@@ -3,9 +3,10 @@
 repository root.
 
 Each probe must compile and fail a behavioral regression. Each escape must be
-refused by a production build of the server, with the error it names. Sources
-are restored from their exact starting bytes in finally, including on failure
-or interrupt.
+refused by a production build of the server, with the error it names. Each
+guard probe removes one guard an escape rests on and requires that escape to
+compile, so no guard can go without its escape noticing. Sources are restored
+from their exact starting bytes in finally, including on failure or interrupt.
 Never run beside another build or source editor in this worktree. Name probes
 to run only those: `python3 -B scripts/validation/server_bounds_mutations.py
 nonce-share preauth-bare`.
@@ -79,6 +80,11 @@ SEALED_SETUP = """        .accept(|held| {
             Ok((body.into_value(), fields))
         })?;
 """
+# The setup check run on a Parsed made before it, and the body kept.
+PARSED_AFTER = """    let (account_name, enrolment) = setup_fields(app, &parsed)?;
+    let body = parsed.into_value();
+"""
+KEEP_PARSED_REFUSAL = "lifetime may not live long enough"
 # The setup body accepted with no check and parsed after its reservation ends.
 SETUP_RELEASED = """    let (raw, ()) = unverified::token_body(app, req)?.accept(|_| Ok(()))?;
     let outside = render::parse_json(&raw)?;
@@ -345,18 +351,70 @@ ESCAPES = [
      "    let body = kept.expect(\"held\").json()?;\n"
      "    let (account_name, enrolment) = setup_fields(app, &body)?;\n    let body = body.into_value();\n",
      "borrowed data escapes outside of closure"),
+    # The provenance of a credential (review of fbf1d84): a Parsed cannot
+    # leave `accept`, and no Held, Parsed or Credential is made outside it.
+    ("escape-keep-parsed", SETUP, SETUP_CHECK,
+     "    let (_, parsed) = unverified::token_body(app, req)?.accept(|held| held.json())?;\n"
+     + PARSED_AFTER, KEEP_PARSED_REFUSAL),
+    ("escape-construct-held", SETUP, SETUP_CHECK,
+     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_| Ok(()))?;\n"
+     "    let parsed = unverified::Held(&raw).json()?;\n" + PARSED_AFTER,
+     "tuple struct constructor `Held` is private"),
+    ("escape-construct-parsed", SETUP, SETUP_CHECK,
+     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_| Ok(()))?;\n"
+     "    let parsed = unverified::Parsed {\n        value: render::parse_json(&raw)?,\n"
+     "        held: std::marker::PhantomData,\n    };\n" + PARSED_AFTER,
+     "of struct `Parsed` are private"),
+    ("escape-construct-credential", PAIRING, CLAIM_CHECK,
+     CLAIM_AFTER + "    pairings.begin_claim(id, &unverified::Credential(&enroll), now)?;\n",
+     "tuple struct constructor `Credential` is private"),
+]
+
+# Each guard an escape rests on, removed: the escape must then compile. An
+# escape with no single guard to remove is refused by a type's shape or by an
+# absence (`escape-reseal`, the two `-check-after`, `escape-keep-held`).
+GUARDS = [
+    ("guard-parsed-lifetime", "escape-keep-parsed",
+     [(UNVERIFIED, "    pub fn json(&self) -> Result<Parsed<'v>, ApiError> {",
+       "    pub fn json(&self) -> Result<Parsed<'static>, ApiError> {")]),
+    ("guard-held-private", "escape-construct-held",
+     [(UNVERIFIED, "pub struct Held<'v, T>(&'v T);", "pub struct Held<'v, T>(pub &'v T);")]),
+    ("guard-parsed-private", "escape-construct-parsed",
+     [(UNVERIFIED, "    value: Value,\n    held: PhantomData<&'v ()>,",
+       "    pub value: Value,\n    pub held: PhantomData<&'v ()>,")]),
+    ("guard-credential-private", "escape-construct-credential",
+     [(UNVERIFIED, "pub struct Credential<'p>(&'p str);", "pub struct Credential<'p>(pub &'p str);")]),
+    ("guard-unverified-private", "escape-reseal-fields",
+     [(UNVERIFIED, "    value: T,\n    reserved: Reserved<'a>,", "    pub value: T,\n    pub reserved: Reserved<'a>,")]),
+    # Two guards refuse a reservation made outside: the method is private,
+    # and so is the type it returns. Either alone still refuses it.
+    ("guard-reserve-private", "escape-reserve",
+     [(UNVERIFIED, "    fn reserve(&self, bytes: u64)", "    pub fn reserve(&self, bytes: u64)"),
+      (UNVERIFIED, "struct Reserved<'a> {", "pub struct Reserved<'a> {")]),
+    ("guard-budget-private", "escape-release",
+     [(UNVERIFIED, "    held: AtomicU64,", "    pub held: AtomicU64,")]),
+    ("guard-test-credential", "escape-test-credential",
+     [(UNVERIFIED, "#[cfg(test)]\nimpl<'p> Credential<'p> {", "impl<'p> Credential<'p> {")]),
+    ("guard-body-test-only", "escape-launder",
+     [(BODY, "#[cfg(test)]\nuse std::io::{BufReader, Cursor};", "use std::io::{BufReader, Cursor};"),
+      (BODY, "    #[cfg(test)]\n    pub fn from_bytes", "    pub fn from_bytes"),
+      (BODY, "#[cfg(test)]\nfn boxed", "fn boxed")]),
 ]
 
 
 def main():
     wanted = set(sys.argv[1:])
-    unknown = wanted - {case[0] for case in CASES + ESCAPES}
+    unknown = wanted - {case[0] for case in CASES + ESCAPES + GUARDS}
     if unknown:
         raise SystemExit("No such probe: " + ", ".join(sorted(unknown)))
     cases = [case for case in CASES if not wanted or case[0] in wanted]
     escapes = [case for case in ESCAPES if not wanted or case[0] in wanted]
+    guards = [case for case in GUARDS if not wanted or case[0] in wanted]
+    by_name = {case[0]: case for case in ESCAPES}
     originals = {Path(path): Path(path).read_bytes()
-                 for path in [case[2] for case in cases] + [case[1] for case in escapes]}
+                 for path in [case[2] for case in cases] + [case[1] for case in escapes]
+                 + [edit[0] for guard in guards for edit in guard[2]]
+                 + [by_name[guard[1]][1] for guard in guards]}
     failures = []
     try:
         for name, path, old, new, refusal in escapes:
@@ -379,6 +437,33 @@ def main():
             print("\n".join(errors), flush=True)
             if not refused:
                 failures.append(name)
+        for name, escape, edits in guards:
+            _, path, old, new, _ = by_name[escape]
+            sources = {edit_path: originals[Path(edit_path)].decode() for edit_path, _, _ in edits}
+            sources.setdefault(path, originals[Path(path)].decode())
+            for edit_path, guard_old, guard_new in edits:
+                if sources[edit_path].count(guard_old) != 1:
+                    raise RuntimeError(f"{name}: guard context moved")
+                sources[edit_path] = sources[edit_path].replace(guard_old, guard_new, 1)
+            if sources[path].count(old) != 1:
+                raise RuntimeError(f"{name}: escape context moved")
+            sources[path] = sources[path].replace(old, new, 1)
+            try:
+                for edit_path, text in sources.items():
+                    Path(edit_path).write_text(text)
+                result = subprocess.run(
+                    ["cargo", "check", "-p", SERVER, "--lib", "--message-format", "short"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, timeout=600, check=False,
+                )
+            finally:
+                for edit_path in sources:
+                    Path(edit_path).write_bytes(originals[Path(edit_path)])
+            pinned = result.returncode == 0
+            print(f"{name}: {'PINNED' if pinned else 'NOT PINNED'} (without it, {escape} compiles)", flush=True)
+            if not pinned:
+                failures.append(name)
+                print("\n".join(line for line in result.stdout.splitlines() if ": error" in line), flush=True)
         for name, crate, path, old, new, selector in cases:
             source = originals[Path(path)].decode()
             if source.count(old) != 1:
@@ -409,9 +494,10 @@ def main():
         for path, original in originals.items():
             path.write_bytes(original)
     if failures:
-        raise SystemExit("Unkilled probes or unrefused escapes: " + ", ".join(failures))
+        raise SystemExit("Unkilled probes, unrefused escapes or unpinned guards: " + ", ".join(failures))
     print(f"All {len(cases)} server probes compiled and were killed; "
-          f"all {len(escapes)} escapes were refused by a production build.")
+          f"all {len(escapes)} escapes were refused by a production build; "
+          f"all {len(guards)} guards are pinned by their escapes.")
 
 
 if __name__ == "__main__":
