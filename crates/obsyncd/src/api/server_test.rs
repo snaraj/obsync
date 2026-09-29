@@ -4816,6 +4816,184 @@ fn a_revoked_or_pending_device_id_is_not_a_credential() {
     );
 }
 
+/// Archiving takes a revoked device off the routine lists and changes
+/// nothing else (issue #247): it is refused as revoked before AND after, it
+/// is still listed with `archived` true so a client that predates the flag
+/// sees what it always saw, and only a revoked device -- never the asking
+/// one -- can be archived.
+#[test]
+fn an_archived_device_is_still_refused_as_revoked_and_still_named() {
+    let h = Harness::start_with(
+        "archive",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
+    let archive = |target: &Cred, by: &Cred| {
+        Req::post(&format!("/v1/devices/{}/archive", target.id))
+            .sign(by, NOW)
+            .send(h.addr)
+    };
+
+    let active = archive(&claimant, &creator);
+    assert_eq!(active.status, 409, "{}", active.text());
+    assert_eq!(
+        active.code(),
+        "device_not_revoked",
+        "a working device is revoked first"
+    );
+    let own = archive(&creator, &creator);
+    assert_eq!(own.status, 409, "{}", own.text());
+    assert_eq!(own.code(), "own_device");
+    let anonymous = Req::post(&format!("/v1/devices/{}/archive", claimant.id)).send(h.addr);
+    assert_eq!(anonymous.status, 401, "{}", anonymous.text());
+
+    let revoke = Req::post(&format!("/v1/devices/{}/revoke", claimant.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(revoke.status, 204, "{}", revoke.text());
+    let refusal = |c: &Cred| {
+        let res = Req::get("/v1/account").sign(c, NOW).send(h.addr);
+        (res.status, res.code())
+    };
+    assert_eq!(
+        refusal(&claimant),
+        (403, "device_revoked".to_string()),
+        "BEFORE: refused as revoked"
+    );
+
+    let archived = archive(&claimant, &creator);
+    assert_eq!(archived.status, 204, "{}", archived.text());
+    assert_eq!(ring_of(&h, "/v1/devices/{id}/archive", 204), "credentialed");
+    let short = |c: &Cred| c.id[..8].to_string();
+    assert!(
+        h.captured().contains(&format!(
+            "event=device_archived device={} by_device={} decision=archived reason=revoked duration_ms=",
+            short(&claimant),
+            short(&creator)
+        )),
+        "{}",
+        h.captured()
+    );
+
+    assert_eq!(
+        refusal(&claimant),
+        (403, "device_revoked".to_string()),
+        "AFTER: the record is what answers this, and it is still there"
+    );
+    // Still listed, and stated as archived: a client that predates the flag
+    // reads the same revoked device it read before (`docs/protocol.md`).
+    let listed = Req::get("/v1/devices")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let devices = listed
+        .get("devices")
+        .and_then(Value::as_array)
+        .expect("devices");
+    let row = devices
+        .iter()
+        .find(|d| d.get("device_id").and_then(Value::as_str) == Some(claimant.id.as_str()))
+        .expect("the archived device is still listed");
+    assert_eq!(row.get("archived").and_then(Value::as_bool), Some(true));
+    assert_eq!(row.get("revoked").and_then(Value::as_bool), Some(true));
+    assert_eq!(row.get("state").and_then(Value::as_str), Some("revoked"));
+    assert_eq!(
+        row.get("name").and_then(Value::as_str),
+        Some("phone"),
+        "its name still answers for the versions it wrote"
+    );
+    assert_eq!(
+        devices
+            .iter()
+            .filter(|d| d.get("archived").and_then(Value::as_bool) == Some(false))
+            .count(),
+        1,
+        "and the device that asked is not archived"
+    );
+    // Archiving again is the same state, not a second decision to reconcile.
+    assert_eq!(archive(&claimant, &creator).status, 204);
+    let unknown = Req::post(&format!("/v1/devices/{}/archive", "ab".repeat(16)))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(unknown.status, 404, "{}", unknown.text());
+    assert_eq!(unknown.code(), "unknown_device");
+}
+
+/// The dashboard archives under its session and its CSRF check, like every
+/// dashboard mutation, and states the flag in its own device list.
+#[test]
+fn the_dashboard_archives_a_revoked_device_under_its_csrf_check() {
+    let h = Harness::start_with(
+        "archive-dashboard",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
+    let cookie = admin_cookie(&h, &creator);
+    let csrf = csrf_value(&cookie);
+    let path = format!("/v1/admin/devices/{}/archive", claimant.id);
+
+    let active = Req::post(&path)
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &csrf)
+        .send(h.addr);
+    assert_eq!(active.status, 409, "{}", active.text());
+    assert_eq!(active.code(), "device_not_revoked");
+
+    let revoke = Req::post(&format!("/v1/admin/devices/{}/revoke", claimant.id))
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &csrf)
+        .send(h.addr);
+    assert_eq!(revoke.status, 204, "{}", revoke.text());
+
+    let no_csrf = Req::post(&path).header("Cookie", &cookie).send(h.addr);
+    assert_eq!(no_csrf.status, 403, "{}", no_csrf.text());
+    assert_eq!(no_csrf.code(), "csrf_failed");
+    let no_session = Req::post(&path).header("X-Obsync-Csrf", &csrf).send(h.addr);
+    assert_eq!(no_session.status, 401, "{}", no_session.text());
+    let archived_flag = || {
+        Req::get("/v1/admin/devices")
+            .header("Cookie", &cookie)
+            .send(h.addr)
+            .json()
+            .get("devices")
+            .and_then(Value::as_array)
+            .expect("devices")
+            .iter()
+            .find(|d| d.get("device_id").and_then(Value::as_str) == Some(claimant.id.as_str()))
+            .map(|d| d.get("archived").and_then(Value::as_bool))
+    };
+    assert_eq!(
+        archived_flag(),
+        Some(Some(false)),
+        "refused, so not archived"
+    );
+
+    let archived = Req::post(&path)
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &csrf)
+        .send(h.addr);
+    assert_eq!(archived.status, 204, "{}", archived.text());
+    assert_eq!(archived_flag(), Some(Some(true)), "listed, and archived");
+    assert_eq!(
+        ring_of(&h, "/v1/admin/devices/{id}/archive", 204),
+        "credentialed"
+    );
+    let after = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(after.code(), "device_revoked", "still refused as revoked");
+}
+
 #[test]
 fn pairing_claim_vault_is_bounded_before_enrolment_and_only_creator_can_read_it() {
     let h = Harness::start("pairing-vault");

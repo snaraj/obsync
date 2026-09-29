@@ -101,6 +101,7 @@ pub(crate) fn device_record() -> DeviceRecord {
             total_budget_bytes: 0,
         },
         state: DeviceState::Active,
+        archived: false,
     }
 }
 

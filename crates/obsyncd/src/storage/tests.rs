@@ -2808,6 +2808,94 @@ fn only_a_pending_device_is_deleted() {
     assert!(store.device(&pending).is_none());
 }
 
+/// Archiving is for a device that can no longer sync (issue #247): an active
+/// or pending one is refused without a frame, and an archived one keeps
+/// everything but its place in the routine lists -- its record, its state,
+/// its name -- from the frames alone after a restart and through a snapshot.
+#[test]
+fn only_a_revoked_device_is_archived_and_the_record_survives() {
+    let dir = TempDir::new("store-archive");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let store = &setup.store;
+    let revoked = spare_device(store, setup.account);
+    store
+        .revoke_device_unless_last(&revoked)
+        .expect("two active devices, so one may go");
+    let pending = store
+        .create_device(NewDevice {
+            account_id: setup.account,
+            name: "half-paired phone".to_string(),
+            platform: "ios".to_string(),
+            app_version: "0.1.0".to_string(),
+            secret: [6u8; 32],
+            state: DeviceState::Pending,
+        })
+        .expect("the claimant")
+        .device_id;
+
+    for (id, state) in [(setup.device, "active"), (pending, "pending")] {
+        let seq = store.head_seq();
+        let refused = store
+            .archive_device(&id)
+            .expect_err("only a revoked device is archived");
+        assert!(
+            matches!(refused, StoreError::DeviceNotRevoked),
+            "{state}: {refused}"
+        );
+        assert!(
+            !store.device(&id).expect("still listed").archived,
+            "{state}: the refusal archived nothing"
+        );
+        assert_eq!(store.head_seq(), seq, "{state}: a refusal appends no frame");
+    }
+    assert!(matches!(
+        store.archive_device(&DeviceId::new([0xeeu8; 16])),
+        Err(StoreError::UnknownDevice)
+    ));
+
+    store
+        .archive_device(&revoked)
+        .expect("a revoked device is archived");
+    let after = store.device(&revoked).expect("the record stays");
+    assert!(after.archived);
+    assert!(after.revoked(), "and it is still revoked");
+    assert_eq!(
+        after.name, "spare device",
+        "so its versions still have an author"
+    );
+    assert!(
+        store.device_secret(&revoked).is_none(),
+        "revocation destroyed it, and archiving gives nothing back"
+    );
+    store
+        .archive_device(&revoked)
+        .expect("archiving twice is the same state");
+    let kept = fingerprint_devices(store);
+    assert_eq!(kept.len(), 3, "every device is still there: {kept:?}");
+    drop(setup);
+
+    // From the frames alone: the flag was on the journal before the call
+    // returned, so a restart finds it.
+    let replayed = open(&cfg);
+    assert_eq!(fingerprint_devices(&replayed), kept, "replay");
+    // And through a snapshot, which carries the flag per device.
+    replayed.snapshot().expect("snapshot");
+    drop(replayed);
+    let loaded = open(&cfg);
+    assert_eq!(fingerprint_devices(&loaded), kept, "snapshot");
+    assert!(loaded.device(&revoked).expect("listed").archived);
+}
+
+/// Every device's id, state, name and archived flag, in id order.
+fn fingerprint_devices(store: &Store) -> Vec<(DeviceId, DeviceState, String, bool)> {
+    store
+        .devices()
+        .into_iter()
+        .map(|d| (d.device_id, d.state, d.name, d.archived))
+        .collect()
+}
+
 /// Two devices revoking each other at the same instant cannot leave an
 /// account with nothing active.
 ///

@@ -592,6 +592,7 @@ const CALLS = [
   ["devices", [], true],
   ["patchDevice", [DEVICE_ID, { name: "n" }], false],
   ["revokeDevice", [DEVICE_ID], false],
+  ["archiveDevice", [DEVICE_ID], false],
   ["heartbeat", ["0.1.0", { perFileMaxBytes: 0, totalBudgetBytes: 0 }], false],
   ["missingChunks", [[SID]], true],
   ["putChunk", [SID, Uint8Array.from([1, 2, 3])], true],

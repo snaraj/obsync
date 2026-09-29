@@ -1,0 +1,12 @@
+# M3472: the fold opens and never closes again
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -1056,7 +1056,7 @@
+       render: (setting) => {
+         setting.addButton((button) => {
+           button.setButtonText(this.revokedShown ? "Hide" : "Show").onClick(() => {
+-            this.revokedShown = !this.revokedShown;
++            this.revokedShown = true;
+             this.update();
+           });
+           button.buttonEl.setAttribute("aria-expanded", String(this.revokedShown));

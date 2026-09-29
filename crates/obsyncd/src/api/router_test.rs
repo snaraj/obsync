@@ -71,6 +71,10 @@ fn heartbeat_is_not_read_as_a_device_id() {
         Route::DeviceRevoke(ID.to_string())
     );
     assert_eq!(
+        route("POST", &format!("/v1/devices/{ID}/archive")),
+        Route::DeviceArchive(ID.to_string())
+    );
+    assert_eq!(
         route("PATCH", &format!("/v1/devices/{ID}")),
         Route::DevicePatch(ID.to_string())
     );
@@ -120,6 +124,10 @@ fn feed_domain_and_admin_routes_resolve() {
         route("POST", &format!("/v1/admin/devices/{ID}/revoke")),
         Route::AdminRevoke(ID.to_string())
     );
+    assert_eq!(
+        route("POST", &format!("/v1/admin/devices/{ID}/archive")),
+        Route::AdminArchive(ID.to_string())
+    );
     assert_eq!(route("GET", "/v1/admin/storage"), Route::AdminStorage);
     assert_eq!(route("POST", "/v1/admin/gc/run"), Route::AdminGcRun);
     assert_eq!(route("POST", "/v1/admin/scrub/run"), Route::AdminScrubRun);
@@ -161,6 +169,16 @@ fn the_log_class_is_a_template_and_never_carries_an_id() {
             "POST",
             format!("/v1/devices/{ID}/revoke"),
             "/v1/devices/{id}/revoke",
+        ),
+        (
+            "POST",
+            format!("/v1/devices/{ID}/archive"),
+            "/v1/devices/{id}/archive",
+        ),
+        (
+            "POST",
+            format!("/v1/admin/devices/{ID}/archive"),
+            "/v1/admin/devices/{id}/archive",
         ),
     ] {
         let c = class(method, &path);
@@ -232,6 +250,7 @@ fn exactly_the_documented_unauthenticated_routes_answer_without_a_credential() {
         ("GET", "/v1/devices".to_string()),
         ("PATCH", format!("/v1/devices/{ID}")),
         ("POST", format!("/v1/devices/{ID}/revoke")),
+        ("POST", format!("/v1/devices/{ID}/archive")),
         ("POST", "/v1/devices/heartbeat".to_string()),
         ("POST", "/v1/chunks/exists".to_string()),
         ("POST", "/v1/chunks/get".to_string()),
@@ -249,6 +268,7 @@ fn exactly_the_documented_unauthenticated_routes_answer_without_a_credential() {
         ("GET", "/v1/admin/overview".to_string()),
         ("GET", "/v1/admin/devices".to_string()),
         ("POST", format!("/v1/admin/devices/{ID}/revoke")),
+        ("POST", format!("/v1/admin/devices/{ID}/archive")),
         ("GET", "/v1/admin/storage".to_string()),
         ("POST", "/v1/admin/gc/run".to_string()),
         ("POST", "/v1/admin/scrub/run".to_string()),
@@ -262,7 +282,7 @@ fn exactly_the_documented_unauthenticated_routes_answer_without_a_credential() {
     }
     // Every route in the table is named above exactly once, so neither list
     // can go stale while the other grows.
-    assert_eq!(public.len() + credentialed.len(), 40);
+    assert_eq!(public.len() + credentialed.len(), 42);
 }
 
 #[test]

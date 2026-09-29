@@ -109,18 +109,23 @@ recovery secrets.
 ## This server no longer recognises this device
 
 A `401 bad_signature` or revoked credential stops sync with an explicit
-forgotten-device message, instead of a repeating offline status. Confirm the
+message saying the server does not recognise this device, instead of a
+repeating offline status. Confirm the
 server address, then use **Setup or recover**. That action clears the rejected
 device ID, feed cursor and sync records while keeping local notes, the vault
 key, server address and access headers. It sets up an empty rebuilt server or
 re-enters a recoverable existing account. No uninstall is needed. **Pair this
 device** can instead obtain a new credential from a device that still syncs.
 
-The updated settings show the action directly when a device is forgotten:
+The settings show that action directly when the server no longer recognises
+this device (which is not what **Forget** on a revoked row does — that one
+only takes a device off the list):
 
 ![Forgotten-device explanation and Set up or recover action, with the token field empty](assets/account-recovery/142-forgotten-device-recovery.png)
 
-After recovery, the new active device appears beside the old revoked one:
+After recovery, the new active device leads the list and the revoked
+predecessor waits behind the **1 revoked device** row that **Show** opens
+(this capture predates that row):
 
 ![One replacement device and its revoked predecessor](assets/account-recovery/142-recovered-device.png)
 

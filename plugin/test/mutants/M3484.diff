@@ -1,0 +1,12 @@
+# M3484: a device somebody forgot is listed again on this device
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3908,7 +3908,7 @@
+    * that with `archived`, which a server before 1.1.5 never sets.
+    */
+   async listDevices(patience: Patience = {}): Promise<DeviceRecord[]> {
+-    return (await this.transport.devices(patience)).devices.filter((device) => device.archived !== true);
++    return (await this.transport.devices(patience)).devices;
+   }
+ 
+   /**

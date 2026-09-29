@@ -261,6 +261,11 @@ impl From<StoreError> for ApiError {
                 code,
                 "only a device waiting for pairing approval is deleted; revoke a paired one",
             ),
+            StoreError::DeviceNotRevoked => ApiError::new(
+                409,
+                code,
+                "only a revoked device is archived; revoke it first",
+            ),
             // The heads are already in the client's hands: every response
             // that named this file carried them, so the way out is a merge
             // naming them, not a retry.
@@ -847,6 +852,7 @@ impl App {
             Route::Devices => devices::list(self, req, client),
             Route::DevicePatch(id) => devices::patch(self, req, client, &id),
             Route::DeviceRevoke(id) => devices::revoke(self, req, client, &id),
+            Route::DeviceArchive(id) => devices::archive(self, req, client, &id),
             Route::Heartbeat => devices::heartbeat(self, req, client),
             Route::ChunksExists => chunks::exists(self, req, client),
             Route::ChunksGet => chunks::batch_get(self, req, client),
@@ -866,6 +872,7 @@ impl App {
             Route::AdminOverview => admin::overview(self, req),
             Route::AdminDevices => admin::devices(self, req),
             Route::AdminRevoke(id) => admin::revoke(self, req, &id),
+            Route::AdminArchive(id) => admin::archive(self, req, &id),
             Route::AdminStorage => admin::storage(self, req),
             Route::AdminGcRun => admin::gc_run(self, req),
             Route::AdminScrubRun => admin::scrub_run(self, req),
@@ -1056,6 +1063,7 @@ fn demands_credential(route: &Route) -> bool {
         | Route::Devices
         | Route::DevicePatch(_)
         | Route::DeviceRevoke(_)
+        | Route::DeviceArchive(_)
         | Route::Heartbeat
         | Route::ChunksExists
         | Route::ChunksGet
@@ -1072,6 +1080,7 @@ fn demands_credential(route: &Route) -> bool {
         | Route::AdminOverview
         | Route::AdminDevices
         | Route::AdminRevoke(_)
+        | Route::AdminArchive(_)
         | Route::AdminStorage
         | Route::AdminGcRun
         | Route::AdminScrubRun
@@ -1172,6 +1181,8 @@ pub enum Route {
     DevicePatch(String),
     /// `POST /v1/devices/{id}/revoke`
     DeviceRevoke(String),
+    /// `POST /v1/devices/{id}/archive`
+    DeviceArchive(String),
     /// `POST /v1/devices/heartbeat`
     Heartbeat,
     /// `POST /v1/chunks/exists`
@@ -1206,6 +1217,8 @@ pub enum Route {
     AdminDevices,
     /// `POST /v1/admin/devices/{id}/revoke`
     AdminRevoke(String),
+    /// `POST /v1/admin/devices/{id}/archive`
+    AdminArchive(String),
     /// `GET /v1/admin/storage`
     AdminStorage,
     /// `POST /v1/admin/gc/run`
@@ -1264,6 +1277,10 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
             Route::DeviceRevoke((*id).to_string()),
             "/v1/devices/{id}/revoke",
         ),
+        ("POST", ["v1", "devices", id, "archive"]) => (
+            Route::DeviceArchive((*id).to_string()),
+            "/v1/devices/{id}/archive",
+        ),
 
         ("POST", ["v1", "chunks", "exists"]) => (Route::ChunksExists, "/v1/chunks/exists"),
         ("POST", ["v1", "chunks", "get"]) => (Route::ChunksGet, "/v1/chunks/get"),
@@ -1294,6 +1311,10 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
         ("POST", ["v1", "admin", "devices", id, "revoke"]) => (
             Route::AdminRevoke((*id).to_string()),
             "/v1/admin/devices/{id}/revoke",
+        ),
+        ("POST", ["v1", "admin", "devices", id, "archive"]) => (
+            Route::AdminArchive((*id).to_string()),
+            "/v1/admin/devices/{id}/archive",
         ),
         ("GET", ["v1", "admin", "storage"]) => (Route::AdminStorage, "/v1/admin/storage"),
         ("POST", ["v1", "admin", "gc", "run"]) => (Route::AdminGcRun, "/v1/admin/gc/run"),

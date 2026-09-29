@@ -1,0 +1,13 @@
+# M3487: the fake server destroys the record instead of flagging it, so an archived device is not refused as revoked
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -811,7 +811,8 @@
+       const device = this.devices.find((candidate) => candidate.device_id === deviceArchive[1]);
+       if (!device) return this.error(404, "unknown_device", "no such device");
+       if (!device.revoked) return this.error(409, "device_not_revoked", "only a revoked device is archived; revoke it first");
+-      device.archived = true;
++      this.devices.splice(this.devices.indexOf(device), 1);
++      this.secrets.delete(deviceArchive[1]);
+       return this.json(204, {});
+     }
+ 

@@ -391,6 +391,17 @@ function mutate(res, method, rest, sent) {
     seq += 1;
     return empty(res, 204, true);
   }
+  // A revoked device only, with the server's codes (#247). The record stays
+  // and is flagged, exactly as obsyncd keeps it.
+  const archive = rest.match(/^\/devices\/([^/]+)\/archive$/);
+  if (method === 'POST' && archive) {
+    const device = devices.find((d) => d.device_id === archive[1]);
+    if (!device) return fail(res, 404, 'unknown_device', 'No such device.');
+    if (!device.revoked) return fail(res, 409, 'device_not_revoked', 'only a revoked device is archived; revoke it first');
+    device.archived = true;
+    seq += 1;
+    return empty(res, 204, true);
+  }
 
   if (method === 'POST' && (rest === '/gc/run' || rest === '/scrub/run')) {
     const job = rest === '/gc/run' ? jobs.gc : jobs.scrub;

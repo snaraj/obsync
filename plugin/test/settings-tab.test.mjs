@@ -18,7 +18,7 @@ class Component {
   constructor(kind) {
     this.kind = kind; this.disabled = false;
     this.inputEl = { listeners: {}, attributes: {}, addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); }, setAttribute(name, value) { this.attributes[name] = value; } };
-    this.buttonEl = { focus: () => { this.focused = true; }, remove: () => { this.removed = true; } };
+    this.buttonEl = { attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, focus: () => { this.focused = true; }, remove: () => { this.removed = true; } };
   }
   /** Type a value, then leave the field: the input's `change` event. */
   commit(value) { this.change(value); for (const fn of this.inputEl.listeners.change ?? []) fn(); }
@@ -107,9 +107,11 @@ function open(t, overrides) {
   tab.update = () => { updates++; };
   const rows = () => tab.getSettingDefinitions().flatMap((group) => group.items.map((item) => ({ ...item, group })));
   const row = (name) => { const found = rows().find((item) => item.name === name); assert.ok(found, `row ${name}`); return found; };
+  /** The rows a person sees: each row's `visible`, evaluated as Obsidian does on a draw. */
+  const shown = (heading) => rows().filter((item) => item.group.heading === heading && (typeof item.visible === "function" ? item.visible() : item.visible !== false)).map((item) => item.name);
   const render = (name) => { made.length = 0; const setting = new obsidian.Setting({}); const result = row(name).render(setting); return { result, made: [...made], setting }; };
   const button = (list, text) => { const found = list.find((c) => c.kind === "button" && c.text === text); assert.ok(found, `button ${text}`); return found; };
-  return { box, obsidian, plugin, calls, settings, tab, rows, row, render, button, made, vault, updates: () => updates };
+  return { box, obsidian, plugin, calls, settings, tab, rows, row, shown, render, button, made, vault, updates: () => updates };
 }
 
 test("the tab keeps the id and name Obsidian gives it, before and after every draft is used", async (t) => {
@@ -680,9 +682,10 @@ test("the device list is read when its row is drawn, once, redrawn when it arriv
   assert.deepEqual(s.calls, ["listDevices"], "drawn twice, read once");
   assert.equal(s.updates(), 1, "the tab is redrawn when the list arrives");
   const names = s.rows().filter((item) => item.group.heading === "Devices").map((item) => item.name);
-  assert.deepEqual(names, ["Kitchen (this device)", "Phone", "Old laptop (revoked)", "Device list"]);
+  assert.deepEqual(names, ["Kitchen (this device)", "Phone", "1 revoked device", "Old laptop (revoked)", "Device list"]);
+  assert.deepEqual(s.shown("Devices"), ["Kitchen (this device)", "Phone", "1 revoked device", "Device list"], "folded (#247)");
   assert.equal(s.row("Device list").desc, "2 devices on this account, and 1 revoked.");
-  assert.equal(s.row("Old laptop (revoked)").render, undefined, "a revoked device has nothing to click");
+  assert.deepEqual(s.render("Old laptop (revoked)").made.map((c) => c.text), ["Forget"], "a revoked device can only be forgotten");
   assert.equal(s.row("Old laptop (revoked)").desc, "linux, plugin 0.1.20", "the name says revoked; the line says the rest");
   const revoke = s.button(s.render("Phone").made, "Revoke");
   assert.equal(revoke.destructive, true);
@@ -801,14 +804,14 @@ test("the device list puts this device first and the revoked last, and counts ea
   s.render("Device list");
   await tick();
   const names = () => s.rows().filter((item) => item.group.heading === "Devices").map((item) => item.name);
-  assert.deepEqual(names(), ["Mac W4RC (this device)", "iPhone EDVF", "Mac ADPQ", "Mac ADPQ (revoked)", "Device list"]);
+  assert.deepEqual(names(), ["Mac W4RC (this device)", "iPhone EDVF", "Mac ADPQ", "1 revoked device", "Mac ADPQ (revoked)", "Device list"]);
   assert.equal(s.row("Device list").desc, "3 devices on this account, and 1 revoked.");
   assert.equal(devices[0].name, "Mac ADPQ", "the list as read is not reordered in place");
 
   devices.push(row("ee".repeat(16), "Mac 7KQ4", { state: "pending" }));
   s.button(s.render("Device list").made, "Refresh").click();
   await tick();
-  assert.deepEqual(names(), ["Mac W4RC (this device)", "iPhone EDVF", "Mac ADPQ", "Mac 7KQ4 (not paired yet)", "Mac ADPQ (revoked)", "Device list"]);
+  assert.deepEqual(names(), ["Mac W4RC (this device)", "iPhone EDVF", "Mac ADPQ", "Mac 7KQ4 (not paired yet)", "1 revoked device", "Mac ADPQ (revoked)", "Device list"]);
   assert.equal(s.row("Device list").desc, "3 devices on this account, 1 not paired yet, and 1 revoked.");
 });
 
@@ -828,9 +831,117 @@ test("two devices under one name are two rows a reader, and Obsidian, can tell a
   s.render("Device list");
   await tick();
   const names = s.rows().filter((item) => item.group.heading === "Devices").map((item) => item.name);
-  assert.deepEqual(names, ["Mac W4RC (this device)", "Android RFV2", "Android RFV2 (revoked) · a1a1a1a1", "Android RFV2 (revoked) · b2b2b2b2", "Device list"]);
+  assert.deepEqual(names, ["Mac W4RC (this device)", "Android RFV2", "2 revoked devices", "Android RFV2 (revoked) · a1a1a1a1", "Android RFV2 (revoked) · b2b2b2b2", "Device list"]);
   const every = s.rows().map((item) => item.name);
   assert.equal(new Set(every).size, every.length, `two rows share a name: ${every.join(" | ")}`);
+
+  // And the question about one of them names the row it was asked from: three
+  // rows reading "Android RFV2" asked "Forget Android RFV2?" three times over.
+  s.button(s.render("2 revoked devices").made, "Show").click();
+  const asked = questions(s, "Cancel");
+  s.button(s.render("Android RFV2 (revoked) · a1a1a1a1").made, "Forget").click();
+  await tick();
+  assert.equal(asked[0].title, "Forget Android RFV2 · a1a1a1a1?");
+  assert.match(asked[0].text, /^Android RFV2 · a1a1a1a1 leaves this list for good\./);
+});
+
+/*
+ * THE ANDROID RECORD, 2026-09-27 (#247): a vault left and paired again many
+ * times listed 16 devices, 12 of them revoked, and the working ones had to
+ * be found among rows that could no longer sync.
+ */
+test("revoked devices fold under one row that counts them, closed until asked, and the fold says whether it is open (#247)", async (t) => {
+  const self = "cc".repeat(16);
+  const row = (id, name, extra = {}) => ({ device_id: id, name, platform: "android", app_version: "1.1.4", last_seen: 0, revoked: false, state: "active", ...extra });
+  const devices = [
+    ...Array.from({ length: 12 }, (_, i) => row((i + 16).toString(16).repeat(16), "Android RFV2", { revoked: true, state: "revoked" })),
+    row(self, "Mac W4RC", { platform: "macos" }),
+    row("01".repeat(16), "Android RFV2"),
+    row("02".repeat(16), "iPhone EDVF", { platform: "ios" }),
+    row("03".repeat(16), "Mac 7KQ4", { platform: "macos" }),
+  ];
+  const s = open(t, { listDevices: async () => devices });
+  s.plugin.state.data.deviceId = self;
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  const working = ["Mac W4RC (this device)", "Android RFV2", "iPhone EDVF", "Mac 7KQ4"];
+  const closed = [...working, "12 revoked devices", "Device list"];
+  assert.deepEqual(s.shown("Devices"), closed, "the working devices first, then one row for the revoked");
+  assert.equal(s.row("12 revoked devices").desc, "These can no longer sync. Forget one to take it off this list for good.");
+  assert.equal(s.row("Device list").desc, "4 devices on this account, and 12 revoked.", "still counted, never first");
+
+  let fold = s.render("12 revoked devices").made;
+  assert.deepEqual(fold.map((c) => [c.text, c.buttonEl.attributes["aria-expanded"]]), [["Show", "false"]], "a disclosure, closed");
+  const drawn = s.updates();
+  fold[0].click();
+  assert.equal(s.updates(), drawn + 1, "pressing it redraws the tab");
+  const opened = s.shown("Devices");
+  assert.deepEqual(opened.slice(0, 5), [...working, "12 revoked devices"], "the fold stays where it was");
+  assert.equal(opened.length, closed.length + 12);
+  assert.ok(opened.slice(5, 17).every((name) => name.startsWith("Android RFV2 (revoked) · ")), opened.join(" | "));
+  assert.equal(opened.at(-1), "Device list");
+  fold = s.render("12 revoked devices").made;
+  assert.deepEqual(fold.map((c) => [c.text, c.buttonEl.attributes["aria-expanded"]]), [["Hide", "true"]]);
+  fold[0].click();
+  assert.deepEqual(s.shown("Devices"), closed, "and closed again");
+
+  // Every showing of the tab starts closed.
+  s.button(s.render("12 revoked devices").made, "Show").click();
+  s.tab.hide();
+  s.render("Device list");
+  await tick();
+  assert.deepEqual(s.shown("Devices"), closed);
+});
+
+test("Forget on a revoked device asks first, says what that device will see, forgets it, and says a refusal in words (#247)", async (t) => {
+  const self = "cc".repeat(16);
+  const gone = "aa".repeat(16);
+  let refusal = null;
+  const s = open(t, {
+    listDevices: async () => [
+      { device_id: self, name: "Mac W4RC", platform: "macos", app_version: "1.1.5", last_seen: 0, revoked: false, state: "active" },
+      { device_id: gone, name: "Old phone", platform: "ios", app_version: "1.1.4", last_seen: 0, revoked: true, state: "revoked" },
+    ],
+    forgetRevoked: async (id) => { s.calls.push(`forget:${id}`); if (refusal !== null) throw refusal; },
+  });
+  s.plugin.state.data.deviceId = self;
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  const forgets = () => s.calls.filter((call) => call.startsWith("forget:"));
+
+  const asked = questions(s, "Cancel");
+  s.button(s.render("Old phone (revoked)").made, "Forget").click();
+  await tick();
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].title, "Forget Old phone?");
+  assert.equal(asked[0].text, "Old phone leaves this list for good. It already cannot sync, and it goes on saying so if somebody " +
+    "opens it; pair it again to bring it back. Nothing else changes: your notes stay, and so does its name on what it wrote.");
+  assert.deepEqual(asked[0].buttons.map((button) => [button.text, button.destructive === true]), [["Cancel", false], ["Forget", true]]);
+  assert.deepEqual(forgets(), [], "Cancel forgets nothing");
+
+  questions(s, "Forget");
+  const drawn = s.updates();
+  s.button(s.render("Old phone (revoked)").made, "Forget").click();
+  await tick();
+  assert.deepEqual(forgets(), [`forget:${gone}`]);
+  assert.deepEqual(s.obsidian.notices, ["Old phone is forgotten."], "one brief confirmation");
+  assert.equal(s.updates(), drawn + 1);
+  assert.equal(s.row("Device list").desc, "Reading the device list…", "and the list is read again");
+
+  s.render("Device list");
+  await tick();
+  refusal = new Error("your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.");
+  s.button(s.render("Old phone (revoked)").made, "Forget").click();
+  await tick();
+  assert.equal(s.obsidian.notices.at(-1), "Old phone was not forgotten: your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.");
+  const { ApiError } = s.box.require(join(s.box.home, "build/transport.js"));
+  refusal = new ApiError(409, "sentinel_refusal", "SENTINEL");
+  s.button(s.render("Old phone (revoked)").made, "Forget").click();
+  await tick();
+  assert.equal(s.obsidian.notices.at(-1), "Old phone was not forgotten: Your server refused this request; the obsync log names the reason.");
+  assert.doesNotMatch(s.obsidian.notices.join("\n"), /sentinel_refusal|SENTINEL|409/, "never a code");
 });
 
 test("the Pairing row names this device and what it is, never its id (iPhone pass, 2026-09-26)", (t) => {

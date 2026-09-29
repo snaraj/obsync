@@ -266,6 +266,7 @@ test('app.css: [hidden] outranks every class by ORDER, and the narrow table rows
   assert.ok(base.includes(rule));
   assert.equal(after.includes('display:'), false, `a display rule follows [hidden]: ${after.trim().slice(0, 80)}`);
   assert.ok(CSS.includes('.grid tr[hidden] { display: none; }'));
+  assert.ok(CSS.includes('.grid tbody[hidden] { display: none; }'), 'the narrow block shows every body: the revoked one hides itself (#247)');
   assert.equal(CSS.includes('!important'), false);
 });
 
@@ -292,6 +293,17 @@ test('app.js: every template it clones exists in index.html', () => {
   assert.ok(templates.length > 4, `expected several templates, found ${templates.length}`);
   const missing = [...new Set(templates)].filter((id) => !HTML.includes(`<template id="${id}">`));
   assert.deepEqual(missing, []);
+});
+
+// The fold (#247) is a disclosure: it ships closed, names what it opens,
+// and sits in the devices table itself, so its rows keep the table's columns.
+test('the revoked devices ship folded: a hidden body in the devices table, and a closed toggle that controls it', () => {
+  const table = HTML.slice(HTML.indexOf('id="devices-table"'), HTML.indexOf('</table>', HTML.indexOf('id="devices-table"')));
+  assert.ok(table.includes('<tbody id="revoked-body" hidden></tbody>'), 'the revoked rows start hidden, in this table');
+  assert.ok(table.includes('<tbody id="revoked-fold" hidden>'), 'and the fold row with them, until there is a count');
+  assert.ok(table.includes('<button type="button" id="revoked-toggle" class="ghost" aria-expanded="false" aria-controls="revoked-body">Show</button>'));
+  assert.ok(table.indexOf('id="devices-body"') < table.indexOf('id="revoked-fold"'), 'working devices first');
+  assert.ok(table.indexOf('id="revoked-fold"') < table.indexOf('id="revoked-body"'), 'then the fold, then what it opens');
 });
 
 test('the devices table, its skeleton, and its history row agree on 11 columns', () => {

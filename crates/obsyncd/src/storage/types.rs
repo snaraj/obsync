@@ -105,6 +105,12 @@ pub struct DeviceRecord {
     pub policy: DevicePolicy,
     /// Where the device is in its life.
     pub state: DeviceState,
+    /// Taken off the routine device lists (issue #247). It is a property of
+    /// a REVOKED device, never a state of its own: the record stays, it is
+    /// still answered `403 device_revoked`, and it still names the versions
+    /// it wrote. A client that does not know the flag sees the device it
+    /// always saw.
+    pub archived: bool,
 }
 
 impl DeviceRecord {
@@ -515,6 +521,10 @@ pub enum StoreError {
     /// Deletion destroys the record outright, so it is reserved for a claim
     /// nobody approved; an approved device is revoked instead (issue #88).
     DeviceNotPending,
+    /// An archive named a device that is not revoked. Archiving takes a
+    /// device off the routine lists, so it is reserved for one that can no
+    /// longer sync; a working device is revoked first (issue #247).
+    DeviceNotRevoked,
     /// No such file.
     UnknownFile,
     /// No such domain: no file the store holds is in it.
@@ -597,6 +607,7 @@ impl fmt::Display for StoreError {
             StoreError::DeviceRevoked => f.write_str("device revoked"),
             StoreError::DevicePending => f.write_str("device pending approval"),
             StoreError::DeviceNotPending => f.write_str("device is not pending approval"),
+            StoreError::DeviceNotRevoked => f.write_str("device is not revoked"),
             StoreError::TooManyHeads { heads, max } => {
                 write!(f, "too many heads: {heads} heads, max {max}")
             }
@@ -650,6 +661,7 @@ impl StoreError {
             StoreError::DeviceRevoked => "device_revoked",
             StoreError::DevicePending => "device_pending",
             StoreError::DeviceNotPending => "device_not_pending",
+            StoreError::DeviceNotRevoked => "device_not_revoked",
             StoreError::TooManyHeads { .. } => "too_many_heads",
             StoreError::UnknownFile => "unknown_file",
             StoreError::UnknownDomain => "unknown_domain",

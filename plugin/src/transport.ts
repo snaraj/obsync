@@ -221,6 +221,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/reject$`), idempotent: false },
   { method: "PATCH", path: new RegExp(`^/v1/devices/${ID}$`), idempotent: false },
   { method: "POST", path: new RegExp(`^/v1/devices/${ID}/revoke$`), idempotent: false },
+  { method: "POST", path: new RegExp(`^/v1/devices/${ID}/archive$`), idempotent: false },
   { method: "POST", path: /^\/v1\/devices\/heartbeat$/, idempotent: false },
   { method: "POST", path: new RegExp(`^/v1/files/${ID}/versions$`), idempotent: false },
   { method: "POST", path: /^\/v1\/dashboard\/login-link$/, idempotent: false },
@@ -428,6 +429,8 @@ export interface DeviceRecord {
   app_version: string;
   last_seen: number;
   revoked: boolean;
+  /** Taken off the device lists (#247). A server before 1.1.5 states nothing. */
+  archived?: boolean;
   /** `pending` until a paired device's claim collects the vault key; absent from a server that predates it. */
   state?: string;
 }
@@ -1152,6 +1155,11 @@ export class Transport {
 
   revokeDevice(deviceId: string): Promise<Sent<void>> {
     return this.once("POST", `/v1/devices/${deviceId}/revoke`, { auth: "device", json: {} });
+  }
+
+  /** A REVOKED device off the device lists (server 1.1.5, #247). */
+  archiveDevice(deviceId: string): Promise<Sent<void>> {
+    return this.once("POST", `/v1/devices/${deviceId}/archive`, { auth: "device", json: {} });
   }
 
   heartbeat(appVersion: string, policy: Policy): Promise<Sent<void>> {

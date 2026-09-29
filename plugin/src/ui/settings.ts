@@ -237,6 +237,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private draftName: string | null = null;
   private deviceList: DeviceRecord[] | null = null;
   private deviceListError: string | null = null;
+  /** Whether the revoked devices are shown under their fold (#247); closed on every showing. */
+  private revokedShown = false;
   private readingDevices = false;
   /**
    * WHICH SHOWING OF THE TAB A DEVICE LIST READ IS FOR (iPhone pass,
@@ -286,6 +288,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.draftName = null;
     this.deviceList = null;
     this.deviceListError = null;
+    this.revokedShown = false;
     this.devicesShown++;
     this.readingDevices = false;
     this.unwatchDevices?.();
@@ -913,14 +916,20 @@ export class ObsyncSettingTab extends PluginSettingTab {
     const rank = (device: DeviceRecord): number =>
       device.device_id === self ? 0 : device.revoked ? 3 : device.state === "pending" ? 2 : 1;
     const devices = [...(this.deviceList ?? [])].sort((a, b) => rank(a) - rank(b));
-    const rows = devices.map((device) => this.deviceRow(device));
     // A phone paired twice under one name left two rows nobody could tell
     // apart, and Obsidian keys each row by its name: a console error at every
-    // draw (rig, 2026-09-27). Such a row carries the start of its device id.
-    const names = rows.map((row) => row.name);
-    rows.forEach((row, at) => {
-      if (names.indexOf(row.name) !== names.lastIndexOf(row.name)) row.name += ` · ${devices[at]?.device_id.slice(0, 8)}`;
-    });
+    // draw (rig, 2026-09-27). Such a device carries the start of its id, in
+    // its row AND in what Revoke and Forget say about it (#247): three rows
+    // reading "Android RFV2" asked the same question three times over.
+    const names = devices.map((device) => `${device.name}${this.marked(device)}`);
+    const named = (at: number): string => {
+      const name = names[at] as string;
+      return names.indexOf(name) === names.lastIndexOf(name) ? (devices[at] as DeviceRecord).name : `${(devices[at] as DeviceRecord).name} · ${(devices[at] as DeviceRecord).device_id.slice(0, 8)}`;
+    };
+    const rows = devices.map((device, at) => this.deviceRow(device, named(at)));
+    // The revoked rows are the last ones: the fold goes in front of them.
+    const revoked = devices.filter((device) => device.revoked).length;
+    if (revoked > 0) rows.splice(rows.length - revoked, 0, this.revokedFold(revoked));
     rows.push({
       name: "Device list",
       desc: () => {
@@ -978,25 +987,44 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.unwatchDevices = unwatch;
   }
 
-  private deviceRow(device: DeviceRecord): Row {
+  /** What a row says beside a device's name. Enrolled without the vault key yet: issue #152. */
+  private marked(device: DeviceRecord): string {
+    if (device.device_id === this.plugin.state.data.deviceId) return " (this device)";
+    return device.revoked ? " (revoked)" : device.state === "pending" ? " (not paired yet)" : "";
+  }
+
+  /** One device's row. `named` is its name, plus the start of its id when another shares it. */
+  private deviceRow(device: DeviceRecord, named: string): Row {
     const self = device.device_id === this.plugin.state.data.deviceId;
     const seen = device.last_seen ? `, last seen ${new Date(device.last_seen).toLocaleString()}` : "";
-    // Enrolled by a pairing code, without the vault key yet (issue #152).
     const pending = device.state === "pending";
     const row: Row = {
-      name: `${device.name}${self ? " (this device)" : device.revoked ? " (revoked)" : pending ? " (not paired yet)" : ""}`,
+      name: `${device.name}${this.marked(device)}${named.slice(device.name.length)}`,
       desc: `${device.platform}, plugin ${device.app_version}${seen}${pending ? `. ${STILL_PAIRING}` : ""}`,
     };
-    if (!device.revoked) {
+    if (device.revoked) {
+      row.visible = () => this.revokedShown;
+      row.render = (setting) => {
+        setting.addButton((button) => button.setButtonText("Forget").onClick(() => {
+          new ConfirmModal(
+            this.app,
+            `Forget ${named}?`,
+            `${named} leaves this list for good. It already cannot sync, and it goes on saying so if somebody opens it; pair it again to bring it back. Nothing else changes: your notes stay, and so does its name on what it wrote.`,
+            () => { void this.forget(device, named); },
+            "Forget",
+          ).open();
+        }));
+      };
+    } else {
       row.render = (setting) => {
         setting.addButton((button) => button.setButtonText("Revoke").setDestructive().onClick(() => {
           new ConfirmModal(
             this.app,
-            `Revoke ${device.name}?`,
+            `Revoke ${named}?`,
             self
               ? "This device will stop syncing immediately. To return, pair from another syncing device, or recover with the setup token and this vault’s key after recovery has been registered. Keep the setup token and 24-word phrase before revoking the last device. The vault key stays in this vault's secret storage."
-              : `${device.name} will stop syncing immediately. Files already on it stay readable there; it cannot write, delete or read anything new.`,
-            () => { void this.revoke(device); },
+              : `${named} will stop syncing immediately. Files already on it stay readable there; it cannot write, delete or read anything new.`,
+            () => { void this.revoke(device, named); },
           ).open();
         }));
       };
@@ -1004,14 +1032,47 @@ export class ObsyncSettingTab extends PluginSettingTab {
     return row;
   }
 
-  private async revoke(device: DeviceRecord): Promise<void> {
+  private async revoke(device: DeviceRecord, named: string): Promise<void> {
     try {
       await this.plugin.revokeDevice(device.device_id);
-      new Notice(`${device.name} is revoked.`);
+      new Notice(`${named} is revoked.`);
       this.deviceList = null;
       this.update();
     } catch (error) {
-      new Notice(`${device.name} was not revoked: ${message(error)}`, 10000);
+      new Notice(`${named} was not revoked: ${message(error)}`, 10000);
+    }
+  }
+
+  /**
+   * THE FOLD (#247). Revoked devices are counted on one row and listed under
+   * it only when asked: a vault left and paired again a few times listed more
+   * revoked devices than working ones, and the working ones had to be found
+   * among them. The button is a disclosure, and says whether it is open.
+   */
+  private revokedFold(count: number): Row {
+    return {
+      name: `${count} revoked device${count === 1 ? "" : "s"}`,
+      desc: "These can no longer sync. Forget one to take it off this list for good.",
+      render: (setting) => {
+        setting.addButton((button) => {
+          button.setButtonText(this.revokedShown ? "Hide" : "Show").onClick(() => {
+            this.revokedShown = !this.revokedShown;
+            this.update();
+          });
+          button.buttonEl.setAttribute("aria-expanded", String(this.revokedShown));
+        });
+      },
+    };
+  }
+
+  private async forget(device: DeviceRecord, named: string): Promise<void> {
+    try {
+      await this.plugin.forgetRevoked(device.device_id);
+      new Notice(`${named} is forgotten.`);
+      this.deviceList = null;
+      this.update();
+    } catch (error) {
+      new Notice(`${named} was not forgotten: ${refusalText(error)}`, 10000);
     }
   }
 

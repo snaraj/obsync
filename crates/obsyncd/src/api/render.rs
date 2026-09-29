@@ -96,6 +96,11 @@ pub fn device(d: &DeviceRecord) -> Value {
         // plugin read it and a pending device is not a revoked one.
         ("state", s(d.state.as_word())),
         ("revoked", b(d.revoked())),
+        // An archived device is still listed, and still revoked: a client
+        // that does not know this field shows exactly what it showed before
+        // (issue #247). Leaving it out instead would have made a 1.1.4
+        // device list disagree with a 1.1.5 one about who exists.
+        ("archived", b(d.archived)),
     ])
 }
 

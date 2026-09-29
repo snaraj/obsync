@@ -3928,9 +3928,14 @@ export default class ObsyncPlugin extends Plugin {
     await this.refreshDeviceNames();
   }
 
-  /** Every device paired to this vault, for the settings tab's device list. */
+  /**
+   * Every device paired to this vault, for the settings tab's device list.
+   * A device somebody has forgotten is not one of them (#247): the server
+   * keeps its record to refuse it by and to name its versions, and states
+   * that with `archived`, which a server before 1.1.5 never sets.
+   */
   async listDevices(patience: Patience = {}): Promise<DeviceRecord[]> {
-    return (await this.transport.devices(patience)).devices;
+    return (await this.transport.devices(patience)).devices.filter((device) => device.archived !== true);
   }
 
   /**
@@ -3962,6 +3967,48 @@ export default class ObsyncPlugin extends Plugin {
       // what happened itself: a phone put this up after every Leave (#233).
       if (!this.leaving) this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
     }
+  }
+
+  /**
+   * Forget a REVOKED device (issue #247): the server takes it off the device
+   * lists. NOTHING IS DESTROYED -- the record is what answers that device
+   * "This device was removed from your server" rather than the answer a
+   * stranger's id gets, and what names the versions it wrote -- so the wire
+   * calls it archiving and the person, who is tidying a list, reads Forget.
+   *
+   * Always a person's press, so always their patience. It is not repeatable,
+   * and a lost answer is settled by reading the list: a device no longer
+   * listed is the outcome that was asked for.
+   *
+   * A SERVER BEFORE 1.1.5 HAS NO SUCH ROUTE and answers `404 not_found`; the
+   * person is told what to update, and the device stays revoked and listed.
+   * Each outcome logs one line with its duration against the interactive budget.
+   */
+  async forgetRevoked(deviceId: string): Promise<void> {
+    const started = Date.now();
+    const logged = (decision: string, reason: string): void =>
+      this.log(`device decision=${decision} action=forget reason=${reason} duration_ms=${Date.now() - started} budget_ms=${INTERACTIVE_MS}`);
+    let sent: Sent<void>;
+    try {
+      sent = await patiently(this.transport.archiveDevice(deviceId), { interactive: true });
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "local";
+      if (code === "unknown_device") return logged("forgotten", "already_gone");
+      logged("refused", code);
+      if (code === "not_found") {
+        throw new Error("your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.");
+      }
+      if (code === "device_not_revoked") throw new Error("it can still sync. Revoke it first.");
+      throw error;
+    }
+    if (sent.outcome === "lost") {
+      const listed = (await this.transport.devices({ interactive: true })).devices
+        .some((device) => device.device_id === deviceId && device.archived !== true);
+      logged(listed ? "unconfirmed" : "forgotten", "lost_answer");
+      if (listed) throw new Error(lostMessage("forgetting that device", sent));
+      return;
+    }
+    logged("forgotten", "revoked");
   }
 
   // --- leaving a server --------------------------------------------------

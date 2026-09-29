@@ -120,6 +120,28 @@ answer to a lost or stolen device.
    to the server; it does not reach into the device and delete files, and it
    does not re-encrypt the vault under a new key.
 
+## How to forget a revoked device
+
+A device that has been revoked stays in the list, refused, until it is
+forgotten. The **Devices** page counts those on one row — **N revoked
+devices** — and **Show** opens them; each carries **Forget** in place of
+**Revoke**.
+
+1. Select **Show** beside the count, and find the device.
+2. Select **Forget**. As with revoking, nothing has happened yet: that button
+   only reveals the confirmation.
+3. Select **Confirm forget**. THIS is the click that sends
+   `POST /v1/admin/devices/{id}/archive`. **Cancel** sends nothing.
+4. The page says "<name> is forgotten." and the row is gone, and a line under
+   the table counts what is no longer listed. Only the LIST changed: the
+   server keeps that device's record, still refuses it with `403
+   device_revoked`, and still names the versions it wrote. The flag is on the
+   journal before the answer, so a restart shows the same list. Only a revoked
+   device can be forgotten; the server refuses anything else with `409
+   device_not_revoked`.
+5. If that device was yours, pair it again from a device that still syncs. Its
+   notes are still in its vault.
+
 You can also revoke from the **Devices** list in the plugin's own settings tab,
 on any paired device, without opening the dashboard at all. It confirms the
 same way: **Revoke** there opens a dialog whose own **Revoke** button is what

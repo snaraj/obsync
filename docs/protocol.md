@@ -35,7 +35,9 @@ device holds its whole share of that cache, 50,000 nonces, a quarter of it;
 only this device is refused), `503 nonce_log_unavailable`
 (the volume would not take that record), `403 device_revoked` (answered from the device
 record before the signature is checked, because revocation destroys the
-wrapped secret and leaves nothing to check it against), `403 device_pending`
+wrapped secret and leaves nothing to check it against; archiving that device
+does not change this answer, because it does not remove the record),
+`403 device_pending`
 (a claimed device that has not yet collected the envelope its creator
 approved, answered only AFTER its signature verifies; only that pairing's
 envelope endpoint admits it, with `409 not_approved` until the approval).
@@ -74,6 +76,7 @@ answers the same.
 | `GET /v1/devices` | yes | read |
 | `PATCH /v1/devices/{id}` | **no** | write |
 | `POST /v1/devices/{id}/revoke` | **no** | write, and one-way |
+| `POST /v1/devices/{id}/archive` | **no** | write; a second send leaves the same state and answers `204` |
 | `POST /v1/devices/heartbeat` | **no** | write |
 | `POST /v1/chunks/exists` | yes | a read; POST only because the sid list is long |
 | `POST /v1/chunks/get` | yes | a read; same reason |
@@ -86,7 +89,7 @@ answers the same.
 A client that loses the answer to a **no** row must not re-send it. The
 outcome is unknown, not failed: the request may already have been applied.
 Settle it by reading what the server holds — the file record for a version
-post, the device list for a revoke — or tell the user, with the reason, that
+post, the device list for a revoke or an archive — or tell the user, with the reason, that
 it is unknown. The plugin's table is `ROUTES` in `plugin/src/transport.ts`
 and a test asserts every route it emits appears there.
 
@@ -209,12 +212,26 @@ retain the account-wide authority described below.
 - `GET /v1/devices` → `{"devices":[{"device_id","name","platform",
   "app_version","created","last_seen","last_sign_in","last_edit",
   "address","country","policy":{"per_file_max_bytes","total_budget_bytes"},
-  "state":"pending|active|revoked","revoked":false}]}`. Only `active`
-  devices count for the last-device rule.
+  "state":"pending|active|revoked","revoked":false,"archived":false}]}`. Only
+  `active` devices count for the last-device rule. `archived` (server 1.1.5)
+  is a property of a REVOKED device and never a state of its own: an archived
+  device is still listed, still `"revoked":true`, and still named, so a client
+  that does not read the field shows exactly what it showed before. A client
+  that does read it leaves those devices out of the lists a person manages.
 - `PATCH /v1/devices/{id}` `{"name"?, "policy"?}` (self or any paired
   device) → `200` the device.
 - `POST /v1/devices/{id}/revoke` → `204`. A device cannot revoke itself
   while it is the only active device unless account recovery is registered.
+- `POST /v1/devices/{id}/archive` (server 1.1.5) → `204`: a REVOKED device is
+  taken off the device lists a person manages. Nothing is destroyed: the
+  record still answers that device `403 device_revoked`, and still names the
+  versions it wrote. `409 device_not_revoked` for an active or pending device
+  (revoke it first), `409 own_device` for the asking device, `404
+  unknown_device`; a second archive of the same device answers `204`. The
+  flag is on the journal before the `204`, inside the `device_update` frame,
+  so a server that predates it replays that frame as the no-op update it
+  reads rather than refusing the journal. A server before 1.1.5 answers `404
+  not_found` (no route).
 - `POST /v1/devices/heartbeat` `{"app_version","policy"}` → `204`; updates
   `last_seen` and the reported policy. Sent on start and hourly.
 
@@ -606,6 +623,9 @@ device whose link opened it is revoked.
 - `POST /v1/admin/devices/{id}/revoke` → `204`; `409 last_device` when the
   target is the only ACTIVE device and account recovery is unregistered. Revocation also closes the dashboard
   sessions that device's links opened and drops the links it minted.
+- `POST /v1/admin/devices/{id}/archive` → `204`; as `POST
+  /v1/devices/{id}/archive`: a revoked device only (`409
+  device_not_revoked`), `404 unknown_device`.
 - `GET /v1/admin/storage` → `{"volumes":[<volume>…],"retention":{"days",
   "versions"},"watermark":{"spec":"5%,2GiB"},"gc":{"state":"idle|running",
   "last":<gc>|null},"scrub":{"state":"idle|running","rate_bytes_per_sec",

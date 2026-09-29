@@ -481,6 +481,21 @@ device compromise is a phase-2 operation (re-encrypt manifests and
 re-derive domain keys; chunks under a domain whose key is rotated are
 re-uploaded lazily).
 
+A REVOKED device can also be taken off the device lists, from the same two
+places (`POST /v1/devices/{id}/archive`, plugin and server 1.1.5; the person
+reads **Forget**, because what they are tidying is a list). NOTHING IS
+DESTROYED, and there is no second device-state model: `archived` is a flag on
+a revoked device, journaled inside the ordinary `device_update` frame and
+fsynced before the answer. The record is what answers that device `403
+device_revoked` rather than the answer an unknown id would get, and what
+names the versions it wrote wherever history is read, so both survive
+archiving; only a revoked device may be archived, never the asking one, and
+the guard sits in the store and in the index, so no replay can hide a device
+that syncs. `GET /v1/devices` still lists archived devices, with the flag, so
+a client that predates it is still correct; a 1.1.5 client leaves them out.
+Both lists show the remaining revoked devices behind one collapsed row that
+counts them, rather than among the devices that sync (issue #247).
+
 Account recovery uses a domain-separated 32-byte HKDF output from VRK,
 `obsync/v1/account-recovery` as salt and empty info, solely as an authentication
 proof. The server stores only its SHA-256 verifier in the account journal frame

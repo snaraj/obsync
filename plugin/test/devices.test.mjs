@@ -10,12 +10,8 @@
 
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { createRequire } from "node:module";
 import { join } from "node:path";
 import { FakeServer, KEYS, fakeState, sandbox } from "./fake.mjs";
-
-const require = createRequire(import.meta.url);
-const { Transport, ApiError } = require("../build/transport.js");
 
 const OTHER_DEVICE = "1122334455667788990011223344ffff";
 
@@ -27,6 +23,9 @@ const OTHER_DEVICE = "1122334455667788990011223344ffff";
 async function plugin(wrap = (request) => request) {
   const box = sandbox();
   const ObsyncPlugin = box.require(join(box.home, "build", "main.js")).default;
+  // The plugin's own transport module, so a refusal is the `ApiError` the
+  // plugin checks for, as it is in a real vault.
+  const { Transport, ApiError } = box.require(join(box.home, "build", "transport.js"));
   const server = new FakeServer();
   const { state } = await fakeState(false);
   const logs = [];
@@ -43,7 +42,7 @@ async function plugin(wrap = (request) => request) {
   instance.engine = null;
   instance.manifest = { id: "obsync", version: "0.1.0" };
   instance.log = (line) => logs.push(line);
-  return { instance, server, state, logs };
+  return { instance, server, state, logs, ApiError };
 }
 
 test("a device with no chosen name is what it is and a tag made here, before and after it enrols (#152)", async () => {
@@ -97,7 +96,7 @@ test("saving this device sends the name AND both ceilings, and keeps them", asyn
 });
 
 test("the server model refuses invalid policy fields before acknowledging heartbeat or settings", async () => {
-  const { instance, server } = await plugin();
+  const { instance, server, ApiError } = await plugin();
   for (const field of ["perFileMaxBytes", "totalBudgetBytes"]) {
     for (const invalid of [-1, 0.5]) {
       const policy = { perFileMaxBytes: 512, totalBudgetBytes: 1024, [field]: invalid };
@@ -170,7 +169,7 @@ test("revoking another device takes effect and does not disturb this one", async
 });
 
 test("the only active device cannot be revoked, and the server's reason is surfaced", async () => {
-  const { instance, server } = await plugin();
+  const { instance, server, ApiError } = await plugin();
   assert.equal(server.devices.length, 1);
 
   await assert.rejects(
@@ -273,4 +272,104 @@ test("a revoke that never landed is reported with its exact reason, not as done"
     false,
     "a lost answer is never reported as success",
   );
+});
+
+// ---- forgetting a revoked device (#247) -----------------------------------
+
+const REVOKED = { ...SECOND_DEVICE, revoked: true, state: "revoked" };
+const forgetLine = (logs, decision, reason) =>
+  logs.find((line) => line.startsWith(`device decision=${decision} action=forget reason=${reason} duration_ms=`) && line.endsWith(" budget_ms=10000"));
+
+test("forgetting a revoked device takes it off this device's list while the server keeps the record", async () => {
+  const { instance, server, logs } = await plugin();
+  server.devices.push({ ...REVOKED });
+
+  await instance.forgetRevoked(OTHER_DEVICE);
+
+  assert.deepEqual(
+    server.devices.map((device) => [device.device_id, device.revoked, device.archived === true]),
+    [[KEYS.deviceId, false, false], [OTHER_DEVICE, true, true]],
+    "nothing was destroyed: the record is flagged, and still revoked",
+  );
+  assert.deepEqual(await instance.listDevices(), [server.devices[0]], "and this device lists only what is left");
+  const sent = server.requests.filter((request) => request.target.endsWith("/archive"));
+  assert.deepEqual(sent.map((request) => `${request.method} ${request.target}`), [`POST /v1/devices/${OTHER_DEVICE}/archive`]);
+  assert.ok(forgetLine(logs, "forgotten", "revoked"), logs.join("\n"));
+  assert.equal(logs.filter((line) => line.includes("action=forget")).length, 1, "one line per forget");
+});
+
+test("a device already forgotten is still refused as revoked, and still names its versions", async () => {
+  const { instance, server } = await plugin();
+  server.devices.push({ ...REVOKED, name: "Old phone" });
+  await instance.forgetRevoked(OTHER_DEVICE);
+
+  const listed = (await instance.transport.devices()).devices.find((device) => device.device_id === OTHER_DEVICE);
+  assert.equal(listed.archived, true, "the wire still states it");
+  assert.equal(listed.name, "Old phone", "so a version it wrote still has an author");
+  assert.equal(listed.revoked, true);
+});
+
+test("a device that can still sync is not forgotten, and the refusal is in words", async () => {
+  const { instance, server, logs } = await plugin();
+  server.devices.push({ ...SECOND_DEVICE });
+
+  await assert.rejects(() => instance.forgetRevoked(OTHER_DEVICE), (error) => {
+    assert.equal(error.message, "it can still sync. Revoke it first.");
+    return true;
+  });
+  assert.equal(server.devices.length, 2, "nothing was forgotten");
+  assert.ok(forgetLine(logs, "refused", "device_not_revoked"), logs.join("\n"));
+});
+
+test("a device already gone from the list is the outcome that was asked for", async () => {
+  const { instance, logs } = await plugin();
+  await instance.forgetRevoked(OTHER_DEVICE);
+  assert.ok(forgetLine(logs, "forgotten", "already_gone"), logs.join("\n"));
+});
+
+test("a server before 1.1.5 has no forget: the person is told to update it, and the device stays revoked", async () => {
+  const { instance, server, logs } = await plugin();
+  server.archives = false;
+  server.devices.push({ ...REVOKED });
+
+  await assert.rejects(() => instance.forgetRevoked(OTHER_DEVICE), (error) => {
+    assert.equal(error.message, "your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.");
+    return true;
+  });
+  assert.equal(server.devices[1].revoked, true, "still listed, still revoked");
+  assert.ok(forgetLine(logs, "refused", "not_found"), logs.join("\n"));
+});
+
+test("any other refusal is passed on as it came, for the settings tab to word", async () => {
+  const { instance, ApiError } = await plugin();
+  await assert.rejects(() => instance.forgetRevoked(KEYS.deviceId), (error) => {
+    assert.ok(error instanceof ApiError, `${error}`);
+    assert.equal(error.code, "own_device");
+    return true;
+  });
+});
+
+test("a forget whose answer is lost is settled by the device list, and never sent twice", async () => {
+  const { instance, server, logs } = await plugin(lossy("/archive"));
+  server.devices.push({ ...REVOKED });
+
+  await instance.forgetRevoked(OTHER_DEVICE);
+
+  assert.equal(server.devices[1].archived, true, "the server had applied it");
+  assert.equal(server.requests.filter((request) => request.target.endsWith("/archive")).length, 1);
+  assert.ok(forgetLine(logs, "forgotten", "lost_answer"), logs.join("\n"));
+});
+
+test("a forget that never landed is reported with its reason, not as done", async () => {
+  const { instance, server, logs } = await plugin(lossy("/archive", true));
+  server.devices.push({ ...REVOKED });
+
+  await assert.rejects(() => instance.forgetRevoked(OTHER_DEVICE), (error) => {
+    assert.match(error.message, /forgetting that device/);
+    assert.match(error.message, /It was not repeated/);
+    return true;
+  });
+  assert.equal(server.devices[1].archived, undefined, "nothing was archived");
+  assert.ok(forgetLine(logs, "unconfirmed", "lost_answer"), logs.join("\n"));
+  assert.equal(logs.some((line) => line.startsWith("device decision=forgotten")), false, "a lost answer is never reported as success");
 });

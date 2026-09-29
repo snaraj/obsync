@@ -1,0 +1,11 @@
+# M3474: a fold left open stays open on the next showing of the tab
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -288,7 +288,6 @@
+     this.draftName = null;
+     this.deviceList = null;
+     this.deviceListError = null;
+-    this.revokedShown = false;
+     this.devicesShown++;
+     this.readingDevices = false;
+     this.unwatchDevices?.();

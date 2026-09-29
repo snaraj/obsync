@@ -1,0 +1,11 @@
+# M3481: a device already gone is reported as a failure
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3966,7 +3966,6 @@
+       sent = await patiently(this.transport.archiveDevice(deviceId), { interactive: true });
+     } catch (error) {
+       const code = error instanceof ApiError ? error.code : "local";
+-      if (code === "unknown_device") return logged("forgotten", "already_gone");
+       logged("refused", code);
+       if (code === "not_found") {
+         throw new Error("your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.");

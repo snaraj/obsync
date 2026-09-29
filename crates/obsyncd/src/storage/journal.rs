@@ -70,12 +70,16 @@ pub(crate) enum Frame {
         record: DeviceRecord,
         wrapped: [u8; 32],
     },
-    /// A device's mutable fields changed.
+    /// A device's mutable fields changed. `archived` rides this frame rather
+    /// than one of its own so that a server that predates the flag replays it
+    /// as the no-op update it reads, instead of refusing the whole journal
+    /// with `unknown frame type` (issue #247).
     DeviceUpdate {
         device_id: DeviceId,
         name: Option<String>,
         policy: Option<DevicePolicy>,
         app_version: Option<String>,
+        archived: Option<bool>,
     },
     /// A pairing's creator approved the claimant: it becomes active.
     DeviceActivate { device_id: DeviceId },
@@ -1580,6 +1584,7 @@ fn device_value(record: &DeviceRecord, wrapped: &[u8; 32]) -> Value {
         ("pfm", num(record.policy.per_file_max_bytes)),
         ("budget", num(record.policy.total_budget_bytes)),
         ("state", text(record.state.as_word())),
+        ("archived", Value::Bool(record.archived)),
         ("wrapped", text(hex::encode(wrapped))),
     ])
 }
@@ -1603,6 +1608,12 @@ fn device_from(value: &Value) -> Result<(DeviceRecord, [u8; 32]), StoreError> {
         },
         state: DeviceState::parse(field_str(value, "state")?)
             .ok_or_else(|| StoreError::Corrupt("field state is not a device state".to_string()))?,
+        // A snapshot written before the flag existed carries devices that
+        // were never archived.
+        archived: value
+            .get("archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     };
     Ok((record, field_bytes::<32>(value, "wrapped")?))
 }
@@ -1700,10 +1711,18 @@ impl Record {
                 name,
                 policy,
                 app_version,
+                archived,
             } => {
                 pairs.push(("device", text(*device_id)));
                 pairs.push(("name", opt_text(name)));
                 pairs.push(("app", opt_text(app_version)));
+                pairs.push((
+                    "archived",
+                    match archived {
+                        Some(v) => Value::Bool(*v),
+                        None => Value::Null,
+                    },
+                ));
                 pairs.push((
                     "policy",
                     match policy {
@@ -1774,6 +1793,9 @@ impl Record {
                 device_id: field_id(&value, "device")?,
                 name: field_opt_text(&value, "name"),
                 app_version: field_opt_text(&value, "app"),
+                // Absent in every frame written before the flag existed, and
+                // absent means "no change", so those frames replay as they did.
+                archived: value.get("archived").and_then(Value::as_bool),
                 policy: match value.get("policy") {
                     Some(policy) if !policy.is_null() => Some(DevicePolicy {
                         per_file_max_bytes: field_num(policy, "pfm")?,
@@ -2114,6 +2136,16 @@ mod tests {
                     total_budget_bytes: 7,
                 }),
                 app_version: Some("0.1.1".to_string()),
+                archived: None,
+            },
+            // The same frame carrying the archive flag, which is what an
+            // archive writes: it round trips like any other (issue #247).
+            Frame::DeviceUpdate {
+                device_id: device.device_id,
+                name: None,
+                policy: None,
+                app_version: None,
+                archived: Some(true),
             },
             Frame::Device {
                 record: DeviceRecord {

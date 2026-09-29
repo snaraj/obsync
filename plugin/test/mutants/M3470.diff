@@ -1,0 +1,12 @@
+# M3470: revoked rows are shown whether or not the fold is open
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -1003,7 +1003,7 @@
+       desc: `${device.platform}, plugin ${device.app_version}${seen}${pending ? `. ${STILL_PAIRING}` : ""}`,
+     };
+     if (device.revoked) {
+-      row.visible = () => this.revokedShown;
++      row.visible = () => true;
+       row.render = (setting) => {
+         setting.addButton((button) => button.setButtonText("Forget").onClick(() => {
+           new ConfirmModal(

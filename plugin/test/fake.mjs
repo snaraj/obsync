@@ -627,6 +627,8 @@ export class FakeServer {
     this.unsigned = [];
     /** Devices whose requests never arrive: a network gone, not a refusal. */
     this.unreachable = new Set();
+    /** False models a server before 1.1.5: it has no archive route (#247). */
+    this.archives = true;
     this.feedWaiters = [];
     this.heartbeats = 0;
     /** Set by `seedDomainMap`: the reserved file the map occupies. */
@@ -796,6 +798,20 @@ export class FakeServer {
         return this.error(409, "last_device", "the only active device cannot be revoked; pair another first");
       }
       device.revoked = true;
+      return this.json(204, {});
+    }
+
+    // `devices::archive` and `Store::archive_device`, with obsyncd's codes:
+    // never the asking device, a revoked device only, and NOTHING destroyed --
+    // the record stays, flagged, so the device is still refused as revoked and
+    // still names the versions it wrote (#247).
+    const deviceArchive = /^\/v1\/devices\/([0-9a-f]{32})\/archive$/.exec(path);
+    if (deviceArchive && request.method === "POST" && this.archives) {
+      if (deviceArchive[1] === request.headers["X-Obsync-Device"]) return this.error(409, "own_device", "a device cannot archive itself");
+      const device = this.devices.find((candidate) => candidate.device_id === deviceArchive[1]);
+      if (!device) return this.error(404, "unknown_device", "no such device");
+      if (!device.revoked) return this.error(409, "device_not_revoked", "only a revoked device is archived; revoke it first");
+      device.archived = true;
       return this.json(204, {});
     }
 

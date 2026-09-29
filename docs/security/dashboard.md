@@ -9,9 +9,9 @@ the wire contract is [`../protocol.md`](../protocol.md).
 
 ## 1. What it is
 
-A read-mostly operator view of one server, plus five mutations: revoke a
-device, run garbage collection, run a scrub, sign out, and sign out
-everywhere. It holds no vault key and never sees plaintext, so it cannot read
+A read-mostly operator view of one server, plus six mutations: revoke a
+device, forget a revoked one (which archives it, and destroys nothing), run
+garbage collection, run a scrub, sign out, and sign out everywhere. It holds no vault key and never sees plaintext, so it cannot read
 a note, approve a device, or recover a vault. Those all happen on a paired
 device.
 
@@ -150,6 +150,14 @@ device.
   alone: `403 device_revoked` against `401 bad_signature`, for the reason
   above. A device id is not a secret the protocol protects, and the
   alternative is a refusal that does not say what happened.
+- **Forgetting a device changes the LIST, not the device.** It archives the
+  record (`POST /v1/admin/devices/{id}/archive`, issue #247): a revoked
+  device only, under the session and the double-submit check like every other
+  mutation, journaled before the answer. The record stays, so that device is
+  still answered `403 device_revoked` rather than becoming indistinguishable
+  from a stranger, and the versions it wrote keep an author. Deleting it
+  instead would have removed evidence an operator may need, so the page says
+  how many devices it is not listing.
 - The decision log is not an audit log. It is two bounded rings in memory —
   1000 lines from credentialed requests, 200 from everything else — so
   unauthenticated traffic can push out only other unauthenticated traffic,

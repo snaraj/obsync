@@ -293,6 +293,8 @@ export function buildDeviceRows(devices) {
       perFile: formatPolicyBytes(policy.per_file_max_bytes),
       budget: formatPolicyBytes(policy.total_budget_bytes),
       revoked: d.revoked === true,
+      // Forgotten from the lists, and still on the server (#247).
+      archived: d.archived === true,
       // Enrolled by a pairing code, without the vault key yet (issue #152).
       pending: d.state === 'pending',
       history: Array.isArray(d.history) ? d.history.slice() : [],
@@ -306,6 +308,33 @@ export function buildDeviceRows(devices) {
     return a.name.localeCompare(b.name);
   });
   return rows;
+}
+
+/**
+ * The devices table's fold (#247): the working devices in the order
+ * `buildDeviceRows` gives them, and the revoked ones, which the page lists
+ * under one row that counts them -- "1 revoked device", "12 revoked
+ * devices" -- closed until asked. With none revoked the label is "" and the
+ * fold is not shown.
+ *
+ * A device somebody has forgotten is in neither list: the server keeps its
+ * record to refuse it by, and this page is the list of devices, not of
+ * records. `archived` counts them, because an operator reading an admin page
+ * should know when a list is shorter than the truth.
+ */
+export function foldDeviceRows(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const kept = list.filter((row) => !row.archived);
+  const working = kept.filter((row) => !row.revoked);
+  const revoked = kept.filter((row) => row.revoked);
+  const n = revoked.length;
+  const label = n === 0 ? '' : `${n} revoked device${n === 1 ? '' : 's'}`;
+  const archived = list.length - kept.length;
+  const archivedNote = archived === 0
+    ? ''
+    : `${archived} forgotten device${archived === 1 ? ' is' : 's are'} not listed. `
+      + 'The server keeps each record to refuse that device by, and to name the versions it wrote.';
+  return { working, revoked, label, archived, archivedNote };
 }
 
 function numberOrNull(v) {

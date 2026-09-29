@@ -88,6 +88,7 @@ server again unless the entry says so.
 | Repeated `dashboard_login_refused` lines in the log | [Repeated `dashboard_login_refused` lines](#repeated-dashboard_login_refused-lines) |
 | An occasional `replayed_nonce` | [A request arrived twice](#a-request-arrived-twice) |
 | `409 last_device` when revoking | [The last device cannot be revoked](#the-last-device-cannot-be-revoked) |
+| A device could not be forgotten | [A device could not be forgotten](#a-device-could-not-be-forgotten) |
 
 ## Reading the status bar
 
@@ -663,6 +664,59 @@ running with one device's credential.
    request retries in your proxy.
 2. Do not copy one device's plugin data onto another. Pair each device on its
    own.
+
+<a id="device_not_revoked"></a>
+
+## A device could not be forgotten
+
+**What you see.** In obsync's settings, under **N revoked devices**, or on the
+dashboard's **Devices** page, **Forget** answers with one of:
+
+> &lt;name&gt; was not forgotten: your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.
+
+> &lt;name&gt; was not forgotten: it can still sync. Revoke it first.
+
+**Why it happens.** Forgetting takes a device off the lists, and it is offered
+for a device that can no longer sync. The first answer is a server still
+running 1.1.4 or older: it has no way to do this, and only the server can. The
+second is a device that is still allowed to sync — the dashboard shows it
+without the **revoked** tag — so there is something to stop before there is
+anything to tidy away.
+
+**How to fix it.**
+
+1. For the first answer, update the server to obsync 1.1.5 or later
+   ([Upgrade by digest](server.md#upgrade-by-digest)), then open the list again and press **Forget**.
+   Nothing changed meanwhile: the device stays revoked and still cannot sync.
+2. For the second, press **Revoke** on that device first, confirm, and then
+   **Forget** it. Revoking is what stops it syncing; forgetting only tidies the
+   list afterwards.
+3. A device you forgot by mistake is not lost. Open obsync on it and pair it
+   again from a device that still syncs: its notes are still in its vault.
+
+<a id="device_forgotten"></a>
+
+## This device was forgotten
+
+**What you see.** Nothing new on the device itself. It was revoked before it
+was forgotten, so it reads what a revoked device reads, and goes on reading it:
+
+> obsync: error — This device was removed from your server. Your notes and vault key are safe here. Pair it again from a device that still syncs: obsync settings, Pair this device.
+
+What changed is the other devices: its row is gone from their **Devices** list
+and from the dashboard.
+
+**Why it happens.** Somebody revoked this device and then pressed **Forget**
+on it, from another device's **Devices** list or from the dashboard.
+Forgetting is about the list, not about the device: the server keeps its
+record, so it is still refused for what it is — a revoked device, not a
+stranger — and the notes it wrote still carry its name in history. Nothing
+about your notes changed anywhere.
+
+**How to fix it.** If it was your device, pair it again as a new device:
+obsync settings → **Pair this device**, with the code from a device that still
+syncs. Its notes stay in its vault, and a note identical to the server's stays
+one note ([`conflicts.md`](conflicts.md)).
 
 <a id="last_device"></a>
 

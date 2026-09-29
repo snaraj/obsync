@@ -1,0 +1,12 @@
+# M3478: a server too old to forget a device is reported as any other refusal
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3968,7 +3968,7 @@
+       const code = error instanceof ApiError ? error.code : "local";
+       if (code === "unknown_device") return logged("forgotten", "already_gone");
+       logged("refused", code);
+-      if (code === "not_found") {
++      if (false) {
+         throw new Error("your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.");
+       }
+       if (code === "device_not_revoked") throw new Error("it can still sync. Revoke it first.");

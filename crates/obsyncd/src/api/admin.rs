@@ -490,6 +490,20 @@ pub fn revoke(app: &App, req: &mut Request, id: &str) -> Result<Response, ApiErr
     Ok(Response::empty(204))
 }
 
+/// `POST /v1/admin/devices/{id}/archive`: the dashboard's archive, under the
+/// session and the double-submit CSRF check every dashboard mutation takes
+/// (`super::devices::archive_revoked`).
+///
+/// # Errors
+/// `401 no_session`, `403 csrf_failed`, `404 unknown_device`, `409
+/// device_not_revoked`.
+pub fn archive(app: &App, req: &mut Request, id: &str) -> Result<Response, ApiError> {
+    mutating_session(app, req)?;
+    let target = render::device_id(id)?;
+    super::devices::archive_revoked(app, &target, ("by", Val::word("dashboard")))?;
+    Ok(Response::empty(204))
+}
+
 /// `GET /v1/admin/storage` (`docs/protocol.md`, "Dashboard (admin) API").
 ///
 /// # Errors

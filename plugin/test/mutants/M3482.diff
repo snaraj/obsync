@@ -1,0 +1,12 @@
+# M3482: the forget decision is never logged
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3960,7 +3960,7 @@
+   async forgetRevoked(deviceId: string): Promise<void> {
+     const started = Date.now();
+     const logged = (decision: string, reason: string): void =>
+-      this.log(`device decision=${decision} action=forget reason=${reason} duration_ms=${Date.now() - started} budget_ms=${INTERACTIVE_MS}`);
++      undefined;
+     let sent: Sent<void>;
+     try {
+       sent = await patiently(this.transport.archiveDevice(deviceId), { interactive: true });

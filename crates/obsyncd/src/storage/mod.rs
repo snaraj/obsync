@@ -856,6 +856,7 @@ impl Store {
             country: None,
             policy: DevicePolicy::default(),
             state: d.state,
+            archived: false,
         };
         let wrapped = self.wrap(device_id.as_bytes(), &d.secret);
         let stored = record.clone();
@@ -921,6 +922,7 @@ impl Store {
                 name,
                 policy,
                 app_version,
+                archived: None,
             }]
         })?;
         Ok(self.index().devices[id].record.clone())
@@ -974,6 +976,7 @@ impl Store {
     /// deliberately no unguarded revoke beside this one, and no unguarded
     /// delete either: [`Store::delete_device`] takes a PENDING device only,
     /// so the rejected-claim path cannot reach a paired one (issue #88).
+    /// [`Store::archive_device`] destroys nothing at all.
     ///
     /// A device waiting for pairing approval is not a way out of the
     /// refusal: it holds no vault key and cannot pair a replacement.
@@ -1051,6 +1054,48 @@ impl Store {
                 ("decision", Val::word("deleted")),
             ],
         );
+        Ok(())
+    }
+
+    /// Archive a REVOKED device: it leaves the routine device lists, and
+    /// everything else about it stays (issue #247).
+    ///
+    /// NOTHING IS DESTROYED. The record is what answers that device `403
+    /// device_revoked` rather than the answer an unknown id gets, and it is
+    /// what names the versions it wrote wherever history is read, so a device
+    /// list without it is a shorter list and not a shorter memory. The flag
+    /// rides the ordinary `DeviceUpdate` frame, fsynced with every other
+    /// write before the answer, and a server that predates the flag replays
+    /// that frame as the no-op update it reads.
+    ///
+    /// Only a revoked device, decided under the same hold of the index lock
+    /// as the append: a device that still syncs is revoked first, so a person
+    /// can never tidy away a device that is still allowed in, and a pending
+    /// one is a claim its pairing removes.
+    ///
+    /// # Errors
+    /// `UnknownDevice` when there is no such device, `DeviceNotRevoked` when
+    /// it is active or pending.
+    pub fn archive_device(&self, id: &DeviceId) -> Result<(), StoreError> {
+        let mut journal = self.journal();
+        let index = self.index();
+        let state = index
+            .devices
+            .get(id)
+            .map(|entry| entry.record.state)
+            .ok_or(StoreError::UnknownDevice)?;
+        if state != DeviceState::Revoked {
+            return Err(StoreError::DeviceNotRevoked);
+        }
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::DeviceUpdate {
+                device_id: *id,
+                name: None,
+                policy: None,
+                app_version: None,
+                archived: Some(true),
+            }]
+        })?;
         Ok(())
     }
 
