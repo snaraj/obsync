@@ -36,7 +36,7 @@ plugin: ## Build and test the plugin
 
 dashboard: ## Test the dashboard's pure functions
 	# The explicit glob names the dashboard test files without relying on
-	# Node's directory-discovery behavior. Verified with pinned Node 26.8.2.
+	# Node's directory-discovery behavior. Verified with pinned Node 26.10.0.
 	node --test dashboard/test/*.test.mjs
 
 chart: ## Helm lint, render, and the rendered pins

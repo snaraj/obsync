@@ -606,6 +606,9 @@ Linux keyring, capitals on Android -- has its entry, and the status bar's six
 icons are shown with their words. The README is now a short front door with
 a directory of every guide, in all 20 languages.
 
+**The build tools are current.** The plugin is built and tested on Node
+26.10.0, with npm unchanged at 11.19.1 (#249).
+
 ## 1.1.3 - 2026-09-26
 
 **Turning obsync off and on during an upload no longer loses track of your

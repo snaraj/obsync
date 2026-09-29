@@ -74,7 +74,7 @@ jobs:
       - name: Set up the pinned Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '26.8.2'
+          node-version: '26.10.0'
           check-latest: false
       - name: Build the plugin from this commit
         working-directory: plugin
@@ -124,7 +124,7 @@ jobs:
       - name: Set up the pinned Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '26.8.2'
+          node-version: '26.10.0'
           check-latest: false
       - name: Build the plugin from this commit
         working-directory: plugin
@@ -203,7 +203,7 @@ jobs:
       - name: Set up the pinned Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '26.8.2'
+          node-version: '26.10.0'
           check-latest: false
       - name: Build the plugin from this commit
         working-directory: plugin
@@ -249,12 +249,12 @@ jobs:
       - name: Set up the pinned Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '26.8.2'
+          node-version: '26.10.0'
           check-latest: false
       - name: Install, build and test the plugin
         run: |
           set -euo pipefail
-          test "$(node --version)" = "v26.8.2"
+          test "$(node --version)" = "v26.10.0"
           npm ci --ignore-scripts --no-audit --no-fund
           npm run build
           npm test
