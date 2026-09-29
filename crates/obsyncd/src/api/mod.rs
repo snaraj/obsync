@@ -252,6 +252,13 @@ impl From<StoreError> for ApiError {
                 code,
                 "the only active device cannot be revoked; pair another first",
             ),
+            // Read by a person on an older plugin too, which prints it after
+            // "The server refused to revoke this device:".
+            StoreError::RecoveryTooNew => ApiError::new(
+                409,
+                code,
+                "this account's recovery key was set less than 7 days ago, and until it is 7 days old the only active device stays; pair another device first",
+            ),
             StoreError::DeviceRevoked => ApiError::new(403, code, "device is revoked"),
             StoreError::DevicePending => {
                 ApiError::new(403, code, "device is waiting for pairing approval")

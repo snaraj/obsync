@@ -351,7 +351,10 @@ requires the refusal.
 
 ## Journal frames
 
-`account`, `device` (create, update, activate, revoke, delete, wrap),
+`account` (setup, and every change to the account's recovery verifier:
+its registration, and the operator's `obsyncd recovery reset apply`, which
+writes the account again without one), `device` (create, update, activate,
+revoke, delete, wrap),
 `version` (which carries its file's `domain_id`, so replay reaches the same
 domain the post named), `gc` (a list of sids collected), `scrub` (a step
 that found a mismatch, or completed a pass), `seen` (device sign-in and edit
@@ -363,6 +366,22 @@ is no `domain` frame: a domain exists because a file record names it
 start destroys every pending device no pairing is holding any more, through
 the `device` delete frame expiry uses (`docs/architecture.md` 4.2). Frames
 carry `account_id`.
+
+**The registration time (1.1.5).** Since 1.1.5 the `account` frame and the
+snapshot's account carry `recovery_at`, the Unix milliseconds at which the
+verifier in `recovery` was registered, which the last-device rule reads
+(`docs/protocol.md`, "Devices"). Both directions of a version change load:
+
+- **Older state on 1.1.5.** A frame or snapshot without `recovery_at` reads as
+  a verifier registered before times were kept, which keeps the older rule. A
+  time that is not a number is refused as corrupt rather than read as absent,
+  because absent is the permissive reading.
+- **1.1.5 state on an older server.** A server before 1.1.5 reads an account's
+  members by name, so it ignores `recovery_at`, loads every 1.1.5 frame, and
+  applies no hold. A reset is an ordinary `account` frame without a verifier,
+  which it reads the same way. A snapshot it writes drops `recovery_at`, so a
+  verifier that passes through one reads as registered before 1.1.5 when a
+  1.1.5 server starts on that journal again.
 
 ## Memory
 

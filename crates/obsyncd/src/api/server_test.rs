@@ -4248,6 +4248,78 @@ fn the_dashboard_refuses_to_revoke_the_only_active_device() {
     assert_eq!(last_again.code(), "last_device");
 }
 
+/// A recovery key any device credential can register -- the server cannot
+/// tell one the vault key produced from one it did not -- keeps the only
+/// active device for a week, on both revoke routes, while every other revoke
+/// goes as it did (1.1.5).
+#[test]
+fn a_new_recovery_key_holds_the_only_device_on_both_revoke_routes() {
+    let h = Harness::start_with(
+        "revoke-hold",
+        Setup {
+            dashboard: true,
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &cred);
+    approve_pairing(&h, &cred, &id);
+    let register = |verifier: &str, at: u64| {
+        Req::post("/v1/account/recovery")
+            .body(&format!(r#"{{"recovery_verifier":"{verifier}"}}"#))
+            .sign(&cred, at)
+            .send(h.addr)
+    };
+    assert_eq!(register(&"b6".repeat(32), NOW).status, 204);
+    let other = register(&"a5".repeat(32), NOW);
+    assert_eq!(other.status, 409, "the first key stands");
+    assert_eq!(other.code(), "recovery_mismatch");
+
+    let not_last = Req::post(&format!("/v1/devices/{}/revoke", claimant.id))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(not_last.status, 204, "{}", not_last.text());
+    let own = Req::post(&format!("/v1/devices/{}/revoke", cred.id))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(own.status, 409, "{}", own.text());
+    assert_eq!(own.code(), "recovery_too_new");
+    let detail = own.text();
+    let days = crate::storage::RECOVERY_HOLD_MS / (24 * 60 * 60 * 1000);
+    assert!(
+        detail.contains(&format!("{days} days")),
+        "the words name the hold the constant holds: {detail}"
+    );
+    let cookie = admin_cookie(&h, &cred);
+    let dashboard = Req::post(&format!("/v1/admin/devices/{}/revoke", cred.id))
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &csrf_value(&cookie))
+        .send(h.addr);
+    assert_eq!(dashboard.status, 409, "{}", dashboard.text());
+    assert_eq!(dashboard.code(), "recovery_too_new");
+    assert!(
+        h.captured().contains("reason=recovery_too_new"),
+        "each refusal states its decision"
+    );
+
+    let almost = NOW + crate::storage::RECOVERY_HOLD_MS / 1000 - 1;
+    h.clock.set(almost);
+    let held = Req::post(&format!("/v1/devices/{}/revoke", cred.id))
+        .sign(&cred, almost)
+        .send(h.addr);
+    assert_eq!(
+        held.code(),
+        "recovery_too_new",
+        "one second short of the hold"
+    );
+    h.clock.set(almost + 1);
+    let gone = Req::post(&format!("/v1/devices/{}/revoke", cred.id))
+        .sign(&cred, almost + 1)
+        .send(h.addr);
+    assert_eq!(gone.status, 204, "{}", gone.text());
+}
+
 /// The decision log is what the dashboard shows an operator after an
 /// incident. A single ring shared with unauthenticated traffic meant anyone
 /// who could reach the port could empty it with free probes.
@@ -5232,8 +5304,17 @@ fn setup_token_and_vault_proof_reenrol_after_the_last_device_leaves() {
             .status,
         201
     );
-    let revoked = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
+    // The key is new, so the only device stays for the hold (1.1.5), and
+    // goes once it has passed.
+    let held = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
         .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(held.status, 409, "{}", held.text());
+    assert_eq!(held.code(), "recovery_too_new");
+    let later = NOW + crate::storage::RECOVERY_HOLD_MS / 1000;
+    h.clock.set(later);
+    let revoked = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
+        .sign(&creator, later)
         .send(h.addr);
     assert_eq!(revoked.status, 204, "{}", revoked.text());
     let recover = |token: &str, evidence: &str| {
@@ -5261,7 +5342,7 @@ fn setup_token_and_vault_proof_reenrol_after_the_last_device_leaves() {
     assert_eq!(result.status, 201, "{}", result.text());
     assert_eq!(result.json().get("recovered"), Some(&Value::Bool(true)));
     let returned = Cred::from_json(&result.json());
-    let current = Req::get("/v1/account").sign(&returned, NOW).send(h.addr);
+    let current = Req::get("/v1/account").sign(&returned, later).send(h.addr);
     assert_eq!(current.status, 200);
     assert_eq!(
         current.json().get("account_id"),
@@ -5270,14 +5351,14 @@ fn setup_token_and_vault_proof_reenrol_after_the_last_device_leaves() {
     assert_eq!(current.json().get("name"), account.json().get("name"));
     assert_eq!(
         Req::get(&format!("/v1/chunks/{sid}"))
-            .sign(&returned, NOW)
+            .sign(&returned, later)
             .send(h.addr)
             .body,
         retained
     );
     assert_eq!(
         Req::get("/v1/account")
-            .sign(&creator, NOW)
+            .sign(&creator, later)
             .send(h.addr)
             .status,
         403

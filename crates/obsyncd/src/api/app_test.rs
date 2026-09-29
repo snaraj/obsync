@@ -13,7 +13,7 @@ use crate::log::LogLevel;
 use crate::storage::testutil::TempDir;
 use crate::storage::types::NewDevice;
 use crate::storage::{Posture, Store};
-use crate::types::AccountId;
+use crate::types::{AccountId, UnixMs};
 
 const NOW: u64 = 1_757_200_000;
 
@@ -85,7 +85,7 @@ fn a_pending_device_whose_pairing_is_gone_does_not_survive_the_restart() {
             .expect("the revoked device")
             .device_id;
         app.store
-            .revoke_device_unless_last(&revoked)
+            .revoke_device_unless_last(&revoked, UnixMs::now())
             .expect("revoked");
         let pending = app
             .store

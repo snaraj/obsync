@@ -143,6 +143,18 @@ impl VersionQueue {
     }
 }
 
+/// How long a newly registered recovery key keeps the account's last active
+/// device from being revoked: seven days (`docs/recovery.md`).
+///
+/// The server cannot tell a verifier the vault key produced from one it did
+/// not: any device credential may register the first one. The key's own
+/// devices meet a key they did not register as `409 recovery_mismatch` at
+/// their next start and say so, and this hold is the time that warning has to
+/// be read and acted on before the last device can go. A constant, not a
+/// setting: a security hold an operator could shorten is one an attacker's
+/// instructions could shorten too (AGENTS.md requirement 4).
+pub const RECOVERY_HOLD_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+
 /// A crash point, armed by a test so recovery can be proven rather than
 /// argued (AGENTS.md, "Testing doctrine": injected fault points).
 ///
@@ -991,10 +1003,11 @@ impl Store {
 
     /// Create the one account. Valid once (docs/protocol.md, `/v1/setup`).
     pub fn setup(&self, name: &str) -> Result<AccountId, StoreError> {
-        self.setup_with_recovery(name, None)
+        self.setup_with_recovery(name, None, UnixMs::now())
     }
 
-    /// Create an account and its optional recovery verifier in one durable frame.
+    /// Create an account and its optional recovery verifier in one durable
+    /// frame; a verifier is registered at `now`.
     ///
     /// # Errors
     /// An existing account, randomness failure, or a refused journal append.
@@ -1002,6 +1015,7 @@ impl Store {
         &self,
         name: &str,
         recovery_verifier: Option<String>,
+        now: UnixMs,
     ) -> Result<AccountId, StoreError> {
         let mut journal = self.journal();
         let index = self.index();
@@ -1015,6 +1029,7 @@ impl Store {
                 name: name.to_string(),
                 created: UnixMs::now(),
                 quota_bytes: None,
+                recovery_registered: recovery_verifier.as_ref().map(|_| now),
                 recovery_verifier,
             }]
         })?;
@@ -1023,28 +1038,56 @@ impl Store {
         Ok(account_id)
     }
 
-    /// Register recovery once; a different verifier cannot replace the original.
+    /// Register recovery once, at `now`; a different verifier cannot replace
+    /// the original. Only the operator's reset clears it
+    /// ([`Store::reset_recovery`]).
     ///
     /// # Errors
     /// An absent account or a refused journal append.
-    pub fn register_recovery(&self, verifier: &str) -> Result<bool, StoreError> {
+    pub fn register_recovery(&self, verifier: &str, now: UnixMs) -> Result<bool, StoreError> {
         let mut journal = self.journal();
         let index = self.index();
         let account = index.account.clone().ok_or(StoreError::NotSetUp)?;
-        if let Some(existing) = account.recovery_verifier {
+        if let Some(existing) = &account.recovery_verifier {
             return Ok(obsync_core::ct::eq(
                 existing.as_bytes(),
                 verifier.as_bytes(),
             ));
         }
         self.commit(&mut journal, index, |_| {
-            vec![Frame::Account {
-                account_id: account.account_id,
-                name: account.name,
-                created: account.created,
-                quota_bytes: account.quota_bytes,
-                recovery_verifier: Some(verifier.to_string()),
-            }]
+            vec![account_frame(
+                account,
+                Some(verifier.to_string()),
+                Some(now),
+            )]
+        })?;
+        // Once per account: the request line beside it names the device.
+        self.log.info(
+            "recovery_registered",
+            &[("decision", Val::word("registered")), ("at", Val::ts(now))],
+        );
+        Ok(true)
+    }
+
+    /// Forget the account's recovery verifier: the operator's reset
+    /// (`obsyncd recovery reset apply`, `docs/recovery.md`). Reachable from the
+    /// server's own volumes only, never over HTTP. Afterwards the account is
+    /// what it was before any verifier: its last active device cannot be
+    /// revoked, and the next device that opens the vault registers its key.
+    ///
+    /// Returns whether there was a verifier to forget.
+    ///
+    /// # Errors
+    /// `NotSetUp`, or a refused journal append.
+    pub fn reset_recovery(&self) -> Result<bool, StoreError> {
+        let mut journal = self.journal();
+        let index = self.index();
+        let account = index.account.clone().ok_or(StoreError::NotSetUp)?;
+        if account.recovery_verifier.is_none() {
+            return Ok(false);
+        }
+        self.commit(&mut journal, index, |_| {
+            vec![account_frame(account, None, None)]
         })?;
         Ok(true)
     }
@@ -1215,10 +1258,23 @@ impl Store {
     /// A device waiting for pairing approval is not a way out of the
     /// refusal: it holds no vault key and cannot pair a replacement.
     ///
+    /// A registered recovery key lifts the refusal, because the setup token
+    /// and the vault's phrase re-enrol a device (`docs/recovery.md`) -- but
+    /// not for [`RECOVERY_HOLD_MS`] after it was registered, measured against
+    /// `now`. Any device credential can register the first key, and one the
+    /// vault key never produced must not be able to end every credential the
+    /// key's own devices hold before they have said so (`409
+    /// recovery_mismatch` at their next start). A key with no registration
+    /// time was registered before 1.1.5 and keeps the older rule: the hold
+    /// guards an account that had NO key, and every key such an account gets
+    /// from 1.1.5 on carries its time. A clock behind the registration reads
+    /// as age zero, so a clock stepped back holds longer, never shorter.
+    ///
     /// # Errors
     /// `UnknownDevice` when there is no such device, `LastActiveDevice` when
-    /// it is the only active one.
-    pub fn revoke_device_unless_last(&self, id: &DeviceId) -> Result<(), StoreError> {
+    /// it is the only active one and no recovery key is registered,
+    /// `RecoveryTooNew` when that key is younger than the hold.
+    pub fn revoke_device_unless_last(&self, id: &DeviceId, now: UnixMs) -> Result<(), StoreError> {
         let mut journal = self.journal();
         let index = self.index();
         let target_is_active = index
@@ -1228,14 +1284,27 @@ impl Store {
             .record
             .active();
         let active = index.devices.values().filter(|e| e.record.active()).count();
-        if target_is_active
-            && active <= 1
-            && index
-                .account
-                .as_ref()
-                .is_none_or(|a| a.recovery_verifier.is_none())
-        {
-            return Err(StoreError::LastActiveDevice);
+        if target_is_active && active <= 1 {
+            let account = index.account.as_ref();
+            if account.is_none_or(|a| a.recovery_verifier.is_none()) {
+                return Err(StoreError::LastActiveDevice);
+            }
+            if let Some(registered) = account.and_then(|a| a.recovery_registered) {
+                let age = now.0.saturating_sub(registered.0);
+                if age < RECOVERY_HOLD_MS {
+                    self.log.warn(
+                        "device_revoke_refused",
+                        &[
+                            ("device", Val::device(id)),
+                            ("decision", Val::word("refused")),
+                            ("reason", Val::word("recovery_too_new")),
+                            ("recovery_age_ms", Val::ms(age)),
+                            ("budget_ms", Val::ms(RECOVERY_HOLD_MS)),
+                        ],
+                    );
+                    return Err(StoreError::RecoveryTooNew);
+                }
+            }
         }
         self.commit(&mut journal, index, |_| {
             vec![Frame::DeviceRevoke { device_id: *id }]
@@ -2066,6 +2135,23 @@ pub(crate) fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
         ],
         StoreError::Io(e) => vec![("io", Val::io(e))],
         _ => Vec::new(),
+    }
+}
+
+/// The account frame that records `account` with this recovery state and
+/// every other field as it stands.
+fn account_frame(
+    account: AccountRecord,
+    recovery_verifier: Option<String>,
+    recovery_registered: Option<UnixMs>,
+) -> Frame {
+    Frame::Account {
+        account_id: account.account_id,
+        name: account.name,
+        created: account.created,
+        quota_bytes: account.quota_bytes,
+        recovery_verifier,
+        recovery_registered,
     }
 }
 

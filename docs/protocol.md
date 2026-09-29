@@ -130,7 +130,10 @@ and a test asserts every route it emits appears there.
   `409 recovery_mismatch` refuses replacement. Invalid shape is `400` before
   storage changes. The verifier survives journal replay and snapshots but is
   omitted from account responses. Old accounts without the field remain
-  readable and retain their last-device safeguard.
+  readable and retain their last-device safeguard. Since 1.1.5 the server
+  also records when the verifier was registered, and nothing but the
+  operator's offline `obsyncd recovery reset apply` removes a verifier; no
+  route does.
 - `GET /v1/account` (device auth) → `{"account_id","name","created",
   "quota_bytes","used_bytes","device_count"}`. `device_count` is how many
   devices can sync: the active ones and those still pairing. A revoked
@@ -227,7 +230,10 @@ retain the account-wide authority described below.
 - `PATCH /v1/devices/{id}` `{"name"?, "policy"?}` (self or any paired
   device) → `200` the device.
 - `POST /v1/devices/{id}/revoke` → `204`. A device cannot revoke itself
-  while it is the only active device unless account recovery is registered.
+  while it is the only active device unless account recovery is registered:
+  `409 last_device` without it, and since 1.1.5 `409 recovery_too_new` while
+  the verifier is younger than seven days, a constant. A verifier registered
+  before 1.1.5 carries no time and counts as older.
 - `POST /v1/devices/{id}/archive` (server 1.1.5) → `204`: a REVOKED device is
   taken off the device lists a person manages. Nothing is destroyed: the
   record still answers that device `403 device_revoked`, and still names the
@@ -627,7 +633,8 @@ device whose link opened it is revoked.
 - `GET /v1/admin/devices` → as `/v1/devices` plus `history:[{"ts","event":
   "sign_in|edit|heartbeat","address","country"}]` bounded by retention.
 - `POST /v1/admin/devices/{id}/revoke` → `204`; `409 last_device` when the
-  target is the only ACTIVE device and account recovery is unregistered. Revocation also closes the dashboard
+  target is the only ACTIVE device and account recovery is unregistered, and
+  `409 recovery_too_new` when it is registered and younger than seven days. Revocation also closes the dashboard
   sessions that device's links opened and drops the links it minted.
 - `POST /v1/admin/devices/{id}/archive` → `204`; as `POST
   /v1/devices/{id}/archive`: a revoked device only (`409

@@ -8,6 +8,7 @@ use obsync_core::json::obj;
 
 use crate::log::Val;
 use crate::storage::types::DeviceState;
+use crate::types::UnixMs;
 
 use super::devices::Enrolment;
 use super::edge::ClientInfo;
@@ -74,7 +75,8 @@ pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
         (account.account_id, true)
     } else {
         (
-            app.store.setup_with_recovery(&account_name, recovery)?,
+            app.store
+                .setup_with_recovery(&account_name, recovery, UnixMs(app.clock.unix_ms()))?,
             false,
         )
     };
@@ -184,7 +186,9 @@ fn verifier_field(body: &obsync_core::json::Value, field: &str) -> Result<String
 }
 
 /// Register an existing account's vault recovery verifier after device authentication.
-/// A different verifier is refused, even for an authenticated device.
+/// A different verifier is refused, even for an authenticated device; the
+/// device that meets it warns its person (`docs/recovery.md`), and only the
+/// operator's reset clears it.
 ///
 /// # Errors
 /// Authentication refusals, `400 bad_request`, `409 recovery_mismatch`, or storage refusal.
@@ -196,7 +200,10 @@ pub fn register_recovery(
     let authed = auth::device(app, req, client)?;
     let body = render::parse_json(&authed.body)?;
     let verifier = verifier_field(&body, "recovery_verifier")?;
-    if !app.store.register_recovery(&verifier)? {
+    if !app
+        .store
+        .register_recovery(&verifier, UnixMs(app.clock.unix_ms()))?
+    {
         return Err(ApiError::new(
             409,
             "recovery_mismatch",

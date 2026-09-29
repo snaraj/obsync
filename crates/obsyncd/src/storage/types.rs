@@ -25,6 +25,10 @@ pub struct AccountRecord {
     pub quota_bytes: Option<u64>,
     /// SHA-256 verifier for a domain-separated vault recovery proof; no content key.
     pub recovery_verifier: Option<String>,
+    /// When that verifier was registered. `None` with a verifier means it was
+    /// registered before the server kept the time (1.1.4 and earlier), which
+    /// the last-device rule treats as long ago (`Store::revoke_device_unless_last`).
+    pub recovery_registered: Option<UnixMs>,
     /// Ciphertext bytes currently stored.
     pub used_bytes: u64,
 }
@@ -513,6 +517,9 @@ pub enum StoreError {
     /// The device is the account's only ACTIVE one, and revoking it would
     /// leave an account nothing can ever sync again.
     LastActiveDevice,
+    /// The device is the account's only ACTIVE one and its recovery key is
+    /// younger than [`crate::storage::RECOVERY_HOLD_MS`].
+    RecoveryTooNew,
     /// The device is revoked.
     DeviceRevoked,
     /// The device claimed a pairing but nobody has approved it.
@@ -604,6 +611,9 @@ impl fmt::Display for StoreError {
             }
             StoreError::UnknownDevice => f.write_str("unknown device"),
             StoreError::LastActiveDevice => f.write_str("the only active device"),
+            StoreError::RecoveryTooNew => {
+                f.write_str("the only active device, and its recovery key is too new")
+            }
             StoreError::DeviceRevoked => f.write_str("device revoked"),
             StoreError::DevicePending => f.write_str("device pending approval"),
             StoreError::DeviceNotPending => f.write_str("device is not pending approval"),
@@ -658,6 +668,7 @@ impl StoreError {
             StoreError::SeqAhead { .. } => "seq_ahead",
             StoreError::UnknownDevice => "unknown_device",
             StoreError::LastActiveDevice => "last_device",
+            StoreError::RecoveryTooNew => "recovery_too_new",
             StoreError::DeviceRevoked => "device_revoked",
             StoreError::DevicePending => "device_pending",
             StoreError::DeviceNotPending => "device_not_pending",

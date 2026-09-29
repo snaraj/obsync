@@ -10,7 +10,7 @@ use obsync_core::json::{Value, obj};
 
 use crate::log::Val;
 use crate::storage::types::{DevicePolicy, DeviceRecord, DeviceState, NewDevice};
-use crate::types::DeviceId;
+use crate::types::{DeviceId, UnixMs};
 
 use super::edge::ClientInfo;
 use super::render::{self};
@@ -137,7 +137,8 @@ pub fn patch(
 ///
 /// # Errors
 /// `404 unknown_device`, `409 last_device` when the target is the only
-/// ACTIVE device, plus the authentication refusals.
+/// ACTIVE device, `409 recovery_too_new` when it is and the recovery key is
+/// younger than the hold, plus the authentication refusals.
 pub fn revoke(
     app: &App,
     req: &mut Request,
@@ -148,7 +149,8 @@ pub fn revoke(
     let target = render::device_id(id)?;
     // One call, one lock: the last-active refusal and the revocation cannot
     // be separated by another request (`Store::revoke_device_unless_last`).
-    app.store.revoke_device_unless_last(&target)?;
+    app.store
+        .revoke_device_unless_last(&target, UnixMs(app.clock.unix_ms()))?;
     // Revocation reaches the dashboard too: the sessions this device's links
     // opened, and the links it minted that nobody has spent.
     let (sessions, links) = app

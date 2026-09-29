@@ -450,6 +450,7 @@ fn a_quota_refuses_before_the_body_is_stored() {
                     created: account.created,
                     quota_bytes: Some(8),
                     recovery_verifier: account.recovery_verifier.clone(),
+                    recovery_registered: account.recovery_registered,
                 }]
             })
             .expect("quota is journalled");
@@ -541,7 +542,7 @@ fn a_version_needs_its_chunks_its_id_and_a_live_device() {
     spare_device(&setup.store, setup.account);
     setup
         .store
-        .revoke_device_unless_last(&setup.device)
+        .revoke_device_unless_last(&setup.device, UnixMs::now())
         .expect("revoke");
     let err = setup
         .store
@@ -1069,7 +1070,9 @@ fn a_pending_device_activates_once_and_never_after_revocation() {
         .expect("approving twice is a no-op");
 
     spare_device(&store, account);
-    store.revoke_device_unless_last(&id).expect("revoke");
+    store
+        .revoke_device_unless_last(&id, UnixMs::now())
+        .expect("revoke");
     let err = store
         .activate_device(&id)
         .expect_err("a revoked device never comes back");
@@ -1157,7 +1160,9 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
     );
 
     spare_device(&store, account);
-    store.revoke_device_unless_last(&id).expect("revoke");
+    store
+        .revoke_device_unless_last(&id, UnixMs::now())
+        .expect("revoke");
     assert_eq!(
         store.device_secret(&id),
         None,
@@ -2749,10 +2754,10 @@ fn revoking_a_device_that_is_not_active_is_never_the_last_one() {
         .device_id;
 
     store
-        .revoke_device_unless_last(&pending)
+        .revoke_device_unless_last(&pending, UnixMs::now())
         .expect("a device that cannot sync is not the last one that can");
     let err = store
-        .revoke_device_unless_last(&active)
+        .revoke_device_unless_last(&active, UnixMs::now())
         .expect_err("and the one that can is still refused");
     assert!(matches!(err, StoreError::LastActiveDevice), "{err}");
 }
@@ -2774,7 +2779,7 @@ fn only_a_pending_device_is_deleted() {
     let active = spare_device(&store, account);
     let revoked = spare_device(&store, account);
     store
-        .revoke_device_unless_last(&revoked)
+        .revoke_device_unless_last(&revoked, UnixMs::now())
         .expect("two active devices, so one may go");
 
     for (id, state) in [(active, "active"), (revoked, "revoked")] {
@@ -2928,11 +2933,11 @@ fn two_devices_revoking_each_other_at_once_cannot_empty_the_account() {
         let (ra, rb) = thread::scope(|scope| {
             let one = scope.spawn(|| {
                 gate.wait();
-                store.revoke_device_unless_last(&b)
+                store.revoke_device_unless_last(&b, UnixMs::now())
             });
             let two = scope.spawn(|| {
                 gate.wait();
-                store.revoke_device_unless_last(&a)
+                store.revoke_device_unless_last(&a, UnixMs::now())
             });
             (one.join().expect("one"), two.join().expect("two"))
         });
@@ -3069,33 +3074,143 @@ fn account_recovery_is_immutable_and_survives_journal_and_snapshot_replay() {
         let cfg = config(&dir);
         let setup = ready(&cfg);
         let verifier = "a5".repeat(32);
+        let registered = UnixMs(1_757_200_000_000);
         put(&setup, b"retained ciphertext");
         let before = setup.store.account().unwrap();
-        assert!(setup.store.register_recovery(&verifier).unwrap());
-        assert!(setup.store.register_recovery(&verifier).unwrap());
-        assert!(!setup.store.register_recovery(&"b6".repeat(32)).unwrap());
+        assert!(
+            setup
+                .store
+                .register_recovery(&verifier, registered)
+                .unwrap()
+        );
+        // Neither a repeat nor a refused replacement moves the time.
+        let later = UnixMs(registered.0 + RECOVERY_HOLD_MS);
+        assert!(setup.store.register_recovery(&verifier, later).unwrap());
+        assert!(
+            !setup
+                .store
+                .register_recovery(&"b6".repeat(32), later)
+                .unwrap()
+        );
         let after = setup.store.account().unwrap();
         assert_eq!(after.account_id, before.account_id);
         assert_eq!(after.created, before.created);
         assert_eq!(after.name, before.name);
         assert_eq!(after.used_bytes, before.used_bytes);
         assert_eq!(after.recovery_verifier, Some(verifier.clone()));
+        assert_eq!(after.recovery_registered, Some(registered));
+        let err = setup
+            .store
+            .revoke_device_unless_last(&setup.device, UnixMs(later.0 - 1))
+            .expect_err("a key one millisecond short of the hold keeps the last device");
+        assert!(matches!(err, StoreError::RecoveryTooNew), "{err}");
+        assert!(setup.store.device_secret(&setup.device).is_some());
         setup
             .store
-            .revoke_device_unless_last(&setup.device)
-            .expect("recovery permits the last device to leave");
+            .revoke_device_unless_last(&setup.device, later)
+            .expect("recovery permits the last device to leave once the hold has passed");
         assert!(setup.store.device_secret(&setup.device).is_none());
         if snapshot {
             setup.store.snapshot().unwrap();
         }
         drop(setup);
         let reopened = open(&cfg);
-        assert_eq!(
-            reopened.account().unwrap().recovery_verifier,
-            Some(verifier)
-        );
-        assert_eq!(reopened.account().unwrap().used_bytes, before.used_bytes);
+        let account = reopened.account().unwrap();
+        assert_eq!(account.recovery_verifier, Some(verifier));
+        assert_eq!(account.recovery_registered, Some(registered));
+        assert_eq!(account.used_bytes, before.used_bytes);
     }
+}
+
+/// A recovery key any device credential registered cannot, in its first
+/// week, end the account's last active device: the key's own devices meet it
+/// as `409 recovery_mismatch` and warn their person, and the hold is that
+/// warning's time. Every other revoke is what it was, a key registered before
+/// registration times were kept keeps the older rule, and the operator's
+/// reset puts the account back where it was before any key.
+#[test]
+fn a_young_recovery_key_holds_only_the_last_device_and_the_reset_restores_the_guard() {
+    let dir = TempDir::new("recovery-hold");
+    let cfg = config(&dir);
+    let log = Log::buffered(LogLevel::Debug);
+    let store = open_with(&cfg, [7u8; 32], log.clone());
+    let account = store.setup("sentinel").expect("setup runs once");
+    let first = spare_device(&store, account);
+    let second = spare_device(&store, account);
+    let registered = UnixMs(1_757_200_000_000);
+    assert!(
+        store
+            .register_recovery(&"b6".repeat(32), registered)
+            .unwrap()
+    );
+
+    store
+        .revoke_device_unless_last(&second, registered)
+        .expect("a device that is not the last goes at once, key or no key");
+    // A clock behind the registration reads as age zero: held, never freed.
+    for now in [UnixMs(registered.0 - 60_000), registered] {
+        let err = store
+            .revoke_device_unless_last(&first, now)
+            .expect_err("the last device stays while the key is young");
+        assert!(matches!(err, StoreError::RecoveryTooNew), "{err}");
+        assert_eq!(err.code(), "recovery_too_new");
+    }
+    let refusals: Vec<String> = log
+        .captured()
+        .lines()
+        .filter(|line| line.contains("event=device_revoke_refused "))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(refusals.len(), 2, "one line per refusal: {refusals:?}");
+    for field in [
+        "decision=refused",
+        "reason=recovery_too_new",
+        "recovery_age_ms=0",
+        "budget_ms=604800000",
+    ] {
+        assert!(refusals[1].contains(field), "{field}: {}", refusals[1]);
+    }
+    assert!(
+        !log.captured().contains(&"b6".repeat(16)),
+        "the key reached the log"
+    );
+
+    // The operator's reset: no key, so the last device is refused as it was
+    // before any key, and the next registration starts its own hold.
+    assert!(store.reset_recovery().expect("reset"));
+    assert!(
+        !store
+            .reset_recovery()
+            .expect("a second reset has nothing to do")
+    );
+    let far = UnixMs(registered.0 + 10 * RECOVERY_HOLD_MS);
+    let err = store
+        .revoke_device_unless_last(&first, far)
+        .expect_err("with no key the last device is refused");
+    assert!(matches!(err, StoreError::LastActiveDevice), "{err}");
+    assert!(store.register_recovery(&"a5".repeat(32), far).unwrap());
+    let err = store
+        .revoke_device_unless_last(&first, far)
+        .expect_err("the key registered after the reset is young");
+    assert!(matches!(err, StoreError::RecoveryTooNew), "{err}");
+
+    // A key from before 1.1.5, written with no time: today's rule.
+    {
+        let mut journal = store.journal();
+        let index = store.index();
+        let account = index.account.clone().expect("account");
+        store
+            .commit(&mut journal, index, |_| {
+                vec![account_frame(account, Some("c7".repeat(32)), None)]
+            })
+            .expect("a 1.1.4 registration");
+    }
+    drop(store);
+    let store = open(&cfg);
+    assert_eq!(store.account().unwrap().recovery_registered, None);
+    store
+        .revoke_device_unless_last(&first, registered)
+        .expect("a key with no registration time does not hold the last device");
 }
 
 #[test]
@@ -3105,12 +3220,13 @@ fn initial_account_recovery_is_one_durable_setup_fact() {
     let store = open(&cfg);
     let verifier = "ab".repeat(32);
     let account = store
-        .setup_with_recovery("recoverable", Some(verifier.clone()))
+        .setup_with_recovery("recoverable", Some(verifier.clone()), UnixMs(7))
         .unwrap();
     drop(store);
     let recovered = open(&cfg).account().unwrap();
     assert_eq!(recovered.account_id, account);
     assert_eq!(recovered.recovery_verifier, Some(verifier));
+    assert_eq!(recovered.recovery_registered, Some(UnixMs(7)));
 }
 
 // --- The durable fast path and the background I/O diet ----------------------

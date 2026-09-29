@@ -14,7 +14,7 @@ use obsync_core::http::{Request, Response};
 use obsync_core::json::{Value, obj};
 
 use crate::log::Val;
-use crate::types::{DeviceId, Seq};
+use crate::types::{DeviceId, Seq, UnixMs};
 
 use super::edge::ClientInfo;
 use super::render::{self, n, s};
@@ -466,13 +466,14 @@ pub fn devices(app: &App, req: &mut Request) -> Result<Response, ApiError> {
 ///
 /// # Errors
 /// `401 no_session`, `403 csrf_failed`, `404 unknown_device`,
-/// `409 last_device`.
+/// `409 last_device`, `409 recovery_too_new`.
 pub fn revoke(app: &App, req: &mut Request, id: &str) -> Result<Response, ApiError> {
     mutating_session(app, req)?;
     let target = render::device_id(id)?;
     // The same single-lock refusal the device route takes: see
     // `Store::revoke_device_unless_last`.
-    app.store.revoke_device_unless_last(&target)?;
+    app.store
+        .revoke_device_unless_last(&target, UnixMs(app.clock.unix_ms()))?;
     let (sessions, links) = app
         .sessions
         .lock()
