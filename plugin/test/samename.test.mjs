@@ -27,7 +27,6 @@ const require = createRequire(import.meta.url);
 const { applyChange, settleBeside, yieldName } = require("../build/sync/pull.js");
 const { pushFile, sidDigest } = require("../build/sync/push.js");
 const { conflictCopyPath } = require("../build/sync/conflict.js");
-const { QUIET_MS } = require("../build/sync/engine.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 const NOTE = "Notes/Same.md";
@@ -1092,14 +1091,15 @@ test("an edit made while a note is being pushed is not left behind", async (t) =
   await timers.run(STEP_MS, () => !waiting);
   await entered.promise;
 
-  // The user edits the note while that publish is still in flight, and the
-  // watcher's debounce and the queue both run to completion on it.
   // The user edits the note while that publish is still in flight. The
   // watcher's quiet period has to pass before the edit is queued at all
-  // (#99), so the clock is advanced through it with the push still held --
-  // which is what puts the second request INSIDE the first push.
+  // (#99), so the clock walks until the edit's request has joined the push
+  // still held -- which is what puts the second request INSIDE the first push
+  // -- and no further: a periodic scan coming due meanwhile waits for the pull
+  // holding that push (#244), runs after the release, and would be a second
+  // route for the edit.
   a.host.write(SAME, LATER, 4000);
-  await timers.run(QUIET_MS + STEP_MS);
+  await timers.run(STEP_MS, () => a.engine.again.has(SAME));
   await timers.run(STEP_MS);
 
   // AND NOT BY THE PERIODIC SCAN. From 1.1.0 a filesystem scan queues a dirty

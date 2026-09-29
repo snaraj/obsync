@@ -821,11 +821,10 @@ export class ObsidianHost implements VaultHost {
    * question to the vault. ONE QUESTION PER FOLDER, AS BEFORE: does the folder
    * hold this plugin's own folder at the path this vault holds it
    * (`manifest.dir`, the config folder's name included)? Listing each folder
-   * to ask every hidden one instead answers a turn later on Android, and that
-   * extra turn let a capitals-only folder rename received from another device
-   * be published back (android-recase.test.mjs, 5 of 20 runs under load).
-   * Only a manifest without `dir`, which Obsidian always sets, is asked by
-   * listing.
+   * to ask every hidden one instead answers a turn later on Android, a bridge
+   * call and a turn per folder for nothing; the race that turn exposed is the
+   * engine's to close, and it does (`inPass`, #244). Only a manifest without
+   * `dir`, which Obsidian always sets, is asked by listing.
    */
   private async holdsPluginHere(folder: string): Promise<boolean> {
     const adapter = this.plugin.app.vault.adapter;

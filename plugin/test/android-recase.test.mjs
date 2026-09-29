@@ -286,6 +286,151 @@ test("Android receives a capitals-only FOLDER rename: the folder and the notes u
   assert.deepEqual(r.b.notices, []);
 });
 
+const turns = async (n) => { for (let i = 0; i < n; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
+
+/**
+ * WORK ASKED FOR WHILE THE PHONE APPLIES A RECEIVED RENAME (#244). The vault
+ * reports a rename the pull makes before the host's call returns, and that
+ * report spends the rename's echo mark; the records follow the entry only after
+ * the adapter's next answers -- a `list` for a folder, a `stat` for a note. A
+ * pass, or the watcher's deletion burst, comparing the vault with the records
+ * in between found the entry moved and nothing recorded there, and published
+ * the move as the phone's own (5 of 20 folder re-cases under load); a listing
+ * taken just BEFORE the rename and compared after it pairs the move backwards.
+ * Here each point's answer -- `call`, once `when` holds -- is held, as a slow
+ * bridge holds it, until its `act` is done or 100 turns have passed. Every
+ * `when` also asks that the records still name the old place, so each `act`
+ * runs inside the pull or not at all, and the test says which.
+ */
+function during(r, ...points) {
+  r.vault.lag = async (name, path) => {
+    const point = points.find((candidate) => candidate.work === undefined && candidate.call === name && candidate.when(path));
+    if (point === undefined) return;
+    point.work = point.act();
+    await Promise.race([point.work, turns(100)]);
+  };
+  return points;
+}
+
+/** Until `done` holds, or 1000 turns. */
+const until = async (done) => { for (let i = 0; i < 1000 && !done(); i++) await turns(1); };
+
+/** The last line `later` matches comes after the first `first` matches: the pull finished before that work began. */
+function after(logs, first, later) {
+  const done = logs.findIndex((line) => first.test(line));
+  const began = logs.findLastIndex((line) => later.test(line));
+  assert.ok(done !== -1 && done < began, `the pull finished at ${done}, the work began at ${began}: ${logs.join(" | ")}`);
+}
+
+const PASS = /^reconcile decision=start /;
+const BURST = /^watch decision=settled reason=vanished /;
+
+test("a pass asked for while Android applies a received FOLDER re-case waits for it, and nothing is sent (#244)", async (t) => {
+  const r = await seeded(t, { "Team docs/One.md": BODY, "Team docs/Two.md": OTHER, "Team docs/Sub/Three.md": CLASH });
+  const three = ["team docs/One.md", "team docs/Two.md", "team docs/Sub/Three.md"];
+  const [pass] = during(r, {
+    call: "list",
+    when: () => r.vault.entries().includes("team docs") && r.b.state.fileByPath("Team docs/One.md") !== undefined,
+    act: () => {
+      const work = r.b.engine.reconcile();
+      // What the phone's clock says passed while the pass waited.
+      r.vault.clock += 250;
+      return work;
+    },
+  });
+
+  r.a.host.renameFolder("Team docs", "team docs");
+  await r.timers.run(STEP_MS, () => pass.work !== undefined && three.every((path) => settled(r.b, path)));
+  await pass.work;
+  await r.timers.run(STEP_MS);
+
+  assert.deepEqual(await phonePosts(r), [], `the phone published a rename it only applied: ${story(r)}`);
+  after(r.b.logs, /^folder path_class=folder decision=case_renamed /, PASS);
+  assert.deepEqual(r.b.logs.filter((line) => line.includes("decision=waited")),
+    ["reconcile decision=waited reason=pull_lock duration_ms=250 budget_ms=5000"], story(r));
+  assert.deepEqual(Object.keys(r.b.state.data.files).sort(), [...three].sort(), story(r));
+  assert.deepEqual(Object.keys(r.b.state.data.folders).sort(), ["team docs", "team docs/Sub"], story(r));
+  assert.deepEqual(r.b.notices, []);
+});
+
+for (const folds of [true, false]) {
+  test(`a scan, a pass and a deletion burst asked for while ${folds ? "Android" : "an iPhone"} applies a received note rename wait for it, and nothing is sent (#244)`, async (t) => {
+    const r = await seeded(t, { "Notes/Old name.md": BODY, "Notes/Other.md": OTHER }, { folds });
+    const id = r.ids["Notes/Old name.md"];
+    // Every debounce the seeding left has settled: the burst below is the one this test starts.
+    await r.timers.run(STEP_MS);
+    const report = Object.assign(Object.create(Object.getPrototypeOf(r.vault.getFileByPath("Notes/Old name.md"))), { path: "Notes/Old name.md" });
+    const recorded = () => r.b.state.fileByPath("Notes/Old name.md") !== undefined;
+    const [scan, pass] = during(r, {
+      // The pull asks where the note may go, before it moves it: the scan
+      // brought forward by the app coming to the front lists the vault now.
+      call: "list",
+      when: (path) => path === "Notes" && r.vault.text("Notes/Old name.md") === BODY && recorded() && r.server.files.get(id).versions.length === 2,
+      act: async () => {
+        r.b.engine.wake("foreground");
+        await until(() => r.b.engine.scanHandle !== null);
+      },
+    }, {
+      // The note is at its new name, its record still at the old one.
+      call: "stat",
+      when: (path) => path === "Notes/New name.md" && r.vault.text(path) === BODY && recorded(),
+      act: async () => {
+        // The watcher's late report of the pull's own write, naming the note
+        // where it was then: its debounce finds the note gone from there, and
+        // the burst that follows asks where it went.
+        r.vault.emit("modify", report);
+        await Promise.all([r.b.engine.reconcile(), until(() => r.b.logs.some((line) => BURST.test(line)))]);
+      },
+    });
+
+    r.a.host.rename("Notes/Old name.md", "Notes/New name.md");
+    await r.timers.run(STEP_MS, () => scan.work !== undefined && pass.work !== undefined && settled(r.b, "Notes/New name.md"));
+    await Promise.all([scan.work, pass.work]);
+    await r.timers.run(STEP_MS);
+
+    assert.deepEqual(await phonePosts(r), [], `the phone published a rename it only applied: ${story(r)}`);
+    const applied = new RegExp(`^pull path_class=file bytes=\\d+ decision=renamed file=${id} `);
+    after(r.b.logs, applied, PASS);
+    after(r.b.logs, applied, BURST);
+    assert.ok(r.b.logs.includes("watch path_class=file decision=deferred reason=missing_during_settle"), `the report's debounce did not settle inside the window: ${story(r)}`);
+    assert.notEqual(r.b.engine.scanHandle, null, "the scan never finished");
+    assert.deepEqual(r.b.logs.filter((line) => line.startsWith("scan decision=queued ")), [], story(r));
+    assert.equal(r.b.state.fileByPath("Notes/New name.md")?.fileId, id, story(r));
+    assert.equal(r.b.state.fileByPath("Notes/Old name.md"), undefined);
+    assert.deepEqual(r.b.notices, []);
+  });
+}
+
+// The lock covers a pass's comparison, not Sync now's content check: that
+// only queues unchanged files, and inside the lock it held another device's
+// page for minutes on a phone of 7,700 notes (#244, #246).
+test("a page from another device lands while a phone's Sync now content check runs, not after it (#244)", async (t) => {
+  const r = await seeded(t, { "Check/One.md": BODY, "Notes/Two.md": OTHER });
+  let held = false;
+  let release;
+  const check = new Promise((resolve) => { release = resolve; });
+  const syncable = r.b.host.syncable.bind(r.b.host);
+  r.b.host.syncable = async (path, kind) => {
+    if (path === "Check/One.md" && !held) { held = true; await check; }
+    return syncable(path, kind);
+  };
+  let pressed = false;
+  const press = r.b.engine.syncNow().then(() => { pressed = true; });
+  await r.timers.run(STEP_MS, () => held);
+
+  r.a.host.write("Notes/Two.md", THEIRS, 7000);
+  await r.timers.run(STEP_MS, () => r.vault.text("Notes/Two.md") === THEIRS && settled(r.b, "Notes/Two.md"))
+    .catch((error) => { throw new Error(`the page waited for the content check: ${error.message}: ${story(r)}`); });
+  assert.equal(pressed, false, "the content check was not held while the page landed: this test proves nothing");
+  release();
+  await r.timers.run(STEP_MS, () => pressed);
+  await press;
+
+  assert.deepEqual(await phonePosts(r), [], story(r));
+  assert.equal(r.a.host.text("Check/One.md"), BODY);
+  assert.deepEqual(r.b.notices, []);
+});
+
 test("an iPhone with a DIFFERENT note at the new spelling still answers occupied, keeps both, and the same-name rule applies", async (t) => {
   const r = await seeded(t, { "CaseMove/Rename me.md": BODY }, { folds: false });
   // A note made on the phone under the new spelling, not yet sent: on

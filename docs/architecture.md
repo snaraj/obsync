@@ -786,6 +786,18 @@ long poll and needs its timeout raised.
    the window comes forward (plugin 1.1.4), because Obsidian's index is never
    fresher than the events it emits: a note moved in from a file manager is
    in neither until the app notices.
+   Every pass -- the start's, the periodic one, Sync now's -- and the
+   watcher's decision on a burst of deletions take the pull lock, listing
+   included (plugin 1.1.5, #244). A pull applying a rename leaves the vault
+   and the records apart for a moment: a phone reports the rename while the
+   host's call still runs, which spends its echo mark, and the records
+   follow the entry only after the host's next answers. A comparison inside
+   that moment published the move as this device's own. The cost is
+   waiting: a pass waits for the page in flight, which it logs
+   (`decision=waited reason=pull_lock`), and a page waits for a pass's
+   comparison, under a second on a 7,700-note phone. Sync now's content
+   check queues its files after the lock: inside it, it held pages for
+   minutes on that phone.
    The periodic pass is ADDITIVE -- it queues work and it pairs a vanished
    recorded path with a new unrecorded one carrying the same `(mtime, size)`
    as a MOVE, keeping the file id -- and it never publishes a tombstone,
@@ -1008,8 +1020,8 @@ long poll and needs its timeout raised.
    folder is the other vault's config folder, `.obsidian` unless its owner
    named it otherwise (`Vault#configDir`). A computer asks every hidden
    folder, by name only; a phone asks each folder once for this plugin's
-   own folder at the path Obsidian loaded it from (`manifest.dir`), because
-   listing folders there answers a turn later and opened a race (#244)
+   own folder at the path Obsidian loaded it from (`manifest.dir`), one
+   question rather than a listing, which answers a turn later there
    (plugin 1.1.4; 1.1.3 asked for `.obsidian` alone, #243). A desktop vault
    that sits inside such a vault refuses to be set up, paired or started.
    Synced from both sides, each pass copied the outer vault into the inner

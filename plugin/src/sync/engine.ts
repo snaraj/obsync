@@ -1319,7 +1319,10 @@ export class SyncEngine {
       if (now - this.burstStarted >= BULK_WINDOW_MS) return;
       this.timers.clear(this.vanishHandle);
     }
-    this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
+    // Under the pull lock, as a pass is (`inPass`, issue #244): a debounce
+    // left pending for a name the pull has just moved finds it gone before
+    // the records follow, and deciding then publishes the pull's own move.
+    this.vanishHandle = this.timers.set(() => { void this.track(this.exclusive(() => this.settleVanished())); }, DEBOUNCE_MS);
   }
 
   /**
@@ -3571,17 +3574,51 @@ export class SyncEngine {
 
   private async reconcileLocal(verifyUpTo: number): Promise<void> {
     const host = this.need().host;
-    await this.inPass(host, async () => this.survey(await host.list(), true, "reconcile", verifyUpTo));
-  }
-
-  /** `work` as one pass of the host's (`VaultHost.pass`), closed however it ends. */
-  private async inPass<T>(host: VaultHost, work: () => Promise<T>): Promise<T> {
+    const recheck: VaultStat[] = [];
+    await this.inPass(host, "reconcile", async () => this.survey(await host.list(), true, "reconcile", verifyUpTo, recheck));
+    // SYNC NOW'S CONTENT CHECK AFTER THE LOCK: it only queues files the pass
+    // found unchanged, and on a phone of 7,700 notes it held a page from
+    // another device for minutes when it ran inside (#244, #246).
+    if (recheck.length === 0) return;
     host.pass?.(true);
     try {
-      return await work();
+      for (const file of recheck) {
+        if (!this.running) return;
+        if (!(await host.syncable(file.path))) continue;
+        this.enqueue(file.path);
+        this.examined++;
+      }
     } finally {
       host.pass?.(false);
     }
+  }
+
+  /**
+   * `work` as one pass of the host's (`VaultHost.pass`), closed however it
+   * ends -- AND UNDER THE PULL LOCK, ITS LISTING INCLUDED (issue #244). A pull
+   * applying a rename leaves the vault and the records apart for a moment: a
+   * phone reports the rename while the host's call still runs, which spends
+   * its echo mark, and the records follow the entry only after the host's next
+   * answers. A pass that compared inside that moment found the entry moved and
+   * nothing recorded there, and published the move as this device's own (5 of
+   * 20 folder re-cases on a loaded Android fake); a listing taken before a pull
+   * and compared after it pairs the same move backwards. One at a time, a pass
+   * never sees half of a pull, and a page waits for the comparison, which is
+   * quick. A pass's wait is said.
+   */
+  private inPass(host: VaultHost, label: string, work: () => Promise<void>): Promise<void> {
+    const asked = this.nowFn();
+    return this.exclusive(async () => {
+      if (!this.running) return;
+      const waited = this.nowFn() - asked;
+      if (waited > 0) host.log(`${label} decision=waited reason=pull_lock duration_ms=${waited} budget_ms=${SCAN_BUDGET_MS}`);
+      host.pass?.(true);
+      try {
+        await work();
+      } finally {
+        host.pass?.(false);
+      }
+    });
   }
 
   /**
@@ -3640,8 +3677,7 @@ export class SyncEngine {
         this.walkFor = null;
         this.unwalked = 0;
       }
-      const own = context.host.scan === undefined ? null : await context.host.scan();
-      await this.inPass(context.host, async () => this.survey(own ?? await context.host.list(), false, "scan"));
+      await this.inPass(context.host, "scan", async () => this.survey((await context.host.scan?.()) ?? await context.host.list(), false, "scan"));
     } catch (error) {
       context.host.log(
         `scan decision=failed reason=${errorText(error)} budget_ms=${SCAN_BUDGET_MS}`,
@@ -3668,12 +3704,11 @@ export class SyncEngine {
    * decides nothing differently, because an unchanged file is not queued
    * either way.
    */
-  private async survey(files: VaultStat[], tombstones: boolean, label: string, verifyUpTo = 0): Promise<void> {
+  private async survey(files: VaultStat[], tombstones: boolean, label: string, verifyUpTo = 0, verify: VaultStat[] = []): Promise<void> {
     const context = this.need();
     const started = context.now();
     const seen = new Set<string>();
     const fresh: VaultStat[] = [];
-    const verify: VaultStat[] = [];
     let skipped = 0;
     // FOLDERS ARE THE RECONCILE PASS'S BUSINESS, not the periodic scan's.
     // The scan is additive and never publishes a tombstone, and a folder
@@ -3739,7 +3774,8 @@ export class SyncEngine {
       }
     }
     // Sync now reads a recorded file's contents again only up to its ceiling
-    // (`SYNC_NOW_VERIFY_MAX`, issue #197); what lies above is counted.
+    // (`SYNC_NOW_VERIFY_MAX`, issue #197); what lies above is counted. The
+    // caller queues `verify`, after the lock (`reconcileLocal`).
     let unread = 0;
     for (const file of files) {
       if (!this.running) return;
@@ -3993,11 +4029,6 @@ export class SyncEngine {
     const own = tombstones ? await this.ownNotes(context, untracked.length) : null;
     if (own !== null && this.lost !== null) await this.rejoinUnseen(context, own.notes, untracked, seen, settled, label);
     let queued = 0;
-    for (const file of verify) {
-      if (!(await context.host.syncable(file.path))) { skipped++; continue; }
-      this.enqueue(file.path);
-      queued++;
-    }
     let adopted = 0;
     let heldBack = 0;
     for (const file of fresh) {

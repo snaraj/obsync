@@ -69,6 +69,12 @@ export class PhoneVault {
     this.renames = [];
     /** `(from, to, n) => boolean`: refuse a rename, the adapter's or the vault's (`n` vault renames so far), before it changes anything. */
     this.fault = null;
+    /**
+     * `(call, path) => Promise | undefined`: what an adapter `list` or `stat`
+     * waits on before it answers, as a slow bridge makes it wait (#244). The
+     * wait comes before the queue, so the calls made meanwhile still run.
+     */
+    this.lag = null;
     /** The adapter's one queue (`queue`). */
     this.chain = Promise.resolve();
     this.clock = 1757200000000;
@@ -77,16 +83,17 @@ export class PhoneVault {
       // The flag is not an answer on Android; a phone that keeps the
       // spellings apart answers for the exact name whatever it is passed.
       exists: (path) => vault.queue(async () => vault.real(path) !== null),
-      stat: (path) => vault.queue(async () => {
+      stat: (path) => vault.lagged("stat", path, () => vault.queue(async () => {
         const at = vault.real(path);
         if (at === null) return null;
         const file = vault.disk.get(at);
         return file === null ? { type: "folder", ctime: 0, mtime: 0, size: 0 }
           : { type: "file", ctime: file.mtime, mtime: file.mtime, size: file.bytes.length };
-      }),
+      })),
       // Real I/O: the listing answers a turn later.
       list: async (path) => {
         await new Promise((resolve) => setTimeout(resolve, 0));
+        await vault.lag?.("list", path);
         const at = vault.real(path === "/" ? "" : path);
         if (at === null || vault.disk.get(at) !== null && at !== "") throw new Error(`ENOENT: ${path}`);
         const out = { files: [], folders: [] };
@@ -128,6 +135,12 @@ export class PhoneVault {
     const next = this.chain.then(fn, fn);
     this.chain = next.catch(() => undefined);
     return next;
+  }
+
+  /** `answer()`, once whatever `lag` holds this call for is over. */
+  lagged(call, path, answer) {
+    const wait = this.lag?.(call, path);
+    return wait === undefined ? answer() : wait.then(answer);
   }
 
   /** Let a turn pass and everything queued in it run: what a test waits on before asserting on the index. */

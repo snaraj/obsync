@@ -1,0 +1,19 @@
+# M3394: Sync now's content check runs under the pull lock, and a page waits for it (#244)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3361,6 +3361,7 @@
+     // found unchanged, and on a phone of 7,700 notes it held a page from
+     // another device for minutes when it ran inside (#244, #246).
+     if (recheck.length === 0) return;
++    await this.exclusive(async () => {
+     host.pass?.(true);
+     try {
+       for (const file of recheck) {
+@@ -3372,6 +3373,7 @@
+     } finally {
+       host.pass?.(false);
+     }
++    });
+   }
+ 
+   /**
