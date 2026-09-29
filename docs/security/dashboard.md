@@ -136,6 +136,22 @@ device.
   with a refusal, renewably. The token is 256 bits compared in constant time,
   so a limit buys nothing against guessing; the noise it would bound is
   already bounded by the ring split below. Refusals are logged instead.
+- **The app that opens a sign-in link may log it** (issue #270). **Open
+  dashboard** hands the link to the system browser through Obsidian, and
+  Obsidian writes the whole address, token included, to its own console
+  output (`Opening URL: …/login?token=…`, seen in the 2026-09-29 validation
+  run, where that output was kept in a file). Wherever a host's output is
+  kept, the token is kept with it, and the browser's history keeps the
+  address too. What such a copy can open is bounded: the token opens one
+  session, once, and only within **five minutes** of being minted. Spent --
+  normally seconds after the click -- a copy opens nothing; never spent, it
+  dies at five minutes, on sign-out-everywhere, or when the device that
+  minted it is revoked. Five minutes and not seconds, because an edge may
+  put its own sign-in in front of `GET /login` -- Cloudflare Access's
+  one-time PIN by e-mail ([shape B](../cloudflare.md#shape-b-a-public-hostname-behind-access)),
+  or a reverse proxy's login -- and the link has to survive it. The server
+  test `a_sign_in_link_lives_five_minutes_and_opens_once` pins that lifetime
+  to the second.
 - **A revoked device's requests are NOT credentialed.** Revocation destroys
   the wrapped secret, so `403 device_revoked` has to be answered from the
   device record before any signature can be checked — there is nothing left

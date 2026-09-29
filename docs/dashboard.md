@@ -16,8 +16,10 @@ what any of them say.
 
 On any paired computer, run the command **Open dashboard** from Obsidian's
 command palette. The plugin asks the server for a single-use sign-in link
-(`POST /v1/dashboard/login-link`), the server answers with a URL valid for five
-minutes, and the plugin opens it in your browser. Following the link
+(`POST /v1/dashboard/login-link`), the server answers with a URL valid once,
+for five minutes, and the plugin opens it in your browser. Obsidian may write
+that URL to its own log; why that is bounded, and why five minutes, is in
+[the dashboard's threat model](security/dashboard.md#6-accepted-residuals). Following the link
 (`GET /login?token=…`) sets the session cookie and lands you on the overview.
 
 The plugin opens that answer only when the address it resolves to is the

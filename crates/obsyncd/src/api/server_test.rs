@@ -5059,6 +5059,64 @@ fn the_device_count_is_the_devices_that_can_sync() {
     assert_eq!(listed, Some(2), "both records stay listed");
 }
 
+/// Issue #270: a dashboard sign-in link is spent once and lives five
+/// minutes, to the second. Opening it takes a browser seconds, but an edge
+/// may put its own sign-in in front of `GET /login` -- an identity policy's
+/// one-time PIN by e-mail, or a reverse proxy's login, on the published-
+/// hostname path (`docs/platform-onboarding.md`) -- and the link must survive
+/// that. It must not live longer
+/// either: the host that opens it may log the whole URL
+/// (`docs/security/dashboard.md`), and a copy that outlives five minutes, or
+/// its first use, opens nothing.
+#[test]
+fn a_sign_in_link_lives_five_minutes_and_opens_once() {
+    let h = Harness::start_with(
+        "link-life",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let mint = || {
+        let res = Req::post("/v1/dashboard/login-link")
+            .sign(&cred, NOW)
+            .send(h.addr);
+        assert_eq!(res.status, 200, "{}", res.text());
+        let v = res.json();
+        let url = v.get("url").and_then(Value::as_str).expect("url");
+        let token = url.split("token=").nth(1).expect("token").to_string();
+        (token, v.get("expires").and_then(Value::as_u64))
+    };
+    let (spent_once, expires) = mint();
+    assert_eq!(expires, Some(NOW + 300), "five minutes from the mint");
+    let (late, _) = mint();
+    let open = |token: &str| {
+        let res = Req::get(&format!("/login?token={token}")).send(h.addr);
+        // A sign-in is a redirect with no body; only a refusal names a code.
+        let code = if res.status == 302 {
+            String::new()
+        } else {
+            res.code()
+        };
+        (res.status, code)
+    };
+
+    h.clock.set(NOW + 299);
+    assert_eq!(open(&spent_once).0, 302, "a second before it expires");
+    assert_eq!(
+        open(&spent_once),
+        (401, "bad_login_token".to_string()),
+        "spent: a logged copy opens nothing"
+    );
+    h.clock.set(NOW + 300);
+    assert_eq!(
+        open(&late),
+        (401, "bad_login_token".to_string()),
+        "expired on the fifth minute"
+    );
+}
+
 #[test]
 fn pairing_claim_vault_is_bounded_before_enrolment_and_only_creator_can_read_it() {
     let h = Harness::start("pairing-vault");
