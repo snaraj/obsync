@@ -98,6 +98,8 @@ class Page {
     this.next = 1;
     this.pending = new Map();
     this.console = [];
+    /** Every plugin line this window has logged, including those the bounded `console` has let go. */
+    this.logged = 0;
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       if (message.id && this.pending.has(message.id)) {
@@ -107,7 +109,10 @@ class Page {
         else resolve(message.result);
       } else if (message.method === "Runtime.consoleAPICalled") {
         const text = message.params.args.map((arg) => arg.value ?? arg.description ?? "").join(" ");
-        if (text.startsWith("obsync ")) this.console.push(text);
+        if (text.startsWith("obsync ")) {
+          this.console.push(text);
+          this.logged += 1;
+        }
         if (this.console.length > 200) this.console.shift();
       }
     });
@@ -566,6 +571,7 @@ async function main() {
     const pick = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
     prove(`B2 end to end: ${rounds} edits written on the first device reached the second's disk, p50 ${pick(0.5)} ms, p95 ${pick(0.95)} ms, max ${sorted.at(-1)} ms`);
 
+    await starvedWatcher(a, b);
     if (ntfs) await windowsJourneys(a, b);
     if (store) await restarted(a, b, { binary, extra, homes, store });
     if (homes) await untrusted(work, pluginDir, binary, extra, url);
@@ -680,6 +686,71 @@ async function untrusted(work, pluginDir, binary, extra, url) {
   } finally {
     c.stop();
   }
+}
+
+/**
+ * What obsync changes on a disk is LISTED though the file events never come
+ * (#253). A Mac whose `fseventsd` is overloaded delivers them late or not at
+ * all, and Obsidian then did not show a note obsync had written -- not in the
+ * file explorer, search or the quick switcher -- until a restart. Here the
+ * second instance's own file watchers are closed from its window (a test-only
+ * stand-in for that starvation, on every operating system), and what the
+ * first one does must still be listed there: a note in a new folder, a
+ * rename and a deletion of notes it listed before. It publishes nothing back.
+ */
+async function starvedWatcher(a, b) {
+  const listedAll = (paths) => inVault(b, (want) => want.every(([file, shown]) =>
+    (app.vault.getAbstractFileByPath(file) !== null) === shown), paths);
+  const before = { kept: `kept ${randomBytes(6).toString("hex")}\n`, gone: `gone ${randomBytes(6).toString("hex")}, longer\n` };
+  await inVault(a, async (texts) => {
+    await app.vault.createFolder("e2e/watched");
+    await app.vault.create("e2e/watched/kept.md", texts.kept);
+    await app.vault.create("e2e/watched/gone.md", texts.gone);
+  }, before);
+  await until("b lists the notes it is sent while its watcher works", () =>
+    listedAll([["e2e/watched/kept.md", true], ["e2e/watched/gone.md", true]]), SYNC_BUDGET_MS);
+  const closed = await inVault(b, () => {
+    const keys = Object.keys(app.vault.adapter.watchers ?? {});
+    for (const key of keys) app.vault.adapter.stopWatchPath(key);
+    return keys;
+  });
+  if (closed.length === 0) throw new Denied("b: Obsidian's adapter held no file watcher to close");
+  const vaultWindow = await b.main();
+  const mark = vaultWindow.logged;
+  const text = `starved ${randomBytes(6).toString("hex")}\n`;
+  await inVault(a, async (body) => {
+    await app.vault.createFolder("e2e/starved");
+    await app.vault.create("e2e/starved/listed.md", body);
+    await app.fileManager.renameFile(app.vault.getAbstractFileByPath("e2e/watched/kept.md"), "e2e/watched/renamed.md");
+    await app.vault.delete(app.vault.getAbstractFileByPath("e2e/watched/gone.md"));
+  }, text);
+  const disk = await arrives(b, "e2e/starved/listed.md", Buffer.from(text), "a note while b's watcher is closed");
+  await arrives(b, "e2e/watched/renamed.md", Buffer.from(before.kept), "a rename while b's watcher is closed");
+  await leaves(b, "e2e/watched/kept.md", "a rename while b's watcher is closed");
+  await leaves(b, "e2e/watched/gone.md", "a deletion while b's watcher is closed");
+  const at = Date.now();
+  await until("b lists what obsync changed on its disk, with its watcher closed", () => listedAll([
+    ["e2e/starved", true], ["e2e/starved/listed.md", true], ["e2e/watched/renamed.md", true],
+    ["e2e/watched/kept.md", false], ["e2e/watched/gone.md", false],
+  ]), 30_000);
+  const listedIn = Date.now() - at;
+  const tree = await inVault(b, () => app.vault.getFolderByPath("e2e/starved")?.children.map((child) => child.path) ?? []);
+  if (!tree.includes("e2e/starved/listed.md")) throw new Denied(`b's file tree does not hold the note under its folder: ${JSON.stringify(tree)}`);
+  const fresh = vaultWindow.logged - mark;
+  if (fresh > vaultWindow.console.length) throw new Denied(`b logged ${fresh} lines during the journey, more than the ${vaultWindow.console.length} kept to read`);
+  const lines = vaultWindow.console.slice(vaultWindow.console.length - fresh);
+  const published = lines.filter((line) => / decision=(pushed|published) |path_class=tombstone decision=deleted version=/.test(line));
+  if (published.length) throw new Denied(`b published what it received: ${published.join(" | ")}`);
+  // The watchers back for what follows; one whose folder has gone cannot be, and is counted.
+  const restored = await inVault(b, async (keys) => {
+    let count = 0;
+    for (const key of keys) await app.vault.adapter.startWatchPath(key).then(() => { count += 1; }, () => undefined);
+    return count;
+  }, closed);
+  prove(`#253: with the second device's ${closed.length} file watcher(s) closed, a note made in a new folder on the first `
+    + `reached its disk in ${disk} ms and was listed ${listedIn} ms later, its folder with it; a rename and a deletion `
+    + `of notes it listed left its listing true (${lines.filter((line) => line.startsWith("obsync vault ")).length} index lines), `
+    + `and it published nothing back; ${restored} of ${closed.length} watcher(s) restored`);
 }
 
 /** The NTFS journeys the review names: a case-only rename, the trash, a locked file. */
