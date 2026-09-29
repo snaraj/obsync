@@ -2,7 +2,7 @@
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
 @@ -3035,7 +3035,7 @@
-     if (status.kind === "error" && status.code === "forgotten_device") {
+     if (status.kind === "error" && status.code === "credential_rejected") {
        this.forgottenDevice = true;
        this.teardownEngine();
 -    } else if (this.forgottenDevice) return;

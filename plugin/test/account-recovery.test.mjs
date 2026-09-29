@@ -95,7 +95,7 @@ test("forgotten credentials show recovery and reset metadata without touching no
   const r = await plugin(t, { metadata: { lastSeq: 42, edgeHeaders: [{ name: "X-Edge", value: "TEST" }] } });
   r.host.seed("kept.md", "local unsent content", 1);
   r.instance.state.data.files["kept.md"] = { fileId: "12".repeat(16), versionId: "34".repeat(32), mtime: 1, size: 20, sha256: "" };
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   r.instance.setStatus({ kind: "idle" });
   assert.match(r.instance.statusText(), /no longer recognises/);
   const { ObsyncSettingTab } = r.box.require(join(r.box.home, "build/ui/settings.js"));
@@ -122,7 +122,7 @@ test("setup recovers a forgotten enrollment with its retained key, without unins
   const r = await plugin(t);
   await r.instance.registerAccountRecovery();
   r.server.devices[0].revoked = true;
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
   assert.notEqual(r.instance.state.data.deviceId, KEYS.deviceId);
   assert.equal(r.instance.forgottenDevice, false);
@@ -202,7 +202,7 @@ test("the feed stops on a forgotten credential and never reports a reachable ser
   });
   const engine = new SyncEngine({ state: r.state, host: r.host, timers, transport, onStatus: (status) => {
     statuses.push(status);
-    if (status.code === "forgotten_device" || status.kind === "offline") observed();
+    if (status.code === "credential_rejected" || status.kind === "offline") observed();
   } });
   t.after(() => engine.stop());
   await engine.start();
@@ -212,7 +212,7 @@ test("the feed stops on a forgotten credential and never reports a reachable ser
   // assertions below instead of leaving this witness waiting indefinitely.
   await forgotten;
   assert.equal(refusals, 1);
-  assert.ok(statuses.some((s) => s.code === "forgotten_device"));
+  assert.ok(statuses.some((s) => s.code === "credential_rejected"));
   assert.equal(statuses.some((s) => s.kind === "offline"), false);
   assert.equal(engine.started, false);
   await timers.run(6000);
@@ -299,7 +299,7 @@ test("an old server without recovery registration can still sync while its last-
 test("a forgotten credential permits restoring the phrase before re-enrollment", async (t) => {
   const r = await plugin(t);
   r.server.secrets.clear();
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   await r.instance.restoreVaultKey("ab".repeat(32));
   assert.equal(r.instance.state.data.vrk, "ab".repeat(32));
   assert.equal(r.server.requests.length, 0, "an unusable old credential cannot gate phrase restoration");
@@ -309,7 +309,7 @@ test("recovery reset refuses an active enrollment and an in-progress restore", a
   const r = await plugin(t);
   await r.instance.resetForgottenEnrollment();
   assert.equal(r.instance.state.data.deviceId, KEYS.deviceId);
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   r.instance.restoring = {};
   await assert.rejects(r.instance.resetForgottenEnrollment(), /Finish the current restore/);
   assert.equal(r.instance.state.data.deviceId, KEYS.deviceId);
@@ -320,7 +320,7 @@ test("recovery reset waits for the old engine writer even after the engine refer
   let release;
   const held = new Promise((resolve) => { release = resolve; });
   r.instance.engine = { stop() {}, stopAndWait: () => held };
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   let reset = false;
   const done = r.instance.resetForgottenEnrollment().then(() => { reset = true; });
   for (let i = 0; i < 20; i++) await tick();
@@ -355,7 +355,7 @@ test("a rejected recovery registration also exposes the forgotten-device action"
 
 test("a forgotten device can claim pairing only after its stale enrollment is cleared", async (t) => {
   const r = await plugin(t, { metadata: { lastSeq: 42 } });
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   const { PairClaimModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
   const { encodePairingCode } = r.box.require(join(r.box.home, "build/pairing.js"));
   const modal = new PairClaimModal(r.instance.app, r.instance, encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16)));
@@ -397,7 +397,7 @@ test("registration does not bind a proof after its vault key was replaced", asyn
 test("closing pairing while its forgotten identity resets prevents a claim", async (t) => {
   for (const incomplete of [false, true]) {
     const r = await plugin(t);
-    r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+    r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
     const { PairClaimModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
     const { encodePairingCode } = r.box.require(join(r.box.home, "build/pairing.js"));
     const code = incomplete ? "incomplete code" : encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16));

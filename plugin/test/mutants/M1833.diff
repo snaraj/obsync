@@ -2,7 +2,7 @@
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
 @@ -511,7 +511,7 @@
-     return { kind: "error", code: "forgotten_device", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };
+     return { kind: "error", code: "credential_rejected", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };
    }
    if (error.code === "stale_timestamp") return { kind: "error", code: "clock", message: said(CLOCK_OFF) };
 -  if (error.code === NOT_OBSYNC || error.code === "part_mismatch" || error.code === "response_too_large") {

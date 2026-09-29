@@ -4,7 +4,7 @@
 @@ -811,7 +811,7 @@
      }
      if (status.kind !== "error") return;
-     const pair = status.code === "forgotten_device";
+     const pair = status.code === "credential_rejected";
 -    const settings = pair || status.code === "edge";
 +    const settings = status.code === "edge";
      new Setting(this.contentEl)

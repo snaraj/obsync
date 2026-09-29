@@ -196,7 +196,7 @@ test("a revoked device reads 'removed from your server' at once, and the feed st
   r.server.releaseFeed();
   await r.timers.run(0, () => r.engine.started === false);
   // The plugin keeps this status and tears the engine down (`setStatus`); the stop's own idle comes after it.
-  assert.deepEqual(r.statuses.find((status) => status.kind === "error"), { kind: "error", code: "forgotten_device", message: REVOKED_DEVICE });
+  assert.deepEqual(r.statuses.find((status) => status.kind === "error"), { kind: "error", code: "credential_rejected", message: REVOKED_DEVICE });
   assert.ok(!r.statuses.some((status) => status.kind === "offline"));
   await stopped(r);
 });

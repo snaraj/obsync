@@ -7,7 +7,7 @@
          // press (`AFTER_START`), not in a promise that it resumes.
 -        this.setStatus(refusalStatus(error, AFTER_START) ?? {
 +        const mapped = refusalStatus(error, AFTER_START);
-+        this.setStatus((mapped?.kind === "error" && mapped.code === "forgotten_device" ? { kind: "offline" as const } : mapped) ?? {
++        this.setStatus((mapped?.kind === "error" && mapped.code === "credential_rejected" ? { kind: "offline" as const } : mapped) ?? {
            kind: "error",
            message: error instanceof ApiError ? START_REFUSED : error instanceof Error ? error.message : String(error),
          });

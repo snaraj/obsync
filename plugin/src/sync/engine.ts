@@ -517,7 +517,7 @@ export function refusalStatus(error: unknown, then = RESUMES): EngineStatus | nu
   if (error.code === "unreachable") return { kind: "offline" };
   // Not narrowed by the predicate: every branch below is an `ApiError` too.
   if (forgottenCredential(error as unknown)) {
-    return { kind: "error", code: "forgotten_device", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };
+    return { kind: "error", code: "credential_rejected", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };
   }
   if (error.code === "stale_timestamp") return { kind: "error", code: "clock", message: said(CLOCK_OFF) };
   if (error.code === NOT_OBSYNC || error.code === "part_mismatch" || error.code === "response_too_large") {
@@ -1149,12 +1149,12 @@ export class SyncEngine {
 
   /**
    * Say what a failure means (`refusalStatus`, or the caller's own words for
-   * one about its piece of work). Absence and a forgotten device are said as
+   * one about its piece of work). Absence and a rejected credential are said as
    * they are; a refusal with a code STANDS -- it is what `resting` says until
    * the server accepts again -- and a failure with none is said once.
    */
   private report(status: EngineStatus): void {
-    if (status.kind === "error" && status.code !== undefined && status.code !== "forgotten_device") {
+    if (status.kind === "error" && status.code !== undefined && status.code !== "credential_rejected") {
       this.refused = status;
       this.status(this.resting());
       return;
@@ -2698,8 +2698,8 @@ export class SyncEngine {
         // itself and stands until the server answers again; only absence reads
         // offline; anything else is a read that failed, said as that.
         const refused = refusalStatus(error) ?? { kind: "error", code: "feed", message: FEED_FAILED };
-        if (refused.kind === "error" && refused.code === "forgotten_device") {
-          context.host.log("feed decision=stopped reason=forgotten_device");
+        if (refused.kind === "error" && refused.code === "credential_rejected") {
+          context.host.log("feed decision=stopped reason=credential_rejected");
           this.status(refused);
           this.stop();
           return;

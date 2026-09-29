@@ -414,7 +414,7 @@ test("Show sync status stays true while open, and offers the next step for the s
   assert.equal(d.button(), undefined, "nothing to do while all is well");
 
   for (const [status, text, call] of [
-    [{ kind: "error", code: "forgotten_device", message: "REVOKED" }, "Pair again", ["close", "settings"]],
+    [{ kind: "error", code: "credential_rejected", message: "REVOKED" }, "Pair again", ["close", "settings"]],
     [{ kind: "error", code: "edge", message: "EDGE" }, "Open settings", ["close", "settings"]],
     [{ kind: "error", code: "clock", message: "CLOCK" }, "Retry now", ["retry"]],
   ]) {

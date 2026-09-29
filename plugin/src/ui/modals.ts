@@ -1265,7 +1265,7 @@ export class StatusModal extends Modal {
       return;
     }
     if (status.kind !== "error") return;
-    const pair = status.code === "forgotten_device";
+    const pair = status.code === "credential_rejected";
     const settings = pair || status.code === "edge";
     new Setting(this.contentEl)
       .setName("What to do")

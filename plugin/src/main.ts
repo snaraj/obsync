@@ -3965,7 +3965,7 @@ export default class ObsyncPlugin extends Plugin {
       this.engine = null;
       // Not this device's own leave, which forgets the pairing next and says
       // what happened itself: a phone put this up after every Leave (#233).
-      if (!this.leaving) this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+      if (!this.leaving) this.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
     }
   }
 
@@ -4440,7 +4440,7 @@ export default class ObsyncPlugin extends Plugin {
       // logged and never said: it read "removed" over a device that left (#233).
       const ended = this.state.data.deviceId !== deviceId;
       const refused = refusalStatus(error);
-      if (!ended && refused?.kind === "error" && refused.code === "forgotten_device") this.setStatus(refused);
+      if (!ended && refused?.kind === "error" && refused.code === "credential_rejected") this.setStatus(refused);
       // Old servers do not implement this route. Sync can continue, and their
       // last-device refusal remains in force until server and client upgrade.
       this.log(`recovery decision=unavailable reason=${error instanceof ApiError ? error.code : "local_or_lost"}${ended ? " session=ended" : ""}`);
@@ -4606,7 +4606,7 @@ export default class ObsyncPlugin extends Plugin {
   // --- status ------------------------------------------------------------
 
   setStatus(status: EngineStatus): void {
-    if (status.kind === "error" && status.code === "forgotten_device") {
+    if (status.kind === "error" && status.code === "credential_rejected") {
       this.forgottenDevice = true;
       this.teardownEngine();
     } else if (this.forgottenDevice) return;
