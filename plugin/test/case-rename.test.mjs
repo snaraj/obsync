@@ -95,18 +95,17 @@ const quietRenameEmptyFolder = (host, from, to) => {
 };
 
 /**
- * Wait on the CONDITION, not on a guess about how many event-loop turns some
- * other work takes: a count that is enough on an idle machine is not enough
- * when the suite runs forty files at once, and a test that fails under load
- * adds a phantom kill to every mutant in the matrix
- * (`plugin/test/mutants/run.sh`).
+ * Wait on the CONDITION, on a wall clock and never a number of turns: an
+ * encryption answers from libuv's thread pool after real time, so 5000 turns
+ * passed in 133 ms on a loaded image builder before the post it precedes
+ * began. A test that fails under load adds a phantom kill to every mutant in
+ * the matrix (`plugin/test/mutants/run.sh`).
  */
 const until = async (condition, what) => {
-  for (let turn = 0; turn < 5000; turn++) {
-    if (condition()) return;
+  for (const deadline = Date.now() + 10_000; !condition();) {
+    if (Date.now() >= deadline) assert.fail(what);
     await new Promise((resolve) => setImmediate(resolve));
   }
-  assert.fail(what);
 };
 
 /** Two notes in one folder, on both devices, with their file ids. */
