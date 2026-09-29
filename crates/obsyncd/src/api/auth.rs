@@ -655,22 +655,31 @@ fn authenticate(
         ));
     }
 
-    // The body stays reserved until the signature over its hash verifies:
-    // until then it is an unverified caller's bytes (`read_body`).
-    let (hash_hex, body, reserved) = match body_hash {
-        BodyHash::Sid(sid) => ((*sid).to_string(), Vec::new(), None),
+    // The body stays reserved until the signature over its hash verifies and
+    // its nonce is remembered: until then it is an unverified caller's bytes,
+    // and `accept` runs the check before it lets them go (`Unverified`).
+    let (hash_hex, unverified) = match body_hash {
+        BodyHash::Sid(sid) => ((*sid).to_string(), None),
         BodyHash::Buffer => {
-            let (raw, reserved) = render::read_body(app, req, super::JSON_BODY_LIMIT)?;
-            (hex::encode(&sha256::sha256(&raw)), raw, Some(reserved))
+            let raw = render::read_body(app, req, super::JSON_BODY_LIMIT)?;
+            (hex::encode(&sha256::sha256(raw.peek())), Some(raw))
         }
     };
 
     let canon = canonical(&method, &target, &ts_hex, &nonce, &hash_hex);
-    if !verify(&secret, &canon, &sig) {
-        return Err(bad());
-    }
-    app.nonces.remember(&device_hex, &nonce, now)?;
-    drop(reserved);
+    let proof = |_: &Vec<u8>| {
+        if !verify(&secret, &canon, &sig) {
+            return Err(bad());
+        }
+        app.nonces.remember(&device_hex, &nonce, now)
+    };
+    let body = match unverified {
+        Some(raw) => raw.accept(proof)?.0,
+        None => {
+            proof(&Vec::new())?;
+            Vec::new()
+        }
+    };
 
     // The signature verified, the timestamp is inside the window and the
     // nonce is fresh: this caller holds the device secret. That fact, and

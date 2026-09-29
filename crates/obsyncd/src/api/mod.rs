@@ -410,6 +410,40 @@ impl Drop for Reserved<'_> {
     }
 }
 
+/// What a caller sent before its credential verified -- the bytes, or what
+/// they parse to -- with the reservation that accounts for it. The value
+/// comes out only through [`Unverified::accept`], which runs the credential
+/// check with the reservation still held: nothing else releases it, so no
+/// handler can give it back while another request could still see the
+/// budget under-counted (review of 7e1294d).
+pub struct Unverified<'a, T> {
+    value: T,
+    reserved: Reserved<'a>,
+}
+
+impl<T> Unverified<'_, T> {
+    /// The value, to read what the check needs: a hash, a token.
+    pub fn peek(&self) -> &T {
+        &self.value
+    }
+
+    /// Run `check` with the reservation held, and hand back the value with
+    /// what the check found only if it passed. The reservation ends after
+    /// the check, either way.
+    ///
+    /// # Errors
+    /// Whatever `check` refuses with.
+    pub fn accept<R>(
+        self,
+        check: impl FnOnce(&T) -> Result<R, ApiError>,
+    ) -> Result<(T, R), ApiError> {
+        let found = check(&self.value)?;
+        let Self { value, reserved } = self;
+        drop(reserved);
+        Ok((value, found))
+    }
+}
+
 /// Cached readiness verdict (`docs/protocol.md`, "Health").
 struct ReadyCache {
     checked_at: u64,

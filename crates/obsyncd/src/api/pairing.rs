@@ -478,13 +478,14 @@ pub fn claim(
     _client: &ClientInfo,
     id: &str,
 ) -> Result<Response, ApiError> {
-    // Held until `begin_claim` has verified the token, the wait for the
+    // Reserved until `begin_claim` has verified the token, the wait for the
     // table's lock included: nothing an unverified claimant sent is kept
-    // outside the pre-authentication budget (`render::token_body`).
-    let (body, reserved) = render::token_body(app, req)?;
-    let enroll = render::field_str(&body, "enroll_token")?.to_string();
-    let enrolment = devices::enrolment_fields(&body)?;
-    let vault = vault_details(&body)?;
+    // outside the pre-authentication budget (`Unverified`).
+    let unverified = render::token_body(app, req)?;
+    let body = unverified.peek();
+    let enroll = render::field_str(body, "enroll_token")?.to_string();
+    let enrolment = devices::enrolment_fields(body)?;
+    let vault = vault_details(body)?;
     let (name, platform, app_version) = (
         enrolment.name.clone(),
         enrolment.platform.clone(),
@@ -495,8 +496,7 @@ pub fn claim(
     // The table lock is held across device creation so two racing claims
     // cannot both pass `begin_claim`.
     let mut pairings = app.pairings.lock().expect("pairings");
-    pairings.begin_claim(id, &enroll, now)?;
-    drop((body, reserved));
+    unverified.accept(|_| pairings.begin_claim(id, &enroll, now))?;
     // The claimant is PENDING: it holds a secret and no authority until the
     // pairing's creator approves it (`docs/architecture.md` 4.2).
     let (record, secret) = devices::enrol(app, enrolment, DeviceState::Pending)?;

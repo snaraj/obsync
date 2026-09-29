@@ -544,6 +544,61 @@ fn claims_waiting_for_the_pairing_table_keep_their_bodies_inside_the_budget() {
     assert_eq!(h.app.preauth_held(), 0, "every reservation came back");
 }
 
+/// Review of c5f79e8, finding 2: an unverified body's reservation ends only
+/// after its check, whether the check passes or refuses. `accept` is the one
+/// way a body leaves `Unverified`, so this is every route's guarantee.
+#[test]
+fn an_unverified_body_stays_reserved_until_its_check_has_run() {
+    let h = Harness::start("unverified-accept");
+    let hold = || crate::api::Unverified {
+        value: 7u8,
+        reserved: h.app.reserve_body(1000).expect("fits"),
+    };
+    let (value, seen) = hold()
+        .accept(|value| Ok((*value, h.app.preauth_held())))
+        .expect("passes");
+    assert_eq!((value, seen), (7, (7, 1000)), "reserved while checked");
+    assert_eq!(h.app.preauth_held(), 0, "and given back after");
+    let refused = hold().accept(|_| -> Result<(), crate::api::ApiError> {
+        assert_eq!(h.app.preauth_held(), 1000, "reserved while refused");
+        Err(crate::api::ApiError::bad_request("refused"))
+    });
+    assert!(refused.is_err());
+    assert_eq!(h.app.preauth_held(), 0, "and given back after a refusal");
+}
+
+/// And a signed body is reserved until its signature verified AND its nonce
+/// was remembered: with the nonce log's flush slowed to 1.5 s, the body stays
+/// reserved for the whole of it, where a reservation given back before the
+/// check would read zero almost throughout.
+#[test]
+fn a_signed_body_stays_reserved_until_its_nonce_is_remembered() {
+    let h = Harness::start("signed-body-reserved");
+    let cred = h.setup_account();
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::SlowSync { ms: 1_500 });
+    let body = r#"{"sentinel":"reserved-until-verified"}"#;
+    let req = Req::post("/v1/pairing").body(body).sign(&cred, NOW);
+    let addr = h.addr;
+    let sent = std::thread::spawn(move || req.send(addr));
+    let (mut held, mut samples) = (0, 0);
+    while !sent.is_finished() {
+        samples += 1;
+        if h.app.preauth_held() == body.len() as u64 {
+            held += 1;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let res = sent.join().expect("request");
+    assert_eq!(res.status, 201, "{}", res.text());
+    assert!(
+        held >= 50,
+        "reserved in {held} of {samples} samples, 10 ms apart, through a 1.5 s nonce flush"
+    );
+    assert_eq!(h.app.preauth_held(), 0);
+}
+
 #[test]
 fn health_endpoints_answer_and_every_response_is_hardened() {
     let h = Harness::start("health");

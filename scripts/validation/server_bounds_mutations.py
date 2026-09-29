@@ -24,12 +24,19 @@ INDEX = "crates/obsyncd/src/storage/index.rs"
 JOURNAL = "crates/obsyncd/src/storage/journal.rs"
 CLI = "crates/obsyncd/src/cli/mod.rs"
 SERVE = "crates/obsyncd/src/cli/serve.rs"
+PAIRING = "crates/obsyncd/src/api/pairing.rs"
 BUDGET = "three_hundred_slow_bodies_stay_inside_the_unverified_body_budget"
 SHARE = "a_device_at_its_share_is_refused_and_no_other_device_is"
 STREAM = "a_batch_streams_and_names_a_lost_chunk_missing"
 PROBE = "the_readiness_probe_never_writes_through_a_planted_link"
 KEY_FILE = "export_reads_the_key_from_a_file_only_its_owner_can_read"
 INCOMPLETE = "a_body_is_too_large_only_when_it_passed_its_ceiling"
+ACCEPT = "an_unverified_body_stays_reserved_until_its_check_has_run"
+SIGNED = "a_signed_body_stays_reserved_until_its_nonce_is_remembered"
+CLAIMS = "claims_waiting_for_the_pairing_table_keep_their_bodies_inside_the_budget"
+PARSE = "a_token_body_and_its_parse_fit_the_reservation"
+BOUND = "the_record_bound_keeps_every_head_and_the_newest_versions_that_fit"
+SENDS = "a_record_measured_past_its_bound_sends_what_the_bound_keeps"
 PROBE_BODY = """    match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -84,8 +91,51 @@ CASES = [
      "    Some((len as u32).to_le_bytes())", "a_frame_length_over_32_bits_is_refused_rather_than_wrapped"),
     ("preauth-ceiling", SERVER, API, "                .filter(|total| *total <= PREAUTH_BODY_BUDGET)",
      "                .filter(|_| true)", BUDGET),
-    ("preauth-reserved", SERVER, RENDER, "    let _reserved = app.reserve_body(declared.unwrap_or(limit))?;",
-     "", BUDGET),
+    # An unverified body's reservation ends only after its credential check
+    # (review of 7e1294d, finding 2, and of c5f79e8, finding 2).
+    ("preauth-reserved", SERVER, API,
+     "        let found = check(&self.value)?;\n        let Self { value, reserved } = self;\n        drop(reserved);\n",
+     "        let Self { value, reserved } = self;\n        drop(reserved);\n        let found = check(&value)?;\n",
+     ACCEPT),
+    ("preauth-signed-reserved", SERVER, AUTH, "        Some(raw) => raw.accept(proof)?.0,",
+     "        Some(raw) => {\n            let body = raw.accept(|_| Ok(()))?.0;\n            proof(&body)?;\n            body\n        }",
+     SIGNED),
+    ("preauth-claim-reserved", SERVER, PAIRING,
+     "    let mut pairings = app.pairings.lock().expect(\"pairings\");\n"
+     "    unverified.accept(|_| pairings.begin_claim(id, &enroll, now))?;",
+     "    unverified.accept(|_| Ok(()))?;\n"
+     "    let mut pairings = app.pairings.lock().expect(\"pairings\");\n"
+     "    pairings.begin_claim(id, &enroll, now)?;", CLAIMS),
+    ("preauth-token-reserve", SERVER, RENDER,
+     "    let reserved = app.reserve_body(reserve.unwrap_or(declared.unwrap_or(limit)))?;",
+     "    let _ = reserve;\n    let reserved = app.reserve_body(declared.unwrap_or(limit))?;", CLAIMS),
+    ("preauth-token-ceiling", SERVER, API, "pub const TOKEN_BODY_LIMIT: u64 = 16 * 1024;",
+     "pub const TOKEN_BODY_LIMIT: u64 = JSON_BODY_LIMIT;", PARSE),
+    ("preauth-token-parse-reserved", SERVER, API, "pub const TOKEN_BODY_RESERVE: u64 = JSON_BODY_LIMIT;",
+     "pub const TOKEN_BODY_RESERVE: u64 = TOKEN_BODY_LIMIT;", PARSE),
+    # A file record's bound (review of 7e1294d, finding 1, and of c5f79e8,
+    # finding 1).
+    ("record-bound", SERVER, RENDER, "            open = open && used + len <= FILE_RECORD_MAX as usize;",
+     "            open = open && used + len <= FILE_RECORD_MAX as usize * 2;", BOUND),
+    ("record-bound-inclusive", SERVER, RENDER, "            open = open && used + len <= FILE_RECORD_MAX as usize;",
+     "            open = open && used + len < FILE_RECORD_MAX as usize;", BOUND),
+    ("record-stops-at-first-misfit", SERVER, RENDER, "            open = open && used + len <= FILE_RECORD_MAX as usize;",
+     "            open = used + len <= FILE_RECORD_MAX as usize;", BOUND),
+    ("record-keeps-every-head", SERVER, RENDER, "            if head {\n                return true;\n            }\n", "",
+     BOUND),
+    ("record-counts-the-heads", SERVER, RENDER,
+     "    let mut used = skeleton\n        + sized\n            .iter()\n            .filter(|(_, head)| *head)\n"
+     "            .map(|(len, _)| len)\n            .sum::<usize>();",
+     "    let mut used = skeleton;", BOUND),
+    ("record-sends-what-it-keeps", SERVER, RENDER,
+     "        .filter(|(_, keep)| **keep)\n        .map(|(v, _)| version(v))",
+     "        .filter(|_| true)\n        .map(|(v, _)| version(v))", SENDS),
+    ("record-counts-what-it-leaves", SERVER, RENDER,
+     "    let left_out = keep.iter().filter(|keep| !**keep).count();", "    let left_out = 0;", SENDS),
+    ("record-measures-the-text", SERVER, RENDER, "    version.to_json().len() + 1\n", "    0\n",
+     "a_versions_share_is_its_text_and_the_comma_after_it"),
+    ("record-bound-450-mib", SERVER, API, "pub const FILE_RECORD_MAX: u64 = 450 * 1024 * 1024;",
+     "pub const FILE_RECORD_MAX: u64 = 64 * 1024 * 1024;", "a_retained_history_past_sixty_four_mib_is_served_whole"),
     ("preauth-released", SERVER, API, "        self.budget.held.fetch_sub(self.bytes, Ordering::SeqCst);",
      "        let _ = self.bytes;", BUDGET),
     ("preauth-bare", SERVER, API, "                .bare())", ")", BUDGET),
