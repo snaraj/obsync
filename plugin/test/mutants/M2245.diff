@@ -1,0 +1,12 @@
+# M2245: a history page larger than asked is accepted
+--- a/plugin/src/sync/history.ts
++++ b/plugin/src/sync/history.ts
+@@ -150,7 +150,7 @@
+     this.operation.check();
+     const seq = page["seq"], head = page["head_seq"], changes = page["changes"];
+     if (!number(seq) || !number(head) || seq < since || seq > head ||
+-        !Array.isArray(changes) || changes.length > limit ||
++        !Array.isArray(changes) ||
+         (this.boundary !== null && head < this.boundary) ||
+         (seq === since && seq < head)) throw new Error("History cursor did not progress safely.");
+     if (this.boundary === null) this.boundary = head;

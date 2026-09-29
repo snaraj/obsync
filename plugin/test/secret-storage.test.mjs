@@ -6,6 +6,8 @@ import { KEYS } from "./fake.mjs";
 const require = createRequire(import.meta.url);
 const { State, StateStorageError } = require("../build/state.js");
 const clone = (value) => structuredClone(value);
+/** A storage stop, by its logged reason: the words shown carry no code (#168). */
+const reason = (code) => (error) => error instanceof StateStorageError && error.reason === code;
 const legacy = () => ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret,
   serverUrl: "https://sync.example.invalid", edgeHeaders: [{ name: "X-Service", value: "LOCAL TOKEN SENTINEL" }],
   lastSeq: 7, files: { "Notes/note.md": { fileId: "12".repeat(16), versionId: "34".repeat(32), size: 4, mtime: 1, sha256: "" } },
@@ -132,7 +134,7 @@ test("damaged legacy identity is refused instead of silently becoming a fresh de
 });
 
 test("unavailable storage and migration failures keep legacy metadata intact", async () => {
-  await assert.rejects(State.open(backing().store, false, undefined), /unavailable/);
+  await assert.rejects(State.open(backing().store, false, undefined), reason("unavailable"));
   for (const fault of ["get", "set", "readback", "metadata", "occupied"]) {
     const initial = legacy(), r = backing(initial);
     if (fault === "get") r.hooks.get = () => { throw new Error("host unavailable"); };
@@ -158,7 +160,7 @@ test("bookkeeping saves leave secret bytes untouched and failed metadata writes 
   assert.equal(r.metadata().credentialRevision, 1);
   r.hooks.save = async () => { throw new Error("metadata failed"); };
   state.data.lastSeq = 9;
-  await assert.rejects(state.save(), /metadata_write_failed/);
+  await assert.rejects(state.save(), reason("metadata_write_failed"));
   r.hooks.save = null;
   assert.equal((await r.open()).data.lastSeq, 8);
   assert.equal(r.entries.get(ref), before);
@@ -196,7 +198,7 @@ test("an uncertain metadata acknowledgement reloads exactly the revision actuall
   const r = backing(legacy()), state = await r.open();
   state.data.vrk = "ab".repeat(32);
   r.hooks.save = async (snapshot) => { r.replaceMetadata(snapshot); throw new Error("acknowledgement lost"); };
-  await assert.rejects(state.save(), /metadata_write_failed/);
+  await assert.rejects(state.save(), reason("metadata_write_failed"));
   assert.equal(state.paired, false);
   r.hooks.save = null;
   assert.equal((await r.open()).data.vrk, "ab".repeat(32));
@@ -214,7 +216,7 @@ test("the single owned entry retains only the current and previous valid credent
   assert.equal(envelope.previous.vrk, "ab".repeat(32));
   assert.equal(r.entries.size, 1);
   r.replaceMetadata(first);
-  await assert.rejects(r.open(), /identity_mismatch/);
+  await assert.rejects(r.open(), reason("identity_mismatch"));
 });
 
 test("the previous credential record is collapsed only once the current one holds none", async () => {
@@ -226,7 +228,7 @@ test("the previous credential record is collapsed only once the current one hold
 
   // A live credential is a revision an interrupted write may still be named
   // by, so history is never collapsed under it.
-  await assert.rejects(() => state.forgetPreviousCredential(), /credential_present/);
+  await assert.rejects(() => state.forgetPreviousCredential(), reason("credential_present"));
   assert.equal(held().previous.revision, 1, "and nothing was dropped");
 
   state.forgetPairing();
@@ -257,13 +259,13 @@ test("a native entry changed by something else is not overwritten while collapsi
   foreign.current = { ...foreign.current, revision: foreign.current.revision + 1 };
   r.entries.set(ref, JSON.stringify(foreign));
   const before = r.entries.get(ref);
-  await assert.rejects(() => state.forgetPreviousCredential(), /secret_changed/);
+  await assert.rejects(() => state.forgetPreviousCredential(), reason("secret_changed"));
   assert.equal(r.entries.get(ref), before, "the other writer's entry stands");
 });
 
 test("an inactive load does not migrate or touch the secret store", async () => {
   const r = backing(legacy());
-  await assert.rejects(State.open(r.store, false, r.secrets, () => {}, () => false), /inactive_load/);
+  await assert.rejects(State.open(r.store, false, r.secrets, () => {}, () => false), reason("inactive_load"));
   assert.deepEqual(r.calls, []);
   assert.deepEqual(r.metadata(), legacy());
 });
@@ -302,7 +304,7 @@ test("an externally changed owned entry is refused before it can be overwritten"
   const sets = r.calls.filter(([operation]) => operation === "set").length;
   r.entries.set(ref, "externally changed local sentinel");
   state.data.vrk = "ab".repeat(32);
-  await assert.rejects(state.save(), /secret_changed/);
+  await assert.rejects(state.save(), reason("secret_changed"));
   assert.equal(r.entries.get(ref), "externally changed local sentinel");
   assert.equal(r.calls.filter(([operation]) => operation === "set").length, sets);
 });
@@ -313,7 +315,7 @@ test("exhausted credential revisions fail without changing native or metadata st
   record.envelope = JSON.stringify(envelope);
   const r = restored(record), state = await r.open();
   state.data.vrk = "ab".repeat(32);
-  await assert.rejects(state.save(), /revision_exhausted/);
+  await assert.rejects(state.save(), reason("revision_exhausted"));
   assert.equal(r.entries.get(record.metadata.credentialRef), record.envelope);
   assert.deepEqual(r.metadata(), record.metadata);
 });

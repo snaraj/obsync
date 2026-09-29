@@ -1,0 +1,11 @@
+# M2208: a failed feed read leaves a Sync now waiting on it
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2517,7 +2517,6 @@
+         if (error instanceof ApiError && error.code === "cancelled") continue;
+         // A failed read is the answer a waiting Sync now gets: it says what
+         // the status says, and the retry goes on without it.
+-        this.answerFeed(Number.POSITIVE_INFINITY);
+         this.feedAnswered = false;
+         // What the failure means, said on the FIRST one (#155): a refusal names
+         // itself and stands until the server answers again; only absence reads

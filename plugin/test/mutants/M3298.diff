@@ -1,0 +1,13 @@
+# M3298: the desktop reads what it will write after the editor is judged, so typing begun in between is written under
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1593,8 +1593,8 @@
+         let text: string | null;
+         let shown: string | null;
+         try {
++          shown = await this.assertEditorIdle(path);
+           text = this.views(path).length > 0 ? await fs.promises.readFile(temp, "utf8") : null;
+-          shown = await this.assertEditorIdle(path);
+         } catch (error) {
+           await discard();
+           throw error;

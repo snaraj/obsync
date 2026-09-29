@@ -1,0 +1,12 @@
+# M2313: a revoked device is not listed last (Devices order, desktop rig)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -911,7 +911,7 @@
+     // (desktop rig, 2026-09-26).
+     const self = this.plugin.state.data.deviceId;
+     const rank = (device: DeviceRecord): number =>
+-      device.device_id === self ? 0 : device.revoked ? 3 : device.state === "pending" ? 2 : 1;
++      device.device_id === self ? 0 : device.state === "pending" ? 2 : 1;
+     const devices = [...(this.deviceList ?? [])].sort((a, b) => rank(a) - rank(b));
+     const rows = devices.map((device) => this.deviceRow(device));
+     // A phone paired twice under one name left two rows nobody could tell

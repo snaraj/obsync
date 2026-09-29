@@ -7,8 +7,9 @@
 
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { rmSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { sandbox } from "./fake.mjs";
 
 const tick = () => new Promise(setImmediate);
@@ -16,12 +17,14 @@ const tick = () => new Promise(setImmediate);
 class Component {
   constructor(kind) {
     this.kind = kind; this.disabled = false;
-    this.inputEl = { listeners: {}, addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); } };
-    this.buttonEl = { focus: () => { this.focused = true; } };
+    this.inputEl = { listeners: {}, attributes: {}, addEventListener(type, fn) { (this.listeners[type] ??= []).push(fn); }, setAttribute(name, value) { this.attributes[name] = value; } };
+    this.buttonEl = { focus: () => { this.focused = true; }, remove: () => { this.removed = true; } };
   }
   /** Type a value, then leave the field: the input's `change` event. */
   commit(value) { this.change(value); for (const fn of this.inputEl.listeners.change ?? []) fn(); }
   setDisabled(value) { this.disabled = value; return this; }
+  setIcon(value) { this.icon = value; return this; }
+  setTooltip(value) { this.tooltip = value; return this; }
   setButtonText(value) { this.text = value; return this; }
   setCta() { this.cta = true; return this; }
   setDestructive() { this.destructive = true; return this; }
@@ -39,8 +42,9 @@ function widgets(obsidian) {
   Object.assign(obsidian.Setting.prototype, {
     setName(value) { this.name = value; return this; },
     setDesc(value) { this.desc = value; return this; },
+    setClass(value) { (this.classes ??= []).push(value); return this; },
     setHeading() { return this; },
-    addText: add("text"), addTextArea: add("textarea"), addDropdown: add("dropdown"), addButton: add("button"),
+    addText: add("text"), addTextArea: add("textarea"), addDropdown: add("dropdown"), addButton: add("button"), addExtraButton: add("extra"),
   });
   return made;
 }
@@ -62,16 +66,22 @@ function stubPlugin(overrides = {}) {
     updateLine: () => null,
     heldDeletionLine: () => null,
     confirmHeldDeletions: () => { calls.push("confirmHeldDeletions"); },
+    restoreHeldDeletions: async () => { calls.push("restoreHeldDeletions"); },
     deviceName: () => "macos-1a2b",
     platformName: () => "macos",
     listDevices: async () => { calls.push("listDevices"); return []; },
     revokeDevice: async (id) => { calls.push(`revoke:${id}`); },
     saveDeviceSettings: async (name) => { calls.push(`saveDevice:${name}`); },
-    saveSyncFolders: async (folders) => { calls.push(`saveSyncFolders:${JSON.stringify(folders)}`); },
+    saveSyncFolders: async (folders) => { calls.push(`saveSyncFolders:${JSON.stringify(folders)}`); return "saved"; },
+    scopeWaitText: () => "Saving…",
+    cancelScopeChange: () => { calls.push("cancelScopeChange"); },
     setUpAccount: async (token, account) => { calls.push(`setUp:${token}:${account}`); },
     openDashboard: async () => { calls.push("openDashboard"); },
     openSetupGuide: () => { calls.push("openSetupGuide"); },
     openPluginManager: () => { calls.push("openPluginManager"); },
+    wake: (reason) => { calls.push(`wake:${reason}`); },
+    watchers: new Set(),
+    onStatusChange(watcher) { this.watchers.add(watcher); return () => { this.watchers.delete(watcher); }; },
     logs: [],
     log(line) { this.logs.push(line); },
     ...overrides,
@@ -189,25 +199,29 @@ test("the update row carries the button that opens Obsidian's Community plugins 
   assert.deepEqual(s.calls, ["openPluginManager"]);
 });
 
-test("the held-deletions row is absent until a pass holds some, and its button confirms them", (t) => {
+test("the held-deletions row is absent until a pass holds some, and offers both answers", (t) => {
   // The row is a question the user should never be asked idly: a settings
-  // page that always offers "Confirm deletions" teaches the click, and the
-  // click removes notes from every device (issue #123).
+  // page that always offers "Delete everywhere" teaches the click, and the
+  // click removes notes from every device (issue #123). Its other answer puts
+  // the notes back here (issue #162).
   const s = open(t);
   const shown = () => s.row("Deletions held back").visible();
   assert.equal(shown(), false, "the row was offered with nothing to decide");
 
-  s.plugin.heldDeletionLine = () => "obsync can no longer see 7 note(s) it syncs here and has NOT told your other devices.";
+  s.plugin.heldDeletionLine = () => "7 note(s) deleted or missing here are still on your other devices: obsync has NOT told them.";
   assert.equal(shown(), true, "the row is hidden while there is something to decide");
   assert.equal(s.row("Deletions held back").desc,
-    "obsync can no longer see 7 note(s) it syncs here and has NOT told your other devices.");
+    "7 note(s) deleted or missing here are still on your other devices: obsync has NOT told them.");
   const { made } = s.render("Deletions held back");
-  const button = s.button(made, "Confirm deletions");
-  assert.equal(button.destructive, true, "confirming removes notes from every device");
+  const everywhere = s.button(made, "Delete everywhere");
+  const here = s.button(made, "Restore here");
+  assert.equal(everywhere.destructive, true, "confirming removes notes from every device");
+  assert.notEqual(here.destructive, true, "putting notes back is not the destructive answer");
 
   assert.equal(s.calls.length, 0, "drawing the row published nothing");
-  button.click();
-  assert.deepEqual(s.calls, ["confirmHeldDeletions"]);
+  here.click();
+  everywhere.click();
+  assert.deepEqual(s.calls, ["restoreHeldDeletions", "confirmHeldDeletions"]);
 });
 
 test("a bare host name becomes an https URL; an explicit scheme is kept; mobile refuses http", (t) => {
@@ -229,11 +243,13 @@ test("a bare host name becomes an https URL; an explicit scheme is kept; mobile 
   const field = () => s.render("Server URL").made.find((c) => c.kind === "text");
   field().commit("sync.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org");
-  assert.deepEqual(s.calls, ["state.save"]);
+  // Adopted, and a request waiting to retry is sent to it now (#186).
+  assert.deepEqual(s.calls, ["state.save", "wake:address"]);
 
   s.plugin.isMobile = true;
   field().commit("http://lan.example.test");
   assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org", "refused, not stored");
+  assert.deepEqual(s.calls, ["state.save", "wake:address"], "a refused address wakes nothing");
   assert.deepEqual(s.obsidian.notices, ["Mobile Obsidian only reaches HTTPS servers."]);
   field().commit("phone.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://phone.example.org", "completed to https, so accepted on mobile");
@@ -290,6 +306,78 @@ test("an address typed one key at a time is adopted once, when the field is left
   assert.equal(s.calls.filter((c) => c === "state.save").length, saves);
 });
 
+test("a header pasted from a command line or wrapped in quotes is unwrapped, saved once, and the person is told (#183)", (t) => {
+  // S69: `-H "X-Id: abc"` was saved as the header `-H "X-Id` and dropped by
+  // the request layer; every prefix with a colon was saved on the way.
+  for (const [typed, headers, told] of [
+    ['-H "X-Id: abc"', [{ name: "X-Id", value: "abc" }], "Trimmed a pasted -H and quotes from line 1."],
+    ["  --header='X-Id: abc' \\", [{ name: "X-Id", value: "abc" }], "Trimmed a pasted --header and a trailing \\ and quotes from line 1."],
+    ["“X-Id: abc”", [{ name: "X-Id", value: "abc" }], "Trimmed quotes from line 1."],
+    ["X-Id: abc\n\n  -H X-Secret:  two words  ", [{ name: "X-Id", value: "abc" }, { name: "X-Secret", value: "two words" }], "Trimmed a pasted -H from line 3."],
+    ['X-Id: "abc"', [{ name: "X-Id", value: '"abc"' }], null],
+    ["", [], null],
+  ]) {
+    const s = open(t);
+    s.plugin.state.data.edgeHeaders = [{ name: "X-Before", value: "kept" }];
+    const area = s.render("Custom request headers").made.find((c) => c.kind === "textarea");
+    assert.equal(area.value, "X-Before: kept");
+    // Key by key; emptying the box is one change to "".
+    for (let i = Math.min(1, typed.length); i <= typed.length; i++) area.change(typed.slice(0, i));
+    assert.deepEqual(s.plugin.state.data.edgeHeaders, [{ name: "X-Before", value: "kept" }], "nothing is stored per keystroke");
+    assert.deepEqual(s.calls, []);
+    for (const fn of area.inputEl.listeners.change) fn();
+    assert.deepEqual(s.plugin.state.data.edgeHeaders, headers, typed);
+    assert.deepEqual(s.calls, ["state.save"], "saved once, when the field is left");
+    assert.deepEqual(s.obsidian.notices, told === null ? [] : [`Custom request headers saved. ${told}`], typed);
+    assert.equal(area.value, headers.map((h) => `${h.name}: ${h.value}`).join("\n"), "the field shows what is kept");
+    assert.ok(s.plugin.logs.includes(`edge decision=kept headers=${headers.length} trimmed=${told === null ? 0 : 1}`), s.plugin.logs.join("\n"));
+  }
+});
+
+test("a header that cannot be sent is refused as it is entered, naming the line and the character, and nothing is saved (#183)", (t) => {
+  for (const [typed, refusal, reason] of [
+    ["X-Id: “abc”", "line 1, character 7, is a curly quote (“). Use straight quotes, or none.", "not_ascii"],
+    ['  -H "X-Id: “a”"', "line 1, character 13, is a curly quote (“). Use straight quotes, or none.", "not_ascii"],
+    ["X-Ok: 1\nX-Id: café", 'line 2, character 10, is "é" (U+00E9), and a header can carry only plain ASCII letters, digits and punctuation. Retype it.', "not_ascii"],
+    ["X-Id: a b", "line 1, character 8, is an invisible character (U+00A0). Delete it and type the line again.", "not_ascii"],
+    ["X-Id: a\u0007b", "line 1, character 8, is an invisible character (U+0007). Delete it and type the line again.", "not_ascii"],
+    ["X-Id: 😀", 'line 1, character 7, is "😀" (U+1F600), and a header can carry only plain ASCII letters, digits and punctuation. Retype it.', "not_ascii"],
+    ["X-Id abc", "line 1 has no colon. Write one header per line as Name: value, for example X-Access-Id: 1234.", "no_colon"],
+    [": abc", "line 1 has no header name before the colon. Write one header per line as Name: value, for example X-Access-Id: 1234.", "no_name"],
+    ["X-Id:", "line 1 has no value after the colon. Write one header per line as Name: value, for example X-Access-Id: 1234.", "no_value"],
+    ["X Id: abc", "line 1: a header name cannot contain a space. Write one header per line as Name: value, for example X-Access-Id: 1234.", "bad_name"],
+    ['"X-Id: abc', 'line 1: a header name cannot contain a quote ("). Write one header per line as Name: value, for example X-Access-Id: 1234.', "bad_name"],
+    ["X-Id(1): abc", 'line 1: a header name cannot contain "(". Write one header per line as Name: value, for example X-Access-Id: 1234.', "bad_name"],
+    ["Content-Type: text/plain", "line 1: obsync sets Content-Type itself, so it cannot be a custom request header. Remove that line.", "own_header"],
+    ["x-obsync-device: 00", "line 1: obsync sets x-obsync-device itself, so it cannot be a custom request header. Remove that line.", "own_header"],
+    ["HOST: elsewhere", "line 1: obsync sets HOST itself, so it cannot be a custom request header. Remove that line.", "own_header"],
+    ["content-length: 0", "line 1: obsync sets content-length itself, so it cannot be a custom request header. Remove that line.", "own_header"],
+  ]) {
+    const s = open(t);
+    s.plugin.state.data.edgeHeaders = [{ name: "X-Before", value: "kept" }];
+    const area = s.render("Custom request headers").made.find((c) => c.kind === "textarea");
+    area.commit(typed);
+    assert.deepEqual(s.obsidian.notices, [`Custom request headers were not saved: ${refusal}`], typed);
+    assert.deepEqual(s.plugin.state.data.edgeHeaders, [{ name: "X-Before", value: "kept" }], typed);
+    assert.deepEqual(s.calls, [], "a refusal saves nothing");
+    assert.ok(s.plugin.logs.includes(`edge decision=refused reason=${reason}`), s.plugin.logs.join("\n"));
+  }
+});
+
+test("edge headers typed and left behind are adopted when Settings closes, and a refused draft is not kept (#183)", (t) => {
+  const s = open(t);
+  s.render("Custom request headers").made.find((c) => c.kind === "textarea").change("-H 'X-Id: abc'");
+  s.tab.hide();
+  assert.deepEqual(s.plugin.state.data.edgeHeaders, [{ name: "X-Id", value: "abc" }]);
+  assert.deepEqual(s.calls, ["state.save"]);
+  s.render("Custom request headers").made.find((c) => c.kind === "textarea").change("X-Id: “abc”");
+  s.tab.hide();
+  assert.deepEqual(s.plugin.state.data.edgeHeaders, [{ name: "X-Id", value: "abc" }]);
+  s.tab.hide();
+  assert.deepEqual(s.calls, ["state.save"], "a field nobody typed into adopts nothing");
+  assert.equal(s.render("Custom request headers").made.find((c) => c.kind === "textarea").value, "X-Id: abc");
+});
+
 test("Check asks the server without a credential before setup, and says to type an address first", async (t) => {
   const asked = [];
   const s = open(t, {
@@ -314,6 +402,86 @@ test("Check asks the server without a credential before setup, and says to type 
   assert.equal(s.obsidian.notices.at(-1), 'Reached "obsync", 2 device(s).');
 });
 
+test("Check against a certificate this device does not trust says so and where to trust it, never 'nothing answered'", async (t) => {
+  let ApiError;
+  const s = open(t, { transport: { account: async () => { throw new ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID"); } } });
+  ({ ApiError } = s.box.require(join(s.box.home, "build/transport.js")));
+  s.plugin.state.data.serverUrl = "https://sync.example.org";
+  s.plugin.state.paired = true;
+  s.button(s.render("Connection").made, "Check").click();
+  await tick(); await tick();
+  assert.equal(s.obsidian.notices.at(-1), "This device does not trust your server's certificate, so it refused the connection. " +
+    "Trust that certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".");
+});
+
+test("Check against a certificate for another name, or out of date, says which and what to do, never 'nothing answered' (#229)", async (t) => {
+  for (const [reason, said] of [
+    ["network=net::ERR_CERT_COMMON_NAME_INVALID", /^This device refused your server's certificate because it was made for another name/],
+    ["network=net::ERR_CERT_DATE_INVALID", /^This device refused your server's certificate because it has expired or is not valid yet/],
+  ]) {
+    let ApiError;
+    const s = open(t, { transport: { pluginManifest: async () => { throw new ApiError(0, "unreachable", reason); } } });
+    ({ ApiError } = s.box.require(join(s.box.home, "build/transport.js")));
+    s.plugin.state.data.serverUrl = "https://192.168.1.10:8443";
+    s.button(s.render("Connection").made, "Check").click();
+    await tick(); await tick();
+    assert.match(s.obsidian.notices.at(-1), said, reason);
+  }
+});
+
+test("Check reads 'Checking…' at once, asks with a person's patience, and answers in words, never a code (#182)", async (t) => {
+  let answer;
+  const asked = [];
+  const s = open(t, {
+    transport: { account: (patience) => { asked.push(patience); return new Promise((resolve, reject) => { answer = { resolve, reject }; }); } },
+  });
+  const { ApiError } = s.box.require(join(s.box.home, "build/transport.js"));
+  s.plugin.state.data.serverUrl = "https://sync.example.org";
+  s.plugin.state.paired = true;
+  const press = () => {
+    const drawn = s.render("Connection");
+    const check = s.button(drawn.made, "Check");
+    check.click();
+    return { setting: drawn.setting, check };
+  };
+  let { setting, check } = press();
+  assert.equal(setting.desc, "Checking…", "the press shows at once");
+  assert.equal(check.disabled, true, "and is not pressed twice");
+  assert.deepEqual(asked, [{ interactive: true }], "two attempts inside ten seconds, not the background's minute and a half");
+  answer.reject(new ApiError(0, "unreachable", "network=ERR_CONNECTION_REFUSED SENTINEL"));
+  await tick(); await tick();
+  assert.equal(s.obsidian.notices.at(-1),
+    "Nothing answered at https://sync.example.org. Check the Server URL, port included; if it has worked before, your server may be switched off or out of this network's reach.");
+  assert.doesNotMatch(s.obsidian.notices.join("\n"), /unreachable|SENTINEL|^0 /);
+  assert.equal(setting.desc, "idle", "the row says the status again");
+  assert.equal(check.disabled, false);
+
+  ({ setting, check } = press());
+  answer.reject(new ApiError(403, "device_revoked", "REVOKED SENTINEL"));
+  await tick(); await tick();
+  assert.match(s.obsidian.notices.at(-1), /removed/i, "a refusal is named for what it is");
+  assert.doesNotMatch(s.obsidian.notices.at(-1), /device_revoked|SENTINEL|403/);
+
+  ({ setting, check } = press());
+  answer.reject(new ApiError(418, "teapot", "TEAPOT SENTINEL"));
+  await tick(); await tick();
+  assert.equal(s.obsidian.notices.at(-1), "Your server refused this request; the obsync log names the reason.");
+});
+
+test("the Connection row says what the status bar says while Settings is open, and stops following when it closes (#182)", (t) => {
+  let words = "idle";
+  const s = open(t, { statusText: () => words });
+  const { setting } = s.render("Connection");
+  assert.equal(s.plugin.watchers.size, 1);
+  words = "offline — retrying";
+  for (const watcher of s.plugin.watchers) watcher();
+  assert.equal(setting.desc, "offline — retrying", "it used to read idle for as long as the tab was open");
+  s.render("Connection");
+  assert.equal(s.plugin.watchers.size, 1, "a redraw replaces its watcher, not adds one");
+  s.tab.hide();
+  assert.equal(s.plugin.watchers.size, 0);
+});
+
 test("leaving a server is offered only to an enrolled device, and both routes are destructive-safe", (t) => {
   const s = open(t);
   const row = () => s.rows().find((item) => item.name === "Leave this server");
@@ -330,7 +498,7 @@ test("leaving a server is offered only to an enrolled device, and both routes ar
   assert.deepEqual(s.calls, [], "drawing the row asks the server nothing");
 });
 
-test("Set up applies an unsaved folder selection first, in that order, and keeps the token until enrolment", async (t) => {
+test("Set up applies an unsaved folder selection first, in that order, and the token is gone after the attempt", async (t) => {
   const s = open(t);
   s.render("Folder selection").made[0].change("selected");
   s.render("Selected folders").made[0].change("Notes\n\nAttachments");
@@ -342,9 +510,10 @@ test("Set up applies an unsaved folder selection first, in that order, and keeps
   // receives is its canonical form.
   assert.deepEqual(s.calls, ['saveSyncFolders:["Attachments","Notes"]', "setUp:TOKEN SENTINEL:obsync"]);
   assert.equal(s.updates(), 1);
-  // Enrolment did not happen (the stub leaves deviceId null), so the pasted token is still there.
+  // Enrolment did not happen (the stub leaves deviceId null), and the refused
+  // token is not drawn again (#169): a retry is a fresh paste.
   setup = s.render("Setup or recover");
-  assert.equal(setup.made.find((c) => c.kind === "text").value, "TOKEN SENTINEL");
+  assert.equal(setup.made.find((c) => c.kind === "text").value, "");
 
   // The same selection, once saved, is not saved again.
   s.plugin.state.data.syncFolders = ["Attachments", "Notes"];
@@ -354,6 +523,122 @@ test("Set up applies an unsaved folder selection first, in that order, and keeps
   await tick();
   assert.deepEqual(s.calls, ["setUp"]);
   assert.equal(s.render("Name").made[0].value, "macos-1a2b", "the enrolled rows draw");
+});
+
+for (const outcome of ["refused", "enrolled"]) test(`the setup token is masked, can be shown to check it, and is gone after the attempt, ${outcome} (#169)`, async (t) => {
+  // A refused token stayed in the field in plain text, and the screenshots
+  // people took to ask for help carried it (S41, S35); the token is also the
+  // dashboard's recovery sign-in.
+  const s = open(t);
+  s.plugin.setUpAccount = async (token) => {
+    s.calls.push(`setUp:${token}`);
+    // The real one reports every refusal in a notice and never throws.
+    if (outcome === "enrolled") s.plugin.state.data.deviceId = "11".repeat(16);
+  };
+  const setup = s.render("Setup or recover");
+  const field = setup.made.find((c) => c.kind === "text");
+  const eye = setup.made.find((c) => c.kind === "extra");
+  assert.equal(field.inputEl.type, "password", "a pasted token is never drawn in plain text");
+  assert.equal(field.placeholder, "Setup token");
+  eye.click();
+  assert.deepEqual([field.inputEl.type, eye.tooltip], ["text", "Hide"], "Show reveals the paste to check it");
+  eye.click();
+  assert.deepEqual([field.inputEl.type, eye.tooltip], ["password", "Show"]);
+
+  field.change("  TOKEN SENTINEL  ");
+  s.button(setup.made, "Set up or recover").click();
+  await tick();
+  assert.deepEqual(s.calls, ["setUp:TOKEN SENTINEL"]);
+  const again = s.render("Setup or recover").made.find((c) => c.kind === "text");
+  assert.deepEqual([again.value, again.inputEl.type], ["", "password"], "the token is not drawn again");
+});
+
+test("a setup token typed and left behind is gone when Settings closes (#169)", (t) => {
+  const s = open(t);
+  s.render("Setup or recover").made.find((c) => c.kind === "text").change("TOKEN SENTINEL");
+  assert.equal(s.render("Setup or recover").made.find((c) => c.kind === "text").value, "TOKEN SENTINEL", "kept while the tab is open");
+  s.tab.hide();
+  assert.equal(s.render("Setup or recover").made.find((c) => c.kind === "text").value, "");
+  assert.deepEqual(s.calls, [], "closing sends nothing");
+});
+
+test("the switch-server dialog masks its setup token and empties it after every attempt (#169)", async (t) => {
+  const s = open(t);
+  const { AccountSetupModal } = s.box.require(join(s.box.home, "build/ui/modals.js"));
+  const modal = new AccountSetupModal({}, s.plugin);
+  modal.contentEl = { createEl: () => ({}), empty() {} };
+  modal.setTitle = () => {};
+  let closed = 0;
+  modal.close = () => { closed++; };
+  s.made.length = 0;
+  modal.onOpen();
+  const field = s.made.find((c) => c.kind === "text");
+  assert.equal(field.inputEl.type, "password");
+  assert.deepEqual(field.inputEl.attributes, LITERAL, "and the keyboard learns nothing (#208)");
+  assert.ok(s.made.some((c) => c.kind === "extra" && c.tooltip === "Show"));
+  field.value = " TOKEN SENTINEL "; // what the input holds once pasted
+  field.change(field.value);
+  s.button(s.made, "Set up or recover").click();
+  await tick();
+  assert.deepEqual(s.calls, ["setUp:TOKEN SENTINEL:obsync"]);
+  assert.equal(field.value, "", "the refused token is cleared from the open dialog");
+  assert.equal(closed, 0, "a refusal keeps the dialog open for a fresh paste");
+  s.button(s.made, "Set up or recover").click();
+  await tick();
+  assert.deepEqual(s.calls, ["setUp:TOKEN SENTINEL:obsync", "setUp::obsync"], "a second press never resends the old token");
+});
+
+/** What a phone keyboard is told about a code or a secret: no capitals, no corrections, no suggestions, nothing learned (#208). */
+const LITERAL = { autocapitalize: "off", autocorrect: "off", autocomplete: "off", spellcheck: "false" };
+
+test("every code or secret field in Settings keeps the phone keyboard from capitalising, correcting or learning it (#208)", (t) => {
+  // Android 15, Obsidian 1.13.8: the setup token's input type read 0xc0a1 --
+  // sentence capitals, autocorrect, suggestions and learning all on.
+  const s = open(t);
+  const field = (row, kind) => s.render(row).made.find((c) => c.kind === kind);
+  assert.deepEqual(field("Server URL", "text").inputEl.attributes, { ...LITERAL, inputmode: "url" });
+  for (const [row, kind] of [["Setup or recover", "text"], ["Custom request headers", "textarea"], ["Selected folders", "textarea"]]) {
+    assert.deepEqual(field(row, kind).inputEl.attributes, LITERAL, row);
+  }
+  // A name is prose: the keyboard may help with it.
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  assert.deepEqual(field("Name", "text").inputEl.attributes, {});
+});
+
+test("on a phone the two boxes of lines take the whole row, without a resize handle; desktop keeps its layout (#210)", (t) => {
+  // Android 15 at 375 px: both boxes were 206 px wide beside their text.
+  const s = open(t);
+  const classed = s.rows().filter((item) => {
+    if (item.render === undefined) return false;
+    const setting = new s.obsidian.Setting({});
+    item.render(setting);
+    return setting.classes?.includes("obsync-lines");
+  }).map((item) => item.name);
+  assert.deepEqual(classed, ["Custom request headers", "Selected folders"]);
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "styles.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [...css.matchAll(/([^{}]+)\{([^}]*)\}/g)].filter(([, selector]) => selector.includes("obsync-lines"));
+  assert.ok(rules.length > 0, "the stylesheet really was read");
+  for (const [, selector] of rules) assert.match(selector.trim(), /^\.is-mobile \.obsync-lines\b/, "scoped to mobile: desktop keeps Obsidian's row");
+  const rule = (end) => rules.find(([, selector]) => selector.trim().endsWith(end))?.[2] ?? "";
+  assert.match(rule(".obsync-lines"), /flex-wrap:\s*wrap/);
+  assert.match(rule(".setting-item-control"), /flex:\s*1 0 100%/);
+  assert.match(rule("textarea"), /width:\s*100%/);
+  assert.match(rule("textarea"), /resize:\s*none/);
+  assert.match(rule("textarea"), /min-height:\s*6em/);
+});
+
+test("the pairing code and the recovery phrase box keep the phone keyboard out as well (#208)", (t) => {
+  const s = open(t);
+  const { PairClaimModal, VaultKeyModal } = s.box.require(join(s.box.home, "build/ui/modals.js"));
+  s.plugin.captureSession = () => ({ assertCurrent() {} });
+  for (const modal of [new PairClaimModal({}, s.plugin), new VaultKeyModal({}, s.plugin)]) {
+    modal.contentEl = { createEl: () => ({}), empty() {} };
+    modal.setTitle = () => {};
+    s.made.length = 0;
+    modal.onOpen();
+    const input = s.made.find((c) => c.kind === "text" || c.kind === "textarea");
+    assert.deepEqual(input.inputEl.attributes, LITERAL, modal.constructor.name);
+  }
 });
 
 test("a folder selection the device refuses stops Set up and Pair this device before they act", async (t) => {
@@ -395,19 +680,165 @@ test("the device list is read when its row is drawn, once, redrawn when it arriv
   assert.deepEqual(s.calls, ["listDevices"], "drawn twice, read once");
   assert.equal(s.updates(), 1, "the tab is redrawn when the list arrives");
   const names = s.rows().filter((item) => item.group.heading === "Devices").map((item) => item.name);
-  assert.deepEqual(names, ["Kitchen (this device)", "Phone", "Old laptop", "Device list"]);
-  assert.equal(s.row("Device list").desc, "3 devices on this account.");
-  assert.equal(s.row("Old laptop").render, undefined, "a revoked device has nothing to click");
-  assert.match(s.row("Old laptop").desc, /revoked/);
+  assert.deepEqual(names, ["Kitchen (this device)", "Phone", "Old laptop (revoked)", "Device list"]);
+  assert.equal(s.row("Device list").desc, "2 devices on this account, and 1 revoked.");
+  assert.equal(s.row("Old laptop (revoked)").render, undefined, "a revoked device has nothing to click");
+  assert.equal(s.row("Old laptop (revoked)").desc, "linux, plugin 0.1.20", "the name says revoked; the line says the rest");
   const revoke = s.button(s.render("Phone").made, "Revoke");
   assert.equal(revoke.destructive, true);
 
   s.render("Device list");
   await tick();
   assert.deepEqual(s.calls, ["listDevices"], "a drawn list is not read again");
+  const updated = s.updates();
   s.button(s.render("Device list").made, "Refresh").click();
+  assert.equal(s.updates(), updated + 1, "Refresh redraws at once: 'Reading the device list…' replaces what was shown (#182)");
+  assert.equal(s.row("Device list").desc, "Reading the device list…");
   await tick();
   assert.deepEqual(s.calls, ["listDevices", "listDevices"]);
+});
+
+test("a device still pairing is marked beside its name, with what that means, and no other is (#152)", async (t) => {
+  const self = "11".repeat(16);
+  const devices = [
+    { device_id: self, name: "Kitchen", platform: "macos", app_version: "1.1.4", last_seen: 0, revoked: false, state: "active" },
+    { device_id: "22".repeat(16), name: "Mac 7KQ4", platform: "macos", app_version: "1.1.4", last_seen: 0, revoked: false, state: "pending" },
+    // A server before `state` says nothing, and nothing is claimed.
+    { device_id: "33".repeat(16), name: "Phone", platform: "ios", app_version: "1.1.3", last_seen: 0, revoked: false },
+  ];
+  const s = open(t, { listDevices: async () => devices });
+  s.plugin.state.data.deviceId = self;
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  const names = s.rows().filter((item) => item.group.heading === "Devices").map((item) => item.name);
+  assert.deepEqual(names, ["Kitchen (this device)", "Phone", "Mac 7KQ4 (not paired yet)", "Device list"]);
+  assert.equal(s.row("Device list").desc, "2 devices on this account, and 1 not paired yet.");
+  assert.equal(s.row("Mac 7KQ4 (not paired yet)").desc, "macos, plugin 1.1.4. It has no vault key until it is approved and " +
+    "collects it, and the server removes it if that has not happened when its pairing code expires.");
+  assert.equal(s.row("Phone").desc, "ios, plugin 1.1.3");
+  assert.equal(s.row("Kitchen (this device)").desc, "macos, plugin 1.1.4");
+});
+
+/*
+ * THE IPHONE PASS, 2026-09-26: Settings opened minutes after sync resumed
+ * said "The device list is unavailable: Your server is not answering." A read
+ * from an earlier showing, its deadline held while the app was in the
+ * background, answered the new showing, which had asked nothing itself.
+ */
+test("a device list read answers only the showing that asked: an outage's error never stands on the next open", async (t) => {
+  const answers = [];
+  let ApiError;
+  const s = open(t, { listDevices: () => new Promise((resolve, reject) => { answers.push({ resolve, reject }); }) });
+  ({ ApiError } = s.box.require(join(s.box.home, "build/transport.js")));
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  s.tab.hide();
+  s.render("Device list");
+  assert.equal(answers.length, 2, "the new showing waited for the old read instead of asking");
+  answers[0].reject(new ApiError(0, "unreachable", "no answer within 10 s"));
+  await tick();
+  assert.equal(s.row("Device list").desc, "Reading the device list…", "the old showing's answer stood on this one");
+  s.render("Device list");
+  assert.equal(answers.length, 2, "the old read's end let a second read start beside this showing's own");
+  answers[1].resolve([{ device_id: "11".repeat(16), name: "iPhone EDVF", platform: "ios", app_version: "1.1.4", last_seen: 0, revoked: false }]);
+  await tick();
+  assert.equal(s.row("Device list").desc, "1 device on this account.");
+});
+
+test("an outage's 'not answering' in the device list goes by itself once the server answers again", async (t) => {
+  let status = { kind: "offline" }, answering = false, reads = 0, ApiError;
+  const s = open(t, {
+    currentStatus: () => status,
+    listDevices: async () => {
+      reads++;
+      if (!answering) throw new ApiError(0, "unreachable", "network=ERR_TIMED_OUT");
+      return [{ device_id: "11".repeat(16), name: "iPhone EDVF", platform: "ios", app_version: "1.1.4", last_seen: 0, revoked: false }];
+    },
+  });
+  ({ ApiError } = s.box.require(join(s.box.home, "build/transport.js")));
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  assert.equal(s.row("Device list").desc, "The device list is unavailable: Your server is not answering. Sync resumes by itself when it is back.");
+  assert.equal(s.plugin.watchers.size, 1);
+  s.tab.hide();
+  assert.equal(s.plugin.watchers.size, 0, "a closed tab keeps watching the status");
+  s.render("Device list");
+  await tick();
+  assert.equal(reads, 2);
+  const changed = async () => { for (const watcher of [...s.plugin.watchers]) watcher(); await tick(); };
+  await changed();
+  assert.equal(reads, 2, "still offline: nothing is asked again");
+  status = { kind: "idle" };
+  answering = true;
+  await changed();
+  assert.equal(reads, 3, "the server answered, and the list was not read again");
+  assert.equal(s.row("Device list").desc, "1 device on this account.");
+  assert.ok(s.plugin.logs.includes("devices decision=reread reason=answered"));
+  assert.equal(s.plugin.watchers.size, 0, "the watch ends with the error it was for");
+});
+
+/*
+ * THE DESKTOP RIG, 2026-09-26: "Mac ADPQ" left and paired again under its own
+ * name. Its revoked row led the list, beside the live one of the same name,
+ * and "4 devices on this account" counted it.
+ */
+test("the device list puts this device first and the revoked last, and counts each for what it is", async (t) => {
+  const self = "cc".repeat(16);
+  const row = (id, name, extra = {}) => ({ device_id: id, name, platform: "macos", app_version: "1.1.4", last_seen: 0, revoked: false, state: "active", ...extra });
+  const devices = [
+    row("aa".repeat(16), "Mac ADPQ", { revoked: true, state: "revoked" }),
+    row("bb".repeat(16), "iPhone EDVF", { platform: "ios" }),
+    row(self, "Mac W4RC"),
+    row("dd".repeat(16), "Mac ADPQ"),
+  ];
+  const s = open(t, { listDevices: async () => devices });
+  s.plugin.state.data.deviceId = self;
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  const names = () => s.rows().filter((item) => item.group.heading === "Devices").map((item) => item.name);
+  assert.deepEqual(names(), ["Mac W4RC (this device)", "iPhone EDVF", "Mac ADPQ", "Mac ADPQ (revoked)", "Device list"]);
+  assert.equal(s.row("Device list").desc, "3 devices on this account, and 1 revoked.");
+  assert.equal(devices[0].name, "Mac ADPQ", "the list as read is not reordered in place");
+
+  devices.push(row("ee".repeat(16), "Mac 7KQ4", { state: "pending" }));
+  s.button(s.render("Device list").made, "Refresh").click();
+  await tick();
+  assert.deepEqual(names(), ["Mac W4RC (this device)", "iPhone EDVF", "Mac ADPQ", "Mac 7KQ4 (not paired yet)", "Mac ADPQ (revoked)", "Device list"]);
+  assert.equal(s.row("Device list").desc, "3 devices on this account, 1 not paired yet, and 1 revoked.");
+});
+
+test("two devices under one name are two rows a reader, and Obsidian, can tell apart (rig, 2026-09-27)", async (t) => {
+  // Obsidian keys each row by its name, and logged "duplicate setting key"
+  // at every draw of a list holding a phone paired twice under one name.
+  const self = "cc".repeat(16);
+  const row = (id, name, extra = {}) => ({ device_id: id, name, platform: "android", app_version: "1.1.4", last_seen: 0, revoked: false, state: "active", ...extra });
+  const s = open(t, { listDevices: async () => [
+    row(self, "Mac W4RC", { platform: "macos" }),
+    row("a1".repeat(16), "Android RFV2", { revoked: true, state: "revoked" }),
+    row("b2".repeat(16), "Android RFV2", { revoked: true, state: "revoked" }),
+    row("d4".repeat(16), "Android RFV2"),
+  ] });
+  s.plugin.state.data.deviceId = self;
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  const names = s.rows().filter((item) => item.group.heading === "Devices").map((item) => item.name);
+  assert.deepEqual(names, ["Mac W4RC (this device)", "Android RFV2", "Android RFV2 (revoked) · a1a1a1a1", "Android RFV2 (revoked) · b2b2b2b2", "Device list"]);
+  const every = s.rows().map((item) => item.name);
+  assert.equal(new Set(every).size, every.length, `two rows share a name: ${every.join(" | ")}`);
+});
+
+test("the Pairing row names this device and what it is, never its id (iPhone pass, 2026-09-26)", (t) => {
+  const s = open(t);
+  s.plugin.state.data.deviceId = "e1".repeat(16);
+  s.plugin.state.paired = true;
+  assert.equal(s.row("Pairing").desc, "Paired as macos-1a2b (Mac).");
+  assert.ok(!s.row("Pairing").desc.includes("e1e1"), "the device id is in the words people screenshot");
 });
 
 test("an unreadable device list says so once and does not loop", async (t) => {
@@ -423,6 +854,18 @@ test("an unreadable device list says so once and does not loop", async (t) => {
   assert.equal(s.updates(), 1);
 });
 
+test("the device list is read with a person's patience, and a server not answering is said in words (#182)", async (t) => {
+  const asked = [];
+  const s = open(t, { listDevices: async (patience) => { asked.push(patience); throw new ApiError(0, "unreachable", "network=ERR_TIMED_OUT SENTINEL"); } });
+  const { ApiError } = s.box.require(join(s.box.home, "build/transport.js"));
+  s.plugin.state.data.deviceId = "11".repeat(16);
+  s.plugin.state.paired = true;
+  s.render("Device list");
+  await tick();
+  assert.deepEqual(asked, [{ interactive: true }]);
+  assert.equal(s.row("Device list").desc, "The device list is unavailable: Your server is not answering. Sync resumes by itself when it is back.");
+});
+
 test("Save to server sends the drafted name and clears the draft", async (t) => {
   const s = open(t);
   s.plugin.state.data.deviceId = "11".repeat(16);
@@ -435,15 +878,17 @@ test("Save to server sends the drafted name and clears the draft", async (t) => 
   assert.equal(s.render("Name").made[0].value, "macos-1a2b", "the field reads the saved name again");
 });
 
-for (const failure of [false, true]) test(`folder Save ${failure ? "failure" : "success"} settles without assimilating the host button`, async (t) => {
+for (const failure of [false, true]) test(`folder Save ${failure ? "failure" : "success"} names what it waits for, offers Cancel, and settles without assimilating the host button`, async (t) => {
   let release;
   const held = new Promise((resolve) => { release = resolve; });
   const s = open(t, {
+    scopeWaitText: () => "Stopping the upload of Attachments/video2.bin…",
     saveSyncFolders: async (folders) => {
       s.calls.push("save");
       assert.deepEqual(folders, ["Notes"]);
       await held;
       if (failure) throw new Error("SAVE FAILURE SENTINEL");
+      return "saved";
     },
   });
   s.plugin.state.data.syncFolders = ["Notes"];
@@ -456,15 +901,39 @@ for (const failure of [false, true]) test(`folder Save ${failure ? "failure" : "
   button.click();
   await tick();
   assert.equal(button.disabled, true, "held while the save waits for transfers");
-  assert.equal(button.text, "Waiting for transfers…");
+  assert.equal(button.text, "Stopping the upload of Attachments/video2.bin…", "the wait says what it is for (#185)");
+  const cancel = s.button(s.made, "Cancel");
+  assert.equal(cancel.removed, undefined, "and a Cancel stands beside it while it waits");
   release();
   for (let waited = 0; button.disabled && waited < 20; waited++) await tick();
   assert.equal(thenCalls, 0, "a Promise continuation returned a native thenable component");
   assert.equal(button.disabled, false);
   assert.equal(button.text, "Save");
+  assert.equal(cancel.removed, true, "the Cancel goes with the wait");
   assert.deepEqual(s.calls, ["save"]);
   assert.equal(s.updates(), failure ? 0 : 1);
   assert.deepEqual(s.obsidian.notices, [failure ? "SAVE FAILURE SENTINEL" : "Folder selection saved on this device."]);
+});
+
+test("Cancel while a folder Save waits keeps the selection there was, and says so (#185)", async (t) => {
+  let cancelled;
+  const withdrawn = new Promise((resolve) => { cancelled = resolve; });
+  const s = open(t, {
+    saveSyncFolders: async () => { s.calls.push("save"); await withdrawn; return "withdrawn"; },
+    cancelScopeChange: () => { s.calls.push("cancelScopeChange"); cancelled(); },
+  });
+  s.plugin.state.data.syncFolders = ["Notes"];
+  const button = s.button(s.render("Save on this device").made, "Save");
+  button.click();
+  await tick();
+  const cancel = s.button(s.made, "Cancel");
+  cancel.click();
+  assert.equal(cancel.disabled, true, "one press of Cancel");
+  for (let waited = 0; button.disabled && waited < 20; waited++) await tick();
+  assert.deepEqual(s.calls, ["save", "cancelScopeChange"]);
+  assert.deepEqual(s.obsidian.notices, ["Folder selection unchanged: sync goes on with the folders it had."]);
+  assert.equal(cancel.removed, true);
+  assert.equal(button.text, "Save");
 });
 
 test("the typed folder selection reaches the save through the host's normalizePath", async (t) => {
@@ -742,4 +1211,38 @@ test("closing a completed pairing redraws settings for the new identity", async 
   modal.contentEl = { empty() {} };
   modal.onClose();
   assert.equal(s.row("Device list").desc, "Reading the device list…");
+});
+
+test("the Recovery phrase row reads Not confirmed with a Show and confirm button until the words are confirmed (#170)", (t) => {
+  const s = open(t);
+  const { RECOVERY_UNCONFIRMED } = s.box.require(join(s.box.home, "build/ui/modals.js"));
+  const opened = [];
+  s.obsidian.Modal.prototype.open = function () { opened.push(this); };
+  const show = () => s.render("Recovery phrase").made.find((c) => c.text === "Show" || c.text === "Show and confirm");
+  s.plugin.state.data.vrk = "00".repeat(32);
+  for (const state of [undefined, "unconfirmed", "skipped"]) {
+    s.plugin.state.data.recoveryPhrase = state;
+    assert.equal(s.row("Recovery phrase").desc, RECOVERY_UNCONFIRMED, String(state));
+    assert.match(RECOVERY_UNCONFIRMED, /^Not confirmed — Show and confirm\. /);
+    const button = show();
+    assert.deepEqual([button.text, button.cta, button.disabled], ["Show and confirm", true, false], String(state));
+    opened.length = 0;
+    button.click();
+    assert.equal(opened.length, 1);
+    assert.equal(opened[0].confirmFirst, true, "the button opens the dialog to confirm");
+    const before = s.updates();
+    opened[0].afterClose();
+    assert.equal(s.updates(), before + 1, "closing it redraws the row");
+  }
+  s.plugin.state.data.recoveryPhrase = "confirmed";
+  assert.match(s.row("Recovery phrase").desc, /^24 words that are the vault key\./);
+  assert.deepEqual([show().text, show().cta], ["Show", undefined]);
+  opened.length = 0;
+  show().click();
+  assert.equal(opened[0].confirmFirst, false);
+
+  s.plugin.state.data.vrk = null;
+  s.plugin.state.data.recoveryPhrase = undefined;
+  assert.match(s.row("Recovery phrase").desc, /^This device holds no vault key\./, "no key, nothing to confirm");
+  assert.deepEqual([show().text, show().disabled], ["Show", true]);
 });

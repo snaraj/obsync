@@ -1,5 +1,7 @@
 # Conflicts
 
+*For people using obsync.*
+
 Two devices edited the same file before either of them synced. obsync never
 discards an edit to resolve that, so exactly one of two things happens.
 
@@ -35,37 +37,27 @@ repeated successful-resolution notices. The deletion stays in history. If an
 edit cannot yet be uploaded, it remains on that device with a warning until
 it can be sent.
 
-The sections below explain the detailed merge rules and filenames.
-
 ## A text file is merged
 
-A merge happens only when ALL of these hold, and any one of them failing gives
-you a conflict copy instead:
+obsync combines two versions into one note when all of these are true.
+If any one of them is not, you get a conflict copy instead:
 
-- **It is a text format**: `.md`, `.markdown`, `.txt`, `.csv`, `.json`,
-  `.yaml`/`.yml`, `.ts`, `.js`, `.css`, `.html`, `.xml`, `.toml`, `.ini`,
-  `.log` — and the local file holds no NUL byte.
-- **Both sides are under 8 MiB**, the chunk ceiling: a merge input is held
-  whole in memory, so the incoming version must be a single chunk, and so must
-  the version the two devices last agreed on. A 12 MiB `.csv` or `.log` is
-  never merged, extension notwithstanding; the log line says
-  `reason=base_above_one_chunk` when it was the common ancestor that was too
-  large.
-- **The two versions share a common ancestor.** Two devices that independently
-  created the same path have none — there is nothing to merge against, and
-  neither side is a later version of the other.
-- **The two sides are close enough to align.** The merge lines up each side
-  against the common ancestor with a table bounded at 4,000,000 cells, counted
-  after the shared opening and closing lines are trimmed. Two versions that
-  differ by thousands of lines in the middle exceed it, the merge answers
-  `too_large`, and you get a conflict copy. Ordinary note editing is nowhere
-  near this.
-- **The changes can be combined.** Edits in different parts of the file merge.
-  Additions to one line can merge when its original characters remain in order
-  on both devices and its beginning is unchanged. Shared added text appears
-  once; different additions at the same position use a consistent order.
-  Character alignment has the same 4,000,000-cell bound. Competing prefixes,
-  replacements and deletions of the same text remain conflicts.
+- **It is a text file**: `.md`, `.markdown`, `.txt`, `.csv`, `.json`,
+  `.yaml` or `.yml`, `.ts`, `.js`, `.css`, `.html`, `.xml`, `.toml`, `.ini`
+  or `.log`.
+- **Both versions are smaller than 8 MiB.** A larger text file, such as a big
+  `.csv` or `.log`, is never combined.
+- **Both versions grew from the same earlier version.** Two devices that each
+  created a file with the same name have nothing to combine.
+- **The versions are not wildly different.** Two versions that differ by
+  thousands of lines are kept apart. Ordinary note editing is nowhere near this.
+- **The changes fit together.** Edits in different parts of a note combine.
+  Text two devices added to the same line can combine too, as long as the
+  line's original text is still there on both. When both devices replace or
+  delete the same text, that stays a conflict.
+
+The exact rules are in [the architecture](architecture.md#62-plugin-loops),
+under Conflicts.
 
 ## The same note on two devices is not a conflict
 
@@ -105,24 +97,10 @@ the other. There is no third state and no silent overwrite.
 ## Avoiding them
 
 - Let a device finish syncing before editing the same note on another one. The
-  status bar reads `obsync: idle` when there is nothing in flight. This is the
+  status bar shows a check (`obsync: idle`) when there is nothing in flight. This is the
   only one of these that helps with a large file or a file two devices created
   independently, because neither of those can ever merge.
 - Do not run a second sync tool on the same vault. Two writers produce
   conflicts neither tool can reconcile, and obsync can only see its own.
 - On a device that has been offline for a long time, open Obsidian and let
   **Sync now** finish before editing.
-
-An identical note is adopted from another file identity only while that incoming
-version is the server's sole current head. Replaying an old version of a note
-that has since been deleted or changed does not retire a later independent
-note. An edit or replacement of the local record during that check also stops
-adoption. The selected keeper is saved before the duplicate identity is retired.
-
-
-If one device deletes a note while another edits it, the edit stays. The
-settlement incorporates the deletion as a parent, so the server holds one
-current note and keeps the deletion only in history. Later edits do not reopen
-the same deletion conflict, and successful settlement produces no notice.
-An unpublished edit that cannot yet be sent remains on its device with a
-warning until it can be published.

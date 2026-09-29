@@ -1,0 +1,11 @@
+# M2853: every refusal of the revoke reads as no answer from the server
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -338,7 +338,6 @@
+   if (error instanceof ApiError && (error.code === "last_device" || error.code === "bad_signature")) {
+     return { reason: error.code, detail: error.detail };
+   }
+-  if (error instanceof ApiError && error.status !== 0 && error.code !== NOT_OBSYNC) return { reason: "refused", detail: error.detail };
+   return { reason: "unreachable", detail: error instanceof Error ? error.message : String(error) };
+ }
+ 

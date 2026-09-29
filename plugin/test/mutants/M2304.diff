@@ -1,0 +1,12 @@
+# M2304: a first post whose name is gone before the rename arrives records nothing (#213)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -512,7 +512,7 @@
+   // scan after it, finds that record and moves or deletes it like any other.
+   const renamed = record === undefined && post !== undefined && post.path !== path ? post.path : undefined;
+   const inScope = inSyncScope(path, context.state.data.syncFolders);
+-  if (renamed !== undefined || !inScope || (record !== undefined && (await context.host.stat(path)) === null)) {
++  if (renamed !== undefined || !inScope || (await context.host.stat(path)) === null) {
+     const moved = renamed ?? (inScope && record !== undefined ? context.state.pathByFileId(fileId) : undefined);
+     const carried = moved === undefined ? undefined : context.state.fileByPath(moved);
+     const follows = renamed === undefined

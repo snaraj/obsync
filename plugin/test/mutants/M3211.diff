@@ -1,0 +1,12 @@
+# M3211: a phone asks for this plugin under .obsidian whatever this vault's config folder is called
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -738,7 +738,7 @@
+   private async holdsPluginHere(folder: string): Promise<boolean> {
+     const adapter = this.plugin.app.vault.adapter;
+     const own = this.plugin.manifest.dir;
+-    if (own !== undefined) return adapter.exists(`${folder}/${own}`);
++    if (own !== undefined) return adapter.exists(`${folder}/.obsidian/plugins/obsync-private-sync`);
+     let folders: string[];
+     try {
+       folders = (await adapter.list(folder)).folders;

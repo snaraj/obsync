@@ -1,10 +1,10 @@
 # M394: the note takes the twin's edit but stays recorded under the id this device retires
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3077,7 +3077,6 @@
+@@ -4228,7 +4228,6 @@
      .catch(() => null);
    if (was?.path !== manifest.path || (await identicalAtName(context, parent, manifest.path, ours)) === null) return null;
-   const landed = await materialise(context, manifest);
+   const landed = await materialise(context, change.file_id, manifest);
 -  await recordAt(context, change, landed.path, landed);
    const retired = await retire(context, ours.fileId, ours.versionId, manifest.path, change.file_id);
    context.host.log(

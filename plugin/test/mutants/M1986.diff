@@ -1,0 +1,12 @@
+# M1986: a one-chunk upload does not hear the stop
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -410,7 +410,7 @@
+     // are asked about first.
+     const direct = single.length <= DIRECT_PUT_MAX && record?.sha256 !== digest;
+     if (direct || (await context.transport.missingChunks(sids, { signal: context.signal })).length > 0) {
+-      await context.transport.putChunk(only.sid, single, { signal: context.signal });
++      await context.transport.putChunk(only.sid, single);
+       uploads = 1;
+     }
+   }

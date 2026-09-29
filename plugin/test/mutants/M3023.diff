@@ -1,0 +1,12 @@
+# M3023: a landed copy that IS this version is never reused, only taken back (one copy per conflict, #225)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3541,7 +3541,7 @@
+     // at the name is asked first whether it IS this version, as any occupant
+     // is; if not, the writer takes back the copy it made, and only that. A
+     // copy it cannot vouch for stays, and no second one is written beside it.
+-    const reused = await reuse(target, there);
++    const reused = null as VaultStat | null;
+     const landed = reused !== null ? "reused" : (await writer.withdraw?.()) ?? "kept";
+     if (landed !== "none") {
+       context.host.log(

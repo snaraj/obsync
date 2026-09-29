@@ -1,0 +1,11 @@
+# M3121: the SIZE check is gone: a file holding the version and more bytes after it is adopted
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4434,7 +4434,6 @@
+   occupant: VaultStat,
+   size: number,
+ ): Promise<VaultStat | null> {
+-  if (occupant.size !== size) return null;
+   let count = 0;
+   try {
+     for await (const plaintext of chunkStream(context.host.source(path, size))) {

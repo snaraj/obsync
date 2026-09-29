@@ -1,0 +1,12 @@
+# M1816: a file's version history is unbounded again
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1319,7 +1319,7 @@
+   }
+ 
+   getFile(fileId: string, patience: Patience = {}): Promise<FileRecord> {
+-    return this.json("GET", `/v1/files/${fileId}`, { auth: "device", cap: FILE_ANSWER_MAX, ...patience });
++    return this.json("GET", `/v1/files/${fileId}`, { auth: "device", cap: Infinity, ...patience });
+   }
+ 
+   /** One version, or `404 unknown_version` when the server does not hold it. */

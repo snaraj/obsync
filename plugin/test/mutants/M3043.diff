@@ -1,0 +1,17 @@
+# M3043: the private index call is made without asking whether the adapter has it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1770,12 +1770,7 @@
+       const cut = from.lastIndexOf("/");
+       const listed = await vault.adapter.list(cut === -1 ? "/" : from.slice(0, cut));
+       if ([...listed.files, ...listed.folders].some((child) => child.slice(child.lastIndexOf("/") + 1) === from.slice(cut + 1))) return;
+-      const adapter = vault.adapter as typeof vault.adapter & { reconcileDeletion?: (realPath: string, path: string, now?: boolean) => Promise<void> };
+-      if (typeof adapter.reconcileDeletion !== "function") {
+-        if (!this.ghostKeptTold) this.log(`vault path_class=${kind} decision=fallback reason=no_index_api kept=ghost`);
+-        this.ghostKeptTold = true;
+-        return;
+-      }
++      const adapter = vault.adapter as typeof vault.adapter & { reconcileDeletion: (realPath: string, path: string, now?: boolean) => Promise<void> };
+       await adapter.reconcileDeletion(from, from, true);
+       this.log(`vault path_class=${kind} decision=unindexed reason=ghost`);
+     } catch {

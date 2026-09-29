@@ -1,0 +1,15 @@
+# M1854: the creator announces paired as soon as its approval is posted (#153)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -300,8 +300,9 @@
+       this.plugin.log("pairing role=creator decision=approved");
+       this.collecting = true;
+       answer.settingEl.remove();
+-      statusEl.setText("Approved. Waiting for the new device to collect the vault key…");
+-      await this.watch(pairingId, claimant, statusEl);
++      new Notice(`The new device, "${claimant.name}", is paired: it holds the vault key now.`);
++      this.collecting = false;
++      this.close();
+     } catch (error) {
+       this.collecting = false;
+       this.plugin.log(`pairing role=creator decision=failed reason=${reasonOf(error)}`);

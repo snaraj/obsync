@@ -1,0 +1,16 @@
+# M3240: a retry asks about keystrokes only before its awaits, and misses one that arrives during them (review of 90d2042 and d62f201)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1224,10 +1224,10 @@
+     const adapter = this.plugin.app.vault.adapter;
+     let stat = await this.stat(path);
+     for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
+-      const unsaved = (await this.editing(path)) === "unsaved";
++      const unsaved = this.typing(path) || (await this.editing(path)) === "unsaved";
+       const now = await this.stat(path);
+       if (now === null || now.size !== 0) return now;
+-      const busy = unsaved || this.typing(path);
++      const busy = unsaved;
+       if (busy || again > WRITE_AGAIN) {
+         this.log(
+           `host path_class=file decision=refused reason=write_dropped cause=${busy ? "editor_busy" : "budget"} ` +

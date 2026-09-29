@@ -13,13 +13,20 @@
  * readback and awaited saveData do not promise a crash-durable transaction
  * across the two host stores. The bounded previous credential record allows
  * reload to select the revision named by metadata after an interrupted write;
- * an unknown revision or identity mismatch stops loading.
+ * an unknown revision or identity mismatch stops loading. A reference this
+ * vault never held, with no secret behind it, loads as a copy: unpaired,
+ * never as the device it names (`Held`). So does metadata exactly one
+ * revision past the entry's newest, the secret write a crash lost: it keeps
+ * its name and says why (`keysLost`), and holds no credential.
  */
 
 import { Policy, defaultPolicy } from "./policy";
-import { isVaultPath } from "./vaultPath";
+import { caseOnly, isVaultPath } from "./vaultPath";
 import { parseSyncFolders } from "./syncScope";
 import { hex, isHex, randomBytes } from "./crypto";
+
+/** The hidden name a re-case passes through, beside its entry (`main.ts`, `recase`). */
+export const RECASE_TEMP = /^\.obsync-recase-[0-9a-f]{16}(\.[^/]+)?$/;
 
 /** The supported native API surface; deliberately no enumeration method. */
 export interface SecretStore {
@@ -27,11 +34,37 @@ export interface SecretStore {
   setSecret(id: string, value: string): void;
 }
 
+/**
+ * The stop every storage fault ends in. The reason goes to the log line, never
+ * to the person (issue #168): the words say what happened and what to do, and
+ * no longer forbid the one step that gets a vault whose saved credentials are
+ * truly gone syncing again -- pairing it as a new device.
+ */
 export class StateStorageError extends Error {
   constructor(readonly reason: string, message?: string) {
-    super(message ?? `Credential storage could not be verified (${reason}). Sync is stopped. Keep this vault and its settings intact, check Obsidian secret storage, then reload. Do not repeat server setup or delete the credential reference.`);
+    super(message ?? "obsync could not read or save this vault's sync credentials in Obsidian's secret storage. Sync is stopped, and nothing was sent or changed. Reload Obsidian. If this keeps happening, have your 24-word recovery phrase or another syncing device at hand, then reinstall obsync and pair this device again; your notes stay in this vault.");
   }
 }
+
+/** What a device a crash left with no keys is told (issue #230; `State.keysLost`). */
+export const KEYS_LOST = "Obsidian closed while obsync was saving this device's keys, so it holds none. Pair this device again from a device that syncs; nothing was deleted.";
+
+/**
+ * What this vault, as Obsidian registers it NOW, remembers holding: the
+ * credential reference it last opened (issue #168). Obsidian keeps both this
+ * record and the secret store per vault id, and a copied vault -- or a folder
+ * renamed outside Obsidian, which it registers as a new vault -- is a new id
+ * that remembers neither. So a well-formed reference this vault never held,
+ * with no secret behind it, is a copy; one it held whose secret is gone is a
+ * storage fault. Neither ever syncs as the device the reference names.
+ */
+export interface Held {
+  holds(ref: string): boolean;
+  hold(ref: string): void;
+}
+
+/** No record at all: every reference counts as held, so a missing secret stays a fault. */
+const ALWAYS_HELD: Held = { holds: () => true, hold: () => {} };
 
 /** Obsidian's `Plugin` provides exactly this pair. */
 export interface Store {
@@ -62,6 +95,17 @@ export interface FileRecord {
    * from its version's position.
    */
   ts?: number;
+  /**
+   * The one chunk this version is made of, when it is one (issue #198): what
+   * the repair walk asks the server about, 4,096 at a time, instead of reading
+   * the version back (`sync/repair.ts`). A hash of the CIPHERTEXT the server
+   * already stores -- `sha256` above is a hash of it in turn -- never of a
+   * note's bytes. Believed only while `sha256` is its digest, so one left from
+   * an older version is never read as this one's. Absent on multi-chunk files
+   * and on every record before 1.1.4; 1.1.3 drops it on load, and the walk
+   * learns it again.
+   */
+  sid?: string;
 }
 
 /**
@@ -145,8 +189,10 @@ export interface ObsyncData {
   deviceSecret: string | null;
   /** What this device calls itself, as renamed here or on another device. */
   deviceName: string | null;
+  /** The four characters its default name ends with, made here once (issue #152). */
+  deviceTag: string | null;
   serverUrl: string;
-  /** Optional service-token headers required by an access-controlled edge. */
+  /** Optional headers an access-controlled proxy or tunnel requires ("Custom request headers"). */
   edgeHeaders: EdgeHeader[];
   /** Last change-feed sequence applied. */
   lastSeq: number;
@@ -191,6 +237,16 @@ export interface ObsyncData {
    */
   parked: Record<string, ParkedRecord>;
   /**
+   * Path to the file id whose write this phone could not make there -- a
+   * download, a merge, a copy -- marked before it committed (`commitMarked`):
+   * the platform's empty file stands at the name (`write_dropped`, issue #242).
+   * It is no edit and never sent, whatever becomes of the parked record -- a
+   * larger head moved to the download lane, a rename elsewhere -- until a
+   * record is made at that name (`setFile`). Kept across leaving a server: it
+   * describes a file here, not a version there.
+   */
+  dropped: Record<string, string>;
+  /**
    * File id to a note this device stopped syncing because something here
    * rewrote it right after another device's version arrived, on the lines
    * that device changed too -- two plugins stamping it, as a rule
@@ -199,6 +255,14 @@ export interface ObsyncData {
    * restart must not start the bounce again unasked.
    */
   paused: Record<string, { path: string; remote?: true }>;
+  /**
+   * Deletions held back from the other devices until the user answers: many
+   * notes deleted at once here (issue #162), or a pass that could no longer
+   * see them (issue #123). Their records stay in `files`, which is what Restore
+   * here reads; persisted because the question outlives a restart, and a
+   * restart that forgot it published what the user was still being asked.
+   */
+  heldDeletions: string[];
   /** The last feed entry processed, `null` until the first (issue #145). */
   feedMark: FeedMark | null;
   /** File id to the tombstone this device published or applied for it. */
@@ -206,6 +270,30 @@ export interface ObsyncData {
   policy: Policy;
   /** Only this device may set it. Missing = whole vault; [] = no files. */
   syncFolders?: string[];
+  /**
+   * A selection saved while the transfers under the old one were stopping,
+   * and not yet in force (issue #185): `{}` is the whole vault. Written the
+   * moment Save is pressed, so a quit before the stop finishes loses nothing,
+   * and the next start puts it in force (`main.ts`, `saveSyncFolders`).
+   */
+  pendingScope?: { folders?: string[] };
+  /**
+   * A capitals-only rename this device was making through a hidden name in
+   * the same folder when it stopped (issue #219; `main.ts`, `recase`).
+   * Written BEFORE the first of its two renames and removed after the
+   * second, so a stop in between leaves the entry under `temp` with this
+   * saying so: the next start puts it back, and until then nothing reads it
+   * as a deletion. A version before 1.1.4 ignores it.
+   */
+  pendingRecase?: { from: string; temp: string; to: string };
+  /**
+   * Whether the 24 words were confirmed ON THIS DEVICE, by the three-word
+   * check or by restoring them (issue #170). `skipped` is a check closed
+   * unanswered: the next start says so once and sets it back to
+   * `unconfirmed`. Nothing before 1.1.4 recorded a confirmation, so a device
+   * that never recorded one is `unconfirmed`.
+   */
+  recoveryPhrase: "unconfirmed" | "skipped" | "confirmed";
 }
 
 export function defaultData(isMobile: boolean): ObsyncData {
@@ -214,6 +302,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     deviceId: null,
     deviceSecret: null,
     deviceName: null,
+    deviceTag: null,
     serverUrl: "",
     edgeHeaders: [],
     lastSeq: 0,
@@ -223,10 +312,13 @@ export function defaultData(isMobile: boolean): ObsyncData {
     retiredRoots: {},
     folderBarriers: [],
     parked: {},
+    dropped: {},
     paused: {},
+    heldDeletions: [],
     feedMark: null,
     graves: {},
     policy: defaultPolicy(isMobile),
+    recoveryPhrase: "unconfirmed",
   };
 }
 
@@ -276,6 +368,15 @@ function secretRef(installationId: string): string {
   return `obsync-private-sync-v1-${installationId}`;
 }
 
+/**
+ * The second owned entry: a pairing claim waiting for its vault key (issue
+ * #153). Beside the credential envelope, never in it, so a plugin that does
+ * not know it reads its credential exactly as before.
+ */
+function claimRef(installationId: string): string {
+  return `${secretRef(installationId)}-claim`;
+}
+
 function readEnvelope(raw: string, installationId: string): SecretEnvelope {
   const envelope: unknown = JSON.parse(raw);
   const fields = ["version", "installationId", "current", "previous"];
@@ -305,10 +406,18 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   // A damaged restriction must never fall back to the whole vault. Refuse
   // loading rather than dropping this field like an optional preference.
   if (Object.hasOwn(loaded, "syncFolders")) data.syncFolders = parseSyncFolders(loaded["syncFolders"]);
+  // Judged like the selection it will become, and refused the same way.
+  if (Object.hasOwn(loaded, "pendingScope")) {
+    const pending = loaded["pendingScope"];
+    if (!isRecord(pending)) throw new Error("obsync: the pending folder selection is damaged; sync is stopped.");
+    data.pendingScope = Object.hasOwn(pending, "folders") ? { folders: parseSyncFolders(pending["folders"]) } : {};
+  }
   data.vrk = typeof loaded["vrk"] === "string" ? loaded["vrk"] : null;
   data.deviceId = typeof loaded["deviceId"] === "string" ? loaded["deviceId"] : null;
   data.deviceSecret = typeof loaded["deviceSecret"] === "string" ? loaded["deviceSecret"] : null;
   data.deviceName = typeof loaded["deviceName"] === "string" ? loaded["deviceName"] : null;
+  const tag = loaded["deviceTag"];
+  data.deviceTag = typeof tag === "string" && /^[2-9A-HJKMNP-TV-Z]{4}$/.test(tag) ? tag : null;
   data.serverUrl = str(loaded["serverUrl"], "");
   data.lastSeq = num(loaded["lastSeq"], 0);
   const headers = loaded["edgeHeaders"];
@@ -338,6 +447,8 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       const name = record["name"];
       if (isVaultPath(name)) (data.files[path] as FileRecord).name = name;
       if (typeof record["ts"] === "number" && Number.isFinite(record["ts"])) data.files[path].ts = record["ts"];
+      const sid = record["sid"];
+      if (typeof sid === "string" && isHex(sid, 32)) data.files[path].sid = sid;
     }
   }
   const folders = loaded["folders"];
@@ -368,6 +479,25 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       data.folderBarriers.push(path);
     }
   }
+  // A held path is only ever a question: dropped here, the note's deletion is
+  // asked again by the next pass that finds it gone, never published unasked.
+  const held = loaded["heldDeletions"];
+  if (Array.isArray(held)) {
+    for (const path of held as unknown[]) {
+      if (!isVaultPath(path) || data.heldDeletions.includes(path)) continue;
+      data.heldDeletions.push(path);
+    }
+  }
+  // Input like every path in this file, and narrower: two spellings of one
+  // name, and a hidden name of the one shape `recase` makes, in their folder.
+  // Anything else names a rename nothing here would make, and is dropped.
+  const recase = loaded["pendingRecase"];
+  if (isRecord(recase)) {
+    const { from, temp, to } = recase;
+    const cut = typeof from === "string" ? from.lastIndexOf("/") + 1 : 0;
+    if (isVaultPath(from) && isVaultPath(to) && caseOnly(from, to) && typeof temp === "string" &&
+      temp.slice(0, cut) === from.slice(0, cut) && RECASE_TEMP.test(temp.slice(cut))) data.pendingRecase = { from, temp, to };
+  }
   const parked = loaded["parked"];
   if (isRecord(parked)) {
     for (const [fileId, record] of Object.entries(parked)) {
@@ -375,6 +505,12 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       // the reason only chooses words, so a damaged one keeps the record.
       if (!isHex(fileId, 16) || !isRecord(record) || !isVaultPath(record["path"])) continue;
       data.parked[fileId] = { path: record["path"], reason: str(record["reason"], "") };
+    }
+  }
+  const dropped = loaded["dropped"];
+  if (isRecord(dropped)) {
+    for (const [path, fileId] of Object.entries(dropped)) {
+      if (isVaultPath(path) && typeof fileId === "string" && isHex(fileId, 16)) data.dropped[path] = fileId;
     }
   }
   const paused = loaded["paused"];
@@ -416,6 +552,9 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       totalBudgetBytes: num(policy["totalBudgetBytes"], data.policy.totalBudgetBytes),
     };
   }
+  // Anything else is not a confirmation: an unreadable value reminds.
+  const phrase = loaded["recoveryPhrase"];
+  if (phrase === "skipped" || phrase === "confirmed") data.recoveryPhrase = phrase;
   return data;
 }
 
@@ -439,8 +578,59 @@ export interface Lease {
   writing: Promise<unknown>;
 }
 
+/**
+ * What `files` holds, answered without walking it (issue #194): the paths
+ * holding each file id, the paths whose record waits beside its name, and the
+ * bytes held. Three questions the pull path asked by walking every record, a
+ * few times per applied version -- about six full passes per note of a first
+ * sync. `of` is the map it describes: one replaced wholesale is indexed again
+ * on the next question.
+ */
+interface Indexes {
+  of: Record<string, FileRecord>;
+  ids: Map<string, Set<string>>;
+  names: Set<string>;
+  bytes: number;
+  /**
+   * Where each path stands in `files`' own key order, which is the order the
+   * waiting notes were always settled in (`besideNames`): insertion order, a
+   * key replaced in place keeping its place.
+   */
+  order: Map<string, number>;
+  next: number;
+}
+
+/** A key JavaScript orders before every other, by its number: an array index. */
+const ARRAY_INDEX = /^(0|[1-9][0-9]*)$/;
+
+function indexed(indexes: Indexes, path: string, record: FileRecord, sign: 1 | -1): void {
+  const paths = indexes.ids.get(record.fileId) ?? new Set<string>();
+  if (sign === 1) {
+    paths.add(path);
+    indexes.ids.set(record.fileId, paths);
+    if (record.name !== undefined) indexes.names.add(path);
+  } else {
+    paths.delete(path);
+    if (paths.size === 0) indexes.ids.delete(record.fileId);
+    indexes.names.delete(path);
+  }
+  indexes.bytes += sign * record.size;
+}
+
+/** The indexes of `files` built from nothing: what the maintained ones must always equal. */
+function indexFiles(files: Record<string, FileRecord>): Indexes {
+  const indexes: Indexes = { of: files, ids: new Map(), names: new Set(), bytes: 0, order: new Map(), next: 0 };
+  for (const [path, record] of Object.entries(files)) {
+    indexes.order.set(path, indexes.next++);
+    indexed(indexes, path, record, 1);
+  }
+  return indexes;
+}
+
 export function dataLease(app: object, pluginId: string): Lease {
-  const scope = globalThis as unknown as Record<symbol, WeakMap<object, Map<string, Lease>> | undefined>;
+  // The renderer's `window`, not module state: a reloaded plugin is a new
+  // module, and its data file must wait for the old one's last write.
+  const scope = window as unknown as Record<symbol, WeakMap<object, Map<string, Lease>> | undefined>;
   const windows = scope[Symbol.for("obsync.dataLease")] ??= new WeakMap();
   const leases = windows.get(app) ?? new Map<string, Lease>();
   windows.set(app, leases);
@@ -467,6 +657,7 @@ export class State {
   private pending = false;
   private flushing: Promise<void> | null = null;
   private failure: StateStorageError | null = null;
+  private indexes: Indexes | null = null;
 
   private constructor(
     private readonly store: Store,
@@ -481,15 +672,45 @@ export class State {
     private readonly claim: object,
   ) {}
 
+  /**
+   * True while this is a COPY's state (issue #168): its data file names a
+   * well-formed credential reference this vault never held, and no secret
+   * stands behind it. It loads as a device that never paired -- the copied
+   * identity, key, name and server records dropped; the folder selection,
+   * ceilings and server address kept -- and nothing is written until the
+   * person pairs or starts fresh. The first save gives it an installation of
+   * its own and ends it.
+   */
+  copied = false;
+
+  /**
+   * Set while this device's keys were lost to a crash (issue #230): its data
+   * file names the credential revision one past the newest its secret entry
+   * holds. It loads holding no credential, as a copy does, but keeps its
+   * name, since it is still this device. AN INSTALLATION OF ITS OWN, because
+   * the data file names the lost revision until the first save lands: a save
+   * into the old entry that a crash cut off before its data file would be a
+   * mismatch at a revision that entry holds, which stops, where a new entry
+   * leaves this state to load again. The two revisions are the log line's;
+   * the first save ends it, as it ends `copied`.
+   */
+  keysLost: { dataRevision: number; secretRevision: number } | null = null;
+
   static async open(
     store: Store, isMobile: boolean, secrets: SecretStore,
     onFailure: (error: StateStorageError) => void = () => {},
     isCurrent: () => boolean = () => true,
     lease: Lease = { holder: null, writing: Promise.resolve() },
+    held: Held = ALWAYS_HELD,
   ): Promise<State> {
     let state: State;
     let migrate = false;
     const claim = lease.holder = {};
+    const fresh = (data: ObsyncData): State => {
+      const id = hex(randomBytes(16));
+      if (secrets.getSecret(secretRef(id)) !== null) throw new StateStorageError("reference_exists");
+      return new State(store, data, secrets, id, null, null, null, onFailure, lease, claim);
+    };
     try {
       if (!secrets || typeof secrets.getSecret !== "function" || typeof secrets.setSecret !== "function") {
         throw new StateStorageError("unavailable");
@@ -517,19 +738,36 @@ export class State {
         const ref = secretRef(id);
         if (metadata["credentialRef"] !== ref) throw new StateStorageError("invalid_reference");
         const raw = secrets.getSecret(ref);
-        if (raw === null) throw new StateStorageError("missing_secret");
-        const envelope = readEnvelope(raw, id);
-        const selected = [envelope.current, envelope.previous].find((record) => record?.revision === revision);
-        if (!selected || selected.serverUrl !== metadata["serverUrl"] || selected.deviceId !== metadata["deviceId"]) {
-          throw new StateStorageError("identity_mismatch");
+        if (raw === null && held.holds(ref)) throw new StateStorageError("missing_secret");
+        const envelope = raw === null ? null : readEnvelope(raw, id);
+        // A COPY, OR A FOLDER RENAMED OUTSIDE OBSIDIAN: never the device the
+        // reference names, and never a stop with nothing to press. OR THE ONE
+        // WRITE A CRASH LOSES (issue #230): the data file landed naming the
+        // revision just past this installation's newest, and the secret entry
+        // it follows was still on its way to disk. That credential is nowhere,
+        // and none is guessed or taken from an older revision.
+        if (envelope === null || revision === envelope.current.revision + 1) {
+          state = fresh(data);
+          const { serverUrl } = data;
+          state.forgetPairing();
+          Object.assign(data, { vrk: null, serverUrl, recoveryPhrase: "unconfirmed" });
+          if (envelope !== null) state.keysLost = { dataRevision: revision, secretRevision: envelope.current.revision };
+          else {
+            data.deviceName = null;
+            state.copied = true;
+          }
+        } else {
+          const selected = [envelope.current, envelope.previous].find((record) => record?.revision === revision);
+          if (!selected || selected.serverUrl !== metadata["serverUrl"] || selected.deviceId !== metadata["deviceId"]) {
+            throw new StateStorageError("identity_mismatch");
+          }
+          Object.assign(data, credentials({ ...selected }));
+          state = new State(store, data, secrets, id, selected, envelope, raw, onFailure, lease, claim);
+          held.hold(ref);
         }
-        Object.assign(data, credentials({ ...selected }));
-        state = new State(store, data, secrets, id, selected, envelope, raw, onFailure, lease, claim);
       } else {
         Object.assign(data, credentials(metadata));
-        const id = hex(randomBytes(16));
-        if (secrets.getSecret(secretRef(id)) !== null) throw new StateStorageError("reference_exists");
-        state = new State(store, data, secrets, id, null, null, null, onFailure, lease, claim);
+        state = fresh(data);
         migrate = true;
       }
     } catch (error) {
@@ -537,7 +775,10 @@ export class State {
       onFailure(failure);
       throw failure;
     }
-    if (migrate) await state.save();
+    if (migrate) {
+      await state.save();
+      held.hold(secretRef(state.installationId));
+    }
     return state;
   }
 
@@ -584,6 +825,8 @@ export class State {
         credentialRef: ref, credentialRevision: selected.revision }));
     } catch { throw new StateStorageError("metadata_write_failed"); }
     this.record = selected;
+    this.copied = false;
+    this.keysLost = null;
   }
 
   async save(): Promise<void> {
@@ -650,6 +893,7 @@ export class State {
     // restored one.
     this.data.parked = {};
     this.data.paused = {};
+    this.data.heldDeletions = [];
     this.data.feedMark = null;
     this.data.graves = {};
     this.data.remoteOnly = {};
@@ -693,6 +937,34 @@ export class State {
     this.serializedSecret = serialized;
   }
 
+  /** The held pairing claim as stored, or `null` (`pairing.ts`, `readClaim`). */
+  heldClaim(): string | null {
+    try {
+      const raw = this.secrets.getSecret(claimRef(this.installationId));
+      return raw === "" ? null : raw;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Hold a pairing claim, or drop it with `null` (`SecretStorage` declares no
+   * delete, so dropping writes it empty). Best effort, and read back: a claim
+   * not kept costs a restart its resume and nothing else, so this answers
+   * whether it was kept instead of stopping the state.
+   */
+  holdClaim(claim: string | null): boolean {
+    if (this.failure !== null || this.lease.holder !== this.claim) return false;
+    const ref = claimRef(this.installationId);
+    const text = claim ?? "";
+    try {
+      this.secrets.setSecret(ref, text);
+      return this.secrets.getSecret(ref) === text;
+    } catch {
+      return false;
+    }
+  }
+
   /** True once this device holds a vault key and a device credential. */
   get paired(): boolean {
     return this.failure === null && this.data.vrk !== null && this.data.deviceId !== null && this.data.deviceSecret !== null;
@@ -702,22 +974,56 @@ export class State {
     return this.data.files[path];
   }
 
+  /** The maintained indexes (`Indexes`), current for the `files` map this state holds now. */
+  private get index(): Indexes {
+    if (this.indexes?.of !== this.data.files) this.indexes = indexFiles(this.data.files);
+    return this.indexes;
+  }
+
+  /**
+   * THE ANSWER IS CHECKED AGAINST `files` BEFORE IT IS GIVEN: the pull path
+   * writes and trashes at the path this returns, so a record changed without
+   * its writer -- which nothing in the plugin does, and only a test's fixture
+   * can -- costs one rebuild, never a wrong file.
+   */
   pathByFileId(fileId: string): string | undefined {
-    for (const [path, record] of Object.entries(this.data.files)) {
-      if (record.fileId === fileId) return path;
+    for (let rebuilt = false; ; rebuilt = true) {
+      const paths = this.index.ids.get(fileId);
+      if (paths === undefined) return undefined;
+      for (const path of paths) if (this.data.files[path]?.fileId === fileId) return path;
+      if (rebuilt) return undefined;
+      this.indexes = null;
     }
-    return undefined;
+  }
+
+  /** Paths whose record waits beside the name it carries (`FileRecord.name`, `sync/pull.ts`, `settleBeside`). */
+  besideNames(): string[] {
+    const { names, order } = this.index;
+    const place = (path: string): number =>
+      ARRAY_INDEX.test(path) && Number(path) < 2 ** 32 - 1 ? Number(path) - 2 ** 32 : order.get(path) ?? Infinity;
+    return [...names].filter((path) => this.data.files[path]?.name !== undefined).sort((a, b) => place(a) - place(b));
   }
 
   setFile(path: string, record: FileRecord): void {
+    const index = this.index;
+    const replaced = this.data.files[path];
+    if (replaced !== undefined) indexed(index, path, replaced, -1);
+    else index.order.set(path, index.next++);
     this.data.files[path] = record;
+    indexed(index, path, record, 1);
     delete this.data.remoteOnly[record.fileId];
     // A file id recorded again is alive here: its old tombstone is no
     // deletion to re-send.
     delete this.data.graves[record.fileId];
+    // A record made at a name ends what a dropped write left there.
+    delete this.data.dropped[path];
   }
 
   forgetPath(path: string): void {
+    const index = this.index;
+    const forgotten = this.data.files[path];
+    if (forgotten !== undefined) indexed(index, path, forgotten, -1);
+    index.order.delete(path);
     delete this.data.files[path];
   }
 
@@ -754,8 +1060,6 @@ export class State {
 
   /** Bytes held locally, the input to the total-budget ceiling. */
   localBytes(): number {
-    let total = 0;
-    for (const record of Object.values(this.data.files)) total += record.size;
-    return total;
+    return this.index.bytes;
   }
 }

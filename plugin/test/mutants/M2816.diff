@@ -1,0 +1,11 @@
+# M2816: an answer after silence leaves a start that could not reach the server on its timer
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3007,7 +3007,6 @@
+     this.render();
+     if (answered) {
+       this.engine?.wake("answered");
+-      this.retryNow("answered");
+     }
+   }
+ 

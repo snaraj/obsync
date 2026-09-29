@@ -1,0 +1,12 @@
+# M2842: the device list is read with the background's patience
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -939,7 +939,7 @@
+     const current = (): boolean => shown === this.devicesShown && deviceId === this.plugin.state.data.deviceId &&
+       serverUrl === this.plugin.state.data.serverUrl;
+     // A person is looking at this list: their patience, not the background's (#182).
+-    void this.plugin.listDevices({ interactive: true })
++    void this.plugin.listDevices()
+       .then((devices) => { if (current()) this.deviceList = devices; }, (error: unknown) => {
+         if (!current()) return;
+         this.deviceListError = `The device list is unavailable: ${refusalText(error)}`;

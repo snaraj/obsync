@@ -1,0 +1,12 @@
+# M2829: Pair again retries against the server that forgot the device instead of opening settings
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -811,7 +811,7 @@
+     }
+     if (status.kind !== "error") return;
+     const pair = status.code === "forgotten_device";
+-    const settings = pair || status.code === "edge";
++    const settings = status.code === "edge";
+     new Setting(this.contentEl)
+       .setName("What to do")
+       .setDesc(status.message)

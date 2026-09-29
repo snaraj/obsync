@@ -1,0 +1,12 @@
+# M2134: a note of many chunks is adopted by its size alone
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3331,7 +3331,7 @@
+   path: string,
+   occupant: VaultStat,
+ ): Promise<VaultStat | null> {
+-  if (manifest.chunks.length !== 1 || manifest.sha256 === "") return null;
++  if (manifest.chunks.length !== 1 || manifest.sha256 === "") return occupant.size === manifest.size ? occupant : null;
+   if (occupant.size !== manifest.size) return null;
+   let bytes: Bytes;
+   try {

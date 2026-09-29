@@ -439,16 +439,20 @@ fn a_quota_refuses_before_the_body_is_stored() {
     // same way setup does, then check the refusal names both numbers.
     {
         let mut journal = setup.store.journal();
-        let mut index = setup.store.index();
+        let index = setup.store.index();
         let account = index.account.clone().expect("account");
-        super::append(&mut journal, &mut index, |_| Frame::Account {
-            account_id: account.account_id,
-            name: account.name.clone(),
-            created: account.created,
-            quota_bytes: Some(8),
-            recovery_verifier: account.recovery_verifier.clone(),
-        })
-        .expect("quota is journalled");
+        setup
+            .store
+            .commit(&mut journal, index, |_| {
+                vec![Frame::Account {
+                    account_id: account.account_id,
+                    name: account.name.clone(),
+                    created: account.created,
+                    quota_bytes: Some(8),
+                    recovery_verifier: account.recovery_verifier.clone(),
+                }]
+            })
+            .expect("quota is journalled");
     }
     let body = vec![b'x'; 16];
     let sid = Sid::new(sha256(&body));
@@ -3019,4 +3023,527 @@ fn initial_account_recovery_is_one_durable_setup_fact() {
     let recovered = open(&cfg).account().unwrap();
     assert_eq!(recovered.account_id, account);
     assert_eq!(recovered.recovery_verifier, Some(verifier));
+}
+
+// --- The durable fast path and the background I/O diet ----------------------
+
+/// An `edit` event as a version post records it.
+fn edit_event() -> SeenEvent {
+    SeenEvent {
+        ts: UnixMs(1_757_200_000_000),
+        kind: SeenKind::Edit,
+        address: Some("192.0.2.7".to_string()),
+        country: None,
+    }
+}
+
+/// Every record the journal holds, in the order it holds them.
+fn journal_records(store: &Store) -> Vec<Record> {
+    let mut records = Vec::new();
+    store
+        .journal()
+        .replay(Seq(0), &mut |record| records.push(record.clone()))
+        .expect("replay");
+    records
+}
+
+#[test]
+fn a_writer_s_fsync_holds_the_journal_and_never_the_index_and_nothing_is_applied_before_it() {
+    let dir = TempDir::new("store-fsync-outside-index");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let head = setup.store.head_seq();
+    let posted = version(&setup, file(1), "one", &[], &[sid], false);
+    let (file_id, version_id) = (posted.file_id, posted.version_id);
+    let store = Arc::new(setup.store);
+    let weak = Arc::downgrade(&store);
+    let inside = Arc::new(AtomicU64::new(0));
+    let seen = Arc::clone(&inside);
+    store.journal().set_mid_sync(Arc::new(move || {
+        let store = weak.upgrade().expect("store");
+        seen.fetch_add(1, Ordering::SeqCst);
+        // The frames are written and not yet durable: the writer holds the
+        // journal, and every reader can still take the index.
+        assert!(store.journal_guard_held());
+        let index = store
+            .index
+            .try_lock()
+            .expect("the index is free during the fsync");
+        assert_eq!(index.seq, head, "nothing is applied before it is durable");
+        assert!(index.version(&file_id, &version_id).is_none());
+    }));
+    let outcome = store
+        .post_version(posted, false, edit_event())
+        .expect("the post lands");
+    assert_eq!(
+        inside.load(Ordering::SeqCst),
+        1,
+        "the version and its edit event share one fsync"
+    );
+    assert_eq!(outcome.seq, head.next());
+    assert_eq!(store.head_seq(), head.next().next(), "both frames applied");
+    assert!(store.version(&file_id, &version_id).is_some());
+}
+
+#[test]
+fn a_post_journals_the_frames_it_always_did_and_every_replay_derives_the_same_device() {
+    // The compatibility contract of the folded append: a version post still
+    // writes a `version` frame and then a `seen` edit frame at the next seq,
+    // exactly the two frames a 1.1.x server wrote in two appends, so a 1.1.x
+    // server replaying this journal derives the same state this one does.
+    let dir = TempDir::new("store-post-frames");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let first = setup.store.head_seq();
+    let post = || version(&setup, file(1), "one", &[], &[sid], false);
+    let outcome = setup
+        .store
+        .post_version(post(), false, edit_event())
+        .expect("the post lands");
+    let tail: Vec<(Seq, &'static str)> = journal_records(&setup.store)
+        .into_iter()
+        .filter(|r| r.seq > first)
+        .map(|r| (r.seq, r.frame.kind()))
+        .collect();
+    assert_eq!(
+        tail,
+        vec![(outcome.seq, "version"), (outcome.seq.next(), "seen")]
+    );
+    // A repost of the same version writes neither.
+    setup
+        .store
+        .post_version(post(), false, edit_event())
+        .expect("the repost is answered");
+    assert_eq!(setup.store.head_seq(), outcome.seq.next());
+
+    let device = setup.store.device(&setup.device).expect("device");
+    assert_eq!(device.last_edit, Some(edit_event().ts));
+    assert_eq!(device.address, edit_event().address);
+    let live = fingerprint(&setup.store);
+    setup.store.snapshot().expect("snapshot");
+    drop(setup);
+    assert_eq!(fingerprint(&open(&cfg)), live, "from the snapshot");
+    for entry in fs::read_dir(dir.path().join("journal/v1/index")).expect("index dir") {
+        fs::remove_file(entry.expect("entry").path()).expect("drop the snapshot");
+    }
+    assert_eq!(fingerprint(&open(&cfg)), live, "from the frames alone");
+}
+
+#[test]
+fn concurrent_posts_are_journalled_applied_and_numbered_in_one_order() {
+    const WRITERS: u8 = 6;
+    const POSTS: u8 = 8;
+    let dir = TempDir::new("store-concurrent-posts");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let before = setup.store.head_seq();
+    let answered: Vec<(Seq, VersionId)> = thread::scope(|s| {
+        let handles: Vec<_> = (0..WRITERS)
+            .map(|w| {
+                let setup = &setup;
+                s.spawn(move || {
+                    (0..POSTS)
+                        .map(|p| {
+                            let v =
+                                version(setup, file(10 + w * POSTS + p), "x", &[], &[sid], false);
+                            let id = v.version_id;
+                            let seq = setup
+                                .store
+                                .post_version(v, false, edit_event())
+                                .expect("post")
+                                .seq;
+                            (seq, id)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("joins"))
+            .collect()
+    });
+    let total = u64::from(WRITERS) * u64::from(POSTS);
+    assert_eq!(setup.store.head_seq(), Seq(before.0 + 2 * total));
+
+    // The journal holds them in strictly increasing seq order, each version
+    // followed by its own edit event.
+    let records: Vec<Record> = journal_records(&setup.store)
+        .into_iter()
+        .filter(|r| r.seq > before)
+        .collect();
+    assert_eq!(records.len() as u64, 2 * total);
+    assert!(records.windows(2).all(|w| w[1].seq == w[0].seq.next()));
+    for pair in records.chunks(2) {
+        assert_eq!(
+            (pair[0].frame.kind(), pair[1].frame.kind()),
+            ("version", "seen")
+        );
+    }
+    // The feed is the apply order, and it is the seq order too.
+    let index = setup.store.index();
+    let feed: Vec<Seq> = index
+        .feed
+        .iter()
+        .map(|(seq, _, _)| *seq)
+        .filter(|seq| *seq > before)
+        .collect();
+    assert_eq!(feed.len() as u64, total);
+    assert!(
+        feed.windows(2).all(|w| w[0] < w[1]),
+        "applied out of seq order"
+    );
+    // And every seq a writer was answered with is the seq its version holds.
+    for (seq, id) in &answered {
+        let (_, _, applied) = index
+            .feed
+            .iter()
+            .find(|(at, _, _)| at == seq)
+            .expect("an answered seq is in the feed");
+        assert_eq!(applied, id);
+    }
+}
+
+#[test]
+fn a_post_made_durable_before_a_crash_is_there_after_it() {
+    // The moment between the fsync and the answer: the frames are on the
+    // volume and nothing was applied or answered.
+    let dir = TempDir::new("store-crash-after-fsync");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let posted = version(&setup, file(1), "one", &[], &[sid], false);
+    let (file_id, version_id) = (posted.file_id, posted.version_id);
+    setup.store.set_fault(Fault::JournalCrashAfterSync);
+    setup
+        .store
+        .post_version(posted, false, edit_event())
+        .expect_err("the process died");
+    assert!(
+        setup.store.version(&file_id, &version_id).is_none(),
+        "never applied"
+    );
+    drop(setup);
+    let reopened = open(&cfg);
+    assert!(
+        reopened.version(&file_id, &version_id).is_some(),
+        "durable, so replayed"
+    );
+    assert_eq!(
+        reopened.devices()[0].last_edit,
+        Some(edit_event().ts),
+        "with the edit event that shared its fsync"
+    );
+}
+
+#[test]
+fn a_snapshot_is_written_with_no_guard_held_and_a_crash_part_way_loses_nothing() {
+    let dir = TempDir::new("store-snapshot-outside-locks");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    setup
+        .store
+        .append_version(version(&setup, file(1), "one", &[], &[sid], false))
+        .expect("before the snapshot");
+    let during = version(&setup, file(2), "two", &[], &[sid], false);
+    let (during_file, during_id) = (during.file_id, during.version_id);
+    let store = Arc::new(setup.store);
+    let weak = Arc::downgrade(&store);
+    let hook_cfg = cfg.clone();
+    let slot = Mutex::new(Some(during));
+    store.journal().set_mid_snapshot(Arc::new(move || {
+        let store = weak.upgrade().expect("store");
+        assert!(
+            !store.journal_guard_held(),
+            "the journal is free while it is written"
+        );
+        assert!(store.index.try_lock().is_ok(), "and so is the index");
+        // The bytes already written are already counted: an append admitted
+        // now is measured against the volume as it really is.
+        let tmp = hook_cfg
+            .journal_dir
+            .join("v1/index")
+            .join(format!("{}.tmp", store.head_seq().0));
+        assert!(fs::metadata(&tmp).expect("the snapshot is landing").len() > 0);
+        assert_eq!(journal_used(&store), journal_root_bytes(&hook_cfg));
+        let posted = slot.lock().expect("slot").take().expect("once");
+        store
+            .append_version(posted)
+            .expect("a writer is served mid-snapshot");
+    }));
+    store.set_fault(Fault::SnapshotTorn);
+    store
+        .snapshot()
+        .expect_err("the process died part way through the snapshot");
+    let live = fingerprint(&store);
+    drop(store);
+
+    let reopened = open(&cfg);
+    assert!(
+        reopened.version(&during_file, &during_id).is_some(),
+        "the version acknowledged mid-snapshot survives the crash"
+    );
+    assert_eq!(fingerprint(&reopened), live, "and nothing else changed");
+    assert!(
+        reopened.log().captured().contains("snapshot=false"),
+        "the torn temporary was never loaded: {}",
+        reopened.log().captured()
+    );
+}
+
+#[test]
+fn a_snapshot_is_due_after_the_journal_grows_past_the_floor_and_the_last_snapshot() {
+    let dir = TempDir::new("store-snapshot-growth");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let grown = setup.store.journal_growth();
+    assert!(grown > 0, "setup's frames are not covered by any snapshot");
+    assert!(!setup.store.snapshot_due(grown + 1), "short of the floor");
+    assert!(setup.store.snapshot_due(grown));
+
+    setup.store.snapshot().expect("snapshot");
+    assert_eq!(
+        setup.store.journal_growth(),
+        0,
+        "the snapshot covers them all"
+    );
+    assert!(
+        !setup.store.snapshot_due(0),
+        "an idle journal is never due again"
+    );
+
+    // Past a tiny floor, and still not due until the tail outweighs the
+    // snapshot that would replace it.
+    let mut n = 1;
+    while !setup.store.snapshot_due(1) {
+        let before = setup.store.journal_growth();
+        setup
+            .store
+            .append_version(version(&setup, file(n), "g", &[], &[sid], false))
+            .expect("version");
+        assert!(setup.store.journal_growth() > before, "every frame counts");
+        n += 1;
+        assert!(n < 200, "never came due");
+    }
+    assert!(n > 2, "a single frame is not worth a whole snapshot");
+    let tail = setup.store.journal_growth();
+    let Setup {
+        store,
+        account,
+        device,
+    } = setup;
+    drop(store);
+    let setup = Setup {
+        store: open(&cfg),
+        account,
+        device,
+    };
+    assert_eq!(
+        setup.store.journal_growth(),
+        tail,
+        "a restart replays the same tail, and still owes it a snapshot"
+    );
+
+    // And a restart remembers the snapshot it loaded: one more frame is not
+    // due on a tiny floor, however many restarts come between.
+    setup.store.snapshot().expect("snapshot");
+    setup
+        .store
+        .append_version(version(&setup, file(n), "g", &[], &[sid], false))
+        .expect("version");
+    drop(setup.store);
+    assert!(
+        !open(&cfg).snapshot_due(1),
+        "the restarted store forgot the size of the snapshot it loaded"
+    );
+}
+
+#[test]
+fn a_chunk_re_uploaded_after_collection_decided_is_not_unlinked() {
+    let dir = TempDir::new("store-gc-reupload");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let body: &[u8] = b"ciphertext-orphan";
+    let orphan = put(&setup, body);
+    setup
+        .store
+        .index()
+        .chunks
+        .get_mut(&orphan)
+        .expect("chunk")
+        .first_seen = UnixMs(17);
+    let account = setup.account;
+    let store = Arc::new(setup.store);
+    let weak = Arc::downgrade(&store);
+    *store.before_gc_unlink.lock().expect("hook") = Some(Arc::new(move || {
+        let store = weak.upgrade().expect("store");
+        // Every global guard is released before a single unlink.
+        assert!(!store.journal_guard_held());
+        assert!(store.index.try_lock().is_ok());
+        assert!(!store.chunk_exists(&orphan), "the durable frame forgot it");
+        assert_eq!(
+            store
+                .put_chunk(&account, &orphan, body.len() as u64, &mut &body[..])
+                .expect("re-uploaded between the frame and the unlink"),
+            PutOutcome::Created
+        );
+    }));
+    let summary = store.gc_run(UnixMs::now());
+    assert_eq!(
+        summary.chunks_collected, 1,
+        "the frame records the decision"
+    );
+    assert!(store.chunk_exists(&orphan), "the upload is inventory");
+    assert_eq!(
+        store.blobs.verify_primary(&orphan).expect("verify"),
+        Some(true),
+        "and its file is still there"
+    );
+    assert!(
+        store.log().captured().contains("reuploaded=1"),
+        "{}",
+        store.log().captured()
+    );
+}
+
+#[test]
+fn a_store_smaller_than_one_step_is_not_re_hashed_until_the_interval_passes() {
+    // The loop #203 found: every step over a small store completed a pass and
+    // began the next at once, so the whole store was re-hashed every few
+    // seconds, forever.
+    let dir = TempDir::new("store-scrub-interval");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    for n in 0..3u8 {
+        put(&setup, &[b'c', n]);
+    }
+    let store = &setup.store;
+    let first = store.scrub_step(1 << 20);
+    assert_eq!(first.chunks_verified, 3);
+    assert!(first.complete_pass, "one step covers a small store");
+    let head = store.head_seq();
+    let starts = store
+        .log()
+        .captured()
+        .matches("event=start job=scrub")
+        .count();
+
+    for _ in 0..3 {
+        let idle = store.scrub_step(1 << 20);
+        assert_eq!(idle.chunks_verified, 0, "a rested pass reads nothing");
+        assert!(!idle.complete_pass);
+    }
+    assert_eq!(store.head_seq(), head, "and journals nothing");
+    assert_eq!(
+        store
+            .log()
+            .captured()
+            .matches("event=start job=scrub")
+            .count(),
+        starts,
+        "and logs nothing"
+    );
+
+    // A day after the pass began, the next one does. A chunk verified in the
+    // very millisecond a pass begins counts as verified by it, so each new
+    // pass here begins at least a millisecond after the last verification.
+    std::thread::sleep(Duration::from_millis(2));
+    store.scrub.lock().expect("pass").began = UnixMs(UnixMs::now().0 - scrub::PASS_INTERVAL_MS);
+    assert_eq!(store.scrub_step(1 << 20).chunks_verified, 3);
+
+    // And one asked for begins at once.
+    assert_eq!(store.scrub_step(1 << 20).chunks_verified, 0);
+    std::thread::sleep(Duration::from_millis(2));
+    store.request_scrub();
+    let asked = store.scrub_step(1 << 20);
+    assert_eq!(asked.chunks_verified, 3);
+    assert!(asked.complete_pass);
+}
+
+#[test]
+fn a_pass_walks_each_chunk_once_journals_once_and_logs_one_start_and_summary() {
+    let dir = TempDir::new("store-scrub-pass");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let mut sids: Vec<Sid> = (0..4u8).map(|n| put(&setup, &[b'p', n, 7, 7])).collect();
+    sids.sort();
+    let store = &setup.store;
+    let head = store.head_seq();
+    let log_before = store.log().captured().len();
+    let verified_at = |sid: &Sid| -> UnixMs { store.index().chunks[sid].last_verified };
+    // Every step works at least 5 ms, for the SUMMARY's work time.
+    store.set_before_scrub_summary(Arc::new(|| std::thread::sleep(Duration::from_millis(5))));
+    // A budget of one byte: one chunk a step, in sid order, each step
+    // resuming after the last.
+    let mut order = Vec::new();
+    for step in 0..4 {
+        let before: Vec<UnixMs> = sids.iter().map(verified_at).collect();
+        let summary = store.scrub_step(1);
+        assert_eq!(summary.chunks_verified, 1, "step {step}");
+        assert_eq!(summary.complete_pass, step == 3, "step {step}");
+        for (sid, was) in sids.iter().zip(before) {
+            if verified_at(sid) != was {
+                order.push(*sid);
+            }
+        }
+    }
+    assert_eq!(order, sids, "each chunk once, in sid order");
+    assert_eq!(
+        store.head_seq(),
+        head.next(),
+        "one frame: the completed pass"
+    );
+    let log = store.log().captured()[log_before..].to_string();
+    assert_eq!(log.matches("event=start job=scrub").count(), 1, "{log}");
+    assert_eq!(log.matches("event=summary job=scrub").count(), 1, "{log}");
+    assert!(log.contains("steps=4 chunks=4"), "{log}");
+    // #216: the SUMMARY says how long the pass worked beside how long it took.
+    let field = |name: &str| -> u64 {
+        log.lines()
+            .find(|l| l.contains("event=summary job=scrub"))
+            .and_then(|l| l.split(&format!(" {name}=")).nth(1))
+            .and_then(|v| v.split(' ').next())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("{name} on the SUMMARY: {log}"))
+    };
+    let worked = field("worked_ms");
+    assert!(worked >= 20, "four steps of at least 5 ms: {log}");
+    assert!(worked <= field("duration_ms"), "{log}");
+}
+
+#[test]
+fn releasing_waiters_answers_a_long_poll_at_once_and_every_later_one() {
+    let dir = TempDir::new("store-release-waiters");
+    let cfg = config(&dir);
+    let setup = Arc::new(ready(&cfg));
+    let head = setup.store.head_seq();
+    let waiter = {
+        let setup = Arc::clone(&setup);
+        thread::spawn(move || {
+            let at = std::time::Instant::now();
+            setup.store.wait_for_change(head, Duration::from_secs(10));
+            at.elapsed()
+        })
+    };
+    thread::sleep(Duration::from_millis(50));
+    setup.store.release_waiters();
+    let waited = waiter.join().expect("joins");
+    assert!(
+        waited < Duration::from_secs(5),
+        "the poll waited {waited:?}"
+    );
+    let at = std::time::Instant::now();
+    assert_eq!(
+        setup.store.wait_for_change(head, Duration::from_secs(10)),
+        head
+    );
+    assert!(
+        at.elapsed() < Duration::from_secs(5),
+        "and a later one does not wait"
+    );
 }

@@ -1,0 +1,11 @@
+# M2908: the start does not put a stopped re-case back before its first pass
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -858,7 +858,6 @@
+    * pass (`VaultHost.settle`): that pass is the one that publishes deletions.
+    */
+   async settle(): Promise<void> {
+-    await this.settleRecase(false);
+   }
+ 
+   /** One directory, then its subdirectories, to a bounded depth; `temps` collects `WRITE_TEMP` files. */

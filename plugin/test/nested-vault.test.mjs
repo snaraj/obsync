@@ -35,7 +35,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
-import { FakeTimers, KEYS, SETUP_TOKEN, STEP_MS, memorySecrets, rig, sandbox } from "./fake.mjs";
+import { FakeTimers, KEYS, SETUP_TOKEN, STEP_MS, memorySecrets, rig, sandbox, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -76,7 +76,7 @@ function walk(root, folder = "") {
  * A real vault directory under the real host -- desktop, or a phone's adapter
  * over the same directory -- with the rig's state, server and keys behind it.
  */
-async function vault(t, { mobile = false } = {}) {
+async function vault(t, { mobile = false, config = ".obsidian", dir = true } = {}) {
   const r = await rig({ isMobile: mobile });
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-nested-"));
@@ -104,14 +104,24 @@ async function vault(t, { mobile = false } = {}) {
       writeFileSync(join(root, path), new Uint8Array(data));
       if (options?.mtime) utimesSync(join(root, path), options.mtime / 1000, options.mtime / 1000);
     },
+    // The folder's own children, hidden ones included, as the Android
+    // emulator's adapter answered on 2026-09-27 (`list('/')` held
+    // `.obsidian` and `.trash`; `list('J114')` held no grandchild).
     list: async (path) => {
-      const below = walk(root, path);
-      return { files: below.files.map((file) => file.path), folders: below.folders };
+      const at = path === "/" ? "" : path;
+      const out = { files: [], folders: [] };
+      for (const name of readdirSync(join(root, at))) {
+        const child = at === "" ? name : `${at}/${name}`;
+        (statSync(join(root, child)).isDirectory() ? out.folders : out.files).push(child);
+      }
+      return out;
     },
   };
   const plugin = {
     state: r.state,
     log: (line) => logs.push(line),
+    // Where Obsidian loaded this plugin from, its config folder's name first.
+    manifest: { version: "1.1.3", ...(dir ? { dir: `${config}/plugins/obsync-private-sync` } : {}) },
     app: {
       vault: {
         adapter,
@@ -124,7 +134,6 @@ async function vault(t, { mobile = false } = {}) {
       // No editor is open on anything here (issue #146).
       workspace: { getLeavesOfType: () => [], onLayoutReady: (done) => done() },
     },
-    manifest: { version: "1.1.3" },
     platformName: () => (mobile ? "android" : "macos"),
     deviceName: () => "sentinel-device",
   };
@@ -288,6 +297,28 @@ test("on a phone the adapter says which folder is a vault of its own, in both di
   assert.equal(excluded(r).length, 1, story(r));
 });
 
+test("a folder whose config folder has another name is a vault of its own too, on a computer and a phone (#180)", async (t) => {
+  // The config folder is each vault's to name (`Vault#configDir`), so no one
+  // name is assumed. A computer asks every HIDDEN folder for this plugin; a
+  // phone asks for it where this vault's own config folder keeps it, named
+  // here as the nested one is; and a phone whose manifest carries no `dir`
+  // asks every hidden folder, as a computer does.
+  for (const [mobile, dir] of [[false, true], [true, true], [true, false]]) {
+    const r = await vault(t, { mobile, config: ".vault-config", dir });
+    r.seed("Notes/a.md", OUTER);
+    r.seed("Sub/s1.md", INNER);
+    r.seed("Other/o.md", OUTER);
+    r.seed("Plain/p.md", OUTER);
+    mkdirSync(join(r.root, "Sub", ".vault-config", "plugins", "obsync-private-sync"), { recursive: true });
+    mkdirSync(join(r.root, "Other", ".vault-config", "plugins", "another-plugin"), { recursive: true });
+    mkdirSync(join(r.root, "Plain", "vault-config", "plugins", "obsync-private-sync"), { recursive: true });
+    assert.equal(await r.host.syncable("Sub/s1.md"), false, `mobile=${mobile} dir=${dir}`);
+    assert.equal(await r.host.syncable("Other/o.md"), true, `mobile=${mobile}: another plugin's folder is not this one`);
+    assert.equal(await r.host.syncable("Plain/p.md"), true, `mobile=${mobile}: a folder that is not hidden is no config folder`);
+    assert.equal(await r.host.syncable("Notes/a.md"), true, `mobile=${mobile}`);
+  }
+});
+
 test("the ancestor check finds this plugin above the vault root, and nothing else (#180)", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "obsync-ancestors-"));
   const box = sandbox();
@@ -326,6 +357,25 @@ test("the ancestor check finds this plugin above the vault root, and nothing els
   make("E", "Vault", ...PLUGIN);
   assert.equal(await enclosing("E", "Vault"), null);
 
+  // A vault above whose config folder has another name (`Vault#configDir`).
+  make("F", ".vault-config", "plugins", "obsync-private-sync");
+  make("F", "Vault");
+  assert.equal(await enclosing("F", "Vault"), "F");
+
+  // A hidden entry the system will not stat (macOS answers `/.resolve` with
+  // EINVAL) is no config folder, and the search goes on past it.
+  make("G", ".a-refused");
+  make("G", ...PLUGIN);
+  make("G", "Vault");
+  const refusing = {
+    ...fsPromises,
+    lstat: (path, options) => (String(path).endsWith(".a-refused")
+      ? Promise.reject(Object.assign(new Error("EINVAL: invalid argument"), { code: "EINVAL" }))
+      : fsPromises.lstat(path, options)),
+  };
+  const found = await new ObsidianHost(plugin, { fs: { promises: refusing }, path: nodePath, base: join(base, "G", "Vault") }).enclosingVault();
+  assert.equal(found, "G");
+
   // A phone sees nothing outside its vault.
   assert.equal(await new ObsidianHost(plugin, null).enclosingVault(), null);
 });
@@ -339,7 +389,9 @@ async function loaded(t, root, metadata) {
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const obsidian = box.require("obsidian");
   obsidian.notices.length = 0;
-  const requests = [], logs = [], bar = [];
+  const requests = [], logs = [];
+  // What the status indicator says on hover: its words, never a text node (#156).
+  const item = statusItem(), bar = item.tooltips;
   obsidian.requestUrl = async (request) => {
     requests.push(request.url);
     return { status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) };
@@ -350,7 +402,7 @@ async function loaded(t, root, metadata) {
   instance.loadData = async () => structuredClone(stored);
   instance.saveData = async (value) => { stored = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText: (text) => bar.push(text) });
+  instance.addStatusBarItem = () => item;
   instance.app = { workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (done) => done() }, secretStorage: memorySecrets(), vault: { adapter: { getBasePath: () => root }, on: () => ({}) } };
   instance.manifest = { version: "1.1.3" };
   instance.checkForUpdate = async () => {};
@@ -381,7 +433,9 @@ test("a vault paired before the check existed stops at every start inside a sync
   assert.deepEqual(p.requests, [], "nothing reached the server");
   assert.equal(p.instance.engine, null);
   assert.equal(p.instance.statusText(), `error — ${refusal("Outer")}`);
-  assert.deepEqual(p.notices, [`obsync: ${refusal("Outer")}`], "one notice, not one per start");
+  // One notice for the refusal, not one per start -- and the Sync now press
+  // answers once, with the same reason, because a press always answers (#182).
+  assert.deepEqual(p.notices, [`obsync: ${refusal("Outer")}`, `obsync: ${refusal("Outer")}`], "one per start, plus the press's answer");
   assert.equal(p.logs.filter((line) => /^engine decision=refused reason=nested_vault duration_ms=\d+$/.test(line)).length, 3, p.logs.join(" | "));
   assert.ok(!p.logs.some((line) => line.startsWith("engine decision=retry_scheduled")), "no timer knocks again");
 });

@@ -1,12 +1,21 @@
-# M95: a retried folder record is put back without its barrier
+# M95: a retried folder record is put back without its barrier, and the drain holds only the take that armed one (both holds go: since #196 each masks the other)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1398,7 +1398,7 @@
+@@ -2126,7 +2126,7 @@
+         while (this.running && failed.length === 0 && running.size < context.concurrency && !(barrier !== null && running.has(barrier))) {
+           const path = this.takeNext(running);
+           if (path === null) break;
+-          if (this.barrierPath === path) barrier = path;
++          barrier = this.barrierPath === path ? path : null;
+           const work: Promise<void> = this.pushOne(path)
+             .catch((error: unknown) => { failed.push(error); })
+             .finally(() => running.delete(path));
+@@ -2464,7 +2464,7 @@
        return;
      }
      this.folderRetries.set(path, attempt);
--    this.publishFolder(path, barrier);
-+    this.publishFolder(path, false);
+-    this.publishFolder(path, barrier, recreate);
++    this.publishFolder(path, false, recreate);
      // In FRONT: what this record orders is already queued behind it.
      if (!this.queue.includes(path)) this.queue.unshift(path);
      context.host.log(

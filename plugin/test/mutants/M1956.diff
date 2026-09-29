@@ -1,0 +1,12 @@
+# M1956: held deletions are not read back after a restart
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -380,7 +380,7 @@
+   // A held path is only ever a question: dropped here, the note's deletion is
+   // asked again by the next pass that finds it gone, never published unasked.
+   const held = loaded["heldDeletions"];
+-  if (Array.isArray(held)) {
++  if (Array.isArray(held) && held.length < 0) {
+     for (const path of held as unknown[]) {
+       if (!isVaultPath(path) || data.heldDeletions.includes(path)) continue;
+       data.heldDeletions.push(path);

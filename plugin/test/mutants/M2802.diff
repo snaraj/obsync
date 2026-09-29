@@ -1,0 +1,12 @@
+# M2802: domain_mismatch is an ordinary push failure again: retried every scan, with an error
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1798,7 +1798,7 @@
+       }
+       const message = error instanceof Error ? error.message : String(error);
+       context.host.log(`push path_class=file decision=failed reason=${message}`);
+-      if (error instanceof ApiError && error.code === "domain_mismatch") {
++      if (error instanceof ApiError && error.code === "never") {
+         await this.rekeyed(context, path);
+         return;
+       }

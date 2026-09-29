@@ -1,11 +1,11 @@
 # M176: closing Settings loses a server address typed but not left
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -156,7 +156,6 @@
+@@ -249,7 +249,6 @@
  
    override hide(): void {
      // Closing Settings is leaving the field: what was typed is adopted, not lost.
 -    this.adoptServerUrl();
+     this.adoptEdgeHeaders();
      super.hide();
-     this.draftScope = null;
-     this.draftToken = "";
+     this.unwatch?.();

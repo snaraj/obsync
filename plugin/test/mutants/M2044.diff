@@ -1,0 +1,12 @@
+# M2044: a typed note above one chunk settles without its recheck
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1847,7 +1847,7 @@
+     if (described && (stat.size > CHUNK_MAX || !context.arrivals.has(path))) return;
+     // THE EDITOR'S OWN SAVE IS NOT A COPY (issue #195): a note someone is
+     // typing in settles at its first look, `EDITOR_SETTLE_MS` after the event.
+-    if (seen === null && stat.size <= EDITOR_SETTLE_MAX_BYTES && context.host.typing(path)) {
++    if (seen === null && context.host.typing(path)) {
+       context.host.log(`watch path_class=file decision=settled reason=editor_save budget_ms=${EDITOR_SETTLE_MS}`);
+       this.unschedule(path);
+       if (!described) await this.answered(context, stat);

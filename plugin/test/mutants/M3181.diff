@@ -1,0 +1,20 @@
+# M3181: a walk that throws leaves the host pass open, so nested-vault answers outlive it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3772,12 +3772,10 @@
+    * deep took 33.6 s outside a pass and 2.5 s inside one (Android emulator).
+    */
+   private async inHostPass<T>(work: () => Promise<T>): Promise<T> {
+-    this.host.pass?.(true);
+-    try {
+-      return await work();
+-    } finally {
+-      this.host.pass?.(false);
+-    }
++    this.host.pass?.(true);
++    const result = await work();
++    this.host.pass?.(false);
++    return result;
+   }
+ 
+   /**

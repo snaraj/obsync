@@ -1,0 +1,12 @@
+# M3244: a dropped-write mark from the data file may name a path outside the vault
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -509,7 +509,7 @@
+   const dropped = loaded["dropped"];
+   if (isRecord(dropped)) {
+     for (const [path, fileId] of Object.entries(dropped)) {
+-      if (isVaultPath(path) && typeof fileId === "string" && isHex(fileId, 16)) data.dropped[path] = fileId;
++      if (typeof fileId === "string" && isHex(fileId, 16)) data.dropped[path] = fileId;
+     }
+   }
+   const paused = loaded["paused"];

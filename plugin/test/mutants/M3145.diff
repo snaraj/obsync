@@ -1,0 +1,12 @@
+# M3145: a start asks after its previous engine stopped only what it asked at 8216bbb, and makes an engine under a leave
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3164,7 +3164,7 @@
+     this.cancelHistories();
+     const previous = this.engine;
+     await previous?.stopAndWait();
+-    if (!wanted(previous)) return superseded();
++    if (!this.isCurrent(generation) || this.changingScope || this.restoring !== null || this.engine !== previous) return;
+     const engine: SyncEngine = new SyncEngine({
+       state: this.state,
+       transport: this.transport,

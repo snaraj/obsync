@@ -1,0 +1,11 @@
+# M1975: the rename of a pulled note is never made durable
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1601,7 +1601,6 @@
+         }
+         await fs.promises.rename(temp, target);
+         this.temps.delete(temp);
+-        await this.syncFolder(fs, parent);
+         // The rename is the moment the file takes its real name, so the
+         // chain is checked again here: a parent swapped after the last
+         // binding would otherwise leave our own inode sitting outside the

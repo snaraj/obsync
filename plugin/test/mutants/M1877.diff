@@ -1,0 +1,11 @@
+# M1877: the switch-server dialog leaves a refused setup token in its field (#169)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -605,7 +605,6 @@
+         token = "";
+         void this.plugin.setUpAccount(typed, "obsync").then(() => {
+           // Used once, then gone from the screen, whatever the answer (#169).
+-          clear();
+           if (this.plugin.state.data.deviceId !== null) this.close();
+         });
+       }));

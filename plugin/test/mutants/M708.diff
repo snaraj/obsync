@@ -1,7 +1,7 @@
 # M708: the peer answer pauses even a clean nonoverlapping merge
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2066,6 +2066,17 @@
+@@ -2214,6 +2214,17 @@
    const baseId = ahead ? localVersionId : commonAncestor(file.versions, localVersionId, change.version_id);
    const before = await context.host.stat(localPath);
    const mine = await context.host.read(localPath);
@@ -16,10 +16,10 @@
 +    await publishPause(context, change.file_id, localPath, true);
 +    return "skipped";
 +  }
-   // TWO HEADS, ONE CONTENT.
-   //
-   // This is where the storm ended up. A and B each merge the same pair to the
-@@ -2214,17 +2225,6 @@
+   // The name this device gives the note: where it is, or where it waits to be
+   // once that name is free (`settleBeside`).
+   const here = context.state.fileByPath(localPath)?.name ?? localPath;
+@@ -2459,17 +2470,6 @@
    // answer: the next keystrokes would then extend the wrong text, splitting
    // one typed line between the note and a copy (native S89). Clean merges
    // above still work, and two people typing carry no background-answer flag.

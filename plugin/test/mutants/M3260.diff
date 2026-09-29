@@ -1,0 +1,12 @@
+# M3260: deleting an unrecorded dropped write's empty file leaves its mark stranded at the name
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -675,7 +675,7 @@
+   // review of 2e4cdca). Deleting it removes that placeholder, not the note,
+   // whose text is on the server and on every other device: a tombstone would
+   // take it from them all. This device forgets the mark, and any record.
+-  if (mark !== undefined) {
++  if (mark !== undefined && record) {
+     if (record) context.state.forgetPath(path);
+     delete context.state.data.dropped[path];
+     await context.state.save();

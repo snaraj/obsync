@@ -1,0 +1,12 @@
+# M3232: a write refused for its busy editor is logged as the budget running out
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1230,7 +1230,7 @@
+       const busy = unsaved || this.typing(path);
+       if (busy || again > WRITE_AGAIN) {
+         this.log(
+-          `host path_class=file decision=refused reason=write_dropped cause=${busy ? "editor_busy" : "budget"} ` +
++          `host path_class=file decision=refused reason=write_dropped cause=budget ` +
+             `writes=${again} bytes=${bytes.length} budget_writes=${WRITE_AGAIN + 1}`,
+         );
+         const said = busy ? "The file stayed empty when it was written, and its editor is busy now." : "The file stayed empty when it was written.";

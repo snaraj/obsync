@@ -1,0 +1,260 @@
+name: Desktop matrix
+
+# The plugin in the REAL Obsidian desktop, and its test suite, on the three
+# desktop operating systems. Until this file the plugin had only ever run
+# inside Obsidian on the owner's macOS (and iPhone), and its suite only on
+# Linux.
+#
+#   obsidian-linux    the official AppImage under Xvfb, two instances with
+#                     their own user-data directories and their own NSS
+#                     stores, driven over the DevTools port through setup,
+#                     pairing, notes both ways, a rename and folders, against
+#                     the server behind Caddy; a third instance that trusts
+#                     nothing must be refused (scripts/ci/obsidian-e2e.sh).
+#                     Twice: with no keyring, the runner as it comes, and
+#                     with GNOME Keyring unlocked; in each, both instances are
+#                     restarted and must sync again from the keys Obsidian
+#                     kept, and what its secret storage did is held (#217).
+#   obsidian-macos    the same journeys with the official dmg and the server
+#                     built natively (scripts/ci/obsidian-host.sh).
+#   obsidian-windows  the same journeys with the official installer, the
+#                     server's static Linux build under WSL 1, and the NTFS
+#                     journeys: a case-only rename, the trash, a file another
+#                     process holds open.
+#   plugin-tests      `npm test` on Windows and macOS, where the desktop code's
+#                     rename, link and inode assumptions meet NTFS and APFS.
+#
+# WHEN IT RUNS. Nightly, by hand, and on a pull request that changes the
+# plugin or these harnesses. The desktop legs take minutes and depend on a GUI
+# session each runner provides; they are not required checks, and a red leg
+# here is a finding to read, not a merge to hold by rule.
+#
+# IT IS A WORKFLOW OF ITS OWN, for the reason compose-e2e.yml gives.
+
+on:
+  schedule:
+    - cron: '53 4 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-matrix.yml'
+      - 'plugin/**'
+      - 'scripts/ci/obsidian-drive.mjs'
+      - 'scripts/ci/obsidian-e2e.sh'
+      - 'scripts/ci/obsidian-host.sh'
+      - 'scripts/ci/proxy-e2e.sh'
+      - 'deploy/proxies/compose.yml'
+      - 'deploy/proxies/caddy/**'
+
+permissions: {}
+
+concurrency:
+  group: desktop-matrix-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  obsidian-linux:
+    name: obsidian-linux (${{ matrix.keyring }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        keyring: [none, gnome-keyring]
+    env:
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-linux-${{ matrix.keyring }}
+      OBSYNC_E2E_KEYRING: ${{ matrix.keyring }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up the pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.10.0'
+          check-latest: false
+      - name: Build the plugin from this commit
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Build the shipped image
+        run: docker build --tag "obsync-desktop-e2e:${GITHUB_SHA}" .
+      - name: Install the pinned GNOME Keyring
+        if: matrix.keyring == 'gnome-keyring'
+        run: scripts/ci/install-keyring.sh
+      - name: Two Obsidian instances through the Caddy leg
+        run: scripts/ci/proxy-e2e.sh "obsync-desktop-e2e:${GITHUB_SHA}" caddy --then scripts/ci/obsidian-e2e.sh
+      - name: Remove anything the run left behind
+        if: always()
+        run: |
+          set -uo pipefail
+          project="obsync-e2e-${OBSYNC_E2E_RUN_ID}"
+          docker ps --all --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker rm --force
+          docker volume ls --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker volume rm --force
+          docker network ls --quiet --filter "label=com.docker.compose.project=${project}" \
+            | xargs -r docker network rm
+          pkill -f 'squashfs-root/obsidian' || true
+          exit 0
+
+  obsidian-macos:
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-macos
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up the pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.10.0'
+          check-latest: false
+      - name: Build the plugin from this commit
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Build the server natively from this commit
+        # rust-toolchain.toml is the one Rust pin; `rustup toolchain install`
+        # with no argument installs exactly what it names.
+        run: |
+          set -euo pipefail
+          rustup toolchain install
+          test "$(rustc --version | awk '{print $2}')" = "1.98.0"
+          cargo build --release --locked -p obsyncd
+      - name: Two Obsidian instances through Caddy
+        run: scripts/ci/obsidian-host.sh "${GITHUB_WORKSPACE}/target/release/obsyncd"
+      - name: Remove anything the run left behind
+        if: always()
+        run: |
+          set -uo pipefail
+          sudo security delete-certificate -c "obsync e2e throwaway CA ${OBSYNC_E2E_RUN_ID}" /Library/Keychains/System.keychain >/dev/null 2>&1 || true
+          pkill -f 'Obsidian.app/Contents/MacOS/Obsidian' || true
+          pkill -f 'target/release/obsyncd' || true
+          exit 0
+
+  static-binary:
+    # The server's static linux/amd64 build from this commit, for the WSL leg.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Build the server stage and take the binary out
+        run: |
+          set -euo pipefail
+          docker build --target server --tag "obsync-static:${GITHUB_SHA}" .
+          container="$(docker create "obsync-static:${GITHUB_SHA}")"
+          docker cp "${container}:/out/obsyncd" "${RUNNER_TEMP}/obsyncd"
+          docker rm --force "${container}" >/dev/null
+      - name: Hand the binary to the Windows leg
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: obsyncd-linux-amd64
+          path: ${{ runner.temp }}/obsyncd
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  obsidian-windows:
+    needs: static-binary
+    runs-on: windows-2025
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-windows
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up the pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.10.0'
+          check-latest: false
+      - name: Build the plugin from this commit
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Take the server binary this commit built
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: obsyncd-linux-amd64
+          path: ${{ runner.temp }}/binary
+      - name: Two Obsidian instances, the server under WSL 1
+        run: scripts/ci/obsidian-host.sh "${RUNNER_TEMP}/binary/obsyncd"
+      - name: Remove anything the run left behind
+        if: always()
+        run: |
+          set -uo pipefail
+          wsl.exe --unregister "obsync-e2e-${OBSYNC_E2E_RUN_ID}" >/dev/null 2>&1 || true
+          certutil -delstore Root "obsync e2e throwaway CA ${OBSYNC_E2E_RUN_ID}" >/dev/null 2>&1 || true
+          taskkill //F //IM Obsidian.exe >/dev/null 2>&1 || true
+          taskkill //F //IM caddy.exe >/dev/null 2>&1 || true
+          exit 0
+
+  plugin-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: plugin
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up the pinned Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.10.0'
+          check-latest: false
+      - name: Install, build and test the plugin
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v26.10.0"
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+          npm test

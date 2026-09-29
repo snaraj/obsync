@@ -1,0 +1,11 @@
+# M1894: opening a vault never records the reference it holds (#168)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -588,7 +588,6 @@
+           }
+           Object.assign(data, credentials({ ...selected }));
+           state = new State(store, data, secrets, id, selected, envelope, raw, onFailure, lease, claim);
+-          held.hold(ref);
+         }
+       } else {
+         Object.assign(data, credentials(metadata));

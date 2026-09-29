@@ -7,7 +7,7 @@ import nodePath, { join } from "node:path";
 import { FakeTimers, rig, sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_TICK_MS, REPAIR_SCAN_MS } = require("../build/sync/repair.js");
+const { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_TICK_MS, REPAIR_SCAN_MS, REPAIR_WALK_MS } = require("../build/sync/repair.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const { pushFile } = require("../build/sync/push.js");
 const { applyChange } = require("../build/sync/pull.js");
@@ -218,13 +218,15 @@ test("selected folders are checked before metadata and local access, including c
   assert.equal(large.reads.length, 0);
 });
 
-test("remembered path must match the authenticated immutable manifest", async () => {
+test("a remembered name that differs from the version's is verified by the version, not refused (#160)", async () => {
+  // A folder typed in another case, two devices disagreeing on a note's name:
+  // chunk presence is a fact about the version, whatever this device calls it.
   const r = await note();
   r.state.data.files["Notes/other.md"] = r.state.data.files[r.path];
   delete r.state.data.files[r.path];
-  r.host.source = () => assert.fail("mismatched path read");
-  await assert.rejects(new ChunkRepair(r.context).step(), /remembered/);
-  assert.equal(r.server.requests.some((request) => request.target === "/v1/chunks/exists"), false);
+  r.host.source = () => assert.fail("nothing is missing, so nothing is read");
+  assert.deepEqual(await new ChunkRepair(r.context).step(), { kind: "checked" });
+  assert.equal(r.server.requests.some((request) => request.target === "/v1/chunks/exists"), true, "the version was verified");
   assert.equal(puts(r).length, 0);
 });
 
@@ -234,7 +236,8 @@ test("authenticated content size must match the remembered size before inventory
   assert.equal(manifest.size, 25);
   r.state.data.files[r.path].size = 26;
   r.host.stat = r.host.source = () => assert.fail("mismatched size touched local source");
-  await assert.rejects(new ChunkRepair(r.context).step(), /remembered/);
+  assert.deepEqual(await new ChunkRepair(r.context).step(), { kind: "skipped" }, "not the remembered file: skipped, and said");
+  assert.ok(r.host.logs.includes(`repair decision=skipped reason=version_mismatch file=${r.frame.file_id}`), r.host.logs.join("\n"));
   assert.equal(r.server.requests.some((request) => request.target === "/v1/chunks/exists"), false);
   assert.equal(puts(r).length, 0);
 });
@@ -251,7 +254,7 @@ test("an authenticated tombstone with matching path and zero size cannot become 
     mtime: manifest.mtime, sha256: manifest.sha256 });
   r.server.requests.length = 0;
   r.host.stat = r.host.source = () => assert.fail("tombstone touched local source");
-  await assert.rejects(new ChunkRepair(r.context).step(), /remembered/);
+  assert.deepEqual(await new ChunkRepair(r.context).step(), { kind: "skipped" });
   assert.equal(r.server.requests.some((request) => request.target === "/v1/chunks/exists"), false);
   assert.equal(puts(r).length, 0);
 });
@@ -473,7 +476,8 @@ test("engine automatically repairs unchanged files, idles between complete walks
   assert.equal(puts(r).length, 1);
   await engine.repairTick(); // Finish the walk, then schedule the idle interval.
   assert.ok(r.host.logs.some((line) => /^repair decision=verified bytes=25 budget_sids=64 budget_chunks=1 duration_ms=\d+$/.test(line)));
-  assert.ok(timers.entries.some((entry) => entry.due - timers.now === REPAIR_SCAN_MS));
+  // Hours between complete walks now, not five minutes (#198).
+  assert.ok(timers.entries.some((entry) => entry.due - timers.now === REPAIR_WALK_MS));
   r.server.chunks.delete(r.sid);
   r.host.seed(r.path, "X".repeat(25), 1000);
   await engine.repairTick();
@@ -750,4 +754,43 @@ test("a server that is not there is absence during repair, never a could-not-ver
     "it waits for the next walk rather than knocking every second");
   await timers.run(0, () => r.server.feedWaiters.length > 0);
   engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
+});
+
+test("each cause of a failed repair says its own words, and none of them sends the person to their network (#160)", async () => {
+  const { ApiError } = require("../build/transport.js");
+  const words = require("../build/sync/engine.js");
+  const cases = [
+    ["a wrong clock", () => new ApiError(401, "stale_timestamp", "SENTINEL"), { code: "clock", message: `${words.CLOCK_OFF} ${words.RESUMES}` }, "clock"],
+    ["a full server", () => new ApiError(507, "volume_full", "SENTINEL"), { code: "storage", message: `${words.SERVER_FULL} ${words.RESUMES}` }, "storage"],
+    ["a proxy's page", () => new ApiError(403, "not_obsync", "SENTINEL"), { code: "edge", message: `${words.NOT_OBSYNC_ANSWER} ${words.RESUMES}` }, "edge"],
+    ["a revoked device", () => new ApiError(403, "device_revoked", "SENTINEL"), { code: "forgotten_device", message: words.REVOKED_DEVICE }, "forgotten_device"],
+    ["a file this device could not read", () => new Error("SENTINEL local fault"), { code: undefined, message: words.VERIFY_FAILED }, "read_or_write_failed"],
+    ["absence", () => new ApiError(0, "unreachable", "network=SENTINEL"), null, "unreachable"],
+  ];
+  for (const [name, failure, expected, reason] of cases) {
+    const r = await note(), timers = new FakeTimers(), statuses = [];
+    r.state.data.lastSeq = r.server.seq;
+    const engine = new SyncEngine({ ...r, timers, onStatus: (status) => statuses.push(status) });
+    await engine.start();
+    await timers.run(0, () => r.server.feedWaiters.length > 0);
+    const before = statuses.length;
+    r.transport.historyVersion = async () => { throw failure(); };
+    await engine.syncNow();
+    const said = statuses.slice(before).filter((status) => status.kind === "error");
+    if (expected === null) assert.deepEqual(said, [], `${name}: no error at all`);
+    else assert.ok(said.some((status) => status.message === expected.message && status.code === expected.code), `${name}: ${JSON.stringify(said)}`);
+    assert.ok(!said.some((status) => /connectivity/i.test(status.message)), `${name}: never "check connectivity"`);
+    assert.ok(r.host.logs.some((line) => line.startsWith(`repair decision=deferred reason=${reason} `)), `${name}: ${r.host.logs.join("\n")}`);
+    engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
+  }
+});
+
+test("a version sealed under a key this device no longer holds is skipped, not an error (#160, #177)", async () => {
+  const r = await note();
+  // The vault key changed on this device after it recorded the note.
+  r.context.manifestKey = await c.deriveManifestKey(new Uint8Array(32).fill(7), r.context.domainId);
+  r.host.source = () => assert.fail("nothing to repair it with");
+  assert.deepEqual(await new ChunkRepair(r.context).step(), { kind: "skipped" });
+  assert.ok(r.host.logs.includes(`repair decision=skipped reason=other_key file=${r.frame.file_id}`), r.host.logs.join("\n"));
+  assert.equal(puts(r).length, 0);
 });

@@ -1,0 +1,11 @@
+# M3122: the chunk COUNT check is gone: a record naming the file's chunks and more is adopted
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4445,7 +4445,6 @@
+     if (error instanceof ApiError) throw error;
+     return null;
+   }
+-  if (count !== sids.length) return null;
+   const after = await context.host.stat(path);
+   if (after === null || after.mtime !== occupant.mtime || after.size !== occupant.size) return null;
+   return after;

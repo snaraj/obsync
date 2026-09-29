@@ -1,0 +1,12 @@
+# M3227: a retry writes beneath text the editor holds unsaved
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1227,7 +1227,7 @@
+       const unsaved = (await this.editing(path)) === "unsaved";
+       const now = await this.stat(path);
+       if (now === null || now.size !== 0) return now;
+-      const busy = unsaved || this.typing(path);
++      const busy = this.typing(path);
+       if (busy || again > WRITE_AGAIN) {
+         this.log(
+           `host path_class=file decision=refused reason=write_dropped cause=${busy ? "editor_busy" : "budget"} ` +

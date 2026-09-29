@@ -1,0 +1,12 @@
+# M2124: an index answer is given without checking the record it names
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -922,7 +922,7 @@
+     for (let rebuilt = false; ; rebuilt = true) {
+       const paths = this.index.ids.get(fileId);
+       if (paths === undefined) return undefined;
+-      for (const path of paths) if (this.data.files[path]?.fileId === fileId) return path;
++      for (const path of paths) return path;
+       if (rebuilt) return undefined;
+       this.indexes = null;
+     }

@@ -1,0 +1,11 @@
+# M3143: a start does not ask again once its engine has started, and registers recovery under a leave
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3186,7 +3186,6 @@
+         throw new Error(nested);
+       }
+       await engine.start();
+-      if (!wanted(engine)) return superseded();
+       if (this.reconnect !== null) {
+         this.log(`engine decision=resumed attempt=${this.reconnect.attempt}`);
+         this.reconnect = null;

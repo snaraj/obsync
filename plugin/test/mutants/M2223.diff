@@ -1,0 +1,12 @@
+# M2223: a download declares its writer one byte over the version's size
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -907,7 +907,7 @@
+   const key = stagedKey(manifest);
+   const staged = context.staged?.get(key);
+   context.staged?.delete(key);
+-  const writer = staged ?? await context.host.writer(manifest.path, manifest.size);
++  const writer = staged ?? await context.host.writer(manifest.path, manifest.size + 1);
+   try {
+     if (staged === undefined) await writeVerified(context, manifest, writer);
+     const now = over === undefined ? null : await context.host.stat(manifest.path);

@@ -1,0 +1,11 @@
+# M2333: an outage's device list error never goes by itself (iPhone pass)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -945,7 +945,6 @@
+       .then((devices) => { if (current()) this.deviceList = devices; }, (error: unknown) => {
+         if (!current()) return;
+         this.deviceListError = `The device list is unavailable: ${refusalText(error)}`;
+-        if (refusalStatus(error)?.kind === "offline") this.rereadWhenAnswered();
+       })
+       .finally(() => {
+         if (shown !== this.devicesShown) return;

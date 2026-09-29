@@ -608,7 +608,32 @@ jobs:
           printf 'path=%s\ndirectory=%s\nname=obsync-plugin-%s.zip\ndigest=sha256:%s\n' \
             "${bundle}" "${export_dir}" "${TAG}" \
             "$(sha256sum "${bundle}" | awk '{print $1}')" >> "${GITHUB_OUTPUT}"
-      - name: Attest the native plugin build
+      - name: Export the static server archives from the image build
+        # The server a host runs without a container must be the server the
+        # image runs, so `server-dist` copies the SAME `server` and `bundle`
+        # stages the image does -- one single-platform export per production
+        # platform, never a second build path -- and the release contract packs
+        # each into one deterministic tarball (sorted, fixed time and owner),
+        # so an idempotent re-run reproduces the bytes it already uploaded.
+        id: server
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          archives="${RUNNER_TEMP}/server-archives"
+          rm -rf -- "${archives}"
+          mkdir -p "${archives}"
+          for arch in amd64 arm64; do
+            tree="${RUNNER_TEMP}/server-dist-${arch}"
+            rm -rf -- "${tree}"
+            docker buildx build --target server-dist --platform "linux/${arch}" \
+              --output "type=local,dest=${tree}" .
+            archive="${archives}/obsync-server-${TAG}-linux-${arch}.tar.gz"
+            python3 -B scripts/ci/release_contract.py server-archive \
+              --source "${tree}" --tag "${TAG}" --platform "linux/${arch}" --output "${archive}"
+            printf '%s=%s\n' "${arch}" "${archive}" >> "${GITHUB_OUTPUT}"
+          done
+      - name: Attest the native plugin build and server archives
         # Native provenance derives its source from the OIDC workflow SHA,
         # already bound to SOURCE_SHA before the first publication write.
         id: native_attestation
@@ -618,12 +643,15 @@ jobs:
             ${{ steps.plugin.outputs.directory }}/main.js
             ${{ steps.plugin.outputs.directory }}/manifest.json
             ${{ steps.plugin.outputs.directory }}/styles.css
+            ${{ steps.server.outputs.amd64 }}
+            ${{ steps.server.outputs.arm64 }}
           create-storage-record: false
           push-to-registry: false
       - name: Verify the native build provenance before release publication
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLUGIN_DIRECTORY: ${{ steps.plugin.outputs.directory }}
+          SERVER_ARCHIVES: ${{ steps.server.outputs.amd64 }} ${{ steps.server.outputs.arm64 }}
           ATTESTATION_BUNDLE: ${{ steps.native_attestation.outputs.bundle-path }}
         run: ./scripts/ci/verify-native-provenance.sh "${PLUGIN_DIRECTORY}" "${SOURCE_SHA}" "${ATTESTATION_BUNDLE}"
       - name: Build the deterministic release evidence manifest
@@ -635,16 +663,26 @@ jobs:
           CHART_DIGEST: ${{ steps.chart.outputs.digest }}
           PLUGIN_DIGEST: ${{ steps.plugin.outputs.digest }}
           PLUGIN_PATH: ${{ steps.plugin.outputs.path }}
+          SERVER_AMD64: ${{ steps.server.outputs.amd64 }}
+          SERVER_ARM64: ${{ steps.server.outputs.arm64 }}
         run: |
           set -euo pipefail
           name="obsync-${TAG}-release-manifest.json"
           path="${RUNNER_TEMP}/${name}"
+          # The contract requires the archives BY VERSION (1.1.4 on) and refuses
+          # them before it, so passing what was exported can select nothing.
+          server=()
+          if [ -n "${SERVER_AMD64:-}${SERVER_ARM64:-}" ]; then
+            server=(--server-archive "linux/amd64=${SERVER_AMD64}"
+                    --server-archive "linux/arm64=${SERVER_ARM64}")
+          fi
           for command in release-manifest manifest-record; do
             args=(--repository "${GITHUB_REPOSITORY}" --source-sha "${SOURCE_SHA}"
                   --main-run-id "${MAIN_RUN_ID}" --version "${VERSION}"
                   --image "${IMAGE}" --image-digest "${IMAGE_DIGEST}"
                   --chart "${CHART}" --chart-digest "${CHART_DIGEST}"
-                  --plugin-digest "${PLUGIN_DIGEST}" --plugin-bundle "${PLUGIN_PATH}")
+                  --plugin-digest "${PLUGIN_DIGEST}" --plugin-bundle "${PLUGIN_PATH}"
+                  "${server[@]}")
             if [ "${command}" = release-manifest ]; then
               python3 -B scripts/ci/release_contract.py "${command}" --output "${path}" "${args[@]}"
             else
@@ -662,10 +700,23 @@ jobs:
           PLUGIN_DIGEST: ${{ steps.plugin.outputs.digest }}
           PLUGIN_PATH: ${{ steps.plugin.outputs.path }}
           PLUGIN_DIRECTORY: ${{ steps.plugin.outputs.directory }}
+          SERVER_AMD64: ${{ steps.server.outputs.amd64 }}
+          SERVER_ARM64: ${{ steps.server.outputs.arm64 }}
           MANIFEST_PATH: ${{ steps.manifest.outputs.path }}
         run: |
           set -euo pipefail
           notes="${RUNNER_TEMP}/release-notes.md"
+          # One inventory for the upload and the byte readback. The archives
+          # join it exactly when the evidence step admitted them (1.1.4 on);
+          # the release-state classifier then requires them by version.
+          assets=("${MANIFEST_PATH}" "${PLUGIN_PATH}" "${PLUGIN_DIRECTORY}/main.js"
+                  "${PLUGIN_DIRECTORY}/manifest.json" "${PLUGIN_DIRECTORY}/styles.css")
+          server=()
+          if [ -n "${SERVER_AMD64:-}${SERVER_ARM64:-}" ]; then
+            assets+=("${SERVER_AMD64}" "${SERVER_ARM64}")
+            server=(--server-archive "linux/amd64=${SERVER_AMD64}"
+                    --server-archive "linux/arm64=${SERVER_ARM64}")
+          fi
           # This checkout IS the authorized source commit, so its CHANGELOG.md
           # is the one this release was cut from. The audit reads the same
           # bytes out of git at that SHA.
@@ -676,7 +727,7 @@ jobs:
             --main-run-id "${MAIN_RUN_ID}" --version "${VERSION}" \
             --image "${IMAGE}" --image-digest "${IMAGE_DIGEST}" \
             --chart "${CHART}" --chart-digest "${CHART_DIGEST}" \
-            --plugin-digest "${PLUGIN_DIGEST}" --plugin-bundle "${PLUGIN_PATH}"
+            --plugin-digest "${PLUGIN_DIGEST}" --plugin-bundle "${PLUGIN_PATH}" "${server[@]}"
           existing="${RUNNER_TEMP}/existing-release.json"
           releases_page="${RUNNER_TEMP}/existing-releases-page.json"
           api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"
@@ -728,9 +779,7 @@ jobs:
 
           verify_asset_bytes() {
             local url observed
-            for asset in "${MANIFEST_PATH}" "${PLUGIN_PATH}" \
-              "${PLUGIN_DIRECTORY}/main.js" "${PLUGIN_DIRECTORY}/manifest.json" \
-              "${PLUGIN_DIRECTORY}/styles.css"; do
+            for asset in "${assets[@]}"; do
               url="$(jq -er --arg name "$(basename "${asset}")" \
                 '.assets[] | select(.name == $name) | .url' "${existing}")"
               observed="${RUNNER_TEMP}/observed-$(basename "${asset}")"
@@ -767,15 +816,14 @@ jobs:
             # the asset upload. Resume only that exact zero-asset draft, then
             # reclassify the authoritative REST inventory before publishing.
             release_id="$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' "${existing}")"
-            # Explicit MIME types make the five-file inventory independent of
-            # the runner's filename database. Never overwrite an existing asset.
-            for asset in "${MANIFEST_PATH}" "${PLUGIN_PATH}" \
-              "${PLUGIN_DIRECTORY}/main.js" "${PLUGIN_DIRECTORY}/manifest.json" \
-              "${PLUGIN_DIRECTORY}/styles.css"; do
+            # Explicit MIME types make the inventory independent of the
+            # runner's filename database. Never overwrite an existing asset.
+            for asset in "${assets[@]}"; do
               name="$(basename "${asset}")"
               case "${name}" in
                 *.json) content_type=application/json ;;
                 *.zip) content_type=application/zip ;;
+                *.tar.gz) content_type=application/gzip ;;
                 main.js) content_type=application/javascript ;;
                 styles.css) content_type=text/css ;;
                 *) exit 1 ;;

@@ -1,0 +1,12 @@
+# M3208: a vault name holding the right-to-left override is shown
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -177,7 +177,7 @@
+ function unshowable(name: string): boolean {
+   for (const char of name) {
+     const code = char.codePointAt(0) ?? 0;
+-    if (code < 0x20 || code === 0x7f || (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069)) return true;
++    if (code < 0x20 || code === 0x7f || (code >= 0x202a && code < 0x202e) || (code >= 0x2066 && code <= 0x2069)) return true;
+   }
+   return false;
+ }

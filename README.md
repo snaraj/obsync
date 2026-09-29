@@ -4,38 +4,138 @@
 
 Read in your language: [English](README.md) • [العربية](docs/ar/README.md) • [Deutsch](docs/de/README.md) • [Español](docs/es/README.md) • [فارسی](docs/fa/README.md) • [Français](docs/fr/README.md) • [Bahasa Indonesia](docs/id/README.md) • [Italiano](docs/it/README.md) • [Nederlands](docs/nl/README.md) • [Polski](docs/pl/README.md) • [Português](docs/pt/README.md) • [Português (Brasil)](docs/pt-br/README.md) • [Русский](docs/ru/README.md) • [ไทย](docs/th/README.md) • [Türkçe](docs/tr/README.md) • [Українська](docs/uk/README.md) • [Tiếng Việt](docs/vi/README.md) • [日本語](docs/ja/README.md) • [한국어](docs/ko/README.md) • [中文简体](docs/zh-cn/README.md) • [中文繁體](docs/zh-tw/README.md)
 
-Self-hosted, end-to-end encrypted live sync for [Obsidian](https://obsidian.md):
-one dependency-free Rust server with a built-in dashboard that you run
-yourself, plus this plugin. Every Obsidian platform, no subscription, no third
-party. The server takes a file of any size; a phone keeps a per-file ceiling
-and a total budget you can see and change, because a phone cannot hold what a
-desktop can ([`docs/troubleshooting.md`](docs/troubleshooting.md)).
+Self-hosted, end-to-end encrypted live sync for [Obsidian](https://obsidian.md).
+Your notes sync through a server you run yourself. Notes, attachments and file
+names are encrypted on your device, and the server never receives the key. The
+plugin works on every platform Obsidian runs on, desktop and mobile. There is
+no subscription and no account anywhere else.
 
-Install it from Settings → Community plugins → Browse as **Self Hosted Private
-Sync** (plugin id `obsync-private-sync`), on Obsidian 1.13.0 or newer.
+**Something not working? → [Troubleshooting](https://snaraj.github.io/obsync/troubleshooting/)**
 
-Run it in your own homelab with [Docker Compose](docs/server.md) or
-[Kubernetes](docs/kubernetes.md). Use your home network, your own VPN, an HTTPS
-proxy, or a tunnel you choose. Cloudflare is optional.
+## Find what you need
 
-**New here? Start with the [setup guide](https://snaraj.github.io/obsync/setup/).** It helps you choose how your
-devices reach your server, says which setups have been proven on real devices, and
-walks through each one. In Obsidian it is one press away: **Settings → Self Hosted
-Private Sync → Setup guide**, or the command **Open the setup guide**.
+Every page is also on the [documentation site](https://snaraj.github.io/obsync/).
+
+### Use obsync
+
+| I want to… | Go to |
+| --- | --- |
+| Choose how my devices reach my server | [Choose your setup](docs/setup.md) |
+| Set up everything on my home network, with every phone screen | [Same network, step by step](docs/same-network.md) |
+| Install the plugin | [Install the plugin](docs/community-plugin.md) |
+| Set up my first device | [Quickstart](docs/quickstart.md) |
+| Pair a phone or another computer | [Pair your phone](docs/quickstart.md#pair-your-phone) |
+| Know what the status icon and the commands mean | [Daily use](docs/daily-use.md) and [Reading the status bar](docs/troubleshooting.md#reading-the-status-bar) |
+| Get an older version of a note back | [Restore a retained version](docs/daily-use.md#restore-a-retained-version) |
+| Know what a setting does | [Settings](docs/settings.md) |
+| Deal with a conflict copy | [Conflicts](docs/conflicts.md) |
+| Fix a problem | [Troubleshooting](docs/troubleshooting.md) |
+| Get back in after losing a device | [Recovery](docs/recovery.md) |
+| Move my vault to another server | [Moving this vault to a different server](docs/recovery.md#moving-this-vault-to-a-different-server) |
+
+### Run a server
+
+| I want to… | Go to |
+| --- | --- |
+| Run my server with Docker or Compose | [Run the server](docs/server.md) |
+| Put it behind my own proxy (Caddy, nginx, Traefik, HAProxy) | [Already have a TLS terminator](docs/server.md#already-have-a-tls-terminator-docker) |
+| Run it without a container, under systemd | [The static binary](docs/server.md#without-a-container-the-static-binary) |
+| Run my server on Kubernetes | [Kubernetes](docs/kubernetes.md) and the [chart reference](chart/README.md) |
+| Reach my server away from home, through my own VPN or proxy | [Reaching it from outside your LAN](docs/server.md#reaching-it-from-outside-your-lan) |
+| Use Cloudflare (optional) | [Cloudflare](docs/cloudflare.md) |
+| Trust my server's certificate on each device | [Trust the certificate authority](docs/server.md#trust-the-certificate-authority-once-per-device) |
+| Know how much memory and disk it needs | [How much memory it needs](docs/server.md#how-much-memory-it-needs) and [Storage](docs/storage.md) |
+| Back up my server | [Back up the two volumes](docs/server.md#back-up-the-two-volumes) |
+| Upgrade my server | [Upgrade by digest](docs/server.md#upgrade-by-digest) |
+| See my devices and revoke one | [The dashboard](docs/dashboard.md) |
+| Wipe my server and start again | [Purging a server](docs/purge.md) |
+| See what changed in each version | [`CHANGELOG.md`](CHANGELOG.md) |
+
+### Trust and privacy
+
+| I want to… | Go to |
+| --- | --- |
+| Know what this plugin touches on my device and network | [What this plugin accesses](#what-this-plugin-accesses) |
+| Understand what is encrypted and what the server can see | [Threat model](docs/threat-model.md) and [the dashboard's threat model](docs/security/dashboard.md) |
+| Report a security problem | [`SECURITY.md`](SECURITY.md) |
+
+### Inside the project
+
+For contributors and reviewers: [`CONTRIBUTING.md`](CONTRIBUTING.md),
+[architecture](docs/architecture.md), [protocol](docs/protocol.md),
+[benchmarks](docs/benchmarks.md), [device validation runs](docs/validation-runs/)
+and [every page](docs/README.md).
+
+## Install
 
 ![The plugin's settings opening with Get started: the Setup guide row and its Open the guide button, above the Server URL field](docs/assets/settings-get-started.png)
 
-**Versions.** The LATEST release is the newest tag on the
-[Releases page](https://github.com/snaraj/obsync/releases/latest), and that is
-what Obsidian installs and updates to. `main` is the EDGE: merged but
-unreleased work, for people building from source. There is no beta channel and
-no pre-release tag; the changelog's Unreleased section is the edge's record.
+Install the plugin from **Settings → Community plugins → Browse**. Search for
+**Self Hosted Private Sync** (plugin id `obsync-private-sync`). It needs
+Obsidian 1.13.0 or newer. Its settings open with the setup guide, one press
+away.
 
 > [!IMPORTANT]
 > - It syncs to a server **you** run: no hosted service, no account elsewhere.
 > - Back up your vault first; keep the 24-word recovery phrase off the device that made it.
 > - Never run it alongside another sync (Obsidian Sync, a cloud folder, another plugin) on one vault.
 > - Young software: read the [`CHANGELOG.md`](CHANGELOG.md) entry for your version, update every device, and know what each [validation run](docs/validation-runs/) covered.
+
+## Get syncing
+
+The shortest complete path is Compose with Caddy on your own network, from a
+checkout of this repository. It gives you HTTPS on any network, with no domain
+and no account anywhere. [Same network, step by step](docs/same-network.md)
+walks through it with every screen. Replace `vX.Y.Z` below with the release you
+are installing, the newest tag on the
+[Releases page](https://github.com/snaraj/obsync/releases/latest).
+
+**1. Verify the image.** Then run exactly the digest it printed:
+
+```sh
+cosign verify ghcr.io/snaraj/obsync:vX.Y.Z \
+  --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+**2. Start the server:**
+
+```sh
+OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
+  OBSYNC_HOST=sync.example.org \
+  OBSYNC_BIND_ADDRESS=192.168.1.10 \
+  docker compose -f deploy/compose/docker-compose.yml up -d
+```
+
+`OBSYNC_HOST` is the name your devices will type. It only has to resolve on
+your own network. `OBSYNC_BIND_ADDRESS` is the address ports 80 and 443 are
+published on: a bind address limits the destination interface, not the source,
+so your firewall decides who reaches it. Compose refuses to start until you have chosen.
+
+**3. Read the setup token.** At first boot the server mints a setup token and
+writes it to its journal volume, mode 0600, never logged. It creates your
+account once and remains the dashboard's recovery sign-in. Guard it like the
+recovery phrase. Ask the running server for it, in any shell, PowerShell and
+Command Prompt included:
+
+```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
+
+If the container is stopped, read the file off it instead, from a POSIX shell
+(macOS, Linux, or WSL on Windows):
+
+```sh
+docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
+```
+
+**4. Set up each device.** Trust the server's certificate once
+([how](docs/server.md#trust-the-certificate-authority-once-per-device)).
+Install the plugin, then follow the [Quickstart](docs/quickstart.md): set up
+the first device, then pair the others.
+
+Already have HTTPS in front, from a proxy or tunnel you trust? Run the
+[bare server](docs/server.md#already-have-a-tls-terminator-docker) instead.
 
 ## What this plugin accesses
 
@@ -48,156 +148,18 @@ no pre-release tag; the changelog's Unreleased section is the edge's record.
 
 What the server can and cannot see: [`SECURITY.md`](SECURITY.md) and the [threat model](docs/threat-model.md).
 
-## Get syncing
+## Versions
 
-Five steps from nothing to two devices in sync. `v1.0.6` is the release this
-page was written for; use the tag you are installing.
-
-### 1. Start the server
-
-Verify the signature, then run exactly the digest it printed:
-
-```sh
-cosign verify ghcr.io/snaraj/obsync:v1.0.6 \
-  --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
-```
-
-The simple path is Compose with Caddy, from a checkout of this repository:
-HTTPS on any network, no domain, no account anywhere.
-
-```sh
-OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
-  OBSYNC_HOST=sync.example.org \
-  OBSYNC_BIND_ADDRESS=192.168.1.10 \
-  docker compose -f deploy/compose/docker-compose.yml up -d
-```
-
-`OBSYNC_HOST` is the name your devices will type; it need only resolve on
-your own network. `OBSYNC_BIND_ADDRESS` is the address ports 80 and 443 are
-published on: a bind address limits the destination interface, not the source,
-so your firewall decides who reaches it. Compose refuses to start until you have chosen.
-
-Already have HTTPS in front, from a proxy or tunnel you trust? Run the bare
-server instead: [Run the server](docs/server.md).
-
-### 2. Read the setup token
-
-At first boot the server mints a setup token and writes it to its journal
-volume, mode 0600, never logged. It creates your account once and
-remains the dashboard's recovery sign-in. On an account with recovery registered,
-it also re-enrols a device when accompanied by proof of the vault key; guard it
-like the recovery phrase.
-Read it from the container:
-
-```sh
-docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
-```
-
-### 3. Trust the certificate, once per device
-
-Caddy signs with an authority it made on first start; each device must trust it
-once. Export the root certificate and install it per platform as
-[Run the server](docs/server.md#trust-the-certificate-authority-once-per-device)
-shows; on iOS, trusting it is a second switch after installing.
-
-### 4. Set up the first device
-
-1. Settings → Community plugins → Browse → **Self Hosted Private Sync** →
-   Install → Enable.
-2. Set **Server URL** to your server (`https://sync.example.org`, port included
-   unless 443), then choose **Whole vault** or **Selected folders only**.
-   You can narrow or widen the selection later; removed folders keep their files.
-
-   ![The plugin's settings tab: the Server URL field holding a demo host name, the edge headers box, and the Connection row with its Check and Open dashboard buttons](docs/assets/settings-server.png)
-
-3. Paste the setup token under **Setup or recover**, select **Set up or recover**, and
-   write down the 24-word recovery phrase.
-
-   If every paired device is lost, restore that phrase in a fresh vault and use
-   **Setup or recover** with the server's setup token. This requires recovery
-   to have been registered before the devices were lost and the server to
-   retain the account and encrypted files. The phrase cannot recover missing
-   server data, and an older account without recovery registration still needs
-   a paired device. See [Recovery](docs/recovery.md).
-
-   ![The This device section of the settings tab: the Pairing row with Pair this device and Pair a new device, the First-time setup row with the Setup token field and the Set up button, and the Vault key row](docs/assets/settings-setup.png)
-
-### 5. Pair the second device
-
-1. Install the plugin there with the same **Server URL**; on the first device
-   run **Pair a new device** for a code valid ten minutes.
-
-   ![The Pair a new device dialog on the first device, its code obscured, with Copy code and Copy link buttons and the line Waiting for the new device](docs/assets/pair-new-device.png)
-
-2. On the second device open **Pair this device**, paste the code, and select
-   **Pair**.
-3. Back on the first device, approve it by name. Edit a note on either; it
-   appears on the other within seconds.
-
-   ![The first device asking whether to approve the new device by name, with Approve and Reject buttons](docs/assets/pair-approve.png)
-
-![Animated: the pairing code shown on the first device, pasted on the second, approved on the first, and the first note arriving on the second](docs/assets/pairing.gif)
-
-Trying it on one computer? `http://127.0.0.1:8080` reaches the bare server on
-a desktop; Obsidian on iOS and Android refuses plain HTTP.
-
-The [same-network guide](docs/same-network.md) includes actual iPhone setup
-screens. Each validation record names the version tested; unreleased desktop
-changes are not presented as phone results.
-
-Every step in full: [Quickstart](docs/quickstart.md).
-
-## Other ways to reach your server
-
-Whichever you choose, the plugin needs HTTPS with a certificate every device
-trusts; the server stays on plain HTTP behind that terminator.
-
-- **LAN only.** The Compose path above, reached only at home; no sync away.
-- **WireGuard.** Your own VPN home: fastest, entirely yours; a peer configuration on every device.
-- **Tailscale.** A managed WireGuard mesh: least setup; a third party coordinates it, on its plan's terms.
-- **A reverse proxy with automatic TLS**, such as Caddy on a public name: reachable from the internet, yours to patch.
-- **Cloudflare Tunnel.** Above. No inbound port; a provider on the path, on its terms.
-
-Which of these have been proven on real devices, and each one's guide:
-[Choose your setup](docs/setup.md).
-
-What a roaming device needs (route, name, certificate, firewall, iOS local-network
-prompt): [Reaching it from outside your LAN](docs/server.md#reaching-it-from-outside-your-lan).
-
-## Optional: Cloudflare
-
-One tested deployment has no public hostname: a Cloudflare Tunnel and a
-private route reach the server's network, and each device's Cloudflare One
-client carries the Server URL there. A public hostname behind Cloudflare
-Access, with a service token in **Edge service-token headers** and
-`OBSYNC_EDGE=cloudflare`, also works. Both, step by step: [Cloudflare](docs/cloudflare.md).
-
-## Troubleshooting
-
-| Symptom | Likely cause | First thing to try |
-| --- | --- | --- |
-| `obsync: offline — retrying` | The device cannot reach the Server URL; it keeps trying and resumes by itself | Nothing, if the device is just away from the server's network; otherwise open the URL in a browser there; check port, HTTPS, route |
-| A phone will not connect while a computer syncs | The phone distrusts the private certificate | Install the root certificate; on iOS also enable it under Certificate Trust Settings |
-| `401 stale_timestamp` | A clock is off by more than 300 seconds | Turn on automatic time on the device or the server |
-| `403 device_pending` | Nobody has approved it yet | Approve it by name on the device you paired from |
-| A file never arrives | Outside the folder selection, or above a phone's size ceiling | Check **Sync folders on this device**; on the phone run **Show remote-only files** |
-
-Every other symptom and error code, and how to report one: [Troubleshooting](docs/troubleshooting.md).
-
-## Documentation
-
-[Choose your setup](docs/setup.md) · [Quickstart](docs/quickstart.md) · [Run the server](docs/server.md) ·
-[Cloudflare](docs/cloudflare.md) · [Daily use](docs/daily-use.md) ·
-[Settings](docs/settings.md) · [Troubleshooting](docs/troubleshooting.md) ·
-[Recovery](docs/recovery.md) · [Changelog](CHANGELOG.md)
-
-Everything else: [docs/README.md](docs/README.md).
+The LATEST release is the newest tag on the
+[Releases page](https://github.com/snaraj/obsync/releases/latest). That is
+what Obsidian installs and updates to. `main` is the EDGE: merged but
+unreleased work, for people building from source. There is no beta channel and
+no pre-release tag. The changelog's Unreleased section is the edge's record.
 
 ## Questions, bugs, and security
 
 - **A question, or not sure it is a bug:** [Discussions](https://github.com/snaraj/obsync/discussions).
-- **A bug:** [open an issue](https://github.com/snaraj/obsync/issues/new/choose) with the report [Troubleshooting](docs/troubleshooting.md) describes; no token, no phrase, no address you would not publish.
+- **A bug:** [open an issue](https://github.com/snaraj/obsync/issues/new/choose) with the report [Troubleshooting](docs/troubleshooting.md#how-to-collect-a-report) describes. Leave out any token, phrase or address you would not publish.
 - **A suspected vulnerability:** privately, through [`SECURITY.md`](SECURITY.md), never a public issue.
 
 ## License

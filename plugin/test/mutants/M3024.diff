@@ -1,0 +1,11 @@
+# M3024: a landed copy the writer cannot vouch for is left and the next name written anyway (one copy per conflict, #225)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3550,7 +3550,6 @@
+       );
+     }
+     if (reused !== null) return { path: target, attempt, stat: reused, written: true };
+-    if (landed === "kept") throw new Error("copy_unconfirmed");
+   }
+   return null;
+ }

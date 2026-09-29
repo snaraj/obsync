@@ -1,0 +1,12 @@
+# M3301: the editor is loaded without reading back what the file holds
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2753,7 +2753,7 @@
+     const started = Date.now();
+     try {
+       const written = lines(text);
+-      if (lines(await read()) !== written) {
++      if (false) {
+         this.log(`host path_class=file decision=editor_left reason=file_changed duration_ms=${Date.now() - started}`);
+         return;
+       }

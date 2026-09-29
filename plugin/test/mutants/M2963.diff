@@ -1,0 +1,12 @@
+# M2963: the engine runs on the page's clock on desktop
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2447,7 +2447,7 @@
+       state: this.state,
+       transport: this.transport,
+       host: this.host,
+-      timers: this.clock ?? pageTimers,
++      timers: pageTimers,
+       onStatus: (status) => {
+         if (this.engine === engine) this.setStatus(status);
+       },

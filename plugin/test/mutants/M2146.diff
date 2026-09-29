@@ -1,0 +1,12 @@
+# M2146: a read-back's own chunk check does not hear the stop
+--- a/plugin/src/sync/repair.ts
++++ b/plugin/src/sync/repair.ts
+@@ -245,7 +245,7 @@
+       this.check(path, record);
+       const batch = manifest.chunks.slice(index, index + REPAIR_BATCH_SIDS);
+       const sids = [...new Set(batch.map((chunk) => chunk.sid))];
+-      const missing = await this.context.transport.missingChunks(sids, { signal: this.context.signal });
++      const missing = await this.context.transport.missingChunks(sids);
+       this.check(path, record);
+       this.inventory(missing, sids);
+       const first = batch.findIndex((chunk) => missing.includes(chunk.sid));

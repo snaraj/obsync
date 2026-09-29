@@ -1,7 +1,7 @@
 # M108: the reconcile pass queues the folder records it owes after the file work
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2131,33 +2131,6 @@
+@@ -3374,49 +3374,6 @@
      // barrier, then the moves underneath -- which queue behind that barrier
      // precisely because they are queued after it.
      const casedFolders = tombstones ? await this.recaseFolders(context, folders, label) : new Set<string>();
@@ -27,19 +27,34 @@
 -        present.add(folder);
 -        if (casedFolders.has(folder)) continue;
 -        if (context.state.folderByPath(folder) !== undefined) continue;
--        this.publishFolder(folder, false);
+-        // A RETIRED ROOT WAITS FOR THE FEED (issue #127). A device stopped
+-        // between a selected folder's tombstone and the record that renames
+-        // it published the folder again here, and that record, written, ended
+-        // the retirement: the rename then arrived as a second folder, was
+-        // refused with a notice blaming the other device, and the two devices
+-        // disagreed about the folder from then on. Held until the feed has
+-        // caught up (`releaseRetired`); a pass after that publishes it.
+-        if (!this.caughtUp && context.state.data.retiredRoots[folder] !== undefined) {
+-          this.retiredHeld.add(folder);
+-          context.host.log(`${label} path_class=folder decision=held reason=retired_root`);
+-          continue;
+-        }
+-        // A FOLDER THAT MERELY HAS NO RECORD HERE IS NOT ONE MADE HERE: a
+-        // tombstone that found it occupied may have kept it, and bringing it
+-        // back to the devices that deleted it is not this pass's to decide
+-        // (`push.ts`, `pushFolder`).
+-        this.publishFolder(folder, false, false);
 -        this.enqueue(folder);
 -        folderQueued++;
 -      }
 -    }
-     for (const file of files) {
-       if (!this.running) return;
-       if (!this.tracked(file.path, label)) { skipped++; continue; }
-@@ -2374,6 +2347,25 @@
-       }
-       this.enqueue(file.path);
+     // Sync now reads a recorded file's contents again only up to its ceiling
+     // (`SYNC_NOW_VERIFY_MAX`, issue #197); what lies above is counted.
+     let unread = 0;
+@@ -3678,6 +3635,41 @@
        queued++;
-+    }
+     }
+     if (verifyUpTo > 0) this.examined += queued;
 +    // THE FOLDER RECORDS THIS DEVICE OWES, after the file work.
 +    let folderQueued = 0;
 +    let folderSkipped = 0;
@@ -54,10 +69,27 @@
 +        present.add(folder);
 +        if (casedFolders.has(folder)) continue;
 +        if (context.state.folderByPath(folder) !== undefined) continue;
-+        this.publishFolder(folder, false);
++        // A RETIRED ROOT WAITS FOR THE FEED (issue #127). A device stopped
++        // between a selected folder's tombstone and the record that renames
++        // it published the folder again here, and that record, written, ended
++        // the retirement: the rename then arrived as a second folder, was
++        // refused with a notice blaming the other device, and the two devices
++        // disagreed about the folder from then on. Held until the feed has
++        // caught up (`releaseRetired`); a pass after that publishes it.
++        if (!this.caughtUp && context.state.data.retiredRoots[folder] !== undefined) {
++          this.retiredHeld.add(folder);
++          context.host.log(`${label} path_class=folder decision=held reason=retired_root`);
++          continue;
++        }
++        // A FOLDER THAT MERELY HAS NO RECORD HERE IS NOT ONE MADE HERE: a
++        // tombstone that found it occupied may have kept it, and bringing it
++        // back to the devices that deleted it is not this pass's to decide
++        // (`push.ts`, `pushFolder`).
++        this.publishFolder(folder, false, false);
 +        this.enqueue(folder);
 +        folderQueued++;
 +      }
-     }
++    }
      if (own !== null) {
        context.host.log(
+         `${label} decision=held since=${own.since} untracked=${untracked.length} adopted=${adopted} ` +

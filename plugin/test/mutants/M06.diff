@@ -1,11 +1,11 @@
 # M06: keep-and-record records no copy
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3431,7 +3431,6 @@
+@@ -3986,7 +3986,6 @@
  ): Promise<ApplyResult> {
-   const copy = await keepBothAt(context, change, manifest);
+   const copy = await keepBothAt(context, change, manifest, context.copies === undefined);
    if (copy === null) return "refused";
 -  await recordAt(context, change, copy.path, copy.stat, manifest.path);
-   return "conflict_copy";
- }
- 
+   // THE NAME IS NOT THIS DEVICE'S TO GIVE (issue #164). The device holding
+   // that file id moves its own note aside under a name it chooses and
+   // publishes the move, which renames this copy a second later: a notice

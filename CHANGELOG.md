@@ -5,7 +5,614 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
-## 1.1.3 - Unreleased
+## 1.1.4 - Unreleased
+
+1.1.4 fixes the issues that were open when its scope was set on
+2026-09-27 -- found by people running obsync and by a review of the whole
+plugin and server -- and those found while testing it on real computers,
+phones and CI runners until then, with three found after (#242, #243, #252).
+One is better but not fixed: two devices typing in one note for a long time
+can still, on a very busy computer, move one person's line into a conflict
+copy, which keeps it (#227, below). Issues found after the scope was set
+wait for 1.1.5 (#238 to #241, #244 to #248, #253). Among them: on a Mac whose
+file-event service is overloaded, Obsidian may not list a note obsync
+downloaded until it catches up or restarts (`docs/troubleshooting.md`, "A
+note that synced does not show in Obsidian").
+
+Update the server and every device; each works with the other's 1.1.3
+meanwhile, and the notes below say where a mixed pair behaves differently.
+
+### Before you update
+
+- **Docker Compose** asks how much space obsync may use:
+  `OBSYNC_BLOBS_CAPACITY` (such as `200GiB`) and `OBSYNC_JOURNAL_CAPACITY`
+  (such as `4GiB`). Until both are set, Compose refuses to start and names
+  the missing one.
+- **The Helm chart** no longer guesses your ingress peer or storage class. An
+  install that relied on the old defaults sets `ingress.peers` and
+  `storage.*.className`; until then it fails closed instead of deploying.
+  The memory request rises from 64Mi to 128Mi (the limit stays 1Gi). Its
+  two platform annotations (`<domain>/deployment-ready`,
+  `<domain>/volume-capacity`) now appear only when you set
+  `platform.annotationDomain`. A platform whose policy reads the keys
+  releases up to 1.1.3 rendered sets it to their prefix,
+  `platform.snaraj.dev`, in the same change that selects 1.1.4; the 1.1.3
+  chart refuses the new key, so it cannot go in earlier.
+- **If you copied the Kubernetes guide's TLS front**, give its `proxy_pass`
+  name a trailing dot (`obsync.obsidian.svc.cluster.local.`): without it,
+  nginx can fail to start where the cluster's search domains are tried
+  first, as in an IPv6-only cluster. In a dual-stack or IPv6-only cluster,
+  also uncomment its `listen [::]:8443 ssl;` line (#226).
+- **Behind a proxy or tunnel**, the server believes forwarding headers only
+  from addresses in `OBSYNC_TRUSTED_PROXY_CIDRS` (in `cloudflare` mode, the
+  private networks when it is empty). A connector on a public address must be
+  listed there, or every request answers 421. A `/0` entry stops the server at
+  start.
+- **If you copied obsync's nginx configuration**, copy it again, or make its
+  two lines read `listen 8443 ssl http2;` and `error_log stderr;`. The old
+  file does not start on nginx 1.24 (Ubuntu 24.04) or under systemd (#215).
+- **`obsyncd export`** takes the key from `--key-file <file|->`, a regular file
+  with mode 600. `--key` still works and warns; it goes in a later release.
+- **Custom request headers** (formerly Edge service-token headers): a line
+  saved by 1.1.3 that a request cannot carry now stops each request with a
+  message naming it, instead of being dropped without a word (#183).
+- **Pairing**: update the server as well as the plugins. Only a 1.1.4 server
+  removes a device that was approved but never collected the vault key (#153).
+- **Going back to 1.1.3** on a device drops two things 1.1.4 keeps in the
+  plugin's data file: a pending folder selection (#185) and deletions held for
+  your answer (#162). A held deletion is then published at the next start
+  unless the share rule holds it.
+
+### What the status bar tells you
+
+**The status bar is one steady icon.** It no longer jumps while you type:
+a check when this device is up to date, a turning wheel while it syncs, a
+cloud struck through while the server does not answer, an alert when sync
+needs you, and a pause sign for a paused note. Hover it for the words; click
+it for **Show sync status**, which stays current and offers the next step.
+Every command ends in "(obsync)", so the palette finds them all (#156).
+
+**Phones and tablets show the same icon** in the header of the note you have
+open; tap it for **Show sync status**. A problem that needs you is also said
+once in a notice. Android, iOS, iPadOS (#209).
+
+**The status tells you what is really going on.** Receiving or sending many
+notes reads syncing with a count that goes down, a device starts on
+"checking for changes", and "offline — retrying" clears as soon as the
+server answers (#158).
+
+**A note waiting for your typing is named.** "syncing 1 file" goes on
+", waiting for unsaved changes in" and the note's name, and Show sync status
+says its newer version follows once that typing is saved (#252).
+
+**A refusal says what it is, the first time.** A removed device, a wrong
+clock, a full server or a proxy answering instead of obsync each say what
+happened and what to do, and clear by themselves once fixed; if Obsidian
+started while one was so, it says to select Sync now once it is fixed,
+because nothing tries a refused start again on its own. Repair no
+longer sends you to check your network, and after a new vault key an unsent
+edit is sent once under the new key with one notice (#155, #160, #177).
+
+**Check, the device list and Sync now answer quickly and in plain words.**
+No more `0 unreachable: network=…` after a minute's wait (#182).
+
+**An untrusted server certificate is named as one.** Check, the status, Show
+sync status, setup and pairing say "This device does not trust your server's
+certificate, so it refused the connection" and point to the troubleshooting
+entry with each device's steps. Sync keeps retrying and resumes once the
+certificate is trusted. Seen on desktop; phones are matched by their own
+wording for the same failure (#201).
+
+**A certificate for another name, or out of date, is named too.** Check,
+the status, Show sync status, setup and pairing say which it is and what
+to do, instead of "nothing answered" and the struck-through cloud. Sync
+keeps retrying. Seen on desktop; phones are matched by their platforms'
+documented wording, not yet seen on a device (#229).
+
+**A device kept out by your server's edge says so.** Before, only a first
+pairing said why. The status, Show sync status and Check now say the
+request did not come through the edge, and to check the Server URL, the
+Custom request headers and the route to the server, in pairing's own
+words (#228).
+
+**Settings no longer shows an old outage, and your devices are named, not
+numbered.** Each opening of Settings reads the device list itself, and "not
+answering" goes by itself once the server answers. Show sync status and the
+Pairing row name this device ("iPhone 5DMY"); the long device id stays,
+smaller, in Show sync status for support (#152).
+
+### Faster
+
+**Sync picks up again the moment your network, the app or a new server
+address comes back.** The next attempt goes at once instead of after a pause
+of up to a minute, or five minutes for a VPN (#134, #186, #195).
+
+**Your edits reach your other devices sooner.** A note you are typing in is
+sent about 150 ms after the editor saves instead of 0.9 s (another app's
+writes keep the longer wait), a small edit takes two requests instead of
+three, and the start no longer waits for its report to the server (#195).
+
+**A note you type while a big file moves now arrives in about a second.**
+Uploads no longer move in lock-step batches, and note-sized pieces have room
+of their own. Versions over 32 MiB download beside other changes and are
+written only once complete and still the newest; Show sync status says
+"Downloading <file>". On the test fakes, 58 s became 0.3 s up and 62 s
+became 0.2 s down; on a real iPhone a note arrived ahead of a 128 MiB file's
+first piece (#196).
+
+**Large uploads run about twice as fast and do half the work.** A file is
+read and encrypted once (256 MiB: 44% less CPU), and 32 MiB instead of 8 MiB
+may be on the wire: 71 → 134 MiB/s at 20 ms round trip. On a link that is
+itself the limit the gain is small (200 Mbit/s: 20 → 23 MiB/s). If Obsidian
+closes in the middle of a large upload, it may send up to 33 MiB again when
+it reopens (up from 8 MiB) (#196).
+
+**Stopping sync no longer waits out a download.** Leave, Save and quitting
+end at the next piece instead of after up to 24 MiB. Nothing half-downloaded
+is written (#196).
+
+**Adding a device to a large vault is many times faster.** A 10,000-note
+first sync rewrote obsync's data file 10,010 times (13.8 GB of writes) and
+took about four minutes on the test fakes; it now writes it 10 times and
+takes about 7 s in 175 requests. A phone holds at most 8 MiB of prefetched
+notes, a computer 32 MiB (#194).
+
+**Copying a vault onto a new device no longer uploads it all again.** A
+copied vault of 1,000 notes published 668 versions and 650 deletions; it now
+publishes none. A note the server also names waits at most ten minutes for
+the device to catch up (#194). A device paired again after your other
+devices edited while it was away holds those notes as it last saw them;
+pairing takes each as the earlier version it is and uploads nothing, so it no
+longer asks whether to add them to the server's vault either. All platforms
+(#194, #141).
+
+**Attachments are recognised too, not uploaded again.** A device paired
+again after Leave, or a vault copied onto a new device, recognised its
+notes but not its files over 8 MiB, such as photos, PDFs and recordings: it
+published each one again under a new id, and your other devices retired one
+of the two, which could leave a file's history under the retired copy. Such
+a file is now recognised by reading it once and comparing it, piece by
+piece, with the version the server holds; nothing is uploaded or
+downloaded. A file that differs by one byte is kept beside the other, as
+before. On a phone, a file above its per-file limit is not read to check it
+and is handled as before. All platforms (#232).
+
+**An idle vault stays quiet.** 4 requests instead of 3,186 per idle hour at
+10,000 notes: repair walks every 6 hours, and a computer walks its folders
+every 5 minutes and when you return to Obsidian (#198).
+
+**Changes made while Obsidian is in the background upload within
+seconds.** On a computer, a note changed while Obsidian's window was
+minimized, behind other windows or on another desktop could take minutes
+to reach your other devices: a hidden window slows its own timers to about
+one a minute, and obsync's uploads and its reconnects waited on them.
+obsync now keeps time in a small background worker a hidden window does
+not slow. If the worker cannot start, obsync says so once in its log
+(`timers decision=fallback`) and works as before. Computers only; phones
+are unchanged (#221).
+
+**Sync now is quick, and Verify all files checks everything.** Sync now read
+and encrypted every file in the vault to find the few that had changed; on a
+phone that meant reading files of up to 512 MiB whole at every press. It now
+sends what is waiting, fetches what the server has, retries what was held
+back, and reads the contents of files up to 8 MiB, the size at which another
+plugin can rewrite a note without changing its size or date. In a test vault
+of 10,000 files with fifty 12 MiB attachments, a press read 20 MB instead of
+1.9 GB. The new command **Verify all files** reads every file, however large,
+sends the ones that changed, and says how many it checked. Desktop and
+mobile (#197).
+
+**A large download on a phone holds the file once, not twice.** A 512 MiB
+download, the most a phone takes by default, held about 1 GiB at its peak by
+the plugin's own count, enough for the phone to close the app; it now holds
+520 MiB. Computers write downloads in pieces and were not affected (#197).
+
+**Restore from history takes far fewer requests.** Each **Load next** made
+twenty requests, and a search that reached a thousand versions back made a
+thousand. Each now reads up to 100 versions in one request, and that search
+takes about a dozen. Works with older servers. Desktop and mobile (#199).
+
+**Small speed-ups you will not see.** Encryption keys are prepared once per
+session, and uploaded pieces are hashed once instead of twice. What is
+encrypted is byte for byte the same (#197).
+
+### Your notes stay safe
+
+**A phone no longer empties a note it has just received.** On Android,
+Obsidian sometimes finished writing a downloaded file but left it empty. The
+phone took the empty file for an edit and sent it back, so the note became
+empty on every device, including the one that wrote it; its text stayed only
+in the note's history. In a test, 4 of 1,600 files a desktop wrote came back
+empty this way. A phone now writes such a file again, whether a download or
+a merge of two devices' edits. If it stays empty, the phone names it in the
+status, tries it again later, and never sends the empty file, wherever it is
+moved, or its deletion. A note this already
+emptied can be restored from history
+([troubleshooting](docs/troubleshooting.md#a-note-became-empty-on-every-device)).
+Mobile; seen on Android (#242).
+
+**A note open on screen shows another device's change as soon as it
+arrives.** On a busy computer, Obsidian could miss obsync writing a note
+that was open and keep showing the old text. obsync took that old text for
+unsaved typing and held every later version of the note, so the status read
+"syncing 1" for as long as the note stayed open, and a keystroke there saved
+the old text over the newer one. obsync now puts what it writes into the open
+note itself, instead of waiting for Obsidian to notice the change. A note
+holding unsaved typing still waits for it to be saved, and the newer version
+is merged in.
+On 1.1.3, closing the note's tab and opening it again clears it
+([troubleshooting](docs/troubleshooting.md#a-note-stays-at-syncing-1-file)).
+Desktop and mobile (#252).
+
+**Two people typing in one note on two devices keep each other's
+typing.** When both devices merged each other's changes at the same moment,
+round after round, obsync stopped after three rounds and settled the note by
+rule: one device's version stayed and the other's went into a conflict copy,
+so words someone had just typed left the note they were still typing in
+(they were in the copy). It was rare, and most likely on a busy computer or
+phone. Each device now remembers the merges it has already worked out, so it
+keeps combining both people's typing for as long as they type, with no copy.
+Both typing devices need 1.1.4; a 1.1.3 device still settles by rule.
+Desktop and mobile (#227).
+
+**And when both type for a long time without a pause.** obsync writes the
+other device's typing into a note only once the typing there pauses. When two
+people typed without a pause for more than a few seconds, each device had to
+look further back through the note's history than it allows, gave up, and
+settled the note by rule: dozens of conflict copies, and one person's typing
+was in them and not in the note. Each device now remembers the history it has
+already read, so the note combines both people's typing as soon as they
+pause, however long they typed. A device whose note lost that rule while
+someone was typing in it also no longer sends its next save over the other
+device's text. It can still happen on a computer too busy to keep up: in a
+test of two desktops typing for a minute beside six busy processes, 2 runs in
+11 moved one person's line into conflict copies, which kept it. Both typing
+devices need 1.1.4. Desktop and mobile (#227, which stays open).
+
+**Deleting many notes at once asks first, and Restore here puts them back.**
+Five or more notes deleted in one go -- a multi-select, or the notes inside
+a deleted folder -- stay on your other devices, and one notice asks: "You
+deleted 20 notes (in Notes). Delete them on your other devices too?" with
+**Delete everywhere** and **Restore here**. Restore here puts the notes back
+on this device exactly as they were, from the server, with no copies and no
+new versions. The question waits for you, across a restart, and stays under
+Settings, obsync, **Deletions held back**. Fewer than five deletions go at
+once, as before. A phone does not put back a note above its **Largest file
+to download** (#162).
+
+**A phone no longer stops syncing over a note it no longer has.** A note
+deleted on a phone while obsync was not running, in the phone's Files app or
+with Obsidian closed, and then deleted on another device, stopped that phone
+for good: it could not move the note to the trash because it was already
+gone, every attempt stopped at the same place, and the status read "Changes
+from your server could not be read" while the server answered every request.
+The deletion is now settled as done, the way a computer already settled it,
+and sync goes on. iPhone, iPad and Android (#234).
+
+**A note you deleted stays deleted when you add a folder to Sync folders.**
+Adding a folder under **Sync folders on this device**, or going back to the
+whole vault, makes the device read your vault's history again from the start.
+A note another device wrote and this device then deleted came back on this
+device alone, with the text it had before, while your other devices kept it
+deleted; a folder deleted the same way came back too. Now the device finishes
+its own deletion as the history reaches it, and sends nothing. The history is
+still read in full, so such a note is downloaded once more and moved to the
+trash again. A note that came back before you updated goes the next time you
+add a folder; if you edited it meanwhile, your edit is kept everywhere.
+Desktop and mobile (#237).
+
+**A file you fetched past the download ceiling is never trashed when it
+changes.** obsync keeps the copy you have, lists it under **Show remote-only
+files** as "a newer version is on the server", and says so once with a
+**Fetch** button; Fetch replaces your copy only if you have not edited it
+(#161).
+
+**Restoring a version and keeping a conflict copy work on Windows.** Every
+restore reported an error there, and a conflict could leave up to 20 copies
+before obsync gave up: Windows refuses to flush a folder to disk, and obsync
+treated that as a failed copy. It now publishes the copy once and logs that
+the folder could not be flushed; any other failure still stops the copy and
+says why (#222).
+
+**A conflict copy that could not be confirmed is still one copy.** When
+saving a copy failed after it was already in place, obsync wrote it again
+under the next name, up to twenty times. It now keeps the copy when it is
+the right one, or takes it back before trying another name. It never
+removes a file it did not make; when it cannot tell, it leaves the copy and
+tries again later. Desktop and mobile (#225).
+
+**On Windows, obsync no longer takes two files for one.** It tells files
+apart by their id, and Windows ids can be larger than the numbers the
+plugin held exactly; the whole id is compared now. Nothing changes on
+macOS, Linux or phones (#224).
+
+**Restoring a copy and keeping a conflict copy work on a USB stick or SD
+card** formatted FAT32 or exFAT, still never replacing a file already at
+that name. Desktop only; phones already worked (#176).
+
+**A downloaded note survives a power cut.** obsync now flushes a downloaded
+note to disk before giving it its name, and the folder after. That costs one
+more flush per downloaded file, measured at about 12 ms per file on macOS.
+Desktop only; the phone's storage call offers no flush (#202).
+
+**obsync refuses oversized or mismatched answers** from whatever sits in
+front of your server: every read has a size limit, and a batch of downloaded
+pieces must name the pieces asked for, in order. Servers on 1.1.3 keep
+working (#202).
+
+**Sync notices name files that exist, once, and only for what this device
+did.** A conflict notice waits up to ten seconds for a copy's name to settle,
+a note that moved while its upload waited no longer flashes `obsync: error`,
+and a first sync no longer announces merges it took no part in. Copies and
+notices from a device paired a moment ago name it straight away (#164).
+
+**A note renamed on one device and edited on another keeps its new name,**
+holding every edit, with no copy; swapping two notes' names in one go ends
+with both names on both devices (#151).
+
+**A folder renamed to two different names on two devices ends under one
+name.** Every device keeps the name that sorts first, moves every note
+there, and says once which name it kept; nothing is copied or deleted (#174).
+
+**Pairing again after Leave no longer copies a note you had edited before**
+when its text matches the server's latest version (#163).
+
+**Two notes given one name while a computer was offline get their names
+sorted out when it reconnects,** at its next upload rather than its next
+edit (#122).
+
+**A note renamed a moment after you make it arrives once on your other
+devices,** under its new name, instead of twice. A folder renamed while a
+new note in it uploads takes the note with it (#213).
+
+### Folders and capitals
+
+**A folder whose capitals you change and change back follows on every
+device,** and the notice about it tells you to update another device only
+when it really runs an older obsync (#165).
+
+**A device that follows a capitals-only rename no longer uploads a second
+copy of every note** in that folder (#166).
+
+**A rename of the folder you sync is not lost** when your disk refuses it
+once, or when obsync stops half-way through it (#127).
+
+**A folder deleted on another device no longer stays behind because Finder
+or Explorer left a file in it.** `.DS_Store`, `._` files, a custom folder
+icon, `Thumbs.db` and `desktop.ini` go with the folder; the two Windows files
+are no longer synced at all. A folder holding anything else is kept, and
+obsync says so once (#184).
+
+**A linked folder's name no longer turns into an empty folder on your other
+devices.** obsync says once: "obsync doesn't sync linked folders: "…" is a
+link, so it stays on this device only." Desktop; phones have no such links
+(#167).
+
+**An Android device now takes a capitals-only rename made on another
+device.** Renaming `Meeting notes.md` to `meeting notes.md`, or a folder the
+same way, left Android on the old capitals for good while it showed synced:
+Android's storage treats the two spellings as one name, and Obsidian there
+refuses to rename by capitals alone. The phone now renames through a hidden
+name in the same folder, with Obsidian's own rename twice, so nothing is
+copied, sent back or deleted. If the phone stops between the two steps, the
+next start puts the note back before anything else and the rename is made
+again. Obsidian's file list on the phone shows the note once, under its new
+capitals; an old-capitals entry it could briefly show is removed, and
+deleting such an entry asks first instead of deleting the note on every
+device. Obsidian on Android still cannot rename by capitals alone itself:
+rename on another device, or to a different name first (#219).
+
+### Pairing, setup and settings
+
+**A computer shut down right after pairing no longer stops obsync for
+good.** Obsidian keeps obsync's keys in storage that can reach the disk
+after obsync's own settings file. A crash, forced quit or power cut in
+between left the plugin refusing to load, with nothing to press. It now
+starts unpaired, says so once at start, in Settings and in Show sync
+status, and offers **Pair this device**. The keys it was saving are gone
+and are never guessed; nothing on the device or the server is deleted.
+The entry the device had stays in the Devices list for you to revoke once
+it syncs again. The same on computers and phones (#230).
+
+**The approval prompt tells your devices apart, and shows a code to check.**
+A device names itself by what it is plus a short tag it makes itself, such
+as "Mac 7KQ4", never by its computer name. The prompt shows six digits the
+new device shows too, which both screens work out from the pairing code;
+the server cannot make them agree. Older devices show no code and pair as
+before (#152).
+
+**Once you approve, the new device says so.** It compares the notes it
+already holds with your server's vault before it syncs, which on a phone with
+thousands of files took a minute, and all that time its dialog still read
+"Waiting for approval on the other device". It now says it was approved and
+is comparing, and that a large vault takes a minute. That comparison, and
+the count **Leave** makes of edits not yet sent, now ask about each folder
+once instead of once per file: on an Android emulator 300 files took 2.5 s
+instead of 33.6 s, so a phone holding thousands of files no longer waits
+minutes to leave a server. All platforms (#236, #198).
+
+**A pairing that fails or is abandoned no longer says "paired" or leaves a
+device without a key on your account.** A new device becomes active only
+when it collects the vault key, and one that has not collected it when the
+ten minutes end is removed. Update the server too for the removal (#153).
+
+**Setup and pairing mistakes say what to do next instead of showing a server
+code,** a pairing link from **Copy link** can be pasted into the code field,
+and a setup token pasted with quotes or a line break is read as meant. **Pair
+this device** is now in the command palette. Once the server holds a claim,
+the one-time code leaves its field, and the prompt counts "1 note" and "7
+notes" (#154).
+
+**The Devices list says which devices are still pairing,** puts revoked ones
+last, marked "(revoked)", and counts what is true, such as "3 devices on this
+account, and 1 revoked." (#152)
+
+**The setup token no longer stays on screen after a failed setup.** Its
+fields are masked like a password, with an eye button, and empty after every
+attempt and when Settings closes (#169).
+
+**obsync remembers whether you confirmed your 24 recovery words, and reminds
+you quietly** in Settings and Show sync status, and once at the next start
+after you skip the check (#170).
+
+**A copied vault, or one whose folder you renamed outside Obsidian, starts
+unpaired instead of stopping with a storage error,** and Settings offers
+**Pair this device** and **Start fresh** (#168).
+
+**Proxy headers are checked as you enter them, and never replace obsync's
+own.** The setting is now called **Custom request headers**. A header pasted
+from a command line or wrapped in quotes is trimmed, with a word; a curly
+quote, a character a header cannot carry, or a name obsync sets itself is
+refused, naming the line (#183, #201).
+
+**On a phone, the keyboard no longer learns your setup token, pairing code
+or recovery words** (#208), and the proxy headers and folder boxes use the
+whole width (#210).
+
+**Leaving a server answers in seconds, and a device can always leave.** When
+the server cannot remove this device, the dialog offers **Leave on this
+device only** (#157).
+
+**Leaving the server just after Obsidian opens leaves nothing running
+behind.** **Leave this server** chosen while obsync was still starting, just
+after Obsidian opened or the plugin was turned on, left the device unpaired
+with sync still running: requests went on under the access it had just given
+up, and it retried a server it no longer had every five seconds. Leave now
+lets a start under way stop first, so once Leave says the device has left,
+nothing of the old pairing runs or sends anything, and a late refusal from
+the server you left no longer turns the status to an error. A folder
+selection saved while obsync was still starting no longer leaves two copies
+of sync running. The same on computers and phones (#233).
+
+**Saving a folder selection during a big upload keeps your choice and takes
+effect in about a second,** with **Cancel** beside the file it is stopping
+(#185).
+
+**On Linux without a keyring**, the docs now say that Obsidian keeps obsync's
+keys unencrypted, protected only by your home folder's permissions, that
+Obsidian says so with a notice from its next start, and what to do (#217).
+
+### Running a server
+
+**The readiness check no longer tells anyone how much you write.** `/readyz`
+answered `{"ready":true,"seq":<n>}` to any caller, and `seq` is the count of
+changes your server holds: anyone who could reach the server could watch it
+grow and see when you write. The server already kept that number to devices
+and dashboard sessions that proved themselves; readiness now answers
+`{"ready":true}` and nothing else. A monitor of your own that read `seq` there
+reads it no more; health probes and the chart's checks are unaffected (#235).
+
+**Run obsync behind the reverse proxy you already have.** The server reads
+the standard `Forwarded` header and every `X-Forwarded-For` line, as one
+list from the proxy's end, only from addresses in
+`OBSYNC_TRUSTED_PROXY_CIDRS`; a header from anywhere else is ignored and
+logged, so a device cannot forge its address on the dashboard. Tested
+configurations for Caddy, nginx, Traefik and HAProxy are in
+`deploy/proxies/`. The server listens on IPv4 and IPv6 alike (#200, #214).
+
+**The Helm chart fits more clusters**: several ingress peers or a network
+block, a registry mirror (the digest still pins the bytes), pull secrets,
+node selectors, tolerations, affinity and pod labels. It runs on Kubernetes
+1.34 and later, and its defaults name no one's cluster (#200). A signed
+**static server for 64-bit Linux** (amd64 and arm64) with a hardened systemd
+unit ships with each release (#200).
+
+**The dashboard opens a round trip sooner,** and its install steps name the
+plugin as Community plugins lists it (#206).
+
+**The server stays small in memory** when devices fetch large files or catch
+up on a long history: attachment batches stream, and history pages hold at
+most 8 MiB. **One misbehaving device can no longer lock the others out,** and
+unverified request bodies share one fixed amount of memory (#193), each
+held until its sender's credential checks out, parsing and waiting included.
+**A long history of a very large file stays readable:** the plugin no longer
+refuses a file record past 64 MiB, and the server never sends one past
+450 MiB, keeping every head and the newest versions that fit. **Its
+memory follows your history**: about 1.3 KiB per kept version, and a restart
+no longer needs four times it; the chart now requests 128 MiB (#205).
+
+**The server answers sooner when several devices sync at once,** with every
+answer still on disk first: 200 posts at once, median wait 185 → 81 ms
+(#191). **A quiet server stays quiet**: ten idle minutes went from 151 disk
+flushes and about 300 log lines to none, and after 10,000 notes an idle
+server uses 0.36 s of CPU a minute instead of 12.8 s (#192, #203, #216).
+**Stopping takes about a second, not twenty**; with `docker stop`, pass
+`-t 30` (#203). A request waiting on a save of the server's replay records
+that crashed is now answered as intended, never with a 500 (#223).
+
+**Large photos and PDFs upload from a phone on a slow connection.** The
+server now requires at least 16 KiB/s, measured from its first read of the
+body, so a slow disk on the server is never blamed on the device (#204,
+#220). **An upload cut off halfway is retried** as `503 body_incomplete`
+instead of refused for good as 413 (#211), and neither it nor a slow body is
+logged as a server error (#212). **Behind HAProxy the log no longer shows a
+refusal for nearly every request** (#212).
+
+**`obsyncd export` reads its key from a file or standard input** (see Before
+you update), and **the readiness check no longer writes through a symbolic
+link** left at its file name (#202).
+
+**When the server cannot open its port, the log says which address,** such as
+`addr=[::]:8080 io=AddrInUse`, and the protocol states that an empty
+change-feed page with a higher `seq` is normal (#218). The shipped **nginx
+configuration** starts on nginx 1.24 and under systemd (#215).
+
+**The Kubernetes guide says which `listen` lines its TLS front needs.** Its
+example listened on IPv4 alone, so in an IPv6-only cluster the front
+answered a port-forward and nothing else. The guide now shows the IPv6 line
+to uncomment for dual-stack and IPv6-only clusters, says why the example
+ships without it (nginx stops on a node whose kernel has no IPv6), and how
+to tell which cluster you have. CI reaches the front through its Service in
+an IPv4 and an IPv6 cluster (#226).
+
+### The project
+
+**The plugin directory's scorecard warnings are fixed.** A folder inside your
+vault that is a vault of its own with obsync installed is now recognised
+whatever its settings folder is called, not only `.obsidian`: Obsidian lets
+you name that folder yourself. A vault name received while pairing is checked
+for control characters without a regular expression that holds them, and the
+plugin keeps its data-file lock on Obsidian's window rather than on
+`globalThis`. A test over the plugin's source now refuses all three shapes.
+A phone asks each folder for obsync where this vault keeps it, so on a phone
+the folder inside must use the same settings-folder name as this vault; a
+computer finds it whatever its name. Desktop and mobile (#243).
+
+**Speed is measured.** A benchmark harness and a nightly CI run time a
+10,000-note first sync, an edit reaching a listening device, a 2 GiB
+transfer and an idle minute, reading the server's own CPU, memory, disk
+writes and flushes, so a slowdown shows up as a number (#190). The release
+tooling accepts a repository that protects main with more than one ruleset
+(#43). The chart ships example volumes for one machine with its own disk
+(#74). Three help pages no longer say a folder selection can only narrow
+(#171).
+
+**The setup guides work for your setup, not only the author's.** Reading
+the setup token no longer needs a POSIX shell: `docker exec obsync-obsync-1
+obsyncd setup-token` works from PowerShell, Command Prompt or any shell.
+Linux desktops get the trust step Obsidian actually reads, its own NSS
+store, with the `certutil` command CI runs. Android gets a publicly trusted
+certificate over DNS-01 that needs no open port. The same-network guide has
+one table per server system, and the setup and validation pages name every
+route by what it is, say which CI job proves it, and say plainly which
+clients have not been recorded on a real device. CI runs real Obsidian on
+Linux with GNOME Keyring and without one, and restarts it on the keys it
+kept. The chart no longer puts
+one deployer's platform annotations on everyone's cluster (#201).
+
+**Troubleshooting grew with this release**: every failure met while testing
+1.1.4 -- an untrusted certificate, a quick tunnel whose address changed, a
+Linux keyring, capitals on Android -- has its entry, and the status bar's six
+icons are shown with their words. The README is now a short front door with
+a directory of every guide, in all 20 languages.
+
+**The build tools are current.** The plugin is built and tested on Node
+26.10.0, with npm unchanged at 11.19.1 (#249). Code scanning runs CodeQL
+action 4.38.2 (#250). The CI jobs that hand a built server to the next job
+use download-artifact 8.0.1, which fails the run when the file's checksum
+does not match (#251).
+
+## 1.1.3 - 2026-09-26
 
 **Turning obsync off and on during an upload no longer loses track of your
 files, or deletes one.** When you turned obsync off and on again in Community

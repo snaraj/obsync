@@ -1,0 +1,12 @@
+# M3246: every empty file is held back as a dropped write
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1643,7 +1643,7 @@
+  * since makes it an edit again.
+  */
+ export function droppedWrite(context: SyncContext, stat: VaultStat | null): boolean {
+-  return stat !== null && stat.size === 0 && context.state.data.dropped[stat.path] !== undefined;
++  return stat !== null && stat.size === 0 && true;
+ }
+ 
+ /**

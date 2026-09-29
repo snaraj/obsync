@@ -22,7 +22,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { DEVICE_B, FakeTimers, KEYS, SECRET_B, memorySecrets, published, rig, sandbox } from "./fake.mjs";
+import { DEVICE_B, FakeTimers, KEYS, SECRET_B, memorySecrets, published, rig, sandbox, statusItem } from "./fake.mjs";
 import { parseManifest as decoder10x } from "./fixtures/decoder-1.0.x.mjs";
 
 const require = createRequire(import.meta.url);
@@ -46,10 +46,13 @@ const identity = () => ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: 
  * Obsidian loads it, so nothing module-level survives from one to the next.
  */
 function vaultWindow(t) {
-  const secrets = new Map();
+  const secrets = new Map(), local = new Map();
   const app = {
     workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (done) => done() },
     secretStorage: { getSecret: (id) => secrets.get(id) ?? null, setSecret: (id, value) => { secrets.set(id, value); } },
+    // Obsidian's per-vault local storage, which records the reference held (#168).
+    loadLocalStorage: (key) => local.get(key) ?? null,
+    saveLocalStorage: (key, value) => { local.set(key, value); },
     vault: { adapter: {}, on: () => ({}) },
   };
   let metadata = identity();
@@ -67,7 +70,7 @@ function vaultWindow(t) {
     plugin.loadData = async () => { reads++; return structuredClone(metadata); };
     plugin.saveData = async (value) => { if (hooks.save) await hooks.save(); metadata = structuredClone(value); };
     plugin.addCommand = plugin.addSettingTab = plugin.registerEvent = plugin.registerObsidianProtocolHandler = () => {};
-    plugin.addStatusBarItem = () => ({ setText() {} });
+    plugin.addStatusBarItem = () => statusItem();
     plugin.checkForUpdate = async () => {};
     plugin.startEngine = async () => {};
     plugin.log = (line) => logs.push(line);
@@ -220,10 +223,10 @@ test("a synced file whose record was lost is adopted at startup, never published
   await timers.run(1000);
   assert.equal(r.server.journal.length, posts, `a synced file was published again: ${lines(r.host)}`);
   assert.equal((await r.server.noteFiles(r.keys.manifestKey)).length, 1, "a second file id was minted for one file");
-  // The server's time for the version (#145) is stamped whenever its echo is
-  // read, on either record or both; it is a field of the same version, so the
-  // comparison leaves it out.
-  const bare = ({ ts, ...rest }) => rest;
+  // The server's time for the version (#145) and its one chunk's sid (#198)
+  // are stamped whenever its echo is read, on either record or both; they are
+  // fields of the same version, so the comparison leaves them out.
+  const bare = ({ ts, sid, ...rest }) => rest;
   assert.deepEqual(bare(r.state.fileByPath(path)), bare(original), "the record is not the version this device already published");
   assert.ok(r.host.logs.some((line) => line.startsWith(`reconcile path_class=file decision=adopted reason=own_version file=${original.fileId}`)),
     lines(r.host));

@@ -107,7 +107,12 @@ function hasControl(value: string): boolean {
 const DRIVE = /^[A-Za-z]:/;
 
 export class VaultPathError extends Error {
-  constructor(readonly refusal: VaultPathRefusal) {
+  /**
+   * `at` is the vault path of the LINK a walk met, for `symlink_component`,
+   * so the host can name that folder to the user once (issue #167). It is
+   * never part of the message.
+   */
+  constructor(readonly refusal: VaultPathRefusal, readonly at?: string) {
     // The path itself is untrusted text and stays out of the message, the
     // way every log line in the plugin keeps paths out (requirement 6).
     super(`refused: not a vault path (${refusal})`);
@@ -182,6 +187,23 @@ export function isVaultPath(value: unknown): value is string {
   return vaultPathRefusal(value) === null;
 }
 
+/**
+ * THE FILES AN OPERATING SYSTEM WRITES INTO A FOLDER BY ITSELF, and the one
+ * list of them (issue #184): Finder's `.DS_Store`, its `Icon\r` for a custom
+ * folder icon and the `._` AppleDouble files macOS leaves on volumes that
+ * cannot hold its metadata, and Windows Explorer's `Thumbs.db` and
+ * `desktop.ini`. None of them is synced -- the dot and the carriage return
+ * already fail the rule above, and `syncScope.ts` leaves the two Windows names
+ * out of what a device syncs -- and none of them keeps a folder another device
+ * deleted (`main.ts`, `trashFolder`). Windows compares these names without
+ * regard to case, so they are compared that way here.
+ */
+const OS_JUNK = new Set([".ds_store", "icon\r", "thumbs.db", "desktop.ini"]);
+
+export function osJunk(name: string): boolean {
+  return OS_JUNK.has(name.toLowerCase()) || name.startsWith("._");
+}
+
 /** The same rule, as a refusal. Every vault operation calls this or the above. */
 export function assertVaultPath(value: unknown): string {
   const refusal = vaultPathRefusal(value);
@@ -212,13 +234,20 @@ export function vaultTarget(root: string, path: string, node: PathResolver): str
   return target;
 }
 
-/** What a no-follow stat says about one path component. */
+/**
+ * What a no-follow stat says about one path component.
+ *
+ * `dev` and `ino` are the kernel's own integers, never numbers (issue #224):
+ * an NTFS or ReFS file id has 64 bits and a number keeps 53, so past 2^53 two
+ * ids that differ by one are one number, and two files would be one file to
+ * every comparison below.
+ */
 export interface PathStat {
   isDirectory(): boolean;
   isFile(): boolean;
   isSymbolicLink(): boolean;
-  readonly dev: number;
-  readonly ino: number;
+  readonly dev: bigint;
+  readonly ino: bigint;
   readonly size: number;
   readonly mtimeMs: number;
 }
@@ -234,8 +263,8 @@ export type FinalComponent = "absent" | "file" | "directory" | "other";
 /** One directory on the way down, by the identity only the kernel assigns. */
 export interface ChainLink {
   path: string;
-  dev: number;
-  ino: number;
+  dev: bigint;
+  ino: bigint;
 }
 
 export interface WalkResult {
@@ -279,7 +308,7 @@ export async function walkVaultPath(
     at = node.resolve(at, segments[index] as string);
     const stat = await walker.lstat(at);
     if (stat === null) return { target, final: "absent", stat: null, chain };
-    if (stat.isSymbolicLink()) throw new VaultPathError("symlink_component");
+    if (stat.isSymbolicLink()) throw new VaultPathError("symlink_component", segments.slice(0, index + 1).join("/"));
     const last = index === segments.length - 1;
     if (!last) {
       if (!stat.isDirectory()) throw new VaultPathError("not_a_directory");

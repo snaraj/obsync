@@ -1,0 +1,12 @@
+# M2104: a stop leaves records held in memory unsaved
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -995,7 +995,7 @@
+     this.holding = null;
+     this.expected.clear();
+     // And what `defer` held in memory is written now, not at a page that is not coming.
+-    void this.saveDeferred("stop");
++    void 0;
+     if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
+     this.parkHandle = null;
+     this.parkDelay = 0;

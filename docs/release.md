@@ -1,5 +1,7 @@
 # Release path
 
+*Internals, for contributors and reviewers.*
+
 Dated 2026-09-07. Requirement 10 in `AGENTS.md`, made operational.
 
 ## Lockstep locks (seven)
@@ -73,6 +75,28 @@ Obsidian's installer downloads only the three individual files and ignores
 the ZIP and the evidence manifest; both remain required by the inventory
 below and by the read-only audit.
 
+**The static server, from 1.1.4.** The same job exports the Dockerfile's
+`server-dist` stage once per production platform -- the binary the image
+runs, the dashboard and plugin files it serves, `deploy/systemd/obsyncd.service`
+and the licence, copied from the same `server` and `bundle` stages the image
+copies -- and `release_contract.py server-archive` packs each into
+`obsync-server-X.Y.Z-linux-amd64.tar.gz` and `…-linux-arm64.tar.gz`: sorted
+entries, one fixed time, owner root, no extended headers, gzip without a name
+or time, so a re-run reproduces the bytes it uploaded. The evidence manifest
+records each archive's name, digest and size under `server_archives`, and the
+contract reads an archive as untrusted input before recording it: bounded
+before decompression and, as one gzip member with nothing after it, bounded
+again when inflated, before tar parses any of it, headers included; every entry
+one plain file or directory under a POSIX USTAR header, with no extended
+header, back to back from the first byte, the archive ending as the publisher
+ends it (two zero blocks, then zeros to a whole 10,240-byte record), under its
+one top directory, owned by root and writable by no one else, carrying an
+executable for its own platform (the ELF machine) and plugin files identical
+to the released plugin's. Both archives join the build-provenance attestation
+below and the Release, as `application/gzip`, making seven assets. Releases
+before 1.1.4 keep their five-asset inventory, evidence and notes byte for
+byte; the boundary is the version, never the presence of a file.
+
 **The Release body.** From 1.0.1 the notes lead with that version's own
 `CHANGELOG.md` section, read out of the SOURCE COMMIT rather than out of a
 working tree, then the one line that installs or updates the plugin and the one
@@ -83,12 +107,21 @@ re-derives the notes from the sealed manifest and compares them, so a format
 change that reached backwards would fail against a release nobody can edit.
 `scripts/ci/test_community_release.py` pins both shapes and the boundary
 between them. The publisher
-requires the exact five-asset inventory and reads every uploaded byte back
-before immutable publication. It scans source and final image for
+requires the exact asset inventory for the version (five assets, seven from
+1.1.4) and reads every uploaded byte back before immutable publication. It scans source and final image for
 high/critical findings, and publishes one immutable Release.
 
 From 0.1.15, the publisher also creates GitHub Actions SLSA v1 build
-provenance for `main.js`, `manifest.json` and `styles.css`. The dispatch
+provenance for `main.js`, `manifest.json` and `styles.css`, and from 1.1.4 for
+both server archives. A reader verifies an archive before unpacking it with
+the same identity the verifier below uses:
+
+```sh
+gh attestation verify obsync-server-X.Y.Z-linux-amd64.tar.gz --repo snaraj/obsync \
+  --cert-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
+  --cert-oidc-issuer https://token.actions.githubusercontent.com
+```
+ The dispatch
 workflow SHA must equal the authorized source SHA before any publication
 write, because GitHub's provenance derives that identity from the workflow.
 The orchestrator dispatches against `main`; if `main` advances before that
@@ -125,17 +158,106 @@ source ref/digest, signer digest, issuer, hosted-runner and SLSA-v1 checks
 remain required. The local argument regression invokes real `gh` against a
 malformed local bundle; live signed-attestation verification is separate.
 
-Native installation and the first directory submission are described in
-[Community plugin distribution](community-plugin.md). Publication alone does
-not prove directory acceptance, installation, or device synchronization.
+Native installation, for the person at the device, is
+[Install the plugin](community-plugin.md); the directory listing and its
+submission are below. Publication alone does not prove directory acceptance,
+installation, or device synchronization.
+
+## The community directory listing
+
+The native installer relies on Obsidian's directory and GitHub release
+distribution. It does not document verification of this project's Cosign
+evidence before executing plugin code. The publisher signs the server image
+and chart and binds plugin bytes in immutable release evidence; that is
+producer-side evidence, not a separate signature verifier in the Obsidian
+client. Treat installing a community plugin as trusting its code with the
+vault. The native build provenance above is verified by the publisher and the
+read-only audit against the exact protected-main source; directory acceptance
+is still a separate observed result, not implied by producing an attestation.
+A new install and a subsequent native update both require real-device
+validation; an archive test alone proves neither.
+
+### Listing review findings (2026-09-22)
+
+Obsidian's review scan of the 1.0.6 listing reported one network call, vault
+enumeration, clipboard access, one stylesheet warning and two extra Release
+assets. Where each one stands:
+
+- **One network call.** Obsidian's `requestUrl`, injected once into the
+  transport (`plugin/src/main.ts`), reaching the configured Server URL and
+  nothing else. Disclosed in the README under "What this plugin accesses".
+- **Vault enumeration.** `vault.getFiles()` decides which files are in scope
+  for sync. Disclosed there.
+- **Clipboard.** Two `navigator.clipboard.writeText` calls, behind the **Copy
+  code** and **Copy link** buttons of **Pair a new device**
+  (`plugin/src/ui/modals.ts`). Nothing reads the clipboard. Disclosed there.
+- **`multicolumn` at `styles.css:20`.** `column-gap` on the recovery-phrase
+  grid is also a multi-column property, which is what the scanner keys on. It
+  is now the `gap` shorthand, which lays out the same two columns of twelve.
+- **Extra Release assets.** `obsync-X.Y.Z-release-manifest.json` and
+  `obsync-plugin-X.Y.Z.zip` are not plugin files, and Obsidian does not
+  download them. They stay: the publisher's five-asset inventory requires
+  them, the read-only release audit downloads both to re-verify the image,
+  chart and bundle digests, and a deployer reads the image digest out of the
+  manifest before running it ("Publisher" above). The scanner's line
+  is informational, not a refusal.
+- **`manifest.json`** against the submission requirements: the description is
+  one action statement of 91 characters ending with a period; `minAppVersion`
+  is 1.13.0 because the settings tab is declared to Obsidian from 1.0.2
+  (`CHANGELOG.md`); `isDesktopOnly` is `false` because the bundle imports
+  `obsidian` and nothing from Node or Electron; `fundingUrl` is absent because
+  no donations are taken; `authorUrl` and `helpUrl` are set. Nothing to
+  change.
+
+### Maintainer submission
+
+Obsidian's current requirements were checked on 2026-09-11 against
+[Submit your plugin](https://docs.obsidian.md/plugins/releasing/submit-plugin)
+and [Set up and claim](https://docs.obsidian.md/community-directory/set-up-and-claim).
+
+The default branch must contain `README.md`, `LICENSE` and the canonical root
+`manifest.json`. The matching published GitHub release must use its exact
+unprefixed version as the tag and carry the three individual plugin files.
+The publisher supplies them from the same build as the server's bundle and
+verifies their hashes before sealing the release.
+
+The default branch also carries root `versions.json`, the ledger the installer
+reads to offer an older Obsidian the newest release it can actually run. This
+plugin's floor has moved three times (1.7.0 at 0.1.11, 1.7.2 at 0.1.13,
+1.12.4 at 0.1.16, 1.13.0 at 1.0.2), so without the ledger an Obsidian below
+1.13.0 is offered nothing at all rather than 1.0.1. It is held as a release follower rather than a lock;
+"Lockstep locks" above states the rule and the gate that enforces it.
+
+After the owner merges and the release is verified, sign in to
+`community.obsidian.md` with the maintainer's Obsidian account, connect the
+GitHub account, and submit `https://github.com/snaraj/obsync` under Plugins →
+New plugin. Review the developer terms and continuing-support commitment as
+the maintainer. Resolve the directory's review feedback and publish the
+listing before claiming that the app is installable from Browse.
+
+The directory reads the default branch and requires a published release.
+Neither a Draft PR nor a local bundle satisfies that prerequisite. Owner
+merge, directory acceptance and real-device acceptance are distinct results.
+This procedure does not waive the repository's runtime live-validation gate.
 
 ## Governance receipt
 
 Before the first Release under this path the repository owner activates:
 immutable releases, strict required checks at the exact head, no core bypass
-actor, signed commits on `main`. The read-only preflight and the standalone
-bypass check are pinned in `scripts/ci/test_release_contract.py`, so the
-settings are re-read rather than remembered.
+actor, signed commits on `main`. `release_contract.py settings-preflight`
+re-reads them with GET requests only and prints the receipt `settings-receipt`
+validates, so the settings are re-read rather than remembered.
+
+Rulesets layer, so the preflight reads main's protection from its CORE
+rulesets: active branch rulesets that name main exactly (`refs/heads/main`,
+`~DEFAULT_BRANCH` or `~ALL`), exclude nothing that could be main, and have no
+bypass actor. A bypassable ruleset such as an owner-only update restriction,
+the release-tag ruleset, and a ruleset that reaches main only through a glob
+are tolerated and never counted. It refuses a default branch other than main,
+no core ruleset, a pull-request or required-checks rule set by two core
+rulesets, a condition it does not model, a bypass list it cannot read, and a
+ruleset that changes while it reads. `scripts/ci/test_release_contract.py`
+pins each case.
 
 ## Deployment
 

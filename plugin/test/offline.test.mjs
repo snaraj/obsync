@@ -463,11 +463,16 @@ test("a move never trashes a local file this device has not pushed", async () =>
   // Applying the move writes at the new path and removes the old one, and the
   // removal is the same loss one path over: the trash is not the vault, and
   // the push that would have carried this edit finds nothing left to read.
-  assert.equal(await applyChange(context, moved), "conflict_copy");
+  // Nothing is written at all: the edit's push forks the file, and its
+  // reconciliation merges the text and the name (issue #151).
+  assert.equal(await applyChange(context, moved), "skipped");
   assert.equal(host.text(NOTE), MINE, "the unpushed edit is still in the vault");
   assert.deepEqual(host.trashed, [], "and it was not moved to the trash either");
   assert.equal(state.fileByPath(NOTE).versionId, pushed.versionId, "its record still names its parent");
-  assert.match(copies(host)[0], /^Notes\/Two \(conflict from iPhone, \d{4}-\d{2}-\d{2} \d{4}\)\.md$/);
+  assert.equal(state.fileByPath(NOTE).sha256, "", "and its push cannot come back unchanged");
+  assert.deepEqual(copies(host), []);
+  assert.ok(host.logs.includes(`pull decision=deferred reason=unpushed_edit file=${pushed.fileId} seq=${moved.seq}`),
+    host.logs.filter((line) => line.startsWith("pull")).join(" | "));
 });
 
 /**
@@ -554,20 +559,23 @@ test("an edited conflict copy survives the next version that would take its name
  * write, so only a byte-identical copy of THIS version is reused.
  */
 /**
- * A note this device pushed and then edited before the other device's version
- * of it arrived: the shape a REPLAYED head actually meets. A version of a
- * file id this device does not track at all is recorded where its copy lands
- * (#113), so the feed's second delivery of it is skipped outright and never
- * reaches the occupant check; the check's subject is this shape, where the
- * record at the name is this device's own edited file and both passes take
- * the keep-both path. The version RENAMES the note (to `MOVED`): one that only
- * edits it is left for this edit's push since issue #135, and a rename over an
- * edit made here is still kept as both.
+ * A note this device pushed and then edited, and published that edit, before
+ * the other device's version of it arrived: the shape a REPLAYED head actually
+ * meets. A version of a file id this device does not track at all is recorded
+ * where its copy lands (#113), so the feed's second delivery of it is skipped
+ * outright and never reaches the occupant check; the check's subject is this
+ * shape, where the record at the name is this device's own edited file and
+ * both passes take the keep-both path. The version RENAMES the note (to
+ * `MOVED`) and rewrites its one line: a fork the merge cannot combine and the
+ * rule cannot settle (`converge`), because its two heads name two paths. An
+ * edit made here and NOT yet published is left for its push (issues #135,
+ * #151).
  */
 async function editedHere(r) {
   r.host.seed(NOTE, "an older line\n", 1000);
   const pushed = await pushFile(r.context, NOTE);
   r.host.seed(NOTE, MINE, 2000);
+  await pushFile(r.context, NOTE);
   return { fileId: pushed.fileId, parents: [pushed.versionId] };
 }
 
@@ -748,7 +756,7 @@ test("the copy's writer is released on success as well as on failure", async () 
  * against the real `ObsidianHost` over a throwaway vault on a real
  * filesystem, where the residue is a directory entry a test can read.
  */
-function desktopVault(t, r) {
+function desktopVault(t, r, promises = fsp) {
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-copy-host-"));
   t.after(() => {
@@ -765,7 +773,7 @@ function desktopVault(t, r) {
   } };
   const host = new ObsidianHost(
     { state: r.state, app: { vault }, log: (line) => logs.push(line) },
-    { base: root, path: nodePath, fs: { promises: fsp } },
+    { base: root, path: nodePath, fs: { promises } },
   );
   return { root, host, logs, context: { ...r.context, host } };
 }
@@ -788,6 +796,62 @@ test("a conflict copy through the real desktop host leaves no temporary behind",
     folder(root), [basename(NOTE), basename(copy)].sort(),
     "a second, hidden name for the copy's plaintext was left in the vault",
   );
+});
+
+/**
+ * THE SAME COPY ON A HOST WITH NO FOLDER SYNC (Windows: `EPERM` for every
+ * folder). The copy was refused after it had landed, so the pull wrote the
+ * note again under the next name, and the next -- twenty copies of one note,
+ * then "refused". It is one copy, and the skip is said once.
+ */
+test("a conflict copy on a host that cannot sync a folder lands once", async (t) => {
+  const r = await rig();
+  const windows = { ...fsp, open: async (path, flags, mode) => {
+    const handle = await fsp.open(path, flags, mode);
+    if (!(await handle.stat()).isDirectory()) return handle;
+    return { sync: async () => { throw Object.assign(new Error("EPERM SENTINEL"), { code: "EPERM" }); }, close: () => handle.close() };
+  } };
+  const { root, context, logs } = desktopVault(t, r, windows);
+  writeFileSync(join(root, NOTE), MINE);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(context, frame), "conflict_copy");
+
+  const copy = copyName(r, NOTE, 1);
+  assert.equal(readFileSync(join(root, copy), "utf8"), THEIRS, "the copy did not land");
+  assert.deepEqual(folder(root), [basename(NOTE), basename(copy)].sort(), "the note was copied more than once");
+  assert.ok(logs.includes("host path_class=folder decision=skipped reason=directory_fsync code=EPERM"), logs.join(" | "));
+});
+
+/**
+ * A COPY WHOSE COMMIT FAILS AFTER IT LANDED (issue #225): here the folder sync
+ * fails with a code a host that has one gives, so the commit refuses a copy
+ * that is already at its name. The next name made another, and the next:
+ * twenty copies, then "refused". The copy at the name IS this version, proven
+ * by its digest, so it is the copy: one, recorded, its own event marked.
+ */
+test("a conflict copy whose commit fails after it landed is that one copy, never another under the next name (#225)", async (t) => {
+  const r = await rig();
+  const failing = { ...fsp, open: async (path, flags, mode) => {
+    const handle = await fsp.open(path, flags, mode);
+    if (!(await handle.stat()).isDirectory()) return handle;
+    return { sync: async () => { throw Object.assign(new Error("EIO SENTINEL"), { code: "EIO" }); }, close: () => handle.close() };
+  } };
+  const { root, context, logs } = desktopVault(t, r, failing);
+  writeFileSync(join(root, NOTE), MINE);
+
+  const frame = await foreign(r, { fileId: "22".repeat(16), path: NOTE, text: THEIRS, mtime: 4000 });
+  assert.equal(await applyChange(context, frame), "conflict_copy");
+
+  const copy = copyName(r, NOTE, 1);
+  assert.deepEqual(folder(root), [basename(NOTE), basename(copy)].sort(), "the note was copied again under the next name");
+  assert.equal(readFileSync(join(root, copy), "utf8"), THEIRS);
+  assert.ok(
+    logs.some((line) => line.startsWith("pull path_class=file decision=refused reason=copy_unconfirmed landed=reused name_attempt=1 ")),
+    logs.join(" | "),
+  );
+  const stat = await context.host.stat(copy);
+  assert.ok(context.written.has(`${copy}:${stat.mtime}:${stat.size}`), "the copy's own event would be published back as a new note");
 });
 
 test("a failed conflict copy through the real desktop host leaves neither copy nor temporary", async (t) => {

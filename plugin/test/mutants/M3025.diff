@@ -1,0 +1,12 @@
+# M3025: a writer that cannot take anything back is believed to have published nothing (one copy per conflict, #225)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3542,7 +3542,7 @@
+     // is; if not, the writer takes back the copy it made, and only that. A
+     // copy it cannot vouch for stays, and no second one is written beside it.
+     const reused = await reuse(target, there);
+-    const landed = reused !== null ? "reused" : (await writer.withdraw?.()) ?? "kept";
++    const landed = reused !== null ? "reused" : (await writer.withdraw?.()) ?? "none";
+     if (landed !== "none") {
+       context.host.log(
+         `pull path_class=file decision=refused reason=copy_unconfirmed landed=${landed} name_attempt=${attempt} ` +

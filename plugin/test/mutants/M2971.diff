@@ -1,0 +1,12 @@
+# M2971: the reconnect is disarmed on a clock other than the one that armed it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2908,7 +2908,7 @@
+   private takeReconnectTimer(): boolean {
+     const pending = this.reconnect;
+     if (pending === null || pending.handle === null) return false;
+-    pending.timers.clear(pending.handle);
++    pageTimers.clear(pending.handle);
+     pending.handle = null;
+     return true;
+   }

@@ -5,15 +5,76 @@
 # Self Hosted Private Sync
 
 Sincronização ao vivo, auto-hospedada e criptografada de ponta a ponta para o
-[Obsidian](https://obsidian.md): um servidor em Rust sem dependências, com
-painel embutido, que você mesmo roda, mais este plugin. Arquivos de qualquer
-tamanho, todas as plataformas do Obsidian, sem assinatura, sem terceiros.
+[Obsidian](https://obsidian.md). Suas notas sincronizam por um servidor que
+você mesmo roda. Notas, anexos e nomes de arquivos são criptografados no seu
+dispositivo, e o servidor nunca recebe a chave. O plugin funciona em todas as
+plataformas em que o Obsidian roda, no computador e no celular. Não há
+assinatura nem conta em nenhum outro lugar.
 
-Instale em Configurações → Plugins não oficiais → Procurar como **Self Hosted
-Private Sync** (id do plugin `obsync-private-sync`), no Obsidian 1.13.0 ou
-mais novo.
+**Algo não está funcionando? → [Solução de problemas](https://snaraj.github.io/obsync/troubleshooting/) (em inglês)**
 
-**Novo por aqui? Comece pelo [guia de configuração](https://snaraj.github.io/obsync/setup/) (em inglês).** Ele ajuda você a escolher como seus dispositivos chegam ao servidor e percorre cada opção passo a passo. No Obsidian: Configurações → Self Hosted Private Sync → Setup guide.
+## Encontre o que você precisa
+
+Todas as páginas também estão no [site da documentação](https://snaraj.github.io/obsync/) (em inglês).
+
+### Usar o obsync
+
+| Eu quero… | Vá para |
+| --- | --- |
+| Escolher como meus dispositivos chegam ao meu servidor | [Escolha a sua configuração](../setup.md) |
+| Configurar tudo na minha rede de casa, com cada tela do celular | [Mesma rede, passo a passo](../same-network.md) |
+| Instalar o plugin | [Instalar o plugin](../community-plugin.md) |
+| Configurar meu primeiro dispositivo | [Início rápido](../quickstart.md) |
+| Parear um celular ou outro computador | [Parear o seu celular](../quickstart.md#pair-your-phone) |
+| Saber o que o ícone de status e os comandos significam | [Uso diário](../daily-use.md) e [Como ler a barra de status](../troubleshooting.md#reading-the-status-bar) |
+| Recuperar uma versão anterior de uma nota | [Restaurar uma versão guardada](../daily-use.md#restore-a-retained-version) |
+| Saber o que uma configuração faz | [Configurações](../settings.md) |
+| Lidar com uma cópia de conflito | [Conflitos](../conflicts.md) |
+| Resolver um problema | [Solução de problemas](../troubleshooting.md) |
+| Voltar a entrar depois de perder um dispositivo | [Recuperação](../recovery.md) |
+| Levar meu cofre para outro servidor | [Mudar este cofre para outro servidor](../recovery.md#moving-this-vault-to-a-different-server) |
+
+### Rodar um servidor
+
+| Eu quero… | Vá para |
+| --- | --- |
+| Rodar meu servidor com Docker ou Compose | [Rodar o servidor](../server.md) |
+| Colocá-lo atrás do meu próprio proxy (Caddy, nginx, Traefik, HAProxy) | [Já tem um terminador TLS](../server.md#already-have-a-tls-terminator-docker) |
+| Rodá-lo sem contêiner, com o systemd | [O binário estático](../server.md#without-a-container-the-static-binary) |
+| Rodar meu servidor no Kubernetes | [Kubernetes](../kubernetes.md) e a [referência do chart](../../chart/README.md) |
+| Alcançar meu servidor fora de casa, pela minha própria VPN ou proxy | [Alcançá-lo de fora da sua LAN](../server.md#reaching-it-from-outside-your-lan) |
+| Usar a Cloudflare (opcional) | [Cloudflare](cloudflare.md) |
+| Confiar no certificado do meu servidor em cada dispositivo | [Confiar na autoridade certificadora](../server.md#trust-the-certificate-authority-once-per-device) |
+| Saber de quanta memória e de quanto disco ele precisa | [De quanta memória ele precisa](../server.md#how-much-memory-it-needs) e [Armazenamento](../storage.md) |
+| Fazer backup do meu servidor | [Faça backup dos dois volumes](../server.md#back-up-the-two-volumes) |
+| Atualizar meu servidor | [Atualizar por digest](../server.md#upgrade-by-digest) |
+| Ver meus dispositivos e revogar um deles | [O painel](../dashboard.md) |
+| Apagar meu servidor e começar de novo | [Limpar um servidor](../purge.md) |
+| Ver o que mudou em cada versão | [`CHANGELOG.md`](../../CHANGELOG.md) |
+
+### Confiança e privacidade
+
+| Eu quero… | Vá para |
+| --- | --- |
+| Saber o que este plugin toca no meu dispositivo e na minha rede | [O que este plugin acessa](#o-que-este-plugin-acessa) |
+| Entender o que é criptografado e o que o servidor pode ver | [Modelo de ameaças](../threat-model.md) e [o modelo de ameaças do painel](../security/dashboard.md) |
+| Relatar um problema de segurança | [`SECURITY.md`](../../SECURITY.md) |
+
+### Por dentro do projeto
+
+Para quem contribui e revisa: [`CONTRIBUTING.md`](../../CONTRIBUTING.md),
+[arquitetura](../architecture.md), [protocolo](../protocol.md),
+[benchmarks](../benchmarks.md), [sessões de validação em dispositivos](../validation-runs/)
+e [todas as páginas](../README.md).
+
+## Instalar
+
+![As configurações do plugin abrindo com Get started: a linha Setup guide e o seu botão Open the guide, acima do campo Server URL](../assets/settings-get-started.png)
+
+Instale o plugin em **Configurações → Plugins não oficiais → Procurar**.
+Busque **Self Hosted Private Sync** (id do plugin `obsync-private-sync`). Ele
+precisa do Obsidian 1.13.0 ou mais novo. As configurações dele abrem com o
+guia de configuração, a um clique de distância.
 
 > [!IMPORTANT]
 > - Ele sincroniza com um servidor que **você** roda: sem serviço hospedado, sem conta em outro lugar.
@@ -21,33 +82,24 @@ mais novo.
 > - Nunca o rode junto de outra sincronização (Obsidian Sync, uma pasta na nuvem, outro plugin) no mesmo cofre.
 > - Software jovem: leia a entrada do [`CHANGELOG.md`](../../CHANGELOG.md) da sua versão, atualize todos os dispositivos e saiba o que cada [sessão de validação](../validation-runs/) cobriu.
 
-## O que este plugin acessa
-
-- **O seu servidor, e mais nada.** Toda requisição vai para a **Server URL** que você digita; sem telemetria, sem terceiros.
-- **Uma conta nesse servidor**, criada a partir do token de configuração; a sua conta do Obsidian não tem papel nenhum.
-- **Os GitHub Releases, pelo Obsidian**, para instalar e atualizar; o Obsidian ignora os arquivos extras do release.
-- **A lista de arquivos do seu cofre**, para decidir o que sincronizar; pastas ocultas (`.obsidian`, `.git`) e pastas que são links simbólicos são ignoradas.
-- **A área de transferência, apenas escrita** pelos botões **Copy code** e **Copy link** em **Pair a new device**, nunca lida.
-
-O que o servidor pode e o que não pode ver: [`SECURITY.md`](../../SECURITY.md) e o [modelo de ameaças](../threat-model.md).
-
 ## Começar a sincronizar
 
-Cinco passos do zero a dois dispositivos sincronizados. `v1.0.6` é o release
-para o qual esta página foi escrita; use a tag que você está instalando.
+O caminho completo mais curto é o Compose com o Caddy na sua própria rede, a
+partir de um checkout deste repositório. Ele dá HTTPS em qualquer rede, sem
+domínio e sem conta em lugar nenhum. [Mesma rede, passo a passo](../same-network.md)
+percorre esse caminho com cada tela. Troque `vX.Y.Z` abaixo pela versão que
+você está instalando: a tag mais recente na
+[página de Releases](https://github.com/snaraj/obsync/releases/latest).
 
-### 1. Inicie o servidor
-
-Verifique a assinatura e então execute exatamente o digest que ela imprimiu:
+**1. Verifique a imagem.** Depois rode exatamente o digest que a verificação imprimiu:
 
 ```sh
-cosign verify ghcr.io/snaraj/obsync:v1.0.6 \
+cosign verify ghcr.io/snaraj/obsync:vX.Y.Z \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-O caminho simples é o Compose com o Caddy, a partir de um checkout deste
-repositório: HTTPS em qualquer rede, sem domínio e sem conta em lugar nenhum.
+**2. Inicie o servidor:**
 
 ```sh
 OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
@@ -56,125 +108,59 @@ OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
   docker compose -f deploy/compose/docker-compose.yml up -d
 ```
 
-`OBSYNC_HOST` é o nome que os seus dispositivos vão digitar; ele só precisa
+`OBSYNC_HOST` é o nome que os seus dispositivos vão digitar. Ele só precisa
 resolver na sua própria rede. `OBSYNC_BIND_ADDRESS` é o endereço em que as
 portas 80 e 443 são publicadas: um endereço de bind limita a interface de
-destino, não a de origem, então quem decide quem o alcança é o seu firewall.
-O Compose se recusa a iniciar enquanto você não escolher.
+destino, não a de origem, então é o seu firewall que decide quem o alcança. O
+Compose se recusa a iniciar enquanto você não escolher.
 
-Já tem HTTPS na frente, vindo de um proxy ou de um túnel em que você confia?
-Rode o servidor puro: [Rodar o servidor](../server.md).
+**3. Leia o token de configuração.** Na primeira inicialização, o servidor
+emite um token de configuração e o grava no seu volume de journal, com modo
+0600 e nunca registrado em log. Ele cria a sua conta uma vez e continua sendo o
+login de recuperação do painel. Guarde-o com o mesmo cuidado que a frase de
+recuperação:
 
-### 2. Leia o token de configuração
-
-Na primeira inicialização, o servidor emite um token de configuração e o grava
-no seu volume de journal, modo 0600, nunca registrado em log. Ele cria a sua
-conta uma vez e continua sendo o login de recuperação do painel: guarde-o com
-o mesmo cuidado que a frase de recuperação. Leia-o do contêiner:
+```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
 
 ```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 
-### 3. Confie no certificado, uma vez por dispositivo
+**4. Configure cada dispositivo.** Confie no certificado do servidor uma vez
+([como fazer](../server.md#trust-the-certificate-authority-once-per-device)).
+Instale o plugin e siga o [Início rápido](../quickstart.md): configure o
+primeiro dispositivo e depois pareie os outros.
 
-O Caddy assina com uma autoridade que ele mesmo gerou na primeira
-inicialização; cada dispositivo precisa confiar nela uma vez. Exporte o
-certificado raiz e instale-o em cada plataforma como mostra
-[Rodar o servidor](../server.md#trust-the-certificate-authority-once-per-device);
-no iOS, confiar nele é uma segunda opção a ativar depois de instalá-lo.
+Já tem HTTPS na frente, vindo de um proxy ou de um túnel em que você confia?
+Rode o [servidor puro](../server.md#already-have-a-tls-terminator-docker) no
+lugar deste caminho.
 
-### 4. Configure o primeiro dispositivo
+## O que este plugin acessa
 
-1. Configurações → Plugins não oficiais → Procurar → **Self Hosted Private
-   Sync** → Instalar → Ativar.
-2. Defina **Server URL** para o seu servidor (`https://sync.example.org`, com
-   a porta quando ela não for 443) e então escolha **Whole vault** ou
-   **Selected folders only**; depois a seleção só pode ser reduzida.
+- **O seu servidor, e mais nada.** Toda requisição vai para a **Server URL** que você digita; sem telemetria, sem terceiros.
+- **Uma conta nesse servidor**, criada a partir do token de configuração; a sua conta do Obsidian não tem papel nenhum.
+- **Os GitHub Releases, pelo Obsidian**, para instalar e atualizar; o Obsidian ignora os arquivos extras do release.
+- **A lista de arquivos do seu cofre**, para decidir o que sincronizar; pastas ocultas (`.obsidian`, `.git`) e pastas que são links simbólicos ficam de fora.
+- **A área de transferência, apenas escrita** por **Copy code** e **Copy link** em **Pair a new device**, nunca lida.
+- **O seu navegador, quando você pede o guia de configuração.** O guia do projeto abre nele; o próprio plugin não envia nada.
 
-   ![A aba de configurações do plugin: o campo Server URL com um nome de host de demonstração, a caixa dos cabeçalhos da borda e a linha Connection com os seus botões Check e Open dashboard](../assets/settings-server.png)
+O que o servidor pode e o que não pode ver: [`SECURITY.md`](../../SECURITY.md) e o [modelo de ameaças](../threat-model.md).
 
-3. Cole o token de configuração em **Setup or recover**, escolha **Set up or recover** e
-   anote a frase de recuperação de 24 palavras.
+## Versões
 
-   ![A seção This device da aba de configurações: a linha Pairing com Pair this device e Pair a new device, a linha First-time setup com o campo Setup token e o botão Set up, e a linha Vault key](../assets/settings-setup.png)
-
-### 5. Pareie o segundo dispositivo
-
-1. Instale o plugin nele com a mesma **Server URL**; no primeiro dispositivo,
-   execute **Pair a new device** para obter um código válido por dez minutos.
-
-   ![A caixa de diálogo Pair a new device no primeiro dispositivo, com o seu código ocultado, com os botões Copy code e Copy link e a linha Waiting for the new device](../assets/pair-new-device.png)
-
-2. No segundo dispositivo, abra **Pair this device**, cole o código e escolha
-   **Pair**.
-3. De volta ao primeiro dispositivo, aprove-o pelo nome. Edite uma nota em
-   qualquer um dos dois; ela aparece no outro em segundos.
-
-   ![O primeiro dispositivo perguntando se o novo dispositivo deve ser aprovado pelo nome, com os botões Approve e Reject](../assets/pair-approve.png)
-
-![Animação: o código de pareamento mostrado no primeiro dispositivo, colado no segundo, aprovado no primeiro, e a primeira nota chegando no segundo](../assets/pairing.gif)
-
-Testando em um só computador? `http://127.0.0.1:8080` alcança o servidor puro
-em um computador; o Obsidian no iOS e no Android recusa HTTP simples.
-
-As capturas de tela de celular ainda não estão neste repositório; elas são
-feitas nos dispositivos do próprio mantenedor e acrescentadas quando uma
-sessão de validação as registra.
-
-Cada passo por extenso: [Início rápido](../quickstart.md).
-
-## Avançado: Cloudflare
-
-A instalação de referência não tem nome de host público: um Cloudflare Tunnel
-e uma rota privada alcançam a rede do servidor, e o cliente Cloudflare One de
-cada dispositivo leva a Server URL até lá. Um nome de host público atrás do
-Cloudflare Access, com um token de serviço em **Edge service-token headers** e
-`OBSYNC_EDGE=cloudflare`, também funciona. As duas variantes, passo a passo:
-[Cloudflare](cloudflare.md).
-
-## Outros jeitos de alcançar o seu servidor
-
-Seja qual for a sua escolha, o plugin precisa de HTTPS com um certificado em
-que todos os dispositivos confiam; o servidor fica em HTTP simples atrás desse
-terminador.
-
-- **Só LAN.** O caminho do Compose acima, alcançável só em casa; sem sincronização fora de casa.
-- **WireGuard.** A sua própria VPN de volta para casa: a mais rápida e inteiramente sua; uma configuração de peer em cada dispositivo.
-- **Tailscale.** Uma malha WireGuard gerenciada: o que menos exige configuração; um terceiro a coordena, nas condições do plano dele.
-- **Um proxy reverso com TLS automático**, como o Caddy em um nome público: alcançável a partir da internet, e mantê-lo atualizado é com você.
-- **Cloudflare Tunnel.** Acima. Sem porta de entrada; um provedor no caminho, com condições próprias.
-
-O que um dispositivo em trânsito precisa (a rota, o nome, o certificado, o
-firewall, o aviso de rede local do iOS):
-[Alcançá-lo de fora da sua LAN](../server.md#reaching-it-from-outside-your-lan).
-
-## Solução de problemas
-
-| Sintoma | Causa provável | Primeira coisa a tentar |
-| --- | --- | --- |
-| `obsync: offline` | O dispositivo não consegue alcançar a Server URL | Abra a URL em um navegador nele; confira a porta, o HTTPS e a rota |
-| Um celular não conecta enquanto um computador sincroniza | O certificado privado não é confiável no celular | Instale o certificado raiz; no iOS, ative-o também em "Certificate Trust Settings" |
-| `401 stale_timestamp` | Um relógio está errado em mais de 300 segundos | Ative a hora automática, no dispositivo ou no servidor |
-| `403 device_pending` | Ninguém aprovou o dispositivo ainda | Aprove-o pelo nome no dispositivo a partir do qual você pareou |
-| Um arquivo nunca chega | Ele está fora da seleção de pastas, ou acima do limite de tamanho de um celular | Confira **Sync folders on this device**; no celular, rode **Show remote-only files** |
-
-Qualquer outro sintoma, cada código de erro e como relatar um deles:
-[Solução de problemas](../troubleshooting.md).
-
-## Documentação
-
-[Início rápido](../quickstart.md) · [Rodar o servidor](../server.md) ·
-[Cloudflare](cloudflare.md) · [Uso diário](../daily-use.md) ·
-[Configurações](../settings.md) · [Solução de problemas](../troubleshooting.md) ·
-[Recuperação](../recovery.md) · [Changelog](../../CHANGELOG.md)
-
-Tudo o mais: [docs/README.md](../README.md).
+A versão LATEST é a tag mais recente na
+[página de Releases](https://github.com/snaraj/obsync/releases/latest). É ela
+que o Obsidian instala e para a qual ele atualiza. `main` é a EDGE: trabalho já
+mesclado, mas ainda não lançado, para quem compila a partir do código-fonte.
+Não há canal beta nem tag de pré-lançamento. A seção Unreleased do changelog é
+o registro da EDGE.
 
 ## Dúvidas, bugs e segurança
 
 - **Uma dúvida, ou algo que você não tem certeza se é um bug:** [Discussions](https://github.com/snaraj/obsync/discussions).
-- **Um bug:** [abra uma issue](https://github.com/snaraj/obsync/issues/new/choose) com o relatório que a [Solução de problemas](../troubleshooting.md) descreve; sem token, sem frase de recuperação, sem nenhum endereço que você não publicaria.
+- **Um bug:** [abra uma issue](https://github.com/snaraj/obsync/issues/new/choose) com o relatório que a [Solução de problemas](../troubleshooting.md#how-to-collect-a-report) descreve. Deixe de fora qualquer token, frase ou endereço que você não publicaria.
 - **Uma suspeita de vulnerabilidade:** em caráter privado, pelo [`SECURITY.md`](../../SECURITY.md), nunca como uma issue pública.
 
 ## Licença

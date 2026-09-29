@@ -7,9 +7,10 @@ own step (docs/platform-onboarding.md item 5).
 
 `className` and `size` come from values, so a future HDD or NAS-backed class is
 a values change and never a code change. `capacity` is what the operator
-provisioned on the volume this claim binds to; it rides as an annotation so a
-250Gi -> 500Gi growth is ONE values edit that states both facts instead of two
-facts in two repositories that can silently disagree.
+provisioned on the volume this claim binds to; under a platform domain
+(`platform.annotationDomain`) it rides as an annotation so a 250Gi -> 500Gi
+growth is ONE values edit that states both facts instead of two facts in two
+repositories that can silently disagree.
 
 ReadWriteOnce, on every claim: the journal has exactly one writer and every
 acknowledged write is fsynced through it, so a mode that admitted a second
@@ -19,6 +20,7 @@ the same node is excluded by the server's own lock on the journal root
 (docs/storage.md, "One writer"), and ReadWriteOncePod is not available on the
 non-CSI local class.
 */}}
+{{- $domain := include "obsync.annotationDomain" . -}}
 {{- $volumes := list (dict "name" "obsync-blobs" "role" "blobs" "spec" .Values.storage.blobs) (dict "name" "obsync-journal" "role" "journal" "spec" .Values.storage.journal) -}}
 {{- range .Values.storage.mirrors -}}
 {{- $volumes = append $volumes (dict "name" (printf "obsync-mirror-%s" .name) "role" "mirror" "spec" .) -}}
@@ -35,8 +37,10 @@ metadata:
   labels:
     {{- include "obsync.labels" $ | nindent 4 }}
     app.kubernetes.io/component: {{ $volume.role }}
+  {{- if $domain }}
   annotations:
-    platform.snaraj.dev/volume-capacity: {{ $volume.spec.capacity | quote }}
+    {{ $domain }}/volume-capacity: {{ $volume.spec.capacity | quote }}
+  {{- end }}
 spec:
   accessModes:
     - ReadWriteOnce

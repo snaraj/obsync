@@ -1,11 +1,11 @@
 # M159: a version is written over a save the user made while it downloaded, and the editor reloads the loss
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -694,10 +694,6 @@
+@@ -951,10 +951,6 @@
    try {
-     await writeVerified(context, manifest, writer);
+     if (staged === undefined) await writeVerified(context, manifest, writer);
      const now = over === undefined ? null : await context.host.stat(manifest.path);
--    if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size)) {
+-    if (over !== undefined && now !== null && (now.mtime !== over.mtime || now.size !== over.size) && !droppedWrite(context, now)) {
 -      await writer.abort();
 -      return null;
 -    }

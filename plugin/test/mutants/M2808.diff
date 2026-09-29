@@ -1,0 +1,12 @@
+# M2808: a start that gets through leaves an earlier start's error standing
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3197,7 +3197,7 @@
+       // A quiet start emits nothing of its own, so the engine is asked; what
+       // the new engine already said is its own, and stands.
+       const earlier = this.statusValue.kind;
+-      if (earlier === "error" || earlier === "offline") this.setStatus(engine.current());
++      if (earlier === "offline") this.setStatus(engine.current());
+       await this.registerAccountRecovery();
+     } catch (error) {
+       if (this.engine !== engine) { engine.stop(); return; }

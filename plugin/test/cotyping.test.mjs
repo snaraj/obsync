@@ -25,7 +25,7 @@ import { createRequire } from "node:module";
 import { KEYS, STEP_MS, pair, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { applyChange } = require("../build/sync/pull.js");
+const { EditorBusy, applyChange } = require("../build/sync/pull.js");
 const { pendingPublication, pushDelete, pushFile, sidDigest } = require("../build/sync/push.js");
 const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
 
@@ -118,11 +118,45 @@ const copies = (host) => [...host.files.keys()].filter((path) => path.includes("
 const pulls = (host) => host.logs.filter((line) => line.startsWith("pull")).join(" | ");
 
 /**
+ * What the server lists of a file: its ten newest versions and every head
+ * (`OBSYNC_RETENTION_VERSIONS`), the rest read one at a time, and counted.
+ */
+function listing(transport) {
+  const getFile = transport.getFile.bind(transport), getVersion = transport.getVersion.bind(transport);
+  const seen = { reads: [] };
+  transport.getFile = async (...args) => {
+    const file = await getFile(...args);
+    return { ...file, versions: file.versions.filter((version, at) => at < 10 || file.heads.includes(version.version_id)) };
+  };
+  transport.getVersion = async (fileId, id, ...rest) => { seen.reads.push(id); return getVersion(fileId, id, ...rest); };
+  return seen;
+}
+
+/**
+ * The host's own refusal: nothing is written to a note someone is typing in,
+ * or whose editor holds what its file does not (`main.ts`, `assertEditorIdle`).
+ */
+function refusing(host, busy = async (path) => host.editors.has(path) && (host.typing(path) || await host.editing(path) === "unsaved")) {
+  const writer = host.writer.bind(host);
+  const refused = { count: 0 };
+  host.writer = async (path, size) => {
+    const output = await writer(path, size);
+    return { ...output, commit: async (mtime) => {
+      if (await busy(path)) { refused.count++; throw new EditorBusy(); }
+      return output.commit(mtime);
+    } };
+  };
+  return refused;
+}
+
+/**
  * A minute of two people typing into one open note, then two minutes of
  * nobody typing: the device run of #135, in virtual time. `placeA`/`placeB`
- * say where each cursor is; `textA`/`textB` are what each types.
+ * say where each cursor is; `textA`/`textB` are what each types. `host` is
+ * the run as Obsidian 1.13 and the server make it (#227): a save a keystroke,
+ * the server's listing, and no write under an open editor.
  */
-async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB = false }) {
+async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB = false, host = false }) {
   const { server, timers, a, b } = await pair(t, "immediate", { isMobileB });
   // One clock for everything a device reads the time from: file mtimes, the
   // merge breaker's window, the virtual timers. A minute of typing is a
@@ -130,6 +164,8 @@ async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB
   for (const device of [a, b]) {
     Object.defineProperty(device.host, "clock", { get: () => T0 + timers.now, set: () => undefined });
   }
+  const refused = host ? [refusing(a.host), refusing(b.host)] : [];
+  if (host) for (const device of [a, b]) listing(device.transport);
   const statuses = { a: [], b: [] };
   a.engine.onStatus = (status) => statuses.a.push(status.kind);
   b.engine.onStatus = (status) => statuses.b.push(status.kind);
@@ -151,7 +187,7 @@ async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB
   const editors = { a: new OpenEditor(a, timers, placeA), b: new OpenEditor(b, timers, placeB) };
   const typedA = [...textA];
   const typedB = [...textB];
-  const every = AUTOSAVE_MS / KEY_MS;
+  const every = host ? 1 : AUTOSAVE_MS / KEY_MS;
   for (let tick = 0; tick < typedA.length; tick++) {
     editors.a.type(typedA[tick] ?? "");
     const atB = tick - B_START;
@@ -183,14 +219,17 @@ async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB
     `records=${a.state.fileByPath(NOTE)?.versionId}/${b.state.fileByPath(NOTE)?.versionId}`,
     `feed=${a.state.data.lastSeq}/${b.state.data.lastSeq} journal=${server.journal.at(-1)?.seq}`,
     `editor_merges=${editors.a.merged}/${editors.b.merged}`,
+    `refused=${refused.map((device) => device.count).join("/")}`,
     `status=${statuses.a.at(-1)}/${statuses.b.at(-1)}`,
     `desktop_pulls=${decisions(a).join(",")}`,
     `laptop_pulls=${decisions(b).join(",")}`,
   ].join("\n  ");
 
   // The editors really were in the loop: a session in which no external
-  // write ever landed under unsaved keystrokes is not this case.
-  assert.ok(editors.a.merged + editors.b.merged > 0, `no write ever landed under an open editor:\n  ${story}`);
+  // write ever landed under unsaved keystrokes is not this case -- nor, on
+  // the host that refuses those writes, one in which none was refused.
+  if (host) assert.ok(refused.every((device) => device.count > 0), `no write was refused under an open editor:\n  ${story}`);
+  else assert.ok(editors.a.merged + editors.b.merged > 0, `no write ever landed under an open editor:\n  ${story}`);
   // THE SPLIT. One note, the same bytes on both devices, one head on the
   // server and both devices standing on it: two devices on two heads are
   // split again at the next keystroke.
@@ -232,6 +271,22 @@ test("desktop and mobile typing on adjacent lines retain both complete sequences
   assert.ok(a.host.text(NOTE).includes(A_TEXT), `the desktop sequence is incomplete:\n  ${story}`);
   assert.ok(a.host.text(NOTE).includes(B_TEXT), `the phone sequence is incomplete:\n  ${story}`);
   assert.deepEqual(copies(a.host), [], `adjacent lines produced conflict copies:\n  ${story}`);
+});
+
+/**
+ * AS OBSIDIAN AND THE SERVER MAKE IT (issue #227). Obsidian 1.13 saves a note
+ * a keystroke after it is typed, the server lists ten versions and every head,
+ * and nothing is written to a note someone is typing in: neither device merges
+ * until the typing stops, and the fork grows by a version a keystroke. Two
+ * desktops typing so on 2026-09-27 kept forty-six conflict copies, and one
+ * person's typing was in them and not in the note.
+ */
+test("two devices saving every keystroke into one open note keep both sequences without copies (#227)", async (t) => {
+  const textB = ` ${sentinel("B", 16)}`;
+  const { a, story } = await session(t, { placeA: atEnd, placeB: atEndOfFirstLine, textA: sentinel("A", 20), textB, host: true });
+  assert.ok(a.host.text(NOTE).includes(sentinel("A", 20)), `the desktop's typing is not all in the note:\n  ${story}`);
+  assert.ok(a.host.text(NOTE).includes(textB), `the laptop's typing is not all in the note:\n  ${story}`);
+  assert.deepEqual(copies(a.host), [], `conflict copies were made:\n  ${story}`);
 });
 
 /**
@@ -813,6 +868,44 @@ test("typing beyond a criss-cross head is published before another merge of that
 });
 
 /**
+ * Two typists, on the first line and the last, who each resolve every fork at
+ * once while holding a keystroke the other has not seen: each round is a
+ * criss-cross one level above the last. `climb(n)` adds `n` rounds and leaves
+ * this device on its own side of the last one, that side's text in the note.
+ * Each word is PREPENDED, so the append-only rule cannot resolve against an
+ * older base: this fixture must exercise recursive bases. `filler` is the
+ * second line, which nobody edits.
+ */
+async function ladder(r, path = NOTE, filler = "two") {
+  const lines = (one, five) => `${one}\n${filler}\nthree\nfour\n${five}\n`;
+  r.host.seed(path, lines("one", "five"), 1000);
+  const base = await pushFile(r.context, path);
+  let mtime = 1000;
+  const publish = (text, parents) => r.server.publish({
+    fileId: base.fileId, path, bytes: enc(text), mtime: (mtime += 1000), parents,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  let [one, five] = ["ONE", "FIVE"];
+  let ours = await publish(lines(one, "five"), [base.versionId]);
+  let theirs = await publish(lines("one", five), [base.versionId]);
+  let level = 0;
+  return async (rounds) => {
+    for (const top = level + rounds; level < top;) {
+      level++;
+      const pair = [ours.version_id, theirs.version_id];
+      ours = await publish(lines(`a${level} ${one}`, five), pair);
+      theirs = await publish(lines(one, `b${level} ${five}`), pair);
+      [one, five] = [`a${level} ${one}`, `b${level} ${five}`];
+    }
+    const mine = r.host.seed(path, lines(one, five.replace(/^b\d+ /, "")), mtime);
+    r.state.setFile(path, {
+      fileId: base.fileId, versionId: ours.version_id, mtime, size: mine.length, sha256: await sidDigest(ours.sids),
+    });
+    return { ours, theirs, one, five, lines, publish, fileId: base.fileId };
+  };
+}
+
+/**
  * AND AGAIN. The two merges of that pair can be merged differently in turn,
  * each device holding one more keystroke, and then the two ancestors of the
  * next pair are themselves a criss-cross: their base is their own two
@@ -822,28 +915,9 @@ test("typing beyond a criss-cross head is published before another merge of that
  * shapes, so three levels merge and a fourth is settled by rule.
  */
 test("merges of merges of one pair merge again, three levels down and no further", async () => {
-  const lines = (one, five) => `${one}\ntwo\nthree\nfour\n${five}\n`;
   for (const levels of [3, 4]) {
     const r = await rig();
-    r.host.seed(NOTE, lines("one", "five"), 1000);
-    const base = await pushFile(r.context, NOTE);
-    let mtime = 1000;
-    const publish = (text, parents) => foreign(r, base.fileId, text, parents, (mtime += 1000));
-    let [one, five] = ["ONE", "FIVE"];
-    let ours = await publish(lines(one, "five"), [base.versionId]);
-    let theirs = await publish(lines("one", five), [base.versionId]);
-    // Prepend each word so the append-only rule cannot resolve directly
-    // against an older base: this fixture must exercise recursive bases.
-    for (let level = 1; level <= levels; level++) {
-      const pair = [ours.version_id, theirs.version_id];
-      ours = await publish(lines(`a${level} ${one}`, five), pair);
-      theirs = await publish(lines(one, `b${level} ${five}`), pair);
-      [one, five] = [`a${level} ${one}`, `b${level} ${five}`];
-    }
-    const mine = r.host.seed(NOTE, lines(one, five.replace(/^b\d+ /, "")), mtime);
-    r.state.setFile(NOTE, {
-      fileId: base.fileId, versionId: ours.version_id, mtime, size: mine.length, sha256: await sidDigest(ours.sids),
-    });
+    const { theirs, one, five, lines } = await (await ladder(r))(levels);
 
     const result = await applyChange(r.context, theirs);
     if (levels === 3) {
@@ -856,6 +930,169 @@ test("merges of merges of one pair merge again, three levels down and no further
     }
     assert.ok(!r.host.logs.some((line) => line.includes("level=4")), pulls(r.host));
   }
+});
+
+/**
+ * THE ROUND AFTER (issue #227). Two people typing on different lines, each
+ * device resolving every fork at once: this device merges a pair three levels
+ * down, and meanwhile the phone merged that SAME pair holding its next
+ * keystroke while the desktop typed its own onto its merge. The next fork's
+ * base is that pair's base one level down, so this walk is four levels deep.
+ * Walked from the bottom again it was refused, and the fork was settled by
+ * rule: one device's saved typing went into a copy and out of the note it was
+ * being typed in (the co-typing run on a busy CI machine, 2026-09-27). The
+ * base of that pair was found one round ago, and a version never changes.
+ */
+test("a criss-cross one level deeper every round keeps merging while both type (#227)", async () => {
+  const r = await rig();
+  const { ours, theirs, one, five, lines, publish, fileId } = await (await ladder(r))(3);
+  assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  const phone = await publish(lines(one, `b4 ${five}`), [ours.version_id, theirs.version_id]);
+  r.host.seed(NOTE, lines(`a4 ${one}`, five), 9000);
+  await pushFile(r.context, NOTE);
+
+  assert.equal(await applyChange(r.context, phone), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(`a4 ${one}`, `b4 ${five}`));
+  assert.deepEqual(copies(r.host), []);
+  const file = r.server.files.get(fileId);
+  assert.equal(file.heads.length, 1);
+  assert.equal(r.state.fileByPath(NOTE).versionId, file.heads[0]);
+  assert.ok(r.host.logs.some((line) => /reason=criss_cross level=2 ok=true found=before/.test(line)), pulls(r.host));
+  assert.ok(!r.host.logs.some((line) => line.includes("ok=false")), pulls(r.host));
+});
+
+/**
+ * The bound is on the levels ONE resolution walks, and a level found before is
+ * no walk: a device that resolved the first round and then met the fourth
+ * finds the rest at the bound itself. A device that never met the first round
+ * still settles a fourth by rule (above).
+ */
+test("a level found in an earlier round is not walked again, even at the bound (#227)", async () => {
+  const r = await rig();
+  const climb = await ladder(r);
+  assert.equal(await applyChange(r.context, (await climb(1)).theirs), "merged", pulls(r.host));
+  const { theirs, one, five, lines } = await climb(3);
+
+  assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(one, five));
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=4 ok=true found=before")), pulls(r.host));
+});
+
+/**
+ * What is remembered is bounded by what one merge holds: the newest bases,
+ * together no longer than one chunk of text, the oldest forgotten first. A
+ * note whose base fills a chunk leaves no room for the one found before it,
+ * which is then walked from the bottom again, as a device that never met it.
+ */
+test("remembered bases hold one merge input's worth, the oldest forgotten first (#227)", async () => {
+  const r = await rig();
+  // A 4 KiB base, then one 2 KiB short of a chunk: together over it, while
+  // every text of either ladder stays inside one chunk.
+  const small = await ladder(r, NOTE, "t".repeat(4096));
+  assert.equal(await applyChange(r.context, (await small(1)).theirs), "merged", pulls(r.host));
+  const BIG = "Notes/Big.md";
+  const big = await ladder(r, BIG, "x".repeat(CHUNK_MAX - 2048));
+  assert.equal(await applyChange(r.context, (await big(1)).theirs), "merged", pulls(r.host));
+  const { theirs } = await small(3);
+
+  assert.notEqual(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=3 ok=false")), pulls(r.host));
+  // The newest is kept: the big note's next rounds find its first one.
+  assert.equal(await applyChange(r.context, (await big(3)).theirs), "merged", pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=4 ok=true found=before")), pulls(r.host));
+});
+
+/**
+ * THE FORK TWO TYPISTS GROW (issue #227), as this device sees it. Each round
+ * is a save here and one from the other device, on its own line, and a
+ * resolution that merges and is refused its write, because nothing is written
+ * to a note someone is typing in (`main.ts`, `assertEditorIdle`) while
+ * `editor.typing` holds. `round()` answers what the resolution came to and
+ * how many versions it read. `older` is history below the fork's base.
+ */
+async function typists(r, older = []) {
+  const seen = listing(r.transport);
+  const editor = { typing: true };
+  refusing(r.host, async (path) => path === NOTE && editor.typing);
+  const lines = (one, last) => `# Both${one}\nthe line nobody edits\nthe last fixed line\n${last}`;
+  const history = [];
+  for (const text of older) {
+    r.host.seed(NOTE, text, 100 + history.length);
+    history.push((await pushFile(r.context, NOTE)).versionId);
+  }
+  r.host.seed(NOTE, lines("", ""), 1000);
+  const base = await pushFile(r.context, NOTE);
+  const typed = { a: "", b: "", theirs: { version_id: base.versionId } };
+  let count = 0;
+  const round = async () => {
+    count++;
+    [typed.a, typed.b] = [`${typed.a}A${count} `, `${typed.b} B${count}`];
+    r.host.seed(NOTE, lines("", typed.a), 1000 + count);
+    await pushFile(r.context, NOTE);
+    typed.theirs = await foreign(r, base.fileId, lines(typed.b, ""), [typed.theirs.version_id], 2000 + count);
+    const reads = seen.reads.length;
+    const outcome = await applyChange(r.context, typed.theirs).catch((error) => error.reason);
+    return `${outcome}:${seen.reads.length - reads}`;
+  };
+  return { seen, editor, lines, base, typed, round, history };
+}
+
+/**
+ * While both type, nothing merges, and each round sinks the fork's base two
+ * versions further below the ten the server lists. Every resolution read
+ * that ancestry again, until the read budget refused it and the fork was
+ * settled by rule: one person's typing went into a copy (two desktops,
+ * 2026-09-27). A version never changes, so it is read once, in one round,
+ * never below the base, and the fork merges the moment the typing stops.
+ */
+test("a fork two typists grow round after round is read once and merges when they stop (#227)", async () => {
+  const r = await rig();
+  const { seen, editor, lines, base, typed, round, history } = await typists(r, ["draft", "outline"]);
+  const rounds = [];
+  for (let count = 0; count < 48; count++) rounds.push(await round());
+
+  assert.deepEqual(rounds.map((entry) => entry.split(":")[0]), Array(48).fill("active_editor"), pulls(r.host));
+  assert.equal(rounds.filter((entry) => !entry.endsWith(":0")).length, 1, rounds.join(" "));
+  assert.equal(new Set(seen.reads).size, seen.reads.length, "a version was read twice");
+  assert.ok(!seen.reads.some((id) => history.includes(id)), "history below the fork was read");
+  assert.ok(r.host.logs.some((line) => /reason=merge_ancestry .*reads=0 recalled=[1-9]/.test(line)), pulls(r.host));
+  editor.typing = false;
+  assert.equal(await applyChange(r.context, typed.theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(typed.b, typed.a));
+  assert.deepEqual(copies(r.host), []);
+  assert.equal(r.server.files.get(base.fileId).heads.length, 1);
+});
+
+/**
+ * What is remembered of the version graph is bounded as the bases are: the
+ * oldest forgotten first, together no longer than one merge input. A version
+ * that big leaves no room for the typists' ancestry, which is read again.
+ */
+test("remembered versions hold one merge input's worth, the oldest forgotten first (#227)", async () => {
+  const r = await rig();
+  const { round } = await typists(r);
+  for (let count = 0; count < 7; count++) await round();
+  assert.equal(await round(), "active_editor:0", pulls(r.host));
+
+  const BIG = "Notes/Big.md";
+  r.host.seed(BIG, "big\n", 1000);
+  const root = await pushFile(r.context, BIG);
+  r.host.seed(BIG, "big here\n", 2000);
+  await pushFile(r.context, BIG);
+  const other = await r.server.publish({ fileId: root.fileId, path: BIG, bytes: enc("big there\n"), mtime: 3000,
+    parents: [root.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (id) => {
+    const file = await getFile(id);
+    return id !== root.fileId ? file : { ...file, versions: file.versions
+      .filter((version) => version.version_id !== root.versionId)
+      .map((version) => (version.version_id === other.version_id ? { ...version, pad: "x".repeat(CHUNK_MAX) } : version)) };
+  };
+  assert.equal(await applyChange(r.context, other), "merged", pulls(r.host));
+  const held = r.host.logs.filter((line) => line.includes("reason=merge_ancestry")).at(-1).match(/held_chars=(\d+)/)[1];
+  assert.ok(Number(held) <= CHUNK_MAX, `remembered ${held} characters`);
+  assert.match(await round(), /^active_editor:[1-9]/, pulls(r.host));
 });
 
 /**
@@ -1092,7 +1329,8 @@ test("two devices settling the same overlap publish one shared conflict-copy ver
   await b.engine.start();
   await timers.run(STEP_MS);
   await Promise.all([a.engine.stopAndWait(), b.engine.stopAndWait()]);
-  const left = a.engine.context, right = b.engine.context;
+  // Driven by hand from here: a stopped engine's own signal would end every request.
+  const left = { ...a.engine.context, signal: undefined }, right = { ...b.engine.context, signal: undefined };
   a.host.seed(NOTE, "base\n", 1000);
   const base = await pushFile(left, NOTE);
   await applyChange(right, server.journal.at(-1));
@@ -1167,6 +1405,76 @@ test("text typed on top of the losing head is published as the copy's next versi
   assert.equal(pushed.status, "pushed");
   const next = r.server.files.get(record.fileId).versions[0];
   assert.deepEqual(next.parents, [record.versionId], "the text was not published as the copy's next version");
+});
+
+/**
+ * NOT WRITTEN, NOT CLAIMED (issue #227). With someone typing in the losing
+ * note, the kept head's write is refused, and the note still holds the losing
+ * head and what was typed on it. Its record said the kept head, so the next
+ * save went out as that head's child: the kept head's text out of the note on
+ * every device, and in no copy.
+ */
+test("a losing note whose editor refuses the kept head keeps its record, and its next save its parent (#227)", async () => {
+  const { r, ours, head } = await losing();
+  const refused = refusing(r.host, async (path) => path === NOTE);
+  const TYPED = "mine\nand a line typed here since\n";
+  r.host.seed(NOTE, TYPED, 5555);
+
+  await assert.rejects(applyChange(r.context, head), (error) => error.reason === "active_editor");
+  assert.equal(refused.count, 1);
+  assert.equal(r.host.text(NOTE), TYPED);
+  assert.equal(r.state.fileByPath(NOTE).versionId, ours.versionId, "the record names a head the note does not hold");
+  assert.ok(r.host.logs.some((line) => line.includes("decision=released reason=not_written role=yield")), pulls(r.host));
+  await pushFile(r.context, NOTE);
+  assert.deepEqual(r.server.files.get(ours.fileId).versions[0].parents, [ours.versionId], "the save went out over the kept head");
+});
+
+/** A phone whose write of `path` stays empty however often it is made (#242, `write_dropped` in main.ts). */
+function dropping(host, path) {
+  const writer = host.writer.bind(host);
+  host.writer = async (at, size) => {
+    const output = await writer(at, size);
+    return at !== path ? output : { ...output, commit: async () => {
+      host.seed(path, "", 9000);
+      throw Object.assign(new Error("write_dropped: sentinel"), { code: "write_dropped" });
+    } };
+  };
+}
+
+/**
+ * A MERGE OR A KEPT HEAD THE PHONE COULD NOT WRITE (#242; M3241). Not only a
+ * download: every write a phone can leave empty marks its name before it
+ * commits, and the empty file it leaves is never sent as the note -- not by
+ * the push that finds it, which no refusal has reached yet.
+ */
+test("a merge the phone leaves empty marks its note, and none of the empty file is sent (#242)", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, "one\ntwo\nthree\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  const other = await foreign(r, base.fileId, "one\ntwo\nTHREE\n", [base.versionId], 3000);
+  r.host.seed(NOTE, "ONE\ntwo\nthree\n", 2000);
+  await pushFile(r.context, NOTE);
+  dropping(r.host, NOTE);
+  const head = { ...other, heads: r.server.files.get(base.fileId).heads, conflicted: true };
+  await assert.rejects(applyChange(r.context, head), (error) => error.reason === "write_dropped");
+  assert.ok(r.host.logs.some((line) => line.includes("decision=publishing reason=merge_receipt")), pulls(r.host));
+  assert.equal(r.host.text(NOTE), "");
+  assert.equal(r.state.data.dropped[NOTE], base.fileId, "the merge's empty file was left unmarked");
+  const journal = r.server.journal.length;
+  assert.equal((await pushFile(r.context, NOTE)).status, "growing");
+  assert.equal(r.server.journal.length, journal, "the merge's empty file was sent as the note");
+});
+
+test("a kept head the phone leaves empty marks its note, and none of the empty file is sent (#242)", async () => {
+  const { r, ours, head } = await losing();
+  dropping(r.host, NOTE);
+  await assert.rejects(applyChange(r.context, head), (error) => error.reason === "write_dropped");
+  assert.ok(r.host.logs.some((line) => line.includes("decision=released reason=not_written role=yield")), pulls(r.host));
+  assert.equal(r.host.text(NOTE), "");
+  assert.equal(r.state.data.dropped[NOTE], ours.fileId, "the kept head's empty file was left unmarked");
+  const journal = r.server.journal.length;
+  assert.equal((await pushFile(r.context, NOTE)).status, "growing");
+  assert.equal(r.server.journal.length, journal, "the kept head's empty file was sent as the note");
 });
 
 /**

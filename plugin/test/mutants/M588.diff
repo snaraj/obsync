@@ -1,10 +1,10 @@
 # M588: enrol before key durability
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2668,7 +2668,7 @@
-       const freshKey = state.data.vrk === null;
+@@ -3257,7 +3257,7 @@
        if (freshKey) {
          state.data.vrk = hex(newVaultKey());
+         state.data.recoveryPhrase = "unconfirmed";
 -        await state.save();
 +        // mutated: key not persisted before setup
        }

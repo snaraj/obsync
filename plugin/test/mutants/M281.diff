@@ -5,7 +5,7 @@
      /** Close, and remove the temp ONLY while its name still means our file. */
      const discard = async (): Promise<void> => {
        if (open) {
--        opened = await handle.stat();
+-        opened = await fstat(handle);
          await handle.close();
        }
        open = false;

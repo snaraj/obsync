@@ -1,5 +1,7 @@
 # Quickstart
 
+*For people using obsync.*
+
 The first device and the second one, every step in full. It assumes your own
 server is already running; if it is not, start with [Run the server](server.md)
 and come back here.
@@ -83,10 +85,12 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
 3. Open the Self Hosted Private Sync settings tab. Set **Server URL** to the
    URL your devices reach the server at, port included when it is not 443
    (`https://name:8443`). If an access-controlled edge sits in front of the
-   server, paste its headers under **Edge service-token headers**, one per
-   line as `Name: value`.
+   server, paste its headers under **Custom request headers**, one per
+   line as `Name: value`. Trying it on one computer? A desktop also accepts
+   plain `http://127.0.0.1:8080` for a server on that same machine; Obsidian
+   on iOS and Android refuses plain HTTP.
 
-   ![The plugin's settings tab: the Server URL field holding a demo host name, the edge headers box, and the Connection row with its Check and Open dashboard buttons](assets/settings-server.png)
+   ![The plugin's settings tab: the Server URL field holding a demo host name, the Custom request headers box, and the Connection row with its Check and Open dashboard buttons](assets/settings-server.png)
 
 4. Under **Sync folders on this device**, choose **Selected folders only**
    if the vault also contains code or files you do not want shared, and
@@ -96,29 +100,96 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
    To stage a first sync within one vault, keep personal files
    in an excluded folder, test disposable notes inside the selected folder,
    then move the personal files in and run **Sync now**.
-   You can also add folders later in this device's settings; saving the wider
-   selection downloads existing server history for those folders.
-5. Under **Setup or recover**, paste the setup token and select **Set up or recover**:
+   You can add folders later in this device's settings; saving the wider
+   selection downloads existing server history for those folders. Removing a
+   folder later keeps its files on this device.
 
-   ![The This device section of the settings tab: the Pairing row with Pair this device and Pair a new device, the First-time setup row with the Setup token field and the Set up button, and the Vault key row](assets/settings-setup.png)
+   ![The Sync folders on this device section with Selected folders only chosen and the folders Notes and Projects typed, before Save](assets/settings-selected-folders.png)
 
-   the plugin creates the account and this device, generates the vault key
-   on this computer, and shows the **recovery phrase** (24 words).
-   Write it down and keep it off this machine: without any paired device and
-   without this phrase, the vault is unrecoverable by design. The server never
-   sees the key. [`recovery.md`](recovery.md) is what the phrase
-   does and does not get you back.
-6. Sync starts. The status bar shows the state; the command **Sync now**
+5. Under **Setup or recover**, paste the setup token and select **Set up or recover**.
+   The plugin creates the account and this device, and makes the vault key
+   on this computer.
+
+   ![The This device section on a new device: Pairing reads Not paired yet, and Setup or recover holds the masked Setup token field beside Set up or recover](assets/settings-new-device.png)
+
+6. It then shows the **recovery phrase**, 24 words, and asks for three of
+   them to check you wrote them down. Write it down and keep it off this
+   machine: without any paired device and without this phrase, the vault
+   cannot be recovered, by design. The server never sees the key.
+   [Recovery](recovery.md) is what the phrase does and does not get you back.
+   If you closed the dialog without the check,
+   [write the phrase down now](troubleshooting.md#you-closed-the-recovery-phrase-without-checking-it).
+
+   ![The recovery phrase dialog: 24 numbered words, every one hidden here, and three answer fields for words 3, 11 and 20, empty](assets/recovery-check.png)
+
+7. Sync starts. The status bar shows the state; the command **Sync now**
    forces a pass, and **Show sync status** explains what it is doing.
 
-Existing installations migrate their own credentials before removing them
-from plugin data. Keep the vault and recovery phrase intact if a storage
-error appears. Check Obsidian's secret storage and reload; do not delete the
-credential reference or repeat server setup. A partially enrolled device
-still needs approval before an existing recovery phrase can restore sync.
-A pending pairing dialog does not resume after app restart. Secret storage is
-shared with other trusted plugins in that vault and is not an OS or plugin
-isolation boundary. Native restart persistence is a separate validation step.
+If a storage error appears instead, reload Obsidian. If it comes back, follow
+[Where your keys are kept](community-plugin.md#where-your-keys-are-kept); do
+not repeat server setup.
+
+## Prepare an Android phone
+
+On an iPhone, skip to [Pair your phone](#pair-your-phone). On Android,
+Obsidian asks for a few permissions the first time; these are the screens.
+They come from an Android 15 emulator running Obsidian 1.13.8. No Android
+device has a recorded sync run yet ([Your devices](setup.md#your-devices)).
+
+1. **Create a vault.** Open Obsidian and select **Create a vault**. When it
+   offers Obsidian's own sync service, choose **Continue without sync**. Name
+   the vault, keep **Device storage**, and select **Create a vault**.
+
+   ![Obsidian on Android: Configure your new vault, with the Vault name field and Device storage selected](assets/android/03-configure-vault.png)
+
+2. **Allow file access.** Select **Allow file access**. Android opens **All
+   files access**: turn on **Allow access to manage all files** for Obsidian,
+   then go back.
+
+   ![Obsidian explains that it needs permission to access device storage, with the Allow file access button](assets/android/05-allow-file-access.png)
+
+   ![Android's All files access screen for Obsidian with the switch off](assets/android/06-all-files-access-off.png)
+
+   ![The same screen with Allow access to manage all files switched on](assets/android/07-all-files-access-on.png)
+
+3. **Choose the folder.** When Android shows the **Documents** folder, select
+   **Use this folder**, then **Allow**. The storage name is covered in these
+   captures.
+
+   ![Android's folder picker on Documents, with the Use this folder button](assets/android/08-choose-documents-folder.png)
+
+   ![Android asks whether to allow Obsidian to access files in Documents, with Cancel and Allow](assets/android/09-allow-documents-access.png)
+
+   The new, empty vault opens.
+
+   ![The new empty vault open on Android](assets/android/10-empty-vault.png)
+
+4. **Allow community plugins.** Open **Settings → Community plugins** and
+   select **Exit Restricted mode**. Then select **Browse**, search for **Self
+   Hosted Private Sync**, and select **Install**, then **Enable**.
+
+   ![Community plugins on Android, with the Exit Restricted mode button](assets/android/11-community-plugins-restricted.png)
+
+   ![Community plugins with Self Hosted Private Sync installed and switched on](assets/android/13-community-plugins-enabled.png)
+
+   If Obsidian asks whether you trust the author of this vault, the vault
+   already holds plugins. Choose **Trust author and enable plugins** only for
+   a vault that is your own.
+
+   ![Obsidian asks whether you trust the author of this vault, with Trust author and enable plugins and Browse vault in Restricted Mode](assets/android/12-trust-author.png)
+
+5. **Open the plugin's settings.** In **Settings**, scroll to **Community
+   plugins** and select **Self Hosted Private Sync**. Then continue with
+   [Pair your phone](#pair-your-phone).
+
+   ![Obsidian's Settings on Android, with Self Hosted Private Sync under Community plugins](assets/android/14-settings-plugin-entry.png)
+
+   ![The plugin's settings on Android: Server URL, Custom request headers, Connection with Check, and the start of Sync folders on this device](assets/android/15-plugin-settings-server.png)
+
+Android keeps certificates you install yourself apart from the built-in ones,
+and an app may ignore them. If Obsidian on Android will not connect to a
+server with its own certificate authority, see
+[the certificate entry in Troubleshooting](troubleshooting.md#the-certificate-is-not-trusted-on-this-device).
 
 ## Pair your phone
 
@@ -147,13 +218,19 @@ isolation boundary. Native restart persistence is a separate validation step.
 
    This is the actual phone dialog, captured before entering a code. For
    certificate setup, follow [Add the phone](same-network.md#add-the-phone).
-4. Back on the computer, check the device name and, on updated devices, the
-   new device's vault name and note count before approving. If these are not
-   the vault you intended, select **Reject**. The phone
-   receives the vault key encrypted under a pairing secret that never touches
-   the server; until you approve, the phone has no authority of any kind.
+4. Back on the computer, check the device name, that both screens show the
+   same match code, and, on updated devices, the new device's vault name and
+   note count before approving. If these are not the vault you intended, or
+   the match codes differ, select **Reject**. The phone receives the vault key
+   encrypted under a pairing secret that never touches the server; until you
+   approve, the phone has no authority of any kind. If the phone's dialog is
+   closed or Obsidian restarts while it waits, pairing still finishes once you
+   approve within the code's ten minutes; after that, pair again with a new
+   code.
 
-   ![The computer names the phone vault and its note count before approval](assets/phone-candidate-113/final-train-approval.png)
+   ![Pair a new device on the computer: Approve "Android ASXT" (Android, obsync 1.1.4)? Approve only if the new device shows the code 791 131. It will sync vault "lab-android" (23 notes). Approve and Reject below](assets/pair-approve-phone.png)
+
+   ![Pair this device on an Android phone, its code field cleared: Waiting for approval on the other device. Its prompt shows the code 791 131: if it shows another, choose Reject there](assets/android/17-pairing-waiting.png)
 
    If the phone holds notes the server does not have, it asks before adding
    them. **Pair and upload** shares those notes with your other paired
@@ -162,6 +239,8 @@ isolation boundary. Native restart persistence is a separate validation step.
    screenshot.
 
    ![The phone asks before uploading notes that are new to this server](assets/phone-candidate-113/final-train-vault-confirm.png)
+
+   ![Once paired, This device on an Android phone: Paired as Android ASXT, Pair this device and Pair a new device, the Name, and the phone's download ceilings, 512 MiB and 50 GiB](assets/android/16-plugin-settings-device.png)
 
 5. Edit a note on the phone. It appears on the computer within seconds, and
    the other way round. That is the whole loop.

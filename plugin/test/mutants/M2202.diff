@@ -1,0 +1,12 @@
+# M2202: Verify all files stops at Sync now's ceiling
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4025,7 +4025,7 @@
+ 
+   /** "Verify all files" (#197): Sync now, reading every file's contents however large. */
+   verifyAll(): Promise<{ checked: number; sent: number }> {
+-    return this.press("verify_all", Number.POSITIVE_INFINITY);
++    return this.press("verify_all", SYNC_NOW_VERIFY_MAX);
+   }
+ 
+   private async press(trigger: string, verifyUpTo: number): Promise<{ checked: number; sent: number }> {

@@ -1,0 +1,12 @@
+# M3254: a mark carried across the selection's boundary is not saved, and a restart strands it at the old name
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1500,7 +1500,7 @@
+     if (!source || !target) {
+       if (target) this.changed(to);
+       else if (source) this.leftScope(from);
+-      if (this.carryMark(context, from, to)) this.saveMoved(context);
++      this.carryMark(context, from, to);
+       return;
+     }
+     const record = context.state.fileByPath(from);

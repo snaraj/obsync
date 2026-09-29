@@ -1,13 +1,13 @@
 # M119: a folder-selection change carries the old reconnect cycle on
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1960,9 +1960,6 @@
-       await this.engine?.stopAndWait();
-       assertActive();
-       this.engine = null;
--      // A retry that fired into a failed save would restart sync under a
--      // status that says it is stopped; the start at the end owns resumption.
--      this.cancelReconnect();
-       await Promise.allSettled(this.manualFetches);
-       await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
-       assertActive();
+@@ -2441,9 +2441,6 @@
+         this.log(`scope decision=withdrawn reason=cancelled duration_ms=${Date.now() - started}`);
+       } else {
+         this.engine = null;
+-        // A retry that fired into a failed save would restart sync under a
+-        // status that says it is stopped; the start at the end owns resumption.
+-        this.cancelReconnect();
+         await this.applyScope(state, "save", started, assertActive);
+         // Redrawn now: whether the status line names an empty selection is this save's to change.
+         this.setStatus(this.statusValue);

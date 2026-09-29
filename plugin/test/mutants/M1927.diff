@@ -1,0 +1,12 @@
+# M1927: a received folder re-case marks only the folder records under it, not the directory it renames
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1149,7 +1149,7 @@
+   // records alone left the host's report of this very rename unmarked: this
+   // device published the folder's tombstone and its record straight back, and
+   // armed a wire barrier for a rename it only applied.
+-  const marked = folders.includes(from) ? folders : [from, ...folders];
++  const marked = folders;
+   for (const folder of marked) {
+     context.trashed.add(folder);
+     context.createdFolders.add(under(folder));

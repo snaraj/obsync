@@ -1,0 +1,12 @@
+# M2212: Sync now waits on a read already asking at once
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4086,7 +4086,7 @@
+    * send, and brings what it brings without the press waiting on it.
+    */
+   private readFeed(): Promise<void> {
+-    if (!this.running || this.reading) return Promise.resolve();
++    if (!this.running) return Promise.resolve();
+     return new Promise<void>((answer) => {
+       const budget = this.timers.set(() => {
+         this.options.host.log(`sync_now decision=feed_unanswered budget_ms=${SYNC_NOW_FEED_MS}`);

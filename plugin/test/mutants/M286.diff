@@ -7,5 +7,5 @@
      const handle = await fs.promises.open(temp, "wx");
 -    this.temps.add(temp);
      let open = true;
-     let opened = await handle.stat();
+     let opened = await fstat(handle);
  

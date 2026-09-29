@@ -1,0 +1,12 @@
+# M2964: a phone gets a worker clock too
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2883,7 +2883,7 @@
+     this.host?.closeQuestion();
+     this.host = new ObsidianHost(this);
+     this.clock?.stop();
+-    const clock = this.clock = Platform.isDesktopApp ? workerClock(pageTimers, (line) => this.log(line)) : null;
++    const clock = this.clock = workerClock(pageTimers, (line) => this.log(line));
+     const timers = clock ?? pageTimers;
+     const transport: Transport = new Transport({
+       request: (request) => {

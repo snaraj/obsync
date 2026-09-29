@@ -1,0 +1,12 @@
+# M3027: a reused landed copy is not marked as this device's own write, so its event is published back (one copy per conflict, #225)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3549,7 +3549,7 @@
+           `duration_ms=${context.now() - started}`,
+       );
+     }
+-    if (reused !== null) return { path: target, attempt, stat: reused, written: true };
++    if (reused !== null) return { path: target, attempt, stat: reused, written: false };
+     if (landed === "kept") throw new Error("copy_unconfirmed");
+   }
+   return null;

@@ -24,7 +24,7 @@ import { createRequire } from "node:module";
 import { DEVICE_B, KEYS, STEP_MS, digest, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { applyChange, settleBeside } = require("../build/sync/pull.js");
+const { applyChange, settleBeside, yieldName } = require("../build/sync/pull.js");
 const { pushFile, sidDigest } = require("../build/sync/push.js");
 const { conflictCopyPath } = require("../build/sync/conflict.js");
 const { QUIET_MS } = require("../build/sync/engine.js");
@@ -95,6 +95,70 @@ test("the holder of the higher id moves its own note aside and yields the path",
   assert.ok(r.context.trashed.has(NOTE));
   assert.ok(
     r.host.logs.some((line) => line.includes(`decision=same_name_tiebreak winner=${LOWER} role=rename`)),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
+/**
+ * A COMMIT THAT FAILS AFTER ITS COPY LANDED (issue #225). The desktop host
+ * links a copy into place and then proves it -- the folder synced, the name
+ * still its own -- and either can fail with the copy already there; the next
+ * name then made a second copy, and a host that failed every time made twenty.
+ * `landsThenFails` makes the first commit do exactly that. Its `withdraw` is
+ * the desktop writer's -- the file it made, only while the name still means
+ * it -- or absent, as on a phone, whose writer cannot tell.
+ */
+function landsThenFails(r, { withdraws }) {
+  const create = r.host.createWriter.bind(r.host);
+  let failed = false;
+  r.host.createWriter = async (path, size, check) => {
+    const { withdraw: _, ...writer } = await create(path, size, check);
+    let made = null;
+    const landing = { ...writer, commit: async (mtime) => {
+      const stat = await writer.commit(mtime);
+      if (failed) return stat;
+      failed = true;
+      made = r.host.files.get(path);
+      throw new Error("sentinel confirmation failure");
+    } };
+    if (!withdraws) return landing;
+    return { ...landing, withdraw: async () => {
+      const mine = made;
+      made = null;
+      if (mine === null) return "none";
+      if (r.host.files.get(path) !== mine) return "kept";
+      r.host.files.delete(path);
+      return "removed";
+    } };
+  };
+}
+
+test("a moved note whose copy failed after it landed is taken back before the next name: one copy (#225)", async () => {
+  const { r, frame } = await collision(HIGHER, LOWER);
+  landsThenFails(r, { withdraws: true });
+
+  assert.equal(await applyChange(r.context, frame), "applied");
+
+  assert.equal(copies(r.host).length, 1, `the landed copy was left beside the next one: ${copies(r.host)}`);
+  assert.equal(r.host.text(copies(r.host)[0]), MINE);
+  assert.equal(r.host.text(NOTE), THEIRS);
+  assert.ok(
+    r.host.logs.some((line) => line.startsWith("pull path_class=file decision=refused reason=copy_unconfirmed landed=removed name_attempt=1 ")),
+    r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
+  );
+});
+
+test("a landed copy its writer cannot vouch for stays, and no second one is written beside it (#225)", async () => {
+  const { r, frame } = await collision(HIGHER, LOWER);
+  landsThenFails(r, { withdraws: false });
+
+  await assert.rejects(applyChange(r.context, frame), /copy_unconfirmed/);
+
+  assert.equal(copies(r.host).length, 1, `a second copy was written: ${copies(r.host)}`);
+  assert.equal(r.host.text(copies(r.host)[0]), MINE);
+  assert.equal(r.host.text(NOTE), MINE, "the note kept its name");
+  assert.ok(
+    r.host.logs.some((line) => line.startsWith("pull path_class=file decision=refused reason=copy_unconfirmed landed=kept name_attempt=1 ")),
     r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
 });
@@ -1787,6 +1851,40 @@ test("the note waiting at a name steps aside to the next free name when the firs
   assert.deepEqual(copies(r.host).sort(), [...taken].sort());
 });
 
+/**
+ * A PUSH THAT READ A NOTE BEFORE THE SWAP GAVE ITS NAME AWAY. The push of
+ * Draft reads Draft's bytes; while it is still working, the second version
+ * moves that note to Final and the note waiting beside takes Draft. The
+ * bytes are the ones the push's record names, so it has nothing to publish --
+ * and nothing to write: the record at Draft is now the other note's, and
+ * putting the one the push read back over it files that note under the
+ * wrong id. The two-device tests met this only through the start's pass
+ * pushing a note the feed was about to rename; that pass now holds such a
+ * note until the feed has named it (#194), so this drives the push and the
+ * pull directly.
+ */
+test("a push that read a note before a swap gave its name away leaves the other note's record there", async () => {
+  const { r, second } = await swapped();
+  const read = r.host.read.bind(r.host);
+  let entered = false;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  r.host.read = async (path) => {
+    const bytes = await read(path);
+    if (path === "Notes/Draft.md" && !entered) { entered = true; await gate; }
+    return bytes;
+  };
+
+  const pushing = pushFile(r.context, "Notes/Draft.md");
+  for (const deadline = Date.now() + 10_000; !entered && Date.now() < deadline;) await new Promise(setImmediate);
+  assert.ok(entered, "the push never read the note, so this proves nothing");
+  assert.equal(await applyChange(r.context, second), "applied");
+  release();
+
+  assert.equal((await pushing).status, "unchanged", "the push read bytes other than the ones its record names");
+  swappedNames(r);
+});
+
 test("a note waiting at a name that holds an unpushed edit is not moved for the version that wants the name", async () => {
   const { r, second } = await swapped();
   r.host.seed("Notes/Final.md", `${FINAL_TEXT}typed here\n`, 9000);
@@ -1795,4 +1893,198 @@ test("a note waiting at a name that holds an unpushed edit is not moved for the 
   assert.equal(r.state.fileByPath("Notes/Final.md").fileId, LOWER);
   assert.equal(r.state.pathByFileId(HIGHER), "Notes/Draft.md");
   assert.equal(r.state.fileByPath("Notes/Draft.md").name, "Notes/Final.md", pullLog(r));
+});
+
+/*
+ * PAIRING AGAIN OVER A NOTE WITH HISTORY (issue #163, S22). Leaving drops
+ * every record, so pairing again replays the feed from zero over notes this
+ * device still holds, and a note with two versions arrives as its OLDER one
+ * first. The note here is the CURRENT one, byte for byte: it must be taken
+ * for that version when it arrives, never moved aside for the one before it.
+ */
+const HISTORY = "22".repeat(16);
+const OLDER = "the note as it was first written\n";
+const CURRENT = "the note as it is now, after an edit\n";
+
+/** A file another device wrote twice at NOTE; `CURRENT` is its only head. */
+async function history(r) {
+  const v1 = await r.server.publish({
+    fileId: HISTORY, path: NOTE, bytes: enc(OLDER), mtime: 1000,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  const v2 = await r.server.publish({
+    fileId: HISTORY, path: NOTE, bytes: enc(CURRENT), mtime: 2000, parents: [v1.version_id],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  return { v1, v2 };
+}
+
+test("pairing again: a note holding its file's current version is taken for it, with no copy (#163)", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, CURRENT, 5000);
+  const { v1, v2 } = await history(r);
+  const before = r.server.journal.length;
+
+  assert.equal(await applyChange(r.context, v1), "skipped", pullLog(r));
+  assert.equal(await applyChange(r.context, v2), "applied", pullLog(r));
+
+  assert.deepEqual(copies(r.host), [], `an identical copy was made: ${pullLog(r)}`);
+  assert.equal(r.host.text(NOTE), CURRENT);
+  assert.equal(r.host.files.get(NOTE).mtime, 5000, "the note was rewritten");
+  assert.equal(r.state.fileByPath(NOTE).fileId, HISTORY);
+  assert.equal(r.state.fileByPath(NOTE).versionId, v2.version_id);
+  assert.equal(r.server.journal.length, before, "pairing again published something");
+  assert.ok(pullLog(r).includes(`decision=skipped reason=superseded_at_name file=${HISTORY} seq=${v1.seq}`), pullLog(r));
+});
+
+for (const [ours, role] of [[LOWER, "keep"], [HIGHER, "yield"]]) {
+  test(`pairing again: a note already published under its own id settles on the current version, with no copy (${role}, #163)`, async () => {
+    const r = await rig();
+    r.host.seed(NOTE, CURRENT, 5000);
+    await pushFile(r.context, NOTE);
+    r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), fileId: ours });
+    const { v1, v2 } = await history(r);
+
+    await applyChange(r.context, v1);
+    await applyChange(r.context, v2);
+
+    assert.deepEqual(copies(r.host), [], `an identical copy was made: ${pullLog(r)}`);
+    assert.deepEqual([...r.host.files.keys()], [NOTE]);
+    assert.equal(r.host.text(NOTE), CURRENT);
+    assert.deepEqual(r.host.trashed, [], "the note was moved aside");
+    assert.equal(r.state.fileByPath(NOTE).fileId, role === "keep" ? LOWER : HISTORY, pullLog(r));
+    assert.ok(pullLog(r).includes(`decision=converged reason=identical_same_name role=${role}`), pullLog(r));
+  });
+}
+
+test("pairing again: a note that differs from every version still keeps both, settled on the current one (#163)", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, MINE, 5000);
+  await pushFile(r.context, NOTE);
+  r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), fileId: LOWER });
+  const { v1, v2 } = await history(r);
+
+  assert.equal(await applyChange(r.context, v1), "skipped", pullLog(r));
+  assert.deepEqual(copies(r.host), [], `a copy was made for a version the file has left behind: ${pullLog(r)}`);
+  assert.equal(await applyChange(r.context, v2), "conflict_copy", pullLog(r));
+
+  // Nothing lost: this device's note keeps the name (the lower id), and the
+  // file's current text is beside it, recorded under its own id.
+  assert.equal(r.host.text(NOTE), MINE);
+  const copy = copies(r.host);
+  assert.equal(copy.length, 1, pullLog(r));
+  assert.equal(r.host.text(copy[0]), CURRENT);
+  assert.equal(r.state.fileByPath(copy[0]).fileId, HISTORY);
+});
+
+test("a view of the file that cannot show its current head proves nothing, and the version settles as before (#163)", async () => {
+  const r = await rig();
+  r.host.seed(NOTE, CURRENT, 5000);
+  const { v1, v2 } = await history(r);
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (id) => {
+    const view = await getFile(id);
+    return { ...view, versions: view.versions.filter((version) => version.version_id !== v2.version_id) };
+  };
+
+  assert.equal(await applyChange(r.context, v1), "conflict_copy", pullLog(r));
+
+  assert.ok(!pullLog(r).includes("superseded_at_name"), pullLog(r));
+  assert.equal(r.host.text(NOTE), CURRENT, "the note here was replaced");
+});
+
+/*
+ * THE RULE AT PUSH TIME (issue #122), at the function the engine asks before
+ * every push. The pair tests in `rename.test.mjs` drive it end to end.
+ */
+const WAITS = "Notes/Same (beside).md";
+
+/** Another note beside NOTE, waiting for it, and this device's own note at NOTE with no id yet. */
+async function waitingFor(r) {
+  const v1 = await r.server.publish({
+    fileId: LOWEST, path: NOTE, bytes: enc(THEIRS), mtime: 1000,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  r.host.seed(WAITS, THEIRS, 1000);
+  r.state.setFile(WAITS, {
+    fileId: LOWEST, versionId: v1.version_id, mtime: 1000, size: THEIRS.length, sha256: await sidDigest(v1.sids), name: NOTE,
+  });
+  r.host.seed(NOTE, MINE, 2000);
+  return v1;
+}
+
+test("at its push, a note with no id yet yields the name to the lower id waiting for it (#122)", async () => {
+  const r = await rig();
+  await waitingFor(r);
+
+  assert.equal(await yieldName(r.context, NOTE), true);
+
+  assert.equal(r.host.text(NOTE), THEIRS, "the waiting note did not take the name");
+  assert.equal(r.state.fileByPath(NOTE).fileId, LOWEST);
+  const moved = copies(r.host).filter((path) => path !== WAITS);
+  assert.equal(moved.length, 1, pullLog(r));
+  assert.equal(r.host.text(moved[0]), MINE, "this device's note was not kept");
+  const record = r.state.fileByPath(moved[0]);
+  assert.ok(record.fileId > LOWEST && record.versionId === "" && record.mtime === -1, JSON.stringify(record));
+  assert.equal(r.host.files.get(moved[0]).mtime, 2000, "the moved note took a time it never had");
+  assert.ok(r.host.logs.includes(`push decision=same_name_tiebreak winner=${LOWEST} role=rename file=${record.fileId}`),
+    r.host.logs.join(" | "));
+  assert.deepEqual(r.host.notices, [`obsync found two different notes named ${NOTE}. This device's is now "${moved[0]}", ` +
+    "and the other device's keeps the name."]);
+});
+
+test("at its push, a note with no id yet that sorts below the waiting one keeps the name, and its id is kept for the push (#122)", async () => {
+  const r = await rig();
+  await waitingFor(r);
+  // Every id sorts above LOWEST; this pair is decided by the one waiting, so
+  // pin it above instead.
+  r.state.setFile(WAITS, { ...r.state.fileByPath(WAITS), fileId: "ff".repeat(16) });
+
+  assert.equal(await yieldName(r.context, NOTE), false);
+
+  assert.equal(r.host.text(NOTE), MINE);
+  const pinned = r.state.fileByPath(NOTE);
+  // Unpublished, and still owed: a push that fails from here is queued again.
+  assert.ok(pinned.fileId < "ff".repeat(16) && pinned.versionId === "" && pinned.mtime === -1, JSON.stringify(pinned));
+  const outcome = await pushFile(r.context, NOTE);
+  assert.equal(outcome.fileId, pinned.fileId, "the push published another id than the one the rule compared");
+});
+
+test("at its push, a phone keeps both as it already did, and chooses no id for the rule (#122)", async () => {
+  const r = await rig({ isMobile: true });
+  await waitingFor(r);
+
+  assert.equal(await yieldName(r.context, NOTE), false);
+
+  assert.equal(r.state.fileByPath(NOTE), undefined, "a phone pinned an id it cannot act on");
+  assert.equal(r.host.text(NOTE), MINE);
+  assert.ok(!r.host.logs.some((line) => line.includes("move_aside_refused")), r.host.logs.join(" | "));
+});
+
+test("at its push, a note whose own name another note is waiting for is not moved while it waits itself (#122)", async () => {
+  const r = await rig();
+  await waitingFor(r);
+  r.state.setFile(NOTE, { fileId: HIGHER, versionId: "v", mtime: 2000, size: MINE.length, sha256: "", name: "Notes/Elsewhere.md" });
+
+  assert.equal(await yieldName(r.context, NOTE), false);
+
+  assert.equal(r.host.text(NOTE), MINE);
+  assert.deepEqual(r.host.trashed, [], "a waiting note was moved aside");
+});
+
+test("a note being published so the rule can decide is not moved aside by that very publication (#122)", async () => {
+  const r = await rig();
+  const v1 = await waitingFor(r);
+  // The engine's own publication, rule and all (`engine.ts`, `pushNow`).
+  r.context.publish = async (path) => { if (!(await yieldName(r.context, path))) await pushFile(r.context, path); };
+  const next = await r.server.publish({
+    fileId: LOWEST, path: NOTE, bytes: enc(`${THEIRS}and a second line\n`), mtime: 3000, parents: [v1.version_id],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+
+  assert.equal(await applyChange(r.context, next), "applied", pullLog(r));
+
+  assert.equal(r.host.text(NOTE), MINE, "the note was moved by its own identification");
+  assert.equal(r.host.text(WAITS), `${THEIRS}and a second line\n`);
+  assert.equal(r.state.fileByPath(WAITS).name, NOTE);
 });

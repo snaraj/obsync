@@ -1,0 +1,12 @@
+# M1855: a held claim is written over the credential entry instead of beside it (#153)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -725,7 +725,7 @@
+    */
+   holdClaim(claim: string | null): boolean {
+     if (this.failure !== null || this.lease.holder !== this.claim) return false;
+-    const ref = claimRef(this.installationId);
++    const ref = secretRef(this.installationId);
+     const text = claim ?? "";
+     try {
+       this.secrets.setSecret(ref, text);

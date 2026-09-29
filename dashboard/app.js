@@ -263,6 +263,7 @@ function deviceRow(row, index) {
   setText(field(node, 'name'), row.name);
   setText(field(node, 'platform'), row.platform);
   field(node, 'revoked').hidden = !row.revoked;
+  field(node, 'pending').hidden = !row.pending;
   setText(field(node, 'app'), row.appVersion);
   setTime(field(node, 'created'), row.created);
   setTime(field(node, 'signin'), row.lastSignIn);

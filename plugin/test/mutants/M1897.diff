@@ -1,0 +1,12 @@
+# M1897: two different moves keep each device's own name instead of one rule
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4230,7 +4230,7 @@
+ function settledName(context: SyncContext, change: ChangeRecord, base: string | undefined, ours: string, theirs: string): string {
+   if (ours === theirs || theirs === base) return ours;
+   if (ours === base) return theirs;
+-  const kept = ours < theirs ? ours : theirs;
++  const kept = ours;
+   context.host.log(
+     `pull decision=renamed_twice kept=${kept === ours ? "ours" : "theirs"} base=${base === undefined ? "unknown" : "known"} ` +
+       `file=${change.file_id} seq=${change.seq}`,

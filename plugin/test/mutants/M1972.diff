@@ -1,0 +1,12 @@
+# M1972: a fallback that fails part-way leaves its partial copy
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1087,7 +1087,7 @@
+         const mine = await fstat(copy).catch(() => null);
+         await copy.close().catch(() => undefined);
+         copy = null;
+-        if (sameFile(mine, await walker(fs).lstat(target).catch(() => null))) await fs.promises.unlink(target).catch(() => undefined);
++        if (sameFile(mine, await walker(fs).lstat(target).catch(() => null)) && target === "") await fs.promises.unlink(target).catch(() => undefined);
+       }
+       throw error;
+     } finally {

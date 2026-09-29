@@ -1,0 +1,12 @@
+# M1968: Fetch writes over an older copy edited here
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1909,7 +1909,7 @@
+     domain_id: file.domain_id,
+   });
+   const present = localPath !== undefined && (await context.host.stat(localPath)) !== null;
+-  if (present && (await competing(context, localPath as string, fileId)) !== null) {
++  if (present && (await competing(context, localPath as string, fileId)) !== null && localPath === "") {
+     throw new Error(`${localPath} has changes on this device that are not on the server yet, so obsync did not replace it. Let it sync, then fetch again.`);
+   }
+   if (present && localPath !== manifest.path) {

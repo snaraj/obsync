@@ -1,0 +1,12 @@
+# M3061: a Check or the device list promises a retry instead of saying pairing's words
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -526,7 +526,7 @@
+  * words. No `0 unreachable: network=...` reaches a person.
+  */
+ export function refusalText(error: unknown): string {
+-  const refused = refusalStatus(error, "");
++  const refused = refusalStatus(error);
+   if (refused?.kind === "offline") return NOT_ANSWERING;
+   if (refused?.kind === "error") return refused.message;
+   if (error instanceof ApiError) return "Your server refused this request; the obsync log names the reason.";

@@ -1,0 +1,11 @@
+# M2814: the feed's failed read never reads offline: absence is forgotten
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2819,7 +2819,6 @@
+     // on their own push or on an editor -- and `idle` only when there is none
+     // AND the feed's latest read was answered. Before that first answer the
+     // device is checking, which is not idle either.
+-    if (this.absent) return { kind: "offline" };
+     const work = this.queue.length + this.active + this.pulls + waiting;
+     // A NOTE WAITING ON AN EDITOR HERE IS NAMED (issue #252): a count
+     // alone read "syncing 1" for minutes and said nothing of what to do.

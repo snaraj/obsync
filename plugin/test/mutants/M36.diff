@@ -1,12 +1,12 @@
 # M36: 56: the in-flight byte ceiling admits anything
 --- a/plugin/src/transport.ts
 +++ b/plugin/src/transport.ts
-@@ -751,7 +751,7 @@
+@@ -1169,7 +1169,7 @@
  
-   /** Does this body fit in flight? A pipe holding nothing fits anything. */
-   private fits(bytes: number): boolean {
--    return this.uploadBytes === 0 || this.uploadBytes + bytes <= UPLOAD_INFLIGHT_MAX;
+   /** Does this body fit in flight through its pipe? A pipe holding nothing fits anything. */
+   private fits(pipe: Pipe, bytes: number): boolean {
+-    return pipe.bytes === 0 || pipe.bytes + bytes <= pipe.max;
 +    return true;
    }
  
-   /** Claim room for one body, in arrival order. */
+   /** Claim room for one body, in arrival order within its pipe. */

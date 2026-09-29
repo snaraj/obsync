@@ -1,5 +1,7 @@
 # Platform onboarding (what a GitOps platform repository must add)
 
+*Internals, for contributors and for operators wiring obsync into a GitOps platform.*
+
 Dated 2026-09-07. This page is for a deployer who runs obsync the way this
 project is delivered: a signed image and OCI chart from this repository's
 publisher, a change in a platform repository selecting an exact digest, and a
@@ -12,8 +14,10 @@ deployer's own choice (requirement 11).
 reached over private connectivity, LAN or VPN, with no public hostname, no
 public access application and no public route, which is `OBSYNC_EDGE=none`.
 Items 1 to 3 describe the published-hostname path for a deployer who wants
-one: they are optional, and taking them means moving to
-`OBSYNC_EDGE=cloudflare` at the same time, because in that mode the server
+one, and they are optional. Behind your own reverse proxy the server stays at
+`OBSYNC_EDGE=none` and trusts forwarded addresses only from
+`OBSYNC_TRUSTED_PROXY_CIDRS`. Only when the edge is Cloudflare's does the
+deployment move to `OBSYNC_EDGE=cloudflare`, and in that mode the server
 refuses any request without the edge's connecting-address and request-id
 headers.
 
@@ -33,7 +37,7 @@ no pod this chart renders.
    new zone, and on the free tier of a provider that offers one, no spend.
 3. **Access policy (optional)**: one application on that hostname with an
    identity policy for the dashboard paths and a service-token policy for
-   `/v1/*`. The plugin sends the service-token headers when configured; the
+   `/v1/*`. The plugin sends its custom request headers when configured; the
    pairing code can carry them.
 4. **Namespace and reconciler:** a namespace of the deployer's choosing,
    prerequisites, default-deny, an OCIRepository with the chart release's
@@ -57,12 +61,38 @@ no pod this chart renders.
    host follows whatever procedure the platform already uses for host paths.
 6. **Secret:** `OBSYNC_SERVER_KEY` as an encrypted, reconciler-managed Secret
    consumed by `secretKeyRef`; never a literal in a repository.
-7. **Promoter:** if the platform cuts releases from an acquisition profile,
-   one profile for the publisher `snaraj/obsync`, with its receipt contract
-   extended to this identity tuple.
+7. **Promotion:** if the platform promotes new releases automatically, it
+   watches the publisher `snaraj/obsync` and verifies the same signing
+   identity the OCIRepository in item 4 does.
 8. **Resources:** a single replica with the `Recreate` strategy (the volumes
    are `ReadWriteOnce`), and requests and limits sized to the node -- a small
    single-board machine wants a floor in the tens of mebibytes and a ceiling
    near its memory, and the server's own budget is in `docs/benchmarks.md`.
 9. **Deploy assurance:** whatever watchdog the platform runs for drift gains
    this workload, so a promotion that never lands is never silent.
+10. **Release signals (optional):** a platform whose release policy reads the
+    replica switch or the provisioned capacity off annotations names its own
+    domain once, in the HelmRelease values:
+
+    ```yaml
+    platform:
+      annotationDomain: platform.example.org
+    ```
+
+    The chart then adds `<domain>/deployment-ready` (the `deploymentReady`
+    value, `"true"` or `"false"`) to the Deployment and
+    `<domain>/volume-capacity` (that volume's `capacity`) to each claim. Left
+    empty, the default from 1.1.4, it adds neither. A domain that is not a
+    lower-case DNS name, or that ends in `kubernetes.io` or `k8s.io`, stops the
+    render and names the value. Releases up to 1.1.3 always added both keys
+    under `platform.snaraj.dev`. A platform whose policy reads those keys adds
+    exactly this line, in the same change that selects 1.1.4:
+
+    ```yaml
+    platform:
+      annotationDomain: platform.snaraj.dev
+    ```
+
+    Without it, 1.1.4 renders no such key and a policy that requires one
+    refuses the release, which fails closed. The line cannot go in earlier:
+    the 1.1.3 chart's schema refuses the unknown `platform` key.

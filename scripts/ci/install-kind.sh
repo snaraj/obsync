@@ -17,7 +17,7 @@
 #
 # THE NODE IMAGE IS A PIN TOO, and a digest rather than a tag: kind's own
 # release notes say the `@sha256` reference is the only way to get an image
-# built for this release. v1.37.0 satisfies the chart's `kubeVersion: >=1.36.0`
+# built for this release. v1.37.0 satisfies the chart's `kubeVersion: >=1.34.0-0`
 # without being the newest thing that happens to exist on the day a job runs.
 # `scripts/ci/helm-e2e.sh` reads both the version and the node image out of
 # THIS file, so the pin is one fact with two readers.

@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
-import { promises as fs, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, lstatSync, symlinkSync } from "node:fs";
+import { promises as fs, appendFileSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, utimesSync, writeFileSync, existsSync, lstatSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { sandbox } from "./fake.mjs";
@@ -27,10 +27,10 @@ function host(t, { mobile = false, wrap = (p) => p } = {}) {
     await fs.writeFile(join(root, p), new Uint8Array(data), { flag: "wx" });
     return { path: p, stat: { mtime: options.mtime, size: data.byteLength } };
   } };
-  const promises = wrap({ ...fs, lstat: async (p) => {
+  const promises = wrap({ ...fs, lstat: async (p, ...options) => {
     calls.push(["lstat", p]);
     assert.ok(!p.startsWith(join(root, "Admin")), "excluded sentinel metadata was accessed");
-    return fs.lstat(p);
+    return fs.lstat(p, ...options);
   } });
   const h = new ObsidianHost({ state, app: { vault }, log: (line) => logs.push(line) }, mobile ? null : { base: root, path, fs: { promises } });
   return { root, h, state, calls, logs, vault, box };
@@ -51,7 +51,9 @@ for (const mobile of [false, true]) test(`create-only ${mobile ? "mobile" : "des
   assert.equal(readFileSync(join(root, "Notes/original.md"), "utf8"), "UNSYNCED ORIGINAL");
   assert.equal(readFileSync(join(root, "Admin/deploy.sh"), "utf8"), "EXCLUDED SENTINEL");
   assert.deepEqual(readdirSync(join(root, "Notes")).sort(), ["copy.md", "original.md"]);
-  if (!mobile) assert.equal(lstatSync(join(root, stat.path)).mode & 0o777, 0o600);
+  // Windows keeps no POSIX mode (Node reports 0o666 for any writable file):
+  // there a copy has the access the vault folder's ACL gives every note.
+  if (!mobile && process.platform !== "win32") assert.equal(lstatSync(join(root, stat.path)).mode & 0o777, 0o600);
   const competing = await h.createWriter("Notes/collision.md", bytes.length, () => {});
   await competing.write(bytes);
   writeFileSync(join(root, "Notes/collision.md"), "COMPETING SENTINEL");
@@ -66,7 +68,7 @@ test("desktop short writes complete and zero progress, size mismatch and file-sy
     const r = host(t, { wrap: (p) => ({ ...p, open: async (...args) => {
       const handle = await p.open(...args);
       if (args[1] !== "wx") return handle;
-      return { stat: () => handle.stat(), close: () => handle.close(), utimes: (...values) => handle.utimes(...values),
+      return { stat: (...options) => handle.stat(...options), close: () => handle.close(), utimes: (...values) => handle.utimes(...values),
         sync: async () => { if (mode === "sync") throw new Error("SYNC SENTINEL"); await handle.sync(); },
         write: async (part) => {
           if (mode === "zero") { assert.equal(++writes, 1, "a zero-byte response was retried"); return { bytesWritten: 0 }; }
@@ -137,6 +139,76 @@ test("unsupported publication and post-link directory-sync failures do not fall 
     await writer.abort();
     assert.equal(existsSync(join(r.root, "Notes/copy.md")), phase === "directory_sync");
     if (phase === "directory_sync") assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
+    // The refusal says why by its code alone; a message names a path on disk.
+    assert.deepEqual(r.logs, ["host path_class=file decision=refused reason=copy_unconfirmed code=none"]);
+  }
+});
+
+/**
+ * A HOST WITH NO FOLDER SYNC (Windows). Node opens a directory there for
+ * reading only, and the sync is refused `EPERM` for every folder, every time;
+ * a host that will not open a directory at all says `EISDIR`. The copy's bytes
+ * were synced before it had a name, so it is published and the skip is said
+ * once -- where every restored copy on Windows was called a failure after it
+ * had landed. Any other folder-sync failure still refuses it (above).
+ */
+for (const [code, at] of [["EPERM", "sync"], ["EISDIR", "open"]]) test(`a host with no folder sync (${code} at ${at}) publishes the copy once, and says so`, async (t) => {
+  const refused = () => Object.assign(new Error(`${code} SENTINEL`), { code });
+  const r = host(t, { wrap: (p) => ({ ...p,
+    open: async (...args) => {
+      if (args[1] !== "r" || !(await p.lstat(args[0])).isDirectory()) return p.open(...args);
+      if (at === "open") throw refused();
+      const h = await p.open(...args);
+      return { sync: async () => { throw refused(); }, close: () => h.close() };
+    },
+  }) });
+  const writer = await r.h.createWriter("Notes/copy.md", bytes.length, () => {});
+  await writer.write(bytes);
+  const stat = await writer.commit(1000);
+  await writer.abort();
+  assert.equal(stat.path, "Notes/copy.md");
+  assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
+  assert.deepEqual(readdirSync(join(r.root, "Notes")), ["copy.md"], "one copy, and no temp beside it");
+  assert.deepEqual(r.logs, [`host path_class=folder decision=skipped reason=directory_fsync code=${code}`]);
+});
+
+/**
+ * WHAT A FAILED COMMIT MAY TAKE BACK (issue #225): the copy it made, and only
+ * while the name still means that file as it was made -- the same inode, size
+ * and time. A file that took the name, a copy something wrote into, and a
+ * removal the disk refuses all stay; a commit that went through has nothing to
+ * take back. Asked twice, the second answer is always `none`.
+ */
+test("withdraw takes back only the copy its commit made, and only as it made it (#225)", async (t) => {
+  for (const phase of ["removed", "replaced", "written", "busy", "confirmed"]) {
+    const r = host(t, { wrap: (p) => ({ ...p,
+      unlink: async (...args) => {
+        if (phase === "busy" && args[0].endsWith("copy.md")) throw Object.assign(new Error("EBUSY SENTINEL"), { code: "EBUSY" });
+        return p.unlink(...args);
+      },
+      open: async (...args) => {
+        const h = await p.open(...args);
+        if (phase === "confirmed" || args[1] !== "r" || !(await p.lstat(args[0])).isDirectory()) return h;
+        return { sync: async () => { throw Object.assign(new Error("EIO SENTINEL"), { code: "EIO" }); }, close: () => h.close() };
+      },
+    }) });
+    const copy = join(r.root, "Notes/copy.md");
+    const writer = await r.h.createWriter("Notes/copy.md", bytes.length, () => {});
+    await writer.write(bytes);
+    if (phase === "confirmed") await writer.commit(1000);
+    else await assert.rejects(writer.commit(1000), /may exist/);
+    await writer.abort();
+    if (phase === "replaced") {
+      // The same bytes and the same time under the name, in another file.
+      writeFileSync(`${copy}.other`, bytes);
+      utimesSync(`${copy}.other`, 1, 1);
+      renameSync(`${copy}.other`, copy);
+    }
+    if (phase === "written") appendFileSync(copy, "!");
+    const answer = { removed: "removed", replaced: "kept", written: "kept", busy: "kept", confirmed: "none" }[phase];
+    assert.equal(await writer.withdraw(), answer, phase);
+    assert.equal(existsSync(copy), phase !== "removed", `${phase}: the copy was ${phase === "removed" ? "left" : "removed"}`);
+    assert.equal(await writer.withdraw(), "none", `${phase}: asked twice`);
   }
 });
 
@@ -177,10 +249,13 @@ test("desktop publication pins directory and destination identity and syncs the 
   for (const phase of ["chain", "landed", "order"]) {
     let changed = false, fileSynced = false, timed = false, tempOpened = false;
     const r = host(t, { wrap: (p) => ({ ...p,
-      lstat: async (name) => {
-        const stat = await p.lstat(name);
-        const alter = changed && (phase === "chain" ? name.endsWith("/Notes") : phase === "landed" && name.endsWith("/copy.md"));
-        return alter ? { ...stat, ino: stat.ino + 1, isDirectory: () => stat.isDirectory(), isFile: () => stat.isFile(), isSymbolicLink: () => stat.isSymbolicLink() } : stat;
+      lstat: async (name, ...options) => {
+        const stat = await p.lstat(name, ...options);
+        const alter = changed && (phase === "chain" ? name.endsWith(`${path.sep}Notes`) : phase === "landed" && name.endsWith(`${path.sep}copy.md`));
+        // The neighbouring id: another file. Exact on Windows too, where an
+        // NTFS file id is 64 bits, now that identity is read as a bigint
+        // (#224); read as a number, past 2^53 it rounded back to the same id.
+        return alter ? { ...stat, ino: stat.ino + 1n, isDirectory: () => stat.isDirectory(), isFile: () => stat.isFile(), isSymbolicLink: () => stat.isSymbolicLink() } : stat;
       },
       utimes: async () => assert.fail("path-based timestamp changed an unbound file"),
       open: async (...args) => {
@@ -188,7 +263,7 @@ test("desktop publication pins directory and destination identity and syncs the 
         if (args[1] !== "wx") return handle;
         assert.equal(args[2], 0o600);
         tempOpened = true;
-        return { stat: () => handle.stat(), close: () => handle.close(), write: (...values) => handle.write(...values),
+        return { stat: (...options) => handle.stat(...options), close: () => handle.close(), write: (...values) => handle.write(...values),
           utimes: async (...values) => { timed = true; return handle.utimes(...values); },
           sync: async () => { assert.equal(timed, true); fileSynced = true; return handle.sync(); } };
       },
@@ -210,4 +285,108 @@ test("desktop publication pins directory and destination identity and syncs the 
     assert.equal(existsSync(join(r.root, "Notes/copy.md")), phase !== "chain");
     if (phase !== "chain") assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
   }
+});
+
+/**
+ * A volume with no hard links (issue #176). FAT32 and exFAT refuse `link`, so
+ * a restored copy and a conflict copy used to end in `CopyPublicationError`
+ * there. The fake filesystem refuses `link` with each code a real one gives;
+ * the copy is then created exclusively and filled from the proven temp.
+ */
+const refusing = (code) => (p) => ({ ...p,
+  rename: async () => assert.fail("overwrite fallback"),
+  copyFile: async () => assert.fail("overwrite fallback"),
+  link: async () => { throw Object.assign(new Error(`${code} SENTINEL`), { code }); },
+});
+
+for (const code of ["ENOTSUP", "EPERM", "EISDIR", "EXDEV"]) test(`a volume that refuses link (${code}) still publishes the copy, exclusively and once`, async (t) => {
+  const r = host(t, { wrap: refusing(code) });
+  const writer = await r.h.createWriter("Notes/copy.md", bytes.length, () => {});
+  await writer.write(bytes);
+  const stat = await writer.commit(1757200000000);
+  await writer.abort();
+  assert.equal(stat.path, "Notes/copy.md");
+  assert.equal(stat.size, bytes.length);
+  assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
+  if (process.platform !== "win32") assert.equal(lstatSync(join(r.root, "Notes/copy.md")).mode & 0o777, 0o600);
+  assert.equal(Math.round(lstatSync(join(r.root, "Notes/copy.md")).mtimeMs), 1757200000000, "the copy carries the version's time");
+  assert.deepEqual(readdirSync(join(r.root, "Notes")), ["copy.md"], "the temp outlived the fallback");
+  assert.ok(
+    r.logs.some((line) => line.startsWith("host path_class=file decision=published reason=link_unsupported fallback=exclusive_create") &&
+      line.includes(`code=${code}`) && line.includes(`bytes=${bytes.length}`)),
+    r.logs.join(" | "),
+  );
+});
+
+test("the fallback never replaces a file that took the name, and leaves no partial copy of its own", async (t) => {
+  // A save at the copy's name between the temp's proof and the fallback's
+  // create: the exclusive create refuses it exactly as `link` would.
+  const taken = host(t, { wrap: (p) => ({ ...refusing("ENOTSUP")(p),
+    link: async () => {
+      writeFileSync(join(taken.root, "Notes/copy.md"), "SAVED MEANWHILE SENTINEL");
+      throw Object.assign(new Error("ENOTSUP SENTINEL"), { code: "ENOTSUP" });
+    },
+  }) });
+  const writer = await taken.h.createWriter("Notes/copy.md", bytes.length, () => {});
+  await writer.write(bytes);
+  await assert.rejects(writer.commit(1000), /may exist/);
+  await writer.abort();
+  assert.equal(readFileSync(join(taken.root, "Notes/copy.md"), "utf8"), "SAVED MEANWHILE SENTINEL");
+  assert.deepEqual(readdirSync(join(taken.root, "Notes")), ["copy.md"], "the temp was left behind");
+
+  // A copy that fails part-way is removed -- it is this call's own file -- and
+  // nothing else is.
+  const torn = host(t, { wrap: (p) => ({ ...refusing("ENOTSUP")(p),
+    open: async (...args) => {
+      const handle = await p.open(...args);
+      if (!args[0].endsWith("copy.md")) return handle;
+      return { stat: (...options) => handle.stat(...options), close: () => handle.close(), sync: () => handle.sync(), utimes: (...v) => handle.utimes(...v),
+        write: async () => { throw new Error("DISK FULL SENTINEL"); } };
+    },
+  }) });
+  const second = await torn.h.createWriter("Notes/copy.md", bytes.length, () => {});
+  await second.write(bytes);
+  await assert.rejects(second.commit(1000), /may exist/);
+  await second.abort();
+  assert.deepEqual(readdirSync(join(torn.root, "Notes")), [], "a partial copy or the temp was left behind");
+});
+
+test("a notice that asks something carries one button per answer, stays up, and a press answers it", (t) => {
+  // Issues #161 and #162: the sync layer names the answers, the host draws
+  // them. A statement still goes after ten seconds.
+  const box = sandbox();
+  t.after(() => rmSync(box.home, { recursive: true }));
+  const obsidian = box.require("obsidian");
+  const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
+  const pressed = [];
+  const h = new ObsidianHost({ state: { data: {} }, app: { vault: {} }, log: () => undefined, act: (action) => pressed.push(action) }, null);
+  const raised = obsidian.raised.length;
+
+  h.notify("STATEMENT SENTINEL");
+  h.notify("QUESTION SENTINEL", [{ kind: "delete_everywhere" }, { kind: "restore_here" }, { kind: "fetch", fileId: "ab".repeat(16) }]);
+
+  const [statement, question] = obsidian.raised.slice(raised);
+  assert.equal(statement.messageEl.children, undefined, "a statement grew buttons");
+  assert.equal(statement.duration, 10000);
+  assert.equal(question.duration, 0, "a question went away before it was answered");
+  const buttons = question.messageEl.children;
+  assert.deepEqual(buttons.map((button) => `${button.tag}:${button.text}`), ["button:Delete everywhere", "button:Restore here", "button:Fetch"]);
+  assert.equal(pressed.length, 0, "drawing the question answered it");
+  buttons[1].dispatch("click");
+  assert.deepEqual(pressed, [{ kind: "restore_here" }]);
+  assert.equal(question.hidden, true, "the answered question stayed up");
+});
+
+test("a name already taken is not a volume without links: EEXIST never falls back", async (t) => {
+  let opened = 0;
+  const r = host(t, { wrap: (p) => ({ ...p,
+    link: async () => { throw Object.assign(new Error("EEXIST SENTINEL"), { code: "EEXIST" }); },
+    open: async (...args) => { if (args[0].endsWith("copy.md")) opened++; return p.open(...args); },
+  }) });
+  const writer = await r.h.createWriter("Notes/copy.md", bytes.length, () => {});
+  await writer.write(bytes);
+  await assert.rejects(writer.commit(1000), /may exist/);
+  await writer.abort();
+  assert.equal(opened, 0, "the destination was created after all");
+  assert.equal(existsSync(join(r.root, "Notes/copy.md")), false);
 });

@@ -1,0 +1,11 @@
+# M2112: a prefetch no longer stops at its byte budget
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -742,7 +742,6 @@
+     for (let next = index + 1; next < this.changes.length && asked.length < PREFETCH_SIDS; next++) {
+       const change = this.changes[next] as ChangeRecord;
+       if (!(await this.wanted(change, local)) || asked.includes(change.sids[0] as string)) continue;
+-      if (bytes + change.bytes + 16 > budget) break;
+       asked.push(change.sids[0] as string);
+       bytes += change.bytes + 16;
+       local += change.bytes;

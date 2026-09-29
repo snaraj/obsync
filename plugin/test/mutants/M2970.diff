@@ -1,0 +1,12 @@
+# M2970: the reconnect after a refused start is armed on the page's clock, which a hidden window slows
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2899,7 +2899,7 @@
+     // On the plugin's clock, which a hidden desktop window does not slow
+     // (issue #221): a reconnect a minute late is a minute of edits held back.
+     // Kept beside the handle, so the clock that armed it disarms it.
+-    const timers = this.clock ?? pageTimers;
++    const timers = pageTimers;
+     this.reconnect = { attempt, handle: timers.set(() => this.retryNow("timer"), delay), timers, at: Date.now() + delay };
+     this.log(`engine decision=retry_scheduled attempt=${attempt} delay_ms=${delay} status=${status}`);
+   }

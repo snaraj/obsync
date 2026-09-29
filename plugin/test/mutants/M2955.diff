@@ -1,0 +1,11 @@
+# M2955: stop never terminates the worker
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -73,7 +73,6 @@
+     return timer?.fn;
+   };
+   const stop = (): void => {
+-    worker?.terminate();
+     worker = null;
+   };
+   try {

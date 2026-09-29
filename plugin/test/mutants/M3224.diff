@@ -1,0 +1,11 @@
+# M3224: the empty file a dropped write left is removed, racing a save that lands after the last look (review of e27eccb, finding 1)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1225,6 +1225,7 @@
+           `host path_class=file decision=refused reason=write_dropped cause=${busy ? "editor_busy" : "budget"} ` +
+             `writes=${again} bytes=${bytes.length} budget_writes=${WRITE_AGAIN + 1}`,
+         );
++        await adapter.remove(path);
+         const said = busy ? "The file stayed empty when it was written, and its editor is busy now." : "The file stayed empty when it was written.";
+         throw Object.assign(new Error(said), { code: "write_dropped" });
+       }

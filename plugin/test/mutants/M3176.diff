@@ -1,0 +1,11 @@
+# M3176: the own deletion a replay owed is applied without a word
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1114,7 +1114,6 @@
+   if (held === undefined) return false;
+   const file = await context.transport.getFile(change.file_id);
+   if (!file.heads.includes(change.version_id) || !reaches(file.versions, change.version_id, held.versionId)) return false;
+-  context.host.log(`pull path_class=tombstone decision=reapplied reason=own_deletion_returned file=${change.file_id} seq=${change.seq}`);
+   return true;
+ }
+ 

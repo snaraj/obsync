@@ -1,0 +1,12 @@
+# M2934: the test's wire answers every chunk at once, so nothing piles up and the window is never measured
+--- a/plugin/test/transfers.test.mjs
++++ b/plugin/test/transfers.test.mjs
+@@ -286,7 +286,7 @@
+       // run, and the push would look idle between two of its own steps.
+       const deadline = Date.now() + 10_000;
+       do await new Promise((resolve) => setTimeout(resolve, 1));
+-      while (!seen.waiting() && Date.now() < deadline);
++      while (false);
+       return request(sent);
+     };
+     const outcome = await pushFile(r.context, "Archive/box.bin");

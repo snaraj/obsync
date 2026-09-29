@@ -17,7 +17,7 @@ nothing here depends on them.
    commits carry the noreply identity per "Commit identity mechanics"; the
    pinned toolchain is `rust-toolchain.toml` (Rust 1.98.0, components
    `rustfmt`, `clippy`, `llvm-tools`) and `plugin/package.json` (Node
-   26.8.2, npm 11.19.1, one exact `typescript` devDependency). The gate
+   26.10.0, npm 11.19.1, one exact `typescript` devDependency). The gate
    verifies these exactly.
 4. Survey live state yourself: `gh issue list`, `gh pr list`, including the
    open-agent-PR count against the PR budget below.
@@ -204,7 +204,7 @@ addresses. `TestProviderNeutrality` pins zero provider names under
 - `crates/obsyncd`: `config`, `signal` (the only unsafe), `log`,
   `storage/{blobs,journal,index,gc,scrub}`, `api/{auth,pairing,sync,
   chunks,changes,admin,plugin}`, `dashboard` (serves `OBSYNC_DASHBOARD_DIR`), `cli`
-  (`serve`, `check`, `setup-token`, `export`, `bench`). Type declarations live in
+  (`serve`, `check`, `setup-token`, `export`). Type declarations live in
   `types.rs` per module group; methods stay beside the logic they serve.
 - `plugin/src`: `main.ts` (plugin entry), `crypto.ts`, `chunker.ts`,
   `state.ts`, `transport.ts`, `sync/{push,pull,conflict}.ts`,

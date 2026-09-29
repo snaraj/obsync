@@ -1,0 +1,11 @@
+# M3042: a late report's ghost is kept from the engine but left in Obsidian's index
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1797,7 +1797,6 @@
+     for (const { from, to } of this.recasing.values()) {
+       if (path !== from && !path.startsWith(`${from}/`)) continue;
+       if (this.plugin.app.vault.getAbstractFileByPath(to + path.slice(from.length)) === null) continue;
+-      void this.unghost(from, to);
+       return true;
+     }
+     return false;

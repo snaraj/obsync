@@ -85,7 +85,8 @@ impl Headers {
         Headers(pairs)
     }
 
-    /// The first value of a header, matched case-insensitively.
+    /// The first value of a header, matched case-insensitively. Not for a
+    /// list header: its later fields are part of its value ([`Headers::all`]).
     pub fn get(&self, name: &str) -> Option<&str> {
         self.0
             .iter()
@@ -93,8 +94,9 @@ impl Headers {
             .map(|(_, value)| value.as_str())
     }
 
-    /// Every value of a header, in order. Used where more than one occurrence
-    /// is a refusal rather than a list.
+    /// Every value of a header, in order: the fields of a list header, which
+    /// are one list read left to right (RFC 9110 5.3), or the occurrences of
+    /// a single-valued header, where more than one is a refusal.
     pub fn all(&self, name: &str) -> Vec<&str> {
         self.0
             .iter()

@@ -1,0 +1,12 @@
+# M1935: a file the operating system wrote keeps a folder on the desktop host
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1688,7 +1688,7 @@
+       if (found.final === "absent") return 0;
+       for (const name of await desktop.fs.promises.readdir(found.target)) {
+         const entry = desktop.path.resolve(found.target, name);
+-        if (osJunk(name) && (await walker(desktop.fs).lstat(entry))?.isFile() === true) junk.push(entry);
++        if (osJunk(name) && name === "" && (await walker(desktop.fs).lstat(entry))?.isFile() === true) junk.push(entry);
+         else kept++;
+       }
+     } else {

@@ -1,7 +1,7 @@
 # M208: an empty folder deleted in Obsidian is never removed from the other devices
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -688,8 +688,7 @@
+@@ -858,8 +858,7 @@
     * nothing waiting it is the ordinary folder deletion, at once.
     */
    folderVanished(path: string): void {
@@ -10,4 +10,4 @@
 +    this.vanishedFolders.add(path);
    }
  
-   /** Hold these deletions, and the rest of their burst, for `DEBOUNCE_MS`. */
+   /**

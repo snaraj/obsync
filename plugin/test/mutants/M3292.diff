@@ -1,0 +1,13 @@
+# M3292: a desktop refreshes the editor even when another write replaced its bytes
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1623,7 +1623,8 @@
+         const ours = landed as PathStat;
+         if (ours.size !== wrote.size || Math.round(ours.mtimeMs) !== Math.round(wrote.mtimeMs)) {
+           this.log("host path_class=file decision=write_superseded");
+-        } else if (shown !== null && text !== null) {
++        }
++        if (shown !== null && text !== null) {
+           await this.refreshEditors(path, shown, text, () => fs.promises.readFile(target, "utf8"));
+         }
+         return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };

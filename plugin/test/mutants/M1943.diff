@@ -1,0 +1,12 @@
+# M1943: the user is never told that a linked folder stays on this device
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -432,7 +432,7 @@
+    * to pass through the link keeps its own refusal (`sync/pull.ts`).
+    */
+   private linkedFolder(error: VaultPathError): void {
+-    if (error.refusal !== "symlink_component" || error.at === undefined || this.linked.has(error.at)) return;
++    if (error.refusal !== "symlink_component" || error.at === undefined || this.linked.has(error.at) || error.at !== "") return;
+     this.linked.add(error.at);
+     this.log("host path_class=folder decision=excluded reason=symlink_component");
+     this.notify(

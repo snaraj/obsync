@@ -1,0 +1,11 @@
+# M3256: a skipped deletion of a dropped write's empty file keeps its record, and the next pass decides it again
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -676,7 +676,6 @@
+   // whose text is on the server and on every other device: a tombstone would
+   // take it from them all. This device forgets the mark, and any record.
+   if (mark !== undefined) {
+-    if (record) context.state.forgetPath(path);
+     delete context.state.data.dropped[path];
+     await context.state.save();
+     context.host.log(`push path_class=tombstone decision=skipped reason=write_dropped file=${mark}`);

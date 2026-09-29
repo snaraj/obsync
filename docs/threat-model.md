@@ -1,10 +1,31 @@
 # Threat model
 
+*For anyone deciding whether to trust obsync, and for reviewers.*
+
 Dated 2026-09-20. Assets, adversaries, what holds, what does not.
 
 The dashboard is one surface with its own entry points, session rules and
 residuals; [`security/dashboard.md`](security/dashboard.md) is that page and
 this one does not repeat it.
+
+## In plain words
+
+- **Encrypted on your device, before anything is sent:** the contents of
+  your notes and attachments, and their file and folder names. The server
+  stores only that ciphertext and never holds the key that opens it.
+- **What the server can see**, and so anyone who runs it or takes its disks:
+  how many files there are, their sizes, when they change, how their versions
+  relate, and which devices use it, with the names you gave them, their
+  network addresses and when they last signed in.
+- **What sits in front of the server** (your HTTPS proxy, or a tunnel
+  provider) sees the same, plus the sign-in credentials that pass through it.
+  It never sees note contents or the key.
+- **A paired device can read the whole vault.** If one is lost, revoke it
+  ([Recovery](recovery.md)).
+- **Not hidden from the server:** the number of files, their sizes and their
+  timing.
+
+The rest of this page is the precise version, for reviewers.
 
 ## Assets
 
@@ -20,10 +41,11 @@ this one does not repeat it.
 | Passive network attacker | nothing beyond TLS metadata on the public leg | read content or forge requests |
 | TLS terminator / edge operator | request metadata, ciphertext, and credentials in clear at the terminator: the device secret at setup/pairing, the account-recovery authentication proof and setup token, dashboard session cookies and recovery sign-in links | read vault content, names or vault keys; replace client code through the sync server (installation uses Obsidian's directory and GitHub assets, with the client trust limits in `docs/community-plugin.md`) |
 | Server operator or stolen volumes | ciphertext, sizes, version graph, device activity; wrapped device credentials can be recovered if the server wrapping key is also available | decrypt vault content without a device-held vault key |
-| Compromised or lost device | read the vault it holds; write, delete, or corrupt versions | erase history (retention keeps versions); make new authenticated server requests after revocation; write outside another device's vault root, through a symlinked folder, or into hidden folders (manifest paths are confined on the filesystem, not lexically); make another device exceed its per-file ceiling, its total budget, or its batch memory bound, or write a byte it has not verified (every decrypted manifest is bound field by field to the authenticated record before policy, download, or a write, and every declared chunk length is proved against the bytes) |
-| Unapproved pairing claimant | poll its own pairing for the envelope | call any other device route: a pending device has no authority until the creator approves; outlive its pairing (expiry destroys it, and so does the next start, since pairings do not survive one) |
+| Compromised or lost device | read the vault it holds; write, delete, or corrupt versions | erase history (retention keeps versions); make new authenticated server requests after revocation; write outside another device's vault root, through a symlinked folder, or into hidden folders (manifest paths are confined on the filesystem, not lexically); make another device exceed its per-file ceiling, its total budget, or its batch memory bound, or write a byte it has not verified (every decrypted manifest is bound field by field to the authenticated record before policy, download, or a write, and every declared chunk length is proved against the bytes); lock the other devices out of the replay cache (each device holds its own share of it) |
+| Unapproved pairing claimant | poll its own pairing for the envelope | call any other device route: a pending device has no authority until it collects the envelope the creator approved; outlive its pairing without collecting it (expiry destroys it, approved or not, and so does the next start, since pairings do not survive one) |
+| Holder of a leaked pairing code | claim it first, under any name it likes | show the owner the match code of the owner's own device: the code is derived from the pairing secret and the device id each claim gets, so the prompt shows the racing claim's own code and the owner's screen shows another (1.1.4) |
 | Other cluster tenant, or another account on the host | nothing (default-deny NetworkPolicy, non-root pod, volume roots 0700 and credential files 0600, measured and corrected on every start, `docs/storage.md`) | reach the API or the volumes, or read the recovery login or the wrapping key off a restored or bind-mounted volume |
-| Malicious client input | attempt parser abuse, oversize bodies, replay, forged sids | pass unverified data (sid check, HMAC, limits); replay a captured request across a restart (accepted nonces are durable); grow a file record or a feed page without bound (heads, sids, parents and manifests are all capped, `docs/protocol.md`) |
+| Malicious client input | attempt parser abuse, oversize bodies, replay, forged sids | pass unverified data (sid check, HMAC, limits); replay a captured request across a restart (accepted nonces are durable); grow a file record or a feed page without bound (heads, sids, parents and manifests are all capped, a file record stops at 450 MiB with every head in it, and a feed page stops at 8 MiB, `docs/protocol.md`); make the server keep more than 64 MiB of what callers sent before their credential verified, parsed or waiting for a lock included (each body stays reserved until its credential verifies, and a setup or claim body, parsed first, reserves 4 MiB for at most 16 KiB) |
 
 ## Deliberate non-goals
 
@@ -107,3 +129,9 @@ Native app-restart persistence remains separate acceptance evidence.
    differential tests against the host's OpenSSL in CI, a verify-only
    asymmetric surface, and constant-time construction by design; a
    dedicated security review is required before any primitive changes.
+8. On Linux, Obsidian's secret storage is only as private as the desktop's
+   keyring: without one it still keeps the vault key and device secret,
+   unencrypted (Obsidian 1.13.7, issue #217; from its next start Obsidian
+   shows a notice saying so), protected then by the home folder's
+   permissions alone. Obsidian's API does not say which storage it uses, so
+   the plugin cannot detect it; `docs/community-plugin.md` tells the user.

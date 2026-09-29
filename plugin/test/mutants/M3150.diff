@@ -1,0 +1,12 @@
+# M3150: a start does not ask after each wait whether a restore began
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3155,7 +3155,7 @@
+     // `engine` is still the one; one that is not goes no further, and says so
+     // in one line. What it made, whoever superseded it has stopped.
+     const wanted = (engine: SyncEngine | null): boolean =>
+-      this.isCurrent(generation) && !this.changingScope && this.restoring === null && !this.leaving && this.engine === engine;
++      this.isCurrent(generation) && !this.changingScope && !this.leaving && this.engine === engine;
+     const superseded = (): void => this.log(`engine decision=stopped reason=superseded duration_ms=${Date.now() - started}`);
+     // Whoever asked for this start owns it: a reconnect still pending would
+     // be a second engine, so its timer is taken here and its count carried,

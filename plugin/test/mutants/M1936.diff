@@ -1,0 +1,12 @@
+# M1936: every hidden file is taken for one the operating system wrote
+--- a/plugin/src/vaultPath.ts
++++ b/plugin/src/vaultPath.ts
+@@ -196,7 +196,7 @@
+ const OS_JUNK = new Set([".ds_store", "icon\r", "thumbs.db", "desktop.ini"]);
+ 
+ export function osJunk(name: string): boolean {
+-  return OS_JUNK.has(name.toLowerCase()) || name.startsWith("._");
++  return OS_JUNK.has(name.toLowerCase()) || name.startsWith(".");
+ }
+ 
+ /** The same rule, as a refusal. Every vault operation calls this or the above. */

@@ -1,0 +1,11 @@
+# M1878: closing Settings keeps a typed setup token for the next visit (#169)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -258,7 +258,6 @@
+     this.unwatch?.();
+     this.unwatch = null;
+     this.draftScope = null;
+-    this.draftToken = "";
+     this.draftName = null;
+     this.deviceList = null;
+     this.deviceListError = null;

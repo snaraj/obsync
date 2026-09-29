@@ -1,0 +1,12 @@
+# M2121: a forgotten record stays in the indexes
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -952,7 +952,7 @@
+   forgetPath(path: string): void {
+     const index = this.index;
+     const forgotten = this.data.files[path];
+-    if (forgotten !== undefined) indexed(index, path, forgotten, -1);
++    if (forgotten !== undefined) void forgotten;
+     index.order.delete(path);
+     delete this.data.files[path];
+   }

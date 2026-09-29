@@ -1,0 +1,11 @@
+# M1834: a standing refusal never clears, whatever the server answers
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -836,7 +836,6 @@
+     if (write) this.written++;
+     const refused = this.refused;
+     if (refused === null || refused.kind !== "error" || (!write && refused.code === "storage")) return;
+-    this.refused = null;
+     this.options.host.log(`engine decision=cleared reason=${refused.code ?? "error"}`);
+     this.status(this.resting());
+   }

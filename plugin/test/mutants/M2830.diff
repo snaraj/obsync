@@ -1,0 +1,11 @@
+# M2830: a phone's header action is placed but never shows the status
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2016,7 +2016,6 @@
+     if (view === null) return;
+     const el = view.addAction("refresh-cw", "Show sync status (obsync)", () => this.showStatus());
+     this.mobileIndicator = { el, view };
+-    this.indicator.attach(el);
+   }
+ 
+   /** Show sync status: from the indicator, the palette, and a phone's view header (#156). */

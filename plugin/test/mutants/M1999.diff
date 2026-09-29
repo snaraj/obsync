@@ -1,0 +1,12 @@
+# M1999: Cancel does not end a folder Save's wait: it withdraws only after the stop
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2430,7 +2430,7 @@
+         await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
+         return false;
+       })();
+-      withdrawn = await Promise.race([quiet, aborted(cancel.signal)]);
++      withdrawn = (await quiet) || cancel.signal.aborted;
+       assertActive();
+       if (withdrawn) {
+         // The stop goes on by itself; the start below waits for it.

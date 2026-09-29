@@ -1,0 +1,11 @@
+# M3243: a record made at a dropped write's name leaves the mark behind
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -1015,7 +1015,6 @@
+     // deletion to re-send.
+     delete this.data.graves[record.fileId];
+     // A record made at a name ends what a dropped write left there.
+-    delete this.data.dropped[path];
+   }
+ 
+   forgetPath(path: string): void {

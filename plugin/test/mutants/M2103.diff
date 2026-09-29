@@ -1,0 +1,12 @@
+# M2103: no timer saves records held in memory while a page still runs
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2819,7 +2819,7 @@
+    */
+   private defer(): void {
+     this.deferred++;
+-    if (this.saveHandle !== null || !this.running) return;
++    if (true || this.saveHandle !== null || !this.running) return;
+     this.saveHandle = this.timers.set(() => {
+       this.saveHandle = null;
+       void this.saveDeferred("coalesced");

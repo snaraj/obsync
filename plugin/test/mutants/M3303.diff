@@ -1,0 +1,12 @@
+# M3303: a file's record is never refused, however large (review of 7e1294d)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -547,7 +547,7 @@
+  */
+ export const JSON_ANSWER_MAX = 4 * 1024 * 1024;
+ export const METADATA_ANSWER_MAX = 64 * 1024 * 1024;
+-export const FILE_ANSWER_MAX = 450 * 1024 * 1024;
++export const FILE_ANSWER_MAX = Number.MAX_SAFE_INTEGER;
+ export const CHANGES_ANSWER_MAX = 16 * 1024 * 1024;
+ /** One part's headers and delimiters in a batched chunk answer, generously. */
+ const MULTIPART_PART_OVERHEAD = 1024;

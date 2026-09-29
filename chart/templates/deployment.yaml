@@ -5,8 +5,11 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "obsync.labels" . | nindent 4 }}
+  {{- $domain := include "obsync.annotationDomain" . }}
+  {{- if $domain }}
   annotations:
-    platform.snaraj.dev/deployment-ready: {{ .Values.deploymentReady | quote }}
+    {{ $domain }}/deployment-ready: {{ .Values.deploymentReady | quote }}
+  {{- end }}
 spec:
   {{- /* deploymentReady is the platform's gate and it gates THIS number, not
   only the annotation above: zero application replicas until the platform
@@ -33,7 +36,28 @@ spec:
     metadata:
       labels:
         {{- include "obsync.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
+      {{- /* Scheduling and registry credentials, passed as written. None of
+      them reaches the security contexts below, which stay constants. */}}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       automountServiceAccountToken: false
       {{- /* The Service is called obsync, so a kubelet with service links on
       injects OBSYNC_SERVICE_HOST, OBSYNC_SERVICE_PORT and OBSYNC_PORT_* into
@@ -71,8 +95,11 @@ spec:
             deployment decides is rendered UNCONDITIONALLY, so an operator reads
             the deployed decision straight off the manifest instead of
             discovering that a block was omitted. */}}
+            {{- /* Dual-stack: IPv4 and IPv6 pods alike, and an IPv6-only
+            cluster. On a node booted without IPv6 the server falls back to
+            every IPv4 address itself, in one logged line. */}}
             - name: OBSYNC_LISTEN
-              value: "0.0.0.0:{{ .Values.service.port }}"
+              value: "[::]:{{ .Values.service.port }}"
             - name: OBSYNC_BLOBS_DIR
               value: /data/blobs
             - name: OBSYNC_JOURNAL_DIR

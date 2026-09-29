@@ -1,0 +1,12 @@
+# M1987: a chunk of a large upload does not hear the stop
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -257,7 +257,7 @@
+         continue;
+       }
+       sent++;
+-      const upload: Promise<void> = context.transport.putChunk(sid, ciphertext, { signal }).finally(() => {
++      const upload: Promise<void> = context.transport.putChunk(sid, ciphertext).finally(() => {
+         held -= ciphertext.length;
+         landing.delete(upload);
+       });

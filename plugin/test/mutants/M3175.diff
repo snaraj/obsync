@@ -1,0 +1,11 @@
+# M3175: every own version with a record here is applied again, not only a deletion
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1106,7 +1106,6 @@
+  * the replay removed it.
+  */
+ async function deletionOwed(context: SyncContext, change: ChangeRecord): Promise<boolean> {
+-  if (!change.deleted) return false;
+   const path = context.state.pathByFileId(change.file_id);
+   const held = path !== undefined
+     ? context.state.fileByPath(path)

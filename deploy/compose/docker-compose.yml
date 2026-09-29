@@ -40,6 +40,10 @@ services:
     # never written in this file.
     image: ${OBSYNC_IMAGE}
     restart: unless-stopped
+    # A stop lets requests in flight finish for up to 20 s and then writes a
+    # snapshot; Docker's default of 10 s would kill a drain a large upload is
+    # still using. 30 s is the chart's grace period too (docs/server.md).
+    stop_grace_period: 30s
     # AGENTS.md, "Security invariants": non-root, read-only root filesystem, no
     # capabilities. 65532 is the uid the image's own /data directories are
     # owned by; the chart's securityContext says the same thing in YAML.
@@ -49,6 +53,10 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # Every variable the server gets is listed here. OBSYNC_HOST,
+    # OBSYNC_BIND_ADDRESS and the two port variables are compose's own: the
+    # server refuses any OBSYNC_* name it does not know, so an `env_file:` that
+    # also carries them stops it at start, naming the variable.
     environment:
       OBSYNC_EDGE: none
       OBSYNC_TRUSTED_PROXY_CIDRS: 172.31.255.240/28
@@ -72,8 +80,14 @@ services:
       # deployment, and its devices still reach `https://name`. An explicit
       # value always wins over the default.
       OBSYNC_PUBLIC_URL: ${OBSYNC_PUBLIC_URL:-https://${OBSYNC_HOST:?set it to the hostname you reach obsync at}:${OBSYNC_HTTPS_PORT:-443}}
-      OBSYNC_BLOBS_CAPACITY: ${OBSYNC_BLOBS_CAPACITY:-250GiB}
-      OBSYNC_JOURNAL_CAPACITY: ${OBSYNC_JOURNAL_CAPACITY:-4GiB}
+      # THE SPACE EACH VOLUME MAY USE, STATED BY YOU. The server cannot measure
+      # free space (docs/storage.md), so it refuses writes against these two
+      # numbers: say what the disk under Docker's volumes can really give, not
+      # the size of a disk it shares with everything else. A default here would
+      # be a number that is wrong on every small disk, and the watermark would
+      # fire after the disk was already full, so compose refuses without them.
+      OBSYNC_BLOBS_CAPACITY: ${OBSYNC_BLOBS_CAPACITY:?set it to the space the blob volume may use on this disk, such as 200GiB}
+      OBSYNC_JOURNAL_CAPACITY: ${OBSYNC_JOURNAL_CAPACITY:?set it to the space the journal volume may use, such as 4GiB}
     volumes:
       - obsync-blobs:/data/blobs
       - obsync-journal:/data/journal
@@ -145,7 +159,9 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # The certificate authority and the issued certificates. Back this up or
       # accept a new local root after a rebuild; with public ACME it is the
-      # account key. Never world-readable.
+      # account key. Never world-readable: the authority's key can sign for
+      # ANY name, so whoever reads it can intercept HTTPS on every device that
+      # trusts its root (docs/server.md, "Trust the certificate authority").
       - caddy-data:/data
       - caddy-config:/config
     depends_on:

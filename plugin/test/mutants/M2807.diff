@@ -1,0 +1,12 @@
+# M2807: a start refused for a reason no row names shows the raw code
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2936,7 +2936,7 @@
+         // press (`AFTER_START`), not in a promise that it resumes.
+         this.setStatus(refusalStatus(error, AFTER_START) ?? {
+           kind: "error",
+-          message: error instanceof ApiError ? START_REFUSED : error instanceof Error ? error.message : String(error),
++          message: error instanceof Error ? error.message : String(error),
+         });
+         return;
+       }

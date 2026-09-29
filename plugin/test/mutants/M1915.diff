@@ -1,0 +1,12 @@
+# M1915: an id chosen at push time is recorded as if its note were published
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4040,7 +4040,7 @@
+   if (ours === undefined) {
+     // Unpublished, so `mtime` says so: a push that fails from here is queued
+     // again by the next scan, as it would have been with no record at all.
+-    ours = { fileId: hex(randomBytes(16)), versionId: "", mtime: -1, size: stat.size, sha256: "" };
++    ours = { fileId: hex(randomBytes(16)), versionId: "", mtime: stat.mtime, size: stat.size, sha256: "" };
+     context.state.setFile(path, ours);
+     await context.state.save();
+   }

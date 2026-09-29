@@ -1,0 +1,11 @@
+# M2228: the fake's writer takes a part past the declared size
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -353,7 +353,6 @@
+     let held = 0;
+     return {
+       async write(bytes) {
+-        if (size !== undefined && held + bytes.length > size) throw new Error("A download exceeded its declared size.");
+         held += bytes.length;
+         parts.push(bytes);
+       },

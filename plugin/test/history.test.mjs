@@ -4,8 +4,8 @@ import { createRequire } from "node:module";
 import { rig, FakeTimers } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { HistoryBrowser, HistoryOperation, historyManifest, restoreCopy, restoreCopyPath } = require("../build/sync/history.js");
-const { Transport, HISTORY_RESPONSE_BYTES } = require("../build/transport.js");
+const { HISTORY_SCAN_RECORDS, HistoryBrowser, HistoryOperation, historyManifest, restoreCopy, restoreCopyPath } = require("../build/sync/history.js");
+const { Transport, CHANGES_ANSWER_MAX, HISTORY_RESPONSE_BYTES } = require("../build/transport.js");
 const { pushFile } = require("../build/sync/push.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const c = require("../build/crypto.js");
@@ -29,6 +29,16 @@ const entry = (record, path = "Notes/note.md") => ({ fileId: record.file_id, ver
 // covers the descending walk and the automatic search.
 const browser = (r, operation = new HistoryOperation(), now) =>
   new HistoryBrowser(r.context, operation, { newestFirst: false, now });
+/**
+ * A server whose byte cap ends every page after one record
+ * (`CHANGES_PAGE_BYTES`, #199): what a step of several requests looks like,
+ * for the tests about what happens between them.
+ */
+function singly(r) {
+  const original = r.transport.historyChanges.bind(r.transport);
+  r.transport.historyChanges = (since, control) => original(since, control, 1);
+  return r.transport.historyChanges;
+}
 
 test("history pages include deleted-note content beyond the file-view cap without touching sync state", async () => {
   const r = await rig();
@@ -37,33 +47,36 @@ test("history pages include deleted-note content beyond the file-view cap withou
   const map = r.server.files.get(r.context.mapFileId);
   r.server.journal.push({ ...map.versions[0], file_id: r.context.mapFileId, heads: map.heads, conflicted: false });
   let previous;
-  for (let i = 0; i < 23; i++) previous = await note(r, "Notes/note.md", `VERSION ${i}`, undefined, previous ? [previous.version_id] : []);
+  const versions = HISTORY_SCAN_RECORDS + 3;
+  for (let i = 0; i < versions; i++) previous = await note(r, "Notes/note.md", `VERSION ${i}`, undefined, previous ? [previous.version_id] : []);
   await r.server.publishTombstone({ fileId: previous.file_id, path: "Notes/note.md", manifestKey: r.keys.manifestKey, parents: [previous.version_id] });
   await note(r, "Admin/deploy.sh", "EXCLUDED SENTINEL", "32".repeat(16));
   r.host.list = r.host.stat = r.host.read = r.host.createWriter = async () => assert.fail("browsing performed local I/O");
   const before = structuredClone(r.state.data);
   const view = browser(r);
   const first = await view.next();
-  assert.equal(first.scanned, 20);
-  assert.equal(first.entries.length, 19, "the domain map is skipped");
+  assert.equal(first.scanned, HISTORY_SCAN_RECORDS);
+  assert.equal(first.entries.length, HISTORY_SCAN_RECORDS - 1, "the domain map is skipped");
   assert.equal(first.refused, 0, "the reserved map is skipped before manifest handling");
   assert.equal(view.done, false);
   const second = await view.next();
   const entries = [...first.entries, ...second.entries];
-  assert.equal(entries.length, 24);
+  assert.equal(entries.length, versions + 1);
   assert.equal(entries.filter((row) => row.deleted).length, 1);
   assert.equal(second.refused, 1);
   assert.equal(view.done, true);
   assert.deepEqual(r.state.data, before);
   assert.equal(r.server.requests.filter((q) => q.target.startsWith("/v1/files/")).length, 0, "no capped/wide file record");
-  assert.ok(r.server.requests.filter((q) => q.target.startsWith("/v1/changes")).every((q) => q.target.endsWith("wait=0&limit=1")));
+  // ONE PAGE A CLICK (#199): each click is one request for a whole step.
+  const reads = r.server.requests.filter((q) => q.target.startsWith("/v1/changes"));
+  assert.deepEqual(reads.map((q) => q.target.replace(/since=\d+&/, "")), Array(2).fill(`/v1/changes?wait=0&limit=${HISTORY_SCAN_RECORDS}`));
 });
 
 test("the captured history boundary excludes later versions and the time budget pauses a scan", async () => {
   const r = await rig();
   await note(r);
   await note(r, "Notes/retired.md", "RETAINED", "33".repeat(16));
-  const original = r.transport.historyChanges.bind(r.transport);
+  const original = singly(r);
   let calls = 0;
   r.transport.historyChanges = async (...args) => {
     const page = await original(...args);
@@ -87,9 +100,13 @@ for (const [label, page] of [
   ["negative", { seq: -1, head_seq: 1, changes: [] }],
   ["unsafe integer", { seq: 2 ** 54, head_seq: 2 ** 54, changes: [] }],
   ["past head", { seq: 2, head_seq: 1, changes: [] }],
-  ["oversized page", { seq: 2, head_seq: 2, changes: [{ seq: 1 }, { seq: 2 }] }],
+  ["oversized page", { seq: 101, head_seq: 101, changes: Array.from({ length: HISTORY_SCAN_RECORDS + 1 }, (_, i) => ({ seq: i + 1 })) }],
   ["record past cursor", { seq: 1, head_seq: 1, changes: [{ seq: 2 }] }],
   ["record at cursor", { seq: 1, head_seq: 1, changes: [{ seq: 0 }] }],
+  // A page's records are the journal's, in its order (#199).
+  ["records out of order", { seq: 2, head_seq: 2, changes: [{ seq: 2 }, { seq: 1 }] }],
+  ["a record twice", { seq: 2, head_seq: 2, changes: [{ seq: 1 }, { seq: 1 }] }],
+  ["a later record past cursor", { seq: 2, head_seq: 3, changes: [{ seq: 1 }, { seq: 3 }] }],
 ]) test(`history refuses ${label} cursor/envelope`, async () => {
   const r = await rig();
   r.transport.historyChanges = async () => page;
@@ -101,7 +118,7 @@ test("history returns earlier rows on a later read failure and retries at the un
   const r = await rig();
   await note(r);
   await note(r, "Notes/second.md", "SECOND", "32".repeat(16));
-  const original = r.transport.historyChanges.bind(r.transport);
+  const original = singly(r);
   let fail = true;
   r.transport.historyChanges = async (cursor, ...args) => {
     if (cursor === 2 && fail) { fail = false; throw new Error("READ SENTINEL"); }
@@ -119,19 +136,21 @@ test("cross-page cursor/head regressions are refused, and empty filtered batches
     const r = await rig();
     const view = browser(r, new HistoryOperation(), (() => { let n = 0; return () => n++ * 6000; })());
     r.transport.historyChanges = async () => ({ seq: 2, head_seq: 4, changes: [] });
-    assert.equal((await view.next()).scanned, 1);
+    assert.equal((await view.next()).scanned, 0, "an empty page reads no record");
+    assert.equal(view.done, false, "and moved the cursor short of the head");
     r.transport.historyChanges = async () => ({ seq: 3, head_seq: 4, changes: [], [field]: field === "seq" ? 1 : 3 });
     await assert.rejects(view.next(), /cursor/);
     assert.equal(r.state.data.lastSeq, 0);
   }
   const r = await rig();
-  for (let i = 0; i < 21; i++) await note(r, `Notes/note-${i}.md`, `VERSION ${i}`);
+  const last = HISTORY_SCAN_RECORDS;
+  for (let i = 0; i <= last; i++) await note(r, `Notes/note-${i}.md`, `VERSION ${i}`);
   const view = browser(r);
   // A filter now steps by itself past the empty batches to the first match,
   // instead of handing one empty page back per click (issue #102).
-  const first = await view.next("NOTE-20");
-  assert.deepEqual(first.entries.map((e) => e.path), ["Notes/note-20.md"]);
-  assert.ok(first.scanned > 20, `it crossed more than one step to get there (${first.scanned})`);
+  const first = await view.next(`NOTE-${last}`);
+  assert.deepEqual(first.entries.map((e) => e.path), [`Notes/note-${last}.md`]);
+  assert.ok(first.scanned > HISTORY_SCAN_RECORDS, `it crossed more than one step to get there (${first.scanned})`);
   assert.equal(first.checked, first.scanned, "and counted every position it consumed");
   assert.equal(view.done, true);
   assert.equal((await view.next()).scanned, 0, "completed scans issue no further request");
@@ -185,6 +204,24 @@ test("manual reads never retry, refuse excessive buffered responses, and cancel 
   cancelled.cancel();
   r.transport.options.request = async () => assert.fail("cancelled operation sent a request");
   await assert.rejects(r.transport.historyChanges(0, cancelled), /cancelled/);
+});
+
+test("a history page over its cap is asked again smaller, down to one record, and says so (#199)", async () => {
+  const r = await rig();
+  const asked = [];
+  const huge = { ...response({}), text: "x".repeat(CHANGES_ANSWER_MAX + 1) };
+  r.transport.options.request = async (q) => {
+    const limit = Number(/limit=(\d+)/.exec(q.url)[1]);
+    asked.push(limit);
+    return limit > 25 ? huge : response({ seq: 0, head_seq: 0, changes: [] });
+  };
+  assert.deepEqual(await r.transport.historyChanges(0, new HistoryOperation(), 100), { seq: 0, head_seq: 0, changes: [] });
+  assert.deepEqual(asked, [100, 50, 25], "an older server's page, asked again at half until it fits");
+  assert.ok(r.host.logs.some((line) => /^history_http GET \/v1\/changes\?since=0&wait=0&limit=100 decision=refused reason=over_cap retry limit=50$/.test(line)), r.host.logs.join(" | "));
+  asked.length = 0;
+  r.transport.options.request = async (q) => { asked.push(Number(/limit=(\d+)/.exec(q.url)[1])); return huge; };
+  await assert.rejects(r.transport.historyChanges(0, new HistoryOperation(), 4), /response_too_large/);
+  assert.deepEqual(asked, [4, 2, 1], "and one record that does not fit is refused, not asked for again");
 });
 
 test("cancellation during signing cannot send a late request", async () => {

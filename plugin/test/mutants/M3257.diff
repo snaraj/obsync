@@ -1,0 +1,11 @@
+# M3257: a skipped deletion of a dropped write's empty file keeps its mark, stranded at a name with nothing there
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -677,7 +677,6 @@
+   // take it from them all. This device forgets the mark, and any record.
+   if (mark !== undefined) {
+     if (record) context.state.forgetPath(path);
+-    delete context.state.data.dropped[path];
+     await context.state.save();
+     context.host.log(`push path_class=tombstone decision=skipped reason=write_dropped file=${mark}`);
+     return null;

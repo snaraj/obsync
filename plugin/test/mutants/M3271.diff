@@ -1,0 +1,12 @@
+# M3271: every empty note is refused as a dropped write, and an intentionally emptied note is never sent
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -434,7 +434,7 @@
+     // are the drop's. Nothing is sent, and the caller looks again, as for a
+     // file that changed while it was read.
+     const mark = context.state.data.dropped[path];
+-    if (plaintext.length === 0 && mark !== undefined) {
++    if (plaintext.length === 0) {
+       context.host.log(`push path_class=file decision=abandoned reason=write_dropped file=${mark} duration_ms=${context.now() - started}`);
+       return { status: "growing", fileId, versionId: "" };
+     }

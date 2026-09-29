@@ -1,0 +1,12 @@
+# M2131: the hold has no limit
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2855,7 +2855,7 @@
+     const holding = this.holding;
+     if (holding === null) return;
+     holding.paths.add(path);
+-    holding.handle ??= this.timers.set(() => this.release("timeout"), HOLD_MS);
++    holding.handle ??= null;
+   }
+ 
+   /**

@@ -1,0 +1,12 @@
+# M2060: the lane applies against the heads it read before its download, not the heads now
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2840,7 +2840,7 @@
+             outcome = "settled";
+             return;
+           }
+-          const file = await context.transport.getFile(fileId, { signal: context.signal });
++          const file = before;
+           const next = this.ahead(context, fileId, file);
+           if (next !== null && next.version_id !== ahead?.version_id) {
+             outcome = "moved_on";

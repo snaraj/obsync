@@ -1,5 +1,7 @@
 # Recovery
 
+*For people using obsync.*
+
 What to do when a device, a credential, or the server is gone. Every path here
 is one the shipped code supports; where there is no path, this page says so
 rather than implying one.
@@ -26,6 +28,8 @@ design, and it is also the reason recovery has the shape it does.
    and any dashboard session opened from one of its links is closed at the
    same moment.
 
+   ![The Devices section listing Laptop (this device) and Desk computer, each with a Revoke button, and the Device list row with Refresh](assets/settings-devices.png)
+
    **Two things revocation does not do.** It cannot be undone — there is no
    un-revoke route and no CLI that restores a revoked device, so the way
    back is to pair that device again as a new one, which gives it a new
@@ -50,9 +54,12 @@ capture uses a disposable desktop device named by its role:
 
 ## A device's plugin data is gone, but other devices still sync
 
-A reinstall, a cleared secret storage, or a vault copied without its
-`.obsidian` folder. The device has no credential and no vault key, and the
-plugin says `not paired`.
+A reinstall, or a vault copied without its `.obsidian` folder. The device has
+no credential and no vault key, and the plugin says `not paired`. A vault
+copied with its `.obsidian` folder, or whose folder was renamed outside
+Obsidian, reads `not paired` too and says it is a copy. A cleared secret
+storage in a vault that has synced stops with a storage error instead, which
+says to pair again if a reload does not bring the credentials back.
 
 Pair it again from a device that still syncs. If it ends up enrolled but
 without a vault key, the **Vault key** dialog offers two buttons, and only one
@@ -138,7 +145,7 @@ hold.
 
 **What to restore, in order.** The server key first (the Secret, or the file on
 the journal volume), then both volumes, then start the server and read
-`/readyz`. It answers `{"ready":true,"seq":<n>}` only once the volumes are writable and
+`/readyz`. It answers `{"ready":true}` only once the volumes are writable and
 the journal has replayed.
 
 **Changes made after the backup.** The restore takes from the server
@@ -151,7 +158,8 @@ was restored to an earlier state; this device re-sent N changes."
   for the last change-feed entry it read. A journal that no longer holds that
   entry where it was, or holds entries where the device read none, was
   rebuilt. The repair pass also notices when the server does not hold a
-  version the device recorded less than a day ago.
+  version the device recorded less than a day ago, whenever it reads that
+  version back: for a chunk the server lacks, or one it does not remember yet.
 - **What it re-sends.** Each note, rename and folder the server lost, onto
   the versions the server still holds. Each deletion the device made or
   received, from the last 1000 it remembers. Then it reads the rebuilt feed
@@ -192,7 +200,7 @@ else — every diagnostic is on standard error and the token reaches no log
 line. It reads the same file a start reads, through the same measured volume
 pass, and opens no journal, so it answers from a server that is serving:
 `kubectl exec deploy/obsync -- obsyncd setup-token` on Kubernetes,
-`docker compose exec obsync obsyncd setup-token` under Compose, neither
+`docker exec obsync-obsync-1 obsyncd setup-token` under Compose, neither
 needing a shell the image does not have.
 
 It exits non-zero and names the reason when there is nothing to print: no

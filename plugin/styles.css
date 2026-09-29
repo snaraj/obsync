@@ -1,4 +1,59 @@
-/* obsync. Four classes, no layout opinions beyond fitting a 390 px phone. */
+/* obsync. Five classes, no layout opinions beyond fitting a 390 px phone. */
+
+/*
+ * The status indicator (issues #156, #209; `src/ui/indicator.ts`): one icon
+ * in a box of ONE fixed width, whatever the state, so the status bar never
+ * shifts as obsync changes state -- the text it replaced moved the whole bar
+ * on every save. Colours are the theme's own; the words are the tooltip.
+ */
+.obsync-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2em;
+  min-width: 2em;
+  max-width: 2em;
+  color: var(--text-muted);
+}
+
+.obsync-status svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.obsync-status[data-state="synced"] {
+  color: var(--color-green);
+}
+
+.obsync-status[data-state="attention"] {
+  color: var(--text-error);
+}
+
+.obsync-status[data-state="paused"] {
+  color: var(--text-warning);
+}
+
+.obsync-status[data-state="quiet"] {
+  color: var(--text-faint);
+}
+
+/* The wheel turns slowly while obsync syncs: one turn in 1.8 s. */
+.obsync-status[data-state="syncing"] svg {
+  animation: obsync-turn 1.8s linear infinite;
+}
+
+@keyframes obsync-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Reduce Motion: no turning at all; the wheel's shape alone says syncing. */
+@media (prefers-reduced-motion: reduce) {
+  .obsync-status[data-state="syncing"] svg {
+    animation: none;
+  }
+}
 
 .obsync-code {
   user-select: all;
@@ -57,4 +112,25 @@
  */
 .obsync-table td:first-child {
   overflow-wrap: normal;
+}
+
+/*
+ * A box of lines -- the edge headers, the selected folders -- takes the whole
+ * row below its name and description on a phone or tablet (issue #210):
+ * beside the description it was 206 px of a 375 px row, with a resize handle
+ * no finger can use. Desktop keeps Obsidian's own row.
+ */
+.is-mobile .obsync-lines {
+  flex-wrap: wrap;
+}
+
+.is-mobile .obsync-lines .setting-item-control {
+  flex: 1 0 100%;
+  margin-top: var(--size-4-2);
+}
+
+.is-mobile .obsync-lines textarea {
+  width: 100%;
+  min-height: 6em;
+  resize: none;
 }

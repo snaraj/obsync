@@ -1,0 +1,12 @@
+# M1870: a hostile platform word reads a prototype member (#152)
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -229,7 +229,7 @@
+ 
+ /** What a person calls a platform word (issue #152); anything else is "device". */
+ export function platformLabel(platform: string): string {
+-  return Object.hasOwn(PLATFORM_LABELS, platform) ? PLATFORM_LABELS[platform] as string : "device";
++  return PLATFORM_LABELS[platform] ?? "device";
+ }
+ 
+ /** No 0/O, 1/I/L or U: a tag is read aloud and retyped. */

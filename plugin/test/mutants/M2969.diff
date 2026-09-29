@@ -1,0 +1,14 @@
+# M2969: a worker that cannot be made is not said in the log
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -83,8 +83,8 @@
+       stop();
+       log(`timers decision=fallback reason=worker_error pending=${armed.size}`);
+     };
+-  } catch (error) {
+-    log(`timers decision=fallback reason=${error instanceof Error ? error.name : "unknown"}`);
++  } catch {
++    // nothing
+   }
+   return {
+     set(fn, ms) {

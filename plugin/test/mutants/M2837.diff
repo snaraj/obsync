@@ -1,0 +1,12 @@
+# M2837: Check asks with the background's patience: a minute and a half of silence
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -306,7 +306,7 @@
+             // works (2026-09-24 battery, S08; #137). The plugin manifest is the
+             // route that needs no credential.
+             const check = this.plugin.state.paired
+-              ? this.plugin.transport.account({ interactive: true }).then((account) => `Reached "${account.name}", ${account.device_count} device(s).`)
++              ? this.plugin.transport.account().then((account) => `Reached "${account.name}", ${account.device_count} device(s).`)
+               : this.plugin.transport.pluginManifest({ interactive: true }).then(() => "Reached your obsync server. Next: Setup or recover on your first device, or Pair this device.");
+             // Nothing answering is said with the address and what to try: a
+             // Check is how a wrong address or a switched-off server is found.

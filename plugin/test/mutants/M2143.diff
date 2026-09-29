@@ -1,0 +1,11 @@
+# M2143: a walk never learns a sid
+--- a/plugin/src/sync/repair.ts
++++ b/plugin/src/sync/repair.ts
+@@ -137,7 +137,6 @@
+     const current = this.context.state.fileByPath(path);
+     if (current === undefined || current.versionId !== record.versionId || current.sid === sid ||
+         (await sidDigest([sid])) !== current.sha256) return;
+-    current.sid = sid;
+     this.walk.learned++;
+   }
+ 

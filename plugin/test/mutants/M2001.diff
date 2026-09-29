@@ -1,0 +1,12 @@
+# M2001: a push is taken beside a barrier still in flight
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1945,7 +1945,7 @@
+       const failed: unknown[] = [];
+       for (;;) {
+         let took = false;
+-        while (this.running && failed.length === 0 && running.size < context.concurrency && !(barrier !== null && running.has(barrier))) {
++        while (this.running && failed.length === 0 && running.size < context.concurrency) {
+           const path = this.takeNext(running);
+           if (path === null) break;
+           if (this.barrierPath === path) barrier = path;

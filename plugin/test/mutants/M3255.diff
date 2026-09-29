@@ -1,0 +1,17 @@
+# M3255: deleting the empty file a dropped write left publishes a tombstone, and the note is deleted on every device (review of 2e4cdca)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -675,13 +675,6 @@
+   // review of 2e4cdca). Deleting it removes that placeholder, not the note,
+   // whose text is on the server and on every other device: a tombstone would
+   // take it from them all. This device forgets the mark, and any record.
+-  if (mark !== undefined) {
+-    if (record) context.state.forgetPath(path);
+-    delete context.state.data.dropped[path];
+-    await context.state.save();
+-    context.host.log(`push path_class=tombstone decision=skipped reason=write_dropped file=${mark}`);
+-    return null;
+-  }
+   if (!record) return null;
+   const manifest: Manifest = {
+     v: 1,

@@ -1,0 +1,12 @@
+# M3192: a note as long as an earlier version counts as that version, whatever its bytes
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3813,7 +3813,7 @@
+           (there.sha256 === "" || hex(await sha256(await this.host.read(file.path))) === there.sha256);
+         if (same) continue;
+         const earlier = there !== undefined && [...there.versions].some((version) => version.startsWith(`${file.size} `)) &&
+-          there.versions.has(`${file.size} ${hex(await sha256(await this.host.read(file.path)))}`);
++          true;
+         if (earlier) older++;
+         else unknown++;
+       }

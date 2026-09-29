@@ -1,29 +1,51 @@
 # Daily use
 
+*For people using obsync.*
+
 Once two devices are paired, sync runs on its own. This page is the rest of
 it: the commands, what the status bar is telling you, what obsync does and
 does not touch, how to get an older version of a note back, and the dashboard.
 
 ## Commands and the status bar
 
-Every command is under **Self Hosted Private Sync** in the command palette:
+Every command is under **Self Hosted Private Sync** in the command palette,
+and each name ends in `(obsync)`, so typing `obsync` there lists them all:
 
 | Command | What it does |
 | --- | --- |
-| Sync now | Checks file contents now, including changes another tool made without changing the file's size or date |
+| Sync now | Sends and fetches everything waiting now, and checks the contents of files up to 8 MiB |
+| Verify all files | Checks every file's contents, however large. Slower; use it if you think another tool changed a file without changing its size or date |
 | Show sync status | What the engine is doing, and why it is not doing more |
 | Pair a new device | Mints a one-time pairing code on this device |
+| Pair this device | Opens the dialog that takes a pairing code from a device that already syncs; on a device that syncs already, it only says so |
 | Show recovery phrase | Re-displays the 24 words, from this device's own key |
 | Restore from history | Browses retained versions and restores one as a copy |
 | Show remote-only files | Lists files above this device's ceilings, to fetch on demand |
 | Open dashboard | Mints a one-time dashboard sign-in link |
 | Open the setup guide | Opens the setup guide in your browser |
 
-The status bar reads `obsync: not paired` before pairing, then `obsync: idle`
-(`obsync: idle — syncing no folders` when **Selected folders** is empty),
-`obsync: syncing <n>` while `n` files are in flight, `obsync: offline —
-retrying` when the server cannot be reached, and `obsync: error — <reason>`
-when sync has stopped and needs you.
+The status bar shows one icon, always the same width: a check when this
+device is up to date, a turning wheel while it syncs (it stands still under
+Reduce Motion), a cloud struck through while the server does not answer, an
+alert in your theme's error colour when sync has stopped and needs you, and a
+pause sign for a paused note. A faint cloud means the device is not paired yet,
+or syncs no folders. A save that syncs within half a second leaves the check
+where it is, so the bar does not flicker while you type.
+
+Hover the icon for its words: `obsync: not paired` before pairing, then
+`obsync: idle` (`obsync: idle — syncing no folders` when **Selected folders**
+is empty), `obsync: syncing <n>` while `n` files are in flight, `obsync:
+offline — retrying` when the server cannot be reached, and `obsync: error —
+<reason>` when sync has stopped and needs you. Click it for **Show sync
+status**, which says the same in full, stays current while it is open, and
+offers the one thing to do next: **Retry now**, **Pair again** or **Open
+settings**. **Sync now** always answers with a notice: what it sent, that
+nothing needed sending, or why it could not.
+
+On a phone or tablet, where Obsidian hides the status bar, the same icon sits
+in the header of the note in front; tap it for **Show sync status**. A refusal
+that needs you there -- this device removed from the account, a clock that is
+off, a full server -- is also said once in a notice.
 
 An incoming update may also stay pending while you type in its note. After
 your text saves and you pause typing for ten seconds, obsync retries it
@@ -46,9 +68,8 @@ says what to do.
 ## What syncs and what does not
 
 - obsync syncs one person's vault across their own devices. Every device you
-  pair has owner access; the current runtime has no recipient role. Giving anyone else
-  access to part of a vault is phase 2 work, gated on the acceptance
-  criteria in `architecture.md` section 5.
+  pair has full access to the vault. Sharing part of a vault with someone
+  else is not supported ([what that would take](architecture.md#5-sharing-phase-2)).
 - Hidden folders (`.obsidian`, `.git`) and symlinked folders are not synced
   in either direction.
 - A folder opened as its own vault with obsync installed is excluded from
@@ -115,27 +136,32 @@ native observations from automated coverage.
 
 ## Restore a retained version
 
-Open **Self Hosted Private Sync: Restore from history** in the command palette. Optionally
-enter part of a filename, select **Restart search**, then **Load next**.
-Versions appear oldest first, including retained content of deleted notes.
-Each click checks at most 20 records; an empty filtered page can still have
-more history after it. Select **Restore a copy** on a content version to
-create a uniquely named sibling inside the currently selected folder.
-Deletion markers themselves contain no file bytes.
+1. Open **Self Hosted Private Sync: Restore from history** in the command
+   palette.
+2. Optionally type part of a file name and select **Restart search**, then
+   **Load next**. Versions appear newest first, including notes that have
+   since been deleted; turn on **Oldest first** to start from the other end.
+   Each **Load next** checks at most 100 entries, so an empty page can still
+   have more history after it: select **Load next** again.
+3. Select **Restore a copy** beside the version you want. obsync creates a
+   copy with a new, unique name beside the original, inside the folders this
+   device syncs. A deletion entry has no content to restore; a deleted
+   note's saved versions are listed before its deletion entry.
 
-The original file, unsynced edits and original history remain unchanged.
-The notice first confirms a local copy and requests ordinary sync; check
-sync status for upload failures. Device size/budget limits apply to the
-additional copy. Desktop streams into a temporary file and publishes only
-to an unoccupied name; a filesystem without that primitive is refused.
-Mobile buffers the verified file and uses Obsidian's create-only API.
+   ![The Restore from history dialog listing three versions of a note, newest first, each with Restore a copy](assets/restore-from-history.png)
 
-Cancel prevents later work, but Obsidian cannot abort a network request or
-local create already dispatched. A late create may finish; check any copy
-path named in an error before retrying. The network API buffers responses
-before a size check is possible. Reopening history does not start another
-manual request until the outstanding one settles. These are platform
-limits, not a claim of power-loss or real-device validation.
+   A restored copy works on any drive, a USB stick or memory card included,
+   and never replaces a file that is already there.
+
+Nothing else changes: the original note, your unsynced edits and the history
+all stay as they were, and the copy syncs like any new note. The notice
+confirms the local copy; **Show sync status** shows whether it has uploaded.
+This device's size limits apply to the copy too.
+
+If you cancel while a copy is already being written, that copy may still
+appear. If an error names a path, check that path before you try again. How
+restoring works inside, per platform, is in
+[the architecture](architecture.md#622-native-retained-history-recovery).
 
 ## See your devices
 

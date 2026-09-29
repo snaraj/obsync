@@ -1,0 +1,12 @@
+# M2310: the palette's Pair this device opens the dialog on a device that syncs (#154)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2144,7 +2144,7 @@
+       // The fresh device's way in (issue #154); one that syncs is told so, and nothing opens.
+       callback: () => {
+         const paired = alreadyPaired(this);
+-        if (paired === null) {
++        if (true) {
+           new PairClaimModal(this.app, this).open();
+           return;
+         }

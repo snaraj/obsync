@@ -1,6 +1,10 @@
-//! A writer for the `multipart/mixed` response of `POST /v1/chunks/get`
+//! The framing of the `multipart/mixed` response of `POST /v1/chunks/get`
 //! (`docs/protocol.md`, "Chunks"): one part per requested chunk, in request
 //! order, so a proxied hop carries one round trip instead of sixty-four.
+//!
+//! Only the framing is built here. The parts are chunk ciphertext, up to
+//! 32 MiB of it in one response, so the caller streams each part's body
+//! between these bytes rather than assembling the body in memory.
 
 /// Longest boundary RFC 2046 allows.
 const MAX_BOUNDARY: usize = 70;
@@ -8,17 +12,15 @@ const MAX_BOUNDARY: usize = 70;
 /// Boundary used when the caller's is empty after sanitizing.
 const FALLBACK_BOUNDARY: &str = "obsync";
 
-/// Builds a `multipart/mixed` body in memory.
-///
-/// The parts are chunk ciphertext, capped at 8 MiB each and 64 per request by
-/// the protocol, so the whole body is bounded and buffering it is cheaper than
-/// streaming it.
+/// The delimiters and part headers of one `multipart/mixed` body.
 pub struct MultipartWriter {
     boundary: String,
-    body: Vec<u8>,
 }
 
 impl MultipartWriter {
+    /// The bytes that end one part's body, before the next delimiter.
+    pub const PART_END: &'static [u8] = b"\r\n";
+
     /// Start a body. Characters RFC 2046 does not allow in a boundary are
     /// dropped and the result is truncated to 70 characters, because a
     /// boundary that does not match its `Content-Type` is unparseable and a
@@ -34,36 +36,28 @@ impl MultipartWriter {
         }
         MultipartWriter {
             boundary: sanitized,
-            body: Vec::new(),
         }
     }
 
-    /// Append one part. A header whose name or value could break the framing
-    /// is dropped, on the same rule as response headers.
-    pub fn part(&mut self, headers: &[(&str, &str)], body: &[u8]) {
-        self.body.extend_from_slice(b"--");
-        self.body.extend_from_slice(self.boundary.as_bytes());
-        self.body.extend_from_slice(b"\r\n");
+    /// The bytes that open one part: its delimiter and its headers. The
+    /// part's body follows them, then [`MultipartWriter::PART_END`]. A header
+    /// whose name or value could break the framing is dropped, on the same
+    /// rule as response headers.
+    pub fn part_head(&self, headers: &[(&str, &str)]) -> Vec<u8> {
+        let mut head = format!("--{}\r\n", self.boundary).into_bytes();
         for (name, value) in headers {
             if !header_is_safe(name, value) {
                 continue;
             }
-            self.body.extend_from_slice(name.as_bytes());
-            self.body.extend_from_slice(b": ");
-            self.body.extend_from_slice(value.as_bytes());
-            self.body.extend_from_slice(b"\r\n");
+            head.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
         }
-        self.body.extend_from_slice(b"\r\n");
-        self.body.extend_from_slice(body);
-        self.body.extend_from_slice(b"\r\n");
+        head.extend_from_slice(b"\r\n");
+        head
     }
 
-    /// Close the body with the final boundary and hand it over.
-    pub fn finish(mut self) -> Vec<u8> {
-        self.body.extend_from_slice(b"--");
-        self.body.extend_from_slice(self.boundary.as_bytes());
-        self.body.extend_from_slice(b"--\r\n");
-        self.body
+    /// The closing delimiter, after the last part.
+    pub fn close(&self) -> Vec<u8> {
+        format!("--{}--\r\n", self.boundary).into_bytes()
     }
 
     /// The `Content-Type` this body must be served with.
@@ -92,22 +86,43 @@ mod tests {
         String::from_utf8(bytes).expect("utf-8")
     }
 
+    /// One part: its headers and its body.
+    type Part<'a> = (&'a [(&'a str, &'a str)], &'a [u8]);
+
+    /// A whole body, assembled in the order a caller streams one.
+    fn assemble(writer: &MultipartWriter, parts: &[Part<'_>]) -> String {
+        let mut body = Vec::new();
+        for (headers, part) in parts {
+            body.extend(writer.part_head(headers));
+            body.extend_from_slice(part);
+            body.extend_from_slice(MultipartWriter::PART_END);
+        }
+        body.extend(writer.close());
+        text(body)
+    }
+
     #[test]
     fn one_part_is_framed_by_its_boundary() {
-        let mut writer = MultipartWriter::new("obsync-1");
-        writer.part(&[("X-Obsync-Sid", "ab"), ("Content-Length", "2")], b"hi");
+        let writer = MultipartWriter::new("obsync-1");
         assert_eq!(
-            text(writer.finish()),
+            assemble(
+                &writer,
+                &[(&[("X-Obsync-Sid", "ab"), ("Content-Length", "2")], b"hi")]
+            ),
             "--obsync-1\r\nX-Obsync-Sid: ab\r\nContent-Length: 2\r\n\r\nhi\r\n--obsync-1--\r\n"
         );
     }
 
     #[test]
     fn parts_keep_request_order_and_an_empty_part_is_legal() {
-        let mut writer = MultipartWriter::new("b");
-        writer.part(&[("X-Obsync-Sid", "one")], b"1");
-        writer.part(&[("X-Obsync-Sid", "two"), ("X-Obsync-Missing", "1")], b"");
-        let body = text(writer.finish());
+        let writer = MultipartWriter::new("b");
+        let body = assemble(
+            &writer,
+            &[
+                (&[("X-Obsync-Sid", "one")], b"1"),
+                (&[("X-Obsync-Sid", "two"), ("X-Obsync-Missing", "1")], b""),
+            ],
+        );
         let first = body.find("one").expect("first part");
         let second = body.find("two").expect("second part");
         assert!(first < second);
@@ -123,7 +138,7 @@ mod tests {
             writer.content_type(),
             "multipart/mixed; boundary=chunk-boundary"
         );
-        assert!(text(writer.finish()).contains("--chunk-boundary--"));
+        assert_eq!(text(writer.close()), "--chunk-boundary--\r\n");
     }
 
     #[test]
@@ -138,16 +153,18 @@ mod tests {
 
     #[test]
     fn a_hostile_part_header_is_dropped() {
-        let mut writer = MultipartWriter::new("b");
-        writer.part(
-            &[
-                ("X-Obsync-Sid", "ok"),
-                ("X-Evil", "v\r\n--b\r\nX-Obsync-Sid: forged"),
-                ("Bad Name", "v"),
-            ],
-            b"",
+        let writer = MultipartWriter::new("b");
+        let body = assemble(
+            &writer,
+            &[(
+                &[
+                    ("X-Obsync-Sid", "ok"),
+                    ("X-Evil", "v\r\n--b\r\nX-Obsync-Sid: forged"),
+                    ("Bad Name", "v"),
+                ],
+                b"",
+            )],
         );
-        let body = text(writer.finish());
         assert!(!body.contains("forged"));
         assert!(!body.contains("Bad Name"));
         assert_eq!(body.matches("--b\r\n").count(), 1);

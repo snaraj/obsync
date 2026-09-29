@@ -8,11 +8,10 @@ HTTPS in front of it ([`docs/architecture.md`](../docs/architecture.md)).
 Obsidian on iOS and Android refuses plain HTTP, so that terminator is not
 optional.
 
-The defaults in `values.yaml` are the reference deployment's — a single-node
-cluster on a Raspberry Pi — and they are fail-closed on purpose: zero
-replicas, StorageClasses that exist on that one machine, and one ingress peer
-that exists in that one cluster. Four of them are yours to replace.
-Everything else can stay.
+The defaults in `values.yaml` name no cluster, and they are fail-closed on
+purpose: zero replicas, a StorageClass no cluster has, and no ingress peer, so
+nothing reaches the server until you say what may. Four of them are yours to
+replace. Everything else can stay.
 
 ## 1. A namespace, a server key, and two volumes
 
@@ -42,6 +41,9 @@ your volume is not one this project runs. So, before `deploymentReady: true`:
 - **A static local volume or `hostPath`:** create the two PersistentVolumes and
   their directories as `65532:65532`, mode `0700`, with root-owned, closed
   parents and no symlink on the path.
+  [`examples/static-local-volumes.yaml`](examples/static-local-volumes.yaml)
+  is that pair for one node's disk, with its StorageClass, each volume bound to
+  its claim, and the two `install -d` commands that prepare the directories.
 - **A dynamic provisioner:** naming your StorageClass below is NOT enough
   unless that provisioner honours the pod's `runAsUser` when it presents the
   volume. Many hand over a root-owned `0755` or a world-writable root, and the
@@ -78,11 +80,12 @@ storage:
     size: 4Gi
     capacity: 4Gi
 
-# The ONE workload allowed to open a connection to this pod.
+# What may open a connection to this pod, and nothing else may.
 ingress:
-  peerNamespace: ingress-nginx
-  peerAppName: ingress-nginx
-  peerInstance: ingress-nginx
+  peers:
+    - namespace: ingress-nginx
+      appName: ingress-nginx
+      instance: ingress-nginx
 
 # The address your devices reach the server at, port included when it is not
 # 443. Leave it "" if you would rather not say.
@@ -92,16 +95,18 @@ publicUrl: "https://sync.example.org"
 **`storage.*.className`** is your StorageClass, twice, and it is also the label
 the dashboard shows for each volume. `size` is what the claim requests AND what
 the server is told its capacity is, so it must not overstate the volume;
-`capacity` is what you provisioned behind it, recorded as an annotation.
+`capacity` is what you provisioned behind it.
 
-**`ingress.peer*`** is the deployment's one door. The NetworkPolicy admits
-traffic from pods that match all three — a namespace by its
-`kubernetes.io/metadata.name` label, and a pod by `app.kubernetes.io/name` and
-`app.kubernetes.io/instance` — and denies everything else, in both directions
-(the pod itself opens no outbound connection at all). All three are required
-because one namespace often holds several connectors that publish the same app
-name and differ only by instance: a policy naming two of them reads narrow and
-behaves wide.
+**`ingress.peers`** is the deployment's door, and an empty list is a closed
+one. The NetworkPolicy admits the listed peers on port 8080 and denies
+everything else, in both directions (the pod itself opens no outbound
+connection at all). A pod peer matches all three of its facts — a namespace by
+its `kubernetes.io/metadata.name` label, and a pod by `app.kubernetes.io/name`
+and `app.kubernetes.io/instance` — and all three are required, because one
+namespace often holds several connectors that publish the same app name and
+differ only by instance: a policy naming two of them reads narrow and behaves
+wide. List a LAN ingress and a tunnel connector side by side when both reach
+the server.
 
 Read the three values off whatever terminates TLS for you:
 
@@ -110,10 +115,29 @@ kubectl get pods --namespace <its namespace> --show-labels
 kubectl get namespace <its namespace> -o jsonpath='{.metadata.labels.kubernetes\.io/metadata\.name}'
 ```
 
-That terminator has to run IN the cluster — an ingress controller, a tunnel
-connector, a reverse proxy you deploy — because the policy names a POD.
-Traffic that arrives from outside the cluster through a NodePort or a
-LoadBalancer is not a pod and is not admitted.
+A terminator that is not a pod in the cluster — an ingress controller on the
+host network, a proxy on a node, clients behind a load balancer that keeps
+their address — is admitted by address instead, with an `ipBlock` peer naming its `cidr`
+(and optionally `except`). The block is the
+source address the pod sees, which for a NodePort or a LoadBalancer is often a
+node's own address rather than the client's. A block holding every address is
+refused. The single-peer `peerNamespace`, `peerAppName` and `peerInstance`
+fields of earlier releases still work and render the same policy.
+
+**`trustedProxyCidrs`** decides whose forwarded address the dashboard
+believes. Empty, it shows the terminator's address for every device; list
+your pod network (or the terminator's own block) to show each device's.
+The NetworkPolicy is what keeps other pods on that network out.
+
+**Optional:** `image.repository` may name a registry mirror, because the
+digest still pins the bytes (verify the signature against that digest);
+`imagePullSecrets`, `nodeSelector`, `tolerations`, `affinity` and `podLabels`
+pass through to the pod as written, and none of them can change its security
+context. `platform.annotationDomain` is for a GitOps platform that reads the
+replica switch and each claim's `capacity` off annotations: set it to that
+platform's domain and the chart adds `<domain>/deployment-ready` and
+`<domain>/volume-capacity`; left empty, it adds neither. The chart supports
+Kubernetes 1.34 and later, suffixed vendor versions included.
 
 **`publicUrl`** is the base of every link the server generates, including the
 dashboard sign-in link the plugin asks for. Empty is a working answer, not a
@@ -126,12 +150,12 @@ address devices use — scheme, host, and port when the port is not 443.
 From the directory holding the `values.yaml` you just wrote:
 
 ```sh
-cosign verify ghcr.io/snaraj/charts/obsync:1.1.3 \
+cosign verify ghcr.io/snaraj/charts/obsync:1.1.4 \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 helm install obsync oci://ghcr.io/snaraj/charts/obsync \
-  --version 1.1.3 \
+  --version 1.1.4 \
   --namespace obsidian \
   -f values.yaml
 ```

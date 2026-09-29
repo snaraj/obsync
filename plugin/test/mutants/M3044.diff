@@ -1,0 +1,14 @@
+# M3044: a folder record at a path a stopped re-case holds is applied while the entry wears its hidden name
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1195,10 +1195,6 @@
+   // where the entry was to come back -- and the way back was taken -- and a
+   // tombstone forgot a record the entry still has. The record waits, as a
+   // note's move does (`landing`), and the feed asks again.
+-  if ((await context.host.recasePending?.(path)) === true) {
+-    context.host.log(`pull path_class=folder decision=held reason=recase_pending file=${change.file_id} seq=${change.seq}`);
+-    throw new Error("a capitals-only rename of this folder is still being put back");
+-  }
+   // WHAT THIS VAULT SHOWS, ASKED ONCE, because both decisions below turn on
+   // it. A record naming one capitalisation of a selected folder reaches this
+   // function on the string rule's tolerance alone (`syncScope.ts`,

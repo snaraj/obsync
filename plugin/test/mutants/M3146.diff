@@ -1,0 +1,12 @@
+# M3146: this device's own leave says the server no longer recognises it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3710,7 +3710,7 @@
+       this.engine = null;
+       // Not this device's own leave, which forgets the pairing next and says
+       // what happened itself: a phone put this up after every Leave (#233).
+-      if (!this.leaving) this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
++      this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+     }
+   }
+ 

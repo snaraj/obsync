@@ -1,0 +1,11 @@
+# M1939: a folder kept only until its note's own deletion arrives raises the kept-folder notice
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1075,7 +1075,6 @@
+ function notifyKeptFolder(context: SyncContext, change: ChangeRecord, path: string, items: number): void {
+   const prefix = `${path}/`;
+   const recorded = (paths: string[]): boolean => paths.some((candidate) => candidate.startsWith(prefix));
+-  if (recorded(Object.keys(context.state.data.files)) || recorded(Object.keys(context.state.data.folders))) return;
+   const key = `kept\u0000${path}`;
+   if (context.refused.has(key)) return;
+   context.refused.add(key);

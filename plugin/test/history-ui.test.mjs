@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { sandbox, memorySecrets } from "./fake.mjs";
+import { sandbox, memorySecrets, statusItem } from "./fake.mjs";
 
 class Element {
   constructor() { this.text = []; this.settings = []; }
@@ -111,7 +111,7 @@ test("plugin registers the native restore command without pairing or issuing a h
   plugin.loadData = async () => null;
   plugin.saveData = async () => {};
   plugin.addCommand = (command) => commands.push(command);
-  plugin.addStatusBarItem = () => new Element();
+  plugin.addStatusBarItem = () => statusItem();
   plugin.addSettingTab = () => {};
   plugin.registerEvent = () => {};
   plugin.registerObsidianProtocolHandler = () => {};
@@ -119,7 +119,7 @@ test("plugin registers the native restore command without pairing or issuing a h
   plugin.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   plugin.manifest = { version: "0.1.11" };
   await plugin.onload();
-  assert.equal(commands.find((c) => c.id === "restore-history")?.name, "Restore from history");
+  assert.equal(commands.find((c) => c.id === "restore-history")?.name, "Restore from history (obsync)");
   assert.throws(() => plugin.openHistory(), /paired device/);
   plugin.onunload();
 });

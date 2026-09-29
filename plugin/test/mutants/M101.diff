@@ -1,11 +1,11 @@
 # M101: the retirement is not spent by the folder record that takes it
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -414,7 +414,6 @@
-     // SPENT HERE. The record the retirement was waiting for has arrived, so a
-     // second record one capitalisation off that folder is a twin again --
-     // including the twin a case-sensitive sender publishes moments later.
--    delete context.state.data.retiredRoots[selected];
-     return;
-   }
-   if (selected !== null) notifyFolderTwin(context, selected, path);
+@@ -1207,7 +1207,6 @@
+   // SPENT HERE, WITH THE RECORD IT ADMITTED (`admitFolderRecord`, issue
+   // #127): a second record one capitalisation off this folder is a twin again
+   // -- including the twin a case-sensitive sender publishes moments later.
+-  if (retired !== null) delete context.state.data.retiredRoots[retired];
+   await context.state.save();
+   context.host.log(
+     `folder path_class=folder decision=case_renamed files=${files.length} folders=${folders.length} seq=${change.seq}`,

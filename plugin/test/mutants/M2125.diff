@@ -1,0 +1,12 @@
+# M2125: a files map replaced wholesale keeps the old map's indexes
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -908,7 +908,7 @@
+ 
+   /** The maintained indexes (`Indexes`), current for the `files` map this state holds now. */
+   private get index(): Indexes {
+-    if (this.indexes?.of !== this.data.files) this.indexes = indexFiles(this.data.files);
++    if (this.indexes === null) this.indexes = indexFiles(this.data.files);
+     return this.indexes;
+   }
+ 

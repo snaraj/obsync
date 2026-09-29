@@ -6,8 +6,9 @@
 //! under the SID lock and rebuilt by the startup scan, not by scrub summaries.
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ops::Bound;
+use std::sync::Arc;
 
 use crate::storage::journal::{Frame, Record};
 use crate::storage::types::{
@@ -56,12 +57,16 @@ pub(crate) struct DeviceEntry {
 /// that version is the only thing that can say which domain the file is in
 /// (`docs/architecture.md` 5.1 item 4). A default-constructed entry would
 /// have to invent one.
+///
+/// A stored version never changes, so it is shared rather than owned: the
+/// copy a snapshot is written from costs a pointer per version, not the
+/// version again.
 #[derive(Clone, Debug)]
 pub(crate) struct FileEntry {
     pub(crate) domain_id: DomainId,
     pub(crate) heads: Vec<VersionId>,
     pub(crate) conflicted: bool,
-    pub(crate) versions: Vec<VersionRecord>,
+    pub(crate) versions: Vec<Arc<VersionRecord>>,
 }
 
 /// What the store knows about one stored chunk.
@@ -88,8 +93,6 @@ pub(crate) struct Index {
     pub(crate) used_bytes: u64,
     pub(crate) last_gc: Option<GcSummary>,
     pub(crate) last_scrub: Option<ScrubSummary>,
-    /// Start of the current scrub pass: chunks verified before it are pending.
-    pub(crate) scrub_cursor: UnixMs,
 }
 
 impl Index {
@@ -198,9 +201,7 @@ impl Index {
                 pruned,
                 summary,
             } => {
-                for (file_id, version_id) in pruned {
-                    self.prune_version(file_id, version_id);
-                }
+                self.prune_versions(pruned);
                 // The chunks go from the index with the frame that records
                 // them, so a replay reaches the same state as the run did
                 // even though chunks are otherwise learnt from the volume.
@@ -251,7 +252,7 @@ impl Index {
         entry.conflicted = entry.heads.len() > 1;
         self.feed
             .push((version.seq, version.file_id, version.version_id));
-        entry.versions.push(version);
+        entry.versions.push(Arc::new(version));
     }
 
     /// How many heads this file would hold if a version naming `parents`
@@ -313,23 +314,51 @@ impl Index {
             .map(|v| (v.seq, v.version_id))
     }
 
-    /// Drop one version, and the file when its last version goes.
-    fn prune_version(&mut self, file_id: &FileId, version_id: &VersionId) {
-        let empty = match self.files.get_mut(file_id) {
-            Some(entry) => {
-                entry.versions.retain(|v| v.version_id != *version_id);
-                entry.heads.retain(|head| head != version_id);
-                entry.conflicted = entry.heads.len() > 1;
-                entry.versions.is_empty()
-            }
-            None => false,
-        };
-        if empty {
-            self.files.remove(file_id);
+    /// Drop versions, and each file whose last version goes.
+    ///
+    /// As one set: each touched file is visited once and the feed is walked
+    /// once, rather than once per pruned version, which made a mass deletion
+    /// quadratic -- at collection and again at every replay of its frame.
+    fn prune_versions(&mut self, pruned: &[(FileId, VersionId)]) {
+        if pruned.is_empty() {
+            return;
         }
-        self.feed.retain(|(_, feed_file, feed_version)| {
-            feed_file != file_id || feed_version != version_id
+        let mut by_file: BTreeMap<FileId, BTreeSet<VersionId>> = BTreeMap::new();
+        for (file_id, version_id) in pruned {
+            by_file.entry(*file_id).or_default().insert(*version_id);
+        }
+        for (file_id, gone) in &by_file {
+            let Some(entry) = self.files.get_mut(file_id) else {
+                continue;
+            };
+            entry.versions.retain(|v| !gone.contains(&v.version_id));
+            entry.heads.retain(|head| !gone.contains(head));
+            entry.conflicted = entry.heads.len() > 1;
+            if entry.versions.is_empty() {
+                self.files.remove(file_id);
+            }
+        }
+        self.feed.retain(|(_, file_id, version_id)| {
+            by_file
+                .get(file_id)
+                .is_none_or(|gone| !gone.contains(version_id))
         });
+    }
+
+    /// The part of the index a snapshot records, copied so that it can be
+    /// encoded and written with no guard held. Chunk inventory and the feed
+    /// are left out: the first is learnt from the blob volume at every start,
+    /// and the second is rebuilt from the versions.
+    pub(crate) fn snapshot_copy(&self) -> Index {
+        Index {
+            account: self.account.clone(),
+            devices: self.devices.clone(),
+            files: self.files.clone(),
+            seq: self.seq,
+            last_gc: self.last_gc.clone(),
+            last_scrub: self.last_scrub.clone(),
+            ..Index::default()
+        }
     }
 
     /// Record a chunk that exists on the volume.
@@ -380,7 +409,8 @@ impl Index {
     /// A file with its versions newest first, capped at `keep` plus every head.
     pub(crate) fn file(&self, file_id: &FileId, keep: usize) -> Option<FileRecord> {
         let entry = self.files.get(file_id)?;
-        let mut versions: Vec<VersionRecord> = entry.versions.iter().rev().cloned().collect();
+        let mut versions: Vec<VersionRecord> =
+            entry.versions.iter().rev().map(|v| (**v).clone()).collect();
         if versions.len() > keep {
             let heads = &entry.heads;
             versions = versions
@@ -410,10 +440,12 @@ impl Index {
             .versions
             .iter()
             .find(|v| v.version_id == *version_id)
-            .cloned()
+            .map(|v| (**v).clone())
     }
 
-    /// One page of the file listing, ordered by file id.
+    /// One page of the file listing, ordered by file id. The walk starts AT
+    /// the cursor rather than at the first file, so paging through a vault
+    /// costs each page its own length, not every page before it.
     pub(crate) fn files_page(
         &self,
         after: Option<&FileId>,
@@ -421,10 +453,8 @@ impl Index {
     ) -> (Vec<FileSummary>, Option<FileId>) {
         let mut page: Vec<FileSummary> = Vec::new();
         let mut next = None;
-        for (file_id, entry) in &self.files {
-            if after.is_some_and(|a| file_id <= a) {
-                continue;
-            }
+        let start = after.map_or(Bound::Unbounded, |a| Bound::Excluded(*a));
+        for (file_id, entry) in self.files.range((start, Bound::Unbounded)) {
             if page.len() == limit {
                 // The cursor is the last id INCLUDED, because `after` is
                 // exclusive: handing back the first excluded id would skip it.
@@ -452,8 +482,9 @@ impl Index {
         }
         let start = self.feed.partition_point(|(seq, _, _)| *seq <= since);
         let window = &self.feed[start..];
-        let truncated = window.len() > limit;
+        let mut truncated = window.len() > limit;
         let mut changes = Vec::new();
+        let mut bytes = 0usize;
         for (_, file_id, version_id) in window.iter().take(limit) {
             let Some(entry) = self.files.get(file_id) else {
                 continue;
@@ -461,8 +492,17 @@ impl Index {
             let Some(version) = entry.versions.iter().find(|v| v.version_id == *version_id) else {
                 continue;
             };
+            // The page stops at its byte budget, never before its first
+            // entry: a client asks for the rest from the cursor this page
+            // hands back, exactly as it does after a full count.
+            let cost = wire_bytes(version, &entry.heads);
+            if !changes.is_empty() && bytes + cost > CHANGES_PAGE_BYTES {
+                truncated = true;
+                break;
+            }
+            bytes += cost;
             changes.push(Change {
-                version: version.clone(),
+                version: (**version).clone(),
                 heads: entry.heads.clone(),
                 conflicted: entry.conflicted,
             });
@@ -481,6 +521,44 @@ impl Index {
             changes,
         })
     }
+
+    /// When each version after `since` landed, at most `limit` of them, in
+    /// feed order: what the dashboard's activity graph counts, read without
+    /// cloning a single version.
+    pub(crate) fn version_times(&self, since: Seq, limit: usize) -> Vec<UnixMs> {
+        let start = self.feed.partition_point(|(seq, _, _)| *seq <= since);
+        self.feed[start..]
+            .iter()
+            .take(limit)
+            .filter_map(|(_, file_id, version_id)| {
+                let entry = self.files.get(file_id)?;
+                let version = entry
+                    .versions
+                    .iter()
+                    .find(|v| v.version_id == *version_id)?;
+                Some(version.ts)
+            })
+            .collect()
+    }
+}
+
+/// A change page stops before its entries pass this many bytes of JSON, and
+/// always carries at least one. One entry is under 6 MiB at the protocol's
+/// ceilings, so no page passes 8 MiB where a thousand maximal entries used to
+/// make one about 6 GiB, on the server and on the phone that parses it
+/// (`docs/protocol.md`, "Limits and headers").
+pub(crate) const CHANGES_PAGE_BYTES: usize = 8 * 1024 * 1024;
+
+/// What one change entry costs as JSON, rounded up: the base64 manifest, one
+/// quoted id per sid, parent and head, and the fixed fields. An estimate that
+/// never falls short is all the page cut needs, and it clones nothing.
+fn wire_bytes(version: &VersionRecord, heads: &[VersionId]) -> usize {
+    /// Every fixed field of one entry, keys and punctuation included.
+    const FIXED: usize = 512;
+    /// One id in a list: 64 hex characters, two quotes and a comma.
+    const ID: usize = 67;
+    let ids = version.sids.len() + version.parents.len() + heads.len();
+    FIXED + version.manifest_ct.len().div_ceil(3) * 4 + ids * ID
 }
 
 #[cfg(test)]
@@ -653,6 +731,106 @@ mod tests {
         );
     }
 
+    /// An index whose versions each carry a manifest of `manifest` bytes.
+    fn wide_feed(count: u8, manifest: usize) -> Index {
+        let mut index = Index::default();
+        for n in 1..=count {
+            let mut v = version_record(file(n), version(n), &[], Seq(n.into()));
+            v.manifest_ct = vec![0x6d; manifest];
+            index.apply(&record(u64::from(n), Frame::Version(v)));
+        }
+        index
+    }
+
+    /// The hostile page: a thousand maximal entries used to be one answer of
+    /// about 6 GiB. A page now stops at its byte budget and hands back a
+    /// cursor, and the next page resumes after it with nothing skipped or
+    /// repeated.
+    #[test]
+    fn a_change_page_stops_at_its_byte_budget_and_resumes_after_it() {
+        // 1 MiB manifests are about 1.4 MB each on the wire, so five fit in
+        // 8 MiB and a sixth does not.
+        let index = wide_feed(10, 1024 * 1024);
+        let first = index.changes(Seq(0), 1000).expect("first page");
+        assert_eq!(first.changes.len(), 5, "cut at the budget, not the count");
+        assert_eq!(first.seq, Seq(5), "the cursor is the last entry included");
+        assert_eq!(first.head_seq, Seq(10));
+        let cost: usize = first
+            .changes
+            .iter()
+            .map(|c| wire_bytes(&c.version, &c.heads))
+            .sum();
+        assert!(cost <= CHANGES_PAGE_BYTES, "{cost} bytes in one page");
+
+        let second = index.changes(first.seq, 1000).expect("second page");
+        let seqs: Vec<Seq> = second.changes.iter().map(|c| c.version.seq).collect();
+        assert_eq!(seqs, (6..=10).map(Seq).collect::<Vec<_>>());
+        assert_eq!(second.seq, Seq(10), "the last page reaches the head");
+    }
+
+    /// An entry wider than the whole budget still travels, alone: a page that
+    /// could carry nothing would hand back its own cursor, and a client
+    /// following it would ask for the same page forever.
+    #[test]
+    fn an_entry_wider_than_the_budget_still_moves_the_cursor() {
+        let index = wide_feed(2, CHANGES_PAGE_BYTES);
+        let first = index.changes(Seq(0), 1000).expect("first page");
+        assert_eq!(first.changes.len(), 1);
+        assert_eq!(first.seq, Seq(1));
+        let second = index.changes(first.seq, 1000).expect("second page");
+        assert_eq!(second.changes.len(), 1);
+        assert_eq!(second.seq, Seq(2));
+    }
+
+    /// The cut runs on an estimate, so the estimate must never fall short of
+    /// what a client is actually sent: for the narrowest entry, and for the
+    /// widest the protocol admits (every list and the manifest at their
+    /// ceilings). Measured on the rendering itself.
+    #[test]
+    fn the_page_estimate_never_falls_short_of_the_rendering() {
+        use crate::api::files::{MANIFEST_CT_MAX, VERSION_MAX_SIDS};
+        use crate::api::render;
+
+        let mut narrow = version_record(file(1), version(1), &[], Seq(1));
+        narrow.seq = Seq(u64::MAX);
+        let heads: Vec<VersionId> = (0..FILE_MAX_HEADS)
+            .map(|n| VersionId::new([n as u8; 32]))
+            .collect();
+        let mut wide = narrow.clone();
+        wide.parents = heads.clone();
+        wide.sids = (0..VERSION_MAX_SIDS)
+            .map(|n| Sid::new([n as u8; 32]))
+            .collect();
+        wide.manifest_ct = vec![0xa5; MANIFEST_CT_MAX / 4 * 3];
+        wide.bytes = u64::MAX;
+        wide.ts = UnixMs(u64::MAX);
+        for (version, heads) in [(narrow, Vec::new()), (wide, heads)] {
+            let rendered = render::change(&Change {
+                version: version.clone(),
+                heads: heads.clone(),
+                conflicted: true,
+            })
+            .to_json()
+            .len();
+            // One entry's share of a page: itself and the comma after it.
+            assert!(
+                wire_bytes(&version, &heads) > rendered,
+                "estimated {} for {rendered} rendered",
+                wire_bytes(&version, &heads)
+            );
+        }
+    }
+
+    #[test]
+    fn version_times_reads_the_feed_tail_without_its_records() {
+        let index = wide_feed(4, 16);
+        assert_eq!(
+            index.version_times(Seq(1), 2),
+            vec![UnixMs(1_757_000_000_002), UnixMs(1_757_000_000_003)]
+        );
+        assert!(index.version_times(Seq(4), 10).is_empty());
+    }
+
     #[test]
     fn files_page_walks_in_id_order() {
         let mut index = Index::default();
@@ -729,6 +907,66 @@ mod tests {
             "activation must never bring a revoked device back"
         );
         assert_eq!(index.devices[&id].wrapped, [0u8; 32]);
+    }
+
+    #[test]
+    fn one_collection_frame_prunes_versions_across_files_and_the_feed_follows() {
+        let mut index = Index::default();
+        let mut seq = 0;
+        for f in 1..=3u8 {
+            for n in 1..=3u8 {
+                seq += 1;
+                let id = VersionId::new([f * 10 + n; 32]);
+                let parents = if n == 1 {
+                    vec![]
+                } else {
+                    vec![VersionId::new([f * 10 + n - 1; 32])]
+                };
+                index.apply(&record(
+                    seq,
+                    Frame::Version(version_record(file(f), id, &parents, Seq(seq))),
+                ));
+            }
+        }
+        let v = |f: u8, n: u8| (file(f), VersionId::new([f * 10 + n; 32]));
+        // File 4 is conflicted: two roots, both heads.
+        for n in 1..=2u8 {
+            seq += 1;
+            index.apply(&record(
+                seq,
+                Frame::Version(version_record(file(4), v(4, n).1, &[], Seq(seq))),
+            ));
+        }
+        assert!(index.file(&file(4), 10).expect("file 4").conflicted);
+        // File 1 loses its two oldest, file 2 loses everything, file 3 none,
+        // and file 4 one of its heads.
+        index.apply(&record(
+            seq + 1,
+            Frame::Gc {
+                sids: Vec::new(),
+                pruned: vec![v(1, 1), v(2, 1), v(1, 2), v(4, 1), v(2, 2), v(2, 3)],
+                summary: GcSummary {
+                    started: UnixMs(0),
+                    duration_ms: 0,
+                    chunks_collected: 0,
+                    bytes_collected: 0,
+                    chunks_retained: 0,
+                },
+            },
+        ));
+        let one = index.file(&file(1), 10).expect("file 1 stays");
+        assert_eq!(one.versions.len(), 1);
+        assert_eq!(one.heads, vec![v(1, 3).1]);
+        assert!(index.file(&file(2), 10).is_none(), "an emptied file goes");
+        assert_eq!(
+            index.file(&file(3), 10).expect("untouched").versions.len(),
+            3
+        );
+        let four = index.file(&file(4), 10).expect("file 4 stays");
+        assert_eq!(four.heads, vec![v(4, 2).1], "a pruned head is no head");
+        assert!(!four.conflicted, "and one head is no conflict");
+        let fed: Vec<(FileId, VersionId)> = index.feed.iter().map(|(_, f, v)| (*f, *v)).collect();
+        assert_eq!(fed, vec![v(1, 3), v(3, 1), v(3, 2), v(3, 3), v(4, 2)]);
     }
 
     #[test]

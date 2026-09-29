@@ -44,7 +44,8 @@ test("an active editor stays pending, other notes arrive, and its latest head re
   const r = await setup(t);
   await r.server.publish({ fileId: "ab".repeat(16), path: "Notes/Other.md", bytes: enc("OTHER"), mtime: 4000,
     domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
-  await r.timers.run(STEP_MS, () => r.host.text("Notes/Other.md") === "OTHER");
+  // The page is counted down as it lands (#158): wait for its last record, not its first write.
+  await r.timers.run(STEP_MS, () => r.host.text("Notes/Other.md") === "OTHER" && r.statuses.at(-1).pending === 1);
   assert.equal(r.host.text(NOTE), "BASE");
   assert.equal(r.statuses.at(-1).kind, "syncing", "a saved but active editor is not idle");
   assert.equal(r.statuses.at(-1).pending, 1);
@@ -123,10 +124,11 @@ test("a push reconciliation retains an active-editor wait without an error notic
   await r.engine.pushOne(NOTE);
   assert.ok(r.attempts() > before, "the push enters native merge publication and hits the editor refusal");
   assert.equal(r.state.data.parked[r.base.fileId].reason, "active_editor");
-  assert.equal(r.statuses.at(-1).kind, "syncing");
+  // The status names the note it waits on (issue #252: "syncing 1" alone said nothing).
+  assert.deepEqual(r.statuses.at(-1), { kind: "syncing", pending: 1, held: NOTE });
   assert.ok(!r.statuses.some((status) => status.kind === "error"));
   assert.ok(!r.host.notices.some((notice) => notice.includes("Cannot write")));
-  assert.equal(unwritableText(NOTE, "active_editor"), `Waiting for typing to settle in ${NOTE}`);
+  assert.equal(unwritableText(NOTE, "active_editor"), `Waiting for unsaved changes in ${NOTE} to be saved; its newer version follows`);
 });
 
 test("an unsaved editor keeps waiting even after recent-input tracking ends", async (t) => {

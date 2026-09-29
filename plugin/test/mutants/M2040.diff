@@ -1,0 +1,12 @@
+# M2040: the start's feed read and reconcile wait for the heartbeat
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -895,7 +895,7 @@
+     // names itself (`learnNames`). Nor for the temp-file sweep, which the
+     // first periodic scan runs (`scanLocal`).
+     this.swept = false;
+-    void this.track(this.heartbeat());
++    await this.heartbeat();
+     // FIRST, AND BEFORE THE PASS THAT QUEUES THE FILE WORK (review round 4,
+     // finding 3).
+     this.restoreFolderBarriers();

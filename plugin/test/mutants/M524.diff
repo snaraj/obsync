@@ -1,12 +1,12 @@
 # M524: claim reports no notes
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -294,7 +294,7 @@
-       const { state, transport, assertCurrent } = this.plugin.captureSession();
+@@ -634,7 +634,7 @@
        const parsed = decodePairingCode(this.code);
+       const name = await this.plugin.nameThisDevice();
        const vault = await sealPairingVault(parsed.pairingSecret, parsed.pairingId, {
 -        name: this.app.vault.getName(), notes: this.app.vault.getMarkdownFiles().length,
 +        name: this.app.vault.getName(), notes: 0,
        });
        assertCurrent();
-       if (!this.waiting) return;
+       if (this.closed) return;

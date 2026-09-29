@@ -1,0 +1,170 @@
+# obsync behind the reverse proxy you already run: Caddy, nginx, Traefik or
+# HAProxy, one at a time, each selected by its profile.
+#
+#   OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
+#   OBSYNC_HOST=sync.example.org \
+#   OBSYNC_TLS_DIR=/path/holding/tls.crt/and/tls.key \
+#   OBSYNC_BIND_ADDRESS=127.0.0.1 \
+#   OBSYNC_BLOBS_CAPACITY=200GiB OBSYNC_JOURNAL_CAPACITY=4GiB \
+#   docker compose -f deploy/proxies/compose.yml --profile nginx up -d
+#
+# Each proxy's own file under deploy/proxies/<name>/ is the part you carry into
+# a proxy you already operate. All four do the same four things, and each is
+# what a stock configuration gets wrong for obsync:
+#
+#   1. TLS terminates in the proxy. The server speaks plain HTTP and never TLS
+#      (AGENTS.md requirement 7); iOS and Android refuse anything else.
+#   2. No request-body ceiling, and no whole-request deadline: files of any
+#      size take one path (requirement 8), and a stock 1 MiB or 60 s limit is a
+#      refusal the server never made.
+#   3. A read timeout above the change feed's 55 s long poll.
+#   4. The proxy REPLACES the client-address header it manages with the address
+#      that connected to it, and removes the other standard one, so a client
+#      cannot name its own address. The server believes that header only from
+#      `OBSYNC_TRUSTED_PROXY_CIDRS`, which here is the proxy's one address.
+#
+# THE TRUST IS ONE ADDRESS, NOT THE NETWORK. The proxy runs at a fixed address
+# and the server trusts exactly that /32, so anything else on this network --
+# or a port someone publishes later -- that sends a forwarded header is
+# ignored. The subnet is stated once below; change it and the two addresses
+# together if it collides with a network on this host.
+#
+# The certificate is yours: a public one, or a leaf from a private authority
+# your devices trust (docs/server.md). Both files are read by the proxy's
+# unprivileged user, so the key must be readable by it.
+name: obsync-proxy
+
+services:
+  obsync:
+    image: ${OBSYNC_IMAGE:?set it to the obsync image by digest}
+    restart: unless-stopped
+    user: "65532:65532"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      OBSYNC_EDGE: none
+      OBSYNC_TRUSTED_PROXY_CIDRS: 172.31.254.14/32
+      OBSYNC_PUBLIC_URL: ${OBSYNC_PUBLIC_URL:-https://${OBSYNC_HOST:?set it to the hostname your devices use}:${OBSYNC_HTTPS_PORT:-443}}
+      OBSYNC_BLOBS_CAPACITY: ${OBSYNC_BLOBS_CAPACITY:?set it to the space the blob volume may use on this disk, such as 200GiB}
+      OBSYNC_JOURNAL_CAPACITY: ${OBSYNC_JOURNAL_CAPACITY:?set it to the space the journal volume may use, such as 4GiB}
+    volumes:
+      - obsync-blobs:/data/blobs
+      - obsync-journal:/data/journal
+    # No `ports:`: the proxy is the only way in.
+    networks:
+      - proxies
+
+  caddy:
+    profiles: [caddy]
+    # caddy 2.10.2, by multi-architecture index digest.
+    image: docker.io/library/caddy@sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb
+    read_only: true
+    cap_drop:
+      - ALL
+    # The image's binary carries the privileged-port file capability, and a
+    # binary whose capability the container cannot grant refuses to start.
+    # The same posture as deploy/compose: this one capability and no other.
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      OBSYNC_HOST: ${OBSYNC_HOST:?set it to the hostname your devices use}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${OBSYNC_TLS_DIR:?set it to the directory holding tls.crt and tls.key}:/tls:ro
+    tmpfs:
+      - /data
+      - /config
+    ports:
+      - "${OBSYNC_BIND_ADDRESS:?set it to the host address that publishes HTTPS}:${OBSYNC_HTTPS_PORT:-443}:8443"
+    depends_on:
+      - obsync
+    networks:
+      proxies:
+        ipv4_address: 172.31.254.14
+
+  nginx:
+    profiles: [nginx]
+    # nginx 1.29.8 (1.29-alpine), by multi-architecture index digest. The
+    # entrypoint is nginx itself: the image's start scripts edit files this
+    # read-only root does not have.
+    image: docker.io/library/nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    user: "101:101"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${OBSYNC_TLS_DIR:?set it to the directory holding tls.crt and tls.key}:/tls:ro
+    tmpfs:
+      - /tmp
+    ports:
+      - "${OBSYNC_BIND_ADDRESS:?set it to the host address that publishes HTTPS}:${OBSYNC_HTTPS_PORT:-443}:8443"
+    depends_on:
+      - obsync
+    networks:
+      proxies:
+        ipv4_address: 172.31.254.14
+
+  traefik:
+    profiles: [traefik]
+    # traefik 3.5.6 (v3.5), by multi-architecture index digest. Configured by
+    # files only: no Docker socket, which would hand it every container here.
+    image: docker.io/library/traefik:v3.5@sha256:16acb89c6db341182970d6fdafece31303b0a380a8ed7aa51682e225229bf1d2
+    command: ["--configfile=/etc/traefik/traefik.yml"]
+    user: "65532:65532"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./traefik:/etc/traefik:ro
+      - ${OBSYNC_TLS_DIR:?set it to the directory holding tls.crt and tls.key}:/tls:ro
+    ports:
+      - "${OBSYNC_BIND_ADDRESS:?set it to the host address that publishes HTTPS}:${OBSYNC_HTTPS_PORT:-443}:8443"
+    depends_on:
+      - obsync
+    networks:
+      proxies:
+        ipv4_address: 172.31.254.14
+
+  haproxy:
+    profiles: [haproxy]
+    # haproxy 3.2.24 (3.2-alpine, the long-term branch), by multi-architecture
+    # index digest. The image already runs as its own unprivileged user.
+    image: docker.io/library/haproxy:3.2-alpine@sha256:1aca32ee932b96d2a75f1882909325839dd23c138ba9c6fd26e4d88179f30f13
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ${OBSYNC_TLS_DIR:?set it to the directory holding tls.crt and tls.key}:/tls:ro
+    ports:
+      - "${OBSYNC_BIND_ADDRESS:?set it to the host address that publishes HTTPS}:${OBSYNC_HTTPS_PORT:-443}:8443"
+    depends_on:
+      - obsync
+    networks:
+      proxies:
+        ipv4_address: 172.31.254.14
+
+networks:
+  proxies:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.254.0/28
+          gateway: 172.31.254.1
+
+volumes:
+  obsync-blobs:
+  obsync-journal:

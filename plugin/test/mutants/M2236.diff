@@ -1,0 +1,11 @@
+# M2236: a forgotten enrollment's reset does not drop the signing handle
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3727,7 +3727,6 @@
+     this.engine = null;
+     const { serverUrl, edgeHeaders } = state.data;
+     state.forgetPairing();
+-    this.transport.forgetDevice();
+     state.data.serverUrl = serverUrl;
+     state.data.edgeHeaders = edgeHeaders;
+     await state.save();

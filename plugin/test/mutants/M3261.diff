@@ -1,0 +1,12 @@
+# M3261: a delete reported while the marked empty file is still there ends its mark, and the empty file goes out as an edit
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -667,7 +667,7 @@
+   // ONE LOOK DECIDES (review of 5c9dc82). Asked twice, a file deleted
+   // between the looks skipped the mark's rule below at the first and took
+   // the ordinary tombstone at the second.
+-  if ((await context.host.stat(path)) !== null) {
++  if (mark === undefined && (await context.host.stat(path)) !== null) {
+     if (record) context.host.log("push path_class=tombstone decision=refused reason=file_present");
+     return null;
+   }

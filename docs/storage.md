@@ -1,5 +1,7 @@
 # Storage contract
 
+*For people running an obsync server.*
+
 Dated 2026-09-07. The design decisions behind it: one StorageClass per
 storage implementation, a class that other workloads may share, and -- for a
 deployment that accepts the risk -- a single copy without backups. The server
@@ -33,7 +35,7 @@ code change.
 <blobs>/v1/tmp/<random>                      in-flight upload, renamed on success
 <journal>/v1                                 journal volume root, mode 0700
 <journal>/v1/journal/<000001>.log            append-only segments, 64 MiB each
-<journal>/v1/index/<seq>.snap                periodic index snapshot
+<journal>/v1/index/<seq>.snap                index snapshot, as the journal grows
 <journal>/v1/nonces                          accepted request nonces, 0600
 <journal>/v1/server.key                      only when OBSYNC_SERVER_KEY is unset, 0600
 <journal>/v1/setup-token                     first-boot and recovery login, 0600
@@ -182,7 +184,12 @@ What it does hold is the replay window (`docs/protocol.md`,
 "Authentication"): every accepted nonce is appended and fsynced before its
 request is answered, a start loads back what the 600 s still covers, the
 file is rewritten when it passes twice the cache's ceiling, and a torn final
-line costs only itself.
+line costs only itself. Requests that arrive together share one fsync: their
+nonces are written as one batch while no lock is held, and each request is
+answered only once the batch holding its nonce is durable. A nonce still in
+flight is already a replay, and counts against its device's share. A request
+refused for the cache's ceiling or for its device's share is refused before
+its nonce joins a batch: it holds nothing and costs no fsync.
 
 ### Nonce log recovery
 
@@ -223,13 +230,20 @@ not yet committed can only leave the name on the file the replacement was
 built from, and every entry in the replacement was appended to that file
 before it entered the window, so either file answers the window.
 
-Any failure inside the sequence refuses the request that triggered it
-with `503 nonce_log_unavailable` and one `event=nonce_log
-decision=refused` line. Nothing already durable changes: `v1/nonces`
-holds what it held, and the nonce the refused request carried was never
-recorded, so it is unspent and the device may send it again. The
-compaction threshold is still outstanding, so the next accepted request
-attempts the rewrite again.
+The rewrite holds what was durable before the batch that triggered it, and
+that batch is appended after it. Any failure inside the sequence, or in the
+append, refuses every request in the batch with `503
+nonce_log_unavailable` and one `event=nonce_log decision=refused batch=<n>`
+line. Nothing already durable changes: `v1/nonces` holds what it held, a
+refused append is cut back off the file before anything else is written,
+and the nonces the refused requests carried were never recorded, so each is
+unspent and the device may send it again. A cut that itself fails leaves the
+log refusing every request until a restart truncates the torn tail. The
+compaction threshold is still outstanding, so the next batch attempts the
+rewrite again. A flush that panics, which only a bug does, settles the same
+way: its whole batch is answered `503 nonce_log_unavailable`, cut back and
+unspent, with one `event=nonce_log decision=refused reason=flush_panicked
+batch=<n>` line, and no request is left waiting on it.
 
 The boundary is the one "One writer" states below. These steps defend
 against what a crash and a restored volume leave behind. A process
@@ -316,7 +330,14 @@ requires the refusal.
    rule 2 describes. Chunk uploads are unaffected: the blob volume is its
    own record.
 5. Snapshot: written to `tmp`, fsynced, renamed; replay starts from the
-   newest valid snapshot and applies later frames.
+   newest valid snapshot and applies later frames. One is written once the
+   journal has grown 16 MiB since the last, and by at least that snapshot's
+   own size, so an idle journal is not snapshotted again and every start,
+   after a stop or a crash alike, replays at most about one snapshot's worth
+   of frames; a stop writes one only when one is due. The index is copied
+   under its lock and the copy is encoded and written with no lock held, so
+   writes and reads go on while it lands; its size counts toward the journal
+   volume from the moment it is admitted.
 6. No write is acknowledged before it is durable. This is not configurable
    (AGENTS.md requirement 4).
 
@@ -324,20 +345,65 @@ requires the refusal.
 
 `account`, `device` (create, update, activate, revoke, delete, wrap),
 `version` (which carries its file's `domain_id`, so replay reaches the same
-domain the post named), `gc` (a list of sids collected), `scrub` (a
-summary), `seen` (device sign-in and edit events, retention-bounded). There
+domain the post named), `gc` (a list of sids collected), `scrub` (a step
+that found a mismatch, or completed a pass), `seen` (device sign-in and edit
+events, retention-bounded; an accepted version post appends its `version`
+frame and its `seen` edit frame together, with one fsync). There
 is no `domain` frame: a domain exists because a file record names it
 (`docs/architecture.md` 5.1 item 4). Pairings live in memory only, so a
 start destroys every pending device no pairing is holding any more, through
 the `device` delete frame expiry uses (`docs/architecture.md` 4.2). Frames
 carry `account_id`.
 
+## Memory
+
+The index lives in memory: the account, the devices, and every retained
+version of every file with its encrypted manifest. Chunk bodies never do.
+So memory grows with retained history, not with the size of the vault:
+about 1.3 KiB for each retained version of a small note, plus about 1 MiB.
+A version of a larger file costs more, because its manifest lists more
+chunks. Retention bounds history (`OBSYNC_RETENTION_VERSIONS` per file,
+kept at least `OBSYNC_RETENTION_DAYS`), so a vault edited for years holds
+what retention keeps, not everything it ever was.
+
+A start rebuilds the index from the newest snapshot and the journal after
+it. The snapshot is read one file at a time, with its CRC computed as it
+streams, so no copy of the whole snapshot is ever in memory, and a start
+peaks at about what the server holds at rest. Measured on linux/arm64
+(2026-09-26), small notes posted through the API, resident memory in MiB:
+
+| Retained versions | At rest | Start, peak | Start, peak before 1.1.4 |
+| --- | --- | --- | --- |
+| 1 000 | 3 | 4 | 4 |
+| 10 000 | 15 | 14 | 14 |
+| 50 000 | 65 | 62 | 146 |
+| 100 000 | 131 | 115 | 285 |
+| 200 000 | 238 | 221 | 1043 |
+
+The same run on linux/amd64, to 50 000 versions, grew by the same 1.3 KiB
+per version, and its start peaked at half what it did before 1.1.4. Before
+1.1.4, a start parsed the whole snapshot at once. It needed about four times
+the index, which put 200 000 versions past a 1 GiB limit at every start.
+
 ## Integrity
 
 - Every upload is verified against its `sid` while streaming.
-- The scrub thread re-hashes blobs at `OBSYNC_SCRUB_RATE`, oldest-verified
-  first, repairs a mismatch from a healthy mirror when available, and
-  otherwise preserves it in `quarantine/` using the sequence below.
+- The scrub thread re-hashes blobs one pass at a time in sid order, repairs
+  a mismatch from a healthy mirror when available, and otherwise preserves
+  it in `quarantine/` using the sequence below. It reads no faster than
+  `OBSYNC_SCRUB_RATE` and works no more than one minute in each hour: a step
+  that took `t` rests at least 59 `t`, because on a store of small notes a
+  chunk costs a file open, not its bytes, and a byte rate alone let the
+  scrub work most of every minute. A pass begins no sooner than a day after
+  the last one began, and at once when the dashboard asks for one: a bad
+  chunk is only worth finding while a mirror or a device can still repair
+  it, and the shortest window this contract gives either is a day
+  (`OBSYNC_RETENTION_DAYS` is at least 1, a newborn chunk is protected for
+  24 h). A store the scrub cannot walk in a day at that pace is scrubbed
+  continuously at it. The day and the minute are constants, not settings. A
+  step journals only a mismatch and what became of it, or a completed pass;
+  each walk logs one START and one SUMMARY, whose `worked_ms` beside its
+  `duration_ms` shows the pace.
 - Every read verifies size; the client verifies the plaintext hash from the
   manifest after decryption, so a corrupted chunk can never be written into
   a vault.
@@ -388,6 +454,10 @@ hash-prefix collision can serialize unrelated uploads; it does not change
 their identities or admission rules. GC tries the whole table once in
 order, releases every acquired lock and logs `gc_skipped
 decision=chunks_busy` if any is busy, then retries on its next scheduled run.
+It holds the table, the journal and the index only to decide and journal a
+collection; it then unlinks each chunk under that chunk's lock alone, and
+leaves one that was uploaded again since the frame (counted as `reuploaded`
+on its SUMMARY).
 
 ## Garbage collection
 
@@ -443,10 +513,10 @@ quietly balanced the books would be worse than one that did not.
 | `journal/<n>.log`, the open segment | every journalled write | a torn tail, rolled back in the same call; kept for the next replay if the rollback also fails | the open segment's durable length, advanced only after a successful fsync |
 | `journal/<n>.log`, a new segment (roll) | first append after a start or replay, and at 64 MiB | an empty segment | the survey, re-run by the roll itself, which then excludes the segment it opened |
 | the last segment, truncated (replay) | every start | none: it removes bytes | the survey, re-run before replay returns |
-| `index/<seq>.tmp` → `<seq>.snap` | each snapshot | a `.tmp` a failed write or rename left, which nothing later removes | the survey, re-run by the prune a successful call ends in AND on every failing exit, before the original error is returned |
+| `index/<seq>.tmp` → `<seq>.snap` | each snapshot | a `.tmp` a failed write or rename left, which nothing later removes | the snapshot's own size from its admission, while it is written with the journal unlocked; then the survey, re-run by the prune a successful call ends in AND on every failing exit, before the original error is returned |
 | `index/<seq>.snap` and covered segments, removed (prune) | end of each snapshot | whatever was removed before one removal failed | the survey, re-run at the end and on every failing exit, before the original error is returned |
 | `quarantine/<sid>` and `.tmp-<unique>` | a scrub mismatch no mirror can repair | partial temporary bytes, a published copy beside the retained primary, or a durable copy after primary removal | a complete survey before admission and on every operation exit, under the same journal guard as the copy and removal; a refused survey marks usage unverified |
-| `nonces` | every authenticated request | a partial line from a short write | the log publishes the absolute size of both its names after every write, the failing ones included |
+| `nonces` | every batch of authenticated requests | a partial batch from a short write, cut back at once; kept only if that cut fails | the log publishes the absolute size of both its names after every write, the failing ones included |
 | `nonces.tmp` → `nonces` (compaction) | when the log passes twice the nonce ceiling | a `nonces.tmp` a failed compaction left | the same publish, which counts the temporary BY NAME so that leftover is seen |
 | `server.key` | first boot | a partial key refuses the start | the survey at `Journal::open`, which runs after it |
 | `setup-token` | first boot | a partial token refuses the start | a survey `cli::serve` runs after it, being the last write the volume takes before the server serves |
@@ -510,7 +580,7 @@ reporting it.
   server implements no AES and never could write plaintext
   (`docs/architecture.md` 3 and 5.1). Its payload assembles a selected newest
   head; retained-version metadata in the manifest is not a backup of every
-  historical payload. Its accepted `--key` argument does not decrypt content.
+  historical payload. The key it accepts (`--key-file`) does not decrypt content.
   Both export and check are offline recovery tools, not a full restore proof.
 
 ### Offline check and recovery verdicts

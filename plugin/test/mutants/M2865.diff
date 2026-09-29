@@ -1,0 +1,11 @@
+# M2865: a withdrawn folder Save leaves its choice pending for the next start
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2435,7 +2435,6 @@
+       if (withdrawn) {
+         // The stop goes on by itself; the start below waits for it.
+         void quiet.catch(() => undefined);
+-        delete state.data.pendingScope;
+         await state.save();
+         assertActive();
+         this.log(`scope decision=withdrawn reason=cancelled duration_ms=${Date.now() - started}`);

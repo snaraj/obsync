@@ -1,0 +1,11 @@
+# M2303: a failed post never releases the rename's push waiting on it (#213)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -327,7 +327,6 @@
+         return await publishFile(context, at, force, typeof over === "function" ? await over() : over, undefined, post);
+       } finally {
+         if (posts.get(post.path) === post) posts.delete(post.path);
+-        settle();
+       }
+     }));
+ }

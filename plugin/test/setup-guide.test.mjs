@@ -16,7 +16,7 @@ import test from "node:test";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { memorySecrets, sandbox } from "./fake.mjs";
+import { memorySecrets, sandbox, statusItem } from "./fake.mjs";
 
 const GUIDE = "https://snaraj.github.io/obsync/setup/";
 const ROOT_MANIFEST = fileURLToPath(new URL("../../manifest.json", import.meta.url));
@@ -61,7 +61,7 @@ test("the command palette offers the guide before the device is paired", async (
   plugin.loadData = async () => null;
   plugin.saveData = async () => {};
   plugin.addCommand = (command) => commands.push(command);
-  plugin.addStatusBarItem = () => new Element();
+  plugin.addStatusBarItem = () => statusItem();
   plugin.addSettingTab = () => {};
   plugin.registerEvent = () => {};
   plugin.registerObsidianProtocolHandler = () => {};
@@ -72,7 +72,7 @@ test("the command palette offers the guide before the device is paired", async (
   t.after(() => plugin.onunload());
 
   const command = commands.find((c) => c.id === "open-setup-guide");
-  assert.equal(command?.name, "Open the setup guide");
+  assert.equal(command?.name, "Open the setup guide (obsync)");
   command.callback();
   assert.deepEqual(opened, [`${GUIDE} _blank`]);
 });

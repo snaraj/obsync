@@ -1,11 +1,11 @@
 # M70: the confirmation queues nothing, so a real deletion never publishes
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1130,7 +1130,7 @@
-     const held = this.heldDeletions;
-     this.heldDeletions = [];
-     this.bulkNoticeShown = false;
--    this.vanish(held);
+@@ -1265,7 +1265,7 @@
+     // The folders deleted with them go after them, as they would have.
+     for (const folder of this.heldFolders) this.vanishedFolders.add(folder);
+     this.heldFolders = [];
+-    this.vanish(held, true);
 +    void held;
      this.options.host.log(`reconcile decision=confirmed reason=bulk_deletion queued=${held.length}`);
    }

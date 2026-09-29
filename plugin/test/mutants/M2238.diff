@@ -1,0 +1,12 @@
+# M2238: a chunk PUT hashes a body encryptChunk made again
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1165,7 +1165,7 @@
+       // THE SID IS THE BODY'S HASH where `encryptChunk` made this very body
+       // (`sealedSid`, issue #197), so it is the signature's body term and the
+       // body is not hashed again. Any other body is hashed like every body.
+-      const digest = sealedSid(ciphertext) === sid ? sid : undefined;
++      const digest = undefined;
+       const sending = await this.prepare(target, { auth: "device", binary: ciphertext, digest });
+       const started = this.now();
+       const budget = this.budget(patience, started);

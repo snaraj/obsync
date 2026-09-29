@@ -1,0 +1,12 @@
+# M2927: fake fidelity: the Android fake's rename accepts the source's own other spelling
+--- a/plugin/test/phone.mjs
++++ b/plugin/test/phone.mjs
+@@ -218,7 +218,7 @@
+     if (this.fault?.(from, to, this.renames.length)) throw new Error("rename interrupted");
+     const at = this.real(from);
+     if (at === null) throw new Error(`ENOENT: ${from}`);
+-    if (this.real(to) !== null) throw new Error("Destination file already exists!");
++    if (this.real(to) !== null && this.real(to) !== at) throw new Error("Destination file already exists!");
+     const landed = this.landing(to);
+     this.relocate(at, landed);
+     this.report(at);

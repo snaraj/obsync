@@ -1,0 +1,12 @@
+# M3038: Apple's words for a certificate out of date are not matched (certificate wording, #229)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1375,7 +1375,7 @@
+  * on desktop, and the documented ones of Apple and Android on a phone.
+  */
+ const WRONG_NAME = /ERR_CERT_COMMON_NAME_INVALID|certificate name does not match|Hostname \S+ not verified/i;
+-const OUT_OF_DATE = /ERR_CERT_DATE_INVALID|certificate for this server (?:has expired|is not yet valid)|timestamp check failed/i;
++const OUT_OF_DATE = /ERR_CERT_DATE_INVALID|timestamp check failed/i;
+ 
+ export const CERT_WRONG_NAME =
+   "This device refused your server's certificate because it was made for another name than the one in the Server URL. " +

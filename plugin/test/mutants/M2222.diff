@@ -1,0 +1,28 @@
+# M2222: the mobile writer keeps every part and joins them at commit (two buffers)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1023,17 +1023,21 @@
+     const desktop = this.desktop;
+     if (desktop !== null) return this.desktopWriter(desktop, path);
+     const folder = path.slice(0, Math.max(0, path.lastIndexOf("/")));
+-    let bytes = new Uint8Array(size);
++    let bytes = new Uint8Array(0);
++    const parts: Bytes[] = [];
+     let at = 0;
+     const adapter = this.plugin.app.vault.adapter;
+     return {
+       write: async (part) => {
+-        if (at + part.length > bytes.length) throw new Error("A download exceeded its declared size.");
+-        bytes.set(part, at);
++        if (at + part.length > size) throw new Error("A download exceeded its declared size.");
++        parts.push(part);
+         at += part.length;
+       },
+       commit: async (mtime) => {
+         if (at !== size) throw new Error("A download ended short of its declared size.");
++        bytes = new Uint8Array(size);
++        let into = 0;
++        for (const kept of parts) { bytes.set(kept, into); into += kept.length; }
+         // A folder can stand where a remote manifest names a file now that
+         // folders sync, and `writeBinary` would not say so. Desktop refuses
+         // it in `confine`; mobile refuses it here, in the same words, so both

@@ -1,0 +1,12 @@
+# M1886: closing the recovery-phrase dialog unanswered records the words as confirmed (#170)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -647,7 +647,7 @@
+     this.contentEl.empty();
+     const data = this.plugin.state.data;
+     if (this.confirmFirst && data.vrk !== null && data.recoveryPhrase !== "confirmed") {
+-      data.recoveryPhrase = "skipped";
++      data.recoveryPhrase = "confirmed";
+       this.plugin.log("phrase decision=skipped");
+       void this.plugin.state.save().catch(() => {});
+     }

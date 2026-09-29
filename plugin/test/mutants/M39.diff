@@ -1,12 +1,12 @@
 # M39: 56: the 409 retry re-uploads every chunk again
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -631,7 +631,7 @@
-     return await settled(await postOnce(context, fileId, id, post, stillWanted), acceptExisting);
-   } catch (error) {
-     if (!(error instanceof ApiError) || error.code !== "missing_chunks") throw error;
--    const missing = new Set(await context.transport.missingChunks(sids));
-+    const missing = new Set(sids);
-     context.host.log(
-       `push decision=retry reason=missing_chunks file=${fileId} chunks=${missing.size} of=${sids.length}`,
-     );
+@@ -250,7 +250,7 @@
+     const chunks = window;
+     window = [];
+     windowBytes = 0;
+-    const missing = new Set(await context.transport.missingChunks(chunks.map((chunk) => chunk.sid), { signal }));
++    const missing = new Set(chunks.map((chunk) => chunk.sid));
+     for (const { sid, ciphertext } of chunks) {
+       if (!missing.has(sid)) {
+         held -= ciphertext.length;

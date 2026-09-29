@@ -1,0 +1,12 @@
+# M2154: the nested-vault answer is asked again for every note in a pass
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -569,7 +569,7 @@
+     const answers = this.nestedAnswers;
+     const answer = async (folder: string, ask: () => Promise<boolean>): Promise<boolean> => {
+       const known = answers?.get(folder) ?? await ask();
+-      answers?.set(folder, known);
++      void known;
+       return known;
+     };
+     if (desktop === null) {

@@ -1,5 +1,7 @@
 # obsync wire protocol v1
 
+*Internals, for contributors and reviewers.*
+
 Dated 2026-09-07. HTTP/1.1, JSON request and response bodies unless a chunk
 body is named, UTF-8, no cookies on the device API. Every path is prefixed
 `/v1`. Errors are `{"error":"<snake_case_code>","detail":"<human text>"}`
@@ -28,20 +30,22 @@ bad_signature`, `401 stale_timestamp` (outside ±300 s), `401 replayed_nonce`
 (seen within 600 s, and the 600 s survives a restart: accepted nonces rest on
 the journal volume and are fsynced before the request is answered), `503
 nonce_cache_full` (the replay cache is at its ceiling; refusing beats
-forgetting a nonce still inside its window), `503 nonce_log_unavailable`
+forgetting a nonce still inside its window), `503 nonce_share_full` (this
+device holds its whole share of that cache, 50,000 nonces, a quarter of it;
+only this device is refused), `503 nonce_log_unavailable`
 (the volume would not take that record), `403 device_revoked` (answered from the device
 record before the signature is checked, because revocation destroys the
 wrapped secret and leaves nothing to check it against), `403 device_pending`
-(a claimed device that the creator has not yet approved, answered only AFTER
-its signature verifies; only that pairing's envelope endpoint admits it, with
-`409 not_approved`).
+(a claimed device that has not yet collected the envelope its creator
+approved, answered only AFTER its signature verifies; only that pairing's
+envelope endpoint admits it, with `409 not_approved` until the approval).
 Pairing claim and envelope fetch are the only device endpoints with their own
 rules (below). Admin endpoints use the dashboard session cookie plus
 `X-Obsync-Csrf`.
 
 In `OBSYNC_EDGE=cloudflare` mode every request must also carry the edge's
-connecting-address and request-id headers or it is refused with `421
-edge_required`.
+connecting-address and request-id headers, once each, from a peer inside
+`OBSYNC_TRUSTED_PROXY_CIDRS`, or it is refused with `421 edge_required`.
 
 ## Idempotence
 
@@ -89,7 +93,7 @@ and a test asserts every route it emits appears there.
 ## Health
 
 - `GET /livez` → `200 ok` while the process runs.
-- `GET /readyz` → `200 {"ready":true,"seq":<n>}` when volumes are writable,
+- `GET /readyz` → `200 {"ready":true}` when volumes are writable,
   the journal is replayed and its usage is verified, and no shutdown is in
   progress; else `503 not_ready`. A journal whose usage survey was refused is
   re-surveyed by this probe, so a fixed volume answers `200` again without any
@@ -152,28 +156,48 @@ ignores the optional field, so its approval prompt cannot name the new vault.
   windows|linux","app_version":"…"}` → `201 {"device_id":"<32hex>",
   "device_secret":"<64hex>"}`. `404 unknown_pairing`, `410 pairing_expired`,
   `409 already_claimed`. The device is created in state `pending`: it holds a
-  credential, but every device-authenticated route refuses it until the
-  creator approves.
+  credential, but every device-authenticated route refuses it until it
+  collects the envelope the creator approved. Since 1.1.4 an expired pairing
+  still answers `410 pairing_expired` for an hour to a claim carrying its
+  token (the server remembers at most 256), while any other token reads `404
+  unknown_pairing`, as it would for a live pairing.
 - `GET /v1/pairing/{id}` (device auth, creator only) → `{"state":"open|
   claimed|approved|consumed|expired","claimant":{"device_id","name",
-  "platform","app_version"}|null}`.
+  "platform","app_version"}|null}`. For the same hour after expiry the
+  creator reads `expired` or, if the key was collected, `consumed`, with a
+  `null` claimant.
 - `POST /v1/pairing/{id}/approve` (device auth, creator only)
   `{"envelope":"<base64 AES-GCM ciphertext>","nonce":"<24hex>"}` → `204`.
+  Approval activates nothing by itself (1.1.4; earlier servers activated the
+  claimant here).
 - `POST /v1/pairing/{id}/reject` (device auth, creator only) → `204`; the
   pending device and its wrapped secret are destroyed. Only a CLAIMED pairing
   is rejectable: an unclaimed one is `409 not_claimed` and one the creator
   already approved is `409 already_approved` and changes nothing, because the
   claimant is a paired device by then and deletion carries no last-active
   guard. A paired device is taken away with
-  `POST /v1/devices/{id}/revoke`. Expiry of an
-  unapproved pairing destroys them the same way, and so does a restart:
-  pairings live in memory, so a claim that does not survive one leaves a
-  device nobody can approve, and the start destroys it. The claimant pairs
-  again.
+  `POST /v1/devices/{id}/revoke`. Expiry of a pairing whose claimant never
+  collected the envelope, approved or not, destroys them the same way, and
+  so does a restart: pairings live in memory, so a claim that does not
+  survive one leaves a device nobody can approve, and the start destroys it.
+  The claimant pairs again.
 - `GET /v1/pairing/{id}/envelope` (device auth, claimant only) →
   `409 not_approved` until the creator approves (the claimant polls this),
   then `{"envelope","nonce"}` exactly once; `410 envelope_consumed`
-  afterwards. Approval moves the device to state `active`.
+  afterwards, and `410 pairing_expired` once the ten minutes have passed.
+  Collecting it moves the device to state `active`: the activation is
+  journaled before the envelope is answered, and a refused journal write
+  consumes nothing.
+
+The approval prompt and the waiting claimant show the same six-digit match
+code (1.1.4), which neither side sends: each computes
+`HKDF(PS, "obsync/v1/pair-match", pairing_id + ":" + device_id)`, reads its
+first four bytes as a big-endian integer modulo 1,000,000 and shows it as
+`ddd ddd` -- the creator from the claimant id the pairing poll names, the
+claimant from the id its claim returned. The server, which never holds `PS`,
+cannot make two screens agree, and a second device claiming a leaked code
+holds another id and shows another code. A 1.1.3 device shows no code and
+ignores one; either side pairs as before.
 
 ## Devices
 
@@ -202,7 +226,8 @@ retain the account-wide authority described below.
   ≤ 8 MiB + 16 bytes (8 MiB plaintext plus the AES-GCM tag); larger
   declarations receive `413 body_too_large` before body storage. The server hashes while streaming to a temp file and refuses
   with `422 sid_mismatch` if `SHA-256(body) ≠ sid`, `507 volume_full` below
-  the watermark, `507 quota_exceeded` over the account quota. Success `201`
+  the watermark, `507 quota_exceeded` over the account quota, `503 slow_body`
+  when the body arrives more slowly than the minimum rate below. Success `201`
   (new) or `200` (already present). Idempotent.
 - `GET /v1/chunks/{sid}` → raw ciphertext with `Content-Length`; honors
   `Range` (single range) → `206`. `404 unknown_chunk`.
@@ -212,7 +237,10 @@ retain the account-wide authority described below.
   `X-Obsync-Missing: 1`. The sum of stored ciphertext lengths must be
   ≤ 32 MiB, excluding multipart framing, or the response is `413 batch_too_large`.
   Clients budget by the ciphertext maximum: the plugin fetches at most three
-  chunks per batch, while ordinary upload concurrency remains four on desktop.
+  chunks of one file per batch, while ordinary upload concurrency remains four
+  on desktop. From plugin 1.1.4 it also asks for the single chunks of up to 64
+  notes of one feed page at once, within 32 MiB (8 MiB on a phone) counted by
+  the lengths their records declare, and refuses a larger answer.
   Cuts request count over a proxied hop.
 
 ## Files and versions
@@ -256,7 +284,8 @@ retain the account-wide authority described below.
 - `GET /v1/files/{file_id}` → `{"file_id","domain_id","heads":[…],
   "conflicted","versions":[{"version_id","parents","sids","bytes",
   "manifest_ct","manifest_nonce","device_id","ts","deleted"}]}` newest
-  first, capped at `OBSYNC_RETENTION_VERSIONS` plus every head. The domain
+  first, capped at `OBSYNC_RETENTION_VERSIONS` plus every head, and at
+  450 MiB of JSON ("Limits and headers"). The domain
   is stated once on the file, because every version of a file is in it.
 - `GET /v1/files/{file_id}/versions/{version_id}` → one version record.
 - `GET /v1/files?after=<file_id>&limit=<n>` → `{"files":[{"file_id",
@@ -314,6 +343,16 @@ nonce derived from the message, two devices publishing the same folder produce
 the same `version_id`, so the second post is the `200` no-op this document
 already specifies for a version the server holds.
 
+That also makes a folder CREATED AGAIN where one was deleted -- a rename back
+to an earlier spelling is one -- the folder's first version, which the server
+holds and appends nothing for. So from plugin 1.1.4 a device that creates or
+renames a folder here, and is answered with `heads` that do not include the
+record it posted, posts it once more with those heads as its parents; every
+device doing the same computes the same version. A device's start-up
+publication of a folder it merely has no record for does not: a folder a
+tombstone found occupied and kept is not brought back to the devices that
+deleted it. A 1.1.3 device applies such a record as any other create.
+
 **Whose folders a device publishes and receives records for.** A device that
 syncs only some folders (`syncFolders`, local-only, above) publishes a folder
 record for each SELECTED folder and for every folder inside it, and receives
@@ -336,17 +375,23 @@ in the state that rename creates on the wire, and refused in every other:
 > when the tombstone for THAT folder's own record -- the record this device
 > holds for it, by its file id -- has been applied, no record has been written
 > for that folder since, and no folder record has already used that admission.
-> The first record to arrive in that state takes it; anything else is refused
-> as `decision=not_synced reason=outside_sync_scope`, with one notice naming
-> both spellings.
+> The first record WRITTEN in that state takes it -- one the vault refuses, or
+> one that fails and is retried, does not (plugin 1.1.4); anything else is
+> refused as `decision=not_synced reason=outside_sync_scope`, with one notice
+> naming both spellings.
 
 The retirement is a STATE, not a clock. It lasts until a record is written for
 that folder -- by the feed, by the re-case itself, or by this device's own
-republication of that folder at its next start-up pass, which is what happens
-when the tombstone was a DELETION and no rename follows it -- or until a
-folder record takes it. Inside that window one record one capitalisation off
-that folder is admitted, and the vault's own answer still decides what becomes
-of it. The rule grants a sender no authority it did not have: a device that
+republication of that folder, which is what happens when the tombstone was a
+DELETION that found the folder occupied and no rename follows it. That
+republication waits until the feed has caught up past the tombstone (plugin
+1.1.4): a start-up pass holds it, so a device stopped between the tombstone
+and the rename's record still takes the rename when it starts. When the
+tombstone REMOVED the directory, nothing republishes it and the retirement
+stays armed but inert: a record it admits names a folder this vault no longer
+holds, and the vault's answer refuses it. Inside the window one record one
+capitalisation off that folder is admitted, and the vault's own answer still
+decides what becomes of it. The rule grants a sender no authority it did not have: a device that
 can publish a folder record can rename that folder in any case. What it takes
 away is a SECOND device's folder being read as this device's rename.
 
@@ -490,8 +535,12 @@ note; the receipt records refusal, application and an advanced feed cursor.
   "file_id","domain_id","version_id","parents","sids","bytes","manifest_ct",
   "manifest_nonce","device_id","ts","deleted","heads","conflicted"}]}`. A
   feed entry arrives without its file, so it carries its own `domain_id`.
-  With `wait`, the server holds the request until a new frame lands or the
+  With `wait`, the server holds the request until a new version lands or the
   wait elapses, then returns whatever exists (possibly an empty list).
+  An empty page whose `seq` is above `since` is normal, and the client
+  continues from that `seq`: frames the feed does not carry (devices,
+  sign-ins, background work) move the head without waking a held request, so
+  a poll that starts behind the head answers at once with it.
   `since` beyond `head_seq` → `416 seq_ahead`.
 
 ## Domains
@@ -581,20 +630,44 @@ device whose link opened it is revoked.
 
 ## Limits and headers
 
-- Request headers ≤ 16 KiB; JSON bodies ≤ 4 MiB; chunk ciphertext
+- Request headers ≤ 16 KiB; JSON bodies ≤ 4 MiB, and the setup and
+  pairing-claim bodies, which carry their token, ≤ 16 KiB; chunk ciphertext
   bodies ≤ 8 MiB + 16 bytes.
+- Every JSON body is read before its credential verifies (a signature covers
+  the body's hash; the setup and enrolment tokens ride inside it), so every
+  such body holds a share of one 64 MiB reservation across every connection
+  from before its first byte is read until its credential verifies, any wait
+  for a lock included. A setup or claim body is parsed before its token
+  verifies, so each reserves 4 MiB: the body and everything parsing 16 KiB
+  can allocate (at most about 72 bytes a byte). A body that does not fit is
+  answered with a bare `503` (no
+  body, `Retry-After: 1`, `Connection: close`) before a byte of it is read,
+  and a repeatable request retries.
 - Heads per file record ≤ 64; versions per file record ≤
   `OBSYNC_RETENTION_VERSIONS` plus one per head; sids per version ≤ 65,536;
   parents per version ≤ 64; `manifest_ct` ≤ 1 MiB of base64.
 - Response bound, enforced by `render`'s own test against the ceilings
   above: a full head list is under 8 KiB, so a 1000-entry `/v1/changes` page
   carries at most 64,000 head ids. The widest single version and the widest
-  change entry are each under 6 MiB, so one file record stays under 450 MiB
-  at the shipped retention of 10 and one full page under 6 GiB. The
-  per-version ceilings, not the heads, are what set those two; a client that
-  wants a smaller page sets `limit`.
+  change entry are each under 6 MiB. One file record never passes 450 MiB:
+  every head is in it (64 of the widest versions fit), and the other
+  versions follow newest first until the next would pass it, so a long
+  retention leaves older versions out of the record rather than growing it
+  past what a client accepts. At the shipped retention of 10 nothing is left
+  out; when something is, the server logs `event=file_record
+  decision=trimmed`. A `/v1/changes` page also stops before its
+  entries pass 8 MiB of JSON and always carries at least one, so no page
+  passes 8 MiB; its `seq` is then below `head_seq`, and the next request from
+  that cursor carries on. A client that wants a smaller page sets `limit`.
 - Idle connection timeout 60 s (long-poll requests excepted up to their
-  `wait`); header read timeout 10 s; body read minimum rate 64 KiB/s.
+  `wait`); header read timeout 10 s; body read minimum rate 16 KiB/s, measured
+  from the server's first read of the body, so time the server spends before it
+  (authentication waiting on a slow volume) is never charged to the sender. A
+  body slower than that, on any route, is `503 slow_body`: the sender's link,
+  not the server's storage, and a client retries it. A body that ends or breaks before
+  it is whole is `503 body_incomplete`, retried the same way, and a chunked body
+  whose framing is not HTTP is `400 bad_request`; `413 body_too_large` is only
+  ever a body past its ceiling.
 - Every response carries `Cache-Control: no-store` and the security headers
   listed in `AGENTS.md`. `X-Obsync-Seq` (journal head) rides only a response
   to a caller that proved a credential: it is write activity, and an

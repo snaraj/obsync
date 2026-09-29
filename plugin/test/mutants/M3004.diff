@@ -1,0 +1,12 @@
+# M3004: remembered bases are never forgotten, whatever they hold
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3352,7 +3352,7 @@
+   const found = bases.get(context) ?? new Map<string, string>();
+   bases.set(context, found.set(pair, text));
+   const held = (): number => [...found.values()].reduce((sum, base) => sum + base.length, 0);
+-  while (held() > CHUNK_MAX) found.delete(found.keys().next().value as string);
++  while (held() > Infinity) found.delete(found.keys().next().value as string);
+ }
+ 
+ /**

@@ -1,0 +1,12 @@
+# M2911: a held folder the index shows is listed, so a folder put back without its record is published
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2116,7 +2116,7 @@
+       // folder outside the selection are both out, in one check -- and the
+       // SELECTED folder itself is in, because a folder record is what carries
+       // its creation, its removal and its own rename (`syncScope.ts`).
+-      if (!inFolderScope(entry.path, folders) || this.holds(entry.path)) continue;
++      if (!inFolderScope(entry.path, folders)) continue;
+       if (this.desktop !== null) {
+         try {
+           await this.confine(this.desktop, entry.path, ["directory"]);

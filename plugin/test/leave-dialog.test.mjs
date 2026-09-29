@@ -28,7 +28,7 @@ class Component {
 }
 
 /** A dialog whose drawing is recorded instead of rendered. */
-function dialog(t, { mode = "leave", deviceId = "11".repeat(16), unpushed = [], answers = [] } = {}) {
+function dialog(t, { mode = "leave", deviceId = "11".repeat(16), unpushed = [], answers = [], sendsNow = true } = {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const obsidian = box.require("obsidian");
@@ -55,6 +55,7 @@ function dialog(t, { mode = "leave", deviceId = "11".repeat(16), unpushed = [], 
   const choices = [];
   const plugin = {
     isMobile: false,
+    sendsNow,
     state: { data: { deviceId } },
     unpushedEdits: async () => unpushed,
     leaveServer: async (choice) => {
@@ -143,9 +144,9 @@ test("a last-device refusal offers leaving locally, and says what that leaves be
   assert.match(text, /The server refused to revoke this device: the only active device cannot be revoked; pair another first\./);
   assert.match(text, /no registered vault recovery yet/);
   assert.match(text, /setup token and 24-word recovery phrase/);
-  assert.equal(d.button("Leave locally anyway").destructive, true);
+  assert.equal(d.button("Leave on this device only").destructive, true);
 
-  d.button("Leave locally anyway").click();
+  d.button("Leave on this device only").click();
   await tick();
 
   assert.deepEqual(d.choices, [
@@ -244,7 +245,7 @@ test("a server that does not recognise this device is named as such before the l
   const text = d.drawn.join("\n");
   assert.match(text, /This server does not recognise this device: it was rebuilt or restored from a backup/);
   assert.doesNotMatch(text, /can never sync again/, "not the last-device warning");
-  d.button("Leave locally anyway").click();
+  d.button("Leave on this device only").click();
   await tick();
 
   assert.deepEqual(d.choices.at(-1), { discardUnpushed: false, localOnly: true });
@@ -271,5 +272,81 @@ test("a last-device refusal focuses Cancel before the local-only leave action", 
   d.modal.onOpen(); await tick();
   d.button("Leave").click(); await tick();
   assert.equal(d.made[0].text, "Cancel");
-  d.button("Leave locally anyway");
+  d.button("Leave on this device only");
+});
+
+// ---- issue #157 -------------------------------------------------------------
+
+test("one press is one leave: the buttons give way to progress at once, and a second press does nothing", async (t) => {
+  // S22: ~23 s with the dialog unchanged, and a second press started a second leave.
+  let finish;
+  const d = dialog(t, { answers: [() => new Promise((resolve) => { finish = resolve; })] });
+  d.modal.onOpen();
+  await tick();
+  const leave = d.button("Leave");
+
+  leave.click();
+  leave.click();
+
+  assert.match(d.drawn.join("\n"), /^p: Leaving: stopping sync on this device, then asking the server to remove it\./, "progress, before anything is awaited");
+  assert.deepEqual(d.made, [], "and no button left to press");
+  await tick();
+  leave.click();
+  assert.equal(d.choices.length, 1, "one leave, however often it was pressed");
+  finish({ decision: "left", revoked: true });
+  await tick();
+  assert.ok(d.notices.some((notice) => notice.includes("left the server")));
+});
+
+test("no answer from the server offers leaving on this device only, and says what stays behind", async (t) => {
+  const d = dialog(t, {
+    answers: [
+      { decision: "refused", reason: "unreachable", detail: "0 unreachable: network=net::ERR_CONNECTION_REFUSED" },
+      { decision: "left", revoked: false },
+    ],
+  });
+  d.modal.onOpen();
+  await tick();
+  d.button("Leave").click();
+  await tick();
+
+  const text = d.drawn.join("\n");
+  assert.match(text, /The server did not answer, so it could not remove this device\./);
+  assert.match(text, /forgets the server and its credential and keeps every note/);
+  assert.doesNotMatch(text, /ERR_CONNECTION_REFUSED|unreachable/, "no raw code on the screen");
+  assert.equal(d.made[0].text, "Cancel", "Cancel first, so Enter is never the destructive answer");
+  d.button("Leave on this device only").click();
+  await tick();
+
+  assert.deepEqual(d.choices.at(-1), { discardUnpushed: false, localOnly: true });
+  assert.ok(d.notices.includes("This device has left. Your server still lists it until you remove it from another device's Devices list or the dashboard."));
+});
+
+test("Sync now is advised only where it can work: never offline, never to a device the server no longer accepts", async (t) => {
+  // S40, S80: "Run Sync now first and they are safe" to a device that could not.
+  for (const sendsNow of [true, false]) {
+    const d = dialog(t, { unpushed: ["Notes/a.md"], sendsNow });
+    d.modal.onOpen();
+    await tick();
+    const text = d.drawn.join("\n");
+    if (sendsNow) assert.match(text, /Run Sync now first and they are safe/);
+    else {
+      assert.doesNotMatch(text, /Sync now/);
+      assert.match(text, /They cannot be sent now: the server is out of reach or no longer accepts this device\. Leave now and they stay in this vault and nowhere else\./);
+    }
+    d.button("Discard 1 and leave");
+  }
+});
+
+test("a leave that fails outright puts the dialog back as it was, buttons and all", async (t) => {
+  const d = dialog(t, { answers: [() => { throw new Error("LEAVE FAILURE SENTINEL"); }, { decision: "left", revoked: true }] });
+  d.modal.onOpen();
+  await tick();
+  d.button("Leave").click();
+  await tick();
+
+  assert.ok(d.notices.includes("LEAVE FAILURE SENTINEL"));
+  d.button("Leave").click();
+  await tick();
+  assert.equal(d.choices.length, 2, "and pressing again tries again");
 });

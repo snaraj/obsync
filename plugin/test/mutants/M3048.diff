@@ -1,0 +1,11 @@
+# M3048: a removal through a name the vault shows as a DIFFERENT recorded note is made
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2068,7 +2068,6 @@
+    */
+   async trash(path: string, expect?: VaultStat): Promise<TrashResult> {
+     assertSyncPath(path, this.plugin.state.data.syncFolders);
+-    if (await this.otherNote(path)) return "kept";
+     const desktop = this.desktop;
+     let found: WalkResult | null = null;
+     if (desktop !== null) {

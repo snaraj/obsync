@@ -5,7 +5,7 @@
 //! and `max_connections` (256 by default) bounds both threads and memory.
 
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -25,13 +25,73 @@ pub type Handler = Arc<dyn Fn(&mut Request) -> Response + Send + Sync + 'static>
 /// Where the server reports what it could not put into a response. Library
 /// code writes nothing to stderr; the caller decides what logging means
 /// (AGENTS.md requirement 12).
-type ErrorSink = Arc<dyn Fn(&str) + Send + Sync>;
+type ErrorSink = Arc<dyn Fn(Report) + Send + Sync>;
 
-/// How often the accept loop looks at the shutdown flag.
-const ACCEPT_POLL: Duration = Duration::from_millis(50);
+/// One thing the server could not put into a response. Words, a status and
+/// an I/O kind only: never an error's message, which can carry an address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Report {
+    /// What happened, a fixed word: `parser_refusal` and `header_timeout`
+    /// for a request refused before any handler ran, `peer_closed` for a
+    /// peer that closed or reset its connection, and a word per failure of
+    /// the server's own (`accept_failed`, `handler_panic`, ...).
+    pub decision: &'static str,
+    /// The status the refusal was answered with, when there was one.
+    pub status: Option<u16>,
+    /// The I/O kind behind it, when there was one.
+    pub io: Option<io::ErrorKind>,
+}
 
-/// How often a connection waiting for its next request looks at it.
-const IDLE_POLL: Duration = Duration::from_millis(100);
+impl Report {
+    fn new(decision: &'static str) -> Report {
+        Report {
+            decision,
+            status: None,
+            io: None,
+        }
+    }
+
+    fn io(decision: &'static str, err: &io::Error) -> Report {
+        Report {
+            io: Some(err.kind()),
+            ..Report::new(decision)
+        }
+    }
+
+    /// A failure on an open connection: the peer ending it is `peer_closed`,
+    /// anything else keeps `decision`. A proxy resets idle keep-alives as a
+    /// matter of course, and a client can leave at any moment (#212).
+    fn connection(decision: &'static str, err: &io::Error) -> Report {
+        let closed = matches!(
+            err.kind(),
+            io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::NotConnected
+        );
+        Report::io(if closed { "peer_closed" } else { decision }, err)
+    }
+
+    /// Whether this is an ordinary end of a connection rather than a
+    /// refusal or a failure: the caller logs it at debug, if at all.
+    pub fn ordinary(&self) -> bool {
+        self.decision == "peer_closed"
+    }
+}
+
+/// How often the shutdown waker looks at the flag. The accept itself blocks,
+/// so this bounds how long a stop takes to begin, never how long a new
+/// connection waits.
+const SHUTDOWN_POLL: Duration = Duration::from_millis(100);
+
+/// How long the accept loop pauses after a failed accept (a full descriptor
+/// table, say), so the failure is not retried in a hot loop.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+
+/// How often a connection waiting for its next request looks at the shutdown
+/// flag. Bytes arriving wake the wait at once; this only bounds how long an
+/// idle keep-alive takes to notice a stop.
+const IDLE_POLL: Duration = Duration::from_secs(1);
 
 /// How much of an unread request body is drained before the connection is
 /// closed instead. A handler that refuses a body early should not have to read
@@ -55,7 +115,7 @@ impl Server {
             listener,
             addr,
             limits,
-            sink: Arc::new(|_message: &str| {}),
+            sink: Arc::new(|_report: Report| {}),
         })
     }
 
@@ -67,31 +127,46 @@ impl Server {
 
     /// Supply a sink for failures that never reach a client: a connection that
     /// dies mid-response, a handler panic, an accept error.
-    pub fn set_error_sink(&mut self, sink: Arc<dyn Fn(&str) + Send + Sync>) {
+    pub fn set_error_sink(&mut self, sink: Arc<dyn Fn(Report) + Send + Sync>) {
         self.sink = sink;
     }
 
     /// Serve until `shutdown` is set, then stop accepting, wait up to
     /// `drain_timeout` for connections in flight, and return. Blocks the
     /// calling thread.
+    ///
+    /// The accept BLOCKS, so a connection is taken the moment it arrives
+    /// rather than at the next look at a flag. What wakes it for a stop is a
+    /// connection to itself, which [`wake_on_shutdown`] makes once the flag
+    /// is set.
     pub fn serve(self, handler: Handler, shutdown: Arc<AtomicBool>, drain_timeout: Duration) {
         let Server {
             listener,
+            addr,
             limits,
             sink,
-            ..
         } = self;
-        if let Err(err) = listener.set_nonblocking(true) {
-            (*sink)(&format!("http: listener would not poll: {err}"));
-            return;
+        let stopped = Arc::new(AtomicBool::new(false));
+        let waker = wake_on_shutdown(
+            addr,
+            Arc::clone(&shutdown),
+            Arc::clone(&stopped),
+            Arc::clone(&sink),
+        );
+        if let Err(err) = &waker {
+            (*sink)(Report::io("no_waker_thread", err));
         }
         let active = Arc::new(AtomicUsize::new(0));
         while !shutdown.load(Ordering::Relaxed) {
             match listener.accept() {
+                // The waker's own connection, or one that raced the stop.
+                Ok(_) if shutdown.load(Ordering::Relaxed) => break,
                 Ok((stream, peer)) => {
-                    if let Err(err) = stream.set_nonblocking(false) {
-                        (*sink)(&format!("http: connection stayed non-blocking: {err}"));
-                        continue;
+                    // Responses leave in more than one write (a head, then a
+                    // streamed body), and Nagle would hold the last one back
+                    // for the peer's delayed acknowledgement.
+                    if let Err(err) = stream.set_nodelay(true) {
+                        (*sink)(Report::io("nodelay_failed", &err));
                     }
                     let guard = ActiveGuard::new(&active);
                     if active.load(Ordering::SeqCst) > limits.max_connections {
@@ -117,21 +192,83 @@ impl Server {
                             );
                         });
                     if let Err(err) = spawned {
-                        (*sink)(&format!("http: no thread for a connection: {err}"));
+                        (*sink)(Report::io("no_connection_thread", &err));
                     }
                 }
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => thread::sleep(ACCEPT_POLL),
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
                 Err(err) => {
-                    (*sink)(&format!("http: accept failed: {err}"));
-                    thread::sleep(ACCEPT_POLL);
+                    (*sink)(Report::io("accept_failed", &err));
+                    thread::sleep(ACCEPT_BACKOFF);
                 }
             }
+        }
+        stopped.store(true, Ordering::SeqCst);
+        if let Ok(waker) = waker {
+            let _ = waker.join();
         }
         let deadline = Instant::now() + drain_timeout;
         while active.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
+    }
+}
+
+/// Once `shutdown` is set, connect to the listener until the accept loop
+/// says it has `stopped`: a blocked accept returns only for a connection.
+/// Retried rather than tried once, because one lost connect would leave the
+/// process unable to stop. A round in which no address took the connection
+/// is reported, once: that is a stop only a `SIGKILL` will end.
+fn wake_on_shutdown(
+    addr: SocketAddr,
+    shutdown: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
+    sink: ErrorSink,
+) -> io::Result<thread::JoinHandle<()>> {
+    let targets = wake_targets(addr);
+    thread::Builder::new()
+        .name("obsync-http-waker".to_string())
+        .spawn(move || {
+            let mut reported = false;
+            while !stopped.load(Ordering::SeqCst) {
+                if shutdown.load(Ordering::Relaxed) {
+                    let mut refused = None;
+                    for target in &targets {
+                        match TcpStream::connect_timeout(target, SHUTDOWN_POLL) {
+                            Ok(_) => {
+                                refused = None;
+                                break;
+                            }
+                            Err(err) => refused = Some(err),
+                        }
+                    }
+                    if let Some(err) = refused
+                        && !std::mem::replace(&mut reported, true)
+                    {
+                        (*sink)(Report::io("waker_unreachable", &err));
+                    }
+                }
+                thread::sleep(SHUTDOWN_POLL);
+            }
+        })
+}
+
+/// The addresses the waker tries, in order, to reach a listener on `addr`:
+/// the address itself, or loopback for a wildcard. The IPv6 wildcard gets
+/// both loopbacks. A dual-stack socket still binds where IPv6 is disabled
+/// -- Docker's default bridge network does exactly that -- and there it
+/// takes 127.0.0.1 and refuses `::1`, so trying `::1` alone left a stop
+/// waiting for its `SIGKILL`.
+fn wake_targets(addr: SocketAddr) -> Vec<SocketAddr> {
+    let port = addr.port();
+    match addr {
+        SocketAddr::V6(v6) if v6.ip().is_unspecified() => vec![
+            SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        ],
+        SocketAddr::V4(v4) if v4.ip().is_unspecified() => {
+            vec![SocketAddr::from((Ipv4Addr::LOCALHOST, port))]
+        }
+        _ => vec![addr],
     }
 }
 
@@ -161,7 +298,7 @@ fn refuse_overload(stream: TcpStream, sink: &ErrorSink) {
     let mut writer = BufWriter::with_capacity(128, stream);
     let refusal = Response::empty(503).header("Retry-After", "1");
     if let Err(err) = write_response(&mut writer, refusal, false, true) {
-        (*sink)(&format!("http: could not refuse a connection: {err}"));
+        (*sink)(Report::connection("overload_unanswered", &err));
     }
 }
 
@@ -194,7 +331,7 @@ fn serve_connection(
     ) {
         (Ok(read_half), Ok(write_half), Ok(body_half)) => (read_half, write_half, body_half),
         _ => {
-            (*sink)("http: could not split a connection");
+            (*sink)(Report::new("split_failed"));
             return;
         }
     };
@@ -216,14 +353,20 @@ fn serve_connection(
                 // A connection that never sent its head is the slowloris
                 // shape and is told so; an idle keep-alive is just closed.
                 if first {
+                    (*sink)(Report {
+                        status: Some(408),
+                        ..Report::new("header_timeout")
+                    });
                     let _ = write_response(&mut writer, Response::empty(408), false, true);
                 }
                 return;
             }
             Await::Closed | Await::Stopping => return,
+            // Where a proxy resetting an idle keep-alive lands: an ordinary
+            // close, not a refusal (#212).
             Await::Failed(err) => {
                 if !is_timeout(&err) {
-                    (*sink)(&format!("http: connection failed while idle: {err}"));
+                    (*sink)(Report::connection("connection_failed", &err));
                 }
                 return;
             }
@@ -239,12 +382,18 @@ fn serve_connection(
         let head = match read_head(&mut reader, limits) {
             Ok(head) => head,
             Err(ParseError::Closed) => return,
+            // The one refusal the handler never sees, so the one the server
+            // itself must report (requirement 12).
             Err(ParseError::Status(status)) => {
+                (*sink)(Report {
+                    status: Some(status),
+                    ..Report::new("parser_refusal")
+                });
                 let _ = write_response(&mut writer, Response::empty(status), false, true);
                 return;
             }
             Err(ParseError::Io(err)) => {
-                (*sink)(&format!("http: could not read a request: {err}"));
+                (*sink)(Report::connection("connection_failed", &err));
                 return;
             }
         };
@@ -281,7 +430,10 @@ fn serve_connection(
         let (response, panicked) = match outcome {
             Ok(response) => (response, false),
             Err(_) => {
-                (*sink)("http: handler panicked; answering 500 and closing the connection");
+                (*sink)(Report {
+                    status: Some(500),
+                    ..Report::new("handler_panic")
+                });
                 (Response::empty(500), true)
             }
         };
@@ -298,9 +450,11 @@ fn serve_connection(
         let close =
             panicked || !drained || !keep_alive || response.wants_close() || recovered.is_none();
 
+        // A streamed body that cannot keep its length lands here too, with
+        // the kind that broke it.
         if let Err(err) = write_response(&mut writer, response, head_only, close) {
-            if !is_timeout(&err) && err.kind() != io::ErrorKind::BrokenPipe {
-                (*sink)(&format!("http: could not write a response: {err}"));
+            if !is_timeout(&err) {
+                (*sink)(Report::connection("write_failed", &err));
             }
             return;
         }
@@ -375,20 +529,34 @@ mod tests {
         join: Option<JoinHandle<()>>,
     }
 
+    /// Every report a server sends its sink, in order.
+    type Reports = Arc<std::sync::Mutex<Vec<Report>>>;
+
     impl TestServer {
         fn start(limits: Limits, handler: Handler) -> TestServer {
-            let server = Server::bind("127.0.0.1:0", limits).expect("bind");
+            TestServer::recorded(limits, handler).0
+        }
+
+        /// A server whose sink records every report.
+        fn recorded(limits: Limits, handler: Handler) -> (TestServer, Reports) {
+            let reports: Reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorder = Arc::clone(&reports);
+            let mut server = Server::bind("127.0.0.1:0", limits).expect("bind");
+            server.set_error_sink(Arc::new(move |report: Report| {
+                recorder.lock().expect("reports").push(report);
+            }));
             let addr = server.local_addr();
             let shutdown = Arc::new(AtomicBool::new(false));
             let serve_shutdown = Arc::clone(&shutdown);
             let join = thread::spawn(move || {
                 server.serve(handler, serve_shutdown, Duration::from_secs(2));
             });
-            TestServer {
+            let server = TestServer {
                 addr,
                 shutdown,
                 join: Some(join),
-            }
+            };
+            (server, reports)
         }
 
         fn connect(&self) -> TcpStream {
@@ -475,6 +643,89 @@ mod tests {
         assert_eq!(body, b"hello");
         assert!(!head.contains("Connection: close"));
         assert!(!head.contains("Date:"));
+    }
+
+    /// A new connection is taken when it arrives, not at the next look at a
+    /// flag. Twenty back-to-back connections behind a 50 ms accept poll wait
+    /// about a second in all; blocking, they take a few milliseconds, so the
+    /// ceiling below has room for a loaded machine and none for a poll.
+    #[test]
+    fn a_new_connection_is_accepted_without_waiting_for_a_poll() {
+        let server = TestServer::start(
+            Limits::default(),
+            handler_of(|_request: &mut Request| Response::text(200, "ok")),
+        );
+        let started = Instant::now();
+        for _ in 0..20 {
+            let stream = server.connect();
+            let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+            (&stream)
+                .write_all(b"GET /x HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
+                .expect("write");
+            assert_eq!(status_of(&read_response(&mut reader).0), 200);
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "twenty fresh connections took {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// The accept blocks, so a stop has to wake it. Nothing connects here but
+    /// the server's own waker. The serving thread is watched rather than
+    /// joined, so a listener nobody wakes fails this test instead of hanging.
+    #[test]
+    fn a_stop_wakes_a_listener_nobody_is_connecting_to() {
+        let mut server = TestServer::start(Limits::default(), echo_handler());
+        thread::sleep(Duration::from_millis(50));
+        let join = server.join.take().expect("serving");
+        server.shutdown.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        while !join.is_finished() && started.elapsed() < Duration::from_secs(2) {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(join.is_finished(), "the listener was never woken");
+    }
+
+    /// Where IPv6 is disabled a dual-stack wildcard still binds and takes
+    /// IPv4 only, so the waker has to reach it on 127.0.0.1 too; ::1 alone
+    /// left every stop in a default Docker network waiting for its SIGKILL.
+    #[test]
+    fn a_wildcard_listener_is_woken_on_every_loopback_it_may_answer() {
+        let v6 = |ip: Ipv6Addr| SocketAddr::from((ip, 8080));
+        let v4 = |ip: Ipv4Addr| SocketAddr::from((ip, 8080));
+        assert_eq!(
+            wake_targets(v6(Ipv6Addr::UNSPECIFIED)),
+            [v6(Ipv6Addr::LOCALHOST), v4(Ipv4Addr::LOCALHOST)]
+        );
+        assert_eq!(
+            wake_targets(v4(Ipv4Addr::UNSPECIFIED)),
+            [v4(Ipv4Addr::LOCALHOST)]
+        );
+        let named = v4(Ipv4Addr::new(192, 0, 2, 7));
+        assert_eq!(wake_targets(named), [named]);
+    }
+
+    /// A stop the waker cannot deliver says so, once.
+    #[test]
+    fn a_waker_that_reaches_no_listener_is_reported_once() {
+        let closed = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = closed.local_addr().expect("addr");
+        drop(closed);
+        let reports = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink: ErrorSink = {
+            let reports = Arc::clone(&reports);
+            Arc::new(move |report| reports.lock().expect("reports").push(report))
+        };
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let waker = wake_on_shutdown(addr, shutdown, Arc::clone(&stopped), sink).expect("spawn");
+        thread::sleep(SHUTDOWN_POLL * 4);
+        stopped.store(true, Ordering::SeqCst);
+        waker.join().expect("the waker stops");
+        let reports = reports.lock().expect("reports");
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert_eq!(reports[0].decision, "waker_unreachable");
     }
 
     #[test]
@@ -659,11 +910,23 @@ mod tests {
         let server = TestServer::start(
             Limits::default(),
             handler_of(|_request: &mut Request| {
-                let mut multipart = MultipartWriter::new("obsync-chunks");
-                multipart.part(&[("X-Obsync-Sid", "aa"), ("Content-Length", "2")], b"hi");
-                multipart.part(&[("X-Obsync-Sid", "bb"), ("X-Obsync-Missing", "1")], b"");
-                let content_type = multipart.content_type();
-                Response::bytes(200, &content_type, multipart.finish())
+                let multipart = MultipartWriter::new("obsync-chunks");
+                let mut body =
+                    multipart.part_head(&[("X-Obsync-Sid", "aa"), ("Content-Length", "2")]);
+                body.extend_from_slice(b"hi");
+                body.extend_from_slice(MultipartWriter::PART_END);
+                body.extend(
+                    multipart.part_head(&[("X-Obsync-Sid", "bb"), ("X-Obsync-Missing", "1")]),
+                );
+                body.extend_from_slice(MultipartWriter::PART_END);
+                body.extend(multipart.close());
+                let len = body.len() as u64;
+                Response::stream(
+                    200,
+                    &multipart.content_type(),
+                    Box::new(Cursor::new(body)),
+                    len,
+                )
             }),
         );
         let stream = server.connect();
@@ -806,44 +1069,22 @@ mod tests {
 
     #[test]
     fn a_handler_panic_costs_the_connection_and_not_the_process() {
-        let reported: Arc<std::sync::Mutex<Vec<String>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
-        let recorder = Arc::clone(&reported);
-        let mut server_instance = Server::bind(
-            "127.0.0.1:0",
+        let (mut server, reported) = TestServer::recorded(
             Limits {
                 idle_timeout: Duration::from_secs(2),
                 ..Limits::default()
             },
-        )
-        .expect("bind");
-        server_instance.set_error_sink(Arc::new(move |message: &str| {
-            if let Ok(mut log) = recorder.lock() {
-                log.push(message.to_string());
-            }
-        }));
-        let addr = server_instance.local_addr();
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let serve_shutdown = Arc::clone(&shutdown);
-        let join = thread::spawn(move || {
-            server_instance.serve(
-                handler_of(|request: &mut Request| {
-                    if request.path == "/panic" {
-                        panic!("sentinel panic");
-                    }
-                    Response::text(200, "alive")
-                }),
-                serve_shutdown,
-                Duration::from_secs(2),
-            );
-        });
+            handler_of(|request: &mut Request| {
+                if request.path == "/panic" {
+                    panic!("sentinel panic");
+                }
+                Response::text(200, "alive")
+            }),
+        );
 
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_info| {}));
-        let stream = TcpStream::connect(addr).expect("connect");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("timeout");
+        let stream = server.connect();
         let mut reader = BufReader::new(stream.try_clone().expect("clone"));
         (&stream)
             .write_all(b"GET /panic HTTP/1.1\r\nHost: h\r\n\r\n")
@@ -854,9 +1095,7 @@ mod tests {
         assert!(head.contains("Connection: close\r\n"));
 
         // The listener is still serving.
-        let next = TcpStream::connect(addr).expect("reconnect");
-        next.set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("timeout");
+        let next = server.connect();
         let mut reader = BufReader::new(next.try_clone().expect("clone"));
         (&next)
             .write_all(b"GET /fine HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n")
@@ -865,12 +1104,92 @@ mod tests {
         assert_eq!(status_of(&head), 200);
         assert_eq!(body, b"alive");
 
-        shutdown.store(true, Ordering::SeqCst);
-        let _ = join.join();
+        server.stop();
         let log = reported.lock().expect("lock");
         assert!(
-            log.iter().any(|message| message.contains("panicked")),
-            "the panic was never reported to the sink"
+            log.iter().any(|report| report.decision == "handler_panic"),
+            "the panic was never reported to the sink: {log:?}"
+        );
+    }
+
+    /// The reports that arrive within `wait`.
+    fn reports_after(reports: &Reports, wait: Duration) -> Vec<Report> {
+        let started = Instant::now();
+        while reports.lock().expect("reports").is_empty() && started.elapsed() < wait {
+            thread::sleep(Duration::from_millis(10));
+        }
+        reports.lock().expect("reports").clone()
+    }
+
+    /// #212: a peer that resets a keep-alive connection between requests,
+    /// which a proxy does routinely, is an ordinary close and never a parser
+    /// refusal. The client leaves its answer unread, so closing the socket
+    /// resets it.
+    #[test]
+    fn a_peer_resetting_an_idle_keep_alive_is_an_ordinary_close() {
+        let (_server, reports) = TestServer::recorded(Limits::default(), echo_handler());
+        let stream = TcpStream::connect(_server.addr).expect("connect");
+        (&stream)
+            .write_all(b"GET /x HTTP/1.1\r\nHost: h\r\n\r\n")
+            .expect("write");
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        let seen = reports_after(&reports, Duration::from_secs(2));
+        assert!(!seen.is_empty(), "the reset never reached the server");
+        assert!(
+            seen.iter().all(|report| report.ordinary()),
+            "an idle reset was reported as something else: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .all(|report| report.decision != "parser_refusal"),
+            "{seen:?}"
+        );
+    }
+
+    /// Where an idle reset surfaces, a reset is the peer's close; any other
+    /// failure keeps the name it was reported under, with its kind.
+    #[test]
+    fn a_connection_failure_is_ordinary_only_when_the_peer_ended_it() {
+        for kind in [
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::NotConnected,
+        ] {
+            let report = Report::connection("connection_failed", &io::Error::from(kind));
+            assert_eq!(report.decision, "peer_closed", "{kind:?}");
+            assert_eq!(report.io, Some(kind));
+            assert!(report.ordinary());
+        }
+        let report = Report::connection(
+            "connection_failed",
+            &io::Error::from(io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(report.decision, "connection_failed");
+        assert_eq!(report.io, Some(io::ErrorKind::PermissionDenied));
+        assert!(!report.ordinary());
+    }
+
+    /// A request the parser refuses still reaches the sink, once, with the
+    /// status it was answered, so a real refusal keeps its line.
+    #[test]
+    fn a_malformed_request_is_reported_as_a_parser_refusal() {
+        let (server, reports) = TestServer::recorded(Limits::default(), echo_handler());
+        let stream = server.connect();
+        let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+        (&stream)
+            .write_all(b"GET / HTTP/1.1\r\n\r\n")
+            .expect("write");
+        assert_eq!(status_of(&read_response(&mut reader).0), 400);
+        let seen = reports_after(&reports, Duration::from_secs(2));
+        assert_eq!(
+            seen,
+            vec![Report {
+                decision: "parser_refusal",
+                status: Some(400),
+                io: None,
+            }]
         );
     }
 

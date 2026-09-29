@@ -1,0 +1,11 @@
+# M3217: the held-deletions question on screen is never known, so nothing closes it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2760,7 +2760,6 @@
+     const asks = actions.some((action) => action.kind === "delete_everywhere" || action.kind === "restore_here");
+     if (asks) this.closeQuestion();
+     const notice = new Notice(message, actions.length === 0 ? 10000 : 0);
+-    if (asks) this.question = notice;
+     for (const action of actions) {
+       const button = notice.messageEl.createEl("button", { text: NOTICE_BUTTONS[action.kind] });
+       button.addEventListener("click", () => {

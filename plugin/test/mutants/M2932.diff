@@ -1,0 +1,11 @@
+# M2932: a refused copy's publication logs nothing (requirement 12)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1112,7 +1112,6 @@
+         } catch (error) {
+           // The cause by its code alone, because its message names a path on
+           // this disk: a refusal that said nothing hid every Windows copy.
+-          this.log(`host path_class=file decision=refused reason=copy_unconfirmed code=${(error as { code?: string }).code ?? "none"}`);
+           throw new CopyPublicationError(path);
+         }
+       },

@@ -4,11 +4,66 @@
 
 # Self Hosted Private Sync
 
-[Obsidian](https://obsidian.md) のための、自己ホスト型でエンドツーエンド暗号化されたライブ同期です。ダッシュボードを内蔵した依存関係のない Rust 製サーバーを一つ自分で動かし、そこにこのプラグインを組み合わせます。どんなサイズのファイルも扱え、Obsidian のすべてのプラットフォームに対応し、サブスクリプションも第三者もありません。
+[Obsidian](https://obsidian.md) のための、自己ホスト型でエンドツーエンド暗号化されたライブ同期です。ノートは、あなた自身が動かすサーバーを通じて同期されます。ノート、添付ファイル、ファイル名はデバイス上で暗号化され、サーバーが鍵を受け取ることはありません。プラグインは、デスクトップでもモバイルでも、Obsidian が動くすべてのプラットフォームで動作します。サブスクリプションも、ほかのどこかのアカウントもありません。
 
-設定 → コミュニティプラグイン → 閲覧 から **Self Hosted Private Sync**（プラグイン ID `obsync-private-sync`）としてインストールします。Obsidian 1.13.0 以降が必要です。
+**うまく動かないときは → [トラブルシューティング](https://snaraj.github.io/obsync/troubleshooting/)（英語）**
 
-**はじめての方は[セットアップガイド](https://snaraj.github.io/obsync/setup/)（英語）から。** 各デバイスがサーバーにどう接続するかを選ぶ手助けをし、それぞれの方法を手順ごとに説明します。Obsidian では 設定 → Self Hosted Private Sync → Setup guide から開けます。
+## 目的別の案内
+
+すべてのページは[ドキュメントサイト](https://snaraj.github.io/obsync/)（英語）にもあります。
+
+### obsync を使う
+
+| やりたいこと | 参照先 |
+| --- | --- |
+| デバイスからサーバーへの接続方法を選ぶ | [構成を選ぶ](../setup.md) |
+| 自宅のネットワークで、スマートフォンの画面ごとにすべてを設定する | [同じネットワークで、手順ごとに](../same-network.md) |
+| プラグインをインストールする | [プラグインのインストール](../community-plugin.md) |
+| 最初のデバイスを設定する | [クイックスタート](../quickstart.md) |
+| スマートフォンや別のコンピューターをペアリングする | [スマートフォンをペアリングする](../quickstart.md#pair-your-phone) |
+| ステータスアイコンとコマンドの意味を知る | [日々の使い方](../daily-use.md)と[ステータスバーの読み方](../troubleshooting.md#reading-the-status-bar) |
+| ノートの以前のバージョンを取り戻す | [保持されたバージョンを復元する](../daily-use.md#restore-a-retained-version) |
+| 設定項目の働きを知る | [設定](../settings.md) |
+| 競合コピーに対処する | [競合](../conflicts.md) |
+| 問題を解決する | [トラブルシューティング](../troubleshooting.md) |
+| デバイスをなくしたあと、再びアクセスする | [復旧](../recovery.md) |
+| 保管庫を別のサーバーへ移す | [この保管庫を別のサーバーへ移す](../recovery.md#moving-this-vault-to-a-different-server) |
+
+### サーバーを動かす
+
+| やりたいこと | 参照先 |
+| --- | --- |
+| Docker または Compose でサーバーを動かす | [サーバーを動かす](../server.md) |
+| 自分のプロキシ（Caddy、nginx、Traefik、HAProxy）の背後に置く | [TLS 終端がすでにある場合](../server.md#already-have-a-tls-terminator-docker) |
+| コンテナを使わず、systemd の下で動かす | [静的バイナリ](../server.md#without-a-container-the-static-binary) |
+| Kubernetes でサーバーを動かす | [Kubernetes](../kubernetes.md) と[チャートのリファレンス](../../chart/README.md) |
+| 自分の VPN やプロキシを通じて、外出先からサーバーに接続する | [LAN の外から到達する](../server.md#reaching-it-from-outside-your-lan) |
+| Cloudflare を使う（任意） | [Cloudflare](cloudflare.md) |
+| 各デバイスでサーバーの証明書を信頼する | [認証局を信頼する](../server.md#trust-the-certificate-authority-once-per-device) |
+| 必要なメモリーとディスクの量を知る | [必要なメモリー](../server.md#how-much-memory-it-needs)と[ストレージ](../storage.md) |
+| サーバーをバックアップする | [2 つのボリュームをバックアップする](../server.md#back-up-the-two-volumes) |
+| サーバーをアップグレードする | [ダイジェストでアップグレードする](../server.md#upgrade-by-digest) |
+| デバイスの一覧を見て、どれかを失効させる | [ダッシュボード](../dashboard.md) |
+| サーバーを消去して最初からやり直す | [サーバーの消去](../purge.md) |
+| 各バージョンの変更点を見る | [`CHANGELOG.md`](../../CHANGELOG.md) |
+
+### 信頼とプライバシー
+
+| やりたいこと | 参照先 |
+| --- | --- |
+| このプラグインがデバイスとネットワークで何に触れるかを知る | [このプラグインがアクセスするもの](#このプラグインがアクセスするもの) |
+| 何が暗号化され、サーバーに何が見えるかを理解する | [脅威モデル](../threat-model.md)と[ダッシュボードの脅威モデル](../security/dashboard.md) |
+| セキュリティ上の問題を報告する | [`SECURITY.md`](../../SECURITY.md) |
+
+### プロジェクトの内側
+
+コントリビューターとレビュアー向け: [`CONTRIBUTING.md`](../../CONTRIBUTING.md)、[アーキテクチャ](../architecture.md)、[プロトコル](../protocol.md)、[ベンチマーク](../benchmarks.md)、[実機での検証実行](../validation-runs/)、そして[すべてのページ](../README.md)。
+
+## インストール
+
+![プラグインの設定が Get started から始まっている様子。Setup guide の行とその Open the guide ボタンが、Server URL 欄の上にある](../assets/settings-get-started.png)
+
+**設定 → コミュニティプラグイン → 閲覧** からプラグインをインストールします。**Self Hosted Private Sync**（プラグイン ID `obsync-private-sync`）を検索してください。Obsidian 1.13.0 以降が必要です。プラグインの設定はセットアップガイドから始まり、ボタン一つで開けます。
 
 > [!IMPORTANT]
 > - 同期先は、**あなた自身**が動かすサーバーです。ホスティングされたサービスはなく、ほかのどこかのアカウントもありません。
@@ -16,31 +71,19 @@
 > - 一つの保管庫で、ほかの同期手段（Obsidian Sync、クラウドフォルダー、ほかのプラグイン）と並べて動かさないでください。
 > - 生まれて間もないソフトウェアです。自分のバージョンの [`CHANGELOG.md`](../../CHANGELOG.md) の項目を読み、すべてのデバイスを更新し、各[検証実行](../validation-runs/)が何をカバーしたかを把握してください。
 
-## このプラグインがアクセスするもの
-
-- **自分のサーバーだけ。** すべてのリクエストは、入力した **Server URL** に送られます。テレメトリーも第三者もありません。
-- **そのサーバー上のアカウント**。セットアップトークンから作成され、Obsidian のアカウントは一切関係しません。
-- **Obsidian を通じた GitHub Releases**。インストールと更新のために使い、Obsidian は追加のリリース資材を無視します。
-- **保管庫のファイル一覧**。何を同期するか判断するために使い、隠しフォルダー（`.obsidian`、`.git`）とシンボリックリンクのフォルダーは対象外です。
-- **クリップボードへの書き込みだけ。** 書き込むのは **Pair a new device** の **Copy code** と **Copy link** だけで、読むことは決してありません。
-
-サーバーに何が見え、何が見えないかは [`SECURITY.md`](../../SECURITY.md) と[脅威モデル](../threat-model.md)にあります。
-
 ## 同期を始める
 
-何もない状態から、二台のデバイスが同期している状態までの五つのステップです。`v1.0.6` はこのページを書いた時点のリリースです。自分がインストールするタグを使ってください。
+完全な手順のうち最短なのは、このリポジトリのチェックアウトから、自分のネットワーク上で Caddy 付きの Compose を使う方法です。どのネットワークでも HTTPS が使え、ドメインも、どこのアカウントも要りません。[同じネットワークで、手順ごとに](../same-network.md)が、この手順をすべての画面とともに説明しています。以下の `vX.Y.Z` は、インストールするリリース、つまり[リリースページ](https://github.com/snaraj/obsync/releases/latest)の最新タグに置き換えてください。
 
-### 1. サーバーを起動する
-
-署名を検証し、そこに出力されたダイジェストをそのまま実行します。
+**1. イメージを検証する。** そのうえで、検証が出力したダイジェストをそのまま実行します。
 
 ```sh
-cosign verify ghcr.io/snaraj/obsync:v1.0.6 \
+cosign verify ghcr.io/snaraj/obsync:vX.Y.Z \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-いちばん簡単な道筋は、このリポジトリのチェックアウトから Caddy 付きの Compose を使うことです。どのネットワークでも HTTPS が使え、ドメインも、どこのアカウントも要りません。
+**2. サーバーを起動する。**
 
 ```sh
 OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
@@ -49,90 +92,41 @@ OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
   docker compose -f deploy/compose/docker-compose.yml up -d
 ```
 
-`OBSYNC_HOST` は、デバイスに入力する名前です。自分のネットワーク内で解決できればそれで十分です。`OBSYNC_BIND_ADDRESS` は、ポート 80 と 443 を公開するアドレスです。バインドアドレスが制限するのは宛先のインターフェースであって送信元ではないので、誰が到達できるかを決めるのはファイアウォールです。選ぶまで Compose は起動しません。
+`OBSYNC_HOST` は、デバイスに入力する名前です。自分のネットワーク内で名前解決できれば十分です。`OBSYNC_BIND_ADDRESS` は、ポート 80 と 443 を公開するアドレスです。バインドアドレスが制限するのは宛先のインターフェースであって送信元ではないので、誰が到達できるかを決めるのはファイアウォールです。選ぶまで Compose は起動しません。
 
-信頼しているプロキシやトンネルによって、すでに前段に HTTPS がありますか。その場合は、代わりに素のサーバーを動かします：[サーバーを動かす](../server.md)。
+**3. セットアップトークンを読む。** 初回起動時に、サーバーはセットアップトークンを発行し、ジャーナルのボリュームにモード 0600 で書き出します。ログには決して出ません。このトークンはアカウントを一度だけ作り、その後もダッシュボードの復旧用サインインとして使えます。リカバリーフレーズと同じように大切に保管してください。
 
-### 2. セットアップトークンを読む
-
-初回起動時に、サーバーはセットアップトークンを発行し、ジャーナルのボリュームにモード 0600 で書き出します。ログには決して出ません。このトークンはアカウントを一度だけ作り、その後もダッシュボードの復旧用サインインであり続けます。リカバリーフレーズと同じだけの注意を払って扱ってください。コンテナから読み出します。
+```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
 
 ```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 
-### 3. 証明書を信頼する。デバイスごとに一度
+**4. 各デバイスを設定する。** サーバーの証明書を一度だけ信頼します（[方法](../server.md#trust-the-certificate-authority-once-per-device)）。プラグインをインストールし、[クイックスタート](../quickstart.md)に従って、最初のデバイスを設定してからほかのデバイスをペアリングします。
 
-Caddy は、初回起動時に自分で生成した認証局で署名します。各デバイスは、その認証局を一度だけ信頼する必要があります。ルート証明書を書き出し、[サーバーを動かす](../server.md#trust-the-certificate-authority-once-per-device)が示すとおりにプラットフォームごとにインストールしてください。iOS では、証明書を信頼することは、インストールしたあとの二つ目のスイッチです。
+信頼しているプロキシやトンネルによって、すでに前段に HTTPS がありますか。その場合は、代わりに[素のサーバー](../server.md#already-have-a-tls-terminator-docker)を動かします。
 
-### 4. 一台目のデバイスを設定する
+## このプラグインがアクセスするもの
 
-1. 設定 → コミュニティプラグイン → 閲覧 → **Self Hosted Private Sync** → インストール → 有効化。
-2. **Server URL** を自分のサーバーに設定し（`https://sync.example.org`。443 以外ならポートも含めます）、**Whole vault** か **Selected folders only** を選びます。あとから変えられるのは、狭める方向だけです。
+- **自分のサーバーだけ。** すべてのリクエストは、入力した **Server URL** に送られます。テレメトリーも第三者もありません。
+- **そのサーバー上のアカウント**。セットアップトークンから作成され、Obsidian のアカウントは一切関係しません。
+- **Obsidian を通じた GitHub Releases**。インストールと更新のために使い、Obsidian は追加のリリース資材を無視します。
+- **保管庫のファイル一覧**。何を同期するか判断するために使い、隠しフォルダー（`.obsidian`、`.git`）とシンボリックリンクのフォルダーは対象外です。
+- **クリップボードへの書き込みだけ。** 書き込むのは **Pair a new device** の **Copy code** と **Copy link** だけで、読むことは決してありません。
+- **セットアップガイドを求めたときのブラウザー。** プロジェクトのガイドがブラウザーで開きます。プラグイン自身は何も送信しません。
 
-   ![プラグインの設定タブ。デモ用のホスト名が入った Server URL 欄、エッジヘッダーの入力欄、Check と Open dashboard のボタンがある Connection の行](../assets/settings-server.png)
+サーバーに何が見え、何が見えないかは [`SECURITY.md`](../../SECURITY.md) と[脅威モデル](../threat-model.md)にあります。
 
-3. セットアップトークンを **Setup or recover** の下に貼り付け、**Set up or recover** を選び、24 語のリカバリーフレーズを書き留めます。
+## バージョン
 
-   ![設定タブの This device セクション。Pair this device と Pair a new device がある Pairing の行、Setup token 欄と Set up ボタンがある First-time setup の行、そして Vault key の行](../assets/settings-setup.png)
-
-### 5. 二台目のデバイスをペアリングする
-
-1. 二台目でも同じ **Server URL** でプラグインをインストールします。一台目で **Pair a new device** を実行すると、10 分間有効なコードが表示されます。
-
-   ![一台目のデバイスの Pair a new device ダイアログ。コードは伏せられ、Copy code と Copy link のボタン、そして Waiting for the new device の行がある](../assets/pair-new-device.png)
-
-2. 二台目で **Pair this device** を開き、コードを貼り付けて **Pair** を選びます。
-3. 一台目に戻り、新しいデバイスを名前で承認します。どちらかでノートを編集すると、数秒のうちにもう片方に現れます。
-
-   ![新しいデバイスを名前で承認するかどうかを尋ねている一台目のデバイス。Approve と Reject のボタンがある](../assets/pair-approve.png)
-
-![アニメーション：一台目に表示されたペアリングコードが二台目に貼り付けられ、一台目で承認され、最初のノートが二台目に届くまで](../assets/pairing.gif)
-
-一台のコンピューターで試しますか。コンピューターなら `http://127.0.0.1:8080` で素のサーバーに届きます。iOS と Android の Obsidian は平文の HTTP を拒否します。
-
-スマートフォンのスクリーンショットは、まだこのリポジトリにはありません。メンテナー自身のデバイスで撮影され、検証実行がそれを記録した時点で追加されます。
-
-各ステップの全文は[クイックスタート](../quickstart.md)にあります。
-
-## 応用：Cloudflare
-
-リファレンス構成には公開ホスト名がありません。Cloudflare Tunnel とプライベートルートがサーバーのネットワークに到達し、各デバイスの Cloudflare One クライアントが Server URL への通信をそこへ運びます。**Edge service-token headers** にサービストークンを入れ、`OBSYNC_EDGE=cloudflare` を設定した、Cloudflare Access の背後の公開ホスト名でも動きます。どちらも手順を追って説明しています：[Cloudflare](cloudflare.md)。
-
-## サーバーに届くほかの方法
-
-何を選ぶにしても、プラグインにはすべてのデバイスが信頼する証明書を備えた HTTPS が必要で、サーバー自身はその終端の背後で平文の HTTP のままです。
-
-- **LAN だけ。** 上記の Compose の構成を、自宅でだけ使います。外出先での同期はできません。
-- **WireGuard。** 自分のネットワークへ戻る自前の VPN です。最も速く完全に自分のものですが、すべてのデバイスにピア設定が要ります。
-- **Tailscale。** 管理された WireGuard のメッシュです。設定はいちばん少なくて済みますが、調整するのは第三者であり、そのプランの条件に従います。
-- **自動 TLS 付きのリバースプロキシ**。公開の名前で動く Caddy などです。インターネットから到達可能になり、更新を当てるのは自分の責任です。
-- **Cloudflare Tunnel。** 上記のとおりです。受信ポートは不要ですが、経路上に独自の条件を持つプロバイダーがいます。
-
-外出先のデバイスに必要なもの（経路、名前、証明書、ファイアウォール、iOS のローカルネットワークの確認）は[LAN の外から到達する](../server.md#reaching-it-from-outside-your-lan)にあります。
-
-## トラブルシューティング
-
-| 症状 | 考えられる原因 | まず試すこと |
-| --- | --- | --- |
-| `obsync: offline` | デバイスが Server URL に到達できない | 同じデバイスのブラウザーでその URL を開き、ポート、HTTPS、経路を確認する |
-| コンピューターは同期しているのに、スマートフォンがつながらない | スマートフォンでプライベート証明書が信頼されていない | ルート証明書をインストールする。iOS ではさらに「証明書信頼設定」でオンにする |
-| `401 stale_timestamp` | どこかの時計が 300 秒以上ずれている | デバイスかサーバーで、時刻の自動設定をオンにする |
-| `403 device_pending` | まだ誰もそのデバイスを承認していない | ペアリング元のデバイスで、名前を見て承認する |
-| ファイルがいつまでも届かない | フォルダー選択の外にあるか、スマートフォンのサイズ上限を超えている | **Sync folders on this device** を確認する。スマートフォンでは **Show remote-only files** を実行する |
-
-それ以外のすべての症状とエラーコード、そして報告のしかたは[トラブルシューティング](../troubleshooting.md)にあります。
-
-## ドキュメント
-
-[クイックスタート](../quickstart.md) · [サーバーを動かす](../server.md) · [Cloudflare](cloudflare.md) · [日々の使い方](../daily-use.md) · [設定](../settings.md) · [トラブルシューティング](../troubleshooting.md) · [復旧](../recovery.md) · [変更履歴](../../CHANGELOG.md)
-
-そのほかはすべて [docs/README.md](../README.md) にあります。
+LATEST のリリースは、[リリースページ](https://github.com/snaraj/obsync/releases/latest)の最新タグです。Obsidian がインストールし、更新するのはこのリリースです。`main` は EDGE で、マージ済みだが未リリースの作業を含み、ソースからビルドする人向けです。ベータチャンネルもプレリリースのタグもありません。変更履歴の Unreleased セクションが EDGE の記録です。
 
 ## 質問、バグ、セキュリティ
 
 - **質問、あるいはバグかどうか自信がないとき：** [Discussions](https://github.com/snaraj/obsync/discussions)。
-- **バグ：** [トラブルシューティング](../troubleshooting.md)に書かれているレポートを添えて、[イシューを作成してください](https://github.com/snaraj/obsync/issues/new/choose)。トークン、リカバリーフレーズ、公開したくないアドレスは含めないでください。
+- **バグ：** [トラブルシューティング](../troubleshooting.md#how-to-collect-a-report)に書かれているレポートを添えて、[イシューを作成してください](https://github.com/snaraj/obsync/issues/new/choose)。公開したくないトークン、フレーズ、アドレスは含めないでください。
 - **脆弱性の疑い：** 公開のイシューにはせず、[`SECURITY.md`](../../SECURITY.md) を通じて非公開で報告してください。
 
 ## ライセンス

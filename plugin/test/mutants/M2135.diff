@@ -1,0 +1,12 @@
+# M2135: a held note the feed did not settle is never published
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2871,7 +2871,7 @@
+     if (holding.handle !== null) this.timers.clear(holding.handle);
+     let queued = 0;
+     for (const path of holding.paths) {
+-      if (this.options.state.fileByPath(path) !== undefined) continue;
++      continue;
+       this.enqueue(path);
+       queued++;
+     }

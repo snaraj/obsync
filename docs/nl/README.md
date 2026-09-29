@@ -5,63 +5,106 @@
 # Self Hosted Private Sync
 
 Zelf gehoste, end-to-end versleutelde live synchronisatie voor
-[Obsidian](https://obsidian.md): één afhankelijkheidsvrije Rust-server met een
-ingebouwd dashboard die je zelf draait, plus deze plugin. Bestanden van elke
-grootte, elk Obsidian-platform, geen abonnement, geen derde partij.
+[Obsidian](https://obsidian.md). Je notities synchroniseren via een server die
+je zelf draait. Notities, bijlagen en bestandsnamen worden op je apparaat
+versleuteld, en de server krijgt de sleutel nooit. De plugin werkt op elk
+platform waarop Obsidian draait, desktop en mobiel. Er is geen abonnement en
+nergens anders een account.
 
-Installeer hem via Instellingen → Externe plug-in → Doorbladeren als
-**Self Hosted Private Sync** (plugin-id `obsync-private-sync`), op Obsidian
-1.13.0 of nieuwer.
+**Werkt er iets niet? → [Probleemoplossing](https://snaraj.github.io/obsync/troubleshooting/)**
 
-**Nieuw hier? Begin met de [installatiegids](https://snaraj.github.io/obsync/setup/) (in het Engels).** Die helpt je kiezen hoe je apparaten je server bereiken en loopt elke optie stap voor stap door. In Obsidian: Instellingen → Self Hosted Private Sync → Setup guide.
+## Vind wat je zoekt
+
+Elke pagina staat ook op de
+[documentatiesite](https://snaraj.github.io/obsync/). De gelinkte pagina's
+zijn in het Engels.
+
+### obsync gebruiken
+
+| Ik wil… | Ga naar |
+| --- | --- |
+| Kiezen hoe mijn apparaten mijn server bereiken | [Kies je opzet](../setup.md) |
+| Alles op mijn thuisnetwerk instellen, met elk scherm op de telefoon | [Hetzelfde netwerk, stap voor stap](../same-network.md) |
+| De plugin installeren | [De plugin installeren](../community-plugin.md) |
+| Mijn eerste apparaat instellen | [Snelstart](../quickstart.md) |
+| Een telefoon of een andere computer koppelen | [Je telefoon koppelen](../quickstart.md#pair-your-phone) |
+| Weten wat het statuspictogram en de opdrachten betekenen | [Dagelijks gebruik](../daily-use.md) en [De statusbalk lezen](../troubleshooting.md#reading-the-status-bar) |
+| Een oudere versie van een notitie terugkrijgen | [Een bewaarde versie terugzetten](../daily-use.md#restore-a-retained-version) |
+| Weten wat een instelling doet | [Instellingen](../settings.md) |
+| Omgaan met een conflictkopie | [Conflicten](../conflicts.md) |
+| Een probleem oplossen | [Probleemoplossing](../troubleshooting.md) |
+| Weer binnenkomen nadat ik een apparaat kwijt ben | [Herstel](../recovery.md) |
+| Mijn kluis naar een andere server verhuizen | [Deze kluis naar een andere server verhuizen](../recovery.md#moving-this-vault-to-a-different-server) |
+
+### Een server draaien
+
+| Ik wil… | Ga naar |
+| --- | --- |
+| Mijn server draaien met Docker of Compose | [De server draaien](../server.md) |
+| Hem achter mijn eigen proxy zetten (Caddy, nginx, Traefik, HAProxy) | [Al een TLS-terminator?](../server.md#already-have-a-tls-terminator-docker) |
+| Hem zonder container draaien, onder systemd | [De statische binary](../server.md#without-a-container-the-static-binary) |
+| Mijn server op Kubernetes draaien | [Kubernetes](../kubernetes.md) en de [chart-referentie](../../chart/README.md) |
+| Mijn server buitenshuis bereiken, via mijn eigen VPN of proxy | [Hem bereiken van buiten je LAN](../server.md#reaching-it-from-outside-your-lan) |
+| Cloudflare gebruiken (optioneel) | [Cloudflare](cloudflare.md) |
+| Het certificaat van mijn server op elk apparaat vertrouwen | [De certificaatautoriteit vertrouwen](../server.md#trust-the-certificate-authority-once-per-device) |
+| Weten hoeveel geheugen en schijfruimte hij nodig heeft | [Hoeveel geheugen hij nodig heeft](../server.md#how-much-memory-it-needs) en [Opslag](../storage.md) |
+| Een back-up van mijn server maken | [Een back-up van de twee volumes maken](../server.md#back-up-the-two-volumes) |
+| Mijn server bijwerken | [Bijwerken via digest](../server.md#upgrade-by-digest) |
+| Mijn apparaten zien en er een intrekken | [Het dashboard](../dashboard.md) |
+| Mijn server wissen en opnieuw beginnen | [Een server leegmaken](../purge.md) |
+| Zien wat er in elke versie is veranderd | [`CHANGELOG.md`](../../CHANGELOG.md) |
+
+### Vertrouwen en privacy
+
+| Ik wil… | Ga naar |
+| --- | --- |
+| Weten waar deze plugin op mijn apparaat en netwerk toegang toe heeft | [Waar deze plugin toegang toe heeft](#waar-deze-plugin-toegang-toe-heeft) |
+| Begrijpen wat er versleuteld is en wat de server kan zien | [Dreigingsmodel](../threat-model.md) en [het dreigingsmodel van het dashboard](../security/dashboard.md) |
+| Een beveiligingsprobleem melden | [`SECURITY.md`](../../SECURITY.md) |
+
+### Binnen in het project
+
+Voor bijdragers en reviewers: [`CONTRIBUTING.md`](../../CONTRIBUTING.md),
+[architectuur](../architecture.md), [protocol](../protocol.md),
+[benchmarks](../benchmarks.md),
+[validatieruns op apparaten](../validation-runs/) en
+[alle pagina's](../README.md).
+
+## Installeren
+
+![De instellingen van de plugin openen met Get started: de rij Setup guide en de knop Open the guide, boven het veld Server URL](../assets/settings-get-started.png)
+
+Installeer de plugin via **Instellingen → Externe plug-in → Doorbladeren**.
+Zoek naar **Self Hosted Private Sync** (plugin-id `obsync-private-sync`). Hij
+heeft Obsidian 1.13.0 of nieuwer nodig. Zijn instellingen openen met de
+installatiegids, één klik verderop.
 
 > [!IMPORTANT]
-> - Hij synchroniseert met een server die **jij** draait: geen gehoste dienst,
->   nergens anders een account.
-> - Maak eerst een back-up van je kluis; bewaar de herstelzin van 24 woorden
->   niet op het apparaat dat hem heeft gemaakt.
-> - Draai hem nooit naast een andere synchronisatie (Obsidian Sync, een
->   cloudmap, een andere plugin) op één kluis.
-> - Jonge software: lees het item in [`CHANGELOG.md`](../../CHANGELOG.md) voor
->   jouw versie, werk elk apparaat bij en weet wat elke
->   [validatierun](../validation-runs/) heeft gedekt.
-
-## Waar deze plugin toegang toe heeft
-
-- **Je eigen server, en niets anders.** Elk verzoek gaat naar de
-  **Server URL** die je invult; geen telemetrie, geen derde partij.
-- **Een account op die server**, aangemaakt met het setup-token; je
-  Obsidian-account speelt geen rol.
-- **GitHub Releases, via Obsidian**, voor installatie en updates; Obsidian
-  negeert de extra release-bestanden.
-- **De bestandslijst van je kluis**, om te bepalen wat er synchroniseert;
-  verborgen mappen (`.obsidian`, `.git`) en mappen die een symbolische
-  koppeling zijn, worden overgeslagen.
-- **Het klembord, alleen beschreven** door **Copy code** en **Copy link** in
-  **Pair a new device**, nooit gelezen.
-
-Wat de server wel en niet kan zien: [`SECURITY.md`](../../SECURITY.md) en het
-[dreigingsmodel](../threat-model.md).
+> - Hij synchroniseert met een server die **jij** draait: geen gehoste dienst, nergens anders een account.
+> - Maak eerst een back-up van je kluis; bewaar de herstelzin van 24 woorden niet op het apparaat dat hem heeft gemaakt.
+> - Draai hem nooit naast een andere synchronisatie (Obsidian Sync, een cloudmap, een andere plugin) op één kluis.
+> - Jonge software: lees het item in [`CHANGELOG.md`](../../CHANGELOG.md) voor jouw versie, werk elk apparaat bij en weet wat elke [validatierun](../validation-runs/) heeft gedekt.
 
 ## Aan de slag met synchroniseren
 
-Vijf stappen, van niets tot twee apparaten die synchroon lopen. `v1.0.6` is de
-release waarvoor deze pagina is geschreven; neem de tag van de release die je
-installeert.
+Het kortste volledige pad is Compose met Caddy op je eigen netwerk, vanuit een
+checkout van dit repository. Het geeft je HTTPS op elk netwerk, zonder domein
+en zonder account waar dan ook.
+[Hetzelfde netwerk, stap voor stap](../same-network.md) loopt het met elk
+scherm door. Vervang hieronder `vX.Y.Z` door de release die je installeert:
+de nieuwste tag op de
+[Releases-pagina](https://github.com/snaraj/obsync/releases/latest).
 
-### 1. De server starten
-
-Controleer de handtekening en draai daarna precies de digest die ze afdrukt:
+**1. Controleer de image.** Draai daarna precies de digest die de opdracht
+heeft afgedrukt:
 
 ```sh
-cosign verify ghcr.io/snaraj/obsync:v1.0.6 \
+cosign verify ghcr.io/snaraj/obsync:vX.Y.Z \
   --certificate-identity https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
-Het eenvoudigste pad is Compose met Caddy, vanuit een checkout van dit
-repository: HTTPS op elk netwerk, zonder domein en zonder account bij wie dan
-ook.
+**2. Start de server:**
 
 ```sh
 OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
@@ -70,139 +113,58 @@ OBSYNC_IMAGE=ghcr.io/snaraj/obsync@sha256:<digest> \
   docker compose -f deploy/compose/docker-compose.yml up -d
 ```
 
-`OBSYNC_HOST` is de naam die je apparaten zullen intypen; hij hoeft alleen op
+`OBSYNC_HOST` is de naam die je apparaten zullen intypen. Hij hoeft alleen op
 je eigen netwerk op te lossen. `OBSYNC_BIND_ADDRESS` is het adres waarop de
 poorten 80 en 443 worden gepubliceerd: een bind-adres beperkt de
 doelinterface, niet de bron, dus je firewall bepaalt wie hem bereikt. Compose
 weigert te starten totdat je hebt gekozen.
 
-Staat er al HTTPS voor, van een proxy of een tunnel die je vertrouwt? Draai
-dan de kale server: [De server draaien](../server.md).
+**3. Lees het setup-token.** Bij de eerste start maakt de server een
+setup-token aan en schrijft het naar zijn journal-volume, modus 0600, nooit
+gelogd. Het maakt je account één keer aan en blijft de herstelaanmelding van
+het dashboard. Bewaar het net zo zorgvuldig als de herstelzin:
 
-### 2. Het setup-token lezen
-
-Bij de eerste start maakt de server een setup-token aan en schrijft het naar
-zijn journal-volume, modus 0600, nooit gelogd. Het maakt je account één keer
-aan en blijft daarna de herstelaanmelding van het dashboard: behandel het met
-dezelfde zorg als de herstelzin. Lees het uit de container:
+```sh
+docker exec obsync-obsync-1 obsyncd setup-token
+```
 
 ```sh
 docker cp obsync-obsync-1:/data/journal/v1/setup-token - | tar -xO
 ```
 
-### 3. Het certificaat vertrouwen, eenmaal per apparaat
+**4. Stel elk apparaat in.** Vertrouw het certificaat van de server één keer
+([hoe](../server.md#trust-the-certificate-authority-once-per-device)).
+Installeer de plugin en volg dan de [Snelstart](../quickstart.md): stel het
+eerste apparaat in en koppel daarna de andere.
 
-Caddy ondertekent met een autoriteit die het bij de eerste start zelf heeft
-gemaakt, dus elk apparaat moet die één keer vertrouwen. Exporteer het
-hoofdcertificaat en installeer het per platform zoals
-[De server draaien](../server.md#trust-the-certificate-authority-once-per-device)
-laat zien; op iOS is het vertrouwen ervan een tweede schakelaar ná de
-installatie.
+Staat er al HTTPS voor, van een proxy of tunnel die je vertrouwt? Draai dan
+de [kale server](../server.md#already-have-a-tls-terminator-docker).
 
-### 4. Het eerste apparaat inrichten
+## Waar deze plugin toegang toe heeft
 
-1. Instellingen → Externe plug-in → Doorbladeren →
-   **Self Hosted Private Sync** → Installeren → Activeer.
-2. Zet **Server URL** op je server (`https://sync.example.org`, met poort
-   wanneer die niet 443 is) en kies dan **Whole vault** of
-   **Selected folders only**; de selectie kan later alleen nog smaller worden.
+- **Je eigen server, en niets anders.** Elk verzoek gaat naar de **Server URL** die je invult; geen telemetrie, geen derde partij.
+- **Een account op die server**, aangemaakt met het setup-token; je Obsidian-account speelt geen rol.
+- **GitHub Releases, via Obsidian**, voor installatie en updates; Obsidian negeert de extra release-bestanden.
+- **De bestandslijst van je kluis**, om te bepalen wat er synchroniseert; verborgen mappen (`.obsidian`, `.git`) en mappen die een symbolische koppeling zijn, worden overgeslagen.
+- **Het klembord, alleen om naar te schrijven**, door **Copy code** en **Copy link** in **Pair a new device**; nooit gelezen.
+- **Je browser, als je om de installatiegids vraagt.** Daar opent de gids van het project; de plugin zelf verstuurt niets.
 
-   ![Het instellingentabblad van de plugin: het veld Server URL met een demo-hostnaam, het vak voor de edge-headers en de rij Connection met de knoppen Check en Open dashboard](../assets/settings-server.png)
+Wat de server wel en niet kan zien: [`SECURITY.md`](../../SECURITY.md) en het [dreigingsmodel](../threat-model.md).
 
-3. Plak het setup-token onder **Setup or recover**, kies **Set up or recover** en schrijf
-   de herstelzin van 24 woorden op.
+## Versies
 
-   ![Het gedeelte This device van het instellingentabblad: de rij Pairing met Pair this device en Pair a new device, de rij First-time setup met het veld Setup token en de knop Set up, en de rij Vault key](../assets/settings-setup.png)
-
-### 5. Het tweede apparaat koppelen
-
-1. Installeer de plugin daar met dezelfde **Server URL**; voer op het eerste
-   apparaat **Pair a new device** uit voor een code die tien minuten geldig
-   is.
-
-   ![Het dialoogvenster Pair a new device op het eerste apparaat, de code onleesbaar gemaakt, met de knoppen Copy code en Copy link en de regel Waiting for the new device](../assets/pair-new-device.png)
-
-2. Open op het tweede apparaat **Pair this device**, plak de code en kies
-   **Pair**.
-3. Terug op het eerste apparaat keur je het op naam goed. Bewerk op een van
-   beide een notitie; ze verschijnt binnen enkele seconden op het andere.
-
-   ![Het eerste apparaat vraagt of het nieuwe apparaat op naam moet worden goedgekeurd, met de knoppen Approve en Reject](../assets/pair-approve.png)
-
-![Animatie: de koppelcode wordt op het eerste apparaat getoond, op het tweede geplakt, op het eerste goedgekeurd, en de eerste notitie komt aan op het tweede](../assets/pairing.gif)
-
-Het op één computer uitproberen? Op een computer bereikt
-`http://127.0.0.1:8080` de kale server; Obsidian op iOS en Android weigert
-gewoon HTTP.
-
-Schermafbeeldingen van een telefoon staan nog niet in dit repository; ze
-worden op de eigen apparaten van de beheerder gemaakt en toegevoegd zodra een
-validatierun ze vastlegt.
-
-Elke stap volledig: [Snelstart](../quickstart.md).
-
-## Gevorderd: Cloudflare
-
-De referentie-installatie heeft geen publieke hostnaam: een Cloudflare Tunnel
-en een privéroute bereiken het netwerk van de server, en de Cloudflare
-One-client op elk apparaat draagt de server-URL daarheen. Een publieke
-hostnaam achter Cloudflare Access, met een servicetoken in
-**Edge service-token headers** en `OBSYNC_EDGE=cloudflare`, werkt ook.
-Beide, stap voor stap: [Cloudflare](cloudflare.md).
-
-## Andere manieren om je server te bereiken
-
-Wat je ook kiest, de plugin heeft HTTPS nodig met een certificaat dat elk
-apparaat vertrouwt; de server zelf blijft achter die terminator op gewoon
-HTTP.
-
-- **Alleen LAN.** Het Compose-pad hierboven, alleen thuis bereikbaar; geen
-  synchronisatie buitenshuis.
-- **WireGuard.** Je eigen VPN naar huis: het snelst en helemaal van jou; op
-  elk apparaat een peer-configuratie.
-- **Tailscale.** Een beheerde WireGuard-mesh: de minste inrichting; een derde
-  partij coördineert hem, onder de voorwaarden van zijn abonnement.
-- **Een reverse proxy met automatische TLS**, zoals Caddy op een publieke
-  naam: bereikbaar vanaf het internet, en jij houdt hem bij.
-- **Cloudflare Tunnel.** Zie hierboven. Geen inkomende poort; een aanbieder op
-  het pad, onder zijn eigen voorwaarden.
-
-Wat een apparaat onderweg nodig heeft (route, naam, certificaat, firewall, de
-iOS-vraag voor het lokale netwerk):
-[Hem bereiken van buiten je LAN](../server.md#reaching-it-from-outside-your-lan).
-
-## Probleemoplossing
-
-| Symptoom | Waarschijnlijke oorzaak | Eerste wat je probeert |
-| --- | --- | --- |
-| `obsync: offline` | Het apparaat kan de server-URL niet bereiken | Open de URL in een browser op hetzelfde apparaat; controleer de poort, HTTPS en de route |
-| Een telefoon verbindt niet terwijl een computer wel synchroniseert | Het privécertificaat wordt op de telefoon niet vertrouwd | Installeer het hoofdcertificaat; zet het op iOS ook aan onder "Certificaatvertrouwensinstellingen" |
-| `401 stale_timestamp` | Een klok wijkt meer dan 300 seconden af | Zet de automatische tijd aan, op het apparaat of op de server |
-| `403 device_pending` | Niemand heeft het apparaat nog goedgekeurd | Keur het op naam goed op het apparaat waarvandaan je hebt gekoppeld |
-| Een bestand komt nooit aan | Het valt buiten de mapselectie, of boven de groottegrens van een telefoon | Controleer **Sync folders on this device**; voer op de telefoon **Show remote-only files** uit |
-
-Elk ander symptoom en elke foutcode, en hoe je er een meldt:
-[Probleemoplossing](../troubleshooting.md).
-
-## Documentatie
-
-[Snelstart](../quickstart.md) · [De server draaien](../server.md) ·
-[Cloudflare](cloudflare.md) · [Dagelijks gebruik](../daily-use.md) ·
-[Instellingen](../settings.md) · [Probleemoplossing](../troubleshooting.md) ·
-[Herstel](../recovery.md) · [Changelog](../../CHANGELOG.md)
-
-Al het overige: [docs/README.md](../README.md).
+De LATEST-release is de nieuwste tag op de
+[Releases-pagina](https://github.com/snaraj/obsync/releases/latest). Die
+installeert Obsidian en daar werkt het naar bij. `main` is de EDGE: werk dat
+is samengevoegd maar nog niet uitgebracht, voor wie vanaf de broncode bouwt.
+Er is geen bètakanaal en geen pre-release-tag. De sectie ‘Unreleased’ in de
+changelog houdt bij wat er in de EDGE zit.
 
 ## Vragen, fouten en beveiliging
 
-- **Een vraag, of iets waarvan je niet zeker weet of het een fout is:**
-  [Discussions](https://github.com/snaraj/obsync/discussions).
-- **Een fout:** [open een issue](https://github.com/snaraj/obsync/issues/new/choose)
-  met het rapport dat [Probleemoplossing](../troubleshooting.md) beschrijft;
-  zonder token, zonder herstelzin en zonder een adres dat je niet zou
-  publiceren.
-- **Een vermoedelijke kwetsbaarheid:** vertrouwelijk, via
-  [`SECURITY.md`](../../SECURITY.md), nooit als openbaar issue.
+- **Een vraag, of iets waarvan je niet zeker weet of het een fout is:** [Discussions](https://github.com/snaraj/obsync/discussions).
+- **Een fout:** [open een issue](https://github.com/snaraj/obsync/issues/new/choose) met het rapport dat [Probleemoplossing](../troubleshooting.md#how-to-collect-a-report) beschrijft. Laat tokens, herstelzinnen en adressen die je niet zou publiceren weg.
+- **Een vermoedelijke kwetsbaarheid:** vertrouwelijk, via [`SECURITY.md`](../../SECURITY.md), nooit als openbaar issue.
 
 ## Licentie
 

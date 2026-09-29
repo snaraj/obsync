@@ -1,0 +1,12 @@
+# M1902: the folder a losing name made is never removed or tombstoned
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4293,7 +4293,7 @@
+  * reconciliation, which tombstones every record whose folder is gone.
+  */
+ async function retireLostFolders(context: SyncContext, base: string | undefined, kept: string, lost: string): Promise<void> {
+-  if (base === undefined) return;
++  if (base === undefined || (true as boolean)) return;
+   const keep = new Set([...ancestors(kept), ...ancestors(base)]);
+   for (const folder of ancestors(lost)) {
+     if (keep.has(folder) || !inSyncScope(folder, context.state.data.syncFolders)) return;

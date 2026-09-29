@@ -1,0 +1,12 @@
+# M2330: a device list read answers a later showing (iPhone pass)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -938,7 +938,7 @@
+     this.readingDevices = true;
+     const shown = this.devicesShown;
+     const { deviceId, serverUrl } = this.plugin.state.data;
+-    const current = (): boolean => shown === this.devicesShown && deviceId === this.plugin.state.data.deviceId &&
++    const current = (): boolean => deviceId === this.plugin.state.data.deviceId &&
+       serverUrl === this.plugin.state.data.serverUrl;
+     // A person is looking at this list: their patience, not the background's (#182).
+     void this.plugin.listDevices({ interactive: true })

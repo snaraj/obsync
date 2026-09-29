@@ -669,7 +669,8 @@ fn watermark_spec(w: &crate::config::Watermark) -> String {
 /// The window is the tail of the change feed, capped at
 /// [`super::CHANGES_MAX_LIMIT`] frames: a dashboard page load is bounded work
 /// however large the vault is, and a server busier than that reports the busy
-/// end of the window, which is the part the graph is for.
+/// end of the window, which is the part the graph is for. Only timestamps are
+/// read, so no version record is copied to count it.
 fn versions_per_hour(app: &App) -> Value {
     const HOURS: u64 = 24;
     let now = app.clock.unix_secs();
@@ -678,12 +679,13 @@ fn versions_per_hour(app: &App) -> Value {
 
     let head = render::seq_u64(app.store.head_seq());
     let since = Seq(head.saturating_sub(super::CHANGES_MAX_LIMIT));
-    if let Ok(c) = app.store.changes(since, super::CHANGES_MAX_LIMIT as usize) {
-        for change in &c.changes {
-            let hour = render::ms_u64(change.version.ts) / 1000 / 3600;
-            if hour >= first_hour && hour < first_hour + HOURS {
-                counts[(hour - first_hour) as usize] += 1;
-            }
+    for ts in app
+        .store
+        .version_times(since, super::CHANGES_MAX_LIMIT as usize)
+    {
+        let hour = render::ms_u64(ts) / 1000 / 3600;
+        if hour >= first_hour && hour < first_hour + HOURS {
+            counts[(hour - first_hour) as usize] += 1;
         }
     }
     Value::Array(

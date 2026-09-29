@@ -1,8 +1,8 @@
 # M522: claim does not send sealed vault details
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -303,7 +303,7 @@
-           name: this.plugin.deviceName(),
+@@ -643,7 +643,7 @@
+           name,
            platform: this.plugin.platformName(),
            app_version: this.plugin.manifest.version,
 -          vault,

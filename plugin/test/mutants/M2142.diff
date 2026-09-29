@@ -1,0 +1,12 @@
+# M2142: a remembered sid is believed without its record's digest
+--- a/plugin/src/sync/repair.ts
++++ b/plugin/src/sync/repair.ts
+@@ -89,7 +89,7 @@
+   private async known(record: FileRecord): Promise<string | null> {
+     const sid = record.sid;
+     if (sid === undefined || !isHex(sid, 32)) return null;
+-    return (await sidDigest([sid])) === record.sha256 ? sid : null;
++    return sid;
+   }
+ 
+   /**

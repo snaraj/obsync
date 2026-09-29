@@ -1,0 +1,12 @@
+# M2225: a merged note declares its writer one byte over the merged text
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2735,7 +2735,7 @@
+         // merged text is written where it is published.
+         const target = settledName(context, change, baseManifest.path, here, theirManifest.path);
+         localPath = await takeName(context, change, localPath, target);
+-        const writer = await context.host.writer(localPath, text.length);
++        const writer = await context.host.writer(localPath, text.length + 1);
+         await writer.write(text);
+         // A new background rewrite may still be waiting for the watcher's
+         // debounce. Judge the actual merge input before our write replaces

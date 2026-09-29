@@ -1,7 +1,7 @@
 # M292: the start-up clean-up deletes a hold, which may be the last name of a save
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -108,7 +108,7 @@
+@@ -111,7 +111,7 @@
   * (`desktopWriter`) and a restored copy's (`createWriter`). Not a hold's --
   * a hold may be the last name of a save (`hold`).
   */
@@ -9,4 +9,4 @@
 +const WRITE_TEMP = /^\.obsync-(?:write|restore|hold)-[0-9a-f]+\.tmp$/;
  
  /**
-  * What makes a folder a vault that syncs with this plugin (issue #180):
+  * What `link` answers on a volume that has no hard links (issue #176):

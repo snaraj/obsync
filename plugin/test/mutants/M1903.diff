@@ -1,0 +1,12 @@
+# M1903: the losing-folder walk forgets the common ancestor's folders
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4294,7 +4294,7 @@
+  */
+ async function retireLostFolders(context: SyncContext, base: string | undefined, kept: string, lost: string): Promise<void> {
+   if (base === undefined) return;
+-  const keep = new Set([...ancestors(kept), ...ancestors(base)]);
++  const keep = new Set([...ancestors(kept)]);
+   for (const folder of ancestors(lost)) {
+     if (keep.has(folder) || !inSyncScope(folder, context.state.data.syncFolders)) return;
+     const shown = await context.host.spelling(folder);

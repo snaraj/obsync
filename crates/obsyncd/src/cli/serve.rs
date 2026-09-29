@@ -6,14 +6,15 @@
 //! configuration, because it is a capacity choice and not a security one.
 #![forbid(unsafe_code)]
 
-use std::io::Write;
+use std::io::{self, Write};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread::{JoinHandle, sleep};
 use std::time::{Duration, Instant};
 
 use obsync_core::hex;
-use obsync_core::http::{Limits, Server};
+use obsync_core::http::{Limits, Report, Server};
 
 use crate::api::auth::SystemClock;
 use crate::api::{self, App};
@@ -34,8 +35,13 @@ pub const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 /// An idle connection is closed after this long; a long-poll is excepted up to
 /// its own `wait`.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-/// A body slower than this is a slowloris and is dropped.
-pub const MIN_BODY_RATE: u64 = 64 * 1024;
+/// A body slower than this is a slowloris and is dropped. 16 KiB/s is about
+/// 128 kbit/s: a maximal 8 MiB chunk gets about 513 s, so a phone on weak
+/// mobile data still delivers one, where 64 KiB/s failed every upload below
+/// about 512 kbit/s forever (#204). A trickle stays bounded by the
+/// connection ceiling and `HEADER_TIMEOUT`, and unverified bodies by
+/// `api::PREAUTH_BODY_BUDGET`.
+pub const MIN_BODY_RATE: u64 = 16 * 1024;
 /// In-flight requests get this long to finish after a signal.
 pub const DRAIN: Duration = Duration::from_secs(20);
 /// Garbage collection runs on this period (`docs/storage.md`).
@@ -44,8 +50,21 @@ pub const GC_PERIOD: Duration = Duration::from_secs(3600);
 pub const GC_BUDGET: Duration = Duration::from_secs(600);
 /// One scrub step re-hashes at most this many bytes before sleeping.
 pub const SCRUB_STEP_BYTES: u64 = 16 * 1024 * 1024;
-/// The index snapshot period.
-pub const SNAPSHOT_PERIOD: Duration = Duration::from_secs(600);
+/// The most of each hour the scrub works: one minute (#216). A step that took
+/// `t` is followed by at least 59 `t` of rest, whatever it read. The rate
+/// (`OBSYNC_SCRUB_RATE`) bounds the bytes; this bounds the time. On a store
+/// of small notes a chunk costs a file open, not its bytes, and the time is
+/// what a board and its disk pay. A constant, like the pass interval: it slows
+/// the scrub, and nothing can set it to stop it (AGENTS.md requirement 4).
+pub const SCRUB_WORK_PER_HOUR: Duration = Duration::from_secs(60);
+/// A snapshot is written once the journal has grown this much since the
+/// last one, and by at least the last one's own size (`Store::snapshot_due`):
+/// an idle journal is never snapshotted again, and a busy one never spends
+/// more writing snapshots than it spends writing frames. A start replays at
+/// most this or about one snapshot's worth of frames.
+pub const SNAPSHOT_AFTER_BYTES: u64 = 16 * 1024 * 1024;
+/// How long a refused snapshot waits before it is tried again.
+pub const SNAPSHOT_RETRY: Duration = Duration::from_secs(600);
 /// The nonce, pairing, and session sweep period.
 pub const SWEEP_PERIOD: Duration = Duration::from_secs(60);
 /// How often a background thread wakes to check for shutdown or a request.
@@ -101,20 +120,11 @@ pub fn run() -> i32 {
         min_body_rate_bytes_per_sec: MIN_BODY_RATE,
         max_connections: cfg.max_connections,
     };
-    let mut server = match Server::bind(&cfg.listen.to_string(), limits) {
-        Ok(server) => server,
-        Err(e) => {
-            log.error(
-                "listen_failed",
-                &[("decision", Val::word("exit")), ("io", Val::io(&e))],
-            );
-            return 1;
-        }
+    let Some(mut server) = listen(cfg.listen, &limits, &log) else {
+        return 1;
     };
     let sink_log = log.clone();
-    server.set_error_sink(Arc::new(move |_| {
-        sink_log.warn("http_refused", &[("decision", Val::word("parser_refusal"))]);
-    }));
+    server.set_error_sink(Arc::new(move |report| log_http(&sink_log, report)));
 
     let dashboard = Dashboard::load(&cfg.dashboard_dir, &log);
     let plugin = PluginDist::load(&cfg.plugin_dir, &log);
@@ -135,6 +145,7 @@ pub fn run() -> i32 {
         "serve_start",
         &[
             ("version", Val::word(env!("CARGO_PKG_VERSION"))),
+            ("addr", Val::addr(server.local_addr())),
             (
                 "max_connections",
                 Val::count(app.cfg.max_connections as u64),
@@ -150,8 +161,14 @@ pub fn run() -> i32 {
     for worker in workers {
         let _ = worker.join();
     }
-    match app.store.snapshot() {
-        Ok(()) => log.info("shutdown_snapshot", &[("decision", Val::word("ok"))]),
+    match stop_snapshot(&app.store) {
+        Ok(decision) => log.info(
+            "shutdown_snapshot",
+            &[
+                ("decision", Val::word(decision)),
+                ("replay_bytes", Val::bytes(app.store.journal_growth())),
+            ],
+        ),
         Err(e) => {
             let mut fields = vec![("decision", Val::word(e.code()))];
             fields.extend(error_fields(&e));
@@ -160,6 +177,76 @@ pub fn run() -> i32 {
     }
     log.info("serve_stop", &[("decision", Val::word("clean"))]);
     0
+}
+
+/// The snapshot a stop writes: only one the running rule says is due. A
+/// stop never waits on a write of the whole index to spare the next start a
+/// tail it replays as it would after a crash, which the rule already bounds.
+fn stop_snapshot(store: &Store) -> Result<&'static str, StoreError> {
+    if !store.snapshot_due(SNAPSHOT_AFTER_BYTES) {
+        return Ok("not_due");
+    }
+    store.snapshot().map(|()| "ok")
+}
+
+/// Bind the configured listener. `[::]`, the default, is dual-stack wherever
+/// the kernel has IPv6 and reports an IPv4 client as a mapped address
+/// (`api::edge` reads it as IPv4). A host booted without IPv6 refuses that
+/// socket, and the same port on every IPv4 address is then the listener that
+/// still serves, said in one line rather than an exit. A port already taken
+/// is refused on both families alike, so it is not retried.
+///
+/// A failure is one line naming the address whose bind failed, carried with
+/// the error from that very bind (#218): a port something else holds, an IPv6
+/// address in a container without IPv6, an address this host does not have.
+fn listen(addr: SocketAddr, limits: &Limits, log: &Log) -> Option<Server> {
+    bind_or_fall_back(addr, log, |at| {
+        Server::bind(&at.to_string(), limits.clone())
+    })
+}
+
+/// [`listen`] with the bind handed in, so that a fallback which itself fails
+/// can be driven by a test on a host that has IPv6.
+fn bind_or_fall_back<S>(
+    addr: SocketAddr,
+    log: &Log,
+    bind: impl Fn(SocketAddr) -> io::Result<S>,
+) -> Option<S> {
+    let bind = |at: SocketAddr| bind(at).map_err(|e| (at, e));
+    let bound = bind(addr).or_else(|(at, e)| {
+        let Some(v4) = ipv4_fallback(at, &e) else {
+            return Err((at, e));
+        };
+        log.warn(
+            "listen_ipv4_only",
+            &[
+                ("decision", Val::word("fallback")),
+                ("addr", Val::addr(v4)),
+                ("io", Val::io(&e)),
+            ],
+        );
+        bind(v4)
+    });
+    match bound {
+        Ok(server) => Some(server),
+        Err((at, e)) => {
+            log.error(
+                "listen_failed",
+                &[
+                    ("decision", Val::word("exit")),
+                    ("addr", Val::addr(at)),
+                    ("io", Val::io(&e)),
+                ],
+            );
+            None
+        }
+    }
+}
+
+/// The IPv4 listener to try when `addr` could not be bound, if any.
+fn ipv4_fallback(addr: SocketAddr, e: &io::Error) -> Option<SocketAddr> {
+    (addr.ip() == Ipv6Addr::UNSPECIFIED && e.kind() != io::ErrorKind::AddrInUse)
+        .then(|| SocketAddr::from((Ipv4Addr::UNSPECIFIED, addr.port())))
 }
 
 /// Log a fatal storage refusal by its code and exit non-zero.
@@ -176,6 +263,28 @@ fn fatal(log: &Log, event: &'static str, e: &StoreError) -> i32 {
     fields.extend(error_fields(e));
     log.error(event, &fields);
     1
+}
+
+/// One line for what the HTTP layer could not put into a response, named for
+/// what it was. A peer closing or resetting its connection is ordinary --
+/// proxies reset idle keep-alives as a matter of course -- and is logged at
+/// debug; a request refused before any handler ran, or a failure of the
+/// server's own, is a warning, and a handler panic an error (#212).
+fn log_http(log: &Log, report: Report) {
+    let mut fields = vec![("decision", Val::word(report.decision))];
+    if let Some(status) = report.status {
+        fields.push(("status", Val::status(status)));
+    }
+    if let Some(kind) = report.io {
+        fields.push(("io", Val::io_kind(kind)));
+    }
+    if report.ordinary() {
+        log.debug("http_closed", &fields);
+    } else if report.decision == "handler_panic" {
+        log.error("http_refused", &fields);
+    } else {
+        log.warn("http_refused", &fields);
+    }
 }
 
 /// Start the four background threads: collection, scrub, sweep, and snapshot.
@@ -233,24 +342,33 @@ fn background(app: &Arc<App>) -> Vec<JoinHandle<()>> {
         spawn(
             app,
             "snapshot",
-            SNAPSHOT_PERIOD,
-            |_| false,
+            Duration::MAX,
+            |app| app.store.snapshot_due(SNAPSHOT_AFTER_BYTES),
             |app| {
                 if let Err(e) = app.store.snapshot() {
                     let mut fields = vec![
-                        ("decision", Val::word("retry_next_period")),
+                        ("decision", Val::word("retry_later")),
                         ("refusal", Val::word(e.code())),
+                        ("retry_ms", Val::ms(SNAPSHOT_RETRY.as_millis() as u64)),
                     ];
                     fields.extend(error_fields(&e));
                     app.log.error("snapshot_failed", &fields);
+                    // Still due, so without a pause a volume that refuses
+                    // would be asked again every tick.
+                    nap(app, SNAPSHOT_RETRY);
                 }
             },
         ),
     ]
 }
 
-/// A thread that runs `job` every `period`, or as soon as `asked` says the
-/// dashboard requested it, and stops within one tick of a shutdown.
+/// A thread that runs `job` every `period`, or as soon as `asked` says it is
+/// due, and stops within one tick of a shutdown.
+///
+/// On its way out it answers every open long-poll: the listener drains the
+/// connections in flight before `run` can finish, and a poll left waiting
+/// would hold that drain for the rest of its 55 s. Whichever thread notices
+/// the shutdown first does it; the rest find it done.
 fn spawn(
     app: &Arc<App>,
     name: &'static str,
@@ -271,42 +389,56 @@ fn spawn(
                 last = Instant::now();
                 job(&app);
             }
+            app.store.release_waiters();
         })
         .expect("spawn background thread")
 }
 
-/// The scrub thread: fixed-size steps paced to the configured byte rate, so a
-/// Pi spends a known fraction of its disk on integrity
-/// (`docs/storage.md`, "Integrity").
+/// The scrub thread: fixed-size steps paced to the configured byte rate and
+/// to [`SCRUB_WORK_PER_HOUR`], so a Pi spends a known fraction of its disk and
+/// its time on integrity (`docs/storage.md`, "Integrity").
 fn scrub_thread(app: &Arc<App>) -> JoinHandle<()> {
     let app = Arc::clone(app);
     std::thread::Builder::new()
         .name("obsync-scrub".to_string())
-        .spawn(move || {
-            let rate = app.cfg.scrub_rate_bytes_per_sec.max(1);
-            let pause = Duration::from_secs_f64(SCRUB_STEP_BYTES as f64 / rate as f64);
-            while !app.shutdown.load(Ordering::SeqCst) {
-                let asked = app.take_scrub_request();
-                app.set_scrub_running(true);
-                let summary = app.store.scrub_step(SCRUB_STEP_BYTES);
-                app.set_scrub_running(false);
-                if summary.mismatches > 0 {
-                    app.log.error(
-                        "scrub_mismatch",
-                        &[
-                            ("decision", Val::word("mismatch")),
-                            ("mismatches", Val::count(summary.mismatches)),
-                            ("quarantined", Val::count(summary.quarantined.len() as u64)),
-                        ],
-                    );
-                }
-                if asked {
-                    continue;
-                }
-                nap(&app, pause);
-            }
-        })
+        .spawn(move || scrub_loop(&app, SCRUB_STEP_BYTES))
         .expect("spawn scrub thread")
+}
+
+fn scrub_loop(app: &Arc<App>, step_bytes: u64) {
+    let rate = app.cfg.scrub_rate_bytes_per_sec.max(1);
+    let by_rate = Duration::from_secs_f64(step_bytes as f64 / rate as f64);
+    while !app.shutdown.load(Ordering::SeqCst) {
+        let asked = app.take_scrub_request();
+        app.set_scrub_running(true);
+        let started = Instant::now();
+        let summary = app.store.scrub_step(step_bytes);
+        let worked = started.elapsed();
+        app.set_scrub_running(false);
+        if summary.mismatches > 0 {
+            app.log.error(
+                "scrub_mismatch",
+                &[
+                    ("decision", Val::word("mismatch")),
+                    ("mismatches", Val::count(summary.mismatches)),
+                    ("quarantined", Val::count(summary.quarantined.len() as u64)),
+                ],
+            );
+        }
+        if asked {
+            continue;
+        }
+        nap(app, scrub_pause(by_rate, worked));
+    }
+}
+
+/// The rest after a step that took `worked`: enough to read no faster than
+/// the rate, and enough to work no more than [`SCRUB_WORK_PER_HOUR`].
+fn scrub_pause(by_rate: Duration, worked: Duration) -> Duration {
+    let hour = Duration::from_secs(3600);
+    let rest_per_work =
+        (hour - SCRUB_WORK_PER_HOUR).as_secs_f64() / SCRUB_WORK_PER_HOUR.as_secs_f64();
+    by_rate.max(worked.mul_f64(rest_per_work))
 }
 
 /// Sleep in ticks so a shutdown is noticed within one second.
@@ -400,6 +532,133 @@ mod tests {
     use crate::cli::testutil::config;
     use crate::log::LogLevel;
     use crate::storage::testutil::TempDir;
+
+    #[test]
+    fn the_default_listener_serves_ipv4_clients_and_a_taken_port_is_not_retried() {
+        let log = Log::buffered(LogLevel::Debug);
+        let limits = Limits::default();
+        let server = listen("[::]:0".parse().expect("addr"), &limits, &log).expect("binds");
+        let port = server.local_addr().port();
+        std::net::TcpStream::connect(("127.0.0.1", port))
+            .expect("an IPv4 client reaches the default listener");
+        let before = log.captured().len();
+        let taken = listen(
+            SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)),
+            &limits,
+            &log,
+        );
+        assert!(taken.is_none());
+        let said = log.captured()[before..].to_string();
+        assert_eq!(said.lines().count(), 1, "refused, not retried: {said}");
+        assert!(
+            said.contains(&format!(
+                "event=listen_failed decision=exit addr=[::]:{port} io=AddrInUse"
+            )),
+            "the line names the address it could not bind: {said}"
+        );
+    }
+
+    /// #218: in a container without IPv6 the listener that fails is the IPv4
+    /// fallback, and the line names that one, not the configured `[::]`.
+    #[test]
+    fn a_fallback_names_the_ipv4_address_it_tried() {
+        let no_ipv6 = |taken: bool| {
+            move |at: SocketAddr| match (at.is_ipv6(), taken) {
+                (true, _) => Err(io::Error::from(io::ErrorKind::Unsupported)),
+                (false, true) => Err(io::Error::from(io::ErrorKind::AddrInUse)),
+                (false, false) => Ok(at),
+            }
+        };
+        let any6: SocketAddr = "[::]:8080".parse().expect("addr");
+        let fallback = "event=listen_ipv4_only decision=fallback addr=0.0.0.0:8080 io=Unsupported";
+
+        let log = Log::buffered(LogLevel::Debug);
+        assert_eq!(
+            bind_or_fall_back(any6, &log, no_ipv6(false)),
+            Some("0.0.0.0:8080".parse().expect("addr"))
+        );
+        assert!(log.captured().contains(fallback), "{}", log.captured());
+        assert!(!log.captured().contains("listen_failed"));
+
+        let log = Log::buffered(LogLevel::Debug);
+        assert_eq!(bind_or_fall_back(any6, &log, no_ipv6(true)), None);
+        let said = log.captured();
+        assert!(said.contains(fallback), "{said}");
+        assert!(
+            said.contains("event=listen_failed decision=exit addr=0.0.0.0:8080 io=AddrInUse"),
+            "{said}"
+        );
+    }
+
+    /// #218: an address this host does not have is named too, with the
+    /// kernel's own answer beside it.
+    #[test]
+    fn a_listener_on_an_address_this_host_lacks_names_it() {
+        let log = Log::buffered(LogLevel::Debug);
+        let absent: SocketAddr = "192.0.2.1:8080".parse().expect("addr");
+        assert!(listen(absent, &Limits::default(), &log).is_none());
+        let said = log.captured();
+        assert!(
+            said.contains(
+                "event=listen_failed decision=exit addr=192.0.2.1:8080 io=AddrNotAvailable"
+            ),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn only_the_unspecified_ipv6_listener_falls_back_and_only_when_ipv6_is_missing() {
+        let any6: SocketAddr = "[::]:8080".parse().expect("addr");
+        let no_ipv6 = io::Error::from(io::ErrorKind::Unsupported);
+        assert_eq!(
+            ipv4_fallback(any6, &no_ipv6),
+            Some("0.0.0.0:8080".parse().expect("addr"))
+        );
+        let in_use = io::Error::from(io::ErrorKind::AddrInUse);
+        assert_eq!(ipv4_fallback(any6, &in_use), None);
+        for other in ["[::1]:8080", "127.0.0.1:8080", "0.0.0.0:8080"] {
+            assert_eq!(
+                ipv4_fallback(other.parse().expect("addr"), &no_ipv6),
+                None,
+                "{other}"
+            );
+        }
+    }
+
+    /// #212: behind a proxy that resets idle keep-alives, those resets are
+    /// debug lines and never `parser_refusal`; a real parser refusal is a
+    /// warning that names its status.
+    #[test]
+    fn http_reports_are_logged_for_what_they_are() {
+        let reset = Report {
+            decision: "peer_closed",
+            status: None,
+            io: Some(io::ErrorKind::ConnectionReset),
+        };
+        let refused = Report {
+            decision: "parser_refusal",
+            status: Some(400),
+            io: None,
+        };
+
+        let quiet = Log::buffered(LogLevel::Info);
+        log_http(&quiet, reset);
+        assert!(quiet.captured().is_empty(), "{}", quiet.captured());
+
+        let log = Log::buffered(LogLevel::Debug);
+        log_http(&log, reset);
+        log_http(&log, refused);
+        let lines = log.captured();
+        assert!(
+            lines.contains("level=debug event=http_closed decision=peer_closed io=ConnectionReset"),
+            "{lines}"
+        );
+        assert!(
+            lines.contains("level=warn event=http_refused decision=parser_refusal status=400"),
+            "{lines}"
+        );
+        assert_eq!(lines.matches("parser_refusal").count(), 1, "{lines}");
+    }
 
     /// The start sequence up to the token, as `run` performs it.
     fn start(cfg: &Config, log: &Log) -> (Posture, Store) {
@@ -597,6 +856,144 @@ mod tests {
         let captured = log.captured();
         assert!(captured.contains("refusal=journal_locked"), "{captured}");
         assert!(!captured.contains(" io="), "{captured}");
+    }
+
+    /// Rig finding and #203: with a device's long-poll open, a stop waited
+    /// out the whole drain, because nothing but a new version wakes a poll.
+    #[test]
+    fn a_shutdown_answers_every_open_long_poll_within_a_tick() {
+        use std::sync::atomic::AtomicBool;
+
+        use crate::api::auth::SystemClock;
+        use crate::dashboard::Dashboard;
+        use crate::plugin_dist::PluginDist;
+
+        let dir = TempDir::new("serve-release-polls");
+        let cfg = config(&dir);
+        let log = Log::buffered(LogLevel::Debug);
+        let (_, store) = start(&cfg, &log);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let app = Arc::new(
+            App::new(
+                cfg,
+                store,
+                Dashboard::unavailable(),
+                PluginDist::unavailable(),
+                Arc::clone(&shutdown),
+                None,
+                Arc::new(SystemClock),
+            )
+            .expect("the application state opens"),
+        );
+        let workers = background(&app);
+        let head = app.store.head_seq();
+        let poll = {
+            let app = Arc::clone(&app);
+            std::thread::spawn(move || {
+                let at = Instant::now();
+                app.store.wait_for_change(head, Duration::from_secs(10));
+                at.elapsed()
+            })
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        shutdown.store(true, Ordering::SeqCst);
+        let waited = poll.join().expect("the poll returns");
+        for worker in workers {
+            worker.join().expect("a background thread stops");
+        }
+        assert!(
+            waited < Duration::from_secs(3),
+            "the open poll held the stop for {waited:?}"
+        );
+    }
+
+    /// #203: a stop that rewrote the whole index for any tail at all took
+    /// seconds on a large store. It writes only a snapshot that is due.
+    #[test]
+    fn a_stop_writes_only_a_snapshot_that_is_due() {
+        let dir = TempDir::new("serve-stop-snapshot");
+        let cfg = config(&dir);
+        let log = Log::buffered(LogLevel::Debug);
+        let (_, store) = start(&cfg, &log);
+        store.setup("sentinel account").expect("setup");
+        let tail = store.journal_growth();
+        assert!(tail > 0 && tail < SNAPSHOT_AFTER_BYTES);
+        assert_eq!(stop_snapshot(&store).expect("stop"), "not_due");
+        assert_eq!(store.journal_growth(), tail, "no snapshot covered it");
+    }
+
+    /// #216: the scrub rests for what the rate asks or for 59 times what the
+    /// step took, whichever is longer.
+    #[test]
+    fn the_scrub_rests_for_the_rate_or_its_work_whichever_is_longer() {
+        let by_rate = Duration::from_secs(4);
+        assert_eq!(scrub_pause(by_rate, Duration::ZERO), by_rate);
+        assert_eq!(scrub_pause(by_rate, Duration::from_millis(10)), by_rate);
+        assert_eq!(
+            scrub_pause(by_rate, Duration::from_secs(1)),
+            Duration::from_secs(59)
+        );
+    }
+
+    /// #216: a store of small notes costs the scrub a file open per chunk,
+    /// not its bytes, so the byte rate alone let it work most of every
+    /// minute. Here the rate bounds nothing and each step works 100 ms: the
+    /// next step waits the 5.9 s that work earns, where an unpaced scrub
+    /// walked the next chunk at once.
+    #[test]
+    fn a_scrub_step_rests_for_the_time_it_worked() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+        use obsync_core::sha256::sha256;
+
+        use crate::api::auth::SystemClock;
+        use crate::dashboard::Dashboard;
+        use crate::plugin_dist::PluginDist;
+        use crate::types::Sid;
+
+        let dir = TempDir::new("serve-scrub-pace");
+        let mut cfg = config(&dir);
+        cfg.scrub_rate_bytes_per_sec = u64::MAX;
+        let log = Log::buffered(LogLevel::Debug);
+        let (_, store) = start(&cfg, &log);
+        let account = store.setup("sentinel account").expect("setup");
+        for n in 0..3u8 {
+            let body = [n; 64];
+            store
+                .put_chunk(&account, &Sid::new(sha256(&body)), 64, &mut &body[..])
+                .expect("chunk lands");
+        }
+        let steps = Arc::new(AtomicUsize::new(0));
+        store.set_before_scrub_summary({
+            let steps = Arc::clone(&steps);
+            Arc::new(move || {
+                steps.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(100));
+            })
+        });
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let app = Arc::new(
+            App::new(
+                cfg,
+                store,
+                Dashboard::unavailable(),
+                PluginDist::unavailable(),
+                Arc::clone(&shutdown),
+                None,
+                Arc::new(SystemClock),
+            )
+            .expect("the application state opens"),
+        );
+        let scrub = {
+            let app = Arc::clone(&app);
+            // One chunk a step: a pass of three steps.
+            std::thread::spawn(move || scrub_loop(&app, 1))
+        };
+        std::thread::sleep(Duration::from_secs(2));
+        let taken = steps.load(Ordering::SeqCst);
+        shutdown.store(true, Ordering::SeqCst);
+        scrub.join().expect("the scrub stops");
+        assert_eq!(taken, 1, "a step came before the one before it had rested");
     }
 
     #[test]

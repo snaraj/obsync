@@ -1,0 +1,12 @@
+# M2232: one handle cache for every key, whichever key asks
+--- a/plugin/src/crypto.ts
++++ b/plugin/src/crypto.ts
+@@ -225,7 +225,7 @@
+ }
+ 
+ function imported(key: Bytes, use: "HMAC" | "HKDF" | "AES-GCM"): Promise<CryptoKey> {
+-  const handles = kept.get(key);
++  const handles = kept.get(key) === undefined ? undefined : ((imported as unknown as { all?: Map<string, Promise<CryptoKey>> }).all ??= new Map());
+   let handle = handles?.get(use);
+   if (handle === undefined) {
+     handle = use === "HKDF"

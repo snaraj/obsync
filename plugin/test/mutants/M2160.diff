@@ -1,0 +1,12 @@
+# M2160: the last chunk of a file of many chunks is taken from the page's prefetch
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -643,7 +643,7 @@
+     // `stage` streams one beside the page (issue #196) -- neither may move
+     // the page's cursor.
+     const only = batch.length === 1 ? (batch[0] as ManifestChunk).sid : null;
+-    const ahead = only !== null && manifest.chunks.length === 1 && control === undefined
++    const ahead = only !== null && control === undefined
+       ? await context.ahead?.take(only, patience) ?? null
+       : null;
+     const bodies =

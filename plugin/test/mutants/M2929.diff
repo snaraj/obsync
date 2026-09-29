@@ -1,0 +1,12 @@
+# M2929: the engine starts its first pass without letting the host settle a stopped re-case
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -992,8 +992,6 @@
+     this.restoreFolderBarriers();
+     // And before that pass: a note left under a re-case's hidden name would
+     // read to it as deleted (issue #219).
+-    await host.settle?.().catch((error: unknown) =>
+-      host.log(`host path_class=file decision=failed reason=settle code=${(error as { code?: string }).code ?? "none"}`));
+     await this.reconcile();
+     if (this.running) {
+       const context = this.need();

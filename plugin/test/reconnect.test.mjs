@@ -28,7 +28,7 @@ import test from "node:test";
 import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { FakeTimers, KEYS, memorySecrets, rig, sandbox } from "./fake.mjs";
+import { FakeTimers, KEYS, memorySecrets, rig, sandbox, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -41,11 +41,19 @@ function fakeWindow() {
   const timers = new Map();
   const listeners = new Map();
   let next = 1;
+  const listen = (type, fn) => { listeners.set(type, [...(listeners.get(type) ?? []), fn]); };
+  const raise = (type) => { for (const fn of listeners.get(type) ?? []) fn(); };
+  const document = { visibilityState: "visible", addEventListener: (type, fn) => listen(`document:${type}`, fn), removeEventListener() {} };
   return {
+    document,
     setTimeout(fn, ms) { const id = next++; timers.set(id, { fn, ms }); return id; },
     clearTimeout(id) { timers.delete(id); },
-    addEventListener(type, fn) { listeners.set(type, [...(listeners.get(type) ?? []), fn]); },
+    addEventListener: listen,
     removeEventListener() {},
+    /** The renderer's window gaining the focus. */
+    focus() { raise("focus"); },
+    /** The app going to the background, or coming back to the foreground. */
+    visibility(state) { document.visibilityState = state; raise("document:visibilitychange"); },
     /** The delays armed right now, oldest first. */
     armed: () => [...timers.values()].map((timer) => timer.ms),
     /** The clock reaching the one armed timer. */
@@ -89,17 +97,21 @@ async function fixture(t) {
     stop() { this.started = false; }
     async stopAndWait() { this.stop(); }
     async syncNow() { this.manual = (this.manual ?? 0) + 1; }
+    wake(reason) { (this.woken ??= []).push(reason); }
+    current() { return { kind: "idle" }; }
   };
   const instance = new Plugin();
   // Obsidian does not wait for the first start (`onload` returns before it); these tests do.
   const load = instance.onload.bind(instance);
   instance.onload = async () => { await load(); await instance.firstStart; };
   let metadata = identity();
-  const logs = [], bar = [];
+  const logs = [];
+  // What the status indicator says on hover: its words, never a text node (#156).
+  const item = statusItem(), bar = item.tooltips;
   instance.loadData = async () => structuredClone(metadata);
   instance.saveData = async (value) => { metadata = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText: (text) => bar.push(text) });
+  instance.addStatusBarItem = () => item;
   instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   instance.manifest = { version: "1.1.1" };
   instance.checkForUpdate = async () => {};
@@ -144,6 +156,32 @@ test("a start the server could not be reached for is retried, and the next one t
   assert.deepEqual(r.win.armed(), [5000]);
   assert.equal(r.scheduled().at(-1), "engine decision=retry_scheduled attempt=1 delay_ms=5000 status=0");
   assert.equal(r.logs.filter((line) => line.startsWith("engine decision=resumed")).length, 1);
+});
+
+test("a start refused by a certificate this device does not trust says so, is retried, and a start that gets through clears it", async (t) => {
+  const r = await fixture(t);
+  const said = "error — This device does not trust your server's certificate, so it refused the connection. Trust that " +
+    "certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".";
+  r.plan((n) => { if (n === 1) throw new r.ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID"); });
+  await r.instance.onload();
+  assert.deepEqual(r.win.armed(), [5000], "retried like absence: trusting the certificate needs no press here");
+  assert.equal(r.instance.statusText(), said, "the settings row and Show sync status read this");
+  assert.equal(r.bar.at(-1), `obsync: ${said}`);
+  r.win.fire();
+  await settle();
+  assert.equal(r.instance.statusText(), "idle", "a start that gets through clears it");
+});
+
+test("a start refused by a certificate out of date says so, is retried, and a start that gets through clears it (#229)", async (t) => {
+  const { CERT_OUT_OF_DATE } = require("../build/transport.js");
+  const r = await fixture(t);
+  r.plan((n) => { if (n === 1) throw new r.ApiError(0, "unreachable", "network=net::ERR_CERT_DATE_INVALID"); });
+  await r.instance.onload();
+  assert.deepEqual(r.win.armed(), [5000], "retried like absence: a renewed certificate or a corrected clock needs no press here");
+  assert.equal(r.instance.statusText(), `error — ${CERT_OUT_OF_DATE}`, "the settings row and Show sync status read this");
+  r.win.fire();
+  await settle();
+  assert.equal(r.instance.statusText(), "idle", "a start that gets through clears it");
 });
 
 test("the pause doubles from 5 s and holds at 5 minutes for as long as the outage lasts", async (t) => {
@@ -251,7 +289,7 @@ test("Obsidian finishes loading while the first start still waits for the server
   // The plugin's own onload, not the fixture's, which waits for the start on purpose.
   let returned = false;
   const loading = Object.getPrototypeOf(r.instance).onload.call(r.instance).then(() => { returned = true; });
-  for (let turn = 0; turn < 50 && !returned; turn++) await new Promise(setImmediate);
+  for (const deadline = Date.now() + 10_000; !returned && Date.now() < deadline;) await new Promise(setImmediate);
   assert.ok(returned, "onload returned while the server had not answered: Obsidian's loading screen is not held");
   assert.equal(r.engines.length, 1, "the first start is running, not skipped");
   assert.deepEqual(r.running(), []);
@@ -351,19 +389,31 @@ test("Sync now takes the place of the pending retry: one engine, and the cycle g
   assert.equal(r.engines[2].manual, 1);
 });
 
-test("a manual start that gets through disarms the pending retry", async (t) => {
-  const r = await fixture(t);
-  r.plan((n) => { if (n === 1) throw r.unreachable(); });
-  await r.instance.onload();
-  assert.deepEqual(r.win.armed(), [5000]);
-  await r.instance.syncNow();
-  await settle();
-  assert.deepEqual(r.running(), [r.engines[1]]);
-  // Not merely harmless: a stale timer left armed would fire into a LATER
-  // cycle and run its retry early, ahead of the pause that cycle chose.
-  assert.deepEqual(r.win.armed(), [], "a running engine has no retry armed behind it");
-  assert.ok(r.logs.includes("engine decision=resumed attempt=1"));
-});
+/*
+ * TWO WAYS A PENDING RETRY IS SHOWN, and Sync now takes them differently. One
+ * shown offline is woken (`wake`), which takes its timer before the start; a
+ * certificate this device does not trust is retried like absence but shown as
+ * the error it is (#201), so Sync now goes straight to the start, and the
+ * start's own take is the only thing that disarms the timer.
+ */
+for (const [shown, failure] of [
+  ["shown offline", (r) => r.unreachable()],
+  ["shown as a certificate refusal", (r) => new r.ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID")],
+]) {
+  test(`a manual start that gets through disarms the pending retry (${shown})`, async (t) => {
+    const r = await fixture(t);
+    r.plan((n) => { if (n === 1) throw failure(r); });
+    await r.instance.onload();
+    assert.deepEqual(r.win.armed(), [5000]);
+    await r.instance.syncNow();
+    await settle();
+    assert.deepEqual(r.running(), [r.engines[1]]);
+    // Not merely harmless: a stale timer left armed would fire into a LATER
+    // cycle and run its retry early, ahead of the pause that cycle chose.
+    assert.deepEqual(r.win.armed(), [], "a running engine has no retry armed behind it");
+    assert.ok(r.logs.includes("engine decision=resumed attempt=1"));
+  });
+}
 
 test("the real engine surfaces the transport's own classification, unwrapped", async (t) => {
   const { SyncEngine } = require("../build/sync/engine.js");
@@ -432,12 +482,19 @@ test("an answer puts back the syncing it covered, and never a status raised sinc
   report(r, false);
   assert.equal(r.instance.statusText(), "offline — retrying");
   report(r, true);
-  assert.equal(r.instance.statusText(), "syncing 3", "the work still pending is not called idle");
+  assert.equal(r.instance.statusText(), "syncing 3 files", "the work still pending is not called idle");
 
   report(r, false);
   r.instance.setStatus({ kind: "syncing", pending: 1 });
   report(r, true);
-  assert.equal(r.instance.statusText(), "syncing 1", "the engine's newer word stands");
+  assert.equal(r.instance.statusText(), "syncing 1 file", "the engine's newer word stands");
+});
+
+test("a note waiting on unsaved changes here is named in the status (issue #252)", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  r.instance.setStatus({ kind: "syncing", pending: 1, held: "Notes/open.md" });
+  assert.equal(r.instance.statusText(), "syncing 1 file, waiting for unsaved changes in Notes/open.md");
 });
 
 test("an unanswered attempt never hides an error, and an answer never clears the reconnect cycle's offline", async (t) => {
@@ -472,4 +529,86 @@ test("an unpaired device stays not paired, and a transport from an earlier sessi
   await s.instance.leaveServer({ discardUnpushed: false, localOnly: false });
   report(s, false);
   assert.equal(s.instance.statusText(), "not paired");
+});
+
+test("network back, the app in front again, its window focused, or a new address: everything waiting on a timer goes now (#134, #186, #195)", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  const woken = [];
+  r.instance.transport.wake = (reason) => woken.push(reason);
+  const engine = r.instance.engine;
+  r.win.online();
+  r.win.focus();
+  r.win.visibility("hidden");
+  r.win.visibility("visible");
+  assert.deepEqual(woken, ["online", "focus", "foreground"], "backgrounding wakes nothing");
+  assert.deepEqual(engine.woken, ["online", "focus", "foreground"], "the feed hears the same three");
+  await r.instance.setServerUrl("https://moved.example.invalid");
+  assert.deepEqual(woken.at(-1), "address");
+  assert.equal(engine.woken.at(-1), "address");
+  assert.equal(r.engines.length, 1, "a running engine is woken, not restarted");
+
+  // A start the server could not be reached for: the focus that follows a VPN
+  // connecting -- which raises no `online` -- runs the pending retry now.
+  r.plan(() => { throw r.unreachable(); });
+  await r.instance.restartEngine();
+  assert.deepEqual(r.win.armed(), [5000]);
+  r.plan(() => undefined);
+  r.win.focus();
+  await settle();
+  assert.ok(r.logs.includes("engine decision=retrying attempt=1 reason=focus"), r.logs.join("\n"));
+  assert.deepEqual(r.win.armed(), []);
+  assert.equal(r.instance.engine, r.engines.at(-1));
+});
+
+test("a refused start says why in words, and a start that gets through clears whatever an earlier one said (#155)", async (t) => {
+  const r = await fixture(t);
+  r.plan((n) => { if (n === 1) throw new r.ApiError(403, "device_pending", "SENTINEL"); });
+  await r.instance.onload();
+  assert.match(r.instance.statusText(), /^error — Your server refused to start sync with this device\. Check the Server URL/);
+  assert.doesNotMatch(r.instance.statusText(), /device_pending|SENTINEL|403/, "no raw code reaches the person");
+  r.plan(() => { throw new r.ApiError(401, "stale_timestamp", "SENTINEL"); });
+  await r.instance.restartEngine();
+  assert.match(r.instance.statusText(), /clock is more than five minutes off/);
+  // Nothing asks again after a refused start, so it says what to press, not that it resumes.
+  assert.match(r.instance.statusText(), /Once that is fixed, select Sync now\.$/);
+  assert.doesNotMatch(r.instance.statusText(), /by itself/);
+  assert.deepEqual(r.win.armed(), [], "a refusal is never knocked on by a timer");
+  // The clock is fixed and the person presses Retry: the error goes with the start that gets through.
+  r.plan(() => undefined);
+  await r.instance.restartEngine();
+  assert.equal(r.instance.statusText(), "idle");
+});
+
+test("a start refused because it did not come through the server's edge says so in pairing's words, not 'refused to start' (#228)", async (t) => {
+  const { AFTER_START } = require("../build/sync/engine.js");
+  const { EDGE_REQUIRED } = require("../build/transport.js");
+  const r = await fixture(t);
+  r.plan((n) => { if (n === 1) throw new r.ApiError(421, "edge_required", "edge connecting-address header missing"); });
+  await r.instance.onload();
+  assert.equal(r.instance.statusText(), `error — ${EDGE_REQUIRED} ${AFTER_START}`, "the settings row and Show sync status read this");
+  assert.equal(r.bar.at(-1), `obsync: error — ${EDGE_REQUIRED} ${AFTER_START}`);
+  assert.ok(r.logs.includes("engine decision=stopped reason=start_failed code=edge_required"), r.logs.join("\n"));
+});
+
+test("any answered attempt takes back the offline, whoever said it, and hurries the feed and a pending start (#158)", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  const engine = r.instance.engine;
+  report(r, false);
+  assert.equal(r.instance.statusText(), "offline — retrying");
+  report(r, true);
+  assert.equal(r.instance.statusText(), "idle");
+  assert.deepEqual(engine.woken, ["answered"], "the feed's own offline goes with its next read, which the answer hurries");
+  // A start that could not reach the server runs again at the first answer, not at its timer.
+  r.plan(() => { throw r.unreachable(); });
+  await r.instance.restartEngine();
+  assert.deepEqual(r.win.armed(), [5000]);
+  report(r, false);
+  r.plan(() => undefined);
+  report(r, true);
+  await settle();
+  assert.ok(r.logs.includes("engine decision=retrying attempt=1 reason=answered"), r.logs.join("\n"));
+  assert.deepEqual(r.win.armed(), []);
+  assert.equal(r.instance.statusText(), "idle");
 });

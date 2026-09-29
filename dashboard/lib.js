@@ -269,8 +269,10 @@ export function volumeIsLow(v) {
 }
 
 /**
- * View rows for the devices table: active devices first, then by last-seen
- * (newest first), then by name, so a revoked device never sits at the top.
+ * View rows for the devices table: active devices first, then those still
+ * pairing, the revoked last -- a device paired again under its old name
+ * listed its revoked row first -- and within each by last-seen (newest
+ * first), then by name.
  */
 export function buildDeviceRows(devices) {
   if (!Array.isArray(devices)) return [];
@@ -291,11 +293,14 @@ export function buildDeviceRows(devices) {
       perFile: formatPolicyBytes(policy.per_file_max_bytes),
       budget: formatPolicyBytes(policy.total_budget_bytes),
       revoked: d.revoked === true,
+      // Enrolled by a pairing code, without the vault key yet (issue #152).
+      pending: d.state === 'pending',
       history: Array.isArray(d.history) ? d.history.slice() : [],
     };
   });
+  const rank = (row) => (row.revoked ? 2 : row.pending ? 1 : 0);
   rows.sort((a, b) => {
-    if (a.revoked !== b.revoked) return a.revoked ? 1 : -1;
+    if (rank(a) !== rank(b)) return rank(a) - rank(b);
     const seen = (b.lastSeen || 0) - (a.lastSeen || 0);
     if (seen !== 0) return seen;
     return a.name.localeCompare(b.name);

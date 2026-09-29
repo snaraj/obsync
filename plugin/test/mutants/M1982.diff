@@ -1,0 +1,12 @@
+# M1982: a drain the stop ended still sets the status
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1561,7 +1561,7 @@
+       this.barriers.clear();
+       this.barrierPath = null;
+       // A drain a stop ended has no word on the status: `stopAndWait` says it.
+-      if (this.running) this.status(this.resting());
++      this.status(this.resting());
+     } finally {
+       this.draining = false;
+     }

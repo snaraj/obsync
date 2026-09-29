@@ -1,0 +1,11 @@
+# M2921: a re-case that cannot be put back is said at every attempt
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1724,7 +1724,6 @@
+     const took = Date.now() - started;
+     if (failed !== null) {
+       this.log(`vault path_class=${kind} decision=failed reason=${failed} via=temp duration_ms=${took}`);
+-      if (this.recaseTold) return;
+       this.recaseTold = true;
+       this.notify(
+         `obsync could not finish renaming "${from}" to "${to}" on this device. Nothing was deleted` +

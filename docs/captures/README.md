@@ -1,7 +1,11 @@
 # README captures
 
-`README.md` leads with captures of the plugin (`AGENTS.md`, "Docs and README
-conventions"; the short guide's own captures live in `docs/assets/`). The five
+*Internals, for contributors and reviewers.*
+
+The onboarding pages lead with captures of the plugin (`AGENTS.md`, "Docs and
+README conventions"). `README.md` is a short front door with one of them; the
+step-by-step pages' own captures live in `docs/assets/`, masked by the rules
+below. The five
 validated-run captures are committed PNG files in this folder, displayed by
 `docs/quickstart.md`, never generated at build time; a pull request that
 changes what the plugin or the dashboard renders asks the owner for fresh ones

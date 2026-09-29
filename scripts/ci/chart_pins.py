@@ -1,21 +1,31 @@
 #!/usr/bin/env python3
 """Prove what `helm template` actually renders -- structurally, not by grep.
 
-THREE PINS, each named by the property it holds:
+THE PINS, each named by the property it holds:
 
-  ingress   the NetworkPolicy admits EXACTLY ONE peer, named by every fact it
-            takes to name one connector (namespace + app name + instance), on
-            the service port only, and denies all egress.
+  ingress   the NetworkPolicy admits EXACTLY the values peers -- each pod named
+            by every fact it takes to name one connector (namespace + app name
+            + instance), each address block narrower than everything -- on the
+            service port only, admits NOTHING when none is named, and denies
+            all egress.
   storage   the render carries exactly the claims docs/storage.md defines, on
             the classes and sizes chart/values.yaml names, and the workload
             mounts NOTHING but those claims -- no hostPath, no emptyDir, no
-            Secret or ConfigMap volume, no CSI inline volume.
+            Secret or ConfigMap volume, no CSI inline volume -- and the
+            static-volume example pre-binds exactly those claims.
   security  the pod and container security context is the one requirement 4
             fixes, and a values override cannot weaken any part of it.
   environment
             the rendered process environment is one the SERVER can parse: the
             claim sizes it is told are Kubernetes binary quantities, and the
             kubelet adds no OBSYNC_* name of its own.
+  kubernetes
+            the chart renders on every Kubernetes minor `Chart.yaml` claims,
+            suffixed vendor versions included, and refuses the minor below.
+  platform  the two platform annotations render only under a domain the
+            operator names, on exactly their objects, and a domain the API
+            server would refuse as a key prefix, or that Kubernetes reserves,
+            fails the render by name.
 
 HOW THESE READ THE RENDER -- the security-critical part. They do NOT count
 `- from:` lines and inspect the first: that is bypassable. A second ingress
@@ -66,6 +76,8 @@ MIRROR_ROOT = "/data/mirrors"
 # and the workload then waits forever on storage that exists.
 CLAIM_DOCUMENTS = (Path("docs/storage.md"), Path("docs/platform-onboarding.md"))
 CLAIM_IN_PROSE = re.compile(r"`([a-z0-9][a-z0-9-]*-(?:blobs|journal))`")
+# The same defect in YAML: the example PersistentVolumes pre-bind by claim name.
+STATIC_VOLUME_EXAMPLE = CHART_DIR / "examples" / "static-local-volumes.yaml"
 
 
 class PinError(AssertionError):
@@ -80,11 +92,11 @@ def values() -> dict[str, Any]:
     return document
 
 
-def _helm(sets: list[str]) -> subprocess.CompletedProcess[str]:
+def _helm(sets: list[str], kube_version: str = KUBE_VERSION) -> subprocess.CompletedProcess[str]:
     command = [
         "helm", "template", RELEASE, str(CHART_DIR),
         "--namespace", NAMESPACE,
-        "--kube-version", KUBE_VERSION,
+        "--kube-version", kube_version,
     ]
     for override in sets:
         command.extend(("--set", override))
@@ -95,6 +107,12 @@ ACTIVE = ("deploymentReady=true",)
 """The platform-ready render: the shipped default is false, which renders the
 same objects with zero application replicas (see `pin_readiness`), so every
 pin that inspects the running shape renders with the gate open."""
+
+DOMAIN = "platform.example.org"
+ANNOTATED = (f"platform.annotationDomain={DOMAIN}",)
+"""A render under a platform domain. The shipped default names none and renders
+neither platform annotation (see `pin_platform`), so every pin that reads what
+an annotation CARRIES renders with one set."""
 
 
 def render(*sets: str) -> list[dict[str, Any]]:
@@ -112,11 +130,20 @@ def render(*sets: str) -> list[dict[str, Any]]:
     return resolved
 
 
-def refuse(*sets: str, because: str) -> None:
-    """Require a render to FAIL. A gate that cannot fail is not a gate."""
+def refuse(*sets: str, because: str, naming: str | None = None) -> None:
+    """Require a render to FAIL. A gate that cannot fail is not a gate.
+
+    `naming` also requires the refusal to name that value, so a render that
+    fails for some other reason is not mistaken for this refusal.
+    """
     completed = _helm(list(sets))
     if completed.returncode == 0:
         raise PinError(f"render accepted {' '.join(sets)}; it must be refused ({because})")
+    if naming is not None and naming not in completed.stderr:
+        raise PinError(
+            f"render of {' '.join(sets)} was refused without naming {naming!r} ({because}):\n"
+            f"{completed.stderr.strip()}"
+        )
     print(f"  refused as required: {' '.join(sets)} ({because})")
 
 
@@ -140,64 +167,107 @@ def selector_labels() -> dict[str, str]:
     return {"app.kubernetes.io/name": "obsync", "app.kubernetes.io/instance": RELEASE}
 
 
+def rendered_annotations(documents: list[dict[str, Any]]) -> dict[str, Any]:
+    """Every `metadata.annotations` in a render, keyed by where it stands.
+
+    Anywhere, not only on each document's own metadata: a pod template's
+    annotations are in the render too, and a key moved there is as present as
+    one left on the Deployment. An `annotations:` rendered with nothing under
+    it is recorded as what it is, so an empty block is not read as absent.
+    """
+    found: dict[str, Any] = {}
+
+    def walk(node: Any, where: str) -> None:
+        if isinstance(node, dict):
+            metadata = node.get("metadata")
+            if isinstance(metadata, dict) and "annotations" in metadata:
+                found[where] = metadata["annotations"]
+            for key, value in node.items():
+                if key != "metadata":
+                    walk(value, f"{where}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{where}[{index}]")
+
+    for document in documents:
+        metadata = document.get("metadata")
+        name = metadata.get("name") if isinstance(metadata, dict) else None
+        walk(document, f"{document.get('kind')}/{name}")
+    return found
+
+
 # --------------------------------------------------------------------------
+
+
+def _pod_peer(namespace: str, app: str, instance: str) -> dict[str, Any]:
+    return {
+        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": namespace}},
+        "podSelector": {
+            "matchLabels": {"app.kubernetes.io/name": app, "app.kubernetes.io/instance": instance}
+        },
+    }
 
 
 def pin_ingress() -> None:
     configured = values()
     port = configured["service"]["port"]
 
-    def expected_rule(instance: str) -> list[dict[str, Any]]:
-        return [
-            {
-                "from": [
-                    {
-                        "namespaceSelector": {
-                            "matchLabels": {
-                                "kubernetes.io/metadata.name": configured["ingress"][
-                                    "peerNamespace"
-                                ]
-                            }
-                        },
-                        "podSelector": {
-                            "matchLabels": {
-                                "app.kubernetes.io/name": configured["ingress"]["peerAppName"],
-                                "app.kubernetes.io/instance": instance,
-                            }
-                        },
-                    }
-                ],
-                "ports": [{"port": port, "protocol": "TCP"}],
-            }
-        ]
+    def rule(*peers: dict[str, Any]) -> list[dict[str, Any]]:
+        return [{"from": list(peers), "ports": [{"port": port, "protocol": "TCP"}]}]
 
-    policy = only(render(*ACTIVE), "NetworkPolicy")
-    spec = policy["spec"]
-    equals(spec["podSelector"], {"matchLabels": selector_labels()}, "the policy podSelector")
-    equals(spec["policyTypes"], ["Ingress", "Egress"], "the policy types")
+    def ingress(*sets: str) -> Any:
+        spec = only(render(*ACTIVE, *sets), "NetworkPolicy")["spec"]
+        equals(spec["podSelector"], {"matchLabels": selector_labels()}, "the policy podSelector")
+        equals(spec["policyTypes"], ["Ingress", "Egress"], "the policy types")
+        equals(spec["egress"], [], "the rendered egress rule set")
+        return spec["ingress"]
+
+    # (a) The shipped default names no peer and admits NOTHING: no rule at
+    # all, and never a rule with an empty `from`, which admits every source.
+    equals(configured["ingress"], {"peers": []}, "the shipped ingress default")
+    equals(ingress(), [], "the default ingress rule set")
+    print("chart-pins ingress: (a) the default render admits nothing and renders no rule")
+
+    # (b) Every values peer renders exactly, in order: a pod by all three of
+    # its facts, an address block with its exceptions. The expectation is
+    # built from the SETS, so the pin moves with the values it is given.
+    pod = ("ingress.peers[0].namespace=ing", "ingress.peers[0].appName=front", "ingress.peers[0].instance=front")
+    block = ("ingress.peers[1].ipBlock.cidr=192.168.1.0/24", "ingress.peers[1].ipBlock.except[0]=192.168.1.1/32")
     equals(
-        spec["ingress"],
-        expected_rule(configured["ingress"]["peerInstance"]),
-        "the rendered ingress rule set",
+        ingress(*pod, *block),
+        rule(
+            _pod_peer("ing", "front", "front"),
+            {"ipBlock": {"cidr": "192.168.1.0/24", "except": ["192.168.1.1/32"]}},
+        ),
+        "the rendered pod and block peers",
     )
-    equals(spec["egress"], [], "the rendered egress rule set")
-    print("chart-pins ingress: (a) the default render admits exactly the one values peer")
+    print("chart-pins ingress: (b) a pod and an address block render exactly as named")
 
-    # (b) An unpinned instance must be refused rather than rendering wide.
-    refuse("ingress.peerInstance=", because="a blank peer instance admits every peer in the namespace")
-    refuse(
-        "ingress.peerInstance=null",
-        because="an absent peer instance admits every peer in the namespace",
+    # (c) The single-peer fields earlier releases shipped render the rule they
+    # always rendered, first, so an existing values file keeps its policy.
+    legacy = (
+        "ingress.peerNamespace=edge",
+        "ingress.peerAppName=connector",
+        "ingress.peerInstance=connector-one",
     )
-    print("chart-pins ingress: (b) a blank or absent peer instance is refused by the schema")
+    equals(ingress(*legacy), rule(_pod_peer("edge", "connector", "connector-one")), "the legacy peer")
+    equals(
+        ingress(*legacy, *pod),
+        rule(_pod_peer("edge", "connector", "connector-one"), _pod_peer("ing", "front", "front")),
+        "the legacy peer beside a listed one",
+    )
+    print("chart-pins ingress: (c) the single-peer form renders its old rule, first")
 
-    # (c) The pin MOVES with the value, which is what proves it reads the
-    # instance at all rather than matching a constant.
-    moved = only(render(*ACTIVE, "ingress.peerInstance=other-tunnel"), "NetworkPolicy")
-    equals(moved["spec"]["ingress"], expected_rule("other-tunnel"), "the overridden ingress rule")
-    if configured["ingress"]["peerInstance"] in str(moved["spec"]["ingress"]):
-        raise PinError("the overridden render still names the default peer instance")
-    print("chart-pins ingress: (c) an overridden instance moves the pin and leaves no default")
+    # (d) Anything that would read narrow and behave wide is refused.
+    refuse(*pod[:2], because="a pod peer with no instance admits every connector in its namespace")
+    refuse(*pod[:2], "ingress.peers[0].instance=", because="a blank instance admits every connector")
+    refuse(*legacy[:2], because="the single-peer form without its instance")
+    refuse(*legacy[:2], "ingress.peerInstance=", because="the single-peer form with a blank instance")
+    refuse("ingress.peers[0].ipBlock.cidr=0.0.0.0/0", because="a block holding every IPv4 address")
+    refuse("ingress.peers[0].ipBlock.cidr=::/0", because="a block holding every IPv6 address")
+    refuse(*pod, "ingress.peers[0].ipBlock.cidr=10.0.0.0/8", because="one entry naming a pod and a block")
+    refuse("trustedProxyCidrs[0]=0.0.0.0/0", because="trusting every sender's forwarded address")
+    print("chart-pins ingress: (d) unpinned pods, a partial single peer and a /0 are refused")
 
 
 def _volume_claims(volume: dict[str, Any]) -> str:
@@ -224,11 +294,6 @@ def _assert_claim(claim: dict[str, Any], *, name: str, spec: dict[str, Any]) -> 
     equals(claim["spec"]["accessModes"], ["ReadWriteOnce"], f"the {name} access modes")
     equals(claim["spec"]["storageClassName"], spec["className"], f"the {name} storage class")
     equals(claim["spec"]["resources"]["requests"]["storage"], spec["size"], f"the {name} size")
-    equals(
-        claim["metadata"]["annotations"]["platform.snaraj.dev/volume-capacity"],
-        spec["capacity"],
-        f"the {name} provisioned-capacity annotation",
-    )
 
 
 def pin_storage() -> None:
@@ -241,6 +306,17 @@ def pin_storage() -> None:
     _assert_claim(
         claims["obsync-journal"], name="obsync-journal", spec=configured["storage"]["journal"]
     )
+    # The provisioned capacity rides on each claim under a platform domain.
+    annotated = {
+        claim["metadata"]["name"]: claim
+        for claim in every(render(*ACTIVE, *ANNOTATED), "PersistentVolumeClaim")
+    }
+    for role in ("blobs", "journal"):
+        equals(
+            annotated[f"obsync-{role}"]["metadata"]["annotations"][f"{DOMAIN}/volume-capacity"],
+            configured["storage"][role]["capacity"],
+            f"the obsync-{role} provisioned-capacity annotation",
+        )
     print("chart-pins storage: (a) exactly two claims, on the classes and sizes values names")
 
     pod = only(documents, "Deployment")["spec"]["template"]["spec"]
@@ -257,7 +333,7 @@ def pin_storage() -> None:
     mirrored = render(
         *ACTIVE,
         "storage.mirrors[0].name=spare",
-        "storage.mirrors[0].className=local-pie-ssd",
+        f"storage.mirrors[0].className={configured['storage']['blobs']['className']}",
         "storage.mirrors[0].size=100Gi",
         "storage.mirrors[0].capacity=100Gi",
     )
@@ -320,7 +396,7 @@ def pin_storage() -> None:
     # Drive a render where they differ -- a volume grown ahead of its claim,
     # the exact situation the distinction exists for -- and require the process
     # to still be told the claim size while the annotation reports the volume.
-    grown = render(*ACTIVE, "storage.blobs.capacity=500Gi")
+    grown = render(*ACTIVE, *ANNOTATED, "storage.blobs.capacity=500Gi")
     grown_pod = only(grown, "Deployment")["spec"]["template"]["spec"]
     grown_environment = {
         entry["name"]: entry.get("value")
@@ -336,7 +412,7 @@ def pin_storage() -> None:
         claim["metadata"]["name"]: claim for claim in every(grown, "PersistentVolumeClaim")
     }["obsync-blobs"]
     equals(
-        grown_claim["metadata"]["annotations"]["platform.snaraj.dev/volume-capacity"],
+        grown_claim["metadata"]["annotations"][f"{DOMAIN}/volume-capacity"],
         "500Gi",
         "the provisioned-capacity annotation when the volume is larger than the claim",
     )
@@ -380,6 +456,16 @@ def pin_storage() -> None:
     if _unknown_claim_names(mutated, known) != [f"stale-{role}"]:
         raise PinError("the document check can no longer fail: it would pass a wrong claim name")
     print("chart-pins storage: (f) the operating documents name the claims the chart creates")
+
+    # (g) chart/examples/static-local-volumes.yaml pre-binds each volume to a
+    # claim by name, so a claim renamed here and not there binds nothing.
+    example = miniyaml.loads(STATIC_VOLUME_EXAMPLE.read_text(encoding="utf-8"))
+    equals(
+        sorted(volume["spec"]["claimRef"]["name"] for volume in every(example, "PersistentVolume")),
+        sorted(known),
+        f"the claims {STATIC_VOLUME_EXAMPLE} pre-binds",
+    )
+    print("chart-pins storage: (g) the static-volume example pre-binds the claims the chart creates")
 
 
 def pin_security() -> None:
@@ -471,12 +557,56 @@ def pin_security() -> None:
         refuse(override, because=because)
     print("chart-pins security: (b) every weakening override is refused by the schema")
 
-    # (c) The image reference keeps its digest. A tag alone resolves whatever
-    # the registry says today.
-    image = container["image"]
-    if "@sha256:" not in image or not image.startswith("ghcr.io/snaraj/obsync:v"):
-        raise PinError(f"the rendered image reference {image!r} is not repository:tag@digest")
-    print("chart-pins security: (c) the workload reference renders repository:tag@digest")
+    # (c) The image reference keeps its digest, whatever registry serves it. A
+    # tag alone resolves whatever the registry says today, so a mirror may
+    # change where the bytes come from and never which bytes run.
+    image_values = configured["image"]
+    pinned = f"{image_values['tag']}@{image_values['digest']}"
+    equals(container["image"], f"{image_values['repository']}:{pinned}", "the image reference")
+    mirror = "registry.example.org:5000/mirror/obsync"
+    mirrored = only(render(*ACTIVE, f"image.repository={mirror}"), "Deployment")
+    equals(
+        mirrored["spec"]["template"]["spec"]["containers"][0]["image"],
+        f"{mirror}:{pinned}",
+        "the mirrored image reference",
+    )
+    refuse("image.digest=", because="an image with no digest resolves whatever a tag says today")
+    refuse("image.repository=Not A Registry", because="a repository that is not a registry path")
+    print("chart-pins security: (c) any repository renders repository:tag@digest, and never without it")
+
+    # (d) Scheduling, registry credentials and pod labels pass through, and
+    # none of them reaches the security context or the selector labels.
+    scheduled = only(
+        render(
+            *ACTIVE,
+            "nodeSelector.kubernetes\\.io/arch=arm64",
+            "tolerations[0].key=dedicated",
+            "tolerations[0].operator=Exists",
+            "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].key=disk",
+            "affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0].operator=Exists",
+            "imagePullSecrets[0].name=mirror-credentials",
+            "podLabels.team=notes",
+        ),
+        "Deployment",
+    )["spec"]["template"]
+    spec = scheduled["spec"]
+    equals(spec["nodeSelector"], {"kubernetes.io/arch": "arm64"}, "the node selector")
+    equals(spec["tolerations"], [{"key": "dedicated", "operator": "Exists"}], "the tolerations")
+    equals(
+        spec["affinity"]["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"],
+        {"nodeSelectorTerms": [{"matchExpressions": [{"key": "disk", "operator": "Exists"}]}]},
+        "the node affinity",
+    )
+    equals(spec["imagePullSecrets"], [{"name": "mirror-credentials"}], "the pull secrets")
+    equals(scheduled["metadata"]["labels"]["team"], "notes", "an extra pod label")
+    equals(spec["securityContext"], pod["securityContext"], "the scheduled pod security context")
+    equals(
+        spec["containers"][0]["securityContext"],
+        container["securityContext"],
+        "the scheduled container security context",
+    )
+    refuse("podLabels.app\\.kubernetes\\.io/name=other", because="a pod label the selectors match on")
+    print("chart-pins security: (d) scheduling passes through and leaves the posture and selectors alone")
 
 
 
@@ -496,13 +626,15 @@ def pin_readiness() -> None:
     equals(sorted(document["kind"] for document in pending), kinds, "the pending render's document kinds")
     deployment = only(pending, "Deployment")
     equals(deployment["spec"]["replicas"], 0, "the pending replica count")
-    equals(deployment["metadata"]["annotations"]["platform.snaraj.dev/deployment-ready"], "false", "the pending readiness annotation")
+    deployment = only(render(*ANNOTATED), "Deployment")
+    equals(deployment["metadata"]["annotations"][f"{DOMAIN}/deployment-ready"], "false", "the pending readiness annotation")
     print("chart-pins readiness: (b) the platform-ready render is the same objects at one replica")
     active = render(*ACTIVE)
     equals(sorted(document["kind"] for document in active), kinds, "the active render's document kinds")
     deployment = only(active, "Deployment")
     equals(deployment["spec"]["replicas"], 1, "the active replica count")
-    equals(deployment["metadata"]["annotations"]["platform.snaraj.dev/deployment-ready"], "true", "the active readiness annotation")
+    deployment = only(render(*ACTIVE, *ANNOTATED), "Deployment")
+    equals(deployment["metadata"]["annotations"][f"{DOMAIN}/deployment-ready"], "true", "the active readiness annotation")
     for name in ("obsync-blobs", "obsync-journal"):
         for shape, documents in (("pending", pending), ("active", active)):
             if not any(claim["metadata"]["name"] == name for claim in every(documents, "PersistentVolumeClaim")):
@@ -571,6 +703,91 @@ def pin_environment() -> None:
     print("chart-pins environment: (c) an accepted binary quantity renders through to the process")
 
 
+KUBE_FLOOR = ("v1.34.0", "v1.34.2-eks-1234", "v1.34.2-gke.100")
+"""The lowest minor `Chart.yaml` claims, bare and with the pre-release-style
+suffixes managed clusters report: the oldest node image the pinned kind
+publishes (scripts/ci/install-kind.sh), so a live leg can prove what this
+render claims. The templates themselves need nothing newer than 1.22."""
+KUBE_CEILING = "v1.37.0"
+KUBE_BELOW = "v1.33.9"
+
+
+def pin_kubernetes() -> None:
+    """The claimed range renders, suffixed versions included, and ends where it says."""
+    for version in (*KUBE_FLOOR, KUBE_CEILING):
+        completed = _helm(list(ACTIVE), kube_version=version)
+        if completed.returncode != 0:
+            raise PinError(f"the chart does not render on {version}:\n{completed.stderr.strip()}")
+    print(f"chart-pins kubernetes: (a) renders on {', '.join((*KUBE_FLOOR, KUBE_CEILING))}")
+    if _helm(list(ACTIVE), kube_version=KUBE_BELOW).returncode == 0:
+        raise PinError(f"the chart renders on {KUBE_BELOW}, below the minor it claims")
+    print(f"chart-pins kubernetes: (b) refuses {KUBE_BELOW}, the minor below the floor")
+
+
+LONGEST_DOMAIN = ".".join(("a" * 63, "b" * 63, "c" * 63, "d" * 61))
+"""A DNS subdomain of exactly 253 characters, the most a key prefix may hold."""
+
+
+def pin_platform() -> None:
+    """The platform annotations are one deployer's signals, rendered on request.
+
+    A platform that promotes releases may read a readiness flag off the
+    Deployment and a provisioned capacity off each claim, under ITS domain.
+    Nobody else's render may carry that domain, so the shipped default names
+    none and renders no annotation at all; a named domain renders exactly the
+    two keys on exactly their objects; and a domain the API server would refuse
+    as a key prefix, or one Kubernetes reserves for itself, fails the render by
+    name instead of reaching a cluster. What the two annotations CARRY is held
+    by `pin_readiness` and `pin_storage`, under a domain.
+    """
+    configured = values()
+    equals(configured["platform"], {"annotationDomain": ""}, "the shipped platform default")
+    mirror = (
+        "storage.mirrors[0].name=spare",
+        f"storage.mirrors[0].className={configured['storage']['blobs']['className']}",
+        "storage.mirrors[0].size=100Gi",
+        "storage.mirrors[0].capacity=100Gi",
+    )
+    for sets in ((), ACTIVE, (*ACTIVE, *mirror)):
+        equals(rendered_annotations(render(*sets)), {}, f"the annotations of the render {' '.join(sets) or '(defaults)'}")
+    print("chart-pins platform: (a) with no domain, the pending, active and mirrored renders carry no annotation")
+
+    storage = configured["storage"]
+    equals(
+        rendered_annotations(render(*ACTIVE, *mirror, *ANNOTATED)),
+        {
+            "Deployment/obsync": {f"{DOMAIN}/deployment-ready": "true"},
+            "PersistentVolumeClaim/obsync-blobs": {f"{DOMAIN}/volume-capacity": storage["blobs"]["capacity"]},
+            "PersistentVolumeClaim/obsync-journal": {f"{DOMAIN}/volume-capacity": storage["journal"]["capacity"]},
+            "PersistentVolumeClaim/obsync-mirror-spare": {f"{DOMAIN}/volume-capacity": "100Gi"},
+        },
+        "the annotations of a render under a platform domain",
+    )
+    print("chart-pins platform: (b) a named domain renders exactly the two keys, on exactly their objects")
+
+    for domain in (LONGEST_DOMAIN, "cluster.x-k8s.io"):
+        deployment = only(render(f"platform.annotationDomain={domain}"), "Deployment")
+        equals(deployment["metadata"]["annotations"], {f"{domain}/deployment-ready": "false"}, f"the key under {domain}")
+    print("chart-pins platform: (c) a 253-character domain and a domain merely ending in k8s.io render")
+
+    for domain, because in (
+        ("Platform.example.org", "an upper-case letter"),
+        ("platform_example.org", "an underscore"),
+        ("-platform.example.org", "a label that starts with a hyphen"),
+        ("platform-.example.org", "a label that ends with a hyphen"),
+        ("platform..example.org", "an empty label"),
+        ("platform.example.org.", "a trailing dot"),
+        ("platform.example.org/x", "a slash, which would split the key"),
+        (f"{LONGEST_DOMAIN}d", "254 characters, one over the limit"),
+        ("kubernetes.io", "the prefix Kubernetes reserves"),
+        ("k8s.io", "the other prefix Kubernetes reserves"),
+        ("apps.kubernetes.io", "a subdomain of kubernetes.io"),
+        ("node.k8s.io", "a subdomain of k8s.io"),
+    ):
+        refuse(*ACTIVE, f"platform.annotationDomain={domain}", because=because, naming=domain)
+    print("chart-pins platform: (d) an invalid or reserved domain fails the render, naming the value")
+
+
 def emit_environment() -> None:
     """Print the rendered pod environment for a caller that RUNS it.
 
@@ -606,6 +823,8 @@ PINS = {
     "security": pin_security,
     "readiness": pin_readiness,
     "environment": pin_environment,
+    "kubernetes": pin_kubernetes,
+    "platform": pin_platform,
 }
 
 

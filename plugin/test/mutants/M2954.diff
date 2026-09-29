@@ -1,0 +1,12 @@
+# M2954: ids mixed up: a worker message runs the newest timer, not its own
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -78,7 +78,7 @@
+   };
+   try {
+     worker = spawn();
+-    worker.onmessage = (event) => take(event.data as number)?.();
++    worker.onmessage = () => take(next)?.();
+     worker.onerror = () => {
+       stop();
+       log(`timers decision=fallback reason=worker_error pending=${armed.size}`);

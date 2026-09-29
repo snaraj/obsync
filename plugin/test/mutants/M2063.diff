@@ -1,0 +1,21 @@
+# M2063: the lane applies outside the pull lock, beside a page
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2830,7 +2830,7 @@
+       if (ahead !== null) await stage(context, ahead);
+       let outcome = "applied";
+       try {
+-        await this.exclusive(async () => {
++        await (async () => {
+           if (!this.running || this.contextValue !== context) {
+             outcome = "stopped";
+             return;
+@@ -2856,7 +2856,7 @@
+           delete context.state.data.parked[fileId];
+           await context.state.save();
+           this.armParkRetry();
+-        });
++        })();
+       } finally {
+         // What the apply did not take -- the heads moved on, a stop -- is dropped.
+         for (const writer of context.staged?.values() ?? []) await writer.abort();

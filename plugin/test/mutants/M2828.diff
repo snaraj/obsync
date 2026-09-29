@@ -1,0 +1,11 @@
+# M2828: a closed Show sync status keeps listening to every status change
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -827,7 +827,6 @@
+   }
+ 
+   override onClose(): void {
+-    this.unwatch?.();
+     this.unwatch = null;
+     this.contentEl.empty();
+   }

@@ -1,0 +1,11 @@
+# M1832: a full server is not named: it falls to the generic words
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -502,7 +502,6 @@
+   if (!(error instanceof ApiError)) return null;
+   const said = (message: string): string => (then === "" ? message : `${message} ${then}`);
+   // First: a full server is never absence, whatever carried its answer.
+-  if (error.status === 507) return { kind: "error", code: "storage", message: said(SERVER_FULL) };
+   const certificate = certificateRefusal(error);
+   if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
+   if (error.code === "unreachable") return { kind: "offline" };

@@ -1,0 +1,12 @@
+# M1860: a setup token keeps the line breaks and spaces it was pasted with (#154)
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -252,7 +252,7 @@
+ 
+ /** A setup token as pasted: quotes, spaces and line breaks are copy-paste, never token (issue #154). */
+ export function pastedToken(text: string): string {
+-  return unwrap(text).replace(/\s+/g, "");
++  return unwrap(text);
+ }
+ 
+ /**

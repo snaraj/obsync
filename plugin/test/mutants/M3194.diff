@@ -1,0 +1,12 @@
+# M3194: a phone's write that left the file empty is never written again, and the empty note is recorded as the download
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1223,7 +1223,7 @@
+   private async landed(path: string, bytes: Uint8Array<ArrayBuffer>, mtime: number): Promise<VaultStat | null> {
+     const adapter = this.plugin.app.vault.adapter;
+     let stat = await this.stat(path);
+-    for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
++    for (let again = 1; stat !== null && stat.size < 0 && bytes.length > 0; again++) {
+       const unsaved = (await this.editing(path)) === "unsaved";
+       const now = await this.stat(path);
+       if (now === null || now.size !== 0) return now;

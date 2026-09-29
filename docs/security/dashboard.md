@@ -1,5 +1,7 @@
 # The dashboard's threat model
 
+*For people running an obsync server, and for reviewers.*
+
 Dated 2026-09-20. One page about one surface: what the dashboard is, what it
 holds, how a browser gets in, what defends it, and what is deliberately left
 standing. The whole-system view is [`../threat-model.md`](../threat-model.md);
@@ -69,7 +71,9 @@ device.
   `dashboard/test/html.test.mjs` fails the build if one appears; every value
   the server sends is rendered with `textContent`.
 - `X-Obsync-Seq` states the journal head to callers that proved a credential
-  and to nobody else, and "proved" is positive evidence: the server records
+  and to nobody else, and no unauthenticated body states it either:
+  `/readyz` answers `{"ready":true}`, where up to 1.1.3 its body carried the
+  head to anyone who asked (issue #235). "Proved" is positive evidence: the server records
   the fact where a credential VERIFIES -- a device signature with its
   timestamp and nonce, a session cookie that matched a live session, a login
   token, a setup token -- and the response header and the log ring key off
@@ -146,12 +150,6 @@ device.
   alone: `403 device_revoked` against `401 bad_signature`, for the reason
   above. A device id is not a secret the protocol protects, and the
   alternative is a refusal that does not say what happened.
-- **`GET /readyz` still states the journal head in its BODY.** The header was
-  taken off unauthenticated responses; the `seq` field of
-  `{"ready":true,"seq":<n>}` is pinned by `../protocol.md` and read by the
-  image and compose smokes, so the write-activity oracle is narrowed here and
-  not closed. Whether readiness should state a sequence at all is a separate
-  decision.
 - The decision log is not an audit log. It is two bounded rings in memory —
   1000 lines from credentialed requests, 200 from everything else — so
   unauthenticated traffic can push out only other unauthenticated traffic,

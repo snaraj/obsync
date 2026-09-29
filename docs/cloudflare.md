@@ -1,11 +1,14 @@
 # Cloudflare
 
-Two ways to put Cloudflare between your devices and your server, and which one
-the reference deployment uses. Neither is required: the server knows no
-provider by name, and [Run the server](server.md) needs no account with
-anybody. Take this page when you want to reach the server away from home
-without opening a port on your router, or when you want a published hostname
-with an access policy in front of it.
+*For people running an obsync server.*
+
+Two ways to put Cloudflare between your devices and your server. Cloudflare
+is one optional choice among many: any reverse proxy, VPN or tunnel you trust
+does the same job, the server knows no provider by name, and
+[Run the server](server.md) needs no account with anybody. Take this page when
+you already use Cloudflare and want to reach the server away from home without
+opening a port on your router, or want a published hostname with an access
+policy in front of it.
 
 Cloudflare's own menus and plan terms change. Every step below names the
 menu path as the Cloudflare documentation gave it on 2026-09-22; check the
@@ -15,10 +18,10 @@ current page before you rely on a limit or a price.
 
 | Shape | What devices see | What the internet sees | Large first sync |
 | --- | --- | --- | --- |
-| **Private route** (the reference deployment) | your own private address and name, through the Cloudflare One client | nothing: no hostname, no open port | private network traffic, not proxied through a public hostname |
+| **Private route** | your own private address and name, through the Cloudflare One client | nothing: no hostname, no open port | private network traffic, not proxied through a public hostname |
 | **Public hostname with Access** | a public name, an Access policy, a service token in the plugin | the hostname, behind Access | proxied through Cloudflare, under the provider's terms for large files |
 
-The private route is the reference because the server stays invisible and
+The private route is the one to prefer, because the server stays invisible and
 because Cloudflare's own documentation sends large transfers that way: a
 public hostname route proxies traffic through Cloudflare, and on the Free,
 Pro and Business plans the service-specific terms require a paid service for
@@ -97,9 +100,10 @@ Trade-offs:
 The server gets a hostname on a domain you have on Cloudflare. The tunnel
 publishes that hostname to the server's private address, and Cloudflare
 Access sits in front of it: an identity policy for the dashboard, and a
-service token for the plugin's API calls. This is the shape
-[platform onboarding](platform-onboarding.md) describes for the reference
-cluster, and the one the reference deployment has not taken.
+service token for the plugin's API calls. This is the Cloudflare form of the
+published-hostname path [platform onboarding](platform-onboarding.md)
+describes; your own reverse proxy with its own authentication is the
+provider-free form of the same path.
 
 1. **Publish the hostname.** In the tunnel's configuration, add a published
    application route from your hostname (`sync.example.com` standing in for
@@ -114,7 +118,7 @@ cluster, and the one the reference deployment has not taken.
    copy the Client ID and the Client Secret; the secret is shown once. Add a
    **Service Auth** policy to the application that includes this token, for
    the paths the plugin uses (`/v1/*`).
-4. **Paste the token into the plugin.** Under **Edge service-token headers**,
+4. **Paste the token into the plugin.** Under **Custom request headers**,
    one per line, exactly as Cloudflare names them:
 
    ```text
@@ -127,7 +131,11 @@ cluster, and the one the reference deployment has not taken.
    `OBSYNC_EDGE=cloudflare`. In that mode every request must carry the
    edge's connecting-address and request-id headers, and a request that
    arrives around the edge is refused with `421 edge_required`
-   ([troubleshooting](troubleshooting.md#edge_required)).
+   ([troubleshooting](troubleshooting.md#edge_required)). The server believes
+   those headers only from `OBSYNC_TRUSTED_PROXY_CIDRS`, which defaults in
+   this mode to the private networks a connector on the same host, container
+   network or cluster reaches it from; set it to the connector's own network
+   to narrow it further.
 6. **Verify.** Open the hostname in a browser and expect the Access sign-in,
    then the dashboard. In the plugin, select **Check** under **Connection**.
 
@@ -146,18 +154,18 @@ Trade-offs:
 
 ## What has been proven
 
-The private route is the reference deployment's route. The
+The private route has device runs on record: the
 [2026-09-14 run](validation-runs/2026-09-14.md) records that it was not
 exercised that day, and why; the [2026-09-20 run](validation-runs/2026-09-20.md)
-records a device run on the reference route with the connectivity and TLS
-checks passed. The public hostname shape has not been exercised by any
-recorded run.
+records a device run on the private route to a cluster, with the
+connectivity and TLS checks passed, on macOS and iPhone. The public hostname
+shape has not been exercised by any recorded run: it is not yet proven.
 
 ## Next
 
 - [Run the server](server.md): the terminator, the volumes, the setup token.
-- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): the chart the reference deployment uses.
-- [Platform onboarding](platform-onboarding.md): what the reference cluster
-  would add for a published hostname.
+- [Kubernetes](kubernetes.md): the chart, its volumes and its TLS front.
+- [Platform onboarding](platform-onboarding.md): what a GitOps platform adds
+  for a published hostname.
 - [Troubleshooting](troubleshooting.md): `edge_required`, `offline`, and the
   certificate.

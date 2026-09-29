@@ -1,0 +1,12 @@
+# M3180: the pairing survey asks every folder's nested-vault question once per note, outside a pass
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3804,7 +3804,7 @@
+     let local = 0;
+     let unknown = 0;
+     let older = 0;
+-    await this.inHostPass(async () => {
++    await (async (work: () => Promise<void>) => work())(async () => {
+       for (const file of await this.host.list()) {
+         if (!(await this.tracked(file.path))) continue;
+         local++;

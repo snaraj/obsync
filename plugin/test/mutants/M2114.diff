@@ -1,0 +1,12 @@
+# M2114: a refused prefetch stops the feed instead of falling back to one GET per note
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -769,7 +769,7 @@
+       bodies = await context.transport.getChunks(asked, undefined, patience, budget);
+     } catch (error) {
+       // No answer, or a stop: the feed's to handle, exactly as a GET's would be.
+-      if (!(error instanceof ApiError) || error.code === "unreachable" || error.code === "cancelled") throw error;
++      if (!(error instanceof ApiError) || error.code !== "") throw error;
+       this.off = true;
+       context.host.log(
+         `pull decision=prefetch_refused reason=${error.code} sids=${asked.length} bytes=${bytes} budget_bytes=${budget} ` +

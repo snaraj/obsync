@@ -2,13 +2,15 @@
 
 # Cloudflare
 
-Twee manieren om Cloudflare tussen je apparaten en je server te zetten, en
-welke daarvan de referentie-installatie gebruikt. Geen van beide is verplicht:
-de server kent geen enkele aanbieder bij naam, en
-[De server draaien](../server.md) heeft bij niemand een account nodig. Deze
-pagina is voor jou als je de server buitenshuis wilt bereiken zonder een poort
-op je router open te zetten, of als je een gepubliceerde hostnaam met een
-toegangsbeleid ervoor wilt.
+*Voor wie een obsync-server draait.*
+
+Twee manieren om Cloudflare tussen je apparaten en je server te zetten.
+Cloudflare is één optionele keuze uit vele: elke reverse proxy, VPN of tunnel
+die je vertrouwt, doet hetzelfde werk, de server kent geen enkele aanbieder
+bij naam, en [De server draaien](../server.md) heeft bij niemand een account
+nodig. Deze pagina is voor jou als je Cloudflare al gebruikt en de server
+buitenshuis wilt bereiken zonder een poort op je router open te zetten, of
+als je een gepubliceerde hostnaam met een toegangsbeleid ervoor wilt.
 
 De menu's van Cloudflare en de voorwaarden van de abonnementen veranderen.
 Elke stap hieronder noemt het menupad zoals de Cloudflare-documentatie het op
@@ -19,10 +21,10 @@ prijs vertrouwt.
 
 | Variant | Wat apparaten zien | Wat het internet ziet | Grote eerste synchronisatie |
 | --- | --- | --- | --- |
-| **Privéroute** (de referentie-installatie) | je eigen privéadres en naam, via de Cloudflare One-client | niets: geen hostnaam, geen open poort | privénetwerkverkeer, niet via een publieke hostnaam geleid |
+| **Privéroute** | je eigen privéadres en naam, via de Cloudflare One-client | niets: geen hostnaam, geen open poort | privénetwerkverkeer, niet via een publieke hostnaam geleid |
 | **Publieke hostnaam met Access** | een publieke naam, een Access-beleid, een servicetoken in de plugin | de hostnaam, achter Access | via Cloudflare geleid, onder de voorwaarden van de aanbieder voor grote bestanden |
 
-De privéroute is de referentie omdat de server onzichtbaar blijft en omdat
+De privéroute heeft de voorkeur, omdat de server onzichtbaar blijft en omdat
 Cloudflares eigen documentatie grote overdrachten die kant op stuurt: een
 route via een publieke hostnaam leidt het verkeer door Cloudflare, en op de
 abonnementen Free, Pro en Business vereisen de dienstspecifieke voorwaarden
@@ -106,10 +108,11 @@ Afwegingen:
 De server krijgt een hostnaam op een domein dat je bij Cloudflare hebt. De
 tunnel publiceert die hostnaam naar het privéadres van de server, en
 Cloudflare Access staat ervoor: een identiteitsbeleid voor het dashboard en
-een servicetoken voor de API-aanroepen van de plugin. Dit is de variant die
-[platform-onboarding](../platform-onboarding.md) beschrijft voor het
-referentiecluster, en de variant die de referentie-installatie niet heeft
-gekozen.
+een servicetoken voor de API-aanroepen van de plugin. Dit is de
+Cloudflare-vorm van het pad met een gepubliceerde hostnaam dat
+[platform-onboarding](../platform-onboarding.md) beschrijft; je eigen reverse
+proxy met zijn eigen authenticatie is de aanbiedervrije vorm van hetzelfde
+pad.
 
 1. **Publiceer de hostnaam.** Voeg in de configuratie van de tunnel een route
    voor een gepubliceerde applicatie toe van je hostnaam (`sync.example.com`
@@ -124,8 +127,8 @@ gekozen.
    een en kopieer de Client ID en het Client Secret; het geheim wordt maar één
    keer getoond. Voeg aan de applicatie een **Service Auth**-beleid toe dat
    dit token bevat, voor de paden die de plugin gebruikt (`/v1/*`).
-4. **Plak het token in de plugin.** Onder **Edge service-token headers**, één
-   per regel, precies zoals Cloudflare ze noemt:
+4. **Plak het token in de plugin.** Onder **Custom request headers**, één per
+   regel, precies zoals Cloudflare ze noemt:
 
    ```text
    CF-Access-Client-Id: <the client id>
@@ -137,7 +140,12 @@ gekozen.
    `OBSYNC_EDGE=cloudflare`. In die modus moet elk verzoek de edge-headers
    met het verbindende adres en de request-ID dragen, en een verzoek dat om
    de edge heen binnenkomt wordt geweigerd met `421 edge_required`
-   ([probleemoplossing](../troubleshooting.md#edge_required)).
+   ([probleemoplossing](../troubleshooting.md#edge_required)). De server
+   gelooft die headers alleen als ze uit `OBSYNC_TRUSTED_PROXY_CIDRS` komen.
+   In deze modus zijn dat standaard de privénetwerken van waaruit een
+   connector op dezelfde host, in hetzelfde containernetwerk of in hetzelfde
+   cluster hem bereikt; zet de waarde op het eigen netwerk van de connector
+   om het verder te beperken.
 6. **Controleer.** Open de hostnaam in een browser en verwacht de
    Access-aanmelding, daarna het dashboard. Kies in de plugin **Check** onder
    **Connection**.
@@ -157,20 +165,20 @@ Afwegingen:
 
 ## Wat is aangetoond
 
-De privéroute is de route van de referentie-installatie. De
+Voor de privéroute zijn apparatenruns vastgelegd: de
 [run van 2026-09-14](../validation-runs/2026-09-14.md) legt vast dat hij die
 dag niet is beproefd, en waarom; de
 [run van 2026-09-20](../validation-runs/2026-09-20.md) legt een apparatenrun
-op de referentieroute vast waarbij de verbindings- en TLS-controles slaagden.
-De variant met publieke hostnaam is door geen enkele vastgelegde run beproefd.
+over de privéroute naar een cluster vast, waarbij de verbindings- en
+TLS-controles slaagden, op macOS en iPhone. De variant met publieke hostnaam
+is door geen enkele vastgelegde run beproefd: die is nog niet aangetoond.
 
 ## Verder
 
 - [De server draaien](../server.md): de terminator, de volumes, het
   setup-token.
-- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): de chart die de referentie-installatie
-  gebruikt.
-- [Platform-onboarding](../platform-onboarding.md): wat het referentiecluster
-  zou toevoegen voor een gepubliceerde hostnaam.
+- [Kubernetes](../kubernetes.md): de chart, zijn volumes en zijn TLS-front.
+- [Platform-onboarding](../platform-onboarding.md): wat een GitOps-platform
+  toevoegt voor een gepubliceerde hostnaam.
 - [Probleemoplossing](../troubleshooting.md): `edge_required`, `offline` en
   het certificaat.

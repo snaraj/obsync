@@ -1,14 +1,22 @@
 # Device validation plan
 
-Dated 2026-09-12. The MVP is validated when every step below passes on
-iPhone, iPad, Windows, and macOS against the reference deployment, plus the
-LAN path from a desktop.
+*Internals, for contributors and reviewers.*
+
+Dated 2026-09-27. The MVP is validated when every step below passes on each
+client platform of the set -- macOS, Windows, Linux, iPhone or iPad, and
+Android -- against a server on either reference route under "Routes" below:
+the Kubernetes chart, or Docker Compose. Neither route presumes anybody's own
+deployment. A Compose server on a spare computer, brought up from
+[Run the server](server.md#any-network-no-provider-compose-with-caddy), is a
+complete reference, and every scenario and journey on this page can be run
+against one. Which platforms have a recorded run, and which are proven only in
+CI so far, is in the [runs index](validation-runs/README.md).
 
 ## What readiness means (owner ruling, 2026-09-07)
 
-The reference deployment is PRIVATE and owner-only: no public application,
+The deployment readiness is judged on is PRIVATE: no public application,
 no public DNS record, no public route. Readiness is real sync between the
-owner's own devices -- including OFF-LAN connectivity over a private path --
+maintainer's own devices -- including OFF-LAN connectivity over a private path --
 together with the authentication, revocation, isolation and recovery checks
 below. **Public reachability is not an acceptance criterion**, and no
 scenario here passes or fails on whether this server can be reached from the
@@ -23,6 +31,12 @@ because mobile Obsidian accepts nothing else. A tunnel, a public hostname, or
 a publicly trusted certificate are optional conveniences layered on top; each
 is validated only if it is actually deployed, and never as a condition of
 readiness.
+
+**The MVP set (owner ruling, 2026-09-27).** Clients: macOS, Windows, Linux,
+iPhone or iPad, and Android. Reference routes: the Kubernetes chart and Docker
+Compose, the second being the one a stranger can stand up without a cluster.
+"Private" above means no public route; it never means one particular person's
+deployment.
 
 ## Install through the production path
 
@@ -53,12 +67,12 @@ evidence.
 | # | Scenario | Pass condition |
 | --- | --- | --- |
 | V1 | Setup on the first desktop; recovery phrase shown and confirmed | account visible in dashboard |
-| V2 | Pair iPhone, iPad, Windows from the desktop | each shows in Devices with platform; country is shown only when supplied by the deployed edge (a dash is expected with `OBSYNC_EDGE=none`) |
-| V3 | Type in a note on iPhone | appears on the other three within 3 s |
+| V2 | Pair every other device of the set -- phone, tablet, the other desktops -- from the first desktop | each shows in Devices with platform; country is shown only when supplied by the deployed edge (a dash is expected with `OBSYNC_EDGE=none`) |
+| V3 | Type in a note on a phone | appears on every other device within 3 s |
 | V4 | Rename and move a populated folder on Windows, including a folder that IS a selected sync folder on that device | mirrored everywhere, no duplicates, no deletions in the journal; the selection names the new path. The note-level half is proven: [issue #96](https://github.com/snaraj/obsync/issues/96) shipped in 1.0.4, and the [2026-09-21 run](validation-runs/2026-09-21.md) renamed a synced note in BOTH directions with both devices on 1.0.4 and saw a move, not a deletion. The Windows folder scenario itself is still `not attempted`: no run has been made on Windows |
 | V5 | Edit the same note offline on two devices, reconnect | clean merge or a visible conflict copy, never a lost edit |
-| V6 | Add a 2 GiB image on macOS | syncs to Windows; iPhone lists it as remote-only under the per-file ceiling |
-| V7 | Add a 20 GiB archive on macOS over LAN; kill Obsidian mid-upload; reopen | resumes; fewer than 8 MiB re-sent |
+| V6 | Add a 2 GiB image on one desktop | syncs to another desktop; a phone lists it as remote-only under the per-file ceiling |
+| V7 | Add a 20 GiB archive on macOS over LAN; kill Obsidian mid-upload; reopen | resumes; re-sent: fewer than 32 MiB of large chunks, plus at most 1 MiB of chunks of 256 KiB or less |
 | V8 | Delete a file on iPad | tombstone everywhere; restorable from history within retention |
 | V9 | Revoke the iPad from the dashboard | its next request fails; other devices unaffected |
 | V10 | Restart the server pod mid-sync | clients resume; readiness is unavailable during startup replay and becomes successful only after replay completes |
@@ -152,11 +166,11 @@ else. The acting device is named first.
 | --- | --- | --- | --- |
 | J1 | Create a note on the phone | the desktop shows the note under the same name with the same bytes, with no action taken on the desktop | phone acts, desktop observes |
 | J2 | Create a note on the desktop | the phone shows the note under the same name with the same bytes, with no action taken on the phone | desktop acts, phone observes |
-| J3 | Rename the vault folder on the desktop, then reopen that vault | the plugin is still paired: no setup token, no pairing code, the same one device in Devices, the same folder selection; an edit made after the reopen reaches the phone | desktop acts, phone observes |
+| J3 | Rename the vault on the desktop in Obsidian's own vault manager (the vault's menu, **Rename vault...**), then reopen that vault. A folder renamed outside Obsidian is a new vault to Obsidian and starts unpaired by design ([troubleshooting](troubleshooting.md#a-copied-or-renamed-vault-says-it-is-a-copy)); that is not this journey | the plugin is still paired: no setup token, no pairing code, the same one device in Devices, the same folder selection; an edit made after the reopen reaches the phone | desktop acts, phone observes |
 | J4 | Rename a selected folder on one device | the other device lists that folder under its new name holding the same file names and the same bytes; the file count matches; nothing is deleted and nothing lands in trash | either device acts, the other observes |
 | J5 | Move a note between two selected folders | the other device shows exactly one copy, under the destination folder only, with the same bytes | either device acts, the other observes |
-| J6 | Move a note out of the selected folders | the plugin asks before the move takes effect and names the consequence for the other device in that prompt; the answer given is the outcome observed, and nothing is removed anywhere without it | either device acts, the other observes |
-| J7 | Create a new top-level folder after pairing, then add it to the selection on that same device | the folder is offered in **Sync folders on this device** and the saved selection survives a restart; its notes then sync, or the plugin states in the UI why an expanded selection is refused. Either way every already-selected folder keeps every file | either device acts, the other observes |
+| J6 | Move a note out of the selected folders | nothing is removed anywhere: the other device keeps the note under its old name with the same bytes and receives no copy under the new one, and the moving device keeps it where it was moved. The moving device says at once, in a notice, how many notes stopped syncing there, that they stay on the other devices and that the server keeps their history. (Obsidian reports a move only after it happened, so there is no prompt before it; the move deletes nothing, so there is nothing to ask, issue #91.) | either device acts, the other observes |
+| J7 | Create a new top-level folder after pairing, then add it to the selection on that same device | the folder is offered in **Sync folders on this device** and the saved selection survives a restart; its notes then sync, because saving the wider selection replays the history this device skipped, and every already-selected folder keeps every file | either device acts, the other observes |
 | J8 | Quit and relaunch Obsidian on both devices | each device returns to idle on its own, with no tap, no **Sync now**, and no setup or pairing prompt; record the time each took | both devices act |
 | J9 | Open a vault that also holds a large non-note folder tree (record the file count and total size) | the vault opens and the plugin reaches idle within a recorded time, or it says why not in one visible line naming the budget it exceeded and what it skipped (requirement 12); silence, a hang, or an unexplained partial scan is a fail | desktop acts, phone observes |
 | J10 | Unpair the device, then pair the same vault again | every local note is still on disk with unchanged bytes, the device appears exactly once in Devices, and sync resumes both ways; no duplicate note and no conflict copy | either device acts, the other observes |
@@ -179,18 +193,31 @@ fact: use disposable notes and name the class.
 
 ## Routes
 
-Two independent routes to a validated MVP, and either one alone satisfies
+Two reference routes to a validated MVP, and either one alone satisfies
 readiness for the scenarios it covers:
 
 | Route | Terminator | Reachability | Proven continuously by |
 | --- | --- | --- | --- |
-| Reference (pie5) | an in-cluster TLS terminator the platform trusts, in front of the pod; `OBSYNC_EDGE=none`. The deployment's own tuple (proxy, route, certificate) lives in the platform runbook, not here | private, owner-only: the LAN, or the owner's private route back to it; no public application, no access broker | the deployment itself; V1-V14 by hand |
-| Compose path | Caddy in `deploy/compose`, `OBSYNC_EDGE=none` | private name, private CA, published only on the chosen `OBSYNC_BIND_ADDRESS` | `scripts/ci/compose-smoke.sh`, on every pull request |
+| The Kubernetes route | an in-cluster TLS terminator the deployer trusts, in front of the pod, as `docs/kubernetes.md` builds one; `OBSYNC_EDGE=none`. A deployment's own tuple (proxy, route, certificate) stays with whoever runs it, not here | private: the LAN, or a private route (a VPN or an overlay network) back to it; no public application, no access broker | `.github/workflows/helm-e2e.yml` on every pull request: the chart, the terminator and an API device flow on a throwaway cluster. Real devices on that route: V1-V14, by hand, in a run record |
+| Docker Compose | Caddy in `deploy/compose`, `OBSYNC_EDGE=none` | private name, private CA, published only on the chosen `OBSYNC_BIND_ADDRESS` | `scripts/ci/compose-smoke.sh` and `.github/workflows/compose-e2e.yml`, on every pull request |
 
-The Compose path is the no-provider route: it needs no account with anybody
-and nothing reachable from the internet, and unlike the reference deployment
-its serving path is re-proven on every pull request rather than by hand. Its
-"no public exposure" is an assertion and not a hope: the smoke reads back the
+A Compose server satisfies every V scenario and every J journey on this page.
+In V10 the server pod is the `obsync-obsync-1` container
+(`docker restart obsync-obsync-1`), and V15 is the Compose route itself. What
+the Kubernetes route adds -- the chart, its NetworkPolicy, its claims -- is
+nothing a device can observe, and `helm-e2e.yml` proves it on every pull
+request.
+
+Docker Compose is the no-provider route: it needs no account with anybody
+and nothing reachable from the internet. Both routes' serving paths are
+re-proven on every pull request by a synthetic client; neither of those CI
+jobs drives the real plugin or a real device. `.github/workflows/desktop-matrix.yml`
+does drive the real plugin, inside the official Obsidian desktop app on Linux,
+macOS and Windows, nightly and on plugin changes: setup, pairing, notes both
+ways, a rename and folders, against the server behind Caddy. That is CI
+evidence for those three desktops, not a device run, and no CI job drives a
+phone. Real devices are what the run records are for. The
+Compose path's "no public exposure" is an assertion and not a hope: the smoke reads back the
 `HostIp` Docker published 80 and 443 on and refuses any address but the one
 `OBSYNC_BIND_ADDRESS` selected, and refuses the compose file itself if that
 variable is optional. V15 is where a person confirms on real devices what
@@ -200,7 +227,7 @@ Every run records device models, OS versions, app versions, the server
 commit, and timings in one file per run under
 [`docs/validation-runs/`](validation-runs/README.md), named `<date>.md` for
 the date the run started; that README holds the required fields and the
-redaction rules. The README's five captures are taken during the run -- 01 from
+redaction rules. The quickstart's five captures are taken during the run -- 01 from
 the production-path install above, 02 and 03 from V1, 04 from V2, 05 from V3
 -- and are committed under [`docs/captures/`](captures/README.md) by
 the convention recorded there.

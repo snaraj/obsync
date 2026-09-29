@@ -1,0 +1,18 @@
+# M1997: a folder Save writes its choice only after the wait, so a quit meanwhile loses it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2412,14 +2412,7 @@
+     const started = Date.now();
+     let withdrawn = false;
+     try {
+-      const before = state.data.pendingScope;
+       state.data.pendingScope = folders === undefined ? {} : { folders };
+-      try {
+-        await state.save();
+-      } catch (error) {
+-        state.data.pendingScope = before;
+-        throw error;
+-      }
+       assertActive();
+       // Scope changes take effect only after old work is quiescent. A
+       // stopped long poll may finish, but must not advance its cursor.

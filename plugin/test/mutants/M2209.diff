@@ -1,0 +1,11 @@
+# M2209: Sync now waits for its feed read without a budget
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4090,7 +4090,6 @@
+     return new Promise<void>((answer) => {
+       const budget = this.timers.set(() => {
+         this.options.host.log(`sync_now decision=feed_unanswered budget_ms=${SYNC_NOW_FEED_MS}`);
+-        answer();
+       }, SYNC_NOW_FEED_MS);
+       this.feedAsks.push({ after: this.feedReads, answer: () => { this.timers.clear(budget); answer(); } });
+       this.wake("sync_now");

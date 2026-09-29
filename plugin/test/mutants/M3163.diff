@@ -1,0 +1,15 @@
+# M3163: a leave waits for a start under way however long its registration takes (#157, #233)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3878,10 +3878,7 @@
+       if (starting.length > 0) {
+         const waited = Date.now();
+         let handle = 0;
+-        const settled = await Promise.race([
+-          Promise.allSettled(starting).then(() => true),
+-          new Promise<boolean>((resolve) => { handle = window.setTimeout(() => resolve(false), START_SETTLE_MS); }),
+-        ]);
++        const settled = await Promise.allSettled(starting).then(() => true);
+         window.clearTimeout(handle);
+         this.log(
+           `unpair decision=${settled ? "waited" : "gave_up"} reason=start_under_way starts=${starting.length} ` +

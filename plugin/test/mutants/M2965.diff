@@ -1,0 +1,11 @@
+# M2965: the transport's backoff sleeps on the page's clock
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2112,7 +2112,6 @@
+       },
+       // An attempt nothing answers is abandoned (#195), and a backoff ends, on time in a hidden window (#221).
+       timers,
+-      sleep: (ms) => new Promise((resolve) => timers.set(resolve, ms)),
+     });
+     this.transport = transport;
+     this.statusEl = this.addStatusBarItem();

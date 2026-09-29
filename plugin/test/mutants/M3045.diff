@@ -1,0 +1,12 @@
+# M3045: a note deleted through its ghost is published as the person's deletion
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2924,7 +2924,7 @@
+         // devices hear of until the person says, and a ghost taken out of
+         // the index is not one at all (issue #219). The watch comes first, so
+         // it holds the note whatever raised the event.
+-        if (this.host?.twinDeleted(file.path, file instanceof TFolder) || this.host?.unindexed(file.path)) return;
++        if (this.host?.unindexed(file.path)) return;
+         if (file instanceof TFile) this.engine?.deleted(file.path);
+         else if (file instanceof TFolder) {
+           for (const path of this.pathsUnder(file.path)) this.engine?.deleted(path);

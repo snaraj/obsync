@@ -1,0 +1,12 @@
+# M1833: an answer from something in front of the server is not named
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -511,7 +511,7 @@
+     return { kind: "error", code: "forgotten_device", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };
+   }
+   if (error.code === "stale_timestamp") return { kind: "error", code: "clock", message: said(CLOCK_OFF) };
+-  if (error.code === NOT_OBSYNC || error.code === "part_mismatch" || error.code === "response_too_large") {
++  if (error.code === "never") {
+     return { kind: "error", code: "edge", message: said(NOT_OBSYNC_ANSWER) };
+   }
+   // Pairing's own words for the edge (`transport.ts`), so the two never disagree.

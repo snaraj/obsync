@@ -1,0 +1,12 @@
+# M3182: a version an earlier resolution read or listed is read again
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2430,7 +2430,7 @@
+       const { id, depth } = queue[cursor] as { id: string; depth: number };
+       if (visited.has(id)) continue;
+       visited.add(id);
+-      const held = known.has(id) ? undefined : ancestry.get(context)?.versions.get(`${file.file_id} ${id}`)?.version;
++      const held = known.has(id) || true ? undefined : ancestry.get(context)?.versions.get(`${file.file_id} ${id}`)?.version;
+       if (held !== undefined) {
+         insert(held);
+         recalled++;

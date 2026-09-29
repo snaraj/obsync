@@ -1,0 +1,11 @@
+# M1822: a wake leaves the feed's pause after a failed read to run out
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2565,7 +2565,6 @@
+     if (!this.running) return;
+     const pause = this.feedPause;
+     this.feedPause = null;
+-    pause?.();
+     const poll = this.poll;
+     const waited = poll === null ? 0 : this.nowFn() - poll.sent;
+     const dropped = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);

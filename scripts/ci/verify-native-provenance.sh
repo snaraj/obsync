@@ -13,8 +13,12 @@ if [ "$#" -eq 3 ]; then
   test -s "$3"
   bundle_args=(--bundle "$3")
 fi
-for member in main.js manifest.json styles.css; do
-  gh attestation verify "${directory}/${member}" \
+# The server archives, from 1.1.4 on, are named by the caller: the publisher's
+# own export, or the audit's download of each archive the evidence records.
+read -r -a archives <<< "${SERVER_ARCHIVES:-}"
+for member in "${directory}/main.js" "${directory}/manifest.json" "${directory}/styles.css" \
+  "${archives[@]}"; do
+  gh attestation verify "${member}" \
     --repo "${GITHUB_REPOSITORY}" \
     --cert-identity 'https://github.com/snaraj/obsync/.github/workflows/release-publisher.yml@refs/heads/main' \
     --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \

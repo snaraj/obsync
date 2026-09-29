@@ -1,0 +1,205 @@
+name: Generic paths
+
+# The deployments a stranger chooses that nothing else runs: the bare binary as
+# a systemd service behind the distribution's own nginx, the Compose file under
+# ROOTLESS Podman, the chart on k3s as k3s ships (its Traefik, its local-path
+# volumes, its network-policy controller), and the chart on an IPv6-only
+# cluster. Each job's script says what it proves and why.
+#
+# WHEN IT RUNS. Nightly, by hand, and on a pull request that changes what
+# these paths run: the server, the chart, the deploy files, or the scripts
+# themselves. They take longer than a pull request should wait for when it
+# touches none of that.
+#
+# IT IS A WORKFLOW OF ITS OWN, for the reason compose-e2e.yml gives.
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/generic-paths.yml'
+      - 'crates/**'
+      - 'chart/**'
+      - 'deploy/**'
+      - 'Dockerfile'
+      - 'scripts/ci/api_flow.py'
+      - 'scripts/ci/binary-e2e.sh'
+      - 'scripts/ci/podman-e2e.sh'
+      - 'scripts/ci/k3d-e2e.sh'
+      - 'scripts/ci/install-k3d.sh'
+      - 'scripts/ci/np-probe.sh'
+      - 'scripts/ci/helm-e2e.sh'
+
+permissions: {}
+
+concurrency:
+  group: generic-paths-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  binary:
+    # M2: no container in the serving path. The tree is the Dockerfile's
+    # `server-dist` stage -- what the release's static server tarball packs
+    # byte for byte, systemd unit included -- built from this commit.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Build the tarball's tree from this commit
+        run: docker build --target server-dist --output "type=local,dest=${RUNNER_TEMP}/server-dist" .
+      - name: Run the binary under systemd behind nginx
+        # The runner image's Ubuntu nginx is the subject here, not a tool:
+        # what `apt install nginx` gives a reader today. The script runs that
+        # binary as a unit of its own and never touches the system's nginx.
+        run: scripts/ci/binary-e2e.sh "${RUNNER_TEMP}/server-dist"
+      - name: Remove anything the run left behind
+        if: always()
+        run: |
+          set -uo pipefail
+          name="obsync-e2e-${OBSYNC_E2E_RUN_ID}"
+          sudo systemctl stop "${name}" "${name}-nginx" >/dev/null 2>&1 || true
+          sudo systemctl reset-failed "${name}" "${name}-nginx" >/dev/null 2>&1 || true
+          sudo rm -f "/etc/systemd/system/${name}.service"
+          sudo systemctl daemon-reload >/dev/null 2>&1 || true
+          sudo rm -rf "/opt/${name}" "/var/lib/${name}" "/etc/${name}" "/srv/${name}-nginx"
+          sudo userdel "${name}" >/dev/null 2>&1 || true
+          exit 0
+
+  podman:
+    # M3: the unmodified Compose file, rootless.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Give Podman a network backend that resolves service names
+        # Ubuntu's podman does not pull these in, and without them one
+        # container cannot find the other by name. Release-pocket versions,
+        # verified by apt against the archive's signed index.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends netavark=1.4.0-4 aardvark-dns=1.4.0-5
+      - name: Build the image and hand it to Podman
+        run: |
+          set -euo pipefail
+          docker build --tag "localhost/obsync-podman-e2e:${GITHUB_SHA}" .
+          docker save "localhost/obsync-podman-e2e:${GITHUB_SHA}" --output "${RUNNER_TEMP}/obsync-image.tar"
+      - name: Run the Compose file under rootless Podman
+        run: scripts/ci/podman-e2e.sh "localhost/obsync-podman-e2e:${GITHUB_SHA}" "${RUNNER_TEMP}/obsync-image.tar"
+      - name: Remove anything the run left behind
+        if: always()
+        run: |
+          set -uo pipefail
+          project="obsync-e2e-${OBSYNC_E2E_RUN_ID}"
+          podman ps --all --quiet --filter "label=com.docker.compose.project=${project}" | xargs -r podman rm --force
+          podman volume ls --quiet --filter "label=com.docker.compose.project=${project}" | xargs -r podman volume rm --force
+          podman network ls --quiet --filter "label=com.docker.compose.project=${project}" | xargs -r podman network rm
+          exit 0
+
+  k3d:
+    # M4: k3s as k3s ships, the local-path chown docs/server.md documents.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Install checksum-verified tools
+        run: ./scripts/ci/install-tools.sh
+      - name: Install the pinned k3d
+        run: ./scripts/ci/install-k3d.sh
+      - name: Build the shipped image under the name the chart deploys
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          docker build --tag "ghcr.io/snaraj/obsync:v${version}" .
+          printf 'OBSYNC_E2E_IMAGE=ghcr.io/snaraj/obsync:v%s\n' "${version}" >> "${GITHUB_ENV}"
+      - name: Install the chart on k3s with Traefik and local-path
+        run: scripts/ci/k3d-e2e.sh "${OBSYNC_E2E_IMAGE}"
+      - name: Delete anything the run left behind
+        if: always()
+        run: |
+          set -uo pipefail
+          k3d cluster delete "obsync-e2e-${OBSYNC_E2E_RUN_ID}" >/dev/null 2>&1 || true
+          exit 0
+
+  kind-ipv6:
+    # M4: every pod, Service and probe IPv6-only. A server listening on an
+    # IPv4 wildcard alone is unreachable here, which is the point of the leg.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-ipv6
+      OBSYNC_E2E_IP_FAMILY: ipv6
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Let the runner forward IPv6
+        run: sudo sysctl -w net.ipv6.conf.all.forwarding=1 net.ipv6.conf.all.disable_ipv6=0
+      - name: Install checksum-verified tools
+        run: ./scripts/ci/install-tools.sh
+      - name: Install the pinned kind
+        run: ./scripts/ci/install-kind.sh
+      - name: Build the shipped image under the name the chart deploys
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          docker build --tag "ghcr.io/snaraj/obsync:v${version}" .
+          printf 'OBSYNC_E2E_IMAGE=ghcr.io/snaraj/obsync:v%s\n' "${version}" >> "${GITHUB_ENV}"
+      - name: Install the chart the Kubernetes guide shows, on IPv6
+        run: scripts/ci/helm-e2e.sh "${OBSYNC_E2E_IMAGE}"
+      - name: Delete anything the run left behind
+        if: always()
+        run: |
+          set -uo pipefail
+          kind delete cluster --name "obsync-e2e-${OBSYNC_E2E_RUN_ID}" || true
+          exit 0

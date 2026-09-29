@@ -1,0 +1,11 @@
+# M2912: the start lets a put-back re-case go before the rename is asked for again
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1737,7 +1737,6 @@
+       return;
+     }
+     if (returned) this.log(`vault path_class=${kind} decision=returned via=temp duration_ms=${took}`);
+-    if (!clear) return;
+     delete state.data.pendingRecase;
+     await state.save();
+     if (!returned) this.log(`vault path_class=${kind} decision=recovered via=temp duration_ms=${took}`);

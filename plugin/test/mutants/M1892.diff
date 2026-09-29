@@ -1,0 +1,12 @@
+# M1892: a copy loads but the plugin stops before its settings tab and status bar (#168)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2877,7 +2877,7 @@
+     });
+     const state = await loading;
+     if (this.stateLoad === loading) this.stateLoad = null;
+-    if (!this.isCurrent(generation) || state === null) return;
++    if (!this.isCurrent(generation) || state === null || state.copied) return;
+     this.state = state;
+     // A reload of this instance keeps no question the old host asked.
+     this.host?.closeQuestion();

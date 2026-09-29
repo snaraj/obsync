@@ -1,16 +1,21 @@
 # M613: Resume selects heads before a queued older upload completes
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -256,9 +256,9 @@
-   finally { if (paths.get(path) === current) paths.delete(path); }
- }
- 
--export function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
--  // Resume selects and preserves heads only after an earlier upload is acknowledged.
--  return serialPublication(context, path, async () => publishFile(context, path, force, typeof over === "function" ? await over() : over));
-+export async function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
-+  const parents = typeof over === "function" ? await over() : over;
-+  return serialPublication(context, path, () => publishFile(context, path, force, parents));
- }
- 
- /** The edit wins; the tombstone becomes an ancestor, not a permanent second head. */
+@@ -314,6 +314,8 @@
+   // Resume selects and preserves heads only after an earlier upload is acknowledged.
+   // The name is resolved BEFORE it is serialised, so a push of either spelling
+   // of one recorded note waits for the other rather than racing it (#166).
++  const early = typeof over === "function" ? over() : undefined;
++  early?.catch(() => undefined);
+   return recordedSpelling(context, path).then((at) =>
+     serialPublication(context, at, async () => {
+       let posts = inFlight.get(context);
+@@ -324,7 +326,7 @@
+       const post: InFlight = { path: at, settled: new Promise<void>((resolve) => { settle = resolve; }) };
+       posts.set(at, post);
+       try {
+-        return await publishFile(context, at, force, typeof over === "function" ? await over() : over, undefined, post);
++        return await publishFile(context, at, force, early !== undefined ? await early : (over as string[] | undefined), undefined, post);
+       } finally {
+         if (posts.get(post.path) === post) posts.delete(post.path);
+         settle();

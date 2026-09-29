@@ -37,7 +37,7 @@ const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const { parseData } = require("../build/state.js");
-const { Unwritable, applyChange, unwritableText } = require("../build/sync/pull.js");
+const { EditorBusy, Unwritable, applyChange, unwritableText } = require("../build/sync/pull.js");
 const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -194,6 +194,132 @@ test("a locked note is parked: every later change arrives, and the status names 
   assert.equal(notices(r, "Notes/n17.md").length, 2);
 });
 
+test("a note a phone's write keeps leaving empty stays parked, is never sent, and lands at the retry (#242)", async (t) => {
+  const r = await rig();
+  const d = device(r);
+  t.after(() => d.engine.stop());
+  const n17 = await foreign(r, N17, "Notes/n17.md", "n17 as both devices first had it\n");
+  await d.engine.start();
+  await d.timers.run(1000, () => r.host.text("Notes/n17.md") !== null);
+
+  // Android's write resolves and leaves the file empty, every time: the
+  // writer refuses it (`write_dropped`) and the name holds an empty file.
+  const real = r.host.writer.bind(r.host);
+  r.host.writer = async (path, size) => {
+    const writer = await real(path, size);
+    if (path !== "Notes/n17.md") return writer;
+    return { ...writer, commit: async () => {
+      r.host.seed("Notes/n17.md", "", 9000);
+      throw Object.assign(new Error("write_dropped: sentinel"), { code: "write_dropped" });
+    } };
+  };
+  const edited = await foreign(r, N17, "Notes/n17.md", "n17 edited on the other device\n", [n17.version_id]);
+  await d.timers.run(1000, () => r.state.data.lastSeq === edited.seq);
+  assert.deepEqual(r.state.data.parked, { [N17]: { path: "Notes/n17.md", reason: "write_dropped" } });
+
+  // The watcher's event and Sync now both leave the empty note unsent.
+  const mine = () => r.server.journal.filter((frame) => frame.device_id === KEYS.deviceId && frame.file_id === N17).length;
+  const sent = mine();
+  d.engine.changed("Notes/n17.md");
+  await d.timers.run(1000, () => r.host.logs.includes(`push path_class=file decision=skipped reason=write_dropped file=${N17}`));
+  await d.engine.syncNow();
+  await d.timers.run(1000);
+  assert.equal(mine(), sent, "the empty note was never published");
+  assert.ok(r.host.logs.includes(`push path_class=file decision=skipped reason=write_dropped file=${N17}`), r.host.logs.join(" | "));
+
+  // Once the platform writes again, the parked retry lands the version.
+  r.host.writer = real;
+  await d.timers.run(10000, () => r.host.text("Notes/n17.md") === "n17 edited on the other device\n" && Object.keys(r.state.data.parked).length === 0);
+  assert.equal(r.host.text("Notes/n17.md"), "n17 edited on the other device\n");
+  assert.deepEqual(r.state.data.parked, {});
+  assert.equal(mine(), sent, "and nothing was sent for it on the way");
+});
+
+test("a new note a phone's write keeps leaving empty is no note of its own: never sent, and the retry writes over it (#242)", async (t) => {
+  // The phone removes nothing (review of e27eccb, finding 1): the platform's
+  // empty file stays at the name, and stays a dropped write while an editor
+  // is busy with it (finding 2), until the version lands over it.
+  const r = await rig();
+  const d = device(r);
+  t.after(() => d.engine.stop());
+  // Its folder is this device's already, so a frame it sends later can only
+  // be the empty file's.
+  r.host.seed("Notes/n05.md", "n05, made here\n", 1000);
+  await d.engine.start();
+  await d.timers.run(1000, () => r.state.fileByPath("Notes/n05.md") !== undefined);
+  const real = r.host.writer.bind(r.host);
+  let busy = false;
+  r.host.writer = async (path, size) => {
+    const writer = await real(path, size);
+    if (path !== "Notes/n17.md") return writer;
+    return { ...writer, commit: async () => {
+      if (busy) throw new EditorBusy();
+      r.host.seed("Notes/n17.md", "", 9000);
+      throw Object.assign(new Error("write_dropped: sentinel"), { code: "write_dropped" });
+    } };
+  };
+  const made = await foreign(r, N17, "Notes/n17.md", "n17, new on the other device\n");
+  await d.timers.run(1000, () => r.state.data.lastSeq === made.seq);
+  assert.deepEqual(r.state.data.parked, { [N17]: { path: "Notes/n17.md", reason: "write_dropped" } });
+  assert.deepEqual(r.state.data.dropped, { "Notes/n17.md": N17 });
+  assert.equal(r.host.text("Notes/n17.md"), "", "the platform's empty file stays where it is");
+
+  const ours = () => r.server.journal.filter((frame) => frame.device_id === KEYS.deviceId).length;
+  const sent = ours();
+  d.engine.changed("Notes/n17.md");
+  await d.timers.run(1000, () => r.host.logs.includes(`push path_class=file decision=skipped reason=write_dropped file=${N17}`));
+  busy = true;
+  await d.engine.syncNow();
+  await d.timers.run(1000);
+  // The record now waits on the editor; the empty file keeps its mark by
+  // name all the same (review of 90d2042, finding 2).
+  assert.deepEqual(r.state.data.parked, { [N17]: { path: "Notes/n17.md", reason: "active_editor" } });
+  assert.deepEqual(r.state.data.dropped, { "Notes/n17.md": N17 }, "the empty file lost its guard with the parked reason");
+  d.engine.changed("Notes/n17.md");
+  await d.timers.run(1000);
+  assert.equal(ours(), sent, "the empty file was never published as a note of its own");
+  // An empty note the person makes elsewhere meanwhile is theirs, and is sent.
+  r.host.seed("Notes/n06.md", "", 9500);
+  d.engine.changed("Notes/n06.md");
+  await d.timers.run(1000, () => r.state.fileByPath("Notes/n06.md") !== undefined);
+  assert.equal(ours(), sent + 1, "the person's own empty note was held back with the dropped write");
+
+  busy = false;
+  r.host.writer = real;
+  await d.timers.run(10000, () => Object.keys(r.state.data.parked).length === 0);
+  assert.equal(r.host.text("Notes/n17.md"), "n17, new on the other device\n");
+  assert.deepEqual([...r.host.files.keys()].filter((path) => path.includes("conflict")), [], "written over, not beside");
+  assert.equal(ours(), sent + 1);
+  assert.deepEqual(r.state.data.dropped, {}, "the record made at the name ends the mark");
+});
+
+test("text typed into a note whose download stayed empty is an edit, and is sent (#242)", async (t) => {
+  const r = await rig();
+  const d = device(r);
+  t.after(() => d.engine.stop());
+  const n17 = await foreign(r, N17, "Notes/n17.md", "n17 as both devices first had it\n");
+  await d.engine.start();
+  await d.timers.run(1000, () => r.host.text("Notes/n17.md") !== null);
+  const real = r.host.writer.bind(r.host);
+  r.host.writer = async (path, size) => {
+    const writer = await real(path, size);
+    if (path !== "Notes/n17.md") return writer;
+    return { ...writer, commit: async () => {
+      r.host.seed("Notes/n17.md", "", 9000);
+      throw Object.assign(new Error("write_dropped: sentinel"), { code: "write_dropped" });
+    } };
+  };
+  const edited = await foreign(r, N17, "Notes/n17.md", "n17 edited on the other device\n", [n17.version_id]);
+  await d.timers.run(1000, () => r.state.data.lastSeq === edited.seq);
+  assert.equal(r.state.data.parked[N17]?.reason, "write_dropped");
+  // The person types into the empty note: that is theirs, and it goes out.
+  r.host.seed("Notes/n17.md", "typed into the empty note\n", 12000);
+  d.engine.changed("Notes/n17.md");
+  const mine = () => r.server.journal.filter((frame) => frame.device_id === KEYS.deviceId && frame.file_id === N17).length;
+  await d.timers.run(1000, () => mine() > 0);
+  assert.ok(mine() > 0, r.host.logs.filter((line) => line.startsWith("push")).join(" | "));
+});
+
 test("a read-only folder parks only its own notes, and Sync now applies them once it is writable", async (t) => {
   const r = await rig();
   const d = device(r);
@@ -209,6 +335,8 @@ test("a read-only folder parks only its own notes, and Sync now applies them onc
 
   assert.equal(r.host.text("Projects/Beta/b3.md"), null);
   assert.deepEqual(r.state.data.parked, { [B3]: { path: "Projects/Beta/b3.md", reason: "EACCES" } });
+  // Nothing is recorded at that name while it waits, so a mark here would stand (#242).
+  assert.deepEqual(r.state.data.dropped, {}, "a read-only folder is not a dropped write");
   assert.deepEqual(d.last(), { kind: "error", message: "Cannot write Projects/Beta/b3.md here: the folder is read-only" });
   assert.equal(notices(r, "Projects/Beta/b3.md").length, 1);
 
@@ -407,7 +535,9 @@ test("a retry pass waits for the feed page in flight: the two never apply side b
   await d.timers.run(100);
   assert.equal(r.host.text("Notes/n17.md"), null, "the retry did not run beside the feed's write");
   open();
-  await d.timers.run(100, () => r.state.data.lastSeq === slow.seq && Object.keys(r.state.data.parked).length === 0);
+  // At or past it: Sync now's pass runs after the feed and the retry (#197),
+  // so it can publish the record the folder they filled owes, a later entry.
+  await d.timers.run(100, () => r.state.data.lastSeq >= slow.seq && Object.keys(r.state.data.parked).length === 0);
   await syncing;
   assert.equal(r.host.text("Notes/n17.md"), "n17, parked and then unlocked\n");
   assert.equal(r.host.text("Notes/slow.md"), "a record the feed is still writing\n");
@@ -422,6 +552,7 @@ test("every refusal a disk can make is parked in plain words; any other failure 
     ["ENOSPC", "the disk is full"],
     ["EDQUOT", "the disk is full"],
     ["ENAMETOOLONG", "its name is too long for this device"],
+    ["write_dropped", "it stayed empty when it was written"],
   ]) {
     const r = await rig();
     refuse(r.host, () => true, code, "commit");
@@ -507,11 +638,24 @@ test("a parked entry in the data file is input: a file id and a vault path, or i
   assert.deepEqual(parseData({ parked: [] }, false).parked, {});
 });
 
+test("a dropped-write mark in the data file is input: a vault path and a file id, or it is dropped (#242)", () => {
+  const data = parseData({ dropped: { "Notes/n17.md": N17, "../outside.md": N18, "Notes/x.md": "not-a-file-id", "Notes/y.md": 7 } }, false);
+  assert.deepEqual(data.dropped, { "Notes/n17.md": N17 });
+  assert.deepEqual(parseData({ dropped: [] }, false).dropped, {});
+  assert.deepEqual(parseData({}, false).dropped, {});
+});
+
 test("Show sync status lists every parked file with its reason", (t) => {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const { StatusModal } = box.require(join(box.home, "build/ui/modals.js"));
   const drawn = [];
+  // The next step it offers is a row of its own, recorded like the table (#156).
+  Object.assign(box.require("obsidian").Setting.prototype, {
+    setName(value) { drawn.push(value); return this; },
+    setDesc(value) { drawn.push(value); return this; },
+    addButton(make) { make({ setButtonText(value) { drawn.push(value); return this; }, setCta() { return this; }, onClick() { return this; } }); return this; },
+  });
   const element = () => ({ createEl: (tag, attributes = {}) => { drawn.push(attributes.text ?? tag); return element(); }, empty: () => {} });
   const data = parseData({}, false);
   data.parked = {
@@ -521,6 +665,8 @@ test("Show sync status lists every parked file with its reason", (t) => {
   const modal = new StatusModal({}, {
     state: { data, localBytes: () => 0 },
     statusText: () => "error — Cannot write Attachments/big.bin here: the disk is full (and 1 more: Show sync status)",
+    currentStatus: () => ({ kind: "error", message: "Cannot write Attachments/big.bin here: the disk is full (and 1 more: Show sync status)" }),
+    onStatusChange: () => () => undefined,
   });
   modal.contentEl = element();
   modal.setTitle = () => {};

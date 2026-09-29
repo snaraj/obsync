@@ -1,0 +1,12 @@
+# M3164: a leave's wait for a start says no budget (#233)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3885,7 +3885,7 @@
+         window.clearTimeout(handle);
+         this.log(
+           `unpair decision=${settled ? "waited" : "gave_up"} reason=start_under_way starts=${starting.length} ` +
+-            `budget_ms=${START_SETTLE_MS} duration_ms=${Date.now() - waited}`,
++            `duration_ms=${Date.now() - waited}`,
+         );
+       }
+       assertCurrent();

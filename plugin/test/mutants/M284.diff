@@ -5,7 +5,7 @@
        this.temps.delete(temp);
        try {
          if (open) {
--          opened = await handle.stat();
+-          opened = await fstat(handle);
            await handle.close();
          }
          open = false;

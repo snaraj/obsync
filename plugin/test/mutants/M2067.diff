@@ -1,0 +1,11 @@
+# M2067: the lane fetches a version above this device's ceiling
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -814,7 +814,6 @@
+   const kept = context.state.pathByFileId(change.file_id);
+   if (kept !== undefined && context.state.fileByPath(kept)?.sha256 === (await sidDigest(change.sids))) return false;
+   if (await context.host.inNestedVault(entry.path)) return false;
+-  if (!admit(context.state.data.policy, context.state.localBytes(), entry.size).ok) return false;
+   let writer: VaultWriter | null = null;
+   try {
+     assertVaultPath(entry.path);

@@ -433,11 +433,13 @@ test("the periodic scan stops offering to delete a held note that is back under 
 });
 
 test("a note deleted while its push is still queued is published as deleted, not as a failure", async (t) => {
-  // The queue drains in batches, so a note edited moments ago can be waiting
-  // behind another push when its delete arrives. The delete now waits for the
-  // other half of a move; the queued push must not run first and find the
-  // file gone, which the status bar would show as an error.
-  const { server, timers, engine, host, state } = await device(t, ["Notes/a.md", "Notes/e.md"]);
+  // Every worker of the queue can be busy (#196), so a note edited moments
+  // ago can be waiting behind other pushes when its delete arrives. The
+  // delete now waits for the other half of a move; the queued push must not
+  // run first and find the file gone, which the status bar would show as an
+  // error.
+  const busy = ["Notes/a.md", "Notes/b.md", "Notes/c.md", "Notes/d.md"];
+  const { server, timers, engine, host, state } = await device(t, [...busy, "Notes/e.md"]);
   const doomed = state.fileByPath("Notes/e.md").fileId;
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
@@ -445,17 +447,32 @@ test("a note deleted while its push is still queued is published as deleted, not
   const read = host.read.bind(host);
   host.read = async (path) => { reads.push(path); await gate; return read(path); };
 
-  host.seed("Notes/a.md", "a, edited\n", 5000);
-  engine.changed("Notes/a.md");
-  await timers.run(STEP_MS, () => reads.length === 1);
+  for (const path of busy) {
+    host.seed(path, `${path}, edited\n`, 5000);
+    engine.changed(path);
+  }
+  await timers.run(STEP_MS, () => reads.length === busy.length);
   host.seed("Notes/e.md", "e, edited\n", 5001);
   engine.changed("Notes/e.md");
   await timers.run(STEP_MS);
-  assert.deepEqual(reads, ["Notes/a.md"], "the edit to e was pushed, not queued behind a");
+  assert.deepEqual(reads, busy, "the edit to e was pushed, not queued behind every worker");
 
   host.files.delete("Notes/e.md");
   engine.deleted("Notes/e.md");
   release();
+  // THE DELETE WITHDRAWS THE QUEUED PUSH; it is not left to find the file
+  // gone. Since #164 a push that does is a quiet `stood_down`, never an
+  // error, so the failure check below no longer tells the two apart. The
+  // virtual clock stands still while the four pushes land, so the deletion's
+  // own debounce cannot decide first: a push still queued for e takes the
+  // first free worker, and stands down where this can see it.
+  await timers.run(0, () =>
+    busy.every((path) => state.fileByPath(path)?.mtime === 5000) && engine.queue.length === 0 && engine.active === 0);
+  assert.deepEqual(
+    host.logs.filter((line) => line.startsWith("push path_class=file decision=stood_down")),
+    [],
+    "the delete left the note's push queued, to find the file gone",
+  );
   await timers.run(STEP_MS, () => tombstones(server).length > 0);
   await timers.run(STEP_MS);
 

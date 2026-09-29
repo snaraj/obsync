@@ -63,6 +63,8 @@ struct Setup {
     /// (requirement 12). Off by default: every other test measures behavior
     /// through the wire, and a buffer nobody reads is just memory.
     capture_log: bool,
+    /// `OBSYNC_TRUSTED_PROXY_CIDRS`; unset when `None`.
+    trusted: Option<&'static str>,
 }
 
 impl Harness {
@@ -106,7 +108,7 @@ impl Harness {
         } else {
             Edge::None
         };
-        let pairs: Vec<(String, String)> = [
+        let mut pairs: Vec<(String, String)> = [
             ("OBSYNC_BLOBS_DIR", blobs.display().to_string()),
             ("OBSYNC_JOURNAL_DIR", journal.display().to_string()),
             ("OBSYNC_BLOBS_CAPACITY", "64MiB".to_string()),
@@ -125,6 +127,9 @@ impl Harness {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
+        if let Some(trusted) = setup.trusted {
+            pairs.push(("OBSYNC_TRUSTED_PROXY_CIDRS".into(), trusted.into()));
+        }
         let cfg = Config::from_pairs(&pairs).expect("configuration");
         let log = if setup.capture_log {
             Log::buffered(LogLevel::Debug)
@@ -164,7 +169,13 @@ impl Harness {
             .expect("the application state opens"),
         );
 
-        let server = Server::bind("127.0.0.1:0", Limits::default()).expect("bind");
+        // The body-rate floor `serve` ships, so the tests that trickle a body
+        // measure the production number rather than a default beside it.
+        let limits = Limits {
+            min_body_rate_bytes_per_sec: crate::cli::serve::MIN_BODY_RATE,
+            ..Limits::default()
+        };
+        let server = Server::bind("127.0.0.1:0", limits).expect("bind");
         let addr = server.local_addr();
         let serve_app = Arc::clone(&app);
         let serve_shutdown = Arc::clone(&shutdown);
@@ -406,6 +417,198 @@ impl Res {
     }
 }
 
+/// Security item 2 over the wire: three hundred uploads that each declare a
+/// maximal body to the unauthenticated setup route, each reserving
+/// `TOKEN_BODY_RESERVE`, and then send it slowly. What the process reserves for bodies no credential has verified
+/// never passes its budget, the uploads beyond it are answered with a bare
+/// `503` and one line naming the budget, and every reservation comes back.
+#[test]
+fn three_hundred_slow_bodies_stay_inside_the_unverified_body_budget() {
+    let h = Harness::start_with(
+        "preauth-budget",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let budget = crate::api::PREAUTH_BODY_BUDGET;
+    let head = format!(
+        "POST /v1/setup HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n",
+        crate::api::TOKEN_BODY_LIMIT
+    );
+    // A first slice of each body: enough to buy about half a second of the
+    // rate floor, besides its grace, so the admitted reads are held at once.
+    let slice = vec![b' '; 8 * 1024];
+    let mut streams = Vec::new();
+    let mut peak = 0;
+    for _ in 0..300 {
+        let stream = TcpStream::connect(h.addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("timeout");
+        let _ = (&stream).write_all(head.as_bytes());
+        let _ = (&stream).write_all(&slice);
+        streams.push(stream);
+        peak = peak.max(h.app.preauth_held());
+    }
+    let mut bare = 0;
+    for mut stream in streams {
+        peak = peak.max(h.app.preauth_held());
+        let mut raw = Vec::new();
+        // An early answer to a body still being sent can arrive as a reset.
+        if stream.read_to_end(&mut raw).is_err() || raw.is_empty() {
+            continue;
+        }
+        let res = Res::parse(&raw);
+        // The server's own 503, not the connection ceiling's: that one is
+        // written before any handler runs and carries no hardening headers.
+        // An admitted upload that then stalls is refused as a slow body; every
+        // other 503 is the budget's, and bare.
+        if res.status == 503 && res.header("cache-control") == Some("no-store") {
+            if !res.body.is_empty() {
+                assert_eq!(res.code(), "slow_body", "a bare refusal: {}", res.text());
+                continue;
+            }
+            assert_eq!(res.header("retry-after"), Some("1"));
+            assert_eq!(res.header("connection"), Some("close"));
+            bare += 1;
+        }
+    }
+    assert!(peak > 0, "the admitted reads reserved their bodies");
+    assert!(peak <= budget, "{peak} bytes reserved past {budget}");
+    assert!(bare > 0, "the uploads past the budget were shed");
+    let log = h.captured();
+    assert!(
+        log.contains(&format!(
+            "event=preauth_body decision=refused bytes={}",
+            crate::api::TOKEN_BODY_RESERVE
+        )) && log.contains(&format!("budget={budget}")),
+        "{}",
+        log.lines()
+            .filter(|l| l.contains("preauth"))
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(log.contains("decision=preauth_budget_full"));
+    assert_eq!(h.app.preauth_held(), 0, "every reservation came back");
+    // And the budget serves again: an ordinary setup is answered.
+    h.setup_account();
+}
+
+/// Review of 7e1294d, finding 2: a body read whole is still an unverified
+/// caller's until its token verifies. With the pairing table held, as a burst
+/// of claims would hold it, every claim that fits the budget is read, parsed
+/// and left waiting with its reservation; the next one is shed with a bare
+/// `503` before a byte of it is read, and every reservation comes back once
+/// the table frees and the tokens are judged.
+#[test]
+fn claims_waiting_for_the_pairing_table_keep_their_bodies_inside_the_budget() {
+    let h = Harness::start("claim-wait-budget");
+    let per = crate::api::TOKEN_BODY_RESERVE;
+    let fit = crate::api::PREAUTH_BODY_BUDGET / per;
+    let target = format!("/v1/pairing/{}/claim", "ab".repeat(16));
+    let body = format!(
+        r#"{{"enroll_token":"{}","name":"phone","platform":"ios","app_version":"0.1.0"}}"#,
+        "00".repeat(32)
+    );
+    let table = h.app.pairings.lock().expect("pairings");
+    let waiting: Vec<_> = (0..fit)
+        .map(|_| {
+            let (addr, target, body) = (h.addr, target.clone(), body.clone());
+            std::thread::spawn(move || Req::post(&target).body(&body).send(addr))
+        })
+        .collect();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while h.app.preauth_held() < fit * per {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} of {} bytes held by claims read whole and waiting",
+            h.app.preauth_held(),
+            fit * per
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let shed = Req::post(&target).body(&body).send(h.addr);
+    assert_eq!(shed.status, 503, "{}", shed.text());
+    assert!(shed.body.is_empty(), "a bare refusal: {}", shed.text());
+    assert_eq!(shed.header("retry-after"), Some("1"));
+    drop(table);
+    for claim in waiting {
+        let res = claim.join().expect("claim");
+        assert_eq!(
+            (res.status, res.code()),
+            (404, "unknown_pairing".to_string())
+        );
+    }
+    assert_eq!(h.app.preauth_held(), 0, "every reservation came back");
+}
+
+/// Review of 77660fb, finding 2: the setup token is compared while its body
+/// is still reserved, for a token that does not match and for one that does.
+/// The comparison notes what the budget holds at that moment, so a handler
+/// that released the body before comparing would note nothing held.
+#[test]
+fn a_setup_token_is_compared_while_its_body_is_reserved() {
+    use std::sync::atomic::Ordering;
+    let h = Harness::start("setup-reserved");
+    let seen = || h.app.bodies.at_token_check.swap(0, Ordering::SeqCst);
+    let wrong = Req::post("/v1/setup")
+        .body(&format!(
+            r#"{{"setup_token":"{}","account_name":"vault","device":{{"name":"laptop","platform":"macos","app_version":"0.1.0"}}}}"#,
+            "00".repeat(32)
+        ))
+        .send(h.addr);
+    assert_eq!(
+        (wrong.status, wrong.code()),
+        (401, "bad_setup_token".to_string())
+    );
+    assert_eq!(
+        seen(),
+        crate::api::TOKEN_BODY_RESERVE,
+        "reserved while a wrong token was compared"
+    );
+    h.setup_account();
+    assert_eq!(
+        seen(),
+        crate::api::TOKEN_BODY_RESERVE,
+        "reserved while the right one was"
+    );
+    assert_eq!(h.app.preauth_held(), 0, "and given back after");
+}
+
+/// And a signed body is reserved until its signature verified AND its nonce
+/// was remembered: with the nonce log's flush slowed to 1.5 s, the body stays
+/// reserved for the whole of it, where a reservation given back before the
+/// check would read zero almost throughout.
+#[test]
+fn a_signed_body_stays_reserved_until_its_nonce_is_remembered() {
+    let h = Harness::start("signed-body-reserved");
+    let cred = h.setup_account();
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::SlowSync { ms: 1_500 });
+    let body = r#"{"sentinel":"reserved-until-verified"}"#;
+    let req = Req::post("/v1/pairing").body(body).sign(&cred, NOW);
+    let addr = h.addr;
+    let sent = std::thread::spawn(move || req.send(addr));
+    let (mut held, mut samples) = (0, 0);
+    while !sent.is_finished() {
+        samples += 1;
+        if h.app.preauth_held() == body.len() as u64 {
+            held += 1;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let res = sent.join().expect("request");
+    assert_eq!(res.status, 201, "{}", res.text());
+    assert!(
+        held >= 50,
+        "reserved in {held} of {samples} samples, 10 ms apart, through a 1.5 s nonce flush"
+    );
+    assert_eq!(h.app.preauth_held(), 0);
+}
+
 #[test]
 fn health_endpoints_answer_and_every_response_is_hardened() {
     let h = Harness::start("health");
@@ -428,6 +631,13 @@ fn health_endpoints_answer_and_every_response_is_hardened() {
     assert_eq!(res.status, 200, "{}", res.text());
     assert_eq!(res.json().get("ready").and_then(Value::as_bool), Some(true));
     assert_eq!(res.header("x-obsync-seq"), None, "nor does readiness");
+    // Nor its body, whole: the journal head rode there to anyone who asked
+    // until 1.1.4 (issue #235).
+    assert_eq!(
+        res.text(),
+        r#"{"ready":true}"#,
+        "readiness says it is ready and nothing else"
+    );
 
     // And a caller that proved one still gets it: the dashboard's footer
     // reads exactly this header.
@@ -492,6 +702,95 @@ fn readyz_tells_the_truth_about_the_volumes_and_about_shutting_down() {
         Req::get("/readyz").send(h.addr).status,
         200,
         "and true again once the volume takes writes"
+    );
+}
+
+/// Security item 4: a link planted at the probe's name, the shape a restored
+/// volume can arrive in. The probe removes the link and writes its own file;
+/// it never opens the name through the link, so the file the link points at
+/// keeps every byte. Something the probe cannot remove refuses readiness.
+#[test]
+fn the_readiness_probe_never_writes_through_a_planted_link() {
+    let h = Harness::start_with(
+        "readyz-link",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let probe = h.dir.join("blobs").join(".obsync-readyz");
+    let victim = h.dir.join("victim");
+    std::fs::write(&victim, b"sentinel\n").expect("the victim");
+    std::os::unix::fs::symlink(&victim, &probe).expect("the link is planted");
+
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(ready.status, 200, "{}", ready.text());
+    assert_eq!(
+        std::fs::read(&victim).expect("still there"),
+        b"sentinel\n",
+        "nothing was truncated or written through the link"
+    );
+    assert!(
+        std::fs::symlink_metadata(&probe).is_err(),
+        "the link is gone and the probe cleaned up after itself"
+    );
+
+    // A directory at the name cannot be removed as a file: the volume is not
+    // in a state the probe can prove, and readiness says so.
+    std::fs::create_dir(&probe).expect("a directory at the probe's name");
+    h.clock.set(NOW + 2 * crate::api::READY_CACHE_SECS + 2);
+    let refused = Req::get("/readyz").send(h.addr);
+    std::fs::remove_dir(&probe).expect("cleared");
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    assert_eq!(refused.code(), "not_ready");
+    assert!(
+        h.captured()
+            .contains("event=readiness decision=not_ready volume=blobs"),
+        "{}",
+        h.captured()
+    );
+}
+
+#[test]
+fn a_real_write_stands_in_for_the_readiness_probe_until_one_is_refused() {
+    let h = Harness::start("readyz-proof");
+    let cred = h.setup_account();
+    let (body, sid) = chunk(b"ciphertext-proof");
+    let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+    assert_eq!(put.status, 201, "{}", put.text());
+
+    // The blob volume stops taking writes, the way the truth test above
+    // breaks it. The chunk just made durable there already proved the
+    // volume, inside the verdict's own lifetime, so no probe runs...
+    let blobs = h.dir.join("blobs");
+    let stashed = h.dir.join("blobs-stashed");
+    std::fs::rename(&blobs, &stashed).expect("stash the volume");
+    std::fs::write(&blobs, b"not a directory\n").expect("occupy the mount point");
+    let later = NOW + crate::api::READY_CACHE_SECS + 1;
+    h.clock.set(later);
+    let proven = Req::get("/readyz").send(h.addr);
+    // ...until a real write is refused, which takes that proof away at once.
+    let (body, sid) = chunk(b"ciphertext-refused");
+    let refused_put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, later, &nonce(), &sid)
+        .send(h.addr);
+    h.clock.set(later + crate::api::READY_CACHE_SECS + 1);
+    let refused = Req::get("/readyz").send(h.addr);
+    std::fs::remove_file(&blobs).expect("free the mount point");
+    std::fs::rename(&stashed, &blobs).expect("restore");
+
+    assert_eq!(proven.status, 200, "{}", proven.text());
+    assert_eq!(refused_put.status, 500, "{}", refused_put.text());
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    assert_eq!(
+        refused.json().get("detail").and_then(Value::as_str),
+        Some("blobs volume is not writable"),
+        "the probe ran again and found the volume it no longer had proof for"
     );
 }
 
@@ -1120,6 +1419,141 @@ fn edge_mode_refuses_a_request_without_the_edge_headers_but_still_serves_health(
 }
 
 #[test]
+fn edge_mode_refuses_the_edge_headers_from_a_peer_outside_the_trusted_networks() {
+    // Every request here arrives from loopback, which this deployment says is
+    // not where its edge connector lives.
+    let h = Harness::start_with(
+        "edge-peer",
+        Setup {
+            edge_mode: true,
+            trusted: Some("10.0.0.0/8"),
+            ..Setup::default()
+        },
+    );
+    let res = Req::post("/v1/setup")
+        .body(r#"{"setup_token":"x","account_name":"v"}"#)
+        .header("CF-Connecting-IP", "198.51.100.7")
+        .header("CF-Ray", "test-ray")
+        .send(h.addr);
+    assert_eq!(res.status, 421);
+    assert_eq!(res.code(), "edge_required");
+    assert_eq!(Req::get("/readyz").send(h.addr).status, 200);
+}
+
+#[test]
+fn a_trusted_proxy_names_the_client_and_a_disagreeing_header_is_ignored_and_logged() {
+    let h = Harness::start_with(
+        "forwarded",
+        Setup {
+            trusted: Some("127.0.0.0/8"),
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    // A heartbeat records the address every time; the device list reads it.
+    let address = |headers: &[(&str, &str)]| {
+        let mut beat = Req::post("/v1/devices/heartbeat").body(r#"{"app_version":"0.1.0"}"#);
+        for (name, value) in headers {
+            beat = beat.header(name, value);
+        }
+        assert_eq!(beat.sign(&cred, NOW).send(h.addr).status, 204);
+        let v = Req::get("/v1/devices").sign(&cred, NOW).send(h.addr).json();
+        v.get("devices").and_then(Value::as_array).expect("devices")[0]
+            .get("address")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    // A proxy that adds its own line after the client's forged one.
+    let two_lines = [
+        ("X-Forwarded-For", "192.0.2.66"),
+        ("X-Forwarded-For", "203.0.113.7"),
+    ];
+    assert_eq!(address(&two_lines).as_deref(), Some("203.0.113.7"));
+    let two_fields = [
+        ("Forwarded", "for=192.0.2.66"),
+        ("Forwarded", "for=203.0.113.8;proto=https"),
+    ];
+    assert_eq!(address(&two_fields).as_deref(), Some("203.0.113.8"));
+    let rfc = [("Forwarded", r#"for="[2001:db8::7]:4711""#)];
+    assert_eq!(address(&rfc).as_deref(), Some("2001:db8::7"));
+    let forged = [
+        ("X-Forwarded-For", "203.0.113.7"),
+        ("Forwarded", "for=192.0.2.66"),
+    ];
+    assert_eq!(address(&forged).as_deref(), Some("127.0.0.1"));
+    let log = h.captured();
+    assert!(
+        log.contains("reason=forwarded_headers_disagree"),
+        "the disagreement is logged: {log}"
+    );
+}
+
+/// #214: a proxy that adds its own field does so on every request. The log
+/// says so once, then once a minute, counting the requests in between.
+#[test]
+fn repeated_forwarding_fields_from_a_trusted_proxy_are_said_once_a_minute() {
+    let h = Harness::start_with(
+        "forwarded-joined",
+        Setup {
+            trusted: Some("127.0.0.0/8"),
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let send = |headers: &[(&str, &str)]| {
+        let mut req = Req::get("/v1/devices");
+        for (name, value) in headers {
+            req = req.header(name, value);
+        }
+        assert_eq!(req.send(h.addr).status, 401);
+    };
+    let joined = || -> Vec<String> {
+        h.captured()
+            .lines()
+            .filter(|line| line.contains("decision=joined"))
+            .map(str::to_string)
+            .collect()
+    };
+    send(&[("X-Forwarded-For", "192.0.2.66, 203.0.113.7")]);
+    send(&[
+        ("X-Forwarded-For", "203.0.113.7"),
+        ("Forwarded", "for=203.0.113.7"),
+    ]);
+    assert_eq!(
+        joined(),
+        Vec::<String>::new(),
+        "one field of each is no join"
+    );
+    let added = [
+        ("X-Forwarded-For", "192.0.2.66"),
+        ("X-Forwarded-For", "203.0.113.7"),
+    ];
+    for _ in 0..3 {
+        send(&added);
+    }
+    let lines = joined();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].contains(
+            "event=forwarded_headers decision=joined reason=repeated_fields \
+             x_forwarded_for=2 forwarded=0 requests=1 interval_ms=60000"
+        ),
+        "{}",
+        lines[0]
+    );
+    h.clock.set(NOW + 60);
+    send(&added);
+    let lines = joined();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(
+        lines[1].contains(" requests=3 "),
+        "the line counts the requests it did not write: {}",
+        lines[1]
+    );
+}
+
+#[test]
 fn the_pairing_flow_runs_end_to_end() {
     let h = Harness::start("pairing");
     let creator = h.setup_account();
@@ -1191,13 +1625,13 @@ fn the_pairing_flow_runs_end_to_end() {
         .send(h.addr);
     assert_eq!(approve.status, 204, "{}", approve.text());
 
-    // Approval activated it, so the creator-only routes now refuse it for
-    // being the wrong actor rather than for being unapproved.
+    // Approval alone grants nothing: the claimant stays pending until it
+    // has collected the key (issue #153).
     let wrong = Req::get(&format!("/v1/pairing/{id}"))
         .sign(&claimant, NOW)
         .send(h.addr);
     assert_eq!(wrong.status, 403);
-    assert_eq!(wrong.code(), "not_creator");
+    assert_eq!(wrong.code(), "device_pending");
 
     let fetch = Req::get(&format!("/v1/pairing/{id}/envelope"))
         .sign(&claimant, NOW)
@@ -1206,6 +1640,22 @@ fn the_pairing_flow_runs_end_to_end() {
     assert_eq!(
         fetch.json().get("envelope").and_then(Value::as_str),
         Some("Y2lwaGVy")
+    );
+
+    // Collecting activated it, so the creator-only routes now refuse it for
+    // being the wrong actor rather than for being unapproved, and the
+    // creator reads that the key was collected.
+    let wrong = Req::get(&format!("/v1/pairing/{id}"))
+        .sign(&claimant, NOW)
+        .send(h.addr);
+    assert_eq!(wrong.status, 403);
+    assert_eq!(wrong.code(), "not_creator");
+    let state = Req::get(&format!("/v1/pairing/{id}"))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(
+        state.json().get("state").and_then(Value::as_str),
+        Some("consumed")
     );
 
     let twice = Req::get(&format!("/v1/pairing/{id}/envelope"))
@@ -1264,6 +1714,15 @@ fn approve_pairing(h: &Harness, creator: &Cred, id: &str) {
         .sign(creator, NOW)
         .send(h.addr);
     assert_eq!(approve.status, 204, "{}", approve.text());
+}
+
+/// Collect an approved pairing's envelope as its claimant, which is what
+/// activates the claimant (issue #153).
+fn collect_envelope(h: &Harness, claimant: &Cred, id: &str) {
+    let fetch = Req::get(&format!("/v1/pairing/{id}/envelope"))
+        .sign(claimant, NOW)
+        .send(h.addr);
+    assert_eq!(fetch.status, 200, "{}", fetch.text());
 }
 
 /// How many devices the creator's `GET /v1/devices` lists.
@@ -1342,8 +1801,13 @@ fn an_unapproved_claimant_holds_a_secret_and_no_authority() {
         "a pending device has signed in to nothing"
     );
 
-    // Approval, and only approval, hands it authority.
+    // Approval does not hand it authority yet; collecting the key it was
+    // approved for does (issue #153).
     approve_pairing(&h, &creator, &id);
+    let approved = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(approved.status, 403, "{}", approved.text());
+    assert_eq!(approved.code(), "device_pending");
+    collect_envelope(&h, &claimant, &id);
     let after = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
     assert_eq!(after.status, 200, "{}", after.text());
 }
@@ -1352,7 +1816,7 @@ fn an_unapproved_claimant_holds_a_secret_and_no_authority() {
 fn a_pending_device_never_counts_as_the_second_device() {
     let h = Harness::start("pairing-last-device");
     let creator = h.setup_account();
-    let (id, _) = claim_pairing(&h, &creator);
+    let (id, claimant) = claim_pairing(&h, &creator);
 
     let alone = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
         .sign(&creator, NOW)
@@ -1364,8 +1828,16 @@ fn a_pending_device_never_counts_as_the_second_device() {
         "an unapproved claimant cannot be the device that lets the last one go"
     );
 
-    // Approved, it counts.
+    // Approved but keyless, it still does not (issue #153).
     approve_pairing(&h, &creator, &id);
+    let keyless = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(keyless.status, 409, "{}", keyless.text());
+    assert_eq!(keyless.code(), "last_device");
+
+    // Holding the key, it counts.
+    collect_envelope(&h, &claimant, &id);
     let now_allowed = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
         .sign(&creator, NOW)
         .send(h.addr);
@@ -1401,11 +1873,12 @@ fn an_expired_pairing_destroys_the_device_it_claimed() {
 }
 
 #[test]
-fn an_approved_device_survives_its_pairing_expiring() {
+fn a_collected_device_survives_its_pairing_expiring() {
     let h = Harness::start("pairing-expiry-approved");
     let creator = h.setup_account();
     let (id, claimant) = claim_pairing(&h, &creator);
     approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
 
     h.app.sweep(NOW + crate::api::pairing::PAIRING_TTL_SECS + 1);
 
@@ -1414,8 +1887,125 @@ fn an_approved_device_survives_its_pairing_expiring() {
     assert_eq!(
         after.status,
         200,
-        "expiry destroys unapproved claims only: {}",
+        "expiry destroys keyless claims only: {}",
         after.text()
+    );
+}
+
+/// Issue #153: the creator approved, the claimant's dialog had closed, and
+/// the account kept an ACTIVE device with no vault key. Collection is what
+/// activates now, so the device is still pending when the ten minutes end,
+/// and the sweep takes it -- saying which state the pairing ended in.
+#[test]
+fn an_approved_device_that_never_collects_is_destroyed_at_expiry() {
+    let h = Harness::start_with(
+        "pairing-expiry-uncollected",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+    let rows = Req::get("/v1/devices")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let rows = rows.get("devices").and_then(Value::as_array).expect("rows");
+    let row = rows
+        .iter()
+        .find(|d| d.get("device_id").and_then(Value::as_str) == Some(claimant.id.as_str()))
+        .expect("listed");
+    assert_eq!(
+        row.get("state").and_then(Value::as_str),
+        Some("pending"),
+        "approval alone activates nothing"
+    );
+
+    h.app.sweep(NOW + crate::api::pairing::PAIRING_TTL_SECS + 1);
+
+    assert_eq!(device_count(&h, &creator), 1, "no keyless device remains");
+    let after = Req::get(&format!("/v1/pairing/{id}/envelope"))
+        .sign(&claimant, NOW)
+        .send(h.addr);
+    assert_eq!(after.status, 401, "{}", after.text());
+    assert_eq!(after.code(), "bad_signature");
+    let state = Req::get(&format!("/v1/pairing/{id}"))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(
+        state.json().get("state").and_then(Value::as_str),
+        Some("expired"),
+        "the creator's last poll reads how it ended, not an unknown pairing"
+    );
+    let logged = h.captured();
+    assert!(
+        logged.contains("pairing_expired")
+            && logged.contains("state=approved")
+            && logged.contains("decision=deleted"),
+        "the deletion is logged with the state it ended in: {logged}"
+    );
+}
+
+/// Issue #153: the same keyless device across a restart. Pairings live in
+/// memory, so a restart between approval and collection used to leave an
+/// active device no sweep would ever see; it is pending now, and the start's
+/// reconciliation takes it.
+#[test]
+fn an_approved_device_that_never_collects_does_not_survive_a_restart() {
+    let h = Harness::start("pairing-restart-uncollected");
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+    // What a restart does to the table, without the restart.
+    *h.app.pairings.lock().expect("pairings") = crate::api::pairing::PairingTable::new();
+    h.app.reconcile_pending();
+
+    assert_eq!(device_count(&h, &creator), 1);
+    let after = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(after.status, 401, "{}", after.text());
+}
+
+/// Issue #154: a code claimed after its ten minutes reads as expired, even
+/// after the sweep has forgotten the pairing, and a mistyped token against
+/// the same id still reads as unknown.
+#[test]
+fn a_late_claim_reads_as_expired_after_the_sweep() {
+    let h = Harness::start("pairing-late-claim");
+    let creator = h.setup_account();
+    let v = Req::post("/v1/pairing")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let id = v
+        .get("pairing_id")
+        .and_then(Value::as_str)
+        .expect("pairing_id")
+        .to_string();
+    let token = v
+        .get("enroll_token")
+        .and_then(Value::as_str)
+        .expect("enroll_token")
+        .to_string();
+    h.app.sweep(NOW + crate::api::pairing::PAIRING_TTL_SECS + 1);
+    let claim = |token: &str| {
+        Req::post(&format!("/v1/pairing/{id}/claim"))
+            .body(&format!(
+                r#"{{"enroll_token":"{token}","name":"Mac 7KQ4","platform":"macos","app_version":"1.1.4"}}"#
+            ))
+            .send(h.addr)
+    };
+    let late = claim(&token);
+    assert_eq!(late.status, 410, "{}", late.text());
+    assert_eq!(late.code(), "pairing_expired");
+    let mistyped = claim(&"00".repeat(32));
+    assert_eq!(mistyped.status, 404, "{}", mistyped.text());
+    assert_eq!(mistyped.code(), "unknown_pairing");
+    assert_eq!(
+        device_count(&h, &creator),
+        1,
+        "neither claim enrolled anything"
     );
 }
 
@@ -1487,6 +2077,7 @@ fn rejecting_an_approved_pairing_is_refused_and_keeps_the_device() {
     let creator = h.setup_account();
     let (id, claimant) = claim_pairing(&h, &creator);
     approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
     assert_eq!(device_count(&h, &creator), 2, "the approval paired it");
     let seq = h.app.store.head_seq();
 
@@ -1668,10 +2259,19 @@ fn maximal_ciphertext_uploads_and_one_extra_byte_is_refused() {
         writer.write_all(&oversized)
     });
     let mut raw = Vec::new();
+    let reading = std::time::Instant::now();
     if let Err(error) = stream.read_to_end(&mut raw) {
         // Some platforms reset after delivering the early refusal with
         // unread request bytes. The complete parsed decision is still required.
-        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+        // Any other end is named with its timing: a `WouldBlock` near 30 s is
+        // this client's read timeout, a server that answered nothing.
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset,
+            "the read ended with {error:?} after {:?}, holding {} bytes",
+            reading.elapsed(),
+            raw.len()
+        );
     }
     let _ = send.join().expect("writer joined");
     let refused = Res::parse(&raw);
@@ -1682,6 +2282,352 @@ fn maximal_ciphertext_uploads_and_one_extra_byte_is_refused() {
         .sign(&cred, NOW)
         .send(h.addr);
     assert_eq!(absent.status, 404, "refused bytes were not stored");
+}
+
+/// Security item 8 over the wire: a 32 MiB batch STREAMS. Its head is on the
+/// wire while most of its chunks are still unread, so a chunk the volume
+/// loses after the head has gone breaks that response instead of being
+/// served out of memory; a buffered batch would already hold all four.
+/// A chunk the volume had lost BEFORE the batch was planned is named
+/// missing, exactly as 1.1.3 named it.
+#[test]
+fn a_batch_streams_and_names_a_lost_chunk_missing() {
+    let h = Harness::start("batch-stream");
+    let cred = h.setup_account();
+    let mut sids = Vec::new();
+    for fill in 0x61..=0x64u8 {
+        let body = vec![fill; 8 * 1024 * 1024];
+        let (_, sid) = chunk(&body);
+        let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+            .raw_body(&body)
+            .sign_with(&cred, NOW, &nonce(), &sid)
+            .send(h.addr);
+        assert_eq!(put.status, 201, "{}", put.text());
+        sids.push(sid);
+    }
+    let path = |sid: &str| h.app.store.chunk_path(&sid.parse().expect("sid"));
+    let list = |sids: &[String]| {
+        sids.iter()
+            .map(|s| format!("\"{s}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    let req = Req::post("/v1/chunks/get")
+        .body(&format!(r#"{{"sids":[{}]}}"#, list(&sids)))
+        .sign(&cred, NOW);
+    let mut stream = TcpStream::connect(h.addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("timeout");
+    let mut head = format!("POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\n", req.target);
+    for (name, value) in &req.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        req.body.len()
+    ));
+    stream.write_all(head.as_bytes()).expect("head");
+    stream.write_all(&req.body).expect("body");
+    let mut first = [0u8; 16];
+    stream
+        .read_exact(&mut first)
+        .expect("the response has begun");
+    assert!(first.starts_with(b"HTTP/1.1 200"));
+    // Socket buffers hold a few MiB, so the stream is still inside its
+    // first two chunks: the last one is removed before it is reached.
+    std::fs::remove_file(path(&sids[3])).expect("lost after the plan");
+    let mut rest = Vec::new();
+    let _ = stream.read_to_end(&mut rest);
+    let raw = [&first[..], &rest[..]].concat();
+    let res = Res::parse(&raw);
+    let promised: usize = res
+        .header("content-length")
+        .and_then(|v| v.parse().ok())
+        .expect("a length");
+    assert!(
+        res.body.len() < promised,
+        "all {promised} bytes arrived: the batch was held in memory"
+    );
+
+    // The next plan opens the chunk again, finds it gone, and says so.
+    let res = Req::post("/v1/chunks/get")
+        .body(&format!(r#"{{"sids":[{}]}}"#, list(&sids[2..])))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(res.status, 200, "{}", res.text());
+    let text = String::from_utf8_lossy(&res.body);
+    assert_eq!(text.matches("X-Obsync-Missing: 1").count(), 1, "one part");
+    assert!(text.contains(&format!("X-Obsync-Sid: {}\r\nX-Obsync-Missing: 1", sids[3])));
+}
+
+/// Send a chunk upload's head, then its body at `rate` bytes a second in
+/// 1 KiB slices, and return the answer. The sender stops when the server
+/// stops listening.
+fn trickle_put(h: &Harness, cred: &Cred, body: &[u8], rate: u64) -> Res {
+    let (_, sid) = chunk(body);
+    let req = Req::new("PUT", &format!("/v1/chunks/{sid}")).sign_with(cred, NOW, &nonce(), &sid);
+    let mut head = format!("PUT {} HTTP/1.1\r\nHost: 127.0.0.1\r\n", req.target);
+    for (name, value) in &req.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    trickle(h, head, body, rate)
+}
+
+/// Send `head` (the request line and headers, without their blank line),
+/// then `body` at `rate` bytes a second in 1 KiB slices.
+fn trickle(h: &Harness, mut head: String, body: &[u8], rate: u64) -> Res {
+    head.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    ));
+    let mut stream = TcpStream::connect(h.addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(600)))
+        .expect("timeout");
+    let mut writer = stream.try_clone().expect("writer");
+    let body = body.to_vec();
+    let pause = Duration::from_secs_f64(1024.0 / rate as f64);
+    let sender = std::thread::spawn(move || -> std::io::Result<()> {
+        writer.write_all(head.as_bytes())?;
+        for slice in body.chunks(1024) {
+            std::thread::sleep(pause);
+            writer.write_all(slice)?;
+        }
+        Ok(())
+    });
+    let mut raw = Vec::new();
+    if let Err(error) = stream.read_to_end(&mut raw) {
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+    }
+    let _ = sender.join().expect("sender joined");
+    Res::parse(&raw)
+}
+
+/// A refusal of a slow body, as #211 has it: `503 slow_body`, a status every
+/// client retries, and the line naming what arrived and the time allowed.
+fn assert_slow_body(h: &Harness, refused: &Res) {
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    assert_eq!(refused.code(), "slow_body");
+    let log = h.captured();
+    assert!(
+        log.lines().any(|l| l
+            .contains("event=request_body decision=refused reason=slow_body bytes=")
+            && l.contains(" budget_ms=")),
+        "{log}"
+    );
+    assert!(log.contains("status=503"), "{log}");
+    assert!(log.contains("decision=slow_body"), "{log}");
+    // The sender's link, not a server fault: a warning an operator can
+    // read past, never an error (#212).
+    assert!(
+        log.lines()
+            .any(|l| l.contains("level=warn event=request ") && l.contains("decision=slow_body")),
+        "{log}"
+    );
+    assert!(!log.contains("level=error event=request "), "{log}");
+}
+
+/// The slowloris floor (`cli::serve::MIN_BODY_RATE`): a body trickled at a
+/// quarter of it is refused once its allowance runs out -- about 1.3 s,
+/// whatever the floor is -- as a slow body, never as the volume (#211), and
+/// nothing is stored. A floor of zero would take the whole minute this body
+/// needs at 1 KiB/s, and store it.
+#[test]
+fn a_chunk_body_trickled_below_the_rate_floor_is_refused() {
+    let h = Harness::start_with(
+        "trickle",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let body = vec![0x57; 64 * 1024];
+    let rate = (crate::cli::serve::MIN_BODY_RATE / 4).max(1024);
+    let started = std::time::Instant::now();
+    let refused = trickle_put(&h, &cred, &body, rate);
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "refused on the floor, not the idle timeout: {:?}",
+        started.elapsed()
+    );
+    assert_slow_body(&h, &refused);
+    assert!(!refused.text().contains("volume"), "{}", refused.text());
+    let (_, sid) = chunk(&body);
+    let absent = Req::get(&format!("/v1/chunks/{sid}"))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(absent.status, 404, "nothing of the trickle was stored");
+}
+
+/// The same floor under a JSON body, read before any credential: it was
+/// answered `413 body_too_large`, which is untrue and which a client never
+/// retries. It is a slow body too.
+#[test]
+fn a_json_body_trickled_below_the_rate_floor_is_refused_as_slow() {
+    let h = Harness::start_with(
+        "trickle-json",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let rate = (crate::cli::serve::MIN_BODY_RATE / 4).max(1024);
+    let head = "POST /v1/setup HTTP/1.1\r\nHost: 127.0.0.1\r\n".to_string();
+    let body = vec![b' '; usize::try_from(crate::api::TOKEN_BODY_LIMIT).expect("fits")];
+    let refused = trickle(&h, head, &body, rate);
+    assert_slow_body(&h, &refused);
+}
+
+/// The floor measures the SENDER, from the server's first read of the body.
+/// A chunk's body is read only after its request authenticated, and that
+/// waits for the nonce log's fsync: on a slow volume the wait alone outlasted
+/// the one-second grace, and a chunk sent at full speed was refused `503
+/// slow_body` before a byte of it was read -- the server's own disk, blamed
+/// on the device's link.
+#[test]
+fn a_slow_nonce_fsync_is_not_charged_to_the_chunk_body_behind_it() {
+    let h = Harness::start_with(
+        "slow-nonce-then-body",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::SlowSync { ms: 1_500 });
+    let (body, sid) = chunk(&vec![0x5a; 64 * 1024]);
+    let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+    assert_eq!(put.status, 201, "{}", put.text());
+    assert!(
+        !h.captured().contains("reason=slow_body"),
+        "{}",
+        h.captured()
+    );
+}
+
+/// Send `head` and `body`, end the request's half of the connection, and
+/// read the answer: the server sees a body end wherever `body` does.
+fn send_and_hang_up(h: &Harness, head: &str, body: &[u8]) -> Res {
+    let mut stream = TcpStream::connect(h.addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("timeout");
+    stream.write_all(head.as_bytes()).expect("head");
+    stream.write_all(body).expect("body");
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("end the request");
+    let mut raw = Vec::new();
+    if let Err(error) = stream.read_to_end(&mut raw) {
+        assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+    }
+    Res::parse(&raw)
+}
+
+/// A read error is `413 body_too_large` only when the body really passed
+/// its ceiling. A body cut short of its `Content-Length` -- a client that
+/// left, a proxy that gave up -- did not arrive whole, and is `503
+/// body_incomplete`, which every client retries; a chunked body whose
+/// framing is not HTTP is `400 bad_request`. Both were `413`, which is
+/// untrue and which no client retries. One line names what arrived.
+#[test]
+fn a_body_is_too_large_only_when_it_passed_its_ceiling() {
+    let h = Harness::start_with(
+        "body-read-errors",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let post = "POST /v1/setup HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n";
+
+    let cut = send_and_hang_up(
+        &h,
+        &format!("{post}Content-Length: 100\r\n\r\n"),
+        b"{\"a\":",
+    );
+    assert_eq!(
+        (cut.status, cut.code()),
+        (503, "body_incomplete".to_string()),
+        "{}",
+        cut.text()
+    );
+    assert!(
+        h.captured().lines().any(|l| l.contains(
+            "event=request_body decision=refused reason=body_incomplete io=UnexpectedEof bytes=5"
+        )),
+        "{}",
+        h.captured()
+    );
+    assert!(
+        h.captured()
+            .lines()
+            .any(|l| l.contains("level=warn event=request ")
+                && l.contains("decision=body_incomplete")),
+        "a body that ended early is the sender's, logged as a warning: {}",
+        h.captured()
+    );
+
+    let framed = send_and_hang_up(
+        &h,
+        &format!("{post}Transfer-Encoding: chunked\r\n\r\n"),
+        b"zz\r\n{}\r\n0\r\n\r\n",
+    );
+    assert_eq!(
+        (framed.status, framed.code()),
+        (400, "bad_request".to_string()),
+        "{}",
+        framed.text()
+    );
+
+    // One byte of payload past the ceiling, in chunks of 64 KiB.
+    let mut over = Vec::new();
+    let limit = usize::try_from(super::TOKEN_BODY_LIMIT).expect("fits");
+    let mut payload = 0;
+    while payload <= limit {
+        let piece = vec![b' '; (limit + 1 - payload).min(64 * 1024)];
+        payload += piece.len();
+        over.extend_from_slice(format!("{:x}\r\n", piece.len()).as_bytes());
+        over.extend_from_slice(&piece);
+        over.extend_from_slice(b"\r\n");
+    }
+    over.extend_from_slice(b"0\r\n\r\n");
+    let large = send_and_hang_up(
+        &h,
+        &format!("{post}Transfer-Encoding: chunked\r\n\r\n"),
+        &over,
+    );
+    assert_eq!(
+        (large.status, large.code()),
+        (413, "body_too_large".to_string()),
+        "{}",
+        large.text()
+    );
+}
+
+/// #204: a phone on weak mobile data, uploading at 256 kbit/s (32 KiB/s).
+/// Under the old 64 KiB/s floor this upload was refused after about two
+/// seconds, on every retry, forever; at 16 KiB/s it arrives whole.
+#[test]
+fn a_chunk_sent_at_256_kbit_per_second_arrives() {
+    let h = Harness::start("slow-uplink");
+    let cred = h.setup_account();
+    let body = vec![0x58; 128 * 1024];
+    let res = trickle_put(&h, &cred, &body, 32 * 1024);
+    assert_eq!(res.status, 201, "{}", res.text());
+    let (_, sid) = chunk(&body);
+    let got = Req::get(&format!("/v1/chunks/{sid}"))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(got.body, body, "stored whole");
 }
 
 #[test]
@@ -1707,6 +2653,23 @@ fn multipart_ciphertext_budget_accepts_exactly_32_mib_and_refuses_more() {
             assert_eq!(res.code(), "batch_too_large");
         }
     }
+
+    // The hostile end: every sid the protocol allows, all naming one maximal
+    // chunk -- 512 MiB of parts. Refused from the plan, before a part is read.
+    let body = vec![0x54; 8 * 1024 * 1024];
+    let (_, sid) = chunk(&body);
+    let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+    assert_eq!(put.status, 201, "{}", put.text());
+    let sids = vec![format!("\"{sid}\""); crate::api::MULTIPART_MAX_SIDS].join(",");
+    let res = Req::post("/v1/chunks/get")
+        .body(&format!(r#"{{"sids":[{sids}]}}"#))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(res.status, 413, "{}", res.text());
+    assert_eq!(res.code(), "batch_too_large");
 }
 
 #[test]
@@ -1754,6 +2717,27 @@ fn a_batch_get_returns_one_part_per_sid_and_marks_what_is_missing() {
     assert!(
         text.contains("batched-ciphertext"),
         "the stored part carries its bytes"
+    );
+
+    // Streamed, and still byte for byte the body a buffered 1.1.3 server
+    // sent, so a client that parses one parses the other: the length is
+    // exact, and the framing is the documented one.
+    let boundary = res
+        .header("content-type")
+        .and_then(|v| v.strip_prefix("multipart/mixed; boundary="))
+        .expect("a boundary");
+    assert_eq!(
+        text,
+        format!(
+            "--{boundary}\r\nX-Obsync-Sid: {sid}\r\nContent-Type: application/octet-stream\r\n\
+             Content-Length: 18\r\n\r\nbatched-ciphertext\r\n\
+             --{boundary}\r\nX-Obsync-Sid: {absent}\r\nX-Obsync-Missing: 1\r\n\
+             Content-Length: 0\r\n\r\n\r\n--{boundary}--\r\n"
+        )
+    );
+    assert_eq!(
+        res.header("content-length"),
+        Some(res.body.len().to_string().as_str())
     );
 }
 
@@ -2412,6 +3396,102 @@ fn the_change_feed_long_polls_and_wakes_on_a_concurrent_post() {
     );
 }
 
+/// #218: frames the feed does not carry (the account, a device, a sign-in)
+/// move the head without waking a held poll. A poll that starts behind the
+/// head therefore answers at once, empty, with the head's `seq`; the next
+/// poll, from that `seq`, is the one that waits.
+#[test]
+fn a_long_poll_behind_the_head_returns_the_head_at_once_and_the_next_one_waits() {
+    let h = Harness::start("changes-behind");
+    let cred = h.setup_account();
+    let poll = |since: u64, wait: u64| {
+        let started = std::time::Instant::now();
+        let res = Req::get(&format!("/v1/changes?since={since}&wait={wait}"))
+            .sign(&cred, NOW)
+            .send(h.addr);
+        assert_eq!(res.status, 200, "{}", res.text());
+        let v = res.json();
+        let number = |name: &str| v.get(name).and_then(Value::as_u64).expect(name);
+        let empty = v
+            .get("changes")
+            .and_then(Value::as_array)
+            .expect("changes")
+            .is_empty();
+        (number("seq"), number("head_seq"), empty, started.elapsed())
+    };
+    let (seq, head, empty, took) = poll(0, 20);
+    assert!(empty, "no version has landed");
+    assert!(seq > 0, "the account and device frames moved the head");
+    assert_eq!(seq, head, "the page hands back the head as the cursor");
+    assert!(
+        took < Duration::from_secs(5),
+        "a poll behind the head answers at once, not at its wait: {took:?}"
+    );
+    let (again, _, empty, took) = poll(seq, 1);
+    assert!(empty);
+    assert_eq!(again, seq, "nothing moved the head");
+    assert!(
+        took >= Duration::from_millis(900),
+        "a poll from the head waits: {took:?}"
+    );
+}
+
+/// The hostile page over the wire: ten versions whose manifests sit at the
+/// protocol's 1 MiB ceiling. A page stops inside its 8 MiB budget
+/// (`storage::index::CHANGES_PAGE_BYTES`) as RENDERED, not only as
+/// estimated, and following the cursor delivers every version exactly once:
+/// the loop a 1.1.3 client already runs (`seq < head_seq`).
+#[test]
+fn a_change_page_stays_inside_its_byte_budget_and_the_cursor_delivers_the_rest() {
+    let h = Harness::start("changes-bytes");
+    let cred = h.setup_account();
+    let manifest = obsync_core::base64::encode(&vec![0x6d; 780_000]);
+    for n in 1..=10u8 {
+        let file_id = format!("{n:02x}").repeat(16);
+        let res = post_version(&h, &cred, &file_id, &[], &[], &manifest);
+        assert_eq!(res.status, 201, "{}", res.text());
+    }
+    let mut since = 0u64;
+    let mut delivered = Vec::new();
+    let mut pages = 0;
+    loop {
+        let res = Req::get(&format!("/v1/changes?since={since}&limit=1000"))
+            .sign(&cred, NOW)
+            .send(h.addr);
+        assert_eq!(res.status, 200, "{}", res.text());
+        assert!(
+            res.body.len() <= 8 * 1024 * 1024,
+            "a page of {} bytes",
+            res.body.len()
+        );
+        let page = res.json();
+        for change in page
+            .get("changes")
+            .and_then(Value::as_array)
+            .expect("changes")
+        {
+            delivered.push(
+                change
+                    .get("file_id")
+                    .and_then(Value::as_str)
+                    .expect("id")
+                    .to_string(),
+            );
+        }
+        pages += 1;
+        since = page.get("seq").and_then(Value::as_u64).expect("seq");
+        if since >= page.get("head_seq").and_then(Value::as_u64).expect("head") {
+            break;
+        }
+        assert!(pages < 10, "the cursor stopped moving");
+    }
+    assert!(pages >= 2, "ten maximal manifests fit no single page");
+    assert_eq!(delivered.len(), 10, "{delivered:?}");
+    delivered.sort();
+    delivered.dedup();
+    assert_eq!(delivered.len(), 10, "nothing repeated");
+}
+
 #[test]
 fn a_revoked_device_is_refused_from_that_moment() {
     let h = Harness::start("revoke");
@@ -2439,6 +3519,7 @@ fn a_revoked_device_is_refused_from_that_moment() {
         .sign(&creator, NOW)
         .send(h.addr);
     assert_eq!(approve.status, 204, "{}", approve.text());
+    collect_envelope(&h, &claimant, &id);
     assert_eq!(
         Req::get("/v1/account")
             .sign(&claimant, NOW)
@@ -3028,6 +4109,7 @@ fn revoking_a_device_ends_the_links_and_sessions_it_minted() {
     let creator = h.setup_account();
     let (id, claimant) = claim_pairing(&h, &creator);
     approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
 
     // A session opened from the claimant's link, and a second link of its
     // own that nobody has spent yet.
@@ -3087,6 +4169,7 @@ fn revoking_a_device_from_another_device_ends_its_dashboard_hold_too() {
     let creator = h.setup_account();
     let (id, claimant) = claim_pairing(&h, &creator);
     approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
 
     let doomed = admin_cookie(&h, &creator);
     let unspent = login_token(&h, &creator);

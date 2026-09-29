@@ -1,0 +1,11 @@
+# M2859: a finished stop never says idle
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -732,7 +732,6 @@
+     while (this.inFlight.size !== 0) await Promise.allSettled([...this.inFlight]);
+     await this.options.state.save();
+     this.options.host.log(`engine decision=quiesced duration_ms=${this.nowFn() - started}`);
+-    this.status({ kind: "idle" });
+   }
+ 
+   /** The paths this engine is pushing now, for a person waiting on its stop. */

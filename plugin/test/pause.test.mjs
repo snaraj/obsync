@@ -313,10 +313,13 @@ test("a stop prevents a queued Resume from publishing or forgetting the hold", a
   await engine.start();
   r.state.data.paused[r.post.fileId] = { path: NOTE, remote: true };
   engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
-  const count = r.server.journal.length;
+  const count = r.server.journal.length, logged = r.host.logs.length;
   await engine.resume(r.post.fileId, "status");
   assert.equal(r.server.journal.length, count);
   assert.deepEqual(r.state.data.paused[r.post.fileId], { path: NOTE, remote: true });
+  // Not tried and refused: a stopped transport also fails the publish and
+  // puts the hold back, so only the absence of the attempt tells them apart.
+  assert.deepEqual(r.host.logs.slice(logged).filter((line) => /^(http|pull) /.test(line)), []);
 });
 
 test("Resume refuses a server head whose version it cannot read", async () => {

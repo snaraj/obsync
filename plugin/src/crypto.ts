@@ -202,20 +202,55 @@ export async function sha256(data: Bytes): Promise<Bytes> {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", data));
 }
 
-export async function hmacSha256(key: Bytes, data: Bytes): Promise<Bytes> {
-  const handle = await crypto.subtle.importKey(
-    "raw",
-    key,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
+/**
+ * SESSION KEY HANDLES (issue #197). A key derived for a session -- the domain
+ * key `K_d` and the manifest key `K_m,d` (`session`) -- is imported into
+ * WebCrypto once per use, not once per operation: every chunk imported `K_d`
+ * twice, and every manifest `K_m,d` once more. Every handle is
+ * non-extractable.
+ *
+ * KEYED BY THE KEY'S OWN OBJECT, through a `WeakMap`: the cache never holds
+ * the key's bytes and never keeps them alive. A handle is found only through
+ * the object it was imported from and dies with it, so a different key -- a
+ * new vault key, a re-pair, a start after a leave -- is a different object
+ * and can never reach an old handle. Nothing writes into a key this module
+ * derived. Any other key, a chunk's own among them, is imported per operation
+ * as before: each is used once.
+ */
+const kept = new WeakMap<Bytes, Map<string, Promise<CryptoKey>>>();
+
+function session(key: Bytes): Bytes {
+  kept.set(key, new Map());
+  return key;
+}
+
+function imported(key: Bytes, use: "HMAC" | "HKDF" | "AES-GCM"): Promise<CryptoKey> {
+  const handles = kept.get(key);
+  let handle = handles?.get(use);
+  if (handle === undefined) {
+    handle = use === "HKDF"
+      ? crypto.subtle.importKey("raw", key, "HKDF", false, ["deriveBits"])
+      : use === "HMAC"
+        ? crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+        : crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+    handles?.set(use, handle);
+  }
+  return handle;
+}
+
+/** A non-extractable HMAC-SHA-256 handle, for a caller that keeps it (`transport`, the device secret). */
+export function hmacKey(key: Bytes): Promise<CryptoKey> {
+  return imported(key, "HMAC");
+}
+
+export async function hmacSha256(key: Bytes | CryptoKey, data: Bytes): Promise<Bytes> {
+  const handle = key instanceof Uint8Array ? await imported(key, "HMAC") : key;
   return new Uint8Array(await crypto.subtle.sign("HMAC", handle, data));
 }
 
 /** HKDF-SHA-256 (RFC 5869 extract-and-expand), `length` bytes of output. */
 export async function hkdf(ikm: Bytes, salt: Bytes, info: Bytes, length: number): Promise<Bytes> {
-  const handle = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  const handle = await imported(ikm, "HKDF");
   const bits = await crypto.subtle.deriveBits(
     { name: "HKDF", hash: "SHA-256", salt, info },
     handle,
@@ -225,7 +260,7 @@ export async function hkdf(ikm: Bytes, salt: Bytes, info: Bytes, length: number)
 }
 
 async function aesGcmEncrypt(key: Bytes, nonce: Bytes, plaintext: Bytes, aad: Bytes): Promise<Bytes> {
-  const handle = await crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["encrypt"]);
+  const handle = await imported(key, "AES-GCM");
   const out = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: nonce, additionalData: aad, tagLength: 128 },
     handle,
@@ -235,7 +270,7 @@ async function aesGcmEncrypt(key: Bytes, nonce: Bytes, plaintext: Bytes, aad: By
 }
 
 async function aesGcmDecrypt(key: Bytes, nonce: Bytes, ciphertext: Bytes, aad: Bytes): Promise<Bytes> {
-  const handle = await crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["decrypt"]);
+  const handle = await imported(key, "AES-GCM");
   const out = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: nonce, additionalData: aad, tagLength: 128 },
     handle,
@@ -245,8 +280,8 @@ async function aesGcmDecrypt(key: Bytes, nonce: Bytes, ciphertext: Bytes, aad: B
 }
 
 /** `K_d = HKDF(VRK, salt="obsync/v1/domain", info=utf8(domain_id))`. */
-export function deriveDomainKey(vrk: Bytes, domainId: string): Promise<Bytes> {
-  return hkdf(vrk, utf8(LABEL.domain), utf8(domainId), KEY_BYTES);
+export async function deriveDomainKey(vrk: Bytes, domainId: string): Promise<Bytes> {
+  return session(await hkdf(vrk, utf8(LABEL.domain), utf8(domainId), KEY_BYTES));
 }
 
 /**
@@ -260,8 +295,8 @@ export function deriveDomainKey(vrk: Bytes, domainId: string): Promise<Bytes> {
  * v0.1 grants nobody anything, but the format is what the genesis release
  * writes, so it is decided here rather than migrated later.
  */
-export function deriveManifestKey(domainKey: Bytes, domainId: string): Promise<Bytes> {
-  return hkdf(domainKey, utf8(LABEL.manifest), utf8(domainId), KEY_BYTES);
+export async function deriveManifestKey(domainKey: Bytes, domainId: string): Promise<Bytes> {
+  return session(await hkdf(domainKey, utf8(LABEL.manifest), utf8(domainId), KEY_BYTES));
 }
 
 /**
@@ -368,7 +403,22 @@ export async function encryptChunk(
   const cid = await chunkCid(domainKey, plaintext);
   const { key, nonce } = await chunkKeyAndNonce(domainKey, cid);
   const ciphertext = await aesGcmEncrypt(key, nonce, plaintext, utf8(LABEL.chunk));
-  return { cid, sid: hex(await sha256(ciphertext)), ciphertext };
+  const sid = hex(await sha256(ciphertext));
+  sealed.set(ciphertext, sid);
+  return { cid, sid, ciphertext };
+}
+
+/**
+ * The sid `encryptChunk` computed for EXACTLY this ciphertext object -- the
+ * line above makes both, so it is `hex(SHA-256(ciphertext))` -- which lets a
+ * chunk PUT sign its body without hashing it a second time (issue #197).
+ * Keyed by the object, never by its bytes: a body `encryptChunk` did not make
+ * has no entry, and is hashed as every other body is.
+ */
+const sealed = new WeakMap<Bytes, string>();
+
+export function sealedSid(ciphertext: Bytes): string | undefined {
+  return sealed.get(ciphertext);
 }
 
 /**
@@ -571,7 +621,7 @@ export async function bodyHash(body: Bytes): Promise<string> {
  * (AGENTS.md requirement 4).
  */
 export async function signRequest(
-  deviceSecret: Bytes,
+  deviceSecret: Bytes | CryptoKey,
   method: string,
   target: string,
   ts: number,

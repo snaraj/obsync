@@ -1,0 +1,11 @@
+# M2858: a chunk upload the stop ends before the loop awaits it is an unhandled rejection
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -262,7 +262,6 @@
+         landing.delete(upload);
+       });
+       // Observed below; a stop can end it before the loop gets there.
+-      upload.catch(() => undefined);
+       landing.add(upload);
+     }
+   };

@@ -1,0 +1,11 @@
+# M1820: after a failed read the feed long-polls again instead of asking at once
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2518,7 +2518,6 @@
+         // A failed read is the answer a waiting Sync now gets: it says what
+         // the status says, and the retry goes on without it.
+         this.answerFeed(Number.POSITIVE_INFINITY);
+-        this.feedAnswered = false;
+         // What the failure means, said on the FIRST one (#155): a refusal names
+         // itself and stands until the server answers again; only absence reads
+         // offline; anything else is a read that failed, said as that.

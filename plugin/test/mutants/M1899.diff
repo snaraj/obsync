@@ -1,0 +1,12 @@
+# M1899: an unpublished local rename is settled from its own name instead of published first
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2225,7 +2225,7 @@
+   // below lets an unpushed edit, and the fork it makes is settled from names
+   // both devices can read.
+   const recorded = ahead ? null : await manifestOf(context, file, change, localVersionId).catch(() => null);
+-  if (recorded !== null && recorded.path !== here) return await deferToPush(context, change, localPath, "unpublished_rename");
++  if ((false as boolean) && recorded !== null && recorded.path !== here) return await deferToPush(context, change, localPath, "unpublished_rename");
+   // TWO HEADS, ONE CONTENT.
+   //
+   // This is where the storm ended up. A and B each merge the same pair to the

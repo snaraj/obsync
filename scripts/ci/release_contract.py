@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import copy
 import datetime as dt
+import gzip
 import hashlib
 import io
 import json
@@ -31,11 +32,13 @@ import re
 import stat
 import subprocess
 import sys
+import tarfile
 import tomllib
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -97,6 +100,19 @@ PLUGIN_FILES = {"main.js": "application/javascript", "manifest.json": "applicati
 PLUGIN_BUNDLE_MAX_BYTES = 16 * 1024 * 1024
 RELEASE_MANIFEST_WORKFLOW = EXPECTED_PUBLISHER_PATH
 RELEASE_MANIFEST_PLATFORMS = ["linux/amd64", "linux/arm64"]
+# The static server, one tarball per production platform, from 1.1.4 on. Every
+# earlier Release is immutable and keeps its five-file inventory, so the
+# boundary is a version, never the presence of a file. The ELF machine is what
+# binds each archive to its platform: a swapped export directory would
+# otherwise ship an arm64 binary under the amd64 name, correctly signed.
+SERVER_ARCHIVES_FROM = (1, 1, 4)
+SERVER_ARCHIVE_MACHINES = {"linux/amd64": 62, "linux/arm64": 183}
+SERVER_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024
+SERVER_ARCHIVE_MAX_ENTRIES = 4096
+SERVER_ARCHIVE_FILES = ("LICENSE", "dashboard/index.html", "obsyncd", "obsyncd.service",
+                        "plugin/main.js", "plugin/manifest.json", "plugin/styles.css")
+# 1980-01-01T00:00:00Z, the timestamp the plugin bundle's entries carry.
+SERVER_ARCHIVE_MTIME = 315532800
 TRIVY_VERSION = "0.72.0"
 TRIVY_SEVERITIES = ["HIGH", "CRITICAL"]
 
@@ -152,6 +168,10 @@ class Version:
     @property
     def legacy(self) -> bool:
         return (self.major, self.minor, self.patch) <= (0, 1, 10)
+
+    @property
+    def server_archives(self) -> bool:
+        return (self.major, self.minor, self.patch) >= SERVER_ARCHIVES_FROM
 
     @property
     def plugin_id(self) -> str:
@@ -1167,6 +1187,143 @@ def plugin_asset_records(bundle: bytes | None, version: Version, digest: str) ->
         raise ContractError("plugin bundle is unreadable") from exc
 
 
+def server_archive_asset_name(tag: str, platform: str) -> str:
+    release_version(tag)
+    if platform not in SERVER_ARCHIVE_MACHINES:
+        raise ContractError("server archive platform is not a production platform")
+    return f"obsync-server-{tag}-{platform.replace('/', '-')}.tar.gz"
+
+
+def build_server_archive(source: Path, tag: str, platform: str) -> bytes:
+    """Pack one exported `server-dist` tree into its deterministic tarball.
+
+    Sorted entries, one fixed timestamp, owner root, fixed modes, ustar (no
+    extended headers), gzip with no name and no time: the same tree always
+    packs to the same bytes, so a re-run cannot classify its own Release
+    asset as foreign. Root owns every entry because the unpacked program must
+    not be writable by the unprivileged user that runs it.
+    """
+    top = server_archive_asset_name(tag, platform).removesuffix(".tar.gz")
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for path in [source, *sorted(source.rglob("*"))]:
+            relative = path.relative_to(source).as_posix()
+            info = tarfile.TarInfo(top if relative == "." else f"{top}/{relative}")
+            info.mtime, info.uid, info.gid, info.uname, info.gname = (
+                SERVER_ARCHIVE_MTIME, 0, 0, "root", "root")
+            if path.is_symlink() or not (path.is_dir() or path.is_file()):
+                raise ContractError("server export holds something other than files and directories")
+            if path.is_dir():
+                info.type, info.mode = tarfile.DIRTYPE, 0o755
+                archive.addfile(info)
+            else:
+                data = path.read_bytes()
+                info.size, info.mode = len(data), 0o755 if relative == "obsyncd" else 0o644
+                archive.addfile(info, io.BytesIO(data))
+    packed = io.BytesIO()
+    with gzip.GzipFile(filename="", mode="wb", fileobj=packed, mtime=0, compresslevel=9) as stream:
+        stream.write(raw.getvalue())
+    return packed.getvalue()
+
+
+def server_archive_records(
+    archives: Mapping[str, bytes] | None, version: Version, plugin_files: Mapping[str, object]
+) -> dict:
+    """Bind each platform's tarball to its name, bytes, binary and plugin files.
+
+    Read as untrusted input, because the read-only audit downloads it: bounded
+    before and after decompression, every entry a plain file or directory
+    under the one top directory, and nothing extracted to disk.
+    """
+    if archives is None or set(archives) != set(RELEASE_MANIFEST_PLATFORMS):
+        raise ContractError("server release requires one archive per production platform")
+    records = {}
+    for platform in RELEASE_MANIFEST_PLATFORMS:
+        data = archives[platform]
+        if not 0 < len(data) <= SERVER_ARCHIVE_MAX_BYTES:
+            raise ContractError("server archive is empty or exceeds its budget")
+        name = server_archive_asset_name(version.tag, platform)
+        top = name.removesuffix(".tar.gz")
+        files: dict[str, bytes] = {}
+        seen: set[str] = set()
+        try:
+            # INFLATED WHOLE, AND BOUNDED, BEFORE TAR PARSES A BYTE (review of
+            # c4668d4). Counting the files tar handed back left tar's own
+            # parsing unbounded: an extended header is metadata read in full
+            # ahead of its member, and 64 KiB of gzip carried a 64 MiB one.
+            # One gzip member and nothing after it, because an extractor reads
+            # on into what follows and this audit would not.
+            inflater = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            raw = inflater.decompress(data, SERVER_ARCHIVE_MAX_BYTES + 1)
+            if len(raw) > SERVER_ARCHIVE_MAX_BYTES:
+                raise ContractError("server archive exceeds its budget once decompressed")
+            if not inflater.eof or inflater.unused_data:
+                raise ContractError("server archive is unreadable")
+            # THE PUBLISHER WRITES ONE USTAR HEADER BLOCK PER ENTRY, BACK TO
+            # BACK FROM BYTE ZERO, THEN ZEROS (reviews of c4668d4 and 510a7af).
+            # Tar skips what it does not report -- an extension header, an
+            # empty global one -- and stops at its first end marker, and an
+            # extractor may read on. So every entry's data starts one header
+            # block after the entry before it ended (tar reads no header
+            # sooner, so nothing lies between), a directory holds no data, and
+            # nothing but zeros follows the last entry. Every header says
+            # POSIX USTAR, as the publisher's do: tar also reads V7 and GNU
+            # headers, which the claim does not cover. And the archive ends as
+            # the publisher's `close` ends it, two zero blocks and zeros to a
+            # whole record: a shorter end is a truncated archive to an
+            # extractor, whatever this reader made of it (review of 0f783ba).
+            expected = 0
+            with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+                for item in archive:
+                    header = expected + 257
+                    if (item.offset_data != expected + tarfile.BLOCKSIZE or (item.isdir() and item.size)
+                            or raw[header:header + len(tarfile.POSIX_MAGIC)] != tarfile.POSIX_MAGIC):
+                        raise ContractError("server archive entry is not plain USTAR")
+                    expected = item.offset_data + -(-item.size // tarfile.BLOCKSIZE) * tarfile.BLOCKSIZE
+                    parts = item.name.split("/")
+                    inner = "/".join(parts[1:])
+                    if (parts[0] != top or item.name in seen or len(seen) >= SERVER_ARCHIVE_MAX_ENTRIES
+                            or any(part in {"", ".", ".."} for part in parts)):
+                        raise ContractError("server archive entry is outside its directory or repeated")
+                    # Unpacked by root, an entry keeps its owner and mode: the
+                    # program must stay unwritable by the user that runs it.
+                    if item.uid or item.gid or item.mode & 0o7022 or (
+                            inner == "obsyncd" and item.mode & 0o777 != 0o755):
+                        raise ContractError("server archive entry owner or mode is not the release's")
+                    seen.add(item.name)
+                    if item.isdir():
+                        continue
+                    # A plain file's bytes are all inside `raw`; a sparse one
+                    # would be read back at a size it never stored.
+                    if (item.type != tarfile.REGTYPE or
+                            (inner not in SERVER_ARCHIVE_FILES and not inner.startswith("dashboard/"))):
+                        raise ContractError("server archive carries a foreign, linked or sparse entry")
+                    stream = archive.extractfile(item)
+                    files[inner] = stream.read() if stream else b""
+            if raw[expected:].strip(b"\0"):
+                raise ContractError("server archive carries bytes after its entries")
+            if len(raw) - expected < 2 * tarfile.BLOCKSIZE or len(raw) % tarfile.RECORDSIZE:
+                raise ContractError("server archive does not end in two zero blocks and whole records")
+        except (tarfile.TarError, OSError, EOFError, zlib.error) as exc:
+            raise ContractError("server archive is unreadable") from exc
+        if any(not files.get(member) for member in SERVER_ARCHIVE_FILES):
+            raise ContractError("server archive lacks a required file")
+        binary = files["obsyncd"]
+        machine = int.from_bytes(binary[18:20], "little")
+        if binary[:5] != b"\x7fELF\x02" or machine != SERVER_ARCHIVE_MACHINES[platform]:
+            raise ContractError("server archive binary is not a 64-bit executable for its platform")
+        for member, record in plugin_files.items():
+            if "sha256:" + hashlib.sha256(files["plugin/" + member]).hexdigest() != _object(
+                    record, "native plugin asset").get("digest"):
+                raise ContractError("server archive plugin files differ from the released plugin")
+        records[platform] = {
+            "name": name,
+            "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+        }
+    return records
+
+
 def build_release_manifest(
     *,
     repository: str,
@@ -1179,6 +1336,7 @@ def build_release_manifest(
     chart_digest: str,
     plugin_digest: str,
     plugin_bundle: bytes | None = None,
+    server_archives: Mapping[str, bytes] | None = None,
 ) -> dict[str, object]:
     """The one canonical, deterministic publication evidence asset."""
     validate_release_destinations(repository, image, chart)
@@ -1234,6 +1392,11 @@ def build_release_manifest(
     }
     if not parsed.legacy:
         manifest["artifacts"]["plugin_files"] = files
+    if parsed.server_archives:
+        manifest["artifacts"]["server_archives"] = server_archive_records(
+            server_archives, parsed, files)
+    elif server_archives is not None:
+        raise ContractError(f"release {parsed} predates the server archives")
     return manifest
 
 
@@ -1250,6 +1413,7 @@ def validate_release_manifest_record(
     chart_digest: str,
     plugin_digest: str,
     plugin_bundle: bytes | None = None,
+    server_archives: Mapping[str, bytes] | None = None,
 ) -> None:
     expected = build_release_manifest(
         repository=repository,
@@ -1262,6 +1426,7 @@ def validate_release_manifest_record(
         chart_digest=chart_digest,
         plugin_digest=plugin_digest,
         plugin_bundle=plugin_bundle,
+        server_archives=server_archives,
     )
     if manifest != expected:
         raise ContractError("release manifest is not the exact canonical evidence record")
@@ -1299,12 +1464,23 @@ def build_release_notes(manifest: Mapping[str, object], changelog: str | None = 
     version = release_version(tag)
     asset_name = release_manifest_asset_name(tag)
     asset_digest = "sha256:" + hashlib.sha256(_canonical_json(manifest)).hexdigest()
+    servers = ""
+    provenance = ""
+    if version.server_archives:
+        archives = _object(artifacts.get("server_archives"), "release manifest server archives")
+        for platform in RELEASE_MANIFEST_PLATFORMS:
+            archive = _object(archives.get(platform), "release manifest server archive")
+            servers += f"| Server ({platform}) | `{archive.get('name')}` (`{archive.get('digest')}`) |\n"
+        provenance = ("The plugin files and server archives carry this workflow's build "
+                      "provenance (`gh attestation verify`).\n")
     evidence = (
         "| Artifact | Reference |\n| --- | --- |\n"
         f"| Image | `{image.get('repository')}:{image.get('tag')}@{image.get('digest')}` |\n"
         f"| Chart | `{chart.get('repository')}:{chart.get('tag')}@{chart.get('digest')}` |\n"
         f"| Plugin | `{plugin.get('name')}` (`{plugin.get('digest')}`) |\n"
+        f"{servers}"
         "\nImage and chart are signed with keyless Cosign by this workflow identity.\n"
+        f"{provenance}"
         f"\nPublication evidence: `{asset_name}` (`{asset_digest}`).\n"
     )
     # EVERY RELEASE THROUGH 1.0.0 KEEPS ITS EXACT NOTES. Those bodies are
@@ -1384,6 +1560,21 @@ def _validate_release_assets(
             expected[name] = {
                 "digest": _require_digest(record.get("digest"), "native plugin asset digest"),
                 "size": size, "content_type": content_type, "state": "uploaded",
+            }
+    if version.server_archives:
+        # Non-legacy by construction, so `artifacts` is the evidence read above.
+        archives = _object(artifacts.get("server_archives"), "server archive assets")
+        if set(archives) != set(RELEASE_MANIFEST_PLATFORMS):
+            raise ContractError("release evidence requires one server archive per production platform")
+        for platform in RELEASE_MANIFEST_PLATFORMS:
+            record = _object(archives[platform], "server archive asset")
+            name, size = server_archive_asset_name(tag, platform), record.get("size")
+            if (record.get("name") != name or isinstance(size, bool) or not isinstance(size, int)
+                    or not 0 < size <= SERVER_ARCHIVE_MAX_BYTES):
+                raise ContractError("server archive asset name or size is invalid")
+            expected[name] = {
+                "digest": _require_digest(record.get("digest"), "server archive asset digest"),
+                "size": size, "content_type": "application/gzip", "state": "uploaded",
             }
     if len(records) != len(expected):
         raise ContractError("GitHub Release must carry the exact versioned asset inventory")
@@ -1602,33 +1793,91 @@ def _rule_parameters(rules: list[object], rule_type: str) -> Mapping[str, object
     return _object(rule.get("parameters", {}), f"{rule_type} parameters")
 
 
-def observe_live_settings(repository: str) -> dict[str, object]:
+# Rulesets LAYER: GitHub enforces every applicable ruleset's rules at once, and
+# a bypass actor escapes only the ruleset that lists it. So main's protection
+# is observed as the union of the CORE rulesets -- active, targeting branches,
+# naming main exactly, excluding nothing that could be main, and bypassable by
+# nobody. Anything else (an owner-only `update` restriction with its bypass,
+# the release-tag ruleset, a ruleset reaching main only through a glob) can add
+# rules GitHub enforces but never stands in for one the receipt claims.
+MAIN_REF = "refs/heads/main"
+MAIN_TARGETS = frozenset({MAIN_REF, "~DEFAULT_BRANCH", "~ALL"})
+# The rules whose PARAMETERS the receipt reads. Two core rulesets setting one
+# leave its effective parameters to GitHub's merge, which is not a receipt.
+PARAMETERIZED_CORE_RULES = ("pull_request", "required_status_checks")
+
+
+def _names_main(ruleset: Mapping[str, object]) -> bool:
+    """Whether a branch ruleset's conditions name main exactly, never by a glob.
+
+    An exclusion is judged the other way: any `~` token, any spelling of main,
+    and any glob could be main, so it disqualifies the ruleset as core.
+    """
+    conditions = _object(ruleset.get("conditions"), "ruleset conditions")
+    ref_name = _object(conditions.get("ref_name"), "ruleset ref_name condition")
+    if set(conditions) != {"ref_name"} or set(ref_name) != {"include", "exclude"}:
+        raise ContractError("ruleset conditions are not one ref_name include/exclude pair")
+    include = _array(ref_name["include"], "ruleset ref_name include")
+    exclude = _array(ref_name["exclude"], "ruleset ref_name exclude")
+    if not all(isinstance(pattern, str) for pattern in include + exclude):
+        raise ContractError("ruleset ref_name patterns must be strings")
+    return bool(MAIN_TARGETS.intersection(include)) and not any(
+        pattern.startswith("~")
+        or pattern.casefold() == MAIN_REF
+        or any(character in pattern for character in "*?[{\\")
+        for pattern in exclude
+    )
+
+
+def _bypassed_by_nobody(ruleset: Mapping[str, object]) -> bool:
+    # A missing actor list is what a caller without admin read sees: an
+    # incomplete inventory, refused rather than read as "nobody".
+    actors = _array(ruleset.get("bypass_actors"), "ruleset bypass actors")
+    return not actors and ruleset.get("current_user_can_bypass") == "never"
+
+
+def observe_live_settings(
+    repository: str, get: Callable[..., object] = _github_api_get
+) -> dict[str, object]:
     """Query only GET endpoints; emit the receipt `settings-receipt` validates."""
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ContractError("repository must be an exact owner/name pair")
-    repository_record = _object(_github_api_get(f"repos/{repository}"), "repository settings")
-    immutable = _object(
-        _github_api_get(f"repos/{repository}/immutable-releases"), "immutable-release settings"
-    )
+    repository_record = _object(get(f"repos/{repository}"), "repository settings")
+    if repository_record.get("default_branch") != "main":
+        raise ContractError("the default branch is not main")
+    immutable = _object(get(f"repos/{repository}/immutable-releases"), "immutable-release settings")
     workflow_permissions = _object(
-        _github_api_get(f"repos/{repository}/actions/permissions/workflow"),
+        get(f"repos/{repository}/actions/permissions/workflow"),
         "default workflow permission settings",
     )
-    summaries = _array(
-        _github_api_get(f"repos/{repository}/rulesets", paginate=True), "rulesets"
-    )
-    active = [
+    summaries = [
         _object(summary, "ruleset summary")
-        for summary in summaries
-        if _object(summary, "ruleset summary").get("enforcement") == "active"
+        for summary in _array(get(f"repos/{repository}/rulesets", paginate=True), "rulesets")
     ]
-    if len(active) != 1:
-        raise ContractError("expected exactly one active repository ruleset")
-    ruleset = _object(
-        _github_api_get(f"repos/{repository}/rulesets/{active[0]['id']}"), "main ruleset"
-    )
-    rules = _array(ruleset.get("rules"), "ruleset rules")
-    types = {_object(rule, "ruleset rule").get("type") for rule in rules}
+    ids = [summary.get("id") for summary in summaries]
+    if not all(
+        isinstance(ruleset_id, int) and not isinstance(ruleset_id, bool) for ruleset_id in ids
+    ) or len(set(ids)) != len(ids):
+        raise ContractError("the ruleset inventory is incomplete: ids are missing or repeated")
+    core = []
+    for summary in summaries:
+        if summary.get("target") != "branch" or summary.get("enforcement") != "active":
+            continue
+        ruleset = _object(get(f"repos/{repository}/rulesets/{summary['id']}"), "branch ruleset")
+        if any(ruleset.get(field) != summary[field] for field in ("id", "target", "enforcement")):
+            raise ContractError("a branch ruleset changed between the listing and its read")
+        if _names_main(ruleset) and _bypassed_by_nobody(ruleset):
+            core.append(ruleset)
+    if not core:
+        raise ContractError(
+            "no active branch ruleset names main exactly, excludes nothing that could be "
+            "main, and has no bypass actor"
+        )
+    rules = [rule for ruleset in core for rule in _array(ruleset.get("rules"), "ruleset rules")]
+    types = [_object(rule, "ruleset rule").get("type") for rule in rules]
+    for rule_type in PARAMETERIZED_CORE_RULES:
+        if types.count(rule_type) > 1:
+            raise ContractError(f"main's {rule_type} rule is set more than once: ambiguous")
     security = _object(
         repository_record.get("security_and_analysis", {}), "security and analysis settings"
     )
@@ -1799,6 +2048,14 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--chart-digest", required=True)
         command.add_argument("--plugin-digest", required=True)
         command.add_argument("--plugin-bundle", type=Path)
+        # PLATFORM=PATH, once per production platform, from 1.1.4 on.
+        command.add_argument("--server-archive", action="append", default=[])
+
+    server_archive = commands.add_parser("server-archive")
+    server_archive.add_argument("--source", type=Path, required=True)
+    server_archive.add_argument("--tag", required=True)
+    server_archive.add_argument("--platform", required=True)
+    server_archive.add_argument("--output", type=Path, required=True)
 
     artifact = commands.add_parser("artifact-state")
     artifact.add_argument("--present", choices=("true", "false"), required=True)
@@ -1823,6 +2080,14 @@ def _manifest_arguments(args: argparse.Namespace) -> dict:
             # Read one extra byte so an oversized file cannot be accepted as
             # a valid prefix, without allocating the rest of the input first.
             plugin_bundle = stream.read(PLUGIN_BUNDLE_MAX_BYTES + 1)
+    server_archives = None
+    for entry in getattr(args, "server_archive", []):
+        platform, _, path = entry.partition("=")
+        server_archives = server_archives or {}
+        if not path or platform in server_archives:
+            raise ContractError("--server-archive takes PLATFORM=PATH once per platform")
+        with Path(path).open("rb") as stream:
+            server_archives[platform] = stream.read(SERVER_ARCHIVE_MAX_BYTES + 1)
     return {
         "repository": args.repository,
         "source_sha": args.source_sha,
@@ -1834,6 +2099,7 @@ def _manifest_arguments(args: argparse.Namespace) -> dict:
         "chart_digest": args.chart_digest,
         "plugin_digest": args.plugin_digest,
         "plugin_bundle": plugin_bundle,
+        "server_archives": server_archives,
     }
 
 
@@ -1977,6 +2243,9 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 else:
                     print("exact")
+        elif args.command == "server-archive":
+            args.output.write_bytes(build_server_archive(args.source, args.tag, args.platform))
+            print("sha256:" + hashlib.sha256(args.output.read_bytes()).hexdigest())
         elif args.command == "artifact-state":
             state = classify_artifact(
                 present=args.present == "true",

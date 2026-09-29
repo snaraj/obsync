@@ -1,0 +1,13 @@
+# M3106: a device a crash left with no keys is told it is a copy
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -735,8 +735,8 @@
+           if (envelope !== null) state.keysLost = { dataRevision: revision, secretRevision: envelope.current.revision };
+           else {
+             data.deviceName = null;
+-            state.copied = true;
+           }
++          state.copied = true;
+         } else {
+           const selected = [envelope.current, envelope.previous].find((record) => record?.revision === revision);
+           if (!selected || selected.serverUrl !== metadata["serverUrl"] || selected.deviceId !== metadata["deviceId"]) {

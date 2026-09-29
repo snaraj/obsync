@@ -31,6 +31,7 @@ import {
   statSync,
   symlinkSync,
   unlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { promises as realFsPromises } from "node:fs";
@@ -79,7 +80,7 @@ async function vault({ fs: injected } = {}) {
     rmdir: async (path) => rmdirSync(join(root, path)),
   };
   const plugin = {
-    state: { data: {} },
+    state: { data: { files: {} } },
     app: {
       vault: {
         adapter,
@@ -288,7 +289,7 @@ function swappingOpen(flags, swapper, wrote) {
         wrote.push(bytes.length);
         return handle.write(bytes);
       },
-      stat: () => handle.stat(),
+      stat: (...options) => handle.stat(...options),
       close: () => handle.close(),
     };
   };
@@ -394,7 +395,7 @@ test("a parent swapped around the rename is refused, hard link and all", async (
           // The file landed where it belonged; the parent is swapped only
           // then, and a hard link gives the outside name our own inode, so
           // that comparing inodes alone would be satisfied.
-          const name = to.slice(to.lastIndexOf("/") + 1);
+          const name = nodePath.basename(to);
           if (!swapper.done()) {
             swapper.swap();
             linkSync(join(root, "Notes.aside", name), join(outsideDir, name));
@@ -505,18 +506,21 @@ test("a temp file swapped for a symlink between the open and the write is refuse
 const PLACEHOLDER_INO = 18446744073709552000;
 
 function renumbering() {
+  // The placeholder in the stat's own type: the host reads identity as a bigint (#224).
   const renumber = (stat) =>
-    stat.isFile() && stat.size === 0
-      ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { ino: PLACEHOLDER_INO })
+    stat.isFile() && Number(stat.size) === 0
+      ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, {
+        ino: typeof stat.ino === "bigint" ? BigInt(PLACEHOLDER_INO) : PLACEHOLDER_INO,
+      })
       : stat;
   return {
     ...realFsPromises,
-    lstat: async (path) => renumber(await realFsPromises.lstat(path)),
+    lstat: async (path, ...options) => renumber(await realFsPromises.lstat(path, ...options)),
     open: async (path, flags, mode) => {
       const handle = await realFsPromises.open(path, flags, mode);
       return new Proxy(handle, {
         get: (target, key) => {
-          if (key === "stat") return async () => renumber(await target.stat());
+          if (key === "stat") return async (...options) => renumber(await target.stat(...options));
           const value = target[key];
           return typeof value === "function" ? value.bind(target) : value;
         },
@@ -620,6 +624,79 @@ test("the create-only writer proves its temp the same way on such a volume", asy
 
   assert.equal(readFileSync(join(root, "Notes", "copy.md"), "utf8"), "first \nthen\n");
   assert.deepEqual(readdirSync(join(root, "Notes")), ["copy.md"], "and no temp is left for either");
+});
+
+/**
+ * A FILE ID WIDER THAN A NUMBER (issue #224). NTFS and ReFS number a file with
+ * 64 bits and a JavaScript number keeps 53, so past 2^53 two ids that differ by
+ * one are one number. `windowsIds` models such a volume over the real
+ * filesystem: each file gets the next id above 2^60, handed over as a bigint
+ * when one is asked for and as a number otherwise, as Node hands it.
+ */
+function windowsIds() {
+  const ids = new Map();
+  const wide = (stat) => {
+    const key = `${stat.dev}:${stat.ino}`;
+    if (!ids.has(key)) ids.set(key, 2n ** 60n + BigInt(ids.size));
+    const id = ids.get(key);
+    return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { ino: typeof stat.ino === "bigint" ? id : Number(id) });
+  };
+  return {
+    ...realFsPromises,
+    lstat: async (path, ...options) => wide(await realFsPromises.lstat(path, ...options)),
+    open: async (path, flags, mode) => {
+      const handle = await realFsPromises.open(path, flags, mode);
+      return new Proxy(handle, {
+        get: (target, key) => {
+          if (key === "stat") return async (...options) => wide(await target.stat(...options));
+          const value = target[key];
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+}
+
+test("a file whose id is past 2^53 is told from its neighbour: one swapped in during a read is refused (#224)", async () => {
+  const wide = windowsIds();
+  let swap = null;
+  const { root, host } = await vault({ fs: { promises: { ...wide, open: async (path, flags, mode) => {
+    if (flags === "r" && swap !== null) {
+      swap();
+      swap = null;
+    }
+    return wide.open(path, flags, mode);
+  } } } });
+  writeFileSync(join(root, "note.md"), "ours\n");
+  writeFileSync(join(root, "other.md"), "not ours\n");
+  // What the fake rests on, said once: the two ids differ by one, and as
+  // numbers they are one.
+  const ours = await wide.lstat(join(root, "note.md"), { bigint: true });
+  const theirs = await wide.lstat(join(root, "other.md"), { bigint: true });
+  assert.equal(theirs.ino - ours.ino, 1n);
+  assert.equal(Number(theirs.ino), Number(ours.ino), "as numbers the two ids are one");
+
+  // Between the walk and the open, the name is made to mean the other file.
+  swap = () => renameSync(join(root, "other.md"), join(root, "note.md"));
+  await assert.rejects(
+    () => host.read("note.md"),
+    (error) => {
+      assert.equal(error.refusal, "target_identity", "the descriptor comparison is what refused");
+      return true;
+    },
+  );
+  assert.equal(swap, null, "the swap really happened");
+});
+
+test("a file's time and size read exactly as they did before identity was read as a bigint (#224)", async () => {
+  const { root, host } = await vault();
+  writeFileSync(join(root, "note.md"), "some bytes\n");
+  // A fraction of a millisecond past one half, where rounding and truncating
+  // part: a time that moved by one would make every such note look edited.
+  utimesSync(join(root, "note.md"), 1757200001.00075, 1757200001.00075);
+  const plain = statSync(join(root, "note.md"));
+  assert.ok(plain.mtimeMs % 1 > 0.5, `the volume keeps the fraction this rests on: ${plain.mtimeMs}`);
+  assert.deepEqual(await host.stat("note.md"), { path: "note.md", mtime: Math.round(plain.mtimeMs), size: plain.size });
 });
 
 test("a download's temp is a hidden name: never listed, never a path any device syncs", async () => {
@@ -781,4 +858,65 @@ test("a tombstoned note takes the real directory it emptied, and stops at one th
   assert.equal(lstatSync(join(root, "Tree")).isDirectory(), true, "a folder with a subfolder was removed");
   assert.deepEqual(readdirSync(join(root, "Tree")), ["Keep"]);
   assert.equal(readFileSync(join(root, "Tree", "Keep", "kept.md"), "utf8"), "a note that stays\n");
+});
+
+/**
+ * A pulled note is durable before it has its name (issue #202). A rename is
+ * atomic for the name and not for the bytes, and closing a file flushes
+ * nothing, so the writer syncs the temp through its own descriptor before the
+ * rename and the directory after it. The filesystem records the order.
+ */
+function recording(calls) {
+  return {
+    ...realFsPromises,
+    open: async (path, flags, mode) => {
+      const handle = await realFsPromises.open(path, flags, mode);
+      const what = path.includes(".obsync-write-") ? "temp" : lstatSync(path).isDirectory() ? "folder" : "file";
+      return new Proxy(handle, {
+        get: (target, key) => {
+          const value = target[key];
+          if (typeof value !== "function") return value;
+          return (...args) => {
+            if (key === "sync" || key === "close") calls.push(`${key}:${what}`);
+            return value.apply(target, args);
+          };
+        },
+      });
+    },
+    rename: async (from, to) => {
+      calls.push("rename");
+      return realFsPromises.rename(from, to);
+    },
+  };
+}
+
+test("a pulled note is synced before it takes its name, and its folder after", async () => {
+  const calls = [];
+  const { root, context, publish, applyChange, logs } = await vault({ fs: { promises: recording(calls) } });
+  mkdirSync(join(root, "Notes"));
+  assert.equal(await applyChange(context, await publish("Notes/n05.md", "BODY SENTINEL\n")), "applied");
+  assert.equal(readFileSync(join(root, "Notes", "n05.md"), "utf8"), "BODY SENTINEL\n");
+
+  const at = (call) => calls.indexOf(call);
+  assert.ok(at("sync:temp") !== -1 && at("sync:temp") < at("close:temp"), calls.join(" "));
+  assert.ok(at("close:temp") < at("rename"), `the temp was published before it was synced: ${calls.join(" ")}`);
+  assert.ok(at("rename") < at("sync:folder"), `the rename was never made durable: ${calls.join(" ")}`);
+  assert.deepEqual(refusals(logs), [], logs.join(" | "));
+});
+
+test("a folder the host cannot sync is said once, and never fails the note it follows", async () => {
+  // Windows opens no directory for syncing: the note's bytes were synced
+  // before the rename, so the write stands and the log says what was skipped.
+  const base = recording([]);
+  const refusing = { ...base, open: async (path, flags, mode) => {
+    if (lstatSync(path, { throwIfNoEntry: false })?.isDirectory() === true) throw Object.assign(new Error("EISDIR SENTINEL"), { code: "EISDIR" });
+    return base.open(path, flags, mode);
+  } };
+  const { root, context, publish, applyChange, logs } = await vault({ fs: { promises: refusing } });
+  mkdirSync(join(root, "Notes"));
+  assert.equal(await applyChange(context, await publish("Notes/a.md", "A\n")), "applied");
+  assert.equal(await applyChange(context, await publish("Notes/b.md", "B\n")), "applied");
+  assert.equal(readFileSync(join(root, "Notes", "b.md"), "utf8"), "B\n");
+  assert.deepEqual(logs.filter((line) => line.includes("reason=directory_fsync")),
+    ["host path_class=folder decision=skipped reason=directory_fsync code=EISDIR"]);
 });

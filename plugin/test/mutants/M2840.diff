@@ -1,0 +1,12 @@
+# M2840: the Connection row keeps the words it was drawn with
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -290,7 +290,7 @@
+         let checking = false;
+         const describe = (): void => { if (!checking) setting.setDesc(this.plugin.statusText()); };
+         this.unwatch?.();
+-        this.unwatch = this.plugin.onStatusChange(describe);
++        this.unwatch = this.plugin.onStatusChange(() => undefined);
+         setting
+           .addButton((button) => button.setButtonText("Check").onClick(() => {
+             if (this.plugin.state.data.serverUrl === "") {

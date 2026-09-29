@@ -1,0 +1,11 @@
+# M3300: a leaf a load moved to another note is loaded with this one
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2759,7 +2759,6 @@
+       }
+       let views = 0;
+       for (const view of this.views(path)) {
+-        if (view.file?.path !== path) continue;
+         const now = lines(view.getViewData());
+         if (now !== shown || now === written) continue;
+         view.setViewData(written, false);

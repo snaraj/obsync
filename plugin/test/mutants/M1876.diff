@@ -1,0 +1,14 @@
+# M1876: the settings tab keeps a refused setup token and clears it only after enrolment (#169)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -540,9 +540,8 @@
+   private async setUp(): Promise<void> {
+     if (!(await this.applyScopeDraft())) return;
+     const token = this.draftToken;
+-    this.draftToken = "";
+     await this.plugin.setUpAccount(token, ACCOUNT_NAME);
+-    if (this.plugin.state.data.deviceId !== null) this.left(); // Re-enrollment replaces the identity behind the device list.
++    if (this.plugin.state.data.deviceId !== null) { this.draftToken = ""; this.left(); } // Re-enrollment replaces the identity behind the device list.
+     else this.update();
+   }
+ 

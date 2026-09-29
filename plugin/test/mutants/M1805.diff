@@ -1,0 +1,12 @@
+# M1805: a signal no longer abandons an attempt in flight
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -646,7 +646,7 @@
+   private until(work: Promise<Attempt>, signal: AbortSignal | undefined, deadline: number): Promise<Attempt | "cancelled" | "deadline"> {
+     if (signal === undefined && deadline === Infinity) return work;
+     return new Promise((resolve, reject) => {
+-      const aborted = (): void => resolve("cancelled");
++      const aborted = (): void => undefined;
+       signal?.addEventListener("abort", aborted, { once: true });
+       if (deadline !== Infinity) void this.sleep(Math.max(0, deadline - this.now())).then(() => resolve("deadline"));
+       void work.then(resolve, reject).finally(() => signal?.removeEventListener("abort", aborted));

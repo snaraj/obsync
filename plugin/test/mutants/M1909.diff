@@ -1,0 +1,12 @@
+# M1909: a push that outlived its path overwrites a record a pull moved on
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -516,7 +516,7 @@
+     const moved = renamed ?? (inScope && record !== undefined ? context.state.pathByFileId(fileId) : undefined);
+     const carried = moved === undefined ? undefined : context.state.fileByPath(moved);
+     const follows = renamed === undefined
+-      ? carried !== undefined && carried.versionId === record?.versionId
++      ? carried !== undefined
+       : carried === undefined && inSyncScope(renamed, context.state.data.syncFolders);
+     if (follows) {
+       context.state.setFile(moved as string, carried === undefined

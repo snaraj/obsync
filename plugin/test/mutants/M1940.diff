@@ -1,0 +1,12 @@
+# M1940: Thumbs.db and desktop.ini are synced like notes
+--- a/plugin/src/syncScope.ts
++++ b/plugin/src/syncScope.ts
+@@ -23,7 +23,7 @@
+  * `osJunk`; issue #184), in either direction.
+  */
+ export function inSyncScope(path: unknown, folders: SyncFolders): path is string {
+-  return isVaultPath(path) && !osJunk(path.slice(path.lastIndexOf("/") + 1)) &&
++  return isVaultPath(path) &&
+     (folders === undefined || folders.some((folder) => path.startsWith(`${folder}/`)));
+ }
+ 

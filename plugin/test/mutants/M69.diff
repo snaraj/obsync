@@ -1,12 +1,12 @@
 # M69: the periodic scan may clear a hold the startup pass took
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2334,7 +2334,7 @@
-             "delete them, confirm it under Settings, obsync, \"Deletions held back\".",
+@@ -2724,7 +2724,7 @@
+           HELD_ACTIONS,
          );
        }
 -    } else if (tombstones) {
 +    } else {
-       this.heldDeletions = [];
+       if (held.length > 0) this.hold([]);
        this.bulkNoticeShown = false;
        for (const from of missing) {

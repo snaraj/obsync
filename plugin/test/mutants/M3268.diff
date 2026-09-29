@@ -1,0 +1,12 @@
+# M3268: a write takes over a mark it did not set, and its failure strands the first drop's empty file unmarked
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -909,7 +909,7 @@
+  */
+ async function commitMarked(context: SyncContext, fileId: string, path: string, commit: () => Promise<VaultStat>): Promise<VaultStat> {
+   const dropped = context.state.data.dropped;
+-  const marked = dropped[path] === undefined;
++  const marked = true;
+   if (marked) dropped[path] = fileId;
+   try {
+     return await commit();

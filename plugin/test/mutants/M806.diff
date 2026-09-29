@@ -1,7 +1,7 @@
 # M806: Normal typing raises a per-file failure notice.
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1959,7 +1959,7 @@
+@@ -2745,7 +2745,7 @@
        `feed decision=parked reason=${error.reason} file=${fileId} parked=${Object.keys(parked).length} ` +
          `retry_ms=${error.reason === "active_editor" ? 1000 : this.parkDelay}`,
      );

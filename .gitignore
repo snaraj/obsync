@@ -2,7 +2,6 @@
 /target/
 plugin/dist/
 plugin/node_modules/
-bench/results/
 .DS_Store
 __pycache__/
 

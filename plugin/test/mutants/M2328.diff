@@ -1,0 +1,12 @@
+# M2328: pairing reads an untrusted certificate as a refusal (certificate wording)
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -321,8 +321,6 @@
+ 
+ /** Any error a setup or pairing step throws, as text: refusals by table, this plugin's own words as they are. */
+ export function refusalText(error: unknown): string {
+-  const certificate = certificateRefusal(error);
+-  if (certificate !== null) return certificate;
+   if (error instanceof ApiError) return refusalFor(error.code);
+   const message = error instanceof Error ? error.message.trim() : "";
+   return message !== "" ? message : "Something went wrong on this device before anything was shared. Try again.";

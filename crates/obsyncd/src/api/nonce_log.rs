@@ -17,10 +17,12 @@
 //! Every accepted nonce is appended and fsynced BEFORE the request it
 //! authenticates is answered, for the reason a journal frame is
 //! (`docs/storage.md`, durability rule 6): a nonce the server has already
-//! acted on but not written down is a nonce a crash makes replayable.
+//! acted on but not written down is a nonce a crash makes replayable. The
+//! nonces of requests that arrive together are written as one batch and made
+//! durable by one fsync (`super::auth::NonceCache`): the promise is per
+//! request, and the fsync is shared.
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -30,6 +32,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(test)]
 use std::sync::Mutex;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
+#[cfg(test)]
+use std::time::{Duration, Instant};
 
 use crate::log::{Log, Val};
 use crate::storage::{PathClass, StoreError};
@@ -72,6 +78,42 @@ pub enum NonceFault {
         /// The `errno` the fsync returns.
         code: i32,
     },
+    /// The fsync takes `ms` longer than the volume would, then succeeds: the
+    /// window in which an answer sent early would show.
+    SlowSync {
+        /// The extra time.
+        ms: u64,
+    },
+    /// Slow, then refused: every request that queued behind the flush joins
+    /// the next batch, and that batch fails as one.
+    SlowSyncFails {
+        /// The extra time.
+        ms: u64,
+        /// The `errno` the fsync returns.
+        code: i32,
+    },
+    /// The batch is durable and the process dies before anyone is answered.
+    CrashAfterSync,
+    /// Slow and successful, as `SlowSync`, and then the NEXT batch's flush
+    /// panics: a bug in the flush, landing on a batch whose members all
+    /// queued behind this one.
+    SlowSyncThenPanic {
+        /// The extra time.
+        ms: u64,
+        /// Whether the panic comes while the flush holds the cache's mutex
+        /// (deciding on a compaction) or half way through the write.
+        locked: bool,
+    },
+    /// Half the batch lands, then the flush panics. Once.
+    PanicMidWrite,
+    /// The flush panics while it holds the cache's mutex. Once.
+    PanicUnderLock,
+    /// Half the batch lands, the write refuses, and so does the cut that
+    /// would take it back off the volume.
+    ShortWriteStuck {
+        /// The `errno` the write returns.
+        code: i32,
+    },
 }
 
 /// The file the accepted nonces are written to, held open for the life of
@@ -96,11 +138,25 @@ pub struct NonceLog {
     lines: usize,
     /// Appends since the last sweep summary.
     appended: u64,
+    /// The length the file has made durable. A refused batch is cut back to
+    /// it: without the cut, the next batch would land after a torn line and
+    /// the next start would refuse the whole file as corrupt.
+    durable_len: u64,
+    /// Set when that cut itself failed. Every later write refuses until a
+    /// restart, which truncates the torn tail as `open` describes.
+    faulted: Option<io::ErrorKind>,
     #[cfg(test)]
     fault: Mutex<NonceFault>,
+    /// Raised while an armed slow fsync runs, so a test can act while a flush
+    /// is in flight without taking any lock the flush might hold.
+    #[cfg(test)]
+    syncing: Arc<AtomicBool>,
+    /// Every durable batch: when its fsync returned, and what it held.
+    #[cfg(test)]
+    flushed: Vec<(Instant, Vec<Nonce>)>,
     /// Durability steps taken. `fsync` leaves nothing a hermetic test can
     /// observe, so what a test can pin is that the step runs, once per
-    /// accepted request; the count rises in exactly one place.
+    /// flush; the count rises in exactly one place.
     syncs: u64,
 }
 
@@ -194,9 +250,15 @@ impl NonceLog {
                     reported,
                     lines,
                     appended: 0,
+                    durable_len: complete as u64,
+                    faulted: None,
                     syncs: 0,
                     #[cfg(test)]
                     fault: Mutex::new(NonceFault::None),
+                    #[cfg(test)]
+                    syncing: Arc::new(AtomicBool::new(false)),
+                    #[cfg(test)]
+                    flushed: Vec::new(),
                 };
                 // What a restart inherits, said once before anything is
                 // written: the journal's survey ran before this and left
@@ -219,6 +281,18 @@ impl NonceLog {
         *self.fault.lock().expect("fault lock")
     }
 
+    /// The flag an armed slow fsync raises while it runs. Tests only.
+    #[cfg(test)]
+    pub fn syncing(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.syncing)
+    }
+
+    /// Every durable batch so far, oldest first. Tests only.
+    #[cfg(test)]
+    pub fn flushed(&self) -> &[(Instant, Vec<Nonce>)] {
+        &self.flushed
+    }
+
     /// Publish what this log occupies on the journal volume.
     ///
     /// Two `stat`s: the open handle, and the compaction temporary by name.
@@ -234,35 +308,89 @@ impl NonceLog {
             .store(live.saturating_add(leftover), Ordering::Release);
     }
 
-    /// Write one accepted nonce down and make it durable.
+    /// Write a batch of accepted nonces down and make it durable with one
+    /// fsync.
+    ///
+    /// A refusal cuts the file back to the length it had made durable before
+    /// this batch, and fsyncs the cut, so no line of a refused batch outlives
+    /// it and the next batch starts on a line boundary. A cut that fails as
+    /// well faults the log: nothing more is written until a restart truncates
+    /// the torn tail.
     ///
     /// # Errors
-    /// The volume. The caller refuses the request it came from: a request
+    /// The volume. The caller refuses every request in the batch: a request
     /// answered without its nonce recorded is one a crash makes replayable.
-    pub fn append(&mut self, ts: u64, entry: &Nonce) -> io::Result<()> {
-        let text = line(ts, entry);
+    pub fn append(&mut self, entries: &[(u64, Nonce)]) -> io::Result<()> {
+        if let Some(kind) = self.faulted {
+            return Err(io::Error::from(kind));
+        }
+        let text: String = entries.iter().map(|(ts, entry)| line(*ts, entry)).collect();
         #[cfg(test)]
         let wrote = match self.armed() {
-            NonceFault::ShortWrite { code } => self
+            NonceFault::ShortWrite { code } | NonceFault::ShortWriteStuck { code } => self
                 .file
                 .write_all(&text.as_bytes()[..text.len() / 2])
                 .and(Err(io::Error::from_raw_os_error(code))),
+            NonceFault::PanicMidWrite => {
+                let _ = self.file.write_all(&text.as_bytes()[..text.len() / 2]);
+                self.set_fault(NonceFault::None);
+                panic!("injected panic part way through a nonce batch");
+            }
             _ => self.file.write_all(text.as_bytes()),
         };
         #[cfg(not(test))]
         let wrote = self.file.write_all(text.as_bytes());
-        let synced = if wrote.is_ok() { self.fsync() } else { Ok(()) };
-        // Before either `?`: a short write that then failed still grew the
-        // file, and the volume's accounting has to see that.
+        let outcome = wrote.and_then(|()| self.fsync());
+        // A crash, not a refusal: nothing after the fsync runs in a process
+        // that died there, so nothing is cut back either.
+        #[cfg(test)]
+        if outcome.is_ok() && self.armed() == NonceFault::CrashAfterSync {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "injected crash"));
+        }
+        if outcome.is_err()
+            && let Err(e) = self.rollback()
+        {
+            self.faulted = Some(e.kind());
+        }
+        // Before the `?`: a cut that failed leaves bytes on the volume, and
+        // the volume's accounting has to see them.
         self.publish();
-        wrote?;
-        synced?;
-        self.lines += 1;
-        self.appended += 1;
+        outcome?;
+        #[cfg(test)]
+        self.flushed.push((
+            Instant::now(),
+            entries.iter().map(|(_, entry)| entry.clone()).collect(),
+        ));
+        self.durable_len += text.len() as u64;
+        self.lines += entries.len();
+        self.appended += entries.len() as u64;
         Ok(())
     }
 
-    /// Rewrite the file with the entries still inside the window.
+    /// A flush that unwound part way, which only a bug does: cut the file
+    /// back to what it had made durable, as a refused batch is cut, so the
+    /// next batch starts on a clean line and no start ever loads a line of a
+    /// batch that was never answered. A cut that fails faults the log, as it
+    /// does after a refusal.
+    pub fn abandon(&mut self) {
+        if let Err(e) = self.rollback() {
+            self.faulted = Some(e.kind());
+        }
+        self.publish();
+    }
+
+    /// Cut a refused batch back off the volume, and make the cut durable.
+    fn rollback(&mut self) -> io::Result<()> {
+        #[cfg(test)]
+        if let NonceFault::ShortWriteStuck { code } = self.armed() {
+            return Err(io::Error::from_raw_os_error(code));
+        }
+        self.file.set_len(self.durable_len)?;
+        self.file.sync_all()
+    }
+
+    /// Rewrite the file with the `lines` entries still inside the window,
+    /// as [`window`] rendered them into `body`.
     ///
     /// The shape of a snapshot (`docs/storage.md`, durability rule 5): a
     /// temporary file, fsynced, renamed onto the name, and the directory
@@ -272,18 +400,17 @@ impl NonceLog {
     ///
     /// # Errors
     /// The volume.
-    pub fn compact(&mut self, live: &HashMap<Nonce, u64>) -> io::Result<()> {
-        let outcome = self.compact_inner(live);
+    pub fn compact(&mut self, body: &str, lines: usize) -> io::Result<()> {
+        let outcome = self.compact_inner(body, lines);
         // A compaction that failed part way leaves the old file AND a
         // temporary beside it; both are on the volume and both are counted.
         self.publish();
         outcome
     }
 
-    fn compact_inner(&mut self, live: &HashMap<Nonce, u64>) -> io::Result<()> {
-        let mut body = String::new();
-        for (entry, expiry) in live {
-            body.push_str(&line(expiry.saturating_sub(NONCE_TTL_SECS), entry));
+    fn compact_inner(&mut self, body: &str, lines: usize) -> io::Result<()> {
+        if let Some(kind) = self.faulted {
+            return Err(io::Error::from(kind));
         }
         let tmp = self.root.join(TMP_NAME);
         // Whatever stands at the temporary name -- a file a crash left, or a
@@ -310,13 +437,19 @@ impl NonceLog {
         // them: the rename moved the object it holds open, so no name is
         // resolved again and there is no link left to follow.
         self.file = replacement;
-        self.lines = live.len();
+        self.lines = lines;
+        self.durable_len = body.len() as u64;
         self.syncs += 1;
         Ok(())
     }
 
     /// Lines the file holds, for the caller's compaction threshold.
-    pub const fn lines(&self) -> usize {
+    pub fn lines(&self) -> usize {
+        #[cfg(test)]
+        if self.armed() == NonceFault::PanicUnderLock {
+            self.set_fault(NonceFault::None);
+            panic!("injected panic while the flush holds the cache");
+        }
         self.lines
     }
 
@@ -331,8 +464,28 @@ impl NonceLog {
     /// The durability step, and the only place the count rises.
     fn fsync(&mut self) -> io::Result<()> {
         #[cfg(test)]
-        if let NonceFault::SyncFails { code } = self.armed() {
-            return Err(io::Error::from_raw_os_error(code));
+        match self.armed() {
+            NonceFault::SyncFails { code } => return Err(io::Error::from_raw_os_error(code)),
+            NonceFault::SlowSync { ms }
+            | NonceFault::SlowSyncFails { ms, .. }
+            | NonceFault::SlowSyncThenPanic { ms, .. } => {
+                self.syncing.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(ms));
+                self.syncing.store(false, Ordering::SeqCst);
+                match self.armed() {
+                    NonceFault::SlowSyncFails { code, .. } => {
+                        return Err(io::Error::from_raw_os_error(code));
+                    }
+                    NonceFault::SlowSyncThenPanic { locked: true, .. } => {
+                        self.set_fault(NonceFault::PanicUnderLock);
+                    }
+                    NonceFault::SlowSyncThenPanic { locked: false, .. } => {
+                        self.set_fault(NonceFault::PanicMidWrite);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
         }
         self.file.sync_all()?;
         self.syncs += 1;
@@ -340,11 +493,23 @@ impl NonceLog {
     }
 
     /// How many times the log has been made durable, for the test that pins
-    /// that every accepted request pays for one.
+    /// that a flush pays for one.
     #[cfg(test)]
     pub const fn syncs(&self) -> u64 {
         self.syncs
     }
+}
+
+/// What a compaction writes: one line per entry the window still covers,
+/// stamped with the second it was accepted, and how many lines that is.
+pub fn window<'a>(live: impl Iterator<Item = (&'a Nonce, &'a u64)>) -> (String, usize) {
+    let mut body = String::new();
+    let mut lines = 0;
+    for (entry, expiry) in live {
+        body.push_str(&line(expiry.saturating_sub(NONCE_TTL_SECS), entry));
+        lines += 1;
+    }
+    (body, lines)
 }
 
 /// One refusal line and the error that stops the start (requirement 12).

@@ -1,0 +1,12 @@
+# M1912: identify's own publication runs the push-time rule on the note it identifies
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4304,7 +4304,7 @@
+  * so again. The lower id keeps the name and publishes nothing new here.
+  */
+ export async function yieldName(context: SyncContext, path: string): Promise<boolean> {
+-  if (context.host.bindsRemoval !== true || identifying.get(context)?.has(path)) return false;
++  if (context.host.bindsRemoval !== true) return false;
+   let waiting: FileState | undefined;
+   for (const at of context.state.besideNames()) {
+     const record = context.state.fileByPath(at) as FileState;

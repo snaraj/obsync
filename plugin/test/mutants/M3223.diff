@@ -1,0 +1,12 @@
+# M3223: Sync now raises an empty notice where it has nothing to add
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3444,7 +3444,7 @@
+       : everything ? `obsync: checked ${files}; ${sent > 0 ? `${sent} had changed and ${sent === 1 ? "was" : "were"} sent` : "none had changed"}.`
+       : sent > 0 ? `obsync: sent ${sent} change${sent === 1 ? "" : "s"}.`
+       : (this.engine?.context?.state.data.heldDeletions.length ?? 0) > 0 ? null : "obsync: nothing to send; this device is up to date.";
+-    if (answer !== null) new Notice(answer);
++    new Notice(answer as string);
+   }
+ 
+   /** Resume in Show sync status: sync one paused note again (issue #179). */

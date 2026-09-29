@@ -1,0 +1,11 @@
+# M1920: a merge adopting the other device's bytes forgets the name it waits for
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2420,7 +2420,6 @@
+               mtime: stat.mtime,
+               size: stat.size,
+               sha256: await sidDigest(change.sids),
+-              ...(target === localPath ? {} : { name: target }),
+               ts: change.ts,
+             });
+             await context.state.save();

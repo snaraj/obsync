@@ -1,0 +1,12 @@
+# M2951: a worker that cannot be made is not survived: no fallback
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -84,7 +84,7 @@
+       log(`timers decision=fallback reason=worker_error pending=${armed.size}`);
+     };
+   } catch (error) {
+-    log(`timers decision=fallback reason=${error instanceof Error ? error.name : "unknown"}`);
++    throw error;
+   }
+   return {
+     set(fn, ms) {

@@ -1,0 +1,12 @@
+# M2850: the repair pass's chunk check does not hear the stop
+--- a/plugin/src/sync/repair.ts
++++ b/plugin/src/sync/repair.ts
+@@ -111,7 +111,7 @@
+       else asked.set(known, [...(asked.get(known) ?? []), next]);
+     }
+     const sids = [...asked.keys()];
+-    const missing = await this.context.transport.missingChunks(sids, { signal: this.context.signal });
++    const missing = await this.context.transport.missingChunks(sids);
+     this.operation.check();
+     this.inventory(missing, sids);
+     for (const gone of missing) this.later.push(...(asked.get(gone) ?? []));

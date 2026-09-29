@@ -1,0 +1,12 @@
+# M2855: the Leave dialog advises Sync now whether or not it can work
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -475,7 +475,7 @@
+     if (unpushed.length > 0) {
+       // Sync now is advice only where it can work: not offline, and not for a
+       // device the server no longer accepts (S40, S80).
+-      const now = this.plugin.sendsNow
++      const now = true
+         ? "Run Sync now first and they are safe; leave now"
+         : "They cannot be sent now: the server is out of reach or no longer accepts this device. Leave now";
+       this.contentEl.createEl("p", {

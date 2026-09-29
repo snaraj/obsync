@@ -1,0 +1,11 @@
+# M2155: a page leaves its host pass open
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2788,7 +2788,6 @@
+       } finally {
+         this.pulls = 0;
+         context.ahead = null;
+-        context.host.pass?.(false);
+       }
+     });
+     if (replayed > 0) context.host.log(`feed decision=skipped reason=seen_before_restore entries=${replayed}`);

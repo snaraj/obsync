@@ -1,0 +1,12 @@
+# M2914: every occupied capitals-only move is refused as a failed re-case
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1753,7 +1753,7 @@
+     // one name: the same-name rule below would publish the note again as a
+     // second one and settle it beside its own name, for good. Refused, as a
+     // folder's capitals are, and said once, before the decision is logged.
+-    if (outcome === "occupied" && (await context.host.spelling(manifest.path)) === localPath) {
++    if (outcome === "occupied") {
+       const told = `recase\u0000${change.file_id}`;
+       if (!context.refused.has(told)) {
+         context.refused.add(told);

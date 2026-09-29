@@ -52,7 +52,9 @@
 #                   answer, from the volumes prepared in step 3.
 #   9. a TLS front  the `<!-- ci: k8s-tls-front -->` block is applied with a
 #                   leaf this job issues, and `/readyz` is answered THROUGH it
-#                   over HTTPS. Requirement 7 says the server never terminates
+#                   over HTTPS, by a port-forward and by its Service (an IPv6
+#                   cluster first uncomments the IPv6 listen line, as the page
+#                   tells it to). Requirement 7 says the server never terminates
 #                   TLS, so the deployment a reader ends up with is this one,
 #                   not the port-forward above.
 #  10. it syncs      the `<!-- ci: k8s-token -->` block reads the setup token
@@ -67,16 +69,22 @@
 #                   account, both devices and the file are still there after
 #                   two pod replacements -- which is what section 8 of the page
 #                   promises an operator.
-#  12. teardown     the cluster is deleted. It runs from a trap, so a failure
+#  12. the policy   `scripts/ci/np-probe.sh`: a pod carrying the peer labels
+#      holds        the values name connects to the server, and a pod with
+#                   another instance label, and one in another namespace, are
+#                   refused. kind's own CNI (kindnetd) enforces NetworkPolicy,
+#                   so these are the cluster's refusals, not the render's.
+#  13. teardown     the cluster is deleted. It runs from a trap, so a failure
 #                   at any step above deletes it too: a kind cluster left
 #                   behind holds a container, a network and a volume on the
 #                   runner.
 #
-# WHAT IT DOES NOT PROVE, stated rather than implied: the NetworkPolicy's
-# refusals (kind's CNI does not enforce policy, so they are proven against the
-# RENDERED policy by scripts/ci/chart_pins.py), the DNS-01 certificate ceremony
-# (the leaf here is issued by the job, and what is proven is the terminator and
-# the wiring, never the issuance), and the private route.
+# `OBSYNC_E2E_IP_FAMILY=ipv6` runs all of it on an IPv6-only cluster, which is
+# where a server listening on an IPv4 wildcard alone is unreachable.
+#
+# WHAT IT DOES NOT PROVE, stated rather than implied: the DNS-01 certificate
+# ceremony (the leaf here is issued by the job, and what is proven is the
+# terminator and the wiring, never the issuance), and the private route.
 # docs/kubernetes.md section 9 says the same thing to a reader.
 #
 # Requires: kind, helm, kubectl, docker, curl, openssl, python3.
@@ -123,11 +131,9 @@ readonly INGRESS_NAMESPACE='obsync-ingress'
 readonly FRONT='tls-front'
 readonly FRONT_HOST='sync-e2e.invalid'
 readonly FRONT_PORT=18443
-# The digest this run pulls the terminator at. The page shows the TAG, as a
-# reader reads it, and tells them to pin their own; the substitution below is
-# what names the bytes this job may run, and the tag it replaces is checked
-# against the page by scripts/ci/test_selfhosting_contract.py.
-readonly FRONT_IMAGE='docker.io/library/nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de'
+# The terminator's bytes are the digest the page itself pins, so this run
+# applies the page as written; scripts/ci/test_selfhosting_contract.py refuses
+# a page whose front is not pinned by digest.
 # Requirement 12: every wait names the budget it is measured against.
 readonly CLUSTER_BUDGET_SECONDS=300
 readonly BIND_BUDGET_SECONDS=180
@@ -178,6 +184,12 @@ deny() {
       printf 'helm-e2e: --- terminator ---\n' >&2
       kubectl get pods --namespace "${INGRESS_NAMESPACE}" >&2 2>&1 || true
       kubectl logs --namespace "${INGRESS_NAMESPACE}" "deploy/${FRONT}" --tail 40 >&2 2>&1 || true
+      # The front finds the server by its Service name, so a front that
+      # cannot is a fact about the cluster's DNS and service routing.
+      printf 'helm-e2e: --- cluster DNS and service routing ---\n' >&2
+      kubectl get pods,services,endpointslices --namespace kube-system --output wide >&2 2>&1 || true
+      kubectl logs --namespace kube-system --selector k8s-app=kube-dns --tail 20 >&2 2>&1 || true
+      kubectl logs --namespace kube-system --selector k8s-app=kube-proxy --tail 20 >&2 2>&1 || true
     fi
   fi
   rm -rf -- "${scratch}"
@@ -205,8 +217,17 @@ documented() {
   python3 -B "${here}/docs_blocks.py" "${GUIDE}" "$@"
 }
 
-printf 'helm-e2e: START image=%s guide=%s cluster=%s kind=%s node_image=%s\n' \
-  "${image}" "${GUIDE}" "${CLUSTER}" "${kind_version}" "${node_image}"
+# The cluster's IP family. IPv4 by default; `ipv6` makes every pod, Service
+# and probe IPv6-only, which is the cluster a server bound to 0.0.0.0 cannot
+# serve.
+ip_family="${OBSYNC_E2E_IP_FAMILY:-ipv4}"
+case "${ip_family}" in
+  ipv4 | ipv6) ;;
+  *) printf 'helm-e2e: OBSYNC_E2E_IP_FAMILY must be ipv4 or ipv6, not %s\n' "${ip_family}" >&2; exit 2 ;;
+esac
+
+printf 'helm-e2e: START image=%s guide=%s cluster=%s kind=%s node_image=%s ip_family=%s\n' \
+  "${image}" "${GUIDE}" "${CLUSTER}" "${kind_version}" "${node_image}" "${ip_family}"
 
 # (1) Preflight.
 for tool in kind helm kubectl docker curl openssl python3; do
@@ -235,13 +256,18 @@ trap cleanup EXIT
 # Set BEFORE the command that creates anything: a cluster that fails half-way
 # through still leaves a container, a network and a volume behind, and those
 # are ours to delete.
+# The API server stays on IPv4 loopback for kubectl on the HOST, whatever the
+# cluster's own family: that is how this script reaches the cluster, not how
+# the cluster reaches the server under test.
+printf 'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnetworking:\n  ipFamily: %s\n  apiServerAddress: 127.0.0.1\n' \
+  "${ip_family}" > "${scratch}/kind.yaml"
 created='cluster'
-kind create cluster --name "${CLUSTER}" --image "${node_image}" \
+kind create cluster --name "${CLUSTER}" --image "${node_image}" --config "${scratch}/kind.yaml" \
   --kubeconfig "${KUBECONFIG}" --wait "${CLUSTER_BUDGET_SECONDS}s" \
   || deny "kind could not create ${CLUSTER} within ${CLUSTER_BUDGET_SECONDS}s"
 kubectl get node "${NODE}" >/dev/null 2>&1 \
   || deny "the cluster has no node called ${NODE}; the documented volumes name it"
-prove "cluster: ${CLUSTER} is up on ${node_image} with a kubeconfig in this run's scratch directory"
+prove "cluster: ${CLUSTER} is up on ${node_image}, ${ip_family}, with a kubeconfig in this run's scratch directory"
 
 # (3) The page's directory preparation, run on the node. `sudo` is dropped
 # because `docker exec` is already root there, and that is the ONE difference
@@ -363,8 +389,15 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
   -keyout "${scratch}/tls.key" -out "${scratch}/tls.crt" -days 1 \
   -subj "/CN=${FRONT_HOST}" -addext "subjectAltName=DNS:${FRONT_HOST}" >/dev/null 2>&1 \
   || deny 'openssl could not issue the leaf this run terminates with'
-front="$(documented k8s-tls-front --substitute "nginx:1.29-alpine=${FRONT_IMAGE}")" \
-  || deny "${GUIDE} no longer shows the TLS-front block this gate substitutes into"
+# The block as a reader of THIS cluster pastes it: as shown in an IPv4
+# cluster, and with the one line the page tells an IPv6 cluster to uncomment.
+if [ "${ip_family}" = ipv6 ]; then
+  front="$(documented k8s-tls-front --substitute '# listen [::]:8443 ssl;=listen [::]:8443 ssl;')" \
+    || deny "${GUIDE} no longer shows the TLS-front block with the IPv6 listen line an IPv6 cluster uncomments"
+else
+  front="$(documented k8s-tls-front)" \
+    || deny "${GUIDE} no longer shows the TLS-front block this gate substitutes into"
+fi
 printf 'helm-e2e: applying, from %s:\n%s\n' "${GUIDE}" "${front}"
 printf '%s\n' "${front}" | kubectl apply -f - \
   || deny 'the documented TLS front was refused by the API server'
@@ -374,13 +407,21 @@ kubectl create secret tls obsync-tls --namespace "${INGRESS_NAMESPACE}" \
 kubectl wait "deploy/${FRONT}" --namespace "${INGRESS_NAMESPACE}" \
   --for=condition=Available --timeout="${AVAILABLE_BUDGET_SECONDS}s" >/dev/null \
   || deny "the documented TLS front was not Available within ${AVAILABLE_BUDGET_SECONDS}s"
-kubectl port-forward --namespace "${INGRESS_NAMESPACE}" "service/${FRONT}" \
-  "${FRONT_PORT}:443" >"${scratch}/front.log" 2>&1 &
-front_pid=$!
+# The front has no readiness probe, so Available comes before nginx has bound
+# 8443, and kubectl ends a port-forward at the first connection the pod
+# refuses ("lost connection to pod"). A forward that ends before the front
+# has answered is started again, inside the same budget, and counted.
 ready=''
+forwards=0
 for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
-  kill -0 "${front_pid}" 2>/dev/null \
-    || deny "the terminator port-forward exited: $(cat "${scratch}/front.log")"
+  if [ -z "${front_pid}" ] || ! kill -0 "${front_pid}" 2>/dev/null; then
+    [ -n "${front_pid}" ] && printf 'helm-e2e: the terminator port-forward ended before the front answered: %s\n' \
+      "$(tr '\n' ' ' <"${scratch}/front.log")"
+    kubectl port-forward --namespace "${INGRESS_NAMESPACE}" "service/${FRONT}" \
+      "${FRONT_PORT}:443" >"${scratch}/front.log" 2>&1 &
+    front_pid=$!
+    forwards=$((forwards + 1))
+  fi
   body="$(curl --silent --show-error --max-time 3 \
     --cacert "${scratch}/tls.crt" \
     --resolve "${FRONT_HOST}:${FRONT_PORT}:127.0.0.1" \
@@ -394,8 +435,35 @@ for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
   sleep 1
 done
 [ -n "${ready}" ] \
-  || deny "no {\"ready\":true through the documented TLS front within ${READY_BUDGET_SECONDS}s"
-prove "a TLS front: the documented terminator answered ${ready} over HTTPS, on a certificate this run issued"
+  || deny "no {\"ready\":true through the documented TLS front within ${READY_BUDGET_SECONDS}s (${forwards} port-forwards; the last said: $(cat "${scratch}/front.log"))"
+# And through its Service, which is how anything in the cluster reaches it. A
+# port-forward reaches the pod's own loopback, which answers on IPv4 whatever
+# the cluster's family, so it cannot tell a front listening on the cluster's
+# family from one that is not; the Service's address can. The node asks, as a
+# workload would, trusting only this run's leaf.
+service_ip="$(kubectl get service "${FRONT}" --namespace "${INGRESS_NAMESPACE}" \
+  --output jsonpath='{.spec.clusterIP}')"
+case "${service_ip}" in *:*) service_ip="[${service_ip}]" ;; esac
+# Through the node's own shell: kind mounts a tmpfs on the node's /tmp, and
+# `docker cp` writes beneath it, where nothing inside the node can see it.
+docker exec -i "${NODE}" sh -c 'cat > /tmp/front.crt' <"${scratch}/tls.crt" \
+  || deny "could not hand ${NODE} the leaf it verifies the front's Service with"
+through_service=''
+for _ in $(seq 1 "${READY_BUDGET_SECONDS}"); do
+  body="$(docker exec "${NODE}" curl --silent --show-error --max-time 3 \
+    --cacert /tmp/front.crt --resolve "${FRONT_HOST}:443:${service_ip}" \
+    "https://${FRONT_HOST}/readyz" 2>"${scratch}/service.log" || true)"
+  case "${body}" in
+    '{"ready":true'*)
+      through_service="${body}"
+      break
+      ;;
+  esac
+  sleep 1
+done
+[ -n "${through_service}" ] \
+  || deny "the documented TLS front answered its port-forward but not its Service at ${service_ip}:443 within ${READY_BUDGET_SECONDS}s (${ip_family}); curl said: $(cat "${scratch}/service.log")"
+prove "a TLS front: the documented terminator answered ${ready} over HTTPS, through a port-forward (${forwards}) and through its Service at ${service_ip}:443, on a certificate this run issued"
 
 # (10) The page's token read, and the whole sync flow through the terminator.
 # The token is masked in the runner's log before it is used and is printed by
@@ -455,7 +523,26 @@ python3 -B "${here}/api_flow.py" verify \
   || deny 'the upgraded and rolled-back release lost the account, the devices or the data'
 prove "upgrade and rollback: two pod replacements on ${digest}, and the account, both devices and the file came through both"
 
-# (12) Teardown, proven rather than assumed. The trap runs it again and finds
+# (12) The policy, asked of the cluster's own network. The peer identity is
+# read out of the documented values this run installed -- the first entry of
+# `ingress.peers` -- and the probe pods run the image the page pins for the
+# front, so the probe asks about the peer the page names rather than one
+# written here.
+peer_value() {
+  awk -v key="$1" '/^  peers:/ {inside = 1; next}
+    inside && /^[^ ]/ {exit}
+    inside {sub(/^[ -]*/, ""); if ($1 == key":") {print $2; exit}}' "${scratch}/values.yaml"
+}
+probe_image="$(printf '%s\n' "${front}" | awk '$1 == "image:" {print $2; exit}')"
+[ -n "${probe_image}" ] || deny "${GUIDE}'s TLS-front block names no image for the probe pods"
+# An absolute name, as the page's front uses: the probe pods are Alpine, and
+# a search suffix the cluster's upstream cannot answer ends a lookup there.
+"${here}/np-probe.sh" "http://${RELEASE}.${NAMESPACE}.svc.cluster.local.:8080/livez" \
+  "$(peer_value namespace)" "$(peer_value appName)" "$(peer_value instance)" "${probe_image}" \
+  || deny 'the cluster does not enforce the NetworkPolicy the chart renders'
+prove 'the policy holds: the named peer connects, a sibling instance and another namespace are refused'
+
+# (13) Teardown, proven rather than assumed. The trap runs it again and finds
 # nothing, which is what an always-run cleanup is for.
 kill "${forward_pid}" >/dev/null 2>&1 || true
 wait "${forward_pid}" 2>/dev/null || true

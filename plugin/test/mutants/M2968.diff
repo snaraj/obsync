@@ -1,0 +1,11 @@
+# M2968: a failed worker is not said in the log
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -81,7 +81,6 @@
+     worker.onmessage = (event) => take(event.data as number)?.();
+     worker.onerror = () => {
+       stop();
+-      log(`timers decision=fallback reason=worker_error pending=${armed.size}`);
+     };
+   } catch (error) {
+     log(`timers decision=fallback reason=${error instanceof Error ? error.name : "unknown"}`);

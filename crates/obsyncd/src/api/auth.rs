@@ -6,10 +6,11 @@
 //! or disable them (AGENTS.md requirement 4 and "Security invariants").
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use obsync_core::hex;
@@ -22,7 +23,7 @@ use crate::storage::{StoreError, error_fields};
 use crate::types::{DeviceId, UnixMs};
 
 use super::edge::ClientInfo;
-use super::nonce_log::{Nonce, NonceLog};
+use super::nonce_log::{Nonce, NonceLog, window};
 use super::{ApiError, App, SIGN_IN_RECORD_INTERVAL_SECS, is_hex, render};
 
 /// Widest accepted difference between the request timestamp and server time.
@@ -32,6 +33,12 @@ pub const NONCE_TTL_SECS: u64 = 600;
 /// Most nonces held at once. Reaching it refuses requests rather than
 /// forgetting a nonce that is still inside its window.
 pub const NONCE_CACHE_MAX: usize = 200_000;
+/// Most nonces one device holds at once: a quarter of the cache, about 83
+/// requests a second sustained across the whole window. A device that
+/// reaches it is refused on its own, and the other devices keep the rest, so
+/// one runaway or compromised device can no longer lock every device out.
+pub const NONCE_DEVICE_SHARE: usize = NONCE_CACHE_MAX / 4;
+const _: () = assert!(NONCE_DEVICE_SHARE < NONCE_CACHE_MAX);
 
 /// Wall-clock source. Production reads the system clock; tests drive the
 /// window and the nonce TTL with a fake.
@@ -96,13 +103,109 @@ impl Clock for FakeClock {
 /// wall-clock time, and a cache that a restart empties cannot keep it
 /// (AGENTS.md requirement 4): the only way to have one is to have the
 /// durable state open (`super::nonce_log`).
+///
+/// GROUP COMMIT. The mutex guards memory only and is never held across the
+/// volume. A request checks its nonce, enters it in `seen` (so a replay of
+/// it is refused from that moment, before it is durable) and joins the open
+/// batch. Whoever finds no flush in flight becomes the leader: it takes the
+/// batch and the file, releases the mutex, writes and fsyncs, and publishes
+/// the outcome to every member. Requests that arrive during a flush wait and
+/// form the next batch, so c concurrent requests cost about one fsync, not c.
+/// No request is answered before the batch holding its nonce is durable; a
+/// batch the volume refuses answers every member `503` and takes their
+/// nonces back out of `seen`, so each is still unspent and a retry is not
+/// refused as a replay.
 pub struct NonceCache {
-    seen: HashMap<Nonce, u64>,
-    durable: NonceLog,
+    state: Mutex<NonceState>,
+    /// Signalled whenever a flush settles.
+    settled: Condvar,
     log: Log,
     /// Most nonces held at once. [`NONCE_CACHE_MAX`] everywhere but the
     /// tests that drive the ceiling and the compaction it triggers.
     capacity: usize,
+    /// Most nonces one device holds: [`NONCE_DEVICE_SHARE`], or the whole
+    /// capacity where a test shrinks that below it.
+    share: usize,
+    #[cfg(test)]
+    syncing: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct NonceState {
+    /// Durable and pending nonces alike, each with its expiry. A nonce
+    /// enters only through [`NonceState::admit`] and leaves only through
+    /// [`NonceState::unspend`] and [`NonceState::sweep`], the three places
+    /// that keep `held` its exact per-device count.
+    seen: HashMap<Nonce, u64>,
+    /// How many of `seen` each device holds, pending ones included, against
+    /// its share.
+    held: HashMap<String, usize>,
+    /// The second of the last sweep a refusal ran. Nothing expires inside
+    /// one second, so a device knocking at its share costs one sweep a
+    /// second rather than one per request.
+    swept_at: u64,
+    /// The nonces the next flush writes.
+    open: Batch,
+    /// The file, here while no flush runs and with the leader while one
+    /// does: `None` IS "a flush is in flight".
+    durable: Option<NonceLog>,
+}
+
+/// Accepted nonces awaiting one fsync, and where their members learn how it
+/// went.
+#[derive(Default)]
+struct Batch {
+    entries: Vec<(u64, Nonce)>,
+    outcome: Arc<OnceLock<Result<(), std::io::ErrorKind>>>,
+}
+
+impl NonceState {
+    /// How many nonces `device` holds right now.
+    fn held_by(&self, device: &str) -> usize {
+        self.held.get(device).copied().unwrap_or(0)
+    }
+
+    /// Enter a nonce in the window, counted against its device once: an
+    /// expired entry not yet swept is replaced, not counted twice.
+    fn admit(&mut self, entry: Nonce, expiry: u64) {
+        let device = entry.0.clone();
+        if self.seen.insert(entry, expiry).is_none() {
+            *self.held.entry(device).or_default() += 1;
+        }
+    }
+
+    /// Take back a nonce whose batch the volume refused: it leaves `seen`
+    /// exactly as it entered, and its device's count with it, unless a later
+    /// acceptance of the same pair has replaced it since.
+    fn unspend(&mut self, ts: u64, entry: &Nonce) {
+        if self.seen.get(entry) == Some(&(ts + NONCE_TTL_SECS)) {
+            self.seen.remove(entry);
+            self.release(&entry.0);
+        }
+    }
+
+    fn release(&mut self, device: &str) {
+        if let Some(count) = self.held.get_mut(device) {
+            *count -= 1;
+            if *count == 0 {
+                self.held.remove(device);
+            }
+        }
+    }
+
+    /// Drop expired entries, returning how many went.
+    fn sweep(&mut self, now: u64) -> usize {
+        let before = self.seen.len();
+        let held = &mut self.held;
+        self.seen.retain(|(device, _), expiry| {
+            let live = *expiry > now;
+            if !live && let Some(count) = held.get_mut(device) {
+                *count -= 1;
+            }
+            live
+        });
+        held.retain(|_, count| *count > 0);
+        before - self.seen.len()
+    }
 }
 
 impl NonceCache {
@@ -130,30 +233,68 @@ impl NonceCache {
         log: &Log,
     ) -> Result<NonceCache, StoreError> {
         let (durable, entries) = NonceLog::open(journal_dir, now, reported, log)?;
+        let mut held: HashMap<String, usize> = HashMap::new();
+        for ((device, _), _) in &entries {
+            *held.entry(device.clone()).or_default() += 1;
+        }
         Ok(NonceCache {
-            seen: entries.into_iter().collect(),
-            durable,
+            #[cfg(test)]
+            syncing: durable.syncing(),
+            state: Mutex::new(NonceState {
+                seen: entries.into_iter().collect(),
+                held,
+                swept_at: 0,
+                open: Batch::default(),
+                durable: Some(durable),
+            }),
+            settled: Condvar::new(),
             log: log.clone(),
             capacity,
+            share: NONCE_DEVICE_SHARE.min(capacity),
         })
+    }
+
+    /// The state, whatever a panic did to the lock. The panic that can hold
+    /// it is a flush's, and `Flight` puts the state back before that guard
+    /// goes, so the poison the guard leaves says nothing about the state. A
+    /// member woken by the flush before reached the lock in the instant
+    /// between the two, trusted the poison and panicked in turn -- poisoning
+    /// the lock again, for good, so that every request after it failed too
+    /// (the arm64 runners, 2026-09-27).
+    fn state(&self) -> MutexGuard<'_, NonceState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The file, while no flush holds it. Tests only, between requests.
+    #[cfg(test)]
+    fn with_durable<T>(&self, read: impl FnOnce(&NonceLog) -> T) -> T {
+        read(self.state().durable.as_ref().expect("no flush in flight"))
     }
 
     /// Arm the durable log's crash point. Tests only.
     #[cfg(test)]
-    fn set_fault(&self, fault: super::nonce_log::NonceFault) {
-        self.durable.set_fault(fault);
+    pub(super) fn set_fault(&self, fault: super::nonce_log::NonceFault) {
+        self.with_durable(|file| file.set_fault(fault));
     }
 
-    /// Remember `nonce` for `device`, or report the replay.
+    /// Remember `nonce` for `device`, or report the replay. Returns only once
+    /// the record is durable.
+    ///
+    /// The reservation comes first and is all in memory: a request refused
+    /// as a replay, for the ceiling or for its device's share never enters
+    /// `seen` or a batch, so it costs no fsync and holds nothing.
     ///
     /// # Errors
-    /// `401 replayed_nonce` when the pair is already held, `503
-    /// nonce_cache_full` when the cache is at its ceiling — refusing beats
-    /// forgetting a nonce that is still inside its window — and `503
-    /// nonce_log_unavailable` when the volume will not take the record.
-    pub fn remember(&mut self, device: &str, nonce: &str, now: u64) -> Result<(), ApiError> {
+    /// `401 replayed_nonce` when the pair is already held, durable or still
+    /// in flight; `503 nonce_cache_full` when the cache is at its ceiling and
+    /// `503 nonce_share_full` when this device holds its whole share of it --
+    /// refusing beats forgetting a nonce that is still inside its window --
+    /// and `503 nonce_log_unavailable` when the volume will not take the
+    /// batch the record was written in.
+    pub fn remember(&self, device: &str, nonce: &str, now: u64) -> Result<(), ApiError> {
         let entry = (device.to_string(), nonce.to_string());
-        if let Some(expiry) = self.seen.get(&entry)
+        let mut state = self.state();
+        if let Some(expiry) = state.seen.get(&entry)
             && *expiry > now
         {
             return Err(ApiError::new(
@@ -162,77 +303,216 @@ impl NonceCache {
                 "nonce was used inside the window",
             ));
         }
-        if self.seen.len() >= self.capacity {
-            self.sweep(now);
+        if (state.seen.len() >= self.capacity || state.held_by(device) >= self.share)
+            && now > state.swept_at
+        {
+            state.swept_at = now;
+            state.sweep(now);
         }
-        if self.seen.len() >= self.capacity {
+        if state.seen.len() >= self.capacity {
             return Err(ApiError::new(
                 503,
                 "nonce_cache_full",
                 "replay cache is full; retry shortly",
             ));
         }
-        // The file is rewritten before this line joins it, never after: a
-        // volume that refuses the rewrite refuses the request too, and the
-        // nonce it carried is still unspent.
-        if self.durable.lines() > self.capacity * 2 {
-            self.sweep(now);
-            let live = &self.seen;
-            self.durable
-                .compact(live)
-                .map_err(|e| self.unavailable(&e))?;
+        let held = state.held_by(device);
+        if held >= self.share {
+            let mut fields = vec![
+                ("decision", Val::word("refused")),
+                ("reason", Val::word("device_share")),
+                ("held", Val::count(held as u64)),
+                ("budget", Val::count(self.share as u64)),
+            ];
+            if let Ok(id) = device.parse::<DeviceId>() {
+                fields.insert(0, ("device", Val::device(&id)));
+            }
+            self.log.warn("nonce_cache", &fields);
+            return Err(ApiError::new(
+                503,
+                "nonce_share_full",
+                "this device's share of the replay cache is full; retry shortly",
+            ));
         }
-        self.durable
-            .append(now, &entry)
-            .map_err(|e| self.unavailable(&e))?;
-        self.seen.insert(entry, now + NONCE_TTL_SECS);
-        Ok(())
+        state.admit(entry.clone(), now + NONCE_TTL_SECS);
+        state.open.entries.push((now, entry));
+        let outcome = Arc::clone(&state.open.outcome);
+        loop {
+            if let Some(settled) = outcome.get() {
+                return settled.map_err(|_| unavailable());
+            }
+            state = match state.durable.take() {
+                // A flush that panics has settled its batch on the way out
+                // (`Flight`), this request's own included, so the leader is
+                // answered like every other member rather than with the panic.
+                Some(file) => catch_unwind(AssertUnwindSafe(|| self.flush(state, file, now)))
+                    .unwrap_or_else(|_| self.state()),
+                None => self
+                    .settled
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
+            };
+        }
+    }
+
+    /// Lead one flush: take the open batch and the file, and land them.
+    fn flush<'a>(
+        &'a self,
+        mut state: MutexGuard<'a, NonceState>,
+        file: NonceLog,
+        now: u64,
+    ) -> MutexGuard<'a, NonceState> {
+        let batch = std::mem::take(&mut state.open);
+        Flight {
+            cache: self,
+            batch,
+            file: Some(file),
+            state: Some(state),
+        }
+        .land(now)
     }
 
     /// Drop expired entries, returning how many went.
-    pub fn sweep(&mut self, now: u64) -> usize {
-        let before = self.seen.len();
-        self.seen.retain(|_, expiry| *expiry > now);
-        before - self.seen.len()
+    pub fn sweep(&self, now: u64) -> usize {
+        self.state().sweep(now)
     }
 
     /// Records written since the last call, for the sweep summary: what one
-    /// period of requests cost the journal volume (requirement 12).
-    pub const fn appends(&mut self) -> u64 {
-        self.durable.take_appends()
+    /// period of requests cost the journal volume (requirement 12). Zero
+    /// while a flush holds the file; its records count at the next call.
+    pub fn appends(&self) -> u64 {
+        self.state()
+            .durable
+            .as_mut()
+            .map_or(0, NonceLog::take_appends)
     }
 
     /// How many nonces are held.
     pub fn len(&self) -> usize {
-        self.seen.len()
+        self.state().seen.len()
     }
 
     /// Whether the cache holds nothing.
     pub fn is_empty(&self) -> bool {
-        self.seen.is_empty()
+        self.state().seen.is_empty()
     }
 
     /// How many times the durable state has been made durable, for the test
-    /// that pins one per accepted request.
+    /// that pins one per flush.
     #[cfg(test)]
-    pub const fn syncs(&self) -> u64 {
-        self.durable.syncs()
+    pub fn syncs(&self) -> u64 {
+        self.with_durable(NonceLog::syncs)
     }
 
-    /// One line for a volume that would not take the record, and the
-    /// refusal the request gets. The kind is the io kind and no location
-    /// (requirement 12, requirement 6).
-    fn unavailable(&self, e: &std::io::Error) -> ApiError {
-        self.log.error(
-            "nonce_log",
-            &[("decision", Val::word("refused")), ("io", Val::io(e))],
-        );
-        ApiError::new(
-            503,
-            "nonce_log_unavailable",
-            "replay state could not be recorded; retry shortly",
-        )
+    /// Whether every device's count is exactly what `seen` holds for it,
+    /// and how many `device` holds. Tests only.
+    #[cfg(test)]
+    fn held_exactly(&self, device: &str) -> (bool, usize) {
+        let state = self.state();
+        let mut counted: HashMap<String, usize> = HashMap::new();
+        for (owner, _) in state.seen.keys() {
+            *counted.entry(owner.clone()).or_default() += 1;
+        }
+        (counted == state.held, state.held_by(device))
     }
+}
+
+/// A flush in flight: the batch it took, the file, and the mutex while it
+/// holds it. Dropped with the file still inside -- which only a flush
+/// unwinding from a panic is -- it settles the batch as a refused one: a
+/// panic anywhere between taking the batch and publishing its outcome would
+/// otherwise leave every member waiting for an outcome nobody sets, and
+/// every later request waiting for a file nobody hands back.
+struct Flight<'a> {
+    cache: &'a NonceCache,
+    batch: Batch,
+    file: Option<NonceLog>,
+    state: Option<MutexGuard<'a, NonceState>>,
+}
+
+impl<'a> Flight<'a> {
+    /// Write and fsync with the mutex released, then settle every member at
+    /// once.
+    ///
+    /// The file is rewritten before the batch joins it, never after: a
+    /// volume that refuses the rewrite refuses the batch too, and every
+    /// nonce in it is still unspent. The rewrite holds what was durable
+    /// before this batch and not the batch itself, because a batch the
+    /// append then refuses must not survive in the rewritten file.
+    fn land(mut self, now: u64) -> MutexGuard<'a, NonceState> {
+        let cache = self.cache;
+        let file = self.file.as_mut().expect("a flight holds the file");
+        let state = self.state.as_mut().expect("a flight starts locked");
+        let rewrite = (file.lines() > cache.capacity * 2).then(|| {
+            state.sweep(now);
+            let pending: HashSet<&Nonce> = self.batch.entries.iter().map(|(_, e)| e).collect();
+            window(state.seen.iter().filter(|(e, _)| !pending.contains(e)))
+        });
+        self.state = None;
+        let written = rewrite
+            .map_or(Ok(()), |(body, lines)| file.compact(&body, lines))
+            .and_then(|()| file.append(&self.batch.entries));
+        let state = self.state.insert(cache.state());
+        if let Err(e) = &written {
+            cache.log.error(
+                "nonce_log",
+                &[
+                    ("decision", Val::word("refused")),
+                    ("io", Val::io(e)),
+                    ("batch", Val::count(self.batch.entries.len() as u64)),
+                ],
+            );
+            for (ts, entry) in &self.batch.entries {
+                state.unspend(*ts, entry);
+            }
+        }
+        state.durable = self.file.take();
+        let _ = self.batch.outcome.set(written.map_err(|e| e.kind()));
+        cache.settled.notify_all();
+        self.state.take().expect("a flight ends locked")
+    }
+}
+
+impl Drop for Flight<'_> {
+    fn drop(&mut self) {
+        let Some(mut file) = self.file.take() else {
+            return;
+        };
+        let cache = self.cache;
+        file.abandon();
+        let mut state = self
+            .state
+            .take()
+            .unwrap_or_else(|| cache.state.lock().unwrap_or_else(PoisonError::into_inner));
+        cache.log.error(
+            "nonce_log",
+            &[
+                ("decision", Val::word("refused")),
+                ("reason", Val::word("flush_panicked")),
+                ("batch", Val::count(self.batch.entries.len() as u64)),
+            ],
+        );
+        for (ts, entry) in &self.batch.entries {
+            state.unspend(*ts, entry);
+        }
+        state.durable = Some(file);
+        let _ = self.batch.outcome.set(Err(std::io::ErrorKind::Other));
+        // Dropped while unwinding, this guard poisons the lock; the state it
+        // guards is whole again, and every lock taken on it says so
+        // (`NonceCache::state`).
+        drop(state);
+        cache.settled.notify_all();
+    }
+}
+
+/// The refusal every member of a batch the volume would not take gets. The
+/// flush that failed has already logged the one line (requirement 12).
+fn unavailable() -> ApiError {
+    ApiError::new(
+        503,
+        "nonce_log_unavailable",
+        "replay state could not be recorded; retry shortly",
+    )
 }
 
 /// An authenticated device request.
@@ -375,22 +655,28 @@ fn authenticate(
         ));
     }
 
-    let (hash_hex, body) = match body_hash {
-        BodyHash::Sid(sid) => ((*sid).to_string(), Vec::new()),
+    // The body stays reserved until the signature over its hash verifies and
+    // its nonce is remembered: until then it is an unverified caller's bytes,
+    // and only `accept` reaches them, hashing them inside the check
+    // (`Unverified`).
+    let proof = |hash_hex: &str| {
+        let canon = canonical(&method, &target, &ts_hex, &nonce, hash_hex);
+        if !verify(&secret, &canon, &sig) {
+            return Err(bad());
+        }
+        app.nonces.remember(&device_hex, &nonce, now)
+    };
+    let body = match body_hash {
+        BodyHash::Sid(sid) => {
+            proof(sid)?;
+            Vec::new()
+        }
         BodyHash::Buffer => {
-            let raw = render::read_body(req, super::JSON_BODY_LIMIT)?;
-            (hex::encode(&sha256::sha256(&raw)), raw)
+            super::unverified::read_body(app, req, super::JSON_BODY_LIMIT)?
+                .accept(|held| proof(&hex::encode(&sha256::sha256(held.value()))))?
+                .0
         }
     };
-
-    let canon = canonical(&method, &target, &ts_hex, &nonce, &hash_hex);
-    if !verify(&secret, &canon, &sig) {
-        return Err(bad());
-    }
-    app.nonces
-        .lock()
-        .expect("nonce cache")
-        .remember(&device_hex, &nonce, now)?;
 
     // The signature verified, the timestamp is inside the window and the
     // nonce is fresh: this caller holds the device secret. That fact, and
@@ -461,29 +747,28 @@ fn record_sign_in(app: &App, id: &DeviceId, client: &ClientInfo, now: u64) {
         }
         seen.insert(key, now);
     }
-    record_seen(app, id, client, SeenKind::SignIn, now);
-}
-
-/// Journal an `edit` event for an accepted version post.
-pub fn record_edit(app: &App, id: &DeviceId, client: &ClientInfo) {
-    let now = app.clock.unix_secs();
-    record_seen(app, id, client, SeenKind::Edit, now);
+    record_seen(app, id, client, SeenKind::SignIn);
 }
 
 /// Journal a `heartbeat` event.
 pub fn record_heartbeat(app: &App, id: &DeviceId, client: &ClientInfo) {
-    let now = app.clock.unix_secs();
-    record_seen(app, id, client, SeenKind::Heartbeat, now);
+    record_seen(app, id, client, SeenKind::Heartbeat);
 }
 
-fn record_seen(app: &App, id: &DeviceId, client: &ClientInfo, kind: SeenKind, now: u64) {
-    let event = SeenEvent {
-        ts: UnixMs(now * 1000),
+/// An activity event as this request saw it: when, and from where. An
+/// accepted version post journals its `edit` event in the version's own
+/// append (`Store::post_version`).
+pub fn seen_event(app: &App, client: &ClientInfo, kind: SeenKind) -> SeenEvent {
+    SeenEvent {
+        ts: UnixMs(app.clock.unix_secs() * 1000),
         kind,
         address: client.address.clone(),
         country: client.country.clone(),
-    };
-    if let Err(e) = app.store.record_seen(id, event) {
+    }
+}
+
+fn record_seen(app: &App, id: &DeviceId, client: &ClientInfo, kind: SeenKind) {
+    if let Err(e) = app.store.record_seen(id, seen_event(app, client, kind)) {
         let mut fields = vec![
             ("kind", Val::word(kind.as_word())),
             ("decision", Val::word(e.code())),
@@ -507,6 +792,7 @@ mod tests {
 
     use std::io::Write;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::time::{Duration, Instant};
 
     use super::*;
     use crate::log::LogLevel;
@@ -619,7 +905,7 @@ mod tests {
     /// window between each pair, so the file grows to one line short of
     /// twice the ceiling while the cache never passes it. Returns the
     /// second the last of them was accepted at, when one entry is live.
-    fn fill_to_the_threshold(c: &mut NonceCache) -> u64 {
+    fn fill_to_the_threshold(c: &NonceCache) -> u64 {
         let mut now = 1_000;
         for n in 1..=5u8 {
             if n % 2 == 1 && n > 1 {
@@ -634,7 +920,7 @@ mod tests {
     fn a_nonce_is_refused_a_second_time_inside_the_window() {
         let dir = volume("nonce-replay");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
         assert!(c.is_empty(), "a volume with no log is a first boot");
         c.remember(DEVICE, &nonce(1), 1_000).expect("first use");
         let e = c.remember(DEVICE, &nonce(1), 1_000).expect_err("replay");
@@ -646,7 +932,7 @@ mod tests {
     fn the_same_nonce_from_another_device_is_not_a_replay() {
         let dir = volume("nonce-devices");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
         c.remember(DEVICE, &nonce(1), 1_000).expect("first use");
         c.remember(OTHER, &nonce(1), 1_000)
             .expect("different device");
@@ -656,7 +942,7 @@ mod tests {
     fn a_nonce_is_forgotten_only_after_the_full_ttl() {
         let dir = volume("nonce-ttl");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
         c.remember(DEVICE, &nonce(1), 1_000).expect("first use");
         assert!(
             c.remember(DEVICE, &nonce(1), 1_000 + NONCE_TTL_SECS - 1)
@@ -673,7 +959,7 @@ mod tests {
     fn sweeping_keeps_live_entries_and_drops_expired_ones() {
         let dir = volume("nonce-sweep");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
         c.remember(DEVICE, &nonce(1), 1_000).expect("first");
         c.remember(DEVICE, &nonce(2), 1_400).expect("second");
         let dropped = c.sweep(1_700);
@@ -687,7 +973,7 @@ mod tests {
     fn a_nonce_outlives_the_process_that_accepted_it() {
         let dir = volume("nonce-restart");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
         c.remember(DEVICE, &nonce(1), 1_000).expect("first use");
         assert_eq!(
             lines_on_disk(&dir),
@@ -696,7 +982,7 @@ mod tests {
         );
         drop(c);
 
-        let mut restarted = cache(&dir, 1_100, NONCE_CACHE_MAX, &log);
+        let restarted = cache(&dir, 1_100, NONCE_CACHE_MAX, &log);
         assert_eq!(restarted.len(), 1, "the window survives the process");
         let e = restarted
             .remember(DEVICE, &nonce(1), 1_100)
@@ -714,13 +1000,13 @@ mod tests {
     fn an_entry_past_the_window_is_not_loaded() {
         let dir = volume("nonce-expiry");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
         c.remember(DEVICE, &nonce(1), 1_000).expect("first use");
         drop(c);
 
         // One second past the window it protects nothing, and holding it
         // would be a cache that only ever grows.
-        let mut restarted = cache(&dir, 1_000 + NONCE_TTL_SECS + 1, NONCE_CACHE_MAX, &log);
+        let restarted = cache(&dir, 1_000 + NONCE_TTL_SECS + 1, NONCE_CACHE_MAX, &log);
         assert!(restarted.is_empty());
         restarted
             .remember(DEVICE, &nonce(1), 1_000 + NONCE_TTL_SECS + 1)
@@ -732,7 +1018,7 @@ mod tests {
     fn a_torn_last_line_costs_only_itself() {
         let dir = volume("nonce-torn");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
         c.remember(DEVICE, &nonce(1), 1_000).expect("first");
         c.remember(DEVICE, &nonce(2), 1_000).expect("second");
         drop(c);
@@ -746,7 +1032,7 @@ mod tests {
             .expect("the torn line lands");
         drop(file);
 
-        let mut restarted = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        let restarted = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
         assert_eq!(restarted.len(), 2, "everything before it survives");
         assert_eq!(lines_on_disk(&dir), 2, "and the torn line is cut off");
         assert!(
@@ -810,14 +1096,14 @@ mod tests {
     fn the_ceiling_still_refuses_after_a_reload() {
         let dir = volume("nonce-ceiling");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, 2, &log);
+        let c = cache(&dir, 1_000, 2, &log);
         c.remember(DEVICE, &nonce(1), 1_000).expect("first");
         c.remember(DEVICE, &nonce(2), 1_000).expect("second");
         drop(c);
 
         // Reloading is not a way past the ceiling: what came back off the
         // volume counts against it exactly as what this process accepted.
-        let mut restarted = cache(&dir, 1_000, 2, &log);
+        let restarted = cache(&dir, 1_000, 2, &log);
         assert_eq!(restarted.len(), 2);
         let e = restarted
             .remember(DEVICE, &nonce(3), 1_000)
@@ -826,11 +1112,66 @@ mod tests {
         assert_eq!(e.code, "nonce_cache_full");
     }
 
+    /// Security item 7: one device at its share is refused, alone, with its
+    /// own code and a line naming the share; every other device is still
+    /// answered, and the device is answered again once its window moves on.
+    #[test]
+    fn a_device_at_its_share_is_refused_and_no_other_device_is() {
+        let dir = volume("nonce-share");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, 8, &log);
+        c.share = 2;
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first");
+        c.remember(DEVICE, &nonce(2), 1_000).expect("second");
+        let e = c
+            .remember(DEVICE, &nonce(3), 1_000)
+            .expect_err("the device's share is spent");
+        assert_eq!((e.status, e.code), (503, "nonce_share_full"));
+        assert!(
+            log.captured().contains(
+                "event=nonce_cache device=a1a1a1a1 decision=refused reason=device_share held=2 budget=2"
+            ),
+            "{}",
+            log.captured()
+        );
+        c.remember(OTHER, &nonce(1), 1_000)
+            .expect("another device is still answered");
+        c.remember(OTHER, &nonce(2), 1_000)
+            .expect("up to its own share");
+        assert_eq!(c.len(), 4, "the cache itself was never full");
+
+        // The window moves on: the spent share comes back as it expires.
+        c.remember(DEVICE, &nonce(3), 1_000 + NONCE_TTL_SECS + 1)
+            .expect("answered again once its nonces expire");
+    }
+
+    /// A restart is not a way past a share: what comes back off the volume
+    /// counts against its device exactly as what this process accepted.
+    #[test]
+    fn a_share_still_refuses_after_a_reload() {
+        let dir = volume("nonce-share-reload");
+        let log = Log::buffered(LogLevel::Debug);
+        let c = cache(&dir, 1_000, 8, &log);
+        c.remember(DEVICE, &nonce(1), 1_000).expect("first");
+        c.remember(DEVICE, &nonce(2), 1_000).expect("second");
+        drop(c);
+
+        let mut restarted = cache(&dir, 1_000, 8, &log);
+        restarted.share = 2;
+        let e = restarted
+            .remember(DEVICE, &nonce(3), 1_000)
+            .expect_err("the reloaded nonces count");
+        assert_eq!(e.code, "nonce_share_full");
+        restarted
+            .remember(OTHER, &nonce(3), 1_000)
+            .expect("and only against their own device");
+    }
+
     #[test]
     fn every_accepted_nonce_pays_for_one_durable_record() {
         let dir = volume("nonce-durability");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
         for n in 1..=3u8 {
             c.remember(DEVICE, &nonce(n), 1_000).expect("accepted");
         }
@@ -841,6 +1182,431 @@ mod tests {
             3,
             "the record is made durable before the request is served"
         );
+    }
+
+    /// Every durable batch so far: when its fsync returned, and what it held.
+    fn flushed(c: &NonceCache) -> Vec<(Instant, Vec<Nonce>)> {
+        c.with_durable(|file| file.flushed().to_vec())
+    }
+
+    /// When the fsync that made `entry` durable returned.
+    fn durable_at(flushes: &[(Instant, Vec<Nonce>)], entry: &Nonce) -> Instant {
+        flushes
+            .iter()
+            .find(|(_, batch)| batch.contains(entry))
+            .map(|(at, _)| *at)
+            .expect("every accepted nonce is in a durable batch")
+    }
+
+    /// Wait, without taking the cache's lock, until an armed slow fsync is
+    /// running.
+    fn until_syncing(c: &NonceCache) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !c.syncing.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "no flush ever reached its fsync");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn concurrent_requests_share_an_fsync_and_none_is_answered_before_its_own() {
+        const REQUESTS: u8 = 8;
+        let dir = volume("nonce-group-commit");
+        let log = Log::buffered(LogLevel::Debug);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        c.set_fault(NonceFault::SlowSync { ms: 150 });
+        let start = std::sync::Barrier::new(usize::from(REQUESTS));
+        let answered: Vec<(Nonce, Instant)> = std::thread::scope(|s| {
+            let handles: Vec<_> = (1..=REQUESTS)
+                .map(|n| {
+                    let (c, start) = (&c, &start);
+                    s.spawn(move || {
+                        start.wait();
+                        c.remember(DEVICE, &nonce(n), 1_000).expect("accepted");
+                        ((DEVICE.to_string(), nonce(n)), Instant::now())
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("joins"))
+                .collect()
+        });
+        c.set_fault(NonceFault::None);
+        let flushes = flushed(&c);
+        for (entry, at) in &answered {
+            assert!(
+                durable_at(&flushes, entry) <= *at,
+                "{entry:?} was answered before the fsync that made it durable returned"
+            );
+        }
+        assert!(
+            flushes.len() < usize::from(REQUESTS),
+            "{} fsyncs for {REQUESTS} concurrent requests: nothing was shared",
+            flushes.len()
+        );
+        assert_eq!(lines_on_disk(&dir), usize::from(REQUESTS));
+    }
+
+    #[test]
+    fn a_nonce_in_flight_is_already_a_replay_and_the_check_does_not_wait_for_the_volume() {
+        let dir = volume("nonce-pending-replay");
+        let log = Log::buffered(LogLevel::Debug);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        c.set_fault(NonceFault::SlowSync { ms: 400 });
+        let refused_at = std::thread::scope(|s| {
+            let first = s.spawn(|| c.remember(DEVICE, &nonce(1), 1_000));
+            until_syncing(&c);
+            let replay = c
+                .remember(DEVICE, &nonce(1), 1_000)
+                .expect_err("a replay of a nonce still in flight");
+            let refused_at = Instant::now();
+            assert_eq!(replay.code, "replayed_nonce");
+            first
+                .join()
+                .expect("joins")
+                .expect("the original is accepted");
+            refused_at
+        });
+        c.set_fault(NonceFault::None);
+        let entry = (DEVICE.to_string(), nonce(1));
+        assert!(
+            refused_at < durable_at(&flushed(&c), &entry),
+            "the replay waited for the fsync: the volume was written under the cache's lock"
+        );
+    }
+
+    #[test]
+    fn a_refused_batch_answers_every_member_and_leaves_every_nonce_unspent() {
+        const REQUESTS: u8 = 6;
+        let dir = volume("nonce-batch-refused");
+        let log = Log::buffered(LogLevel::Debug);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        c.set_fault(NonceFault::SlowSyncFails {
+            ms: 150,
+            code: ENOSPC,
+        });
+        let start = std::sync::Barrier::new(usize::from(REQUESTS));
+        std::thread::scope(|s| {
+            for n in 1..=REQUESTS {
+                let (c, start) = (&c, &start);
+                s.spawn(move || {
+                    start.wait();
+                    let e = c
+                        .remember(DEVICE, &nonce(n), 1_000)
+                        .expect_err("the batch was refused");
+                    assert_eq!((e.status, e.code), (503, "nonce_log_unavailable"));
+                });
+            }
+        });
+        c.set_fault(NonceFault::None);
+        let captured = log.captured();
+        let largest = captured
+            .lines()
+            .filter(|l| l.contains("event=nonce_log decision=refused"))
+            .filter_map(|l| {
+                l.split("batch=")
+                    .nth(1)?
+                    .split(' ')
+                    .next()?
+                    .parse::<u64>()
+                    .ok()
+            })
+            .max()
+            .expect("each refused flush logs its batch");
+        assert!(
+            largest > 1,
+            "no batch held more than one request: {captured}"
+        );
+        assert_eq!(c.len(), 0, "nothing refused is held");
+        assert_eq!(
+            lines_on_disk(&dir),
+            0,
+            "and nothing refused is on the volume"
+        );
+        for n in 1..=REQUESTS {
+            c.remember(DEVICE, &nonce(n), 1_000)
+                .expect("a retry of a refused request is not a replay");
+        }
+    }
+
+    /// Each device's share counts exactly what the window holds for it,
+    /// through every path that takes a nonce in or out: acceptance, the
+    /// sweep a share refusal runs, the sweep a compaction runs, and a batch
+    /// the volume refuses. A refused nonce handed back to the window but not
+    /// to its device would shrink that device's share for good.
+    #[test]
+    fn a_refused_batch_gives_every_device_its_share_back() {
+        let dir = volume("nonce-share-refused");
+        let log = Log::buffered(LogLevel::Debug);
+        let mut c = cache(&dir, 1_000, 8, &log);
+        c.share = 3;
+        let exact = |c: &NonceCache, device: &str, held: usize| {
+            assert_eq!(c.held_exactly(device), (true, held), "{device}");
+        };
+        // Three windows, each share refusal sweeping the one before it. The
+        // last leaves this device one short of its share, so nothing but the
+        // compaction sweeps it: seventeen lines, past twice the ceiling.
+        let mut now = 1_000;
+        for round in 0..3u8 {
+            for device in [DEVICE, OTHER] {
+                let quota = if round == 2 && device == DEVICE { 2 } else { 3 };
+                for n in 1..=quota {
+                    c.remember(device, &nonce(round * 10 + n), now)
+                        .expect("inside the share");
+                }
+                exact(&c, device, usize::from(quota));
+            }
+            now += NONCE_TTL_SECS + 1;
+        }
+        c.set_fault(NonceFault::SlowSyncFails {
+            ms: 150,
+            code: ENOSPC,
+        });
+
+        // The compaction sweeps the expired window, then the append that
+        // follows it is refused.
+        let e = c
+            .remember(DEVICE, &nonce(41), now)
+            .expect_err("the append was refused");
+        assert_eq!(e.code, "nonce_log_unavailable");
+        assert_eq!(
+            lines_on_disk(&dir),
+            0,
+            "the compaction ran, and the refused batch was cut back after it"
+        );
+        exact(&c, DEVICE, 0);
+        exact(&c, OTHER, 0);
+
+        // A batch of both devices, refused as one.
+        let start = std::sync::Barrier::new(5);
+        std::thread::scope(|s| {
+            for (device, n) in [
+                (DEVICE, 42),
+                (DEVICE, 43),
+                (OTHER, 41),
+                (OTHER, 42),
+                (OTHER, 43),
+            ] {
+                let (c, start) = (&c, &start);
+                s.spawn(move || {
+                    start.wait();
+                    let e = c
+                        .remember(device, &nonce(n), now)
+                        .expect_err("the batch was refused");
+                    assert_eq!(e.code, "nonce_log_unavailable");
+                });
+            }
+        });
+        c.set_fault(NonceFault::None);
+        exact(&c, DEVICE, 0);
+        exact(&c, OTHER, 0);
+        assert_eq!(c.len(), 0);
+
+        // Every share is whole again, and no bigger than it was.
+        for device in [DEVICE, OTHER] {
+            for n in 41..=43 {
+                c.remember(device, &nonce(n), now)
+                    .expect("the refused nonces were handed back");
+            }
+            let syncs = c.syncs();
+            let e = c
+                .remember(device, &nonce(44), now)
+                .expect_err("and the share is still the share");
+            assert_eq!(e.code, "nonce_share_full");
+            assert_eq!(c.syncs(), syncs, "a refused share costs no fsync");
+            exact(&c, device, 3);
+        }
+        drop(c);
+        let reloaded = cache(&dir, now, 8, &log);
+        assert_eq!(
+            reloaded.len(),
+            6,
+            "no refused nonce ever reached the volume"
+        );
+        exact(&reloaded, DEVICE, 3);
+    }
+
+    /// A panic inside a flush is a bug, and it costs one refusal per member
+    /// and nothing more: the whole batch is answered `503`, the leader
+    /// included, every nonce in it is unspent now and after a restart, the
+    /// half a batch that landed is cut back, and the next request is served.
+    /// Both places a flush can die: holding the cache's mutex, and not.
+    #[test]
+    fn a_flush_that_panics_answers_every_member_and_blocks_nobody() {
+        flush_panics(false, "nonce-panic-write");
+        flush_panics(true, "nonce-panic-locked");
+    }
+
+    /// The member that meets the poison: parked on the condvar while a flush
+    /// is out, it is woken only after that flush has died holding the lock.
+    /// Held, not raced -- the arm64 runners met this instant by chance and
+    /// the member panicked; no answer and no later request may depend on it.
+    #[test]
+    fn a_member_woken_on_a_lock_a_flush_poisoned_is_answered() {
+        let dir = volume("nonce-poisoned-wake");
+        let log = Log::buffered(LogLevel::Debug);
+        let c = Arc::new(cache(&dir, 1_000, NONCE_CACHE_MAX, &log));
+        let file = c.state().durable.take().expect("no flush in flight");
+        let member = {
+            let c = Arc::clone(&c);
+            std::thread::spawn(move || c.remember(DEVICE, &nonce(1), 1_000))
+        };
+        // The member holds the lock from its check until it waits, so its
+        // nonce in the open batch means it is waiting.
+        while c.state().open.entries.is_empty() {
+            std::thread::yield_now();
+        }
+        let flush = Arc::clone(&c);
+        let died = std::thread::spawn(move || {
+            let mut state = flush.state();
+            state.durable = Some(file);
+            panic!("injected panic while a flush holds the cache");
+        })
+        .join();
+        assert!(
+            died.is_err() && c.state.is_poisoned(),
+            "the lock is poisoned"
+        );
+        c.settled.notify_all();
+        member
+            .join()
+            .expect("a member woken on a poisoned lock panicked")
+            .expect("it leads the next flush, which lands");
+        c.remember(DEVICE, &nonce(2), 1_000)
+            .expect("and the next request is served");
+        assert_eq!(c.len(), 2);
+    }
+
+    fn flush_panics(locked: bool, name: &str) {
+        const REQUESTS: u8 = 6;
+        let dir = volume(name);
+        let log = Log::buffered(LogLevel::Debug);
+        let c = Arc::new(cache(&dir, 1_000, NONCE_CACHE_MAX, &log));
+        c.set_fault(NonceFault::SlowSyncThenPanic { ms: 200, locked });
+        // Detached threads and a deadline: a member left waiting fails the
+        // test instead of hanging it.
+        let (done, answers) = std::sync::mpsc::channel();
+        let requests: Vec<_> = (1..=REQUESTS)
+            .map(|n| {
+                let (c, done) = (Arc::clone(&c), done.clone());
+                std::thread::spawn(move || {
+                    // The first request's flush is slow and lands; everyone
+                    // who arrives meanwhile forms the next batch, whose flush
+                    // panics.
+                    if n > 1 {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    let _ = done.send((n, c.remember(DEVICE, &nonce(n), 1_000)));
+                })
+            })
+            .collect();
+        let mut settled = Vec::new();
+        while settled.len() < usize::from(REQUESTS) {
+            settled.push(
+                answers
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("a member was left waiting on a flush that panicked"),
+            );
+        }
+        for request in requests {
+            request.join().expect("no request panicked");
+        }
+        settled.sort_by_key(|(n, _)| *n);
+        assert!(settled[0].1.is_ok(), "{name}: the first batch landed");
+        for (n, answer) in &settled[1..] {
+            let e = answer.as_ref().expect_err("the panicked batch is refused");
+            assert_eq!(
+                (e.status, e.code),
+                (503, "nonce_log_unavailable"),
+                "{name}: request {n}"
+            );
+        }
+        assert!(
+            log.captured()
+                .contains("event=nonce_log decision=refused reason=flush_panicked batch=5"),
+            "{}",
+            log.captured()
+        );
+        assert_eq!(c.len(), 1, "{name}: only the batch that landed is held");
+        assert_eq!(
+            lines_on_disk(&dir),
+            1,
+            "{name}: none of the panicked batch stays"
+        );
+        c.remember(DEVICE, &nonce(7), 1_000)
+            .expect("the next request is served");
+
+        drop(c);
+        let restarted = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        assert_eq!(
+            restarted
+                .remember(DEVICE, &nonce(1), 1_000)
+                .expect_err("spent")
+                .code,
+            "replayed_nonce"
+        );
+        for n in 2..=REQUESTS {
+            restarted
+                .remember(DEVICE, &nonce(n), 1_000)
+                .expect("a nonce the panicked batch carried was never spent");
+        }
+    }
+
+    #[test]
+    fn a_batch_made_durable_is_still_spent_after_a_crash_before_it_was_answered() {
+        const REQUESTS: u8 = 4;
+        let dir = volume("nonce-crash-after-flush");
+        let log = Log::buffered(LogLevel::Debug);
+        let c = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        c.set_fault(NonceFault::CrashAfterSync);
+        let start = std::sync::Barrier::new(usize::from(REQUESTS));
+        std::thread::scope(|s| {
+            for n in 1..=REQUESTS {
+                let (c, start) = (&c, &start);
+                s.spawn(move || {
+                    start.wait();
+                    let _ = c.remember(DEVICE, &nonce(n), 1_000);
+                });
+            }
+        });
+        // The process is gone: nobody was answered, and the next start reads
+        // only what the volume holds.
+        drop(c);
+        let restarted = cache(&dir, 1_000, NONCE_CACHE_MAX, &log);
+        for n in 1..=REQUESTS {
+            assert_eq!(
+                restarted
+                    .remember(DEVICE, &nonce(n), 1_000)
+                    .expect_err("every nonce the flush made durable is spent")
+                    .code,
+                "replayed_nonce"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rewrite_holds_what_was_durable_and_never_the_batch_it_precedes() {
+        // The rewrite lands and the append after it is refused. The refused
+        // nonce is unspent, so it must not be in the rewritten file either,
+        // or a restart would refuse the retry the refusal promised.
+        let dir = volume("nonce-rewrite-excludes-batch");
+        let log = Log::buffered(LogLevel::Debug);
+        let c = cache(&dir, 1_000, 2, &log);
+        let now = fill_to_the_threshold(&c);
+        c.set_fault(NonceFault::SyncFails { code: ENOSPC });
+        c.remember(DEVICE, &nonce(6), now)
+            .expect_err("the append after the rewrite is refused");
+        c.set_fault(NonceFault::None);
+        assert_eq!(lines_on_disk(&dir), 1, "the rewrite landed without it");
+        drop(c);
+        let restarted = cache(&dir, now, 2, &log);
+        restarted
+            .remember(DEVICE, &nonce(6), now)
+            .expect("the refused nonce was never written down");
+        restarted
+            .remember(DEVICE, &nonce(5), now)
+            .expect_err("and what was durable before it still is");
     }
 
     /// The bytes the nonce log and its compaction temporary occupy, walked
@@ -866,7 +1632,7 @@ mod tests {
         let dir = volume("nonce-accounting");
         let log = Log::buffered(LogLevel::Debug);
         let handle = reported();
-        let mut c = NonceCache::sized(dir.path(), 1_000, 2, Arc::clone(&handle), &log)
+        let c = NonceCache::sized(dir.path(), 1_000, 2, Arc::clone(&handle), &log)
             .expect("the nonce log opens");
         assert_eq!(
             handle.load(Ordering::Acquire),
@@ -874,7 +1640,7 @@ mod tests {
             "at the open"
         );
 
-        let now = fill_to_the_threshold(&mut c);
+        let now = fill_to_the_threshold(&c);
         let grown = handle.load(Ordering::Acquire);
         assert!(grown > 0, "the log grew with the nonces it accepted");
         assert_eq!(grown, nonce_bytes_on_disk(&dir), "and said so as it grew");
@@ -901,36 +1667,83 @@ mod tests {
     fn a_write_that_failed_part_way_still_publishes_the_bytes_that_landed() {
         // The claim this pins is that the figure is published BEFORE the
         // error is returned. A volume that refuses half way through a line
-        // still grew the file, and a watermark that cannot see those bytes
-        // is a watermark that admits a write onto a full volume.
+        // AND refuses the cut that would take it back still grew the file,
+        // and a watermark that cannot see those bytes is a watermark that
+        // admits a write onto a full volume.
+        let dir = volume("nonce-partial-write");
+        let log = Log::buffered(LogLevel::Debug);
+        let handle = reported();
+        let c = NonceCache::sized(dir.path(), 1_000, 2, Arc::clone(&handle), &log)
+            .expect("the nonce log opens");
+        c.remember(DEVICE, &nonce(1), 1_000).expect("accepted");
+        let before = handle.load(Ordering::Acquire);
+
+        c.set_fault(NonceFault::ShortWriteStuck { code: ENOSPC });
+        c.remember(DEVICE, &nonce(2), 1_000)
+            .expect_err("the volume refused");
+        c.set_fault(NonceFault::None);
+
+        let landed = handle.load(Ordering::Acquire);
+        assert!(
+            landed > before,
+            "bytes landed before the error and were published: \
+             {landed} is not above {before}"
+        );
+        assert_eq!(
+            landed,
+            nonce_bytes_on_disk(&dir),
+            "and the figure is the volume's own"
+        );
+
+        // Bytes nothing could cut stay where they are, and nothing is ever
+        // written after them: the log refuses until a restart, which cuts
+        // the torn tail and keeps every line that was durable.
+        assert_eq!(
+            c.remember(DEVICE, &nonce(3), 1_000)
+                .expect_err("a faulted log takes nothing more")
+                .code,
+            "nonce_log_unavailable"
+        );
+        drop(c);
+        let restarted = cache(&dir, 1_000, 2, &log);
+        assert_eq!(restarted.len(), 1, "the durable line survives");
+        restarted
+            .remember(DEVICE, &nonce(2), 1_000)
+            .expect("the refused nonce was never spent");
+    }
+
+    #[test]
+    fn a_refused_batch_is_cut_back_so_the_next_one_lands_on_a_clean_line() {
+        // Without the cut, a short write leaves half a line and the next
+        // accepted batch lands glued to it: one line that parses as nothing,
+        // in the middle of the file, and the next start refuses the whole log
+        // as corrupt.
         for fault in [
             NonceFault::ShortWrite { code: ENOSPC },
             NonceFault::SyncFails { code: ENOSPC },
         ] {
-            let dir = volume("nonce-partial-write");
+            let dir = volume("nonce-cut-back");
             let log = Log::buffered(LogLevel::Debug);
             let handle = reported();
-            let mut c = NonceCache::sized(dir.path(), 1_000, 2, Arc::clone(&handle), &log)
+            let c = NonceCache::sized(dir.path(), 1_000, 8, Arc::clone(&handle), &log)
                 .expect("the nonce log opens");
             c.remember(DEVICE, &nonce(1), 1_000).expect("accepted");
-            let before = handle.load(Ordering::Acquire);
+            let before = nonce_bytes_on_disk(&dir);
 
             c.set_fault(fault);
             c.remember(DEVICE, &nonce(2), 1_000)
                 .expect_err("the volume refused");
             c.set_fault(NonceFault::None);
+            assert_eq!(nonce_bytes_on_disk(&dir), before, "{fault:?}: cut back");
+            assert_eq!(handle.load(Ordering::Acquire), before, "{fault:?}");
 
-            let landed = handle.load(Ordering::Acquire);
-            assert!(
-                landed > before,
-                "{fault:?}: bytes landed before the error and were published: \
-                 {landed} is not above {before}"
-            );
-            assert_eq!(
-                landed,
-                nonce_bytes_on_disk(&dir),
-                "{fault:?}: and the figure is the volume's own"
-            );
+            c.remember(DEVICE, &nonce(3), 1_000).expect("accepted");
+            drop(c);
+            let restarted = cache(&dir, 1_000, 8, &log);
+            assert_eq!(restarted.len(), 2, "{fault:?}: both durable lines load");
+            restarted
+                .remember(DEVICE, &nonce(2), 1_000)
+                .expect("the refused nonce was never spent");
         }
     }
 
@@ -944,7 +1757,7 @@ mod tests {
         let dir = volume("nonce-compaction-residue");
         let log = Log::buffered(LogLevel::Debug);
         let handle = reported();
-        let mut c = NonceCache::sized(dir.path(), 1_000, 2, Arc::clone(&handle), &log)
+        let c = NonceCache::sized(dir.path(), 1_000, 2, Arc::clone(&handle), &log)
             .expect("the nonce log opens");
         c.remember(DEVICE, &nonce(1), 1_000).expect("accepted");
         let clean = handle.load(Ordering::Acquire);
@@ -973,8 +1786,8 @@ mod tests {
     fn the_log_is_compacted_once_it_passes_twice_the_ceiling() {
         let dir = volume("nonce-compaction");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, 2, &log);
-        let now = fill_to_the_threshold(&mut c);
+        let c = cache(&dir, 1_000, 2, &log);
+        let now = fill_to_the_threshold(&c);
         assert_eq!(lines_on_disk(&dir), 5, "every acceptance is one line");
 
         c.remember(DEVICE, &nonce(6), now).expect("accepted");
@@ -999,8 +1812,8 @@ mod tests {
         let tmp = tmp_file(&dir);
         std::os::unix::fs::symlink(&victim, &tmp).expect("the link is planted");
 
-        let mut c = cache(&dir, 1_000, 2, &log);
-        let now = fill_to_the_threshold(&mut c);
+        let c = cache(&dir, 1_000, 2, &log);
+        let now = fill_to_the_threshold(&c);
         c.remember(DEVICE, &nonce(6), now).expect("accepted");
         assert_eq!(lines_on_disk(&dir), 2, "the rewrite happened");
         assert_eq!(
@@ -1035,8 +1848,8 @@ mod tests {
     fn a_partial_temporary_file_is_ignored_at_the_next_start_and_the_rewrite_replaces_it() {
         let dir = volume("nonce-tmp-partial");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, 2, &log);
-        let now = fill_to_the_threshold(&mut c);
+        let c = cache(&dir, 1_000, 2, &log);
+        let now = fill_to_the_threshold(&c);
         drop(c);
         // What a crash between step 2 and step 5 leaves: as much of the
         // replacement as reached the volume. One complete line and a torn
@@ -1051,7 +1864,7 @@ mod tests {
         )
         .expect("the leftover lands");
 
-        let mut restarted = cache(&dir, now, 2, &log);
+        let restarted = cache(&dir, now, 2, &log);
         assert_eq!(
             restarted.len(),
             1,
@@ -1090,8 +1903,8 @@ mod tests {
         let log = Log::buffered(LogLevel::Debug);
         // A name step 1 cannot remove and step 2 cannot take.
         std::fs::create_dir(tmp_file(&dir)).expect("a directory stands at the temporary name");
-        let mut c = cache(&dir, 1_000, 2, &log);
-        let now = fill_to_the_threshold(&mut c);
+        let c = cache(&dir, 1_000, 2, &log);
+        let now = fill_to_the_threshold(&c);
         assert_eq!(lines_on_disk(&dir), 5);
 
         let e = c
@@ -1140,7 +1953,8 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        durable.compact(&live).expect("the rewrite lands");
+        let (body, lines) = window(live.iter());
+        durable.compact(&body, lines).expect("the rewrite lands");
         let published = std::fs::read_to_string(log_file(&source)).expect("the log");
         assert_eq!(
             published.lines().count(),
@@ -1157,7 +1971,7 @@ mod tests {
         // stop the kernel between a rename and the fsync that follows it.
         let dir = volume("nonce-rename-crash");
         std::fs::write(log_file(&dir), &published).expect("what the rename left");
-        let mut restarted = cache(&dir, 2_202, NONCE_CACHE_MAX, &log);
+        let restarted = cache(&dir, 2_202, NONCE_CACHE_MAX, &log);
         assert_eq!(
             restarted.len(),
             2,
@@ -1191,8 +2005,8 @@ mod tests {
             // make here. The case is skipped, never weakened.
             return;
         }
-        let mut c = cache(&dir, 1_000, 2, &log);
-        let now = fill_to_the_threshold(&mut c);
+        let c = cache(&dir, 1_000, 2, &log);
+        let now = fill_to_the_threshold(&c);
         let root = PathClass::JournalRoot.path(dir.path());
 
         // Step 2 cannot create the replacement under a root this user may
@@ -1231,7 +2045,7 @@ mod tests {
     fn the_durable_state_is_readable_by_nobody_but_this_user() {
         let dir = volume("nonce-mode");
         let log = Log::buffered(LogLevel::Debug);
-        let mut c = cache(&dir, 1_000, 2, &log);
+        let c = cache(&dir, 1_000, 2, &log);
         c.remember(DEVICE, &nonce(1), 1_000).expect("accepted");
         let mode = std::fs::symlink_metadata(log_file(&dir))
             .expect("the log is there")

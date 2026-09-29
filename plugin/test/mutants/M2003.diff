@@ -1,0 +1,12 @@
+# M2003: the queue drains in lock-step batches again, each waiting for its slowest push
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1958,7 +1958,7 @@
+         this.active = running.size;
+         if (took) this.status(this.resting());
+         if (running.size === 0) break;
+-        await Promise.race([new Promise<void>((wake) => { this.wakeDrain = wake; }), ...running.values()]);
++        await Promise.all([...running.values()]);
+         this.wakeDrain = null;
+       }
+       if (failed.length > 0) throw failed[0];

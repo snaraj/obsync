@@ -95,18 +95,17 @@ const quietRenameEmptyFolder = (host, from, to) => {
 };
 
 /**
- * Wait on the CONDITION, not on a guess about how many event-loop turns some
- * other work takes: a count that is enough on an idle machine is not enough
- * when the suite runs forty files at once, and a test that fails under load
- * adds a phantom kill to every mutant in the matrix
- * (`plugin/test/mutants/run.sh`).
+ * Wait on the CONDITION, on a wall clock and never a number of turns: an
+ * encryption answers from libuv's thread pool after real time, so 5000 turns
+ * passed in 133 ms on a loaded image builder before the post it precedes
+ * began. A test that fails under load adds a phantom kill to every mutant in
+ * the matrix (`plugin/test/mutants/run.sh`).
  */
 const until = async (condition, what) => {
-  for (let turn = 0; turn < 5000; turn++) {
-    if (condition()) return;
+  for (const deadline = Date.now() + 10_000; !condition();) {
+    if (Date.now() >= deadline) assert.fail(what);
     await new Promise((resolve) => setImmediate(resolve));
   }
-  assert.fail(what);
 };
 
 /** Two notes in one folder, on both devices, with their file ids. */
@@ -522,9 +521,9 @@ test("the two host models answer a second spelling differently, or these tests p
     r.host.explicitFolders.clear();
     await r.host.createFolder("Team docs");
   }
-  assert.equal(await folding.host.trashFolder("team docs"), true, "the folding host refused a name it answers for");
+  assert.equal(await folding.host.trashFolder("team docs"), 0, "the folding host refused a name it answers for");
   assert.deepEqual([...folding.host.explicitFolders], [], "the folding host removed nothing at the folded name");
-  assert.equal(await apart.host.trashFolder("team docs"), true, "a folder nothing holds is already gone");
+  assert.equal(await apart.host.trashFolder("team docs"), 0, "a folder nothing holds is already gone");
   assert.deepEqual([...apart.host.explicitFolders], ["Team docs"], "a host that keeps them apart removed the other entry");
 });
 
@@ -827,10 +826,15 @@ test("the startup scan drops the ghost record, publishes nothing, and disarms th
     a.host.logs.some((line) => line.includes("decision=case_ghost_forgotten")),
     a.host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),
   );
-  assert.ok(
-    a.host.notices.some((message) => message.includes("capitalisation")),
-    a.host.notices.join(" | "),
-  );
+  // True of a fleet already on 1.1.4, and still the order a mixed one needs:
+  // no "update every device" to a person whose devices all run this version.
+  assert.ok(a.host.notices.includes(
+    "obsync: this device holds records for one folder under two capitalisations, and the notes under the " +
+      "spelling it no longer shows are already tracked under the one it does. It has stopped tracking the " +
+      "old spelling and deleted nothing. If another device shows TWO folders whose names differ only in " +
+      "capitalisation, delete the stale one there only once every device runs obsync 1.1.0 or later and " +
+      "has synced once since updating -- see Troubleshooting, \"Two folders that differ only in capitalisation\".",
+  ), a.host.notices.join(" | "));
 
   // And now the tombstone the stale folder's deletion publishes elsewhere
   // reaches a device that no longer maps the old spelling to anything.
@@ -1170,6 +1174,16 @@ test("the folder record reaches the server before the moves under it, whatever t
  * The pass now emits the tombstone first and the record behind it as a wire
  * barrier, which is exactly what the handler sends for a rename this device
  * was told about (`docs/protocol.md`).
+ *
+ * THE TOMBSTONE IS SLOW, which is what makes this test about the ORDER and
+ * not about which post happened to answer first. A desktop posts four at a
+ * time (#196), so a record sent BESIDE the tombstone instead of behind it is
+ * journaled in completion order -- and the tombstone, which asks the host
+ * nothing first, won that race every time, so the order the pass published
+ * in went unseen. Its post waits until the new spelling's record is on the
+ * server, or is written down as held behind it (`folderBarriers`): the order
+ * this pass promises is untouched by the wait, and any other order lands the
+ * record first.
  */
 test("an EMPTY folder renamed by case while Obsidian was closed survives on both devices", async (t) => {
   const { server, timers, a, b, keys } = await pair(t, "immediate", {
@@ -1180,12 +1194,25 @@ test("an EMPTY folder renamed by case while Obsidian was closed survives on both
   await b.engine.start();
   await timers.run(STEP_MS, () => b.state.data.folders["Team docs"] !== undefined);
   assert.ok(b.host.explicitFolders.has("Team docs"), "the empty folder never reached the other device");
+  const oldId = await c.folderFileId(keys.manifestKey, "Team docs");
+  const newId = await c.folderFileId(keys.manifestKey, "team docs");
+  const post = a.transport.postVersion.bind(a.transport);
+  let held = 0;
+  a.transport.postVersion = async (fileId, body) => {
+    if (fileId === oldId && held++ === 0) {
+      const behind = () => a.state.data.folderBarriers.includes("team docs") ||
+        server.journal.some((frame) => frame.file_id === newId);
+      for (const deadline = Date.now() + 10_000; !behind() && Date.now() < deadline;) await new Promise(setImmediate);
+    }
+    return post(fileId, body);
+  };
 
   quietRenameEmptyFolder(a.host, "Team docs", "team docs");
   await a.engine.syncNow();
   await timers.run(STEP_MS, () => b.state.data.folders["team docs"] !== undefined);
   await timers.run(SCAN_MS);
   await timers.run(SCAN_MS);
+  assert.equal(held, 1, "the tombstone never reached the transport, so its order proves nothing");
 
   // THE FOLDER IS STILL THERE, on both devices, spelled the new way.
   assert.deepEqual([...b.host.explicitFolders], ["team docs"], `the receiver deleted the folder: ${story(server, a, b)}`);
@@ -1207,8 +1234,6 @@ test("an EMPTY folder renamed by case while Obsidian was closed survives on both
 
   // AND THE ORDER IT WENT IN, which is what makes the above true: the
   // tombstone for the old record, then the record for the new spelling.
-  const oldId = await c.folderFileId(keys.manifestKey, "Team docs");
-  const newId = await c.folderFileId(keys.manifestKey, "team docs");
   const tombstone = server.journal.findIndex((frame) => frame.file_id === oldId && frame.deleted);
   const record = server.journal.findIndex((frame) => frame.file_id === newId && !frame.deleted);
   assert.notEqual(tombstone, -1, `no tombstone was published: ${story(server, a, b)}`);

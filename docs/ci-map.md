@@ -1,5 +1,7 @@
 # CI map
 
+*Internals, for contributors and reviewers.*
+
 Dated 2026-09-20. What each job runs, what that proves, and the exact contexts
 the owner enters into the branch ruleset. `make check` runs the same battery
 locally, and `scripts/ci/makefile-invariants.sh` fails the gate if the two ever
@@ -23,7 +25,7 @@ emptying the configuration cannot also drop the context that names the socket.
 | `security` | `actionlint` | The workflows parse and their shell bodies pass shellcheck. |
 | `security` | `trivy fs --scanners vuln --severity HIGH,CRITICAL` | No high or critical vulnerability in the source tree. Requirement 5 keeps this near-empty by construction; the same policy string is recorded in the release evidence manifest. |
 | `security` | `gitleaks git` (full history) and `gitleaks dir` (working tree) | No secret in any blob, in history or in the tree. `.gitleaks.toml` uses the default rule set whole and carries exactly one path allowlist, for `plugin/test/fixtures/crypto.json` -- sentinel-derived cross-implementation vectors whose root input is the byte sequence 00..1f and which are regenerable in one command. It is one FILE wide, not one directory or one rule, and a probe confirms the same payload in a neighbouring fixtures file is still found. |
-| `application` | `rustup toolchain install` then exact version assertions | The runner runs the toolchain `rust-toolchain.toml` names (1.98.0 with rustfmt, clippy, llvm-tools) and Node 26.8.2 / npm 11.19.1 — not whatever the runner image shipped. |
+| `application` | `rustup toolchain install` then exact version assertions | The runner runs the toolchain `rust-toolchain.toml` names (1.98.0 with rustfmt, clippy, llvm-tools) and Node 26.10.0 / npm 11.19.1 — not whatever the runner image shipped. |
 | `application` | `cargo fmt --all --check` | Formatting is decided, not argued. |
 | `application` | `cargo clippy --workspace --all-targets -- -D warnings` | No lint survives, in tests as well as in the library. |
 | `application` | `cargo test --workspace` | The Rust battery, including the doctrine pins. |
@@ -32,7 +34,7 @@ emptying the configuration cannot also drop the context that names the socket.
 | `application` | `node --test dashboard/test/` | The dashboard's pure functions hold. The dashboard has no `package.json` by design, so this needs no install step. |
 | `application` | `scripts/ci/makefile-invariants.sh` | `make check` and this workflow run one battery — plus the two `docker build` commands `make image` and the `container` job share, and the smoke that follows them. Both sides are read for what they RUN, never for what they mention: the Makefile's tab-indented recipe lines, and every step `run:` value resolved by `scripts/ci/workflow_runs.py` through the fail-closed YAML reader. A step or job carrying an `if:`, and a segment behind a `false &&` or a `||`, are not the battery and do not count. The check can still fail — it mutates a copy of each file thirteen ways (deleting a canonical command, naming it in a comment, neutralizing it as `true # …` or `echo '…'`, and putting it behind a `false &&`, a `||` or an `if:`) and requires the comparison to refuse every one. |
 | `chart` | `helm lint chart`, `helm template smoke chart --kube-version v1.36.0` | The chart renders against the platform's Kubernetes target and satisfies its own required, closed `values.schema.json`. |
-| `chart` | `python3 -B scripts/ci/chart_pins.py all` | The three rendered pins below. |
+| `chart` | `python3 -B scripts/ci/chart_pins.py all` | The seven rendered pins below. |
 | `container` | `docker build --target server --tag obsync-gate:<sha> .` | The release stage builds, natively on the amd64 runner with no emulation, including the `cargo clippy` lint and the `cargo test --workspace --locked` battery that run INSIDE the image on Linux and the musl cross-link. Nothing is pushed and no registry is logged into; `DOCKER_CONFIG` points at an empty directory so no credential helper is consulted for the anonymous digest-pinned base-image pulls. |
 | `container` | `docker create` + `docker cp` + `file` on `/out/obsyncd` | The shipped binary is a static ELF for the runner's OWN architecture — the property that lets the final image be distroless/static with no shell. Asked from outside because distroless has no shell to ask inside, and compared against `uname -m` so an emulated cross-build fails instead of passing. |
 | `container` | `docker build --tag obsync-gate-full:<sha> .` | The whole Dockerfile builds: the plugin stage's own `npm ci`/build/test inside the image, the bundle stage the Release asset is exported from, and the final image with the dashboard it serves. |
@@ -40,7 +42,7 @@ emptying the configuration cannot also drop the context that names the socket.
 | `container` | `scripts/ci/image-smoke.sh obsync-gate-full:<sha>` | The shipped image SERVES, run the way README.md's quick start runs it: two FRESH named volumes, `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`, a loopback-published port. Five properties — `/readyz` answers `{"ready":true` inside a 60 s budget, every process in the container is uid 65532, the README's own `docker cp … \| tar -xO` yields a 64-lowercase-hex setup token, the same read works on the STOPPED container, and the run carried the hardening it claims. It builds nothing; the image reference is the argument, so the gate smokes exactly what it just built. The build steps above were all green on an image that exited at first boot with `event=server_key_failed decision=exit refusal=io_error`, because the final stage declared `USER nonroot` without creating `/data/blobs` and `/data/journal` and Docker therefore created both mount points root-owned. A sixth property weakens the real key, token and roots on the same volumes to the round-8 reviewer's restored-volume shape and requires a second start to repair every class, log each repair, and log only the modes it read back. A seventh starts a second container on the same volumes while the first serves and requires it to refuse with `reason=journal_locked`, exit non-zero, and leave the first serving: `ReadWriteOnce` excludes other nodes, the server's own lock excludes a second process. An eighth presents root-owned `0755` volumes holding no root, the shape a dynamic provisioner hands a non-root workload, and requires the `unwritable` refusal with nothing created. A ninth exhausts a real blob volume — a tmpfs-backed volume the digest-pinned throwaway fills while the server serves, because a `--tmpfs` mount belongs to one container and `docker cp` into one writes past the mount — and requires `/readyz` to answer `503 not_ready` naming the volume, the log to carry `event=readiness decision=not_ready volume=blobs io=StorageFull`, the container to stay running, and readiness to return once the space does. It does NOT put a chunk through `PUT /v1/chunks/{sid}`: that is HMAC-authenticated and the smoke ships no signing client, so `scripts/ci/test_image_smoke_contract.py` pins the property's executable structure instead — the size option, the separate journal volume, the hardening, the pinned filler, the grep, and the recovery half. |
 | `gate` | asserts each job's result | One aggregate required context that names every job, so a job renamed, conditioned out, or removed turns the gate red instead of leaving a required check that never reports. |
 
-### What the three chart pins prove
+### What the chart pins prove
 
 They read the COMPLETE render — every template, no `--show-only` — through
 `scripts/ci/miniyaml.py`, a fail-closed reader that refuses every construct it
@@ -48,14 +50,18 @@ does not fully model. An unparseable render is a FAILED pin, never a passed
 one, and expectations come from `chart/values.yaml` so the peer identity and
 the storage classes are stated in exactly one place.
 
-- **ingress** — the NetworkPolicy admits exactly one peer, named by namespace
-  **and** app label **and** instance, on the service port only, and denies all
-  egress. A blank or absent instance is refused by the schema; an overridden
-  instance moves the pin and leaves no trace of the default. Comparing the
-  whole `spec.ingress` sub-tree rather than counting `- from:` lines is what
-  catches a second rule with no `from` (`- {}` renders an allow-all), and
-  requiring exactly one NetworkPolicy document is what catches a second policy
-  in another template, since ingress rules are additive.
+- **ingress** — the NetworkPolicy admits exactly the `ingress.peers` values
+  name, each pod by namespace **and** app label **and** instance and each
+  address block as written, on the service port only, and denies all egress.
+  The shipped default names none and renders NO rule, never one with an empty
+  `from`. The single-peer fields of earlier releases render the rule they
+  always did. A pod peer missing or blanking its instance, a partial
+  single-peer form, a pod and a block in one entry, and a `/0` block or trusted
+  network are refused by the schema. Comparing the whole `spec.ingress`
+  sub-tree rather than counting `- from:` lines is what catches a second rule
+  with no `from` (`- {}` renders an allow-all), and requiring exactly one
+  NetworkPolicy document is what catches a second policy in another template,
+  since ingress rules are additive.
 - **storage** — exactly the two claims `docs/storage.md` defines, on the
   classes, sizes and provisioned capacities `values.yaml` names, all
   `ReadWriteOnce`; and the workload mounts NOTHING but those claims — a
@@ -68,13 +74,28 @@ the storage classes are stated in exactly one place.
   escalation, all capabilities dropped, `RuntimeDefault` seccomp, no
   service-account token), and every weakening override is refused by the
   schema rather than merely absent from the defaults. The workload reference
-  still renders `repository:tag@digest`.
+  renders `repository:tag@digest` from any registry path, a mirror included,
+  and never without the digest. Scheduling fields, pull secrets and pod labels
+  pass through without touching that context, and a pod label the selectors
+  match on is refused.
+- **readiness** and **environment** — `deploymentReady` gates the replica
+  count and nothing else; the process environment is one the server parses.
+- **kubernetes** — the chart renders on the lowest minor `Chart.yaml` claims,
+  bare and with the suffixes managed clusters report, and on the newest, and
+  refuses the minor below.
+- **platform** — with `platform.annotationDomain` empty, the shipped default,
+  no object carries any annotation; with a domain set, exactly
+  `<domain>/deployment-ready` on the Deployment and `<domain>/volume-capacity`
+  on each claim, mirrors included; a domain that is not a lower-case DNS
+  subdomain of at most 253 characters, or that ends in `kubernetes.io` or
+  `k8s.io`, fails the render with a message naming it.
+  `scripts/validation/platform_annotation_mutations.py` is its kill matrix.
 
 ## `codeql.yml` — pull requests, pushes to `main`, weekly cron
 
 Two matrix jobs, both `build-mode: none`. **Rust is analysed**: `rust` is a
 built-in CodeQL language at the pinned action version — `src/languages/
-builtin.json` at `1c5b675` (v4.38.1) lists `actions, cpp, csharp, go, java,
+builtin.json` at `2892aa5` (v4.38.2) lists `actions, cpp, csharp, go, java,
 javascript, python, ruby, rust, swift`, so no fallback to
 javascript-only was needed. `javascript-typescript` is that file's alias for
 `javascript` and covers `plugin/src`, `plugin/build.mjs`, and the dashboard.
@@ -164,8 +185,11 @@ Two jobs, and the split is enforced by permissions rather than convention:
   HIGH/CRITICAL before signing it**, signs image and OCI chart keyless,
   substitutes the resolved digest into the chart values before packaging,
   exports the plugin bundle from the same Dockerfile stage the image copies,
-  and publishes one immutable Release carrying the deterministic evidence
-  manifest and the bundle.
+  exports the `server-dist` stage once per platform and packs the two static
+  server tarballs deterministically (from 1.1.4), attests the plugin files and
+  both tarballs with build provenance, and publishes one immutable Release
+  carrying the deterministic evidence manifest, the bundle, the plugin files
+  and the tarballs.
 
 Position is the contract in two places: the vulnerability gate sits between
 digest resolution and `cosign sign`, so a failing digest never receives this
@@ -178,7 +202,8 @@ publish step's package read the identical tree.
 Re-binds the newest immutable Release: the manifest bytes, the notes, the
 Release record, the successful run, the annotated tag, both registry aliases
 still resolving to the recorded digests, both cosign signatures, the plugin
-bundle's SHA-256, and a fresh HIGH/CRITICAL scan of the shipped image against
+bundle's SHA-256, from 1.1.4 both server tarballs (bytes against the evidence,
+and their build provenance), and a fresh HIGH/CRITICAL scan of the shipped image against
 today's vulnerability database. It holds no write permission anywhere.
 
 ## `docs-site.yml` — pull requests, pushes to `main`, manual dispatch
@@ -248,16 +273,50 @@ clean runner.
 
 | Job | Command | What it proves |
 | --- | --- | --- |
-| `helm` | `install-tools.sh`, `install-kind.sh`, `docker build`, then `scripts/ci/helm-e2e.sh` | The chart installs and SERVES. A throwaway `kind` cluster at the node image pinned beside kind; the two node directories prepared `0700` and owned by 65532, the StorageClass and both `local` PersistentVolumes, the values file, the TLS front and the setup-token read, all read out of [`docs/kubernetes.md`](kubernetes.md); the image loaded and deployed by the digest containerd actually holds, with `pullPolicy: Never` so the cluster can only run those bytes; both claims `Bound`, the Deployment `Available`, `/readyz` answered through a port-forward AND through the documented terminator over HTTPS; then the same `api_flow.py` device flow through that terminator — including a file larger than a stock proxy's 1 MiB body ceiling — and a `helm upgrade` on the digest followed by a `helm rollback`, after which the account, both devices and the file are still there |
+| `helm` | `install-tools.sh`, `install-kind.sh`, `docker build`, then `scripts/ci/helm-e2e.sh` | The chart installs and SERVES. A throwaway `kind` cluster at the node image pinned beside kind; the two node directories prepared `0700` and owned by 65532, the StorageClass and both `local` PersistentVolumes, the values file, the TLS front and the setup-token read, all read out of [`docs/kubernetes.md`](kubernetes.md); the image loaded and deployed by the digest containerd actually holds, with `pullPolicy: Never` so the cluster can only run those bytes; both claims `Bound`, the Deployment `Available`, `/readyz` answered through a port-forward AND through the documented terminator over HTTPS, by its port-forward and by its Service's address from the node; then the same `api_flow.py` device flow through that terminator — including a file larger than a stock proxy's 1 MiB body ceiling — and a `helm upgrade` on the digest followed by a `helm rollback`, after which the account, both devices and the file are still there. Last, `scripts/ci/np-probe.sh` opens connections from three one-shot pods: one carrying the three peer labels the values name connects, one with another instance label and one in another namespace are refused. kind's own network plugin (kindnetd) enforces NetworkPolicy, so these are the cluster's refusals, not the render's |
+| `kube-versions` | `install-tools.sh`, then `scripts/ci/chart-kube-versions.sh` | The chart renders for every minor its `kubeVersion` claims, from the floor to the kind node image's, in the spellings managed clusters report (`v1.36.3-eks-…`, `v1.36.3-gke.…`, `v1.36.3+k3s1`), and `helm template` REFUSES the version just below the floor, which is what makes the other lines mean the floor is enforced |
 
-What it does not prove, stated rather than implied: the NetworkPolicy's
-refusals, which are proven against the RENDERED policy by
-`scripts/ci/chart_pins.py`, because kind's CNI does not enforce policy; and the
-DNS-01 issuance, because the leaf the terminator serves is one the job issues.
-What the terminator step does prove is the wiring a first activation of this
-chart gets wrong — the three peer labels, the upstream Service, and the body
-ceiling. An
+What it does not prove, stated rather than implied: the DNS-01 issuance,
+because the leaf the terminator serves is one the job issues. What the
+terminator step does prove is the wiring a first activation of this chart gets
+wrong — the three peer labels, the upstream Service, and the body ceiling. An
 `if: always()` step deletes the cluster whatever happened to the script.
+
+## `proxy-matrix.yml` — pull requests, pushes to `main`, manual dispatch
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `proxy` (caddy, nginx, traefik, haproxy) | `docker build`, then `scripts/ci/proxy-e2e.sh <image> <proxy>` and `scripts/validation/proxy_matrix.sh <image> <proxy>` | `deploy/proxies/compose.yml`, run as shipped with the proxy's profile, keeps out of the sync path's way. `proxy-e2e.sh` adds only a second network for the client, then from a client container there `api_flow.py` enrols, pairs and syncs, and proves: an 8 MiB + 16 B chunk up and back, a full 32 MiB `POST /v1/chunks/get` answer in order, a 55 s long poll held to its end (a 30 s proxy timeout answers 504 here) and a long poll woken by a write within 5 s rather than at the end of its wait, the client's own address recorded although it sent a forged `X-Forwarded-For`, and a direct connection to the server's port refused from where the client stands. `proxy_matrix.sh` then proves a client's forged `X-Forwarded-For` and `Forwarded` are not believed through the proxy or around it, and the edge mode's headers are admitted only from the trusted peer; its own long poll is skipped (`SKIP_LONGPOLL=1`) because the first script holds the same poll |
+| `proxy-arm64` | the same, nginx, on `ubuntu-24.04-arm` | The same properties natively on arm64 |
+
+## `generic-paths.yml` — nightly, manual dispatch, and pull requests that change what it runs
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `binary` | `docker build --target server-dist`, then `scripts/ci/binary-e2e.sh` | The static server tarball's tree with no container: the binary, dashboard and plugin, installed as its own `obsyncd.service` header says, and that unit run AS SHIPPED with only its names moved to the run's (user, `/opt`, `/var/lib`, `/etc`), so every hardening line it carries is the one that runs; systemd makes both state directories `0700` under a root-owned parent, and the server listens on `127.0.0.1:8080` and nowhere else. The runner's own Ubuntu nginx binary is in front, as `www-data` in a unit of its own, with `deploy/proxies/nginx/nginx.conf` (its upstream, certificate and temporary paths moved, every directive as shipped, on Ubuntu 24.04's nginx 1.24), passing `nginx -t`; then `api_flow.py` enrol and the proxy properties (without the bypass probe, since client and server share the host), and a restart that keeps everything |
+| `podman` | `docker build`, `docker save`, then `scripts/ci/podman-e2e.sh` | The unmodified Compose file under ROOTLESS Podman (`podman compose` with the runner's Compose v2 plugin as its provider, netavark and aardvark-dns for name resolution), published on 8080/8443; `/readyz` through Caddy, the sync flow, a restart |
+| `k3d` | `install-tools.sh`, `install-k3d.sh`, `docker build`, then `scripts/ci/k3d-e2e.sh` | The chart on k3s as k3s ships: local-path volumes, which the server REFUSES as provisioned (`reason=writable_by_others`) until the documented administrator step (chown to 65532, `0700`, on the node) is taken; k3s's own Traefik as the ingress, its labels read off the running Deployment into the peer values; the sync flow through it; the NetworkPolicy enforced by k3s's controller (`np-probe.sh`); a replacement pod on the same volumes |
+| `kind-ipv6` | `helm-e2e.sh` with `OBSYNC_E2E_IP_FAMILY=ipv6` | The whole Kubernetes guide on an IPv6-only cluster, where a server listening on the IPv4 wildcard alone never answers its startup probe; the chart's `[::]` listener is what this leg holds, and the terminator runs with the IPv6 `listen` line the page tells an IPv6 cluster to uncomment, answering through its Service's IPv6 address |
+
+## `desktop-matrix.yml` — nightly, manual dispatch, and pull requests that change the plugin or these harnesses
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `obsidian-linux (none)`, `obsidian-linux (gnome-keyring)` | the plugin built with `npm`, `docker build`, for the second `scripts/ci/install-keyring.sh` (GNOME Keyring from pinned Ubuntu snapshot packages), then `scripts/ci/proxy-e2e.sh <image> caddy --then scripts/ci/obsidian-e2e.sh` | The plugin inside the REAL Obsidian, through `deploy/proxies/compose.yml`'s Caddy: the official AppImage (pinned by SHA-256) under Xvfb, two instances with their own `--user-data-dir` and their own `HOME`, each trusting the throwaway authority through an NSS database of its own and nothing else. `scripts/ci/obsidian-drive.mjs` drives them over the DevTools port: the vault trusted, Server URL, the setup token and the recovery-phrase check on the first, the pairing code carried to the second and approved, then notes both ways, a rename, a nested folder and an empty folder, read off the other instance's disk, and ten timed edits (B2 end to end). Then both instances are restarted on the same directories and must be paired again and carry a note, from the keys Obsidian's secret storage kept: with no keyring (the runner as it comes) it must report no encryption and hold them as plain JSON; with each instance started through `scripts/ci/obsidian-session.sh` (a session bus of its own, GNOME Keyring unlocked from its own `HOME`, a GNOME desktop named), it must report `gnome_libsecret`, hold them encrypted, and show no unencrypted-storage warning. The warning Obsidian shows without a keyring is recorded. A third instance with no trust must be refused. The token is read from a file and deleted; the pairing code and the phrase are never printed |
+| `obsidian-macos` | the plugin, `cargo build --release -p obsyncd`, then `scripts/ci/obsidian-host.sh` | The same journeys with the official dmg, the server built natively, Caddy 2.10.2 (pinned) in front with `deploy/proxies/caddy/Caddyfile` (its paths, port and upstream moved), and the authority in the System keychain |
+| `static-binary` | `docker build --target server`, the binary uploaded | The static linux/amd64 server for the Windows leg, from this commit |
+| `obsidian-windows` | the plugin, that binary, then `scripts/ci/obsidian-host.sh` (Git Bash) | The same journeys with the official installer run silently, the server under WSL 1 in an Alpine distribution imported for the run, Caddy in front, the authority in the machine Root store; plus a rename by capitalisation alone, a note moved to the trash, and an edit to a note another process holds open |
+| `plugin-tests` (windows-2025, macos-15) | `npm ci`, `npm run build`, `npm test` | The plugin suite on NTFS and APFS, not only on the ext4 of the gate |
+
+## `bench.yml` — nightly, manual dispatch, and pull requests that change the harness
+
+| Job | Command | What it proves |
+| --- | --- | --- |
+| `bench` (amd64, arm64) | `docker build`, then `scripts/ci/bench.sh` | Nothing: it MEASURES. [Benchmarks](benchmarks.md) B1, B2 (wire), B3 and B7 against the Compose deployment, with the server's CPU, memory, bytes written and fsync calls read from its own `/proc` entry; full scale on the schedule, smoke scale on a pull request. The results are the run's artifact for 90 days and the step summary; nothing is committed |
+
+None of these four workflows is in the release chain, for the reason
+`docs-site.yml` gives, and none is a required check unless the owner enters it
+into `Protect-Main`.
 
 ## `arch-matrix.yml` — pull requests, pushes to `main`, manual dispatch
 
@@ -323,12 +382,19 @@ missing is only the ruleset's refusal to merge around a red one.
 ## Zero-spend guardrails
 
 Top-level `permissions: {}` with narrow per-job grants; `persist-credentials:
-false` on every checkout; GitHub-hosted runners only -- `ubuntu-24.04`, and
-`ubuntu-24.04-arm` for the architecture matrix, both free for public
+false` on every checkout; GitHub-hosted runners only -- `ubuntu-24.04`,
+`ubuntu-24.04-arm`, `macos-15` and `windows-2025`, all free for public
 repositories; every third-party action pinned to a full commit SHA with a
 version comment; every third-party tool installed only through a
-checksum-verifying installer (`scripts/ci/install-tools.sh`, and
-`scripts/ci/install-kind.sh` for the one job that creates a cluster). `scripts/ci/test_workflow_integrity.py` refuses
+checksum-verifying installer (`scripts/ci/install-tools.sh`,
+`scripts/ci/install-kind.sh` and `scripts/ci/install-k3d.sh` for the jobs that
+create a cluster), and every other download -- Obsidian, Caddy, the Alpine
+root filesystem, strace -- refused by the script that fetches it unless its
+SHA-256 matches the pin beside it. Two exceptions are stated rather than
+hidden: the Podman job's `netavark` and `aardvark-dns` come from Ubuntu's
+archive at exact versions, checked by apt against the archive's signed index,
+and k3d starts its own helper image at the tag of its pinned release.
+`scripts/ci/test_workflow_integrity.py` refuses
 any workflow that breaks the pinning, permissions, `pull_request_target`, or
 `persist-credentials` rules, and its allowlist ratchets shut rather than
 accumulating excuses. The `container` job builds and never publishes: no

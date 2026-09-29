@@ -63,6 +63,14 @@ const raised = [];
 class NoticeEl {
   constructor(parent = null) { this.handlers = {}; this.parent = parent; }
   addEventListener(type, handler) { (this.handlers[type] ??= []).push(handler); }
+  /** Obsidian's element helper, for the buttons a notice that asks something carries. */
+  createEl(tag, options = {}) {
+    const el = new NoticeEl(this);
+    el.tag = tag;
+    el.text = options.text;
+    (this.children ??= []).push(el);
+    return el;
+  }
   /** A click on an element runs its listeners, then its ancestors', as the DOM does. */
   dispatch(type) { for (let el = this; el !== null; el = el.parent) for (const handler of el.handlers[type] ?? []) handler(); }
 }
@@ -71,8 +79,9 @@ class NoticeEl {
 // of \`messageEl\`, the text element inside it. A fake that made them one element
 // would hide the difference between a tap on the text and a tap on the padding.
 class Notice {
-  constructor(message) {
+  constructor(message, duration) {
     this.message = message;
+    this.duration = duration;
     this.containerEl = new NoticeEl();
     this.noticeEl = this.messageEl = new NoticeEl(this.containerEl);
     this.hidden = false;
@@ -87,9 +96,17 @@ class TFolder {}
 class TAbstractFile {}
 // The editor view the host asks about an open note (issue #146); a test gives
 // an instance its \`file\` and \`getViewData\`, which is all the host reads.
-class MarkdownView {}
+class ItemView {}
+class MarkdownView extends ItemView {}
+// An icon is recorded, never drawn: the element's one child is a marker named
+// for it, as the real \`setIcon\` leaves one \`<svg>\` (the status indicator's
+// fixed width rests on that). Every Lucide name is known here.
+function setIcon(el, icon) { el.icon = icon; el.children = [{ svg: icon }]; }
+function getIcon(icon) { return { icon }; }
+function setTooltip(el, text) { (el.tooltips ??= []).push(text); }
 module.exports = {
-  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile, MarkdownView, notices, raised,
+  Component, Plugin, Modal, PluginSettingTab, Setting, Notice, TFile, TFolder, TAbstractFile, ItemView, MarkdownView, notices, raised,
+  setIcon, getIcon, setTooltip,
   Platform: { isMobile: false, isDesktopApp: true, isMacOS: true, isWin: false, isLinux: false, isIosApp: false, isAndroidApp: false, isTablet: false },
   requestUrl: async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }),
   normalizePath: (p) => p,
@@ -98,17 +115,31 @@ module.exports = {
   );
   cpSync(join(PLUGIN_DIR, "build"), join(home, "build"), { recursive: true });
   if (dist) cpSync(join(PLUGIN_DIR, "dist"), join(home, "plugin"), { recursive: true });
-  // The renderer's `window`, for the two things the bundle reads from it:
+  // The renderer's `window`, for the three things the bundle reads from it:
   // timers (`window.setTimeout`, the guideline rule `guidelines.test.mjs`
-  // pins) and the `online` event. Real timers that never hold the process
-  // open, and listeners that go nowhere: a test that must see either installs
-  // its own `globalThis.window` before `onload` and restores it after, as
+  // pins), the `online` event, and the worker the desktop clock runs on
+  // (`clock.ts`, #221). Real timers that never hold the process open, and
+  // listeners that go nowhere: a test that must see any of them installs its
+  // own `globalThis.window` before `onload` and restores it after, as
   // `reconnect.test.mjs` does.
   globalThis.window ??= {
     setTimeout: (fn, ms) => setTimeout(fn, ms).unref(),
     clearTimeout: (handle) => clearTimeout(handle),
+    Blob, URL,
+    // What the worker's script does, on the same timers: `clock.test.mjs` runs the script itself.
+    Worker: class {
+      armed = new Map();
+      onmessage = null;
+      postMessage({ id, ms }) {
+        clearTimeout(this.armed.get(id));
+        if (ms !== undefined) this.armed.set(id, setTimeout(() => this.onmessage?.({ data: id }), ms).unref());
+      }
+      terminate() { for (const handle of this.armed.values()) clearTimeout(handle); }
+    },
     addEventListener: () => undefined,
     removeEventListener: () => undefined,
+    // Where `visibilitychange` is raised; a test that fires it installs its own window.
+    document: { visibilityState: "visible", addEventListener: () => undefined, removeEventListener: () => undefined },
   };
   return { home, require: createRequire(join(home, "x.js")) };
 }
@@ -122,6 +153,26 @@ const sameSet = (a, b) => {
   const right = [...new Set(b)].sort();
   return left.length === right.length && left.every((id, index) => id === right[index]);
 };
+
+/**
+ * A status bar item, or a view-header action, as far as the plugin touches
+ * one: classes, attributes, listeners, and whatever the stub's \`setIcon\` and
+ * \`setTooltip\` record. \`tooltips\` is what the person would read on hover.
+ */
+export function statusItem() {
+  return {
+    classes: new Set(), attributes: {}, listeners: {}, texts: [], tooltips: [], children: [], removed: false,
+    addClass(...names) { for (const name of names) this.classes.add(name); },
+    setAttr(name, value) { this.attributes[name] = String(value); },
+    getAttribute(name) { return this.attributes[name] ?? null; },
+    setText(text) { this.texts.push(text); },
+    addEventListener(type, handler) { (this.listeners[type] ??= []).push(handler); },
+    click() { for (const handler of this.listeners.click ?? []) handler({}); },
+    remove() { this.removed = true; },
+    /** The words on it now. */
+    get label() { return this.tooltips.at(-1); },
+  };
+}
 
 /** A vault of files in memory, with the `VaultHost` surface the engine needs. */
 export class FakeHost {
@@ -143,6 +194,8 @@ export class FakeHost {
     this.explicitFolders = new Set();
     this.logs = [];
     this.notices = [];
+    /** The notices that asked something, with their buttons (`notify`). */
+    this.asked = [];
     this.trashed = [];
     /** Every folder `trashFolder` was ASKED about, kept ones included. */
     this.folderChecks = [];
@@ -299,14 +352,25 @@ export class FakeHost {
     };
   }
 
-  async writer(path) {
+  /**
+   * A declared `size` is held to, as the phone's writer holds it (`main.ts`,
+   * one buffer of that size, issue #197): a part past it and a commit short of
+   * it are refused in its words, so a caller declaring the wrong size fails
+   * here and not only on a phone. A test's own wrapper that drops the size
+   * gets the unchecked writer.
+   */
+  async writer(path, size) {
     const parts = [];
     const host = this;
+    let held = 0;
     return {
       async write(bytes) {
+        if (size !== undefined && held + bytes.length > size) throw new Error("A download exceeded its declared size.");
+        held += bytes.length;
         parts.push(bytes);
       },
       async commit(mtime) {
+        if (size !== undefined && held !== size) throw new Error("A download ended short of its declared size.");
         let total = 0;
         for (const part of parts) total += part.length;
         const joined = new Uint8Array(total);
@@ -321,6 +385,7 @@ export class FakeHost {
       },
       async abort() {
         parts.length = 0;
+        held = 0;
       },
     };
   }
@@ -349,6 +414,9 @@ export class FakeHost {
         return writer.commit(mtime);
       },
       abort: writer.abort,
+      // A commit here refuses before it writes, so a failed one published
+      // nothing, which is what the desktop writer says of it (#225).
+      withdraw: async () => "none",
     };
   }
 
@@ -467,15 +535,18 @@ export class FakeHost {
     this.folderChecks.push(path);
     const entry = this.resolveFolder(path);
     // Nothing here to remove, and so nothing here to keep either: the real
-    // host answers `true` for an absent folder.
-    if (entry === undefined) return true;
+    // host answers `0` for an absent folder.
+    if (entry === undefined) return 0;
     const prefix = `${entry}/`;
-    const holds = [...this.files.keys(), ...this.explicitFolders]
-      .some((candidate) => candidate.startsWith(prefix));
-    if (holds) return false;
+    // What keeps it is counted the way a directory listing counts it: its
+    // own entries, a folder holding files being one of them.
+    const holds = new Set([...this.files.keys(), ...this.explicitFolders]
+      .filter((candidate) => candidate.startsWith(prefix))
+      .map((candidate) => candidate.slice(prefix.length).split("/")[0]));
+    if (holds.size > 0) return holds.size;
     this.explicitFolders.delete(entry);
     this.trashed.push(entry);
-    return true;
+    return 0;
   }
 
   inputAt = new Map();
@@ -487,8 +558,19 @@ export class FakeHost {
     return this.editors.get(path) === this.text(path) ? "saved" : "unsaved";
   }
 
-  notify(message) {
+  /**
+   * What the user was told, and -- for a notice that asks something -- the
+   * buttons it offered (`VaultHost.notify`), so a test can see the question
+   * and press an answer by what it names.
+   */
+  notify(message, actions = []) {
     this.notices.push(message);
+    if (actions.length > 0) this.asked.push({ message, actions });
+  }
+
+  /** How many times the engine took the held-deletions question away (`hold`). */
+  closeQuestion() {
+    this.questionsClosed = (this.questionsClosed ?? 0) + 1;
   }
 
   log(line) {
@@ -1066,6 +1148,19 @@ const MAX_ADVANCES = 1800;
 const QUIET_ADVANCES = 40;
 
 /**
+ * ONE IDLE ROUND: about a millisecond of real time, yielded. `setTimeout(1)`
+ * is that on Linux and macOS; on Windows it is a whole timer tick, about
+ * 15.6 ms, so every virtual step cost many times the real time these budgets
+ * were written for, and a wait that walks virtual time outran its ten seconds
+ * (the Windows runner, 2026-09-27: the co-typing, stamper and parked-file
+ * tests). There the millisecond is waited out on `setImmediate`, which still
+ * lets every completion the threadpool delivers run first.
+ */
+const idle = process.platform === "win32"
+  ? async () => { for (const until = performance.now() + 1; performance.now() < until;) await new Promise(setImmediate); }
+  : () => new Promise((resolve) => setTimeout(resolve, 1));
+
+/**
  * Timers on a virtual clock: nothing fires until the test advances time, so a
  * 500 ms debounce and a one-hour heartbeat cannot be confused for each other.
  */
@@ -1127,7 +1222,7 @@ export class FakeTimers {
         // Nothing was due, so what we are waiting for is a promise, most of
         // it off-thread. Yield the CPU instead of spinning on it: that is
         // what makes this wait independent of how busy the machine is.
-        await new Promise((resolve) => setTimeout(resolve, 1));
+        await idle();
         if (advances < advanceLimit) {
           this.now += advanceMs;
           advances++;
@@ -1367,13 +1462,13 @@ export class EventVault extends FakeHost {
   }
 
   async trashFolder(path) {
-    const removed = await super.trashFolder(path);
-    if (removed && !this.silent.has(path)) this.emit("delete", this.entry(path, true));
-    return removed;
+    const kept = await super.trashFolder(path);
+    if (kept === 0 && !this.silent.has(path)) this.emit("delete", this.entry(path, true));
+    return kept;
   }
 
-  async writer(path) {
-    const writer = await super.writer(path);
+  async writer(path, size) {
+    const writer = await super.writer(path, size);
     return { ...writer, commit: async (mtime) => this.commit(writer, path, mtime) };
   }
 
@@ -1515,7 +1610,7 @@ async function device(box, server, timers, { id, secret, name, delivery, isMobil
   const { SyncEngine } = require("../build/sync/engine.js");
   const obsidian = box.require("obsidian");
   const host = new EventVault({ delivery, obsidian, isMobile, deviceName: name, caseSensitive });
-  const { state } = await fakeState(isMobile);
+  const { state, reload } = await fakeState(isMobile);
   state.data.deviceId = id;
   state.data.deviceSecret = secret;
   const transport = new Transport({
@@ -1538,7 +1633,7 @@ async function device(box, server, timers, { id, secret, name, delivery, isMobil
   plugin.state = state;
   plugin.engine = engine;
   plugin.registerVaultEvents();
-  return { host, state, transport, engine, plugin };
+  return { host, state, transport, engine, plugin, reload };
 }
 
 /**

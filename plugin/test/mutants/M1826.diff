@@ -1,0 +1,11 @@
+# M1826: the plugin's wake never reaches the requests asleep in the transport
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2211,7 +2211,6 @@
+    * loop.
+    */
+   wake(reason: string): void {
+-    this.transport.wake(reason);
+     this.engine?.wake(reason);
+     this.retryNow(reason);
+   }

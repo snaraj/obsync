@@ -1,0 +1,11 @@
+# M1800: wake logs but wakes nothing: a request asleep in its backoff waits the pause out
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -729,7 +729,6 @@
+   wake(reason: string): void {
+     const asleep = [...this.sleepers];
+     this.sleepers.clear();
+-    for (const sleeper of asleep) sleeper.wake();
+     if (asleep.length > 0) this.log(`http decision=woken reason=${reason} requests=${asleep.length}`);
+   }
+ 

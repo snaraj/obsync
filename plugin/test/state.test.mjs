@@ -90,6 +90,18 @@ test("a remembered waiting name survives a load only when it is a vault path", (
   assert.equal("name" in data.files["Notes/Plain.md"], false);
 });
 
+/**
+ * A held deletion (issue #162) is a question the next start asks again, so
+ * it is read back -- and as input: a name that is not a vault path, or not a
+ * string, is dropped, and a missing field is no hold at all.
+ */
+test("held deletions survive a load, and only as vault paths", () => {
+  const data = parseData({ heldDeletions: ["Notes/a.md", "../outside.md", 7, "Notes/a.md", ".obsidian/x.md", "Notes/b.md"] }, false);
+  assert.deepEqual(data.heldDeletions, ["Notes/a.md", "Notes/b.md"]);
+  assert.deepEqual(parseData({ heldDeletions: "Notes/a.md" }, false).heldDeletions, []);
+  assert.deepEqual(parseData({}, false).heldDeletions, []);
+});
+
 test("saves serialise and never lose the newest state", async () => {
   const backing = store();
   const state = await State.open(backing, false, backing.secrets);
@@ -194,7 +206,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
   const state = await State.open(store(), false, memorySecrets());
   Object.assign(state.data, {
     vrk: "aa".repeat(32), deviceId: "bb".repeat(16), deviceSecret: "cc".repeat(32),
-    deviceName: "Study laptop", serverUrl: "https://sync.example.invalid",
+    deviceName: "Study laptop", deviceTag: "7KQ4", serverUrl: "https://sync.example.invalid",
     edgeHeaders: [{ name: "X-Edge", value: "EDGE SENTINEL" }], lastSeq: 9,
     files: { "Notes/a.md": { fileId: "f1", versionId: "v1", mtime: 1, size: 2, sha256: "s" } },
     // A FOLDER RECORD IS A PAIRING FACT TOO (#104): its file id is derived
@@ -210,14 +222,21 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     // And a parked record, which names a version on the server being left
     // (`sync/engine.ts`, `park`; issue #144).
     parked: { f5: { path: "Notes/locked.md", reason: "EPERM" } },
+    // A dropped write's mark describes a file here, not a version there, and
+    // is kept: pairing again must not send the empty file it names (#242).
+    dropped: { "Notes/empty.md": "f7" },
     // And a paused note (#179), which names a file id on that server too.
     paused: { f6: { path: "Notes/stamped.md" } },
+    // And a held deletion (#162), a question about records being dropped.
+    heldDeletions: ["Notes/a.md"],
     // And the feed mark and the graves (#145), which name entries and
     // versions on the server being left: a mark kept for the next server
     // would read its journal as a restored one.
     feedMark: { seq: 9, fileId: "f1", versionId: "v1", ts: 5, replay: false },
     graves: { f4: { versionId: "v4", path: "Notes/gone.md", folder: false } },
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
+    // The key is kept, so the words confirmed for it stay confirmed (#170).
+    recoveryPhrase: "confirmed",
   });
 
   state.forgetPairing();
@@ -225,10 +244,10 @@ test("forgetting a pairing drops the identity and everything derived from it, an
   assert.deepEqual(
     { ...state.data },
     {
-      vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop",
+      vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop", deviceTag: "7KQ4",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-      retiredRoots: {}, folderBarriers: [], parked: {}, paused: {}, feedMark: null, graves: {},
-      syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
+      retiredRoots: {}, folderBarriers: [], parked: {}, dropped: { "Notes/empty.md": "f7" }, paused: {}, heldDeletions: [],
+      feedMark: null, graves: {}, syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed",
     },
   );
   assert.equal(state.paired, false);

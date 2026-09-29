@@ -1,0 +1,14 @@
+# M3177: a file this device buried is recorded again without a word
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4662,10 +4662,6 @@
+   // it. Said, because the grave goes with it, and without this line a replay
+   // that brought deleted notes back left nothing in the log until the next
+   // start deleted them a second time.
+-  const grave = context.state.data.graves[change.file_id];
+-  if (grave !== undefined) {
+-    context.host.log(`pull path_class=file decision=unburied file=${change.file_id} version=${change.version_id} grave=${grave.versionId}`);
+-  }
+   context.state.setFile(path, {
+     fileId: change.file_id,
+     versionId: change.version_id,

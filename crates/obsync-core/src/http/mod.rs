@@ -46,7 +46,7 @@ pub use multipart::MultipartWriter;
 pub use range::{RangeError, parse_range};
 pub use request::{Headers, Request};
 pub use response::{Response, ResponseBody};
-pub use server::{Handler, Server};
+pub use server::{Handler, Report, Server};
 
 use std::io::{self, BufRead, BufReader, Read};
 

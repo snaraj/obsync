@@ -1,11 +1,11 @@
 # M23: recordAt stats the file itself
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3456,6 +3456,7 @@
-   stat: VaultStat,
+@@ -4657,6 +4657,7 @@
    wants?: string,
+   created = false,
  ): Promise<void> {
 +  stat = (await context.host.stat(path)) ?? stat;
-   context.state.setFile(path, {
-     fileId: change.file_id,
-     versionId: change.version_id,
+   // A FILE THIS DEVICE DELETED, RECORDED AGAIN (issue #237): an edit another
+   // device kept over the deletion, or a replay handing back what came before
+   // it. Said, because the grave goes with it, and without this line a replay

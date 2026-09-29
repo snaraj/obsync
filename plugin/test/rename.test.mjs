@@ -38,12 +38,12 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { DEVICE_B, FakeServer, KEYS, SECRET_B, STEP_MS, pair, rig, settled } from "./fake.mjs";
+import { DEVICE_B, FakeServer, KEYS, SECRET_B, STEP_MS, keys, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
 const { applyChange } = require("../build/sync/pull.js");
-const { pushFile } = require("../build/sync/push.js");
+const { carryPost, pushFile } = require("../build/sync/push.js");
 const c = require("../build/crypto.js");
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -233,7 +233,20 @@ test("one version that renames AND edits is downloaded, not applied as a bare re
   );
 });
 
-test("a rename over an unpushed local edit keeps both, and renames nothing", async (t) => {
+/**
+ * A RENAME MEETING AN EDIT IS ONE NOTE UNDER THE NEW NAME (issue #151, S03).
+ *
+ * The phone, offline, edits a note the desktop renames. Until 1.1.4 the
+ * rename's arrival over the unpushed edit kept both, and once the edit was
+ * pushed the merge was posted under the PHONE's name, which renamed the note
+ * back on the desktop too. The edit is now published first and the fork is
+ * merged three ways on the name as on the text: the desktop moved the note and
+ * the phone did not, so the merged note carries the desktop's name, holding
+ * the phone's line, on both -- with no copy, no trash and no tombstone.
+ */
+const PHONE_EDIT = "# A note TYPED ON THE PHONE SENTINEL\nwith a body that must survive its own rename\n";
+
+test("a rename over an unpushed local edit ends as one note under the new name, holding the edit", async (t) => {
   const { server, timers, a, b } = await pair(t, "immediate");
 
   a.host.write("Note.md", BODY, 1000);
@@ -241,40 +254,73 @@ test("a rename over an unpushed local edit keeps both, and renames nothing", asy
   await b.engine.start();
   await timers.run(STEP_MS, () =>
     b.host.text("Note.md") === BODY && settled(a, "Note.md") && settled(b, "Note.md"));
+  const fileId = a.state.fileByPath("Note.md").fileId;
 
   // The phone stops listening and its user edits the note; the desktop, which
   // never sees that edit, renames it.
   b.engine.stop();
-  b.host.write("Note.md", "TYPED ON THE PHONE SENTINEL", 5000);
+  b.host.write("Note.md", PHONE_EDIT, 5000);
   a.host.rename("Note.md", "Renamed.md");
-  await timers.run(STEP_MS, () => settled(a, "Renamed.md"));
+  await timers.run(STEP_MS, () => a.state.fileByPath("Renamed.md")?.mtime > 0);
 
   await b.engine.start();
-  await timers.run(STEP_MS, () => [...b.host.files.values()].some((file) =>
-    new TextDecoder().decode(file.bytes) === BODY && b.host.text("Note.md") !== BODY));
+  await timers.run(STEP_MS, () => [a, b].every((device) => device.host.text("Renamed.md") === PHONE_EDIT &&
+    device.state.data.lastSeq === server.seq && device.host.text("Note.md") === null)).catch(() => undefined);
   await timers.run(STEP_MS);
 
-  // WHAT THE COMPOSED HEAD DOES, stated rather than assumed: the phone's own
-  // edit keeps the name it was typed under, and the version the desktop
-  // renamed arrives beside it as a named conflict copy. Both notes exist on
-  // this device, nothing was trashed, and no tombstone exists -- which is
-  // delete-versus-edit keeping both (#98), reached because the source could
-  // not be proved and the rename path was therefore never taken.
-  assert.equal(b.host.text("Note.md"), "TYPED ON THE PHONE SENTINEL",
-    `the phone's own edit was carried away by the rename: ${story(server, a, b)}`);
-  assert.ok(
-    [...b.host.files.entries()].some(([path, file]) =>
-      path !== "Note.md" && new TextDecoder().decode(file.bytes) === BODY),
-    `the renamed version reached the phone under no name at all: ${story(server, a, b)}`,
-  );
-  assert.equal(
-    b.host.logs.some((line) => line.includes("decision=renamed")),
-    false,
-    `a source holding an unpushed edit was renamed: ${b.host.logs.filter((line) => line.startsWith("pull")).join(" | ")}`,
-  );
-  assert.deepEqual(b.host.trashed, [], `keeping both trashed something: ${story(server, a, b)}`);
-  assert.deepEqual(tombstones(server), [], `keeping both published a tombstone: ${story(server, a, b)}`);
+  for (const device of [a, b]) {
+    assert.equal(device.host.text("Renamed.md"), PHONE_EDIT, `the edit or the rename was lost: ${story(server, a, b)}`);
+    assert.equal(device.host.text("Note.md"), null, `the rename was undone: ${story(server, a, b)}`);
+    assert.equal(device.state.fileByPath("Renamed.md")?.fileId, fileId, "one file id throughout");
+    assert.deepEqual([...device.host.files.keys()].filter((path) => path.includes("(conflict from")), [],
+      `a copy was made: ${story(server, a, b)}`);
+  }
+  assert.equal(server.files.get(fileId).heads.length, 1, `the file is still forked: ${story(server, a, b)}`);
+  assert.deepEqual(b.host.trashed, [], `moving the phone's note trashed something: ${story(server, a, b)}`);
+  assert.deepEqual(tombstones(server), [], `settling the pair published a tombstone: ${story(server, a, b)}`);
 });
+
+/**
+ * NO USER TEXT IS EVER LOST: the same rename against edits the merge cannot
+ * combine -- both devices replaced the same words -- still keeps both lines on
+ * both devices, one in the note and the other in a copy. Asked by line, not by
+ * file, so a merge that did combine them would pass too.
+ */
+for (const [kind, phone, desktop] of [
+  ["that merges", "# A note PHONE-SENTINEL\n", "# A note DESKTOP-SENTINEL\n"],
+  ["that cannot merge", "# PHONE-SENTINEL title\n", "# DESKTOP-SENTINEL title\n"],
+]) {
+  test(`a rename over a divergent edit ${kind} keeps both lines on both devices`, async (t) => {
+    const { server, timers, a, b } = await pair(t, "immediate", { isMobileB: false });
+    const tail = "with a body that must survive its own rename\n";
+
+    a.host.write("Note.md", BODY, 1000);
+    await a.engine.start();
+    await b.engine.start();
+    await timers.run(STEP_MS, () =>
+      b.host.text("Note.md") === BODY && settled(a, "Note.md") && settled(b, "Note.md"));
+
+    b.engine.stop();
+    b.host.write("Note.md", phone + tail, 5000);
+    a.host.rename("Note.md", "Renamed.md");
+    await timers.run(STEP_MS, () => a.state.fileByPath("Renamed.md")?.mtime > 0);
+    a.host.write("Renamed.md", desktop + tail, 6000);
+    await timers.run(STEP_MS, () => a.state.fileByPath("Renamed.md")?.mtime === 6000);
+
+    await b.engine.start();
+    const holds = (device, line) => [...device.host.files.keys()].some((path) => device.host.text(path).includes(line));
+    const both = () => [a, b].every((device) => holds(device, "PHONE-SENTINEL") && holds(device, "DESKTOP-SENTINEL"));
+    await timers.run(STEP_MS, () => both() && [a, b].every((device) => device.state.data.lastSeq === server.seq))
+      .catch(() => undefined);
+    await timers.run(STEP_MS);
+
+    for (const device of [a, b]) {
+      assert.ok(holds(device, "PHONE-SENTINEL"), `the phone's line was lost: ${story(server, a, b)}`);
+      assert.ok(holds(device, "DESKTOP-SENTINEL"), `the desktop's line was lost: ${story(server, a, b)}`);
+    }
+    assert.deepEqual(tombstones(server), [], story(server, a, b));
+  });
+}
 
 test("a renamed folder moves every file it holds, and only the folder is tombstoned", async (t) => {
   const { server, timers, a, b, keys: k } = await pair(t, "immediate");
@@ -742,6 +788,193 @@ for (const delivery of ["immediate", "deferred"]) {
   }
 }
 
+/*
+ * A PUSH THAT OUTLIVES ITS PATH (issue #151, S77). A swap made one rename at a
+ * time: the first push of Draft's id was posting as `tmp` when `tmp` became
+ * `Final`, so it recorded nothing, the push of `Final` named the stale parent
+ * beside the version just posted, and the file forked -- and the fork's
+ * settlement then named `tmp` again, so `Final` was gone on every device. The
+ * record the rename carried learns the version the push posted.
+ */
+for (const pulled of [false, true]) {
+  test(`a note renamed while its version posts names that version as its next parent${pulled ? ", unless a pull moved it on" : ""} (#151)`, async () => {
+    const r = await rig();
+    r.host.seed("Notes/Draft.md", DRAFT, 1000);
+    const first = await pushFile(r.context, "Notes/Draft.md");
+    r.host.seed("Notes/Draft.md", `${DRAFT}one more line\n`, 2000);
+    const post = r.transport.postVersion.bind(r.transport);
+    r.transport.postVersion = async (...args) => {
+      const sent = await post(...args);
+      r.transport.postVersion = post;
+      // The rename handler, while the manifest posts: the note moves, and its
+      // record with it, still owing the new name (`engine.ts`, `renamed`).
+      r.host.files.set("Notes/Final.md", r.host.files.get("Notes/Draft.md"));
+      r.host.files.delete("Notes/Draft.md");
+      r.state.setFile("Notes/Final.md", {
+        ...r.state.fileByPath("Notes/Draft.md"), mtime: -1, sha256: "", ...(pulled ? { versionId: "pulled" } : {}),
+      });
+      r.state.forgetPath("Notes/Draft.md");
+      return sent;
+    };
+
+    const outcome = await pushFile(r.context, "Notes/Draft.md");
+
+    assert.equal(outcome.status, "pushed");
+    const moved = r.state.fileByPath("Notes/Final.md");
+    assert.equal(moved.mtime, -1, "the rename is no longer owed");
+    assert.equal(r.state.fileByPath("Notes/Draft.md"), undefined, "the path the note left was put back");
+    const line = r.host.logs.find((entry) => entry.startsWith("push path_class=file decision=not_recorded"));
+    if (pulled) {
+      assert.equal(moved.versionId, "pulled", "the push wrote over a record a pull had moved on");
+      assert.equal(line, `push path_class=file decision=not_recorded reason=path_gone parent=kept file=${first.fileId}`);
+      return;
+    }
+    assert.equal(moved.versionId, outcome.versionId, "the next push will name a stale parent");
+    assert.equal(line, `push path_class=file decision=not_recorded reason=path_gone parent=advanced file=${first.fileId}`);
+    const next = await pushFile(r.context, "Notes/Final.md", true);
+    assert.deepEqual(r.server.files.get(first.fileId).heads, [next.versionId], "the rename forked the file");
+    assert.deepEqual((await published(r.server, first.fileId, r.keys.manifestKey)).map((manifest) => manifest.path),
+      ["Notes/Draft.md", "Notes/Draft.md", "Notes/Final.md"]);
+  });
+}
+
+test("a swap made one rename at a time, with a push posting in between, keeps every name on both devices (#151, S77)", async (t) => {
+  const { server, timers, a, b, keys } = await pair(t, "immediate");
+  a.host.write("Notes/Draft.md", DRAFT, 1000);
+  a.host.write("Notes/Final.md", FINAL, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => b.host.text("Notes/Draft.md") === DRAFT && b.host.text("Notes/Final.md") === FINAL &&
+    settled(b, "Notes/Draft.md") && settled(b, "Notes/Final.md"));
+  await timers.run(STEP_MS);
+  const draftId = a.state.fileByPath("Notes/Draft.md").fileId;
+  const finalId = a.state.fileByPath("Notes/Final.md").fileId;
+
+  // The first rename's push is posting when the other two are made.
+  const post = a.transport.postVersion.bind(a.transport);
+  a.transport.postVersion = async (...args) => {
+    const sent = await post(...args);
+    a.transport.postVersion = post;
+    a.host.rename("Notes/Final.md", "Notes/Draft.md");
+    a.host.rename("Notes/tmp.md", "Notes/Final.md");
+    return sent;
+  };
+  a.host.rename("Notes/Draft.md", "Notes/tmp.md");
+  await timers.run(STEP_MS, () => quiet(server, a, b) && b.host.text("Notes/Final.md") === DRAFT &&
+    b.host.text("Notes/Draft.md") === FINAL).catch(() => undefined);
+  await timers.run(STEP_MS);
+
+  for (const device of [a, b]) {
+    assert.equal(device.host.text("Notes/Final.md"), DRAFT, `a name was lost: ${story(server, a, b)}`);
+    assert.equal(device.host.text("Notes/Draft.md"), FINAL, `a name was lost: ${story(server, a, b)}`);
+    assert.equal(device.host.text("Notes/tmp.md"), null, `the swap's passing name was left: ${story(server, a, b)}`);
+  }
+  assert.deepEqual(nameMap(b), nameMap(a), story(server, a, b));
+  assert.ok(a.host.logs.includes(`push path_class=file decision=not_recorded reason=path_gone parent=advanced file=${draftId}`),
+    `the test never reached the window it exists for: ${a.host.logs.filter((line) => line.startsWith("push")).join(" | ")}`);
+  for (const id of [draftId, finalId]) {
+    assert.equal(server.files.get(id).heads.length, 1, `the swap forked a file: ${story(server, a, b)}`);
+    // And never forked on the way: a fork settled afterwards leaves a version
+    // naming two parents, and which name it keeps is then the rule's choice.
+    assert.ok(server.files.get(id).versions.every((version) => version.parents.length <= 1),
+      `the swap forked a file and settled it afterwards: ${story(server, a, b)}`);
+  }
+  assert.equal((await server.noteFiles(keys.manifestKey)).length, 2, "a swap made a file");
+  assert.deepEqual(tombstones(server), [], story(server, a, b));
+});
+
+/*
+ * ONE FOLDER, TWO NEW NAMES (issue #174, S84). The laptop, offline, renames
+ * `Projects/Beta` to `Jobs`; the desktop renames it to `Work`. Until 1.1.4 the
+ * folder split note by note, each note beside a byte-identical copy of
+ * itself: the laptop's own unpublished rename read as an edit, the arriving
+ * move kept both, and identical content was then settled per note by version
+ * id. Each note is now one fork, settled on the name that sorts first -- the
+ * same name for every note in the folder -- and the other folder goes.
+ */
+const B1 = "# b1\nthe first note in Beta\n";
+const B2 = "# b2\nthe second note in Beta\n";
+const KEEP = "# keep\na note beside the folder, which must not move\n";
+
+for (const edited of [false, true]) {
+  test(`a folder renamed differently on two devices ends under one name on both, with no copy${edited ? ", keeping an edit made there" : ""} (#174)`, async (t) => {
+    const { server, timers, a, b, keys } = await pair(t, "immediate", { isMobileB: false });
+    a.host.write("Projects/Beta/b1.md", B1, 1000);
+    a.host.write("Projects/Beta/b2.md", B2, 1000);
+    a.host.write("Projects/keep.md", KEEP, 1000);
+    await a.engine.start();
+    await b.engine.start();
+    await timers.run(STEP_MS, () => ["b1", "b2"].every((name) => settled(b, `Projects/Beta/${name}.md`)) &&
+      b.state.folderByPath("Projects/Beta") !== undefined && quiet(server, a, b));
+    const ids = ["b1", "b2"].map((name) => a.state.fileByPath(`Projects/Beta/${name}.md`).fileId);
+
+    // The laptop loses the server; its user renames the folder (and edits a
+    // note in it). The desktop renames the same folder another way.
+    server.unreachable.add(DEVICE_B);
+    b.host.renameFolder("Projects/Beta", "Jobs");
+    if (edited) b.host.write("Jobs/b1.md", `${B1}a line typed on the laptop SENTINEL\n`, 5000);
+    await timers.run(STEP_MS, () => b.state.fileByPath("Jobs/b2.md") !== undefined);
+    a.host.renameFolder("Projects/Beta", "Work");
+    await timers.run(STEP_MS, () => a.state.fileByPath("Work/b2.md")?.mtime > 0 && a.state.data.lastSeq === server.seq);
+
+    server.unreachable.delete(DEVICE_B);
+    const b1 = edited ? `${B1}a line typed on the laptop SENTINEL\n` : B1;
+    const done = () => quiet(server, a, b) && [a, b].every((device) => device.host.text("Jobs/b1.md") === b1 &&
+      device.host.text("Jobs/b2.md") === B2 && !device.host.hasFolder("Work"));
+    await timers.run(STEP_MS, done).catch(() => undefined);
+    await timers.run(STEP_MS);
+
+    const report = `${story(server, a, b)} desktop_notices=${JSON.stringify(a.host.notices)} laptop_notices=${JSON.stringify(b.host.notices)}`;
+    for (const device of [a, b]) {
+      assert.equal(device.host.text("Jobs/b1.md"), b1, `b1 is not under the name both settled on: ${report}`);
+      assert.equal(device.host.text("Jobs/b2.md"), B2, `b2 is not under the name both settled on: ${report}`);
+      assert.equal(device.host.text("Projects/keep.md"), KEEP, report);
+      assert.deepEqual([...device.host.files.keys()].filter((path) => path.includes("(conflict from")), [],
+        `a copy was made: ${report}`);
+      assert.equal(device.host.hasFolder("Work"), false, `the other name is still a folder: ${report}`);
+      assert.equal(device.host.hasFolder("Projects/Beta"), false, `the old name is still a folder: ${report}`);
+      assert.equal(device.state.fileByPath("Jobs/b1.md")?.fileId, ids[0], "b1 changed identity");
+      assert.equal(device.state.fileByPath("Jobs/b2.md")?.fileId, ids[1], "b2 changed identity");
+      // Told once, not once per note, which name won.
+      assert.equal(device.host.notices.filter((notice) => notice.includes("renamed differently")).length, 1, report);
+    }
+    assert.deepEqual(nameMap(b), nameMap(a), report);
+    for (const id of ids) assert.equal(server.files.get(id).heads.length, 1, `a note is still forked: ${report}`);
+    assert.deepEqual(tombstonesFor(server, ids), [], report);
+    assert.equal((await server.noteFiles(keys.manifestKey)).length, 3, `a note was duplicated: ${report}`);
+  });
+}
+
+/*
+ * AND ONLY THE FOLDER THE LOSING NAME MADE. A note moved out of its folder on
+ * one device and edited in it on the other merges under the new name; the
+ * folder it left is one its user keeps, empty, exactly as a note moved out of
+ * it on one device alone would leave it -- on both devices (issue #174).
+ */
+test("a note moved out of its folder on one device and edited in it on the other leaves that folder standing (#174)", async (t) => {
+  const { server, timers, a, b } = await pair(t, "immediate", { isMobileB: false });
+  a.host.write("Inbox/x.md", B1, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => settled(b, "Inbox/x.md") && b.state.folderByPath("Inbox") !== undefined && quiet(server, a, b));
+
+  b.engine.stop();
+  b.host.write("Inbox/x.md", `${B1}a line typed on the laptop SENTINEL\n`, 5000);
+  a.host.rename("Inbox/x.md", "Archive/x.md");
+  await timers.run(STEP_MS, () => a.state.fileByPath("Archive/x.md")?.mtime > 0 && a.state.data.lastSeq === server.seq);
+  await b.engine.start();
+  const edited = `${B1}a line typed on the laptop SENTINEL\n`;
+  await timers.run(STEP_MS, () => quiet(server, a, b) && [a, b].every((device) => device.host.text("Archive/x.md") === edited))
+    .catch(() => undefined);
+  await timers.run(STEP_MS);
+
+  for (const device of [a, b]) {
+    assert.equal(device.host.text("Archive/x.md"), edited, story(server, a, b));
+    assert.equal(device.host.text("Inbox/x.md"), null, story(server, a, b));
+    assert.equal(device.host.hasFolder("Inbox"), true, `the folder the note left was taken: ${story(server, a, b)}`);
+  }
+});
+
 /**
  * A vault that reports this device's own writes LATE: every create and modify
  * it would report is held back a second, and a name's held reports are
@@ -870,6 +1103,68 @@ for (const [order, n11] of [["lower", LOW], ["higher", HIGH]]) {
 }
 
 /**
+ * THE SAME-NAME RULE AT PUSH TIME (issue #122). The laptop reads the feed but
+ * cannot publish when the desktop's note of the same name arrives, so it has no
+ * id of its own to compare and keeps both, its own note at the name. When it
+ * can publish again, the push is where the rule is applied: holding the higher
+ * id, the laptop moves its note aside there and publishes it once, already
+ * under the new name, and the desktop's note takes the name; holding the lower,
+ * it keeps the name and the desktop moves its own note, as the feed's rule
+ * says. Both vantage points; the names agree either way.
+ */
+for (const [order, desktopId] of [["higher", LOW], ["lower", HIGH]]) {
+  test(`a note that could not be published at a collision is settled at its push, holding the ${order} id (#122)`, async (t) => {
+    const { ApiError } = require("../build/transport.js");
+    const { server, timers, a, b } = await pair(t, "immediate", { isMobileB: false });
+    a.host.write("Anchor.md", N11, 1000);
+    await a.engine.start();
+    await b.engine.start();
+    await timers.run(STEP_MS, () => b.host.text("Anchor.md") === N11 && settled(b, "Anchor.md"));
+
+    const post = b.transport.postVersion.bind(b.transport);
+    b.transport.postVersion = async () => { throw new ApiError(0, "unreachable", "offline"); };
+    b.host.write("Notes/Same.md", FROM_LAPTOP, 2000);
+    a.host.write("Notes/Same.md", DRAFT, 3000);
+    pin(a, "Notes/Same.md", desktopId);
+    await timers.run(STEP_MS, () => b.state.pathByFileId(desktopId) !== undefined);
+    // Kept both, and nothing was decided: the laptop's note has no id yet.
+    assert.equal(b.state.fileByPath("Notes/Same.md"), undefined, story(server, a, b));
+    assert.equal(b.state.fileByPath(b.state.pathByFileId(desktopId)).name, "Notes/Same.md");
+
+    b.transport.postVersion = post;
+    await timers.run(STEP_MS, () => quiet(server, a, b) && Object.keys(b.state.data.files).length === 3 &&
+      JSON.stringify(nameMap(a)) === JSON.stringify(nameMap(b))).catch(() => undefined);
+    await timers.run(STEP_MS);
+
+    assert.deepEqual(nameMap(b), nameMap(a), `the two devices name the notes differently: ${story(server, a, b)}`);
+    const laptopId = Object.values(b.state.data.files).find((record) => ![desktopId, a.state.fileByPath("Anchor.md").fileId]
+      .includes(record.fileId))?.fileId;
+    assert.ok(laptopId !== undefined, story(server, a, b));
+    assert.equal(laptopId > desktopId, order === "higher", "the fixture's ids are not in the order this case is about");
+    assert.equal(a.state.pathByFileId(desktopId) === "Notes/Same.md", order === "higher", "the lower id did not keep the name");
+    for (const device of [a, b]) {
+      const texts = [...device.host.files.keys()].map((path) => device.host.text(path));
+      assert.ok(texts.includes(DRAFT) && texts.includes(FROM_LAPTOP), `a note is missing: ${story(server, a, b)}`);
+    }
+    const laptopVersions = await published(server, laptopId, (await keys()).manifestKey);
+    if (order === "higher") {
+      // Published once, already under the name it moved to: no rename at all.
+      assert.equal(laptopVersions.length, 1, story(server, a, b));
+      assert.notEqual(laptopVersions[0].path, "Notes/Same.md");
+      assert.ok(b.host.logs.includes(`push decision=same_name_tiebreak winner=${LOW} role=rename file=${laptopId}`),
+        b.host.logs.filter((line) => line.startsWith("push")).join(" | "));
+    } else {
+      assert.deepEqual(laptopVersions.map((manifest) => manifest.path), ["Notes/Same.md"], "the lower id moved");
+      assert.equal(b.host.text("Notes/Same.md"), FROM_LAPTOP);
+      assert.ok(!b.host.logs.some((line) => line.includes("same_name_tiebreak") && line.includes("role=rename")),
+        b.host.logs.filter((line) => line.includes("same_name")).join(" | "));
+      // The desktop published the one rename.
+      assert.equal((await published(server, desktopId, (await keys()).manifestKey)).length, 2, story(server, a, b));
+    }
+  });
+}
+
+/**
  * AT THE NEXT SCAN. A phone cannot move its own note aside (`moveAside`), so
  * when both devices make a note of one name it keeps both, the desktop's
  * beside its own, and the two devices name them differently -- the price
@@ -907,3 +1202,172 @@ test("a note beside its name takes it at the next scan once this device's own us
   await timers.run(STEP_MS);
   assert.deepEqual(nameMap(b), nameMap(a), story(server, a, b));
 });
+
+/*
+ * A NEW NOTE RENAMED WHILE ITS FIRST POST IS IN FLIGHT (issue #213). A note
+ * has no record until the server answers its first post, so a rename landing
+ * before then had nothing to move: its push minted a second file id, and the
+ * other device received the note twice, under both names. The rename carries
+ * the post now, and the answer is the record at the new name -- whether the
+ * rename arrives while the post is being sent, once the server holds it, or
+ * (a watcher's event) after the answer was already recorded.
+ */
+const BORN = "# Born\na note renamed a moment after it was made\n";
+const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
+for (const delivery of ["immediate", "deferred"]) {
+  for (const moment of ["while it is sent", "once the server holds it", "after its answer"]) {
+    // Delivered at once, the last two are the same test.
+    if (delivery === "immediate" && moment === "after its answer") continue;
+    test(`a new note renamed ${moment} is one note under one id on both devices (#213, ${delivery})`, async (t) => {
+      const { server, timers, a, b, keys } = await pair(t, delivery);
+      await a.engine.start();
+      await b.engine.start();
+      const post = a.transport.postVersion.bind(a.transport);
+      a.transport.postVersion = async (...args) => {
+        // The folder's record goes first; the note's post is the one with chunks.
+        if (args[1].sids.length === 0) return post(...args);
+        a.transport.postVersion = post;
+        if (moment === "while it is sent") {
+          a.host.rename("Notes/Born.md", "Notes/Renamed.md");
+          if (delivery === "deferred") await tick();
+        }
+        const sent = await post(...args);
+        if (moment !== "while it is sent") {
+          a.host.rename("Notes/Born.md", "Notes/Renamed.md");
+          // The answer waits for the event, or goes back before it arrives.
+          if (delivery === "deferred" && moment === "once the server holds it") await tick();
+        }
+        return sent;
+      };
+      a.host.write("Notes/Born.md", BORN, 1000);
+      await timers.run(STEP_MS, () => quiet(server, a, b) && b.host.text("Notes/Renamed.md") === BORN &&
+        b.host.text("Notes/Born.md") === null).catch(() => undefined);
+      await timers.run(STEP_MS);
+
+      const carried = a.host.logs.includes("rename path_class=file decision=carried reason=post_in_flight");
+      assert.equal(carried, moment !== "after its answer",
+        `the test never reached the window it exists for: ${a.host.logs.filter((line) => /^(push|rename)/.test(line)).join(" | ")}`);
+      for (const device of [a, b]) {
+        assert.equal(device.host.text("Notes/Renamed.md"), BORN, `the note is not under its new name: ${story(server, a, b)}`);
+        assert.equal(device.host.text("Notes/Born.md"), null, `the note arrived twice: ${story(server, a, b)}`);
+      }
+      assert.deepEqual(nameMap(b), nameMap(a), story(server, a, b));
+      const id = a.state.fileByPath("Notes/Renamed.md").fileId;
+      assert.deepEqual(Object.keys(nameMap(a)), ["Notes/Renamed.md"], story(server, a, b));
+      assert.deepEqual(await server.noteFiles(keys.manifestKey), [id], `the server holds the note twice: ${story(server, a, b)}`);
+      assert.deepEqual(tombstones(server), [], story(server, a, b));
+      // What this device published: the note, then one move of it. (Under
+      // load the phone can publish its own applied move once more, a
+      // receiver echo this issue does not touch.)
+      const ours = server.journal.filter((frame) => frame.file_id === id && frame.device_id === KEYS.deviceId);
+      assert.deepEqual(ours.map((frame) => frame.parents.length), [0, 1], `this device did not publish one note and one move: ${story(server, a, b)}`);
+      assert.deepEqual([...new Set((await published(server, id, keys.manifestKey)).map((manifest) => manifest.path))],
+        ["Notes/Born.md", "Notes/Renamed.md"], "the rename was not published as a move of the posted note");
+    });
+  }
+}
+
+/*
+ * AND A FOLDER RENAMED WHILE A NEW NOTE IN IT POSTS. Obsidian reports the
+ * folder once, and the note in flight is neither a record nor queued work, so
+ * only the push in flight can say it moves with the folder: it does at once,
+ * not at the next scan.
+ */
+test("a new note whose folder is renamed while its first post is in flight is one note under one id on both devices (#213)", async (t) => {
+  const { server, timers, a, b, keys } = await pair(t, "immediate");
+  await a.engine.start();
+  await b.engine.start();
+  const post = a.transport.postVersion.bind(a.transport);
+  a.transport.postVersion = async (...args) => {
+    if (args[1].sids.length === 0) return post(...args);
+    a.transport.postVersion = post;
+    const sent = await post(...args);
+    a.host.renameFolder("Notes", "Journal");
+    return sent;
+  };
+  a.host.write("Notes/Born.md", BORN, 1000);
+  await timers.run(STEP_MS, () => quiet(server, a, b) && b.host.text("Journal/Born.md") === BORN &&
+    b.host.text("Notes/Born.md") === null).catch(() => undefined);
+  await timers.run(STEP_MS);
+
+  assert.ok(a.host.logs.includes("rename path_class=file decision=carried reason=post_in_flight"),
+    `the folder rename left the post in flight behind: ${a.host.logs.filter((line) => /^(push|rename)/.test(line)).join(" | ")}`);
+  for (const device of [a, b]) {
+    assert.equal(device.host.text("Journal/Born.md"), BORN, `the note did not move with its folder: ${story(server, a, b)}`);
+    assert.equal(device.host.text("Notes/Born.md"), null, `the note arrived twice: ${story(server, a, b)}`);
+  }
+  assert.deepEqual(nameMap(b), nameMap(a), story(server, a, b));
+  const id = a.state.fileByPath("Journal/Born.md").fileId;
+  assert.deepEqual(await server.noteFiles(keys.manifestKey), [id], `the server holds the note twice: ${story(server, a, b)}`);
+});
+
+/*
+ * THE RENAME'S OWN PUSH, RUN BESIDE THE POST IT CARRIED -- out of turn, as a
+ * pull's `identify` asks for one -- waits for that post's answer and publishes
+ * a move of its id. A post that fails leaves the moved note a new note, and
+ * one carried out of the selection records nothing (issue #91).
+ */
+for (const ending of ["lands", "fails", "leaves the selection", "lands before the move is sent"]) {
+  test(`a first post carried by a rename ${ending}: the rename's push waits for it and the server holds one note (#213)`, async () => {
+    const r = await rig();
+    if (ending === "leaves the selection") r.state.data.syncFolders = ["Notes"];
+    const to = ending === "leaves the selection" ? "Elsewhere/Renamed.md" : "Notes/Renamed.md";
+    r.host.seed("Notes/Born.md", BORN, 1000);
+    let reached = () => undefined;
+    let release = () => undefined;
+    const posting = new Promise((resolve) => { reached = resolve; });
+    const held = new Promise((resolve) => { release = resolve; });
+    const post = r.transport.postVersion.bind(r.transport);
+    r.transport.postVersion = async (...args) => {
+      r.transport.postVersion = post;
+      reached();
+      await held;
+      if (ending === "fails") throw new Error("the post was refused");
+      return post(...args);
+    };
+    const first = pushFile(r.context, "Notes/Born.md");
+    first.catch(() => undefined);
+    await posting;
+    // The rename handler, while the first post is out (`engine.ts`, `renamed`).
+    r.host.files.set(to, r.host.files.get("Notes/Born.md"));
+    r.host.files.delete("Notes/Born.md");
+    assert.equal(carryPost(r.context, "Notes/Born.md", to), true, "the post in flight was not linked to its path");
+    assert.equal(carryPost(r.context, "Notes/Born.md", to), false, "the link stayed behind at the old name");
+    const second = ending === "leaves the selection" || ending === "lands before the move is sent" ? null : pushFile(r.context, to, true);
+    release();
+    const waited = new Promise((_, reject) => setTimeout(() => reject(new assert.AssertionError({ message: "the rename's push waited for good" })), 5000));
+    waited.catch(() => undefined);
+    const born = await Promise.race([first.catch(() => null), waited]);
+    const moved = second === null ? null : await Promise.race([second, waited]);
+
+    const notes = await r.server.noteFiles(r.keys.manifestKey);
+    assert.equal(r.state.fileByPath("Notes/Born.md"), undefined, "the name the note left was recorded");
+    if (ending === "lands before the move is sent") {
+      // Obsidian may close now: the record owes the move, exactly as a rename leaves one, so the next start sends it.
+      assert.deepEqual(r.state.fileByPath(to), { fileId: born.fileId, versionId: born.versionId, mtime: -1, size: BORN.length, sha256: "" });
+      assert.deepEqual(notes, [born.fileId]);
+      return;
+    }
+    if (ending === "leaves the selection") {
+      assert.equal(r.state.fileByPath(to), undefined, "a path outside the selection was recorded");
+      assert.ok(r.host.logs.includes(`push path_class=file decision=not_recorded reason=renamed parent=kept file=${born.fileId}`),
+        r.host.logs.join(" | "));
+      assert.deepEqual(notes, [born.fileId]);
+      return;
+    }
+    const record = r.state.fileByPath(to);
+    assert.deepEqual([record.fileId, record.versionId], [moved.fileId, moved.versionId], "the moved note's record is not its move");
+    assert.deepEqual(notes, [moved.fileId], "the server holds the note twice");
+    if (ending === "fails") {
+      assert.equal(born, null);
+      assert.deepEqual((await published(r.server, moved.fileId, r.keys.manifestKey)).map((manifest) => manifest.path), [to]);
+      return;
+    }
+    assert.equal(moved.fileId, born.fileId, "the rename published the note under a second id");
+    assert.ok(r.host.logs.includes(`push path_class=file decision=not_recorded reason=renamed parent=advanced file=${born.fileId}`),
+      r.host.logs.join(" | "));
+    assert.deepEqual(r.server.files.get(born.fileId).heads, [moved.versionId], "the rename forked the file");
+    assert.deepEqual((await published(r.server, born.fileId, r.keys.manifestKey)).map((manifest) => manifest.path),
+      ["Notes/Born.md", to]);
+  });
+}

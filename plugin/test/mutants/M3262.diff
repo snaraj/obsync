@@ -1,0 +1,12 @@
+# M3262: the deletion rule keys on an empty record instead of the mark, and an intentionally empty note's deletion is never sent
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -675,7 +675,7 @@
+   // review of 2e4cdca). Deleting it removes that placeholder, not the note,
+   // whose text is on the server and on every other device: a tombstone would
+   // take it from them all. This device forgets the mark, and any record.
+-  if (mark !== undefined) {
++  if (mark !== undefined || record?.size === 0) {
+     if (record) context.state.forgetPath(path);
+     delete context.state.data.dropped[path];
+     await context.state.save();

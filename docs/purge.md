@@ -1,5 +1,7 @@
 # Purging a server
 
+*For people running an obsync server.*
+
 Wiping everything a server holds — every ciphertext chunk, every manifest,
 every version — and starting again with the same devices or with new ones.
 
@@ -88,7 +90,7 @@ hold.
    nothing now.
 
    ```sh
-   docker compose -f deploy/compose/docker-compose.yml exec obsync obsyncd setup-token
+   docker exec obsync-obsync-1 obsyncd setup-token
    ```
 
    [`recovery.md`](recovery.md), "Reading the setup token", has the Kubernetes

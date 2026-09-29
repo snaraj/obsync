@@ -1,0 +1,12 @@
+# M2817: the transport's silence hides an error that needs the person
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3015,7 +3015,7 @@
+   private shown(): EngineStatus {
+     const status = this.statusValue;
+     const calm = status.kind === "idle" || status.kind === "syncing";
+-    return this.unanswered && calm && this.state?.paired === true ? { kind: "offline" } : status;
++    return this.unanswered && this.state?.paired === true ? { kind: "offline" } : status;
+   }
+ 
+   private render(): void {

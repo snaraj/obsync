@@ -1,0 +1,12 @@
+# M2958: a fallback is said at debug, which the console hides by default
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -230,7 +230,7 @@
+ }
+ 
+ /** The decisions that mean the plugin did NOT do what was asked, or fell back to a slower way of doing it (#221). */
+-const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback)\b/;
++const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved)\b/;
+ 
+ /**
+  * How long a device waits to start again after the server could not be

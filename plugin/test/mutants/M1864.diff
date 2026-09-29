@@ -1,0 +1,12 @@
+# M1864: a device enrolled as its bare platform keeps that name on the server (#152)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3135,7 +3135,7 @@
+     const shown = context.host.deviceName;
+     if (own === undefined || own.name === shown) return;
+     const { platform } = context.host;
+-    const legacy = context.state.data.deviceName === null &&
++    const legacy = context.state.data.deviceName === "" &&
+       (own.name === platform || own.name === `${platform}-${context.deviceId.slice(0, 4)}`);
+     if (!legacy) {
+       context.state.data.deviceName = own.name;

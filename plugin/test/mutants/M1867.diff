@@ -1,0 +1,11 @@
+# M1867: closing the claim dialog cancels the claim (#153)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -593,6 +593,7 @@
+     this.waiting = null;
+     if (waiting === null || this.plugin.waiting !== waiting) return;
+     waiting.show = () => undefined;
++    waiting.stop = true;
+     tell("still waiting for approval in the background. Approve this device on the other device, and pairing finishes by itself; the code works for ten minutes from when it was made.");
+   }
+ 

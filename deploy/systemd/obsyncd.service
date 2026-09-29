@@ -1,0 +1,78 @@
+# obsync server as a systemd service, from the release tarball
+# (docs/server.md, "Without a container: the static binary").
+#
+# The same posture the container has (AGENTS.md, "Security invariants"): an
+# unprivileged user, no capabilities, a read-only system, and the server's
+# plain-HTTP port on loopback only, for a TLS reverse proxy on this host.
+#
+# Before the first start, as root:
+#   useradd --system --no-create-home --shell /usr/sbin/nologin obsync
+#   unpack the tarball to /opt/obsync, owned by root
+#   install -m 0600 /dev/null /etc/obsync/obsyncd.env, then write the two
+#   capacities into it (below)
+#
+# A STATIC user, not DynamicUser=: the journal volume holds the server key and
+# the setup token, and the server refuses a volume owned by anyone but root or
+# itself (docs/storage.md, "Volume posture"). A dynamic uid is recycled between
+# services and reaches its state directory through a symlink the posture pass
+# refuses (`not_canonical`).
+[Unit]
+Description=obsync server
+Documentation=https://github.com/snaraj/obsync/blob/main/docs/server.md
+After=network.target
+
+[Service]
+Type=simple
+User=obsync
+Group=obsync
+ExecStart=/opt/obsync/obsyncd serve
+# Loopback only; the reverse proxy on this host is the one trusted peer.
+Environment=OBSYNC_LISTEN=127.0.0.1:8080
+Environment=OBSYNC_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+Environment=OBSYNC_BLOBS_DIR=/var/lib/obsync/blobs
+Environment=OBSYNC_JOURNAL_DIR=/var/lib/obsync/journal
+Environment=OBSYNC_DASHBOARD_DIR=/opt/obsync/dashboard
+Environment=OBSYNC_PLUGIN_DIR=/opt/obsync/plugin
+# REQUIRED, and deliberately not defaulted here: OBSYNC_BLOBS_CAPACITY and
+# OBSYNC_JOURNAL_CAPACITY, the space you set aside on this disk (for example
+# 100GiB and 4GiB). Free space is capacity minus what the server wrote, so a
+# number larger than the disk makes the free-space refusal fire too late. The
+# server refuses to start without them. The file may also carry
+# OBSYNC_PUBLIC_URL and OBSYNC_SERVER_KEY; any other OBSYNC_* name is a
+# startup error.
+EnvironmentFile=/etc/obsync/obsyncd.env
+# Created owned by obsync, mode 0700, under a root-owned /var/lib/obsync.
+StateDirectory=obsync/blobs obsync/journal
+StateDirectoryMode=0700
+UMask=0077
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+
+[Install]
+WantedBy=multi-user.target

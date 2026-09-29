@@ -1,0 +1,21 @@
+# M2907: the pending re-case is saved after the first rename instead of before it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1691,15 +1691,15 @@
+     if (state.data.pendingRecase !== undefined) return refuse("recase_pending");
+     const temp = await this.recaseTemp(from, kind);
+     if (temp === null) return refuse("temp_taken");
+-    state.data.pendingRecase = { from, temp, to };
+-    await state.save();
+     this.recasing.set(temp, { from, to });
++    const saveLate = async (): Promise<void> => { state.data.pendingRecase = { from, temp, to }; await state.save(); };
+     const settle = async (): Promise<void> => {
+       delete state.data.pendingRecase;
+       await state.save();
+     };
+     try {
+       await vault.rename(entry, temp);
++      await saveLate();
+     } catch {
+       // Nothing moved: the entry still wears the name its records hold.
+       await settle();

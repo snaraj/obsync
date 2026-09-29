@@ -21,6 +21,7 @@ pub mod plugin;
 pub mod rand;
 pub mod render;
 pub mod setup;
+pub mod unverified;
 
 #[cfg(test)]
 mod app_test;
@@ -35,7 +36,7 @@ use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use obsync_core::http::{Handler, Request, Response, ResponseBody};
 use obsync_core::json::obj;
@@ -56,6 +57,32 @@ use self::render::s;
 /// JSON request bodies are refused above this size (`docs/protocol.md`,
 /// "Limits and headers").
 pub const JSON_BODY_LIMIT: u64 = 4 * 1024 * 1024;
+/// Bytes of request body this process holds, across every connection, before
+/// any credential has verified: sixteen maximal JSON bodies. Every JSON body
+/// is read before its credential verifies, because a device signature covers
+/// the body's hash and the setup and enrolment tokens ride inside the body.
+/// Without this the bound was the connection ceiling times 4 MiB, about the
+/// chart's whole memory limit, and anyone who can reach the port could spend
+/// it (`docs/threat-model.md`).
+pub const PREAUTH_BODY_BUDGET: u64 = 16 * JSON_BODY_LIMIT;
+/// The setup and pairing-claim bodies carry their credential inside them, so
+/// they are parsed before anything verifies. They are small by construction
+/// (two tokens, a name, a platform, a version and a sealed vault key, under
+/// 4 KiB), and are read under this ceiling instead of [`JSON_BODY_LIMIT`].
+pub const TOKEN_BODY_LIMIT: u64 = 16 * 1024;
+/// What one such read reserves against [`PREAUTH_BODY_BUDGET`], held until
+/// its token verifies: the body and everything parsing it can allocate. A
+/// document of [`TOKEN_BODY_LIMIT`] bytes allocates at most about 72 bytes
+/// of value per byte (a `[[[…]]]` nest); `render`'s test measures the
+/// costliest shapes under this.
+pub const TOKEN_BODY_RESERVE: u64 = JSON_BODY_LIMIT;
+/// The most JSON one `GET /v1/files/{file_id}` answer carries
+/// (`docs/protocol.md`, "Limits and headers"). Every head is always in it,
+/// and 64 of the widest versions fit with room to spare (`render`'s test);
+/// older versions stop where the next would pass it, so a long retention
+/// never makes a file's record larger than a client accepts (the plugin
+/// refuses an answer above this same number).
+pub const FILE_RECORD_MAX: u64 = 450 * 1024 * 1024;
 /// Maximum ciphertext: 8 MiB plaintext plus the existing 16-byte AES-GCM tag.
 pub const CHUNK_BODY_LIMIT: u64 = 8 * 1024 * 1024 + 16;
 /// `POST /v1/chunks/exists` accepts at most this many sids.
@@ -103,6 +130,10 @@ pub struct ApiError {
     /// Extra body fields a refusal carries, such as the `missing` sid list of
     /// `409 missing_chunks`.
     pub fields: Vec<(String, obsync_core::json::Value)>,
+    /// Answered as the framework answers its own overload: a status line,
+    /// `Retry-After`, `Connection: close` and no body. The code still
+    /// reaches the log line.
+    pub bare: bool,
 }
 
 impl ApiError {
@@ -113,7 +144,16 @@ impl ApiError {
             code,
             detail: detail.into(),
             fields: Vec::new(),
+            bare: false,
         }
+    }
+
+    /// A refusal answered with no body, for load the server sheds before it
+    /// has anything to say to the caller.
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
     }
 
     /// Add one field to the refusal body.
@@ -136,6 +176,11 @@ impl ApiError {
     /// The wire body: `{"error","detail"}` plus any extra fields
     /// (`docs/protocol.md`).
     pub fn to_response(&self) -> Response {
+        if self.bare {
+            return Response::empty(self.status)
+                .header("Retry-After", "1")
+                .close();
+        }
         let mut fields = vec![
             ("error".to_string(), s(self.code)),
             ("detail".to_string(), s(&self.detail)),
@@ -372,12 +417,14 @@ pub struct App {
     pub shutdown: Arc<AtomicBool>,
     /// First-boot setup token, also the dashboard recovery login.
     pub setup_token: Option<String>,
-    nonces: Mutex<auth::NonceCache>,
+    nonces: auth::NonceCache,
     pairings: Mutex<PairingTable>,
     sessions: Mutex<admin::SessionTable>,
     seen: Mutex<HashMap<String, u64>>,
+    joined: edge::JoinedLog,
     recent: Mutex<Recent>,
     ready: Mutex<ReadyCache>,
+    bodies: unverified::BodyBudget,
     gc_requested: AtomicBool,
     scrub_requested: AtomicBool,
     gc_running: AtomicBool,
@@ -434,15 +481,17 @@ impl App {
             plugin,
             shutdown,
             setup_token,
-            nonces: Mutex::new(nonces),
+            nonces,
             pairings: Mutex::new(PairingTable::new()),
             sessions: Mutex::new(admin::SessionTable::new()),
             seen: Mutex::new(HashMap::new()),
+            joined: edge::JoinedLog::default(),
             recent: Mutex::new(Recent::default()),
             ready: Mutex::new(ReadyCache {
                 checked_at: 0,
                 verdict: Ok(()),
             }),
+            bodies: unverified::BodyBudget::default(),
             gc_requested: AtomicBool::new(false),
             scrub_requested: AtomicBool::new(false),
             gc_running: AtomicBool::new(false),
@@ -525,14 +574,21 @@ impl App {
         self.gc_requested.swap(false, Ordering::SeqCst)
     }
 
-    /// Ask the scrubber to start a pass now.
+    /// Ask the scrubber to start a pass now, even one resting between passes.
     pub fn request_scrub(&self) {
+        self.store.request_scrub();
         self.scrub_requested.store(true, Ordering::SeqCst);
     }
 
     /// Whether a scrub was asked for, clearing the request.
     pub fn take_scrub_request(&self) -> bool {
         self.scrub_requested.swap(false, Ordering::SeqCst)
+    }
+
+    /// Body bytes reserved right now, for the tests that pin the ceiling.
+    #[cfg(test)]
+    pub fn preauth_held(&self) -> u64 {
+        self.bodies.held()
     }
 
     /// The account id, or `409 not_set_up`.
@@ -547,19 +603,21 @@ impl App {
     /// and what the accepted requests since the last sweep cost the journal
     /// volume in durable nonce records.
     ///
-    /// A pairing that expired while claimed but unapproved leaves a device
-    /// nobody ever approved. That device is deleted here, secret and all, so
-    /// a claim can never outlive the ten minutes that granted it
-    /// (`docs/architecture.md` 4.2). Each deletion is one log line
-    /// (requirement 12).
+    /// A pairing that expired before its claimant collected the key --
+    /// claimed and unapproved, or approved and never fetched -- leaves a
+    /// device with no vault key, still pending because collection is what
+    /// activates. That device is deleted here, secret and all, so a claim can
+    /// never outlive the ten minutes that granted it (`docs/architecture.md`
+    /// 4.2; issue #153). Each deletion is one log line naming the state the
+    /// pairing ended in (requirement 12).
     pub fn sweep(&self, now: u64) -> (usize, u64, usize, usize) {
-        let (nonces, nonce_appends) = {
-            let mut cache = self.nonces.lock().expect("nonce cache");
-            (cache.sweep(now), cache.appends())
-        };
+        let (nonces, nonce_appends) = (self.nonces.sweep(now), self.nonces.appends());
         let swept = self.pairings.lock().expect("pairings").sweep(now);
-        for device in &swept.orphans {
-            let mut fields = vec![("device", Val::device(device))];
+        for (device, ended) in &swept.orphans {
+            let mut fields = vec![
+                ("device", Val::device(device)),
+                ("state", Val::word(ended.as_str())),
+            ];
             match self.store.delete_device(device) {
                 Ok(()) => fields.push(("decision", Val::word("deleted"))),
                 Err(e) => {
@@ -629,28 +687,38 @@ impl App {
                 io: Some(kind),
             });
         }
-        if let Err(e) = probe_writable(&self.cfg.blobs_dir) {
-            self.not_ready("blobs", &e);
-            return Err(NotReady {
-                reason: "blobs volume is not writable",
-                io: None,
-            });
+        // A real write made durable inside the verdict's own lifetime already
+        // proved its volumes take a write, and the synthetic probe is skipped
+        // for them; the first real write a volume refuses takes that proof
+        // away. A chunk write lands on the primary and on every mirror, so it
+        // proves all of them.
+        let (blobs_proven, journal_proven) = self
+            .store
+            .written_within(Duration::from_secs(READY_CACHE_SECS));
+        if !blobs_proven {
+            if let Err(e) = probe_writable(&self.cfg.blobs_dir) {
+                self.not_ready("blobs", &e);
+                return Err(NotReady {
+                    reason: "blobs volume is not writable",
+                    io: None,
+                });
+            }
+            for m in &self.cfg.blobs_mirrors {
+                if let Err(e) = probe_writable(&m.path) {
+                    self.not_ready("mirror", &e);
+                    return Err(NotReady {
+                        reason: "a mirror volume is not writable",
+                        io: None,
+                    });
+                }
+            }
         }
-        if let Err(e) = probe_writable(&self.cfg.journal_dir) {
+        if !journal_proven && let Err(e) = probe_writable(&self.cfg.journal_dir) {
             self.not_ready("journal", &e);
             return Err(NotReady {
                 reason: "journal volume is not writable",
                 io: None,
             });
-        }
-        for m in &self.cfg.blobs_mirrors {
-            if let Err(e) = probe_writable(&m.path) {
-                self.not_ready("mirror", &e);
-                return Err(NotReady {
-                    reason: "a mirror volume is not writable",
-                    io: None,
-                });
-            }
         }
         Ok(())
     }
@@ -671,6 +739,50 @@ impl App {
         );
     }
 
+    /// One line for forwarded headers the server did not believe. From a
+    /// peer outside `OBSYNC_TRUSTED_PROXY_CIDRS` that is either a client
+    /// naming itself or a proxy nobody listed, and the dashboard then shows
+    /// the proxy's address for everyone (debug: it is also every direct
+    /// request that carries one). Two headers from a trusted proxy naming
+    /// different clients is a forgery in the one the proxy does not manage.
+    fn forwarding_ignored(&self, reason: &'static str) {
+        let fields = [
+            ("decision", Val::word("ignored")),
+            ("reason", Val::word(reason)),
+        ];
+        if reason == "untrusted_peer" {
+            self.log.debug("forwarded_headers", &fields);
+        } else {
+            self.log.warn("forwarded_headers", &fields);
+        }
+    }
+
+    /// One line, at most once a minute, for a trusted proxy that sent a
+    /// forwarding header in more than one field: it ADDS its own field
+    /// rather than appending to the one that arrived, and the server reads
+    /// the fields as one list (`edge::derive_parts`). The line counts the
+    /// requests since the last one, so a proxy that does it on every request
+    /// cannot flood the log.
+    fn forwarding_joined(&self, (forwarded_for, forwarded): (usize, usize)) {
+        let Some(requests) = self.joined.due(self.clock.unix_secs()) else {
+            return;
+        };
+        self.log.info(
+            "forwarded_headers",
+            &[
+                ("decision", Val::word("joined")),
+                ("reason", Val::word("repeated_fields")),
+                ("x_forwarded_for", Val::count(forwarded_for as u64)),
+                ("forwarded", Val::count(forwarded as u64)),
+                ("requests", Val::count(requests)),
+                (
+                    "interval_ms",
+                    Val::ms(edge::JOINED_LOG_INTERVAL_SECS * 1000),
+                ),
+            ],
+        );
+    }
+
     /// Serve one request: resolve, enforce the edge requirement, dispatch,
     /// harden the response, and log exactly one line.
     pub fn handle(&self, req: &mut Request) -> Response {
@@ -682,6 +794,14 @@ impl App {
                 let health = matches!(route, Route::Livez | Route::Readyz);
                 let demands = demands_credential(&route);
                 let client = edge::derive(&self.cfg, req);
+                if let Ok(c) = &client {
+                    if let Some(reason) = c.ignored {
+                        self.forwarding_ignored(reason);
+                    }
+                    if let Some(fields) = c.joined {
+                        self.forwarding_joined(fields);
+                    }
+                }
                 let out = match (health, client) {
                     (true, _) => self.dispatch(route, req, &ClientInfo::unknown()),
                     (false, Ok(c)) => self.dispatch(route, req, &c),
@@ -755,13 +875,12 @@ impl App {
         }
     }
 
+    /// Readiness and nothing else. The journal head is write activity, kept
+    /// from any caller that proved no credential (`X-Obsync-Seq`); the body
+    /// carried it to anyone who asked until 1.1.4 (issue #235).
     fn readyz(&self) -> Result<Response, ApiError> {
-        let seq = self.store.head_seq();
         match self.readiness() {
-            Ok(()) => Ok(Response::json(
-                200,
-                &obj(vec![("ready", render::b(true)), ("seq", render::seq(seq))]),
-            )),
+            Ok(()) => Ok(Response::json(200, &obj(vec![("ready", render::b(true))]))),
             Err(reason) => Err(ApiError::new(503, "not_ready", reason.detail())),
         }
     }
@@ -841,6 +960,12 @@ impl App {
     /// The one line every request logs (`docs/protocol.md`, "Limits and
     /// headers"). A refusal raises it to warn, and a server fault to error, so
     /// the decision is visible at any level an operator runs (requirement 12).
+    ///
+    /// A `503` that names the SENDER is a refusal, not a fault: a body slower
+    /// than the floor, or one that ended before it was whole, is the device's
+    /// link, and the device retries it. Logged as an error, every phone on a
+    /// weak signal read as a failing server, which the troubleshooting table
+    /// says it is not (#212).
     fn emit(&self, line: &LogLine) {
         let fields = [
             ("method", Val::word(line.method)),
@@ -854,7 +979,8 @@ impl App {
             ("duration_ms", Val::ms(line.duration_ms)),
             ("decision", Val::word(line.decision)),
         ];
-        if line.status >= 500 {
+        let sender = matches!(line.decision, "slow_body" | "body_incomplete");
+        if line.status >= 500 && !sender {
             self.log.error("request", &fields);
         } else if line.status >= 400 {
             self.log.warn("request", &fields);
@@ -989,9 +1115,25 @@ pub fn is_hex(v: &str, n: usize) -> bool {
 }
 
 /// Write, fsync, and remove a probe file: proof the volume takes a write now.
+///
+/// Whatever stands at the name -- a probe a crash left, or a link a restored
+/// volume brought -- is removed by name, which never follows a link, and the
+/// probe is then created exclusively: `O_EXCL` refuses an existing name of
+/// any kind, so the probe can never truncate or write the file a planted
+/// link points at (the compaction in `api/nonce_log.rs` does the same).
 fn probe_writable(dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
     let path = dir.join(".obsync-readyz");
-    let mut f = std::fs::File::create(&path)?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
     f.write_all(b"obsync readyz probe\n")?;
     f.sync_all()?;
     drop(f);

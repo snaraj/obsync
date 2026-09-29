@@ -1,0 +1,12 @@
+# M2863: the Leave dialog shows no progress and keeps its buttons while it leaves
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -504,8 +504,6 @@
+     // Progress at once, in place of the buttons: the stop, the revoke and a
+     // refusal each take seconds, and a dialog that sat unchanged for them read
+     // as a press that did nothing (S22, S40).
+-    this.contentEl.empty();
+-    this.contentEl.createEl("p", { text: LEAVING });
+     let result;
+     try {
+       result = await this.plugin.leaveServer(choice);

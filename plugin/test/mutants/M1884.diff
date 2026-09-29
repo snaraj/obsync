@@ -1,0 +1,12 @@
+# M1884: a stored edge header replaces a header obsync sets itself (#183)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -522,7 +522,7 @@
+       // for a name pasted with its `-H` -- is refused by name before anything
+       // is sent (issue #183). Settings refuses both at entry; this holds for
+       // a list saved before it did.
+-      if (ownHeader(header.name) || !HEADER_NAME.test(header.name) || !HEADER_VALUE.test(header.value)) {
++      if (!HEADER_NAME.test(header.name) || !HEADER_VALUE.test(header.value)) {
+         this.log(`http ${target} decision=refused reason=edge_header`);
+         throw new Error(`The custom request header "${header.name}" cannot be sent as written, so obsync sent nothing. Correct it in obsync's settings, under Custom request headers.`);
+       }

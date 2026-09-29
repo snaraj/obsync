@@ -1,0 +1,12 @@
+# M3202: a config folder holding this plugin's folder directly, without plugins/, makes a vault
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -712,7 +712,7 @@
+     next: for (const name of names) {
+       if (!name.startsWith(".")) continue;
+       let at = desktop.path.resolve(dir, name);
+-      for (const step of ["plugins", PAIRING_ACTION, null]) {
++      for (const step of [PAIRING_ACTION, null]) {
+         // A hidden entry the system will not stat (macOS answers `/.resolve`
+         // with EINVAL) is no config folder; the question moves on.
+         const stat = await walker(desktop.fs).lstat(at).catch(() => null);

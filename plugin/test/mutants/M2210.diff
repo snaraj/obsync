@@ -1,0 +1,12 @@
+# M2210: Sync now leaves the long poll in flight instead of dropping it for a read at once
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2568,7 +2568,7 @@
+     pause?.();
+     const poll = this.poll;
+     const waited = poll === null ? 0 : this.nowFn() - poll.sent;
+-    const dropped = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);
++    const dropped = poll !== null && (reason === "address" || waited >= POLL_STALE_MS);
+     if (dropped) {
+       this.poll = null;
+       this.feedAnswered = false;

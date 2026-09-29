@@ -2,13 +2,16 @@
 
 # Cloudflare
 
-Deux façons de placer Cloudflare entre vos appareils et votre serveur, et
-laquelle utilise le déploiement de référence. Aucune n'est obligatoire : le
-serveur ne connaît aucun fournisseur par son nom, et
+*Pour qui fait tourner un serveur obsync.*
+
+Deux façons de placer Cloudflare entre vos appareils et votre serveur.
+Cloudflare n'est qu'un choix facultatif parmi d'autres : tout proxy inverse,
+VPN ou tunnel auquel vous faites confiance fait le même travail, le serveur ne
+connaît aucun fournisseur par son nom, et
 [Faire tourner le serveur](../server.md) n'exige de compte chez personne.
-Cette page s'adresse à vous si vous voulez joindre le serveur hors de chez
-vous sans ouvrir de port sur votre routeur, ou si vous voulez un nom d'hôte
-publié avec une politique d'accès devant.
+Cette page s'adresse à vous si vous utilisez déjà Cloudflare et voulez joindre
+le serveur hors de chez vous sans ouvrir de port sur votre routeur, ou si vous
+voulez un nom d'hôte publié avec une politique d'accès devant.
 
 Les menus de Cloudflare et les conditions de ses offres changent. Chaque
 étape ci-dessous nomme le chemin de menu tel que la documentation Cloudflare
@@ -19,10 +22,10 @@ limite ou à un prix.
 
 | Variante | Ce que voient les appareils | Ce que voit Internet | Première synchronisation volumineuse |
 | --- | --- | --- | --- |
-| **Route privée** (le déploiement de référence) | votre propre adresse privée et votre nom, via le client Cloudflare One | rien : ni nom d'hôte ni port ouvert | trafic de réseau privé, sans passer par un nom d'hôte public |
+| **Route privée** | votre propre adresse privée et votre nom, via le client Cloudflare One | rien : ni nom d'hôte ni port ouvert | trafic de réseau privé, sans passer par un nom d'hôte public |
 | **Nom d'hôte public avec Access** | un nom public, une politique Access, un jeton de service dans le module | le nom d'hôte, derrière Access | relayé par Cloudflare, aux conditions du fournisseur pour les gros fichiers |
 
-La route privée est la référence parce que le serveur reste invisible et
+La route privée est celle à préférer, parce que le serveur reste invisible et
 parce que la documentation de Cloudflare elle-même y envoie les gros
 transferts : une route par nom d'hôte public fait passer le trafic par
 Cloudflare, et sur les offres Free, Pro et Business les conditions propres au
@@ -109,10 +112,11 @@ Compromis :
 Le serveur reçoit un nom d'hôte sur un domaine que vous avez chez Cloudflare.
 Le tunnel publie ce nom vers l'adresse privée du serveur, et Cloudflare
 Access se place devant : une politique d'identité pour le tableau de bord et
-un jeton de service pour les appels d'API du module. C'est la variante que
-[l'intégration à la plateforme](../platform-onboarding.md) décrit pour le
-cluster de référence, et celle que le déploiement de référence n'a pas
-retenue.
+un jeton de service pour les appels d'API du module. C'est la forme
+Cloudflare du chemin par nom d'hôte publié que décrit
+[l'intégration à la plateforme](../platform-onboarding.md) ; votre propre
+proxy inverse avec sa propre authentification en est la forme sans
+fournisseur.
 
 1. **Publiez le nom d'hôte.** Dans la configuration du tunnel, ajoutez une
    route d'application publiée de votre nom d'hôte (`sync.example.com` tient
@@ -128,8 +132,8 @@ retenue.
    un et copiez le Client ID et le Client Secret ; le secret n'est affiché
    qu'une fois. Ajoutez à l'application une politique **Service Auth** qui
    inclut ce jeton, pour les chemins qu'utilise le module (`/v1/*`).
-4. **Collez le jeton dans le module.** Sous **Edge service-token headers**, un
-   par ligne, exactement comme Cloudflare les nomme :
+4. **Collez le jeton dans le module.** Sous **Custom request headers**, un par
+   ligne, exactement comme Cloudflare les nomme :
 
    ```text
    CF-Access-Client-Id: <the client id>
@@ -142,6 +146,11 @@ retenue.
    en-têtes de la bordure indiquant l'adresse de connexion et l'identifiant de
    requête, et une requête qui arrive en contournant la bordure est refusée
    avec `421 edge_required` ([dépannage](../troubleshooting.md#edge_required)).
+   Le serveur ne croit ces en-têtes que s'ils viennent de
+   `OBSYNC_TRUSTED_PROXY_CIDRS`. Dans ce mode, sa valeur par défaut couvre
+   les réseaux privés depuis lesquels le joint un connecteur installé sur le
+   même hôte, dans le même réseau de conteneurs ou dans le même cluster ;
+   réglez-le sur le propre réseau du connecteur pour le restreindre davantage.
 6. **Vérifiez.** Ouvrez le nom d'hôte dans un navigateur et attendez-vous à la
    connexion Access, puis au tableau de bord. Dans le module, choisissez
    **Check** sous **Connection**.
@@ -162,21 +171,21 @@ Compromis :
 
 ## Ce qui a été prouvé
 
-La route privée est la route du déploiement de référence. La
+La route privée a des campagnes sur appareils à son actif : la
 [campagne du 2026-09-14](../validation-runs/2026-09-14.md) note qu'elle n'a
 pas été exercée ce jour-là, et pourquoi ; la
 [campagne du 2026-09-20](../validation-runs/2026-09-20.md) enregistre une
-campagne sur appareils sur la route de référence, avec les vérifications de
-connectivité et de TLS réussies. La variante à nom d'hôte public n'a été
-exercée par aucune campagne enregistrée.
+campagne sur appareils par la route privée vers un cluster, avec les
+vérifications de connectivité et de TLS réussies, sur macOS et iPhone. La
+variante à nom d'hôte public n'a été exercée par aucune campagne
+enregistrée : elle n'est pas encore prouvée.
 
 ## Ensuite
 
 - [Faire tourner le serveur](../server.md) : le terminateur, les volumes, le
   jeton d'installation.
-- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md) : le chart qu'utilise le déploiement
-  de référence.
-- [Intégration à la plateforme](../platform-onboarding.md) : ce que le
-  cluster de référence ajouterait pour un nom d'hôte publié.
+- [Kubernetes](../kubernetes.md) : le chart, ses volumes et son frontal TLS.
+- [Intégration à la plateforme](../platform-onboarding.md) : ce qu'une
+  plateforme GitOps ajoute pour un nom d'hôte publié.
 - [Dépannage](../troubleshooting.md) : `edge_required`, `offline` et le
   certificat.

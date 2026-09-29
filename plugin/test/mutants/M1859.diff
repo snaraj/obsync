@@ -1,0 +1,12 @@
+# M1859: a pasted pairing link is read as a code (#154)
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -87,7 +87,7 @@
+  * code (issue #154). Refusals say what to paste, never what failed to decode.
+  */
+ export function decodePairingCode(code: string): PairingCode {
+-  const linked = /[?&]code=([^&#\s]+)/.exec(code)?.[1];
++  const linked = undefined;
+   let raw: Bytes;
+   try {
+     raw = unbase32(unwrap(linked ?? code));

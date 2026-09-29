@@ -2,12 +2,16 @@
 
 # Cloudflare
 
-Zwei Wege, Cloudflare zwischen deine Geräte und deinen Server zu setzen, und
-welchen davon die Referenzinstallation nutzt. Keiner ist Pflicht: Der Server
+*Für alle, die einen obsync-Server betreiben.*
+
+Zwei Wege, Cloudflare zwischen deine Geräte und deinen Server zu setzen.
+Cloudflare ist eine optionale Wahl unter vielen: Jeder Reverse-Proxy, jedes
+VPN und jeder Tunnel, dem du vertraust, erledigt dieselbe Aufgabe, der Server
 kennt keinen Anbieter beim Namen, und [Server betreiben](../server.md) braucht
-kein Konto bei irgendwem. Diese Seite ist für dich, wenn du den Server von
-unterwegs erreichen willst, ohne einen Port am Router zu öffnen, oder wenn du
-einen veröffentlichten Hostnamen mit einer Zugriffsrichtlinie davor willst.
+kein Konto bei irgendwem. Diese Seite ist für dich, wenn du Cloudflare schon
+nutzt und den Server von unterwegs erreichen willst, ohne einen Port am Router
+zu öffnen, oder wenn du einen veröffentlichten Hostnamen mit einer
+Zugriffsrichtlinie davor willst.
 
 Cloudflares Menüs und Tarifbedingungen ändern sich. Jeder Schritt unten nennt
 den Menüpfad so, wie ihn die Cloudflare-Dokumentation am 2026-09-22 angab;
@@ -18,10 +22,10 @@ verlässt.
 
 | Variante | Was die Geräte sehen | Was das Internet sieht | Große Erstsynchronisation |
 | --- | --- | --- | --- |
-| **Private Route** (die Referenzinstallation) | deine eigene private Adresse und deinen Namen, über den Cloudflare One Client | nichts: kein Hostname, kein offener Port | privater Netzwerkverkehr, nicht über einen öffentlichen Hostnamen geleitet |
+| **Private Route** | deine eigene private Adresse und deinen Namen, über den Cloudflare One Client | nichts: kein Hostname, kein offener Port | privater Netzwerkverkehr, nicht über einen öffentlichen Hostnamen geleitet |
 | **Öffentlicher Hostname mit Access** | einen öffentlichen Namen, eine Access-Richtlinie, ein Service-Token im Plugin | den Hostnamen, hinter Access | über Cloudflare geleitet, zu den Bedingungen des Anbieters für große Dateien |
 
-Die private Route ist die Referenz, weil der Server unsichtbar bleibt und
+Die private Route ist die bessere Wahl, weil der Server unsichtbar bleibt und
 weil Cloudflares eigene Dokumentation große Übertragungen dorthin verweist:
 Eine Route über einen öffentlichen Hostnamen leitet den Verkehr durch
 Cloudflare, und in den Tarifen Free, Pro und Business verlangen die
@@ -110,9 +114,10 @@ Der Server bekommt einen Hostnamen in einer Domain, die du bei Cloudflare
 hast. Der Tunnel veröffentlicht diesen Hostnamen auf die private Adresse des
 Servers, und Cloudflare Access sitzt davor: eine Identitätsrichtlinie für das
 Dashboard und ein Service-Token für die API-Aufrufe des Plugins. Das ist die
-Variante, die [Platform-Onboarding](../platform-onboarding.md) für den
-Referenz-Cluster beschreibt, und die, die die Referenzinstallation nicht
-gewählt hat.
+Cloudflare-Form des Wegs über einen veröffentlichten Hostnamen, den
+[Platform-Onboarding](../platform-onboarding.md) beschreibt; dein eigener
+Reverse-Proxy mit eigener Authentifizierung ist die anbieterfreie Form
+desselben Wegs.
 
 1. **Den Hostnamen veröffentlichen.** Füge in der Konfiguration des Tunnels
    eine Route für eine veröffentlichte Anwendung von deinem Hostnamen
@@ -128,7 +133,7 @@ gewählt hat.
    einmal angezeigt. Füge der Anwendung eine **Service Auth**-Richtlinie
    hinzu, die dieses Token einschließt, für die Pfade, die das Plugin nutzt
    (`/v1/*`).
-4. **Das Token ins Plugin einfügen.** Unter **Edge service-token headers**,
+4. **Das Token ins Plugin einfügen.** Unter **Custom request headers**,
    eines pro Zeile, genau so, wie Cloudflare sie nennt:
 
    ```text
@@ -141,7 +146,12 @@ gewählt hat.
    `OBSYNC_EDGE=cloudflare`. In diesem Modus muss jede Anfrage die Header der
    Edge für die verbindende Adresse und die Request-ID tragen, und eine
    Anfrage, die an der Edge vorbei ankommt, wird mit `421 edge_required`
-   abgewiesen ([Fehlersuche](../troubleshooting.md#edge_required)).
+   abgewiesen ([Fehlersuche](../troubleshooting.md#edge_required)). Der
+   Server glaubt diesen Headern nur aus `OBSYNC_TRUSTED_PROXY_CIDRS`; in
+   diesem Modus sind das standardmäßig die privaten Netze, aus denen ihn ein
+   Connector auf demselben Host, im selben Container-Netz oder im selben
+   Cluster erreicht. Setze den Wert auf das eigene Netz des Connectors, um ihn
+   weiter einzuschränken.
 6. **Prüfen.** Öffne den Hostnamen im Browser und erwarte die
    Access-Anmeldung, dann das Dashboard. Wähle im Plugin **Check** unter
    **Connection**.
@@ -161,21 +171,22 @@ Abwägungen:
 
 ## Was nachgewiesen ist
 
-Die private Route ist die Route der Referenzinstallation. Der
+Für die private Route liegen Geräteläufe vor: Der
 [Lauf vom 2026-09-14](../validation-runs/2026-09-14.md) hält fest, dass sie an
 diesem Tag nicht geprüft wurde, und warum; der
 [Lauf vom 2026-09-20](../validation-runs/2026-09-20.md) hält einen Gerätelauf
-auf der Referenzroute fest, bei dem die Verbindungs- und TLS-Prüfungen
-bestanden wurden. Die Variante mit öffentlichem Hostnamen wurde von keinem
-aufgezeichneten Lauf geprüft.
+über die private Route zu einem Cluster fest, bei dem die Verbindungs- und
+TLS-Prüfungen bestanden wurden, auf macOS und iPhone. Die Variante mit
+öffentlichem Hostnamen wurde von keinem aufgezeichneten Lauf geprüft: Sie ist
+noch nicht nachgewiesen.
 
 ## Weiter
 
 - [Server betreiben](../server.md): der Terminator, die Volumes, das
   Setup-Token.
-- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): das Chart, das die Referenzinstallation
-  nutzt.
-- [Platform-Onboarding](../platform-onboarding.md): was der Referenz-Cluster
-  für einen veröffentlichten Hostnamen ergänzen würde.
+- [Kubernetes](../kubernetes.md): das Chart, seine Volumes und sein
+  TLS-Frontend.
+- [Platform-Onboarding](../platform-onboarding.md): was eine GitOps-Plattform
+  für einen veröffentlichten Hostnamen ergänzt.
 - [Fehlersuche](../troubleshooting.md): `edge_required`, `offline` und das
   Zertifikat.

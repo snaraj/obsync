@@ -1,0 +1,11 @@
+# M2115: a refused prefetch is asked again for every note of the page
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -755,7 +755,6 @@
+     } catch (error) {
+       // No answer, or a stop: the feed's to handle, exactly as a GET's would be.
+       if (!(error instanceof ApiError) || error.code === "unreachable" || error.code === "cancelled") throw error;
+-      this.off = true;
+       context.host.log(
+         `pull decision=prefetch_refused reason=${error.code} sids=${asked.length} bytes=${bytes} budget_bytes=${budget} ` +
+           `duration_ms=${context.now() - started}`,

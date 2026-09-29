@@ -5,7 +5,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { hkdfSync, createHash } from "node:crypto";
-import { FakeHost, FakeServer, FakeTimers, KEYS, SETUP_TOKEN, memorySecrets, sandbox, rig, keys } from "./fake.mjs";
+import { FakeHost, FakeServer, FakeTimers, KEYS, SETUP_TOKEN, memorySecrets, sandbox, rig, keys, statusItem } from "./fake.mjs";
 const require = createRequire(import.meta.url);
 const { accountRecovery, forgottenCredential, FORGOTTEN_DEVICE } = require("../build/accountRecovery.js");
 const { ApiError, Transport } = require("../build/transport.js");
@@ -28,7 +28,7 @@ async function plugin(t, { server = new FakeServer(), host = new FakeHost(), met
   instance.loadData = async () => structuredClone(stored);
   instance.saveData = async (value) => { stored = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText() {} });
+  instance.addStatusBarItem = () => statusItem();
   instance.app = { workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (done) => done() }, secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}), getName: () => "Recovery QA", getMarkdownFiles: () => [...host.files.keys()].filter((path) => path.endsWith(".md")) } };
   instance.manifest = { id: "obsync-private-sync", version: "1.1.3" };
   instance.checkForUpdate = async () => {};
@@ -102,7 +102,11 @@ test("forgotten credentials show recovery and reset metadata without touching no
   const tab = new ObsyncSettingTab(r.instance.app, r.instance);
   const row = tab.getSettingDefinitions().flatMap((g) => g.items).find((item) => item.name === "Setup or recover");
   assert.ok(row.visible(), "the rejected non-null ID must not hide recovery");
+  // The handle requests signed with goes with the credential (#197).
+  let forgotten = 0;
+  r.instance.transport.forgetDevice = () => { forgotten++; };
   await r.instance.resetForgottenEnrollment();
+  assert.equal(forgotten, 1, "the signing handle was dropped with the credential");
   assert.equal(r.instance.state.data.vrk, KEYS.vrk);
   assert.equal(r.instance.state.data.serverUrl, "https://sync.example.invalid");
   assert.deepEqual(r.instance.state.data.edgeHeaders, [{ name: "X-Edge", value: "TEST" }]);
@@ -136,6 +140,15 @@ test("wrong token, wrong vault key and an unregistered legacy account never enro
     assert.equal(r.instance.state.data.deviceId, null, reason);
     assert.equal(server.requests.length, 1, "no automatic retry");
   }
+});
+
+test("setup against a certificate this device does not trust says so, never 'the server refused this step'", async (t) => {
+  const r = await plugin(t, { server: new FakeServer({ claimed: false }), metadata: { ...unpaired, vrk: null } });
+  const { ApiError, CERT_UNTRUSTED } = r.box.require(join(r.box.home, "build/transport.js"));
+  r.instance.transport.setup = async () => { throw new ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID"); };
+  await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
+  assert.equal(r.instance.state.data.deviceId, null);
+  assert.deepEqual(r.notices, [`obsync: ${CERT_UNTRUSTED}`]);
 });
 
 test("a lost first setup response retains its pre-request key for an explicit recovery attempt", async (t) => {
@@ -346,19 +359,24 @@ test("a forgotten device can claim pairing only after its stale enrollment is cl
   const { PairClaimModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
   const { encodePairingCode } = r.box.require(join(r.box.home, "build/pairing.js"));
   const modal = new PairClaimModal(r.instance.app, r.instance, encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16)));
-  modal.contentEl = { empty() {} };
+  modal.contentEl = { empty() {}, createEl: () => ({ setText() {} }) };
   modal.close = () => modal.onClose();
   let claims = 0;
   r.instance.transport.pairingClaim = async () => {
     claims++;
     assert.equal(r.instance.state.data.deviceId, null);
     assert.equal(r.instance.state.data.lastSeq, 0);
-    modal.waiting = false;
     return { outcome: "ok", value: { device_id: "bc".repeat(16), device_secret: "cd".repeat(32) } };
   };
+  // The claim is HELD until its key arrives (#153); this one is refused at once.
+  const { ApiError: Refused } = r.box.require(join(r.box.home, "build/transport.js"));
+  r.instance.transport.pairingEnvelope = async () => { throw new Refused(401, "bad_signature", "gone"); };
+  const previous = globalThis.window;
+  globalThis.window = { ...previous, setTimeout: (fn) => { fn(); return 0; } };
+  t.after(() => { globalThis.window = previous; });
   await modal.claim();
   assert.equal(claims, 1);
-  assert.equal(r.instance.state.data.deviceId, "bc".repeat(16));
+  assert.equal(r.instance.state.data.deviceId, null, "no credential is kept before its key");
   assert.equal(r.instance.state.data.vrk, KEYS.vrk);
 });
 
@@ -395,4 +413,43 @@ test("closing pairing while its forgotten identity resets prevents a claim", asy
     assert.equal(claims, 0);
     assert.equal(r.instance.state.data.deviceId, null);
   }
+});
+
+// ---- issues #152, #154: what setup sends, and what its refusals say ---------
+
+const RAW_CODE = /\b(401|403|409)\b|bad_setup_token|already_set_up|recovery_unavailable|bad_recovery_proof/;
+
+test("a setup token pasted with quotes and a line break sets up, under this device's own name (#152, #154)", async (t) => {
+  const server = new FakeServer({ claimed: false });
+  const r = await plugin(t, { server, metadata: { ...unpaired, vrk: null } });
+  await r.instance.setUpAccount(`“${SETUP_TOKEN.slice(0, 20)}\n  ${SETUP_TOKEN.slice(20)}” `, "obsync");
+  assert.ok(r.instance.state.data.deviceId, r.notices.join(" | "));
+  const setup = JSON.parse(server.requests.find((request) => request.target === "/v1/setup").json);
+  assert.equal(setup.setup_token, SETUP_TOKEN);
+  assert.match(setup.device.name, /^Mac [2-9A-HJKMNP-TV-Z]{4}$/, "never the bare platform");
+  assert.equal(setup.device.name, r.instance.deviceName(), "the server holds the name this device shows");
+  assert.equal(r.metadata().deviceTag, setup.device.name.slice("Mac ".length), "kept before it was sent");
+});
+
+test("a second computer's setup is told to pair instead, naming both commands, never a code (#154)", async (t) => {
+  for (const registered of [true, false]) {
+    const server = new FakeServer();
+    if (registered) server.recoveryVerifier = (await accountRecovery(KEYS.vrk)).verifier;
+    const r = await plugin(t, { server, metadata: { ...unpaired, vrk: null } });
+    await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
+    assert.equal(r.instance.state.data.deviceId, null);
+    const told = r.notices.join(" | ");
+    assert.match(told, /already holds a vault.*Pair a new device.*Pair this device/, told);
+    assert.ok(!RAW_CODE.test(told), told);
+    assert.ok(!/recovery words|recovery phrase/.test(told), "a key made for this setup restored nothing");
+    assert.ok(r.logs.some((line) => /^setup decision=failed reason=(bad_recovery_proof|recovery_unavailable)$/.test(line)));
+  }
+});
+
+test("a setup token from elsewhere is refused in words (#154)", async (t) => {
+  const r = await plugin(t, { server: new FakeServer({ claimed: false }), metadata: { ...unpaired, vrk: null } });
+  await r.instance.setUpAccount("another-servers-token", "obsync");
+  const told = r.notices.join(" | ");
+  assert.match(told, /did not accept that setup token.*obsyncd setup-token/, told);
+  assert.ok(!RAW_CODE.test(told), told);
 });

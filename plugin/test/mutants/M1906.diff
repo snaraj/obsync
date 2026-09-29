@@ -1,0 +1,12 @@
+# M1906: a head view that cannot show every head is trusted anyway
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3520,7 +3520,7 @@
+ async function superseded(context: SyncContext, change: ChangeRecord): Promise<boolean> {
+   const file = await context.transport.getFile(change.file_id);
+   const complete = file.heads.length > 0 && file.heads.every((id) => file.versions.some((version) => version.version_id === id));
+-  if (!complete || file.heads.includes(change.version_id)) return false;
++  if (file.heads.includes(change.version_id)) return false;
+   context.host.log(`pull decision=skipped reason=superseded_at_name file=${change.file_id} seq=${change.seq}`);
+   return true;
+ }

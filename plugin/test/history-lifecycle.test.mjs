@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { rig, sandbox, memorySecrets } from "./fake.mjs";
+import { rig, sandbox, memorySecrets, statusItem } from "./fake.mjs";
 
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 async function promptly(work) {
@@ -42,7 +42,7 @@ function reloadHarness(r) {
   instance.loadData = async () => { loads++; return structuredClone(persisted); };
   instance.saveData = async (value) => { persisted = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText() {} });
+  instance.addStatusBarItem = () => statusItem();
   instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   instance.manifest = { version: "0.1.11" };
   instance.checkForUpdate = async () => {};
@@ -54,6 +54,7 @@ function reloadHarness(r) {
     async start() { starts++; this.started = true; }
     stop() { this.started = false; }
     async stopAndWait() { this.stop(); }
+    current() { return { kind: "idle" }; }
   };
   instance.startEngine = () => r.Plugin.prototype.startEngine.call(instance);
   return { loads: () => loads, starts: () => starts };
@@ -108,6 +109,27 @@ test("engine drain is required even with no older Fetch, and detached browsers c
   assert.equal(reads, 0, "engine ownership must drain before restore reads or writes");
   stopped.resolve();
   assert.ok((await restoring).path.includes("restored-"));
+});
+
+test("a start still waiting on the old engine when a restore begins makes no engine under it (#233)", async (t) => {
+  const r = await plugin(t);
+  const made = [];
+  r.box.require(join(r.box.home, "build/sync/engine.js")).SyncEngine = class {
+    constructor() { made.push(this); }
+    async start() {}
+    stop() {}
+    async stopAndWait() {}
+    current() { return { kind: "idle" }; }
+  };
+  const stopped = deferred();
+  r.instance.engine.stopAndWait = () => stopped.promise;
+  const start = r.Plugin.prototype.startEngine.call(r.instance);
+  const restoring = r.instance.restoreHistory(r.instance.openHistory(), r.entry);
+  stopped.resolve();
+  await start;
+  assert.deepEqual(made, [], "the restore owns the device until it ends");
+  assert.ok((await restoring).path.includes("restored-"));
+  assert.equal(r.restarts(), 1, "and the restore's own restart is the one that runs");
 });
 
 test("unload during a pending history read detaches restoration and never restarts or writes", async (t) => {

@@ -1,0 +1,11 @@
+# M2838: Check shows nothing while it asks
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -299,7 +299,6 @@
+             }
+             checking = true;
+             button.setDisabled(true);
+-            setting.setDesc("Checking…");
+             // Before setup there is no device to sign with, and the signed
+             // read answered "not paired" without asking the server anything:
+             // the one moment a person most needs to know whether the address

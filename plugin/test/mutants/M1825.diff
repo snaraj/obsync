@@ -1,0 +1,12 @@
+# M1825: the app going to the background wakes everything too
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1937,7 +1937,7 @@
+     this.registerDomEvent(window, "focus", () => this.wake("focus"));
+     const page = window.document;
+     this.registerDomEvent(page, "visibilitychange", () => {
+-      if (page.visibilityState === "visible") this.wake("foreground");
++      this.wake("foreground");
+     });
+     // NEVER AWAITED HERE. Obsidian holds its "Loading plugins…" screen until
+     // `onload` returns, and a first start talks to the server: with the

@@ -1,0 +1,11 @@
+# M3201: on a computer, a folder that is not hidden is taken for another vault's config folder
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -710,7 +710,6 @@
+       return false;
+     }
+     next: for (const name of names) {
+-      if (!name.startsWith(".")) continue;
+       let at = desktop.path.resolve(dir, name);
+       for (const step of ["plugins", PAIRING_ACTION, null]) {
+         // A hidden entry the system will not stat (macOS answers `/.resolve`

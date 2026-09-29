@@ -33,12 +33,12 @@ const TARGET = "Notes/the-deleted-note.md";
 const RECORDS = 500;
 const AT = 480;
 
-/** A journal of 500 versions with the wanted note at record 480. */
-async function journal(r) {
+/** A journal of 500 versions with the wanted note at record 480, or at `at`. */
+async function journal(r, at = AT) {
   for (let i = 1; i <= RECORDS; i++) {
     await r.server.publish({
       fileId: String(i).padStart(2, "0").padStart(32, "0"),
-      path: i === AT ? TARGET : `Notes/note-${i}.md`,
+      path: i === at ? TARGET : `Notes/note-${i}.md`,
       bytes: enc(`VERSION ${i}`),
       mtime: 1000 + i,
       domainKey: r.keys.domainKey,
@@ -130,10 +130,38 @@ test("an unfiltered step stays one step; only a filter runs the steps together",
   assert.match(r.host.logs.find((line) => line.startsWith("history decision=start")), /filtered=false checked=0 about=\d+ budget_ms=0/);
 });
 
-test("a filtered search that finds nothing stops at its budget and resumes where it stopped", async () => {
+test("a click reads one page of at most 100 entries: one request, and one more to find the newest (#199)", async () => {
   const r = await rig();
   await journal(r);
-  const clock = ticking(HISTORY_SEARCH_MS / 4);
+  const sent = [];
+  const request = r.transport.options.request;
+  r.transport.options.request = async (q) => {
+    if (q.url.includes("/v1/changes?")) sent.push(/limit=(\d+)/.exec(q.url)[1]);
+    return request(q);
+  };
+  const click = async (view, filter = "") => {
+    sent.length = 0;
+    const page = await view.next(filter);
+    return { limits: [...sent], scanned: page.scanned };
+  };
+  const newest = open(r);
+  assert.deepEqual(await click(newest), { limits: ["1", "100"], scanned: 101 }, "the head, then one window");
+  assert.deepEqual(await click(newest), { limits: ["100"], scanned: 100 });
+  const oldest = open(r, { newestFirst: false });
+  assert.deepEqual(await click(oldest), { limits: ["100"], scanned: 100 });
+  assert.deepEqual(await click(oldest), { limits: ["100"], scanned: 100 });
+  // The note at record 480 is in the newest window: a search is two requests, not twenty-one.
+  const found = await click(open(r), "the-deleted-note");
+  assert.deepEqual(found.limits, ["1", "100"]);
+});
+
+test("a filtered search that finds nothing stops at its budget and resumes where it stopped", async () => {
+  const r = await rig();
+  // Below the first window, so the first action cannot reach it (#199: a
+  // window is one page of `HISTORY_SCAN_RECORDS`).
+  await journal(r, RECORDS - HISTORY_SCAN_RECORDS - 10);
+  // Two reads spend the budget: the one that fixes the head and one window.
+  const clock = ticking(HISTORY_SEARCH_MS / 2);
   const original = r.transport.historyChanges.bind(r.transport);
   r.transport.historyChanges = async (...args) => { clock.tick(); return original(...args); };
   const view = open(r, { now: clock.now });
@@ -184,4 +212,30 @@ test("the descending walk reaches the end of retained history and says so", asyn
   assert.equal(view.done, true, "one window covers this whole journal");
   assert.equal(page.entries.length, 9, "and every record is shown exactly once");
   assert.equal((await view.next()).scanned, 0, "a completed walk issues no further request");
+});
+
+test("a note deleted with many others is found by the content it can restore, listed before its marker", async () => {
+  // S12: twenty notes deleted at once put twenty deletion markers in the
+  // newest window, so the search for one of them stopped at its marker, whose
+  // Restore is disabled, and a second search was needed (issue #162).
+  const r = await rig();
+  const notes = Array.from({ length: HISTORY_SCAN_RECORDS }, (_, i) => `Notes/n${String(i).padStart(2, "0")}.md`);
+  const heads = [];
+  for (const [i, path] of notes.entries()) {
+    heads.push(await r.server.publish({
+      fileId: String(i + 10).repeat(16), path, bytes: enc(`CONTENT ${path}`), mtime: 1000 + i,
+      domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+    }));
+  }
+  for (const [i, path] of notes.entries()) {
+    await r.server.publishTombstone({ fileId: String(i + 10).repeat(16), path, manifestKey: r.keys.manifestKey, parents: [heads[i].version_id] });
+  }
+  r.state.data.lastSeq = r.server.seq;
+
+  const page = await open(r).next("n07");
+
+  assert.deepEqual(
+    page.entries.map((entry) => `${entry.path} ${entry.deleted ? "marker" : `${entry.size} B`}`),
+    [`Notes/n07.md ${"CONTENT Notes/n07.md".length} B`, "Notes/n07.md marker"],
+  );
 });

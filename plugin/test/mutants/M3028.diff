@@ -1,0 +1,11 @@
+# M3028: the desktop writer forgets the copy its failed commit published, so it is never taken back (one copy per conflict, #225)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1236,7 +1236,6 @@
+             );
+           }
+           // From here on, failure/cancellation preserves the published copy.
+-          unconfirmed = made;
+           await this.syncFolder(fs, parent, true);
+           const refusal = await chainRefusal(found.chain, walker(fs));
+           const landed = await walker(fs).lstat(found.target);

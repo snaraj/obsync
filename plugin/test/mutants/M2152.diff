@@ -1,0 +1,12 @@
+# M2152: the tree is walked only at a start and on focus, never on the interval
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3026,7 +3026,7 @@
+       // index offers a desktop pass nothing a walk minutes later does not,
+       // while it names every note the walk leaves out, a nested vault's too.
+       if (context.host.scan !== undefined) {
+-        if (this.walkFor === null && ++this.unwalked < Math.round(WALK_MS / SCAN_MS)) {
++        if (this.walkFor === null) {
+           this.sweepEchoes(context, "scan");
+           return;
+         }

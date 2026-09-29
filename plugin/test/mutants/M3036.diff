@@ -1,0 +1,12 @@
+# M3036: Apple's words for a certificate for another name are not matched (certificate wording, #229)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1374,7 +1374,7 @@
+  * or is not valid yet. Each is matched on the platform's own words: Chromium's
+  * on desktop, and the documented ones of Apple and Android on a phone.
+  */
+-const WRONG_NAME = /ERR_CERT_COMMON_NAME_INVALID|certificate name does not match|Hostname \S+ not verified/i;
++const WRONG_NAME = /ERR_CERT_COMMON_NAME_INVALID|Hostname \S+ not verified/i;
+ const OUT_OF_DATE = /ERR_CERT_DATE_INVALID|certificate for this server (?:has expired|is not yet valid)|timestamp check failed/i;
+ 
+ export const CERT_WRONG_NAME =

@@ -1,0 +1,11 @@
+# M1919: a folder renamed two ways is told once per note, not once per folder
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4241,7 +4241,6 @@
+   const names = [ours, theirs, ...(base === undefined ? [] : [base])].map((name) => name.split("/"));
+   let shared = 0;
+   const part = (parts: string[]): string | undefined => parts[parts.length - 1 - shared];
+-  while (names.every((parts) => parts.length - shared > 1 && part(parts) === part(names[0] as string[]))) shared++;
+   const unit = (name: string): string => name.split("/").slice(0, name.split("/").length - shared).join("/");
+   const key = `renamed\u0000${unit(base ?? kept)}`;
+   if (!context.refused.has(key)) {

@@ -1,0 +1,12 @@
+# M1889: the Recovery phrase row reads confirmed whatever the device recorded (#170)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -855,7 +855,7 @@
+ 
+   /** Until this device has confirmed the words, the row says so and its button asks for them (issue #170). */
+   private recoveryPhrase(): Row {
+-    const unconfirmed = (): boolean => this.plugin.state.data.vrk !== null && this.plugin.state.data.recoveryPhrase !== "confirmed";
++    const unconfirmed = (): boolean => this.plugin.state.data.vrk !== null && this.plugin.state.data.recoveryPhrase === undefined;
+     return {
+       name: "Recovery phrase",
+       desc: () => this.plugin.state.data.vrk === null

@@ -27,6 +27,7 @@ import {
   memorySecrets,
   rig,
   sandbox,
+  statusItem,
 } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
@@ -130,7 +131,7 @@ async function plugin(t, { server = new FakeServer(), host = new FakeHost(), met
   instance.loadData = async () => structuredClone(stored);
   instance.saveData = async (value) => { stored = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
-  instance.addStatusBarItem = () => ({ setText() {} });
+  instance.addStatusBarItem = () => statusItem();
   instance.app = { workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (done) => done() }, secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) } };
   instance.manifest = { id: "obsync-private-sync", version: "1.1.3" };
   instance.checkForUpdate = async () => {};
@@ -218,7 +219,7 @@ test("a server holding only a vault's map still has a vault to strand, and one h
 // ---- the key: Create, in the dialog ------------------------------------------
 
 class Component {
-  constructor() { this.buttonEl = { focus: () => { this.focused = true; } }; }
+  constructor() { this.buttonEl = { focus: () => { this.focused = true; } }; this.inputEl = { setAttribute() {} }; }
   setButtonText(value) { this.text = value; return this; }
   setCta() { this.cta = true; return this; }
   setDestructive() { this.destructive = true; return this; }
@@ -349,7 +350,16 @@ test("a claimant counts the notes the server's vault does not hold, byte for byt
   copy.seed("Notes/a.md", "alpha\n");
   copy.seed("Attachments/scan.pdf", large);
   const p = await plugin(t, { server, host: copy, metadata: { vrk: null } });
+  // One host pass for the whole survey (#198): a phone asks each folder once, not once per note.
+  let open = 0;
+  let opened = 0;
+  const inside = [];
+  copy.pass = (on) => { if (on) { open++; opened++; } else open--; };
+  const syncable = copy.syncable.bind(copy);
+  copy.syncable = async (path) => { inside.push(open > 0); return syncable(path); };
   assert.equal(await p.instance.notesUnknownTo(KEYS.vrk), 0);
+  assert.ok(inside.length === 2 && inside.every(Boolean), `every question inside the pass: ${JSON.stringify(inside)}`);
+  assert.deepEqual([opened, open], [1, 0], "one pass, closed");
 
   // Another vault: same name other bytes, a name the server lacks, a name it deleted.
   const other = new FakeHost();
@@ -360,8 +370,49 @@ test("a claimant counts the notes the server's vault does not hold, byte for byt
   assert.equal(await p.instance.notesUnknownTo(KEYS.vrk), 3);
 
   assert.deepEqual(p.posts(), [], "the survey only reads");
-  assert.ok(p.logs.some((line) => /^pairing role=claimant decision=surveyed local=2 unknown=0 held=2 duration_ms=\d+$/.test(line)));
-  assert.ok(p.logs.some((line) => /^pairing role=claimant decision=surveyed local=3 unknown=3 held=2 duration_ms=\d+$/.test(line)));
+  assert.ok(p.logs.some((line) => /^pairing role=claimant decision=surveyed local=2 unknown=0 older=0 held=2 duration_ms=\d+$/.test(line)));
+  assert.ok(p.logs.some((line) => /^pairing role=claimant decision=surveyed local=3 unknown=3 older=0 held=2 duration_ms=\d+$/.test(line)));
+});
+
+// A device paired again after the others edited while it was away holds each
+// such note as it last saw it: an earlier version, which pairing takes as that
+// version and uploads nothing (#194). Counted as unknown, it asked about notes
+// the server holds (the Android journey J10, 2026-09-27).
+test("a note held at an earlier version of the server's is the vault's, and only at its own path (#141)", async (t) => {
+  const { server, k } = await holdingVault();
+  const fileId = "14".repeat(16);
+  const first = await server.publish({
+    fileId, path: "Notes/edited.md", bytes: enc("as this device last saw it\n"), mtime: 1757200000000,
+    domainKey: k.domainKey, manifestKey: k.manifestKey,
+  });
+  await server.publish({
+    fileId, path: "Notes/edited.md", bytes: enc("edited while it was away\n"), mtime: 1757200001000,
+    domainKey: k.domainKey, manifestKey: k.manifestKey, parents: [first.version_id],
+  });
+
+  const away = new FakeHost();
+  away.seed("Notes/a.md", "alpha\n");
+  away.seed("Notes/edited.md", "as this device last saw it\n");
+  const p = await plugin(t, { server, host: away, metadata: { vrk: null } });
+  assert.equal(await p.instance.notesUnknownTo(KEYS.vrk), 0, "an earlier version of a held note is the vault's");
+
+  // The same bytes under another name are a note the server's vault lacks.
+  const elsewhere = new FakeHost();
+  elsewhere.seed("Notes/a.md", "alpha\n");
+  elsewhere.seed("Private/edited.md", "as this device last saw it\n");
+  p.instance.host = elsewhere;
+  assert.equal(await p.instance.notesUnknownTo(KEYS.vrk), 1, "the note's own history, at its own path");
+
+  // As long as an earlier version, but other bytes: not one of them.
+  const other = new FakeHost();
+  other.seed("Notes/a.md", "alpha\n");
+  other.seed("Notes/edited.md", "as this device last saw IT\n");
+  p.instance.host = other;
+  assert.equal(await p.instance.notesUnknownTo(KEYS.vrk), 1, "an earlier version's size alone is not its bytes");
+
+  assert.deepEqual(p.posts(), [], "the survey only reads");
+  assert.ok(p.logs.some((line) => /^pairing role=claimant decision=surveyed local=2 unknown=0 older=1 held=2 duration_ms=\d+$/.test(line)));
+  assert.equal(p.logs.filter((line) => / unknown=1 older=0 /.test(line)).length, 2);
 });
 
 test("Setup on a server without registered recovery says one server holds one vault (#141)", async (t) => {

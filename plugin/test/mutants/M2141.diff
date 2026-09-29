@@ -1,0 +1,12 @@
+# M2141: a remembered sid the server does not hold is never read back
+--- a/plugin/src/sync/repair.ts
++++ b/plugin/src/sync/repair.ts
+@@ -114,7 +114,7 @@
+     const missing = await this.context.transport.missingChunks(sids, { signal: this.context.signal });
+     this.operation.check();
+     this.inventory(missing, sids);
+-    for (const gone of missing) this.later.push(...(asked.get(gone) ?? []));
++    for (const gone of missing) void gone;
+     this.later.push(...unknown);
+     this.walk.batched += sids.length;
+     this.walk.requests++;

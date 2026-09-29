@@ -1,0 +1,12 @@
+# M3111: Show sync status no longer says why or offers Pair this device
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -1240,7 +1240,7 @@
+   /** The state that needs doing something about, what it is, and the button that does it. */
+   private nextStep(): void {
+     // A crash left this device with no keys (issue #230): what Settings says, and the one way back.
+-    if (this.plugin.state.keysLost) {
++    if (this.plugin.state.keysLost && this.plugin.state.copied) {
+       new Setting(this.contentEl)
+         .setName("What to do")
+         .setDesc(KEYS_LOST)

@@ -1,0 +1,11 @@
+# M1872: a claim outlives its ten minutes and keeps collecting (#153)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -452,7 +452,6 @@
+       await new Promise((resolve) => window.setTimeout(resolve, 2000));
+       assertCurrent();
+       if (waiting.stop) throw new ClaimEnded("superseded");
+-      if (Date.now() >= claim.claimedAt + PAIRING_WINDOW_MS) throw new ClaimEnded("expired");
+       // Status belongs to the creator. The claimant may only collect its
+       // envelope; an explicit not_approved refusal has not consumed it.
+       let sent: Sent<PairingEnvelope>;

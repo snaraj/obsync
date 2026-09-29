@@ -167,10 +167,35 @@ test('index.html: every form control has a label', () => {
   assert.equal(controls.length, 1);
 });
 
-test('index.html: exactly the two asset paths the server serves', () => {
-  assert.deepEqual(assetReferences(HTML), ['/app.css', '/app.js']);
+test('index.html: exactly the three asset paths the server serves', () => {
+  assert.deepEqual(assetReferences(HTML), ['/app.css', '/lib.js', '/app.js']);
   assert.ok(HTML.includes('<link rel="stylesheet" href="/app.css">'));
   assert.ok(HTML.includes('<script type="module" src="/app.js"></script>'));
+  // lib.js is app.js's one import. Declared here, the browser fetches it
+  // beside app.js instead of after it: one round trip fewer to first render,
+  // on the same origin `script-src 'self'` already allows.
+  assert.ok(HTML.includes('<link rel="modulepreload" href="/lib.js">'));
+  assert.ok(HTML.indexOf('modulepreload') < HTML.indexOf('src="/app.js"'));
+});
+
+// The Install page names the plugin as its directory lists it and the
+// controls as the plugin labels them, and asks nothing of one provider.
+test('index.html: the install steps use the listing name and the current control names', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../../manifest.json', import.meta.url), 'utf8'));
+  assert.ok(HTML.includes(`search for\n        <strong>${manifest.name}</strong>`));
+  assert.ok(HTML.includes('use Setup or recover'));
+  assert.ok(!/search for <strong>Obsync<\/strong>|First-time setup|service-token/.test(HTML));
+});
+
+// The edge note sends an operator to the plugin row that carries a proxy's
+// credentials (#201). The row's name is read out of the plugin, so a rename on
+// either side fails here instead of sending a reader to a setting that is not
+// there, and the note keeps no provider's product term for it.
+test('index.html: the edge note names the plugin row by the name the plugin shows', () => {
+  const settings = readFileSync(new URL('../../plugin/src/ui/settings.ts', import.meta.url), 'utf8');
+  const row = settings.match(/name: "(Custom request headers)",/);
+  assert.ok(row, 'the plugin shows no "Custom request headers" row');
+  assert.ok(HTML.includes(`add them to the device's ${row[1].toLowerCase()} before`));
 });
 
 test('index.html: no off-origin reference beyond the SVG namespace', () => {

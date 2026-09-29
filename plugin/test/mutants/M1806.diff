@@ -1,0 +1,11 @@
+# M1806: a signal no longer ends a retry asleep in its backoff
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -706,7 +706,6 @@
+         resolve(awake);
+       };
+       this.sleepers.add(sleeper);
+-      signal?.addEventListener("abort", aborted, { once: true });
+       void this.sleep(ms).then(() => done(true));
+     });
+   }

@@ -4,12 +4,12 @@ import { createRequire } from "node:module";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
-import { FakeTimers, STEP_MS, fakeState, pair, rig, sandbox, settled, memorySecrets } from "./fake.mjs";
+import { FakeTimers, KEYS, STEP_MS, fakeState, pair, rig, sandbox, settled, memorySecrets, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { parseSyncFolders, inFolderScope, inSyncScope, inSyncTree, expandsSyncScope } = require("../build/syncScope.js");
 const { parseData } = require("../build/state.js");
-const { SyncEngine } = require("../build/sync/engine.js");
+const { FEED_ERROR_BACKOFF_MS, SyncEngine } = require("../build/sync/engine.js");
 const { pushFile, pushDelete, postManifest } = require("../build/sync/push.js");
 const { applyChange, fetchRemoteOnly, remoteOnlyList, decryptRecordManifest, assembleBytes } = require("../build/sync/pull.js");
 const { folderFileId } = require("../build/crypto.js");
@@ -22,6 +22,18 @@ test("missing scope keeps dedicated-vault compatibility; empty scope survives pe
   assert.equal(inSyncScope("note.md", undefined), true);
   assert.equal(inSyncScope("Notes/note.md", []), false);
   assert.equal(inSyncScope(".config/setting", undefined), false);
+});
+
+test("a pending selection survives persistence, the whole vault included, and a damaged one refuses to load (#185)", () => {
+  const load = (value) => parseData(JSON.parse(JSON.stringify(value)), false).pendingScope;
+  assert.equal(load({}), undefined, "nothing pending");
+  assert.deepEqual(load({ pendingScope: {} }), {}, "the whole vault");
+  assert.deepEqual(load({ pendingScope: { folders: ["Notes/Journal", "Notes", "Attachments"] } }), { folders: ["Attachments", "Notes"] });
+  assert.deepEqual(load({ pendingScope: { folders: [] } }), { folders: [] });
+  // Judged as the selection it would become: never dropped into "the whole vault".
+  for (const damaged of [["Notes"], null, { folders: "Notes" }, { folders: ["Notes/../Admin"] }]) {
+    assert.throws(() => load({ pendingScope: damaged }), JSON.stringify(damaged));
+  }
 });
 
 test("scope matches folder boundaries and removes redundant descendants", () => {
@@ -242,10 +254,10 @@ async function scopedHost(t, mobile) {
     getFiles: () => { throw new Error("whole-vault listing must not run"); },
     getAbstractFileByPath: (p) => { calls.push(["cached", p]); assert.equal(p, "Notes"); return folder; },
   } } };
-  const desktop = { base: root, path, fs: { promises: { ...fs, lstat: async (p) => {
+  const desktop = { base: root, path, fs: { promises: { ...fs, lstat: async (p, ...options) => {
     calls.push(["lstat", p]);
-    assert.ok(p === root || p.startsWith(`${root}/Notes`), "excluded filesystem metadata was inspected");
-    return fs.lstat(p);
+    assert.ok(p === root || p.startsWith(join(root, "Notes")), "excluded filesystem metadata was inspected");
+    return fs.lstat(p, ...options);
   } } } };
   return { root, calls, state, host: new ObsidianHost(plugin, mobile ? null : desktop) };
 }
@@ -315,10 +327,12 @@ test("scope saving waits for engine work without manual downloads and serializes
   await new Promise(setImmediate);
   assert.match(refusal?.message ?? "", /already being saved/);
   assert.equal(state.data.syncFolders, undefined);
-  assert.equal(saved(), null);
+  assert.equal(saved().syncFolders, undefined, "the old selection stays in force while its transfers stop");
+  assert.deepEqual(saved().pendingScope, { folders: ["Notes"] }, "and the first save's choice is already kept (#185)");
   work.resolve();
   await saving;
   assert.deepEqual(saved().syncFolders, ["Notes"]);
+  assert.equal(saved().pendingScope, undefined, "in force, and no longer pending");
 });
 
 /**
@@ -395,14 +409,98 @@ test("a failed save of a widening restores the cursor the device had", async (t)
 test("a device that syncs no folders says so in the status bar, not a bare idle (#150)", async (t) => {
   // S30d: `[]` was stored and the status bar read `obsync: idle`.
   const { instance } = await plugin(t);
-  const bar = { setText(text) { this.text = text; } };
-  instance.statusEl = bar;
+  // The indicator's words, and its icon: a device that syncs nothing is not a green check (#156).
+  const bar = statusItem();
+  instance.indicator.attach(bar);
   instance.engine = { stopAndWait: async () => undefined };
   await instance.saveSyncFolders([]);
-  assert.equal(bar.text, "obsync: idle — syncing no folders", "the bar still shows what it said before the save");
+  assert.equal(bar.label, "obsync: idle — syncing no folders", "the bar still shows what it said before the save");
+  assert.equal(bar.attributes["data-state"], "quiet");
   assert.equal(instance.statusText(), "idle — syncing no folders");
   await instance.saveSyncFolders(["Notes"]);
-  assert.equal(bar.text, "obsync: idle");
+  assert.equal(bar.label, "obsync: idle");
+  assert.equal(bar.attributes["data-state"], "synced");
+});
+
+/**
+ * The real plugin over one data file and one secret store, launched the way
+ * Obsidian launches it: what a quit and a relaunch share (issue #185).
+ */
+function relaunchable(t) {
+  const box = sandbox();
+  t.after(() => rmSync(box.home, { recursive: true, force: true }));
+  const Plugin = box.require(join(box.home, "build/main.js")).default;
+  const obsidian = box.require("obsidian");
+  const secrets = memorySecrets();
+  let metadata = { vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid", lastSeq: 17, files: {} };
+  const logs = [];
+  const launch = async () => {
+    const instance = new Plugin();
+    instance.loadData = async () => structuredClone(metadata);
+    instance.saveData = async (value) => { metadata = structuredClone(value); };
+    instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
+    instance.addStatusBarItem = () => statusItem();
+    instance.app = { secretStorage: secrets, vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
+    instance.manifest = { id: "obsync-private-sync", version: "1.1.4" };
+    instance.checkForUpdate = async () => {};
+    instance.startEngine = async () => { logs.push("start"); };
+    instance.log = (line) => logs.push(line);
+    await instance.onload();
+    await instance.firstStart;
+    return instance;
+  };
+  return { launch, logs, obsidian, metadata: () => structuredClone(metadata) };
+}
+
+test("a quit while Save waits keeps the choice, and the next start puts it in force and says so (#185)", async (t) => {
+  // S87 run b: Obsidian quit 8.4 s into the wait, and after the relaunch the
+  // data file held no selection at all, with nothing said.
+  const app = relaunchable(t);
+  const first = await app.launch();
+  const stopping = deferred();
+  first.engine = { stop: () => undefined, stopAndWait: () => stopping.promise, uploads: () => [] };
+  const saving = first.saveSyncFolders(["Notes"]).catch((error) => error);
+  for (const deadline = Date.now() + 10_000; app.metadata().pendingScope === undefined && Date.now() < deadline;) await new Promise(setImmediate);
+  assert.deepEqual(app.metadata().pendingScope, { folders: ["Notes"] }, "kept the moment Save was pressed");
+  first.onunload();
+  stopping.resolve();
+  assert.match(String(await saving), /unloaded.*takes effect when obsync starts again/);
+  assert.equal(app.metadata().syncFolders, undefined, "nothing was put in force by the session that quit");
+
+  const second = await app.launch();
+
+  assert.deepEqual(second.state.data.syncFolders, ["Notes"]);
+  assert.equal(second.state.data.pendingScope, undefined);
+  assert.deepEqual(app.metadata().syncFolders, ["Notes"], "and it is in the data file");
+  assert.equal(app.metadata().pendingScope, undefined);
+  assert.ok(app.obsidian.notices.includes("obsync: the folder selection you saved before Obsidian closed is now in effect."));
+  const applied = app.logs.findIndex((line) => /^scope decision=saved mode=selected_folders folders=1 replay=none from_seq=17 trigger=start duration_ms=\d+$/.test(line));
+  assert.ok(applied !== -1, app.logs.join("\n"));
+  assert.equal(app.logs.lastIndexOf("start") > applied, true, "and sync starts only under it");
+});
+
+test("Cancel while Save waits keeps the selection there was, and sync goes on without waiting for the stop (#185)", async (t) => {
+  const { instance, state, saved, restarts } = await plugin(t);
+  const logs = [];
+  instance.log = (line) => logs.push(line);
+  state.data.syncFolders = ["Notes"];
+  state.data.lastSeq = 23;
+  const stopping = deferred();
+  t.after(() => stopping.resolve());
+  instance.engine = { stopAndWait: () => stopping.promise };
+  const saving = instance.saveSyncFolders(["Notes", "Attachments"]);
+  for (const deadline = Date.now() + 10_000; saved()?.pendingScope === undefined && Date.now() < deadline;) await new Promise(setImmediate);
+  assert.deepEqual(saved().pendingScope, { folders: ["Attachments", "Notes"] });
+
+  instance.cancelScopeChange();
+  const outcome = await Promise.race([saving, new Promise((resolve) => setTimeout(() => resolve("still waiting"), 2000).unref())]);
+
+  assert.equal(outcome, "withdrawn", "Cancel ends the wait itself, not only what follows it");
+  assert.deepEqual(state.data.syncFolders, ["Notes"]);
+  assert.equal(saved().pendingScope, undefined, "withdrawn from the data file too, so no later start applies it");
+  assert.equal(state.data.lastSeq, 23, "and the widening it would have been replays nothing");
+  assert.equal(restarts(), 1, "sync goes on under the selection it had");
+  assert.ok(logs.some((line) => /^scope decision=withdrawn reason=cancelled duration_ms=\d+$/.test(line)), logs.join("\n"));
 });
 
 test("an unused device can select folders or an explicit empty scope before pairing", async (t) => {
@@ -652,13 +750,21 @@ test("stopping during a feed wait does not acknowledge unapplied metadata", asyn
   await engine.start();
   await entered.promise;
   const seq = r.state.data.lastSeq;
+  // This poll does not hear the stop, as one answered in the same turn does
+  // not: its page must still be dropped unread, and nothing saved but the
+  // stop's own write -- a reload may already hold the state.
+  let saves = 0;
+  const save = r.state.save.bind(r.state);
+  r.state.save = async () => { saves++; return save(); };
   const stopped = engine.stopAndWait();
   const change = await publish(r, "Notes/later.md");
   assert.ok(change.seq > seq, "the completed long poll really has newer unapplied metadata");
   page.resolve({ seq: change.seq, head_seq: change.seq, changes: [change] });
   await stopped;
+  for (let turn = 0; turn < 20; turn++) await new Promise(setImmediate);
   assert.equal(r.state.data.lastSeq, seq);
   assert.equal(r.host.text("Notes/later.md"), null);
+  assert.equal(saves, 1, "the late page was handed on and saved the state");
 });
 
 /**
@@ -675,7 +781,7 @@ test("stopping for a folder change never waits out a long poll that moves nothin
   await timers.run(1000, () => r.server.feedWaiters.length !== 0);
   let settled = false;
   const stopping = engine.stopAndWait().then(() => { settled = true; });
-  for (let turn = 0; turn < 20 && !settled; turn++) await new Promise(setImmediate);
+  for (const deadline = Date.now() + 10_000; !settled && Date.now() < deadline;) await new Promise(setImmediate);
   assert.equal(settled, true, "the stop waited for a long poll with nothing to transfer");
   await stopping;
 
@@ -706,6 +812,59 @@ test("an engine started again after a stop runs one feed, never the stopped poll
   await timers.run(1000, () => r.server.feedWaiters.length !== 0);
   for (let turn = 0; turn < 20; turn++) await new Promise(setImmediate);
   assert.equal(r.server.feedWaiters.length, 1, "two feeds are polling one cursor");
+  const finished = engine.stopAndWait();
+  r.server.releaseFeed();
+  await finished;
+});
+
+/*
+ * AND A STOPPED FEED STILL WAITING OUT A FAILED READ. Since #157 a stop ends
+ * the long poll at once, so the feed the test above stops is gone before the
+ * new start begins. The pause after a failed read is not ended by a stop: it
+ * ends on the clock both starts share, and the feed it wakes belongs to the
+ * start before. Going on, that feed would ask the journal about its mark
+ * (`probeFeed`) and read beside the new one. That ask is the first request
+ * such a feed sends, and it is held here, so a feed that wrongly goes on is
+ * counted there.
+ */
+test("an engine started again while its stopped feed waits out a failed read runs one feed", async () => {
+  const r = await rig();
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({ ...r, timers });
+  // A note from another device, so a read after a failure asks about its mark first.
+  await publish(r, "marked.md");
+  const real = r.transport.options.request;
+  let failing = false;
+  let restarted = false;
+  let polls = 0;
+  let asks = 0;
+  r.transport.options.request = async (request) => {
+    const feed = request.url.includes("/v1/changes?");
+    if (feed && failing) return { status: 503, headers: {}, text: "", arrayBuffer: new ArrayBuffer(0) };
+    if (feed && restarted && request.url.includes("&wait=55&")) polls++;
+    if (feed && restarted && polls > 0 && request.url.includes("&limit=2")) {
+      asks++;
+      return new Promise(() => undefined);
+    }
+    return real(request);
+  };
+  await engine.start();
+  await timers.run(0, () => r.state.data.feedMark !== null && r.server.feedWaiters.length !== 0);
+  // The poll is dropped, and the read that replaces it fails: the feed pauses.
+  failing = true;
+  engine.wake("sync_now");
+  await timers.run(0, () => r.host.logs.some((line) => line.startsWith("feed decision=retry ")));
+  await engine.stopAndWait();
+
+  failing = false;
+  restarted = true;
+  await engine.start();
+  await timers.run(0, () => polls === 1);
+  // The pause is due, and what it wakes has a real quiet window to act in.
+  await timers.run(FEED_ERROR_BACKOFF_MS, () => true);
+  await timers.run(0);
+  assert.equal(asks, 0, "the stopped feed read again beside the new one");
+  assert.equal(polls, 1, "two feeds are polling one cursor");
   const finished = engine.stopAndWait();
   r.server.releaseFeed();
   await finished;
@@ -765,11 +924,11 @@ async function lifecyclePlugin(t) {
   const logs = [], statuses = [], mounts = [];
   instance.state = r.state;
   instance.log = (line) => logs.push(line);
-  instance.host = { log: (line) => logs.push(line), enclosingVault: async () => null };
+  instance.host = { log: (line) => logs.push(line), enclosingVault: async () => null, closeQuestion: () => undefined };
   instance.setStatus = (status) => statuses.push(status);
   instance.manifest = { version: "0.1.11" };
   instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
-  instance.addStatusBarItem = () => { mounts.push("status"); return { setText: () => undefined }; };
+  instance.addStatusBarItem = () => { mounts.push("status"); return statusItem(); };
   for (const method of ["addSettingTab", "addCommand", "registerObsidianProtocolHandler", "registerEvent"]) {
     instance[method] = () => mounts.push(method);
   }
@@ -787,24 +946,25 @@ test("startup registers only the native installation's pairing actions", async (
   assert.deepEqual([...handlers.keys()], ["obsync-private-sync", "obsync-private-sync/pair"]);
 });
 
-test("disabling during a scope save cancels the selection and never starts another engine", async (t) => {
+test("disabling during a scope save keeps the choice for the next start and never starts another engine (#185)", async (t) => {
   const { instance, Engine, state, saved, statuses } = await lifecyclePlugin(t);
   let starts = 0;
   Engine.prototype.start = async () => { starts++; };
   const active = deferred();
   instance.engine = { stop: () => undefined, stopAndWait: () => active.promise };
-  const saving = assert.rejects(instance.saveSyncFolders(["Notes"]), /unloaded.*check the saved selection/);
+  const saving = assert.rejects(instance.saveSyncFolders(["Notes"]), /unloaded.*takes effect when obsync starts again/);
   instance.onunload();
   active.resolve();
   await saving;
   assert.equal(starts, 0);
   assert.equal(instance.engine, null);
-  assert.equal(state.data.syncFolders, undefined);
-  assert.equal(saved(), null);
+  assert.equal(state.data.syncFolders, undefined, "nothing was put in force by a stopped session");
+  assert.equal(saved().syncFolders, undefined);
+  assert.deepEqual(saved().pendingScope, { folders: ["Notes"] }, "and nothing the person chose was lost");
   assert.deepEqual(statuses, [], "cancelled work must not update an unloaded UI");
 });
 
-test("disabling while a manual download drains prevents the pending scope from being saved", async (t) => {
+test("disabling while a manual download drains keeps the pending selection and puts nothing in force", async (t) => {
   const { instance, state, saved } = await lifecyclePlugin(t);
   const download = deferred();
   instance.manualFetches.add(download.promise);
@@ -813,7 +973,8 @@ test("disabling while a manual download drains prevents the pending scope from b
   instance.onunload();
   download.resolve("done");
   await saving;
-  assert.equal(saved(), null);
+  assert.equal(saved().syncFolders, undefined);
+  assert.deepEqual(saved().pendingScope, { folders: ["Notes"] });
   assert.equal(state.data.syncFolders, undefined);
   assert.equal(instance.engine, null);
 });
@@ -824,16 +985,20 @@ test("an already-issued scope write may finish after unload but cannot report su
   Engine.prototype.start = async () => { starts++; };
   const entered = deferred(), write = deferred();
   const save = state.save.bind(state);
-  state.save = async () => { entered.resolve(); await write.promise; await save(); };
-  const saving = assert.rejects(instance.saveSyncFolders(["Notes"]), /unloaded.*check the saved selection/);
+  // The second write is the one that puts the selection in force; the first
+  // only kept it pending.
+  let writes = 0;
+  state.save = async () => { if (++writes === 2) { entered.resolve(); await write.promise; } await save(); };
+  const saving = assert.rejects(instance.saveSyncFolders(["Notes"]), /unloaded.*takes effect when obsync starts again/);
   await entered.promise;
   instance.onunload();
   write.resolve();
   await saving;
   assert.deepEqual(saved().syncFolders, ["Notes"], "a persistence operation already issued cannot be recalled");
+  assert.equal(saved().pendingScope, undefined);
   assert.equal(starts, 0);
   assert.deepEqual(statuses, []);
-  assert.deepEqual(logs, ["scope decision=cancelled reason=plugin_unloaded"]);
+  assert.deepEqual(logs, ["scope decision=deferred reason=plugin_unloaded pending=false"]);
 });
 
 test("a cancelled scope save drains before a later load owns its engine and scope edit", async (t) => {
@@ -857,7 +1022,7 @@ test("a cancelled scope save drains before a later load owns its engine and scop
   const competing = instance.saveSyncFolders(["Notes"]).catch((error) => { refusal = error; });
   await new Promise(setImmediate);
   assert.match(refusal?.message ?? "", /already being saved/);
-  assert.equal(saved(), null, "the old state was never written");
+  assert.equal(saved().syncFolders, undefined, "the old session put nothing in force");
   newWork.resolve();
   await newSave;
   await competing;
@@ -1192,4 +1357,98 @@ for (const placement of ["before the widening", "between the rewind and the firs
     assert.ok(holds(a, LOCAL_ONLY), `the edit is gone: ${vaultNames(a)}`);
   });
 }
+
+/**
+ * AND WHAT IT MEETS THAT THIS DEVICE DELETED (issue #237).
+ *
+ * The phone wrote the note, so the replay hands this device the phone's
+ * versions first, with no record here to meet: written, recorded, the grave
+ * gone. The deletion after them is this device's own, and was skipped as an
+ * echo -- the note stood here again, alone, at a version the phone had
+ * deleted too. An edit made here before the deletion is an echo as well, so
+ * the record the replay leaves is an ANCESTOR of what the deletion names; a
+ * folder is the same rule one kind over.
+ */
+for (const kind of ["note", "note edited here first", "folder"]) {
+  test(`a widening does not bring back a ${kind} this device deleted, and sends no deletion again (#237)`, async (t) => {
+    const rig = await widening(t);
+    const { server, timers, a, b } = rig;
+    const path = kind === "folder" ? "Notes/Sub/Theirs.md" : "Notes/Theirs.md";
+    if (kind === "folder") {
+      b.host.makeFolder("Notes/Sub");
+      await timers.run(STEP_MS, () => a.state.folderByPath("Notes/Sub") !== undefined);
+    }
+    b.host.write(path, "PHONE NOTE SENTINEL\n", 2000);
+    await timers.run(STEP_MS, () => settled(a, path) && a.host.text(path) === "PHONE NOTE SENTINEL\n");
+    const id = a.state.fileByPath(path).fileId;
+    const folderId = a.state.folderByPath("Notes/Sub")?.fileId;
+    if (kind === "note edited here first") {
+      a.host.write(path, "DESKTOP EDIT SENTINEL\n", 3000);
+      await timers.run(STEP_MS, () => b.host.text(path) === "DESKTOP EDIT SENTINEL\n");
+    }
+    if (kind === "folder") a.host.removeFolder("Notes/Sub");
+    else a.host.remove(path);
+    await timers.run(STEP_MS, () => b.host.text(path) === null && b.state.fileByPath(path) === undefined &&
+      b.state.folderByPath("Notes/Sub") === undefined && a.state.data.lastSeq === server.seq);
+    if (kind === "folder") {
+      // And a folder deleted here and made again since: that deletion is no
+      // longer where the folder stands, and the replay leaves the folder be.
+      b.host.makeFolder("Notes/Again");
+      await timers.run(STEP_MS, () => a.state.folderByPath("Notes/Again") !== undefined);
+      a.host.removeFolder("Notes/Again");
+      await timers.run(STEP_MS, () => b.host.resolveFolder("Notes/Again") === undefined);
+      a.host.makeFolder("Notes/Again");
+      await timers.run(STEP_MS, () => b.host.resolveFolder("Notes/Again") !== undefined && a.state.data.lastSeq === server.seq);
+    }
+    const own = (fileId) => server.journal.filter((frame) => frame.file_id === fileId && frame.deleted);
+    const [deletion] = own(id);
+    assert.equal(deletion?.device_id, KEYS.deviceId, "the fixture's deletion is not this device's own");
+    const frames = server.journal.length;
+
+    await save(rig, ["Notes", "Work"]);
+    await timers.run(STEP_MS, () => a.host.text("Work/Remote.md") === "remote\n" && a.state.data.lastSeq === server.seq);
+    // The pass that publishes a deletion for a recorded note the vault lacks.
+    await a.engine.syncNow();
+    await timers.run(STEP_MS);
+
+    const story = `${vaultNames(a)} ${JSON.stringify(a.host.logs.filter((line) => /^(pull|push)/.test(line)))}`;
+    assert.equal(a.host.text(path), null, `the deleted ${kind} came back: ${story}`);
+    assert.equal(a.state.pathByFileId(id), undefined, `and is recorded here again: ${story}`);
+    assert.equal(a.state.data.graves[id]?.versionId, deletion.version_id, "its grave is not the deletion this device made");
+    assert.deepEqual(server.journal.slice(frames).filter((frame) => frame.deleted), [], `a deletion was sent again: ${story}`);
+    assert.equal(b.host.text(path), null);
+    assert.ok(a.host.logs.includes(`pull path_class=tombstone decision=reapplied reason=own_deletion_returned file=${id} seq=${deletion.seq}`), story);
+    assert.ok(a.host.logs.some((line) => line.startsWith(`pull path_class=file decision=unburied file=${id} `) &&
+      line.endsWith(` grave=${deletion.version_id}`)), story);
+    if (kind === "folder") {
+      assert.equal(a.host.resolveFolder("Notes/Sub"), undefined, `the deleted folder came back: ${story}`);
+      assert.equal(a.state.folderByPath("Notes/Sub"), undefined);
+      assert.equal(a.state.data.graves[folderId]?.versionId, own(folderId)[0]?.version_id);
+      assert.equal(a.host.resolveFolder("Notes/Again"), "Notes/Again", `the folder made again here was removed: ${story}`);
+      assert.notEqual(a.state.folderByPath("Notes/Again"), undefined, story);
+    }
+  });
+}
+
+test("this device's own deletion removes the version it deleted, and stays an echo over an edit it never saw (#237)", async () => {
+  const r = await rig();
+  const { domainKey, manifestKey } = r.keys;
+  const replay = async (fileId, path, edited) => {
+    const base = await r.server.publish({ fileId, path, bytes: enc("BASE SENTINEL"), mtime: 1000, domainKey, manifestKey });
+    const deletion = await r.server.publishTombstone({ fileId, path, manifestKey, parents: [base.version_id], deviceId: KEYS.deviceId });
+    assert.equal(await applyChange(r.context, base), "applied");
+    if (edited) {
+      const edit = await r.server.publish({ fileId, path, bytes: enc("EDIT SENTINEL"), mtime: 2000, domainKey, manifestKey, parents: [base.version_id] });
+      assert.equal(await applyChange(r.context, edit), "applied");
+    }
+    const frames = r.server.journal.length;
+    const result = await applyChange(r.context, deletion);
+    assert.equal(r.server.journal.length, frames, `a version was published for this device's own deletion: ${r.host.logs.join(" | ")}`);
+    return result;
+  };
+  assert.equal(await replay("35".repeat(16), "Notes/deleted.md", false), "deleted");
+  assert.equal(r.host.text("Notes/deleted.md"), null);
+  assert.equal(await replay("36".repeat(16), "Notes/edited.md", true), "echo");
+  assert.equal(r.host.text("Notes/edited.md"), "EDIT SENTINEL");
+});
 

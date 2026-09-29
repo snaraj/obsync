@@ -1,0 +1,12 @@
+# M2230: session key handles are extractable
+--- a/plugin/src/crypto.ts
++++ b/plugin/src/crypto.ts
+@@ -232,7 +232,7 @@
+       ? crypto.subtle.importKey("raw", key, "HKDF", false, ["deriveBits"])
+       : use === "HMAC"
+         ? crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+-        : crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
++        : crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
+     handles?.set(use, handle);
+   }
+   return handle;

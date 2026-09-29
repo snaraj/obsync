@@ -1,0 +1,12 @@
+# M1895: a merge or closing posts the record's path, not the settled name
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4179,7 +4179,7 @@
+   if (missing.length > 0) await context.transport.putChunk(sid, ciphertext);
+   const manifest: Manifest = {
+     v: 1,
+-    path: target,
++    path,
+     size: text.length,
+     mtime,
+     domain: context.domainId,

@@ -1,0 +1,12 @@
+# M1890: a copied or renamed vault is treated as a storage fault and stops loading (#168)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -719,7 +719,7 @@
+         const ref = secretRef(id);
+         if (metadata["credentialRef"] !== ref) throw new StateStorageError("invalid_reference");
+         const raw = secrets.getSecret(ref);
+-        if (raw === null && held.holds(ref)) throw new StateStorageError("missing_secret");
++        if (raw === null && (held.holds(ref) || ref !== "")) throw new StateStorageError("missing_secret");
+         const envelope = raw === null ? null : readEnvelope(raw, id);
+         // A COPY, OR A FOLDER RENAMED OUTSIDE OBSIDIAN: never the device the
+         // reference names, and never a stop with nothing to press. OR THE ONE

@@ -1,0 +1,12 @@
+# M3213: the parked retry takes a dropped write's empty file for a local edit and releases the note
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1626,7 +1626,7 @@
+   fileId: string,
+ ): Promise<"no_record" | "other_file" | "local_edit" | null> {
+   const stat = await context.host.stat(path);
+-  if (stat === null || droppedWrite(context, stat)) return null;
++  if (stat === null) return null;
+   const record = context.state.fileByPath(path);
+   if (record === undefined) return "no_record";
+   if (record.fileId !== fileId) return "other_file";

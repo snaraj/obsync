@@ -84,12 +84,27 @@ jobs:
           # The asset the Release serves TODAY must still hash to the digest the
           # sealed manifest recorded at publication.
           test "sha256:$(sha256sum "${bundle}" | awk '{print $1}')" = "${plugin_digest}"
+          # The static server archives, from 1.1.4 on. manifest-record below
+          # requires them BY VERSION, so reading the evidence's key here can
+          # select nothing; the names are derived from the tag, never read.
+          server=()
+          server_archives=''
+          if jq -e '.artifacts | has("server_archives")' "${manifest}" >/dev/null; then
+            mkdir -p "${RUNNER_TEMP}/audit-server"
+            for arch in amd64 arm64; do
+              observed="${RUNNER_TEMP}/audit-server/obsync-server-${tag}-linux-${arch}.tar.gz"
+              download_asset "$(basename "${observed}")" "${observed}"
+              server+=(--server-archive "linux/${arch}=${observed}")
+              server_archives="${server_archives} ${observed}"
+            done
+          fi
 
           contract=(--repository "${repository}" --source-sha "${source_sha}"
                     --main-run-id "${main_run_id}" --version "${version}"
                     --image "${IMAGE}" --image-digest "${image_digest}"
                     --chart "${CHART}" --chart-digest "${chart_digest}"
-                    --plugin-digest "${plugin_digest}" --plugin-bundle "${bundle}")
+                    --plugin-digest "${plugin_digest}" --plugin-bundle "${bundle}"
+                    "${server[@]}")
           python3 -B scripts/ci/release_contract.py manifest-record \
             --manifest "${manifest}" "${contract[@]}"
           # The notes lead with the changelog entry as the SOURCE COMMIT wrote
@@ -141,7 +156,8 @@ jobs:
           # selects the historical path, and a classification error is fatal.
           native_provenance="$(python3 -B -c 'from scripts.ci.release_contract import Version; import sys; print(str(Version.parse(sys.argv[1]) >= Version(0, 1, 15)).lower())' "${version}")"
           if [ "${native_provenance}" = true ]; then
-            ./scripts/ci/verify-native-provenance.sh "${native_directory}" "${source_sha}"
+            SERVER_ARCHIVES="${server_archives}" \
+              ./scripts/ci/verify-native-provenance.sh "${native_directory}" "${source_sha}"
           fi
 
           gh api --method GET \

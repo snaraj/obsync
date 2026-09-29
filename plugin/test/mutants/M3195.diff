@@ -1,0 +1,12 @@
+# M3195: a phone writes an empty-landing download once more than its budget
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1228,7 +1228,7 @@
+       const now = await this.stat(path);
+       if (now === null || now.size !== 0) return now;
+       const busy = unsaved || this.typing(path);
+-      if (busy || again > WRITE_AGAIN) {
++      if (busy || again > WRITE_AGAIN + 1) {
+         this.log(
+           `host path_class=file decision=refused reason=write_dropped cause=${busy ? "editor_busy" : "budget"} ` +
+             `writes=${again} bytes=${bytes.length} budget_writes=${WRITE_AGAIN + 1}`,

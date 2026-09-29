@@ -1,0 +1,11 @@
+# M2020: a large push posts its version before every chunk has landed
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -290,7 +290,6 @@
+     held += ciphertext.length;
+   }
+   if (window.length > 0) await ask();
+-  await Promise.all(landing);
+   return sent;
+ }
+ 

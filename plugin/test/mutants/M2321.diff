@@ -1,0 +1,12 @@
+# M2321: a server refusal naming the certificate error is taken for the device's own (certificate wording)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1397,7 +1397,7 @@
+  * a certificate error is the server's refusal.
+  */
+ export function certificateRefusal(error: unknown): string | null {
+-  if (!(error instanceof ApiError) || error.code !== "unreachable") return null;
++  if (!(error instanceof ApiError)) return null;
+   const detail = error.detail;
+   return CERTIFICATE_REFUSALS.find(([words]) => words.test(detail))?.[1] ?? null;
+ }

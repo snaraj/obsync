@@ -1,0 +1,12 @@
+# M2931: a copy's publication forgives every folder-sync failure, not only a host that has none
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1139,7 +1139,7 @@
+       try { await directory.sync(); } finally { await directory.close(); }
+     } catch (error) {
+       const code = (error as { code?: string }).code ?? "none";
+-      if (strict && !NO_FOLDER_SYNC.has(code)) throw error;
++      if (strict && false) throw error;
+       if (this.folderSyncRefused) return;
+       this.folderSyncRefused = true;
+       this.log(`host path_class=folder decision=skipped reason=directory_fsync code=${code}`);

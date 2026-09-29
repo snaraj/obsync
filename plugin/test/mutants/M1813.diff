@@ -1,0 +1,12 @@
+# M1813: a chunk answer of any size is taken as the chunk
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1227,7 +1227,7 @@
+     const target = `/v1/chunks/${sid}`;
+     const response = control
+       ? await this.readOnce(target, control, CHUNK_CIPHERTEXT_MAX)
+-      : this.capped("GET", target, await this.call("GET", target, { auth: "device", cap: CHUNK_CIPHERTEXT_MAX, bulk: true, ...patience }), CHUNK_CIPHERTEXT_MAX, true);
++      : await this.call("GET", target, { auth: "device", cap: CHUNK_CIPHERTEXT_MAX, bulk: true, ...patience });
+     return new Uint8Array(response.arrayBuffer);
+   }
+ 

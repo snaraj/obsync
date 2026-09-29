@@ -1,0 +1,11 @@
+# M3041: a late report's ghost reaches the engine as a note of its own, and stays in the index
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2908,7 +2908,6 @@
+     this.registerEvent(
+       vault.on("create", (file: TAbstractFile) => {
+         // The old spelling of a re-cased entry, indexed again (issue #219).
+-        if (this.host?.ghost(file.path)) return;
+         if (file instanceof TFile) this.engine?.changed(file.path);
+         else if (file instanceof TFolder) this.engine?.folderCreated(file.path);
+       }),

@@ -1,5 +1,7 @@
 # obsync architecture
 
+*Internals, for contributors and reviewers.*
+
 Dated 2026-09-07. This is the design every lane builds from. Where a number
 here is a default, `docs/protocol.md` and `docs/storage.md` carry the exact
 contract; where it is a benchmark target, `docs/benchmarks.md` does.
@@ -79,8 +81,8 @@ per approved device, and a device that has not been paired and approved --
 however local it is -- can do nothing but be refused.
 
 **2. The hop from that terminator to this process is plain HTTP.** The server
-listens on plain HTTP and never links TLS (requirement 7), so on the
-reference deployment the connector-to-pod hop is unencrypted. What limits who
+listens on plain HTTP and never links TLS (requirement 7), so on a
+cluster deployment the terminator-to-pod hop is unencrypted. What limits who
 can reach it is a default-deny NetworkPolicy admitting exactly one peer and a
 restricted Pod Security level, which withholds the capabilities a
 neighbouring pod would need to read another pod's traffic. That is
@@ -175,9 +177,12 @@ decision, not a default.
 Files up to 8 MiB are one chunk. Larger files use content-defined chunking
 (gear-hash rolling window, homegrown, identical constants on both sides):
 minimum 1 MiB, target 4 MiB, maximum 8 MiB. Editing the middle of a 20 GB
-archive re-uploads a handful of chunks, not the file. The chunk cap keeps
-every request far below the 100 MB body limit a free Cloudflare zone
-imposes and bounds memory on mobile.
+archive re-uploads a handful of chunks, not the file. The chunk cap bounds
+every request body, which keeps it under the body limits edge providers
+commonly impose (100 MB on a free Cloudflare zone, for one) and bounds memory
+on mobile. It is still above some reverse proxies' defaults, such as nginx's
+1 MiB, which is why the terminator in `docs/kubernetes.md` section 4 lifts
+that limit.
 
 ### 3.4 File manifests and versions
 
@@ -319,7 +324,7 @@ a conflict the user never made.
 The server stores `wrapped = device_secret XOR HKDF(server_key,
 "obsync/v1/wrap", device_id)` — a one-time pad from a per-device HKDF
 output. A stolen journal without the server key yields nothing; the server
-key is a Kubernetes Secret on the reference deployment, or a first-boot
+key is a Kubernetes Secret on a cluster deployment, or a first-boot
 file with mode 0600 elsewhere.
 
 ## 4. Devices, pairing, identity
@@ -367,23 +372,29 @@ that phrase the vault is unrecoverable by design.
    for the claimant's vault. A separate `obsync/v1/pair-vault` HKDF label and
    AES-GCM binding to the pairing ID keep these details blind to the server;
    the creator decrypts them before showing approval (protocol: Pairing).
-3. The paired device polls the pairing, shows "Approve <name> on
-   <platform>?", and on approval encrypts `{VRK}` with `K_pair =
+3. The paired device polls the pairing and asks about the claim by the
+   claimant's name ("Mac 7KQ4": what it is and a tag it made itself), what it
+   is, when it asked, and a match code both screens derive from `PS` and the
+   claimant's device id (protocol: Pairing). Sealed vault details that do not
+   open under `PS` mean the claimant holds another code, and it is refused
+   before anyone is asked. On approval it encrypts `{VRK}` with `K_pair =
    HKDF(PS, "obsync/v1/pair", pairing_id)` under AES-GCM and posts the
-   envelope. The server stores it for one fetch.
+   envelope. The server stores it for one fetch, and the paired device says
+   "paired" only once the server reports it fetched.
 4. The new device fetches the envelope (a signed request), decrypts it with
-   `PS`, and persists `VRK` through the native secret store before sync starts. Approval
-   is what activates the device; rejection, or expiry of an unapproved
-   pairing, destroys the pending credential. Rejection reaches a PENDING
-   claimant only: once approved, the claimant is a paired device, so a
-   reject that arrived after the approval is refused
-   (`409 already_approved`) and the store refuses to delete anything but a
-   pending device. Removing a paired device is revocation, which keeps the
-   record, destroys the secret, and refuses the last active device only while
-   account recovery is unregistered.
+   `PS`, and persists `VRK` and its credential together, in one write to the
+   native secret store, before sync starts. Collecting the envelope is what
+   activates the device; rejection, or expiry before collection, approved or
+   not, destroys the pending credential. A claimant that cannot open or keep
+   the key revokes the device it just activated. Rejection reaches a claim
+   the creator has not approved only: a reject that arrived after the
+   approval is refused (`409 already_approved`) and the store refuses to
+   delete anything but a pending device. Removing a paired device is
+   revocation, which keeps the record, destroys the secret, and refuses the
+   last active device only while account recovery is unregistered.
 
 A pairing lives in memory and the device a claim creates is journaled, so a
-restart between step 2 and step 3 leaves a pending device behind a pairing
+restart between step 2 and step 4 leaves a pending device behind a pairing
 that no longer exists: nobody can approve it, and the expiry sweep cannot
 reach it, because the sweep only ever sees the table. Assembling the
 application state therefore destroys every pending device no pairing is
@@ -398,8 +409,8 @@ it holds no `VRK`. Approval is always from a paired Obsidian instance.
 
 Obsidian 1.13.0 or newer is required; the vendored official API package is
 pinned at exactly that version, so the compiler refuses any newer member. The plugin uses only the public SecretStorage
-`getSecret` and `setSecret` operations for its exact owned entry. A validated,
-random installation ID determines that entry's name. No secret inventory or
+`getSecret` and `setSecret` operations for its exact owned entries. A validated,
+random installation ID determines their names. No secret inventory or
 other plugin installation is read or imported.
 
 The entry contains one versioned envelope with current and previous valid
@@ -407,12 +418,26 @@ credential records: vault root key, device secret and optional edge headers,
 bound to the installation, server URL, device ID and a credential revision.
 Plugin `data.json` holds that reference and nonsecret bookkeeping. Loading
 selects only the record named by metadata with the matching server/device
-identity; missing, malformed or mismatched data stops loading instead of
-resetting identity or generating another key. Key-only recovery and
-credential-only enrollment are preserved as incomplete states. Approval can
-finish in an already-open pairing dialog. Its pairing code is not persisted,
-so app restart does not resume that dialog. A recovery phrase can restore
-the key after device approval; it does not authorize a pending device.
+identity; malformed or mismatched data, and a missing entry this vault has
+held, stop loading instead of resetting identity or generating another key.
+A missing entry this vault never held -- a copied vault, or a folder renamed
+outside Obsidian, which Obsidian registers as a new vault id with empty
+secret storage -- loads as a device that never paired, never as the device
+the reference names, and nothing is written until the person pairs it or
+starts fresh. So does metadata exactly one revision past the entry's current
+record, which a desktop killed between the two writes leaves because its
+secret storage reaches disk after the data file: that device keeps its name
+and holds no credential, never one taken from an older record, until it pairs
+again. Which reference a vault last opened is kept in Obsidian's
+per-vault local storage; it is not a secret. Key-only recovery and
+credential-only enrollment are preserved as incomplete states. A pairing
+claim waiting for its key is held in a second owned entry, beside the
+credential and never in it: the pairing id, `PS`, the claimed credential and
+the claim time. It signs only its own envelope collection, survives a closed
+dialog and an app restart, and is emptied (the API has no delete) when the
+key is kept or the claim ends, or once it is older than the pairing's ten
+minutes. A recovery phrase can restore a key; it does not authorize a
+pending device.
 
 Existing plaintext settings migrate by writing and reading back the owned
 entry before replacing metadata. Saves use detached snapshots and serialize
@@ -431,9 +456,10 @@ a dialog invalidates its later UI continuation. Closing cannot undo a local
 write already dispatched by the user’s action. Setup, pairing and key-recovery continuations are bound to the
 state, transport, server URL and plugin session that started them; a
 superseded response cannot overwrite a new session’s identity. Shutdown can
-still lose a one-time server response. Closing a pairing dialog after an
-envelope request was dispatched preserves a received key in the same active
-session, without restarting sync or issuing another collection request.
+still lose a one-time server response; a claim that collected its envelope
+and restarted before keeping the key revokes that device when it resumes.
+Closing a pairing dialog does not cancel the claim: it finishes behind the
+dialog and says so.
 An interrupted first migration can leave an unreferenced native entry;
 the plugin never inventories or automatically deletes native secrets.
 
@@ -520,10 +546,14 @@ anyone but the owner access to anything, and no wording in this repository
 should suggest otherwise.
 
 **Manual access on the host** is the only access path beyond a paired
-device: `obsyncd export --domain <id> --key <hex> --out <dir>` reconstructs
-that domain's stored ciphertext from the volumes -- file records carry their
-domain in clear (5.1 item 4), so the filter is exact -- and the operator
-decrypts it on a device that holds the key. It is the same binary; opening
+device: `obsyncd export --domain <id> --key-file <file> --out <dir>`
+reconstructs that domain's stored ciphertext from the volumes -- file records
+carry their domain in clear (5.1 item 4), so the filter is exact -- and the
+operator decrypts it on a device that holds the key. The key file must be
+readable by its owner alone (`chmod 600`), and `--key-file -` reads the key
+from standard input instead. The older `--key <hex>` still works but prints
+a warning: a key on the command line is visible in the process list and
+kept in shell history. It is the same binary; opening
 storage performs the recovery and posture changes described in
 [Offline check and recovery verdicts](storage.md#offline-check-and-recovery-verdicts).
 Use a restored copy with the server stopped, preserving the pristine backup.
@@ -650,7 +680,7 @@ authorization work, and none of it exists yet.
 
 An append-only **journal** of frames (`docs/storage.md`) is the source of
 truth; an in-memory **index** (files, versions, devices, chunk refcounts)
-is rebuilt from it at start and snapshotted periodically. Every accepted
+is rebuilt from it at start and snapshotted as the journal grows. Every accepted
 write is journaled and fsynced before its response.
 
 Each version append is checked against the file's current heads: if the
@@ -678,8 +708,11 @@ computed id -- every 1.0.x client -- is stored as posted.
 
 The **change feed** is the journal's version and tombstone frames, in
 sequence order, exposed by `GET /v1/changes?since=<seq>&wait=<s>`.
-`wait` long-polls up to 55 s (inside the edge's 100 s idle limit) and
-returns immediately when a new frame lands.
+`wait` long-polls up to 55 s and returns immediately when a new frame lands.
+55 s sits inside the idle limits of common terminators (60 s is nginx's
+default read timeout, 100 s a tunnel edge's); a proxy configured with a
+shorter one, such as the 30 s common in HAProxy examples, closes a healthy
+long poll and needs its timeout raised.
 
 ### 6.2 Plugin loops
 
@@ -687,7 +720,9 @@ returns immediately when a new frame lands.
    reconciliation that compares `(mtime, size)` per path against the local
    state and re-hashes anything that differs. Events are debounced 500 ms
    per path, and the growing-file guard then compares each stat with the one
-   the previous recheck took, 400 ms earlier: a file that has been seen
+   the previous recheck took, 400 ms earlier. A note of at most one chunk
+   that someone typed in within the last 10 s is the editor's own save: it
+   settles 150 ms after its event, with no recheck (issue #195). A file that has been seen
    changing must hold still for 5 s before it is queued, and a push whose
    file moved between the start and the end of its read is abandoned before
    a version exists. A file still growing is retried, never uploaded torn.
@@ -702,20 +737,33 @@ returns immediately when a new frame lands.
    five seconds old: a plugin answering a sync can keep both numbers, a
    fixed-width stamp the size and a kept modified time the other (issue #179).
    Startup and periodic scans retain their metadata shortcut. Explicit
-   **Sync now** re-chunks every admitted local file; unchanged digests publish
-   nothing, and a silent same-metadata rewrite is uploaded even long after
-   the arrival window expired. It uses the ordinary bounded streaming push
-   and device budget policy rather than buffering the whole vault.
-   Every 30 s the engine also compares its own listing of the vault against
-   the local state. On desktop that listing is the filesystem, read directly,
-   because Obsidian's index is never fresher than the events it emits: a
-   note moved in from a file manager is in neither until the app notices.
+   **Sync now** sends what is queued, reads the feed once without waiting,
+   retries parked and paused files, then runs the startup pass re-chunking
+   every admitted local file of at most one chunk (8 MiB): unchanged digests
+   publish nothing, and a silent same-metadata rewrite is uploaded even long
+   after the arrival window expired. **Verify all files** re-chunks every
+   admitted file, however large. Both use the ordinary bounded streaming push
+   and device budget policy rather than buffering the whole vault, and
+   neither keeps a plaintext hash to go faster: one in `data.json` would
+   confirm a guessed note to anyone who can read it (issue #197).
+   The engine also compares its own listing of the vault against the local
+   state: every 30 s on mobile, from Obsidian's index; on desktop from the
+   filesystem, read directly, every five minutes, at each start and whenever
+   the window comes forward (plugin 1.1.4), because Obsidian's index is never
+   fresher than the events it emits: a note moved in from a file manager is
+   in neither until the app notices.
    The periodic pass is ADDITIVE -- it queues work and it pairs a vanished
    recorded path with a new unrecorded one carrying the same `(mtime, size)`
    as a MOVE, keeping the file id -- and it never publishes a tombstone,
    because a listing this device took itself is the right thing to converge
    from and the wrong thing to delete on. Deletions stay with the watcher
-   and with startup reconciliation, which read Obsidian's own index.
+   and with startup reconciliation, which read Obsidian's own index, and
+   either holds a bulk deletion rather than publish it: the startup pass
+   when most of what this device tracks is gone (issue #123), the watcher
+   when at least five notes -- a multi-select, or a folder's notes -- go in
+   one burst (issue #162). The hold is persisted, and nothing of it leaves
+   the device until the user answers **Delete everywhere** or **Restore
+   here**, which puts the notes back from the versions this device recorded.
 
    THE SCAN READS RECORDS BEFORE THE LISTING, and that order carries one
    fact. A rename the plugin never heard as an event -- made while Obsidian
@@ -731,11 +779,15 @@ returns immediately when a new frame lands.
    entry. A host that keeps them apart answers nothing for a file that is
    gone, so a deletion beside a genuinely different note whose name differs
    only in case still publishes its tombstone.
-2. **Push.** Read, chunk, encrypt, batch-check existence (`POST
-   /v1/chunks/exists`), upload missing chunks with bounded concurrency
-   (4 on desktop, 2 on mobile) and resume by `sid`, then post the version.
-   A rejected parent set means another device wrote first; the plugin pulls,
-   reconciles, and retries.
+2. **Push.** Read, chunk and encrypt once; batch-check existence (`POST
+   /v1/chunks/exists`) a window of ciphertext at a time (32 MiB on desktop,
+   8 MiB on mobile) and upload what is missing from memory; resume by `sid`;
+   post the version once every chunk has landed. A note's one chunk of at
+   most 1 MiB is uploaded without the check. Pushes run in worker slots (4 on
+   desktop, 2 on mobile), each taking the next queued path as it frees up,
+   and a chunk of 256 KiB or less never waits behind a larger one (issue
+   #196). A rejected parent set means another device wrote first; the plugin
+   pulls, reconciles, and retries.
 3. **Pull.** Follow the change feed; for each version not authored here,
    download missing chunks, decrypt, assemble, verify the plaintext
    `sha256`, and write atomically (temp file plus rename on desktop via the
@@ -755,9 +807,14 @@ returns immediately when a new frame lands.
    same-name rule settles as a collision at the old spelling for good
    (issue #124). The host renames the entry instead, refusing when a
    DIFFERENT file wears the destination's exact name -- proved by inode on
-   desktop and by the adapter's case-sensitive existence check on mobile --
-   and that refusal is the real collision, which takes the same-name rule as
-   before. A DIRECTORY'S CASE IS NOT A NOTE'S TO CHANGE, and that is the half
+   desktop and by the folder's own listing on mobile -- and that refusal is
+   the real collision, which takes the same-name rule as before. Android's
+   storage folds capitals and Obsidian there refuses a capitals-only rename
+   outright, so the phone renames through a hidden name in the same folder,
+   two of Obsidian's own renames reported to the engine as one; a stop
+   between them is put back at the next start and held until the rename is
+   asked for again, so no pass reads it as a deletion (issue #219). A
+   DIRECTORY'S CASE IS NOT A NOTE'S TO CHANGE, and that is the half
    an entry rename cannot do: `rename(2)` resolves the directory components
    of its destination, so a per-file rename whose difference lies above the
    last component renames nothing and reports success. The FOLDER record
@@ -791,6 +848,62 @@ returns immediately when a new frame lands.
    metadata of the bytes IT committed -- the descriptor's own stat, or the
    byte count handed to the adapter -- never a fresh look at the name, which
    after an in-place save describes another file under the same inode.
+
+   A PHONE'S WRITE IS CHECKED FOR BYTES (plugin 1.1.4). On Android, Obsidian's
+   `writeBinary` can resolve and leave the file empty for good: 4 of 1,600
+   downloads on the Android emulator while a desktop wrote 400 files at a
+   time. The empty file was taken for a save landing after the write, and
+   the watcher published it, so the note was empty on every device. A phone
+   now looks at a file it has just written with bytes: an empty one is
+   written again, up to twice more, each logged (`decision=written_again`).
+   Each write again follows the first write's rule: never beneath text an
+   editor holds unsaved, nor beneath a keystroke (#135). Its last look at the
+   file comes after the editor's read, and anything there but the empty file
+   is a save that landed. That save is kept and sent as an edit. The
+   keystrokes are asked after that look, with no await between them and the
+   write. The look's own await is the floor every write on a phone has.
+   One that stays empty, or whose editor became busy, is refused as that one
+   file's (`write_dropped`, the log naming the `cause`), parked and tried
+   again like any other, and never recorded as written. Only emptiness is
+   judged; a file holding other bytes is still a save that landed
+   (`decision=write_superseded`, which names both sizes).
+   The empty file stays at the name: nothing on a phone can remove it without
+   racing a save that lands after the last look at it. It is marked by its
+   name (`state.dropped`), apart from the parked record, whose reason a later
+   retry may change (a larger head sent to the download lane, a lock) and
+   which a rename elsewhere releases. The name is marked before the first
+   write of every write a phone can refuse so -- a download, a merge, the head
+   a yield writes back, a resumed copy (`commitMarked`) -- not at the refusal:
+   a loaded phone's three writes took seconds, and the watcher pushed the
+   empty file between them (E6, live). A write that fails for any other reason
+   takes back only a mark it set itself. A push judges the bytes it read, not
+   an earlier look: empty bytes read at a marked name are sent as nothing, and
+   the file is looked at again (`publishFile`). It follows the file through every move
+   `renamed` is told of here: a rename, each file of a folder's rename (the
+   marked names among them), and a move into or out of the selected folders.
+   A record moved is no download landed, and an empty file is no content on
+   either side of the selection. The mark ends when a record is made at that
+   name. While it stands, the file is no edit, and where the download was new
+   it is no note of its own (`droppedWrite`, pull.ts):
+   - the push skips it (`push decision=skipped reason=write_dropped`);
+   - the parked retry writes the version over it rather than beside it;
+   - deleting it publishes no tombstone (`pushDelete`, `path_class=tombstone
+     decision=skipped`): it held nothing of the note, whose text is on the
+     server and on every other device. This device forgets the mark, and the
+     record if there is one; a folder deleted here reports its marked files
+     with its recorded ones (`pathsUnder`, main.ts). One look at the file
+     decides: a delete reported while the empty file still stands changes
+     nothing, and its real deletion is decided when it comes, so no file
+     removed between two looks can take the ordinary tombstone (review of
+     `5c9dc82`). While the mark stands,
+     deletion is local cleanup, even of text typed into the file and deleted
+     before it was sent: that text never left this device. Once a landed
+     retry or a sent edit ends the mark, deletion is ordinary. A move can leave the record
+     on the empty file where the retry no longer reaches it, as when the
+     selection follows a renamed folder.
+   Text typed into that empty note meanwhile is an edit, and is sent. A note
+   renamed on another device before its retry lands leaves the empty file
+   under the old name, on this phone only.
 
    A REMOVAL NEVER TARGETS THE LIVE NAME. A caller that removes a file names
    the content it is removing, and the desktop host first gives that file a
@@ -856,8 +969,14 @@ returns immediately when a new frame lands.
    pair is settled by keeping both instead. Hidden folders
    (`.obsidian`, `.git`) and symlinked folders are excluded from sync in
    both directions in v0.1; syncing them is a later opt-in. So is a folder
-   holding its own `.obsidian/plugins/obsync-private-sync/`, a vault of its
-   own that syncs with obsync, named once by a notice; and a desktop vault
+   holding a hidden folder with `plugins/obsync-private-sync/` in it, a vault
+   of its own that syncs with obsync, named once by a notice. That hidden
+   folder is the other vault's config folder, `.obsidian` unless its owner
+   named it otherwise (`Vault#configDir`). A computer asks every hidden
+   folder, by name only; a phone asks each folder once for this plugin's
+   own folder at the path Obsidian loaded it from (`manifest.dir`), because
+   listing folders there answers a turn later and opened a race (#244)
+   (plugin 1.1.4; 1.1.3 asked for `.obsidian` alone, #243). A desktop vault
    that sits inside such a vault refuses to be set up, paired or started.
    Synced from both sides, each pass copied the outer vault into the inner
    one a level deeper, on every device (issue #180).
@@ -920,12 +1039,16 @@ returns immediately when a new frame lands.
    Each declared length is then proved against the bytes as its chunk
    decrypts, so nothing unverified is written even when record and manifest
    agree, and one batched fetch is bounded by the chunk ceiling times the
-   batch size rather than by lengths another device declared.
+   batch size rather than by lengths another device declared. The page's
+   prefetch of other notes' single chunks (plugin 1.1.4) counts declared
+   lengths to fill its budget, and refuses any answer larger than that
+   budget, falling back to one GET per note.
 
    ONE RECORD THIS DEVICE CANNOT WRITE NEVER HOLDS UP THE REST (issue #144).
    A write the host's filesystem refuses for that one file (`EPERM`, `EBUSY`,
-   `EACCES`, `EROFS`, `ENOSPC`, `EDQUOT`, `ENAMETOOLONG`), or a chunk the
-   server does not hold (`404 unknown_chunk`, or a missing part of a batch),
+   `EACCES`, `EROFS`, `ENOSPC`, `EDQUOT`, `ENAMETOOLONG`), a phone's write
+   that stays empty however often it is made (`write_dropped`, below), or a
+   chunk the server does not hold (`404 unknown_chunk`, or a missing part of a batch),
    PARKS the record: its file id, path and reason are persisted with the
    cursor that moves past it, the status and one notice name the file and the
    reason, and every later change keeps arriving. A parked file is retried
@@ -933,6 +1056,10 @@ returns immediately when a new frame lands.
    one minute after it parks, doubling to half an hour, and at once at the
    next start and on **Sync now**; a later version of it that the feed
    applies settles it at once. A retry pass and the feed apply one at a time.
+   A version of more than 32 MiB is parked the same way as `downloading`
+   and fetched beside the feed, so later notes keep arriving; it is applied
+   under the same one-at-a-time rule, against the file's heads as they are
+   then (issue #196).
    Anything else -- the server out of reach, a refusal about this device, an
    I/O error -- is no fact about one record and keeps the feed's own retry.
    The filesystem causes are recognised on desktop only: the mobile adapter's
@@ -953,7 +1080,12 @@ returns immediately when a new frame lands.
    unresolvable or over-depth shared base refuses the merge; it cannot fall
    back to just one ancestor and replay the other's text.
    Replacements of existing characters and multi-line overlaps stay conflicts.
-   A clean merge posts a new version with both heads as parents.
+   A clean merge posts a new version with both heads as parents, under a name
+   merged the same way against the same ancestor: the side that moved the
+   note keeps its name, and two different moves keep, on every device, the
+   name that sorts first, which the user is told (issue #151). A folder
+   renamed two ways is that rule once per note, so every note takes the same
+   side, and the losing folder, emptied, is tombstoned (issue #174).
    Two heads that do not merge (binary, no
    ancestor, overlapping hunks) are settled by a rule every device computes
    alike without asking another: the head with the lower version id is the
@@ -968,8 +1100,8 @@ returns immediately when a new frame lands.
    note is replaced only if it is exactly as it was read. A head that a later
    version has replaced is settled against that version instead. Delete
    versus edit keeps the live edit as one current head, with the deletion in
-   history. A pair the rule cannot see (a rename against an edit, a copy name
-   already taken) keeps both: the foreign head is written as
+   history. A pair the rule cannot see (a rename against an edit that does
+   not merge, a copy name already taken) keeps both: the foreign head is written as
    `<name> (conflict from <device>, <date>).<ext>` and the user is told.
    The status reads `syncing` while a note waits on this device's own push to
    settle a fork, and only while that push is in flight; a parked file is
@@ -1027,7 +1159,47 @@ returns immediately when a new frame lands.
    keystrokes the other had not seen), the two heads share two newest
    ancestors, and their merge is the base; when those two were themselves
    merged differently, their base is found the same way one level down, to
-   at most three levels, each one single-chunk text.
+   at most three levels, each one single-chunk text. A base found once is
+   remembered (issue #227), because two versions never change: two people
+   typing make each round's criss-cross one level deeper than the last, and a
+   round walks only the levels not found before. The remembered bases are
+   together no longer than one merge input. A base below the versions the
+   server lists is read a version at a time, at most 64 a resolution and
+   never below the two branches' shared frontier; a version read or listed
+   once is remembered too (issue #227). Nothing is written under an editor
+   someone is typing in, so two people typing keep a note forked for as long
+   as both type and its base sinks a version a save: a resolution reads only
+   what none before it did, and the remembered versions are together no
+   longer than one merge input. A device whose own head lost the rule keeps
+   its record on that head until the kept head is written: while someone
+   types there the write waits, and the next save is an edit of the head the
+   note still holds.
+
+   AN EDITOR OBSYNC WROTE UNDER SHOWS WHAT IT WROTE (issue #252). Obsidian
+   loads an outside change into an open note when its file watcher reports
+   one. On a Mac whose file-event daemon was starved for minutes it reported
+   nothing, so the editor kept the old text. Every later version of the note
+   was then held as unsaved (`active_editor`) behind "syncing 1", and a
+   keystroke there would have saved the old text over the new. So a write
+   judged safe remembers what the note's editors showed at that moment, which
+   was its file's text. Nothing awaits between that judgment and the write:
+   on a desktop the bytes to show are read from the temp before the editor
+   is judged, not between the judgment and the rename. After the write lands,
+   the file is read back, and only if it holds exactly the written text (a
+   save of the same size, even the same mtime, can land after the write)
+   does each view still of this note and still showing that text load it
+   (`setViewData`), with no await after the read; each view is judged at its
+   own load, because a load can rebind another leaf. On a desktop that text
+   is the bytes renamed into place; on a phone it is the bytes handed to the
+   adapter. A view typed in since shows something else and is left alone. A
+   load that fails is logged (`decision=failed reason=editor_refresh`) and
+   never fails the write, which has landed. A view that
+   differs from its file still holds the note: nothing on the view says
+   whether the difference is typing. `TextFileView.data` follows every
+   keystroke (Obsidian 1.13.4), and a build that read it as "what the view
+   last loaded or saved" wrote merges under typing on an iPhone and garbled
+   the note (live, 2026-09-28). The status names a held note
+   (`waiting for unsaved changes in <note>`).
 
    A NOTE TWO PLUGINS KEEP REWRITING IS PAUSED (issue #179). A change within
    five seconds of a received version, without recent trusted Markdown editor
@@ -1094,12 +1266,58 @@ returns immediately when a new frame lands.
    version graph is another device's to shape, the file a conflict lands on
    is the file with the longest history, and this runs on Obsidian's UI
    thread while the user waits.
+
+   Merge eligibility, which `docs/conflicts.md` states for users in plain
+   words. A merge happens only when ALL of these hold, and any one of them
+   failing gives a conflict copy instead:
+
+   - **It is a text format**: `.md`, `.markdown`, `.txt`, `.csv`, `.json`,
+     `.yaml`/`.yml`, `.ts`, `.js`, `.css`, `.html`, `.xml`, `.toml`, `.ini`,
+     `.log` — and the local file holds no NUL byte.
+   - **Both sides are under 8 MiB**, the chunk ceiling: a merge input is held
+     whole in memory, so the incoming version must be a single chunk, and so
+     must the version the two devices last agreed on. A 12 MiB `.csv` or `.log`
+     is never merged, extension notwithstanding; the log line says
+     `reason=base_above_one_chunk` when it was the common ancestor that was too
+     large.
+   - **The two versions share a common ancestor.** Two devices that
+     independently created the same path have none — there is nothing to
+     merge against, and neither side is a later version of the other.
+   - **The two sides are close enough to align.** The merge lines up each side
+     against the common ancestor with a table bounded at 4,000,000 cells,
+     counted after the shared opening and closing lines are trimmed. Two
+     versions that differ by thousands of lines in the middle exceed it, the
+     merge answers `too_large`, and a conflict copy results.
+   - **The changes can be combined.** Edits in different parts of the file
+     merge. Additions to one line can merge when its original characters
+     remain in order on both devices and its beginning is unchanged. Shared
+     added text appears once; different additions at the same position use a
+     consistent order. Character alignment has the same 4,000,000-cell bound.
+     Competing prefixes, replacements and deletions of the same text remain
+     conflicts.
+
+   An identical note is adopted from another file identity only while that
+   incoming version is the server's sole current head. Replaying an old
+   version of a note that has since been deleted or changed does not retire a
+   later independent note. An edit or replacement of the local record during
+   that check also stops adoption. The selected keeper is saved before the
+   duplicate identity is retired.
+
+   When one device deletes a note while another edits it, the edit stays. The
+   settlement incorporates the deletion as a parent, so the server holds one
+   current note and keeps the deletion only in history. Later edits do not
+   reopen the same deletion conflict, and successful settlement produces no
+   notice. An unpublished edit that cannot yet be sent remains on its device
+   with a warning until it can be published.
 5. **Policy.** Per device: `perFileMaxBytes` (desktop 0 = unlimited; mobile
    512 MiB, the practical whole-file read ceiling in a WebView) and
    `totalBudgetBytes` (mobile 50 GiB by owner ruling). Files above a
    ceiling are not downloaded; they appear in the plugin's "Remote only"
-   view with an on-demand fetch. Every ceiling is visible in settings and
-   in the dashboard's device table.
+   view with an on-demand fetch. Excluding never deletes: a copy already on
+   the device when a newer version arrives above a ceiling stays, is listed
+   there as older, and is named once in a notice offering Fetch (issue
+   #161). Every ceiling is visible in settings and in the dashboard's device
+   table.
 6. **Streaming on desktop.** Electron exposes Node's `fs`; the plugin
    reads, hashes, and encrypts in 8 MiB windows and never loads a large
    file whole. Mobile reads whole files through the adapter, which is why
@@ -1125,7 +1343,13 @@ START line and its counts as a SUMMARY (requirement 12).
 **Removal, and the rule that governs it.** A folder is removed only when it is
 EMPTY on this device, and emptiness is asked of the FILESYSTEM, not of the
 synced inventory: a hidden file, an unsynced note, another plugin's data all
-keep it, and the file is never taken to make the folder go. Beyond that:
+keep it, and the file is never taken to make the folder go. The one exception
+is what an operating system writes into a folder by itself -- `.DS_Store`,
+`Icon\r` and `._` files on macOS, `Thumbs.db` and `desktop.ini` on Windows --
+which is never synced and goes with the folder instead of keeping it (one
+list, `vaultPath.ts`, `osJunk`; issue #184). A folder a TOMBSTONE finds
+occupied by anything else is kept and the user is told once, with the folder
+and how many items keep it. Beyond that:
 
 - a folder WITH a record is removed by its own tombstone and by nothing else,
   so an empty folder a user keeps does not vanish when its last note is
@@ -1149,7 +1373,10 @@ will take it when it empties.
 
 **Refusals.** A folder path takes the same vault-path rule and the same
 desktop component walk a file path takes, so no folder is created through a
-symlink or outside the vault. A folder record naming a path where a FILE
+symlink or outside the vault -- and none is PUBLISHED through one: every
+folder publication takes that walk first, so a linked folder's name never
+reaches another device, and the user is told once which folder stays on this
+device (issue #167). A folder record naming a path where a FILE
 stands is refused and logged, and so is a file manifest naming a path where a
 folder stands — on both platforms, since a folder can now arrive where a file
 used to be. Every folder decision logs one line: `folder path_class=folder
@@ -1282,13 +1509,16 @@ it exists. Narrowing keeps its cursor, because nothing new is covered.
 
 The replay is safe because the pull path answers each record against what
 this device holds NOW rather than against the order it arrives in: a version
-this device authored is its own echo, a version its head already reaches is
-`already_incorporated`, a tombstone for a file it no longer tracks is
-skipped, and local content the server never received is kept beside the
-incoming version instead of replaced (6.2 item 3). It is not free: replaying a file whose
-history this device already holds spends one `GET /v1/files/{id}` per foreign
-version older than its own head, and the decision line records the cursor it
-rewound from. No
+this device authored is its own echo -- except its own deletion of a file the
+replay has just written back, which is applied again (issue #237) -- a version
+its head already reaches is `already_incorporated`, a tombstone for a file it
+no longer tracks is skipped, and local content the server never received is
+kept beside the incoming version instead of replaced (6.2 item 3). It is not
+free: replaying a file whose history this device already holds spends one
+`GET /v1/files/{id}` per foreign version older than its own head, a file this
+device deleted after another device wrote it is downloaded and removed again
+(`pull decision=unburied`, then `decision=reapplied`), and the decision line
+records the cursor it rewound from. No
 re-pairing, state reset or fresh vault is involved, and another device's
 selection is untouched.
 
@@ -1303,10 +1533,13 @@ same selection; the existing platform filesystem and memory limits remain.
 
 **Restore from history** reads the retained change feed with its own cursor,
 never `State.lastSeq`, and never calls the feed application path. Each
-click performs at most 20 serial, single-attempt requests with `wait=0` and
-`limit=1`, stopping after five seconds plus the current request. One
-contract-conforming response is under 6 MiB (at most 120 MiB cumulatively
-per click); only one full response and 20 compact row descriptors are held.
+click reads at most 100 records in single-attempt requests with `wait=0`,
+normally one page of `limit=100` (a newest-first walk's first click adds one
+`limit=1` read that fixes its head), stopping after five seconds plus the
+current request. A 1.1.4 server ends a page at 8 MiB, inside the 16 MiB
+answer cap; a larger page from an older server is asked again at half the
+limit, down to one record under 6 MiB. Only one full response and 100
+compact row descriptors are held.
 The first response fixes the scan's head. Cursor progress is validated and
 later records above that boundary are discarded. GC removes pruned versions
 from the feed; retained content of deleted files remains browseable.
@@ -1324,8 +1557,12 @@ admission, not an atomic filesystem quota.
 Desktop creates an exclusive mode-0600 hidden sibling temporary file, streams
 and verifies content, flushes it, and publishes with a same-directory hard
 link that cannot replace a destination. It syncs the destination directory
-and retains directory/inode confinement checks. Unsupported publication
-primitives are errors; there is no overwriting fallback. Abort removes only
+and retains directory/inode confinement checks. A volume without hard links
+(FAT32, exFAT) answers the link with an exclusive create filled from the
+verified temporary file, which cannot replace a destination either; the copy
+is visible under its final name while it is filled, and one that fails is
+removed while that name still means it (issue #176). There is no overwriting
+fallback. Abort removes only
 the attempt's temporary inode. A crash can leave a hidden temporary file;
 it is excluded from sync, and recovery never automatically deletes unknown
 temporary names. Mobile holds the completed file in memory and calls
@@ -1356,24 +1593,30 @@ separate from source and isolated tests.
 After scrub quarantines a bad primary chunk without a healthy mirror, the
 server removes that SID from its inventory. Each running client walks its
 remembered, selected local versions independently of watcher events and
-`(mtime, size)` reconciliation. It authenticates the exact retained version
-and manifest, then asks which of its SIDs are absent. A healthy file requires
-no local content read. A missing chunk is regenerated from its authenticated
-offset and length only when the current local record, selection and stat
+`(mtime, size)` reconciliation. A one-chunk file whose SID the device
+remembers (plugin 1.1.4, `FileRecord.sid`, believed only while the record's
+digest is that SID's) is asked about with up to 4,095 others in one
+existence question; any other file, and one whose SID the server lacks, has
+its exact retained version and manifest authenticated first, and then asks
+which of its SIDs are absent. A healthy file requires no local content read.
+A missing chunk is regenerated from its authenticated offset and length only
+when the current local record, selection and stat
 still match. Its CID and SID must match the retained manifest before the
 signed, idempotent ciphertext PUT; an exact SID readback is required before
 the client reports restoration. No version, tombstone, file identity, feed
 cursor or selection is changed by this worker, and server quarantine evidence
 is retained.
 
-Work is incremental: at most one retained-version metadata read, 64 chunk
-entries audited, and one chunk restored per step. The authenticated manifest
-stays in memory across that file's batches. Steps run one second apart during
-a walk, with five minutes between complete walks; **Sync now** advances one
-step immediately. Completion time therefore depends on the number of files,
-chunk batches, missing chunks and request latency. There is one repair worker
-per engine, and stopping the engine cancels further work and drains an
-already dispatched write before a replacement engine starts.
+Work is incremental: at most one existence question of remembered SIDs, one
+retained-version metadata read, 64 chunk entries audited, and one chunk
+restored per step. The authenticated manifest stays in memory across that
+file's batches. Steps run one second apart during a walk, with six hours
+between complete walks (five minutes after a failed step); **Sync now**
+advances one step immediately. A 10,000-note vault whose SIDs are remembered
+walks in three existence questions. Completion time therefore depends on the
+number of files, chunk batches, missing chunks and request latency. There is
+one repair worker per engine, and stopping the engine cancels further work and
+drains an already dispatched write before a replacement engine starts.
 
 The host declares whether it can serve bounded ranges without buffering the
 whole file. The native desktop filesystem host can; the Obsidian adapter
@@ -1521,7 +1764,9 @@ JSON under `/v1/admin/*` behind the dashboard session. Pages:
 
 Address and country: in `cloudflare` edge mode from the edge's
 connecting-address and country headers; in `none` mode from the peer
-address or a trusted proxy header. Device history retention defaults to 90
+address or a trusted proxy's `X-Forwarded-For` or `Forwarded` header. Either
+header is believed only from a peer inside `OBSYNC_TRUSTED_PROXY_CIDRS`, and
+when a proxy sends both they must name the same client or neither is believed. Device history retention defaults to 90
 days. Multi-account operation is a backlog issue; every record already
 carries an `account_id`.
 
@@ -1531,7 +1776,7 @@ Environment only, so containers and charts need no config file:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `OBSYNC_LISTEN` | `0.0.0.0:8080` | HTTP listener |
+| `OBSYNC_LISTEN` | `[::]:8080` | HTTP listener; `[::]` is dual-stack, and falls back to every IPv4 address on a host without IPv6 |
 | `OBSYNC_BLOBS_DIR` | `/data/blobs` | Chunk volume |
 | `OBSYNC_JOURNAL_DIR` | `/data/journal` | Journal, index snapshots, server key |
 | `OBSYNC_BLOBS_MIRRORS` | empty | Comma-separated extra blob volumes |
@@ -1540,7 +1785,7 @@ Environment only, so containers and charts need no config file:
 | `OBSYNC_DASHBOARD_DIR` | `/opt/obsync/dashboard` | Dashboard static files |
 | `OBSYNC_PLUGIN_DIR` | `/opt/obsync/plugin` | Plugin bundle (`main.js`, `manifest.json`, `styles.css`) |
 | `OBSYNC_EDGE` | `none` | `none` or `cloudflare` |
-| `OBSYNC_TRUSTED_PROXY_CIDRS` | empty | Forwarded-address trust in `none` mode |
+| `OBSYNC_TRUSTED_PROXY_CIDRS` | empty | The only peers whose forwarding headers are believed, in every mode. Empty in `none` mode believes only the peer address; empty in `cloudflare` mode means the private networks a tunnel connector reaches its origin from (loopback, RFC 1918, RFC 6598, IPv6 unique local). A block holding every address is refused |
 | `OBSYNC_PUBLIC_URL` | empty | The base every generated link is built on -- the dashboard sign-in link the plugin asks for, and the addresses the pairing and install pages show. Empty is the private default: the server then hands out a relative link and the device resolves it against the server address it is configured with. Set, it must carry the scheme, the host AND the port devices arrive on |
 | `OBSYNC_SERVER_KEY` | empty | 64 hex chars; generated once if absent |
 | `OBSYNC_FREE_WATERMARK` | `5%,2GiB` | Refuse writes below the larger of the two |
@@ -1586,13 +1831,16 @@ never enter a repository. Edge mode follows the posture: `OBSYNC_EDGE=none`
 while nothing but private connectivity reaches the deployment, so a forwarded
 address is trusted only from `OBSYNC_TRUSTED_PROXY_CIDRS` (section 9).
 
-Publishing a hostname later is a configuration change, not a redesign: a
-tunnel for one hostname (`sync.example.org` standing in for the deployer's
-own) with an access policy in front -- identity policy for the dashboard
-paths, service-token policy for `/v1/*` -- and `OBSYNC_EDGE=cloudflare`, which
-makes the edge's connecting-address and request-id headers mandatory on every
-request and refuses one that lacks them. `docs/platform-onboarding.md` lists
-what a GitOps platform repository has to add.
+Publishing a hostname later is a configuration change, not a redesign. Behind
+the deployer's own reverse proxy (`sync.example.org` standing in for the
+deployer's own name) the edge mode stays `none` and
+`OBSYNC_TRUSTED_PROXY_CIDRS` names that proxy. Behind a tunnel provider with
+an access policy in front -- identity policy for the dashboard paths,
+service-token policy for `/v1/*` -- the Cloudflare form is
+`OBSYNC_EDGE=cloudflare`, which makes the edge's connecting-address and
+request-id headers mandatory on every request and refuses one that lacks
+them. `docs/platform-onboarding.md` lists what a GitOps platform repository
+has to add.
 
 Every other deployment differs from it in the terminator and in which
 proxies, if any, may speak for a client's address; the edge mode is `none`

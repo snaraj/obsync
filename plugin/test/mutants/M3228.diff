@@ -1,0 +1,16 @@
+# M3228: the retry of a new note's dropped write takes the empty file for a note of its own, and writes beside it
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1626,10 +1626,11 @@
+   fileId: string,
+ ): Promise<"no_record" | "other_file" | "local_edit" | null> {
+   const stat = await context.host.stat(path);
+-  if (stat === null || droppedWrite(context, stat)) return null;
++  if (stat === null) return null;
+   const record = context.state.fileByPath(path);
+   if (record === undefined) return "no_record";
+   if (record.fileId !== fileId) return "other_file";
++  if (droppedWrite(context, stat)) return null;
+   if (record.mtime !== stat.mtime || record.size !== stat.size) return "local_edit";
+   return null;
+ }

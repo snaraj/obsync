@@ -7,18 +7,17 @@
  * the path lives inside the encrypted manifest, and the only clear fields
  * are opaque ids, sizes and hashes of ciphertext (AGENTS.md requirement 6).
  *
- * TWO PASSES ABOVE ONE CHUNK. A file of at most 8 MiB is one chunk and is
- * handled in a single pass holding its ciphertext. A larger file is streamed
- * TWICE: pass one derives `{sid, cid, len}` per chunk and discards the
- * ciphertext, so one `POST /v1/chunks/exists` can cover thousands of chunks;
- * pass two re-encrypts (deterministically — `encryptChunk` is a pure
- * function of the domain key and the plaintext, so the second pass produces
- * the same bytes) and uploads only the missing ones. Peak memory is
- * `concurrency × 8 MiB`, so a 20 GB archive costs the same as an 8 MiB note.
- * Killing Obsidian mid-upload and reopening resumes by `sid`: the exists
- * check already knows what landed. What the restart must send AGAIN is
- * whatever was in flight when the process died, which is why the transport
- * bounds those bytes rather than the number of requests
+ * ONE PASS, A WINDOW AT A TIME (issue #196). A file of at most 8 MiB is one
+ * chunk, held with its ciphertext; a note's one small chunk is PUT without
+ * asking first (`DIRECT_PUT_MAX`, issue #195). A larger file is read and
+ * encrypted ONCE: each window of ciphertext is asked about in one
+ * `POST /v1/chunks/exists` and what the server lacks is sent while it is still
+ * in memory, and the version is posted only after every chunk has landed.
+ * Peak memory is the window (`PUSH_WINDOW_BYTES`), so a 20 GB archive costs
+ * the same as a 32 MiB file. Killing Obsidian mid-upload and reopening
+ * resumes by `sid`: the exists check knows what landed. What the restart
+ * must send AGAIN is whatever was in flight when the process died, which is
+ * why the transport bounds those bytes rather than the number of requests
  * (`UPLOAD_INFLIGHT_MAX`) and why this module never re-sends a plan it has
  * not re-checked. Every run that chunks a file, and every run that re-sent a
  * byte, says so in one `upload decision=summary` line.
@@ -36,9 +35,10 @@
  * own `data.json` above all — cannot be uploaded even if an event names one
  * (`vaultPath.ts`).
  *
- * PLATFORM. Desktop streams the file through Node's `fs` in 8 MiB windows
- * with concurrency 4; mobile reads the whole file through the vault adapter
- * with concurrency 2, which is why the mobile per-file ceiling exists.
+ * PLATFORM. Desktop streams the file through Node's `fs` in 8 MiB reads and
+ * holds a 32 MiB window; mobile reads the whole file once through the vault
+ * adapter, which is why the mobile per-file ceiling exists, and holds an
+ * 8 MiB window beside it.
  */
 
 import type { SyncContext } from "./engine";
@@ -63,7 +63,23 @@ import {
 } from "../crypto";
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
 import { assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
-import { VaultPathError, assertVaultPath } from "../vaultPath";
+import { VaultPathError, assertVaultPath, caseOnly } from "../vaultPath";
+
+/**
+ * The ciphertext one push holds between encrypting a chunk and the server
+ * taking it (issue #196): what lets a large file be read and encrypted once
+ * rather than twice. A phone holds less, beside the whole file its adapter
+ * has already read.
+ */
+export const PUSH_WINDOW_BYTES = 32 << 20;
+export const PUSH_WINDOW_MOBILE_BYTES = 8 << 20;
+
+/**
+ * A single chunk this small is PUT without asking first (issue #195): the PUT
+ * is idempotent and the server verifies the body against its sid, so the
+ * question costs a round trip to save at most this many bytes.
+ */
+export const DIRECT_PUT_MAX = 1 << 20;
 
 export interface ManifestChunk {
   sid: string;
@@ -135,11 +151,24 @@ export interface FolderManifest {
 }
 
 export interface PushOutcome {
-  /** `growing`: the file moved while it was being read, so no version exists. */
+  /**
+   * `growing`: the file moved while it was being read, or what was read is the
+   * empty file a dropped download left (#242), so no version exists.
+   */
   status: "pushed" | "unchanged" | "growing";
   fileId: string;
   versionId: string;
   ack?: VersionAck;
+}
+
+/**
+ * The file a push was asked for is no longer there (issue #164). Not a
+ * failure: a note renamed, deleted or moved with its folder between the queue
+ * and the read has an event of its own, and that event decides what is
+ * published. No path in the message, because a name is vault content.
+ */
+export class PathGone extends Error {
+  constructor() { super("push: path_gone"); }
 }
 
 /**
@@ -203,29 +232,69 @@ export async function retire(
   }
 }
 
-async function uploadMissing(
-  context: SyncContext,
-  missing: Set<string>,
-  plan: ManifestChunk[],
-  path: string,
-  size: number,
-): Promise<void> {
-  if (missing.size === 0) return;
-  const source = context.host.source(path, size);
-  const queue: Promise<void>[] = [];
-  for await (const plaintext of chunkStream(source)) {
-    const { sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
-    if (!missing.has(sid)) continue;
-    missing.delete(sid);
-    queue.push(context.transport.putChunk(sid, ciphertext));
-    if (queue.length >= context.concurrency) {
-      await Promise.all(queue.splice(0, queue.length));
+/**
+ * Read, encrypt and send a file of more than one chunk in ONE pass (issue
+ * #196). `plan` fills in file order. Chunks are asked about a window at a
+ * time, and what the server lacks is sent from memory: at most `limit` of
+ * ciphertext is held between encrypting a chunk and the server taking it.
+ * Resolves only once every chunk sent has LANDED -- the version is posted
+ * after it, never beside it -- and answers how many were sent.
+ */
+async function sendChunks(context: SyncContext, path: string, size: number, plan: ManifestChunk[]): Promise<number> {
+  const limit = context.host.isMobile ? PUSH_WINDOW_MOBILE_BYTES : PUSH_WINDOW_BYTES;
+  const signal = context.signal;
+  const landing = new Set<Promise<void>>();
+  const asked = new Set<string>();
+  let window: { sid: string; ciphertext: Bytes }[] = [];
+  let windowBytes = 0;
+  let held = 0;
+  let sent = 0;
+  const ask = async (): Promise<void> => {
+    const chunks = window;
+    window = [];
+    windowBytes = 0;
+    const missing = new Set(await context.transport.missingChunks(chunks.map((chunk) => chunk.sid), { signal }));
+    for (const { sid, ciphertext } of chunks) {
+      if (!missing.has(sid)) {
+        held -= ciphertext.length;
+        continue;
+      }
+      sent++;
+      const upload: Promise<void> = context.transport.putChunk(sid, ciphertext, { signal }).finally(() => {
+        held -= ciphertext.length;
+        landing.delete(upload);
+      });
+      // Observed below; a stop can end it before the loop gets there.
+      upload.catch(() => undefined);
+      landing.add(upload);
     }
+  };
+  for await (const plaintext of chunkStream(context.host.source(path, size))) {
+    // THE CHUNK BOUNDARY IS WHERE A STOP LANDS (issues #157, #185): nothing
+    // after it is encrypted or sent, and what already landed is found by its
+    // sid when the push runs again, so a folder Save or a Leave never waits
+    // for the rest of a large upload.
+    if (signal?.aborted === true) {
+      // The chunks on the wire end by the same signal, at once.
+      await Promise.allSettled(landing);
+      throw new ApiError(0, "cancelled", "sync stopped on this device");
+    }
+    const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
+    plan.push({ sid, cid: hex(cid), len: plaintext.length });
+    // A chunk a file repeats is asked about and sent once.
+    if (asked.has(sid)) continue;
+    asked.add(sid);
+    // Half the window is asked about at once, so the other half can still be
+    // on its way up while the next is encrypted.
+    if (window.length > 0 && windowBytes + ciphertext.length > limit / 2) await ask();
+    while (held + ciphertext.length > limit && landing.size > 0) await Promise.race(landing);
+    window.push({ sid, ciphertext });
+    windowBytes += ciphertext.length;
+    held += ciphertext.length;
   }
-  await Promise.all(queue);
-  if (missing.size > 0) {
-    throw new Error(`push: ${missing.size} chunk(s) of ${plan.length} vanished mid-upload`);
-  }
+  if (window.length > 0) await ask();
+  await Promise.all(landing);
+  return sent;
 }
 
 /**
@@ -261,9 +330,79 @@ export async function serialPublication<T>(context: SyncContext, path: string, p
   finally { if (paths.get(path) === current) paths.delete(path); }
 }
 
+/**
+ * THE PATH A PUSH PUBLISHES, LINKED UNTIL ITS RECORD IS WRITTEN (issue #213).
+ *
+ * A note's first push has no record for a rename to move: the record is
+ * written when the server answers. A new note renamed before then moved
+ * nothing, so the rename's own push minted a second file id and the other
+ * device received the note twice. The rename carries this link instead
+ * (`carryPost`), the answer becomes the record at the new name (`publishFile`,
+ * beside `path_gone`), and the rename's push waits for it here and publishes
+ * a move of that id. A post that fails records nothing, and the moved note is
+ * a new note, as before.
+ */
+interface InFlight { path: string; settled: Promise<void> }
+const inFlight = new WeakMap<SyncContext, Map<string, InFlight>>();
+
+/** A rename moved `from` while a push of it was in flight: its answer follows the note to `to`. */
+export function carryPost(context: SyncContext, from: string, to: string): boolean {
+  const posts = inFlight.get(context);
+  const post = posts?.get(from);
+  if (posts === undefined || post === undefined) return false;
+  posts.delete(from);
+  post.path = to;
+  posts.set(to, post);
+  return true;
+}
+
 export function pushFile(context: SyncContext, path: string, force = false, over?: string[] | (() => Promise<string[]>)): Promise<PushOutcome> {
   // Resume selects and preserves heads only after an earlier upload is acknowledged.
-  return serialPublication(context, path, async () => publishFile(context, path, force, typeof over === "function" ? await over() : over));
+  // The name is resolved BEFORE it is serialised, so a push of either spelling
+  // of one recorded note waits for the other rather than racing it (#166).
+  return recordedSpelling(context, path).then((at) =>
+    serialPublication(context, at, async () => {
+      let posts = inFlight.get(context);
+      if (posts === undefined) { posts = new Map(); inFlight.set(context, posts); }
+      const carried = posts.get(at);
+      if (carried !== undefined) await carried.settled;
+      let settle = (): void => undefined;
+      const post: InFlight = { path: at, settled: new Promise<void>((resolve) => { settle = resolve; }) };
+      posts.set(at, post);
+      try {
+        return await publishFile(context, at, force, typeof over === "function" ? await over() : over, undefined, post);
+      } finally {
+        if (posts.get(post.path) === post) posts.delete(post.path);
+        settle();
+      }
+    }));
+}
+
+/**
+ * The name this device RECORDS for the entry `path` resolves to, when that
+ * is `path` under other capitals (issue #166); otherwise `path`.
+ *
+ * A VAULT THAT FOLDS CASE ANSWERS FOR BOTH SPELLINGS, and Obsidian's index,
+ * keyed by exact spelling, keeps reporting and listing the one an entry had
+ * before the pull path re-cased it (S24, S93). A push of that old name found
+ * no record under it -- the record moved with the entry -- and published the
+ * note's bytes under a brand-new file id: one duplicate per note in a
+ * re-cased folder, live on the server and tracked by no device, which a device
+ * paired later adopted and then tried to delete. The vault is asked which
+ * entry the name is, and an entry this device records under another spelling
+ * is published as THAT record, never as a new file. A host that keeps the two
+ * spellings apart answers with the name itself, which is a different file.
+ *
+ * Asked only when some record differs from `path` by case alone, so a new
+ * note costs one pass over the records and no vault walk.
+ */
+async function recordedSpelling(context: SyncContext, path: string): Promise<string> {
+  if (context.state.fileByPath(path) !== undefined) return path;
+  if (!Object.keys(context.state.data.files).some((recorded) => caseOnly(recorded, path))) return path;
+  const shown = await context.host.spelling(path);
+  if (shown === null || shown === path || context.state.fileByPath(shown) === undefined) return path;
+  context.host.log("push path_class=file decision=resolved reason=case_variant");
+  return shown;
 }
 
 /** The edit wins; the tombstone becomes an ancestor, not a permanent second head. */
@@ -271,10 +410,10 @@ export function reviveFile(context: SyncContext, path: string, tombstone: string
   return serialPublication(context, path, () => publishFile(context, path, true, undefined, tombstone));
 }
 
-async function publishFile(context: SyncContext, path: string, force = false, over?: string[], tombstone?: string): Promise<PushOutcome> {
+async function publishFile(context: SyncContext, path: string, force = false, over?: string[], tombstone?: string, post?: InFlight): Promise<PushOutcome> {
   assertSyncPath(path, context.state.data.syncFolders);
   const stat = await context.host.stat(path);
-  if (!stat) throw new Error(`push: ${path} disappeared`);
+  if (!stat) throw new PathGone();
   const record = context.state.fileByPath(path);
   const fileId = record?.fileId ?? hex(randomBytes(16));
   const domain = context.domainId;
@@ -283,17 +422,28 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
   const plan: ManifestChunk[] = [];
   let single: Bytes | null = null;
   let plaintextHash = "";
+  let uploads = 0;
+  const before = context.transport.uploadStats();
   if (stat.size <= CHUNK_MAX) {
     const plaintext = await context.host.read(path);
+    // THE BYTES READ ARE WHAT IS JUDGED (#242; review of c4668d4). The engine
+    // asks `droppedWrite` of a look taken before this push, and a download
+    // dropped while that look was awaited left its empty file after it: read
+    // here, it was published as the note. The name is marked before the
+    // download writes (`materialise`), so empty bytes read at a marked name
+    // are the drop's. Nothing is sent, and the caller looks again, as for a
+    // file that changed while it was read.
+    const mark = context.state.data.dropped[path];
+    if (plaintext.length === 0 && mark !== undefined) {
+      context.host.log(`push path_class=file decision=abandoned reason=write_dropped file=${mark} duration_ms=${context.now() - started}`);
+      return { status: "growing", fileId, versionId: "" };
+    }
     const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
     plan.push({ sid, cid: hex(cid), len: plaintext.length });
     plaintextHash = hex(await sha256(plaintext));
     single = ciphertext;
   } else {
-    for await (const plaintext of chunkStream(context.host.source(path, stat.size))) {
-      const { cid, sid } = await encryptChunk(context.domainKey, plaintext);
-      plan.push({ sid, cid: hex(cid), len: plaintext.length });
-    }
+    uploads = await sendChunks(context, path, stat.size, plan);
   }
 
   const sids = plan.map((chunk) => chunk.sid);
@@ -306,14 +456,18 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
     return { status: "unchanged", fileId, versionId: record.versionId };
   }
 
-  const before = context.transport.uploadStats();
-  const missing = new Set(await context.transport.missingChunks(sids));
-  const uploads = missing.size;
   if (single !== null) {
     const only = plan[0] as ManifestChunk;
-    if (missing.has(only.sid)) await context.transport.putChunk(only.sid, single);
-  } else {
-    await uploadMissing(context, missing, plan, path, stat.size);
+    // AN EDIT'S ONE SMALL CHUNK GOES STRAIGHT UP (issue #195): new bytes are
+    // almost never on the server already, and the PUT is idempotent and
+    // verified against its sid there. Bytes the record already names -- a
+    // rename, a re-send over a restored server -- most likely are, so those
+    // are asked about first.
+    const direct = single.length <= DIRECT_PUT_MAX && record?.sha256 !== digest;
+    if (direct || (await context.transport.missingChunks(sids, { signal: context.signal })).length > 0) {
+      await context.transport.putChunk(only.sid, single, { signal: context.signal });
+      uploads = 1;
+    }
   }
 
   // THE GROWING-FILE INVARIANT (issue #99). Everything above describes the
@@ -398,10 +552,42 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
   // the record here would put that path back and arm exactly that tombstone.
   // The version itself is published and stays published; what this device
   // declines to do is claim it still tracks a path it no longer syncs.
+  //
+  // BUT A NOTE THAT ONLY MOVED IS STILL THIS DEVICE'S, AND ITS NEXT VERSION
+  // DESCENDS FROM THIS ONE (issue #151). A rename landing while the manifest
+  // posts carries the record to the new name with the parent this push read,
+  // so the next push named that stale parent beside the version just posted
+  // and forked the file: a swap made in one call lost a name on every device.
+  // The record the rename carried -- found by file id, still naming the version
+  // this push was made on -- learns the posted version, and nothing else about
+  // it changes: the path it waits to publish is still unpublished. A record a
+  // pull has moved on since, and a path that left the selection (#91), are
+  // left exactly as they are.
+  //
+  // A FIRST POST THE RENAME CARRIED (issue #213) has no record to follow: its
+  // answer IS the record, written at the note's new name and owing the move
+  // there, exactly as `renamed` leaves a record it moves. A name taken by now,
+  // or out of the selection, gets nothing, and the moved note is a new note.
+  // One the rename has not reached yet is recorded where it was posted, gone
+  // or not: the rename or deletion is an event of its own, and it, or the
+  // scan after it, finds that record and moves or deletes it like any other.
+  const renamed = record === undefined && post !== undefined && post.path !== path ? post.path : undefined;
   const inScope = inSyncScope(path, context.state.data.syncFolders);
-  if (!inScope || (await context.host.stat(path)) === null) {
+  if (renamed !== undefined || !inScope || (record !== undefined && (await context.host.stat(path)) === null)) {
+    const moved = renamed ?? (inScope && record !== undefined ? context.state.pathByFileId(fileId) : undefined);
+    const carried = moved === undefined ? undefined : context.state.fileByPath(moved);
+    const follows = renamed === undefined
+      ? carried !== undefined && carried.versionId === record?.versionId
+      : carried === undefined && inSyncScope(renamed, context.state.data.syncFolders);
+    if (follows) {
+      context.state.setFile(moved as string, carried === undefined
+        ? { fileId, versionId: ack.versionId, mtime: -1, size: stat.size, sha256: "" }
+        : { ...carried, versionId: ack.versionId });
+      await context.state.save();
+    }
     context.host.log(
-      `push path_class=file decision=not_recorded reason=${inScope ? "path_gone" : "left_scope"} file=${fileId}`,
+      `push path_class=file decision=not_recorded reason=${renamed !== undefined ? "renamed" : inScope ? "path_gone" : "left_scope"} ` +
+        `parent=${follows ? "advanced" : "kept"} file=${fileId}`,
     );
     return { status: "pushed", fileId, versionId: ack.versionId };
   }
@@ -491,11 +677,27 @@ export async function pushDelete(context: SyncContext, path: string): Promise<Pu
   // is refused without the vault being touched at all (`scope.test.mjs`).
   assertSyncPath(path, context.state.data.syncFolders);
   const record = context.state.fileByPath(path);
-  if (!record) return null;
+  const mark = context.state.data.dropped[path];
+  if (!record && mark === undefined) return null;
+  // ONE LOOK DECIDES (review of 5c9dc82). Asked twice, a file deleted
+  // between the looks skipped the mark's rule below at the first and took
+  // the ordinary tombstone at the second.
   if ((await context.host.stat(path)) !== null) {
-    context.host.log("push path_class=tombstone decision=refused reason=file_present");
+    if (record) context.host.log("push path_class=tombstone decision=refused reason=file_present");
     return null;
   }
+  // THE EMPTY FILE A DROPPED WRITE LEFT HELD NOTHING OF THE NOTE (#242;
+  // review of 2e4cdca). Deleting it removes that placeholder, not the note,
+  // whose text is on the server and on every other device: a tombstone would
+  // take it from them all. This device forgets the mark, and any record.
+  if (mark !== undefined) {
+    if (record) context.state.forgetPath(path);
+    delete context.state.data.dropped[path];
+    await context.state.save();
+    context.host.log(`push path_class=tombstone decision=skipped reason=write_dropped file=${mark}`);
+    return null;
+  }
+  if (!record) return null;
   const manifest: Manifest = {
     v: 1,
     path,
@@ -572,15 +774,42 @@ export function folderManifest(context: SyncContext, path: string, deleted: bool
  * re-posting it would buy a request and a second head for no change. That
  * early return is also what makes startup reconciliation and the vault's own
  * echo of a pull-created folder free (`engine.ts`).
+ *
+ * A FOLDER MADE AGAIN WHERE ONE WAS DELETED IS A NEW VERSION (issue #165).
+ * The record's file id is derived from its path and its manifest carries no
+ * time, so the record for a path that ever had one is byte-for-byte that
+ * path's FIRST version -- and the server answers a version it already holds
+ * with a `200` that writes nothing (`docs/protocol.md`). Renaming `team docs`
+ * back to `Team docs` therefore published the old spelling's tombstone and
+ * the moves, and never the record that re-cases the directory on a device
+ * that folds case: that device refused every move and blamed a version
+ * difference the pair did not have. The answer names the file's heads, and a
+ * creation (`recreate`) that is not among them is posted again over them,
+ * which every device doing the same computes identically. The start-up
+ * pass's publication of a folder that merely has no record here does not
+ * recreate: a folder a tombstone found occupied and KEPT is nobody's to bring
+ * back to the devices that deleted it (`docs/architecture.md` 6.2.0).
  */
-export async function pushFolder(context: SyncContext, path: string): Promise<string | null> {
+export async function pushFolder(context: SyncContext, path: string, recreate = false): Promise<string | null> {
   assertFolderScope(path, context.state.data.syncFolders);
   if (context.state.folderByPath(path) !== undefined) return null;
+  // A LINKED FOLDER'S NAME IS NOT PUBLISHED (issue #167). The string rule
+  // passes a link; the filesystem's no-follow walk does not, and every folder
+  // publication -- a create event, a rename, the start-up pass -- asks it
+  // here, where a file's publication already met it. The host logs the
+  // refusal and tells the user once.
+  if (!(await context.host.syncable(path, "folder"))) return null;
   const fileId = await folderFileId(context.manifestKey, path);
-  const ack = await postManifest(context, fileId, [], [], folderManifest(context, path, false), 0, false);
+  const manifest = folderManifest(context, path, false);
+  let ack = await postManifest(context, fileId, [], [], manifest, 0, false);
+  let reason = "created";
+  if (recreate && !ack.ack.heads.includes(ack.versionId)) {
+    ack = await postManifest(context, fileId, ack.ack.heads, [], manifest, 0, false);
+    reason = "recreated";
+  }
   context.state.setFolder(path, { fileId, versionId: ack.versionId });
   await context.state.save();
-  context.host.log(`folder path_class=folder decision=published reason=created version=${ack.versionId}`);
+  context.host.log(`folder path_class=folder decision=published reason=${reason} version=${ack.versionId}`);
   return ack.versionId;
 }
 
@@ -686,11 +915,13 @@ export async function postManifest(
     return await settled(await postOnce(context, fileId, id, post, stillWanted), acceptExisting);
   } catch (error) {
     if (!(error instanceof ApiError) || error.code !== "missing_chunks") throw error;
-    const missing = new Set(await context.transport.missingChunks(sids));
+    // Collected between the check and the post: the file is read once more
+    // and what the server now lacks is sent. A chunk the file no longer holds
+    // is still missing, and the server says so again.
+    const sent = await sendChunks(context, manifest.path, manifest.size, []);
     context.host.log(
-      `push decision=retry reason=missing_chunks file=${fileId} chunks=${missing.size} of=${sids.length}`,
+      `push decision=retry reason=missing_chunks file=${fileId} chunks=${sent} of=${sids.length}`,
     );
-    await uploadMissing(context, missing, manifest.chunks, manifest.path, manifest.size);
     return await settled(await postOnce(context, fileId, id, post, stillWanted), acceptExisting);
   }
 }

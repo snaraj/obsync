@@ -1,0 +1,12 @@
+# M2045: a note someone is typing in waits the full debounce
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1771,7 +1771,7 @@
+     if (existing) this.timers.clear(existing.handle);
+     const handle = this.timers.set(() => {
+       void this.track(this.settle(path, tries, seen));
+-    }, tries > 0 ? RECHECK_MS : this.options.host.typing(path) ? EDITOR_SETTLE_MS : DEBOUNCE_MS);
++    }, tries > 0 ? RECHECK_MS : DEBOUNCE_MS);
+     this.pending.set(path, { handle, tries });
+   }
+ 

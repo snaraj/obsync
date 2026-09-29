@@ -7,7 +7,22 @@ Storage   obsync-blobs   {{ .Values.storage.blobs.size }} on {{ .Values.storage.
 {{- range .Values.storage.mirrors }}
           obsync-mirror-{{ .name }} {{ .size }} on {{ .className }} (volume {{ .capacity }})
 {{- end }}
-Ingress   only {{ .Values.ingress.peerNamespace }}/{{ .Values.ingress.peerAppName }}/{{ .Values.ingress.peerInstance }} on {{ .Values.service.port }}; all egress denied
+Ingress   on {{ .Values.service.port }} only from:
+{{- if .Values.ingress.peerNamespace }}
+          pod {{ .Values.ingress.peerNamespace }}/{{ .Values.ingress.peerAppName }}/{{ .Values.ingress.peerInstance }}
+{{- end }}
+{{- range .Values.ingress.peers }}
+{{- if .ipBlock }}
+          block {{ .ipBlock.cidr }}{{ with .ipBlock.except }} except {{ join "," . }}{{ end }}
+{{- else }}
+          pod {{ .namespace }}/{{ .appName }}/{{ .instance }}
+{{- end }}
+{{- end }}
+{{- if not (or .Values.ingress.peerNamespace .Values.ingress.peers) }}
+          NOTHING. No peer is set, so no connection reaches the server: name
+          the terminator in front of it in ingress.peers.
+{{- end }}
+          All egress denied.
 
 {{ if eq .Values.image.digest "sha256:0000000000000000000000000000000000000000000000000000000000000000" -}}
 WARNING: this render carries the fail-closed all-zeros image digest. It is what
@@ -15,9 +30,8 @@ the chart ships in git; the published OCI chart carries the resolved digest the
 publisher substituted. Install the PUBLISHED chart, or set image.digest.
 {{ end -}}
 {{ if not .Values.deploymentReady -}}
-deploymentReady is false: the Deployment renders with ZERO replicas (annotated
-deployment-ready=false); the claims, Service, account and policy render as
-usual. The platform reconciler sets it true once the namespace, both volumes,
+deploymentReady is false: the Deployment renders with ZERO replicas; the
+claims, Service, account and policy render as usual. The platform reconciler sets it true once the namespace, both volumes,
 and the {{ .Values.serverKeySecret.name }} Secret exist
 (docs/platform-onboarding.md); that scales the Deployment to one replica.
 {{ end -}}

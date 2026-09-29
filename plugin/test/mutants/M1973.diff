@@ -1,0 +1,12 @@
+# M1973: a name already taken (EEXIST) falls back as if links were unsupported
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -119,7 +119,7 @@
+  * exclusive create, which refuses an occupied name as `link` does. `EEXIST`
+  * is not among them: it is the name being taken, the refusal `link` is for.
+  */
+-const LINK_UNSUPPORTED = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR", "ENOSYS", "EXDEV"]);
++const LINK_UNSUPPORTED = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR", "ENOSYS", "EXDEV", "EEXIST"]);
+ 
+ /** The words on a notice's buttons (`VaultHost.notify`). */
+ const NOTICE_BUTTONS: Record<NoticeAction["kind"], string> = {

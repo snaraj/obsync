@@ -1,0 +1,12 @@
+# M2957: the worker is never told of a clear
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -94,7 +94,7 @@
+       return id;
+     },
+     clear(handle) {
+-      if (take(handle as number) !== undefined) worker?.postMessage({ id: handle });
++      take(handle as number);
+     },
+     stop,
+   };

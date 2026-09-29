@@ -1,0 +1,12 @@
+# M1900: the note never moves to its settled name when the merge decides it
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4264,7 +4264,7 @@
+  * reported yet, which a move must never overtake (`movable`).
+  */
+ async function takeName(context: SyncContext, change: ChangeRecord, localPath: string, target: string): Promise<string> {
+-  if (target === localPath || context.state.fileByPath(localPath) === undefined) return localPath;
++  return localPath;
+   for (const mark of context.written) if (mark.startsWith(`${localPath}:`)) return localPath;
+   const outcome = await relocate(context, localPath, target).catch((error: unknown) =>
+     error instanceof VaultPathError ? error.refusal : "failed");

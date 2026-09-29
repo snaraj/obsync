@@ -2,11 +2,14 @@
 
 # Cloudflare
 
-Cloudflare'i cihazlarınızla sunucunuzun arasına koymanın iki yolu ve referans
-kurulumun hangisini kullandığı. İkisi de zorunlu değil: sunucu hiçbir
-sağlayıcıyı adıyla tanımaz ve [Sunucuyu çalıştırma](../server.md) kimsede
-hesap gerektirmez. Bu sayfa, yönlendiricinizde port açmadan evden uzaktayken
-sunucuya ulaşmak istiyorsanız ya da önünde bir erişim politikası olan
+*Bir obsync sunucusu çalıştıranlar için.*
+
+Cloudflare'i cihazlarınızla sunucunuzun arasına koymanın iki yolu. Cloudflare
+birçok seçenekten yalnızca biri ve isteğe bağlıdır: güvendiğiniz herhangi bir
+ters vekil, VPN ya da tünel aynı işi görür, sunucu hiçbir sağlayıcıyı adıyla
+tanımaz ve [Sunucuyu çalıştırma](../server.md) kimsede hesap gerektirmez. Bu
+sayfa, zaten Cloudflare kullanıyorsanız ve yönlendiricinizde port açmadan
+evden uzaktayken sunucuya ulaşmak ya da önünde bir erişim politikası olan
 yayımlanmış bir ana bilgisayar adı istiyorsanız size göre.
 
 Cloudflare'in menüleri ve plan koşulları değişir. Aşağıdaki her adım, menü
@@ -17,12 +20,12 @@ bir sınıra ya da fiyata güvenmeden önce güncel sayfaya bakın.
 
 | Seçenek | Cihazların gördüğü | İnternetin gördüğü | Büyük ilk eşitleme |
 | --- | --- | --- | --- |
-| **Özel rota** (referans kurulum) | Cloudflare One istemcisi üzerinden kendi özel adresiniz ve adınız | hiçbir şey: ne ana bilgisayar adı ne de açık port | özel ağ trafiği, herkese açık bir ana bilgisayar adı üzerinden geçmez |
+| **Özel rota** | Cloudflare One istemcisi üzerinden kendi özel adresiniz ve adınız | hiçbir şey: ne ana bilgisayar adı ne de açık port | özel ağ trafiği, herkese açık bir ana bilgisayar adı üzerinden geçmez |
 | **Access arkasında herkese açık ana bilgisayar adı** | herkese açık bir ad, bir Access politikası, eklentide bir hizmet belirteci | Access'in arkasındaki ana bilgisayar adı | Cloudflare üzerinden geçer, büyük dosyalar için sağlayıcının koşullarına tabidir |
 
-Özel rota referans seçenektir; çünkü sunucu görünmez kalır ve Cloudflare'in
-kendi belgeleri büyük aktarımları o yola gönderir: herkese açık ana
-bilgisayar adı rotası trafiği Cloudflare üzerinden geçirir ve Free, Pro ve
+Tercih edilecek seçenek özel rotadır; çünkü sunucu görünmez kalır ve
+Cloudflare'in kendi belgeleri büyük aktarımları o yola gönderir: herkese açık
+ana bilgisayar adı rotası trafiği Cloudflare üzerinden geçirir ve Free, Pro ve
 Business planlarında hizmete özel koşullar video ve diğer büyük dosyalar için
 ücretli bir hizmet ister; özel ağ rotası ise bunları sizin kendi trafiğiniz
 olarak taşır. Her iki seçenekte de büyük ilk eşitlemeyi yerel ağda yapın.
@@ -39,7 +42,7 @@ Sunucu kendi ağınızda özel bir adres tutar. Yanında bir tünel bağlayıcı
 çalışır, bir rota Cloudflare'e o tünelin arkasında hangi adreslerin
 bulunduğunu söyler ve her cihazdaki Cloudflare One istemcisi (eski adıyla
 WARP) bu adreslere giden trafiği tünelden taşır. Cihazlarınızın yazdığı
-sunucu URL'si, bu özel adrese çözümlenen özel bir addır.
+Server URL, bu özel adrese çözümlenen özel bir addır.
 
 Gerekenler: Zero Trust kuruluşu ("takım adı") olan bir Cloudflare hesabı,
 sunucunun ağında tünel bağlayıcısını çalıştırabilecek bir makine ve evden
@@ -64,10 +67,10 @@ uzakta eşitleme yapacak her cihazda Cloudflare One istemcisi.
    dışarıda tutmak istediğiniz aralıkları yeniden ekleyin; **Include**
    modunda adresi ya da alt ağı ekleyin.
 5. **Adın cihazda çözümlenmesini sağlayın.** Eklenti her isteği yazdığınız
-   sunucu URL'sine gönderir; bu yüzden o adın dışarıdaki cihazda
-   çözümlenmesi gerekir: bir ana bilgisayar adı rotası, kendi çözümleyicinize
-   Local Domain Fallback ya da özel bir DNS kaydı. İstemcinin yönlendirmediği
-   bir adrese çözümlenen ad, tıpkı kapalı bir sunucu gibi başarısız olur.
+   Server URL'ye gönderir; bu yüzden o adın dışarıdaki cihazda çözümlenmesi
+   gerekir: bir ana bilgisayar adı rotası, kendi çözümleyicinize Local Domain
+   Fallback ya da özel bir DNS kaydı. İstemcinin yönlendirmediği bir adrese
+   çözümlenen ad, tıpkı kapalı bir sunucu gibi başarısız olur.
 6. **TLS'yi kendiniz sonlandırın.** Rota trafiğinizi kendi
    sonlandırıcınıza taşır: sunucunun önünde, her cihazın güvendiği bir
    sertifikaya sahip bir ingress ya da ters vekil, tıpkı
@@ -79,7 +82,7 @@ uzakta eşitleme yapacak her cihazda Cloudflare One istemcisi.
    adresine ve portuna yalnızca kayıtlı cihazlarınızın ulaşmasına izin verip
    o rotadaki diğer her şeyi engelleyebilir.
 8. **Ağınızın dışındaki bir cihazdan doğrulayın.** O cihazdaki tarayıcıda
-   sunucu URL'sini açın ve panonun oturum açma sayfasını bekleyin. Eklentide
+   Server URL'yi açın ve panonun oturum açma sayfasını bekleyin. Eklentide
    **Connection** altındaki **Check** düğmesine basın: tek bir gidiş-dönüş
    adresi, sertifikayı ve kimlik bilgisini birlikte kanıtlar.
 
@@ -101,8 +104,9 @@ Sunucu, Cloudflare'de sahip olduğunuz bir alan adında bir ana bilgisayar adı
 alır. Tünel bu adı sunucunun özel adresine yayımlar ve önünde Cloudflare
 Access durur: pano için bir kimlik politikası, eklentinin API çağrıları için
 bir hizmet belirteci. Bu, [platform entegrasyonu](../platform-onboarding.md)
-sayfasının referans küme için anlattığı ve referans kurulumun tercih etmediği
-seçenektir.
+sayfasının anlattığı yayımlanmış ana bilgisayar adı yolunun Cloudflare
+biçimidir; kendi kimlik doğrulaması olan kendi ters vekiliniz aynı yolun
+sağlayıcısız biçimidir.
 
 1. **Ana bilgisayar adını yayımlayın.** Tünelin yapılandırmasında, ana
    bilgisayar adınızdan (`sync.example.com` sizinkinin yerine geçer)
@@ -119,21 +123,25 @@ seçenektir.
    kopyalayın; gizli anahtar yalnızca bir kez gösterilir. Uygulamaya, bu
    belirteci kapsayan bir **Service Auth** politikasını eklentinin kullandığı
    yollar (`/v1/*`) için ekleyin.
-4. **Belirteci eklentiye yapıştırın.** **Edge service-token headers**
-   altında, satır başına bir tane, Cloudflare'in adlandırdığı gibi:
+4. **Belirteci eklentiye yapıştırın.** **Custom request headers** altında,
+   satır başına bir tane, Cloudflare'in adlandırdığı gibi:
 
    ```text
    CF-Access-Client-Id: <the client id>
    CF-Access-Client-Secret: <the client secret>
    ```
 
-   Bunlar sunucu URL'sine giden her istekle birlikte gider, başka hiçbir
+   Bunlar Server URL'ye giden her istekle birlikte gider, başka hiçbir
    şeyle değil.
 5. **Sunucuya uç noktanın arkasında olduğunu söyleyin.** Onu
    `OBSYNC_EDGE=cloudflare` ile çalıştırın. Bu modda her istek, uç noktanın
    bağlanan adres ve istek kimliği başlıklarını taşımak zorundadır; uç
    noktayı atlayarak gelen bir istek `421 edge_required` ile reddedilir
-   ([sorun giderme](../troubleshooting.md#edge_required)).
+   ([sorun giderme](../troubleshooting.md#edge_required)). Sunucu bu
+   başlıklara yalnızca `OBSYNC_TRUSTED_PROXY_CIDRS` içinden gelirlerse
+   güvenir; bu modda varsayılan değer, aynı ana makinedeki, aynı konteyner
+   ağındaki ya da aynı kümedeki bir bağlayıcının sunucuya ulaştığı özel
+   ağlardır. Daha da daraltmak için bunu bağlayıcının kendi ağına ayarlayın.
 6. **Doğrulayın.** Ana bilgisayar adını tarayıcıda açın; önce Access oturum
    açmasını, sonra panoyu bekleyin. Eklentide **Connection** altındaki
    **Check** düğmesine basın.
@@ -147,25 +155,25 @@ seçenektir.
   Açığa çıkarsa Cloudflare'de yenileyin.
 - Büyük aktarımlar yukarıdaki koşullarla Cloudflare üzerinden geçer. Büyük
   ilk eşitlemeyi yerel ağda yapın.
-- Bu modda panonun Cihazlar sayfasının adres ve ülke olarak gösterdiği şey,
+- Bu modda panonun Devices sayfasının adres ve ülke olarak gösterdiği şey,
   uç noktanın bağlanan adres ve ülke başlıklarıdır.
 
 ## Neyin kanıtlandığı
 
-Özel rota, referans kurulumun rotasıdır.
+Özel rotanın kayıtlı cihaz çalıştırmaları var:
 [2026-09-14 çalıştırması](../validation-runs/2026-09-14.md) o gün
 denenmediğini ve nedenini kaydeder;
-[2026-09-20 çalıştırması](../validation-runs/2026-09-20.md) referans rotada,
-bağlantı ve TLS denetimleri geçilmiş bir cihaz çalıştırmasını kaydeder.
-Herkese açık ana bilgisayar adı seçeneği kayıtlı hiçbir çalıştırmada
-denenmemiştir.
+[2026-09-20 çalıştırması](../validation-runs/2026-09-20.md) özel rota
+üzerinden bir kümeye, bağlantı ve TLS denetimleri geçilmiş bir cihaz
+çalıştırmasını macOS ve iPhone'da kaydeder. Herkese açık ana bilgisayar adı
+seçeneği kayıtlı hiçbir çalıştırmada denenmemiştir: henüz kanıtlanmadı.
 
 ## Sonraki adım
 
 - [Sunucuyu çalıştırma](../server.md): sonlandırıcı, birimler, kurulum
   belirteci.
-- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): referans kurulumun kullandığı chart.
-- [Platform entegrasyonu](../platform-onboarding.md): referans kümenin
-  yayımlanmış bir ana bilgisayar adı için ekleyecekleri.
+- [Kubernetes](../kubernetes.md): chart, birimleri ve önündeki TLS.
+- [Platform entegrasyonu](../platform-onboarding.md): bir GitOps platformunun
+  yayımlanmış bir ana bilgisayar adı için ekledikleri.
 - [Sorun giderme](../troubleshooting.md): `edge_required`, `offline` ve
   sertifika.

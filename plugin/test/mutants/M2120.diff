@@ -1,0 +1,12 @@
+# M2120: a replaced record stays in the indexes
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -939,7 +939,7 @@
+   setFile(path: string, record: FileRecord): void {
+     const index = this.index;
+     const replaced = this.data.files[path];
+-    if (replaced !== undefined) indexed(index, path, replaced, -1);
++    if (replaced !== undefined) void replaced;
+     else index.order.set(path, index.next++);
+     this.data.files[path] = record;
+     indexed(index, path, record, 1);

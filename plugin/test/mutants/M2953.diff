@@ -1,0 +1,11 @@
+# M2953: a failed worker is kept and still sent timers
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -80,7 +80,6 @@
+     worker = spawn();
+     worker.onmessage = (event) => take(event.data as number)?.();
+     worker.onerror = () => {
+-      stop();
+       log(`timers decision=fallback reason=worker_error pending=${armed.size}`);
+     };
+   } catch (error) {

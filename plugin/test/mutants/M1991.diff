@@ -1,0 +1,12 @@
+# M1991: a start's map read does not hear the stop
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -583,7 +583,7 @@
+    */
+   private async openMap(keys: DomainMapKeys, signal: AbortSignal): Promise<DomainMap> {
+     const host = this.options.host;
+-    const existing = await loadDomainMap(this.options.transport, keys, { signal });
++    const existing = await loadDomainMap(this.options.transport, keys);
+     if (existing) {
+       host.log(`domainmap decision=loaded domains=${existing.domains.length}`);
+       return existing;

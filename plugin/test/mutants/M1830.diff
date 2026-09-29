@@ -1,0 +1,15 @@
+# M1830: the feed reads every failure as offline again, refusals included
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2032,9 +2032,8 @@
+         context.host.log(`feed decision=retry reason=${message} status=${refused.kind === "error" ? refused.code : refused.kind} retry_ms=${FEED_ERROR_BACKOFF_MS}`);
+         // Absence is the feed's to say until its next read is answered, and
+         // no longer than that (`resting`).
+-        this.absent = refused.kind === "offline";
+-        if (this.absent) this.status(this.resting());
+-        else this.report(refused);
++        this.absent = true;
++        this.status(this.resting());
+         await new Promise<void>((resolve) => {
+           this.feedPause = resolve;
+           this.timers.set(resolve, FEED_ERROR_BACKOFF_MS);

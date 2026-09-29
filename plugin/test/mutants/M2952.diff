@@ -1,0 +1,12 @@
+# M2952: no page-clock backstop while a worker runs
+--- a/plugin/src/clock.ts
++++ b/plugin/src/clock.ts
+@@ -89,7 +89,7 @@
+   return {
+     set(fn, ms) {
+       const id = ++next;
+-      armed.set(id, { fn, handle: page.set(() => take(id)?.(), ms) });
++      armed.set(id, { fn, handle: worker === null ? page.set(() => take(id)?.(), ms) : undefined });
+       worker?.postMessage({ id, ms });
+       return id;
+     },

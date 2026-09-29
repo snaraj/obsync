@@ -1,0 +1,12 @@
+# M3238: a retry writes over a save that landed while the phone looked at its empty write (review of 90d2042, finding 1)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1225,8 +1225,6 @@
+     let stat = await this.stat(path);
+     for (let again = 1; stat !== null && stat.size === 0 && bytes.length > 0; again++) {
+       const unsaved = (await this.editing(path)) === "unsaved";
+-      const now = await this.stat(path);
+-      if (now === null || now.size !== 0) return now;
+       const busy = unsaved || this.typing(path);
+       if (busy || again > WRITE_AGAIN) {
+         this.log(

@@ -1,0 +1,12 @@
+# M1994: a refused leave waits for the restart it triggers before it answers
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2806,7 +2806,7 @@
+       // no refusal here may leave the engine stopped. A device that DID
+       // leave starts nothing, because `startEngine` requires `paired`. Not
+       // awaited: see NOTHING HERE WAITS OUT THE SERVER above.
+-      if (owned) void this.startEngine().catch(() => this.log("unpair decision=sync_pending reason=restart_failed"));
++      if (owned) await this.startEngine();
+     }
+   }
+ 

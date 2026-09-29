@@ -1,0 +1,12 @@
+# M2300: a rename never carries the first post in flight (#213)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1277,7 +1277,7 @@
+     // A NEW NOTE WHOSE FIRST POST IS IN FLIGHT has no record to move: the
+     // post's answer follows it instead, and records nothing if it left the
+     // selection (issue #213, `carryPost`).
+-    if (this.contextValue !== null && this.contextValue.state.fileByPath(from) === undefined && carryPost(this.contextValue, from, to)) {
++    if (this.contextValue !== null && this.contextValue.state.fileByPath(from) === undefined && false) {
+       this.options.host.log("rename path_class=file decision=carried reason=post_in_flight");
+     }
+     // A local move across the boundary is a create within the selected

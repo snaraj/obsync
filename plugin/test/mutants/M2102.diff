@@ -1,0 +1,12 @@
+# M2102: an edit of a note this device holds is held in memory like a creation
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2081,7 +2081,7 @@
+   }
+   // `landed.path`, never `manifest.path`: what the vault shows for the file
+   // this write put there (`landedAt`, review round 2, finding 3).
+-  await recordAt(context, change, landed.path, landed, undefined, localPath === undefined);
++  await recordAt(context, change, landed.path, landed, undefined, true);
+   context.host.log(
+     `pull path_class=file bytes=${manifest.size} chunks=${manifest.chunks.length} decision=applied seq=${change.seq} duration_ms=${context.now() - started}`,
+   );

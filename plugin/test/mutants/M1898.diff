@@ -1,0 +1,12 @@
+# M1898: a move meeting an unpushed change at its source keeps both again
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1725,7 +1725,7 @@
+       if (decided !== null) return decided;
+     } else if (atTarget === "local_edit" && localPath === manifest.path && local !== undefined) {
+       return await reconcile(context, await context.transport.getFile(change.file_id), change, manifest, localPath, local.versionId);
+-    } else if (atTarget === null && atSource === "local_edit" && local !== undefined) {
++    } else if (false && atTarget === null && atSource === "local_edit" && local !== undefined) {
+       // A MOVE MEETING A CHANGE AT ITS SOURCE IS A FORK, NOT TWO NOTES (issues
+       // #151, #174). What this device holds there and has not published -- an
+       // edit, or a rename of its own, whose record is dirty until its push --

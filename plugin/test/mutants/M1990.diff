@@ -1,0 +1,14 @@
+# M1990: a start the stop cut short rejects instead of ending quietly
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -600,9 +600,7 @@
+     const halt = this.halt = new AbortController();
+     // A start its stop cut short -- the map read of a restart against a server
+     // that is gone -- ends quietly, as one stopped between two steps does.
+-    return this.track(this.startLoops(halt.signal).catch((error: unknown) => {
+-      if (!(halt.signal.aborted && stopped(error))) throw error;
+-    }));
++    return this.track(this.startLoops(halt.signal));
+   }
+ 
+   private track<T>(work: Promise<T>): Promise<T> {

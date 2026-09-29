@@ -1,0 +1,12 @@
+# M2901: any entry at the exact new name counts as the source already re-cased
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1561,7 +1561,7 @@
+     const listed = parent === "" || (await adapter.exists(parent)) ? await adapter.list(parent === "" ? "/" : parent) : { files: [], folders: [] };
+     const names = [...listed.files, ...listed.folders].map((child) => child.slice(child.lastIndexOf("/") + 1));
+     if (names.includes(name)) {
+-      return own !== null && caseOnly(own, name) && !names.includes(own) && (await adapter.exists(from)) ? "moved" : "occupied";
++      return own !== null && caseOnly(own, name) && (await adapter.exists(from)) ? "moved" : "occupied";
+     }
+     if (!(await adapter.exists(to))) return "free";
+     const twins = names.filter((candidate) => caseOnly(candidate, name));

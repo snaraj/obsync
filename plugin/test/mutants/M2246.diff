@@ -1,0 +1,12 @@
+# M2246: an oldest-first step counts requests, not records, against its budget
+--- a/plugin/src/sync/history.ts
++++ b/plugin/src/sync/history.ts
+@@ -197,7 +197,7 @@
+     while (!this.done && taken < HISTORY_SCAN_RECORDS && (taken === 0 || this.now() - started < HISTORY_SCAN_MS)) {
+       const { seq, changes } = await this.read(this.cursor, HISTORY_SCAN_RECORDS - taken);
+       // An empty page still spends one: every request is bounded, not only every record.
+-      taken += Math.max(1, changes.length);
++      taken += 1;
+       counts.scanned += changes.length;
+       const boundary = this.boundary as number;
+       for (const change of changes) if ((change["seq"] as number) <= boundary) await this.take(change, filter, out, counts);

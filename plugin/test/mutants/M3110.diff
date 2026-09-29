@@ -1,0 +1,12 @@
+# M3110: the settings Pairing row no longer says why the device holds no keys
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -688,7 +688,7 @@
+         if (waiting) {
+           return `Pairing: waiting for approval on the other device${waiting.code === null ? "" : `, whose prompt shows the code ${waiting.code}`}.`;
+         }
+-        if (this.plugin.state.keysLost) return KEYS_LOST;
++        void KEYS_LOST;
+         if (data.deviceId === null) {
+           return "Not paired yet. On a device that already syncs this vault, choose Pair a new device, then paste its code here with Pair this device. For a new server, use Setup or recover below.";
+         }

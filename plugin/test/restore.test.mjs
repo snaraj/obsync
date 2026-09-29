@@ -191,6 +191,10 @@ test("a server restored from last night's backup gets the day's notes, rename an
     caughtUp(server, a));
   server.unreachable.delete(DEVICE_B);
   await recovered(timers, () => caughtUp(server, b) && caughtUp(server, a) && strays(server, b).length === 0);
+  // The replay of the rebuilt journal skips what a device already processed
+  // rather than receiving it again: yesterday is not applied over today.
+  assert.ok([...a.host.logs, ...b.host.logs].some((line) => /^feed decision=skipped reason=seen_before_restore entries=[1-9]/.test(line)),
+    `no entry of the replay was skipped as seen before the restore: ${story(server, a, b)}`);
 
   // What a device paired now would be given: the day, not yesterday.
   const now = await heads(server, k);
@@ -454,8 +458,9 @@ test("a normal restart over history retention pruned sends one probe and publish
   hold = new Promise((resolve) => { open = resolve; });
   await publish(G, "Notes/G.md", "G two\n", LATER, [g1.version_id]);
   await timers.run(STEP_MS, () => sent().filter((request) => request.target.includes("&wait=55&")).length >= 2);
-  await engine.syncNow();
-  assert.ok(r.host.logs.some((line) => /^repair decision=lost reason=unknown_version verdict=suspected /.test(line)), r.host.logs.join(" | "));
+  // The repair pass's own tick, not Sync now: a press reads the feed at once
+  // (#197), and would apply the page this race holds back.
+  await timers.run(STEP_MS, () => r.host.logs.some((line) => /^repair decision=lost reason=unknown_version verdict=suspected /.test(line)));
   open();
   await timers.run(STEP_MS, () => r.host.logs.some((line) => line.startsWith("restore decision=summary")) && r.host.text("Notes/G.md") === "G two\n");
 

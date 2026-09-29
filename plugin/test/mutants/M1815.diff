@@ -1,0 +1,12 @@
+# M1815: batched parts are matched by position: a part naming another sid is taken
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1120,7 +1120,7 @@
+     // here, by name, it is the refusal it is.
+     const count = Math.max(parts.length, sids.length);
+     let wrong = 0;
+-    while (wrong < count && parts[wrong]?.sid === sids[wrong]) wrong++;
++    while (wrong < count && parts[wrong] !== undefined && sids[wrong] !== undefined) wrong++;
+     if (wrong < count) {
+       this.log(`http POST ${target} decision=refused reason=part_mismatch part=${wrong} parts=${parts.length} asked=${sids.length}`);
+       throw new ApiError(response.status, "part_mismatch", `part ${wrong} is not the chunk asked for`);

@@ -1,0 +1,12 @@
+# M2917: the hidden name is used without checking that nothing wears it
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1656,7 +1656,7 @@
+     const extension = kind === "file" && dot > cut ? from.slice(dot) : "";
+     for (let attempt = 0; attempt < 3; attempt++) {
+       const temp = `${from.slice(0, cut)}.obsync-recase-${hex(randomBytes(8))}${extension}`;
+-      if (vault.getAbstractFileByPath(temp) === null && !(await vault.adapter.exists(temp))) return temp;
++      return temp;
+     }
+     return null;
+   }

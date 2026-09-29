@@ -1,0 +1,13 @@
+# M3251: a mark moved with a file that has no record is not saved, and a restart strands it at the old name
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1510,7 +1510,8 @@
+       context.state.setFile(to, { ...record, mtime: -1, sha256: "" });
+       context.state.forgetPath(from);
+     }
+-    if (this.carryMark(context, from, to) || record) this.saveMoved(context);
++    this.carryMark(context, from, to);
++    if (record) this.saveMoved(context);
+     this.unschedule(from);
+     // Straight into the queue: the debounce and the unchanged-content check
+     // would both drop a rename, whose only change is the path in the manifest.

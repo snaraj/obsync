@@ -1,0 +1,22 @@
+# M3250: a dropped write's mark moves before the record, and the record's move erases it
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1502,16 +1502,17 @@
+       else if (source) this.leftScope(from);
+       if (this.carryMark(context, from, to)) this.saveMoved(context);
+       return;
+     }
++    const carried = this.carryMark(context, from, to);
+     const record = context.state.fileByPath(from);
+     if (record) {
+       // Persist the need to publish the new name. A stopped/failed queue
+       // must not make a restart mistake an unposted rename for unchanged bytes.
+       context.state.setFile(to, { ...record, mtime: -1, sha256: "" });
+       context.state.forgetPath(from);
+     }
+-    if (this.carryMark(context, from, to) || record) this.saveMoved(context);
++    if (carried || record) this.saveMoved(context);
+     this.unschedule(from);
+     // Straight into the queue: the debounce and the unchanged-content check
+     // would both drop a rename, whose only change is the path in the manifest.
+     this.renames.add(to);

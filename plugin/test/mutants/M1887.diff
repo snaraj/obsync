@@ -1,0 +1,11 @@
+# M1887: passing the three-word check records nothing (#170)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -686,7 +686,6 @@
+             new Notice(`Word ${wrong.join(", ")} does not match. Check the list again.`);
+             return;
+           }
+-          this.plugin.state.data.recoveryPhrase = "confirmed";
+           this.plugin.log("phrase decision=confirmed");
+           void this.plugin.state.save().catch(() => {});
+           new Notice("Recovery phrase confirmed.");

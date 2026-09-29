@@ -1,0 +1,13 @@
+# M3120: the chunk ORDER is not checked: a local chunk anywhere in the record's list passes
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4439,7 +4439,8 @@
+   try {
+     for await (const plaintext of chunkStream(context.host.source(path, size))) {
+       if (context.signal?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
+-      if ((await encryptChunk(context.domainKey, plaintext)).sid !== sids[count++]) return null;
++      if (!sids.includes((await encryptChunk(context.domainKey, plaintext)).sid)) return null;
++      count++;
+     }
+   } catch (error) {
+     if (error instanceof ApiError) throw error;

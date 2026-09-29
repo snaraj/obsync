@@ -1,12 +1,12 @@
 # M270: a second vault's notes are uploaded into the server's vault without a question (the count is ignored)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -320,7 +320,7 @@
-         // and pairs without a question; anything else asks, Cancel first.
-         const unknown = await this.plugin.notesUnknownTo(envelope.vrk);
-         assertCurrent();
--        if (unknown > 0 && !(await confirmFirst(
-+        if (unknown < 0 && !(await confirmFirst(
-           this.app,
-           "Add this vault's notes to the server's vault?",
-           `This vault holds ${unknown} note(s) that are not in the vault ${state.data.serverUrl} holds. Pairing ` +
+@@ -531,7 +531,7 @@
+       waiting.show("Approved. Comparing the notes here with your server's vault before anything is sent. A large vault takes a minute.");
+       const unknown = await plugin.notesUnknownTo(envelope.vrk);
+       assertCurrent();
+-      if (unknown > 0 && !(await confirmFirst(
++      if (unknown < 0 && !(await confirmFirst(
+         app,
+         "Add this vault's notes to the server's vault?",
+         `This vault has ${notes(unknown)} the server's vault does not. Pairing uploads ${unknown === 1 ? "it" : "them"} to every ` +

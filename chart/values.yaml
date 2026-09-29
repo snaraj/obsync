@@ -20,14 +20,28 @@
 # that is a scale from zero to one replica and nothing else.
 deploymentReady: false
 
+# The prefix of two annotations a GitOps platform may read, and nothing the
+# server reads: `<annotationDomain>/deployment-ready` on the Deployment carries
+# deploymentReady above, and `<annotationDomain>/volume-capacity` on each claim
+# carries that volume's `capacity` below. Empty, the shipped default, renders
+# neither annotation. A value that is not a lower-case DNS subdomain, or that
+# is a prefix Kubernetes reserves (kubernetes.io, k8s.io), fails the render.
+platform:
+  annotationDomain: ""
+
 image:
+  # Where the image is pulled from. A registry mirror or a pull-through cache
+  # may serve it under another name: the digest below still pins the bytes,
+  # so a mirror can change where they come from and never what runs. Verify
+  # the signature against that digest (docs/kubernetes.md, section 1); a mirror
+  # that should carry the signature too copies it with `cosign copy`.
   repository: ghcr.io/snaraj/obsync
   # The published release tag, carried IN FRONT OF the digest so the rendered
   # reference reads repository:tag@digest. Kubernetes resolves the digest and
   # ignores the tag; the tag is what an operator reads in `kubectl describe
   # pod`. It is one of the seven lockstep locks (requirement 10), so a chart
   # claiming one release can never ship the tag of another.
-  tag: v1.1.3
+  tag: v1.1.4
   # Fail-closed sentinel, and it stays that way in git: a syntactically valid
   # digest no registry can resolve, so a chart deployed with this value fails
   # at pull time instead of resolving something unverified. The publisher
@@ -36,6 +50,10 @@ image:
   # chart, so only the PUBLISHED artifact ever carries a resolved digest.
   digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   pullPolicy: IfNotPresent
+
+# Secrets holding credentials for a private registry or mirror, by name:
+# `- name: my-registry`. Empty for the public registry.
+imagePullSecrets: []
 
 service:
   port: 8080
@@ -46,28 +64,47 @@ service:
 # no ingress, DNS, edge, or access provider; which stack may reach it is
 # injected here, so a provider swap is a values override, never a code edit.
 #
-# All three fields are load-bearing. The peer namespace is shared by several
-# connectors that publish the SAME app label and are told apart ONLY by their
-# instance label, so a namespace+app selector would admit every connector
-# deployed there instead of this workload's own. The schema requires the
-# instance non-empty: an unpinned peer selector must fail to render, never
-# render wide.
+# `peers` lists everything the NetworkPolicy admits to the service port, and
+# nothing else is admitted. Each entry is exactly one of:
+#
+#   a pod     `namespace`, `appName` and `instance`, all three required. A
+#             namespace often holds several connectors that publish the SAME
+#             app label and are told apart ONLY by their instance label, so a
+#             selector naming two of the three reads narrow and behaves wide;
+#             the schema refuses an entry missing any of them.
+#   ipBlock   `cidr`, and optionally `except`: a front end that is not a pod
+#             in the cluster -- a hostNetwork ingress controller, a proxy on a
+#             node, a LAN range behind a load balancer that keeps the client
+#             address. A block holding every address is refused.
+#
+# EMPTY IS THE SHIPPED DEFAULT, AND IT ADMITS NOTHING: the policy renders with
+# no ingress rule, so the server is unreachable until the terminator in front
+# of it is named here. It never renders a rule with an empty `from`, which
+# Kubernetes reads as every source.
+#
+# `peerNamespace`, `peerAppName` and `peerInstance` are the single-peer form
+# earlier releases shipped. They are still accepted, all three together, and
+# render as the first pod peer, so an existing values file keeps its policy.
 ingress:
-  peerNamespace: cloudflare-public
-  peerAppName: cloudflare-public
-  peerInstance: obsync-tunnel
+  peers: []
 
 # Provider behaviour selection (AGENTS.md "Deployment-provider contract").
 # `cloudflare` makes the server require the edge's connecting-address and
-# request-id headers on every request and refuse requests that lack them;
-# `none` makes it trust only trustedProxyCidrs for forwarded addresses. The
-# reference deployment overrides this to `cloudflare`; the shipped default is
-# the one that assumes least about what is in front of the process.
+# request-id headers on every request, from a peer inside trustedProxyCidrs,
+# and refuse requests that lack them; `none` believes a forwarded address
+# (`X-Forwarded-For` or `Forwarded`) only from a peer inside trustedProxyCidrs.
+# `none` is the shipped default: it assumes least about what is in front of
+# the process.
 edge:
   mode: none
 
-# Forwarded-address trust in `none` mode. Empty means the peer address is the
-# only address the server will believe.
+# The only peers whose forwarding headers the server believes, in either mode.
+# Empty in `none` mode means it believes only the peer address, so the
+# dashboard shows the terminator's address for every device; list the
+# terminator's own network (for an in-cluster one, the pod network) to show
+# the client's. Empty in `cloudflare` mode means the private networks a
+# tunnel connector reaches its origin from (docs/architecture.md, section 9).
+# A block holding every address is refused.
 trustedProxyCidrs: []
 
 # The base of every link the server generates: the dashboard sign-in link the
@@ -103,7 +140,8 @@ serverKeySecret:
 #            free-space watermark fire late). The server reads the same
 #            spelling, and its own KiB/MiB/GiB/TiB forms besides.
 #   capacity the capacity the operator provisioned on the volume this claim
-#            binds to. Recorded as an annotation on the claim so growth (250Gi
+#            binds to. Recorded as an annotation on the claim when
+#            platform.annotationDomain is set, so growth (250Gi
 #            -> 500Gi) is ONE values edit that states both the claim and the
 #            volume it must fit, instead of two facts in two repositories that
 #            can disagree silently. It is deliberately NOT what the server is
@@ -118,13 +156,16 @@ serverKeySecret:
 #   className the StorageClass, used for the claim and as the dashboard's
 #            display label (OBSYNC_*_CLASS). The server assumes nothing about
 #            what is behind the path beyond a POSIX directory honouring fsync.
+#   The shipped className names no class a cluster has, so a claim stays
+#   Pending with "storageclass not found" until yours is set -- the same
+#   fail-closed shape as the image digest above.
 storage:
   blobs:
-    className: local-pie-ssd
+    className: unset-storage-class
     size: 250Gi
     capacity: 250Gi
   journal:
-    className: local-pie-ssd
+    className: unset-storage-class
     size: 4Gi
     capacity: 4Gi
   # Optional extra blob copies (docs/storage.md, "Replication"): every chunk
@@ -144,16 +185,35 @@ retention:
 # scrub thread; it never disables it.
 scrubRate: 4MiB/s
 
-# docs/platform-onboarding.md item 8: the measured envelope on the Pi.
+# docs/platform-onboarding.md item 8: sized for a small single-board machine.
+# Raise the limits on a larger host; the server's budget is docs/benchmarks.md.
+# Memory follows retained history, about 1.3 KiB per retained version of a note
+# (docs/storage.md, "Memory"): the request holds about 90,000 at rest, and a
+# start peaks at no more than the server holds at rest -- 221 MiB measured at
+# 200,000 -- so the limit leaves room for request bodies in flight and for
+# several times that history.
 resources:
   requests:
     cpu: 100m
-    memory: 64Mi
+    memory: 128Mi
   limits:
     # Quoted: a Kubernetes quantity is a string, and an unquoted 2 is a YAML
     # integer the schema (and the API server) refuse.
     cpu: "2"
     memory: 1Gi
+
+# Scheduling, passed to the pod spec as written: which nodes it may run on and
+# which taints it tolerates. None of them can change the security context
+# below. The data volumes are ReadWriteOnce, so a node selector that disagrees
+# with a local volume's node affinity leaves the pod Pending, never elsewhere.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Extra labels on the pod, for a mesh, a cost report or another workload's
+# policy. The chart's own `app.kubernetes.io/*` labels are refused here:
+# selectors and the NetworkPolicy match on them.
+podLabels: {}
 
 # Stated here so an operator reads the deployed posture off one file, and
 # CONSTRAINED by the schema to the only admissible values: every field is a

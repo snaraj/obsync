@@ -1,0 +1,11 @@
+# M3248: leaving a server forgets a dropped write's mark, and pairing again sends the empty file
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -891,6 +891,7 @@
+     // too: a mark carried to the next server would read its journal as a
+     // restored one.
+     this.data.parked = {};
++    this.data.dropped = {};
+     this.data.paused = {};
+     this.data.heldDeletions = [];
+     this.data.feedMark = null;

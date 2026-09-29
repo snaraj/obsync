@@ -1,0 +1,12 @@
+# M1969: Fetch writes over a different file standing at the name
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1926,7 +1926,7 @@
+     context.state.setFile(manifest.path, context.state.fileByPath(localPath as string) as FileState);
+     context.state.forgetPath(localPath as string);
+     localPath = manifest.path;
+-  } else if (!present && (await context.host.stat(manifest.path)) !== null) {
++  } else if (!present && (await context.host.stat(manifest.path)) !== null && manifest.path === "") {
+     throw new Error(`Another file is already at ${manifest.path}, so obsync did not replace it. Move it, then fetch again.`);
+   }
+   const over = present ? context.state.fileByPath(manifest.path) : undefined;

@@ -1,0 +1,12 @@
+# M3119: the recovered device keeps the lost installation, with the older revision as its record
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -728,7 +728,7 @@
+         // it follows was still on its way to disk. That credential is nowhere,
+         // and none is guessed or taken from an older revision.
+         if (envelope === null || revision === envelope.current.revision + 1) {
+-          state = fresh(data);
++          state = envelope === null ? fresh(data) : new State(store, data, secrets, id, envelope.current, envelope, raw, onFailure, lease, claim);
+           const { serverUrl } = data;
+           state.forgetPairing();
+           Object.assign(data, { vrk: null, serverUrl, recoveryPhrase: "unconfirmed" });

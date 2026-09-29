@@ -46,11 +46,29 @@ async function plugin(wrap = (request) => request) {
   return { instance, server, state, logs };
 }
 
-test("a device with no chosen name falls back to platform and id", async () => {
+test("a device with no chosen name is what it is and a tag made here, before and after it enrols (#152)", async () => {
   const { instance, state } = await plugin();
-  assert.equal(instance.deviceName(), `macos-${KEYS.deviceId.slice(0, 4)}`);
   state.data.deviceId = null;
-  assert.equal(instance.deviceName(), "macos");
+  const name = instance.deviceName();
+  assert.match(name, /^Mac [2-9A-HJKMNP-TV-Z]{4}$/, "never the bare platform every Mac used to share");
+  assert.equal(state.data.deviceTag, name.slice("Mac ".length), "the tag is this device's, kept");
+  state.data.deviceId = KEYS.deviceId;
+  assert.equal(instance.deviceName(), name, "enrolling does not rename it");
+  // The tag survives a reload, so the name does too.
+  await state.save();
+  const again = await instance.nameThisDevice();
+  assert.equal(again, name);
+});
+
+test("a device's tag is kept before its name is sent anywhere (#152)", async () => {
+  const { instance, state } = await plugin();
+  state.data.deviceTag = null;
+  const save = state.save.bind(state), saved = [];
+  state.save = async () => { saved.push(state.data.deviceTag); await save(); };
+  const name = await instance.nameThisDevice();
+  assert.deepEqual(saved, [name.slice("Mac ".length)], "one save, carrying the tag, before the name leaves");
+  await instance.nameThisDevice();
+  assert.equal(saved.length, 1, "a kept tag is not saved again");
 });
 
 test("saving this device sends the name AND both ceilings, and keeps them", async () => {
@@ -96,7 +114,7 @@ test("clearing the name restores the default rather than sending an empty one", 
   await instance.saveDeviceSettings("Named");
   await instance.saveDeviceSettings("   ");
   const patches = server.requests.filter((request) => request.method === "PATCH");
-  assert.equal(JSON.parse(patches[1].json).name, `macos-${KEYS.deviceId.slice(0, 4)}`);
+  assert.equal(JSON.parse(patches[1].json).name, `Mac ${state.data.deviceTag}`);
   assert.equal(state.data.deviceName, null);
 });
 

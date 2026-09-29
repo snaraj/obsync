@@ -1,0 +1,12 @@
+# M1881: a curly quote or other non-ASCII character in a header is saved (#183)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -166,7 +166,7 @@
+       line = line.slice(1, -1);
+     }
+     if (cut.length !== 0) trimmed.push(`Trimmed ${cut.join(" and ")} from ${where}.`);
+-    const odd = /[^\t\x20-\x7e]/u.exec(line);
++    const odd = /[^\t\x20-\x7e\u0080-\u{10ffff}]/u.exec(line);
+     if (odd !== null) {
+       const at = Array.from(typed.slice(0, offset + odd.index)).length + 1;
+       return { refusal: `${where}, character ${at}, is ${character(odd[0])}.`, reason: "not_ascii" };

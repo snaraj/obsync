@@ -2,13 +2,15 @@
 
 # Cloudflare
 
-Hai cách đặt Cloudflare giữa các thiết bị của bạn và máy chủ của bạn, và cách
-nào được bản triển khai tham chiếu sử dụng. Không cách nào là bắt buộc: máy
-chủ không biết tên bất kỳ nhà cung cấp nào, và
-[Chạy máy chủ](../server.md) không cần tài khoản ở đâu cả. Trang này dành
-cho bạn khi muốn truy cập máy chủ lúc xa nhà mà không mở cổng trên bộ định
-tuyến, hoặc khi muốn một tên máy chủ công khai có chính sách truy cập đứng
-trước.
+*Dành cho người vận hành một máy chủ obsync.*
+
+Hai cách đặt Cloudflare giữa các thiết bị của bạn và máy chủ của bạn.
+Cloudflare chỉ là một lựa chọn tùy chọn trong nhiều lựa chọn: bất kỳ reverse
+proxy, VPN hay tunnel nào bạn tin cậy cũng làm được cùng việc đó, máy chủ
+không biết tên bất kỳ nhà cung cấp nào, và [Chạy máy chủ](../server.md) không
+cần tài khoản ở đâu cả. Trang này dành cho bạn khi bạn đã dùng Cloudflare và
+muốn truy cập máy chủ lúc xa nhà mà không mở cổng trên bộ định tuyến, hoặc
+muốn một tên máy chủ công khai có chính sách truy cập đứng trước.
 
 Menu của Cloudflare và điều khoản gói dịch vụ thay đổi theo thời gian. Mỗi
 bước bên dưới nêu đường dẫn menu như tài liệu Cloudflare đưa ra vào ngày
@@ -19,10 +21,10 @@ một mức giá.
 
 | Cách | Thiết bị nhìn thấy gì | Internet nhìn thấy gì | Lần đồng bộ lớn đầu tiên |
 | --- | --- | --- | --- |
-| **Tuyến riêng** (bản triển khai tham chiếu) | địa chỉ riêng và tên của chính bạn, qua ứng dụng Cloudflare One | không gì cả: không tên máy chủ, không cổng mở | lưu lượng mạng riêng, không đi qua tên máy chủ công khai |
+| **Tuyến riêng** | địa chỉ riêng và tên của chính bạn, qua ứng dụng Cloudflare One | không gì cả: không tên máy chủ, không cổng mở | lưu lượng mạng riêng, không đi qua tên máy chủ công khai |
 | **Tên máy chủ công khai với Access** | một tên công khai, một chính sách Access, một token dịch vụ trong plugin | tên máy chủ, đứng sau Access | đi qua Cloudflare, theo điều khoản của nhà cung cấp về tệp lớn |
 
-Tuyến riêng là tham chiếu vì máy chủ vẫn vô hình và vì chính tài liệu của
+Nên chọn tuyến riêng, vì máy chủ vẫn vô hình và vì chính tài liệu của
 Cloudflare hướng các lần truyền lớn đi theo đường đó: tuyến tên máy chủ công
 khai chuyển lưu lượng qua Cloudflare, và ở các gói Free, Pro và Business,
 điều khoản riêng của dịch vụ yêu cầu dịch vụ trả phí cho video và các tệp lớn
@@ -41,17 +43,17 @@ Cloudflare cũng là một điểm kết thúc TLS.
 Máy chủ giữ một địa chỉ riêng trong mạng của bạn. Một bộ kết nối tunnel chạy
 bên cạnh, một tuyến cho Cloudflare biết địa chỉ nào nằm sau tunnel đó, và
 ứng dụng Cloudflare One (trước đây là WARP) trên mỗi thiết bị đưa lưu lượng
-tới các địa chỉ đó qua tunnel. URL máy chủ mà thiết bị của bạn nhập vào là
+tới các địa chỉ đó qua tunnel. Server URL mà thiết bị của bạn nhập vào là
 một tên riêng phân giải về địa chỉ riêng đó.
 
 Bạn cần: một tài khoản Cloudflare có tổ chức Zero Trust ("tên nhóm"), một
 máy trong mạng của máy chủ có thể chạy bộ kết nối tunnel, và ứng dụng
 Cloudflare One trên mọi thiết bị sẽ đồng bộ khi xa nhà.
 
-1. **Tạo một tunnel.** Trong bảng điều khiển Cloudflare, vào **Networking**
-   > **Tunnels** và tạo một tunnel `cloudflared`. Chạy bộ kết nối được cấp
-   trên một máy trong mạng của máy chủ: trong cụm bên cạnh máy chủ, hoặc trên
-   cùng máy.
+1. **Tạo một tunnel.** Trong bảng điều khiển Cloudflare, vào
+   **Networking** > **Tunnels** và tạo một tunnel `cloudflared`. Chạy bộ kết
+   nối được cấp trên một máy trong mạng của máy chủ: trong cụm bên cạnh máy
+   chủ, hoặc trên cùng máy.
 2. **Định tuyến địa chỉ riêng của máy chủ qua tunnel.** Vào **Networking** >
    **Routes**, chọn **Create route** > **Tunnel CIDR**, chọn tunnel và nhập
    địa chỉ riêng hoặc dải mạng con của máy chủ. Một địa chỉ là đủ; dải mạng
@@ -65,10 +67,10 @@ Cloudflare One trên mọi thiết bị sẽ đồng bộ khi xa nhà.
    **Exclude**, bỏ khối RFC 1918 chứa nó và thêm lại những dải bạn vẫn muốn
    loại trừ; ở chế độ **Include**, thêm địa chỉ hoặc dải mạng con.
 5. **Đảm bảo tên phân giải được trên thiết bị.** Plugin gửi mọi yêu cầu tới
-   URL máy chủ bạn đã nhập, nên tên đó phải phân giải được trên thiết bị
-   đang ở xa: một tuyến theo tên máy chủ, Local Domain Fallback về bộ phân
-   giải của bạn, hoặc một bản ghi DNS riêng. Một tên phân giải ra địa chỉ mà
-   ứng dụng không định tuyến sẽ thất bại y như máy chủ đang tắt.
+   Server URL bạn đã nhập, nên tên đó phải phân giải được trên thiết bị đang
+   ở xa: một tuyến theo tên máy chủ, Local Domain Fallback về bộ phân giải
+   của bạn, hoặc một bản ghi DNS riêng. Một tên phân giải ra địa chỉ mà ứng
+   dụng không định tuyến sẽ thất bại y như máy chủ đang tắt.
 6. **Tự kết thúc TLS.** Tuyến đưa lưu lượng của bạn tới điểm kết thúc TLS của
    chính bạn: một ingress hoặc reverse proxy đứng trước máy chủ với chứng
    chỉ mà mọi thiết bị tin cậy, như trong [Chạy máy chủ](../server.md). Máy
@@ -77,7 +79,7 @@ Cloudflare One trên mọi thiết bị sẽ đồng bộ khi xa nhà.
 7. **Tùy chọn: lọc bằng Gateway.** Một chính sách mạng Gateway có thể chỉ
    cho phép các thiết bị đã đăng ký của bạn tới địa chỉ và cổng của máy chủ,
    và chặn mọi thứ khác trên tuyến đó.
-8. **Kiểm tra từ một thiết bị ngoài mạng của bạn.** Mở URL máy chủ trong
+8. **Kiểm tra từ một thiết bị ngoài mạng của bạn.** Mở Server URL trong
    trình duyệt trên thiết bị đó và chờ trang đăng nhập của bảng điều khiển.
    Trong plugin, chọn **Check** dưới **Connection**: một lượt đi-về chứng
    minh cùng lúc địa chỉ, chứng chỉ và thông tin đăng nhập.
@@ -100,36 +102,41 @@ Cloudflare One trên mọi thiết bị sẽ đồng bộ khi xa nhà.
 Máy chủ nhận một tên máy chủ trên một miền bạn có ở Cloudflare. Tunnel công
 bố tên đó tới địa chỉ riêng của máy chủ, và Cloudflare Access đứng trước:
 một chính sách danh tính cho bảng điều khiển, và một token dịch vụ cho các
-lời gọi API của plugin. Đây là cách mà
-[tích hợp nền tảng](../platform-onboarding.md) mô tả cho cụm tham chiếu, và
-là cách mà bản triển khai tham chiếu chưa chọn.
+lời gọi API của plugin. Đây là dạng Cloudflare của con đường dùng tên máy chủ
+công khai mà [tích hợp nền tảng](../platform-onboarding.md) mô tả; reverse
+proxy của riêng bạn với cơ chế xác thực của riêng nó là dạng không cần nhà
+cung cấp của cùng con đường đó.
 
 1. **Công bố tên máy chủ.** Trong cấu hình tunnel, thêm một tuyến ứng dụng
    công bố từ tên máy chủ của bạn (`sync.example.com` thay cho tên thật) tới
    địa chỉ HTTP riêng của máy chủ, cổng 8080. Cloudflare tạo bản ghi DNS.
 2. **Đặt Access phía trước.** Vào **Zero Trust** > **Access controls** >
    **Applications**, tạo một ứng dụng **Self-hosted** trên tên máy chủ đó,
-   và thêm một chính sách danh tính chỉ cho phép bạn, chẳng hạn mã PIN dùng
-   một lần gửi tới địa chỉ của bạn, dành cho bảng điều khiển.
-3. **Tạo token dịch vụ cho plugin.** Vào **Zero Trust** > **Access controls**
-   > **Service credentials** > **Service Tokens**, tạo một token và sao chép
-   Client ID cùng Client Secret; secret chỉ hiện một lần. Thêm vào ứng dụng
-   một chính sách **Service Auth** bao gồm token này, cho các đường dẫn
-   plugin dùng (`/v1/*`).
-4. **Dán token vào plugin.** Dưới **Edge service-token headers**, mỗi dòng
-   một mục, đúng như Cloudflare đặt tên:
+   và thêm cho bảng điều khiển một chính sách danh tính chỉ cho phép bạn,
+   chẳng hạn mã PIN dùng một lần gửi tới địa chỉ của bạn.
+3. **Tạo token dịch vụ cho plugin.** Vào **Zero Trust** >
+   **Access controls** > **Service credentials** > **Service Tokens**, tạo
+   một token và sao chép Client ID cùng Client Secret; secret chỉ hiện một
+   lần. Thêm vào ứng dụng một chính sách **Service Auth** bao gồm token này,
+   cho các đường dẫn plugin dùng (`/v1/*`).
+4. **Dán token vào plugin.** Dưới **Custom request headers**, mỗi dòng một
+   mục, đúng như Cloudflare đặt tên:
 
    ```text
    CF-Access-Client-Id: <the client id>
    CF-Access-Client-Secret: <the client secret>
    ```
 
-   Chúng đi kèm mọi yêu cầu tới URL máy chủ, và không đi đâu khác.
+   Chúng đi kèm mọi yêu cầu tới Server URL, và không đi đâu khác.
 5. **Cho máy chủ biết nó đứng sau biên.** Chạy máy chủ với
    `OBSYNC_EDGE=cloudflare`. Ở chế độ đó, mọi yêu cầu phải mang các tiêu đề
    của biên về địa chỉ kết nối và mã yêu cầu, và yêu cầu đi vòng qua biên sẽ
    bị từ chối với `421 edge_required`
-   ([khắc phục sự cố](../troubleshooting.md#edge_required)).
+   ([khắc phục sự cố](../troubleshooting.md#edge_required)). Máy chủ chỉ tin
+   các tiêu đề đó khi chúng tới từ `OBSYNC_TRUSTED_PROXY_CIDRS`; ở chế độ này,
+   giá trị mặc định là các mạng riêng mà từ đó một bộ kết nối trên cùng máy,
+   cùng mạng container hoặc cùng cụm tới được máy chủ. Hãy đặt nó thành mạng
+   của chính bộ kết nối để thu hẹp thêm.
 6. **Kiểm tra.** Mở tên máy chủ trong trình duyệt và chờ màn hình đăng nhập
    Access, rồi tới bảng điều khiển. Trong plugin, chọn **Check** dưới
    **Connection**.
@@ -145,25 +152,25 @@ là cách mà bản triển khai tham chiếu chưa chọn.
 - Các lần truyền lớn đi qua Cloudflare theo điều khoản nêu trên. Hãy thực
   hiện lần đồng bộ lớn đầu tiên trên mạng LAN.
 - Các tiêu đề của biên về địa chỉ kết nối và quốc gia chính là thứ trang
-  Thiết bị của bảng điều khiển hiển thị làm địa chỉ và quốc gia ở chế độ này.
+  Devices của bảng điều khiển hiển thị làm địa chỉ và quốc gia ở chế độ này.
 
 ## Những gì đã được chứng minh
 
-Tuyến riêng là tuyến của bản triển khai tham chiếu.
-[Đợt chạy 2026-09-14](../validation-runs/2026-09-14.md) ghi lại rằng hôm đó
+Tuyến riêng đã có các đợt chạy với thiết bị được ghi lại:
+[đợt chạy 2026-09-14](../validation-runs/2026-09-14.md) ghi lại rằng hôm đó
 tuyến này chưa được thử, và lý do;
 [đợt chạy 2026-09-20](../validation-runs/2026-09-20.md) ghi lại một đợt chạy
-với thiết bị trên tuyến tham chiếu, các kiểm tra kết nối và TLS đều đạt.
-Cách dùng tên máy chủ công khai chưa được thử trong bất kỳ đợt chạy nào được
-ghi lại.
+với thiết bị trên tuyến riêng tới một cụm, các kiểm tra kết nối và TLS đều
+đạt, trên macOS và iPhone. Cách dùng tên máy chủ công khai chưa được thử
+trong bất kỳ đợt chạy nào được ghi lại: cách này chưa được chứng minh.
 
 ## Tiếp theo
 
-- [Chạy máy chủ](../server.md): điểm kết thúc TLS, các ổ lưu trữ, token thiết
+- [Chạy máy chủ](../server.md): điểm kết thúc TLS, các volume, token thiết
   lập.
-- [Kubernetes](https://github.com/snaraj/obsync/blob/main/chart/README.md): chart mà bản triển khai tham chiếu sử
-  dụng.
-- [Tích hợp nền tảng](../platform-onboarding.md): cụm tham chiếu sẽ bổ sung
+- [Kubernetes](../kubernetes.md): chart, các volume của nó và lớp TLS đứng
+  trước.
+- [Tích hợp nền tảng](../platform-onboarding.md): một nền tảng GitOps bổ sung
   gì cho một tên máy chủ công khai.
 - [Khắc phục sự cố](../troubleshooting.md): `edge_required`, `offline` và
   chứng chỉ.

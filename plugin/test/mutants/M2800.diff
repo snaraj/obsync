@@ -1,0 +1,12 @@
+# M2800: an answered read clears a full server's refusal while it still refuses changes
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -835,7 +835,7 @@
+   private accepted(write: boolean): void {
+     if (write) this.written++;
+     const refused = this.refused;
+-    if (refused === null || refused.kind !== "error" || (!write && refused.code === "storage")) return;
++    if (refused === null || refused.kind !== "error") return;
+     this.refused = null;
+     this.options.host.log(`engine decision=cleared reason=${refused.code ?? "error"}`);
+     this.status(this.resting());

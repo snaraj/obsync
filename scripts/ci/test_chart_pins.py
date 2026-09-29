@@ -15,6 +15,7 @@ import re
 import io
 import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -88,6 +89,43 @@ class ExtractionRefusesWhatCountingWouldPass(unittest.TestCase):
             chart_pins.equals(widened, expected, "the ingress rule set")
 
 
+class EveryAnnotationInARenderIsFound(unittest.TestCase):
+    """`rendered_annotations` is what "no annotation anywhere" is judged by, so
+    a key it cannot see is a platform domain that ships unnoticed."""
+
+    def test_a_render_with_no_annotation_reads_as_empty(self):
+        self.assertEqual(
+            chart_pins.rendered_annotations(
+                [{"kind": "Service", "metadata": {"name": "obsync", "labels": {"a": "b"}}}]
+            ),
+            {},
+        )
+
+    def test_annotations_are_found_on_the_object_and_inside_its_pod_template(self):
+        deployment = {
+            "kind": "Deployment",
+            "metadata": {"name": "obsync", "annotations": {"one.example/x": "1"}},
+            "spec": {"template": {"metadata": {"annotations": {"two.example/y": "2"}}}},
+        }
+        claim = {"kind": "PersistentVolumeClaim", "metadata": {"name": "obsync-blobs", "annotations": {}}}
+        self.assertEqual(
+            chart_pins.rendered_annotations([deployment, claim]),
+            {
+                "Deployment/obsync": {"one.example/x": "1"},
+                "Deployment/obsync.spec.template": {"two.example/y": "2"},
+                "PersistentVolumeClaim/obsync-blobs": {},
+            },
+        )
+
+    def test_an_empty_annotations_block_is_recorded_not_skipped(self):
+        # `annotations:` with nothing under it reads as None, and a key that is
+        # present at all is a render that differs from one with no annotation.
+        self.assertEqual(
+            chart_pins.rendered_annotations([{"kind": "Deployment", "metadata": {"name": "o", "annotations": None}}]),
+            {"Deployment/o": None},
+        )
+
+
 class VolumeSourcesAreRefusedByName(unittest.TestCase):
     def test_a_claim_backed_volume_resolves_to_its_claim(self):
         self.assertEqual(
@@ -122,16 +160,16 @@ class TheGateRunsEveryPin(unittest.TestCase):
 
     `test_each_pin_holds` iterates `PINS`, so deleting a registration would
     delete its own test. These pins name the registry independently: exactly
-    the five pins, each bound to its function; `all` invokes every one of
+    the seven pins, each bound to its function; `all` invokes every one of
     them, readiness included; a readiness refusal fails the gate; and the
     hosted gate and `make check` run `all`, never a subset. None of them needs
     helm, so they run everywhere.
     """
 
-    def test_the_registry_names_exactly_the_five_pins_bound_to_their_functions(self):
+    def test_the_registry_names_exactly_the_seven_pins_bound_to_their_functions(self):
         self.assertEqual(
             list(chart_pins.PINS),
-            ["ingress", "storage", "security", "readiness", "environment"],
+            ["ingress", "storage", "security", "readiness", "environment", "kubernetes", "platform"],
         )
         for name in chart_pins.PINS:
             self.assertIs(chart_pins.PINS[name], getattr(chart_pins, f"pin_{name}"))
@@ -142,7 +180,8 @@ class TheGateRunsEveryPin(unittest.TestCase):
         with mock.patch.dict(chart_pins.PINS, stubs), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(chart_pins.main(["all"]), 0)
         self.assertEqual(
-            calls, ["ingress", "storage", "security", "readiness", "environment"]
+            calls,
+            ["ingress", "storage", "security", "readiness", "environment", "kubernetes", "platform"],
         )
 
     def test_a_readiness_refusal_fails_the_all_gate_and_the_single_pin(self):
@@ -264,15 +303,23 @@ class TheMustFailHelperCanItselfFail(unittest.TestCase):
         with self.assertRaises(chart_pins.PinError):
             chart_pins.refuse(because="the default render succeeds, so this must raise")
 
+    @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
+    def test_a_refusal_that_does_not_name_the_value_is_reported_as_a_failure(self):
+        # The render IS refused, but for its own value: a refusal the pin asked
+        # to name something else is not the refusal it asked for.
+        refused = "platform.annotationDomain=Upper.example.org"
+        with contextlib.redirect_stdout(io.StringIO()):
+            chart_pins.refuse(refused, because="an upper-case domain", naming="Upper.example.org")
+            with self.assertRaisesRegex(chart_pins.PinError, "without naming"):
+                chart_pins.refuse(refused, because="an upper-case domain", naming="other.example.org")
+
 
 class ExpectationsComeFromValues(unittest.TestCase):
     def test_the_shipped_values_file_supplies_every_expectation_the_pins_read(self):
         configured = chart_pins.values()
         for path in (
             ("service", "port"),
-            ("ingress", "peerNamespace"),
-            ("ingress", "peerAppName"),
-            ("ingress", "peerInstance"),
+            ("image", "repository"),
             ("storage", "blobs", "className"),
             ("storage", "blobs", "size"),
             ("storage", "blobs", "capacity"),
@@ -285,6 +332,17 @@ class ExpectationsComeFromValues(unittest.TestCase):
                 for key in path:
                     node = node[key]
                 self.assertTrue(node not in (None, ""))
+
+    def test_the_shipped_defaults_name_no_cluster(self):
+        # A default that names one cluster's peer or class is that cluster's
+        # private fact and a policy that admits a stranger's pod of the same
+        # name. The shipped peers admit nothing until they are named.
+        configured = chart_pins.values()
+        self.assertEqual(configured["ingress"], {"peers": []})
+        # Nor one platform's annotation domain: the shipped chart renders none.
+        self.assertEqual(configured["platform"], {"annotationDomain": ""})
+        for role in ("blobs", "journal"):
+            self.assertEqual(configured["storage"][role]["className"], "unset-storage-class")
 
 
 @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
@@ -365,6 +423,64 @@ class TheChartReadmeShipsThisVersion(unittest.TestCase):
                     f"chart/README.md must name {version} wherever it names a version "
                     "(the release step moves it with the locks)",
                 )
+
+
+class TheStaticVolumeExample(unittest.TestCase):
+    """`chart/examples/static-local-volumes.yaml` (#74): what an operator with
+    no provisioner applies before the chart, so each fact in it is one the
+    server or the chart depends on."""
+
+    def documents(self) -> list[dict]:
+        return miniyaml.loads(chart_pins.STATIC_VOLUME_EXAMPLE.read_text(encoding="utf-8"))
+
+    def test_the_class_waits_for_the_pod_and_keeps_the_data(self):
+        storage_class = chart_pins.only(self.documents(), "StorageClass")
+        self.assertEqual(storage_class["provisioner"], "kubernetes.io/no-provisioner")
+        self.assertEqual(storage_class["volumeBindingMode"], "WaitForFirstConsumer")
+        self.assertEqual(storage_class["reclaimPolicy"], "Retain")
+
+    def test_each_volume_is_one_nodes_directory_bound_to_its_claim_at_its_size(self):
+        documents = self.documents()
+        storage_class = chart_pins.only(documents, "StorageClass")["metadata"]["name"]
+        configured = chart_pins.values()["storage"]
+        volumes = chart_pins.every(documents, "PersistentVolume")
+        self.assertEqual(
+            sorted(volume["spec"]["claimRef"]["name"] for volume in volumes),
+            ["obsync-blobs", "obsync-journal"],
+        )
+        for volume in volumes:
+            spec = volume["spec"]
+            role = spec["claimRef"]["name"].rsplit("-", 1)[1]
+            with self.subTest(role=role):
+                self.assertEqual(spec["storageClassName"], storage_class)
+                self.assertEqual(spec["capacity"]["storage"], configured[role]["size"])
+                self.assertEqual(spec["accessModes"], ["ReadWriteOnce"])
+                self.assertEqual(spec["persistentVolumeReclaimPolicy"], "Retain")
+                self.assertEqual(spec["local"]["path"], f"<{role.upper()}_PATH>")
+                self.assertEqual(
+                    spec["nodeAffinity"]["required"]["nodeSelectorTerms"],
+                    [{"matchExpressions": [{
+                        "key": "kubernetes.io/hostname", "operator": "In", "values": ["<NODE_NAME>"],
+                    }]}],
+                )
+
+    def test_each_directory_is_prepared_for_the_server_user_and_closed(self):
+        text = chart_pins.STATIC_VOLUME_EXAMPLE.read_text(encoding="utf-8")
+        for path in ("<BLOBS_PATH>", "<JOURNAL_PATH>"):
+            with self.subTest(path=path):
+                self.assertIn(f"#   install -d -o 65532 -g 65532 -m 0700 {path}\n", text)
+
+    @unittest.skipUnless(shutil.which("helm"), "helm is not installed")
+    def test_the_storage_pin_refuses_an_example_bound_to_a_claim_the_chart_lacks(self):
+        text = chart_pins.STATIC_VOLUME_EXAMPLE.read_text(encoding="utf-8")
+        self.assertEqual(text.count("    name: obsync-journal\n"), 1)
+        with tempfile.TemporaryDirectory() as scratch:
+            stale = Path(scratch) / "static-local-volumes.yaml"
+            stale.write_text(text.replace("    name: obsync-journal\n", "    name: obsidian-journal\n"))
+            with mock.patch.object(chart_pins, "STATIC_VOLUME_EXAMPLE", stale), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(chart_pins.PinError, "pre-binds"):
+                    chart_pins.pin_storage()
 
 
 if __name__ == "__main__":

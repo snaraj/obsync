@@ -1,0 +1,11 @@
+# M1874: a rename made on another device is never taken as this device's own (#152)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3138,7 +3138,6 @@
+     const legacy = context.state.data.deviceName === null &&
+       (own.name === platform || own.name === `${platform}-${context.deviceId.slice(0, 4)}`);
+     if (!legacy) {
+-      context.state.data.deviceName = own.name;
+       await context.state.save();
+       context.host.log("device decision=adopted reason=renamed_elsewhere");
+       return;

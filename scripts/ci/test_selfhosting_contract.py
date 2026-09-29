@@ -108,12 +108,29 @@ K8S_TOKEN_READ = re.compile(r"^sudo cat (?P<path>/\S+)/v1/setup-token$", re.MULT
 # The one Service the terminator must reach, and the ceiling it must lift.
 # Requirement 8: files of any size take one path, and a proxy's default 1 MiB
 # body limit is a refusal the server never made.
-FRONT_UPSTREAM = "http://obsync.obsidian.svc.cluster.local:8080"
+FRONT_UPSTREAM = "http://obsync.obsidian.svc.cluster.local.:8080"
 FRONT_BODY_CEILING = "client_max_body_size 0;"
-# The three labels `ingress.peer*` injects into the chart's NetworkPolicy. A
-# terminator that does not carry all three is a connection that policy drops.
-PEER_VALUES = ("peerNamespace", "peerAppName", "peerInstance")
+# The front's sockets. As pasted it listens on IPv4 alone, the one form every
+# node starts: nginx cannot open an IPv6 socket where the kernel has no IPv6.
+# The IPv6 line is shown commented out, once, for a dual-stack or IPv6-only
+# cluster to uncomment, which is what helm-e2e.sh's IPv6 leg does.
+FRONT_LISTEN = re.compile(r"^\s*(?P<comment>#\s*)?listen\s+(?P<address>[^;]*);", re.MULTILINE)
+FRONT_LISTENS_AS_PASTED = ["8443 ssl"]
+FRONT_LISTENS_TO_UNCOMMENT = ["[::]:8443 ssl"]
+# The three facts an `ingress.peers` pod entry injects into the chart's
+# NetworkPolicy. A terminator that does not carry all three is a connection
+# that policy drops.
+PEER_VALUES = ("namespace", "appName", "instance")
 PEER_LABELS = ("app.kubernetes.io/name", "app.kubernetes.io/instance")
+# The one workload that reaches the server runs as hardened as the server does
+# (security item 14): what the pod and its containers must say.
+FRONT_POD_POSTURE = {"runAsNonRoot": True, "seccompProfile": {"type": "RuntimeDefault"}}
+FRONT_CONTAINER_POSTURE = {
+    "readOnlyRootFilesystem": True,
+    "allowPrivilegeEscalation": False,
+    "capabilities": {"drop": ["ALL"]},
+}
+FRONT_IMAGE_BY_DIGEST = re.compile(r"^[a-z0-9./-]+:[\w.-]+@sha256:[0-9a-f]{64}$")
 
 # Rule 6: what each script may not contain, because it must read it instead.
 FORBIDDEN_LITERALS = {
@@ -129,7 +146,17 @@ FORBIDDEN_LITERALS = {
 }
 
 # Rule 7: the scripts whose workflows must clean up after themselves.
-DISPOSABLE = ("compose-e2e.sh", "helm-e2e.sh", "distro-smoke.sh")
+DISPOSABLE = (
+    "compose-e2e.sh",
+    "helm-e2e.sh",
+    "distro-smoke.sh",
+    "proxy-e2e.sh",
+    "bench.sh",
+    "k3d-e2e.sh",
+    "podman-e2e.sh",
+    "binary-e2e.sh",
+    "obsidian-host.sh",
+)
 
 
 def scripts() -> dict[str, str]:
@@ -307,26 +334,36 @@ def _kubernetes_refusals(pages_by_name: dict[str, str]) -> list[str]:
 def _front_refusals(guide: str, blocks: dict, values: list) -> list[str]:
     """Rule 5, for the terminator: the peer the NetworkPolicy admits.
 
-    The chart admits exactly ONE peer, by namespace label plus both of the
-    workload's own labels (`chart/templates/network-policy.yaml`). Those three
-    facts live in the values block, and the terminator that must carry them
-    lives in another block on the same page. Two blocks that disagree render
-    perfectly and drop every connection, which is the reference activation's
-    own lesson and is why it is read here rather than discovered by a device
-    that cannot reach the server.
+    The chart admits exactly the listed peers, each pod by namespace label plus
+    both of the workload's own labels (`chart/templates/network-policy.yaml`).
+    The page documents one front, so its values name exactly one pod peer, and
+    the terminator that must carry those three facts lives in another block on
+    the same page. Two blocks that disagree render perfectly and drop every
+    connection, which is the reference activation's own lesson and is why it
+    is read here rather than discovered by a device that cannot reach the
+    server. The front is also the one workload that reaches the server, so its
+    posture is read here too.
     """
     found: list[str] = []
     try:
         front = miniyaml.loads(blocks["k8s-tls-front"][1])
     except miniyaml.YamlError as error:
         return [f"{guide}: the TLS-front block cannot be resolved: {error}"]
-    peer = {}
-    if values and isinstance(values[0], dict) and isinstance(values[0].get("ingress"), dict):
-        peer = values[0]["ingress"]
-    wanted = {name: peer.get(name) for name in PEER_VALUES}
-    if not all(wanted.values()):
-        found.append(f"{guide}: the values block no longer names all three `ingress.peer*` values: {wanted}")
+    ingress = values[0].get("ingress") if values and isinstance(values[0], dict) else None
+    peers = ingress.get("peers") if isinstance(ingress, dict) else None
+    pods = [p for p in peers if isinstance(p, dict) and "ipBlock" not in p] if isinstance(peers, list) else []
+    wanted = {name: pods[0].get(name) for name in PEER_VALUES} if len(pods) == 1 else {}
+    if not wanted or not all(wanted.values()):
+        found.append(
+            f"{guide}: the values block no longer names exactly one pod in `ingress.peers` "
+            f"by all three of {PEER_VALUES}: {pods}"
+        )
         return found
+    wanted = {
+        "peerNamespace": wanted["namespace"],
+        "peerAppName": wanted["appName"],
+        "peerInstance": wanted["instance"],
+    }
     namespaces = {
         document.get("metadata", {}).get("namespace")
         for document in front
@@ -338,15 +375,35 @@ def _front_refusals(guide: str, blocks: dict, values: list) -> list[str]:
             f"admit {wanted['peerNamespace']!r}: the NetworkPolicy names the namespace, so a "
             "terminator somewhere else is a connection the policy drops"
         )
-    pods = [
-        document.get("spec", {}).get("template", {}).get("metadata", {}).get("labels", {})
+    templates = [
+        document.get("spec", {}).get("template", {})
         for document in front
         if isinstance(document, dict) and document.get("kind") == "Deployment"
     ]
-    if not pods:
+    if not templates:
         found.append(f"{guide}: the TLS-front block declares no Deployment to carry the peer labels")
         return found
-    for labels in pods:
+    for template in templates:
+        spec = template.get("spec") or {}
+        pod_posture = spec.get("securityContext") or {}
+        if any(pod_posture.get(key) != value for key, value in FRONT_POD_POSTURE.items()):
+            found.append(
+                f"{guide}: the terminator's pod no longer runs non-root under the runtime's "
+                f"default seccomp profile: {pod_posture}"
+            )
+        for container in spec.get("containers") or []:
+            posture = container.get("securityContext") or {}
+            if any(posture.get(key) != value for key, value in FRONT_CONTAINER_POSTURE.items()):
+                found.append(
+                    f"{guide}: the terminator's container no longer drops every capability "
+                    f"on a read-only root: {posture}"
+                )
+            if not FRONT_IMAGE_BY_DIGEST.match(str(container.get("image"))):
+                found.append(
+                    f"{guide}: the terminator's image {container.get('image')!r} is not pinned "
+                    "by digest, so what reaches the server is whatever a tag says today"
+                )
+    for labels in (template.get("metadata", {}).get("labels", {}) for template in templates):
         carried = {key: labels.get(key) for key in PEER_LABELS}
         if carried != {
             "app.kubernetes.io/name": wanted["peerAppName"],
@@ -372,6 +429,25 @@ def _front_refusals(guide: str, blocks: dict, values: list) -> list[str]:
         found.append(
             f"{guide}: the terminator no longer carries `{FRONT_BODY_CEILING}`, so a stock 1 MiB "
             "body ceiling refuses a large file the server would have taken (requirement 8)"
+        )
+    # Read off the block's text: miniyaml drops a `#` line even inside a block
+    # scalar, and the line to uncomment is one.
+    listens = [
+        (bool(m.group("comment")), m.group("address"))
+        for m in FRONT_LISTEN.finditer(blocks["k8s-tls-front"][1])
+    ]
+    as_pasted = [address for commented, address in listens if not commented]
+    if as_pasted != FRONT_LISTENS_AS_PASTED:
+        found.append(
+            f"{guide}: the terminator listens on {as_pasted} as pasted, not {FRONT_LISTENS_AS_PASTED}: "
+            "an IPv6 socket stops nginx on a node whose kernel has no IPv6, so the block as "
+            "shown must be IPv4 alone"
+        )
+    if [address for commented, address in listens if commented] != FRONT_LISTENS_TO_UNCOMMENT:
+        found.append(
+            f"{guide}: the terminator no longer shows `listen {FRONT_LISTENS_TO_UNCOMMENT[0]};` "
+            "commented out, once: without it a dual-stack or IPv6-only cluster has no line to "
+            "uncomment, and its front answers a port-forward but not its Service"
         )
     return found
 
@@ -715,10 +791,34 @@ class MutatedGuidesAreRefused(unittest.TestCase):
     def test_pointing_the_terminator_at_another_service_is_refused(self):
         found = self.mutate(
             "docs/kubernetes.md",
-            "proxy_pass http://obsync.obsidian.svc.cluster.local:8080;",
-            "proxy_pass http://obsync.default.svc.cluster.local:8080;",
+            "proxy_pass http://obsync.obsidian.svc.cluster.local.:8080;",
+            "proxy_pass http://obsync.default.svc.cluster.local.:8080;",
         )
         self.kills(found, "no longer proxies to")
+
+    def test_unpinning_the_terminator_image_is_refused(self):
+        found = self.mutate(
+            "docs/kubernetes.md",
+            "image: docker.io/library/nginx:1.29-alpine@sha256:",
+            "image: docker.io/library/nginx:1.29-alpine # @sha256:",
+        )
+        self.kills(found, "is not pinned by digest")
+
+    def test_keeping_the_terminators_capabilities_is_refused(self):
+        found = self.mutate("docs/kubernetes.md", "              drop:\n                - ALL", "              drop:\n                - NET_RAW")
+        self.kills(found, "no longer drops every capability")
+
+    def test_an_unconfined_terminator_is_refused(self):
+        found = self.mutate("docs/kubernetes.md", "          type: RuntimeDefault", "          type: Unconfined")
+        self.kills(found, "default seccomp profile")
+
+    def test_a_values_block_that_names_no_pod_peer_is_refused(self):
+        found = self.mutate(
+            "docs/kubernetes.md",
+            "  peers:\n    - namespace: obsync-ingress\n      appName: tls-front\n      instance: tls-front\n",
+            "  peers:\n    - ipBlock:\n        cidr: 10.0.0.0/8\n",
+        )
+        self.kills(found, "exactly one pod in `ingress.peers`")
 
     def test_restoring_the_proxy_body_ceiling_is_refused(self):
         found = self.mutate(
@@ -727,6 +827,20 @@ class MutatedGuidesAreRefused(unittest.TestCase):
             "      client_max_body_size 1m;",
         )
         self.kills(found, "body ceiling refuses a large file")
+
+    def test_a_front_that_opens_an_ipv6_socket_as_pasted_is_refused(self):
+        found = self.mutate("docs/kubernetes.md", "      # listen [::]:8443 ssl;", "      listen [::]:8443 ssl;")
+        self.kills(found, "must be IPv4 alone")
+
+    def test_a_front_that_listens_without_tls_is_refused(self):
+        found = self.mutate("docs/kubernetes.md", "      listen 8443 ssl;", "      listen 8443;")
+        self.kills(found, "must be IPv4 alone")
+
+    def test_dropping_the_ipv6_line_to_uncomment_is_refused(self):
+        found = self.mutate("docs/kubernetes.md", "      # listen [::]:8443 ssl;\n", "")
+        self.kills(found, "has no line to uncomment")
+        # And the IPv6 leg, which uncomments it, can no longer read the block.
+        self.kills(found, "helm-e2e.sh: docs/kubernetes.md: block 'k8s-tls-front' does not show")
 
     def test_a_token_read_that_needs_a_shell_in_the_container_is_refused(self):
         found = self.mutate(

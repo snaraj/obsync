@@ -1,0 +1,12 @@
+# M2316: the count counts revoked and pairing devices as devices (Devices count, desktop rig)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -53,7 +53,7 @@
+ function deviceCount(devices: DeviceRecord[]): string {
+   const revoked = devices.filter((device) => device.revoked).length;
+   const pending = devices.filter((device) => !device.revoked && device.state === "pending").length;
+-  const paired = devices.length - revoked - pending;
++  const paired = devices.length;
+   const rest = [pending > 0 ? `${pending} not paired yet` : "", revoked > 0 ? `${revoked} revoked` : ""].filter((part) => part !== "");
+   const tail = rest.length === 0 ? "" : rest.length === 1 ? `, and ${rest[0]}` : `, ${rest[0]}, and ${rest[1]}`;
+   return `${paired} device${paired === 1 ? "" : "s"} on this account${tail}.`;

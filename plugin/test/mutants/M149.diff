@@ -1,7 +1,7 @@
 # M149: the first start reconciles before Obsidian has listed the vault
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1927,13 +1927,7 @@
+@@ -2209,14 +2209,7 @@
      // Confirm that would have published them) and every empty folder WAS
      // published as deleted, on every restart, on 1.1.1 too (2026-09-24
      // battery, X1: `reconcile decision=start budget_files=0`).
@@ -10,9 +10,10 @@
 -        const opened = view.containerEl.ownerDocument.defaultView;
 -        if (opened !== null) this.host.trackInput(opened);
 -      }
+-      this.placeIndicator();
 -      listed();
 -    })).then(async () => {
 +    this.firstStart = Promise.resolve().then(async () => {
+       if (this.state.data.pendingScope !== undefined) await this.finishScopeChange(generation);
        if (this.state.paired) await this.startEngine();
-       if (this.isCurrent(generation)) void this.checkForUpdate();
-     });
+       else this.resumePairing();

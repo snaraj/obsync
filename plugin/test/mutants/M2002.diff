@@ -1,0 +1,11 @@
+# M2002: a path queued while every push in flight is slow waits for one to land
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1921,7 +1921,6 @@
+    */
+   private drain(): Promise<void> {
+     if (this.draining && this.drainWork !== null) {
+-      this.wakeDrain?.();
+       return this.drainWork;
+     }
+     this.drainWork = this.drainQueue();

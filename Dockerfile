@@ -16,14 +16,14 @@
 # is the immutable build input and the tag states the Node version a reader
 # should expect from those bytes.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/node:26.8.2-trixie-slim@sha256:f7bb8247fdb16250dbec7fd0e24f091c6f5f0a29d256f3aef5816a7a369166b2 AS plugin
+FROM --platform=$BUILDPLATFORM docker.io/library/node:26.10.0-trixie-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1 AS plugin
 WORKDIR /src/plugin
 COPY plugin/package.json plugin/package-lock.json ./
 # The tag and digest select Node; these checks also prove the npm bundled by
 # that image is the separately reviewed package-manager pin. `--ignore-scripts`
 # is not optional: it is the difference between installing a compiler and
 # executing arbitrary install hooks (requirement 5).
-RUN test "$(node --version)" = "v26.8.2" && \
+RUN test "$(node --version)" = "v26.10.0" && \
     test "$(npm --version)" = "11.19.1" && \
     npm ci --ignore-scripts --no-audit --no-fund
 COPY plugin/ ./
@@ -127,6 +127,23 @@ RUN set -eux; \
 # ---------------------------------------------------------------------------
 FROM server AS datadirs
 RUN install -d -m 0700 /skeleton/data /skeleton/data/blobs /skeleton/data/journal
+
+# ---------------------------------------------------------------------------
+# server-dist -- the same server for a host without a container runtime: the
+# binary the image runs, the dashboard and plugin files it serves, a hardened
+# systemd unit, and the licence. Per target architecture, from the SAME
+# `server` and `bundle` stages the image copies, so the release tarball and
+# the image cannot carry different bytes. The publisher exports this stage
+# with `docker buildx build --target server-dist --output type=local` and
+# `scripts/ci/release_contract.py server-archive` packs it deterministically.
+# Never part of the image.
+# ---------------------------------------------------------------------------
+FROM scratch AS server-dist
+COPY --from=server /out/obsyncd /obsyncd
+COPY --from=bundle / /plugin/
+COPY dashboard/ /dashboard/
+COPY deploy/systemd/obsyncd.service /obsyncd.service
+COPY LICENSE /LICENSE
 
 # ---------------------------------------------------------------------------
 # The shipped image: one static binary, the dashboard it serves, and the plugin

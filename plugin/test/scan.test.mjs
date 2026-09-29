@@ -452,7 +452,7 @@ function nativeHost(t, folders) {
     promises: {
       ...fs,
       readdir: async (path) => { opened.push(String(path)); return fs.readdir(path); },
-      lstat: async (path) => { statted.push(String(path)); return fs.lstat(path); },
+      lstat: async (path, ...options) => { statted.push(String(path)); return fs.lstat(path, ...options); },
     },
   };
   const host = new ObsidianHost(plugin, { fs: watched, path: nodePath, base: root });

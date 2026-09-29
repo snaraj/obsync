@@ -1,12 +1,13 @@
 # M598: misclassify startup authentication refusal
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2099,7 +2099,7 @@
-         const code = error instanceof ApiError ? error.code : error instanceof Error ? error.name : "unknown";
-         this.log(`engine decision=stopped reason=start_failed code=${code}`);
-         this.setStatus(forgottenCredential(error)
--          ? { kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE }
-+          ? { kind: "offline" }
-           : { kind: "error", message: error instanceof Error ? error.message : String(error) });
-         return;
-       }
+@@ -2934,7 +2934,8 @@
+         // words, its code left in the line above.
+         // Never asked again by a timer, so what clears elsewhere ends in what to
+         // press (`AFTER_START`), not in a promise that it resumes.
+-        this.setStatus(refusalStatus(error, AFTER_START) ?? {
++        const mapped = refusalStatus(error, AFTER_START);
++        this.setStatus((mapped?.kind === "error" && mapped.code === "forgotten_device" ? { kind: "offline" as const } : mapped) ?? {
+           kind: "error",
+           message: error instanceof ApiError ? START_REFUSED : error instanceof Error ? error.message : String(error),
+         });

@@ -1,0 +1,12 @@
+# M3269: a push reads the empty file a download dropped after the guard looked, and publishes it as the note (review of c4668d4)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -434,7 +434,7 @@
+     // are the drop's. Nothing is sent, and the caller looks again, as for a
+     // file that changed while it was read.
+     const mark = context.state.data.dropped[path];
+-    if (plaintext.length === 0 && mark !== undefined) {
++    if (plaintext.length < 0 && mark !== undefined) {
+       context.host.log(`push path_class=file decision=abandoned reason=write_dropped file=${mark} duration_ms=${context.now() - started}`);
+       return { status: "growing", fileId, versionId: "" };
+     }
