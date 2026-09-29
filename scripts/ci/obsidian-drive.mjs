@@ -480,6 +480,65 @@ function listing(instance, relative) {
   return fs.readdirSync(path.join(instance.vault, relative)).sort();
 }
 
+/**
+ * TWO PEOPLE TYPING IN ONE OPEN NOTE (issue #227). Each instance types its own
+ * line -- the first at the note's end, the second at the end of its first
+ * line -- one keystroke every 200 ms for 20 s, through DevTools
+ * `Input.insertText`: a trusted beforeinput, the input the plugin counts as
+ * typing. When both stop, both disks and both editors must come to hold every
+ * keystroke in order with the fixed lines intact, and no conflict copy may
+ * exist. The note is new, so any copy is this journey's.
+ */
+async function cotyping(a, b) {
+  const note = `e2e/cotype-${randomBytes(4).toString("hex")}.md`;
+  const start = "# Both\nthe line nobody edits\nthe last fixed line\n";
+  await inVault(a, async (file, text) => { await app.vault.create(file, text); return true; }, note, start);
+  await arrives(b, note, Buffer.from(start), "the co-typing note");
+  for (const instance of [a, b]) {
+    await until(`${instance.name}: the co-typing note open in an editor`, () => inVault(instance, async (file) => {
+      await app.workspace.getLeaf(false).openFile(app.vault.getAbstractFileByPath(file), { state: { mode: "source" } });
+      return Boolean(app.workspace.activeLeaf?.view?.editor);
+    }, note));
+  }
+  const words = (letter) => Array.from({ length: 30 }, (_, i) => `${letter}${String(i + 1).padStart(3, "0")}`);
+  const streams = { a: words("A").join(" "), b: ` ${words("B").join(" ")}` };
+  const typed = { a: 0, b: 0 };
+  const started = Date.now();
+  const typist = async (instance, key, place) => {
+    const main = await instance.main();
+    while (Date.now() - started < 20_000 && typed[key] < streams[key].length) {
+      const tick = Date.now();
+      await main.run((where) => {
+        const editor = app.workspace.activeLeaf.view.editor;
+        editor.focus();
+        const line = where === "end" ? editor.lastLine() : 0;
+        editor.setCursor({ line, ch: editor.getLine(line).length });
+        return true;
+      }, place);
+      await main.send("Input.insertText", { text: streams[key][typed[key]] });
+      typed[key] += 1;
+      await sleep(Math.max(0, 200 - (Date.now() - tick)));
+    }
+  };
+  await Promise.all([typist(a, "a", "end"), typist(b, "b", "first")]);
+  const stopped = Date.now();
+  const expected = `# Both${streams.b.slice(0, typed.b)}\nthe line nobody edits\nthe last fixed line\n${streams.a.slice(0, typed.a)}`;
+  const shows = (instance) => inVault(instance, (file) => app.workspace.getLeavesOfType("markdown")
+    .map((leaf) => leaf.view).find((view) => view.file?.path === file)?.editor?.getValue() ?? null, note);
+  await until(`both disks and both editors hold every keystroke of ${typed.a} and ${typed.b}`, async () => {
+    for (const instance of [a, b]) {
+      const file = path.join(instance.vault, note);
+      if (!fs.existsSync(file) || fs.readFileSync(file, "utf8") !== expected || (await shows(instance)) !== expected) return false;
+    }
+    return true;
+  }, SYNC_BUDGET_MS);
+  const stem = path.basename(note, ".md");
+  const copies = [a, b].flatMap((instance) => listing(instance, "e2e").filter((name) => name.startsWith(`${stem} (conflict`)));
+  if (copies.length !== 0) throw new Denied(`co-typing left conflict copies: ${copies.join(", ")}`);
+  prove(`co-typing: ${typed.a} and ${typed.b} keystrokes typed into one open note on both instances over ${stopped - started} ms; ` +
+    `both disks and editors hold all of them ${Date.now() - stopped} ms after the typing stopped, no conflict copy`);
+}
+
 async function main() {
   const binary = env("OBSIDIAN_BIN");
   const work = env("OBSYNC_E2E_WORK");
@@ -571,6 +630,7 @@ async function main() {
     const pick = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
     prove(`B2 end to end: ${rounds} edits written on the first device reached the second's disk, p50 ${pick(0.5)} ms, p95 ${pick(0.95)} ms, max ${sorted.at(-1)} ms`);
 
+    await cotyping(a, b);
     await starvedWatcher(a, b);
     if (ntfs) await windowsJourneys(a, b);
     if (store) await restarted(a, b, { binary, extra, homes, store });
