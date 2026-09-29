@@ -955,6 +955,19 @@ long poll and needs its timeout raised.
    Text typed into that empty note meanwhile is an edit, and is sent. A note
    renamed on another device before its retry lands leaves the empty file
    under the old name, on this phone only.
+   The mark reaches the data file with the next save, and Android may end
+   the app before that save (plugin 1.1.5, #248). A start's first pass
+   therefore asks the feed about every empty file whose record says it held
+   text, or that has no record: one whose path a live version ahead of this
+   device's cursor names, a version the record does not hold, is that
+   download's leftover, and is marked again rather than sent; the feed then
+   writes the version over it. A note a person emptied here has no such
+   version ahead -- they emptied what this device held -- and is sent as
+   ever; one emptied here while another device edited it, before this device
+   could send, gives way to that edit's text. The feed is read once per start,
+   and only when such a file exists (`decision=held reason=unfinished_download`
+   counts them); a read that fails holds an emptied note this device records,
+   marked, rather than send it empty unverified.
 
    A REMOVAL NEVER TARGETS THE LIVE NAME. A caller that removes a file names
    the content it is removing, and the desktop host first gives that file a

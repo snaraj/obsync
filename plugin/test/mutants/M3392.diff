@@ -1,0 +1,12 @@
+# M3392: a walk of the feed that fails lets an emptied note go out empty (#248)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3782,7 +3782,7 @@
+       const record = context.state.fileByPath(file.path);
+       const note = own?.notes.get(file.path);
+       const ahead = note !== undefined && note.version_id !== record?.versionId;
+-      const mark = ahead ? note.file_id : blind ? record?.fileId : undefined;
++      const mark = ahead ? note.file_id : undefined;
+       if (mark === undefined) continue;
+       context.state.data.dropped[file.path] = mark;
+       settled.add(file.path);

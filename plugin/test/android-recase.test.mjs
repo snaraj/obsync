@@ -41,7 +41,7 @@ async function sentPaths(server, manifestKey) {
     const manifest = JSON.parse(await c.decryptManifest(
       manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
     ));
-    out.push({ path: manifest.path, deleted: frame.deleted, folder: manifest.v === 2, device: frame.device_id });
+    out.push({ path: manifest.path, deleted: frame.deleted, folder: manifest.v === 2, device: frame.device_id, size: manifest.size });
   }
   return out;
 }
@@ -67,6 +67,8 @@ async function phone(t, r, fresh = false, id = PHONE, secret = PHONE_SECRET) {
   }
   const logs = [];
   const notices = [];
+  // Set by `kill`: the process is gone, and nothing it had under way reaches the server.
+  let dead = false;
   const plugin = new main.default();
   Object.assign(plugin, {
     app: { vault, fileManager: vault.fileManager, workspace: { getLeavesOfType: () => [] } },
@@ -82,7 +84,12 @@ async function phone(t, r, fresh = false, id = PHONE, secret = PHONE_SECRET) {
   host.notify = (message) => notices.push(message);
   plugin.host = host;
   const transport = new Transport({
-    request: server.request,
+    request: async (request) => {
+      if (dead) throw new Error("sentinel: this process was stopped");
+      // A request the test says never arrives.
+      if (r.lost?.(request)) throw new Error("sentinel: no route");
+      return await server.request(request);
+    },
     serverUrl: () => state.data.serverUrl,
     device: () => ({ id, secret: Uint8Array.from(Buffer.from(secret, "hex")) }),
     edgeHeaders: () => [],
@@ -96,7 +103,9 @@ async function phone(t, r, fresh = false, id = PHONE, secret = PHONE_SECRET) {
   vault.listeners.clear();
   plugin.registerVaultEvents();
   t.after(() => engine.stop());
-  return { vault, host, state, transport, engine, plugin, logs, notices };
+  // Android ending the app: no save, no request, no further write of its own.
+  const kill = () => { dead = true; engine.stop(); };
+  return { vault, host, state, transport, engine, plugin, logs, notices, kill };
 }
 
 /** A Mac-like desktop, the Android device beside it, one server, one clock. */
@@ -1090,4 +1099,136 @@ test("a phone whose index kept a stale size or mtime: Leave does not count the n
   assert.deepEqual([...new Set(reads)], ["Index/Three.md"], again.logs.join(" | "));
   assert.deepEqual(await again.plugin.unpushedEdits(), [], again.logs.join(" | "));
   assert.deepEqual(again.notices, []);
+});
+
+/**
+ * A PHONE STOPPED RIGHT AFTER A DOWNLOAD'S FIRST EMPTY WRITE (#248). Android
+ * can land a download's write empty (#242); the phone writes it again, and the
+ * mark that keeps the empty file from being sent reaches the data file only at
+ * the next save. Android may end the app between the two. The next process
+ * here is made of ONLY what was persisted before that write and the files left
+ * behind -- the running one is killed at the instant the empty write lands, so
+ * nothing it would have saved or sent afterwards exists.
+ */
+async function stoppedAfterEmptyWrite(t, existing) {
+  const PATH = "Crash/Note.md";
+  const r = await seeded(t, { "Crash/Kept.md": BODY, ...(existing ? { [PATH]: OTHER } : {}) });
+  let left = null;
+  r.vault.dropping = (path) => path === PATH;
+  r.vault.onEmpty = () => {
+    if (left !== null) return;
+    left = { data: structuredClone(r.store.data), disk: new Map(r.vault.disk) };
+    r.b.kill();
+  };
+  r.a.host.write(PATH, THEIRS, 5000);
+  await r.timers.run(STEP_MS, () => left !== null);
+  assert.equal(left.data.dropped?.[PATH], undefined, "the mark was saved before the write: this test proves nothing");
+  // The next process: Obsidian indexes what the storage holds, obsync reads its data file.
+  r.vault = new PhoneVault(r.box.require("obsidian"));
+  r.vault.disk = left.disk;
+  r.vault.restart();
+  r.store = { data: left.data, secrets: r.store.secrets };
+  assert.equal(r.vault.text(PATH), "", "the write did not leave the empty file");
+  return { r, PATH };
+}
+
+for (const existing of [false, true]) {
+  test(`a phone stopped right after a download's first empty write sends neither an empty ${existing ? "version" : "note"} nor a tombstone when it starts again (#248)`, async (t) => {
+    const { r, PATH } = await stoppedAfterEmptyWrite(t, existing);
+    const again = await phone(t, r);
+    await again.engine.start();
+    await r.timers.run(STEP_MS, () => r.vault.text(PATH) === THEIRS && settled(again, PATH))
+      .catch((error) => { throw new Error(`${error.message}: ${story({ ...r, b: again })} ${again.logs.join(" | ")}`); });
+    await r.timers.run(STEP_MS);
+    await again.engine.syncNow();
+    await r.timers.run(STEP_MS);
+
+    const sent = (await sentPaths(r.server, r.keys.manifestKey)).filter((frame) => frame.device === PHONE && !frame.folder);
+    assert.deepEqual(sent, [], `the restarted phone sent what its empty file said: ${again.logs.join(" | ")}`);
+    assert.deepEqual(again.logs.filter((line) => line.includes("reason=unfinished_download")),
+      [`reconcile decision=held reason=unfinished_download files=1 unverified=0 budget_ms=5000 duration_ms=0`]);
+    assert.equal(r.a.host.text(PATH), THEIRS);
+    assert.equal(r.vault.text(PATH), THEIRS);
+    assert.equal(again.state.data.dropped[PATH], undefined, "the mark outlived the download that landed");
+    assert.deepEqual(again.notices, []);
+  });
+}
+
+test("an existing note's empty file is held, unverified, when the start cannot read the feed, and nothing is sent (#248)", async (t) => {
+  const { r, PATH } = await stoppedAfterEmptyWrite(t, true);
+  // The walk of the feed the start's pass makes, and its one retry, never arrive.
+  let lost = 0;
+  r.lost = (request) => request.method === "GET" && request.url.includes("wait=0&limit=1000") && lost++ < 2;
+  const again = await phone(t, r);
+  await again.engine.start();
+  await r.timers.run(STEP_MS, () => r.vault.text(PATH) === THEIRS && settled(again, PATH));
+  await r.timers.run(STEP_MS);
+
+  assert.ok(again.logs.some((line) => line.startsWith("reconcile decision=held_failed ")), again.logs.join(" | "));
+  assert.deepEqual(again.logs.filter((line) => line.includes("reason=unfinished_download")),
+    [`reconcile decision=held reason=unfinished_download files=1 unverified=1 budget_ms=5000 duration_ms=0`]);
+  const sent = (await sentPaths(r.server, r.keys.manifestKey)).filter((frame) => frame.device === PHONE && !frame.folder);
+  assert.deepEqual(sent, [], `the restarted phone sent what its empty file said: ${again.logs.join(" | ")}`);
+  assert.equal(again.state.data.dropped[PATH], undefined);
+});
+
+test("a note emptied on purpose while the phone was stopped is still sent empty at its next start (#248)", async (t) => {
+  const PATH = "Crash/Note.md";
+  const r = await seeded(t, { "Crash/Kept.md": BODY, [PATH]: OTHER });
+  // The phone's own edit, sent: its version is the newest the server holds.
+  r.vault.write(PATH, new TextEncoder().encode(THEIRS), 6000, true);
+  await r.timers.run(STEP_MS, () => r.server.journal.at(-1).device_id === PHONE && r.b.state.fileByPath(PATH)?.versionId === r.server.journal.at(-1).version_id);
+  await r.timers.run(STEP_MS);
+  r.b.kill();
+  // Stopped after its push was recorded and before the feed brought the push
+  // back, so that version is still ahead of the cursor the phone saved -- the
+  // one case where an unfinished download and an emptied note look alike but
+  // for the record. Then the person empties the note, and nothing sends it.
+  const mine = r.server.journal.at(-1);
+  const before = r.server.journal.filter((frame) => frame.seq < mine.seq).at(-1);
+  const data = structuredClone(r.store.data);
+  data.lastSeq = before.seq;
+  data.feedMark = { seq: before.seq, fileId: before.file_id, versionId: before.version_id, ts: before.ts, replay: false };
+  const disk = new Map(r.vault.disk);
+  disk.set(PATH, { bytes: new Uint8Array(), mtime: 9000 });
+  r.vault = new PhoneVault(r.box.require("obsidian"));
+  r.vault.disk = disk;
+  r.vault.restart();
+  r.store = { data, secrets: r.store.secrets };
+  const frames = r.server.journal.length;
+
+  const again = await phone(t, r);
+  await again.engine.start();
+  await r.timers.run(STEP_MS, () => r.server.journal.length > frames && settled(again, PATH) && again.state.fileByPath(PATH).size === 0);
+  await r.timers.run(STEP_MS);
+
+  const sent = (await sentPaths(r.server, r.keys.manifestKey)).slice(frames);
+  assert.deepEqual(sent, [{ path: PATH, deleted: false, folder: false, device: PHONE, size: 0 }], again.logs.join(" | "));
+  assert.equal(r.a.host.text(PATH), "", "the note emptied on purpose did not reach the desktop");
+  // The start did read the feed from the cursor its version is ahead of.
+  assert.ok(again.logs.some((line) => line.startsWith(`reconcile decision=held since=${before.seq} `)), again.logs.join(" | "));
+  assert.deepEqual(again.logs.filter((line) => line.includes("reason=unfinished_download")), []);
+  assert.equal(again.state.data.dropped[PATH], undefined);
+});
+
+test("a note emptied on purpose while the phone runs is sent empty, even by a Sync now after the start's own read of the feed (#248)", async (t) => {
+  const PATH = "Crash/Note.md";
+  const r = await seeded(t, { "Crash/Kept.md": BODY, [PATH]: OTHER });
+  r.b.kill();
+  // A note made here while obsync was stopped: the start reads the feed for it.
+  r.vault.seed("Crash/Local.md", "RECASE SENTINEL: a note made on the phone\n", 7000);
+  const again = await phone(t, r);
+  await again.engine.start();
+  await r.timers.run(STEP_MS, () => settled(again, "Crash/Local.md"));
+  assert.ok(again.logs.some((line) => line.startsWith("reconcile decision=held since=")), again.logs.join(" | "));
+  const frames = r.server.journal.length;
+
+  r.vault.write(PATH, new Uint8Array(), 9000, true);
+  await again.engine.syncNow();
+  await r.timers.run(STEP_MS, () => r.server.journal.length > frames && again.state.fileByPath(PATH)?.size === 0);
+  await r.timers.run(STEP_MS);
+
+  const sent = (await sentPaths(r.server, r.keys.manifestKey)).slice(frames);
+  assert.deepEqual(sent, [{ path: PATH, deleted: false, folder: false, device: PHONE, size: 0 }], again.logs.join(" | "));
+  assert.deepEqual(again.logs.filter((line) => line.includes("reason=unfinished_download")), []);
 });

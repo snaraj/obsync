@@ -1,0 +1,12 @@
+# M3393: a pass that did not walk the feed holds an emptied note as if its walk had failed (#248)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3776,7 +3776,7 @@
+     const emptied = tombstones ? fresh.filter((file) => file.size === 0 && !settled.has(file.path)) : [];
+     const walked = !this.ownRead;
+     const own = tombstones ? await this.ownNotes(context, untracked.length + emptied.length) : null;
+-    const blind = walked && this.ownRead && own === null;
++    const blind = own === null;
+     let unfinished = 0;
+     for (const file of emptied) {
+       const record = context.state.fileByPath(file.path);

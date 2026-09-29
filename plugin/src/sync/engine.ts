@@ -4026,8 +4026,49 @@ export class SyncEngine {
     // for every tracked file, against the stat this device's own manifest
     // carries.
     const untracked = fresh.filter((file) => !settled.has(file.path) && context.state.fileByPath(file.path) === undefined);
-    const own = tombstones ? await this.ownNotes(context, untracked.length) : null;
-    if (own !== null && this.lost !== null) await this.rejoinUnseen(context, own.notes, untracked, seen, settled, label);
+    // THE EMPTY FILE OF A DOWNLOAD THIS DEVICE NEVER FINISHED (issue #248).
+    // Android can land a download's write empty (#242), and the mark that
+    // keeps that file unsent reaches the data file with the next save: a phone
+    // stopped between the two starts with the empty file and no mark, and sent
+    // it -- an existing note emptied on every device, or a new empty one.
+    // What tells it from a note a person emptied here is the feed: that
+    // download is still ahead of this device's cursor, a live version at the
+    // very path that the record does not hold. Such a file is marked again, as
+    // it was, and the feed writes the version over it (`droppedWrite`,
+    // pull.ts). A note emptied here has no such version ahead -- the person
+    // emptied what this device held -- and is sent as ever; where both
+    // happened before this device could send, the other version's text wins
+    // and nothing is lost. A walk that fails holds an emptied note this device
+    // records the same way: never sent empty on no evidence.
+    const emptied = tombstones ? fresh.filter((file) => file.size === 0 && !settled.has(file.path)) : [];
+    const walked = !this.ownRead;
+    const own = tombstones ? await this.ownNotes(context, untracked.length + emptied.length) : null;
+    const blind = walked && this.ownRead && own === null;
+    let unfinished = 0;
+    for (const file of emptied) {
+      const record = context.state.fileByPath(file.path);
+      const note = own?.notes.get(file.path);
+      const ahead = note !== undefined && note.version_id !== record?.versionId;
+      const mark = ahead ? note.file_id : blind ? record?.fileId : undefined;
+      if (mark === undefined) continue;
+      context.state.data.dropped[file.path] = mark;
+      settled.add(file.path);
+      unfinished++;
+    }
+    if (unfinished > 0) {
+      context.host.log(
+        `${label} decision=held reason=unfinished_download files=${unfinished} unverified=${blind ? unfinished : 0} ` +
+          `budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+      );
+      void this.track(context.state.save()).catch(() => {
+        this.stop();
+        context.host.log(`${label} decision=failed reason=state_not_saved`);
+      });
+    }
+    if (own !== null && this.lost !== null) {
+      const open = untracked.filter((file) => !settled.has(file.path));
+      await this.rejoinUnseen(context, own.notes, open, seen, settled, label);
+    }
     let queued = 0;
     let adopted = 0;
     let heldBack = 0;

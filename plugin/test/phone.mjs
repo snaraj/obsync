@@ -81,6 +81,10 @@ export class PhoneVault {
      * a `restart` -- Obsidian mobile watches no filesystem.
      */
     this.cached = new Map();
+    /** `(path) => boolean`: this `writeBinary` lands EMPTY, as Android's did (#242). */
+    this.dropping = null;
+    /** `(path) => void`, the moment an empty write has landed: where a test stops the process (#248). */
+    this.onEmpty = null;
     /** The adapter's one queue (`queue`). */
     this.chain = Promise.resolve();
     this.clock = 1757200000000;
@@ -116,7 +120,11 @@ export class PhoneVault {
         if (!file) throw new Error(`ENOENT: ${path}`);
         return file.bytes.slice().buffer;
       },
-      writeBinary: (path, data, options) => vault.queue(async () => vault.write(path, new Uint8Array(data), options?.mtime ?? vault.clock, true)),
+      writeBinary: (path, data, options) => vault.queue(async () => {
+        const empty = vault.dropping?.(path) === true;
+        vault.write(path, empty ? new Uint8Array() : new Uint8Array(data), options?.mtime ?? vault.clock, true);
+        if (empty) vault.onEmpty?.(path);
+      }),
       remove: (path) => vault.queue(async () => vault.drop(path)),
       // A name the storage does not answer for, as the emulator did (#234):
       // the system bin declines it and the vault's own `.trash` throws.

@@ -66,6 +66,7 @@ server again unless the entry says so.
 | After pairing a device again, a note you once renamed shows up under its old name too | [A renamed note came back under its old name after pairing again](#a-renamed-note-came-back-under-its-old-name-after-pairing-again) |
 | A note you moved out of your Sync folders, then deleted or hid there, is back under its old name after syncing the whole vault | [A note came back under its old name after syncing the whole vault again](#a-note-came-back-under-its-old-name-after-syncing-the-whole-vault-again) |
 | A note another device had just written is empty everywhere | [A note became empty on every device](#a-note-became-empty-on-every-device) |
+| A note you emptied on a phone still has its text on your other devices | [A note you emptied on a phone keeps its text elsewhere](#a-note-you-emptied-on-a-phone-keeps-its-text-elsewhere) |
 | On a phone, Leave lists files your other devices already have | [Leave lists files your other devices already have](#leave-lists-files-your-other-devices-already-have) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
 | A computer you paired later shows an empty folder under a name another device renamed away | [An empty folder appeared on a computer paired later](#an-empty-folder-appeared-on-a-computer-paired-later) |
@@ -1611,10 +1612,12 @@ again. If the file stays empty, the status names it:
 > Cannot write Notes/Plan.md here: it stayed empty when it was written
 
 The phone tries that file again later and never sends the empty file; until
-then the note shows empty on the phone. If the note was renamed on another
-device meanwhile, an empty note under its old name stays on the phone: delete
-it there. Moving or renaming that empty note on the phone does not send it
-either, and deleting it on the phone deletes nothing on your other devices.
+then the note shows empty on the phone. From 1.1.5 that holds even when
+Android ends Obsidian between those writes (issue #248). If the note was
+renamed on another device meanwhile, an empty note under its old name stays
+on the phone: delete it there. Moving or renaming that empty note on the
+phone does not send it either, and deleting it on the phone deletes nothing
+on your other devices.
 
 **How to fix it.**
 
@@ -1624,6 +1627,26 @@ either, and deleting it on the phone deletes nothing on your other devices.
 3. Select **Restore a copy** beside that version, then copy its text back
    into the note, or delete the empty note and rename the copy
    ([Restore a retained version](daily-use.md#restore-a-retained-version)).
+
+## A note you emptied on a phone keeps its text elsewhere
+
+**What you see.** You emptied a note on a phone, and your other devices still
+show its text. The phone's obsync log has a line
+`reconcile decision=held reason=unfinished_download` ending in
+`unverified=1` or more.
+
+**Why it happens.** When Obsidian starts on a phone, obsync looks for empty
+files a download left when Android ended the app half-way, and never sends
+those (issue #248). It tells them from a note you emptied by asking your
+server what is still on its way to the phone. When the server could not
+answer at that moment, a note obsync last knew with text is kept back rather
+than sent empty on a guess.
+
+**How to fix it.**
+
+1. On the phone, open the note and type one character.
+2. Wait for the status to read idle, then delete that character. The note
+   is sent empty as usual.
 
 ## Leave lists files your other devices already have
 
