@@ -353,7 +353,9 @@ requires the refusal.
 
 `account` (setup, and every change to the account's recovery verifier:
 its registration, and the operator's `obsyncd recovery reset apply`, which
-writes the account again without one), `device` (create, update, activate,
+writes the account again without one and with `recovery_cleared_at`, the
+reset's time, arming one re-enrolment until a verifier is registered),
+`device` (create, update, activate,
 revoke, delete, wrap),
 `version` (which carries its file's `domain_id`, so replay reaches the same
 domain the post named), `gc` (a list of sids collected), `scrub` (a step
@@ -382,6 +384,12 @@ verifier in `recovery` was registered, which the last-device rule reads
   which it reads the same way. A snapshot it writes drops `recovery_at`, so a
   verifier that passes through one reads as registered before 1.1.5 when a
   1.1.5 server starts on that journal again.
+- **The reset's arm.** `recovery_cleared_at` is read only beside no verifier;
+  beside one it describes nothing, and a value that is not a number is refused
+  as corrupt. A server before 1.1.5 ignores it and refuses recovery on an
+  account with no verifier, and a snapshot it writes drops it, so the arm
+  fails closed: the account answers `recovery_unavailable` until the next
+  reset.
 
 ## Memory
 

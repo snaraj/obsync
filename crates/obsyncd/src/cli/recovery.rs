@@ -6,8 +6,14 @@
 //! device holding the real key meets `409 recovery_mismatch` and warns its
 //! person (`docs/recovery.md`, "Another device set a different recovery
 //! key"). This verb is the way back: `plan` says what stands and what a reset
-//! would change, and changes nothing; `apply` clears the verifier, and the
-//! next device that opens the vault registers its own.
+//! would change, and changes nothing; `apply` clears the verifier, rotates the
+//! setup token, and arms one re-enrolment. The first verifier registered
+//! afterwards becomes the account's and spends the arm: a device that still
+//! syncs registers its own, or the owner recovers with the new token and the
+//! recovery phrase (`api::setup::create`). The server has nothing to check
+//! that phrase against, so the authority is this offline step and the token
+//! only it hands out; the proof only chooses the verifier, which the operator
+//! can clear again.
 //!
 //! What it refuses to be is as much of the design as what it does:
 //!
@@ -15,10 +21,13 @@
 //!   volumes; there is no route for it. A device credential cannot reach it.
 //! - **One writer.** Both steps open the store the way `check` does, so they
 //!   take the journal lock and refuse with `journal_locked` while `serve`
-//!   holds it. The reset is one account frame, appended and fsynced by the
-//!   same code a serving store uses, and the next start replays it. A marker
-//!   the running server acts on later was the alternative: an instruction
-//!   left on the volume for whoever starts next.
+//!   holds it. The reset is one account frame, carrying the arm, appended and
+//!   fsynced by the same code a serving store uses, and the next start
+//!   replays it.
+//! - **The old token dies first.** `apply` removes the standing setup token,
+//!   durably, before it writes the arm, so the next start mints a new one and
+//!   a token captured earlier never meets an armed account. A removal that
+//!   fails refuses the step with nothing armed.
 //! - **Nothing secret in any output.** The verifier, or anything derived from
 //!   it, is never printed or logged; only whether one stands, and when it was
 //!   registered.
@@ -38,7 +47,8 @@ use obsync_core::json::{Value, obj};
 use crate::config::Config;
 use crate::log::{Log, Val};
 use crate::storage::{
-    Posture, RECOVERY_HOLD_MS, Store, StoreError, error_fields, load_or_create_server_key,
+    PathClass, Posture, RECOVERY_HOLD_MS, Store, StoreError, error_fields,
+    load_or_create_server_key,
 };
 use crate::types::UnixMs;
 
@@ -50,7 +60,7 @@ const SCHEMA_VERSION: i64 = 1;
 pub enum Mode {
     /// Say what stands and what a reset would change; change nothing.
     Plan,
-    /// Clear the verifier.
+    /// Clear the verifier, rotate the setup token, arm one re-enrolment.
     Apply,
 }
 
@@ -105,8 +115,24 @@ struct Found {
     cleared: bool,
 }
 
-/// Open the volumes as a start does, read the account, and in `apply` clear
-/// its verifier.
+/// Remove the standing setup token so the next start mints another
+/// (`cli::serve::setup_token`), and make the removal durable. None standing
+/// is already rotated.
+fn rotate_setup_token(cfg: &Config) -> Result<(), StoreError> {
+    let path = PathClass::SetupToken.path(&cfg.journal_dir);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::File::open(dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
+/// Open the volumes as a start does, read the account, and in `apply` rotate
+/// the setup token, then clear its verifier and arm one re-enrolment.
 fn execute(cfg: &Config, log: &Log, mode: Mode) -> Result<Found, StoreError> {
     let storage = cfg.storage();
     let posture = Posture::enforce(&storage, log)?;
@@ -118,7 +144,13 @@ fn execute(cfg: &Config, log: &Log, mode: Mode) -> Result<Found, StoreError> {
         .recovery_verifier
         .as_ref()
         .map(|_| account.recovery_registered);
-    let cleared = mode == Mode::Apply && store.reset_recovery()?;
+    let cleared = match mode {
+        Mode::Plan => false,
+        Mode::Apply => {
+            rotate_setup_token(cfg)?;
+            store.reset_recovery(UnixMs::now())?
+        }
+    };
     Ok(Found {
         registered,
         cleared,
@@ -136,10 +168,10 @@ pub fn run(cfg: &Config, log: &Log, args: Args) -> i32 {
     let duration = timed.elapsed_ms();
     match outcome {
         Ok(found) => {
-            let decision = match (args.mode, found.registered.is_some(), found.cleared) {
-                (Mode::Plan, _, _) => "planned",
-                (Mode::Apply, _, true) => "cleared",
-                (Mode::Apply, _, false) => "unchanged",
+            let decision = match (args.mode, found.cleared) {
+                (Mode::Plan, _) => "planned",
+                (Mode::Apply, true) => "cleared",
+                (Mode::Apply, false) => "armed",
             };
             match args.output {
                 Output::Human => println!("{}", human(args.mode, &found)),
@@ -198,25 +230,33 @@ fn human(mode: Mode, found: &Found) -> String {
             utc(hold_ends(at))
         ),
     };
-    let then = match (mode, found.registered.is_some(), found.cleared) {
-        (Mode::Plan, true, _) => {
-            "Nothing was changed. To clear it: obsyncd recovery reset apply. Afterwards the account's only active device cannot be revoked until a device registers a key again, and the next device that opens the vault registers its own."
-        }
-        (Mode::Plan, false, _) | (Mode::Apply, _, false) => {
-            "There is nothing to clear; nothing was changed."
+    // What arming means, the same sentence for the plan and the apply.
+    let armed = "The first recovery key registered after the next start becomes the account's, whether a device that still syncs registers its own or the owner recovers with the new setup token and the recovery phrase. The server cannot check that phrase; it only sets the key, so a wrong one locks out only whoever used it, and another reset starts over. Until then the account's only active device cannot be revoked.";
+    match mode {
+        Mode::Plan => {
+            let clears = if found.registered.is_some() {
+                "clears it, "
+            } else {
+                ""
+            };
+            format!(
+                "{stands}\nNothing was changed. obsyncd recovery reset apply {clears}rotates the setup token (the old one stops working) and arms one recovery. {armed}"
+            )
         }
         // Said as what the reset removed, not as what stands.
-        (Mode::Apply, _, true) => {
-            let since = match found.registered {
-                Some(Some(at)) => format!(", registered {},", utc(at)),
-                _ => String::new(),
+        Mode::Apply => {
+            let removed = match (found.cleared, found.registered) {
+                (true, Some(Some(at))) => {
+                    format!("The recovery key, registered {}, is cleared.", utc(at))
+                }
+                (true, _) => "The recovery key is cleared.".to_string(),
+                (false, _) => "No recovery key was registered.".to_string(),
             };
-            return format!(
-                "The recovery key{since} is cleared.\nStart the server: the next device that opens the vault registers its own recovery key."
-            );
+            format!(
+                "{removed}\nThe setup token is rotated: start the server and it mints a new one, which obsyncd setup-token prints; the old one no longer works.\nOne recovery is armed. {armed}"
+            )
         }
-    };
-    format!("{stands}\n{then}")
+    }
 }
 
 /// The result as one JSON object: the same fields on success and refusal.
@@ -231,10 +271,15 @@ fn json(mode: Mode, outcome: Result<&Found, &StoreError>, duration_ms: u64) -> V
                 (Mode::Apply, _, true) => "cleared",
                 _ => "none",
             };
-            let next = match change {
-                "clear" => vec!["obsyncd recovery reset apply"],
-                "cleared" => vec!["start the server"],
-                _ => Vec::new(),
+            // `apply` always rotates and arms, so these name that step's
+            // effect: to come in a plan, done in an apply.
+            let (token, arm, next) = match mode {
+                Mode::Plan => ("rotate", "arm", vec!["obsyncd recovery reset apply"]),
+                Mode::Apply => (
+                    "rotated",
+                    "armed",
+                    vec!["start the server", "obsyncd setup-token"],
+                ),
             };
             (
                 if mode == Mode::Plan {
@@ -254,6 +299,8 @@ fn json(mode: Mode, outcome: Result<&Found, &StoreError>, duration_ms: u64) -> V
                     ("registered_at", time(registered)),
                     ("hold_ends_at", time(registered.map(hold_ends))),
                     ("change", text(change)),
+                    ("setup_token", text(token)),
+                    ("re_enrolment", text(arm)),
                 ]),
                 Value::Null,
                 next,
@@ -405,11 +452,18 @@ mod tests {
         let cfg = config(&dir);
         let bogus = "b6".repeat(32);
         let at = UnixMs(1_757_200_000_000);
-        drop(serving(&cfg, Some(&bogus), at));
+        let store = serving(&cfg, Some(&bogus), at);
+        let token = start_token(&cfg, &store);
+        drop(store);
 
         let log = Log::buffered(LogLevel::Debug);
         let plan = parsed(&["reset", "plan", "--output", "json"]);
         assert_eq!(run(&cfg, &log, plan), 0, "a plan exits zero");
+        assert_eq!(
+            standing_token(&cfg),
+            Some(token.clone()),
+            "a plan rotates nothing"
+        );
         let lines = decisions(&log.captured());
         assert_eq!(lines.len(), 1, "one decision line per run: {lines:?}");
         assert!(
@@ -439,9 +493,21 @@ mod tests {
             Some("2025-09-13T23:06:40Z")
         );
         assert_eq!(data.get("change").and_then(Value::as_str), Some("clear"));
+        assert_eq!(
+            data.get("setup_token").and_then(Value::as_str),
+            Some("rotate")
+        );
+        assert_eq!(
+            data.get("re_enrolment").and_then(Value::as_str),
+            Some("arm")
+        );
         let text = human(Mode::Plan, &found);
         assert!(text.contains("since 2025-09-06T23:06:40Z"), "{text}");
         assert!(text.contains("Nothing was changed"), "{text}");
+        assert!(
+            text.contains("clears it, rotates the setup token"),
+            "a plan states both effects: {text}"
+        );
         let cleared = Found {
             registered: Some(Some(at)),
             cleared: true,
@@ -471,22 +537,23 @@ mod tests {
             !captured.contains(&bogus[..16]),
             "the verifier reached the log"
         );
+        assert_eq!(standing_token(&cfg), None, "the apply rotated the token");
 
-        // The next start replays the reset, and the key's own device registers
-        // again, with a time of its own.
+        // The next start replays the reset, armed, and the key's own device
+        // registers again, with a time of its own, which spends the arm.
         let store = serving_again(&cfg);
         let account = store.account().expect("the account survives");
         assert_eq!(account.recovery_verifier, None);
         assert_eq!(account.recovery_registered, None);
+        assert!(account.recovery_cleared.is_some(), "armed");
         assert!(
             store
                 .register_recovery(&"a5".repeat(32), UnixMs(42))
                 .expect("register")
         );
-        assert_eq!(
-            store.account().expect("account").recovery_registered,
-            Some(UnixMs(42))
-        );
+        let account = store.account().expect("account");
+        assert_eq!(account.recovery_registered, Some(UnixMs(42)));
+        assert_eq!(account.recovery_cleared, None, "spent");
     }
 
     fn serving_again(cfg: &Config) -> Store {
@@ -498,19 +565,51 @@ mod tests {
         Store::open(&storage, key, &posture, log).expect("store")
     }
 
+    /// The token a start on these volumes serves, minted when none stands.
+    fn start_token(cfg: &Config, store: &Store) -> String {
+        let log = Log::buffered(LogLevel::Error);
+        let posture = Posture::enforce(&cfg.storage(), &log).expect("volume posture");
+        crate::cli::serve::setup_token(cfg, store, &posture, &log)
+            .expect("the start reads or mints its token")
+            .expect("a start always has a token")
+    }
+
+    /// What stands under the token's name, if anything.
+    fn standing_token(cfg: &Config) -> Option<String> {
+        std::fs::read_to_string(PathClass::SetupToken.path(&cfg.journal_dir))
+            .ok()
+            .map(|text| text.trim().to_string())
+    }
+
     #[test]
-    fn a_reset_with_nothing_to_clear_changes_nothing_and_says_so() {
-        let dir = TempDir::new("recovery-reset-unchanged");
+    fn a_reset_with_no_key_still_rotates_the_token_and_arms_one_re_enrolment() {
+        let dir = TempDir::new("recovery-reset-armed");
         let cfg = config(&dir);
-        drop(serving(&cfg, None, UnixMs(1)));
+        let store = serving(&cfg, None, UnixMs(1));
+        let old = start_token(&cfg, &store);
+        drop(store);
         let log = Log::buffered(LogLevel::Debug);
         assert_eq!(
             run(&cfg, &log, parsed(&["reset", "apply"])),
             0,
-            "nothing to clear is not a failure"
+            "no key to clear is not a failure"
         );
-        let lines = decisions(&log.captured());
-        assert!(lines[0].contains("decision=unchanged"), "{}", lines[0]);
+        let captured = log.captured();
+        let lines = decisions(&captured);
+        assert!(lines[0].contains("decision=armed"), "{}", lines[0]);
+        assert!(!captured.contains(&old[..16]), "the token reached the log");
+        assert_eq!(standing_token(&cfg), None, "the old token is gone");
+        let store = serving_again(&cfg);
+        assert!(
+            store.account().expect("account").recovery_cleared.is_some(),
+            "the reset armed a re-enrolment"
+        );
+        assert_ne!(
+            start_token(&cfg, &store),
+            old,
+            "the next start mints another token"
+        );
+
         let found = Found {
             registered: None,
             cleared: false,
@@ -522,8 +621,29 @@ mod tests {
         );
         let data = value.get("data").expect("data");
         assert_eq!(data.get("change").and_then(Value::as_str), Some("none"));
+        assert_eq!(
+            data.get("setup_token").and_then(Value::as_str),
+            Some("rotated")
+        );
+        assert_eq!(
+            data.get("re_enrolment").and_then(Value::as_str),
+            Some("armed")
+        );
         assert_eq!(data.get("registered_at"), Some(&Value::Null));
-        assert!(human(Mode::Apply, &found).contains("nothing to clear"));
+        assert!(
+            value
+                .get("next_actions")
+                .and_then(Value::as_array)
+                .is_some_and(|next| next.contains(&Value::Str("obsyncd setup-token".into()))),
+            "the apply says where the new token is"
+        );
+        let text = human(Mode::Apply, &found);
+        assert!(
+            text.starts_with("No recovery key was registered."),
+            "{text}"
+        );
+        assert!(text.contains("The setup token is rotated"), "{text}");
+        assert!(text.contains("cannot check that phrase"), "{text}");
         // A key from before 1.1.5 is registered, with no time to state.
         let legacy = Found {
             registered: Some(None),
@@ -544,6 +664,7 @@ mod tests {
         let cfg = config(&dir);
         let bogus = "b6".repeat(32);
         let held = serving(&cfg, Some(&bogus), UnixMs(1));
+        let token = start_token(&cfg, &held);
         for mode in ["plan", "apply"] {
             let log = Log::buffered(LogLevel::Debug);
             assert_eq!(
@@ -563,6 +684,11 @@ mod tests {
             held.account().expect("account").recovery_verifier,
             Some(bogus),
             "the serving store's key is untouched"
+        );
+        assert_eq!(
+            standing_token(&cfg),
+            Some(token),
+            "a refused apply leaves the serving token where it stands"
         );
         let refused = json(Mode::Apply, Err(&StoreError::Locked), 0);
         assert_eq!(

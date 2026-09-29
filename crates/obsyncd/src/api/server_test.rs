@@ -50,6 +50,8 @@ struct Harness {
     shutdown: Arc<AtomicBool>,
     addr: SocketAddr,
     server: Option<JoinHandle<()>>,
+    /// The setup token this start serves.
+    token: String,
 }
 
 /// How a harness is set up.
@@ -65,6 +67,10 @@ struct Setup {
     capture_log: bool,
     /// `OBSYNC_TRUSTED_PROXY_CIDRS`; unset when `None`.
     trusted: Option<&'static str>,
+    /// Serve the token a start reads off the journal volume, minting one when
+    /// none stands (`cli::serve::setup_token`), instead of the fixed test
+    /// token: what the operator's reset rotates.
+    token_from_volume: bool,
 }
 
 impl Harness {
@@ -73,7 +79,62 @@ impl Harness {
     }
 
     fn start_with(tag: &str, setup: Setup) -> Self {
-        let dir = temp_dir(tag);
+        Self::start_in(temp_dir(tag), setup)
+    }
+
+    /// The configuration a start on `dir` reads, which an offline verb on
+    /// the same volumes reads too.
+    fn config(dir: &Path, setup: &Setup) -> Config {
+        let edge = if setup.edge_mode {
+            Edge::requiring_headers()
+        } else {
+            Edge::None
+        };
+        let mut pairs: Vec<(String, String)> = [
+            ("OBSYNC_BLOBS_DIR", dir.join("blobs").display().to_string()),
+            (
+                "OBSYNC_JOURNAL_DIR",
+                dir.join("journal").display().to_string(),
+            ),
+            ("OBSYNC_BLOBS_CAPACITY", "64MiB".to_string()),
+            ("OBSYNC_JOURNAL_CAPACITY", "16MiB".to_string()),
+            // A test volume is tiny, so the shipped 2 GiB watermark would
+            // refuse the first byte. The threshold itself is exercised by the
+            // storage lane's own tests.
+            ("OBSYNC_FREE_WATERMARK", "1%,64KiB".to_string()),
+            (
+                "OBSYNC_DASHBOARD_DIR",
+                dir.join("dashboard").display().to_string(),
+            ),
+            (
+                "OBSYNC_PLUGIN_DIR",
+                dir.join("plugin").display().to_string(),
+            ),
+            ("OBSYNC_EDGE", edge.as_word().to_string()),
+            ("OBSYNC_SERVER_KEY", "aa".repeat(32)),
+            ("OBSYNC_PUBLIC_URL", "http://127.0.0.1".to_string()),
+            ("OBSYNC_LOG", "error".to_string()),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        if let Some(trusted) = setup.trusted {
+            pairs.push(("OBSYNC_TRUSTED_PROXY_CIDRS".into(), trusted.into()));
+        }
+        Config::from_pairs(&pairs).expect("configuration")
+    }
+
+    /// Stop serving and release the volumes, keeping them for the next start.
+    fn stop(mut self) -> PathBuf {
+        self.shutdown.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.addr);
+        if let Some(server) = self.server.take() {
+            server.join().expect("the server stops");
+        }
+        std::mem::take(&mut self.dir)
+    }
+
+    fn start_in(dir: PathBuf, setup: Setup) -> Self {
         let blobs = dir.join("blobs");
         let journal = dir.join("journal");
         let dashboard_dir = dir.join("dashboard");
@@ -103,34 +164,7 @@ impl Harness {
             std::fs::write(plugin_dir.join("styles.css"), b".obsync{}").expect("styles");
         }
 
-        let edge = if setup.edge_mode {
-            Edge::requiring_headers()
-        } else {
-            Edge::None
-        };
-        let mut pairs: Vec<(String, String)> = [
-            ("OBSYNC_BLOBS_DIR", blobs.display().to_string()),
-            ("OBSYNC_JOURNAL_DIR", journal.display().to_string()),
-            ("OBSYNC_BLOBS_CAPACITY", "64MiB".to_string()),
-            ("OBSYNC_JOURNAL_CAPACITY", "16MiB".to_string()),
-            // A test volume is tiny, so the shipped 2 GiB watermark would
-            // refuse the first byte. The threshold itself is exercised by the
-            // storage lane's own tests.
-            ("OBSYNC_FREE_WATERMARK", "1%,64KiB".to_string()),
-            ("OBSYNC_DASHBOARD_DIR", dashboard_dir.display().to_string()),
-            ("OBSYNC_PLUGIN_DIR", plugin_dir.display().to_string()),
-            ("OBSYNC_EDGE", edge.as_word().to_string()),
-            ("OBSYNC_SERVER_KEY", "aa".repeat(32)),
-            ("OBSYNC_PUBLIC_URL", "http://127.0.0.1".to_string()),
-            ("OBSYNC_LOG", "error".to_string()),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect();
-        if let Some(trusted) = setup.trusted {
-            pairs.push(("OBSYNC_TRUSTED_PROXY_CIDRS".into(), trusted.into()));
-        }
-        let cfg = Config::from_pairs(&pairs).expect("configuration");
+        let cfg = Self::config(&dir, &setup);
         let log = if setup.capture_log {
             Log::buffered(LogLevel::Debug)
         } else {
@@ -142,6 +176,17 @@ impl Harness {
             load_or_create_server_key(&storage.journal_dir, cfg.server_key, &posture, &log)
                 .expect("server key");
         let store = Store::open(&storage, server_key, &posture, log.clone()).expect("store");
+        let token = if setup.token_from_volume {
+            let token = crate::cli::serve::setup_token(&cfg, &store, &posture, &log)
+                .expect("the start reads or mints its token")
+                .expect("a start always has a token");
+            store
+                .resurvey_journal()
+                .expect("the journal volume surveys");
+            token
+        } else {
+            "5e".repeat(32)
+        };
 
         let dashboard = if setup.dashboard {
             Dashboard::load(&dashboard_dir, &log)
@@ -163,7 +208,7 @@ impl Harness {
                 dashboard,
                 plugin,
                 Arc::clone(&shutdown),
-                Some("5e".repeat(32)),
+                Some(token.clone()),
                 Arc::clone(&clock) as Arc<dyn Clock>,
             )
             .expect("the application state opens"),
@@ -194,6 +239,7 @@ impl Harness {
             shutdown,
             addr,
             server: Some(handle),
+            token,
         }
     }
 
@@ -207,7 +253,7 @@ impl Harness {
     fn setup_account(&self) -> Cred {
         let body = format!(
             r#"{{"setup_token":"{}","account_name":"vault","device":{{"name":"laptop","platform":"macos","app_version":"0.1.0"}}}}"#,
-            "5e".repeat(32)
+            self.token
         );
         let res = Req::post("/v1/setup").body(&body).send(self.addr);
         assert_eq!(res.status, 201, "setup: {}", res.text());
@@ -5366,30 +5412,217 @@ fn setup_token_and_vault_proof_reenrol_after_the_last_device_leaves() {
     assert!(!h.captured().contains(&proof));
 }
 
-#[test]
-fn a_legacy_account_needs_an_authenticated_recovery_registration() {
-    let h = Harness::start("legacy-account-recovery");
-    let creator = h.setup_account();
-    let body = format!(
-        r#"{{"setup_token":"{}","account_name":"vault","recovery_proof":"{}","device":{{"name":"return","platform":"macos","app_version":"1.1.3"}}}}"#,
-        "5e".repeat(32),
-        "11".repeat(32)
+/// A setup-and-recover body for an existing account.
+fn reenrol_body(token: &str, evidence: &str) -> String {
+    format!(
+        r#"{{"setup_token":"{token}","account_name":"must not rename","recovery_proof":"{evidence}","device":{{"name":"returned","platform":"macos","app_version":"1.1.5"}}}}"#
+    )
+}
+
+/// How many times the structured log states this event.
+fn events(h: &Harness, event: &str) -> usize {
+    let needle = format!("event={event} ");
+    h.captured()
+        .lines()
+        .filter(|line| line.contains(&needle))
+        .count()
+}
+
+/// The operator's reset, as it runs: the server stopped, the verb itself on
+/// its volumes, and the next start on them.
+fn reset_offline(h: Harness, setup: fn() -> Setup) -> Harness {
+    use crate::cli::recovery::{Args, Mode, Output, run};
+    let dir = h.stop();
+    let log = Log::buffered(LogLevel::Error);
+    let apply = Args {
+        mode: Mode::Apply,
+        output: Output::Json,
+    };
+    assert_eq!(
+        run(&Harness::config(&dir, &setup()), &log, apply),
+        0,
+        "{}",
+        log.captured()
     );
-    let refused = Req::post("/v1/setup").body(&body).send(h.addr);
-    assert_eq!(refused.status, 409);
-    assert_eq!(refused.code(), "recovery_unavailable");
+    Harness::start_in(dir, setup())
+}
+
+fn rotating() -> Setup {
+    Setup {
+        capture_log: true,
+        token_from_volume: true,
+        ..Setup::default()
+    }
+}
+
+/// An account with no verifier that the operator has not reset -- one set up
+/// before a key was registered -- answers 1.1.4's `409 recovery_unavailable`
+/// to the setup token whatever proof comes with it: the token alone never
+/// enrols a device or chooses a key.
+#[test]
+fn an_account_never_reset_refuses_a_recovery_without_a_key_whatever_the_proof() {
+    let h = Harness::start_with(
+        "recovery-unarmed",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    for evidence in ["11".repeat(32), "not-a-64-character-proof".to_string()] {
+        let refused = Req::post("/v1/setup")
+            .body(&reenrol_body(&h.token, &evidence))
+            .send(h.addr);
+        assert_eq!(refused.status, 409, "{}", refused.text());
+        assert_eq!(refused.code(), "recovery_unavailable");
+    }
+    let account = h.app.store.account().expect("account");
+    assert_eq!(account.recovery_verifier, None, "no key was chosen");
+    assert_eq!(h.app.store.devices().len(), 1, "no device was enrolled");
+    assert_eq!(events(&h, "recovery_reestablished"), 0);
+
+    // A malformed verifier is refused before storage on the device route, so a
+    // device cannot register a shapeless value.
     let invalid = Req::post("/v1/account/recovery")
         .body(r#"{"recovery_verifier":"not-a-hash"}"#)
         .sign(&creator, NOW)
         .send(h.addr);
     assert_eq!(invalid.status, 400);
+}
+
+/// `obsyncd recovery reset apply` rotates the setup token and arms exactly one
+/// re-enrolment: a token captured before it stops working, and the new token
+/// with a proof registers the verifier that proof derives, timed, and enrols
+/// the device. The server has nothing to check that proof against, so a
+/// second attempt meets the ordinary check against what the first
+/// registered, and no device credential can arm or reach any of it.
+#[test]
+fn a_reset_arms_one_re_enrolment_by_the_rotated_token_and_nothing_a_device_holds() {
+    let h = Harness::start_with("recovery-rearm", rotating());
+    let old = h.token.clone();
+    let creator = h.setup_account();
+    let first = Req::post("/v1/account/recovery")
+        .body(&format!(r#"{{"recovery_verifier":"{}"}}"#, "b6".repeat(32)))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(first.status, 204, "{}", first.text());
+
+    let h = reset_offline(h, rotating);
+    assert_ne!(h.token, old, "the start after the reset minted a new token");
+    let armed = h.app.store.account().expect("account");
+    assert_eq!(armed.recovery_verifier, None);
+    assert!(
+        armed.recovery_cleared.is_some(),
+        "the reset armed a re-enrolment"
+    );
+
+    let proof = "11".repeat(32);
+    let verifier = hex::encode(&sha256::sha256(&[0x11; 32]));
+    // A token captured before the reset enrols nothing.
+    let stale = Req::post("/v1/setup")
+        .body(&reenrol_body(&old, &proof))
+        .send(h.addr);
+    assert_eq!(stale.status, 401);
+    assert_eq!(stale.code(), "bad_setup_token");
+    // A malformed proof enrols nothing and leaves the arm standing.
+    let bad = Req::post("/v1/setup")
+        .body(&reenrol_body(&h.token, "not-a-64-character-proof"))
+        .send(h.addr);
+    assert_eq!(bad.status, 403);
+    assert_eq!(bad.code(), "bad_recovery_proof");
+    assert!(h.app.store.account().unwrap().recovery_cleared.is_some());
+
+    // The new token and a proof re-enrol, without renaming the account.
+    let recovered = Req::post("/v1/setup")
+        .body(&reenrol_body(&h.token, &proof))
+        .send(h.addr);
+    assert_eq!(recovered.status, 201, "{}", recovered.text());
+    assert_eq!(recovered.json().get("recovered"), Some(&Value::Bool(true)));
+    let returned = Cred::from_json(&recovered.json());
+    let account = Req::get("/v1/account").sign(&returned, NOW).send(h.addr);
+    assert_eq!(account.status, 200);
+    assert_eq!(
+        account.json().get("name"),
+        Some(&Value::Str("vault".into()))
+    );
+    let stored = h.app.store.account().expect("account");
+    assert_eq!(stored.recovery_verifier, Some(verifier.clone()));
+    assert_eq!(
+        stored.recovery_registered,
+        Some(crate::types::UnixMs(NOW * 1000))
+    );
+    assert_eq!(
+        stored.recovery_cleared, None,
+        "the re-enrolment spent the arm"
+    );
+    // Registered, never disclosed; one decision line names it.
+    assert!(!account.text().contains(&verifier));
+    assert!(!h.captured().contains(&verifier));
+    assert!(!h.captured().contains(&proof));
+    assert_eq!(events(&h, "recovery_reestablished"), 1, "{}", h.captured());
+
+    // Spent: another proof now meets the ordinary check and is refused.
+    let second = Req::post("/v1/setup")
+        .body(&reenrol_body(&h.token, &"22".repeat(32)))
+        .send(h.addr);
+    assert_eq!(second.status, 403);
+    assert_eq!(second.code(), "bad_recovery_proof");
+    assert_eq!(events(&h, "recovery_reestablished"), 1);
+
+    // A device cannot replace the key, the only device route that touches one.
+    let other = Req::post("/v1/account/recovery")
+        .body(&format!(r#"{{"recovery_verifier":"{}"}}"#, "22".repeat(32)))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(other.status, 409);
+    assert_eq!(other.code(), "recovery_mismatch");
+
+    // Timed, so the seven-day hold runs from the re-enrolment.
     assert_eq!(
         Req::post(&format!("/v1/devices/{}/revoke", creator.id))
-            .sign(&creator, NOW)
+            .sign(&returned, NOW)
             .send(h.addr)
             .status,
-        409
+        204,
+        "a device that is not the last goes at once"
     );
+    let held = Req::post(&format!("/v1/devices/{}/revoke", returned.id))
+        .sign(&returned, NOW)
+        .send(h.addr);
+    assert_eq!(held.status, 409);
+    assert_eq!(held.code(), "recovery_too_new");
+}
+
+/// The first key registered after a reset spends its arm, whoever registers:
+/// a device that still syncs registers its own, and a recovery then is the
+/// ordinary one, proved against that key. A reset of an account that never
+/// had a key arms the same way.
+#[test]
+fn a_device_that_registers_after_the_reset_spends_the_arm() {
+    let h = Harness::start_with("recovery-arm-spent", rotating());
+    let creator = h.setup_account();
+    let h = reset_offline(h, rotating);
+    assert!(h.app.store.account().unwrap().recovery_cleared.is_some());
+
+    let own = hex::encode(&sha256::sha256(&[0x33; 32]));
+    let registered = Req::post("/v1/account/recovery")
+        .body(&format!(r#"{{"recovery_verifier":"{own}"}}"#))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(registered.status, 204, "{}", registered.text());
+    assert_eq!(h.app.store.account().unwrap().recovery_cleared, None);
+
+    let refused = Req::post("/v1/setup")
+        .body(&reenrol_body(&h.token, &"11".repeat(32)))
+        .send(h.addr);
+    assert_eq!(refused.status, 403);
+    assert_eq!(refused.code(), "bad_recovery_proof");
+    let ordinary = Req::post("/v1/setup")
+        .body(&reenrol_body(&h.token, &"33".repeat(32)))
+        .send(h.addr);
+    assert_eq!(ordinary.status, 201, "{}", ordinary.text());
+    assert_eq!(events(&h, "recovery_reestablished"), 0);
+    assert_eq!(events(&h, "account_recovered"), 1);
 }
 
 #[test]

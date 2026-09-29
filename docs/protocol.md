@@ -120,10 +120,21 @@ and a test asserts every route it emits appears there.
   `HKDF-SHA-256(VRK, salt=utf8("obsync/v1/account-recovery"), info="", L=32)`.
   The verifier is lowercase hex `SHA-256(proof)`. The server compares hashes
   in constant time, never receives VRK or a content decryption key, and returns
-  `403 bad_recovery_proof` for a wrong proof. `409 recovery_unavailable` means
-  no verifier was registered before credentials were lost. A valid recovery
-  enrolls a new active device on the same account, without renaming it,
-  replacing content or reviving revoked credentials. It is never auto-retried.
+  `403 bad_recovery_proof` for a wrong proof. An account with no verifier
+  answers `409 recovery_unavailable`, whatever the proof, unless the
+  operator's offline `obsyncd recovery reset apply` has armed it since. That
+  step rotates the setup token and arms exactly one re-enrolment: a
+  `recovery_proof` then registers the verifier it derives (timed, so the
+  last-device hold applies from then) and enrols. The server has nothing to
+  check that proof against, so the authority is the offline reset and the new
+  token only it hands out; the proof only chooses the verifier. The first
+  verifier registered after the reset spends the arm, by this route or by a
+  device's `POST /v1/account/recovery`, and a later recovery is proved against
+  it. No device-authenticated request can clear a verifier or arm this.
+  A valid recovery enrolls a new active device on the same account, without
+  renaming it, replacing content or reviving revoked credentials. It is never
+  auto-retried. A server before 1.1.5 answers `409 recovery_unavailable`
+  instead of re-enrolling.
 - `POST /v1/account/recovery` (device auth)
   `{"recovery_verifier":"<64hex>"}` → `204`. Register once after the client has
   successfully opened its vault. Repeating the same verifier is harmless;

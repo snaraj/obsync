@@ -451,6 +451,7 @@ fn a_quota_refuses_before_the_body_is_stored() {
                     quota_bytes: Some(8),
                     recovery_verifier: account.recovery_verifier.clone(),
                     recovery_registered: account.recovery_registered,
+                    recovery_cleared: account.recovery_cleared,
                 }]
             })
             .expect("quota is journalled");
@@ -3177,11 +3178,11 @@ fn a_young_recovery_key_holds_only_the_last_device_and_the_reset_restores_the_gu
 
     // The operator's reset: no key, so the last device is refused as it was
     // before any key, and the next registration starts its own hold.
-    assert!(store.reset_recovery().expect("reset"));
+    assert!(store.reset_recovery(registered).expect("reset"));
     assert!(
         !store
-            .reset_recovery()
-            .expect("a second reset has nothing to do")
+            .reset_recovery(registered)
+            .expect("a second reset has no key to clear")
     );
     let far = UnixMs(registered.0 + 10 * RECOVERY_HOLD_MS);
     let err = store
@@ -3201,7 +3202,7 @@ fn a_young_recovery_key_holds_only_the_last_device_and_the_reset_restores_the_gu
         let account = index.account.clone().expect("account");
         store
             .commit(&mut journal, index, |_| {
-                vec![account_frame(account, Some("c7".repeat(32)), None)]
+                vec![account_frame(account, Some("c7".repeat(32)), None, None)]
             })
             .expect("a 1.1.4 registration");
     }
@@ -3227,6 +3228,60 @@ fn initial_account_recovery_is_one_durable_setup_fact() {
     assert_eq!(recovered.account_id, account);
     assert_eq!(recovered.recovery_verifier, Some(verifier));
     assert_eq!(recovered.recovery_registered, Some(UnixMs(7)));
+}
+
+/// The operator's reset arms one re-enrolment (`api::setup::create`), which
+/// the journal and a snapshot both keep, and the first registration of any key
+/// spends; an account never reset carries none.
+#[test]
+fn the_reset_arms_one_re_enrolment_that_replay_keeps_and_any_registration_spends() {
+    for snapshot in [false, true] {
+        let dir = TempDir::new("recovery-arm");
+        let cfg = config(&dir);
+        let store = open(&cfg);
+        store.setup_with_recovery("vault", None, UnixMs(1)).unwrap();
+        assert_eq!(
+            store.account().unwrap().recovery_cleared,
+            None,
+            "an account never reset is not armed"
+        );
+        let armed = UnixMs(1_757_200_000_000);
+        assert!(
+            !store.reset_recovery(armed).unwrap(),
+            "no key to clear, and armed all the same"
+        );
+        if snapshot {
+            store.snapshot().unwrap();
+        }
+        drop(store);
+        let store = open(&cfg);
+        assert_eq!(
+            store.account().unwrap().recovery_cleared,
+            Some(armed),
+            "replay keeps the arm (snapshot: {snapshot})"
+        );
+        let registered = UnixMs(armed.0 + 1);
+        assert!(
+            store
+                .register_recovery(&"a5".repeat(32), registered)
+                .unwrap()
+        );
+        let spent = store.account().unwrap();
+        assert_eq!(
+            spent.recovery_cleared, None,
+            "a registration spends the arm"
+        );
+        assert_eq!(spent.recovery_registered, Some(registered));
+        if snapshot {
+            store.snapshot().unwrap();
+        }
+        drop(store);
+        assert_eq!(
+            open(&cfg).account().unwrap().recovery_cleared,
+            None,
+            "and it stays spent (snapshot: {snapshot})"
+        );
+    }
 }
 
 // --- The durable fast path and the background I/O diet ----------------------

@@ -29,6 +29,11 @@ pub struct AccountRecord {
     /// registered before the server kept the time (1.1.4 and earlier), which
     /// the last-device rule treats as long ago (`Store::revoke_device_unless_last`).
     pub recovery_registered: Option<UnixMs>,
+    /// When the operator's reset cleared the verifier, which arms one
+    /// re-enrolment by setup token and recovery proof (`api::setup::create`).
+    /// Registering any verifier spends it, so it stands only while none does.
+    /// `None` for an account never reset, whose recovery stays unavailable.
+    pub recovery_cleared: Option<UnixMs>,
     /// Ciphertext bytes currently stored.
     pub used_bytes: u64,
 }

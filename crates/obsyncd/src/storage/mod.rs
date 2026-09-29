@@ -1031,6 +1031,7 @@ impl Store {
                 quota_bytes: None,
                 recovery_registered: recovery_verifier.as_ref().map(|_| now),
                 recovery_verifier,
+                recovery_cleared: None,
             }]
         })?;
         self.log
@@ -1040,7 +1041,8 @@ impl Store {
 
     /// Register recovery once, at `now`; a different verifier cannot replace
     /// the original. Only the operator's reset clears it
-    /// ([`Store::reset_recovery`]).
+    /// ([`Store::reset_recovery`]). Registering spends the re-enrolment that
+    /// reset armed, whoever registers.
     ///
     /// # Errors
     /// An absent account or a refused journal append.
@@ -1059,6 +1061,7 @@ impl Store {
                 account,
                 Some(verifier.to_string()),
                 Some(now),
+                None,
             )]
         })?;
         // Once per account: the request line beside it names the device.
@@ -1069,27 +1072,27 @@ impl Store {
         Ok(true)
     }
 
-    /// Forget the account's recovery verifier: the operator's reset
-    /// (`obsyncd recovery reset apply`, `docs/recovery.md`). Reachable from the
-    /// server's own volumes only, never over HTTP. Afterwards the account is
-    /// what it was before any verifier: its last active device cannot be
-    /// revoked, and the next device that opens the vault registers its key.
+    /// Forget the account's recovery verifier and arm one re-enrolment, at
+    /// `now`: the operator's reset (`obsyncd recovery reset apply`,
+    /// `docs/recovery.md`), which rotates the setup token before it calls this.
+    /// Reachable from the server's own volumes only, never over HTTP.
+    /// Afterwards the account's last active device cannot be revoked, and the
+    /// first registration of a verifier spends the arm: a device that opens
+    /// the vault, or one recovery with the new token (`api::setup::create`).
     ///
     /// Returns whether there was a verifier to forget.
     ///
     /// # Errors
     /// `NotSetUp`, or a refused journal append.
-    pub fn reset_recovery(&self) -> Result<bool, StoreError> {
+    pub fn reset_recovery(&self, now: UnixMs) -> Result<bool, StoreError> {
         let mut journal = self.journal();
         let index = self.index();
         let account = index.account.clone().ok_or(StoreError::NotSetUp)?;
-        if account.recovery_verifier.is_none() {
-            return Ok(false);
-        }
+        let had = account.recovery_verifier.is_some();
         self.commit(&mut journal, index, |_| {
-            vec![account_frame(account, None, None)]
+            vec![account_frame(account, None, None, Some(now))]
         })?;
-        Ok(true)
+        Ok(had)
     }
 
     /// The account, with the usage the volumes actually hold.
@@ -2144,6 +2147,7 @@ fn account_frame(
     account: AccountRecord,
     recovery_verifier: Option<String>,
     recovery_registered: Option<UnixMs>,
+    recovery_cleared: Option<UnixMs>,
 ) -> Frame {
     Frame::Account {
         account_id: account.account_id,
@@ -2152,6 +2156,7 @@ fn account_frame(
         quota_bytes: account.quota_bytes,
         recovery_verifier,
         recovery_registered,
+        recovery_cleared,
     }
 }
 
