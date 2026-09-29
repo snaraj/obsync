@@ -1,8 +1,8 @@
 # M3498: a hidden or config-folder name is reconciled too (#253)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1499,7 +1499,6 @@
-   private async reconcile(path: string, kind: "file" | "folder", present: boolean): Promise<void> {
+@@ -1509,7 +1509,6 @@
+   private async reconcile(path: string, kind: "file" | "folder", present: boolean, written = false): Promise<void> {
      const started = Date.now();
      try {
 -      if (!isVaultPath(path)) return;

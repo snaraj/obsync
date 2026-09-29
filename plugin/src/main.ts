@@ -1565,8 +1565,18 @@ export class ObsidianHost implements VaultHost {
    * Obsidian accepts only a hidden name for it (1.13.4, `validateConfigDir`).
    * The budget is the adapter queue's own: Obsidian abandons a queued action
    * after `ADAPTER_QUEUE_MS` without progress, and this call with it.
+   *
+   * NEW BYTES UNDER A NOTE OBSIDIAN LISTS (`written`, issue #267) leave its
+   * cached stat and read cache -- search, backlinks -- describing the old ones,
+   * so the note is reconciled too, which raises the `modify` a watcher would:
+   * the engine settles it against the echo mark like the `create` above. Not
+   * while a leaf shows the note (`inView`): Obsidian reloads a view on that
+   * event, and merges into one with unsaved typing behind a notice -- typing
+   * that can begin while the reconcile waits in the queue. #252's refresh
+   * shows such a view the new text; its index follows the editor's next
+   * save, the late event, or a restart.
    */
-  private async reconcile(path: string, kind: "file" | "folder", present: boolean): Promise<void> {
+  private async reconcile(path: string, kind: "file" | "folder", present: boolean, written = false): Promise<void> {
     const started = Date.now();
     try {
       if (!isVaultPath(path)) return;
@@ -1581,17 +1591,26 @@ export class ObsidianHost implements VaultHost {
         this.reconcileTold = true;
         return;
       }
-      if ((vault.getAbstractFileByPath(path) !== null) === present) return;
+      const entry = vault.getAbstractFileByPath(path);
+      const changed = written && present && entry instanceof TFile;
+      if ((entry !== null) === present && !changed) return;
+      if (changed && this.inView(path)) {
+        this.log(`vault path_class=${kind} decision=skipped reason=open_view`);
+        return;
+      }
+      const stat = changed ? entry.stat : null;
       if (!present) this.unghosting.add(path);
       try {
         await queue.call(adapter, () => reconcileInternalFile.call(adapter, path));
       } finally {
         this.unghosting.delete(path);
       }
-      const shown = vault.getAbstractFileByPath(path) !== null;
+      const now = vault.getAbstractFileByPath(path);
+      const done = changed ? now instanceof TFile && now.stat !== stat : (now !== null) === present;
       this.log(
-        `vault path_class=${kind} decision=${shown === present ? (present ? "listed" : "unlisted") : "unchanged"} ` +
-          `reason=${present ? "not_listed" : "still_listed"} budget_ms=${ADAPTER_QUEUE_MS} duration_ms=${Date.now() - started}`,
+        `vault path_class=${kind} decision=${done ? (changed ? "reindexed" : present ? "listed" : "unlisted") : "unchanged"} ` +
+          `reason=${changed ? "bytes_changed" : present ? "not_listed" : "still_listed"} budget_ms=${ADAPTER_QUEUE_MS} ` +
+          `duration_ms=${Date.now() - started}`,
       );
     } catch (error) {
       const name = error instanceof Error ? error.name : "unknown";
@@ -1600,6 +1619,22 @@ export class ObsidianHost implements VaultHost {
           `duration_ms=${Date.now() - started}`,
       );
     }
+  }
+
+  /**
+   * Does any leaf show `path` -- an editor, a canvas, a preview -- or can this
+   * host not tell (`reconcile`)? Asked right before the reconcile is queued: a
+   * view that opens after that read the new bytes, and Obsidian ignores a
+   * `modify` whose bytes its view last loaded (`TextFileView`, 1.13.4).
+   */
+  private inView(path: string): boolean {
+    const workspace = this.plugin.app.workspace as Partial<App["workspace"]>;
+    if (typeof workspace.iterateAllLeaves !== "function") return true;
+    let found = false;
+    workspace.iterateAllLeaves((leaf) => {
+      if ((leaf.view as { file?: TAbstractFile | null }).file?.path === path) found = true;
+    });
+    return found;
   }
 
   /**
@@ -1770,10 +1805,11 @@ export class ObsidianHost implements VaultHost {
           }
           throw new VaultPathError(refusal ?? "target_identity");
         }
-        // Proven at its name: Obsidian lists it now (`reconcile`). A note it
-        // did not list has no editor, so nothing below awaits after the
-        // `create` this may raise, which the caller's echo mark settles.
-        await this.reconcile(path, "file", true);
+        // Proven at its name: Obsidian lists it now, with these bytes
+        // (`reconcile`). One it reconciles is in no view, so nothing below
+        // awaits after the event this may raise, which the caller's echo
+        // mark settles.
+        await this.reconcile(path, "file", true, true);
         // The rename kept the inode, and the inode is what `sameFile` proves
         // -- but an ordinary in-place save keeps the inode too, so identity
         // alone does not say these are still our bytes. The answer is bound

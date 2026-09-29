@@ -1,11 +1,11 @@
 # M3501: a name Obsidian already lists right is reconciled anyway (#253)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1511,7 +1511,6 @@
-         this.reconcileTold = true;
-         return;
+@@ -1523,7 +1523,6 @@
        }
--      if ((vault.getAbstractFileByPath(path) !== null) === present) return;
-       if (!present) this.unghosting.add(path);
-       try {
-         await queue.call(adapter, () => reconcileInternalFile.call(adapter, path));
+       const entry = vault.getAbstractFileByPath(path);
+       const changed = written && present && entry instanceof TFile;
+-      if ((entry !== null) === present && !changed) return;
+       if (changed && this.inView(path)) {
+         this.log(`vault path_class=${kind} decision=skipped reason=open_view`);
+         return;

@@ -53,10 +53,15 @@ function obsidianIndex(root, obsidian, { insensitive = folds(root), api = true }
   const { TFile, TFolder } = obsidian;
   const listeners = new Map();
   const events = [];
+  /** What search and backlinks would index: each note's text as of its last `create` or `modify` (the metadata cache's own trigger). */
+  const metadata = {};
   const rootFolder = Object.assign(new TFolder(), { path: "/", name: "", children: [], parent: null });
   const fileMap = { "/": rootFolder };
   const emit = (name, file, ...rest) => {
     events.push(`${name} ${file.path}`);
+    if ((name === "create" || name === "modify") && file instanceof TFile) {
+      try { metadata[file.path] = readFileSync(join(root, file.path), "utf8"); } catch { metadata[file.path] = null; }
+    }
     for (const handler of listeners.get(name) ?? []) handler(file, ...rest);
   };
   const attach = (file) => {
@@ -217,6 +222,7 @@ function obsidianIndex(root, obsidian, { insensitive = folds(root), api = true }
     configDir: ".obsidian",
     fileMap,
     events,
+    metadata,
     on(name, handler) {
       listeners.set(name, [...(listeners.get(name) ?? []), handler]);
       return { name };
@@ -245,7 +251,7 @@ function obsidianIndex(root, obsidian, { insensitive = folds(root), api = true }
  * The receiving laptop: the real `ObsidianHost` and engine over a real vault
  * directory whose Obsidian index is `obsidianIndex`, enrolled on `server`.
  */
-async function receiver(t, { server, timers, a }, options = {}) {
+async function receiver(t, { server, timers, a }, { iterate = true, ...options } = {}) {
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-starved-"));
   t.after(() => {
@@ -273,7 +279,11 @@ async function receiver(t, { server, timers, a }, options = {}) {
   const index = obsidianIndex(root, obsidian, options);
   const main = box.require(join(box.home, "build/main.js"));
   const plugin = new main.default();
-  plugin.app = { vault: index.vault, fileManager: index.fileManager, workspace: { getLeavesOfType: () => [] } };
+  // The workspace: its leaves, and `iterateAllLeaves` unless a test takes it away.
+  const leaves = [];
+  const workspace = { getLeavesOfType: (type) => (type === "markdown" ? leaves : []) };
+  if (iterate) workspace.iterateAllLeaves = (visit) => leaves.forEach(visit);
+  plugin.app = { vault: index.vault, fileManager: index.fileManager, workspace };
   plugin.manifest = { id: "obsync-private-sync", version: "1.1.4", dir: ".obsidian/plugins/obsync-private-sync" };
   plugin.state = state;
   plugin.log = (line) => logs.push(line);
@@ -300,7 +310,7 @@ async function receiver(t, { server, timers, a }, options = {}) {
   await index.listAll();
   const posted = () => server.journal.filter((frame) => frame.device_id === RECEIVER);
   const text = (path) => { try { return readFileSync(join(root, path), "utf8"); } catch { return null; } };
-  return { root, state, engine, host, plugin, logs, notices, hooks, posted, text, obsidian, ...index };
+  return { root, state, engine, host, plugin, logs, notices, hooks, posted, text, obsidian, leaves, ...index };
 }
 
 const listed = (r, path) => r.vault.getAbstractFileByPath(path);
@@ -333,7 +343,7 @@ test("a note pulled into a new folder while the watcher is starved is listed at 
   assert.deepEqual(r.adapter.errors, []);
 });
 
-test("the late OS event finds the index right and raises nothing, and a listed note costs no reconcile", async (t) => {
+test("the late OS event finds the index right and raises nothing; an edit to a listed note no view shows is reindexed at once (#267)", async (t) => {
   const devices = await pair(t);
   const { timers, a } = devices;
   await a.engine.start();
@@ -347,13 +357,23 @@ test("the late OS event finds the index right and raises nothing, and a listed n
   await timers.run(STEP_MS);
   assert.deepEqual(r.vault.events.slice(before), [], "the late event raised a second create or a modify");
 
-  // An edit to a note Obsidian lists: one lookup, no reconcile (#252 owns its editor).
+  // An edit to a note Obsidian lists and no view shows: one reconcile, and
+  // the one modify a watcher would have raised, so search reads the new words.
   const calls = r.adapter.calls.length;
   a.host.write("Notes/late.md", "SECOND SENTINEL, longer\n", 2000);
   await timers.run(STEP_MS, () => r.text("Notes/late.md") === "SECOND SENTINEL, longer\n" && r.state.fileByPath("Notes/late.md")?.mtime === 2000);
   await timers.run(STEP_MS);
-  assert.equal(r.adapter.calls.length, calls, "a note Obsidian already lists was reconciled");
-  assert.deepEqual(r.posted(), [], story(r));
+  assert.equal(r.adapter.calls.length, calls + 1, story(r));
+  assert.deepEqual(r.vault.events.slice(before), ["modify Notes/late.md"], story(r));
+  assert.equal(r.vault.metadata["Notes/late.md"], "SECOND SENTINEL, longer\n", `search still reads the old words: ${story(r)}`);
+  assert.equal(listed(r, "Notes/late.md").stat.size, "SECOND SENTINEL, longer\n".length);
+  assert.ok(r.logs.some((line) => /^vault path_class=file decision=reindexed reason=bytes_changed budget_ms=60000 duration_ms=\d+$/.test(line)), story(r));
+  // The modify is the write's own echo, and its late event raises no second.
+  assert.equal(r.logs.filter((line) => line === "watch path_class=file decision=echo_suppressed").length, 2, story(r));
+  await r.adapter.late("Notes/late.md");
+  await timers.run(STEP_MS);
+  assert.deepEqual(r.vault.events.slice(before), ["modify Notes/late.md"], story(r));
+  assert.deepEqual(r.posted(), [], `the receiver published what it received: ${story(r)}`);
 });
 
 test("a pulled rename, deletion and new empty folder under a starved watcher leave the listing true and send nothing back", async (t) => {
@@ -395,6 +415,25 @@ test("a pulled rename, deletion and new empty folder under a starved watcher lea
   assert.deepEqual(r.notices, []);
   // The names this host moved or removed were taken out as its own: no engine heard a note's deletion.
   assert.ok(!r.logs.some((line) => /^watch path_class=file .*event=delete/.test(line)), story(r));
+});
+
+test("a name a watcher that keeps up has already reported costs a lookup, not a reconcile", async (t) => {
+  const devices = await pair(t);
+  const { timers, a } = devices;
+  a.host.write("Notes/keep.md", "KEEP SENTINEL\n", 1000);
+  await a.engine.start();
+  const r = await receiver(t, devices);
+  await r.engine.start();
+  await timers.run(STEP_MS, () => settled(r, "Notes/keep.md"));
+  for (const path of ["Notes", "Notes/keep.md"]) await r.adapter.late(path);
+  // The new name is reported before the host asks; the old one waits out the app's 100 ms.
+  r.hooks.afterRename = async (_from, to) => { if (to.endsWith(`${nodePath.sep}kept.md`)) await r.adapter.late("Notes/kept.md"); };
+  const calls = r.adapter.calls.length;
+  a.host.rename("Notes/keep.md", "Notes/kept.md");
+  await timers.run(STEP_MS, () => settled(r, "Notes/kept.md") && listed(r, "Notes/keep.md") === null);
+  await timers.run(STEP_MS);
+  assert.deepEqual(r.adapter.calls.slice(calls), ["Notes/keep.md"], story(r));
+  assert.deepEqual(r.posted(), [], story(r));
 });
 
 test("a name is the host's own only while the host takes it out: the person's later deletion there is sent", async (t) => {
@@ -525,4 +564,98 @@ test("a folder re-cased on the disk is listed under its new spelling and not the
   assert.ok(listed(r, "team docs/One.md") instanceof r.obsidian.TFile, story(r));
   assert.equal(listed(r, "Team docs"), null, story(r));
   assert.equal(listed(r, "Team docs/One.md"), null, story(r));
+});
+
+/**
+ * A markdown editor on `path` as Obsidian 1.13.4's `TextFileView` takes its
+ * file's `modify` (`onModify` -> `loadFileInternal`): a view whose last load
+ * or save holds the bytes read does nothing; one with typing that differs
+ * from both gets the app's merge and its notice (`merges`); any other is
+ * reloaded (`loads`).
+ */
+function openEditor(r, path) {
+  const view = new r.obsidian.MarkdownView();
+  const disk = readFileSync(join(r.root, path), "utf8");
+  Object.assign(view, { file: r.vault.getAbstractFileByPath(path), data: disk, lastSavedData: disk, dirty: false, loads: [], merges: 0 });
+  view.getViewData = () => view.data;
+  view.setViewData = (data) => { view.data = data; view.loads.push(data); };
+  view.type = (text) => { view.data += text; view.dirty = true; };
+  r.vault.on("modify", (file) => {
+    if (file !== view.file) return;
+    let bytes = readFileSync(join(r.root, file.path), "utf8");
+    const last = view.lastSavedData;
+    view.lastSavedData = bytes;
+    if (last === bytes) return;
+    if (view.dirty && view.data !== bytes && view.data !== last) { view.merges++; bytes = view.data; }
+    if (view.data !== bytes) view.setViewData(bytes);
+  });
+  r.leaves.push({ view });
+  return view;
+}
+
+const BEFORE = "first line\nold words SENTINEL\n";
+const AFTER = "first line\nnew words SENTINEL, longer\n";
+
+/** A receiver holding `Notes/n.md` at `BEFORE`, listed as a person's notes are (the watcher reported it), then A's edit to it. */
+async function editListed(t, options, arm = () => undefined) {
+  const devices = await pair(t);
+  const { timers, a } = devices;
+  a.host.write("Notes/n.md", BEFORE, 1000);
+  await a.engine.start();
+  const r = await receiver(t, devices, options);
+  await r.engine.start();
+  await timers.run(STEP_MS, () => settled(r, "Notes/n.md"));
+  for (const path of ["Notes", "Notes/n.md"]) await r.adapter.late(path);
+  await timers.run(STEP_MS);
+  const view = arm(r);
+  const calls = r.adapter.calls.length;
+  a.host.write("Notes/n.md", AFTER, 2000);
+  await timers.run(STEP_MS, () => r.text("Notes/n.md") === AFTER && r.state.fileByPath("Notes/n.md")?.mtime === 2000);
+  await timers.run(STEP_MS);
+  assert.deepEqual(r.posted(), [], `the receiver published what it received: ${story(r)}`);
+  return { r, view, reconciled: r.adapter.calls.length - calls };
+}
+
+test("a listed note open in an editor is never reconciled: an idle editor gets #252's refresh, a typed one is left alone (#267)", async (t) => {
+  for (const typing of [false, true]) {
+    const { r, view, reconciled } = await editListed(t, {}, (r) => {
+      const view = openEditor(r, "Notes/n.md");
+      // Typing begun after the write was judged safe, before anything could reconcile.
+      if (typing) r.hooks.afterRename = async (_from, to) => { if (to.endsWith(`${nodePath.sep}n.md`)) view.type("TYPED"); };
+      return view;
+    });
+    assert.equal(reconciled, 0, `typing=${typing}: a note in a view was reconciled: ${story(r)}`);
+    assert.equal(view.merges, 0, `typing=${typing}: Obsidian merged under the person's typing`);
+    assert.deepEqual(view.loads, typing ? [] : [AFTER], `typing=${typing}: ${story(r)}`);
+    assert.equal(view.data, typing ? `${BEFORE}TYPED` : AFTER);
+    assert.ok(r.logs.includes("vault path_class=file decision=skipped reason=open_view"), story(r));
+    assert.equal(r.logs.includes("host path_class=file decision=editor_refreshed views=1"), !typing, story(r));
+  }
+});
+
+test("a view opened while the reconcile waits read the new bytes and ignores its modify (#267)", async (t) => {
+  let view = null;
+  const { r, reconciled } = await editListed(t, {}, (r) => {
+    r.hooks.afterRename = async (_from, to) => {
+      if (!to.endsWith(`${nodePath.sep}n.md`)) return;
+      r.hooks.afterRename = undefined;
+      const queued = r.adapter.queue;
+      r.adapter.queue = function (action) {
+        r.adapter.queue = queued;
+        return queued.call(this, async () => { view = openEditor(r, "Notes/n.md"); view.type("TYPED"); return action(); });
+      };
+    };
+  });
+  assert.equal(reconciled, 1, story(r));
+  assert.deepEqual(view.loads, [], "the view was reloaded");
+  assert.equal(view.merges, 0);
+  assert.equal(view.data, `${AFTER}TYPED`);
+  assert.equal(r.vault.metadata["Notes/n.md"], AFTER, story(r));
+});
+
+test("a host that cannot see its leaves reconciles no listed note (#267)", async (t) => {
+  const { r, reconciled } = await editListed(t, { iterate: false });
+  assert.equal(reconciled, 0, story(r));
+  assert.equal(r.vault.metadata["Notes/n.md"], BEFORE);
+  assert.ok(r.logs.includes("vault path_class=file decision=skipped reason=open_view"), story(r));
 });

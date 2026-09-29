@@ -1,10 +1,10 @@
 # M3502: a removed name's events reach the engine (#253)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1512,7 +1512,6 @@
+@@ -1529,7 +1529,6 @@
          return;
        }
-       if ((vault.getAbstractFileByPath(path) !== null) === present) return;
+       const stat = changed ? entry.stat : null;
 -      if (!present) this.unghosting.add(path);
        try {
          await queue.call(adapter, () => reconcileInternalFile.call(adapter, path));
