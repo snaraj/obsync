@@ -3,6 +3,7 @@
 Status: proposed release gate, 2026-09-29; **no scenario in this document has
 been executed by the planning task**. Design and work packages:
 [CLI/MCP specification](../design/cli-mcp-v1.1.6.md),
+[security contract](../security/cli-mcp-v1.1.6.md),
 [#254](https://github.com/snaraj/obsync/issues/254).
 
 The intended result must be observed on the running server, the selected
@@ -498,6 +499,56 @@ partial resulting state. Use bounded ordinary functional tests on isolated data.
 | Missing native observer or measurement | NOT_RUN/UNKNOWN; never inferred PASS |
 | Host lacks icons, extensions or streaming UI | Core structured results and text labels still usable |
 
+### Security acceptance gates
+
+These cross-cutting rows attach to the existing V01–V18 scenarios; they are not
+a substitute campaign or a claim of completed security testing. Each S row has
+its own `PASS/FAIL/NOT_RUN/UNKNOWN` receipt, exact artifacts and platform coverage.
+V19 repeats the applicable installation/trust checks on published bytes.
+Candidate installation uses an explicitly trusted staging build/signing path
+bound to the tested SHA/hashes; it does not require a not-yet-published production
+release. V19 checks production publisher provenance and candidate correspondence.
+Disclose native Obsidian installer trust separately; post-install inspection
+cannot establish verification before execution.
+Use only bounded, authorized functional checks and synthetic campaign data.
+
+| Gate | Scenarios | Independently observed passing outcome |
+| --- | --- | --- |
+| S01 Trusted installation/update | V01, V18 | Installed bytes and publisher provenance agree with an independently established trust anchor. Altered, untrusted or incompatible candidates are refused; the prior installation remains usable. Verify runtime/helpers and rollback compatibility, not merely a colocated checksum |
+| S02 Origin, identity and request authentication | V03, V04, V06, V16 | Intended HTTPS origin and server instance are authenticated. Failed trust or identity mismatch is refused before credential disclosure or mutation; no insecure fallback or silent retargeting. Invalid, stale and repeated management request proofs are refused without effects, including across server restart; a fresh authorized control request succeeds |
+| S03 Least privilege and isolation | V03, V04, V16 | Fresh agent gets only approved metadata scopes. Unauthorized grant/device/storage/deployment changes are denied by their authoritative boundary, independent of tool visibility. A grant cannot broaden itself. An advertised isolated workload can read permitted metadata but cannot access unrelated vaults or deployment authority; record same-user/host trust limits |
+| S04 Native bridge and local configuration | V05, V08, V16 | Only the approved installation/vault accepts handoff. Wrong-vault operations are refused; unrelated vaults, MCP entries and settings stay unchanged. Other OS users cannot access protected entries. Real native filesystem cases preserve exact destinations and recoverability; Windows semantics receive a native run |
+| S05 Secret custody and audit | V02, V03, V05, V07, V16, V17 | Campaign-owned output/configuration/logs/transcripts/residue contain no credential, recovery material, pairing secret, auth header or vault key. Ephemeral credentials leave no persistent copy. Each privileged effect has durable intent/result evidence or explicit reconciliation; unavailable required audit persistence refuses new privileged work |
+| S06 Content-owner approval | V05, V07 | Pending, rejected or expired enrollment cannot sync. Management permission alone cannot grant content access. Native approval, envelope collection and protected persistence are separately observed before calling onboarding complete. Distinguish server activation on envelope collection from native persistence; a failed persistence is reconciled/revoked rather than reported complete |
+| S07 Effective revoke/expiry | V04, V09 | Fresh requests after durable revocation/expiry fail; linked grants, sessions and handles lose access. A control device still works. Archive/restart cannot restore access; jobs stop at their declared authorization boundary and report committed effects |
+| S08 Plans, retries and authority | V10, V12, V18 | Changed/expired/cross-target plans fail before effects; tool arguments or local workspace data cannot create owner approval. Repetition resolves to the original operation; response loss and cancellation cannot silently duplicate destructive effects or produce false success. Independent readback resolves uncertainty where possible |
+| S09 Untrusted data stays data | V02, V16, V17 | Synthetic labels, logs, server descriptions and explicit input files cannot become commands, privileged instructions, credential selections or approvals. Human rendering remains readable, machine fields preserve data boundaries and unrelated working-directory files cannot alter executable/identity/target selection |
+| S10 Storage integrity/confinement | V11–V14 | Only authorized campaign storage is affected; single writer and admission remain enforced. Refused writes are not acknowledged as durable; protected heads/history remain recoverable and unrelated data unchanged. Interrupted destination writes preserve recoverability and cannot escape the selected target |
+| S11 Recovery preserves denied access | V14, V15, V18 | Untrusted, wrong-origin or incomplete backups stay refused/isolated with source and backup intact. Restore cannot broaden configuration authority; its credential fence precedes reachability. Post-backup revocations survive cutover/restart, and an authorized native client recovers plaintext |
+| S12 Availability with protections enabled | V04, V10–V13, V16, V18 | Bounded ordinary concurrent work and controlled interruptions preserve declared sync latency/availability. Refusals and queues have documented limits; CPU, memory, input/output and history stay within budgets. TLS, auth, replay, integrity, durability, permissions and audit remain enabled throughout every timed run |
+
+For every denied effect, collect both the requesting client's refusal and
+independent before/after proof that protected state did not change. Hidden MCP
+tools, client-side rejection and a nonzero exit alone cannot prove server or
+adapter enforcement. An observer must use independently authorized read access,
+not broaden the restricted test identity. Include a working control client so a
+broken service cannot masquerade as successful permission enforcement.
+
+Security fixtures and evidence are campaign-owned and synthetic. Do not collect
+unrelated local files, credentials or private user content to prove isolation or
+redaction. Capture only the exact approved surfaces, with private raw evidence
+outside the public repository. State any runtime/OS limitation explicitly.
+
+Non-waivable invariants: no unauthorized effect, privilege widening, wrong-target
+mutation, secret disclosure, management-only content approval, lost acknowledged
+data during normal operation, unapproved recovery-point regression during restore,
+revival of denied credentials, false success or install trust bypass. An explicitly
+approved older recovery point cannot recover later data absent from surviving
+clients/backups; name that limitation and never claim a lossless recovery.
+Never weaken product protections to meet a time budget. A required S row left
+`NOT_RUN` or `UNKNOWN` blocks its advertised capability; no aggregate pass rate
+or performance exception can hide it.
+
 ## 6. Evidence receipt and independent review
 
 Create a dated record under `docs/validation-runs/` for each final campaign,
@@ -507,6 +558,9 @@ stays outside the repository; publish sanitized observations and checksums.
 Each scenario record includes:
 
 - Scenario/run ID, operator/reviewer role and selected capability.
+- Applicable security-gate IDs, threat boundary, least-privilege test identity,
+  control client and independently authorized observer; approved isolation model
+  and residual limits. Record which protections stayed enabled during timing.
 - Source SHA; server image/chart digest; CLI/MCP bundle hashes; plugin asset
   hashes; installation channel; OS/architecture; Obsidian and MCP host versions.
 - Network/deployment/storage profile, fixture seed and manifest checksum,
@@ -525,6 +579,9 @@ An independent reviewer reproduces critical onboarding, revoke and restore
 outcomes on the candidate and checks that receipts prove their claims. The
 ordinary repository source/CI/adversarial review is still required separately.
 Live validation must not be replaced by a review of its script or screenshots.
+The security review additionally checks effective authorization denials, trusted
+installation, secret custody and recovery fencing at the actual boundary; scope
+the reproduction to campaign-owned systems and preserve all failed receipts.
 
 Any artifact change invalidates evidence for behavior it can affect. Changes to
 shared authentication, state transitions, storage or transport rerun their whole
@@ -540,6 +597,11 @@ scope decision, and independent review agrees. A missing required device/client
 is a release evidence gap, not a reason to mark its row optional retroactively.
 V19 remains explicitly pending in the candidate receipt until publication; it is
 the post-publication delivery gate, never marked inapplicable to avoid the wait.
+
+All applicable S01–S12 security receipts are also required. Security precedes
+convenience, speed and schedule; scope/budget decisions cannot waive the security
+contract. Any narrowed feature/platform claim is explicit before publication,
+not a retroactive relabeling of a failure as a pass.
 
 Block release claims for lost/overwritten sentinel data, unintended deletion,
 unauthorized effects, leaked secrets/content, false success, hidden unknown

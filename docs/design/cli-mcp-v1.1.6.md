@@ -9,6 +9,13 @@ Reconcile the design with the completed 1.1.5 train before implementation.
 
 ## 1. Product outcome and release boundary
 
+Security is the primary product requirement. The
+[CLI/MCP security contract](../security/cli-mcp-v1.1.6.md) governs every package:
+least privilege, trusted installation, credential custody, explicit authority,
+recoverability and independently observed denial. Convenience, performance and
+the release date cannot override it. Unsupported safe behavior is a visible
+capability gap, never a bypass or permissive fallback.
+
 Give a person or an agent one entry point, `obsync setup`, to connect a server,
 prepare storage, configure an explicitly selected Obsidian vault and prove sync
 with another device. The same client manages devices, credentials, storage,
@@ -76,6 +83,13 @@ The plugin owns content keys, local folder selection, sync records and native
 secret entries. The management client never reads plugin secrets or edits its
 private `data.json`. The server remains blind to vault paths and contents.
 Management authorization does not authorize a new device to decrypt the vault.
+
+Local stdio and tool allowlists are not an OS sandbox. An agent with unrestricted
+same-user shell access can read that user's files outside MCP. Stronger workload
+isolation needs separate OS/container authority and narrow mounts/credentials;
+server-enforced scopes remain mandatory either way. Workspace inputs, remote
+labels and tool results cannot grant authority, select privileged executables or
+become instructions. Review these trust boundaries before implementation.
 
 ### Decisions to settle before product implementation
 
@@ -314,6 +328,10 @@ opens the [Community Plugins flow](https://obsidian.md/help/Extending+Obsidian/C
 and gives the exact next action. The person makes Restricted Mode/plugin trust
 choices. Do not install executable plugin code from the configured sync server.
 Opening a link or an app is an intermediate event, not proof of installation.
+The native installer does not document verification of obsync's signed evidence.
+Disclose that trust boundary; checking installed bytes afterward does not prove
+pre-execution verification. Any stronger promise needs a supported, live-proven
+pre-enable verification path, not a guessed native API.
 
 Build a narrow, versioned plugin handoff for obsync-owned actions: inspect status,
 preview/apply server configuration and local folder selection, begin/observe
@@ -347,7 +365,7 @@ Cold-server bootstrap is a distinct stage because no dashboard session or paired
 device exists yet. An explicitly authorized local deployment adapter retrieves
 the standing setup token into a protected process-to-process channel, bound to
 the new server instance and selected native installation. It hands recovery sign-in
-to the trusted browser flow and setup input to the plugin; token bytes never pass
+to a reviewed browser flow and setup input to the plugin; token bytes never pass
 through tool results, shell arguments, generated config, normal stdout or logs.
 Any short-lived handoff storage has exclusive permissions, expiry and an exact
 owned cleanup target. Where that channel cannot be secured, the owner enters
@@ -356,6 +374,9 @@ specific action needed. It never asks for the token in agent chat. A lost first
 setup response is reconciled from the plugin/server state; it is not blindly
 re-sent or treated as permission to create a second identity. The standing token
 remains in its existing protected server custody after the handoff expires.
+The current token-bearing dashboard sign-in URL does not satisfy this new
+handoff contract. WP2/WP3 must supply a safe browser ceremony and verify its actual
+history/request/diagnostic behavior; manual entry alone does not establish that.
 
 Reconciliation cannot recover a one-time credential that never reached native
 storage. For that case, the new setup operation must durably identify the exact
@@ -638,6 +659,10 @@ WP1 can establish the contract while WP2/3/5 designs proceed in parallel. Auth
 and operation durability precede mutation tools. Compose the finished work for
 one release; respect the three-PR budget rather than opening eight artifact PRs.
 
+Each package owns the security requirements and S01–S12 live gates mapped in the
+[security responsibility table](../security/cli-mcp-v1.1.6.md#8-ownership-and-release-gates).
+No package can defer its enforcement or negative-state evidence to final polish.
+
 Update these product instructions when implementation is available: README's
 first-run entry; docs index; quickstart, setup, server, Kubernetes, settings,
 dashboard, storage, recovery, troubleshooting, architecture, protocol, release,
@@ -654,6 +679,12 @@ Measure the candidate and make its docs agree; do not choose a timing claim from
 the more convenient sentence.
 
 ## 11. Definition of done
+
+All applicable security gates pass without weakening product protections.
+Independent review and live receipts establish both permitted outcomes and
+effective denial, including unchanged unauthorized state. Required unknown or
+missing security evidence blocks the affected release claim; a timing exception
+cannot waive a security invariant.
 
 The release can claim CLI/MCP administration only when the live plan passes for
 every advertised capability/platform, actual native outcomes meet frozen time

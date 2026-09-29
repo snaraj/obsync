@@ -57,6 +57,7 @@ These documents describe planned work, not commands available in the current rel
 | Page | What it answers |
 | --- | --- |
 | [v1.1.6 CLI and MCP design](design/cli-mcp-v1.1.6.md) | Agent and human interfaces for onboarding, devices, storage and server administration |
+| [v1.1.6 CLI and MCP security contract](security/cli-mcp-v1.1.6.md) | Trust boundaries, secure defaults, credential custody and non-waivable release invariants |
 | [v1.1.6 live acceptance plan](validation-plans/cli-mcp-v1.1.6.md) | Native outcomes, independent state checks, measured speed and human/AI interface gates |
 
 ### Current implementation
