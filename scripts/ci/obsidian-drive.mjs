@@ -696,7 +696,8 @@ async function untrusted(work, pluginDir, binary, extra, url) {
  * second instance's own file watchers are closed from its window (a test-only
  * stand-in for that starvation, on every operating system), and what the
  * first one does must still be listed there: a note in a new folder, a
- * rename and a deletion of notes it listed before. It publishes nothing back.
+ * rename and a deletion of notes it listed before; and an edit to one must
+ * reach the text its search reads (#267). It publishes nothing back.
  */
 async function starvedWatcher(a, b) {
   const listedAll = (paths) => inVault(b, (want) => want.every(([file, shown]) =>
@@ -736,6 +737,18 @@ async function starvedWatcher(a, b) {
   const listedIn = Date.now() - at;
   const tree = await inVault(b, () => app.vault.getFolderByPath("e2e/starved")?.children.map((child) => child.path) ?? []);
   if (!tree.includes("e2e/starved/listed.md")) throw new Denied(`b's file tree does not hold the note under its folder: ${JSON.stringify(tree)}`);
+  // #267: an edit to a note it lists, in no view there, reaches the text its search reads.
+  const edit = `edited ${randomBytes(6).toString("hex")}, longer\n`;
+  await inVault(a, async (body) => {
+    await app.vault.modify(app.vault.getAbstractFileByPath("e2e/watched/renamed.md"), body);
+  }, edit);
+  const edited = await arrives(b, "e2e/watched/renamed.md", Buffer.from(edit), "an edit while b's watcher is closed");
+  const editAt = Date.now();
+  await until("b's index reads the edit to a note it lists, with its watcher closed", () => inVault(b, async (body) => {
+    const file = app.vault.getFileByPath("e2e/watched/renamed.md");
+    return file !== null && file.stat.size === body.length && (await app.vault.cachedRead(file)) === body;
+  }, edit), 30_000);
+  const indexedIn = Date.now() - editAt;
   const fresh = vaultWindow.logged - mark;
   if (fresh > vaultWindow.console.length) throw new Denied(`b logged ${fresh} lines during the journey, more than the ${vaultWindow.console.length} kept to read`);
   const lines = vaultWindow.console.slice(vaultWindow.console.length - fresh);
@@ -749,7 +762,8 @@ async function starvedWatcher(a, b) {
   }, closed);
   prove(`#253: with the second device's ${closed.length} file watcher(s) closed, a note made in a new folder on the first `
     + `reached its disk in ${disk} ms and was listed ${listedIn} ms later, its folder with it; a rename and a deletion `
-    + `of notes it listed left its listing true (${lines.filter((line) => line.startsWith("obsync vault ")).length} index lines), `
+    + `of notes it listed left its listing true, an edit to one reached its disk in ${edited} ms and its index ${indexedIn} ms `
+    + `later (#267; ${lines.filter((line) => line.startsWith("obsync vault ")).length} index lines), `
     + `and it published nothing back; ${restored} of ${closed.length} watcher(s) restored`);
 }
 

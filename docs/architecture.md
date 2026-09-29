@@ -1259,8 +1259,25 @@ long poll and needs its timeout raised.
    for by name, and where absent the listing waits for the event as before,
    said once (`decision=skipped reason=no_reconcile`); a failure is logged and
    never fails the write, which has landed. A hidden name, and so the config
-   folder, is never asked about. An edit to a note Obsidian already lists is
-   not reconciled: its open editors are #252's, above.
+   folder, is never asked about.
+
+   NEW BYTES UNDER A LISTED NOTE REACH ITS INDEX (issue #267). A write to a
+   note Obsidian already lists left its cached stat and read cache on the old
+   bytes, so search, backlinks and other plugins read the old text until the
+   event came. The writer reconciles that note too; the adapter compares
+   mtime and size, updates the stat and raises the `modify` a watcher would,
+   which the engine settles against the pull's echo mark: nothing is sent
+   back. Not while any leaf shows the note (`inView`, every split and popout
+   window; a host that cannot say is taken to show it): Obsidian reloads a
+   view on that event, and merges into one with unsaved typing behind its
+   own notice, and typing can begin while the reconcile waits in the
+   adapter's queue. #252's refresh shows such a view the new text, and its
+   index follows the editor's next save, the late event or a restart. A
+   view that opens after the check has read the new bytes, and Obsidian
+   ignores a `modify` whose bytes its view last loaded. A note embedded in
+   another, a canvas card or a hover preview is no leaf of its own and gets
+   what a prompt watcher would give it. Cost: one reconcile per pulled edit,
+   1 ms p50 and 2 ms p95 over 200 live edits (2026-09-29 record).
 
    A NOTE TWO PLUGINS KEEP REWRITING IS PAUSED (issue #179). A change within
    five seconds of a received version, without recent trusted Markdown editor

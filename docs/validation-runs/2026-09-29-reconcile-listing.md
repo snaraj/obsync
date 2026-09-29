@@ -43,9 +43,9 @@ eleven names the six changes touched. B posted no version in either build,
 showed no notice, logged no warning, and read `idle`. Each after-run logged
 one `vault … decision=listed` or `decision=unlisted` line per name it fixed.
 
-A note obsync rewrites that Obsidian already lists is outside this change:
+A note obsync rewrites that Obsidian already lists was outside this change:
 under the same starvation, search still found only its old words 10 s after
-the new ones reached the disk, on both builds.
+the new ones reached the disk, on both builds. Issue #267 covers it, below.
 
 ## Natural overload
 
@@ -79,6 +79,35 @@ it reached the disk, the step taking 2.3 s.
 On A and B after a starved run: no notice; the status item `idle`, synced;
 Show sync status `idle`; the obsync settings tab unchanged; no warning or
 error in either console. The new note is in B's file explorer and search.
+
+## New words in a listed note (issue #267)
+
+The same rigs, with B's watchers closed. Before is the #253 build above
+(`e40140bf…`); after is the #267 change (`d80300d6…`, and `587be169…` for the
+first run and the cost run, which is the same code before one doc-comment edit). A made three
+notes. B listed them and found their old word in search while its watcher was
+still working. B then opened one note in a tab and one in a split, and A edited
+them.
+
+| On B | Before | After |
+| --- | --- | --- |
+| A note in no view: core search for the new word | not found after 60 s; the old word still found; the cached size still the old one | found by the first search, 0.6 s after the text reached the disk; the old word gone |
+| A note open and idle | the editor showed the new text 1 ms after it landed (#252); search did not find the new word in 15 s | the same: the editor 3-53 ms, search not in 15 s, the reconcile skipped (`reason=open_view`) |
+| B typing 69 words over 14 s (trusted input) while A typed five on another line of the same note | the view was never reloaded while typing or unsaved; no notice; no word lost; both disks equal with every word 10.3 s after the typing stopped | the same, 10.3 s |
+
+B posted no version for either received edit, in either build. The only posts
+in the typing row were B's own saves of its own typing. After, 200 listed notes
+edited on A with no view on B took one reconcile each: 1 ms at the median,
+2 ms at the 95th percentile, 14 ms at most. Every cached size was right 3 ms
+after the last note reached the disk, and B posted nothing. The machine's load
+average was 35-203 during these runs.
+
+The CI journey's starved step now also edits a listed note. Before, it stopped
+there after 30 s (`DENY b's index reads the edit to a note it lists, with its
+watcher closed`); after, it passed, with the index right 2 ms after the edit
+reached the disk. The whole-app sweep of A and B afterwards showed the same as
+above. B's search pane showed `No matches found` for the open note's new word,
+which is the limit the table states.
 
 ## Not covered here
 
