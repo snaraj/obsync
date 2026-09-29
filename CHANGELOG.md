@@ -608,7 +608,9 @@ a directory of every guide, in all 20 languages.
 
 **The build tools are current.** The plugin is built and tested on Node
 26.10.0, with npm unchanged at 11.19.1 (#249). Code scanning runs CodeQL
-action 4.38.2 (#250).
+action 4.38.2 (#250). The CI jobs that hand a built server to the next job
+use download-artifact 8.0.1, which fails the run when the file's checksum
+does not match (#251).
 
 ## 1.1.3 - 2026-09-26
 
