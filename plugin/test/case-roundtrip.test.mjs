@@ -123,15 +123,30 @@ const followed = (server, device, folder, ids) => ids.every((id, index) => {
   return device.host.files.has(path) && head?.length === 1 && device.state.fileByPath(path)?.versionId === head[0];
 });
 
+/** Each note's heads on the server now, to tell a rename's moves from the versions they moved. */
+const heads = (server, ids) => ids.map((id) => (server.files.get(id)?.heads ?? []).join(","));
+
+/**
+ * THE RENAME'S MOVES ARE THE HEADS (issue #271). `followed` alone compares a
+ * record with the head the server holds NOW, and until the renaming device's
+ * move posts land that head is still the version it moved, which both devices
+ * hold: the wait passed early, and the test's next rename raced the first one.
+ */
+const moved = (server, ids, before) => heads(server, ids).every((now, index) => now !== "" && now !== before[index]);
+
 test("a folder's capitals changed on one device and changed back on the other converge on both (#165)", async (t) => {
   const { server, timers, a, b, ids, keys } = await seeded(t);
 
+  const original = heads(server, ids);
   a.host.renameFolder("Team docs", "team docs");
-  await timers.run(STEP_MS, () => followed(server, b, "team docs", ids) && followed(server, a, "team docs", ids));
+  await timers.run(STEP_MS, () => moved(server, ids, original) &&
+    followed(server, b, "team docs", ids) && followed(server, a, "team docs", ids));
   await timers.run(SCAN_MS);
 
+  const recased = heads(server, ids);
   b.host.renameFolder("team docs", "Team docs");
-  await timers.run(STEP_MS, () => followed(server, a, "Team docs", ids) && followed(server, b, "Team docs", ids));
+  await timers.run(STEP_MS, () => moved(server, ids, recased) &&
+    followed(server, a, "Team docs", ids) && followed(server, b, "Team docs", ids));
   await timers.run(SCAN_MS);
   await timers.run(SCAN_MS);
 
