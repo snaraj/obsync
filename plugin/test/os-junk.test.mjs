@@ -85,8 +85,8 @@ async function vault(t) {
         getAbstractFileByPath: () => null,
         getFileByPath: () => null,
         // Obsidian's index holds no dot-named path and none of this vault, so
-        // the host takes the adapter's non-recursive removal: the path on
-        // which a `.DS_Store` stops `rmdir` outright.
+        // the host removes the folder itself: the path on which a `.DS_Store`
+        // stops `rmdir` outright.
         getFolderByPath: () => null,
         getAllFolders: () => [],
         getConfig: (key) => (key === "trashOption" ? "none" : undefined),
@@ -195,6 +195,14 @@ for (const names of [[".DS_Store"], ["Thumbs.db", "desktop.ini"], finder]) {
     assert.deepEqual(v.notices, [], "a folder that went said something");
   });
 }
+
+test("an empty folder made and deleted in one replay, before Obsidian indexed it, goes without stopping the feed (#241 live run)", async (t) => {
+  const v = await vault(t);
+  const created = await kept(v, "J10/Old", []);
+  const tombstone = await v.folder("J10/Old", { deleted: true, parents: [created.version_id] });
+  assert.equal(await v.applyChange(v.context, tombstone), "deleted", v.logs.join(" | "));
+  assert.equal(existsSync(join(v.root, "J10", "Old")), false, "the empty folder was kept");
+});
 
 test("a folder holding something else is kept, with the OS files, and the user is told once with the count (#184)", async (t) => {
   const v = await vault(t);

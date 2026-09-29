@@ -980,6 +980,14 @@ side failed: find this device's `GET /v1/changes` lines.
   phone's Files app, or while Obsidian was closed. It tried to move the note
   to the trash, found nothing there, and stopped at that deletion on every
   attempt (issue #234).
+- **Answered `200`, and the alert went away by itself a few seconds later:**
+  up to 1.1.4 a computer did this once when it caught up on a folder another
+  device had made and then deleted, before Obsidian had listed it -- for
+  example when pairing again after a folder was renamed (issue #266). The
+  next attempt usually removed the folder; if it is still there, see [An
+  empty folder appeared on a computer paired
+  later](#an-empty-folder-appeared-on-a-computer-paired-later). 1.1.5
+  removes it the first time.
 
 **How to fix it.**
 
