@@ -39,6 +39,8 @@ server again unless the entry says so.
 | Pairing says the code expired, or was already used | [Pairing says the code expired or was already used](#pairing-says-the-code-expired-or-was-already-used) |
 | The new device keeps waiting for approval | [The new device waits for approval](#the-new-device-waits-for-approval) |
 | You closed the recovery phrase without writing it down | [You closed the recovery phrase without checking it](#you-closed-the-recovery-phrase-without-checking-it) |
+| "obsync security warning: Another device set a different recovery key" | [Another device set a different recovery key](#another-device-set-a-different-recovery-key) |
+| Leave says the recovery key was set less than 7 days ago, or `409 recovery_too_new` | [The only device cannot leave in its first week](#the-only-device-cannot-leave-in-its-first-week) |
 | On Linux, Obsidian says secrets are stored without encryption, or you use no keyring and want to know how obsync's keys are kept | [On Linux, the keys may not be in a keyring](#on-linux-the-keys-may-not-be-in-a-keyring) |
 
 **Your notes and folders**
@@ -738,10 +740,67 @@ dashboard.
 recovery registered, so revoking it would leave an account nobody can reach.
 Since 1.1.3 an account registers recovery at setup, and there the last device
 can be revoked; the dialog asks you to keep the setup token and the recovery
-phrase first. Older accounts and servers still refuse.
+phrase first. Older accounts and servers still refuse. From 1.1.5 the first
+seven days after registration answer `409 recovery_too_new` instead
+([below](#the-only-device-cannot-leave-in-its-first-week)).
 
 **How to fix it.** Pair another device first, then revoke. Or update the
 server and every device, so the account can register recovery.
+
+<a id="recovery_too_new"></a>
+
+## The only device cannot leave in its first week
+
+**What you see.** **Leave this server** on your only syncing device says:
+
+> This is the only device syncing this vault, and its recovery key was set less than 7 days ago. For your safety the server keeps its last device until that key is 7 days old, so a stolen device credential cannot lock you out of your own server. Pair another device first, or leave on this device only: it forgets the server and keeps every note, and the server lists this device until you remove it.
+
+Revoking it from the dashboard, or with a 1.1.4 plugin, answers
+`409 recovery_too_new` with the same reason.
+
+**Why it happens.** Since 1.1.5 a recovery key keeps the account's last
+active device for seven days after it is registered, and setting up a new
+account registers one. [Recovery](recovery.md#another-device-set-a-different-recovery-key)
+explains why the hold exists.
+
+**How to fix it.**
+
+1. To move to another device, pair it first; then leave on this one.
+2. To stop syncing here anyway, choose **Leave on this device only**. Your
+   notes stay; the server keeps listing this device until you revoke it from
+   another device or the dashboard, or after the seven days.
+3. Otherwise wait: the same Leave works once the key is seven days old.
+
+<a id="recovery_mismatch"></a>
+
+## Another device set a different recovery key
+
+**What you see.** A notice that stays until you dismiss it, and the same text
+at the top of **Show sync status** and of obsync's settings, under **Security**:
+
+> obsync security warning: Another device set a different recovery key for this vault on your server, so your 24-word phrase cannot restore access there. If that was not you, a device may be compromised: revoke any device you do not recognise, then ask whoever runs your server to clear the recovery key; this device then registers yours by itself. Steps: the guide's Troubleshooting page, "Another device set a different recovery key".
+
+The plugin's log reads
+`recovery decision=refused reason=recovery_mismatch warning=shown`.
+
+**Why it happens.** The server keeps the first recovery key any device
+registers and cannot tell whether it came from this vault's 24 words. This
+device's key is different: one of your devices holds another vault key, or
+someone holding a copy of one of your device credentials registered one.
+Your notes stay encrypted either way; the server cannot read them.
+
+**How to fix it.**
+
+1. Check every device shows this vault's notes; restore the right 24 words
+   on one that does not.
+2. In obsync's settings, **Devices**, revoke every device you do not
+   recognise. If you recognise them all, pair a replacement for any device
+   whose credential may have been copied, then revoke the old entry.
+3. Ask whoever runs the server to clear the recovery key with
+   `obsyncd recovery reset plan`, then `obsyncd recovery reset apply`, with the
+   server stopped ([Clearing the recovery key](recovery.md#clearing-the-recovery-key)).
+4. Start the server and let this device sync: it registers its key and the
+   warning clears. Keep the setup token and the 24-word phrase.
 
 ## The dashboard signs itself out on every page load
 

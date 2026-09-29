@@ -391,7 +391,8 @@ that phrase the vault is unrecoverable by design.
    approval is refused (`409 already_approved`) and the store refuses to
    delete anything but a pending device. Removing a paired device is
    revocation, which keeps the record, destroys the secret, and refuses the
-   last active device only while account recovery is unregistered.
+   last active device while account recovery is unregistered, or registered
+   less than seven days ago.
 
 A pairing lives in memory and the device a claim creates is journaled, so a
 restart between step 2 and step 4 leaves a pending device behind a pairing
@@ -506,6 +507,24 @@ standing setup token and the proof, creates a new credential, and retains the
 same account and ciphertext. Accounts upgraded after losing every credential
 have no verifier and cannot use this route. The server still refuses their
 last active device's revocation while a credential remains.
+
+The server cannot tell a verifier the vault key produced from one it did not,
+and any device credential can register the first one. Since 1.1.5 two things
+follow from that. A device whose own registration meets a different verifier
+(`409 recovery_mismatch`) says so: a security notice no notice setting mutes,
+and a line at the top of Show sync status and of the settings tab, in a
+Security group shown only then, until a registration of its own succeeds. And a verifier younger than seven
+days (`RECOVERY_HOLD_MS`, a constant) does not lift the last-device refusal:
+revoking the only active device answers `409 recovery_too_new`, so the warning
+has time to be read before a verifier can end the last credential. The
+account frame records when its verifier was registered (`docs/storage.md`,
+"Journal frames"); one registered before 1.1.5 carries no time and keeps the
+older rule, which is safe because the hold protects accounts that had no
+verifier, and every verifier such an account gets from 1.1.5 on is timed. The
+cost is a person who sets up one device and leaves it within the week: Leave
+offers leaving on that device only. Only the operator clears a verifier, with
+`obsyncd recovery reset plan|apply` against the stopped server's volumes; the
+next device that opens the vault then registers its own.
 
 A forgotten or revoked device stops its feed rather than retrying authentication.
 The recovery action drains old work and clears its rejected identity, cursor

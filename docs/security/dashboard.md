@@ -207,6 +207,8 @@ device.
 - **The last-device refusal** protects accounts without registered recovery.
   Once an authenticated client registers the vault-key verifier, the last device
   may be revoked: the setup token plus vault-key proof can enroll a new one.
+  From 1.1.5, only once that verifier is seven days old (`409
+  recovery_too_new` before), from either route.
   A legacy account that lost every credential before registration cannot do so.
 - **Sign out everywhere** ends every session in the process at once and
   drops every unspent login link with them, for the browser left behind on a

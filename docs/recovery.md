@@ -37,7 +37,10 @@ design, and it is also the reason recovery has the shape it does.
    vault recovery is registered: keep the setup token and the 24-word phrase
    before doing so. An older server or account without that registration
    still refuses with `409 last_device`; update server and plugin while a
-   credential still works, or pair the replacement first.
+   credential still works, or pair the replacement first. From 1.1.5 a
+   recovery key registered less than seven days ago keeps the last active
+   device too (`409 recovery_too_new`), for the reason in
+   [Another device set a different recovery key](#another-device-set-a-different-recovery-key).
 2. **Pair the replacement** from a device that still syncs: **Pair a new
    device** there, the code on the new one, approval back on the first. The
    vault key travels inside the pairing envelope, encrypted under a secret the
@@ -105,6 +108,91 @@ use **Set up or recover** again with the retained key and token. A device may
 have been enrolled by the lost attempt; revoke that unused entry once access
 is restored. Keep an ordinary backup of the vault folder as well as the two
 recovery secrets.
+
+## Another device set a different recovery key
+
+*Server and plugin 1.1.5 or later.*
+
+Each updated device registers this vault's recovery key with the server when
+it opens the vault: a check value derived from the 24 words, which is what
+lets the setup token and the phrase re-enrol a device later. It opens nothing;
+the server keeps the first key registered and cannot tell whether it came
+from this vault's phrase. A device whose own key differs from the one the
+server holds says so, in a notice that stays until you dismiss it, and at the
+top of **Show sync status** and of obsync's settings, under **Security**, until
+its own key is registered. While that stands, your 24-word phrase cannot re-enrol
+a device through this server.
+
+Two things lead there:
+
+- **One of your devices holds a different vault key**: words restored wrongly,
+  or a new vault key made on a device that was already paired. That device
+  does not read this vault's notes either.
+- **Someone holding a copy of one of your device credentials registered it.**
+  A device credential never carries the vault key and cannot read a note, but
+  until it is revoked it acts as a device on your server.
+
+**What the server does meanwhile.** For seven days after a recovery key is
+registered, the account's only active device cannot be revoked
+(`409 recovery_too_new`), whoever asks; every other revoke works as before. A
+key you did not register cannot then be used to end every device you have
+before you have seen the warning. A key registered before 1.1.5 carries no
+registration time and keeps the older rule.
+
+**What to do:**
+
+1. Check that every device shows this vault's notes. On one that does not,
+   restore the right 24 words (**Vault key**, **Restore**) before anything else.
+2. On a device that shows the warning, open obsync's settings, **Devices**, and
+   revoke every device you do not recognise. If you recognise all of them, a
+   copy of one device's credential may exist: pair a replacement for any
+   device you are unsure of from another one, then revoke the old entry.
+3. Ask whoever runs the server to clear the recovery key (below).
+4. Start the server and let a device that holds this vault's key sync: it
+   registers its key, and the warning clears on every device that showed it
+   at their next start.
+
+### Clearing the recovery key
+
+For whoever runs the server. `obsyncd recovery reset` reads and writes the
+journal, so, like `check` and `export`, it runs with the server stopped
+([One writer](storage.md#one-writer)); against a running server it refuses
+with `journal_locked` and changes nothing. There is no route for it: a device
+cannot ask for it.
+
+- `obsyncd recovery reset plan` says whether a recovery key is registered, since
+  when, and until when it keeps the only active device, and changes nothing.
+- `obsyncd recovery reset apply` clears it. The account then has no recovery
+  key: its only active device cannot be revoked (`409 last_device`) until a
+  device registers one again, which the next device that opens the vault does
+  by itself.
+- `--output json` prints one JSON object on standard output instead of
+  sentences, refusals included: `schema_version`, `operation`
+  (`recovery.reset.plan` or `recovery.reset.apply`), `state` (`planned`,
+  `completed` or `refused`), `data` (`recovery_key`, `registered_at` and
+  `hold_ends_at` as the command found them, and `change`: `clear` or `none`
+  for a plan, `cleared` or `none` for an apply), `error` (`code`,
+  `message`), `next_actions`, `observed_at` and `duration_ms`. Times are UTC
+  RFC 3339.
+- Exit status: `0` the step did what was asked, including a reset with nothing
+  to clear; `1` refused, with the reason in the output; `2` the command or the
+  configuration is malformed. Each run logs one
+  `event=recovery_reset mode=… decision=…` line. Nothing either step prints or
+  logs is a secret.
+
+Under Compose:
+
+```sh
+docker compose -f deploy/compose/docker-compose.yml stop obsync
+docker compose -f deploy/compose/docker-compose.yml run --rm obsync recovery reset plan
+docker compose -f deploy/compose/docker-compose.yml run --rm obsync recovery reset apply
+docker compose -f deploy/compose/docker-compose.yml start obsync
+```
+
+On Kubernetes, scale the Deployment to zero
+(`kubectl scale deploy/obsync --namespace obsidian --replicas=0`), run the same
+two commands in a pod that mounts the server's two claims and its key Secret
+the way the Deployment does, then scale it back to one.
 
 ## This server no longer recognises this device
 
@@ -279,8 +367,9 @@ Choose **Cancel** to keep using the current server.
    new server has no account yet. Either way the VAULT KEY on this device is
    kept, so this is the same vault; a new key would be a new vault
    ([`settings.md`](settings.md)).
-3. Switch each device in that order. Once recovery is registered, the last
-   device is revoked normally too, so none remains active on the old server.
+3. Switch each device in that order. Once recovery has been registered for
+   seven days, the last device is revoked normally too, so none remains
+   active on the old server.
    An older server or unregistered legacy account still refuses the last
    revoke and explains the upgrade requirement. Leaving locally is explicit;
    it keeps that credential active remotely. A device already revoked simply
