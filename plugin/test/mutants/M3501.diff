@@ -1,0 +1,11 @@
+# M3501: a name Obsidian already lists right is reconciled anyway (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1511,7 +1511,6 @@
+         this.reconcileTold = true;
+         return;
+       }
+-      if ((vault.getAbstractFileByPath(path) !== null) === present) return;
+       if (!present) this.unghosting.add(path);
+       try {
+         await queue.call(adapter, () => reconcileInternalFile.call(adapter, path));

@@ -1,0 +1,12 @@
+# M3500: a missing reconcile is said on every write, not once (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1507,7 +1507,7 @@
+       };
+       const { queue, reconcileInternalFile } = adapter;
+       if (typeof queue !== "function" || typeof reconcileInternalFile !== "function") {
+-        if (!this.reconcileTold) this.log(`vault path_class=${kind} decision=skipped reason=no_reconcile`);
++        this.log(`vault path_class=${kind} decision=skipped reason=no_reconcile`);
+         this.reconcileTold = true;
+         return;
+       }

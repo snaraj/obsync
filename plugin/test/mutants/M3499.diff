@@ -1,0 +1,20 @@
+# M3499: the reconcile is called unchecked where Obsidian does not offer it (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1506,15 +1506,10 @@
+         reconcileInternalFile?: (path: string) => Promise<void>;
+       };
+       const { queue, reconcileInternalFile } = adapter;
+-      if (typeof queue !== "function" || typeof reconcileInternalFile !== "function") {
+-        if (!this.reconcileTold) this.log(`vault path_class=${kind} decision=skipped reason=no_reconcile`);
+-        this.reconcileTold = true;
+-        return;
+-      }
+       if ((vault.getAbstractFileByPath(path) !== null) === present) return;
+       if (!present) this.unghosting.add(path);
+       try {
+-        await queue.call(adapter, () => reconcileInternalFile.call(adapter, path));
++        await queue!.call(adapter, () => reconcileInternalFile!.call(adapter, path));
+       } finally {
+         this.unghosting.delete(path);
+       }

@@ -51,7 +51,7 @@ server again unless the entry says so.
 | A note or file never arrives on another device | [A file is not syncing](#a-file-is-not-syncing) |
 | On a computer, a change made while Obsidian's window is minimized or behind other windows arrives minutes later | [Changes wait while Obsidian is in the background](#changes-wait-while-obsidian-is-in-the-background) |
 | The status stays at `syncing 1 file` and another device's change to a note does not appear | [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file) |
-| The status reads idle, but a note from another device is not in the file list | [A note that synced does not show in Obsidian](#a-note-that-synced-does-not-show-in-obsidian) |
+| The status reads idle, but a note from another device is not in the file list, or one it deleted is still listed | [A note that synced does not show in Obsidian](#a-note-that-synced-does-not-show-in-obsidian) |
 | A large file is missing on a phone | [A large file did not arrive on a phone](#a-large-file-did-not-arrive-on-a-phone) |
 | A photo or PDF from a phone on a weak connection never arrives on the other devices | [A photo or PDF from my phone never arrives on my other devices](#a-photo-or-pdf-from-my-phone-never-arrives-on-my-other-devices) |
 | Notes you deleted on one device disappeared everywhere | [Notes deleted on one device disappeared everywhere](#notes-deleted-on-one-device-disappeared-everywhere) |
@@ -1142,20 +1142,27 @@ typing, so it waits.
 ## A note that synced does not show in Obsidian
 
 **What you see.** The status is idle, and another device's new note is not in
-Obsidian's file list, search or quick switcher on this computer.
+Obsidian's file list, search or quick switcher on this computer. Or a note
+another device renamed or deleted is still listed here under its old name.
 
 **Why it happens.** The note is on this computer's disk. Obsidian learns about
 a file that another program writes, obsync included, from the operating
 system's file events, and on a busy Mac the service that delivers them
 (`fseventsd`) can fall minutes behind. Until it catches up, Obsidian does not
-list the new note. It does not notice a note you copy into the vault folder
-yourself either.
+list the new note. From 1.1.5 obsync tells Obsidian itself about the notes and
+folders it writes, moves or deletes on a computer, so what it syncs is listed
+at once however late those events are (issue #253). Obsidian still waits for them
+to notice a note you copy into the vault folder yourself, or one another
+program writes. If obsync's log says `decision=skipped reason=no_reconcile`,
+your Obsidian version no longer offers what obsync uses for this, and notes
+wait for the events as they did before 1.1.5.
 
 **How to fix it.** Restart Obsidian, or run **Reload app without saving** from
 the command palette. Obsidian reads the vault again and lists the note. To see
 whether the event service is behind, open Activity Monitor and look for
 `fseventsd` using a large share of the CPU; it usually settles once whatever
-is changing many files at once (an indexing run or a large copy) finishes.
+is changing many files at once (an indexing run or a large copy) finishes. On
+1.1.4 or earlier, update obsync to 1.1.5.
 
 ## A large file did not arrive on a phone
 

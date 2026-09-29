@@ -1,0 +1,11 @@
+# M3506: a reconcile that throws fails the write it follows (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1529,6 +1529,7 @@
+         `vault path_class=${kind} decision=failed reason=reconcile error=${name} budget_ms=${ADAPTER_QUEUE_MS} ` +
+           `duration_ms=${Date.now() - started}`,
+       );
++      throw error;
+     }
+   }
+ 

@@ -169,7 +169,11 @@ for (const [code, at] of [["EPERM", "sync"], ["EISDIR", "open"]]) test(`a host w
   assert.equal(stat.path, "Notes/copy.md");
   assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
   assert.deepEqual(readdirSync(join(r.root, "Notes")), ["copy.md"], "one copy, and no temp beside it");
-  assert.deepEqual(r.logs, [`host path_class=folder decision=skipped reason=directory_fsync code=${code}`]);
+  // This adapter has no reconcile, as an Obsidian without it would not (#253): said once, the copy stands.
+  assert.deepEqual(r.logs, [
+    `host path_class=folder decision=skipped reason=directory_fsync code=${code}`,
+    "vault path_class=file decision=skipped reason=no_reconcile",
+  ]);
 });
 
 /**

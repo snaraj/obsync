@@ -213,6 +213,13 @@ function stamp(at: number): string {
 const NO_FOLDER_SYNC = new Set(["EPERM", "EISDIR"]);
 
 /**
+ * How long Obsidian's desktop adapter lets its queue go without progress
+ * before it abandons the action in front ("File system operation timed out.",
+ * 1.13.4): the budget a reconcile this host queues is held to (`reconcile`).
+ */
+const ADAPTER_QUEUE_MS = 60_000;
+
+/**
  * How many folders above the vault root the nested-vault check looks at. A
  * bound on an absurd path rather than a defence: the walk ends at the
  * filesystem root long before this on any real disk.
@@ -583,8 +590,14 @@ export class ObsidianHost implements VaultHost {
   private readonly recasing = new Map<string, { from: string; to: string }>();
   /** A re-case that could not be put back has been told about, once (`settleRecase`). */
   private recaseTold = false;
-  /** Old spellings being taken out of Obsidian's index now: their `delete` events are that removal's own (`unghost`). */
+  /**
+   * Names being taken out of Obsidian's index now -- a ghost's old spelling
+   * (`unghost`), or one this host moved or removed on the disk (`reconcile`):
+   * their `delete` events are that removal's own.
+   */
   private readonly unghosting = new Set<string>();
+  /** Obsidian's adapter offers no reconcile here, said once (`reconcile`). */
+  private reconcileTold = false;
   /** Entries being put back under their own names now: their `create` events are that put-back's own (`settleRecase`). */
   private readonly returning = new Set<string>();
   /** Obsidian's index could not be corrected here, said once (`unghost`). */
@@ -1465,6 +1478,7 @@ export class ObsidianHost implements VaultHost {
           const landed = await walker(fs).lstat(found.target);
           if (refusal !== null || !sameFile(published, landed)) throw new Error("Restore publication identity changed.");
           const stat = landed as PathStat;
+          await this.reconcile(path, "file", true);
           if (stat.size !== made.size || Math.round(stat.mtimeMs) !== Math.round(made.mtimeMs)) {
             this.log("host path_class=file decision=write_superseded");
           }
@@ -1515,6 +1529,76 @@ export class ObsidianHost implements VaultHost {
       if (this.folderSyncRefused) return;
       this.folderSyncRefused = true;
       this.log(`host path_class=folder decision=skipped reason=directory_fsync code=${code}`);
+    }
+  }
+
+  /**
+   * TELL OBSIDIAN WHAT THIS HOST JUST DID ON THE DISK (issue #253). Desktop
+   * writes, moves and removes with the filesystem, and Obsidian hears of a
+   * change made outside it only from the operating system's file events. A
+   * Mac whose `fseventsd` is overloaded delivers them late or not at all, and
+   * then a note obsync wrote is on the disk, recorded and synced, while
+   * Obsidian does not list it -- not in the file explorer, search or the quick
+   * switcher -- until a restart; a note obsync removed stays listed. Obsidian's
+   * own writes never wait for an event: its adapter reconciles the name it
+   * wrote (`reconcileInternalFile`), which lists it, the folders above it
+   * first, or drops it, and raises the event its watcher would have. This asks
+   * the adapter for the same, in the adapter's own queue, for a name whose
+   * listing disagrees with what this host just did (`present`); a name
+   * Obsidian already shows right costs one lookup.
+   *
+   * THE SAME EVENTS, SOONER, AND ONCE. What it raises is what a prompt watcher
+   * raises, and what the phone's adapter raises inside every write: a `create`
+   * the engine settles against the echo marks the pull arms before each call
+   * (`engine.ts`, ECHOES). A REMOVED name's events are this host's own, as a
+   * ghost's are, and never reach the engine (`unindexed`): the removal is the
+   * pull applying another device's change, already recorded. The event that
+   * arrives late finds the index right and raises nothing, because Obsidian
+   * compares with what its index holds -- and asks the folder's listing for
+   * the exact name first, so a name the volume spells another way is never
+   * listed twice.
+   *
+   * NOT OBSIDIAN'S PUBLISHED API, so both members are asked for by name, and
+   * without them the listing waits for the event as before, said once. A
+   * failure is logged and never fails what it follows: that has landed. A
+   * hidden name is never asked about, and that is the config folder too:
+   * Obsidian accepts only a hidden name for it (1.13.4, `validateConfigDir`).
+   * The budget is the adapter queue's own: Obsidian abandons a queued action
+   * after `ADAPTER_QUEUE_MS` without progress, and this call with it.
+   */
+  private async reconcile(path: string, kind: "file" | "folder", present: boolean): Promise<void> {
+    const started = Date.now();
+    try {
+      if (!isVaultPath(path)) return;
+      const vault = this.plugin.app.vault;
+      const adapter = vault.adapter as typeof vault.adapter & {
+        queue?: (action: () => Promise<void>) => Promise<void>;
+        reconcileInternalFile?: (path: string) => Promise<void>;
+      };
+      const { queue, reconcileInternalFile } = adapter;
+      if (typeof queue !== "function" || typeof reconcileInternalFile !== "function") {
+        if (!this.reconcileTold) this.log(`vault path_class=${kind} decision=skipped reason=no_reconcile`);
+        this.reconcileTold = true;
+        return;
+      }
+      if ((vault.getAbstractFileByPath(path) !== null) === present) return;
+      if (!present) this.unghosting.add(path);
+      try {
+        await queue.call(adapter, () => reconcileInternalFile.call(adapter, path));
+      } finally {
+        this.unghosting.delete(path);
+      }
+      const shown = vault.getAbstractFileByPath(path) !== null;
+      this.log(
+        `vault path_class=${kind} decision=${shown === present ? (present ? "listed" : "unlisted") : "unchanged"} ` +
+          `reason=${present ? "not_listed" : "still_listed"} budget_ms=${ADAPTER_QUEUE_MS} duration_ms=${Date.now() - started}`,
+      );
+    } catch (error) {
+      const name = error instanceof Error ? error.name : "unknown";
+      this.log(
+        `vault path_class=${kind} decision=failed reason=reconcile error=${name} budget_ms=${ADAPTER_QUEUE_MS} ` +
+          `duration_ms=${Date.now() - started}`,
+      );
     }
   }
 
@@ -1686,6 +1770,10 @@ export class ObsidianHost implements VaultHost {
           }
           throw new VaultPathError(refusal ?? "target_identity");
         }
+        // Proven at its name: Obsidian lists it now (`reconcile`). A note it
+        // did not list has no editor, so nothing below awaits after the
+        // `create` this may raise, which the caller's echo mark settles.
+        await this.reconcile(path, "file", true);
         // The rename kept the inode, and the inode is what `sameFile` proves
         // -- but an ordinary in-place save keeps the inode too, so identity
         // alone does not say these are still our bytes. The answer is bound
@@ -1754,6 +1842,8 @@ export class ObsidianHost implements VaultHost {
     const refusal = await chainRefusal(source.chain, walker(desktop.fs)) ??
       await chainRefusal(found.chain, walker(desktop.fs));
     if (refusal !== null) throw new VaultPathError(refusal);
+    await this.reconcile(from, "file", false);
+    await this.reconcile(to, "file", true);
     return "moved";
   }
 
@@ -1861,6 +1951,8 @@ export class ObsidianHost implements VaultHost {
     const refusal = await chainRefusal(source.chain.slice(0, -1), walker(desktop.fs)) ??
       await chainRefusal(found.final === "directory" ? found.chain.slice(0, -1) : found.chain, walker(desktop.fs));
     if (refusal !== null) throw new VaultPathError(refusal);
+    await this.reconcile(from, "folder", false);
+    await this.reconcile(to, "folder", true);
     return "moved";
   }
 
@@ -2356,7 +2448,11 @@ export class ObsidianHost implements VaultHost {
       this.log("host path_class=file decision=kept reason=unheld");
       return "unheld";
     }
-    return await this.removeHeld(desktop, found, hold, expect, path);
+    const verdict = await this.removeHeld(desktop, found, hold, expect, path);
+    // The note left by a hidden name, which Obsidian never listed, so the
+    // name it had is the one to take out of the listing (`reconcile`).
+    if (verdict === "removed") await this.reconcile(path, "file", false);
+    return verdict;
   }
 
   /**
@@ -2705,6 +2801,7 @@ export class ObsidianHost implements VaultHost {
       if (found.final === "directory") return;
       await desktop.fs.promises.mkdir(found.target, { recursive: true });
       await this.confine(desktop, path, ["directory"]);
+      await this.reconcile(path, "folder", true);
       return;
     }
     const adapter = this.plugin.app.vault.adapter;

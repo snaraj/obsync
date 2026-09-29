@@ -1,0 +1,12 @@
+# M3505: the log says listed when the reconcile changed nothing (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1520,7 +1520,7 @@
+       }
+       const shown = vault.getAbstractFileByPath(path) !== null;
+       this.log(
+-        `vault path_class=${kind} decision=${shown === present ? (present ? "listed" : "unlisted") : "unchanged"} ` +
++        `vault path_class=${kind} decision=${present ? "listed" : "unlisted"} ` +
+           `reason=${present ? "not_listed" : "still_listed"} budget_ms=${ADAPTER_QUEUE_MS} duration_ms=${Date.now() - started}`,
+       );
+     } catch (error) {

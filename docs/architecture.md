@@ -1235,6 +1235,33 @@ long poll and needs its timeout raised.
    the note (live, 2026-09-28). The status names a held note
    (`waiting for unsaved changes in <note>`).
 
+   WHAT OBSYNC CHANGES ON A DESKTOP'S DISK IS LISTED AT ONCE (issue #253).
+   The same starved watcher left a note obsync had written on the disk,
+   recorded and synced, and missing from Obsidian's file list, search and
+   quick switcher until a restart; a note it had moved or deleted stayed
+   listed under the old name. Obsidian's own writes never wait for an event:
+   its desktop adapter reconciles the name it wrote (`reconcileInternalFile`),
+   which lists it, the unlisted folders above it first, or drops it, and
+   raises the event its watcher would have. So after each desktop operation
+   that changes a name -- a written note or copy, a moved note or folder, a
+   removed note, a made folder -- the host asks the adapter for the same, in
+   the adapter's own queue, for each name whose listing disagrees with what
+   the operation did; a name Obsidian already shows right costs one lookup
+   (`main.ts`, `reconcile`). What it raises is what a prompt watcher raises,
+   and what the phone's adapter raises inside every write: a `create` the
+   engine settles against the echo marks the pull arms before each call, so
+   nothing received is sent back. A removed name's events are the host's own
+   and never reach the engine, as a re-case ghost's are (`unindexed`). The
+   event that arrives late finds the index right and raises nothing: Obsidian
+   compares with what its index holds, and first asks the folder's listing for
+   the exact name, so a volume that spells a name another way never gets it
+   listed twice. The reconcile is not Obsidian's published API: it is asked
+   for by name, and where absent the listing waits for the event as before,
+   said once (`decision=skipped reason=no_reconcile`); a failure is logged and
+   never fails the write, which has landed. A hidden name, and so the config
+   folder, is never asked about. An edit to a note Obsidian already lists is
+   not reconciled: its open editors are #252's, above.
+
    A NOTE TWO PLUGINS KEEP REWRITING IS PAUSED (issue #179). A change within
    five seconds of a received version, without recent trusted Markdown editor
    input, is marked inside its encrypted manifest as a background answer.

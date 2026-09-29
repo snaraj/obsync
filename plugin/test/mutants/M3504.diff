@@ -1,0 +1,12 @@
+# M3504: the reconcile runs outside the adapter's queue (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1514,7 +1514,7 @@
+       if ((vault.getAbstractFileByPath(path) !== null) === present) return;
+       if (!present) this.unghosting.add(path);
+       try {
+-        await queue.call(adapter, () => reconcileInternalFile.call(adapter, path));
++        await reconcileInternalFile.call(adapter, path);
+       } finally {
+         this.unghosting.delete(path);
+       }

@@ -1,0 +1,11 @@
+# M3490: the desktop writer never tells Obsidian about the note it wrote (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1703,7 +1703,6 @@
+         // Proven at its name: Obsidian lists it now (`reconcile`). A note it
+         // did not list has no editor, so nothing below awaits after the
+         // `create` this may raise, which the caller's echo mark settles.
+-        await this.reconcile(path, "file", true);
+         // The rename kept the inode, and the inode is what `sameFile` proves
+         // -- but an ordinary in-place save keeps the inode too, so identity
+         // alone does not say these are still our bytes. The answer is bound
