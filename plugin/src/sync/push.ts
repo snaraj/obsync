@@ -613,7 +613,19 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
       size: stat.size,
       sha256: digest,
     });
-    await context.state.save();
+    // A NEW NOTE OF ONE CHUNK WAITS FOR THE NEXT SAVE (issue #274), as a note
+    // the pull creates does (#194). The data file is rewritten whole, and a
+    // first sync rewrote it after every note it uploaded -- 478 MB of writes
+    // for 1,501 notes, growing with the square of the vault -- while each
+    // upload held its slot until the write was done. The record is saved by the
+    // engine within `SAVE_COALESCE_MS`, when the queue drains, or at a stop.
+    // A crash first loses the record, not the note: the next start asks the
+    // feed for this device's own newest version at the name and records it
+    // again while the note is still exactly what was posted (`engine.ts`,
+    // `survey`, #181), so no second id is minted. An edit of a recorded note,
+    // or a file of many chunks, is saved here as before.
+    if (record === undefined && single !== null && context.defer !== undefined) context.defer();
+    else await context.state.save();
   }
   // The upload's own receipt: what crossed the wire while this run was in
   // flight and the budget it is measured against (requirement 12). The

@@ -85,7 +85,11 @@ test("a reload while requests wait out their backoff: each old request ends at i
 
   const after = a.host.logs.slice(mark);
   const told = `old session's lines after the reload: ${JSON.stringify(after)}`;
-  for (const line of after) assert.ok(ENDED.test(line) || CANCELLED.test(line), told);
+  // The stop's own save of what the queue held back (#194, and new notes'
+  // records since #274) is the stop, not a request: once at most.
+  const saved = after.filter((line) => /^state decision=saved reason=stop /.test(line));
+  assert.ok(saved.length <= 1, `the stop saved more than once: ${told}`);
+  for (const line of after) assert.ok(ENDED.test(line) || CANCELLED.test(line) || saved.includes(line), told);
   const targets = after.map((line) => line.split(" ").slice(0, 3).join(" "));
   assert.equal(new Set(targets).size, targets.length, `a request said it ended twice: ${told}`);
   const ended = after.filter((line) => ENDED.test(line));

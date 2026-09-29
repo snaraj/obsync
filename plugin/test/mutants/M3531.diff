@@ -1,0 +1,11 @@
+# M3531: the records the pushes held are not saved when the queue drains (#274)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2169,7 +2169,6 @@
+       // The records the pushes held in memory (`pushFile`, issue #274) are
+       // written once the queue is empty: a note pushed alone is saved as soon
+       // as it would have been, only no longer inside its slot.
+-      await this.saveDeferred("drained");
+       if (failed.length > 0) throw failed[0];
+       // Nothing is queued behind anything any more, so no barrier can still
+       // mean something. Expiring them here is what keeps one armed for a path

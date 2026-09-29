@@ -750,3 +750,93 @@ test("the nested-vault answer is kept per folder for one pass and asked afresh o
   assert.equal(await host.inNestedVault("A/B/y.md"), true, "and the next pass finds it");
   host.pass(false);
 });
+
+// --- The send path's saves (#274) ------------------------------------------
+
+/** Notes at the vault's root: a folder record would add a save of its own. */
+const rootOf = (i) => `n${String(i).padStart(5, "0")}.md`;
+
+/** An uploading device over a vault of `count` new notes, and the server they go to. */
+async function uploader(count, store = memoryStore()) {
+  const { server, k } = await vaultServer();
+  const host = new FakeHost();
+  for (let i = 0; i < count; i++) host.seed(rootOf(i), textOf(i), 1757000000000 + i);
+  return { server, k, d: await device(server, { host, store }) };
+}
+
+test("a first sync writes its new notes with the queue, not once per note, and the pages of its own echoes cost no write (#274)", async () => {
+  const count = 60;
+  const { server, d } = await uploader(count);
+  await d.engine.start();
+  // No virtual time passes, so no timer can save.
+  await d.timers.run(0, () => server.journal.length >= count && d.store.writes.some((write) => recorded(write).size === count));
+  const echoPages = server.requests.filter((request) => request.target.startsWith("/v1/changes")).length;
+  assert.ok(echoPages >= 10, `the device read its own echoes back: ${echoPages} pages`);
+  const saved = d.store.writes.filter((write) => recorded(write).size > 0);
+  // The feed's first page may be saved beside the queue's; never one per note or per page.
+  assert.ok(saved.length <= 2, `${saved.length} writes: ${saved.map((write) => recorded(write).size)}`);
+  assert.ok(d.host.logs.some((line) => /^state decision=saved reason=drained records=\d+ budget_ms=1500 duration_ms=\d+$/.test(line)),
+    d.host.logs.join(" | "));
+  await stopped(d, server);
+});
+
+test("an upload frees its slot before its note's record is saved (#274)", async () => {
+  const count = 60;
+  const { server, k, d } = await uploader(count);
+  // Every save that carries a note's record waits until the test lets it go:
+  // an upload that waited for its save would stop the queue at four.
+  const save = d.store.saveData;
+  let release = () => undefined;
+  const held = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  d.store.saveData = async (value) => {
+    if (Object.keys(value.files ?? {}).length > 0) {
+      calls++;
+      await held;
+    }
+    return save(value);
+  };
+  await d.engine.start();
+  // No virtual time passes, so no timer can save.
+  await d.timers.run(0, () => server.journal.length >= count);
+  assert.equal((await server.noteFiles(k.manifestKey)).length, count, "every note went up while a save was held");
+  assert.ok(calls <= 1, `${calls} saves were asked for while the notes went up`);
+
+  release();
+  await d.timers.run(0, () => d.store.writes.some((write) => recorded(write).size === count));
+  for (let i = 0; i < count; i++) assert.notEqual(d.state.fileByPath(rootOf(i)), undefined, rootOf(i));
+  await stopped(d, server);
+});
+
+test("a crash between the server's answer and the save loses no note and mints no id: the next start adopts its own versions (#274, #181)", async () => {
+  const count = 40;
+  const store = memoryStore();
+  const { server, k, d: first } = await uploader(count, store);
+  // The crash: from here on, nothing the first run writes reaches its data file.
+  const save = store.saveData;
+  store.saveData = async () => undefined;
+  await first.engine.start();
+  await first.timers.run(0, () => server.journal.length >= count);
+  const posted = new Map([...Array(count).keys()].map((i) => [rootOf(i), first.state.fileByPath(rootOf(i))?.fileId]));
+  assert.equal([...posted.values()].filter((id) => id !== undefined).length, count, "the server answered every post");
+  assert.equal(recorded(await store.loadData()).size, 0, "and the data file holds none of them");
+  first.engine.stop();
+
+  store.saveData = save;
+  const second = await device(server, { host: first.host, store });
+  const from = first.host.logs.length;
+  await second.engine.start();
+  await second.timers.run(STEP_MS, () => [...posted.keys()].every((path) => second.state.fileByPath(path) !== undefined));
+  await second.timers.run(STEP_MS);
+
+  assert.equal(server.journal.length, count, "a note was published again");
+  assert.equal((await server.noteFiles(k.manifestKey)).length, count, "a second id was minted");
+  for (const [path, fileId] of posted) {
+    assert.equal(second.state.fileByPath(path).fileId, fileId, `${path} kept its id`);
+    assert.equal(first.host.text(path), textOf(Number(path.slice(1, 6))), `${path} is intact`);
+  }
+  const logs = first.host.logs.slice(from);
+  assert.equal(logs.filter((line) => /^reconcile path_class=file decision=adopted reason=own_version /.test(line)).length, count,
+    logs.join(" | "));
+  await stopped(second, server);
+});

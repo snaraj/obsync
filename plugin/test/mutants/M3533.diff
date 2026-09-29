@@ -1,0 +1,11 @@
+# M3533: a page that applied another device's change waits for the timer like a page of echoes (#274)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3166,7 +3166,6 @@
+           if (mark?.replay === true && seenBefore(change, mark)) replayed++;
+           else {
+             const result = await this.receive(context, change);
+-            if (result !== "echo") wrote = true;
+             this.processed(context, change, result);
+           }
+           context.state.data.lastSeq = change.seq;

@@ -2278,6 +2278,10 @@ export class SyncEngine {
         await Promise.race([new Promise<void>((wake) => { this.wakeDrain = wake; }), ...running.values()]);
         this.wakeDrain = null;
       }
+      // The records the pushes held in memory (`pushFile`, issue #274) are
+      // written once the queue is empty: a note pushed alone is saved as soon
+      // as it would have been, only no longer inside its slot.
+      await this.saveDeferred("drained");
       if (failed.length > 0) throw failed[0];
       // Nothing is queued behind anything any more, so no barrier can still
       // mean something. Expiring them here is what keeps one armed for a path
@@ -3304,6 +3308,9 @@ export class SyncEngine {
   private async applyPage(context: SyncContext, page: ChangesPage): Promise<void> {
     await this.learnNames(context, page.changes);
     let replayed = 0;
+    // Whether any change of the page was more than this device's own version
+    // coming back (`pull.ts`, ECHOES) or an entry a replay skips.
+    let wrote = false;
     await this.exclusive(async () => {
       // What arrived and is not yet written is work, and the status counts it
       // down as it lands: a receiving device read `idle` through a thousand
@@ -3320,7 +3327,11 @@ export class SyncEngine {
           // yesterday's note over today's, a deletion undone, a rename reverted.
           const mark = context.state.data.feedMark;
           if (mark?.replay === true && seenBefore(change, mark)) replayed++;
-          else this.processed(context, change, await this.receive(context, change));
+          else {
+            const result = await this.receive(context, change);
+            if (result !== "echo") wrote = true;
+            this.processed(context, change, result);
+          }
           context.state.data.lastSeq = change.seq;
           this.pulls--;
         }
@@ -3336,14 +3347,28 @@ export class SyncEngine {
       await this.returnLost(context);
       this.release("caught_up");
     }
-    // The save below writes what `defer` held (issue #194).
-    this.takeDeferred();
-    if (!this.running) {
+    // A PAGE THAT WROTE NOTHING HERE WAITS FOR THE NEXT SAVE (issue #274).
+    // An uploading device reads its own versions back all the way through its
+    // upload, a page every few notes, and each page's save rewrote the whole
+    // data file to move nothing but the cursor. Lost in a crash, the cursor is
+    // older, and those echoes -- or a replay's skipped entries -- are read
+    // again and dropped again. An empty page that leaves the cursor where it
+    // is has nothing to save at all.
+    if (!wrote && this.running) {
+      if (page.changes.length > 0 || page.seq !== context.state.data.lastSeq) {
+        context.state.data.lastSeq = page.seq;
+        this.defer();
+      }
+    } else {
+      // The save below writes what `defer` held (issue #194).
+      this.takeDeferred();
+      if (!this.running) {
+        await context.state.save();
+        return;
+      }
+      context.state.data.lastSeq = page.seq;
       await context.state.save();
-      return;
     }
-    context.state.data.lastSeq = page.seq;
-    await context.state.save();
     announceCopies(context);
     // EVERY ANSWERED PAGE, EMPTY OR NOT (issue #158): an `offline` the feed
     // said is taken back by the next answer, not by the next page that
