@@ -1,0 +1,12 @@
+# M3386: the disk's answer is logged and then ignored (#245)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -876,7 +876,7 @@
+       }
+       stale++;
+       this.log(`list decision=stale_index size_index=${file.size} size_disk=${disk.size} mtime_index=${file.mtime} mtime_disk=${disk.mtime}`);
+-      out.push(disk);
++      out.push(file);
+     }
+     if (stale > 0) this.log(`list decision=confirmed suspects=${suspects} stale=${stale} files=${files.length} duration_ms=${Date.now() - started}`);
+     return out;

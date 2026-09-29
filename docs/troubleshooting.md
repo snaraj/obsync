@@ -1633,15 +1633,20 @@ files with the same text.
 
 **Why it happens.** Android sometimes writes a downloaded file's bytes a
 moment after Obsidian has looked at it. Obsidian's list of the vault's files
-keeps the size it saw first, often empty, until it restarts, and obsync reads
-that list (issue #245). The file's text is already on the server.
+keeps the size it saw first, often empty, until it restarts. Up to 1.1.4
+obsync counted from that list (issue #245). From 1.1.5 it asks the phone's
+storage about every file whose listed size or date differs from what it
+synced, and counts only what really changed there; its log says
+`list decision=stale_index` for each file the storage corrected. A file the
+storage does not answer for is still counted, to be safe.
 
 **How to fix it.**
 
 1. Select **Cancel**. Leaving then changes nothing.
-2. Close Obsidian on the phone completely and open it again.
-3. Select **Leave this server** again. The list now names only files that
-   really changed here; for those, run **Sync now** first.
+2. Select **Sync now**, then **Leave this server** again.
+3. If the list still names a file you did not change here, close Obsidian on
+   the phone completely, open it again, and select **Leave this server**
+   again.
 
 ## Two folders that differ only in capitalisation
 

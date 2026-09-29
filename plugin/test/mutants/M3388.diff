@@ -1,0 +1,12 @@
+# M3388: a stale index the disk corrected is not said (#245)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -875,7 +875,7 @@
+         continue;
+       }
+       stale++;
+-      this.log(`list decision=stale_index size_index=${file.size} size_disk=${disk.size} mtime_index=${file.mtime} mtime_disk=${disk.mtime}`);
++      if (stale < 0) this.log(`list decision=stale_index size_index=${file.size} size_disk=${disk.size} mtime_index=${file.mtime} mtime_disk=${disk.mtime}`);
+       out.push(disk);
+     }
+     if (stale > 0) this.log(`list decision=confirmed suspects=${suspects} stale=${stale} files=${files.length} duration_ms=${Date.now() - started}`);

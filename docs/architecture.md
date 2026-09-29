@@ -785,7 +785,12 @@ long poll and needs its timeout raised.
    filesystem, read directly, every five minutes, at each start and whenever
    the window comes forward (plugin 1.1.4), because Obsidian's index is never
    fresher than the events it emits: a note moved in from a file manager is
-   in neither until the app notices.
+   in neither until the app notices. A listed file whose size or mtime
+   differs from its record is asked of the disk once before it counts as a
+   change or an unsent edit, and only such a file (plugin 1.1.5, #245):
+   Obsidian mobile watches no filesystem, so a download whose bytes Android
+   landed after Obsidian looked stays in the index at the size it saw,
+   often 0, until the app restarts.
    Every pass -- the start's, the periodic one, Sync now's -- and the
    watcher's decision on a burst of deletions take the pull lock, listing
    included (plugin 1.1.5, #244). A pull applying a rename leaves the vault

@@ -1036,3 +1036,58 @@ for (const fate of ["kept", "deleted"]) {
     assert.deepEqual(sent.map((frame) => frame.file_id), fate === "kept" ? [id] : [], story(r));
   });
 }
+
+/**
+ * A PHONE'S INDEX KEPT WHAT IT SAW FIRST (#245). Android lands a download's
+ * bytes after Obsidian has looked at the file, and Obsidian mobile, watching no
+ * filesystem, keeps that first look -- size 0, as the emulator's index held
+ * four synced 993-byte files -- until it restarts. Leave counted them as
+ * unsent and every pass queued and read them. A file whose listed size or
+ * mtime differs from its record is asked of the disk once, and only such a
+ * file; one another app really changed stays counted, at what the disk holds,
+ * and one the disk cannot answer for keeps the index's word.
+ */
+test("a phone whose index kept a stale size or mtime: Leave does not count the note, a pass reads nothing, and the difference is said (#245)", async (t) => {
+  const r = await seeded(t, {
+    "Index/One.json": BODY, "Index/Two.json": OTHER, "Index/Three.md": CLASH, "Index/Four.md": THEIRS,
+    "Index/Five.md": "RECASE SENTINEL: a note nothing changed\n",
+  });
+  r.b.engine.stop();
+  const record = (path) => r.b.state.fileByPath(path);
+  // Two synced files the index misreports: an empty look, and an older mtime.
+  r.vault.cached.set("Index/One.json", { mtime: record("Index/One.json").mtime, size: 0 });
+  r.vault.cached.set("Index/Two.json", { mtime: record("Index/Two.json").mtime + 5000, size: record("Index/Two.json").size });
+  // A file another app changed, which the index misreports too: a real edit.
+  const changed = `${CLASH}changed by another app\n`;
+  r.vault.write("Index/Three.md", new TextEncoder().encode(changed), 9000, false);
+  r.vault.cached.set("Index/Three.md", { mtime: record("Index/Three.md").mtime, size: 0 });
+  // And one the bridge will not answer for.
+  r.vault.cached.set("Index/Four.md", { mtime: record("Index/Four.md").mtime, size: 0 });
+  r.vault.lag = (call, path) => call === "stat" && path === "Index/Four.md" ? Promise.reject(new Error("sentinel: no answer")) : undefined;
+  let stats = 0;
+  const stat = r.vault.adapter.stat;
+  r.vault.adapter.stat = (path) => { stats++; return stat(path); };
+
+  assert.deepEqual(await r.b.plugin.unpushedEdits(), ["Index/Four.md", "Index/Three.md"], r.b.logs.join(" | "));
+  // One line per file the disk corrected, and no path in any (requirement 6).
+  assert.deepEqual(r.b.logs.filter((line) => line.startsWith("list decision=stale_index ")).sort(), [
+    `list decision=stale_index size_index=0 size_disk=${BODY.length} mtime_index=1000 mtime_disk=1000`,
+    `list decision=stale_index size_index=0 size_disk=${changed.length} mtime_index=1000 mtime_disk=9000`,
+    `list decision=stale_index size_index=${OTHER.length} size_disk=${OTHER.length} mtime_index=6000 mtime_disk=1000`,
+  ]);
+  assert.equal(r.b.logs.filter((line) => /^list decision=confirmed suspects=4 stale=3 files=5 duration_ms=\d+$/.test(line)).length, 1, r.b.logs.join(" | "));
+  assert.equal(stats, 4, "the disk was asked about more than the suspects");
+
+  // A pass with the engine running reads only the file that changed.
+  r.vault.lag = null;
+  const reads = [];
+  const read = r.vault.adapter.readBinary;
+  r.vault.adapter.readBinary = (path) => { reads.push(path); return read(path); };
+  const again = await phone(t, r);
+  await again.engine.start();
+  await r.timers.run(STEP_MS, () => r.a.host.text("Index/Three.md") === changed);
+  await r.timers.run(STEP_MS);
+  assert.deepEqual([...new Set(reads)], ["Index/Three.md"], again.logs.join(" | "));
+  assert.deepEqual(await again.plugin.unpushedEdits(), [], again.logs.join(" | "));
+  assert.deepEqual(again.notices, []);
+});

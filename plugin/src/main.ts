@@ -924,12 +924,45 @@ export class ObsidianHost implements VaultHost {
         const entry = this.plugin.app.vault.getAbstractFileByPath(folder);
         if (entry instanceof TFolder) await visit(entry);
       }
-      return await this.unghosted(files);
+      return await this.confirmed(await this.unghosted(files));
     }
     const synced = await this.inventory();
     const skipped = this.plugin.app.vault.getFiles().length - synced.length;
     if (skipped !== 0) this.plugin.log(`list decision=skipped_unsyncable files=${skipped}`);
-    return await this.unghosted(synced);
+    return await this.confirmed(await this.unghosted(synced));
+  }
+
+  /**
+   * THE INDEX, ASKED OF THE DISK WHERE IT DISAGREES WITH A RECORD (issue
+   * #245). Obsidian mobile watches no filesystem: a download whose bytes
+   * Android lands after Obsidian looked at the file stays in the index at the
+   * size it saw, often 0, until Obsidian restarts. Leave then counted a synced
+   * note as unsent (four on the emulator), and every pass queued and read it
+   * for nothing. A listed file whose size or mtime differs from its record is
+   * asked ONE `stat` -- a suspect, never every file -- and the disk's answer
+   * stands for it. A file with no record, or one the disk cannot answer for,
+   * keeps the index's word.
+   */
+  private async confirmed(files: VaultStat[]): Promise<VaultStat[]> {
+    const started = Date.now();
+    let suspects = 0;
+    let stale = 0;
+    const out: VaultStat[] = [];
+    for (const file of files) {
+      const record = this.plugin.state.data.files[file.path];
+      const suspect = record !== undefined && !isPushed(record, file.mtime, file.size);
+      if (suspect) suspects++;
+      const disk = suspect ? await this.stat(file.path).catch(() => null) : null;
+      if (disk === null || (disk.size === file.size && disk.mtime === file.mtime)) {
+        out.push(file);
+        continue;
+      }
+      stale++;
+      this.log(`list decision=stale_index size_index=${file.size} size_disk=${disk.size} mtime_index=${file.mtime} mtime_disk=${disk.mtime}`);
+      out.push(disk);
+    }
+    if (stale > 0) this.log(`list decision=confirmed suspects=${suspects} stale=${stale} files=${files.length} duration_ms=${Date.now() - started}`);
+    return out;
   }
 
   /**

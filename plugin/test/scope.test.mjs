@@ -247,7 +247,7 @@ async function scopedHost(t, mobile) {
   Object.defineProperty(hiddenFolder, "children", { get: () => assert.fail("hidden cached children were inspected") });
   const folder = Object.assign(new TFolder(), { path: "Notes", children: [file, excludedFile, hiddenFolder] });
   const calls = [];
-  const state = { data: { syncFolders: ["Notes"] } };
+  const state = { data: { syncFolders: ["Notes"], files: {} } };
   const adapter = Object.fromEntries(["stat", "readBinary", "writeBinary", "remove", "mkdir", "exists"].map((method) =>
     [method, async (p) => { calls.push([method, p]); throw new Error("unexpected adapter access"); }]));
   const plugin = { state, log: () => undefined, app: { vault: { adapter,

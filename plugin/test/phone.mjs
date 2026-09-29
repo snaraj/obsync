@@ -75,6 +75,12 @@ export class PhoneVault {
      * wait comes before the queue, so the calls made meanwhile still run.
      */
     this.lag = null;
+    /**
+     * What the index keeps for a file whose bytes landed after Obsidian looked
+     * at it (#245): `{ mtime, size }` by path, whatever the storage holds, until
+     * a `restart` -- Obsidian mobile watches no filesystem.
+     */
+    this.cached = new Map();
     /** The adapter's one queue (`queue`). */
     this.chain = Promise.resolve();
     this.clock = 1757200000000;
@@ -326,6 +332,8 @@ export class PhoneVault {
       // A stale entry reads the one it folds to, as a ghost does.
       Object.defineProperty(entry, "stat", {
         get: () => {
+          const kept = vault.cached.get(entry.path);
+          if (kept !== undefined) return { ctime: kept.mtime, ...kept };
           const file = vault.disk.get(vault.real(entry.path) ?? "");
           return file ? { ctime: file.mtime, mtime: file.mtime, size: file.bytes.length } : { ctime: 0, mtime: 0, size: 0 };
         },
@@ -337,6 +345,7 @@ export class PhoneVault {
   /** Obsidian starting over this storage: every entry indexed under its real name, no hidden name. */
   restart() {
     this.index.clear();
+    this.cached.clear();
     for (const [path, value] of this.disk) if (!hidden(path)) this.index.set(path, this.entry(path, value === null));
   }
 
