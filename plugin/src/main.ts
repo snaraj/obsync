@@ -92,6 +92,7 @@ import {
   assertVaultPath,
   caseOnly,
   chainRefusal,
+  errorText,
   isVaultPath,
   osJunk,
   sameFile,
@@ -2692,8 +2693,24 @@ export class ObsidianHost implements VaultHost {
     if (kept > 0) return kept;
     const folder = this.plugin.app.vault.getFolderByPath(path);
     if (folder) await this.plugin.app.fileManager.trashFile(folder);
-    else {
-      for (const file of junk) await (desktop !== null ? desktop.fs.promises.unlink(file) : adapter.remove(file));
+    else if (desktop !== null && found !== null) {
+      // NOT THE ADAPTER'S `rmdir(path, false)` ON DESKTOP (issue #266): that is
+      // `fs.rm` without `recursive`, which refuses EVERY directory, empty or
+      // not, with `EISDIR`. A folder Obsidian has not indexed yet -- one a
+      // device paired later made moments ago, replaying the history -- stayed
+      // for good, and the page failed. `rmdir(2)` takes the walked directory
+      // only while it is empty: an entry that arrived since the listing keeps
+      // it, and one already gone is gone.
+      for (const file of junk) await desktop.fs.promises.unlink(file);
+      try {
+        await desktop.fs.promises.rmdir(found.target);
+      } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        if (code === "ENOTEMPTY" || code === "EEXIST") return 1;
+        if (code !== "ENOENT") throw error;
+      }
+    } else {
+      for (const file of junk) await adapter.remove(file);
       await adapter.rmdir(path, false);
     }
     if (junk.length > 0) this.log(`host path_class=folder decision=cleared reason=os_junk files=${junk.length}`);
@@ -4466,7 +4483,7 @@ export default class ObsyncPlugin extends Plugin {
         this.openPluginManager();
       });
     } catch (error) {
-      if (this.isCurrent(generation)) this.log(`update decision=skipped reason=${error instanceof Error ? error.message : String(error)}`);
+      if (this.isCurrent(generation)) this.log(`update decision=skipped reason=${errorText(error)}`);
     }
   }
 

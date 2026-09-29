@@ -120,6 +120,27 @@ export class VaultPathError extends Error {
   }
 }
 
+/** A path as the operating system gives one: `/…`, `C:\…` or `C:/…`, `\\server\…`. */
+const ABSOLUTE = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/;
+/** Such a path quoted in a message, as Node words a failed call. */
+const QUOTED_ABSOLUTE = /'(?:\/|[A-Za-z]:[\\/]|\\\\)[^']*'/g;
+
+/**
+ * An error's own words for a LOG LINE, with the paths it names cut out (issue
+ * #266). A filesystem error names the ABSOLUTE path it failed on -- in its
+ * `path` and `dest` and in its message -- so a line carrying its message named
+ * the person's home and vault folders in every log they share, where every
+ * other line keeps paths out. The code, the call and the reason stay.
+ */
+export function errorText(error: unknown): string {
+  let text = error instanceof Error ? error.message : String(error);
+  const named = error as { path?: unknown; dest?: unknown } | null | undefined;
+  for (const path of [named?.path, named?.dest]) {
+    if (typeof path === "string" && ABSOLUTE.test(path)) text = text.split(path).join("<path>");
+  }
+  return text.replace(QUOTED_ABSOLUTE, "'<path>'");
+}
+
 /** The reason `value` is not a canonical relative vault path, or `null`. */
 export function vaultPathRefusal(value: unknown): VaultPathRefusal | null {
   if (typeof value !== "string") return "not_a_string";

@@ -1,0 +1,12 @@
+# M3322: the feed's retry line carries the error's raw words (issue #266)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2703,7 +2703,7 @@
+           continue;
+         }
+         verify = true;
+-        const message = errorText(error);
++        const message = error instanceof Error ? error.message : String(error);
+         context.host.log(`feed decision=retry reason=${message} status=${refused.kind === "error" ? refused.code : refused.kind} retry_ms=${FEED_ERROR_BACKOFF_MS}`);
+         // Absence is the feed's to say until its next read is answered, and
+         // no longer than that (`resting`).

@@ -60,6 +60,7 @@ server again unless the entry says so.
 | A note another device had just written is empty everywhere | [A note became empty on every device](#a-note-became-empty-on-every-device) |
 | On a phone, Leave lists files your other devices already have | [Leave lists files your other devices already have](#leave-lists-files-your-other-devices-already-have) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
+| A computer you paired later shows an empty folder under a name another device renamed away | [An empty folder appeared on a computer paired later](#an-empty-folder-appeared-on-a-computer-paired-later) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
 | A note or folder you renamed has another device's name | [A note or folder took the other device's name](#a-note-or-folder-took-the-other-devices-name) |
@@ -1098,6 +1099,22 @@ kept only for something else.
 
 **How to fix it.** Look inside the folder on that device. If you no longer need
 what is in it, delete the folder there, in Obsidian or in Finder.
+
+## An empty folder appeared on a computer paired later
+
+**What you see.** On a Mac, Windows or Linux computer you paired after a
+folder was renamed and then renamed back on another device, an empty folder
+stands under the name the folder had in between. Your other devices do not
+show it.
+
+**Why it happens.** Up to 1.1.4 a computer catching up on the vault's history
+could not remove a folder Obsidian had not listed yet: the removal failed with
+`EISDIR` and was tried again, and the folder stayed (issue #266). From 1.1.5
+the computer removes it while catching up. Nothing is lost: the folder is
+empty, and your notes are where the other devices show them.
+
+**How to fix it.** Delete the empty folder on that computer, in Obsidian or in
+the file manager. Your other devices do not have it, so nothing changes there.
 
 ## A linked folder shows up empty on other devices
 

@@ -1,0 +1,12 @@
+# M3325: a failed scan's line carries the error's raw words (issue #266)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3504,7 +3504,7 @@
+       await this.inPass(context.host, async () => this.survey(own ?? await context.host.list(), false, "scan"));
+     } catch (error) {
+       context.host.log(
+-        `scan decision=failed reason=${errorText(error)} budget_ms=${SCAN_BUDGET_MS}`,
++        `scan decision=failed reason=${error instanceof Error ? error.message : String(error)} budget_ms=${SCAN_BUDGET_MS}`,
+       );
+     }
+   }

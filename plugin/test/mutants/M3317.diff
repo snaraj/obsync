@@ -1,0 +1,12 @@
+# M3317: the desktop host removes an unindexed empty folder with the adapter's fs.rm again, which refuses every directory (issue #266)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2703,7 +2703,7 @@
+       // it, and one already gone is gone.
+       for (const file of junk) await desktop.fs.promises.unlink(file);
+       try {
+-        await desktop.fs.promises.rmdir(found.target);
++        await adapter.rmdir(path, false);
+       } catch (error) {
+         const code = (error as { code?: unknown }).code;
+         if (code === "ENOTEMPTY" || code === "EEXIST") return 1;

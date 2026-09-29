@@ -74,7 +74,7 @@ import {
 } from "../domainmap";
 import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, NOT_OBSYNC, Transport, certificateRefusal } from "../transport";
-import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
+import { VaultPathError, errorText, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
 import { publishPause } from "./pause";
@@ -1343,7 +1343,7 @@ export class SyncEngine {
       // records stay, and the next reconcile pass asks it again.
       context.host.log(
         `watch decision=failed reason=vanished_unsettled files=${paths.length} budget_ms=${DEBOUNCE_MS} ` +
-          `duration_ms=${context.now() - started} error=${error instanceof Error ? error.message : String(error)}`,
+          `duration_ms=${context.now() - started} error=${errorText(error)}`,
       );
       return;
     }
@@ -2008,7 +2008,7 @@ export class SyncEngine {
       await this.settleTracked(context, path, tries, seen);
     } catch (error) {
       context.host.log(
-        `watch path_class=file decision=failed reason=${error instanceof Error ? error.message : String(error)}`,
+        `watch path_class=file decision=failed reason=${errorText(error)}`,
       );
     } finally {
       // A note waiting on its push was counted while this debounce was in
@@ -2399,7 +2399,7 @@ export class SyncEngine {
         context.host.log("push path_class=file decision=stood_down reason=path_gone");
         return;
       }
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorText(error);
       context.host.log(`push path_class=${pathClass} decision=failed reason=${message}`);
       if (error instanceof ApiError && error.code === "domain_mismatch") {
         await this.rekeyed(context, path);
@@ -2483,7 +2483,7 @@ export class SyncEngine {
    */
   private retryFolder(context: SyncContext, path: string, barrier: boolean, recreate: boolean, error: unknown): void {
     const attempt = (this.folderRetries.get(path) ?? 0) + 1;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorText(error);
     // A POST THAT FAILS AFTER THIS ENGINE STOPPED HAS NO QUEUE TO GO BACK
     // INTO, and what survives a stop is written down rather than re-armed
     // (`publishFolder`; review round 4, finding 3). It matters beyond the
@@ -2642,7 +2642,7 @@ export class SyncEngine {
           continue;
         }
         verify = true;
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorText(error);
         context.host.log(`feed decision=retry reason=${message} status=${refused.kind === "error" ? refused.code : refused.kind} retry_ms=${FEED_ERROR_BACKOFF_MS}`);
         // Absence is the feed's to say until its next read is answered, and
         // no longer than that (`resting`).
@@ -3443,7 +3443,7 @@ export class SyncEngine {
       await this.inPass(context.host, async () => this.survey(own ?? await context.host.list(), false, "scan"));
     } catch (error) {
       context.host.log(
-        `scan decision=failed reason=${error instanceof Error ? error.message : String(error)} budget_ms=${SCAN_BUDGET_MS}`,
+        `scan decision=failed reason=${errorText(error)} budget_ms=${SCAN_BUDGET_MS}`,
       );
     }
   }
@@ -4346,7 +4346,7 @@ export class SyncEngine {
       if (beat.outcome === "lost") context.host.log(`heartbeat decision=lost reason=${beat.reason}`);
       else context.host.log("heartbeat decision=reported policy_schema=v1");
     } catch (error) {
-      context.host.log(`heartbeat decision=${stopped(error) ? "cancelled" : "failed"} reason=${error instanceof Error ? error.message : String(error)}`);
+      context.host.log(`heartbeat decision=${stopped(error) ? "cancelled" : "failed"} reason=${errorText(error)}`);
     }
     this.unnamed.clear();
     await this.readNames(context, "heartbeat");

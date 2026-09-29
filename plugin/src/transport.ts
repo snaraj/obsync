@@ -57,6 +57,7 @@ import { Bytes, bodyHash, hex, hmacKey, randomBytes, sealedSid, signRequest, unh
 import { CHUNK_CIPHERTEXT_MAX } from "./chunker";
 import { EdgeHeader } from "./state";
 import { Policy } from "./policy";
+import { errorText } from "./vaultPath";
 
 /** Device-local policy uses camelCase; the existing v1 API uses snake_case. */
 function policyBody(policy: Policy): { per_file_max_bytes: number; total_budget_bytes: number } {
@@ -764,7 +765,7 @@ export class Transport {
         status: 0,
         reason: error === TIMED_OUT
           ? `timeout budget_ms=${sending.deadlineMs}`
-          : `network=${error instanceof Error ? error.message : String(error)}`,
+          : `network=${errorText(error)}`,
       };
     }
     this.options.reachable?.(outcome.kind === "settled");
