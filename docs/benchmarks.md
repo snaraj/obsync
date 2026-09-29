@@ -223,12 +223,64 @@ byte is hashed, and every downloaded byte copied, by the two paths the
 SHA-256 and buffer changes touch. A Linux `fsync` is fast enough that four
 clients rarely queue behind one, so B1's flushes and wall time do not move.
 
+**A new fan-out directory is made durable in its parent (#273)**, which
+costs a full flush for each chunk that opens a new leaf (two for the first
+chunk under each of the 256 first levels). On a store of N chunks a new
+chunk opens a leaf with probability e^(−N/65,536): 94 % of the chunks of a
+7,700-note first sync into an empty store, 47 % at 50,000 chunks, 10 % at
+150,000. The same harness at
+`OBSYNC_BENCH_SCALE=smoke` (1,000 notes, then 200 under `strace`, two
+requests per note since #275), images from this branch before and after
+the change, two runs each, alternated, load 36 to 116:
+
+| Scenario | Before #273 | After |
+| --- | --- | --- |
+| B1 fsyncs, a fresh store | 4.88, 4.92 per note | 5.88, 5.93 per note |
+| B1, 1,000 notes | 6.7 s, 6.1 s | 7.0 s, 5.6 s |
+
+One more flush per new note on Linux does not show in B1's wall time. On
+the lab Mac a chunk `PUT` that opens a leaf waits for one more
+`F_FULLFSYNC`, about 7 ms; an interleaved run of single uploads there
+(put_small, four rounds, load 27 to 249) was inside the laptop's noise.
+
+**A first sync stops rewriting the plugin's data file once per note
+(#274).** The same 7,703-file vault on two desktop rigs, the same 1.1.5
+server, the 1.1.4 plugin against this one; the uploading rig shown (not
+focused) while it uploads, since a minimized one ran 27 times slower
+(below); `saveData` wrapped to count every write:
+
+| First sync up, A | 1.1.4 plugin | 1.1.5 plugin, three runs |
+| --- | --- | --- |
+| Writes of the data file | 7,451 | 211, 233, 253 |
+| JSON written | 9.29 GB | 0.22, 0.23, 0.27 GB |
+| Time spent writing it | 159 s | 7.7, 7.9, 11.2 s |
+| First push to last | 302 s | 233, 250, 281 s |
+| Pushes/s, first thousand → last | 24.8 → 19.0 | 30.6 → 27.5, 33.6 → 23.2, 33.2 → 20.2 |
+| Load average | 23 to 39 | 20 to 50, 14 to 24, 23 to 29 |
+
+The writes fall 30 to 35 times and the bytes 34 to 42 times. The upload's
+wall time moves less, 7 to 23 % on one run before against three after on
+a loaded laptop, and pushes still slow across the thousands: what remains
+of that slope is other work that grows with the vault (below). Every
+download that finished was byte-identical to the upload (7,703 files); the
+download is unchanged, 140 s before, 161 s and 135 s after. The first
+download after the change stalled part way and was stopped; it did not
+recur in the two runs after it ([run record](validation-runs/2026-09-29-speed.md)).
+
+**A minimized Obsidian window syncs far slower.** Mid-upload, rig A made
+1.35 notes/s over 20 s minimized and 37 over the next 20 s shown without
+focus (load 27). Its renderer sat at 0.1 % CPU while minimized, with
+`setTimeout(0)` taking up to 224 ms: the window, not obsync, set the pace.
+
 ### What still bounds each path
 
-Each needs a decision outside the server's code, and is not changed here:
-the plugin's per-push state rewrite (first sync up); B's one-note-at-a-time
+Each needs a decision outside what 1.1.5 changes: B's one-note-at-a-time
 apply with two flushes per note (first sync down, #202); re-hashing every
 note (Sync now, #197); Obsidian's own save delay (typing); and, on the
-server, the five flushes a new note costs, which the protocol (two
-requests per note) and the blob layout (a new directory for most early
-chunks) fix.
+server, the five flushes a new note costs (six while the store is young,
+#273), which the protocol (two requests per note) and the blob layout (a
+new directory for most early chunks) fix. What remains of the upload's
+slowdown across the thousands is smaller: the push of a new note still
+scans every record for a case-only twin of its name (`recordedSpelling`),
+3.9 ms at 7,700 records on this laptop, about 15 s over the whole first
+sync.
