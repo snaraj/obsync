@@ -1,0 +1,11 @@
+# M3314: a refused folder removal is logged as a file (issue #240)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2268,7 +2268,6 @@
+       // folder sets are the only ones that can name a path with no stat.
+       const judged = this.folderRemovals.get(path);
+       if (this.folderRemovals.delete(path)) {
+-        pathClass = "folder";
+         const versionId = await pushFolderDelete(context, path, judged);
+         if (versionId !== null) {
+           context.authored.add(versionId);

@@ -62,7 +62,7 @@ import {
   versionId,
 } from "../crypto";
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
-import { assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
+import { SyncFolders, assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
 import { VaultPathError, assertVaultPath, caseOnly } from "../vaultPath";
 
 /**
@@ -813,13 +813,16 @@ export async function pushFolder(context: SyncContext, path: string, recreate = 
   return ack.versionId;
 }
 
-/** Tombstone a folder record. The files it held publish their own tombstones. */
-export async function pushFolderDelete(context: SyncContext, path: string): Promise<string | null> {
+/**
+ * Tombstone a folder record. The files it held publish their own tombstones.
+ * `judged` is the selection the removal was decided against (`postManifest`).
+ */
+export async function pushFolderDelete(context: SyncContext, path: string, judged?: SyncFolders): Promise<string | null> {
   assertVaultPath(path);
   const record = context.state.folderByPath(path);
   if (record === undefined) return null;
   const parents = record.versionId !== "" ? [record.versionId] : [];
-  const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false);
+  const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false, undefined, judged);
   context.state.forgetFolder(path);
   bury(context, record.fileId, ack.versionId, path, true);
   await context.state.save();
@@ -845,6 +848,7 @@ export async function postManifest(
   bytes: number,
   acceptExisting: boolean,
   stillWanted: () => Promise<boolean> = async () => true,
+  judged?: SyncFolders,
 ): Promise<{ versionId: string; ack: VersionAck }> {
   // The folder rule for a folder record, the file rule for a file: the
   // selected folder itself has a record and is never a file (`syncScope.ts`).
@@ -856,7 +860,16 @@ export async function postManifest(
   // device renaming its own selected folder published the record and never
   // the tombstone, so every other device kept a folder record for a spelling
   // that no longer exists (review round 3, finding 1).
-  if (manifest.v === 2) assertFolderCaseScope(manifest.path, context.state.data.syncFolders);
+  //
+  // AND A FOLDER'S REMOVAL AGAINST THE SELECTION IT WAS JUDGED IN (issue
+  // #240), for the rename that changes more than capitalisation: the
+  // selection followed the folder before the old name's tombstone was posted,
+  // so every other device kept an empty folder under that name. Only the
+  // removals the engine decided carry `judged`; left out, or judged against
+  // the whole vault, it is the selection in force now -- a selection set in
+  // between makes the check stricter, never wider. A FILE is checked against
+  // the selection in force, always.
+  if (manifest.v === 2) assertFolderCaseScope(manifest.path, judged ?? context.state.data.syncFolders);
   else assertSyncPath(manifest.path, context.state.data.syncFolders);
   // AND NEVER A PATH IN A VAULT OF ITS OWN (issue #180), whatever asked for
   // the post: a rename, a tombstone and a folder record reach here without

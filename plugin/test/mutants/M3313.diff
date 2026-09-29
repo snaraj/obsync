@@ -1,0 +1,12 @@
+# M3313: a removal judged against the whole vault is checked against the whole vault, not the selection in force (issue #240)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -869,7 +869,7 @@
+   // the whole vault, it is the selection in force now -- a selection set in
+   // between makes the check stricter, never wider. A FILE is checked against
+   // the selection in force, always.
+-  if (manifest.v === 2) assertFolderCaseScope(manifest.path, judged ?? context.state.data.syncFolders);
++  if (manifest.v === 2) assertFolderCaseScope(manifest.path, judged);
+   else assertSyncPath(manifest.path, context.state.data.syncFolders);
+   // AND NEVER A PATH IN A VAULT OF ITS OWN (issue #180), whatever asked for
+   // the post: a rename, a tombstone and a folder record reach here without

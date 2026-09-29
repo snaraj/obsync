@@ -1493,6 +1493,19 @@ A destination this version syncs
 in neither direction (hidden, malformed) cannot be followed: the selection
 stays where it is and the files leave the scope unpublished.
 
+The folder's own record is retired against the selection BEFORE the move as
+well (issue #240): a queued folder removal carries the selection it was judged
+against to the post, where the folder rule checks it (`postManifest`). Checked
+against the selection after the move, the old name of a renamed selected
+folder was refused, so every other device kept an empty folder under it and a
+device paired later received one. Nothing wider is admitted: only removals the
+engine judged carry a selection; one judged against the whole vault is checked
+against the selection in force at the post; saving a selection restarts the
+engine, so a judgement queued under the old one is never sent and the next
+pass judges the record against the new one; and a file is always checked
+against the selection in force. The judgement lives in memory only: a removal
+whose post fails, or that a stop cuts off before it is sent, is not sent again.
+
 Unloading the plugin invalidates pending startup and scope-change
 continuations. A cancelled folder change cannot restart sync or replace a
 newer load's engine or state. A local data write already issued may still

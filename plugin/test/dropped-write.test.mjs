@@ -38,7 +38,13 @@ async function emptied(r, before) {
   const empty = [];
   for (const frame of r.server.journal.slice(before)) {
     if (frame.device_id !== KEYS.deviceId) continue;
-    const manifest = await decodeRecordManifest(r.context, frame);
+    // DECRYPTED, NOT ADMITTED: every note frame is read whatever its path, and
+    // a renamed selected folder's own tombstone -- which names a folder outside
+    // the selection that followed it (issue #240) -- is no receiver's question.
+    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
+    const manifest = JSON.parse(await c.decryptManifest(
+      r.keys.manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
+    ));
     if (manifest.v === 1 && (manifest.deleted || manifest.size === 0)) empty.push({ path: manifest.path, fileId: frame.file_id, deleted: !!manifest.deleted });
   }
   return empty;

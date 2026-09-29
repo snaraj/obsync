@@ -772,10 +772,12 @@ export class SyncEngine {
    * Queued folder paths to publish a record for, each with whether it is a
    * CREATION -- a folder made or renamed here, which is published again over a
    * tombstone the server still holds for that path (`push.ts`, `pushFolder`,
-   * issue #165) -- and queued paths to tombstone.
+   * issue #165) -- and queued paths to tombstone, each with the selection its
+   * removal was JUDGED against: a renamed selected folder's old name is in no
+   * selection by the time its tombstone is posted (issue #240).
    */
   private readonly folderPublishes = new Map<string, boolean>();
-  private readonly folderRemovals = new Set<string>();
+  private readonly folderRemovals = new Map<string, SyncFolders>();
   /**
    * Queued paths that must reach the server BEFORE anything queued behind
    * them: the wire order, which pushes in flight side by side are not
@@ -1821,7 +1823,7 @@ export class SyncEngine {
       this.options.host.log("watch path_class=folder decision=echo_suppressed event=delete");
       return;
     }
-    this.folderRemovals.add(path);
+    this.folderRemovals.set(path, folders);
     this.enqueue(path);
   }
 
@@ -2259,11 +2261,15 @@ export class SyncEngine {
 
   private async pushNow(path: string): Promise<void> {
     const context = this.need();
+    // What the lines below name: a folder's removal is no file (issue #240).
+    let pathClass = "file";
     try {
       // Folder work first: a path is a folder or a file, never both, and the
       // folder sets are the only ones that can name a path with no stat.
+      const judged = this.folderRemovals.get(path);
       if (this.folderRemovals.delete(path)) {
-        const versionId = await pushFolderDelete(context, path);
+        pathClass = "folder";
+        const versionId = await pushFolderDelete(context, path, judged);
         if (versionId !== null) {
           context.authored.add(versionId);
           this.accepted(true);
@@ -2373,13 +2379,13 @@ export class SyncEngine {
       // logged and dropped, and the status bar stays quiet. Every other
       // failure is the user's business.
       if (error instanceof VaultPathError) {
-        context.host.log(`push path_class=file decision=not_synced reason=${error.refusal}`);
+        context.host.log(`push path_class=${pathClass} decision=not_synced reason=${error.refusal}`);
         return;
       }
       // A push the stop cut at a chunk boundary is not a failure: the file is
       // still unsent, and the next start's pass queues it again.
       if (!this.running && stopped(error)) {
-        context.host.log("push path_class=file decision=cancelled reason=engine_stopped");
+        context.host.log(`push path_class=${pathClass} decision=cancelled reason=engine_stopped`);
         return;
       }
       // Nor is a path that went away while it waited its turn (issue #164):
@@ -2389,7 +2395,7 @@ export class SyncEngine {
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      context.host.log(`push path_class=file decision=failed reason=${message}`);
+      context.host.log(`push path_class=${pathClass} decision=failed reason=${message}`);
       if (error instanceof ApiError && error.code === "domain_mismatch") {
         await this.rekeyed(context, path);
         return;
@@ -3812,7 +3818,7 @@ export class SyncEngine {
         if (present.has(folder) || casedFolders.has(folder)) continue;
         if (!this.trackedFolder(folder, "reconcile_folder_state")) { folderSkipped++; continue; }
         if (left.length > 0) { this.folderLeftScope(folder, context.state.data.syncFolders); continue; }
-        this.folderRemovals.add(folder);
+        this.folderRemovals.set(folder, context.state.data.syncFolders);
         this.enqueue(folder);
         folderQueued++;
       }
@@ -3925,7 +3931,7 @@ export class SyncEngine {
       // handlers drop it: a path is a removal or a publication, never both,
       // and `pushNow` would otherwise answer the removal for both.
       this.folderPublished(from);
-      this.folderRemovals.add(from);
+      this.folderRemovals.set(from, context.state.data.syncFolders);
       this.enqueue(from);
       this.folderRemovals.delete(to);
       // ARMED BEFORE THE ENQUEUE, because `enqueue` drains synchronously as

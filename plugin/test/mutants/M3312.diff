@@ -1,0 +1,12 @@
+# M3312: a folder removal is stored as judged against the whole vault (issue #240)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1823,7 +1823,7 @@
+       this.options.host.log("watch path_class=folder decision=echo_suppressed event=delete");
+       return;
+     }
+-    this.folderRemovals.set(path, folders);
++    this.folderRemovals.set(path, undefined);
+     this.enqueue(path);
+   }
+ 
