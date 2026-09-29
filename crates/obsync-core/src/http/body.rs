@@ -1,7 +1,9 @@
 //! The request body: framing, the size the client declared, and the rate floor
 //! that stops a connection from being held open for free.
 
-use std::io::{self, BufReader, Cursor, Read};
+use std::io::{self, Read};
+#[cfg(test)]
+use std::io::{BufReader, Cursor};
 use std::time::{Duration, Instant};
 
 use super::{BUFFER_BYTES, ConnReader, LineEnd, is_timeout, read_line};
@@ -67,7 +69,11 @@ impl Body {
         Body::new(None, Framing::None, 0, None)
     }
 
-    /// A body already in memory, for testing a handler without a socket.
+    /// A body already in memory, for this crate's tests. It exists in test
+    /// builds of this crate only: a server has no way to make a body that did
+    /// not arrive on its connection, so a handler cannot read a second body to
+    /// take a second reservation for its credential check (review of 0bf6a62).
+    #[cfg(test)]
     pub fn from_bytes(bytes: Vec<u8>) -> Body {
         let len = bytes.len() as u64;
         let reader = BufReader::with_capacity(BUFFER_BYTES, boxed(bytes));
@@ -342,6 +348,7 @@ impl Read for Body {
     }
 }
 
+#[cfg(test)]
 fn boxed(bytes: Vec<u8>) -> Box<dyn Read + Send> {
     Box::new(Cursor::new(bytes))
 }

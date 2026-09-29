@@ -673,7 +673,7 @@ fn authenticate(
         }
         BodyHash::Buffer => {
             super::unverified::read_body(app, req, super::JSON_BODY_LIMIT)?
-                .accept(|raw, _| proof(&hex::encode(&sha256::sha256(raw))))?
+                .accept(|held| proof(&hex::encode(&sha256::sha256(held.value()))))?
                 .0
         }
     };

@@ -21,7 +21,7 @@ use crate::types::DeviceId;
 
 use super::edge::ClientInfo;
 use super::render::{self, n, s};
-use super::unverified::{self, Held};
+use super::unverified::{self, Credential};
 use super::{ApiError, App, auth, devices, rand};
 
 /// A pairing is claimable for ten minutes and no longer
@@ -263,13 +263,14 @@ impl PairingTable {
 
     /// Check that a claim may proceed: the token matches, the pairing is live,
     /// and nobody has claimed it yet. The caller creates the device and then
-    /// calls [`PairingTable::finish_claim`] under the same lock. The token is
-    /// the credential, so this takes [`Held`]: it runs only inside `accept`,
-    /// with the claim's body still reserved.
+    /// calls [`PairingTable::finish_claim`] under the same lock. It takes the
+    /// token as a [`Credential`], so it runs only inside `accept`, on the
+    /// claim's body whose reservation is held.
     ///
     /// # Errors
     /// `404 unknown_pairing`, `410 pairing_expired`, `409 already_claimed`.
-    pub fn begin_claim(&self, id: &str, token: &str, now: u64, _: &Held) -> Result<(), ApiError> {
+    pub fn begin_claim(&self, id: &str, token: &Credential, now: u64) -> Result<(), ApiError> {
+        let token = token.as_str();
         let Some(p) = self.entries.get(id) else {
             // A code that expired is not a mistyped one, and says so -- but
             // only to a caller holding its token, so a stranger probing ids
@@ -489,13 +490,13 @@ pub fn claim(
     // across device creation so two racing claims cannot both pass
     // `begin_claim`.
     let (_, (enrolment, vault, mut pairings)) =
-        unverified::token_body(app, req)?.accept(|raw, held| {
-            let body = &render::parse_json(raw)?;
-            let enroll = render::field_str(body, "enroll_token")?.to_string();
-            let enrolment = devices::enrolment_fields(body)?;
-            let vault = vault_details(body)?;
+        unverified::token_body(app, req)?.accept(|held| {
+            let parsed = held.json()?;
+            let enroll = parsed.credential("enroll_token")?;
+            let enrolment = devices::enrolment_fields(parsed.value())?;
+            let vault = vault_details(parsed.value())?;
             let pairings = app.pairings.lock().expect("pairings");
-            pairings.begin_claim(id, &enroll, now, held)?;
+            pairings.begin_claim(id, &enroll, now)?;
             Ok((enrolment, vault, pairings))
         })?;
     let (name, platform, app_version) = (
@@ -729,7 +730,11 @@ fn dev(byte: u8) -> DeviceId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::unverified::HELD_FOR_TESTS;
+    use crate::api::unverified::Credential;
+
+    fn tok(token: &str) -> Credential<'_> {
+        Credential::for_tests(token)
+    }
 
     const NOW: u64 = 1_757_200_000;
 
@@ -797,8 +802,7 @@ mod tests {
 
     fn claimed() -> (PairingTable, DeviceId, DeviceId) {
         let (mut t, creator) = table();
-        t.begin_claim("p1", "tok", NOW, &HELD_FOR_TESTS)
-            .expect("claimable");
+        t.begin_claim("p1", &tok("tok"), NOW).expect("claimable");
         let claimant = dev(2);
         t.finish_claim(
             "p1",
@@ -836,7 +840,7 @@ mod tests {
             "unknown_pairing"
         );
         assert_eq!(
-            t.begin_claim("nope", "tok", NOW, &HELD_FOR_TESTS)
+            t.begin_claim("nope", &tok("tok"), NOW)
                 .expect_err("unknown")
                 .code,
             "unknown_pairing"
@@ -847,7 +851,7 @@ mod tests {
     fn the_wrong_enrollment_token_is_indistinguishable_from_an_unknown_pairing() {
         let (t, _) = table();
         let e = t
-            .begin_claim("p1", "wrong", NOW, &HELD_FOR_TESTS)
+            .begin_claim("p1", &tok("wrong"), NOW)
             .expect_err("refused");
         assert_eq!(e.status, 404);
         assert_eq!(e.code, "unknown_pairing");
@@ -857,7 +861,7 @@ mod tests {
     fn a_claim_after_ten_minutes_is_expired() {
         let (t, _) = table();
         let e = t
-            .begin_claim("p1", "tok", NOW + PAIRING_TTL_SECS, &HELD_FOR_TESTS)
+            .begin_claim("p1", &tok("tok"), NOW + PAIRING_TTL_SECS)
             .expect_err("expired");
         assert_eq!(e.status, 410);
         assert_eq!(e.code, "pairing_expired");
@@ -867,7 +871,7 @@ mod tests {
     fn a_second_claim_is_refused() {
         let (t, _, _) = claimed();
         let e = t
-            .begin_claim("p1", "tok", NOW, &HELD_FOR_TESTS)
+            .begin_claim("p1", &tok("tok"), NOW)
             .expect_err("already claimed");
         assert_eq!(e.status, 409);
         assert_eq!(e.code, "already_claimed");
@@ -1162,32 +1166,28 @@ mod tests {
         let (mut t, _) = table();
         t.sweep(NOW + PAIRING_TTL_SECS);
         let late = NOW + PAIRING_TTL_SECS + 1;
-        let e = t
-            .begin_claim("p1", "tok", late, &HELD_FOR_TESTS)
-            .expect_err("late");
+        let e = t.begin_claim("p1", &tok("tok"), late).expect_err("late");
         assert_eq!((e.status, e.code), (410, "pairing_expired"));
         let e = t
-            .begin_claim("p1", "tak", late, &HELD_FOR_TESTS)
+            .begin_claim("p1", &tok("tak"), late)
             .expect_err("mistyped");
         assert_eq!(
             (e.status, e.code),
             (404, "unknown_pairing"),
             "the wrong token learns nothing"
         );
-        let e = t
-            .begin_claim("p9", "tok", late, &HELD_FOR_TESTS)
-            .expect_err("unknown");
+        let e = t.begin_claim("p9", &tok("tok"), late).expect_err("unknown");
         assert_eq!(e.code, "unknown_pairing");
         t.sweep(NOW + PAIRING_TTL_SECS + ENDED_KEPT_SECS - 1);
         assert_eq!(
-            t.begin_claim("p1", "tok", late, &HELD_FOR_TESTS)
+            t.begin_claim("p1", &tok("tok"), late)
                 .expect_err("kept")
                 .code,
             "pairing_expired"
         );
         t.sweep(NOW + PAIRING_TTL_SECS + ENDED_KEPT_SECS);
         assert_eq!(
-            t.begin_claim("p1", "tok", late, &HELD_FOR_TESTS)
+            t.begin_claim("p1", &tok("tok"), late)
                 .expect_err("forgotten")
                 .code,
             "unknown_pairing",
@@ -1243,7 +1243,7 @@ mod tests {
         assert_eq!(t.ended.len(), ENDED_KEPT_MAX);
         for i in 0..3 {
             assert_eq!(
-                t.begin_claim(&format!("p{i}"), "tok", late, &HELD_FOR_TESTS)
+                t.begin_claim(&format!("p{i}"), &tok("tok"), late)
                     .expect_err("evicted")
                     .code,
                 "unknown_pairing",
@@ -1251,7 +1251,7 @@ mod tests {
             );
         }
         assert_eq!(
-            t.begin_claim(&format!("p{}", total - 1), "tok", late, &HELD_FOR_TESTS)
+            t.begin_claim(&format!("p{}", total - 1), &tok("tok"), late)
                 .expect_err("kept")
                 .code,
             "pairing_expired"

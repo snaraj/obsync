@@ -55,37 +55,41 @@ PROBE_BODY = """    match std::fs::remove_file(&path) {
         .mode(0o600)
         .open(&path)?;"""
 CLAIM_CHECK = """    let (_, (enrolment, vault, mut pairings)) =
-        unverified::token_body(app, req)?.accept(|raw, held| {
-            let body = &render::parse_json(raw)?;
-            let enroll = render::field_str(body, "enroll_token")?.to_string();
-            let enrolment = devices::enrolment_fields(body)?;
-            let vault = vault_details(body)?;
+        unverified::token_body(app, req)?.accept(|held| {
+            let parsed = held.json()?;
+            let enroll = parsed.credential("enroll_token")?;
+            let enrolment = devices::enrolment_fields(parsed.value())?;
+            let vault = vault_details(parsed.value())?;
             let pairings = app.pairings.lock().expect("pairings");
-            pairings.begin_claim(id, &enroll, now, held)?;
+            pairings.begin_claim(id, &enroll, now)?;
             Ok((enrolment, vault, pairings))
         })?;
 """
 SETUP_CHECK = """    let (_, (body, (account_name, enrolment))) =
-        unverified::token_body(app, req)?.accept(|raw, held| {
-            let body = render::parse_json(raw)?;
-            let fields = setup_fields(app, &body, held)?;
-            Ok((body, fields))
+        unverified::token_body(app, req)?.accept(|held| {
+            let body = held.json()?;
+            let fields = setup_fields(app, &body)?;
+            Ok((body.into_value(), fields))
         })?;
 """
-# The setup check, run inside `accept` on what SEALED names.
-SEALED_SETUP = """        .accept(|raw, held| {
-            let body = render::parse_json(raw)?;
-            let fields = setup_fields(app, &body, held)?;
-            Ok((body, fields))
+# The setup check, run inside `accept` on what the line before it seals.
+SEALED_SETUP = """        .accept(|held| {
+            let body = held.json()?;
+            let fields = setup_fields(app, &body)?;
+            Ok((body.into_value(), fields))
         })?;
+"""
+# The setup body accepted with no check and parsed after its reservation ends.
+SETUP_RELEASED = """    let (raw, ()) = unverified::token_body(app, req)?.accept(|_| Ok(()))?;
+    let outside = render::parse_json(&raw)?;
 """
 # The claim's fields and table lock inside `accept`, and `begin_claim` after it.
 CLAIM_AFTER = """    let (_, (enroll, enrolment, vault, mut pairings)) =
-        unverified::token_body(app, req)?.accept(|raw, _| {
-            let body = &render::parse_json(raw)?;
-            let enroll = render::field_str(body, "enroll_token")?.to_string();
+        unverified::token_body(app, req)?.accept(|held| {
+            let parsed = held.json()?;
+            let enroll = parsed.credential("enroll_token")?.as_str().to_string();
             let pairings = app.pairings.lock().expect("pairings");
-            Ok((enroll, devices::enrolment_fields(body)?, vault_details(body)?, pairings))
+            Ok((enroll, devices::enrolment_fields(parsed.value())?, vault_details(parsed.value())?, pairings))
         })?;
 """
 CASES = [
@@ -139,36 +143,30 @@ CASES = [
     # probes release inside `accept`, or launder a check through a second,
     # empty body, and the route tests catch each.
     ("preauth-reserved", SERVER, UNVERIFIED,
-     "        let found = check(&self.value, &Held(()))?;\n        let Self { value, reserved } = self;\n"
+     "        let found = check(Held(&self.value))?;\n        let Self { value, reserved } = self;\n"
      "        drop(reserved);\n",
      "        let Self { value, reserved } = self;\n        drop(reserved);\n"
-     "        let found = check(&value, &Held(()))?;\n",
+     "        let found = check(Held(&value))?;\n",
      ACCEPT),
     ("preauth-signed-reserved", SERVER, AUTH,
      "            super::unverified::read_body(app, req, super::JSON_BODY_LIMIT)?\n"
-     "                .accept(|raw, _| proof(&hex::encode(&sha256::sha256(raw))))?\n"
+     "                .accept(|held| proof(&hex::encode(&sha256::sha256(held.value()))))?\n"
      "                .0\n",
      "            let raw = super::unverified::read_body(app, req, super::JSON_BODY_LIMIT)?\n"
-     "                .accept(|_, _| Ok(()))?\n                .0;\n"
+     "                .accept(|_| Ok(()))?\n                .0;\n"
      "            proof(&hex::encode(&sha256::sha256(&raw)))?;\n            raw\n",
      SIGNED),
-    ("preauth-claim-laundered", SERVER, PAIRING, CLAIM_CHECK,
-     "    let (_, (enroll, enrolment, vault)) = unverified::token_body(app, req)?.accept(|raw, _| {\n"
-     "        let body = &render::parse_json(raw)?;\n"
-     "        let enroll = render::field_str(body, \"enroll_token\")?.to_string();\n"
-     "        Ok((enroll, devices::enrolment_fields(body)?, vault_details(body)?))\n    })?;\n"
-     "    req.body = obsync_core::http::Body::from_bytes(Vec::new());\n"
-     "    let (_, mut pairings) = unverified::read_body(app, req, 0)?.accept(|_, held| {\n"
-     "        let pairings = app.pairings.lock().expect(\"pairings\");\n"
-     "        pairings.begin_claim(id, &enroll, now, held)?;\n        Ok(pairings)\n    })?;\n",
-     CLAIMS),
-    ("preauth-setup-laundered", SERVER, SETUP, SETUP_CHECK,
-     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
-     "    let body = render::parse_json(&raw)?;\n"
-     "    req.body = obsync_core::http::Body::from_bytes(Vec::new());\n"
-     "    let (_, (account_name, enrolment)) =\n"
-     "        unverified::read_body(app, req, 0)?.accept(|_, held| setup_fields(app, &body, held))?;\n",
+    # The reviewer's second-seal variants at 0bf6a62: release the real body,
+    # parse it outside, and seal an empty one for the check. The check reads
+    # its credential from the body it holds, so it finds none.
+    ("preauth-setup-second-seal", SERVER, SETUP, SETUP_CHECK,
+     SETUP_RELEASED + "    let _ = outside;\n    req.body = obsync_core::http::Body::empty();\n" + SETUP_CHECK,
      SETUP_HELD),
+    ("preauth-claim-second-seal", SERVER, PAIRING, CLAIM_CHECK,
+     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_| Ok(()))?;\n"
+     "    let _outside = render::parse_json(&raw)?;\n"
+     "    req.body = obsync_core::http::Body::empty();\n" + CLAIM_CHECK,
+     CLAIMS),
     # `token_body` itself, the entry both token routes call (review of c78ef46).
     ("preauth-token-wrapper-reserve", SERVER, UNVERIFIED,
      "        TOKEN_BODY_LIMIT,\n        Some(TOKEN_BODY_RESERVE),\n",
@@ -308,41 +306,44 @@ CASES = [
 # must be refused by `cargo check` of the server as it ships, with this error.
 ESCAPES = [
     ("escape-reseal", SETUP, SETUP_CHECK,
-     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_| Ok(()))?;\n"
      "    let (_, (body, (account_name, enrolment))) =\n"
      "        unverified::Unverified::new(raw, app.reserve_body(super::TOKEN_BODY_RESERVE)?)\n"
      + SEALED_SETUP,
      "named `new` found for struct `Unverified"),
     ("escape-reseal-fields", SETUP, SETUP_CHECK,
-     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_| Ok(()))?;\n"
      "    let sealed = unverified::token_body(app, req)?;\n"
      "    let (_, (body, (account_name, enrolment))) = unverified::Unverified { value: raw, ..sealed }\n"
      + SEALED_SETUP,
      "fields `value` and `reserved` of struct `Unverified` are private"),
+    # The reviewer's second seal with the real bytes: a server build cannot
+    # make a body that did not arrive on the connection.
+    ("escape-launder", SETUP, SETUP_CHECK,
+     SETUP_RELEASED + "    req.body = obsync_core::http::Body::from_bytes(raw);\n" + SETUP_CHECK,
+     "named `from_bytes` found for struct `Body`"),
     ("escape-reserve", SETUP, SETUP_CHECK,
      "    let _reserved = app.bodies.reserve(super::TOKEN_BODY_RESERVE);\n" + SETUP_CHECK,
      "method `reserve` is private"),
     ("escape-release", SETUP, SETUP_CHECK,
      "    app.bodies.held.store(0, std::sync::atomic::Ordering::SeqCst);\n" + SETUP_CHECK,
      "field `held` of struct `BodyBudget` is private"),
-    # The parse moved out of `accept` takes the token check with it.
+    # A credential parsed anywhere but from the held body is not one.
     ("escape-setup-check-after", SETUP, SETUP_CHECK,
-     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
-     "    let body = render::parse_json(&raw)?;\n"
-     "    let (account_name, enrolment) = setup_fields(app, &body, held)?;\n",
-     "cannot find value `held` in this scope"),
+     SETUP_RELEASED + "    let body = outside;\n    let (account_name, enrolment) = setup_fields(app, &body)?;\n",
+     "expected `&Parsed<'_>`, found `&Value`"),
     ("escape-claim-check-after", PAIRING, CLAIM_CHECK,
-     CLAIM_AFTER + "    pairings.begin_claim(id, &enroll, now, held)?;\n",
-     "cannot find value `held` in this scope"),
-    ("escape-test-held", PAIRING, CLAIM_CHECK,
-     CLAIM_AFTER + "    pairings.begin_claim(id, &enroll, now, &unverified::HELD_FOR_TESTS)?;\n",
-     "cannot find value `HELD_FOR_TESTS` in module `unverified`"),
+     CLAIM_AFTER + "    pairings.begin_claim(id, &enroll, now)?;\n",
+     "expected `&Credential<'_>`, found `&String`"),
+    ("escape-test-credential", PAIRING, CLAIM_CHECK,
+     CLAIM_AFTER + "    pairings.begin_claim(id, &unverified::Credential::for_tests(&enroll), now)?;\n",
+     "named `for_tests` found for struct `unverified::Credential"),
     ("escape-keep-held", SETUP, SETUP_CHECK,
      "    let mut kept = None;\n"
-     "    let (raw, ()) = unverified::token_body(app, req)?.accept(|_, held| {\n"
+     "    let (_, ()) = unverified::token_body(app, req)?.accept(|held| {\n"
      "        kept = Some(held);\n        Ok(())\n    })?;\n"
-     "    let body = render::parse_json(&raw)?;\n"
-     "    let (account_name, enrolment) = setup_fields(app, &body, kept.expect(\"held\"))?;\n",
+     "    let body = kept.expect(\"held\").json()?;\n"
+     "    let (account_name, enrolment) = setup_fields(app, &body)?;\n    let body = body.into_value();\n",
      "borrowed data escapes outside of closure"),
 ]
 

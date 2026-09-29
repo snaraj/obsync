@@ -4,7 +4,7 @@
 
 use obsync_core::ct;
 use obsync_core::http::{Request, Response};
-use obsync_core::json::{Value, obj};
+use obsync_core::json::obj;
 
 use crate::log::Val;
 use crate::storage::types::DeviceState;
@@ -12,7 +12,7 @@ use crate::storage::types::DeviceState;
 use super::devices::Enrolment;
 use super::edge::ClientInfo;
 use super::render::{self, s};
-use super::unverified::{self, Held};
+use super::unverified::{self, Credential, Parsed};
 use super::{ApiError, App, auth, devices};
 
 /// `POST /v1/setup`: create an account, or recover one with the token and vault proof.
@@ -30,10 +30,10 @@ pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
     // is parsed, its fields read and the token compared inside `accept`, with
     // the body still reserved (`Unverified`).
     let (_, (body, (account_name, enrolment))) =
-        unverified::token_body(app, req)?.accept(|raw, held| {
-            let body = render::parse_json(raw)?;
-            let fields = setup_fields(app, &body, held)?;
-            Ok((body, fields))
+        unverified::token_body(app, req)?.accept(|held| {
+            let body = held.json()?;
+            let fields = setup_fields(app, &body)?;
+            Ok((body.into_value(), fields))
         })?;
     // The token matched in constant time, so this caller holds the
     // first-boot credential. The `409` below is answered to a caller that
@@ -106,8 +106,9 @@ pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
 /// The account name and the first device's enrolment from a setup body,
 /// once its token has matched. Runs inside `accept`: until the token matches,
 /// the body is an unverified caller's.
-fn setup_fields(app: &App, body: &Value, held: &Held) -> Result<(String, Enrolment), ApiError> {
-    let token = render::field_str(body, "setup_token")?;
+fn setup_fields(app: &App, parsed: &Parsed) -> Result<(String, Enrolment), ApiError> {
+    let body = parsed.value();
+    let token = parsed.credential("setup_token")?;
     let account_name =
         render::text_field(render::field_str(body, "account_name")?, "account_name", 64)?;
     let device = body
@@ -124,18 +125,18 @@ fn setup_fields(app: &App, body: &Value, held: &Held) -> Result<(String, Enrolme
     // which is a free "is this server claimed?" oracle on a public hostname.
     // Now only a caller holding the token can tell the two apart
     // (`docs/protocol.md`, "Setup and account").
-    check_token(app, token, held)?;
+    check_token(app, &token)?;
     Ok((account_name, enrolment))
 }
 
 /// Refuse unless `token` is the outstanding setup token, compared in constant
-/// time. The token is the credential, so this takes [`Held`]: the comparison
-/// and its refusal run only inside `accept`, with the body still reserved.
+/// time. It takes a [`Credential`], so the comparison and its refusal run only
+/// inside `accept`, on the body whose reservation is held.
 ///
 /// # Errors
 /// `409 already_set_up` when no setup token is outstanding, and
 /// `401 bad_setup_token` when this one does not match.
-fn check_token(app: &App, token: &str, _: &Held) -> Result<(), ApiError> {
+fn check_token(app: &App, token: &Credential) -> Result<(), ApiError> {
     let expected = app
         .setup_token
         .as_deref()
@@ -144,7 +145,7 @@ fn check_token(app: &App, token: &str, _: &Held) -> Result<(), ApiError> {
     app.bodies
         .at_token_check
         .store(app.preauth_held(), std::sync::atomic::Ordering::SeqCst);
-    if !ct::eq(expected.as_bytes(), token.as_bytes()) {
+    if !ct::eq(expected.as_bytes(), token.as_str().as_bytes()) {
         app.log.warn(
             "setup_refused",
             &[("decision", Val::word("bad_setup_token"))],
