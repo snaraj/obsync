@@ -496,7 +496,7 @@ one that makes sync look broken:
 bounded by the connection limit (`OBSYNC_MAX_CONNECTIONS`, 256 by default)
 and the 10-second header timeout, which closes a connection that has not
 finished its request head, and the bodies no credential has verified yet
-share one 64 MiB reservation.
+share one 64 MiB reservation, each held until its credential verifies.
 
 What has actually been proved is the LAN: the recorded run
 ([`docs/validation-runs/2026-09-14.md`](validation-runs/2026-09-14.md))

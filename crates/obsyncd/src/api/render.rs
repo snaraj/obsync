@@ -20,7 +20,9 @@ use crate::storage::types::{
 };
 use crate::types::{DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
-use super::{ApiError, App, JSON_BODY_LIMIT};
+use super::{
+    ApiError, App, FILE_RECORD_MAX, JSON_BODY_LIMIT, Reserved, TOKEN_BODY_LIMIT, TOKEN_BODY_RESERVE,
+};
 
 /// A JSON string.
 pub fn s(v: &str) -> Value {
@@ -153,16 +155,54 @@ pub fn version(v: &VersionRecord) -> Value {
 /// file's domain, so repeating it per version would be a second copy of one
 /// fact (`docs/architecture.md` 5.1 item 4). The change feed carries its own,
 /// because a feed entry arrives without its file.
-pub fn file(f: &FileRecord) -> Value {
+///
+/// Never past [`FILE_RECORD_MAX`] bytes of JSON: every head, then the other
+/// versions newest first while the next one fits. The first that does not
+/// fit ends them, so the record is always a file's newest versions, as the
+/// retention cap already makes it. Returns the record and how many versions
+/// it left out.
+pub fn file(f: &FileRecord) -> (Value, usize) {
+    file_within(f, FILE_RECORD_MAX as usize)
+}
+
+fn file_within(f: &FileRecord, budget: usize) -> (Value, usize) {
+    // Each version's text and the comma after it.
+    let size = |value: &Value| value.to_json().len() + 1;
+    let heads: Vec<Option<Value>> = f
+        .versions
+        .iter()
+        .map(|v| f.heads.contains(&v.version_id).then(|| version(v)))
+        .collect();
+    let mut used =
+        file_of(f, Vec::new()).to_json().len() + heads.iter().flatten().map(size).sum::<usize>();
+    let mut kept = Vec::with_capacity(f.versions.len());
+    let mut left = 0;
+    for (v, head) in f.versions.iter().zip(heads) {
+        if let Some(value) = head {
+            kept.push(value);
+            continue;
+        }
+        if left == 0 {
+            let value = version(v);
+            let len = size(&value);
+            if used + len <= budget {
+                used += len;
+                kept.push(value);
+                continue;
+            }
+        }
+        left += 1;
+    }
+    (file_of(f, kept), left)
+}
+
+fn file_of(f: &FileRecord, versions: Vec<Value>) -> Value {
     obj(vec![
         ("file_id", s(&f.file_id.to_string())),
         ("domain_id", s(&f.domain_id.to_string())),
         ("heads", strs(f.heads.iter().map(ToString::to_string))),
         ("conflicted", b(f.conflicted)),
-        (
-            "versions",
-            Value::Array(f.versions.iter().map(version).collect()),
-        ),
+        ("versions", Value::Array(versions)),
     ])
 }
 
@@ -266,29 +306,50 @@ pub fn quarantine(last: Option<&ScrubSummary>) -> Value {
     )
 }
 
-/// Read and parse a JSON request body under the protocol's 4 MiB ceiling.
+/// Read and parse a body whose credential rides inside it (setup, pairing
+/// claim), under [`TOKEN_BODY_LIMIT`].
+///
+/// The reservation covers the body AND its parse ([`TOKEN_BODY_RESERVE`]),
+/// and it is returned with the value: the caller holds it until the token
+/// verifies, so what an unverified caller makes this process keep, waiting
+/// included, stays inside [`super::PREAUTH_BODY_BUDGET`].
 ///
 /// # Errors
-/// `413 body_too_large` above the ceiling, `400 bad_json` when it does not
-/// parse, `400 bad_request` when the body cannot be read.
-pub fn json_body(app: &App, req: &mut Request) -> Result<Value, ApiError> {
-    let raw = read_body(app, req, JSON_BODY_LIMIT)?;
-    parse_json(&raw)
+/// As [`read_body`], and `400 bad_json` when the body does not parse.
+pub fn token_body<'a>(app: &'a App, req: &mut Request) -> Result<(Value, Reserved<'a>), ApiError> {
+    let (raw, reserved) = read_reserved(app, req, TOKEN_BODY_LIMIT, Some(TOKEN_BODY_RESERVE))?;
+    Ok((parse_json(&raw)?, reserved))
 }
 
 /// Read a request body under an explicit ceiling.
 ///
 /// Every caller reads its body before a credential has verified, so the read
-/// holds a reservation against [`super::PREAUTH_BODY_BUDGET`] for as long as
-/// it takes. A chunked body's length is unknown until it ends, so it reserves
-/// the ceiling.
+/// holds a reservation against [`super::PREAUTH_BODY_BUDGET`], and returns it
+/// with the body: the caller drops it once the credential has verified. A
+/// chunked body's length is unknown until it ends, so it reserves the
+/// ceiling.
 ///
 /// # Errors
 /// `413 body_too_large` above the ceiling, `503 slow_body` for a body slower
 /// than the rate floor, `503 body_incomplete` for one that ended or broke
 /// before it was whole, `400 bad_request` for a chunked body whose framing is
 /// not HTTP, and a bare `503` when the budget has no room for this body.
-pub fn read_body(app: &App, req: &mut Request, limit: u64) -> Result<Vec<u8>, ApiError> {
+pub fn read_body<'a>(
+    app: &'a App,
+    req: &mut Request,
+    limit: u64,
+) -> Result<(Vec<u8>, Reserved<'a>), ApiError> {
+    read_reserved(app, req, limit, None)
+}
+
+/// [`read_body`], reserving `reserve` bytes, or the body's declared length
+/// when `None`.
+fn read_reserved<'a>(
+    app: &'a App,
+    req: &mut Request,
+    limit: u64,
+    reserve: Option<u64>,
+) -> Result<(Vec<u8>, Reserved<'a>), ApiError> {
     let declared = req.body.declared_len();
     if let Some(declared) = declared
         && declared > limit
@@ -299,9 +360,9 @@ pub fn read_body(app: &App, req: &mut Request, limit: u64) -> Result<Vec<u8>, Ap
             "request body exceeds the limit",
         ));
     }
-    let _reserved = app.reserve_body(declared.unwrap_or(limit))?;
+    let reserved = app.reserve_body(reserve.unwrap_or(declared.unwrap_or(limit)))?;
     match req.body.read_to_vec(limit as usize) {
-        Ok(raw) => Ok(raw),
+        Ok(raw) => Ok((raw, reserved)),
         Err(e) if e.kind() == ErrorKind::TimedOut => Err(slow_body(app, &req.body)),
         // The body refuses its ceiling once more than `limit` bytes of it
         // have arrived, and only then; the same kind below that is framing.
@@ -499,6 +560,204 @@ pub fn text_field(v: &str, name: &str, max: usize) -> Result<String, ApiError> {
 mod tests {
     use super::*;
 
+    /// The heap a parsed value holds: every `Vec` and `String` by its
+    /// capacity, and 16 bytes of allocator bookkeeping for each.
+    fn heap(value: &Value) -> usize {
+        let block = |bytes: usize| if bytes == 0 { 0 } else { bytes + 16 };
+        match value {
+            Value::Str(text) => block(text.capacity()),
+            Value::Array(items) => {
+                block(items.capacity() * size_of::<Value>()) + items.iter().map(heap).sum::<usize>()
+            }
+            Value::Object(pairs) => {
+                block(pairs.capacity() * size_of::<(String, Value)>())
+                    + pairs
+                        .iter()
+                        .map(|(key, item)| block(key.capacity()) + heap(item))
+                        .sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+
+    /// Review of 7e1294d, finding 2: a token route's reservation covers its
+    /// body and the parse of it. The costliest shapes a body of
+    /// `TOKEN_BODY_LIMIT` bytes can take -- values two bytes apart, empty
+    /// containers, unique keys, one-element arrays, and nests at the depth
+    /// cap -- each parse, and body plus value fit what the read reserved.
+    #[test]
+    fn a_token_body_and_its_parse_fit_the_reservation() {
+        let limit = usize::try_from(TOKEN_BODY_LIMIT).expect("fits");
+        let fill = |open: &str, item: &dyn Fn(usize) -> String, close: &str| {
+            let mut doc = open.to_string();
+            let mut n = 0;
+            loop {
+                let next = format!("{}{}", if n == 0 { "" } else { "," }, item(n));
+                if doc.len() + next.len() + close.len() > limit {
+                    break;
+                }
+                doc.push_str(&next);
+                n += 1;
+            }
+            doc.push_str(close);
+            doc
+        };
+        let nest = "[".repeat(obsync_core::json::MAX_DEPTH - 1)
+            + &"]".repeat(obsync_core::json::MAX_DEPTH - 1);
+        let shapes = [
+            ("numbers", fill("[", &|_| "0".to_string(), "]")),
+            ("empty arrays", fill("[", &|_| "[]".to_string(), "]")),
+            ("empty objects", fill("[", &|_| "{}".to_string(), "]")),
+            ("empty strings", fill("[", &|_| "\"\"".to_string(), "]")),
+            ("one-element arrays", fill("[", &|_| "[0]".to_string(), "]")),
+            ("unique keys", fill("{", &|n| format!("\"{n}\":0"), "}")),
+            ("nests", fill("[", &|_| nest.clone(), "]")),
+        ];
+        let mut worst = 0.0f64;
+        for (name, doc) in &shapes {
+            assert!(
+                doc.len() <= limit && doc.len() > limit - 256,
+                "{name}: {} bytes",
+                doc.len()
+            );
+            let value = parse_json(doc.as_bytes()).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+            let held = doc.len() + heap(&value);
+            worst = worst.max(held as f64 / doc.len() as f64);
+            assert!(
+                held as u64 <= TOKEN_BODY_RESERVE,
+                "{name}: {held} bytes held for a {} byte body, {TOKEN_BODY_RESERVE} reserved",
+                doc.len()
+            );
+        }
+        // The reservation is not vacuous: the costliest shape needs most of
+        // it, so a ceiling raised without it is caught here.
+        assert!(
+            worst * TOKEN_BODY_LIMIT as f64 > TOKEN_BODY_RESERVE as f64 / 8.0,
+            "worst {worst:.1}x"
+        );
+    }
+
+    /// A version `id` of a test file: `sids` chunks and a manifest of
+    /// `manifest` bytes, as `files::post_version` accepts them.
+    fn sized_version(id: u8, sids: usize, manifest: usize) -> VersionRecord {
+        VersionRecord {
+            file_id: FileId::new([0x11; 16]),
+            domain_id: DomainId::new([0x22; 16]),
+            version_id: VersionId::new([id; 32]),
+            parents: Vec::new(),
+            sids: (0..sids)
+                .map(|n| {
+                    let mut bytes = [id; 32];
+                    bytes[..8].copy_from_slice(&(n as u64).to_be_bytes());
+                    Sid::new(bytes)
+                })
+                .collect(),
+            bytes: 8 * 1024 * 1024 * sids as u64,
+            manifest_ct: vec![0xa5; manifest],
+            manifest_nonce: [0x44; 12],
+            device_id: DeviceId::new([0x55; 16]),
+            ts: UnixMs(1_790_000_000_000 + u64::from(id)),
+            deleted: false,
+            seq: Seq(u64::from(id)),
+        }
+    }
+
+    fn record_of(versions: Vec<VersionRecord>, heads: &[u8]) -> FileRecord {
+        FileRecord {
+            file_id: FileId::new([0x11; 16]),
+            domain_id: DomainId::new([0x22; 16]),
+            heads: heads.iter().map(|id| VersionId::new([*id; 32])).collect(),
+            conflicted: heads.len() > 1,
+            versions,
+        }
+    }
+
+    fn kept(record: &Value) -> Vec<String> {
+        record
+            .get("versions")
+            .and_then(Value::as_array)
+            .expect("versions")
+            .iter()
+            .map(|v| v.get("version_id").and_then(Value::as_str).expect("id")[..2].to_string())
+            .collect()
+    }
+
+    /// Review of 7e1294d, finding 1: the reviewer's history. Sixty retained
+    /// versions of a file of 4,000 chunks of 8 MiB, each with a 648,152-byte
+    /// manifest -- every one a version the server accepts -- render past the
+    /// 64 MiB the plugin used to refuse, and are served whole.
+    #[test]
+    fn a_retained_history_past_sixty_four_mib_is_served_whole() {
+        let versions: Vec<VersionRecord> = (1..=60u8)
+            .rev()
+            .map(|id| sized_version(id, 4000, 648_152))
+            .collect();
+        let (record, left_out) = file(&record_of(versions, &[60]));
+        let json = record.to_json().len() as u64;
+        assert_eq!(left_out, 0);
+        assert_eq!(kept(&record).len(), 60);
+        assert!(
+            json > 64 * 1024 * 1024,
+            "the history renders as {json} bytes"
+        );
+        assert!(json <= FILE_RECORD_MAX);
+    }
+
+    /// And past the budget: every head stays, the other versions are the
+    /// newest that fit, and the first that does not fit ends them, even
+    /// when an older, smaller one would fit after it.
+    #[test]
+    fn a_record_past_its_budget_keeps_every_head_and_the_newest_versions() {
+        // Newest first: a head, two others, a second head, a small old one.
+        // The heads are as wide as the middle version, so a budget that
+        // forgot them would have room for it.
+        let versions = vec![
+            sized_version(0x50, 100, 10_000),
+            sized_version(0x40, 10, 100),
+            sized_version(0x30, 100, 10_000),
+            sized_version(0x20, 100, 10_000),
+            sized_version(0x10, 1, 10),
+        ];
+        let record = record_of(versions, &[0x50, 0x20]);
+        let whole = file_within(&record, usize::MAX);
+        assert_eq!(
+            (kept(&whole.0), whole.1),
+            (
+                vec!["50", "40", "30", "20", "10"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect::<Vec<_>>(),
+                0
+            )
+        );
+        let size = |id: u8| {
+            let v = record
+                .versions
+                .iter()
+                .find(|v| v.version_id == VersionId::new([id; 32]));
+            version(v.expect("a version of the record")).to_json().len() + 1
+        };
+        let budget = file_of(&record, Vec::new()).to_json().len()
+            + size(0x50)
+            + size(0x20)
+            + size(0x40)
+            + size(0x10);
+        let (trimmed, left_out) = file_within(&record, budget);
+        assert_eq!(
+            kept(&trimmed),
+            vec!["50", "40", "20"],
+            "the heads, and the newest that fit"
+        );
+        assert_eq!(left_out, 2);
+        assert!(trimmed.to_json().len() <= budget);
+        let (heads, left_out) = file_within(&record, 0);
+        assert_eq!(
+            (kept(&heads), left_out),
+            (vec!["50".to_string(), "20".to_string()], 3),
+            "no budget still names every head"
+        );
+    }
+
     #[test]
     fn text_fields_refuse_control_characters_and_overlength() {
         assert!(text_field("MacBook", "name", 64).is_ok());
@@ -536,7 +795,6 @@ mod tests {
 
         const HEADS_CEILING: usize = 8 * 1024;
         const VERSION_CEILING: u64 = 6 * 1024 * 1024;
-        const RECORD_CEILING: u64 = 450 * 1024 * 1024;
         const PAGE_CEILING: u64 = 8 * 1024 * 1024;
 
         let heads: Vec<VersionId> = (0..FILE_MAX_HEADS)
@@ -583,7 +841,7 @@ mod tests {
             conflicted: true,
             ..bare.clone()
         };
-        let heads_bytes = file(&conflicted).to_json().len() - file(&bare).to_json().len();
+        let heads_bytes = file(&conflicted).0.to_json().len() - file(&bare).0.to_json().len();
         assert!(
             heads_bytes <= HEADS_CEILING,
             "a full head list renders as {heads_bytes} bytes"
@@ -605,10 +863,20 @@ mod tests {
             "the widest change entry renders as {change_bytes} bytes"
         );
 
-        // A file record holds retention's versions plus one per head.
+        // Every head is always in a record, at its widest, with room for
+        // the rest: `file` can always keep its promise.
+        let skeleton = file(&bare).0.to_json().len() as u64;
+        let heads_only =
+            skeleton + heads_bytes as u64 + FILE_MAX_HEADS as u64 * (version_bytes + 1);
+        assert!(
+            heads_only <= FILE_RECORD_MAX,
+            "the heads alone reach {heads_only}"
+        );
+        // And at the shipped retention nothing is ever left out: retention's
+        // versions plus one per head, all at their widest, fit.
         let versions = u64::from(Config::default().retention_versions) + FILE_MAX_HEADS as u64;
-        let record = heads_bytes as u64 + versions * version_bytes;
-        assert!(record <= RECORD_CEILING, "a file record reaches {record}");
+        let record = skeleton + heads_bytes as u64 + versions * (version_bytes + 1);
+        assert!(record <= FILE_RECORD_MAX, "a file record reaches {record}");
 
         // A page stops at its byte budget and always carries one entry, so
         // the widest entry alone must fit under the page ceiling too. The

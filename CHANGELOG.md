@@ -514,7 +514,11 @@ plugin as Community plugins lists it (#206).
 **The server stays small in memory** when devices fetch large files or catch
 up on a long history: attachment batches stream, and history pages hold at
 most 8 MiB. **One misbehaving device can no longer lock the others out,** and
-unverified request bodies share one fixed amount of memory (#193). **Its
+unverified request bodies share one fixed amount of memory (#193), each
+held until its sender's credential checks out, parsing and waiting included.
+**A long history of a very large file stays readable:** the plugin no longer
+refuses a file record past 64 MiB, and the server never sends one past
+450 MiB, keeping every head and the newest versions that fit. **Its
 memory follows your history**: about 1.3 KiB per kept version, and a restart
 no longer needs four times it; the chart now requests 128 MiB (#205).
 

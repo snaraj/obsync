@@ -10,12 +10,13 @@ use obsync_core::base64;
 use obsync_core::http::{Request, Response};
 use obsync_core::json::{Value, obj};
 
+use crate::log::Val;
 use crate::storage::types::{NewVersion, SeenKind};
 use crate::types::{FileId, Sid, VersionId};
 
 use super::edge::ClientInfo;
 use super::render::{self, b, s};
-use super::{ApiError, App, auth};
+use super::{ApiError, App, FILE_RECORD_MAX, auth};
 
 /// Largest encrypted manifest the server will store, in base64 characters.
 /// A manifest holds one file's path, size, and chunk list; nothing here needs
@@ -143,7 +144,19 @@ pub fn get_file(
         .store
         .file(&file_id)
         .ok_or_else(|| ApiError::new(404, "unknown_file", "no such file"))?;
-    Ok(Response::json(200, &render::file(&record)))
+    let (body, left_out) = render::file(&record);
+    if left_out > 0 {
+        app.log.info(
+            "file_record",
+            &[
+                ("decision", Val::word("trimmed")),
+                ("versions", Val::count(record.versions.len() as u64)),
+                ("left_out", Val::count(left_out as u64)),
+                ("budget", Val::bytes(FILE_RECORD_MAX)),
+            ],
+        );
+    }
+    Ok(Response::json(200, &body))
 }
 
 /// `GET /v1/files/{file_id}/versions/{version_id}`.

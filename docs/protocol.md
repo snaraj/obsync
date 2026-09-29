@@ -284,7 +284,8 @@ retain the account-wide authority described below.
 - `GET /v1/files/{file_id}` → `{"file_id","domain_id","heads":[…],
   "conflicted","versions":[{"version_id","parents","sids","bytes",
   "manifest_ct","manifest_nonce","device_id","ts","deleted"}]}` newest
-  first, capped at `OBSYNC_RETENTION_VERSIONS` plus every head. The domain
+  first, capped at `OBSYNC_RETENTION_VERSIONS` plus every head, and at
+  450 MiB of JSON ("Limits and headers"). The domain
   is stated once on the file, because every version of a file is in it.
 - `GET /v1/files/{file_id}/versions/{version_id}` → one version record.
 - `GET /v1/files?after=<file_id>&limit=<n>` → `{"files":[{"file_id",
@@ -629,12 +630,17 @@ device whose link opened it is revoked.
 
 ## Limits and headers
 
-- Request headers ≤ 16 KiB; JSON bodies ≤ 4 MiB; chunk ciphertext
+- Request headers ≤ 16 KiB; JSON bodies ≤ 4 MiB, and the setup and
+  pairing-claim bodies, which carry their token, ≤ 16 KiB; chunk ciphertext
   bodies ≤ 8 MiB + 16 bytes.
 - Every JSON body is read before its credential verifies (a signature covers
-  the body's hash; the setup and enrolment tokens ride inside it), so the
-  bodies being read at any moment share one 64 MiB reservation across every
-  connection. A body that does not fit is answered with a bare `503` (no
+  the body's hash; the setup and enrolment tokens ride inside it), so every
+  such body holds a share of one 64 MiB reservation across every connection
+  from before its first byte is read until its credential verifies, any wait
+  for a lock included. A setup or claim body is parsed before its token
+  verifies, so each reserves 4 MiB: the body and everything parsing 16 KiB
+  can allocate (at most about 72 bytes a byte). A body that does not fit is
+  answered with a bare `503` (no
   body, `Retry-After: 1`, `Connection: close`) before a byte of it is read,
   and a repeatable request retries.
 - Heads per file record ≤ 64; versions per file record ≤
@@ -643,8 +649,13 @@ device whose link opened it is revoked.
 - Response bound, enforced by `render`'s own test against the ceilings
   above: a full head list is under 8 KiB, so a 1000-entry `/v1/changes` page
   carries at most 64,000 head ids. The widest single version and the widest
-  change entry are each under 6 MiB, so one file record stays under 450 MiB
-  at the shipped retention of 10. A `/v1/changes` page also stops before its
+  change entry are each under 6 MiB. One file record never passes 450 MiB:
+  every head is in it (64 of the widest versions fit), and the other
+  versions follow newest first until the next would pass it, so a long
+  retention leaves older versions out of the record rather than growing it
+  past what a client accepts. At the shipped retention of 10 nothing is left
+  out; when something is, the server logs `event=file_record
+  decision=trimmed`. A `/v1/changes` page also stops before its
   entries pass 8 MiB of JSON and always carries at least one, so no page
   passes 8 MiB; its `seq` is then below `head_seq`, and the next request from
   that cursor carries on. A client that wants a smaller page sets `limit`.

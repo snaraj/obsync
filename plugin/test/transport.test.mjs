@@ -12,6 +12,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createHash, createHmac } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -24,6 +25,7 @@ const SERVER = "https://sync.example.invalid";
 const PAIRING_ID = "00".repeat(16);
 const FILE_ID = "44".repeat(16);
 const SID = "55".repeat(32);
+const VERSION_ID = "66".repeat(32);
 const INFO = { name: "n", platform: "linux", app_version: "0.1.0" };
 const VERSION_POST = {
   version_id: "11".repeat(32),
@@ -419,9 +421,17 @@ test("an answer larger than its route can be is refused before it is parsed or k
   await refused((t) => t.devices(), { status: 200, text: text(JSON_ANSWER_MAX + 1) }, JSON_ANSWER_MAX);
   await refused((t) => t.postVersion(FILE_ID, VERSION_POST), { status: 201, text: text(JSON_ANSWER_MAX + 1) }, JSON_ANSWER_MAX);
   await accepted((t) => t.account(), { status: 200, text: text(JSON_ANSWER_MAX) });
-  // A file's history is allowed more, and still bounded.
-  await accepted((t) => t.getFile(FILE_ID), { status: 200, text: text(JSON_ANSWER_MAX + 1) });
-  await refused((t) => t.getFile(FILE_ID), { status: 200, text: text(METADATA_ANSWER_MAX + 1) }, METADATA_ANSWER_MAX);
+  // A file's record is allowed what the server can send (review of
+  // 7e1294d): the reviewer's sixty retained versions of a 4,000-chunk file
+  // render as 67,953,622 characters, past the 64 MiB this used to refuse.
+  await accepted((t) => t.getFile(FILE_ID), { status: 200, text: text(67_953_622) });
+  // Past the server's own bound (`FILE_RECORD_MAX`, stated here as the
+  // protocol states it) it is refused; only the length is read.
+  const record = 450 * 1024 * 1024;
+  await refused((t) => t.getFile(FILE_ID), { status: 200, text: { length: record + 1 } }, record);
+  // One version and a listing page keep the smaller bound.
+  await accepted((t) => t.getVersion(FILE_ID, VERSION_ID), { status: 200, text: text(JSON_ANSWER_MAX + 1) });
+  await refused((t) => t.getVersion(FILE_ID, VERSION_ID), { status: 200, text: text(METADATA_ANSWER_MAX + 1) }, METADATA_ANSWER_MAX);
   // A chunk is its ciphertext ceiling, measured in bytes.
   const maximum = 8 * 1024 * 1024 + 16;
   await accepted((t) => t.getChunk(SID), { status: 200, body: new ArrayBuffer(maximum) });
@@ -430,6 +440,19 @@ test("an answer larger than its route can be is refused before it is parsed or k
   await refused((t) => t.getChunks([SID, SID]), { status: 200, headers: { "content-type": "multipart/mixed; boundary=b" }, body: new ArrayBuffer(batch + 1) }, batch);
   // The feed page is bounded by its records until the server caps it by bytes.
   await accepted((t) => t.changes(0, 0), { status: 200, text: JSON.stringify({ seq: 0, head_seq: 0, changes: [], pad: "y".repeat(JSON_ANSWER_MAX) }) });
+});
+
+test("the plugin accepts exactly the file record the server never passes (review of 7e1294d)", (t) => {
+  const { FILE_ANSWER_MAX } = require("../build/transport.js");
+  const source = new URL("../../crates/obsyncd/src/api/mod.rs", import.meta.url);
+  // The image's plugin stage copies plugin/ alone; the gate and the desktop
+  // matrix run from the whole checkout, where this always runs.
+  if (!existsSync(source)) return t.skip("the server's source is not beside this plugin");
+  const rust = readFileSync(source, "utf8");
+  const stated = /pub const FILE_RECORD_MAX: u64 = ([0-9 *_]+);/.exec(rust);
+  assert.ok(stated, "the server states FILE_RECORD_MAX");
+  const server = stated[1].split("*").reduce((product, factor) => product * Number(factor.trim().replaceAll("_", "")), 1);
+  assert.equal(FILE_ANSWER_MAX, server);
 });
 
 /** Deadline timers the test fires by hand, recording the deadline each attempt was given. */

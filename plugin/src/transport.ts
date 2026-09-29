@@ -526,14 +526,18 @@ type CallOptions = Patience & {
  * stop a broken or hostile terminator making the platform read a body. What a
  * cap does stop is this client parsing, decoding, copying and keeping it --
  * the part that is this code's -- and it turns such an answer into a named
- * refusal instead of a stall. Each is sized well above the largest answer
- * the route can legitimately give:
+ * refusal instead of a stall. Each is at least the largest answer the route
+ * can legitimately give:
  *
  * - `JSON_ANSWER_MAX` for the small answers: the account, the device list,
  *   pairing, an acknowledgement, and the largest of them, an existence answer
  *   for 4096 sids, which is about 270 KB.
- * - `METADATA_ANSWER_MAX` for a file's versions and a listing page, which grow
- *   with a file's chunk count and so with its size.
+ * - `FILE_ANSWER_MAX` for a file's record: exactly what the server never
+ *   passes (`FILE_RECORD_MAX`, `docs/protocol.md`), since it keeps every head
+ *   and then only the newest versions that fit. A 64 MiB cap here refused
+ *   legitimate histories of large files (review of 7e1294d).
+ * - `METADATA_ANSWER_MAX` for one version (under 6 MiB) and a listing page
+ *   (under 8 MiB).
  * - A chunk: its ciphertext ceiling; a batch: that per sid, plus its framing,
  *   for the sids actually asked.
  * - `CHANGES_ANSWER_MAX` for a feed page: twice the 8 MiB a 1.1.4 server caps
@@ -543,6 +547,7 @@ type CallOptions = Patience & {
  */
 export const JSON_ANSWER_MAX = 4 * 1024 * 1024;
 export const METADATA_ANSWER_MAX = 64 * 1024 * 1024;
+export const FILE_ANSWER_MAX = 450 * 1024 * 1024;
 export const CHANGES_ANSWER_MAX = 16 * 1024 * 1024;
 /** One part's headers and delimiters in a batched chunk answer, generously. */
 const MULTIPART_PART_OVERHEAD = 1024;
@@ -1314,7 +1319,7 @@ export class Transport {
   }
 
   getFile(fileId: string, patience: Patience = {}): Promise<FileRecord> {
-    return this.json("GET", `/v1/files/${fileId}`, { auth: "device", cap: METADATA_ANSWER_MAX, ...patience });
+    return this.json("GET", `/v1/files/${fileId}`, { auth: "device", cap: FILE_ANSWER_MAX, ...patience });
   }
 
   /** One version, or `404 unknown_version` when the server does not hold it. */

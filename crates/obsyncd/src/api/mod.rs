@@ -64,6 +64,24 @@ pub const JSON_BODY_LIMIT: u64 = 4 * 1024 * 1024;
 /// chart's whole memory limit, and anyone who can reach the port could spend
 /// it (`docs/threat-model.md`).
 pub const PREAUTH_BODY_BUDGET: u64 = 16 * JSON_BODY_LIMIT;
+/// The setup and pairing-claim bodies carry their credential inside them, so
+/// they are parsed before anything verifies. They are small by construction
+/// (two tokens, a name, a platform, a version and a sealed vault key, under
+/// 4 KiB), and are read under this ceiling instead of [`JSON_BODY_LIMIT`].
+pub const TOKEN_BODY_LIMIT: u64 = 16 * 1024;
+/// What one such read reserves against [`PREAUTH_BODY_BUDGET`], held until
+/// its token verifies: the body and everything parsing it can allocate. A
+/// document of [`TOKEN_BODY_LIMIT`] bytes allocates at most about 72 bytes
+/// of value per byte (a `[[[…]]]` nest); `render`'s test measures the
+/// costliest shapes under this.
+pub const TOKEN_BODY_RESERVE: u64 = JSON_BODY_LIMIT;
+/// The most JSON one `GET /v1/files/{file_id}` answer carries
+/// (`docs/protocol.md`, "Limits and headers"). Every head is always in it,
+/// and 64 of the widest versions fit with room to spare (`render`'s test);
+/// older versions stop where the next would pass it, so a long retention
+/// never makes a file's record larger than a client accepts (the plugin
+/// refuses an answer above this same number).
+pub const FILE_RECORD_MAX: u64 = 450 * 1024 * 1024;
 /// Maximum ciphertext: 8 MiB plaintext plus the existing 16-byte AES-GCM tag.
 pub const CHUNK_BODY_LIMIT: u64 = 8 * 1024 * 1024 + 16;
 /// `POST /v1/chunks/exists` accepts at most this many sids.

@@ -418,8 +418,8 @@ impl Res {
 }
 
 /// Security item 2 over the wire: three hundred uploads that each declare a
-/// maximal JSON body to the unauthenticated setup route and then send it
-/// slowly. What the process reserves for bodies no credential has verified
+/// maximal body to the unauthenticated setup route, each reserving
+/// `TOKEN_BODY_RESERVE`, and then send it slowly. What the process reserves for bodies no credential has verified
 /// never passes its budget, the uploads beyond it are answered with a bare
 /// `503` and one line naming the budget, and every reservation comes back.
 #[test]
@@ -434,11 +434,11 @@ fn three_hundred_slow_bodies_stay_inside_the_unverified_body_budget() {
     let budget = crate::api::PREAUTH_BODY_BUDGET;
     let head = format!(
         "POST /v1/setup HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n\r\n",
-        crate::api::JSON_BODY_LIMIT
+        crate::api::TOKEN_BODY_LIMIT
     );
-    // A first slice of each body: enough to buy about two seconds of the
-    // rate floor, so the admitted reads are all held at once.
-    let slice = vec![b' '; 64 * 1024];
+    // A first slice of each body: enough to buy about half a second of the
+    // rate floor, besides its grace, so the admitted reads are held at once.
+    let slice = vec![b' '; 8 * 1024];
     let mut streams = Vec::new();
     let mut peak = 0;
     for _ in 0..300 {
@@ -481,7 +481,7 @@ fn three_hundred_slow_bodies_stay_inside_the_unverified_body_budget() {
     assert!(
         log.contains(&format!(
             "event=preauth_body decision=refused bytes={}",
-            crate::api::JSON_BODY_LIMIT
+            crate::api::TOKEN_BODY_RESERVE
         )) && log.contains(&format!("budget={budget}")),
         "{}",
         log.lines()
@@ -494,6 +494,54 @@ fn three_hundred_slow_bodies_stay_inside_the_unverified_body_budget() {
     assert_eq!(h.app.preauth_held(), 0, "every reservation came back");
     // And the budget serves again: an ordinary setup is answered.
     h.setup_account();
+}
+
+/// Review of 7e1294d, finding 2: a body read whole is still an unverified
+/// caller's until its token verifies. With the pairing table held, as a burst
+/// of claims would hold it, every claim that fits the budget is read, parsed
+/// and left waiting with its reservation; the next one is shed with a bare
+/// `503` before a byte of it is read, and every reservation comes back once
+/// the table frees and the tokens are judged.
+#[test]
+fn claims_waiting_for_the_pairing_table_keep_their_bodies_inside_the_budget() {
+    let h = Harness::start("claim-wait-budget");
+    let per = crate::api::TOKEN_BODY_RESERVE;
+    let fit = crate::api::PREAUTH_BODY_BUDGET / per;
+    let target = format!("/v1/pairing/{}/claim", "ab".repeat(16));
+    let body = format!(
+        r#"{{"enroll_token":"{}","name":"phone","platform":"ios","app_version":"0.1.0"}}"#,
+        "00".repeat(32)
+    );
+    let table = h.app.pairings.lock().expect("pairings");
+    let waiting: Vec<_> = (0..fit)
+        .map(|_| {
+            let (addr, target, body) = (h.addr, target.clone(), body.clone());
+            std::thread::spawn(move || Req::post(&target).body(&body).send(addr))
+        })
+        .collect();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while h.app.preauth_held() < fit * per {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} of {} bytes held by claims read whole and waiting",
+            h.app.preauth_held(),
+            fit * per
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let shed = Req::post(&target).body(&body).send(h.addr);
+    assert_eq!(shed.status, 503, "{}", shed.text());
+    assert!(shed.body.is_empty(), "a bare refusal: {}", shed.text());
+    assert_eq!(shed.header("retry-after"), Some("1"));
+    drop(table);
+    for claim in waiting {
+        let res = claim.join().expect("claim");
+        assert_eq!(
+            (res.status, res.code()),
+            (404, "unknown_pairing".to_string())
+        );
+    }
+    assert_eq!(h.app.preauth_held(), 0, "every reservation came back");
 }
 
 #[test]
@@ -2363,7 +2411,8 @@ fn a_json_body_trickled_below_the_rate_floor_is_refused_as_slow() {
     );
     let rate = (crate::cli::serve::MIN_BODY_RATE / 4).max(1024);
     let head = "POST /v1/setup HTTP/1.1\r\nHost: 127.0.0.1\r\n".to_string();
-    let refused = trickle(&h, head, &vec![b' '; 64 * 1024], rate);
+    let body = vec![b' '; usize::try_from(crate::api::TOKEN_BODY_LIMIT).expect("fits")];
+    let refused = trickle(&h, head, &body, rate);
     assert_slow_body(&h, &refused);
 }
 
@@ -2476,7 +2525,7 @@ fn a_body_is_too_large_only_when_it_passed_its_ceiling() {
 
     // One byte of payload past the ceiling, in chunks of 64 KiB.
     let mut over = Vec::new();
-    let limit = usize::try_from(super::JSON_BODY_LIMIT).expect("fits");
+    let limit = usize::try_from(super::TOKEN_BODY_LIMIT).expect("fits");
     let mut payload = 0;
     while payload <= limit {
         let piece = vec![b' '; (limit + 1 - payload).min(64 * 1024)];
