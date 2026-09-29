@@ -38,7 +38,9 @@ server again unless the entry says so.
 | Pairing says the code is not valid | [Pairing says the code is not valid](#pairing-says-the-code-is-not-valid) |
 | Pairing says the code expired, or was already used | [Pairing says the code expired or was already used](#pairing-says-the-code-expired-or-was-already-used) |
 | The new device keeps waiting for approval | [The new device waits for approval](#the-new-device-waits-for-approval) |
-| The two devices show different match codes, or pairing warns that a device or your server runs an older obsync | [The two devices show different match codes](#the-two-devices-show-different-match-codes) |
+| Pairing says to update your obsync server | [Pairing says to update your obsync server](#pairing-says-to-update-your-obsync-server) |
+| The two devices show different match codes, or pairing warns that a device runs an older obsync | [The two devices show different match codes](#the-two-devices-show-different-match-codes) |
+| After approving, the device that made the code says the new device did not keep the key, or has not started syncing | [The device that made the code says the new device did not keep the key](#the-device-that-made-the-code-says-the-new-device-did-not-keep-the-key) |
 | You closed the recovery phrase without writing it down | [You closed the recovery phrase without checking it](#you-closed-the-recovery-phrase-without-checking-it) |
 | "obsync security warning: Another device set a different recovery key" | [Another device set a different recovery key](#another-device-set-a-different-recovery-key) |
 | Leave says the recovery key was set less than 7 days ago, or `409 recovery_too_new` | [The only device cannot leave in its first week](#the-only-device-cannot-leave-in-its-first-week) |
@@ -438,38 +440,79 @@ no access of any kind.
 
 ![Pair a new device on the device that made the code: Approve "Mac WKJN" (Mac, obsync 1.1.4)? Approve only if the new device shows the code 667 151. It will sync vault "rig-C" (0 notes). Approve and Reject below](assets/pair-approve-match-code.png)
 
+## Pairing says to update your obsync server
+
+**What you see.** **Pair a new device** shows no code, only:
+
+> Your obsync server runs a version older than 1.1.5, or does not say which, so no code was made. Update your obsync server to 1.1.5 or later, then pair again -- see Troubleshooting, "Pairing says to update your obsync server".
+
+**Why it happens.** From 1.1.5, pairing adds a key exchange between the two
+devices, which the server has to pass on; an older server drops it, and the
+new device could never finish pairing through it. So before it makes a code,
+the device reads the version your server reports (the plugin release it
+ships, which is also what **Check** reaches) and stops there if it is older
+than 1.1.5 or missing. A server started without its plugin bundle
+(`OBSYNC_PLUGIN_DIR`) reports no version at all.
+
+**How to fix it.**
+
+1. Update obsyncd on your server to 1.1.5 or later
+   ([Upgrade by digest](server.md#upgrade-by-digest)).
+2. If it already runs 1.1.5 or later, make sure it serves its plugin bundle:
+   the container image and the systemd unit do by default; a server you
+   started yourself needs `OBSYNC_PLUGIN_DIR` pointing at the bundle
+   ([Server](server.md)).
+3. Choose **Pair a new device** again.
+
 ## The two devices show different match codes
 
 **What you see.** While pairing, the approval question on the device that made
 the code shows one six-digit match code, and the new device's "Waiting for
-approval" shows another. Or a pairing screen adds a warning: "That device, or
-your obsync server, runs an older obsync; update it so pairing can protect the
-code you shared." on the device that made the code, or "That device runs an
-older obsync; …" on the new device.
+approval" shows another. Or a pairing screen adds "That device runs an older
+obsync; update it so pairing can protect the code you shared.".
 
-**Why it happens.** From 1.1.5, when both devices and the server run 1.1.5,
-pairing adds a key exchange between the two devices, and the match code covers
-it. The two codes differ when:
-
-- your server runs an obsyncd older than 1.1.5, which drops that exchange, so
-  two 1.1.5 devices cannot finish pairing through it; or
-- something between the two devices changed the pairing on the way.
-
-A warning with matching codes means one device runs an older obsync: pairing
-works the older way, where the code alone opens the vault key.
+**Why it happens.** From 1.1.5, when both devices run 1.1.5, pairing adds a key
+exchange between them, and the match code covers it. The two codes differ when
+something between the two devices changed the pairing on the way. A warning
+with matching codes means one device runs an older obsync: pairing works the
+older way, where the code alone opens the vault key.
 
 **How to fix it.**
 
 1. Select **Reject** on the device that made the code. If it was approved
    anyway, the new device refuses the vault key it was sent and removes itself
-   from the server: nothing is shared. The device that made the code may still
-   say "The new device, … is paired"; the new device's own screen, which says
-   it could not open the vault key, is the one that is right.
-2. Update obsyncd on your server ([Upgrade by digest](server.md#upgrade-by-digest))
-   and obsync on any older device, then pair again with a new code.
-3. If both devices and the server run 1.1.5 or later and the codes still
-   differ, pair on a network you trust
+   from the server, and the device that made the code says "The new device did
+   not keep the vault key and removed itself from the server…". Nothing syncs
+   to it.
+2. Update obsync on the older device, if the warning named one, then pair
+   again with a new code.
+3. If both devices run 1.1.5 or later and the codes still differ, pair on a
+   network you trust
    ([Pairing on a network you don't control](#pairing-on-a-network-you-dont-control)).
+
+## The device that made the code says the new device did not keep the key
+
+**What you see.** After you approved, **Pair a new device** says "The new
+device collected the vault key. Waiting for it to open the key and start
+syncing…", and then one of:
+
+> The new device did not keep the vault key and removed itself from the server: the code it used did not match this one, or pairing was cancelled on it. It does not sync. To pair it, make a new code here and paste it whole there.
+
+> The new device collected the vault key but has not started syncing within ten minutes. Look at it: if it asks whether to add its notes, answer there; if it says it could not open the vault key, remove it under Devices.
+
+**Why it happens.** From 1.1.5 this device says a new device is paired only
+once it has kept the vault key and started syncing, not merely collected it.
+The new device may still be asking whether to add its own notes, it may have
+been cancelled there, or its code did not match.
+
+**How to fix it.**
+
+1. Look at the new device's screen: it says what happened there.
+2. If it asks whether to add its notes, answer there; this device then needs
+   nothing more.
+3. Otherwise make a new code here and pair again. A device that says it could
+   not open the vault key and is still listed under **Devices** can be
+   removed there.
 
 ## Pairing on a network you don't control
 
@@ -490,11 +533,12 @@ setup and pairing:
 - **The pairing code.** It never crosses the network on its own, but it
   carries a secret that helps open the sealed envelope your vault key travels
   in, and that envelope does cross the network when you approve the new device.
-  From 1.1.5, when both devices and your server run 1.1.5, the envelope also
-  needs a key exchange that only the two devices hold, so a copy of the code
-  alone no longer opens it. When one device runs an older obsync, pairing warns
-  you and works the older way, where the code alone opens it. Either way, keep
-  the code out of work channels.
+  From 1.1.5, when both devices run 1.1.5, the envelope also needs a key
+  exchange that only the two devices hold, so a copy of the code alone no
+  longer opens it; a 1.1.5 device makes no code through a server older than
+  1.1.5. When one device runs an older obsync, pairing warns you and works the
+  older way, where the code alone opens it. Either way, keep the code out of
+  work channels.
 
 **How to fix it.**
 

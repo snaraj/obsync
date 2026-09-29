@@ -145,6 +145,53 @@ export function isV2Secret(secret: Bytes): boolean {
   return secret.length >= 2 && secret[0] === PAIRING_V2_MARKER[0] && secret[1] === PAIRING_V2_MARKER[1];
 }
 
+/** The first server release that carries the two key-exchange fields. */
+export const PAIRING_V2_SERVER = [1, 1, 5] as const;
+
+/**
+ * Whether the version a server reports is 1.1.5 or later (owner ruling: fail
+ * closed, say it early). Only `major.minor.patch` counts, so a pre-release of
+ * 1.1.5 passes; anything else -- absent, empty, or not three numbers -- does
+ * not. A forged or stripped answer can only make the creator refuse; the key
+ * exchange's own strip detection is unchanged.
+ */
+export function serverPairsV2(version: unknown): boolean {
+  if (typeof version !== "string") return false;
+  const parts = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:[-+][0-9A-Za-z.-]*)?$/.exec(version);
+  if (parts === null) return false;
+  for (let i = 0; i < PAIRING_V2_SERVER.length; i++) {
+    const have = Number(parts[i + 1]);
+    const need = PAIRING_V2_SERVER[i] as number;
+    if (have !== need) return have > need;
+  }
+  return true;
+}
+
+/** The device-list fields that say what a new device did with the key it collected. */
+export interface KeptRow {
+  state?: string;
+  revoked: boolean;
+  last_seen?: number | null;
+  last_sign_in?: number | null;
+}
+
+/**
+ * What a new device did with the vault key it collected, read from its row
+ * of the device list. Collection proves only that the envelope left the
+ * server; a device that cannot open it, or whose person cancels, takes itself
+ * back. Its first request after collection signs it in (`last_sign_in`, the
+ * survey that reads the server's vault); a KEPT key then starts its sync, and
+ * that sync's heartbeat moves `last_seen` past the sign-in. So: `kept` once
+ * active and seen after signing in, `dropped` once revoked or gone, and
+ * `open` while it is still deciding.
+ */
+export function keptOutcome(row: KeptRow | undefined): "kept" | "dropped" | "open" {
+  if (row === undefined || row.revoked || row.state === "revoked") return "dropped";
+  if (row.state !== "active") return "open";
+  if (typeof row.last_sign_in !== "number" || typeof row.last_seen !== "number") return "open";
+  return row.last_seen > row.last_sign_in ? "kept" : "open";
+}
+
 export function newVaultKey(): Bytes {
   return randomBytes(VRK_BYTES);
 }

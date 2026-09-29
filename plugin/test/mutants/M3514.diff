@@ -1,0 +1,12 @@
+# M3514: an unparseable server version counts as 1.1.5 or later
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -158,7 +158,7 @@
+ export function serverPairsV2(version: unknown): boolean {
+   if (typeof version !== "string") return false;
+   const parts = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:[-+][0-9A-Za-z.-]*)?$/.exec(version);
+-  if (parts === null) return false;
++  if (parts === null) return true;
+   for (let i = 0; i < PAIRING_V2_SERVER.length; i++) {
+     const have = Number(parts[i + 1]);
+     const need = PAIRING_V2_SERVER[i] as number;

@@ -248,18 +248,31 @@ devices and seals the envelope under a key derived from BOTH the exchange AND
   and shows a v2 code the stripped path cannot reproduce. The marker does not
   change the code's length, so a 1.1.4 device decodes a v2 code unchanged and
   pairs the legacy way.
-- **Skew.** Two 1.1.5 devices on a 1.1.5 server pair v2. A 1.1.5 claimant
-  handed a 1.1.4 creator's code (no marker) pairs the legacy way and warns that
-  the other device runs an older obsync. A 1.1.4 claimant sends no
-  `claimant_pub`, so a 1.1.5 creator seals the legacy way and warns that the
-  other device or the server is older. A 1.1.4 server drops both fields, and
-  that is indistinguishable from a key stripped on the way, so two 1.1.5
-  devices on it FAIL CLOSED: the creator shows the legacy code with the
-  warning, the claimant shows the v2 code, the two differ, and an approval
-  anyway ends with the claimant refusing the legacy envelope and removing
-  itself. Update the server before pairing 1.1.5 devices. A 1.1.4 creator's
-  fully random `PS` carries the marker with probability 2^-16; that one
-  pairing then shows mismatched codes and is retried with a fresh code.
+- **The server first.** A 1.1.4 server drops both key fields, which no
+  device can tell from a key stripped on the way. So before `POST
+  /v1/pairing` a 1.1.5 creator reads `GET /v1/plugin/manifest` and makes no
+  code unless the `version` it reports is 1.1.5 or later (`major.minor.patch`,
+  a pre-release counts); an older version, a malformed one, or none (`404
+  plugin_unavailable`, a server without its plugin bundle) is refused with
+  one sentence: update the obsync server to 1.1.5 or later, then pair. The
+  version is unauthenticated, and that is safe here: a forged or stripped
+  answer can only cause the refusal, never a weaker pairing, because the
+  marker and the strip detection above are unchanged.
+- **Skew between devices.** Two 1.1.5 devices pair v2. A 1.1.5 claimant
+  handed a 1.1.4 creator's code (no marker) pairs the legacy way and warns
+  that the other device runs an older obsync. A 1.1.4 claimant sends no
+  `claimant_pub`, so a 1.1.5 creator seals the legacy way and warns the same.
+  A 1.1.4 creator's fully random `PS` carries the marker with probability
+  2^-16; that one pairing then shows mismatched codes and is retried with a
+  fresh code.
+- **Paired means kept.** Collection (`consumed`) proves only that the envelope
+  left the server: a claimant that cannot open it, or whose person cancels,
+  revokes itself. So the creator says "paired" only once the claimant's row in
+  `GET /v1/devices` is `active` with `last_seen` after `last_sign_in` -- the
+  sign-in is its first request after collection (reading the server's vault
+  before it keeps the key), and the later `last_seen` is the heartbeat of the
+  sync a kept key starts. A row that is revoked or gone reads "did not keep
+  the vault key"; neither within ten minutes reads "not confirmed".
 
 ## Devices
 

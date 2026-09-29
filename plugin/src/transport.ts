@@ -428,6 +428,8 @@ export interface DeviceRecord {
   platform: string;
   app_version: string;
   last_seen: number;
+  /** Its first authenticated request as an active device, throttled to one per 15 min; `null` before any. */
+  last_sign_in?: number | null;
   revoked: boolean;
   /** Taken off the device lists (#247). A server before 1.1.5 states nothing. */
   archived?: boolean;

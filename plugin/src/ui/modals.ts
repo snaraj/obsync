@@ -31,6 +31,7 @@ import {
   encodePairingCode,
   entropyFromPhrase,
   isV2Secret,
+  keptOutcome,
   matchCode,
   matchCodeV2,
   newPairingKeyExchange,
@@ -47,6 +48,7 @@ import {
   refusalText,
   sealEnvelope,
   sealEnvelopeV2,
+  serverPairsV2,
 } from "../pairing";
 import { hex, unhex } from "../crypto";
 import { ApiError, PairingClaimant, PairingEnvelope, PairingStatus, Sent, Transport, lostMessage } from "../transport";
@@ -193,12 +195,30 @@ const CLAIM_ENDED: Record<string, string> = {
 };
 const STILL_LISTED = " obsync could not remove this device from the server again: revoke it from the other device's Devices list.";
 
+const PAIR_INTRO =
+  "On the new device, choose Pair this device in obsync and TYPE this code. It expires in ten minutes and carries the secret that unlocks your vault key on the new device. Don't email or message it to yourself, or send its link through a work chat: anyone who can read that channel could unlock your vault.";
+const SERVER_TOO_OLD =
+  "Your obsync server runs a version older than 1.1.5, or does not say which, so no code was made. Update your obsync server to 1.1.5 or later, then pair again -- see Troubleshooting, \"Pairing says to update your obsync server\".";
+const KEY_DROPPED =
+  "The new device did not keep the vault key and removed itself from the server: the code it used did not match this one, or pairing was cancelled on it. It does not sync. To pair it, make a new code here and paste it whole there.";
+const KEY_UNCONFIRMED =
+  "The new device collected the vault key but has not started syncing within ten minutes. Look at it: if it asks whether to add its notes, answer there; if it says it could not open the vault key, remove it under Devices.";
+/** Two-second device-list reads for ten minutes, while the new device opens the key. */
+const CONFIRM_POLLS = 300;
+
+/** A server-reported version as one safe log word. */
+function versionWord(version: unknown): string {
+  if (version === null || version === undefined) return "unreported";
+  return typeof version === "string" && /^[0-9A-Za-z.+-]{1,32}$/.test(version) ? version : "unreadable";
+}
+
 /**
  * Creator side of pairing. Mints the pairing, keeps `PS` on this device,
  * polls for a claimant, and seals the vault key only after the user has
  * approved it by name, platform, time and match code. It says "paired" only
- * once the SERVER reports the key collected, which is also what activates
- * the new device (issue #153).
+ * once the new device KEPT the key it collected (`keptOutcome`): collection,
+ * which activates it (issue #153), is not yet a pairing. Before any code, it
+ * refuses a server older than 1.1.5 (`serverPairsV2`).
  *
  * `PS` lives in this dialog and nowhere else, so once it closes nobody can
  * approve this pairing: a claimant still waiting is refused then, rather than
@@ -222,9 +242,6 @@ export class PairCreateModal extends Modal {
   override onOpen(): void {
     this.closed = false;
     this.setTitle("Pair a new device");
-    this.contentEl.createEl("p", {
-      text: "On the new device, choose Pair this device in obsync and TYPE this code. It expires in ten minutes and carries the secret that unlocks your vault key on the new device. Don't email or message it to yourself, or send its link through a work chat: anyone who can read that channel could unlock your vault.",
-    });
     void this.run();
   }
 
@@ -238,12 +255,27 @@ export class PairCreateModal extends Modal {
       void this.refuse(asking, "closed", "Pairing ended: closing that dialog refused the device that was waiting, and nothing was shared with it. To pair it, make a new code.");
     } else if (this.collecting) {
       this.collecting = false;
-      tell("Approved. The new device finishes pairing by itself as soon as it collects the vault key.");
+      tell("Approved. The new device finishes pairing by itself; its own screen says when it has.");
     }
   }
 
   private async run(): Promise<void> {
+    const introEl = this.contentEl.createEl("p", { text: "Checking your obsync server…" });
     try {
+      // SAID EARLY (owner ruling, 2026-09-29). A server older than 1.1.5
+      // drops the key exchange, so a code made through it could never pair a
+      // 1.1.5 device: the two screens would only show different numbers. The
+      // server's version is read before anything is minted, and it can only
+      // REFUSE: a forged or stripped answer ends here, never in a weaker
+      // pairing, and the exchange's own strip detection is unchanged.
+      const server = await this.serverVersion();
+      if (this.closed) return;
+      if (!serverPairsV2(server)) {
+        this.plugin.log(`pairing role=creator decision=refused reason=server_too_old server=${versionWord(server)}`);
+        introEl.setText(SERVER_TOO_OLD);
+        return;
+      }
+      introEl.setText(PAIR_INTRO);
       const pairing = value(await this.plugin.transport.pairingCreate(), "creating a pairing");
       const secret = newPairingSecret();
       const code = encodePairingCode(pairing.pairing_id, pairing.enroll_token, secret);
@@ -309,10 +341,10 @@ export class PairCreateModal extends Modal {
       }
     }
     // v2 when the claim carried a key-exchange public key; else the legacy
-    // path with a plain warning. An older claimant, an older server that drops
-    // the field, and a key stripped on the way all look identical here, so the
-    // warning names the first two and the claimant's mismatched code catches
-    // the last two (a v2 claimant never opens a legacy envelope).
+    // path with a plain warning that the other device is older. An older
+    // server never gets here (`run` refuses it before a code exists); a key
+    // stripped on the way looks identical, and the claimant's mismatched code
+    // catches that (a v2 claimant never opens a legacy envelope).
     const claimantKey = claimant.claimant_pub;
     const code = claimantKey === undefined
       ? await matchCode(secret, pairingId, claimant.device_id)
@@ -322,7 +354,7 @@ export class PairCreateModal extends Modal {
       `Approve "${claimant.name}" (${platformLabel(claimant.platform)}, obsync ${claimant.app_version}), asking since ${clock(asked)}? ` +
         `Approve only if the new device shows the code ${code}.` +
         (claimantKey === undefined
-          ? " That device, or your obsync server, runs an older obsync; update it so pairing can protect the code you shared."
+          ? " That device runs an older obsync; update it so pairing can protect the code you shared."
           : "") +
         (vault === null ? "" : ` It will sync vault "${vault.name}" (${notes(vault.notes)}) with this server's vault.`),
     );
@@ -402,11 +434,7 @@ export class PairCreateModal extends Modal {
       }
       if (!this.collecting) return;
       if (state === "consumed") {
-        this.collecting = false;
-        this.plugin.log("pairing role=creator decision=paired");
-        new Notice(`The new device, "${claimant.name}", is paired: it holds the vault key now.`);
-        void this.plugin.refreshDeviceNames();
-        this.close();
+        await this.confirmKept(claimant, statusEl);
         return;
       }
       if (state === "expired" || state === "ended") {
@@ -417,6 +445,60 @@ export class PairCreateModal extends Modal {
           : "The new device did not collect the vault key before the code expired, so nothing was shared with it. To pair it, make a new code and paste it there.");
         return;
       }
+    }
+  }
+
+  /**
+   * "PAIRED" ONLY ONCE THE NEW DEVICE KEPT THE KEY (owner ruling, lab leg B3):
+   * a device that collected it and could not open it was announced as paired
+   * here while its own screen said nothing was shared. Its row in the device
+   * list decides (`keptOutcome`); a failed read decides nothing and is logged
+   * once.
+   */
+  private async confirmKept(claimant: PairingClaimant, statusEl: HTMLElement): Promise<void> {
+    statusEl.setText("The new device collected the vault key. Waiting for it to open the key and start syncing; if it asks whether to add its notes, answer there.");
+    let unread = false;
+    for (let poll = 1; poll <= CONFIRM_POLLS; poll++) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      if (!this.collecting) return;
+      let outcome: ReturnType<typeof keptOutcome>;
+      try {
+        const { devices } = await this.plugin.transport.devices();
+        outcome = keptOutcome(devices.find((device) => device.device_id === claimant.device_id));
+      } catch (error) {
+        if (!unread) this.plugin.log(`pairing role=creator decision=waiting reason=devices_unread error=${reasonOf(error)}`);
+        unread = true;
+        continue;
+      }
+      if (!this.collecting) return;
+      if (outcome === "kept") {
+        this.collecting = false;
+        this.plugin.log(`pairing role=creator decision=paired polls=${poll}`);
+        new Notice(`The new device, "${claimant.name}", is paired: it holds the vault key now.`);
+        void this.plugin.refreshDeviceNames();
+        this.close();
+        return;
+      }
+      if (outcome === "dropped") {
+        this.collecting = false;
+        this.plugin.log(`pairing role=creator decision=failed reason=key_not_kept polls=${poll}`);
+        statusEl.setText(KEY_DROPPED);
+        return;
+      }
+    }
+    if (!this.collecting) return;
+    this.collecting = false;
+    this.plugin.log(`pairing role=creator decision=failed reason=key_unconfirmed polls=${CONFIRM_POLLS}`);
+    statusEl.setText(KEY_UNCONFIRMED);
+  }
+
+  /** The release the server reports (`GET /v1/plugin/manifest`), or `null` when it reports none. */
+  private async serverVersion(): Promise<unknown> {
+    try {
+      return (await this.plugin.transport.pluginManifest({ interactive: true })).version;
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "plugin_unavailable") return null;
+      throw error;
     }
   }
 

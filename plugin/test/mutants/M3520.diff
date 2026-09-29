@@ -1,0 +1,12 @@
+# M3520: a failed device-list read is taken for a dropped key
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -466,7 +466,7 @@
+       } catch (error) {
+         if (!unread) this.plugin.log(`pairing role=creator decision=waiting reason=devices_unread error=${reasonOf(error)}`);
+         unread = true;
+-        continue;
++        outcome = "dropped";
+       }
+       if (!this.collecting) return;
+       if (outcome === "kept") {

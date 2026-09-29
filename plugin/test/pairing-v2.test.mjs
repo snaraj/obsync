@@ -147,3 +147,26 @@ test("the legacy envelope still round-trips under a v2-marked secret (1.1.4 peer
   const opened = await p.openEnvelope(secret, KAT.pairingId, sealed.envelope, sealed.nonce);
   assert.equal(opened.vrk, VRK);
 });
+
+test("a server version counts as v2-capable only at 1.1.5 or later, three numbers, nothing else", () => {
+  for (const yes of ["1.1.5", "1.1.6", "1.1.10", "1.2.0", "2.0.0", "1.1.5-beta.1", "1.1.5+build.7"]) {
+    assert.equal(p.serverPairsV2(yes), true, yes);
+  }
+  for (const no of ["1.1.4", "1.0.99", "0.99.99", "1.1", "1.1.5.1", "", " 1.1.5", "v1.1.5", "1.1.5x", "1.1.5 ", null, undefined, 115, {}, ["1.1.5"]]) {
+    assert.equal(p.serverPairsV2(no), false, String(no));
+  }
+});
+
+test("a collected key counts as kept only once the new device was seen after signing in", () => {
+  const row = (fields) => ({ state: "active", revoked: false, last_sign_in: 1000, last_seen: 2000, ...fields });
+  assert.equal(p.keptOutcome(row({})), "kept");
+  assert.equal(p.keptOutcome(row({ last_seen: 1000 })), "open", "the sign-in alone is the survey, before any key is kept");
+  assert.equal(p.keptOutcome(row({ last_seen: 999 })), "open");
+  assert.equal(p.keptOutcome(row({ last_sign_in: null })), "open");
+  assert.equal(p.keptOutcome(row({ last_seen: null })), "open");
+  assert.equal(p.keptOutcome(row({ state: "pending" })), "open");
+  assert.equal(p.keptOutcome(row({ state: undefined })), "open");
+  assert.equal(p.keptOutcome(row({ revoked: true })), "dropped");
+  assert.equal(p.keptOutcome(row({ state: "revoked" })), "dropped");
+  assert.equal(p.keptOutcome(undefined), "dropped", "a device no longer listed took itself back");
+});

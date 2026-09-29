@@ -1,0 +1,12 @@
+# M3517: the new device's sign-in alone counts as a kept key
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -189,7 +189,7 @@
+   if (row === undefined || row.revoked || row.state === "revoked") return "dropped";
+   if (row.state !== "active") return "open";
+   if (typeof row.last_sign_in !== "number" || typeof row.last_seen !== "number") return "open";
+-  return row.last_seen > row.last_sign_in ? "kept" : "open";
++  return row.last_seen >= row.last_sign_in ? "kept" : "open";
+ }
+ 
+ export function newVaultKey(): Bytes {

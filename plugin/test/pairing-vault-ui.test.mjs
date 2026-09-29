@@ -10,9 +10,11 @@ const VRK = "00".repeat(32);
 
 /**
  * A creator dialog over a scripted server: `statuses` answers each pairing
- * poll in turn, and every request is recorded.
+ * poll in turn, `rows(poll, row)` each device-list read after collection
+ * (default: the new device kept the key), `server` the version the server
+ * reports; every request is recorded.
  */
-async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", value: undefined }), notes = 7 } = {}) {
+async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", value: undefined }), notes = 7, rows = (poll, row) => [row()], server = "1.1.5" } = {}) {
   const box = sandbox(); t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const obsidian = box.require("obsidian"), buttons = [], messages = [], calls = [], logs = [];
   obsidian.Setting.prototype.addButton = function (build) {
@@ -24,6 +26,12 @@ async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", valu
   const { ApiError } = box.require(join(box.home, "build/transport.js"));
   const pairing = box.require(join(box.home, "build/pairing.js"));
   const notices = obsidian.notices;
+  const secret = pairing.newPairingSecret(), id = "ab".repeat(16), device = "cd".repeat(16);
+  // The new device's row: signed in at 1000 by its survey, seen at 2000 by
+  // the heartbeat of the sync a kept key starts.
+  const row = (fields = {}) => ({ device_id: device, name: "iPhone 7KQ4", platform: "ios", app_version: "1.1.5",
+    state: "active", revoked: false, last_sign_in: 1000, last_seen: 2000, ...fields });
+  let reads = 0;
   const plugin = {
     state: { data: { vrk: VRK } },
     log: (line) => logs.push(line),
@@ -38,6 +46,17 @@ async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", valu
         if (next instanceof Error) throw next;
         return { state: next, claimant: null };
       },
+      devices: async () => {
+        calls.push("devices");
+        const answer = rows(++reads, row);
+        if (answer instanceof Error) throw answer;
+        return { devices: answer };
+      },
+      pluginManifest: async () => {
+        calls.push("manifest");
+        if (server instanceof Error) throw server;
+        return { version: server };
+      },
     },
   };
   const modal = new PairCreateModal({}, plugin);
@@ -47,11 +66,10 @@ async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", valu
   const previousWindow = globalThis.window;
   globalThis.window = { setTimeout: (resolve) => resolve() };
   t.after(() => { globalThis.window = previousWindow; });
-  const secret = pairing.newPairingSecret(), id = "ab".repeat(16), device = "cd".repeat(16);
   const claimant = { device_id: device, name: "iPhone 7KQ4", platform: "ios", app_version: "1.1.4",
     vault: await pairing.sealPairingVault(secret, id, { name: "Plans <2026>", notes }) };
   return {
-    modal, secret, id, device, claimant, buttons, messages, calls, logs, notices, pairing, ApiError, closed: () => closed,
+    modal, secret, id, device, claimant, buttons, messages, calls, logs, notices, pairing, ApiError, row, closed: () => closed,
     status: { setText: (text) => messages.push(text) },
     press: async (label) => { await buttons.find((button) => button.text === label).click(); },
   };
@@ -134,16 +152,16 @@ test("the creator says paired only once the server reports the key collected (#1
   const r = await prompt(t, { statuses: ["approved", "approved", "consumed"] });
   await r.modal.approve(r.id, r.secret, r.claimant, r.status);
   await r.press("Approve");
-  await until(() => r.closed() === 1, "the dialog closed on collection");
+  await until(() => r.closed() === 1, "the dialog closed once the key was kept");
   const approvals = r.calls.filter((call) => call.approve);
   assert.equal(approvals.length, 1, "the envelope is posted exactly once");
-  assert.deepEqual(r.calls.filter((call) => !call.approve), ["status", "status", "status", "names"]);
+  assert.deepEqual(r.calls.filter((call) => !call.approve), ["status", "status", "status", "devices", "names"]);
   assert.ok(r.messages.includes("Approved. Waiting for the new device to collect the vault key…"));
   const paired = r.notices.filter((notice) => notice.includes("is paired"));
   assert.deepEqual(paired, ['The new device, "iPhone 7KQ4", is paired: it holds the vault key now.']);
   assert.equal(r.buttons.length, 0, "no answer is offered twice");
   assert.equal(r.closed(), 1);
-  assert.ok(r.logs.includes("pairing role=creator decision=paired"));
+  assert.ok(r.logs.includes("pairing role=creator decision=paired polls=1"));
   // The envelope opens under the code's secret, and carries the vault key only.
   const { envelope, nonce } = approvals[0].approve;
   assert.deepEqual(await r.pairing.openEnvelope(r.secret, r.id, envelope, nonce), { vrk: VRK });
@@ -223,4 +241,98 @@ test("a refused approval is told in words, never as a server code (#154)", async
   assert.ok(r.notices.some((notice) => notice.includes("That code has expired")), r.notices.join(" | "));
   assert.ok(r.notices.every((notice) => !RAW.test(notice)), r.notices.join(" | "));
   assert.ok(r.logs.includes("pairing role=creator decision=failed reason=pairing_expired"));
+});
+
+// --- Owner ruling, 2026-09-29: "paired" only once the new device kept the key,
+// and a server older than 1.1.5 refused before any code is made (lab leg B3).
+
+/** Approve a claim that the server then reports collected, and wait for the dialog's last word. */
+async function collected(t, rows, done) {
+  const r = await prompt(t, { statuses: ["consumed"], rows });
+  await r.modal.approve(r.id, r.secret, r.claimant, r.status);
+  await r.press("Approve");
+  await until(() => done(r), "the creator settled");
+  return r;
+}
+
+test("collection is not pairing: paired waits for the new device's first sync, not its sign-in", async t => {
+  const r = await collected(t, (poll, row) => [poll === 1 ? row({ last_seen: 1000 }) : row({ last_seen: 1500 })], (r) => r.closed() === 1);
+  assert.ok(r.messages.some((text) => text.startsWith("The new device collected the vault key. Waiting for it to open the key")), r.messages.join(" | "));
+  assert.equal(r.calls.filter((call) => call === "devices").length, 2, "signed in but not yet synced is still open");
+  assert.deepEqual(r.notices.filter((notice) => notice.includes("is paired")), ['The new device, "iPhone 7KQ4", is paired: it holds the vault key now.']);
+  assert.ok(r.logs.includes("pairing role=creator decision=paired polls=2"), r.logs.join(" | "));
+});
+
+test("a new device that did not keep the key is never announced as paired, and the outcome is said plainly", async t => {
+  for (const [what, answer] of [
+    ["revoked", (poll, row) => [row({ state: "revoked", revoked: true })]],
+    ["state revoked", (poll, row) => [row({ state: "revoked" })]],
+    ["gone", () => []],
+  ]) {
+    const r = await collected(t, answer, (r) => r.logs.some((line) => line.includes("reason=key_not_kept")));
+    assert.ok(!r.notices.some((notice) => notice.includes("is paired")), `${what}: ${r.notices.join(" | ")}`);
+    assert.match(r.messages.at(-1), /^The new device did not keep the vault key and removed itself from the server/, what);
+    assert.ok(!RAW.test(r.messages.at(-1)), what);
+    assert.equal(r.closed(), 0, `${what}: the outcome stays on screen`);
+    assert.ok(r.logs.includes("pairing role=creator decision=failed reason=key_not_kept polls=1"), what);
+  }
+});
+
+test("a new device that never confirms within ten minutes is told so, not called paired", async t => {
+  const r = await collected(t, (poll, row) => [row({ last_seen: 1000 })], (r) => r.logs.some((line) => line.includes("reason=key_unconfirmed")));
+  assert.equal(r.calls.filter((call) => call === "devices").length, 300);
+  assert.ok(!r.notices.some((notice) => notice.includes("is paired")), r.notices.join(" | "));
+  assert.match(r.messages.at(-1), /has not started syncing within ten minutes/);
+  assert.ok(r.logs.includes("pairing role=creator decision=failed reason=key_unconfirmed polls=300"));
+});
+
+test("a failed device-list read decides nothing: it is logged once and the wait goes on", async t => {
+  const r = await collected(t, (poll, row) => (poll < 3 ? new Error("offline") : [row()]), (r) => r.closed() === 1);
+  assert.equal(r.logs.filter((line) => line.includes("reason=devices_unread")).length, 1, r.logs.join(" | "));
+  assert.ok(r.logs.includes("pairing role=creator decision=paired polls=3"));
+});
+
+/**
+ * Open the creator's run() over a scripted server; returns what it wrote and
+ * whether a pairing was made. A function `server` is a refusal, built from
+ * this sandbox's own ApiError.
+ */
+async function opened(t, server, statuses = ["expired"]) {
+  const r = await prompt(t, { server: typeof server === "function" ? null : server });
+  if (typeof server === "function") r.modal.plugin.transport.pluginManifest = async () => { throw server(r.ApiError); };
+  let created = 0;
+  r.modal.plugin.transport.pairingCreate = async () => { created++; return { outcome: "ok", value: { pairing_id: r.id, enroll_token: "34".repeat(32), expires: 0 } }; };
+  r.modal.plugin.transport.pairingStatus = async () => ({ state: statuses.shift() ?? "expired", claimant: null });
+  const texts = [];
+  r.modal.contentEl = { empty() {}, createEl: (tag, options) => { if (options?.text) texts.push(options.text); return { remove() {}, setText: (text) => texts.push(text) }; } };
+  await r.modal.run();
+  return { ...r, texts, created: () => created };
+}
+
+test("a server older than 1.1.5, or one that reports no version, is refused before any code is made", async t => {
+  const unavailable = (ApiError) => new ApiError(404, "plugin_unavailable", "this server ships no plugin bundle");
+  for (const server of ["1.1.4", "1.0.99", "0.9.9", "", "abc", "1.1", "1.1.5x", "v1.1.5", 5, null, unavailable]) {
+    const o = await opened(t, server);
+    assert.equal(o.created(), 0, `${String(server)}: no pairing was created`);
+    assert.match(o.texts.at(-1), /^Your obsync server runs a version older than 1\.1\.5, or does not say which, so no code was made\. Update your obsync server to 1\.1\.5 or later, then pair again/, String(server));
+    assert.ok(o.logs.some((line) => line.startsWith("pairing role=creator decision=refused reason=server_too_old server=")), String(server));
+    assert.ok(!o.texts.some((text) => text.includes("TYPE this code")), `${String(server)}: no code is offered`);
+  }
+});
+
+test("a 1.1.5 or later server gets a code", async t => {
+  for (const server of ["1.1.5", "1.1.5-beta.1", "1.1.10", "1.2.0", "2.0.0"]) {
+    const o = await opened(t, server);
+    assert.equal(o.created(), 1, server);
+    assert.ok(o.texts.some((text) => text.includes("TYPE this code")), server);
+    assert.ok(!o.logs.some((line) => line.includes("server_too_old")), server);
+  }
+});
+
+test("an unreachable server is told as unreachable, never as too old", async t => {
+  const o = await opened(t, (ApiError) => new ApiError(0, "unreachable", "no answer within 15 s"));
+  assert.equal(o.created(), 0);
+  assert.ok(!o.texts.some((text) => text.includes("older than 1.1.5")), o.texts.join(" | "));
+  assert.ok(o.logs.includes("pairing role=creator decision=failed reason=unreachable"), o.logs.join(" | "));
+  assert.equal(o.notices.length, 1, "one refusal, in words");
 });

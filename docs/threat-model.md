@@ -79,10 +79,11 @@ device sent it.
    sends its secret again; the exposure is only at setup and pairing.
 2. **Type the pairing code into the other device; don't send it to yourself
    through work channels.** The code carries a secret that helps open the
-   sealed envelope your vault key travels in. When both devices and the server
-   run 1.1.5, the envelope also needs a key exchange only the two devices hold,
-   so a copy of the code alone no longer opens it; when one device runs an
-   older obsync, pairing warns you and the code alone still opens it. Mailing
+   sealed envelope your vault key travels in. When both devices run 1.1.5, the
+   envelope also needs a key exchange only the two devices hold, so a copy of
+   the code alone no longer opens it, and a 1.1.5 device makes no code through
+   a server older than 1.1.5; when one device runs an older obsync, pairing
+   warns you and the code alone still opens it. Mailing
    the code to your work address, or pasting it into a work chat, hands that
    secret to whatever inspects those channels. See
    [Troubleshooting](troubleshooting.md).
