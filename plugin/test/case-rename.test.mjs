@@ -1965,6 +1965,84 @@ test("a folder record reported twice while its post is in flight publishes one r
 });
 
 /**
+ * AND THE POST THAT WAS REPORTED TWICE THEN FAILS (issue #238).
+ *
+ * The duplicate queued the record's path again while its post was in flight,
+ * BEHIND the moves the first report had queued. The retry then found the path
+ * already queued and left it there, so the moves went first and the folding
+ * receiver refused every one of them with a notice blaming the other device.
+ * A retried record goes back to the HEAD of the queue whether or not its path
+ * is queued, and the failure is said once.
+ */
+test("a folder record reported twice whose post then fails is retried in front of the moves", async (t) => {
+  const { server, timers, a, b, keys } = await pair(t, "immediate", {
+    isMobileB: false, caseSensitiveA: false, caseSensitiveB: false,
+  });
+  a.host.write("Team docs/One.md", BODY, 1000);
+  a.host.write("Team docs/Two.md", OTHER, 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => settled(b, "Team docs/One.md") && settled(b, "Team docs/Two.md"));
+  const ids = ["Team docs/One.md", "Team docs/Two.md"].map((path) => b.state.fileByPath(path).fileId);
+  const folderId = await c.folderFileId(keys.manifestKey, "team docs");
+
+  const turns = async (count) => {
+    for (let turn = 0; turn < count; turn++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  const post = b.transport.postVersion.bind(b.transport);
+  const holds = [];
+  b.transport.postVersion = async (fileId, body) => {
+    if (fileId !== folderId) return post(fileId, body);
+    if (holds.length === 0) {
+      await new Promise((resolve) => holds.push(resolve));
+      throw new Error("fixture: the folder record's post was refused after the duplicate");
+    }
+    // Slow, so the order is the barrier's and not whichever post answers first.
+    await turns(50);
+    return post(fileId, body);
+  };
+  const before = server.journal.length;
+  const at = (id) => server.journal.findIndex(
+    (frame, index) => index >= before && frame.file_id === id && !frame.deleted);
+
+  b.host.renameFolder("Team docs", "team docs");
+  await until(() => holds.length === 1, "the folder record's post never started, so this test proves nothing");
+  b.host.emit("rename", b.host.entry("team docs", true), "Team docs");
+  await turns(20);
+  holds[0]();
+  await timers.run(STEP_MS, () =>
+    a.host.logs.some((line) => line.includes("decision=case_renamed")) &&
+    [folderId, ...ids].every((id) => at(id) !== -1));
+  await timers.run(STEP_MS, () => a.state.data.lastSeq >= server.journal[server.journal.length - 1].seq);
+
+  for (const id of ids) {
+    assert.ok(at(folderId) < at(id), `a move was journaled before the retried record: ${story(server, a, b)}`);
+  }
+  assert.deepEqual(
+    b.host.logs.filter((line) => line.startsWith("push path_class=folder")),
+    ["push path_class=folder decision=retry reason=folder_post attempt=1 budget=3"],
+    b.host.logs.filter((line) => line.startsWith("push")).join(" | "),
+  );
+  assert.equal(a.host.logs.some((line) => line.includes("case_move_refused")), false, a.host.logs.join(" | "));
+  assert.deepEqual(a.host.notices.filter((message) => message.includes("spells the folder")), [], a.host.notices.join(" | "));
+  // The receiver published the folder, KEPT it at the old spelling's
+  // tombstone because the notes were still in it, re-cased it once from the
+  // record, and had no refused version to bring down afterwards.
+  assert.deepEqual(
+    a.host.logs
+      .filter((line) => line.startsWith("folder path_class=folder"))
+      .map((line) => (/decision=([a-z_]+)/.exec(line) ?? [])[1]),
+    ["published", "kept", "case_renamed", "start", "heads_refetched"],
+    a.host.logs.filter((line) => line.startsWith("folder")).join(" | "),
+  );
+  assert.ok(a.host.logs.some((line) => line.includes("decision=heads_refetched records=2 applied=0 failed=0")), a.host.logs.join(" | "));
+  assert.deepEqual([...a.host.files.keys()].sort(), ["team docs/One.md", "team docs/Two.md"], story(server, a, b));
+  for (const path of ["team docs/One.md", "team docs/Two.md"]) {
+    assert.equal(a.state.fileByPath(path)?.versionId, b.state.fileByPath(path)?.versionId, story(server, a, b));
+  }
+});
+
+/**
  * AND THE QUEUE NEVER STALLS FOREVER. A retry that could be taken again for
  * ever would stop this device publishing anything under that folder, so the
  * hold is bounded: `FOLDER_POST_TRIES` attempts, then one decision, one

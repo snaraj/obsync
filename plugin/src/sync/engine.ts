@@ -1953,14 +1953,19 @@ export class SyncEngine {
     for (const path of [...held].reverse()) {
       this.folderPublishes.set(path, true);
       this.barriers.add(path);
-      const queued = this.queue.indexOf(path);
-      if (queued !== -1) this.queue.splice(queued, 1);
-      this.queue.unshift(path);
+      this.toFront(path);
     }
     this.options.host.log(
       `engine decision=restored reason=folder_barrier folders=${held.length}`,
     );
     void this.track(this.drain());
+  }
+
+  /** At the head of the queue, taken out of wherever it already stands. */
+  private toFront(path: string): void {
+    const queued = this.queue.indexOf(path);
+    if (queued !== -1) this.queue.splice(queued, 1);
+    this.queue.unshift(path);
   }
 
   /** The live context, for views that read remote-only accounting. */
@@ -2506,8 +2511,10 @@ export class SyncEngine {
     }
     this.folderRetries.set(path, attempt);
     this.publishFolder(path, barrier, recreate);
-    // In FRONT: what this record orders is already queued behind it.
-    if (!this.queue.includes(path)) this.queue.unshift(path);
+    // In FRONT: what this record orders is already queued behind it. EVEN
+    // WHEN IT IS QUEUED ALREADY (issue #238): a duplicate report of the rename
+    // queued it again while the post was in flight, behind those very moves.
+    this.toFront(path);
     context.host.log(
       `push path_class=folder decision=retry reason=folder_post attempt=${attempt} budget=${FOLDER_POST_TRIES}`,
     );
