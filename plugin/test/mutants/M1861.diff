@@ -1,11 +1,11 @@
 # M1861: a page from an unknown device is applied before the names are read (#164)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2662,7 +2662,6 @@
+@@ -3143,7 +3143,6 @@
     * (`exclusive`), and a record this device cannot write is parked (`receive`).
     */
    private async applyPage(context: SyncContext, page: ChangesPage): Promise<void> {
 -    await this.learnNames(context, page.changes);
      let replayed = 0;
-     await this.exclusive(async () => {
-       // What arrived and is not yet written is work, and the status counts it
+     // Whether any change of the page was more than this device's own version
+     // coming back (`pull.ts`, ECHOES) or an entry a replay skips.
