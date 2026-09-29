@@ -1601,6 +1601,15 @@ Obsidian has buffered the response. A local publication already dispatched
 must settle. It is never undone after cancellation: success is a local-copy
 receipt, and an uncertain outcome names the path to check.
 
+A request of a load generation that is no longer current is refused by the
+plugin's request function before anything is sent (`SessionEnded`, issue
+#272). The transport ends that call at that attempt with one line, `http …
+decision=ended reason=session_inactive`, and reports nothing about the
+server; read as an absent network, it was retried through its whole
+backoff, up to two minutes after a reload, each retry logged beside the
+new session's lines. The stopped engine it belonged to says nothing more:
+what it owed is already written down for the session that replaced it.
+
 The copy is untracked and receives no pull echo marker. Ordinary watcher
 ingestion/reconciliation gives it a fresh file id and posts its own history;
 the original heads remain unchanged. Ordinary startup runs separately so

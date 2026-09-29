@@ -1,0 +1,11 @@
+# M3633: a stopped engine logs an ended session's folder post as deferred (issue #272)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2523,7 +2523,6 @@
+   private retryFolder(context: SyncContext, path: string, barrier: boolean, recreate: boolean, error: unknown): void {
+     // An ended session's request said so itself (#272), and what survives the
+     // stop below is already written down.
+-    if (error instanceof SessionEnded) return;
+     const attempt = (this.folderRetries.get(path) ?? 0) + 1;
+     const message = errorText(error);
+     // A POST THAT FAILS AFTER THIS ENGINE STOPPED HAS NO QUEUE TO GO BACK

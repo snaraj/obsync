@@ -1,0 +1,11 @@
+# M3635: a manual read in an ended session also logs its own refusal line (issue #272)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1027,7 +1027,6 @@
+       }
+       return this.settle(method, target, response, 1, started);
+     } catch (error) {
+-      if (error instanceof SessionEnded) throw error;
+       // `budget_bytes` belongs to the size refusal alone. A read that never
+       // left the device was never measured against a byte budget, and naming
+       // one made a scheduling collision read like an oversize response.

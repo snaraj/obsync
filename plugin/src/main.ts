@@ -70,7 +70,7 @@ import {
   inSyncTree,
   parseSyncFolders,
 } from "./syncScope";
-import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, Transport, isNewer, lostMessage } from "./transport";
+import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
 import { AFTER_START, EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
@@ -2982,7 +2982,8 @@ export default class ObsyncPlugin extends Plugin {
     const transport: Transport = new Transport({
       request: (request) => {
         state.assertAvailable();
-        if (!this.isCurrent(generation) || this.state !== state) throw new Error("The previous plugin session is inactive.");
+        // Ends the call, never retried (`SessionEnded`, issue #272).
+        if (!this.isCurrent(generation) || this.state !== state) throw new SessionEnded();
         return requestUrl(request);
       },
       serverUrl: () => state.data.serverUrl,

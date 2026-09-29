@@ -1432,6 +1432,10 @@ this order avoids.
    Two answers a step waits for are routine, `decision=expected`: a first
    setup finding no domain map yet (`404 unknown_file`), and a new device
    asking for its approval before it is given (`409 not_approved`).
+   After obsync is disabled and enabled again, or reloaded, a line ending
+   `decision=ended reason=session_inactive` is the old session dropping a
+   request it still had waiting; nothing was sent, and the new session does
+   the work.
 2. **Show sync status**, from the command palette: what sync is doing and why
    it is not doing more. Its first row is this device's **Server** address;
    leave that row out, for the reason the list below gives.

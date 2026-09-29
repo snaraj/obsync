@@ -1,0 +1,12 @@
+# M3634: the plugin's request function refuses an ended session with a plain Error again (issue #272)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2983,7 +2983,7 @@
+       request: (request) => {
+         state.assertAvailable();
+         // Ends the call, never retried (`SessionEnded`, issue #272).
+-        if (!this.isCurrent(generation) || this.state !== state) throw new SessionEnded();
++        if (!this.isCurrent(generation) || this.state !== state) throw new Error("The previous plugin session is inactive.");
+         return requestUrl(request);
+       },
+       serverUrl: () => state.data.serverUrl,

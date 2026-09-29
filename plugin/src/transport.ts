@@ -275,6 +275,23 @@ export const SLOWEST_BYTES_PER_MS = 16;
 const TIMED_OUT = new Error("no answer within the attempt's deadline");
 
 /**
+ * THE PLUGIN SESSION THIS TRANSPORT BELONGS TO HAS ENDED (issue #272): the
+ * plugin was disabled, reloaded or replaced while a request of that session
+ * was still in flight or asleep in its backoff. The request function refuses
+ * before anything is sent. It is not a network failure: retried, it ran out
+ * its whole backoff, up to two minutes, refusing every attempt and logging
+ * into the session that replaced it. It ends the call at that attempt, like a
+ * caller's signal, with one line; nothing was sent and nothing was learnt
+ * about the server.
+ */
+export class SessionEnded extends Error {
+  constructor() {
+    super("The previous plugin session is inactive.");
+    this.name = "SessionEnded";
+  }
+}
+
+/**
  * How long a repeatable call may keep its caller waiting, and whether the
  * caller may end it (issue #182).
  *
@@ -767,6 +784,11 @@ export class Transport {
         ? { kind: "settled", response }
         : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
     } catch (error) {
+      // A session that ended sends nothing more, and says so once (#272).
+      if (error instanceof SessionEnded) {
+        this.log(`http ${method} ${target} decision=ended reason=session_inactive`);
+        throw error;
+      }
       outcome = {
         kind: "unsettled",
         status: 0,
@@ -1005,6 +1027,7 @@ export class Transport {
       }
       return this.settle(method, target, response, 1, started);
     } catch (error) {
+      if (error instanceof SessionEnded) throw error;
       // `budget_bytes` belongs to the size refusal alone. A read that never
       // left the device was never measured against a byte budget, and naming
       // one made a scheduling collision read like an oversize response.
@@ -1262,8 +1285,10 @@ export class Transport {
       const probe = await this.attempt("POST", target, sending);
       if (probe.kind !== "settled" || probe.response.status >= 400) return false;
       return decode<{ missing: string[] }>(probe.response).missing.length === 0;
-    } catch {
-      // The probe saves bytes; it can never cost a chunk.
+    } catch (error) {
+      // The probe saves bytes; it can never cost a chunk. An ended session
+      // ends the upload here, its one line already said (#272).
+      if (error instanceof SessionEnded) throw error;
       return false;
     }
   }

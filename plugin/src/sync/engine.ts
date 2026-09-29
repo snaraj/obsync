@@ -73,7 +73,7 @@ import {
   soleDomain,
 } from "../domainmap";
 import { State, isPushed } from "../state";
-import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, NOT_OBSYNC, Transport, certificateRefusal } from "../transport";
+import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, NOT_OBSYNC, SessionEnded, Transport, certificateRefusal } from "../transport";
 import { VaultPathError, errorText, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
@@ -2408,6 +2408,10 @@ export class SyncEngine {
       }
       if (outcome.ack?.conflicted) await this.reconcileFile(outcome.fileId);
     } catch (error) {
+      // A REQUEST OF A PLUGIN SESSION THAT ENDED (#272): the transport said so,
+      // once, and this engine was stopped with that session. What it owed is
+      // written down for the session that replaced it; nothing more is said.
+      if (error instanceof SessionEnded) return;
       // A push can immediately reconcile a competing head. A native editor
       // refusal in that pull uses the same durable retry as the feed.
       const held = error instanceof Unwritable ? context.state.fileByPath(error.path) : undefined;
@@ -2517,6 +2521,9 @@ export class SyncEngine {
    * reconcile pass republishes the record.
    */
   private retryFolder(context: SyncContext, path: string, barrier: boolean, recreate: boolean, error: unknown): void {
+    // An ended session's request said so itself (#272), and what survives the
+    // stop below is already written down.
+    if (error instanceof SessionEnded) return;
     const attempt = (this.folderRetries.get(path) ?? 0) + 1;
     const message = errorText(error);
     // A POST THAT FAILS AFTER THIS ENGINE STOPPED HAS NO QUEUE TO GO BACK
