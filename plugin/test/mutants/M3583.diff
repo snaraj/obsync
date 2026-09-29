@@ -1,0 +1,12 @@
+# M3583: the CLI ignores format=json
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3334,7 +3334,7 @@
+           if (!json && params["format"] !== undefined && params["format"] !== "text") throw new CliRefusal("unknown_value", usage);
+           const result = await answer(params);
+           this.log(`cli decision=answered command=${command} format=${json ? "json" : "text"} duration_ms=${Date.now() - started}`);
+-          return scrub(json ? JSON.stringify(result.json) : result.text);
++          return scrub(result.text);
+         } catch (error) {
+           const refusal = error instanceof CliRefusal ? error : new CliRefusal("failed", "obsync could not do that; its log in Obsidian's developer console says why.");
+           this.log(`cli decision=refused reason=${refusal.code} command=${command} duration_ms=${Date.now() - started}`);

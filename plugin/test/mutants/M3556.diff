@@ -1,0 +1,12 @@
+# M3556: Once per note counts the quiet from the first combine, not the latest
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -258,7 +258,7 @@
+     if (notice.kind === "combined") {
+       for (const path of notice.paths ?? []) {
+         last = Math.max(last, this.combinedAt.get(path) ?? -Infinity);
+-        this.combinedAt.set(path, now);
++        if (!this.combinedAt.has(path)) this.combinedAt.set(path, now);
+       }
+       if (this.combinedAt.size > RECENT_MAX * 4) {
+         for (const [path, at] of this.combinedAt) if (now - at >= ONCE_IDLE_MS) this.combinedAt.delete(path);

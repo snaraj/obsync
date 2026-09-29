@@ -31,7 +31,8 @@ const ORIGINAL = () => ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: 
   files: { "Notes/a.md": { fileId: "12".repeat(16), versionId: "34".repeat(32), size: 4, mtime: 1, sha256: "" } },
   folders: { Notes: { fileId: "56".repeat(16), versionId: "78".repeat(32) } },
   feedMark: { seq: 7, fileId: "12".repeat(16), versionId: "34".repeat(32), ts: 5, replay: false },
-  syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed" });
+  syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed",
+  notices: { level: "needs-me", merges: "every" } });
 
 /** One vault as Obsidian keeps it: a data file, a secret store and a local-storage record, each per vault id. */
 function vault(metadata = null) {
@@ -77,6 +78,7 @@ test("a reference this vault never held, with no secret behind it, loads as an u
     retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: {}, paused: {}, heldDeletions: [],
     feedMark: null, graves: {},
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "unconfirmed",
+    notices: { level: "needs-me", merges: "every" },
   });
   assert.deepEqual(copy.writes, [], "nothing is written until the person acts");
   assert.deepEqual(copy.data(), original.data());

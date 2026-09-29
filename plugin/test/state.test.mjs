@@ -239,6 +239,8 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
     // The key is kept, so the words confirmed for it stay confirmed (#170).
     recoveryPhrase: "confirmed",
+    // What this person chose to be told is theirs, not the server's (1.1.5).
+    notices: { level: "needs-me", merges: "off" },
   });
 
   state.forgetPairing();
@@ -251,6 +253,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
       retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: { "Notes/empty.md": "f7" }, paused: {},
       heldDeletions: [],
       feedMark: null, graves: {}, syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed",
+      notices: { level: "needs-me", merges: "off" },
     },
   );
   assert.equal(state.paired, false);

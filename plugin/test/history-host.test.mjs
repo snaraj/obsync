@@ -357,9 +357,11 @@ test("a notice that asks something carries one button per answer, stays up, and 
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true }));
   const obsidian = box.require("obsidian");
-  const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
+  const { ObsidianHost, noticeChannel } = box.require(join(box.home, "build/main.js"));
   const pressed = [];
-  const h = new ObsidianHost({ state: { data: {} }, app: { vault: {} }, log: () => undefined, act: (action) => pressed.push(action) }, null);
+  const plugin = { state: { data: {} }, app: { vault: {} }, log: () => undefined, act: (action) => pressed.push(action) };
+  plugin.notices = noticeChannel(plugin);
+  const h = new ObsidianHost(plugin, null);
   const raised = obsidian.raised.length;
 
   h.notify("STATEMENT SENTINEL");

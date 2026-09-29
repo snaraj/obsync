@@ -111,6 +111,7 @@ test("a crash that loses a pairing's secret write loads with no credential, keep
     retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: {}, paused: {}, heldDeletions: [],
     feedMark: null, graves: {},
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "unconfirmed",
+    notices: { level: "everything", merges: "once" },
   });
   assert.deepEqual(d.failures, [], "a recovery is not a stop");
   assert.equal(d.writes.length, writes, "nothing is written until the person acts");

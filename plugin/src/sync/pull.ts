@@ -2957,7 +2957,14 @@ async function resolve(
             context.host.log(`pull decision=edit_verdict_retained reason=local_merge file=${change.file_id} seq=${change.seq}`);
           }
           await postMerged(context, change, localPath, target, localVersionId, text, stat.mtime);
-          if (ours) context.host.notify(`obsync merged concurrent edits to ${target}.`);
+          // Named by its title and the other device's name, and quiet or once
+          // per note as the person chose (`notices.ts`, "Combined edits").
+          if (ours) {
+            context.host.notify({
+              kind: "combined", text: "combined your edits to {notes} with {device}'s.", paths: [target],
+              device: context.deviceNameFor(change.device_id),
+            });
+          }
           context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq} announced=${ours}`);
           return "merged";
         });

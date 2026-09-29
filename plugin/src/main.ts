@@ -53,13 +53,14 @@
  */
 
 import { ItemView, MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
-import type { App } from "obsidian";
+import type { App, CliData, CliFlag, CliFlags, CliHandler } from "obsidian";
 import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
 import { accountRecovery, FORGOTTEN_DEVICE } from "./accountRecovery";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
 import { KEYS_LOST, State, StateStorageError, dataLease, isPushed, type Held, type ObsyncData } from "./state";
+import { HELD, LEVELS, MERGES, NOTICE_DEFAULTS, NoticeChannel, scrub, titles, type Drawn, type NoticeSettings, type SyncNotice } from "./notices";
 import {
   assertFolderCaseScope,
   assertFolderScope,
@@ -77,7 +78,7 @@ import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, r
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
 import { COPIED_VAULT, ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
 import {
-  LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, alreadyPaired, awaitApproval,
+  LeaveServerModal, PairClaimModal, PairCreateModal, RecentModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, alreadyPaired, awaitApproval,
 } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
 import { Indicator, indicated } from "./ui/indicator";
@@ -133,6 +134,74 @@ const NOTICE_BUTTONS: Record<NoticeAction["kind"], string> = {
   restore_here: "Restore here",
   fetch: "Fetch",
 };
+
+/**
+ * One of Obsidian's toasts, for the notice channel (`notices.ts`): its words,
+ * one button per action (issues #161, #162) that answers and takes the toast
+ * away, and what a click anywhere on it opens. The same decision stays
+ * reachable after a toast is dismissed -- Settings, "Deletions held back",
+ * Show remote-only files, and Recent in Show sync status -- so a dismissed
+ * toast loses nothing. Only a toast without buttons changes its words
+ * (`NoticeChannel.show`): `setMessage` empties the element they live in.
+ */
+function toast(plugin: ObsyncPlugin, text: string, ms: number, actions: readonly NoticeAction[], open?: () => void): Drawn {
+  const notice = new Notice(text, ms);
+  let hidden = false;
+  for (const action of actions) {
+    const button = notice.messageEl.createEl("button", { text: NOTICE_BUTTONS[action.kind] });
+    button.addEventListener("click", () => {
+      notice.hide();
+      plugin.act(action);
+    });
+  }
+  if (open !== undefined) notice.containerEl.addEventListener("click", open);
+  return {
+    update: (words) => {
+      notice.setMessage(words);
+    },
+    hide: () => {
+      hidden = true;
+      notice.hide();
+    },
+    // Obsidian takes a toast out of the page when its time is up or it is clicked.
+    shown: () => !hidden && notice.containerEl.isConnected,
+  };
+}
+
+/** The notice channel on Obsidian's screen, for one plugin instance. */
+export function noticeChannel(plugin: ObsyncPlugin): NoticeChannel {
+  return new NoticeChannel({
+    draw: (text, ms, actions, open) => toast(plugin, text, ms, actions, open),
+    settings: () => plugin.state?.data.notices ?? NOTICE_DEFAULTS,
+    now: () => Date.now(),
+    log: (line) => plugin.log(line),
+    showStatus: () => plugin.showStatus(),
+  });
+}
+
+/**
+ * A command-line request obsync refuses: one sentence for a person, and the
+ * stable code `format=json` prints beside it (`docs/architecture.md` 6.4).
+ */
+class CliRefusal extends Error {
+  constructor(readonly code: "unknown_flag" | "unknown_value" | "failed", message: string) {
+    super(message);
+  }
+}
+
+/** One command-line answer: words for a person, and the documented object for a program. */
+interface CliAnswer {
+  text: string;
+  json: unknown;
+}
+
+/** Local date and time to the second, "2026-09-29 14:05:12", for the CLI's Recent. */
+function stamp(at: number): string {
+  const date = new Date(at);
+  const two = (value: number): string => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} ` +
+    `${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`;
+}
 
 /**
  * What a folder sync answers on a host that has none. Node opens a directory
@@ -491,8 +560,6 @@ const WRITE_AGAIN = 2;
 
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
-  /** The held-deletions question on screen now, if any: at most one (`notify`). */
-  private question: Notice | null = null;
   /** The temps this host's writers hold open now, which `sweep` never takes. */
   private readonly temps = new Set<string>();
   /** The nested vaults this host has already told the user about, once each. */
@@ -2845,35 +2912,20 @@ export class ObsidianHost implements VaultHost {
   }
 
   /**
-   * A statement goes after ten seconds; a notice that asks something stays
-   * until it is answered or dismissed, with one button per action (issues
-   * #161, #162). The same decision stays reachable afterwards -- Settings,
-   * "Deletions held back", and Show remote-only files -- so a dismissed
-   * notice loses nothing.
+   * Through the plugin's one notice channel (`notices.ts`), which decides how
+   * long a notice stays, whether a setting keeps it to Recent, and keeps ONE
+   * held-deletions question on screen at a time: every engine start, Sync now
+   * and new burst asks again, and the same question stacked down the screen
+   * (owner's rig, 2026-09-27: eight at once). `closeQuestion` takes it away
+   * once nothing is held any more.
    */
-  notify(message: string, actions: NoticeAction[] = []): void {
-    // ONE QUESTION ABOUT HELD DELETIONS IS ON SCREEN AT A TIME. Obsidian keeps
-    // an asking notice until it is clicked, and every engine start, Sync now
-    // and new burst asked again, so the same question stacked down the screen
-    // (owner's rig, 2026-09-27: eight at once). A new one replaces the last;
-    // `closeQuestion` takes it away once nothing is held any more.
-    const asks = actions.some((action) => action.kind === "delete_everywhere" || action.kind === "restore_here");
-    if (asks) this.closeQuestion();
-    const notice = new Notice(message, actions.length === 0 ? 10000 : 0);
-    if (asks) this.question = notice;
-    for (const action of actions) {
-      const button = notice.messageEl.createEl("button", { text: NOTICE_BUTTONS[action.kind] });
-      button.addEventListener("click", () => {
-        notice.hide();
-        this.plugin.act(action);
-      });
-    }
+  notify(notice: SyncNotice | string, actions: NoticeAction[] = []): void {
+    this.plugin.notices.show(notice, actions);
   }
 
   /** Take the held-deletions question off the screen: answered, released, or this plugin unloading. */
   closeQuestion(): void {
-    this.question?.hide();
-    this.question = null;
+    this.plugin.notices.close(HELD);
   }
 
   log(line: string): void {
@@ -2885,6 +2937,8 @@ export default class ObsyncPlugin extends Plugin {
   state!: State;
   transport!: Transport;
   host!: ObsidianHost;
+  /** Every notice this plugin shows, and the Recent list (`notices.ts`); it outlives a reload of this instance. */
+  readonly notices: NoticeChannel = noticeChannel(this);
   engine: SyncEngine | null = null;
   /** The start and update probe `onload` began and deliberately did not wait for. */
   firstStart: Promise<void> = Promise.resolve();
@@ -2901,6 +2955,9 @@ export default class ObsyncPlugin extends Plugin {
   private noticed: string | null = null;
   /** Show sync status and the settings tab, re-drawn on every status change while open (#156). */
   private readonly watchers = new Set<() => void>();
+  /** The Show sync status and Recent dialogs last opened; asked for again while one shows, it comes forward (#269). */
+  private statusDialog: StatusModal | null = null;
+  private recentDialog: RecentModal | null = null;
   private statusValue: EngineStatus = { kind: "idle" };
   forgottenDevice = false;
   /** A pairing claim waiting for its vault key (issue #153); it signs its own collection. */
@@ -3077,6 +3134,17 @@ export default class ObsyncPlugin extends Plugin {
       name: "Switch server (obsync)",
       callback: () => new LeaveServerModal(this.app, this, "switch").open(),
     });
+    // A CHOICE WITH FIXED ANSWERS IS A SETTING (owner, 2026-09-29): each answer
+    // is a command, so a hotkey can be bound to it, as well as a Settings row
+    // and a CLI flag.
+    for (const [level, words] of LEVELS) {
+      this.addCommand({ id: `notices-${level}`, name: `Notifications: ${words} (obsync)`, callback: () => void this.setNotices({ level }, "palette").catch(() => {}) });
+    }
+    for (const [merges, words] of MERGES) {
+      this.addCommand({ id: `merges-${merges}`, name: `Combined edits: ${words} (obsync)`, callback: () => void this.setNotices({ merges }, "palette").catch(() => {}) });
+    }
+    this.addCommand({ id: "recent", name: "Show recent sync activity (obsync)", callback: () => this.showRecent() });
+    this.registerCli();
 
     // Use the installation identity for both URI spellings without also
     // claiming the old generic action used by pre-directory installations.
@@ -3193,7 +3261,174 @@ export default class ObsyncPlugin extends Plugin {
 
   /** Show sync status: from the indicator, the palette, and a phone's view header (#156). */
   showStatus(): void {
-    new StatusModal(this.app, this).open();
+    this.statusDialog = this.oneDialog(this.statusDialog, () => new StatusModal(this.app, this), "status");
+  }
+
+  /** Every notice this session, newest first, shown or kept quiet (`notices.ts`). */
+  showRecent(): void {
+    this.recentDialog = this.oneDialog(this.recentDialog, () => new RecentModal(this.app, this), "recent");
+  }
+
+  /** One dialog, however often it is asked for (#269): the one showing comes forward, or a new one opens. */
+  private oneDialog<D extends StatusModal | RecentModal>(showing: D | null, make: () => D, name: string): D {
+    if (showing?.isShown() === true) {
+      this.log(`${name} decision=forward reason=already_open`);
+      showing.forward();
+      return showing;
+    }
+    const dialog = make();
+    dialog.open();
+    return dialog;
+  }
+
+  /** Open a note Recent names; one no longer at that name is said to be so. */
+  openNote(path: string): void {
+    const file = this.app.vault.getFileByPath(path);
+    if (file === null) {
+      this.log("recent decision=refused reason=not_at_that_name");
+      this.notices.show({ kind: "confirm", text: "{notes} is no longer at that name: it was renamed, moved or deleted since.", paths: [path] });
+      return;
+    }
+    void this.app.workspace.getLeaf(false).openFile(file);
+  }
+
+  /**
+   * Set what this device shows as a notice, from Settings, the palette or the
+   * CLI, and keep it (`ObsyncData.notices`). The palette's answer is said in a
+   * notice; Settings shows it in its field and the CLI prints it.
+   */
+  async setNotices(change: Partial<NoticeSettings>, source: "settings" | "palette" | "cli"): Promise<NoticeSettings> {
+    const started = Date.now();
+    const previous = this.state.data.notices;
+    const next: NoticeSettings = { ...previous, ...change };
+    this.state.data.notices = next;
+    try {
+      await this.state.save();
+    } catch (error) {
+      // Not kept is not set: the notices go on as the person last saved them.
+      this.state.data.notices = previous;
+      this.log(`notices decision=failed reason=save source=${source} duration_ms=${Date.now() - started}`);
+      throw error;
+    }
+    this.log(`notices decision=changed level=${next.level} merges=${next.merges} source=${source} duration_ms=${Date.now() - started}`);
+    if (source === "palette") this.notices.show({ kind: "confirm", text: this.noticeWords(next) });
+    return next;
+  }
+
+  /** "notifications: Everything useful; combined edits: Once per note." */
+  private noticeWords(settings: NoticeSettings): string {
+    const words = (options: readonly [string, string][], value: string): string => options.find(([option]) => option === value)?.[1] ?? value;
+    return `notifications: ${words(LEVELS, settings.level)}; combined edits: ${words(MERGES, settings.merges)}.`;
+  }
+
+  /**
+   * OBSIDIAN'S COMMAND LINE (1.12.2 and later): `<id>:notices` shows the
+   * notice settings or sets them, `<id>:recent` shows Recent, `<id>:status`
+   * what Show sync status says. Words for a person by default; `format=json`
+   * prints the documented object instead, and a refusal as
+   * `{"error":{"code","message"}}` (`docs/architecture.md` 6.4). Nothing
+   * printed carries an id, key or code (`scrub`). A host that refuses a
+   * registration -- one without a command line -- is logged, and the plugin
+   * runs on without it.
+   */
+  private registerCli(): void {
+    const format: CliFlag = { value: "text|json", description: "Output format (default: text)" };
+    const commands: [string, string, CliFlags, (params: CliData) => CliAnswer | Promise<CliAnswer>][] = [
+      ["notices", "Show or set obsync notifications", {
+        level: { value: LEVELS.map(([value]) => value).join("|"), description: "What obsync notifies about" },
+        merges: { value: MERGES.map(([value]) => value).join("|"), description: "When it notifies about combined edits" },
+        format,
+      }, (params) => this.noticesCli(params)],
+      ["recent", "Show recent obsync notices, newest first", { format }, () => this.recentCli()],
+      ["status", "Show obsync sync status", { format }, () => this.statusCli()],
+    ];
+    for (const [command, description, flags, answer] of commands) {
+      const usage = `${command} takes ${Object.entries(flags).map(([name, flag]) => `${name}=${flag.value ?? ""}`).join(", ")}.`;
+      const handler: CliHandler = async (params) => {
+        const started = Date.now();
+        const json = params["format"] === "json";
+        try {
+          if (Object.keys(params).some((flag) => !Object.hasOwn(flags, flag))) throw new CliRefusal("unknown_flag", `That is not an option here: ${usage}`);
+          if (!json && params["format"] !== undefined && params["format"] !== "text") throw new CliRefusal("unknown_value", usage);
+          const result = await answer(params);
+          this.log(`cli decision=answered command=${command} format=${json ? "json" : "text"} duration_ms=${Date.now() - started}`);
+          return scrub(json ? JSON.stringify(result.json) : result.text);
+        } catch (error) {
+          const refusal = error instanceof CliRefusal ? error : new CliRefusal("failed", "obsync could not do that; its log in Obsidian's developer console says why.");
+          this.log(`cli decision=refused reason=${refusal.code} command=${command} duration_ms=${Date.now() - started}`);
+          if (json) return JSON.stringify({ error: { code: refusal.code, message: refusal.message } });
+          throw new Error(refusal.message);
+        }
+      };
+      try {
+        this.registerCliHandler(`${this.manifest.id}:${command}`, description, flags, handler);
+      } catch (error) {
+        this.log(`cli decision=refused reason=${error instanceof Error ? error.name : "unknown"} command=${command}`);
+      }
+    }
+  }
+
+  /** `{"level","merges"}`, set first from `level=` and `merges=` when given. */
+  private async noticesCli(params: CliData): Promise<CliAnswer> {
+    const pick = <T extends string>(options: readonly [T, string][], name: string): T | undefined => {
+      const value = params[name];
+      if (value === undefined) return undefined;
+      const found = options.find(([option]) => option === value);
+      const values = options.map(([option]) => option);
+      if (found === undefined) throw new CliRefusal("unknown_value", `${name} takes ${values.slice(0, -1).join(", ")} or ${values.at(-1) ?? ""}.`);
+      return found[0];
+    };
+    const level = pick(LEVELS, "level"), merges = pick(MERGES, "merges");
+    let now = this.state.data.notices;
+    if (level !== undefined || merges !== undefined) {
+      now = await this.setNotices({ ...level === undefined ? {} : { level }, ...merges === undefined ? {} : { merges } }, "cli");
+    }
+    const words = (options: readonly [string, string][], value: string): string => options.find(([option]) => option === value)?.[1] ?? value;
+    return {
+      text: `Notifications: ${words(LEVELS, now.level)} (level=${now.level})\nCombined edits: ${words(MERGES, now.merges)} (merges=${now.merges})`,
+      json: { level: now.level, merges: now.merges },
+    };
+  }
+
+  /** Recent, newest first: `[{"time","kind","note_title","device","text"}]`. */
+  private recentCli(): CliAnswer {
+    const entries = this.notices.recent();
+    return {
+      text: entries.length === 0 ? "Nothing since obsync started." : entries.map((entry) => `${stamp(entry.at)}  ${entry.text}`).join("\n"),
+      json: entries.map((entry) => ({
+        time: new Date(entry.at).toISOString(),
+        kind: entry.kind,
+        note_title: entry.paths.length === 1 ? titles(entry.paths)[0] ?? null : null,
+        device: entry.device ?? null,
+        text: entry.text,
+      })),
+    };
+  }
+
+  /** What Show sync status says, without the device id. */
+  private statusCli(): CliAnswer {
+    const data = this.state.data;
+    const server = data.serverUrl === "" ? null : data.serverUrl;
+    const device = data.deviceId === null ? null : this.deviceName();
+    const counts = {
+      files_tracked: Object.keys(data.files).length,
+      remote_only: Object.keys(data.remoteOnly).length,
+      waiting_to_be_written: Object.keys(data.parked).length,
+      paused: Object.keys(data.paused).length,
+    };
+    return {
+      text: [
+        `State: ${this.statusText()}`,
+        `Server: ${server ?? "not configured"}`,
+        `This device: ${device ?? "not paired"}`,
+        `Vault key: ${data.vrk === null ? "absent" : "present"}`,
+        `Files tracked: ${counts.files_tracked}`,
+        `Remote only: ${counts.remote_only}`,
+        `Waiting to be written: ${counts.waiting_to_be_written}`,
+        `Paused: ${counts.paused}`,
+      ].join("\n"),
+      json: { state: this.shown().kind, text: this.statusText(), server, device, has_vault_key: data.vrk !== null, ...counts },
+    };
   }
 
   private registerVaultEvents(): void {

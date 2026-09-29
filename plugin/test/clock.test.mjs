@@ -247,7 +247,7 @@ async function loaded(t, { mobile = false, worker = true } = {}) {
   instance.checkForUpdate = async () => {};
   await instance.onload();
   await instance.firstStart;
-  return { instance, engines, workers, said };
+  return { instance, engines, workers, said, raised: box.require("obsidian").raised };
 }
 
 test("on desktop the transport and every engine run on one worker clock, and unload ends it", async (t) => {
@@ -306,7 +306,8 @@ test("a reload of the same plugin instance closes the question its old host aske
   const r = await loaded(t);
   t.after(() => r.instance.onunload());
   r.instance.host.notify("Holding deletions", [{ kind: "delete_everywhere" }, { kind: "restore_here" }]);
-  const question = r.instance.host.question;
+  const question = r.raised.at(-1);
+  assert.equal(question.message, "Holding deletions");
   assert.equal(question.hidden, false);
   await r.instance.onload();
   await r.instance.firstStart;

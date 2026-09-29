@@ -196,6 +196,7 @@ test("a merge of an edit made here is still announced", async () => {
   // The other half of the rule: the same fork, with one side typed here and
   // not pushed yet, is this device's news.
   const r = await rig();
+  r.host.noticeSettings = { level: "everything", merges: "once" };
   const FILE = "25".repeat(16);
   const publish = (bytes, parents, mtime) => r.server.publish({
     fileId: FILE, path: "Notes/Shared.md", bytes: enc(bytes), mtime, parents,
@@ -208,7 +209,12 @@ test("a merge of an edit made here is still announced", async () => {
   const right = await publish("one\ntwo\nTHREE\n", [base.version_id], 1757200003000);
 
   assert.equal(await applyChange(r.context, { ...right, conflicted: true }), "merged");
-  assert.deepEqual(r.host.notices, ["obsync merged concurrent edits to Notes/Shared.md."]);
+  // By its title and the other device's name, never a path or an id (owner, 2026-09-29).
+  assert.deepEqual(r.host.notices, ["obsync: combined your edits to \"Shared\" with iPhone's."]);
+  assert.deepEqual(r.host.said, [{
+    kind: "combined", text: "combined your edits to {notes} with {device}'s.", paths: ["Notes/Shared.md"], device: "iPhone",
+  }]);
+  assert.deepEqual(r.host.toasts.map((toast) => [toast.text, toast.ms]), [["obsync: combined your edits to \"Shared\" with iPhone's.", 8000]]);
 });
 
 test("one question about held deletions is on screen at a time, and it goes when nothing is held or the plugin unloads", async (t) => {
@@ -219,6 +225,7 @@ test("one question about held deletions is on screen at a time, and it goes when
   const main = box.require(join(box.home, "build", "main.js"));
   const { raised } = box.require("obsidian");
   const plugin = { state: { data: {} }, log: () => undefined, act: () => undefined };
+  plugin.notices = main.noticeChannel(plugin);
   const host = new main.ObsidianHost(plugin, null);
   const held = [{ kind: "delete_everywhere" }, { kind: "restore_here" }];
   const from = raised.length;

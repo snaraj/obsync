@@ -62,6 +62,7 @@
 import { forgottenCredential, FORGOTTEN_DEVICE } from "../accountRecovery";
 import { ByteSource, CHUNK_MAX } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
+import type { SyncNotice } from "../notices";
 import {
   DomainMap,
   DomainMapError,
@@ -319,7 +320,8 @@ export interface VaultHost {
   editing(path: string): Promise<"unsaved" | "saved" | null>;
   /** Recent trusted editor input, including a composition still in progress. */
   typing(path: string): boolean;
-  notify(message: string, actions?: NoticeAction[]): void;
+  /** Tell the person, through the one notice channel (`notices.ts`); bare words are a notice not yet given a kind. */
+  notify(notice: SyncNotice | string, actions?: NoticeAction[]): void;
   /** Take the held-deletions question off the screen once nothing is held (`hold`). */
   closeQuestion?(): void;
   log(line: string): void;

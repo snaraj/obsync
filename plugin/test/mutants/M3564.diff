@@ -1,0 +1,12 @@
+# M3564: an unnamed device is shown as nothing
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -134,7 +134,7 @@
+ 
+ /** The sentence for these notes; `times` above one says the same thing happened again. */
+ export function sentence(notice: SyncNotice, paths: readonly string[] = notice.paths ?? [], times = 1): string {
+-  const text = notice.text.replace(/\{(notes|device)\}/g, (_, slot: string) => slot === "notes" ? named(paths) : notice.device ?? "another device");
++  const text = notice.text.replace(/\{(notes|device)\}/g, (_, slot: string) => slot === "notes" ? named(paths) : notice.device ?? "");
+   return times > 1 ? text.replace(/\.?$/, ` (${times} times).`) : text;
+ }
+ 

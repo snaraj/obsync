@@ -1,0 +1,12 @@
+# M3557: a notice of the same event never joins the toast that is up
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -233,7 +233,7 @@
+     }
+     // A notice with buttons is its own toast: joined, they would act for the first note only.
+     const group = notice.actions?.length ? undefined : this.groups.get(key);
+-    if (group !== undefined && live(group, now)) {
++    if (group !== undefined && live(group, now) && now < 0) {
+       for (const path of notice.paths ?? []) if (!group.paths.includes(path)) group.paths.push(path);
+       group.times++;
+       group.drawn.update(`obsync: ${sentence(group.notice, group.paths, group.paths.length <= 1 ? group.times : 1)}`);

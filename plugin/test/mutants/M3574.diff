@@ -1,0 +1,12 @@
+# M3574: the palette's change is not answered
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3293,7 +3293,7 @@
+       throw error;
+     }
+     this.log(`notices decision=changed level=${next.level} merges=${next.merges} source=${source} duration_ms=${Date.now() - started}`);
+-    if (source === "palette") this.notices.show({ kind: "confirm", text: this.noticeWords(next) });
++    if (source === "cli") this.notices.show({ kind: "confirm", text: this.noticeWords(next) });
+     return next;
+   }
+ 

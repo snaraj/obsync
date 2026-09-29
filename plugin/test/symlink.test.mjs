@@ -55,7 +55,7 @@ async function vault({ fs: injected } = {}) {
   // one copy means one `VaultPathError` class, the way the shipped bundle's
   // single module registry gives the plugin one of everything.
   const box = sandbox();
-  const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
+  const { ObsidianHost, noticeChannel } = box.require(join(box.home, "build", "main.js"));
   const { applyChange } = box.require(join(box.home, "build", "sync", "pull.js"));
   const obsidian = box.require("obsidian");
   obsidian.notices.length = 0;
@@ -101,6 +101,7 @@ async function vault({ fs: injected } = {}) {
     },
     log: (line) => logs.push(line),
   };
+  plugin.notices = noticeChannel(plugin);
   const desktop = { fs: injected ?? { promises: { ...realFsPromises } }, path: nodePath, base: root };
   const host = new ObsidianHost(plugin, desktop);
 

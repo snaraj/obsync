@@ -667,6 +667,7 @@ test("Show sync status lists every parked file with its reason", (t) => {
     statusText: () => "error — Cannot write Attachments/big.bin here: the disk is full (and 1 more: Show sync status)",
     currentStatus: () => ({ kind: "error", message: "Cannot write Attachments/big.bin here: the disk is full (and 1 more: Show sync status)" }),
     onStatusChange: () => () => undefined,
+    notices: { recent: () => [] },
   });
   modal.contentEl = element();
   modal.setTitle = () => {};

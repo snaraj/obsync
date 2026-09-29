@@ -1,0 +1,16 @@
+# M3571: a host without a command line stops the plugin loading
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3342,11 +3342,7 @@
+           throw new Error(refusal.message);
+         }
+       };
+-      try {
+-        this.registerCliHandler(`${this.manifest.id}:${command}`, description, flags, handler);
+-      } catch (error) {
+-        this.log(`cli decision=refused reason=${error instanceof Error ? error.name : "unknown"} command=${command}`);
+-      }
++      this.registerCliHandler(`${this.manifest.id}:${command}`, description, flags, handler);
+     }
+   }
+ 

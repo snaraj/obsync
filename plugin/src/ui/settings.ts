@@ -41,6 +41,7 @@ import { platformLabel } from "../pairing";
 import { parseSyncFolders } from "../syncScope";
 import { refusalStatus, refusalText } from "../sync/engine";
 import { KEYS_LOST, type EdgeHeader } from "../state";
+import { LEVELS, MERGES } from "../notices";
 import { HEADER_NAME, ownHeader, type DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
 import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVERY_UNCONFIRMED, RecoveryPhraseModal, VaultKeyModal, confirmFirst, literal, secretText } from "./modals";
@@ -304,7 +305,55 @@ export class ObsyncSettingTab extends PluginSettingTab {
       { heading: "This device", rows: [this.pairing(), this.setup(), this.deviceName(enrolled), this.perFile(enrolled), this.total(enrolled), this.saveDevice(enrolled), this.leaving(enrolled)] },
       { heading: "Devices", visible: () => this.plugin.state.paired, rows: this.deviceRows() },
       { heading: "Vault key", rows: [this.recoveryPhrase()] },
+      { heading: "Notifications", rows: [this.noticeLevel(), this.combinedEdits(), this.recentActivity()] },
     ];
+  }
+
+  // ---- Notifications -------------------------------------------------------
+  // The same two settings are commands in the palette and flags of the CLI's
+  // `obsync-private-sync:notices` (`main.ts`). Neither can quiet a question or
+  // a security warning (`notices.ts`, requirement 4).
+
+  private noticeLevel(): Row {
+    return {
+      name: "Notification level",
+      desc: "Everything useful: obsync also tells you when it combined edits for you. Only what needs me: questions, security warnings, errors and conflict copies. Either way every notice is listed under Recent in Show sync status.",
+      render: (setting) => {
+        setting.addDropdown((dropdown) => {
+          for (const [value, words] of LEVELS) dropdown.addOption(value, words);
+          dropdown.setValue(this.plugin.state.data.notices.level).onChange((value) => {
+            const level = LEVELS.find(([option]) => option === value)?.[0];
+            if (level !== undefined) void this.plugin.setNotices({ level }, "settings").catch(() => {});
+          });
+        });
+      },
+    };
+  }
+
+  private combinedEdits(): Row {
+    return {
+      name: "Combined edits",
+      desc: "When obsync combines your edits to a note with another device's. Once per note: the first time, then quiet for that note until it has gone five minutes without one. Every time: each one. Recent only: never a notice. Only what needs me keeps these to Recent.",
+      render: (setting) => {
+        setting.addDropdown((dropdown) => {
+          for (const [value, words] of MERGES) dropdown.addOption(value, words);
+          dropdown.setValue(this.plugin.state.data.notices.merges).onChange((value) => {
+            const merges = MERGES.find(([option]) => option === value)?.[0];
+            if (merges !== undefined) void this.plugin.setNotices({ merges }, "settings").catch(() => {});
+          });
+        });
+      },
+    };
+  }
+
+  private recentActivity(): Row {
+    return {
+      name: "Recent sync activity",
+      desc: "Every notice since obsync started, newest first, including the ones these settings kept off the screen.",
+      render: (setting) => {
+        setting.addButton((button) => button.setButtonText("Show").onClick(() => { this.plugin.showRecent(); }));
+      },
+    };
   }
 
   // ---- Get started ---------------------------------------------------------

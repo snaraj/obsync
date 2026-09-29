@@ -17,6 +17,7 @@ import type ObsyncPlugin from "../main";
 import type { LeaveChoice, LeaveRefusal } from "../main";
 import { formatBytes } from "../policy";
 import { KEYS_LOST } from "../state";
+import { RECENT_MAX, titles } from "../notices";
 import { RemoteOnlyKind, remoteOnlyList, unwritableText } from "../sync/pull";
 import {
   PAIRING_WINDOW_MS,
@@ -1238,6 +1239,16 @@ export class StatusModal extends Modal {
           }),
         );
     }
+    // What the notices said, including those a setting kept off the screen
+    // and those a flood folded into "N more" (`notices.ts`).
+    this.contentEl.createEl("h3", { text: "Recent" });
+    drawRecent(this.contentEl, this.plugin, () => this.close(), RECENT_SHOWN);
+    if (this.plugin.notices.recent().length > RECENT_SHOWN) {
+      new Setting(this.contentEl).addButton((button) => button.setButtonText("Show all").onClick(() => {
+        this.close();
+        this.plugin.showRecent();
+      }));
+    }
   }
 
   /** The state that needs doing something about, what it is, and the button that does it. */
@@ -1281,9 +1292,89 @@ export class StatusModal extends Modal {
         }));
   }
 
+  /** On screen now: between its open and its close. */
+  isShown(): boolean {
+    return this.unwatch !== null;
+  }
+
+  forward(): void {
+    forward(this, () => this.render());
+  }
+
   override onClose(): void {
     this.unwatch?.();
     this.unwatch = null;
+    this.contentEl.empty();
+  }
+}
+
+/**
+ * A DIALOG ASKED FOR AGAIN WHILE IT SHOWS (#269): the palette, a hotkey or a
+ * notice opened a second one over the first. The one showing comes in front
+ * of any other dialog instead -- its keys first, so Escape closes it first --
+ * and is drawn afresh.
+ */
+function forward(modal: Modal, draw: () => void): void {
+  modal.app.keymap.popScope(modal.scope);
+  modal.app.keymap.pushScope(modal.scope);
+  modal.containerEl.ownerDocument.body.appendChild(modal.containerEl);
+  draw();
+}
+
+/** How many of the newest notices Show sync status lists; Show all lists every one kept. */
+const RECENT_SHOWN = 10;
+
+/** Recent notices, newest first, with the time each came and a button for each note it names. */
+function drawRecent(el: HTMLElement, plugin: ObsyncPlugin, close: () => void, limit: number): void {
+  const entries = plugin.notices.recent();
+  if (entries.length === 0) {
+    new Setting(el).setDesc("Nothing since obsync started.");
+    return;
+  }
+  for (const entry of entries.slice(0, limit)) {
+    const setting = new Setting(el).setName(entry.text).setDesc(clock(new Date(entry.at)));
+    const names = titles(entry.paths);
+    entry.paths.slice(0, 3).forEach((path, index) => setting.addButton((button) => button
+      .setButtonText(entry.paths.length === 1 ? "Open" : `Open ${names[index] ?? ""}`)
+      .onClick(() => {
+        close();
+        plugin.openNote(path);
+      })));
+  }
+}
+
+/** Show recent sync activity: every notice Recent keeps, from the palette and Settings. */
+export class RecentModal extends Modal {
+  private shown = false;
+
+  constructor(
+    app: App,
+    private readonly plugin: ObsyncPlugin,
+  ) {
+    super(app);
+  }
+
+  override onOpen(): void {
+    this.shown = true;
+    this.setTitle("Recent sync activity");
+    this.draw();
+  }
+
+  isShown(): boolean {
+    return this.shown;
+  }
+
+  forward(): void {
+    forward(this, () => this.draw());
+  }
+
+  private draw(): void {
+    this.contentEl.empty();
+    drawRecent(this.contentEl, this.plugin, () => this.close(), RECENT_MAX);
+  }
+
+  override onClose(): void {
+    this.shown = false;
     this.contentEl.empty();
   }
 }

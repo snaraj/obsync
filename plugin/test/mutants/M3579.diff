@@ -1,0 +1,12 @@
+# M3579: a notice with buttons joins another toast
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -232,7 +232,7 @@
+       return;
+     }
+     // A notice with buttons is its own toast: joined, they would act for the first note only.
+-    const group = notice.actions?.length ? undefined : this.groups.get(key);
++    const group = this.groups.get(key);
+     if (group !== undefined && live(group, now)) {
+       for (const path of notice.paths ?? []) if (!group.paths.includes(path)) group.paths.push(path);
+       group.times++;

@@ -21,6 +21,7 @@ const require = createRequire(import.meta.url);
 const c = require("../build/crypto.js");
 const dm = require("../build/domainmap.js");
 const vp = require("../build/vaultPath.js");
+const notes = require("../build/notices.js");
 const PLUGIN_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
@@ -44,7 +45,15 @@ export function sandbox({ dist = false } = {}) {
 // listener on unload as well; the stub attaches only, so a fake window a test
 // installs holds exactly what the plugin registered.
 class Component { registerDomEvent(el, type, handler) { el.addEventListener(type, handler); } }
-class Plugin extends Component {}
+// Obsidian's command line (1.12.2+) keeps one handler per id and refuses a
+// second, as \`app.cli.registerHandler\` does; a test runs a handler by its id.
+class Plugin extends Component {
+  registerCliHandler(command, description, flags, handler) {
+    this.cli ??= new Map();
+    if (this.cli.has(command)) throw new Error(\`Command "\${command}" is already registered as a handler.\`);
+    this.cli.set(command, { description, flags, handler });
+  }
+}
 class Modal { constructor(app) { this.app = app; } }
 // Like the real one, the constructor names the tab after the plugin. The API
 // declaration does not list \`id\` or \`name\`, so a subclass field with either
@@ -61,7 +70,9 @@ class Setting { constructor(el) { this.el = el; } }
 const notices = [];
 const raised = [];
 class NoticeEl {
-  constructor(parent = null) { this.handlers = {}; this.parent = parent; }
+  constructor(parent = null, notice = null) { this.handlers = {}; this.parent = parent; this.notice = notice; }
+  /** In the page until its notice is hidden, as Obsidian takes a hidden toast out of it. */
+  get isConnected() { return this.notice === null || !this.notice.hidden; }
   addEventListener(type, handler) { (this.handlers[type] ??= []).push(handler); }
   /** Obsidian's element helper, for the buttons a notice that asks something carries. */
   createEl(tag, options = {}) {
@@ -82,13 +93,15 @@ class Notice {
   constructor(message, duration) {
     this.message = message;
     this.duration = duration;
-    this.containerEl = new NoticeEl();
+    this.containerEl = new NoticeEl(null, this);
     this.noticeEl = this.messageEl = new NoticeEl(this.containerEl);
     this.hidden = false;
     this.containerEl.addEventListener("click", () => { this.hidden = true; });
     notices.push(message);
     raised.push(this);
   }
+  /** New words, as the real one: the text element is emptied, its buttons with it. */
+  setMessage(message) { this.message = message; this.messageEl.children = undefined; return this; }
   hide() { this.hidden = true; }
 }
 class TFile {}
@@ -196,6 +209,27 @@ export class FakeHost {
     this.notices = [];
     /** The notices that asked something, with their buttons (`notify`). */
     this.asked = [];
+    /** The notices raised with a kind, as raised (`notify`). */
+    this.said = [];
+    /** The quietest a person can choose (`notify`); a test of what shows sets its own. */
+    this.noticeSettings = { level: "needs-me", merges: "off" };
+    /** Every toast the channel drew: its words as they are now, how long it stays, and whether it is up. */
+    this.toasts = [];
+    this.channel = new notes.NoticeChannel({
+      draw: (text, ms, actions, open) => {
+        const toast = { text, ms, actions, open, hidden: false, words: [text] };
+        this.toasts.push(toast);
+        return {
+          update: (words) => { toast.text = words; toast.words.push(words); },
+          hide: () => { toast.hidden = true; },
+          shown: () => !toast.hidden,
+        };
+      },
+      settings: () => this.noticeSettings,
+      now: () => this.clock,
+      log: (line) => this.logs.push(line),
+      showStatus: () => { this.statusShown = (this.statusShown ?? 0) + 1; },
+    });
     this.trashed = [];
     /** Every folder `trashFolder` was ASKED about, kept ones included. */
     this.folderChecks = [];
@@ -561,16 +595,33 @@ export class FakeHost {
   /**
    * What the user was told, and -- for a notice that asks something -- the
    * buttons it offered (`VaultHost.notify`), so a test can see the question
-   * and press an answer by what it names.
+   * and press an answer by what it names. Every notice is its words in
+   * `notices`, a kind's own in `said`, and goes through the real notice
+   * channel (`notices.ts`) under `noticeSettings`: `toasts` is what reached
+   * the screen, on this host's clock.
+   *
+   * REQUIREMENT 4, AT EVERY CALL SITE THE SUITE DRIVES. The settings start at
+   * the quietest a person can choose, and a question or a security notice
+   * the channel kept off the screen throws, on a phone as on a desktop: no
+   * setting may silence a control, and every test that raises one proves it.
    */
-  notify(message, actions = []) {
+  notify(notice, actions = []) {
+    const message = typeof notice === "string" ? notice : `obsync: ${notes.sentence(notice)}`;
     this.notices.push(message);
+    if (typeof notice !== "string") this.said.push(notice);
     if (actions.length > 0) this.asked.push({ message, actions });
+    const before = this.toasts.length;
+    this.channel.show(notice, actions);
+    const control = typeof notice === "string" ? actions.length > 0 : notes.NON_MUTABLE.has(notice.kind);
+    if (control && this.toasts.length === before) {
+      throw new Error(`a ${typeof notice === "string" ? "question" : notice.kind} was kept off the screen under ${JSON.stringify(this.noticeSettings)}`);
+    }
   }
 
   /** How many times the engine took the held-deletions question away (`hold`). */
   closeQuestion() {
     this.questionsClosed = (this.questionsClosed ?? 0) + 1;
+    this.channel.close(notes.HELD);
   }
 
   log(line) {

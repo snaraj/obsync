@@ -21,6 +21,7 @@
  */
 
 import { Policy, defaultPolicy } from "./policy";
+import { NOTICE_DEFAULTS, NoticeSettings, noticeSettings } from "./notices";
 import { caseOnly, isVaultPath } from "./vaultPath";
 import { parseSyncFolders } from "./syncScope";
 import { hex, isHex, randomBytes } from "./crypto";
@@ -304,6 +305,12 @@ export interface ObsyncData {
    * that never recorded one is `unconfirmed`.
    */
   recoveryPhrase: "unconfirmed" | "skipped" | "confirmed";
+  /**
+   * What this device shows as a notice (`notices.ts`): set in Settings, the
+   * palette or Obsidian's CLI. Absent before 1.1.5, which loads as the
+   * defaults; a 1.1.4 build ignores the field and its next save drops it.
+   */
+  notices: NoticeSettings;
 }
 
 export function defaultData(isMobile: boolean): ObsyncData {
@@ -330,6 +337,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     graves: {},
     policy: defaultPolicy(isMobile),
     recoveryPhrase: "unconfirmed",
+    notices: { ...NOTICE_DEFAULTS },
   };
 }
 
@@ -579,6 +587,7 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   // Anything else is not a confirmation: an unreadable value reminds.
   const phrase = loaded["recoveryPhrase"];
   if (phrase === "skipped" || phrase === "confirmed") data.recoveryPhrase = phrase;
+  data.notices = noticeSettings(loaded["notices"]);
   return data;
 }
 

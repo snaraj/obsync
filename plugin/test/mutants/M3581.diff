@@ -1,0 +1,12 @@
+# M3581: Settings passes a value its list does not hold
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -320,7 +320,7 @@
+           for (const [value, words] of LEVELS) dropdown.addOption(value, words);
+           dropdown.setValue(this.plugin.state.data.notices.level).onChange((value) => {
+             const level = LEVELS.find(([option]) => option === value)?.[0];
+-            if (level !== undefined) void this.plugin.setNotices({ level }, "settings").catch(() => {});
++            if (level !== null) void this.plugin.setNotices({ level }, "settings").catch(() => {});
+           });
+         });
+       },

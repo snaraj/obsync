@@ -215,7 +215,8 @@ test("clicking the indicator opens Show sync status (#156)", async (t) => {
 test("the palette finds every command under 'obsync', and their ids have not changed (#156)", async (t) => {
   const p = await plugin(t);
   assert.deepEqual(p.commands.map((command) => command.id), ["sync-now", "verify-all", "restore-history", "pair-device", "pair-this-device", "show-recovery-phrase",
-    "open-dashboard", "open-setup-guide", "remote-only", "status", "leave-server", "switch-server"]);
+    "open-dashboard", "open-setup-guide", "remote-only", "status", "leave-server", "switch-server",
+    "notices-everything", "notices-needs-me", "merges-once", "merges-every", "merges-off", "recent"]);
   for (const command of p.commands) assert.match(command.name, /obsync/, command.name);
   assert.equal(p.commands.find((command) => command.id === "status").name, "Show sync status (obsync)");
 });
@@ -365,6 +366,9 @@ function dialog(t, status) {
     onStatusChange: (watcher) => { watchers.add(watcher); return () => watchers.delete(watcher); },
     retry: () => calls.push("retry"),
     openSettings: () => calls.push("settings"),
+    notices: { recent: () => current.recent ?? [] },
+    openNote: (path) => calls.push(`open:${path}`),
+    showRecent: () => calls.push("recent"),
   };
   const classed = [];
   const element = () => ({ createEl: (tag, attributes = {}) => {
@@ -428,4 +432,65 @@ test("Show sync status stays true while open, and offers the next step for the s
   }
   d.modal.onClose();
   assert.equal(d.watchers.size, 0, "closed, it stops listening");
+});
+
+test("Show sync status asked for again while it shows is that one dialog, brought forward and current, never a second (#269)", async (t) => {
+  const p = await plugin(t);
+  // Obsidian's own Modal as far as the dialog touches it: open appends the
+  // container and pushes the dialog's keys; open again while shown is nothing.
+  const bodies = [], keys = [], shown = [];
+  let draws = 0;
+  const element = () => ({ createEl: () => element(), empty: () => { draws++; } });
+  Object.assign(p.obsidian.Setting.prototype, { setName() { return this; }, setDesc() { return this; }, addButton() { return this; } });
+  Object.assign(p.obsidian.Modal.prototype, {
+    open() {
+      if (shown.includes(this)) return;
+      this.scope ??= { dialog: shown.length };
+      this.containerEl ??= { ownerDocument: { body: { appendChild: (el) => bodies.push(el) } } };
+      this.contentEl ??= element();
+      this.setTitle = () => {};
+      shown.push(this);
+      keys.push(["push", this.scope]);
+      this.onOpen();
+    },
+    close() { shown.splice(shown.indexOf(this), 1); keys.push(["pop", this.scope]); this.onClose(); },
+  });
+  p.instance.app.keymap = { pushScope: (scope) => keys.push(["push", scope]), popScope: (scope) => keys.push(["pop", scope]) };
+  const logs = [];
+  p.instance.log = (line) => logs.push(line);
+
+  // The palette, the status item, and a notice's "N more", each while it shows.
+  const command = p.commands.find((candidate) => candidate.id === "status");
+  command.callback();
+  const [first] = shown;
+  const opened = draws;
+  p.item.click();
+  for (let i = 0; i < 3; i++) p.instance.notices.show({ kind: "info", text: `FLOOD ${i}.` });
+  p.instance.notices.show({ kind: "info", text: "ONE TOO MANY." });
+  const more = p.obsidian.raised.find((notice) => /more — see Recent/.test(notice.message));
+  more.containerEl.dispatch("click");
+  assert.deepEqual(shown, [first], "one dialog on screen");
+  assert.equal(draws, opened + 2, "drawn afresh each time it is asked for again");
+  assert.deepEqual(bodies, [first.containerEl, first.containerEl], "brought in front of any other dialog, each time");
+  assert.deepEqual(keys.slice(1), [["pop", first.scope], ["push", first.scope], ["pop", first.scope], ["push", first.scope]],
+    "and its keys first, so Escape closes it first");
+  assert.equal(logs.filter((line) => line === "status decision=forward reason=already_open").length, 2);
+
+  // Closed, the next request opens a new one.
+  first.close();
+  command.callback();
+  assert.equal(shown.length, 1);
+  assert.notEqual(shown[0], first);
+
+  // Recent the same way: asked for twice, one dialog, in front, drawn again.
+  const recent = p.commands.find((candidate) => candidate.id === "recent");
+  recent.callback();
+  const listed = shown.at(-1);
+  const before = draws;
+  recent.callback();
+  assert.equal(shown.filter((dialog) => dialog === listed).length, 1);
+  assert.equal(shown.length, 2, "Show sync status and one Recent");
+  assert.equal(draws, before + 1);
+  assert.equal(bodies.at(-1), listed.containerEl);
+  assert.equal(logs.filter((line) => line === "recent decision=forward reason=already_open").length, 1);
 });

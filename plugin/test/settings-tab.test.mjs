@@ -55,7 +55,8 @@ function stubPlugin(overrides = {}) {
     manifest: { id: "obsync-private-sync", name: "Self Hosted Private Sync" },
     isMobile: false,
     state: {
-      data: { serverUrl: "", edgeHeaders: [], syncFolders: undefined, deviceId: null, vrk: null, policy: { perFileMaxBytes: 0, totalBudgetBytes: 0 } },
+      data: { serverUrl: "", edgeHeaders: [], syncFolders: undefined, deviceId: null, vrk: null, policy: { perFileMaxBytes: 0, totalBudgetBytes: 0 },
+        notices: { level: "everything", merges: "once" } },
       paired: false,
       save: async () => { calls.push("state.save"); },
       localBytes: () => 0,
@@ -80,6 +81,8 @@ function stubPlugin(overrides = {}) {
     openSetupGuide: () => { calls.push("openSetupGuide"); },
     openPluginManager: () => { calls.push("openPluginManager"); },
     wake: (reason) => { calls.push(`wake:${reason}`); },
+    setNotices: async (change, source) => { calls.push(`setNotices:${JSON.stringify(change)}:${source}`); },
+    showRecent: () => { calls.push("showRecent"); },
     watchers: new Set(),
     onStatusChange(watcher) { this.watchers.add(watcher); return () => { this.watchers.delete(watcher); }; },
     logs: [],
@@ -142,8 +145,8 @@ test("definitions are pure groups of named rows, and drawing a row returns nothi
   const groups = s.tab.getSettingDefinitions();
   s.tab.getSettingDefinitions();
   assert.deepEqual(s.calls, [], "listing the rows reads nothing and saves nothing");
-  assert.deepEqual(groups.map((group) => group.type), ["group", "group", "group", "group", "group", "group"]);
-  assert.deepEqual(groups.map((group) => group.heading), ["Get started", "Server", "Sync folders on this device", "This device", "Devices", "Vault key"]);
+  assert.deepEqual(groups.map((group) => group.type), ["group", "group", "group", "group", "group", "group", "group"]);
+  assert.deepEqual(groups.map((group) => group.heading), ["Get started", "Server", "Sync folders on this device", "This device", "Devices", "Vault key", "Notifications"]);
   for (const item of s.rows()) {
     assert.ok(typeof item.name === "string" && item.name !== "", "every row has a name for search");
     if (item.render === undefined) continue;
@@ -1356,4 +1359,23 @@ test("the Recovery phrase row reads Not confirmed with a Show and confirm button
   s.plugin.state.data.recoveryPhrase = undefined;
   assert.match(s.row("Recovery phrase").desc, /^This device holds no vault key\./, "no key, nothing to confirm");
   assert.deepEqual([show().text, show().disabled], ["Show", true]);
+});
+
+test("Notifications lists both settings with every value, a change goes to the plugin, and Recent is one click away (1.1.5)", async (t) => {
+  const s = open(t);
+  s.plugin.state.data.notices = { level: "needs-me", merges: "every" };
+  const group = s.tab.getSettingDefinitions().find((candidate) => candidate.heading === "Notifications");
+  assert.deepEqual(group.items.map((item) => item.name), ["Notification level", "Combined edits", "Recent sync activity"]);
+  for (const item of group.items.slice(0, 2)) assert.match(item.desc, /Recent/, `${item.name} says where the quiet ones go`);
+  const [level] = s.render("Notification level").made;
+  assert.deepEqual([level.kind, level.options, level.value], ["dropdown", ["everything", "needs-me"], "needs-me"]);
+  level.change("everything");
+  level.change("silent");
+  const [merges] = s.render("Combined edits").made;
+  assert.deepEqual([merges.options, merges.value], [["once", "every", "off"], "every"]);
+  merges.change("off");
+  s.button(s.render("Recent sync activity").made, "Show").click();
+  await tick();
+  assert.deepEqual(s.calls, ["setNotices:{\"level\":\"everything\"}:settings", "setNotices:{\"merges\":\"off\"}:settings", "showRecent"],
+    "a value the list does not hold changes nothing");
 });

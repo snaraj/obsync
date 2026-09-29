@@ -1,0 +1,11 @@
+# M3585: bare words are kept quiet under Only what needs me
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -294,6 +294,7 @@
+       this.screen.log("notice decision=shown kind=unsorted stays_ms=0");
+       return;
+     }
++    if (this.screen.settings().level === "needs-me") return;
+     this.screen.draw(message, UNSORTED_MS, actions);
+     this.screen.log(`notice decision=shown kind=unsorted stays_ms=${UNSORTED_MS}`);
+   }

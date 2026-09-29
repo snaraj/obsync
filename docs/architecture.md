@@ -1778,6 +1778,71 @@ installer does not document verification of this project's Cosign evidence;
 see `docs/community-plugin.md` for the actual client trust model. A separate
 pinned-key verifier is not part of this installation path.
 
+### 6.4 Notices
+
+Every notice the plugin shows goes through one channel, `plugin/src/notices.ts`
+(`VaultHost.notify` and `ObsidianHost.notify` are its adapters). A notice is a
+kind, one sentence, the notes it is about and the device, by name. The channel
+decides whether it becomes a toast and records every notice, shown or not, in
+Recent: the newest 50 since obsync started, listed in Show sync status and printed
+by `obsync-private-sync:recent`.
+
+| Kind | For | Stays | Under "Only what needs me" |
+| --- | --- | --- | --- |
+| `question` | a decision only the person can make, such as held deletions | until answered; one per key | shown |
+| `security` | something that protects the vault | until dismissed | shown |
+| `error` | something stopped and needs the person | until dismissed | shown |
+| `conflict` | a conflict copy was kept | 8 s | shown |
+| `combined` | edits made here and another device's combined into one note | 8 s | Recent only |
+| `info` | anything else worth knowing | 8 s | Recent only |
+| `confirm` | the answer to the person's own click or command | 4 s | shown |
+
+No setting keeps a `question` or `security` notice off the screen, on any
+platform (requirement 4); nothing in the channel branches on the platform, and
+the plugin's test fake runs every test under the quietest settings and refuses
+any control the channel did not show. **Combined edits** decides `combined`
+under "Everything useful": `Once per note` shows the first combine in a note and
+then nothing for that note until it has gone five minutes without one
+(`ONCE_IDLE_MS`), `Every time`, or `Recent only`.
+
+A second notice of the same event while its toast is up joins that toast --
+`2 notes ("Plan" and "Log")`, `(3 times)` -- instead of stacking; a notice with
+buttons never joins. Beyond three obsync toasts on screen the rest are counted
+on one "N more — see Recent in Show sync status" toast, which opens Show sync
+status and stays until dismissed once it counts an error. Each decision logs
+one line, `notice decision=shown|joined|folded|quiet kind=...`, with the budget
+it was measured against (`since_ms`/`budget_ms`, `visible`/`budget`).
+
+**Wording.** One plain sentence per event, after "obsync: ", in lower case. A
+note is its title in quotes: its name without `.md`; any other file keeps its
+extension; its folder only when two notes in one sentence share a title. A
+device is its name ("another device" while unknown), never its id. No internal
+term reaches a person -- concurrent, manifest, tombstone, version, sid, seq,
+chunk, domain, envelope, status codes, file ids -- and when the person must
+act, the sentence says what to do. Paths and ids stay in log lines.
+
+**Settings, palette and command line.** Both settings are in Settings under
+Notifications, are palette commands a hotkey can take (`Notifications: ...`,
+`Combined edits: ...`, and Show recent sync activity), and are flags of
+Obsidian's command line (1.12.2 and later), which `obsidian` runs:
+
+| Command | Flags | `format=json` prints |
+| --- | --- | --- |
+| `obsync-private-sync:notices` | `level=everything\|needs-me`, `merges=once\|every\|off` | `{"level": "everything", "merges": "once"}` |
+| `obsync-private-sync:recent` | none | `[{"time", "kind", "note_title", "device", "text"}]`, newest first |
+| `obsync-private-sync:status` | none | `{"state", "text", "server", "device", "has_vault_key", "files_tracked", "remote_only", "waiting_to_be_written", "paused"}` |
+
+Every command also takes `format=text|json`, text by default. In JSON, `time`
+is UTC RFC 3339, `note_title` and `device` are `null` when the notice names no
+single note or no device, and `state` is the status bar's state (`idle`,
+`syncing`, `offline`, `error`, `paused`). A refusal is one sentence in text and
+`{"error": {"code": "unknown_flag" | "unknown_value" | "failed", "message": "..."}}`
+in JSON; a setting that could not be saved is refused and not in effect.
+Nothing printed carries a secret, key, code or id: any run of 16 or more hex
+digits is printed as "…". The settings live in `data.json` as `notices` with
+`storageVersion` still 1, so 1.1.4 loads a 1.1.5 data file and ignores them;
+its next save drops them, and the defaults return after a downgrade.
+
 ## 7. Storage, durability, replication
 
 `docs/storage.md` is the contract. In brief: one blob volume, one journal

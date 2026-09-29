@@ -1,0 +1,12 @@
+# M3563: two notes with one title are not told apart by their folders
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -119,7 +119,7 @@
+ export function titles(paths: readonly string[]): string[] {
+   const bare = (path: string): string => path.endsWith(".md") ? path.slice(0, -3) : path;
+   const names = paths.map((path) => bare(path.slice(path.lastIndexOf("/") + 1)));
+-  return paths.map((path, index) => names.indexOf(names[index] as string) === names.lastIndexOf(names[index] as string) ? names[index] as string : bare(path));
++  return paths.map((_path, index) => names[index] as string);
+ }
+ 
+ /** `"Plan"`, `2 notes ("Plan" and "Log")`, `3 notes ("Plan", "Log" and 1 more)`. */

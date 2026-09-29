@@ -1,0 +1,12 @@
+# M3577: a merge this device took no part in is announced
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2959,7 +2959,7 @@
+           await postMerged(context, change, localPath, target, localVersionId, text, stat.mtime);
+           // Named by its title and the other device's name, and quiet or once
+           // per note as the person chose (`notices.ts`, "Combined edits").
+-          if (ours) {
++          if (true) {
+             context.host.notify({
+               kind: "combined", text: "combined your edits to {notes} with {device}'s.", paths: [target],
+               device: context.deviceNameFor(change.device_id),

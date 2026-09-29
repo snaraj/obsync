@@ -764,17 +764,16 @@ function desktopVault(t, r, promises = fsp) {
     rmSync(box.home, { recursive: true, force: true });
   });
   mkdirSync(join(root, "Notes"));
-  const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
+  const { ObsidianHost, noticeChannel } = box.require(join(box.home, "build/main.js"));
   const logs = [];
   const vault = { adapter: {
     exists: async (path) => existsSync(join(root, path)),
     mkdir: async (path) => fsp.mkdir(join(root, path), { recursive: true }),
     writeBinary: async () => assert.fail("the overwriting adapter was used"),
   } };
-  const host = new ObsidianHost(
-    { state: r.state, app: { vault }, log: (line) => logs.push(line) },
-    { base: root, path: nodePath, fs: { promises } },
-  );
+  const plugin = { state: r.state, app: { vault }, log: (line) => logs.push(line) };
+  plugin.notices = noticeChannel(plugin);
+  const host = new ObsidianHost(plugin, { base: root, path: nodePath, fs: { promises } });
   return { root, host, logs, context: { ...r.context, host } };
 }
 

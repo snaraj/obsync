@@ -1,0 +1,12 @@
+# M3565: a long hex run reaches the command line
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -143,7 +143,7 @@
+  * a key or a hash is a support detail for the log, never for a terminal.
+  */
+ export function scrub(text: string): string {
+-  return text.replace(/[0-9a-f]{16,}/gi, "…");
++  return text;
+ }
+ 
+ /** A toast on screen, as the screen reports it. */

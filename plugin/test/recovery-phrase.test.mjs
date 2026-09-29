@@ -147,6 +147,7 @@ test("Show sync status lists an unconfirmed phrase as a to-do that opens the che
     p.currentStatus = () => ({ kind: "idle" });
     p.nextRetryAt = () => null;
     p.onStatusChange = () => () => {};
+    p.notices = { recent: () => [] };
     const modal = new b.modals.StatusModal({}, p);
     modal.contentEl = element();
     modal.setTitle = () => {};

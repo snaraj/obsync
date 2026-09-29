@@ -1,0 +1,12 @@
+# M3550: a setting keeps a question or a security notice off the screen
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -105,7 +105,7 @@
+  * `question` and `security` answer yes whatever the settings hold.
+  */
+ export function toasts(kind: NoticeKind, settings: NoticeSettings): boolean {
+-  if (NON_MUTABLE.has(kind)) return true;
++  if (NON_MUTABLE.has(kind)) return settings.level === "everything";
+   if (kind === "combined") return settings.level === "everything" && settings.merges !== "off";
+   if (kind === "info") return settings.level === "everything";
+   return true;

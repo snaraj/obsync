@@ -601,7 +601,7 @@ test("concurrent edits with a common ancestor merge, keeping both", async () => 
   const result = await applyChange(context, { ...head, conflicted: true });
   assert.equal(result, "merged");
   assert.equal(host.text("Notes/Shared.md"), "ONE\ntwo\nTHREE\n");
-  assert.match(host.notices.join(" "), /merged concurrent edits/);
+  assert.match(host.notices.join(" "), /combined your edits to "Shared" with/);
 
   const merged = server.journal[server.journal.length - 1];
   assert.deepEqual([...merged.parents].sort(), [mine.versionId, theirs.version_id].sort());

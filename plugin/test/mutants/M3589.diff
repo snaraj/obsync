@@ -1,0 +1,11 @@
+# M3589: a dialog brought forward keeps its old words (#269)
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -1318,7 +1318,6 @@
+   modal.app.keymap.popScope(modal.scope);
+   modal.app.keymap.pushScope(modal.scope);
+   modal.containerEl.ownerDocument.body.appendChild(modal.containerEl);
+-  draw();
+ }
+ 
+ /** How many of the newest notices Show sync status lists; Show all lists every one kept. */

@@ -1,0 +1,13 @@
+# M3570: the CLI takes a value it does not list
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3357,8 +3357,7 @@
+       if (value === undefined) return undefined;
+       const found = options.find(([option]) => option === value);
+       const values = options.map(([option]) => option);
+-      if (found === undefined) throw new CliRefusal("unknown_value", `${name} takes ${values.slice(0, -1).join(", ")} or ${values.at(-1) ?? ""}.`);
+-      return found[0];
++      return (found?.[0] ?? value) as T;
+     };
+     const level = pick(LEVELS, "level"), merges = pick(MERGES, "merges");
+     let now = this.state.data.notices;

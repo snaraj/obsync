@@ -442,7 +442,8 @@ test("a merge carries the name the other device moved the note to, and the note 
   assert.equal(r.state.pathByFileId(base.fileId), MOVED);
   assert.equal(r.state.fileByPath(MOVED).name, undefined, "a note at its own name waits for it");
   assert.deepEqual(r.server.files.get(base.fileId).heads.length, 1);
-  assert.ok(r.host.notices.includes(`obsync merged concurrent edits to ${MOVED}.`), r.host.notices.join(" | "));
+  // Named where the merge put it, by its title (`notices.ts`).
+  assert.deepEqual(r.host.said.filter((notice) => notice.kind === "combined").map((notice) => notice.paths), [[MOVED]], r.host.notices.join(" | "));
   assert.ok(!r.host.notices.some((notice) => notice.includes("renamed differently")), "one move is no disagreement");
 });
 

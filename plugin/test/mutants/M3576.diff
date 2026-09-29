@@ -1,0 +1,12 @@
+# M3576: a toast Obsidian took away still counts as on screen
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -163,7 +163,7 @@
+       notice.hide();
+     },
+     // Obsidian takes a toast out of the page when its time is up or it is clicked.
+-    shown: () => !hidden && notice.containerEl.isConnected,
++    shown: () => !hidden,
+   };
+ }
+ 

@@ -79,6 +79,15 @@ server again unless the entry says so.
 | My server says its storage is full | [The server has run out of storage](#the-server-has-run-out-of-storage) |
 | Another code, such as `409 missing_chunks` | [Other refusals a device can show](#other-refusals-a-device-can-show) |
 
+**Notices**
+
+| What you see | Go to |
+| --- | --- |
+| A notice reads `obsync: 4 more — see Recent in Show sync status` | [A notice says there are more](#a-notice-says-there-are-more) |
+| Another device's edits appear in a note you are editing, and no notice says so | [obsync no longer says when it combines edits](#obsync-no-longer-says-when-it-combines-edits) |
+| `obsidian obsync-private-sync:notices` answers `Command ... not found`, or that the command line is not enabled | [The command line does not find obsync](#the-command-line-does-not-find-obsync) |
+| Two **Sync status** windows, one over the other | [Show sync status opened twice](#show-sync-status-opened-twice) |
+
 **Running the server and its dashboard**
 
 | What you see | Go to |
@@ -1475,6 +1484,79 @@ deletes the notes you are trying to keep, everywhere. Follow this order:
 The plugin does not do step 3 for you: it cannot know that every other device
 has already been updated, and deleting one sync too early is exactly the loss
 this order avoids.
+
+## A notice says there are more
+
+**What you see.** A notice reads `obsync: 4 more — see Recent in Show sync
+status`, with fewer obsync notices above it than that.
+
+**Why it happens.** obsync keeps at most three of its notices on screen at
+once. When more arrive together -- a device catching up after a day offline,
+say -- the rest are counted on that one notice instead of covering the screen.
+Nothing is lost: every notice, including the counted ones, is listed under
+**Recent** in **Show sync status**. A question, such as whether to delete notes
+everywhere, is never counted away: it always gets a notice of its own.
+
+**How to fix it.**
+
+1. Click or tap that notice, or the status bar icon, to open **Show sync
+   status**.
+2. Read **Recent**; **Show all** lists every one kept since obsync started.
+
+## obsync no longer says when it combines edits
+
+**What you see.** Text another device wrote appears in a note you are editing,
+and no notice says so.
+
+**Why it happens.** That is obsync combining your edits with the other
+device's, and how often it says so is a setting. **Combined edits** set to
+**Once per note** (the default) says it the first time, then stays quiet for
+that note until it has gone five minutes without another; **Recent only** never
+says it; and a **Notification level** of **Only what needs me** keeps it quiet
+whatever **Combined edits** says. Every combine is still listed under **Recent**
+in **Show sync status**.
+
+**How to fix it.**
+
+1. Open **Settings**, obsync, **Notifications**.
+2. Set **Notification level** to **Everything useful**, and **Combined edits**
+   to **Every time** or **Once per note**.
+3. Or, from the command palette, run `Combined edits: Every time (obsync)`; or
+   in a terminal, `obsidian obsync-private-sync:notices level=everything merges=every`.
+
+## The command line does not find obsync
+
+**What you see.** `obsidian obsync-private-sync:notices` answers
+`Command "obsync-private-sync:notices" not found`, or says the command line
+interface is not enabled.
+
+**Why it happens.** Obsidian's command line reaches a running Obsidian, and
+then the vault the terminal is in, or the one you name. obsync's commands exist
+only in a vault where obsync is enabled, and only in Obsidian 1.12.2 or later.
+
+**How to fix it.**
+
+1. In Obsidian, open **Settings**, **General**, and turn on **Command line
+   interface** under **Advanced**; register it when Obsidian offers to.
+2. Run the command from inside the vault's folder, or name the vault first:
+   `obsidian vault="My vault" obsync-private-sync:status`.
+3. Check that obsync is enabled in that vault under **Settings**, **Community
+   plugins**, and that Obsidian is 1.12.2 or later.
+
+## Show sync status opened twice
+
+**What you see.** Two **Sync status** windows, one over the other, and Escape
+closes only the top one.
+
+**Why it happens.** Up to 1.1.4, asking for **Show sync status** while it was
+already open -- from the command palette, a hotkey, or a notice -- opened
+another one. From 1.1.5 the one already open comes to the front instead, and
+**Show recent sync activity** does the same.
+
+**How to fix it.**
+
+1. Press Escape once for each extra window; nothing is lost by closing them.
+2. Update obsync to 1.1.5 or later under **Settings**, **Community plugins**.
 
 ## How to collect a report
 

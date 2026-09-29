@@ -1,0 +1,12 @@
+# M3566: Recent grows without bound
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -300,7 +300,7 @@
+ 
+   private remember(entry: RecentEntry): void {
+     this.recentList.push(entry);
+-    if (this.recentList.length > RECENT_MAX) this.recentList.shift();
++    if (this.recentList.length > Infinity) this.recentList.shift();
+   }
+ 
+   /** obsync toasts this channel holds on screen now (bare words are not held); the ones gone are forgotten. */
