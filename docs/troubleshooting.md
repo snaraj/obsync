@@ -1429,6 +1429,9 @@ this order avoids.
    filter for `obsync`. Problems are at the warning level; routine decisions
    are at the verbose level, which the console hides until you turn it on.
    Every refusal names the request, the status and the code, never the content.
+   Two answers a step waits for are routine, `decision=expected`: a first
+   setup finding no domain map yet (`404 unknown_file`), and a new device
+   asking for its approval before it is given (`409 not_approved`).
 2. **Show sync status**, from the command palette: what sync is doing and why
    it is not doing more. Its first row is this device's **Server** address;
    leave that row out, for the reason the list below gives.

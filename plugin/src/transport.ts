@@ -295,6 +295,13 @@ const TIMED_OUT = new Error("no answer within the attempt's deadline");
 export interface Patience {
   interactive?: boolean;
   signal?: AbortSignal;
+  /**
+   * The one refusal code this caller reads as an ANSWER, not a failure: the
+   * domain map a first setup has not written yet, a pairing not approved yet.
+   * Logged as `decision=expected` rather than at warning level; still thrown,
+   * and every other refusal of the call is logged as the refusal it is.
+   */
+  expected?: string;
 }
 
 export const INTERACTIVE_MS = 10000;
@@ -773,10 +780,11 @@ export class Transport {
   }
 
   /** A settled response: 2xx is returned, 4xx is thrown as the decision it is. */
-  private settle(method: string, target: string, response: HttpResponse, attempts: number, started: number): HttpResponse {
+  private settle(method: string, target: string, response: HttpResponse, attempts: number, started: number, expected?: string): HttpResponse {
     if (response.status >= 400) {
       const { code, detail } = parseError(response.text);
-      this.log(`http ${method} ${target} status=${response.status} decision=refused code=${code} duration_ms=${this.now() - started}`);
+      const decision = code === expected ? "expected" : "refused";
+      this.log(`http ${method} ${target} status=${response.status} decision=${decision} code=${code} duration_ms=${this.now() - started}`);
       throw new ApiError(response.status, code, detail);
     }
     this.log(`http ${method} ${target} status=${response.status} decision=ok attempts=${attempts} duration_ms=${this.now() - started}`);
@@ -792,7 +800,7 @@ export class Transport {
       if (options.signal?.aborted) throw this.ended(method, target, "cancelled", "waiting", attempt - 1, started);
       const outcome = await this.until(this.attempt(method, target, sending), options.signal, budget.deadline);
       if (outcome === "cancelled" || outcome === "deadline") throw this.ended(method, target, outcome, "in_flight", attempt, started);
-      if (outcome.kind === "settled") return this.settle(method, target, outcome.response, attempt, started);
+      if (outcome.kind === "settled") return this.settle(method, target, outcome.response, attempt, started, options.expected);
       await this.pause(method, target, outcome, attempt, budget, started, options.signal);
     }
   }
@@ -930,7 +938,7 @@ export class Transport {
     const started = this.now();
     const outcome = await this.attempt(method, target, sending);
     if (outcome.kind === "settled") {
-      return { outcome: "ok", value: this.settle(method, target, outcome.response, 1, started) };
+      return { outcome: "ok", value: this.settle(method, target, outcome.response, 1, started, options.expected) };
     }
     this.log(`http ${method} ${target} ${outcome.reason} decision=lost attempts=1 duration_ms=${this.now() - started}`);
     return { outcome: "lost", attempts: 1, reason: outcome.reason };
@@ -1102,7 +1110,8 @@ export class Transport {
 
   /** Single use by the protocol: a retry would destroy the sealed vault key. */
   pairingEnvelope(pairingId: string): Promise<Sent<PairingEnvelope>> {
-    return this.once("GET", `/v1/pairing/${pairingId}/envelope`, { auth: "device" });
+    // Polled until the other device approves: until then `not_approved` is the answer.
+    return this.once("GET", `/v1/pairing/${pairingId}/envelope`, { auth: "device", expected: "not_approved" });
   }
 
   // --- devices -----------------------------------------------------------

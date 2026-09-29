@@ -12,12 +12,15 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createHash, createHmac } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { join } from "node:path";
+import { sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { ApiError, HISTORY_RESPONSE_BYTES, Transport, lostMessage, parseMultipart, routeFor } = require("../build/transport.js");
 const c = require("../build/crypto.js");
+const { loadDomainMap } = require("../build/domainmap.js");
 
 const DEVICE_ID = "aabbccddeeff00112233445566778899";
 const DEVICE_SECRET_HEX = "0f".repeat(32);
@@ -1118,4 +1121,50 @@ test("a chunk PUT signs the sid as its body digest only for the body encryptChun
   // really sent, so the server can refuse the pair for what it is.
   const three = await c.encryptChunk(domainKey, c.utf8("THIRD CHUNK SENTINEL\n"));
   await assert.rejects(transport.putChunk(one.sid, three.ciphertext), (error) => error.code === "sid_mismatch");
+});
+
+/**
+ * AN EXPECTED ANSWER IS NOT A WARNING (the #240 validation run's sweep). A
+ * first setup's read of a domain map that does not exist yet, and a new
+ * device's poll while approval is pending, were each logged as a refusal at
+ * warning level in every healthy setup and pairing. The caller names the one
+ * code it reads as an answer; that code, and only that code on that call, is
+ * logged as `decision=expected`, which the log sink sends at debug. The error
+ * is still thrown, and every other refusal of the same call is still a
+ * warning.
+ */
+test("a refusal the caller expects is logged as expected, and nothing else is", async () => {
+  const refused = (status, code) => ({ status, text: JSON.stringify({ error: code, detail: "" }) });
+  const h = harness([
+    refused(404, "unknown_file"), refused(404, "unknown_file"), refused(404, "route_not_found"),
+    refused(409, "not_approved"), refused(410, "envelope_consumed"),
+  ]);
+  await assert.rejects(h.transport.getFile(FILE_ID, { expected: "unknown_file" }), (error) => error.code === "unknown_file");
+  await assert.rejects(h.transport.getFile(FILE_ID), (error) => error.code === "unknown_file");
+  await assert.rejects(h.transport.getFile(FILE_ID, { expected: "unknown_file" }), (error) => error.code === "route_not_found");
+  await assert.rejects(h.transport.pairingEnvelope(PAIRING_ID), (error) => error.code === "not_approved");
+  await assert.rejects(h.transport.pairingEnvelope(PAIRING_ID), (error) => error.code === "envelope_consumed");
+  assert.deepEqual(h.logged.map((line) => /decision=(\w+) code=(\w+)/.exec(line)?.slice(1).join(" ")), [
+    "expected unknown_file", "refused unknown_file", "refused route_not_found", "expected not_approved", "refused envelope_consumed",
+  ]);
+
+  // And the sink sends each at the level its decision names.
+  const box = sandbox();
+  const Plugin = box.require(join(box.home, "build/main.js")).default;
+  const said = [];
+  const { warn, debug } = console;
+  console.warn = (line) => said.push(["warn", line]);
+  console.debug = (line) => said.push(["debug", line]);
+  try {
+    for (const line of h.logged) Plugin.prototype.log.call({}, line);
+  } finally {
+    Object.assign(console, { warn, debug });
+    rmSync(box.home, { recursive: true, force: true });
+  }
+  assert.deepEqual(said.map(([level]) => level), ["debug", "warn", "warn", "debug", "warn"]);
+
+  // The domain map's own read is the caller that expects `unknown_file`.
+  const map = harness([refused(404, "unknown_file")]);
+  assert.equal(await loadDomainMap(map.transport, { fileId: FILE_ID, key: new Uint8Array(32) }), null);
+  assert.match(map.logged[0], / status=404 decision=expected code=unknown_file /);
 });
