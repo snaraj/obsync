@@ -1,0 +1,12 @@
+# M3345: a version the start's walk never read is taken for history of the held note (#241)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1949,7 +1949,7 @@
+   // adopted when the note kept is that older version, which the newer one
+   // then updates -- and a version the start's walk did not reach is applied.
+   const heldNote = context.expected?.get(change.file_id);
+-  if (heldNote !== undefined && heldNote.path !== manifest.path && heldNote.behind.has(change.version_id)) {
++  if (heldNote !== undefined && heldNote.path !== manifest.path) {
+     context.host.log(`pull decision=skipped reason=behind_held file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }

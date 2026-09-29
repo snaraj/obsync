@@ -1608,7 +1608,8 @@ it exists. Narrowing keeps its cursor, because nothing new is covered.
 The replay is safe because the pull path answers each record against what
 this device holds NOW rather than against the order it arrives in: a version
 this device authored is its own echo -- except its own deletion of a file the
-replay has just written back, which is applied again (issue #237) -- a version
+replay has just written back, which is applied again (issue #237), and its own
+version of a note it holds nowhere (issue #239, below) -- a version
 its head already reaches is `already_incorporated`, a tombstone for a file it
 no longer tracks is skipped, and local content the server never received is
 kept beside the incoming version instead of replaced (6.2 item 3). It is not
@@ -1619,6 +1620,30 @@ device deleted after another device wrote it is downloaded and removed again
 records the cursor it rewound from. No
 re-pairing, state reset or fresh vault is involved, and another device's
 selection is untouched.
+
+**A replay settles each note against where its file stands (issues #239,
+#241).** A device holds a note when its file stands where the feed's newest
+version of it is. Pairing again over a vault it kept, the start's one walk of
+the feed (`heldNotes`) gives each unrecorded local note at such a name the
+versions the newest descends from; any of them at another name is history and
+is never written there (`pull decision=skipped reason=behind_held`), so a note
+renamed before the device left is adopted where it stands, and nothing is
+posted again. A widening never skips a note this device holds nowhere. A note
+that leaves the selection by a move this device sees is remembered with where
+it went (`departed`, persisted; a version before 1.1.5 ignores and drops it),
+nothing of it is applied while it is out (`reason=left_selection`), and once a
+selection covers that name it is published as a move of the same file id on
+the version it held -- what other devices did meanwhile meets that move by the
+rename-meets-edit and delete-versus-edit rules. A move nothing remembered is
+taken as one only when exactly one file of the selection IS this device's own
+newest version of the note, chunk for chunk, and the note's name holds nothing
+here (`published_move reason=identical`). Any other note of this device's that
+the replay passes as an echo and this device does not hold at that version --
+its new name deleted, hidden, or in a linked folder -- is fetched again from
+the file's heads once the replay catches up (`decision=downloaded_again`): two
+copies at most, nothing lost, nothing hidden. The cost is one
+`GET /v1/files/{id}` per note fetched again, one read of a local file whose
+size is that of such a note, and nothing where there is none.
 
 This limits obsync's file operations, not the Obsidian application, another
 plugin, an OS process or a paired device's access to previously uploaded

@@ -1,0 +1,12 @@
+# M3346: where a note went is not read back from saved state (#239)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -533,7 +533,7 @@
+   }
+   // A version id is the parent the move is published on, and the path is
+   // where it is published to: both input, judged as every path here is.
+-  const departed = loaded["departed"];
++  const departed = loaded["departed_unread"];
+   if (isRecord(departed)) {
+     for (const [fileId, away] of Object.entries(departed)) {
+       if (isHex(fileId, 16) && isRecord(away) && isVaultPath(away["path"]) && typeof away["versionId"] === "string" &&

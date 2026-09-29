@@ -1,0 +1,11 @@
+# M3378: a file of the same size but other bytes is taken for an unseen move (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4027,7 +4027,6 @@
+       // vault of its own is never published from (`syncable`).
+       if (notes.has(file.path) || !bySize.has(file.size) || !(await context.host.syncable(file.path))) continue;
+       for (const note of bySize.get(file.size) ?? []) {
+-        if ((await sameChunks(context, note.sids, file.path, file, file.size)) === null) continue;
+         found.set(note, [...(found.get(note) ?? []), file]);
+         claimed.set(file.path, (claimed.get(file.path) ?? 0) + 1);
+       }

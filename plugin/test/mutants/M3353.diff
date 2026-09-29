@@ -1,0 +1,12 @@
+# M3353: a note moved back into the selection is published as a new note (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1527,7 +1527,7 @@
+       // it, it is remembered at its new name, or forgotten at one no selection
+       // can cover, and nothing of it is published.
+       const away = Object.keys(context.state.data.departed).find((id) => context.state.data.departed[id]?.path === from);
+-      if (target && away !== undefined) {
++      if (target && away !== undefined && Date.now() < 0) {
+         const refused = this.rejoin(context, away, to, context.state.data.departed[away]?.size ?? 0);
+         context.host.log(`rename path_class=file decision=${refused === null ? "published_move reason=moved_back" : `forgotten reason=${refused}`} file=${away}`);
+         if (refused !== null) this.changed(to);

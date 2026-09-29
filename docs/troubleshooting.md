@@ -60,6 +60,7 @@ server again unless the entry says so.
 | After you renamed one of your Sync folders, your other devices still show an empty folder with the old name | [A renamed Sync folder left an empty folder behind](#a-renamed-sync-folder-left-an-empty-folder-behind) |
 | A note you moved out of your Sync folders is missing on that device after it went back to the whole vault | [A note moved out of Sync folders is missing after syncing the whole vault again](#a-note-moved-out-of-sync-folders-is-missing-after-syncing-the-whole-vault-again) |
 | After pairing a device again, a note you once renamed shows up under its old name too | [A renamed note came back under its old name after pairing again](#a-renamed-note-came-back-under-its-old-name-after-pairing-again) |
+| A note you moved out of your Sync folders, then deleted or hid there, is back under its old name after syncing the whole vault | [A note came back under its old name after syncing the whole vault again](#a-note-came-back-under-its-old-name-after-syncing-the-whole-vault-again) |
 | A note another device had just written is empty everywhere | [A note became empty on every device](#a-note-became-empty-on-every-device) |
 | On a phone, Leave lists files your other devices already have | [Leave lists files your other devices already have](#leave-lists-files-your-other-devices-already-have) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
@@ -1409,16 +1410,20 @@ Your other devices now hold the note twice, under its old name and where you
 moved it, but this device has only the copy you moved, and its status shows
 the check mark.
 
-**Why it happens.** The device still counts the note's old name as synced, so
-reading your vault's history again skips it and never fetches the file (issue
-#239, fixed in 1.1.5). Nothing is lost: the note is on your other devices
-under its old name.
+**Why it happens.** Up to 1.1.4 the device forgot the note when it left the
+selection. Going back to the whole vault sent the moved copy as a new note,
+and reading your vault's history again skipped the note under its old name as
+this device's own, so it was never fetched (issue #239). From 1.1.5 the device
+remembers where the note went and sends it as a move instead: one copy, under
+its new name, on every device. Nothing is lost either way.
 
-**How to fix it.** Copy what you need from the note on another device. If you
-want this device to hold exactly what your other devices hold, leave the
-server on it (Settings, obsync, **Leave**) and pair it again: pairing again
-downloads the note under its old name. Then delete whichever of the two copies
-you do not want, on any device.
+**How to fix it.**
+
+1. Update obsync on this device to 1.1.5 or later.
+2. To fetch the copy under the old name, choose one folder under **Sync
+   folders on this device** and save, then choose the whole vault again and
+   save. This device then holds both copies, like your other devices.
+3. Delete whichever copy you do not want, on any device.
 
 ## A renamed note came back under its old name after pairing again
 
@@ -1435,11 +1440,34 @@ arrives, and the rename then meets the copy this device already kept under
 the new name (issue #241, fixed in 1.1.5). Nothing is lost: both copies hold
 the note's text.
 
-**How to fix it.** Delete the copy under the old name on the device that shows
-it; the copy under the current name is the one your other devices hold. If a
-pairing asks whether to add notes the server's vault does not hold, choose
-**Cancel**, delete the old-name copy, and pair again: cancelling uploads
-nothing.
+**How to fix it.**
+
+1. Update obsync to 1.1.5 or later before you pair again: it keeps such notes
+   where they are and sends nothing.
+2. Delete the copy under the old name on the device that shows it; the copy
+   under the current name is the one your other devices hold.
+3. If a pairing asks whether to add notes the server's vault does not hold,
+   choose **Cancel**, delete the old-name copy, and pair again: cancelling
+   uploads nothing.
+
+## A note came back under its old name after syncing the whole vault again
+
+**What you see.** On a device that syncs only some folders, you moved a note
+out of them and later deleted it there, or moved it into a hidden folder (one
+whose name starts with a dot) or a linked folder. After you set the device
+back to the whole vault, the note is here again under the name it had before
+you moved it.
+
+**Why it happens.** obsync never syncs a hidden or linked folder, and your
+other devices still hold the note under its old name. Going back to the whole
+vault gives this device every note they hold, so the note is downloaded again
+(from 1.1.5). Nothing was sent from this device.
+
+**How to fix it.**
+
+1. If you want the note on every device, keep it; nothing else is needed.
+2. If you meant to remove it everywhere, delete it under its old name on any
+   one device, and let it sync.
 
 ## A note became empty on every device
 

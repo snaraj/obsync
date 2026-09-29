@@ -1,0 +1,12 @@
+# M3368: the replay notes this start's own new posts as notes held nowhere (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3383,7 +3383,7 @@
+     // settles it, this start's own posts among them (`returnLost`, #239).
+     if (this.lost !== null) {
+       const { through, notes } = this.lost;
+-      if (result === "echo" && change.sids.length > 0 && change.seq <= through) notes.set(change.file_id, change.version_id);
++      if (result === "echo" && change.sids.length > 0) notes.set(change.file_id, change.version_id);
+       else notes.delete(change.file_id);
+     }
+     state.data.feedMark = { seq: change.seq, fileId: change.file_id, versionId: change.version_id, ts: change.ts, replay: false };

@@ -585,9 +585,17 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
         : { ...carried, versionId: ack.versionId });
       await context.state.save();
     }
+    // And a note that LEFT the selection while this posted is brought back on
+    // this version, not the one before it (`engine.ts`, `rejoin`; #239).
+    const away = context.state.data.departed[fileId];
+    const advanced = away !== undefined && away.versionId === record?.versionId;
+    if (advanced) {
+      away.versionId = ack.versionId;
+      await context.state.save();
+    }
     context.host.log(
       `push path_class=file decision=not_recorded reason=${renamed !== undefined ? "renamed" : inScope ? "path_gone" : "left_scope"} ` +
-        `parent=${follows ? "advanced" : "kept"} file=${fileId}`,
+        `parent=${follows || advanced ? "advanced" : "kept"} file=${fileId}`,
     );
     return { status: "pushed", fileId, versionId: ack.versionId };
   }

@@ -102,6 +102,40 @@ test("held deletions survive a load, and only as vault paths", () => {
   assert.deepEqual(parseData({}, false).heldDeletions, []);
 });
 
+/**
+ * Where a note that left the selection went (issue #239): a data file from
+ * 1.1.4 has none, and loads as none; each entry is input, and one that names
+ * no vault path, no file id or no version is dropped rather than published
+ * to. A 1.1.4 build reading a 1.1.5 file keeps only the fields it knows, so
+ * its next save drops this one: nothing there reads it.
+ */
+test("where a note that left the selection went loads back, and only when well formed (#239)", async () => {
+  const id = (n) => n.toString(16).padStart(32, "0");
+  const version = "cd".repeat(32);
+  const data = parseData({
+    departed: {
+      [id(1)]: { path: "Out/n.md", versionId: version, size: 7 },
+      [id(2)]: { path: "../outside.md", versionId: version, size: 7 },
+      [id(3)]: { path: ".obsidian/n.md", versionId: version, size: 7 },
+      [id(4)]: { path: "Out/v.md", versionId: "v1", size: 7 },
+      "not-a-file-id": { path: "Out/f.md", versionId: version, size: 7 },
+      [id(5)]: "Out/s.md",
+      [id(6)]: { path: "Out/z.md", versionId: version },
+    },
+  }, false);
+  assert.deepEqual(data.departed, {
+    [id(1)]: { path: "Out/n.md", versionId: version, size: 7 },
+    [id(6)]: { path: "Out/z.md", versionId: version, size: 0 },
+  });
+  assert.deepEqual(parseData({}, false).departed, {}, "a 1.1.4 data file");
+  assert.deepEqual(parseData({ departed: ["Out/n.md"] }, false).departed, {});
+  const saved = store();
+  const state = await State.open(saved, false, saved.secrets);
+  state.data.departed[id(1)] = { path: "Out/n.md", versionId: version, size: 7 };
+  await state.save();
+  assert.deepEqual((await State.open(saved, false, saved.secrets)).data.departed, state.data.departed);
+});
+
 test("saves serialise and never lose the newest state", async () => {
   const backing = store();
   const state = await State.open(backing, false, backing.secrets);
@@ -229,6 +263,9 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     dropped: { "Notes/empty.md": "f7" },
     // And a paused note (#179), which names a file id on that server too.
     paused: { f6: { path: "Notes/stamped.md" } },
+    // And where a note that left the selection went (#239): the version it
+    // names is on that server too.
+    departed: { f8: { path: "Out/moved.md", versionId: "v8", size: 2 } },
     // And a held deletion (#162), a question about records being dropped.
     heldDeletions: ["Notes/a.md"],
     // And the feed mark and the graves (#145), which name entries and
@@ -251,7 +288,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop", deviceTag: "7KQ4",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
       retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: { "Notes/empty.md": "f7" }, paused: {},
-      heldDeletions: [],
+      departed: {}, heldDeletions: [],
       feedMark: null, graves: {}, syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed",
       notices: { level: "needs-me", merges: "off" },
     },

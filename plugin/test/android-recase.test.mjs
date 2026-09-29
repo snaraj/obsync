@@ -52,7 +52,7 @@ async function sentPaths(server, manifestKey) {
  * Obsidian drops a plugin's vault handlers when it unloads, so a reload
  * starts from none.
  */
-async function phone(t, r, fresh = false) {
+async function phone(t, r, fresh = false, id = PHONE, secret = PHONE_SECRET) {
   const { box, server, timers, vault, store } = r;
   const main = box.require(join(box.home, "build/main.js"));
   const { State } = box.require(join(box.home, "build/state.js"));
@@ -63,7 +63,7 @@ async function phone(t, r, fresh = false) {
     saveData: async (value) => { store.data = JSON.parse(JSON.stringify(value)); },
   }, true, store.secrets);
   if (fresh) {
-    Object.assign(state.data, { vrk: KEYS.vrk, deviceId: PHONE, deviceSecret: PHONE_SECRET, serverUrl: "https://sync.example.invalid" });
+    Object.assign(state.data, { vrk: KEYS.vrk, deviceId: id, deviceSecret: secret, serverUrl: "https://sync.example.invalid" });
   }
   const logs = [];
   const notices = [];
@@ -84,7 +84,7 @@ async function phone(t, r, fresh = false) {
   const transport = new Transport({
     request: server.request,
     serverUrl: () => state.data.serverUrl,
-    device: () => ({ id: PHONE, secret: Uint8Array.from(Buffer.from(PHONE_SECRET, "hex")) }),
+    device: () => ({ id, secret: Uint8Array.from(Buffer.from(secret, "hex")) }),
     edgeHeaders: () => [],
     now: () => vault.clock,
     sleep: async () => undefined,
@@ -809,3 +809,85 @@ test("on Android, a widening does not bring back a note this phone deleted, nor 
   assert.equal(r.a.host.text("R237/Two.md"), OTHER);
   assert.deepEqual(r.b.notices, []);
 });
+
+/**
+ * PAIRED AGAIN OVER THE VAULT IT KEPT, ON ANDROID (issue #241), as the
+ * emulator ran J10: the phone renames a folder of notes, leaves, and is paired
+ * again as a new device over its vault. The replay's first version of each
+ * note names the OLD folder; written there, a copy stayed at the old name for
+ * good, and every note was posted again. Nothing is written there now, and
+ * nothing is posted.
+ */
+test("on Android, a phone paired again after renaming a folder writes nothing at the old name and posts nothing (#241)", async (t) => {
+  const names = ["One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"];
+  const r = await seeded(t, Object.fromEntries(names.map((name) => [`J241/Old/${name}.md`, `${BODY}${name}\n`])));
+  await r.vault.rename(r.vault.getAbstractFileByPath("J241/Old"), "J241/New");
+  await r.timers.run(STEP_MS, () => names.every((name) => settled(r.a, `J241/New/${name}.md`) && settled(r.b, `J241/New/${name}.md`)) &&
+    !r.a.host.hasFolder("J241/Old"));
+  await r.timers.run(STEP_MS * 20);
+  await r.b.engine.stopAndWait();
+  r.server.devices.find((device) => device.device_id === PHONE).revoked = true;
+  const seq = r.server.seq;
+  const again = "d0".repeat(16);
+  r.server.addDevice(again, "6b".repeat(32), "android again", "android");
+  r.store = { data: null, secrets: memorySecrets() };
+  const c = await phone(t, r, true, again, "6b".repeat(32));
+  await c.engine.start();
+  await r.timers.run(STEP_MS, () => c.state.data.lastSeq >= seq && names.every((name) => settled(c, `J241/New/${name}.md`)));
+  await r.timers.run(STEP_MS * 40);
+  await r.timers.run(STEP_MS, () => c.engine.current().kind === "idle" && c.state.data.lastSeq === r.server.seq);
+  await r.vault.settle(150);
+  const posted = r.server.journal.filter((frame) => frame.device_id === again && (frame.sids.length > 0 || frame.deleted));
+  const tale = `${story({ ...r, b: c })} posted=${posted.length}`;
+  assert.deepEqual(r.vault.entries().filter((path) => path.startsWith("J241/Old/")), [], tale);
+  for (const name of names) assert.equal(c.state.fileByPath(`J241/New/${name}.md`)?.fileId, r.ids[`J241/Old/${name}.md`], `${name}: ${tale}`);
+  assert.deepEqual(posted, [], tale);
+});
+
+/**
+ * A NOTE MOVED OUT OF THE PHONE'S SELECTION, AND A WIDENING (issue #239), as
+ * the emulator ran J6: published as the move, so the desktop holds it once,
+ * at its new name, as the same note. Its new name deleted while it was out,
+ * it comes back at its old one instead, and the phone publishes nothing.
+ */
+for (const fate of ["kept", "deleted"]) {
+  test(`on Android, a note moved out of the selection and ${fate} there ends as one note on both devices after a widening (#239)`, async (t) => {
+    const r = await seeded(t, { "Sel/n.md": BODY, "Sel/Other.md": OTHER });
+    const id = r.ids["Sel/n.md"];
+    // As the plugin does, a new engine per start.
+    const { SyncEngine } = r.box.require(join(r.box.home, "build/sync/engine.js"));
+    r.b.plugin.startEngine = async () => {
+      const engine = new SyncEngine({ state: r.b.state, transport: r.b.transport, host: r.b.host, now: () => r.vault.clock, timers: r.timers });
+      t.after(() => engine.stop());
+      r.b.engine = r.b.plugin.engine = engine;
+      await engine.start();
+    };
+    await saveFolders(r, ["Sel"]);
+    // The note's newest version is the phone's own: its replay is an echo here.
+    await r.vault.adapter.writeBinary("Sel/n.md", new TextEncoder().encode(THEIRS).buffer, { mtime: 2000 });
+    await r.timers.run(STEP_MS, () => r.a.host.text("Sel/n.md") === THEIRS && r.b.state.fileByPath("Sel/n.md")?.size === THEIRS.length);
+    await r.vault.adapter.mkdir("Out");
+    await r.vault.rename(r.vault.getAbstractFileByPath("Sel/n.md"), "Out/n.md");
+    await r.vault.settle();
+    if (fate === "deleted") await r.vault.fileManager.trashFile(r.vault.getAbstractFileByPath("Out/n.md"));
+    await r.timers.run(STEP_MS, () => r.b.state.data.lastSeq === r.server.journal.at(-1).seq);
+    const frames = r.server.journal.length;
+
+    await saveFolders(r, undefined);
+    const idle = () => r.b.state.data.lastSeq === r.server.journal.at(-1).seq && r.a.state.data.lastSeq === r.server.journal.at(-1).seq &&
+      r.a.engine.current().kind === "idle" && r.b.engine.current().kind === "idle";
+    await r.timers.run(STEP_MS, idle);
+    await r.timers.run(STEP_MS);
+    await r.timers.run(STEP_MS, idle);
+    await r.vault.settle(150);
+    const at = fate === "kept" ? "Out/n.md" : "Sel/n.md";
+    const notes = (paths) => paths.filter((path) => path.endsWith(".md")).sort();
+    assert.deepEqual(notes(r.vault.entries()), [at, "Sel/Other.md"].sort(), story(r));
+    assert.deepEqual(notes([...r.a.host.files.keys()]), [at, "Sel/Other.md"].sort(), story(r));
+    assert.equal(r.b.state.fileByPath(at)?.fileId, id, story(r));
+    assert.equal(r.a.state.fileByPath(at)?.fileId, id, story(r));
+    assert.equal(r.vault.text(at), THEIRS);
+    const sent = r.server.journal.slice(frames).filter((frame) => frame.device_id === PHONE && frame.sids.length > 0);
+    assert.deepEqual(sent.map((frame) => frame.file_id), fate === "kept" ? [id] : [], story(r));
+  });
+}

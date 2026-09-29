@@ -1,0 +1,11 @@
+# M3358: a destination the selection does not cover is published as the move (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3724,7 +3724,6 @@
+       const listed = new Map(fresh.map((file) => [file.path, file]));
+       for (const [fileId, away] of Object.entries(context.state.data.departed)) {
+         if (!this.running) return;
+-        if (!inSyncScope(away.path, context.state.data.syncFolders)) continue;
+         const started = context.now();
+         const file = listed.get(away.path);
+         const refused = file === undefined ? "destination_gone"

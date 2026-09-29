@@ -1,0 +1,12 @@
+# M3379: an unseen move is guessed when two files are the note, or one file is two notes (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4033,7 +4033,7 @@
+       }
+     }
+     for (const [note, [file, ...more]] of found) {
+-      if (file === undefined || more.length > 0 || claimed.get(file.path) !== 1) continue;
++      if (file === undefined) continue;
+       context.state.data.departed[note.file_id] = { path: file.path, versionId: note.version_id, size: file.size };
+       const refused = this.rejoin(context, note.file_id, file.path, file.size);
+       if (refused === null) settled.add(file.path);

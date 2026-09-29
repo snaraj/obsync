@@ -77,7 +77,7 @@ import { State, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, NOT_OBSYNC, SessionEnded, Transport, certificateRefusal } from "../transport";
 import { VaultPathError, errorText, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
+import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, sameChunks, settleBeside, stage, unwritableText, yieldName } from "./pull";
 import { publishPause } from "./pause";
 import { PathGone, carryPost, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS, REPAIR_WALK_MS } from "./repair";
@@ -430,10 +430,20 @@ export interface SyncContext {
   ahead?: Prefetch | null;
   /**
    * File ids the feed is expected to find already here, byte for byte: the
-   * notes of other devices whose names a held local note occupies (`holding`).
-   * Their chunks are not fetched ahead, because adopting them fetches none.
+   * notes of other devices whose names a held local note occupies (`holding`),
+   * with that name and the versions the note there descends from. Their
+   * chunks are not fetched ahead, because adopting them fetches none, and a
+   * version behind them is never written at another name (`pull.ts`, issue
+   * #241).
    */
-  readonly expected?: Set<string>;
+  readonly expected?: ReadonlyMap<string, { readonly path: string; readonly behind: ReadonlySet<string> }>;
+  /**
+   * Versions this device authored, of notes it no longer holds anywhere, that
+   * are to be applied like another device's instead of dropped as echoes:
+   * each is its file's head, proved by the server just before (`returnLost`,
+   * issue #239).
+   */
+  readonly returning?: ReadonlySet<string>;
   readonly deviceNames: Map<string, string>;
   now(): number;
   deviceNameFor(deviceId: string): string;
@@ -865,7 +875,15 @@ export class SyncEngine {
    * from a note of its own.
    */
   private holding: { paths: Set<string>; since: number; handle: unknown; all: boolean } | null = null;
-  private readonly expected = new Set<string>();
+  private readonly expected = new Map<string, { path: string; behind: ReadonlySet<string> }>();
+  /**
+   * A replay from zero -- a widening (issue #239) -- until its first catch-up:
+   * the last entry this device had read before it, and by file id the last
+   * version of its own the replay passed as an echo (`processed`); `null`
+   * outside one. And the ones being brought back (`returnLost`).
+   */
+  private lost: { through: number; notes: Map<string, string> } | null = null;
+  private readonly returning = new Set<string>();
   /** No record and no cursor at this start: a vault the server has not seen from here. */
   private emptyStart = false;
   /** Passes since the last walk of the tree (`WALK_MS`), and why the next pass walks, when it must. */
@@ -1028,6 +1046,7 @@ export class SyncEngine {
       defer: () => this.defer(),
       ahead: null,
       expected: this.expected,
+      returning: this.returning,
       deviceNames,
       now: () => this.nowFn(),
       deviceNameFor: (id) => deviceNames.get(id) ?? "another device",
@@ -1039,6 +1058,9 @@ export class SyncEngine {
     this.expected.clear();
     this.holding = { paths: new Set(), since: this.nowFn(), handle: null, all: false };
     this.emptyStart = state.data.lastSeq === 0 && Object.keys(state.data.files).length === 0;
+    // A cursor at zero: a widening's replay over the feed this device has read
+    // to its mark, or a first read, which has no mark and notes nothing.
+    this.lost = state.data.lastSeq === 0 ? { through: state.data.feedMark?.seq ?? 0, notes: new Map() } : null;
     // A start's first pass walks: what moved while the app was closed shows there first.
     this.unwalked = 0;
     this.walkFor = "start";
@@ -1109,6 +1131,7 @@ export class SyncEngine {
     if (this.holding !== null && this.holding.handle !== null) this.timers.clear(this.holding.handle);
     this.holding = null;
     this.expected.clear();
+    this.lost = null;
     // And what `defer` held in memory is written now, not at a page that is not coming.
     void this.saveDeferred("stop");
     if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
@@ -1323,7 +1346,7 @@ export class SyncEngine {
     if (!this.running) return;
     const context = this.need();
     const started = context.now();
-    const left: string[] = [];
+    const left: [string, string | null][] = [];
     // What goes now -- confirmed, or back at its name and so the change it
     // is -- and what may be asked about first (issue #162).
     const gone: string[] = [];
@@ -1336,7 +1359,7 @@ export class SyncEngine {
         if (!this.running) return;
         const outcome = await this.follow(context, path, index, new Set());
         if (outcome === "moved") moved++;
-        else if (outcome === "left") left.push(path);
+        else if (outcome !== null) left.push([path, outcome.to]);
         else if (!confirmed.has(path) && (await context.host.stat(path)) === null) asked.push(path);
         else gone.push(path);
       }
@@ -1366,7 +1389,7 @@ export class SyncEngine {
       this.enqueue(path);
       removed++;
     }
-    for (const path of left) this.leftScope(path);
+    for (const [path, to] of left) this.leftScope(path, to);
     for (const folder of folders) {
       if (left.length > 0) this.folderLeftScope(folder, context.state.data.syncFolders);
       else if (holding) this.heldFolders.push(folder);
@@ -1426,7 +1449,8 @@ export class SyncEngine {
    * in the selection, is the MOVE, and keeps the file id. Any outside it --
    * one or several, because there is nothing to guess about a note this
    * device will not publish -- means the note LEFT the selection: alive here,
-   * so never a deletion (`leftScope`). An ambiguous pair inside the selection
+   * so never a deletion (`leftScope`), and where it went when exactly one
+   * file carries it (issue #239). An ambiguous pair inside the selection
    * stays unpaired, exactly as the scan leaves it.
    */
   private async follow(
@@ -1434,7 +1458,7 @@ export class SyncEngine {
     from: string,
     index: Map<string, VaultStat[]>,
     taken: Set<string>,
-  ): Promise<"moved" | "left" | null> {
+  ): Promise<"moved" | { to: string | null } | null> {
     const record = context.state.fileByPath(from);
     const found = record === undefined ? [] : this.carriers(record, index, taken);
     // A file that is still there is not gone, whatever else carries its bytes.
@@ -1445,7 +1469,7 @@ export class SyncEngine {
       this.renamed(from, only.path);
       return "moved";
     }
-    return found.some((file) => !inSyncScope(file.path, folders)) ? "left" : null;
+    return found.some((file) => !inSyncScope(file.path, folders)) ? { to: only?.path ?? null } : null;
   }
 
   /** The unrecorded files, among `files`, that carry this record's `(mtime, size)`. */
@@ -1502,8 +1526,22 @@ export class SyncEngine {
     // by every other device (issue #91).
     const context = this.need();
     if (!source || !target) {
-      if (target) this.changed(to);
-      else if (source) this.leftScope(from);
+      // A NOTE THAT LEFT THE SELECTION IS FOLLOWED OUT THERE (issue #239):
+      // back into it, it is published as the move it is; moved again outside
+      // it, it is remembered at its new name, or forgotten at one no selection
+      // can cover, and nothing of it is published.
+      const away = Object.keys(context.state.data.departed).find((id) => context.state.data.departed[id]?.path === from);
+      if (target && away !== undefined) {
+        const refused = this.rejoin(context, away, to, context.state.data.departed[away]?.size ?? 0);
+        context.host.log(`rename path_class=file decision=${refused === null ? "published_move reason=moved_back" : `forgotten reason=${refused}`} file=${away}`);
+        if (refused !== null) this.changed(to);
+      } else if (target) this.changed(to);
+      else if (source) this.leftScope(from, to);
+      else if (away !== undefined) {
+        if (vaultPathRefusal(to) === null) (context.state.data.departed[away] as { path: string }).path = to;
+        else delete context.state.data.departed[away];
+        this.saveMoved(context);
+      }
       if (this.carryMark(context, from, to)) this.saveMoved(context);
       return;
     }
@@ -1570,10 +1608,12 @@ export class SyncEngine {
     // reconciliation. Pending work moves with the folder like everything
     // else under it, and so does a first post in flight (issue #213).
     // A dropped write's empty file may have no record and no work at all, only
-    // its mark (#242; review of 2e4cdca).
-    const { files, dropped } = this.options.state.data;
+    // its mark (#242; review of 2e4cdca), and a note that left the selection
+    // only the name it went to (#239).
+    const { files, dropped, departed } = this.options.state.data;
     const pending = [...this.pending.keys(), ...this.queue, ...this.pushing.keys()];
-    for (const path of new Set([...Object.keys(files), ...Object.keys(dropped), ...pending])) {
+    const away = Object.values(departed).map((entry) => entry.path);
+    for (const path of new Set([...Object.keys(files), ...Object.keys(dropped), ...away, ...pending])) {
       if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
     }
   }
@@ -1670,14 +1710,23 @@ export class SyncEngine {
    * queued push it may still be owed are cancelled, and the user is told once
    * per move, with the count: every caller makes its exits in one synchronous
    * run, so the notice waits for the end of it (issue #139).
+   *
+   * AND WHERE IT WENT IS REMEMBERED (issue #239), when a caller knows and it
+   * is a name some selection can cover: once a selection covers it again, the
+   * note is published as a move of the same file id (`rejoin`), and every
+   * device ends with one copy of it instead of two.
    */
-  private leftScope(from: string): void {
+  private leftScope(from: string, to: string | null = null): void {
     const context = this.need();
     this.unschedule(from);
     this.deletions.delete(from);
     const queued = this.queue.indexOf(from);
     if (queued !== -1) this.queue.splice(queued, 1);
-    if (context.state.fileByPath(from) !== undefined) {
+    const record = context.state.fileByPath(from);
+    if (record !== undefined) {
+      if (to !== null && vaultPathRefusal(to) === null) {
+        context.state.data.departed[record.fileId] = { path: to, versionId: record.versionId, size: record.size };
+      }
       context.state.forgetPath(from);
       void this.track(context.state.save()).catch(() => {
         this.stop();
@@ -1697,6 +1746,28 @@ export class SyncEngine {
           "Sync folders on this device.",
       );
     });
+  }
+
+  /**
+   * A NOTE THAT LEFT THE SELECTION, BACK IN IT (issue #239; owner ruling
+   * 2026-09-29): published as a MOVE of its file id to where it stands now,
+   * exactly as a rename made here is (`renamed`) -- its record at the new
+   * name, owing the post, on the version this device held when it left.
+   * Edits made while it was out go in that same version, and what another
+   * device did to it meanwhile meets this one by the rules for a rename
+   * meeting an edit or a deletion (issue #151). `null` once it is queued; or
+   * the reason it cannot be, with the entry forgotten either way: the file id
+   * is held here under another name already.
+   */
+  private rejoin(context: SyncContext, fileId: string, path: string, size: number): "held_elsewhere" | null {
+    const away = context.state.data.departed[fileId] as { versionId: string };
+    delete context.state.data.departed[fileId];
+    this.saveMoved(context);
+    if (context.state.pathByFileId(fileId) !== undefined) return "held_elsewhere";
+    context.state.setFile(path, { fileId, versionId: away.versionId, mtime: -1, size, sha256: "" });
+    this.renames.add(path);
+    this.enqueue(path);
+    return null;
   }
 
   /**
@@ -3093,7 +3164,8 @@ export class SyncEngine {
    */
   private async background(context: SyncContext, change: ChangeRecord): Promise<boolean> {
     if (change.deleted || change.bytes <= LARGE_APPLY_BYTES || change.device_id === context.deviceId ||
-      context.authored.has(change.version_id) || context.state.data.paused[change.file_id] !== undefined) return false;
+      context.authored.has(change.version_id) || context.state.data.paused[change.file_id] !== undefined ||
+      context.state.data.departed[change.file_id] !== undefined) return false;
     // A rename, or bytes this device already holds: nothing to fetch.
     const kept = context.state.pathByFileId(change.file_id);
     if (kept !== undefined && context.state.fileByPath(kept)?.sha256 === (await sidDigest(change.sids))) return false;
@@ -3258,6 +3330,7 @@ export class SyncEngine {
     if (replayed > 0) context.host.log(`feed decision=skipped reason=seen_before_restore entries=${replayed}`);
     if (!this.caughtUp && page.seq >= page.head_seq) {
       await this.releaseRetired(context);
+      await this.returnLost(context);
       this.release("caught_up");
     }
     // The save below writes what `defer` held (issue #194).
@@ -3392,7 +3465,65 @@ export class SyncEngine {
       const grave = state.data.graves[change.file_id];
       if (grave?.versionId === change.version_id) grave.ts = change.ts;
     }
+    // What a replay passes as this device's own version of a file -- a live
+    // one carries a chunk; a deletion, a folder or a pause none -- of what it
+    // had read before, is its newest so far; anything later of that file
+    // settles it, this start's own posts among them (`returnLost`, #239).
+    if (this.lost !== null) {
+      const { through, notes } = this.lost;
+      if (result === "echo" && change.sids.length > 0 && change.seq <= through) notes.set(change.file_id, change.version_id);
+      else notes.delete(change.file_id);
+    }
     state.data.feedMark = { seq: change.seq, fileId: change.file_id, versionId: change.version_id, ts: change.ts, replay: false };
+  }
+
+  /**
+   * NOTES THIS DEVICE WROTE AND HOLDS NOWHERE, brought back once a replay over
+   * the vault it holds has caught up (issue #239; owner ruling 2026-09-29: a
+   * record whose file is missing is never treated as held). A widening reads
+   * the whole feed again, and this device's own versions come back to it as
+   * echoes -- right for a note it holds, and a silent divergence for one it
+   * does not: a note that left the selection before 1.1.5 remembered where
+   * to, or whose new name was deleted, hidden or taken into a linked folder
+   * while it was out -- and so for one the replay has just given back at an
+   * older version of another device's, before passing over this device's own
+   * newer one. Such a note's heads, read from the server now, are applied as
+   * another device's version would be (`returning`), at the name every other
+   * device keeps. One read per note, one line each, and none at all for a
+   * note held at that version, one that left and is still out of the
+   * selection, or one whose last version was a deletion.
+   */
+  private returnLost(context: SyncContext): Promise<void> {
+    const lost = this.lost;
+    this.lost = null;
+    if (lost === null || lost.notes.size === 0) return Promise.resolve();
+    const held = (fileId: string): string | undefined => {
+      const path = context.state.pathByFileId(fileId);
+      return path === undefined ? undefined : context.state.fileByPath(path)?.versionId;
+    };
+    return this.exclusive(async () => {
+      for (const [fileId, versionId] of lost.notes) {
+        if (!this.running) return;
+        const before = held(fileId);
+        if (before === versionId || context.state.data.departed[fileId] !== undefined) continue;
+        const started = context.now();
+        let outcome: string;
+        this.returning.add(versionId);
+        try {
+          await this.reconcileFile(fileId);
+          outcome = held(fileId) === before ? "not_applied" : "applied";
+        } catch (error) {
+          outcome = `failed_${error instanceof ApiError ? error.code : error instanceof Unwritable ? error.reason : "error"}`;
+        } finally {
+          this.returning.delete(versionId);
+        }
+        context.host.log(
+          `feed path_class=file decision=downloaded_again reason=not_held outcome=${outcome} file=${fileId} ` +
+            `budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+        );
+      }
+      await context.state.save();
+    });
   }
 
   /**
@@ -3668,6 +3799,37 @@ export class SyncEngine {
     // content and never reaches a log (requirement 6).
     if (unnormalised > 0) context.host.log(`${label} decision=skipped reason=normalisation_only files=${unnormalised}`);
 
+    // NOTES THAT LEFT THE SELECTION, WHERE IT COVERS THEM AGAIN (issue #239):
+    // after a widening, or a start that finds one moved back while the app
+    // was closed. Each is published as the move it is (`rejoin`), and one
+    // whose name holds nothing this device may sync -- deleted, or taken into
+    // a linked folder or a vault of its own while it was out -- is forgotten,
+    // so the replay brings it back at the name the other devices keep
+    // (`returnLost`). Before the pairing below, which must not take its file
+    // for another note's move. One line each, with what it was measured
+    // against.
+    if (tombstones) {
+      const listed = new Map(fresh.map((file) => [file.path, file]));
+      for (const [fileId, away] of Object.entries(context.state.data.departed)) {
+        if (!this.running) return;
+        if (!inSyncScope(away.path, context.state.data.syncFolders)) continue;
+        const started = context.now();
+        const file = listed.get(away.path);
+        const refused = file === undefined ? "destination_gone"
+          : !(await context.host.syncable(file.path)) ? "destination_unsyncable"
+          : this.rejoin(context, fileId, file.path, file.size);
+        if (refused === null) settled.add(away.path);
+        else if (context.state.data.departed[fileId] !== undefined) {
+          delete context.state.data.departed[fileId];
+          this.saveMoved(context);
+        }
+        context.host.log(
+          `${label} path_class=file decision=${refused === null ? "published_move reason=left_selection" : `forgotten reason=${refused}`} ` +
+            `file=${fileId} budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+        );
+      }
+    }
+
     // Moves first: a paired destination must not also be queued as a new
     // file, and a paired source must not also be tombstoned. A path the
     // normalisation check settled is handled in exactly the same way.
@@ -3725,7 +3887,7 @@ export class SyncEngine {
     // found there LEFT the selection -- never a deletion, never a hold.
     // Asked only when something is gone, which is almost never.
     const missing: string[] = [];
-    const left: string[] = [];
+    const left: [string, string | null][] = [];
     if (candidates.length > 0) {
       const index = byStat(await context.host.inventory());
       for (const from of candidates) {
@@ -3733,10 +3895,10 @@ export class SyncEngine {
         // The moves are the pairing above's, which saw every file of the
         // selection; what is left to find here is outside it.
         const outcome = await this.follow(context, from, index, settled);
-        if (outcome === "left") left.push(from);
-        else if (outcome === null) missing.push(from);
+        if (outcome === null) missing.push(from);
+        else if (outcome !== "moved") left.push([from, outcome.to]);
       }
-      for (const from of left) this.leftScope(from);
+      for (const [from, to] of left) this.leftScope(from, to);
     }
 
     // A BULK DELETION IS A QUESTION, NOT AN INSTRUCTION (issue #123). What
@@ -3829,6 +3991,7 @@ export class SyncEngine {
     // carries.
     const untracked = fresh.filter((file) => !settled.has(file.path) && context.state.fileByPath(file.path) === undefined);
     const own = tombstones ? await this.ownNotes(context, untracked.length) : null;
+    if (own !== null && this.lost !== null) await this.rejoinUnseen(context, own.notes, untracked, seen, settled, label);
     let queued = 0;
     for (const file of verify) {
       if (!(await context.host.syncable(file.path))) { skipped++; continue; }
@@ -3859,7 +4022,7 @@ export class SyncEngine {
       // rule; a note no other device named goes out at once.
       if (this.holding !== null && context.state.fileByPath(file.path) === undefined &&
         (this.holding.all || (note !== undefined && note.device_id !== context.deviceId))) {
-        if (note !== undefined) this.expected.add(note.file_id);
+        if (note !== undefined) this.expected.set(note.file_id, { path: file.path, behind: note.behind });
         if (!this.holding.paths.has(file.path)) heldBack++;
         this.holdBack(file.path);
         continue;
@@ -3925,6 +4088,59 @@ export class SyncEngine {
     }
     // LAST, because this pass's own pairings consume marks (`renamed`).
     this.sweepEchoes(context, label);
+  }
+
+  /**
+   * A NOTE THAT LEFT THE SELECTION UNSEEN (issue #239): moved out of it before
+   * this device remembered where to (1.1.4 and older), or by a move nothing
+   * here saw. A replay over the vault this device holds finds its own newest
+   * version of such a note at a name in the selection that holds nothing
+   * here; when exactly one file of the selection, recorded nowhere and at no
+   * note's name, IS that version, chunk for chunk (`sameChunks`), and is that
+   * version for no other note, that file is the note, moved -- published as
+   * the move (`rejoin`). Anything short of that proof leaves the note to be
+   * brought back where it was (`returnLost`): two copies, nothing lost.
+   * Cost: one read of a file only where its size is such a note's.
+   */
+  private async rejoinUnseen(
+    context: SyncContext,
+    notes: Map<string, HeldNote>,
+    files: VaultStat[],
+    seen: Set<string>,
+    settled: Set<string>,
+    label: string,
+  ): Promise<void> {
+    const started = context.now();
+    const bySize = new Map<number, HeldNote[]>();
+    for (const note of notes.values()) {
+      // Missing is what the listing of the selection says, so only a name in it can be.
+      if (note.device_id !== context.deviceId || !inSyncScope(note.path, context.state.data.syncFolders) || seen.has(note.path) ||
+        context.state.pathByFileId(note.file_id) !== undefined || context.state.data.departed[note.file_id] !== undefined) continue;
+      bySize.set(note.size, [...(bySize.get(note.size) ?? []), note]);
+    }
+    const found = new Map<HeldNote, VaultStat[]>();
+    const claimed = new Map<string, number>();
+    for (const file of files) {
+      if (!this.running) return;
+      // Asked of the host only where a size matches: a linked folder or a
+      // vault of its own is never published from (`syncable`).
+      if (notes.has(file.path) || !bySize.has(file.size) || !(await context.host.syncable(file.path))) continue;
+      for (const note of bySize.get(file.size) ?? []) {
+        if ((await sameChunks(context, note.sids, file.path, file, file.size)) === null) continue;
+        found.set(note, [...(found.get(note) ?? []), file]);
+        claimed.set(file.path, (claimed.get(file.path) ?? 0) + 1);
+      }
+    }
+    for (const [note, [file, ...more]] of found) {
+      if (file === undefined || more.length > 0 || claimed.get(file.path) !== 1) continue;
+      context.state.data.departed[note.file_id] = { path: file.path, versionId: note.version_id, size: file.size };
+      const refused = this.rejoin(context, note.file_id, file.path, file.size);
+      if (refused === null) settled.add(file.path);
+      context.host.log(
+        `${label} path_class=file decision=${refused === null ? "published_move reason=identical" : `forgotten reason=${refused}`} ` +
+          `file=${note.file_id} budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+      );
+    }
   }
 
   /**

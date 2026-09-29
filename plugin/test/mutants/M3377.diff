@@ -1,0 +1,12 @@
+# M3377: a file in a linked folder or nested vault is taken for an unseen move (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4025,7 +4025,7 @@
+       if (!this.running) return;
+       // Asked of the host only where a size matches: a linked folder or a
+       // vault of its own is never published from (`syncable`).
+-      if (notes.has(file.path) || !bySize.has(file.size) || !(await context.host.syncable(file.path))) continue;
++      if (notes.has(file.path) || !bySize.has(file.size)) continue;
+       for (const note of bySize.get(file.size) ?? []) {
+         if ((await sameChunks(context, note.sids, file.path, file, file.size)) === null) continue;
+         found.set(note, [...(found.get(note) ?? []), file]);

@@ -1,0 +1,12 @@
+# M3364: a widening never looks for this device's notes it holds nowhere (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1056,7 +1056,7 @@
+     this.emptyStart = state.data.lastSeq === 0 && Object.keys(state.data.files).length === 0;
+     // A cursor at zero: a widening's replay over the feed this device has read
+     // to its mark, or a first read, which has no mark and notes nothing.
+-    this.lost = state.data.lastSeq === 0 ? { through: state.data.feedMark?.seq ?? 0, notes: new Map() } : null;
++    this.lost = null;
+     // A start's first pass walks: what moved while the app was closed shows there first.
+     this.unwalked = 0;
+     this.walkFor = "start";

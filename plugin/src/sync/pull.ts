@@ -466,9 +466,12 @@ async function openManifest(
  * A live note as the feed states it: the manifest, and the record it rode in.
  * `versions` holds "size sha256" of every version of the note the walk met,
  * the newest included: a copy that is one of them is this vault's note.
+ * `behind` holds the ids of the newest and every version it descends from, as
+ * far as the walk read the feed: at any other name, history (issue #241).
  */
 export type HeldNote = Manifest & Pick<ChangeRecord, "file_id" | "version_id" | "sids" | "device_id"> & {
   versions: ReadonlySet<string>;
+  behind: ReadonlySet<string>;
 };
 
 /**
@@ -479,11 +482,13 @@ export type HeldNote = Manifest & Pick<ChangeRecord, "file_id" | "version_id" | 
  * From a cursor, it is what changed since then (issue #181).
  */
 export async function heldNotes(transport: Transport, manifestKey: Bytes, from = 0): Promise<Map<string, HeldNote>> {
-  const newest = new Map<string, Omit<HeldNote, "versions"> | null>();
+  const newest = new Map<string, Omit<HeldNote, "versions" | "behind"> | null>();
   const versions = new Map<string, Set<string>>();
+  const graph: VersionNode[] = [];
   for (let since = from; ;) {
     const page = await transport.changes(since, 0);
     for (const change of page.changes) {
+      graph.push(change);
       try {
         const entry = parseEntry(await openManifest(manifestKey, change));
         const { file_id, version_id, sids, device_id } = change;
@@ -497,9 +502,11 @@ export async function heldNotes(transport: Transport, manifestKey: Bytes, from =
     if (page.changes.length === 0 || page.seq <= since) break;
     since = page.seq;
   }
+  const parents = parentsFrom(graph);
   const held = new Map<string, HeldNote>();
   for (const [fileId, manifest] of newest) {
-    if (manifest !== null) held.set(manifest.path, { ...manifest, versions: versions.get(fileId) ?? new Set() });
+    if (manifest === null) continue;
+    held.set(manifest.path, { ...manifest, versions: versions.get(fileId) ?? new Set(), behind: reachable(parents, manifest.version_id) });
   }
   return held;
 }
@@ -1173,13 +1180,29 @@ export async function applyChange(context: SyncContext, change: ChangeRecord, in
     return "skipped";
   }
   const authored = context.authored.delete(change.version_id);
-  if ((authored || change.device_id === context.deviceId) && !(await deletionOwed(context, change))) return "echo";
+  // An echo is a version this device HOLDS. One it authored and holds nowhere
+  // now -- a note that left the selection before 1.1.5, or whose new name was
+  // deleted or hidden while it was out -- is applied as any other device's
+  // would be, once the engine has proved it is still the file's head
+  // (`returning`, issue #239).
+  if ((authored || change.device_id === context.deviceId) && context.returning?.has(change.version_id) !== true &&
+    !(await deletionOwed(context, change))) return "echo";
   // A PAUSED NOTE TAKES NOTHING (issue #179): not from the feed, and not from
   // a push that was in flight when it paused and came back conflicted. Its
   // versions are asked of the server again, as the file stands then, when it
   // is resumed (`engine.ts`, `resume`).
   if (context.state.data.paused[change.file_id] !== undefined) {
     context.host.log(`pull path_class=file decision=skipped reason=paused file=${change.file_id} seq=${change.seq}`);
+    return "skipped";
+  }
+  // NOR DOES A NOTE THAT LEFT THE SELECTION (issues #91, #239). This device
+  // keeps it under its new name and no longer syncs it; written again at the
+  // old one, it was a second copy here. What another device did to it
+  // meanwhile meets this device's move when that move is published
+  // (`engine.ts`, `rejoin`), by the rules for a rename meeting an edit or a
+  // deletion (issue #151).
+  if (context.state.data.departed[change.file_id] !== undefined) {
+    context.host.log(`pull path_class=file decision=skipped reason=left_selection file=${change.file_id} seq=${change.seq}`);
     return "skipped";
   }
   try {
@@ -1913,6 +1936,23 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
   }
 
   if (local && local.versionId === change.version_id) return "skipped";
+
+  // A NOTE KEPT AT ITS NEWEST NAME IS NOT WRITTEN AT AN OLDER ONE (issue
+  // #241). Paired again over the vault it kept, a device replays the feed
+  // from zero, and a note renamed before it left arrives first at its OLD
+  // name -- free here, so it was written there -- and its move then met the
+  // kept note at the new name: published again under a new id, and the copy
+  // at the old name left beside it for good on a phone. A version the held
+  // note descends from, at a name it does not stand at, is history: skipped,
+  // and the newest version, later in the same replay, is adopted where the
+  // note stands (`adopt`). One at the held name is still compared there --
+  // adopted when the note kept is that older version, which the newer one
+  // then updates -- and a version the start's walk did not reach is applied.
+  const heldNote = context.expected?.get(change.file_id);
+  if (heldNote !== undefined && heldNote.path !== manifest.path && heldNote.behind.has(change.version_id)) {
+    context.host.log(`pull decision=skipped reason=behind_held file=${change.file_id} seq=${change.seq}`);
+    return "skipped";
+  }
 
   const policy = context.state.data.policy;
   const admission = admit(policy, context.state.localBytes(), manifest.size);
@@ -4582,7 +4622,7 @@ async function adopt(
  * read proves nothing, and it is stat-ed again afterwards for the reason
  * `alreadyCopied` gives: what is recorded is true of the bytes proved.
  */
-async function sameChunks(
+export async function sameChunks(
   context: SyncContext,
   sids: string[],
   path: string,

@@ -1,0 +1,12 @@
+# M3371: a move made before 1.1.5 is never found, only brought back beside the copy (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3903,7 +3903,7 @@
+     // carries.
+     const untracked = fresh.filter((file) => !settled.has(file.path) && context.state.fileByPath(file.path) === undefined);
+     const own = tombstones ? await this.ownNotes(context, untracked.length) : null;
+-    if (own !== null && this.lost !== null) await this.rejoinUnseen(context, own.notes, untracked, seen, settled, label);
++    if (Date.now() < 0 && own !== null) await this.rejoinUnseen(context, own.notes, untracked, seen, settled, label);
+     let queued = 0;
+     for (const file of verify) {
+       if (!(await context.host.syncable(file.path))) { skipped++; continue; }

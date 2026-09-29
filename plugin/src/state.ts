@@ -267,6 +267,17 @@ export interface ObsyncData {
    */
   paused: Record<string, { path: string; remote?: true }>;
   /**
+   * File id to where a note went when it LEFT the selection by a move this
+   * device saw (`sync/engine.ts`, `leftScope`; issues #91, #239), with the
+   * version and size it had then. Nothing about it is applied while it is out
+   * of the selection, and once the selection covers that name again the note
+   * is published as a MOVE of that file id (`rejoin`), so every device ends
+   * with one copy. Persisted because the move and the widening that brings it
+   * back are far apart. A version before 1.1.5 ignores it, and its next save
+   * drops it: the widening then publishes the note as a new one, as before.
+   */
+  departed: Record<string, { path: string; versionId: string; size: number }>;
+  /**
    * Deletions held back from the other devices until the user answers: many
    * notes deleted at once here (issue #162), or a pass that could no longer
    * see them (issue #123). Their records stay in `files`, which is what Restore
@@ -332,6 +343,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     parked: {},
     dropped: {},
     paused: {},
+    departed: {},
     heldDeletions: [],
     feedMark: null,
     graves: {},
@@ -549,6 +561,15 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   if (isRecord(paused)) {
     for (const [fileId, record] of Object.entries(paused)) {
       if (isHex(fileId, 16) && isRecord(record) && isVaultPath(record["path"])) data.paused[fileId] = { path: record["path"], ...(record["remote"] === true ? { remote: true } : {}) };
+    }
+  }
+  // A version id is the parent the move is published on, and the path is
+  // where it is published to: both input, judged as every path here is.
+  const departed = loaded["departed"];
+  if (isRecord(departed)) {
+    for (const [fileId, away] of Object.entries(departed)) {
+      if (isHex(fileId, 16) && isRecord(away) && isVaultPath(away["path"]) && typeof away["versionId"] === "string" &&
+        isHex(away["versionId"], 32)) data.departed[fileId] = { path: away["path"], versionId: away["versionId"], size: num(away["size"], 0) };
     }
   }
   // The mark names a request path and the graves a request path and a
@@ -927,6 +948,7 @@ export class State {
     // restored one.
     this.data.parked = {};
     this.data.paused = {};
+    this.data.departed = {};
     this.data.heldDeletions = [];
     this.data.feedMark = null;
     this.data.graves = {};
