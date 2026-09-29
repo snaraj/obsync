@@ -673,6 +673,8 @@ export class FakeServer {
     this.recoveryVerifier = null;
     /** When `recoveryVerifier` was registered, on `clock`; `null` for a key from before 1.1.5. */
     this.recoveryAt = null;
+    /** One re-enrolment the operator's reset armed (1.1.5); any registration spends it. */
+    this.recoveryArmed = false;
     this.recoveries = 0;
     if (!claimed) {
       this.devices = [];
@@ -720,6 +722,13 @@ export class FakeServer {
   }
 
   /** Enrol a second device in the same vault, with its own secret. */
+  /** The operator's `obsyncd recovery reset apply`: no key, one re-enrolment armed. */
+  resetRecovery() {
+    this.recoveryVerifier = null;
+    this.recoveryAt = null;
+    this.recoveryArmed = true;
+  }
+
   addDevice(deviceId, deviceSecretHex, name, platform = "ios") {
     this.secrets.set(deviceId, Buffer.from(deviceSecretHex, "hex"));
     this.devices.push({
@@ -795,8 +804,23 @@ export class FakeServer {
       const recovered = this.claimed;
       if (recovered) {
         if (body.recovery_proof === undefined) return this.error(409, "already_set_up", "this server already holds an account");
-        if (this.recoveryVerifier === null) return this.error(409, "recovery_unavailable", "a paired device must register recovery first");
-        if (!/^[0-9a-f]{64}$/.test(body.recovery_proof) || createHash("sha256").update(Buffer.from(body.recovery_proof, "hex")).digest("hex") !== this.recoveryVerifier) return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
+        // No key and no reset since: the token alone recovers nothing (1.1.4's answer).
+        if (this.recoveryVerifier === null && !this.recoveryArmed) {
+          return this.error(409, "recovery_unavailable", "no recovery key is registered for this account");
+        }
+        if (!/^[0-9a-f]{64}$/.test(body.recovery_proof)) return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
+        const derived = createHash("sha256").update(Buffer.from(body.recovery_proof, "hex")).digest("hex");
+        if (this.recoveryVerifier === null) {
+          // The re-enrolment the operator's reset armed (1.1.5): the server
+          // registers the verifier the proof derives, timed, and enrols, which
+          // spends the arm. obsyncd derives it from the proof, so a bogus
+          // verifier a caller sends beside the proof is never what stands.
+          this.recoveryVerifier = derived;
+          this.recoveryAt = this.clock;
+          this.recoveryArmed = false;
+        } else if (derived !== this.recoveryVerifier) {
+          return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
+        }
       } else {
         this.recoveryVerifier = body.recovery_verifier ?? null;
         this.recoveryAt = this.recoveryVerifier === null ? null : this.clock;
@@ -819,6 +843,7 @@ export class FakeServer {
       if (this.recoveryVerifier !== null && this.recoveryVerifier !== verifier) return this.error(409, "recovery_mismatch");
       if (this.recoveryVerifier === null) this.recoveryAt = this.clock;
       this.recoveryVerifier = verifier;
+      this.recoveryArmed = false;
       return this.json(204, {});
     }
 

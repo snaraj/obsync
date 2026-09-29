@@ -1,0 +1,12 @@
+# M3616: a freshly made key sends its proof, taking over an occupied server
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4317,7 +4317,7 @@
+         name,
+         platform: this.platformName(),
+         app_version: this.manifest.version,
+-      }, freshKey ? { verifier: recovery.verifier } : recovery);
++      }, recovery);
+       assertCurrent();
+       if (state.data.vrk !== vrk) throw new Error("The vault key changed while the server answered; this response was not adopted. Restore the intended phrase and recover explicitly.");
+       // Setup is not repeatable and the credential it mints exists nowhere

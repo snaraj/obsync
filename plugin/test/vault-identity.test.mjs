@@ -415,14 +415,16 @@ test("a note held at an earlier version of the server's is the vault's, and only
   assert.equal(p.logs.filter((line) => / unknown=1 older=0 /.test(line)).length, 2);
 });
 
-test("Setup on a server without registered recovery says one server holds one vault (#141)", async (t) => {
-  const p = await plugin(t, { metadata: { deviceId: null, deviceSecret: null } });
+test("a new vault key cannot take over a server that already holds a vault (#141)", async (t) => {
+  // A key made for this setup, not restored from a phrase: it sends no proof,
+  // so the occupied server says to pair or restore, never a second vault key.
+  const p = await plugin(t, { metadata: { vrk: null, deviceId: null, deviceSecret: null } });
   await p.instance.setUpAccount(SETUP_TOKEN, "obsync");
   assert.ok(p.notices.some((notice) =>
     notice.includes("This server already holds a vault, and one server holds one vault") &&
     notice.includes("Pair this device") && notice.includes("a different vault needs a server of its own")));
   assert.equal(p.notices.some((notice) => notice.includes("already_set_up")), false, "not the raw server code");
-  assert.ok(p.logs.includes("setup decision=failed reason=recovery_unavailable"));
+  assert.ok(p.logs.includes("setup decision=failed reason=already_set_up"));
   assert.equal(p.instance.state.data.deviceId, null);
 });
 

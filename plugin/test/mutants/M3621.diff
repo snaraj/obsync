@@ -1,0 +1,12 @@
+# M3621: the recovery_unavailable notice no longer names the operator's reset
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4835,7 +4835,7 @@
+           : code === "already_set_up"
+             ? `This server already holds a vault, and one server holds one vault. If this is that vault, ${pairHere}, or restore its recovery phrase and use Setup or recover with the setup token; a different vault needs a server of its own.`
+             : code === "recovery_unavailable"
+-              ? `This server holds a vault with no recovery key registered, so these words cannot re-enrol this device on their own: ${pairHere}, or ask whoever runs the server to reset its recovery key and send you the new setup token (server 1.1.5 or later); a different vault needs a server of its own.`
++              ? `This server holds a vault with no recovery key registered, so these words cannot re-enrol this device on their own: ${pairHere}, then update that device and the server so recovery is registered; a different vault needs a server of its own.`
+               : code === "bad_recovery_proof"
+                 ? `These recovery words do not open this server’s vault, and no device was enrolled. Restore its correct 24-word phrase, or ${pairHere}; a different vault needs a server of its own.`
+                 : refusalText(error);

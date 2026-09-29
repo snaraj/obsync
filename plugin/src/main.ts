@@ -4789,11 +4789,16 @@ export default class ObsyncPlugin extends Plugin {
       const recovery = await accountRecovery(vrk);
       assertCurrent();
       if (state.data.vrk !== vrk) throw new Error("The vault key changed during setup; try again with the current key.");
+      // A key made for THIS setup recovers nothing, so it sends no proof: an
+      // occupied server then says to pair or restore, rather than establishing
+      // a second vault key over the one it holds (#141, #154). A key restored
+      // from the phrase sends its proof, which re-enrols an existing account,
+      // including one an operator has cleared (`docs/recovery.md`).
       const enrolled = await transport.setup(pastedToken(setupToken), accountName, {
         name,
         platform: this.platformName(),
         app_version: this.manifest.version,
-      }, recovery);
+      }, freshKey ? { verifier: recovery.verifier } : recovery);
       assertCurrent();
       if (state.data.vrk !== vrk) throw new Error("The vault key changed while the server answered; this response was not adopted. Restore the intended phrase and recover explicitly.");
       // Setup is not repeatable and the credential it mints exists nowhere
@@ -4830,7 +4835,7 @@ export default class ObsyncPlugin extends Plugin {
           : code === "already_set_up"
             ? `This server already holds a vault, and one server holds one vault. If this is that vault, ${pairHere}, or restore its recovery phrase and use Setup or recover with the setup token; a different vault needs a server of its own.`
             : code === "recovery_unavailable"
-              ? `This server already holds a vault, and one server holds one vault. Recovery was not registered before its credentials were lost, so these words cannot re-enrol this device: ${pairHere}, then update that device and the server so recovery is registered; a different vault needs a server of its own.`
+              ? `This server holds a vault with no recovery key registered, so these words cannot re-enrol this device on their own: ${pairHere}, or ask whoever runs the server to reset its recovery key and send you the new setup token (server 1.1.5 or later); a different vault needs a server of its own.`
               : code === "bad_recovery_proof"
                 ? `These recovery words do not open this server’s vault, and no device was enrolled. Restore its correct 24-word phrase, or ${pairHere}; a different vault needs a server of its own.`
                 : refusalText(error);

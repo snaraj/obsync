@@ -137,16 +137,50 @@ test("setup recovers a forgotten enrollment with its retained key, without unins
   assert.ok(r.notices.some((text) => text.includes("Account recovered")));
 });
 
-test("wrong token, wrong vault key and an unregistered legacy account never enrol a recovery device", async (t) => {
-  for (const reason of ["token", "key", "legacy"]) {
+test("a wrong token and a wrong vault key never enrol a recovery device", async (t) => {
+  for (const reason of ["token", "key"]) {
     const server = new FakeServer();
-    if (reason !== "legacy") server.recoveryVerifier = (await accountRecovery(KEYS.vrk)).verifier;
+    server.recoveryVerifier = (await accountRecovery(KEYS.vrk)).verifier;
     const r = await plugin(t, { server, metadata: { ...unpaired, vrk: reason === "key" ? "ab".repeat(32) : KEYS.vrk } });
     await r.instance.setUpAccount(reason === "token" ? "wrong-token" : SETUP_TOKEN, "obsync");
     assert.equal(server.devices.length, 1, reason);
     assert.equal(r.instance.state.data.deviceId, null, reason);
     assert.equal(server.requests.length, 1, "no automatic retry");
   }
+});
+
+test("an operator-cleared account re-enrols the restored key, which then carries the hold and can be warned about (1.1.5)", async (t) => {
+  // The state `obsyncd recovery reset apply` leaves: no verifier, one re-enrolment armed.
+  const server = new FakeServer();
+  server.resetRecovery();
+  const r = await plugin(t, { server, metadata: { ...unpaired, vrk: KEYS.vrk } });
+  await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
+  // The restored key re-enrols and registers the verifier it derives, timed,
+  // which spends the arm.
+  assert.notEqual(r.instance.state.data.deviceId, null);
+  assert.equal(server.recoveryVerifier, (await accountRecovery(KEYS.vrk)).verifier);
+  assert.notEqual(server.recoveryAt, null);
+  assert.equal(server.recoveryArmed, false);
+  assert.ok(r.notices.some((text) => text.includes("Account recovered")));
+  // The request carried the proof, because the key was restored, not freshly made.
+  const setup = server.requests.find((request) => request.target.endsWith("/v1/setup"));
+  assert.ok(JSON.parse(setup.json).recovery_proof, "a restored key proves the vault");
+});
+
+test("an account with no key that no one has reset refuses the restored key, and says how to get in (1.1.5)", async (t) => {
+  // An account set up before any key was registered, and never reset: the
+  // server answers recovery_unavailable, as 1.1.4 did.
+  const server = new FakeServer();
+  const r = await plugin(t, { server, metadata: { ...unpaired, vrk: KEYS.vrk } });
+  await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
+  assert.equal(r.instance.state.data.deviceId, null);
+  assert.equal(server.devices.length, 1, "no device was enrolled");
+  assert.equal(server.recoveryVerifier, null, "no key was chosen");
+  assert.ok(r.logs.includes("setup decision=failed reason=recovery_unavailable"), r.logs.join(" | "));
+  const told = r.notices.join(" | ");
+  assert.match(told, /Pair a new device.*Pair this device/, told);
+  assert.match(told, /reset its recovery key/, told);
+  assert.ok(!/\b(401|403|409)\b|recovery_unavailable/.test(told), told);
 });
 
 test("setup against a certificate this device does not trust says so, never 'the server refused this step'", async (t) => {
@@ -453,7 +487,11 @@ test("a second computer's setup is told to pair instead, naming both commands, n
     assert.match(told, /already holds a vault.*Pair a new device.*Pair this device/, told);
     assert.ok(!RAW_CODE.test(told), told);
     assert.ok(!/recovery words|recovery phrase/.test(told), "a key made for this setup restored nothing");
-    assert.ok(r.logs.some((line) => /^setup decision=failed reason=(bad_recovery_proof|recovery_unavailable)$/.test(line)));
+    // A freshly made key sends no proof, so an occupied server says pair or
+    // restore, whether or not it holds a verifier — never a new vault key.
+    assert.ok(r.logs.some((line) => /^setup decision=failed reason=already_set_up$/.test(line)));
+    const setup = r.server.requests.find((request) => request.target.endsWith("/v1/setup"));
+    assert.equal(JSON.parse(setup.json).recovery_proof, undefined, "a freshly made key proves nothing");
   }
 });
 
@@ -538,11 +576,11 @@ for (const mobile of [false, true]) test(`a recovery key this device did not reg
 
   // The operator's reset: the server forgets the key, this device's next
   // registration stands, and the warning ends everywhere it was said.
-  r.server.recoveryVerifier = null;
-  r.server.recoveryAt = null;
+  r.server.resetRecovery();
   await r.instance.registerAccountRecovery();
   assert.equal(r.instance.recoveryMismatch, false);
   assert.equal(r.server.recoveryVerifier, (await accountRecovery(KEYS.vrk)).verifier);
+  assert.equal(r.server.recoveryArmed, false, "this device's registration spent the arm");
   assert.deepEqual(r.logs.slice(-2), ["recovery decision=registered", "recovery decision=cleared reason=registered warning=cleared"]);
   assert.equal(group().visible(), false);
   assert.equal(drawn.includes(RECOVERY_MISMATCH), false, "Show sync status redrew without it");

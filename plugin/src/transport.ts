@@ -1091,12 +1091,19 @@ export class Transport {
     setupToken: string,
     accountName: string,
     device: { name: string; platform: string; app_version: string },
-    recovery?: { verifier: string; proof: string },
+    recovery?: { verifier: string; proof?: string },
   ): Promise<Sent<PairingCredential & { account_id: string; recovered?: boolean }>> {
+    // The verifier registers this key at first setup; the PROOF is what
+    // recovers an existing account, so a freshly made key sends none and an
+    // occupied server answers `already_set_up` rather than re-enrolling a new
+    // vault key over the one it holds (`main.ts`, setUpAccount).
     return this.once("POST", "/v1/setup", {
       auth: "none",
       json: { setup_token: setupToken, account_name: accountName, device,
-        ...(recovery === undefined ? {} : { recovery_verifier: recovery.verifier, recovery_proof: recovery.proof }) },
+        ...(recovery === undefined ? {} : {
+          recovery_verifier: recovery.verifier,
+          ...(recovery.proof === undefined ? {} : { recovery_proof: recovery.proof }),
+        }) },
     });
   }
 
