@@ -16,6 +16,11 @@
 # rather than land two functions away and be counted as a mutation of something
 # it never touched.
 #
+# FORWARD ONLY. `-N` refuses a diff that reads as already applied. Without it,
+# patch -- whose stdin is not a terminal here -- assumes `-R` for a mutant the
+# code already agrees with, applies it BACKWARDS, exits 0, and the matrix
+# counts a kill of the opposite mutation (#280).
+#
 # THE TREE IS RESTORED FROM A COPY, NEVER FROM GIT. `git checkout -- plugin`
 # would erase uncommitted work belonging to whoever is running this, so both
 # trees are copied out first, copied back on every exit path including an
@@ -54,7 +59,7 @@ restore() {
 trap restore EXIT INT TERM
 
 printf '=== %s ===\n' "$(basename "${patch_file}")"
-if ! patch -s -F0 -p1 -d "${root}" <"${patch_file}"; then
+if ! patch -s -N -F0 -p1 -d "${root}" <"${patch_file}"; then
   printf 'PATCH DOES NOT APPLY: this mutant no longer describes this head\n'
   exit 0
 fi

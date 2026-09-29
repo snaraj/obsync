@@ -21,8 +21,10 @@ suite. One mutant can be re-measured on its own:
 A surviving mutant is a finding, so each line below either has a non-zero
 count and names the tests that produced it, or says why no test can produce
 one. The runner applies with `-F0`: a patch whose context has moved fails
-loudly rather than mutating something it was never written for, and a patch
-that fails to apply is neither a kill nor a survival -- it is an unmeasured
+loudly rather than mutating something it was never written for. It also
+applies with `-N`: a patch that reads as already applied is refused, never
+applied backwards and counted as a kill of the opposite mutation (#280). A
+patch that fails to apply is neither a kill nor a survival -- it is an unmeasured
 guard, which is why every mutant whose context a repair moves is re-cut in
 the same range as the repair.
 Node reports deliberately hung tests as cancelled rather than assertion
