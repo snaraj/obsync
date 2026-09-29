@@ -41,6 +41,7 @@ server again unless the entry says so.
 | You closed the recovery phrase without writing it down | [You closed the recovery phrase without checking it](#you-closed-the-recovery-phrase-without-checking-it) |
 | "obsync security warning: Another device set a different recovery key" | [Another device set a different recovery key](#another-device-set-a-different-recovery-key) |
 | Leave says the recovery key was set less than 7 days ago, or `409 recovery_too_new` | [The only device cannot leave in its first week](#the-only-device-cannot-leave-in-its-first-week) |
+| You set up or paired on a work laptop or an inspected network, or sent a pairing code through work email or chat | [Pairing on a network you don't control](#pairing-on-a-network-you-dont-control) |
 | On Linux, Obsidian says secrets are stored without encryption, or you use no keyring and want to know how obsync's keys are kept | [On Linux, the keys may not be in a keyring](#on-linux-the-keys-may-not-be-in-a-keyring) |
 
 **Your notes and folders**
@@ -435,6 +436,42 @@ no access of any kind.
    with a new code.
 
 ![Pair a new device on the device that made the code: Approve "Mac WKJN" (Mac, obsync 1.1.4)? Approve only if the new device shows the code 667 151. It will sync vault "rig-C" (0 notes). Approve and Reject below](assets/pair-approve-match-code.png)
+
+## Pairing on a network you don't control
+
+**What you see.** You are setting up or pairing obsync on a work laptop, behind
+an employer VPN, or on any network that decrypts and inspects your traffic; or
+you are about to send a pairing code to yourself through work email or a work
+chat so you can paste it on your other device.
+
+**Why it matters.** Your notes stay encrypted the whole way, and an inspected
+network cannot read them — that is proven ([Threat model](threat-model.md), "On
+a work laptop, or a network you don't control"). But two things matter at
+setup and pairing:
+
+- **The device secret**, handed to a device when it is set up or paired. It
+  crosses the network at that moment. It is not your vault key and cannot read
+  a note, but it is that device's authority over the server account; someone
+  who captured it could disrupt your sync.
+- **The pairing code.** It never crosses the network on its own, but it
+  carries the secret that opens the sealed envelope your vault key travels in,
+  and that envelope does cross the network when you approve the new device.
+  Send the code through a work channel and the channel's operator holds that
+  secret.
+
+**How to fix it.**
+
+1. Set up your first device and pair new ones on a network you trust — your
+   home Wi‑Fi, or any connection that is not inspected. Once a device is paired
+   it never sends its secret again, so the exposure is only at that moment.
+2. **Type the pairing code into the new device by hand.** Do not email it to
+   yourself or paste it into a work chat. If both devices are with you, reading
+   the code across is safest.
+3. If a code or a device secret may already have leaked, open obsync's settings
+   on a device that still works, and under **This device** or the device list
+   revoke the device in question ([Recovery](recovery.md)); then, if you had not
+   already, write down your 24‑word recovery phrase. A revoked device can make
+   no further requests.
 
 ## The plugin says this device is not paired
 
