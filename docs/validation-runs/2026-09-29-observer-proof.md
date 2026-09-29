@@ -23,7 +23,13 @@ DOES capture a device secret at setup or pairing can do without the vault key.
   with the `afbf7e7` builds on one side for the version-skew legs. Run 3
   (the final head, `64abf24`): the plugin rebuilt (`main.js`
   `5a856ea67dcb613ef997e683199ce01895d2c68b51afbad4e541e71ef6a8c1ff`), the
-  same `obsyncd` (no server change after `26361c8`).
+  same `obsyncd` (no server change after `26361c8`). Run 4 (the owner's
+  ruling, `e6b19a7`): the plugin rebuilt (`main.js`
+  `3f8e51114c831484ceeefd534676231fe16047f747a60e94f4c39402282ff73e`), the
+  same `obsyncd`, and a bundle whose `manifest.json` says 1.1.5, as the
+  release's will (no version is bumped in this change). Every rig ran with a
+  HOME of its own, so Obsidian's CLI socket was the rig's; the check after
+  each launch found it under the rig's HOME.
 - The recording hop `scripts/ci/observer.mjs` sat between the plugin and the
   server: both rigs pointed their Server URL at the hop
   (`127.0.0.1:18802`), which recorded every byte in each direction and
@@ -131,8 +137,9 @@ The same two rigs and the same recording hop, on the `26361c8` builds.
    That device runs an older obsync; update it so pairing can protect the code
    you shared. …", the new device showed 717 607, the creator logged
    `kex=legacy`, and a note synced each way. Leg 4 showed the same words when
-   the SERVER was the older side, so the creator's warning now reads "That
-   device, or your obsync server, runs an older obsync; …".
+   the SERVER was the older side; run 3 widened them to "That device, or your
+   obsync server, …", and run 4 narrowed them back, because since the ruling
+   an older server is refused before any code exists.
 3. **1.1.4 creator, 1.1.5 new device** (server `26361c8`). The new device's
    screen read "Waiting for approval on the other device. Its prompt shows the
    code 751 374: … That device runs an older obsync; update it so pairing can
@@ -145,8 +152,9 @@ The same two rigs and the same recording hop, on the `26361c8` builds.
    warning; the new device, which read the 1.1.5 marker in its code, showed
    183 406. Approved anyway, the new device refused the envelope ("This device
    could not open the vault key it was sent: … Nothing was shared."), removed
-   itself (`device_revoked … by_device=<itself>`), and stayed unpaired. It
-   failed closed, as `docs/protocol.md` describes.
+   itself (`device_revoked … by_device=<itself>`), and stayed unpaired: it
+   failed closed, but late, and the creator still announced it as paired.
+   The owner's ruling moved the refusal before any code (run 4, below).
 5. **The final head** (`64abf24`, run 3). Leg 1 again: 170 940 and then
    462 718 on both screens, no warning; the scan: 10 connections, 100
    requests, 98 responses, 26 needles in 325 encodings,
@@ -172,6 +180,37 @@ What the unit tests prove and this run does not: that the pairing secret
 alone does not open a v2 envelope, that a substituted or stripped exchange key
 changes the match code, and that a malformed key is refused
 (`plugin/test/pairing-v2.test.mjs`, mutants M3510-M3513).
+
+## The owner's ruling, live (run 4)
+
+The ruling: a server older than 1.1.5 is refused before any code exists
+("fail closed, say it early"), and the creator says "paired" only once the new
+device kept the key.
+
+1. **1.1.5 creator on a 1.1.4 server** (server `afbf7e7`, whose bundle
+   reports 1.1.4). **Pair a new device** showed only "Your obsync server runs
+   a version older than 1.1.5, or does not say which, so no code was made.
+   Update your obsync server to 1.1.5 or later, then pair again -- see
+   Troubleshooting, "Pairing says to update your obsync server"." No code on
+   screen, `POST /v1/pairing` 0 times in the server log, and the creator
+   logged `pairing role=creator decision=refused reason=server_too_old
+   server=1.1.4`. Capture (no code on screen, proved before capturing):
+   `lab-G/results/sweep-r3/b3-refused-A.png`.
+2. **The creator's word matches the new device's outcome** (both 1.1.5, server
+   `e6b19a7`). B held a note the server lacked, so it asked before keeping
+   the key. B answered Cancel: B said "Pairing cancelled: nothing was
+   uploaded, and this device was removed from the server again." and the
+   creator said "The new device did not keep the vault key and removed itself
+   from the server: …" with no paired notice (`decision=failed
+   reason=key_not_kept polls=1`). Paired again, B answered Pair and upload:
+   the creator said "The new device, "Mac 5Q67", is paired: it holds the vault
+   key now." after B's first sync (`decision=paired polls=1`), and a note
+   crossed each way.
+3. **Both 1.1.5 on a 1.1.5 server, with the scan.** Leg 1 again: 961 490 and
+   then 614 484 on both screens, no warning, both rigs `idle` / `synced` with
+   zero notices; the scan: 10 connections, 106 requests, 104 responses, 22
+   needles in 277 encodings, `DECISION PASS (zero needle hits)`; the positive
+   control `FAIL`.
 
 ## Found on the way
 
