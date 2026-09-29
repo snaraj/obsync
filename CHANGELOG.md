@@ -5,7 +5,18 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
-## 1.1.4 - Unreleased
+## 1.1.5 - Unreleased
+
+1.1.5 closes every issue left open when 1.1.4 was released: the ones found
+after 1.1.4's scope was set (#238 to #241, #244 to #248, #253) and the one
+1.1.4 improved without fixing (#227, two people typing in one note on a
+busy computer).
+
+### Changed
+
+- Obsidian's list of installed plugins shows the author as Samuel Naranjo.
+
+## 1.1.4 - 2026-09-29
 
 1.1.4 fixes the issues that were open when its scope was set on
 2026-09-27 -- found by people running obsync and by a review of the whole
