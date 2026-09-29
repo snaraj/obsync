@@ -5,7 +5,7 @@
  * `path` decides where bytes land, so a compromised or hostile paired device
  * that can post a valid encrypted manifest could otherwise name
  * `../../outside-the-vault.md`, an absolute path, or this plugin's own
- * `.obsidian/plugins/obsync/main.js` and have the writer put its bytes there.
+ * bundle in the vault's config folder and have the writer put its bytes there.
  * Every vault operation — read, write, rename, trash, conflict copy,
  * remote-only listing, watcher ingestion, manifest decode — goes through
  * `vaultPathRefusal` first (`docs/architecture.md` 6.2 item 3).
@@ -16,8 +16,9 @@
  * and not starting with `.`.
  *
  * HIDDEN SEGMENTS ARE EXCLUDED IN BOTH DIRECTIONS IN v0.1. That rule takes
- * `.obsidian/**` — including this plugin's own bundle, its `data.json` and
- * therefore the vault key — and `.git/**` out of sync entirely: they are
+ * the vault's config folder (a hidden folder, whatever its name) —
+ * including this plugin's own bundle, its `data.json` and therefore the
+ * vault key — and `.git/**` out of sync entirely: they are
  * neither pushed nor accepted. Syncing hidden folders is a later opt-in with
  * its own design (a plugin that can rewrite its own code from the feed is a
  * remote-code-execution channel between devices), not a setting to add here.

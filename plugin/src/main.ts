@@ -48,8 +48,8 @@
  *
  * UPDATES ARE NEVER INSTALLED FROM THE SERVER (`docs/architecture.md` 6.3).
  * The plugin compares versions and tells the user; the trusted source of
- * plugin code is the GitHub Release. Nothing here writes into
- * `.obsidian/plugins/`.
+ * plugin code is the GitHub Release. Nothing here writes plugin code into
+ * the vault's config folder.
  */
 
 import { ItemView, MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
@@ -789,8 +789,8 @@ export class ObsidianHost implements VaultHost {
    * HIDDEN folder in it holding `plugins/` and this plugin's own folder, which
    * the community installer names after the directory identity. That hidden
    * folder is the other vault's config folder, and its name is that vault's
-   * to choose (`.obsidian` unless its owner picked another in Obsidian's
-   * settings), so no one name is assumed: every hidden folder is asked. Only
+   * to choose in Obsidian's settings (the vault API names only this
+   * vault's), so no one name is assumed: every hidden folder is asked. Only
    * names are looked at, never what is in them; a folder that cannot be
    * listed is not known to be a vault, and the walk skips it as unreadable.
    */

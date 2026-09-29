@@ -14,7 +14,7 @@
  * decrypted manifest is therefore parsed through `parseManifest`, which
  * checks each field's type and puts `path` through the one vault-path rule
  * (`vaultPath.ts`), so a compromised paired device cannot name
- * `../../outside-the-vault.md`, an absolute path, or `.obsidian/**` and have
+ * `../../outside-the-vault.md`, an absolute path, or the config folder and have
  * the writer land bytes there. The host refuses on the same terms when the
  * FILESYSTEM disagrees with the string — a symlinked folder, a temp file
  * swapped under the writer — and both arrive here as one decision: a refusal

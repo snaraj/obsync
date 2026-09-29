@@ -185,8 +185,9 @@ test("a device applying a capitals-only folder rename posts nothing, even when i
   const stale = staleIndex(b.host);
   const posts = countPosts(b);
 
+  const original = heads(server, ids);
   a.host.renameFolder("Team docs", "team docs");
-  await timers.run(STEP_MS, () => followed(server, b, "team docs", ids));
+  await timers.run(STEP_MS, () => moved(server, ids, original) && followed(server, b, "team docs", ids));
   // The periodic scan twice, and the user's Sync now, which lists the index.
   await timers.run(SCAN_MS);
   await b.engine.syncNow();

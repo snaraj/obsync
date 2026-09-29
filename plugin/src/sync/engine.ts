@@ -51,7 +51,7 @@
  *
  * WHAT IS SYNCED. Only canonical relative vault paths, in both directions:
  * the watcher, startup reconciliation and the pull path all refuse anything
- * else, which is what takes `.obsidian/**` and `.git/**` out of sync in v0.1
+ * else, which is what takes the config folder and `.git/**` out of sync in v0.1
  * (`vaultPath.ts` states the rule and why hidden folders wait for an opt-in).
  *
  * PLATFORM. Concurrency is 4 on desktop and 2 on mobile; the desktop host
@@ -1188,9 +1188,9 @@ export class SyncEngine {
   /**
    * The gate every watcher event and every reconciliation entry passes: a
    * path that is not a canonical relative vault path is not synced, in either
-   * direction, and the refusal is visible. This is what keeps `.obsidian/**`
-   * — this plugin's own bundle and its bookkeeping `data.json`
-   * — and `.git/**` out of the vault's history (`vaultPath.ts`).
+   * direction, and the refusal is visible. This is what keeps the config
+   * folder — this plugin's own bundle and its bookkeeping `data.json` —
+   * and `.git/**` out of the vault's history (`vaultPath.ts`).
    */
   private tracked(path: string, event: string, folders: SyncFolders = this.options.state.data.syncFolders): boolean {
     const refusal = vaultPathRefusal(path) ??
