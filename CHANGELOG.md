@@ -607,7 +607,8 @@ icons are shown with their words. The README is now a short front door with
 a directory of every guide, in all 20 languages.
 
 **The build tools are current.** The plugin is built and tested on Node
-26.10.0, with npm unchanged at 11.19.1 (#249).
+26.10.0, with npm unchanged at 11.19.1 (#249). Code scanning runs CodeQL
+action 4.38.2 (#250).
 
 ## 1.1.3 - 2026-09-26
 

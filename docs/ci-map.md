@@ -95,7 +95,7 @@ the storage classes are stated in exactly one place.
 
 Two matrix jobs, both `build-mode: none`. **Rust is analysed**: `rust` is a
 built-in CodeQL language at the pinned action version — `src/languages/
-builtin.json` at `1c5b675` (v4.38.1) lists `actions, cpp, csharp, go, java,
+builtin.json` at `2892aa5` (v4.38.2) lists `actions, cpp, csharp, go, java,
 javascript, python, ruby, rust, swift`, so no fallback to
 javascript-only was needed. `javascript-typescript` is that file's alias for
 `javascript` and covers `plugin/src`, `plugin/build.mjs`, and the dashboard.
