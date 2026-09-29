@@ -23,17 +23,22 @@ import { RemoteOnlyKind, remoteOnlyList, unwritableText } from "../sync/pull";
 import {
   PAIRING_WINDOW_MS,
   PHRASE_WORDS,
+  PairingKeyExchange,
   PairingVault,
   PendingClaim,
   VaultEnvelope,
   decodePairingCode,
   encodePairingCode,
   entropyFromPhrase,
+  isV2Secret,
   matchCode,
+  matchCodeV2,
+  newPairingKeyExchange,
   newPairingSecret,
   newVaultKey,
   normalisePhrase,
   openEnvelope,
+  openEnvelopeV2,
   openPairingVault,
   sealPairingVault,
   pairingLink,
@@ -41,6 +46,7 @@ import {
   recoveryPhrase,
   refusalText,
   sealEnvelope,
+  sealEnvelopeV2,
 } from "../pairing";
 import { hex, unhex } from "../crypto";
 import { ApiError, PairingClaimant, PairingEnvelope, PairingStatus, Sent, Transport, lostMessage } from "../transport";
@@ -217,7 +223,7 @@ export class PairCreateModal extends Modal {
     this.closed = false;
     this.setTitle("Pair a new device");
     this.contentEl.createEl("p", {
-      text: "On the new device, choose Pair this device in obsync and paste this code or its link. It expires in ten minutes and carries the only copy of your vault key that will ever cross the network — sealed so the server cannot read it.",
+      text: "On the new device, choose Pair this device in obsync and TYPE this code. It expires in ten minutes and carries the secret that unlocks your vault key on the new device. Don't email or message it to yourself, or send its link through a work chat: anyone who can read that channel could unlock your vault.",
     });
     void this.run();
   }
@@ -246,13 +252,13 @@ export class PairCreateModal extends Modal {
         .addButton((button) =>
           button.setButtonText("Copy code").onClick(() => {
             void navigator.clipboard.writeText(code);
-            new Notice("Pairing code copied.");
+            new Notice("Pairing code copied. Type it into your other device; don't send it through work email or chat.", 8000);
           }),
         )
         .addButton((button) =>
           button.setButtonText("Copy link").onClick(() => {
             void navigator.clipboard.writeText(pairingLink(code));
-            new Notice("Pairing link copied.");
+            new Notice("Pairing link copied. Open it on your other device; don't send it through work email or chat.", 8000);
           }),
         );
       const statusEl = this.contentEl.createEl("p", { text: "Waiting for the new device…" });
@@ -302,11 +308,22 @@ export class PairCreateModal extends Modal {
         return;
       }
     }
-    const code = await matchCode(secret, pairingId, claimant.device_id);
+    // v2 when the claim carried a key-exchange public key; else the legacy
+    // path with a plain warning. An older claimant, an older server that drops
+    // the field, and a key stripped on the way all look identical here, so the
+    // warning names the first two and the claimant's mismatched code catches
+    // the last two (a v2 claimant never opens a legacy envelope).
+    const claimantKey = claimant.claimant_pub;
+    const code = claimantKey === undefined
+      ? await matchCode(secret, pairingId, claimant.device_id)
+      : await matchCodeV2(secret, pairingId, claimant.device_id, claimantKey);
     if (this.closed) return;
     statusEl.setText(
       `Approve "${claimant.name}" (${platformLabel(claimant.platform)}, obsync ${claimant.app_version}), asking since ${clock(asked)}? ` +
         `Approve only if the new device shows the code ${code}.` +
+        (claimantKey === undefined
+          ? " That device, or your obsync server, runs an older obsync; update it so pairing can protect the code you shared."
+          : "") +
         (vault === null ? "" : ` It will sync vault "${vault.name}" (${notes(vault.notes)}) with this server's vault.`),
     );
     const answer = new Setting(this.contentEl);
@@ -341,9 +358,25 @@ export class PairCreateModal extends Modal {
     try {
       const vrk = this.plugin.state.data.vrk;
       if (!vrk) throw new Error("This device holds no vault key, so it cannot pair another. Restore its recovery phrase first.");
-      const sealed = await sealEnvelope(secret, pairingId, { vrk });
-      value(await this.plugin.transport.pairingApprove(pairingId, sealed.envelope, sealed.nonce), "approving the new device");
-      this.plugin.log("pairing role=creator decision=approved");
+      const claimantKey = claimant.claimant_pub;
+      let sealed: { envelope: string; nonce: string };
+      let creatorKey: string | undefined;
+      let kex: string;
+      if (claimantKey === undefined) {
+        // Legacy claimant (or a stripped v2 key): seal under PS alone, as 1.1.4.
+        sealed = await sealEnvelope(secret, pairingId, { vrk });
+        kex = "legacy";
+      } else {
+        // v2: an ephemeral P-256 exchange; the envelope needs both the code and
+        // the live agreement to open, so a captured code alone no longer does.
+        let ours: PairingKeyExchange | null = await newPairingKeyExchange();
+        creatorKey = ours.publicKey;
+        sealed = await sealEnvelopeV2(ours, claimantKey, secret, pairingId, { vrk });
+        ours = null; // drop the reference: the ephemeral private key is not kept
+        kex = "v2";
+      }
+      value(await this.plugin.transport.pairingApprove(pairingId, sealed.envelope, sealed.nonce, creatorKey), "approving the new device");
+      this.plugin.log(`pairing role=creator decision=approved kex=${kex}`);
       this.collecting = true;
       answer.settingEl.remove();
       statusEl.setText("Approved. Waiting for the new device to collect the vault key…");
@@ -415,6 +448,13 @@ export interface Waiting {
   stop: boolean;
   /** True once this device is paired by it. */
   done: Promise<boolean>;
+  /**
+   * The v2 ephemeral key exchange, memory-only for this claim, or `null` for a
+   * legacy claim. The private key is non-extractable and is never persisted, so
+   * a v2 claim finishes only while this process lives; it survives closing the
+   * dialog (the wait continues in `plugin.waiting`) but not a full restart.
+   */
+  keyExchange: PairingKeyExchange | null;
 }
 
 /** Start waiting on a claim: hold it for a restart, then collect in the background. */
@@ -424,10 +464,15 @@ export function awaitApproval(
   claim: PendingClaim,
   show: (text: string) => void,
   resumed = false,
+  keyExchange: PairingKeyExchange | null = null,
 ): Waiting {
-  const waiting: Waiting = { claim, code: null, show, stop: false, done: Promise.resolve(false) };
+  const waiting: Waiting = { claim, code: null, show, stop: false, done: Promise.resolve(false), keyExchange };
   plugin.waiting = waiting;
-  if (!resumed && !plugin.state.holdClaim(JSON.stringify(claim))) {
+  // A v2 claim is never written to disk: its ephemeral private key cannot be,
+  // so a restart cannot complete it, and holding the rest would only strand a
+  // device the server destroys at the window's end. A legacy claim is held for
+  // a restart exactly as before.
+  if (!resumed && keyExchange === null && !plugin.state.holdClaim(JSON.stringify(claim))) {
     plugin.log("pairing role=claimant decision=unkept reason=secret_storage");
   }
   waiting.done = collect(plugin, app, waiting, resumed);
@@ -485,13 +530,17 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
   const started = Date.now();
   const { state, transport, assertCurrent } = plugin.captureSession();
   const secret = unhex(claim.pairingSecret);
+  const kex = waiting.keyExchange;
   // Whether the server may hold this device as ACTIVE: collection activates.
   let active = resumed;
   // Once the key is kept this device is paired, and nothing takes it back.
   let kept = false;
   try {
-    waiting.code = await matchCode(secret, claim.pairingId, claim.deviceId);
-    const asked = `Waiting for approval on the other device. Its prompt shows the code ${waiting.code}: if it shows another, choose Reject there.`;
+    waiting.code = kex === null
+      ? await matchCode(secret, claim.pairingId, claim.deviceId)
+      : await matchCodeV2(secret, claim.pairingId, claim.deviceId, kex.publicKey);
+    const asked = `Waiting for approval on the other device. Its prompt shows the code ${waiting.code}: if it shows another, choose Reject there.`
+      + (kex === null ? " That device runs an older obsync; update it so pairing can protect the code you shared." : "");
     waiting.show(asked);
     if (resumed) tell(`still pairing this device. ${asked}`);
     for (;;) {
@@ -518,7 +567,16 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
       const sealed = value(sent, "collecting the sealed vault key");
       let envelope: VaultEnvelope;
       try {
-        envelope = await openEnvelope(secret, claim.pairingId, sealed.envelope, sealed.nonce);
+        if (kex === null) {
+          envelope = await openEnvelope(secret, claim.pairingId, sealed.envelope, sealed.nonce);
+        } else if (typeof sealed.creator_pub !== "string") {
+          // This device asked for a key exchange (it saw the v2 marker) but the
+          // creator sent no key: the field was stripped, or the creator is not
+          // really v2. Refuse rather than fall back to the weaker seal.
+          throw new Error("pairing: the other device did not complete the key exchange");
+        } else {
+          envelope = await openEnvelopeV2(kex, sealed.creator_pub, secret, claim.pairingId, sealed.envelope, sealed.nonce);
+        }
       } catch {
         throw new ClaimEnded("unopened");
       }
@@ -700,6 +758,10 @@ export class PairClaimModal extends Modal {
       const vault = await sealPairingVault(parsed.pairingSecret, parsed.pairingId, {
         name: this.app.vault.getName(), notes: this.app.vault.getMarkdownFiles().length,
       });
+      // The code's own marker (read out of band, never from the network) says
+      // the creator is v2-capable, so this device offers an ephemeral key. Its
+      // absence means an older creator: pair the legacy way (see the warning).
+      const keyExchange = isV2Secret(parsed.pairingSecret) ? await newPairingKeyExchange() : null;
       assertCurrent();
       if (this.closed) return;
       const credential = value(
@@ -708,6 +770,7 @@ export class PairClaimModal extends Modal {
           platform: this.plugin.platformName(),
           app_version: this.plugin.manifest.version,
           vault,
+          ...(keyExchange === null ? {} : { claimant_pub: keyExchange.publicKey }),
         }),
         "claiming the pairing",
       );
@@ -726,7 +789,7 @@ export class PairClaimModal extends Modal {
         deviceSecret: credential.device_secret,
         serverUrl: state.data.serverUrl,
         claimedAt: Date.now(),
-      }, (text) => this.show(text));
+      }, (text) => this.show(text), false, keyExchange);
       const done = this.waiting.done;
       if (this.closed) this.handOff();
       if (await done) this.close();

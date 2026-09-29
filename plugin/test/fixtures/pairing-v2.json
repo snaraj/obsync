@@ -1,0 +1,29 @@
+{
+  "claimantPriv": {
+    "kty": "EC",
+    "crv": "P-256",
+    "d": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+    "x": "b_A7lJJBzh2t1DUZ5pYOCoW0GmmgXDKBA6orzhWUyhY",
+    "y": "PE91OlW_AdxT9sCwx-7ni0DG_30lqW4igrmJzvccFEo",
+    "key_ops": [
+      "deriveBits"
+    ],
+    "ext": true
+  },
+  "claimantRaw": "BG_wO5SSQc4drdQ1GeaWDgqFtBppoFwygQOqK84VlMoWPE91OlW_AdxT9sCwx-7ni0DG_30lqW4igrmJzvccFEo",
+  "creatorPriv": {
+    "kty": "EC",
+    "crv": "P-256",
+    "d": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+    "x": "VQ9HEAPz35fD31Bqx5f2ch-xoft7j2-D0iRJimXIjiQ",
+    "y": "E2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY",
+    "key_ops": [
+      "deriveBits"
+    ],
+    "ext": true
+  },
+  "creatorRaw": "BFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY",
+  "psHex": "0b5c0102030405060708090a0b0c0d0e",
+  "pairingId": "0123456789abcdef0123456789abcdef",
+  "derivedKeyHex": "609971ccce788e9ab022c122c67a91fd0247bb571568e95592b4742b4c3b1ded"
+}

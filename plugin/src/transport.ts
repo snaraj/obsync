@@ -462,6 +462,8 @@ export interface PairingCreated {
 
 export interface PairingClaimant {
   vault?: { envelope: string; nonce: string };
+  /** The claimant's ephemeral P-256 public key (v2 pairing), raw base64url. */
+  claimant_pub?: string;
   device_id: string;
   name: string;
   platform: string;
@@ -481,6 +483,8 @@ export interface PairingCredential {
 export interface PairingEnvelope {
   envelope: string;
   nonce: string;
+  /** The creator's ephemeral P-256 public key (v2 pairing), raw base64url. */
+  creator_pub?: string;
 }
 
 /** Only the field the plugin reads; the served hashes are the Install page's. */
@@ -1111,7 +1115,7 @@ export class Transport {
   pairingClaim(
     pairingId: string,
     enrollToken: string,
-    info: { name: string; platform: string; app_version: string; vault?: { envelope: string; nonce: string } },
+    info: { name: string; platform: string; app_version: string; vault?: { envelope: string; nonce: string }; claimant_pub?: string },
   ): Promise<Sent<PairingCredential>> {
     return this.once("POST", `/v1/pairing/${pairingId}/claim`, {
       auth: "none",
@@ -1123,10 +1127,10 @@ export class Transport {
     return this.json("GET", `/v1/pairing/${pairingId}`, { auth: "device", ...patience });
   }
 
-  pairingApprove(pairingId: string, envelope: string, nonce: string): Promise<Sent<void>> {
+  pairingApprove(pairingId: string, envelope: string, nonce: string, creatorKey?: string): Promise<Sent<void>> {
     return this.once("POST", `/v1/pairing/${pairingId}/approve`, {
       auth: "device",
-      json: { envelope, nonce },
+      json: creatorKey === undefined ? { envelope, nonce } : { envelope, nonce, creator_pub: creatorKey },
     });
   }
 

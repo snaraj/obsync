@@ -1,10 +1,10 @@
 # M521: closed creator modal recreates decrypted approval controls
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -257,7 +257,7 @@
-       }
-     }
-     const code = await matchCode(secret, pairingId, claimant.device_id);
+@@ -315,7 +315,7 @@
+     const code = claimantKey === undefined
+       ? await matchCode(secret, pairingId, claimant.device_id)
+       : await matchCodeV2(secret, pairingId, claimant.device_id, claimantKey);
 -    if (this.closed) return;
 +    if (false) return;
      statusEl.setText(

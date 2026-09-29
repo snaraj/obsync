@@ -49,6 +49,7 @@ export const LABEL = {
   chunk: "obsync/v1/chunk",
   nonce: "obsync/v1/nonce",
   pair: "obsync/v1/pair",
+  pairV2: "obsync/v2/pair",
   signature: "obsync/v1",
 } as const;
 
@@ -198,8 +199,65 @@ export function unbase32(text: string): Bytes {
   return out.subarray(0, at);
 }
 
+/** RFC 4648 base64url, unpadded: the pairing v2 public-key encoding on the wire. */
+export function base64url(bytes: Bytes): string {
+  return base64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export function unbase64url(text: string): Bytes {
+  return unbase64(text.replace(/-/g, "+").replace(/_/g, "/"));
+}
+
 export async function sha256(data: Bytes): Promise<Bytes> {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+}
+
+/**
+ * Pairing key agreement (v2, `docs/protocol.md` "Pairing"). An ephemeral
+ * P-256 ECDH exchange whose private keys never leave the device: the vault-key
+ * envelope is sealed under a key derived from BOTH the exchanged secret AND the
+ * pairing secret `PS`, so a party who captured the code alone -- an inspecting
+ * proxy, a work chat -- can no longer open the envelope it also captured. The
+ * key agreement is on WebCrypto's own P-256, present on every platform obsync
+ * runs on (Electron, iOS WKWebView, Android WebView).
+ *
+ * The public key crosses the wire raw-uncompressed (65 bytes, `0x04` prefix)
+ * as base64url; the private key is non-extractable, so it cannot be read out of
+ * the renderer, and callers drop their reference to the pair after one use.
+ */
+export const PAIRING_PUBLIC_KEY_BYTES = 65;
+
+export function generatePairingKeyPair(): Promise<CryptoKeyPair> {
+  return crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveBits"]) as Promise<CryptoKeyPair>;
+}
+
+export async function exportPairingPublicKey(pair: CryptoKeyPair): Promise<string> {
+  const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  return base64url(raw);
+}
+
+/** Import a peer's raw-uncompressed P-256 public key; a wrong shape throws. */
+export function importPairingPublicKey(raw: Bytes): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", raw, { name: "ECDH", namedCurve: "P-256" }, false, []);
+}
+
+/**
+ * `K = HKDF-SHA-256(ikm = ECDH(priv, peer), salt = PS,
+ * info = "obsync/v2/pair" || pairing_id)` (32 bytes), the seal key for the
+ * v2 vault-key envelope. The exchanged secret is the ikm; `PS` is the salt, so
+ * both the live key agreement AND the code are needed. `pairing_id` is the
+ * UTF-8 of its hex text, as every other id used as HKDF info in this module.
+ */
+export async function derivePairingV2Key(
+  privatePair: CryptoKeyPair,
+  peerPublic: CryptoKey,
+  pairingSecret: Bytes,
+  pairingId: string,
+): Promise<Bytes> {
+  const shared = new Uint8Array(
+    await crypto.subtle.deriveBits({ name: "ECDH", public: peerPublic }, privatePair.privateKey, 256),
+  );
+  return hkdf(shared, pairingSecret, concat(utf8(LABEL.pairV2), utf8(pairingId)), KEY_BYTES);
 }
 
 /**

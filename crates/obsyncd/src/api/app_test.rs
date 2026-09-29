@@ -175,6 +175,7 @@ fn a_pending_device_whose_pairing_still_stands_is_left_alone() {
                 platform: "ios".to_string(),
                 app_version: "0.1.0".to_string(),
                 vault: None,
+                claimant_pub: None,
             },
         );
     }

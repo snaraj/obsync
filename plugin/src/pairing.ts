@@ -34,13 +34,19 @@ import {
   base32,
   base64,
   concat,
+  derivePairingV2Key,
+  exportPairingPublicKey,
+  generatePairingKeyPair,
   hex,
   hkdf,
+  importPairingPublicKey,
+  PAIRING_PUBLIC_KEY_BYTES,
   pairingKey,
   randomBytes,
   sha256,
   unbase32,
   unbase64,
+  unbase64url,
   unhex,
   utf8,
 } from "./crypto";
@@ -109,8 +115,34 @@ export function pairingLink(code: string): string {
   return `obsidian://${PAIRING_ACTION}/pair?code=${encodeURIComponent(code)}`;
 }
 
+/**
+ * A fixed 16-bit marker in the first two bytes of a creator-generated pairing
+ * secret. It is the CAPABILITY SIGNAL for pairing v2: the claimant reads it
+ * from the code it was handed OUT OF BAND (never from the server or the
+ * network, which an interceptor controls), so a stripped key-exchange field
+ * cannot silently downgrade the pairing -- the claimant already knows the
+ * creator is v2-capable and shows a v2 match code the stripped path cannot
+ * reproduce.
+ *
+ * It costs nothing the design relies on: 112 bits of `PS` remain random and
+ * v2's confidentiality rests on the ECDH exchange, not on `PS`. It does not
+ * change the code's length, so a 1.1.4 device decodes a v2 code unchanged and
+ * simply pairs the legacy way. A 1.1.4 creator's fully random secret matches
+ * the marker with probability 2^-16; that one pairing then shows mismatched
+ * codes and is retried with a fresh code (`docs/protocol.md`).
+ */
+export const PAIRING_V2_MARKER = Uint8Array.from([0x0b, 0x5c]);
+
 export function newPairingSecret(): Bytes {
-  return randomBytes(PAIRING_SECRET_BYTES);
+  const secret = randomBytes(PAIRING_SECRET_BYTES);
+  secret[0] = PAIRING_V2_MARKER[0] as number;
+  secret[1] = PAIRING_V2_MARKER[1] as number;
+  return secret;
+}
+
+/** Does this pairing secret carry the v2 capability marker (creator is v2)? */
+export function isV2Secret(secret: Bytes): boolean {
+  return secret.length >= 2 && secret[0] === PAIRING_V2_MARKER[0] && secret[1] === PAIRING_V2_MARKER[1];
 }
 
 export function newVaultKey(): Bytes {
@@ -153,6 +185,105 @@ export async function openEnvelope(
     await crypto.subtle.decrypt(
       { name: "AES-GCM", iv: unhex(nonce), additionalData: utf8(pairingId), tagLength: 128 },
       await envelopeKey(pairingSecret, pairingId),
+      unbase64(envelope),
+    ),
+  );
+  const parsed = JSON.parse(new TextDecoder().decode(plaintext)) as VaultEnvelope;
+  if (typeof parsed.vrk !== "string" || parsed.vrk.length !== VRK_BYTES * 2) {
+    throw new Error("pairing: the envelope carries no vault key");
+  }
+  return { vrk: parsed.vrk };
+}
+
+/**
+ * The v2 vault-key envelope (`docs/protocol.md` "Pairing"). What v1 does with
+ * `PS` alone, v2 does with the ECDH-derived key, and it BINDS the sealed key to
+ * the pairing and to BOTH public keys through the AEAD's additional data, so an
+ * envelope cannot be replayed into another pairing or opened against a
+ * substituted key. The 65-byte raw public keys are the additional data,
+ * claimant's then creator's, after the pairing id.
+ */
+function envelopeAadV2(pairingId: string, claimantKey: Bytes, creatorKey: Bytes): Bytes {
+  return concat(utf8(pairingId), claimantKey, creatorKey);
+}
+
+/** A raw-uncompressed P-256 public key as base64url, checked before it is used. */
+export function checkedPublicKey(value: unknown): Bytes {
+  if (typeof value !== "string") throw new Error("pairing: a public key must be text");
+  let raw: Bytes;
+  try {
+    raw = unbase64url(value);
+  } catch {
+    throw new Error("pairing: a public key is not base64url");
+  }
+  if (raw.length !== PAIRING_PUBLIC_KEY_BYTES || raw[0] !== 0x04) {
+    throw new Error("pairing: a public key is not a raw-uncompressed P-256 point");
+  }
+  return raw;
+}
+
+/** What a device holds through one v2 pairing: its ephemeral pair and its own public key text. */
+export interface PairingKeyExchange {
+  pair: CryptoKeyPair;
+  publicKey: string;
+}
+
+export async function newPairingKeyExchange(): Promise<PairingKeyExchange> {
+  const pair = await generatePairingKeyPair();
+  return { pair, publicKey: await exportPairingPublicKey(pair) };
+}
+
+/**
+ * Seal `{VRK}` for the claimant under the ECDH-derived key, with the two public
+ * keys bound as additional data. The creator calls this on approval, with its
+ * own ephemeral pair and the claimant's public key it received.
+ */
+export async function sealEnvelopeV2(
+  ours: PairingKeyExchange,
+  peerPublicKey: string,
+  pairingSecret: Bytes,
+  pairingId: string,
+  envelope: VaultEnvelope,
+): Promise<{ envelope: string; nonce: string }> {
+  const peerRaw = checkedPublicKey(peerPublicKey);
+  const peer = await importPairingPublicKey(peerRaw);
+  const key = await derivePairingV2Key(ours.pair, peer, pairingSecret, pairingId);
+  const nonce = randomBytes(12);
+  const handle = await crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["encrypt"]);
+  const aad = envelopeAadV2(pairingId, checkedPublicKey(peerPublicKey), checkedPublicKey(ours.publicKey));
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce, additionalData: aad, tagLength: 128 },
+      handle,
+      utf8(JSON.stringify(envelope)),
+    ),
+  );
+  return { envelope: base64(ciphertext), nonce: hex(nonce) };
+}
+
+/**
+ * Open a v2 envelope: the claimant calls this with its own ephemeral pair and
+ * the creator's public key it collected. A stripped or substituted creator key
+ * makes the AEAD tag fail, which the caller treats as a device that could not
+ * be verified.
+ */
+export async function openEnvelopeV2(
+  ours: PairingKeyExchange,
+  peerPublicKey: string,
+  pairingSecret: Bytes,
+  pairingId: string,
+  envelope: string,
+  nonce: string,
+): Promise<VaultEnvelope> {
+  const peerRaw = checkedPublicKey(peerPublicKey);
+  const peer = await importPairingPublicKey(peerRaw);
+  const key = await derivePairingV2Key(ours.pair, peer, pairingSecret, pairingId);
+  const handle = await crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["decrypt"]);
+  const aad = envelopeAadV2(pairingId, checkedPublicKey(ours.publicKey), checkedPublicKey(peerPublicKey));
+  const plaintext = new Uint8Array(
+    await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: unhex(nonce), additionalData: aad, tagLength: 128 },
+      handle,
       unbase64(envelope),
     ),
   );
@@ -230,11 +361,34 @@ const MATCH_LABEL = "obsync/v1/pair-match";
  * another code. Nothing about it crosses the wire: a device older than 1.1.4
  * shows none, and pairs as before.
  */
-export async function matchCode(secret: Bytes, pairingId: string, deviceId: string): Promise<string> {
-  const bytes = await hkdf(secret, utf8(MATCH_LABEL), utf8(`${pairingId}:${deviceId}`), 4);
+function sixDigits(bytes: Bytes): string {
   const value = new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0) % 1_000_000;
   const digits = String(value).padStart(6, "0");
   return `${digits.slice(0, 3)} ${digits.slice(3)}`;
+}
+
+export async function matchCode(secret: Bytes, pairingId: string, deviceId: string): Promise<string> {
+  return sixDigits(await hkdf(secret, utf8(MATCH_LABEL), utf8(`${pairingId}:${deviceId}`), 4));
+}
+
+const MATCH_LABEL_V2 = "obsync/v2/pair-match";
+
+/**
+ * The v2 match code, `docs/protocol.md` "Pairing". It additionally binds the
+ * claimant's public key: `HKDF(PS, "obsync/v2/pair-match", pairing_id + ":" +
+ * device_id + ":" + claimant_pub)`, six digits. The creator derives it from the
+ * key it RECEIVED, the claimant from the key it SENT, so a substituted or
+ * STRIPPED key exchange makes the two screens show different codes -- the
+ * signal to the person not to approve. A device pairing the legacy way shows
+ * `matchCode` (v1) instead.
+ */
+export async function matchCodeV2(
+  secret: Bytes,
+  pairingId: string,
+  deviceId: string,
+  claimantKey: string,
+): Promise<string> {
+  return sixDigits(await hkdf(secret, utf8(MATCH_LABEL_V2), utf8(`${pairingId}:${deviceId}:${claimantKey}`), 4));
 }
 
 const PLATFORM_LABELS: Record<string, string> = {

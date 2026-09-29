@@ -1,12 +1,12 @@
 # M525: claim reports a generic vault name
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -634,7 +634,7 @@
+@@ -754,7 +754,7 @@
        const parsed = decodePairingCode(this.code);
        const name = await this.plugin.nameThisDevice();
        const vault = await sealPairingVault(parsed.pairingSecret, parsed.pairingId, {
 -        name: this.app.vault.getName(), notes: this.app.vault.getMarkdownFiles().length,
 +        name: "Vault", notes: this.app.vault.getMarkdownFiles().length,
        });
-       assertCurrent();
-       if (this.closed) return;
+       // The code's own marker (read out of band, never from the network) says
+       // the creator is v2-capable, so this device offers an ephemeral key. Its

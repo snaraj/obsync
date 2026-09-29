@@ -39,6 +39,21 @@ useDefault = true
 description = "Sentinel-derived cross-implementation crypto vectors, regenerable from plugin/test/fixtures/generate.mjs; the root input is the byte sequence 00..1f and every other value derives from it."
 paths = ['''^plugin/test/fixtures/crypto\.json$''']
 
+# THE SECOND REVIEWED FILE, by the same doctrine. `plugin/test/fixtures/
+# pairing-v2.json` is the pairing v2 known-answer vector. Its two P-256
+# private scalars are the bytes 01 01 … 01 and 02 02 … 02, the pairing secret
+# is the marker 0b 5c followed by 01 … 0e, and the pairing id counts 0123…ef;
+# the public points, the raw keys and `derivedKeyHex` are what those derive.
+# `plugin/test/fixtures/generate-pairing-v2.mjs` recomputes the whole file
+# with Node's WebCrypto alone, and `pairing-v2.test.mjs` asserts on every run
+# that the committed file equals that output and that both scalars are the
+# sentinels. `generic-api-key` flags `derivedKeyHex` beside a key-shaped name:
+# the heuristic working as designed on a file made to look like key material,
+# and a verified false positive. Again one file, not the directory.
+[[allowlists]]
+description = "Sentinel-derived pairing v2 known-answer vector, regenerable from plugin/test/fixtures/generate-pairing-v2.mjs; the P-256 scalars are 01..01 and 02..02 and every other value derives from them."
+paths = ['''^plugin/test/fixtures/pairing-v2\.json$''']
+
 # The git-ignored MIRRORS. `gitleaks dir` walks the working tree, which on a
 # developer's machine and inside a lane's worktree contains three directories
 # that are copies of files this scan already reads at their real paths:

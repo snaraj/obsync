@@ -38,6 +38,7 @@ server again unless the entry says so.
 | Pairing says the code is not valid | [Pairing says the code is not valid](#pairing-says-the-code-is-not-valid) |
 | Pairing says the code expired, or was already used | [Pairing says the code expired or was already used](#pairing-says-the-code-expired-or-was-already-used) |
 | The new device keeps waiting for approval | [The new device waits for approval](#the-new-device-waits-for-approval) |
+| The two devices show different match codes, or pairing warns that a device or your server runs an older obsync | [The two devices show different match codes](#the-two-devices-show-different-match-codes) |
 | You closed the recovery phrase without writing it down | [You closed the recovery phrase without checking it](#you-closed-the-recovery-phrase-without-checking-it) |
 | "obsync security warning: Another device set a different recovery key" | [Another device set a different recovery key](#another-device-set-a-different-recovery-key) |
 | Leave says the recovery key was set less than 7 days ago, or `409 recovery_too_new` | [The only device cannot leave in its first week](#the-only-device-cannot-leave-in-its-first-week) |
@@ -437,6 +438,37 @@ no access of any kind.
 
 ![Pair a new device on the device that made the code: Approve "Mac WKJN" (Mac, obsync 1.1.4)? Approve only if the new device shows the code 667 151. It will sync vault "rig-C" (0 notes). Approve and Reject below](assets/pair-approve-match-code.png)
 
+## The two devices show different match codes
+
+**What you see.** While pairing, the approval question on the device that made
+the code shows one six-digit match code, and the new device's "Waiting for
+approval" shows another. Or a pairing screen adds a warning: "That device, or
+your obsync server, runs an older obsync; update it so pairing can protect the
+code you shared." on the device that made the code, or "That device runs an
+older obsync; …" on the new device.
+
+**Why it happens.** From 1.1.5, when both devices and the server run 1.1.5,
+pairing adds a key exchange between the two devices, and the match code covers
+it. The two codes differ when:
+
+- your server runs an obsyncd older than 1.1.5, which drops that exchange, so
+  two 1.1.5 devices cannot finish pairing through it; or
+- something between the two devices changed the pairing on the way.
+
+A warning with matching codes means one device runs an older obsync: pairing
+works the older way, where the code alone opens the vault key.
+
+**How to fix it.**
+
+1. Select **Reject** on the device that made the code. If it was approved
+   anyway, the new device refuses the vault key it was sent and removes itself
+   from the server: nothing is shared.
+2. Update obsyncd on your server ([Upgrade by digest](server.md#upgrade-by-digest))
+   and obsync on any older device, then pair again with a new code.
+3. If both devices and the server run 1.1.5 or later and the codes still
+   differ, pair on a network you trust
+   ([Pairing on a network you don't control](#pairing-on-a-network-you-dont-control)).
+
 ## Pairing on a network you don't control
 
 **What you see.** You are setting up or pairing obsync on a work laptop, behind
@@ -454,10 +486,13 @@ setup and pairing:
   a note, but it is that device's authority over the server account; someone
   who captured it could disrupt your sync.
 - **The pairing code.** It never crosses the network on its own, but it
-  carries the secret that opens the sealed envelope your vault key travels in,
-  and that envelope does cross the network when you approve the new device.
-  Send the code through a work channel and the channel's operator holds that
-  secret.
+  carries a secret that helps open the sealed envelope your vault key travels
+  in, and that envelope does cross the network when you approve the new device.
+  From 1.1.5, when both devices and your server run 1.1.5, the envelope also
+  needs a key exchange that only the two devices hold, so a copy of the code
+  alone no longer opens it. When one device runs an older obsync, pairing warns
+  you and works the older way, where the code alone opens it. Either way, keep
+  the code out of work channels.
 
 **How to fix it.**
 

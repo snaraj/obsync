@@ -1,8 +1,8 @@
 # M1854: the creator announces paired as soon as its approval is posted (#153)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -300,8 +300,9 @@
-       this.plugin.log("pairing role=creator decision=approved");
+@@ -377,8 +377,9 @@
+       this.plugin.log(`pairing role=creator decision=approved kex=${kex}`);
        this.collecting = true;
        answer.settingEl.remove();
 -      statusEl.setText("Approved. Waiting for the new device to collect the vault key…");

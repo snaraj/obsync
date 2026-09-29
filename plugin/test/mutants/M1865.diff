@@ -1,9 +1,9 @@
 # M1865: a key that does not open leaves the collected device active (#153)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -474,6 +474,7 @@
-       try {
-         envelope = await openEnvelope(secret, claim.pairingId, sealed.envelope, sealed.nonce);
+@@ -576,6 +576,7 @@
+           envelope = await openEnvelopeV2(kex, sealed.creator_pub, secret, claim.pairingId, sealed.envelope, sealed.nonce);
+         }
        } catch {
 +        active = false;
          throw new ClaimEnded("unopened");

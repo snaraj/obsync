@@ -14,9 +14,13 @@ DOES capture a device secret at setup or pairing can do without the vault key.
   `--user-data-dir` and disposable vault.
 - Server: a disposable loopback `obsyncd` on `127.0.0.1:18801`, `OBSYNC_EDGE=none`,
   plain HTTP; the build at `afbf7e7` (release 1.1.4, this train's base).
-- Plugin `main.js` SHA-256 `19d3202059551d72f53f3f3a0deaf3eb159971604c1d9fb481f756ac56c28d0c`,
-  built from `afbf7e7`. This lane changes no `plugin/src`, so the plugin build
-  is byte-identical before and after the lane's work.
+- Run 1 (the scan and audit below): plugin `main.js` SHA-256
+  `19d3202059551d72f53f3f3a0deaf3eb159971604c1d9fb481f756ac56c28d0c`, built
+  from `afbf7e7`. Run 2 ("Pairing v2, live"): plugin and `obsyncd` built from
+  `26361c8`, the pairing key exchange (`main.js`
+  `72cd7378b81f908b88b34c25fbb104d054f85f6b73ae232c4ada05be620e60ed`,
+  `obsyncd` `c13a018e7b54b91e2dc0ed81336dd13d48cb5a58ce85ae3ad697a823ae69f12a`),
+  with the `afbf7e7` builds on one side for the version-skew legs.
 - The recording hop `scripts/ci/observer.mjs` sat between the plugin and the
   server: both rigs pointed their Server URL at the hop
   (`127.0.0.1:18802`), which recorded every byte in each direction and
@@ -104,6 +108,66 @@ left untouched, and the user is told which device sent it
 disrupt availability and control the account, but can never read, forge, or
 silently alter a note.
 
+## Pairing v2, live (1.1.5)
+
+The same two rigs and the same recording hop, on the `26361c8` builds.
+
+1. **Both 1.1.5.** Setup, the sentinel notes, and a pairing: the approval
+   question and the new device showed the same match code (429 636) and no
+   warning. Then a rename and an edit on B, a delete on A, a dashboard
+   login-link, Leave on B, and a second pairing (986 387 on both screens). The
+   capture: 8 connections, 124 requests, 122 responses. The scan searched it
+   for 25 needles in 312 encodings (the 14 sentinels, the vault key and its
+   derived keys, the recovery phrase, and BOTH pairing codes with the pairing
+   secret decoded from each): `DECISION PASS (zero needle hits)`. The positive
+   control on the same capture (`macos`, `obsidian/1.13.4`) returned `FAIL`.
+   The two exchange keys crossed as JSON fields `claimant_pub` (claim) and
+   `creator_pub` (approve, and once with the envelope); no pairing secret did.
+2. **1.1.5 creator, 1.1.4 new device** (server `26361c8`). The approval
+   question read "… Approve only if the new device shows the code 717 607.
+   That device runs an older obsync; update it so pairing can protect the code
+   you shared. …", the new device showed 717 607, the creator logged
+   `kex=legacy`, and a note synced each way. Leg 4 showed the same words when
+   the SERVER was the older side, so the creator's warning now reads "That
+   device, or your obsync server, runs an older obsync; …".
+3. **1.1.4 creator, 1.1.5 new device** (server `26361c8`). The new device's
+   screen read "Waiting for approval on the other device. Its prompt shows the
+   code 751 374: … That device runs an older obsync; update it so pairing can
+   protect the code you shared.", the creator showed 751 374, and both paired.
+   In the first of five runs of this leg, rig A's (1.1.4) change feed stopped
+   applying after its own first upload and the note from B never arrived; the
+   other four runs synced both ways. See "Found on the way".
+4. **Both 1.1.5 on a 1.1.4 server** (server `afbf7e7`). The old server drops
+   both key fields. The creator showed the legacy code 616 320 with the
+   warning; the new device, which read the 1.1.5 marker in its code, showed
+   183 406. Approved anyway, the new device refused the envelope ("This device
+   could not open the vault key it was sent: … Nothing was shared."), removed
+   itself (`device_revoked … by_device=<itself>`), and stayed unpaired. It
+   failed closed, as `docs/protocol.md` describes.
+5. **Visual sweep** (rigs of leg 2): status items `obsync: idle` / `synced` on
+   both, zero notices, Show sync status complete on both (the new device also
+   lists its unconfirmed recovery phrase), Settings rendered; each rig's
+   starter window was closed after the vault opened and each Settings window
+   after use. Guarded captures: `lab-G/results/sweep-b1/`.
+
+What the unit tests prove and this run does not: that the pairing secret
+alone does not open a v2 envelope, that a substituted or stripped exchange key
+changes the match code, and that a malformed key is refused
+(`plugin/test/pairing-v2.test.mjs`, mutants M3510-M3513).
+
+## Found on the way
+
+- **A byte-identical conflict copy after Leave and pairing again** (run 2, leg
+  1): `OBSGSENTINELrenamedzzz (conflict from Mac ZJBQ, 2026-09-29 1352).md`
+  beside `OBSGSENTINELrenamedzzz.md` on both rigs, same SHA-256. The same
+  sequence did not reproduce it on `afbf7e7` or on `26361c8` (one run each).
+- **A 1.1.4 desktop's change feed stopped** (leg 3, one run of five, machine
+  load average ~115 on 10 cores): its long poll returned its own new version
+  at the same millisecond as the upload's answer, and from then on the feed
+  never asked again (engine running, no poll outstanding, cursor one change
+  behind, Sync now still waiting after 15 s). The feed code is unchanged in
+  1.1.5.
+
 ## Not covered here
 
 - The recording hop is not yet wired into the CI real-Obsidian run
@@ -114,3 +178,5 @@ silently alter a note.
   (`plugin/src/crypto.ts`), unmeasured on those devices in this run.
 - The account-recovery finding above is fixed by another change in this
   release and proven in its own record.
+- Pairing v2 against an interceptor that rewrites traffic: covered by the unit
+  tests and mutants named above, not by a live leg.

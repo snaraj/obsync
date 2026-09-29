@@ -99,6 +99,10 @@ pub struct Claimant {
     pub app_version: String,
     /// Optional sealed claimant vault details; the server cannot decrypt them.
     pub vault: Option<Value>,
+    /// The claimant's ephemeral P-256 public key for pairing v2, as the
+    /// base64url text the client sent. The server stores and returns it
+    /// verbatim and does no EC math on it (`docs/protocol.md`, "Pairing").
+    pub claimant_pub: Option<String>,
 }
 
 /// One pairing.
@@ -117,6 +121,9 @@ pub struct Pairing {
     pub claimant: Option<Claimant>,
     /// The key envelope and its nonce, held for exactly one fetch.
     pub envelope: Option<(String, String)>,
+    /// The creator's ephemeral P-256 public key for pairing v2, posted with
+    /// the envelope and returned with it, verbatim. `None` for a legacy pairing.
+    pub creator_pub: Option<String>,
 }
 
 /// The in-memory pairing table.
@@ -152,6 +159,7 @@ impl PairingTable {
                 state: State::Open,
                 claimant: None,
                 envelope: None,
+                creator_pub: None,
             },
         );
         expires
@@ -315,6 +323,7 @@ impl PairingTable {
         actor: &DeviceId,
         envelope: &str,
         nonce: &str,
+        creator_pub: Option<&str>,
         now: u64,
     ) -> Result<DeviceId, ApiError> {
         let p = self.entries.get_mut(id).ok_or_else(unknown)?;
@@ -335,6 +344,7 @@ impl PairingTable {
             .expect("a claimed pairing has one")
             .device_id;
         p.envelope = Some((envelope.to_string(), nonce.to_string()));
+        p.creator_pub = creator_pub.map(str::to_string);
         p.state = State::Approved;
         Ok(claimant)
     }
@@ -393,7 +403,7 @@ impl PairingTable {
         actor: &DeviceId,
         now: u64,
         activate: impl FnOnce() -> Result<(), ApiError>,
-    ) -> Result<(String, String), ApiError> {
+    ) -> Result<(String, String, Option<String>), ApiError> {
         let p = self.entries.get_mut(id).ok_or_else(unknown)?;
         let is_claimant = p.claimant.as_ref().is_some_and(|c| &c.device_id == actor);
         if !is_claimant {
@@ -420,9 +430,10 @@ impl PairingTable {
             ));
         }
         activate()?;
-        let envelope = p.envelope.take().ok_or_else(consumed)?;
+        let (envelope, nonce) = p.envelope.take().ok_or_else(consumed)?;
+        let creator_pub = p.creator_pub.take();
         p.state = State::Consumed;
-        Ok(envelope)
+        Ok((envelope, nonce, creator_pub))
     }
 }
 
@@ -489,15 +500,16 @@ pub fn claim(
     // pre-authentication budget (`Unverified`). The table lock is held on
     // across device creation so two racing claims cannot both pass
     // `begin_claim`.
-    let (_, (enrolment, vault, mut pairings)) =
-        unverified::token_body(app, req)?.accept(|held| {
+    let (_, (enrolment, vault, claimant_pub, mut pairings)) = unverified::token_body(app, req)?
+        .accept(|held| {
             let parsed = held.json()?;
             let enroll = parsed.credential("enroll_token")?;
             let enrolment = devices::enrolment_fields(parsed.value())?;
             let vault = vault_details(parsed.value())?;
+            let claimant_pub = public_key_field(parsed.value(), "claimant_pub")?;
             let pairings = app.pairings.lock().expect("pairings");
             pairings.begin_claim(id, &enroll, now)?;
-            Ok((enrolment, vault, pairings))
+            Ok((enrolment, vault, claimant_pub, pairings))
         })?;
     let (name, platform, app_version) = (
         enrolment.name.clone(),
@@ -515,6 +527,7 @@ pub fn claim(
             platform,
             app_version,
             vault,
+            claimant_pub,
         },
     );
     drop(pairings);
@@ -547,6 +560,49 @@ fn vault_details(body: &Value) -> Result<Option<Value>, ApiError> {
     ])))
 }
 
+/// Validate an optional ephemeral public-key field (pairing v2) without doing
+/// any elliptic-curve mathematics: the server holds and returns it verbatim
+/// and never computes on it (requirement 5, std-only). A raw-uncompressed
+/// P-256 point is 65 bytes beginning `0x04`; its base64url is 87 characters.
+/// Anything else is a `400`, and the field is bounded so an unverified claim
+/// body cannot smuggle a large value past the pre-authentication budget.
+fn public_key_field(body: &Value, name: &str) -> Result<Option<String>, ApiError> {
+    let Some(v) = body.get(name) else {
+        return Ok(None);
+    };
+    let text = v
+        .as_str()
+        .ok_or_else(|| ApiError::bad_request("public key must be a string"))?;
+    let bad =
+        || ApiError::bad_request("public key must be a raw-uncompressed P-256 point, base64url");
+    if text.len() != 87
+        || !text
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err(bad());
+    }
+    // base64url -> standard base64 with padding, then the standard decoder.
+    let mut std: String = text
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            other => other,
+        })
+        .collect();
+    std.push('=');
+    let raw = obsync_core::base64::decode(&std).map_err(|_| bad())?;
+    if raw.len() != PAIRING_PUBLIC_KEY_LEN || raw[0] != 0x04 {
+        return Err(bad());
+    }
+    Ok(Some(text.to_string()))
+}
+
+/// A raw-uncompressed P-256 public key is 65 bytes: `0x04` then two 32-byte
+/// coordinates.
+const PAIRING_PUBLIC_KEY_LEN: usize = 65;
+
 /// `GET /v1/pairing/{id}`: the creator polls for a claimant.
 ///
 /// # Errors
@@ -574,6 +630,9 @@ pub fn state(
             ];
             if let Some(vault) = c.vault {
                 fields.push(("vault", vault));
+            }
+            if let Some(key) = c.claimant_pub {
+                fields.push(("claimant_pub", s(&key)));
             }
             obj(fields)
         }
@@ -608,12 +667,16 @@ pub fn approve(
     if !super::is_hex(nonce, 24) {
         return Err(ApiError::bad_request("nonce must be 24 hex characters"));
     }
+    let creator_pub = public_key_field(&body, "creator_pub")?;
     let now = app.clock.unix_secs();
-    let claimant = app
-        .pairings
-        .lock()
-        .expect("pairings")
-        .approve(id, &authed.id, envelope, nonce, now)?;
+    let claimant = app.pairings.lock().expect("pairings").approve(
+        id,
+        &authed.id,
+        envelope,
+        nonce,
+        creator_pub.as_deref(),
+        now,
+    )?;
     // Approval grants nothing yet: the claimant becomes active when it
     // collects the envelope, inside the ten minutes (`envelope` below).
     app.log.info(
@@ -696,7 +759,7 @@ pub fn envelope(
 ) -> Result<Response, ApiError> {
     let authed = auth::device_claimant(app, req, client)?;
     let now = app.clock.unix_secs();
-    let (envelope, nonce) =
+    let (envelope, nonce, creator_pub) =
         app.pairings
             .lock()
             .expect("pairings")
@@ -710,10 +773,11 @@ pub fn envelope(
             ("decision", Val::word("activated")),
         ],
     );
-    Ok(Response::json(
-        200,
-        &obj(vec![("envelope", s(&envelope)), ("nonce", s(&nonce))]),
-    ))
+    let mut fields = vec![("envelope", s(&envelope)), ("nonce", s(&nonce))];
+    if let Some(key) = creator_pub {
+        fields.push(("creator_pub", s(&key)));
+    }
+    Ok(Response::json(200, &obj(fields)))
 }
 
 fn token(bytes: usize) -> Result<String, ApiError> {
@@ -788,9 +852,94 @@ mod tests {
         );
     }
 
+    /// A raw-uncompressed P-256 point (65 bytes, `0x04` prefix) as base64url.
+    const PUBKEY: &str =
+        "BO8WCdd27pWdRyoUup6EiGUawF_1YKg8KISaBuGImQsp-zQ_bUKC0Ks1RRbDGmCLqT2V7eHp2NzNejuASM-kyJ4";
+
+    #[test]
+    fn public_key_field_is_optional_and_holds_a_p256_point_verbatim() {
+        // Absent is fine (a legacy pairing carries no key).
+        assert_eq!(public_key_field(&obj(vec![]), "k").unwrap(), None);
+        // A valid point is returned verbatim, never decoded on the server.
+        assert_eq!(
+            public_key_field(&obj(vec![("k", s(PUBKEY))]), "k").unwrap(),
+            Some(PUBKEY.to_string())
+        );
+        // Wrong prefix (a compressed point), wrong length, a bad alphabet, the
+        // wrong type: each is a 400 the server never computes on.
+        let compressed = {
+            let mut raw = [0u8; 65];
+            raw[0] = 0x02;
+            obsync_core::base64::encode(&raw)
+                .replace('+', "-")
+                .replace('/', "_")
+                .trim_end_matches('=')
+                .to_string()
+        };
+        let short = {
+            let raw = [4u8; 64];
+            obsync_core::base64::encode(&raw)
+                .replace('+', "-")
+                .replace('/', "_")
+                .trim_end_matches('=')
+                .to_string()
+        };
+        for bad in [
+            compressed,
+            short,
+            "!".repeat(87),
+            "AAAA".to_string(),
+            format!("{PUBKEY}A"),
+        ] {
+            assert!(
+                public_key_field(&obj(vec![("k", s(&bad))]), "k").is_err(),
+                "{bad}"
+            );
+        }
+        assert!(public_key_field(&obj(vec![("k", Value::Null)]), "k").is_err());
+        assert!(public_key_field(&obj(vec![("k", n(1))]), "k").is_err());
+    }
+
+    #[test]
+    fn the_pairing_carries_the_claimant_pub_to_the_creator() {
+        let (mut t, creator) = table();
+        t.begin_claim("p1", &tok("tok"), NOW).expect("claimable");
+        t.finish_claim(
+            "p1",
+            Claimant {
+                device_id: dev(2),
+                name: "n".into(),
+                platform: "ios".into(),
+                app_version: "0".into(),
+                vault: None,
+                claimant_pub: Some("CLAIMANTKEY".into()),
+            },
+        );
+        let (_, claimant) = t.state_for("p1", &creator, NOW).expect("state");
+        assert_eq!(
+            claimant.unwrap().claimant_pub.as_deref(),
+            Some("CLAIMANTKEY")
+        );
+    }
+
+    #[test]
+    fn approve_stores_the_creator_pub_and_collection_returns_it_once() {
+        let (mut t, creator, claimant) = claimed();
+        t.approve("p1", &creator, "ct", "aa", Some("CREATORKEY"), NOW)
+            .expect("approved");
+        let (env, nonce, key) = t
+            .take_envelope("p1", &claimant, NOW, || Ok(()))
+            .expect("collected");
+        assert_eq!(
+            (env.as_str(), nonce.as_str(), key.as_deref()),
+            ("ct", "aa", Some("CREATORKEY"))
+        );
+    }
+
     /// A fetch whose activation always succeeds, inside the ten minutes.
     fn take(t: &mut PairingTable, actor: &DeviceId) -> Result<(String, String), ApiError> {
         t.take_envelope("p1", actor, NOW, || Ok(()))
+            .map(|(e, nonce, _)| (e, nonce))
     }
 
     fn table() -> (PairingTable, DeviceId) {
@@ -812,6 +961,7 @@ mod tests {
                 platform: "ios".to_string(),
                 app_version: "0.1.0".to_string(),
                 vault: None,
+                claimant_pub: None,
             },
         );
         (t, creator, claimant)
@@ -889,26 +1039,26 @@ mod tests {
     fn approve_requires_a_claim_and_the_creator() {
         let (mut t, creator) = table();
         assert_eq!(
-            t.approve("p1", &creator, "ct", "aa", NOW)
+            t.approve("p1", &creator, "ct", "aa", None, NOW)
                 .expect_err("no claim")
                 .code,
             "not_claimed"
         );
         let (mut t, creator, claimant) = claimed();
         assert_eq!(
-            t.approve("p1", &claimant, "ct", "aa", NOW)
+            t.approve("p1", &claimant, "ct", "aa", None, NOW)
                 .expect_err("wrong actor")
                 .code,
             "not_creator"
         );
-        t.approve("p1", &creator, "ct", "aa", NOW)
+        t.approve("p1", &creator, "ct", "aa", None, NOW)
             .expect("creator approves");
         assert_eq!(
             t.state_for("p1", &creator, NOW).expect("state").0,
             State::Approved
         );
         assert_eq!(
-            t.approve("p1", &creator, "ct", "aa", NOW)
+            t.approve("p1", &creator, "ct", "aa", None, NOW)
                 .expect_err("twice")
                 .code,
             "already_approved"
@@ -919,7 +1069,7 @@ mod tests {
     fn approve_after_expiry_is_refused() {
         let (mut t, creator, _) = claimed();
         let e = t
-            .approve("p1", &creator, "ct", "aa", NOW + PAIRING_TTL_SECS)
+            .approve("p1", &creator, "ct", "aa", None, NOW + PAIRING_TTL_SECS)
             .expect_err("expired");
         assert_eq!(e.code, "pairing_expired");
     }
@@ -931,7 +1081,7 @@ mod tests {
             take(&mut t, &claimant).expect_err("not approved yet").code,
             "not_approved"
         );
-        t.approve("p1", &creator, "ct", "aa", NOW)
+        t.approve("p1", &creator, "ct", "aa", None, NOW)
             .expect("approved");
         assert_eq!(
             take(&mut t, &creator)
@@ -949,7 +1099,7 @@ mod tests {
     #[test]
     fn an_unrelated_device_cannot_fetch_the_envelope() {
         let (mut t, creator, _) = claimed();
-        t.approve("p1", &creator, "ct", "aa", NOW)
+        t.approve("p1", &creator, "ct", "aa", None, NOW)
             .expect("approved");
         assert_eq!(
             take(&mut t, &dev(9)).expect_err("stranger").code,
@@ -976,7 +1126,7 @@ mod tests {
     fn an_approved_pairing_refuses_a_reject_and_keeps_its_claimant() {
         for consume in [false, true] {
             let (mut t, creator, claimant) = claimed();
-            t.approve("p1", &creator, "ct", "aa", NOW)
+            t.approve("p1", &creator, "ct", "aa", None, NOW)
                 .expect("approved");
             if consume {
                 take(&mut t, &claimant).expect("fetched");
@@ -1033,7 +1183,7 @@ mod tests {
     fn approve_names_the_device_to_activate() {
         let (mut t, creator, claimant) = claimed();
         assert_eq!(
-            t.approve("p1", &creator, "ct", "aa", NOW)
+            t.approve("p1", &creator, "ct", "aa", None, NOW)
                 .expect("creator approves"),
             claimant,
             "the caller logs exactly that device; collection activates it"
@@ -1064,7 +1214,7 @@ mod tests {
     fn an_expired_approved_pairing_hands_back_its_device_unless_collected() {
         for consume in [false, true] {
             let (mut t, creator, claimant) = claimed();
-            t.approve("p1", &creator, "ct", "aa", NOW)
+            t.approve("p1", &creator, "ct", "aa", None, NOW)
                 .expect("approved");
             if consume {
                 take(&mut t, &claimant).expect("fetched");
@@ -1097,7 +1247,7 @@ mod tests {
             })
             .expect_err("not approved yet");
         assert_eq!(e.code, "not_approved");
-        t.approve("p1", &creator, "ct", "aa", NOW)
+        t.approve("p1", &creator, "ct", "aa", None, NOW)
             .expect("approved");
         let e = t
             .take_envelope("p1", &creator, NOW, || {
@@ -1143,7 +1293,7 @@ mod tests {
         for approve in [false, true] {
             let (mut t, creator, claimant) = claimed();
             if approve {
-                t.approve("p1", &creator, "ct", "aa", NOW)
+                t.approve("p1", &creator, "ct", "aa", None, NOW)
                     .expect("approved");
             }
             let e = t
@@ -1201,7 +1351,7 @@ mod tests {
     fn a_swept_pairing_tells_its_creator_how_it_ended() {
         for consume in [false, true] {
             let (mut t, creator, claimant) = claimed();
-            t.approve("p1", &creator, "ct", "aa", NOW)
+            t.approve("p1", &creator, "ct", "aa", None, NOW)
                 .expect("approved");
             if consume {
                 take(&mut t, &claimant).expect("fetched");
@@ -1261,7 +1411,7 @@ mod tests {
     #[test]
     fn a_consumed_pairing_does_not_flip_back_to_expired() {
         let (mut t, creator, claimant) = claimed();
-        t.approve("p1", &creator, "ct", "aa", NOW)
+        t.approve("p1", &creator, "ct", "aa", None, NOW)
             .expect("approved");
         take(&mut t, &claimant).expect("fetched");
         let (state, _) = t

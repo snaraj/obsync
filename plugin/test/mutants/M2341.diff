@@ -1,10 +1,10 @@
 # M2341: the approval prompt counts one note as notes (iPhone pass)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -304,7 +304,7 @@
-     statusEl.setText(
-       `Approve "${claimant.name}" (${platformLabel(claimant.platform)}, obsync ${claimant.app_version}), asking since ${clock(asked)}? ` +
-         `Approve only if the new device shows the code ${code}.` +
+@@ -322,7 +322,7 @@
+         (claimantKey === undefined
+           ? " That device, or your obsync server, runs an older obsync; update it so pairing can protect the code you shared."
+           : "") +
 -        (vault === null ? "" : ` It will sync vault "${vault.name}" (${notes(vault.notes)}) with this server's vault.`),
 +        (vault === null ? "" : ` It will sync vault "${vault.name}" (${vault.notes} notes) with this server's vault.`),
      );
