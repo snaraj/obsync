@@ -303,7 +303,16 @@ requires the refusal.
    `fsync` leaves an unsynced temp; a refusal at the `rename` leaves a synced
    one. Both leftovers are removed at the next start, which counts them on
    its `store_open` SUMMARY, and in every case the chunk is simply absent and
-   the client re-uploads.
+   the client re-uploads. A fan-out directory the `rename` needs (`v1/<ab>/`,
+   `v1/<ab>/<cd>/`) is created first, top down, and each new one's parent is
+   fsynced before going deeper, so every directory on an acknowledged
+   chunk's path is durable (1.1.5, #273). A directory whose parent's
+   `fsync` failed is remembered, and the next chunk under it fsyncs that
+   parent again. A start that removes a leftover temp fsyncs `v1/` and each
+   first-level directory once (`fanout_synced=` on the same SUMMARY): the
+   cut may have fallen between a directory's creation and its parent's
+   `fsync`. On a fresh store most early chunks open a new leaf, so they cost
+   one more flush (two for the first of each 256 first levels).
 2. Journal append: frame = `u32 len | u32 crc32 | payload`; `write`,
    `fsync(segment)`; only then respond. Startup replay stops at the first
    torn or CRC-failing frame, truncates the segment there, and logs the

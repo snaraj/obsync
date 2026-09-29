@@ -250,6 +250,8 @@ pub(crate) enum BlobPhase {
     Sync,
     /// The `rename` into place.
     Rename,
+    /// Persisting a new fan-out directory's name in its parent.
+    DirParentSync,
     /// Copying into a quarantine-local temporary file.
     QuarantineCopy,
     /// The quarantine copy's file fsync.
@@ -359,6 +361,7 @@ impl Store {
                 ("frames", Val::count(replay.frames)),
                 ("truncated_bytes", Val::bytes(replay.truncated_bytes)),
                 ("tmp_removed", Val::count(leftovers)),
+                ("fanout_synced", Val::count(blobs.synced_at_open())),
                 ("chunks", Val::count(chunk_count)),
                 ("strays", Val::count(strays)),
                 ("bytes", Val::bytes(index.used_bytes)),

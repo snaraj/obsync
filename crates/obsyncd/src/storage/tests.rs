@@ -1420,6 +1420,119 @@ fn a_full_blob_volume_refuses_per_phase_and_leaves_that_phase_s_residue() {
     }
 }
 
+/// A body whose sid starts with `prefix` (hex), and is not `other`.
+fn body_under(prefix: &str, other: &[u8]) -> Vec<u8> {
+    (0u64..)
+        .map(|n| format!("ciphertext-sentinel-{n}").into_bytes())
+        .find(|b| b != other && Sid::new(sha256(b)).to_string().starts_with(prefix))
+        .expect("a body under the prefix")
+}
+
+#[test]
+fn a_new_fan_out_directory_is_durable_in_its_parent_before_its_chunk_is_acknowledged() {
+    // #273. The rename's own directory fsync makes the chunk's name durable
+    // in `v1/<ab>/<cd>`; when the rename needed that directory first, its
+    // name lives in `v1/<ab>`, and a power cut could take it, and the
+    // acknowledged chunk with it, unless that parent is fsynced too.
+    const EIO: i32 = 5;
+    let dir = TempDir::new("store-fanout");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let (store, account) = (&setup.store, &setup.account);
+    let body = b"ciphertext-sentinel".to_vec();
+    let sid = Sid::new(sha256(&body));
+    let name = sid.to_string();
+    let leaf = cfg.blobs_dir.join("v1").join(&name[0..2]).join(&name[2..4]);
+    let post = |body: &[u8]| {
+        let sid = Sid::new(sha256(body));
+        store.put_chunk(account, &sid, body.len() as u64, &mut &body[..])
+    };
+    let refuse = || {
+        store.set_fault(Fault::BlobErrno {
+            phase: BlobPhase::DirParentSync,
+            code: EIO,
+        });
+    };
+    // Its first level already exists and is durable: a sibling leaf made it.
+    let sibling = (0u64..)
+        .map(|n| format!("ciphertext-sibling-{n}").into_bytes())
+        .find(|b| {
+            let s = Sid::new(sha256(b)).to_string();
+            s.starts_with(&name[0..2]) && !s.starts_with(&name[0..4])
+        })
+        .expect("a sibling");
+    post(&sibling).expect("the sibling lands");
+
+    // The new leaf's name cannot be made durable: nothing is acknowledged,
+    // though the leaf now exists.
+    refuse();
+    match post(&body).expect_err("refused before the rename") {
+        StoreError::Io(e) => assert_eq!(e.raw_os_error(), Some(EIO)),
+        other => panic!("expected the volume's error, got {other}"),
+    }
+    assert!(leaf.is_dir(), "the leaf was created");
+    assert!(!store.chunk_exists(&sid));
+    // Existing is not durable: the next upload into that leaf fsyncs its
+    // parent again, and is refused again.
+    post(&body).expect_err("the leaf's name is still not durable");
+    assert!(!store.chunk_exists(&sid));
+    // Once the volume takes the fsync, the chunk lands.
+    store.set_fault(Fault::None);
+    post(&body).expect("lands once its path is durable");
+    assert!(store.chunk_exists(&sid));
+    // A leaf already durable costs no further fsync: with the fault armed,
+    // a second chunk in it lands.
+    refuse();
+    post(&body_under(&name[0..4], &body)).expect("no parent fsync for a durable leaf");
+    // A new first level needs one, in `v1/`.
+    let elsewhere = (0u64..)
+        .map(|n| format!("ciphertext-elsewhere-{n}").into_bytes())
+        .find(|b| {
+            let first = &Sid::new(sha256(b)).to_string()[0..2];
+            !cfg.blobs_dir.join("v1").join(first).exists()
+        })
+        .expect("an unused first level");
+    post(&elsewhere).expect_err("a new first level's name is fsynced in v1/");
+}
+
+#[test]
+fn a_start_after_a_cut_upload_makes_every_fan_out_name_durable() {
+    // A cut between creating a fan-out directory and the fsync of its
+    // parent leaves the directory on the next start's disk, not necessarily
+    // on the platter, and always leaves the upload's temp file. That temp
+    // is the trace: the start that removes one fsyncs `v1/` and every
+    // first-level directory once. A clean start fsyncs none.
+    let dir = TempDir::new("store-fanout-start");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    for n in 0..3u8 {
+        put(&setup, &[b's', b'e', b'n', n]);
+    }
+    let first_levels = fs::read_dir(cfg.blobs_dir.join("v1"))
+        .expect("v1")
+        .filter(|e| e.as_ref().is_ok_and(|e| e.file_name() != "tmp"))
+        .count() as u64;
+    drop(setup);
+
+    let clean = Log::buffered(LogLevel::Debug);
+    drop(open_with(&cfg, [7u8; 32], clean.clone()));
+    assert!(
+        clean.captured().contains("fanout_synced=0"),
+        "{}",
+        clean.captured()
+    );
+
+    fs::write(cfg.blobs_dir.join("v1/tmp/cut-upload"), b"partial").expect("a leftover");
+    let cut = Log::buffered(LogLevel::Debug);
+    drop(open_with(&cfg, [7u8; 32], cut.clone()));
+    let captured = cut.captured();
+    assert!(captured.contains("tmp_removed=1"), "{captured}");
+    assert!(
+        captured.contains(&format!("fanout_synced={}", first_levels + 1)),
+        "v1/ and each of its {first_levels} first levels: {captured}"
+    );
+}
+
 #[test]
 fn the_journal_watermark_refuses_a_version_and_the_dashboard_agrees() {
     let dir = TempDir::new("store-journal-watermark");

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce the server durability guard probes (#191, #192, #203) from the
+"""Reproduce the server durability guard probes (#191, #192, #203, #273) from the
 repository root.
 
 Each probe must compile and fail a behavioral regression. A probe is one or
@@ -18,6 +18,7 @@ STORE = "crates/obsyncd/src/storage/mod.rs"
 JOURNAL = "crates/obsyncd/src/storage/journal.rs"
 INDEX = "crates/obsyncd/src/storage/index.rs"
 SCRUB = "crates/obsyncd/src/storage/scrub.rs"
+BLOBS = "crates/obsyncd/src/storage/blobs.rs"
 SERVE = "crates/obsyncd/src/cli/serve.rs"
 
 GROUP = "concurrent_requests_share_an_fsync_and_none_is_answered_before_its_own"
@@ -28,6 +29,8 @@ READ = "a_snapshot_is_read_a_file_at_a_time_to_the_index_it_was_written_from"
 FSYNC = "a_writer_s_fsync_holds_the_journal_and_never_the_index_and_nothing_is_applied_before_it"
 GROWTH = "a_snapshot_is_due_after_the_journal_grows_past_the_floor_and_the_last_snapshot"
 SNAPSHOT = "a_snapshot_is_written_with_no_guard_held_and_a_crash_part_way_loses_nothing"
+FANOUT = "a_new_fan_out_directory_is_durable_in_its_parent_before_its_chunk_is_acknowledged"
+FANOUT_START = "a_start_after_a_cut_upload_makes_every_fan_out_name_durable"
 
 CASES = [
     # --- nonce log group commit (#191) ------------------------------------
@@ -219,6 +222,21 @@ CASES = [
         "index.seq <= since && !self.stopping.load(Ordering::SeqCst)",
         "index.seq <= since",
     )], "releasing_waiters_answers_a_long_poll_at_once_and_every_later_one"),
+    # --- a new fan-out directory's name (#273) -------------------------------
+    ("fanout-parent-fsync", BLOBS, [(
+        "            if self.unsynced().contains(step) {",
+        "            if false && self.unsynced().contains(step) {",
+    )], FANOUT),
+    ("fanout-existing-is-not-durable", BLOBS, [(
+        "                #[cfg(test)]\n                self.errno_at(BlobPhase::DirParentSync)?;\n"
+        "                fsync_parent(step)?;\n                self.unsynced().remove(step);\n",
+        "                self.unsynced().remove(step);\n                #[cfg(test)]\n"
+        "                self.errno_at(BlobPhase::DirParentSync)?;\n                fsync_parent(step)?;\n",
+    )], FANOUT),
+    ("fanout-synced-once-a-cut-start", BLOBS, [(
+        "            if left > 0 {",
+        "            if left > u64::MAX - 1 {",
+    )], FANOUT_START),
 ]
 
 

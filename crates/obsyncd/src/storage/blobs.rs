@@ -2,17 +2,20 @@
 //!
 //! The durability rules are docs/storage.md, "Durability rules" 1: stream to
 //! a temp file while hashing, verify the sid and the length, `fsync` the
-//! file, `rename` it into place, `fsync` the directory. Only then may the
-//! caller acknowledge. A crash therefore leaves either a complete chunk or a
+//! file, `rename` it into place, `fsync` the directory -- and, for a fan-out
+//! directory the rename needed first, that directory's parent. Only then may
+//! the caller acknowledge. A crash therefore leaves either a complete chunk or a
 //! temp file that startup removes. None of this is configurable
 //! (AGENTS.md requirement 4).
 #![forbid(unsafe_code)]
 
+use std::collections::HashSet;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use obsync_core::sha256::Sha256;
@@ -24,8 +27,6 @@ use crate::types::{Sid, UnixMs};
 use crate::storage::{BlobPhase, Fault};
 #[cfg(test)]
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Mutex;
 
 /// Copy buffer. Large enough to keep the disk busy, small enough that a
 /// mobile-sized chunk never needs a second allocation strategy.
@@ -42,6 +43,13 @@ pub(crate) type Chunk = (Sid, u64, UnixMs);
 pub(crate) struct Blobs {
     root: PathBuf,
     mirrors: Vec<PathBuf>,
+    /// Fan-out directories created whose name is not yet known durable in
+    /// their parent: the parent's fsync failed, so the next chunk published
+    /// under one tries it again (`Blobs::make_dirs`).
+    unsynced: Mutex<HashSet<PathBuf>>,
+    /// Fan-out directories whose names a start made durable, because the
+    /// last stop left an upload behind (`Blobs::open`).
+    synced_at_open: u64,
     #[cfg(test)]
     fault: Mutex<Fault>,
     /// Called from inside the quarantine move. Tests only, and the point of
@@ -59,9 +67,11 @@ impl Blobs {
     /// non-zero count is the visible trace of a crash mid-upload
     /// (requirement 12).
     pub(crate) fn open(root: &Path, mirrors: &[PathBuf]) -> Result<(Blobs, u64), StoreError> {
-        let blobs = Blobs {
+        let mut blobs = Blobs {
             root: root.to_path_buf(),
             mirrors: mirrors.to_vec(),
+            unsynced: Mutex::new(HashSet::new()),
+            synced_at_open: 0,
             #[cfg(test)]
             fault: Mutex::new(Fault::None),
             #[cfg(test)]
@@ -69,18 +79,90 @@ impl Blobs {
         };
         let mut removed = 0;
         for volume in blobs.volumes() {
-            make_dir(&volume.join("v1"))?;
-            let tmp = volume.join("v1/tmp");
-            make_dir(&tmp)?;
+            make_dir(&volume)?;
+            let v1 = volume.join("v1");
+            let tmp = v1.join("tmp");
+            for dir in [&v1, &tmp] {
+                if !dir.is_dir() {
+                    DirBuilder::new().mode(DIR_MODE).create(dir)?;
+                    fsync_parent(dir)?;
+                }
+            }
+            let mut left = 0;
             for entry in fs::read_dir(&tmp)? {
                 let path = entry?.path();
                 if path.is_file() {
                     fs::remove_file(&path)?;
-                    removed += 1;
+                    left += 1;
                 }
             }
+            // A temp left behind means the last stop cut an upload short,
+            // possibly between creating a fan-out directory and the fsync
+            // of its parent: the directory is on this start's disk but not
+            // necessarily on the platter. Make every fan-out name durable
+            // once, so no later chunk is acknowledged under one that is not.
+            if left > 0 {
+                fsync_dir(&v1)?;
+                blobs.synced_at_open += 1;
+                for outer in read_dir_sorted(&v1)? {
+                    if outer.is_dir() && outer != tmp {
+                        fsync_dir(&outer)?;
+                        blobs.synced_at_open += 1;
+                    }
+                }
+            }
+            removed += left;
         }
         Ok((blobs, removed))
+    }
+
+    /// Directories whose names the last start made durable (`open`).
+    pub(crate) fn synced_at_open(&self) -> u64 {
+        self.synced_at_open
+    }
+
+    fn unsynced(&self) -> MutexGuard<'_, HashSet<PathBuf>> {
+        self.unsynced.lock().expect("unsynced directories")
+    }
+
+    /// `rename` a synced temp file into place on `volume` and `fsync` the
+    /// directory that now names it. The fan-out directories the target
+    /// needs are created first, each made durable in its parent before the
+    /// next step (`make_dirs`), so no directory on the path an acknowledged
+    /// chunk is reached by can vanish in a power cut.
+    fn publish(&self, volume: &Path, tmp: &Path, target: &Path) -> Result<(), StoreError> {
+        if let Some(parent) = target.parent() {
+            self.make_dirs(volume, parent)?;
+        }
+        fs::rename(tmp, target)?;
+        fsync_parent(target)
+    }
+
+    /// Create what is missing of `dir` below `<volume>/v1`, top down, and
+    /// `fsync` each new directory's parent before going deeper (#273).
+    ///
+    /// A directory whose parent's fsync failed stays in `unsynced`, and the
+    /// next chunk published under it fsyncs that parent again: existing is
+    /// not the same as durable. Two publishers never race here: the
+    /// caller's SID stripe is the sid's first byte, which is the first
+    /// fan-out level, so one branch has one publisher at a time.
+    fn make_dirs(&self, volume: &Path, dir: &Path) -> Result<(), StoreError> {
+        let v1 = volume.join("v1");
+        let mut chain: Vec<&Path> = dir.ancestors().take_while(|p| *p != v1).collect();
+        chain.reverse();
+        for step in chain {
+            if !step.is_dir() {
+                DirBuilder::new().mode(DIR_MODE).create(step)?;
+                self.unsynced().insert(step.to_path_buf());
+            }
+            if self.unsynced().contains(step) {
+                #[cfg(test)]
+                self.errno_at(BlobPhase::DirParentSync)?;
+                fsync_parent(step)?;
+                self.unsynced().remove(step);
+            }
+        }
+        Ok(())
     }
 
     fn volumes(&self) -> Vec<PathBuf> {
@@ -145,7 +227,7 @@ impl Blobs {
         self.tripped(Fault::ChunkBeforeRename)?;
         #[cfg(test)]
         self.errno_at(BlobPhase::Rename)?;
-        publish(&tmp, &Blobs::chunk_path(&self.root, sid))?;
+        self.publish(&self.root, &tmp, &Blobs::chunk_path(&self.root, sid))?;
         for mirror in &self.mirrors {
             self.mirror_copy(mirror, sid)?;
         }
@@ -177,7 +259,7 @@ impl Blobs {
         io::copy(&mut input, &mut output)?;
         output.sync_all()?;
         drop(output);
-        publish(&tmp, &Blobs::chunk_path(mirror, sid))
+        self.publish(mirror, &tmp, &Blobs::chunk_path(mirror, sid))
     }
 
     /// Open a chunk for reading, with its length.
@@ -269,7 +351,7 @@ impl Blobs {
             io::copy(&mut input, &mut output)?;
             output.sync_all()?;
             drop(output);
-            publish(&tmp, &Blobs::chunk_path(&self.root, sid))?;
+            self.publish(&self.root, &tmp, &Blobs::chunk_path(&self.root, sid))?;
             return Ok(true);
         }
         Ok(false)
@@ -489,15 +571,6 @@ fn make_dir(path: &Path) -> Result<(), StoreError> {
         .mode(DIR_MODE)
         .create(path)?;
     Ok(())
-}
-
-/// `rename` into place and `fsync` the directory that now names the file.
-fn publish(tmp: &Path, target: &Path) -> Result<(), StoreError> {
-    if let Some(parent) = target.parent() {
-        make_dir(parent)?;
-    }
-    fs::rename(tmp, target)?;
-    fsync_parent(target)
 }
 
 fn fsync_parent(path: &Path) -> Result<(), StoreError> {
