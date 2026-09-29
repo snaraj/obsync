@@ -20,7 +20,10 @@ DOES capture a device secret at setup or pairing can do without the vault key.
   `26361c8`, the pairing key exchange (`main.js`
   `72cd7378b81f908b88b34c25fbb104d054f85f6b73ae232c4ada05be620e60ed`,
   `obsyncd` `c13a018e7b54b91e2dc0ed81336dd13d48cb5a58ce85ae3ad697a823ae69f12a`),
-  with the `afbf7e7` builds on one side for the version-skew legs.
+  with the `afbf7e7` builds on one side for the version-skew legs. Run 3
+  (the final head, `64abf24`): the plugin rebuilt (`main.js`
+  `5a856ea67dcb613ef997e683199ce01895d2c68b51afbad4e541e71ef6a8c1ff`), the
+  same `obsyncd` (no server change after `26361c8`).
 - The recording hop `scripts/ci/observer.mjs` sat between the plugin and the
   server: both rigs pointed their Server URL at the hop
   (`127.0.0.1:18802`), which recorded every byte in each direction and
@@ -144,7 +147,22 @@ The same two rigs and the same recording hop, on the `26361c8` builds.
    could not open the vault key it was sent: … Nothing was shared."), removed
    itself (`device_revoked … by_device=<itself>`), and stayed unpaired. It
    failed closed, as `docs/protocol.md` describes.
-5. **Visual sweep** (rigs of leg 2): status items `obsync: idle` / `synced` on
+5. **The final head** (`64abf24`, run 3). Leg 1 again: 170 940 and then
+   462 718 on both screens, no warning; the scan: 10 connections, 100
+   requests, 98 responses, 26 needles in 325 encodings,
+   `DECISION PASS (zero needle hits)`; the positive control `FAIL`. Leg 4
+   again: the creator's question now read "… Approve only if the new device
+   shows the code 670 130. That device, or your obsync server, runs an older
+   obsync; update it so pairing can protect the code you shared. …", the new
+   device showed 403 072, and an approval anyway ended as before (refused,
+   removed, unpaired). An earlier scan at this head FAILED on two single
+   recovery words, each of which is a field name of the device list the
+   server returns (checked against the scan's own list of visible field names;
+   the words are not recorded here). The scanner now leaves out a single
+   recovery word that is the protocol's own vocabulary in that capture and
+   names it; the whole phrase stays a needle, and a word that is not
+   vocabulary is still caught (`scripts/ci/test_observer.py`).
+6. **Visual sweep** (rigs of leg 2): status items `obsync: idle` / `synced` on
    both, zero notices, Show sync status complete on both (the new device also
    lists its unconfirmed recovery phrase), Settings rendered; each rig's
    starter window was closed after the vault opened and each Settings window
@@ -160,7 +178,10 @@ changes the match code, and that a malformed key is refused
 - **A byte-identical conflict copy after Leave and pairing again** (run 2, leg
   1): `OBSGSENTINELrenamedzzz (conflict from Mac ZJBQ, 2026-09-29 1352).md`
   beside `OBSGSENTINELrenamedzzz.md` on both rigs, same SHA-256. The same
-  sequence did not reproduce it on `afbf7e7` or on `26361c8` (one run each).
+  sequence did not reproduce it on `afbf7e7` (one run), on `26361c8` (one
+  more run) or on `64abf24` (one run whose listing was kept; a second run
+  there tracked four files where three are expected, but its listing was not
+  kept).
 - **A 1.1.4 desktop's change feed stopped** (leg 3, one run of five, machine
   load average ~115 on 10 cores): its long poll returned its own new version
   at the same millisecond as the upload's answer, and from then on the feed

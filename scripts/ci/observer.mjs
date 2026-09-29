@@ -24,6 +24,11 @@
 // could take. A needle is a sentinel the session wrote or key material read
 // off the devices; PASS is zero hits. It also lists what IS visible, so the
 // threat model can be held to exactly that. Needle values are never printed.
+// A single recovery word is a needle of its own only when it is not part of
+// the protocol's own vocabulary (a JSON key, header name or route word the
+// capture itself uses): a BIP-39 word such as a device-list field name would
+// otherwise "leak" on every run whose phrase happens to hold it. The whole
+// phrase stays a needle, and each skipped word is named by label.
 //
 // usage:
 //   node observer.mjs record --listen 127.0.0.1:18802 --upstream 127.0.0.1:18801 --out <dir>
@@ -306,11 +311,11 @@ function encodingsOf(value, kind) {
  */
 function buildNeedles(spec) {
   const needles = [];
-  const push = (label, value, kind) => {
+  const push = (label, value, kind, extra = {}) => {
     if (!value) return;
     const { forms, raws } = encodingsOf(value, kind);
     if (forms.length || raws.length) {
-      needles.push({ label, kind, forms, raws: raws.map((b) => b.toString("latin1")) });
+      needles.push({ label, kind, forms, raws: raws.map((b) => b.toString("latin1")), ...extra });
     }
   };
   for (const [label, value] of Object.entries(spec.text || {})) push(`text:${label}`, value, "text");
@@ -320,7 +325,7 @@ function buildNeedles(spec) {
     for (const word of spec.phrase.trim().split(/\s+/)) {
       // A single common word is not a needle, but a run of them is the phrase,
       // covered above; individual rare words are still worth flagging.
-      if (word.length >= 7) push(`recovery:word:${word.slice(0, 2)}…`, word, "text");
+      if (word.length >= 7) push(`recovery:word:${word.slice(0, 2)}…`, word, "text", { word: word.toLowerCase() });
     }
   }
   for (const [i, code] of (spec.codes || []).entries()) push(`pairing:code:${i}`, code, "text");
@@ -397,6 +402,38 @@ function viewsOf(message, isRequest) {
 
 // ---- The scan.
 
+/** Every JSON object key in a parsed body, at any depth. */
+function keysOf(value, out, depth) {
+  if (depth > 6) return;
+  if (Array.isArray(value)) for (const v of value) keysOf(v, out, depth + 1);
+  else if (value && typeof value === "object") {
+    for (const k of Object.keys(value)) { out.add(k.toLowerCase()); keysOf(value[k], out, depth + 1); }
+  }
+}
+
+/**
+ * The protocol's own words in this capture: header names, JSON keys at any
+ * depth, and the literal words of every request target (path segments and
+ * query names). A single recovery word inside one of these is protocol, not
+ * a leak.
+ */
+function vocabularyOf(conns) {
+  const words = new Set();
+  const body = (m) => { try { keysOf(JSON.parse(m.body.toString("utf8")), words, 0); } catch { /* not json */ } };
+  for (const conn of conns) {
+    for (const req of conn.requests) {
+      for (const k of Object.keys(req.head)) if (k !== "line" && k !== "raw") words.add(k.toLowerCase());
+      for (const w of (req.head.line.split(" ")[1] || "").split(/[/?&=]/)) if (/^[a-z_-]+$/i.test(w)) words.add(w.toLowerCase());
+      body(req);
+    }
+    for (const res of conn.responses) {
+      for (const k of Object.keys(res.head)) if (k !== "line" && k !== "raw") words.add(k.toLowerCase());
+      body(res);
+    }
+  }
+  return [...words];
+}
+
 /** Route class for one request line, so the report says WHAT crossed. */
 function routeClass(line) {
   const target = (line.split(" ")[1] || "").split("?")[0];
@@ -410,8 +447,12 @@ function routeClass(line) {
  * empty on PASS; `visible` is the metadata inventory (routes, header names,
  * field names, device names, platforms, versions, agent, credential legs).
  */
-export function scan(conns, needles) {
+export function scan(conns, allNeedles) {
   const hits = [];
+  const vocabulary = vocabularyOf(conns);
+  const isProtocol = (n) => n.word !== undefined && vocabulary.some((w) => w.includes(n.word));
+  const skipped = allNeedles.filter(isProtocol).map((n) => n.label);
+  const needles = allNeedles.filter((n) => !isProtocol(n));
   const routes = new Map();
   const requestHeaders = new Set();
   const responseHeaders = new Set();
@@ -465,6 +506,7 @@ export function scan(conns, needles) {
   }
   return {
     hits,
+    skipped,
     visible: {
       routes: [...routes.entries()].map(([r, n]) => `${r} ×${n}`).sort(),
       requestHeaders: [...requestHeaders].sort(),
@@ -504,15 +546,16 @@ async function cli() {
     const spec = JSON.parse(fs.readFileSync(args.needles, "utf8"));
     const needles = buildNeedles(spec);
     const conns = readCapture(args.capture);
-    const { hits, visible } = scan(conns, needles);
+    const { hits, skipped, visible } = scan(conns, needles);
     const requests = conns.reduce((n, c) => n + c.requests.length, 0);
     const responses = conns.reduce((n, c) => n + c.responses.length, 0);
     if (args.json) {
-      process.stdout.write(`${JSON.stringify({ decision: hits.length === 0 ? "pass" : "fail", needles: needles.length, connections: conns.length, requests, responses, hits, visible }, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify({ decision: hits.length === 0 ? "pass" : "fail", needles: needles.length, connections: conns.length, requests, responses, hits, skipped, visible }, null, 2)}\n`);
     } else {
       process.stdout.write(`observer scan: ${conns.length} connections, ${requests} requests, ${responses} responses, ${needles.length} needles in ${needles.reduce((n, x) => n + x.forms.length + x.raws.length, 0)} encodings\n`);
       process.stdout.write(`observer scan: DECISION ${hits.length === 0 ? "PASS (zero needle hits)" : `FAIL (${hits.length} hit(s))`}\n`);
       for (const h of hits) process.stdout.write(`observer scan:   HIT ${h.label} in a ${h.where}\n`);
+      if (skipped.length) process.stdout.write(`observer scan: ${skipped.length} single recovery word(s) not searched, being the protocol's own vocabulary here: ${skipped.join(", ")}\n`);
       process.stdout.write("observer scan: VISIBLE to the hop:\n");
       process.stdout.write(`  routes: ${visible.routes.join(", ")}\n`);
       process.stdout.write(`  request headers: ${visible.requestHeaders.join(", ")}\n`);

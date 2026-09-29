@@ -147,6 +147,24 @@ class ObserverScanner(unittest.TestCase):
         self.assertEqual(out["decision"], "pass", out)
         self.assertEqual(out["hits"], [])
 
+    def test_a_recovery_word_that_is_a_protocol_field_name_is_not_a_hit(self):
+        # "address" is a BIP-39 word AND a device-list field name: a phrase
+        # holding it must not fail every capture that lists devices.
+        devices = b'{"devices":[{"name":"Mac","address":"192.0.2.1","country":"XX"}]}'
+        down = b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s" % (len(devices), devices)
+        cap = _capture(self.tmp, _message("GET", "/v1/devices", b""), down)
+        out = _scan(cap, {"phrase": "abandon ability address"})
+        self.assertEqual(out["decision"], "pass", out)
+        self.assertEqual(out["skipped"], ["recovery:word:ad…"], out)
+
+    def test_a_recovery_word_in_a_value_is_still_caught(self):
+        # The same phrase, with a word that is NOT protocol vocabulary sent as
+        # a value: the per-word needle still fires.
+        cap = _capture(self.tmp, _message("PATCH", "/v1/devices/" + "a" * 32, b'{"name":"ability"}'))
+        out = _scan(cap, {"phrase": "abandon ability address"})
+        self.assertEqual(out["decision"], "fail", out)
+        self.assertTrue(any(h["label"] == "recovery:word:ab…" for h in out["hits"]), out)
+
     def test_the_visibility_inventory_names_the_route_and_headers(self):
         cap = _capture(self.tmp, _message("POST", "/v1/files/" + "a" * 32 + "/versions", b"{}"))
         out = _scan(cap, {"text": {"note": SENTINEL}})
