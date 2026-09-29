@@ -462,7 +462,9 @@ works the older way, where the code alone opens the vault key.
 
 1. Select **Reject** on the device that made the code. If it was approved
    anyway, the new device refuses the vault key it was sent and removes itself
-   from the server: nothing is shared.
+   from the server: nothing is shared. The device that made the code may still
+   say "The new device, … is paired"; the new device's own screen, which says
+   it could not open the vault key, is the one that is right.
 2. Update obsyncd on your server ([Upgrade by digest](server.md#upgrade-by-digest))
    and obsync on any older device, then pair again with a new code.
 3. If both devices and the server run 1.1.5 or later and the codes still
