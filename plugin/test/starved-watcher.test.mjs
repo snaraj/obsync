@@ -23,7 +23,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { lstat, readdir, rename as renameFile, rm, unlink } from "node:fs/promises";
-import { promises as fsPromises, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
+import { promises as fsPromises, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import nodePath, { dirname, join } from "node:path";
 import { KEYS, STEP_MS, memorySecrets, pair, sandbox, settled } from "./fake.mjs";
@@ -297,6 +297,10 @@ async function receiver(t, { server, timers, a }, { iterate = true, ...options }
       await fsPromises.rename(from, to);
       if (hooks.afterRename) await hooks.afterRename(from, to);
     },
+    rmdir: async (path, ...rest) => {
+      if (hooks.beforeRmdir) await hooks.beforeRmdir(path);
+      await fsPromises.rmdir(path, ...rest);
+    },
   };
   const host = new main.ObsidianHost(plugin, { base: root, path: nodePath, fs: { promises } });
   const notices = [];
@@ -415,6 +419,34 @@ test("a pulled rename, deletion and new empty folder under a starved watcher lea
   assert.deepEqual(r.notices, []);
   // The names this host moved or removed were taken out as its own: no engine heard a note's deletion.
   assert.ok(!r.logs.some((line) => /^watch path_class=file .*event=delete/.test(line)), story(r));
+});
+
+test("a folder removed while Obsidian did not list it stays unlisted when its late event lists it first (#266, #253)", async (t) => {
+  const devices = await pair(t);
+  const { timers, a } = devices;
+  await a.engine.start();
+  const r = await receiver(t, devices);
+  await r.engine.start();
+  await timers.run(STEP_MS);
+  // A folder this disk holds that Obsidian never listed: another program made it while the watcher starved.
+  mkdirSync(join(r.root, "Gone"));
+  assert.equal(listed(r, "Gone"), null);
+  // Its event arrives late: after the host found the folder unlisted, before the removal.
+  r.hooks.beforeRmdir = async (path) => {
+    if (path.endsWith(`${nodePath.sep}Gone`)) await r.adapter.late("Gone");
+  };
+  assert.equal(await r.host.trashFolder("Gone"), 0);
+  assert.equal(existsSync(join(r.root, "Gone")), false, "the folder is removed");
+  assert.equal(listed(r, "Gone"), null, `the removed folder is still listed: ${story(r)}`);
+  assert.ok(r.logs.some((line) => /^vault path_class=folder decision=unlisted reason=still_listed /.test(line)), story(r));
+  // With no late event the listing already agrees: one lookup, nothing logged.
+  r.hooks.beforeRmdir = undefined;
+  mkdirSync(join(r.root, "Quiet"));
+  const before = r.logs.length;
+  assert.equal(await r.host.trashFolder("Quiet"), 0);
+  assert.equal(existsSync(join(r.root, "Quiet")), false);
+  assert.equal(listed(r, "Quiet"), null);
+  assert.ok(!r.logs.slice(before).some((line) => line.startsWith("vault path_class=folder")), story(r));
 });
 
 test("a name a watcher that keeps up has already reported costs a lookup, not a reconcile", async (t) => {

@@ -2894,8 +2894,10 @@ export class ObsidianHost implements VaultHost {
     }
     if (kept > 0) return kept;
     const folder = this.plugin.app.vault.getFolderByPath(path);
+    let unlisted = false;
     if (folder) await this.plugin.app.fileManager.trashFile(folder);
     else if (desktop !== null && found !== null) {
+      unlisted = true;
       // NOT THE ADAPTER'S `rmdir(path, false)` ON DESKTOP (issue #266): that is
       // `fs.rm` without `recursive`, which refuses EVERY directory, empty or
       // not, with `EISDIR`. A folder Obsidian has not indexed yet -- one a
@@ -2926,6 +2928,11 @@ export class ObsidianHost implements VaultHost {
     if (after !== null && after.isDirectory() && after.dev === found.stat?.dev && after.ino === found.stat?.ino) {
       throw new VaultPathError("target_identity");
     }
+    // A folder Obsidian did not list when it was removed (#266) may still be
+    // reported by a late or starved file event: tell Obsidian it is gone, as
+    // every other removal on disk does (#253). Usually the listing already
+    // agrees, and this costs one lookup.
+    if (unlisted) await this.reconcile(path, "folder", false);
     return 0;
   }
 
