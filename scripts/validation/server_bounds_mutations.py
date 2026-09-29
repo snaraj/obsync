@@ -2,8 +2,10 @@
 """Reproduce the server-bounds (#193, part of #202, #204) guard probes from the
 repository root.
 
-Each probe must compile and fail a behavioral regression. Sources are restored
-from their exact starting bytes in finally, including on failure or interrupt.
+Each probe must compile and fail a behavioral regression. Each escape must be
+refused by a production build of the server, with the error it names. Sources
+are restored from their exact starting bytes in finally, including on failure
+or interrupt.
 Never run beside another build or source editor in this worktree. Name probes
 to run only those: `python3 -B scripts/validation/server_bounds_mutations.py
 nonce-share preauth-bare`.
@@ -25,6 +27,8 @@ JOURNAL = "crates/obsyncd/src/storage/journal.rs"
 CLI = "crates/obsyncd/src/cli/mod.rs"
 SERVE = "crates/obsyncd/src/cli/serve.rs"
 PAIRING = "crates/obsyncd/src/api/pairing.rs"
+SETUP = "crates/obsyncd/src/api/setup.rs"
+UNVERIFIED = "crates/obsyncd/src/api/unverified.rs"
 BUDGET = "three_hundred_slow_bodies_stay_inside_the_unverified_body_budget"
 SHARE = "a_device_at_its_share_is_refused_and_no_other_device_is"
 STREAM = "a_batch_streams_and_names_a_lost_chunk_missing"
@@ -36,7 +40,10 @@ SIGNED = "a_signed_body_stays_reserved_until_its_nonce_is_remembered"
 CLAIMS = "claims_waiting_for_the_pairing_table_keep_their_bodies_inside_the_budget"
 PARSE = "a_token_body_and_its_parse_fit_the_reservation"
 BOUND = "the_record_bound_keeps_every_head_and_the_newest_versions_that_fit"
-SENDS = "a_record_measured_past_its_bound_sends_what_the_bound_keeps"
+SETUP_HELD = "a_setup_token_is_compared_while_its_body_is_reserved"
+PAST = "a_record_at_the_bound_is_whole_and_one_byte_past_it_leaves_out_what_passes_it"
+MEASURE = "a_records_measure_is_its_rendering_length"
+LENGTH = "a_versions_length_is_its_rendering_length"
 PROBE_BODY = """    match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -47,6 +54,19 @@ PROBE_BODY = """    match std::fs::remove_file(&path) {
         .create_new(true)
         .mode(0o600)
         .open(&path)?;"""
+CLAIM_CHECK = """    let (_, (enrolment, vault, mut pairings)) =
+        unverified::token_body(app, req)?.accept(|body, held| {
+            let enroll = render::field_str(body, "enroll_token")?.to_string();
+            let enrolment = devices::enrolment_fields(body)?;
+            let vault = vault_details(body)?;
+            let pairings = app.pairings.lock().expect("pairings");
+            pairings.begin_claim(id, &enroll, now, held)?;
+            Ok((enrolment, vault, pairings))
+        })?;
+"""
+SETUP_CHECK = """    let (body, (account_name, enrolment)) =
+        unverified::token_body(app, req)?.accept(|body, held| setup_fields(app, body, held))?;
+"""
 CASES = [
     ("accept-blocks", CORE, HTTP, "            match listener.accept() {",
      "            thread::sleep(Duration::from_millis(50));\n            match listener.accept() {",
@@ -89,32 +109,54 @@ CASES = [
      "files_page_walks_in_id_order"),
     ("frame-length-refused", SERVER, JOURNAL, "    u32::try_from(len).ok().map(u32::to_le_bytes)",
      "    Some((len as u32).to_le_bytes())", "a_frame_length_over_32_bits_is_refused_rather_than_wrapped"),
-    ("preauth-ceiling", SERVER, API, "                .filter(|total| *total <= PREAUTH_BODY_BUDGET)",
+    ("preauth-ceiling", SERVER, UNVERIFIED, "                .filter(|total| *total <= PREAUTH_BODY_BUDGET)",
      "                .filter(|_| true)", BUDGET),
     # An unverified body's reservation ends only after its credential check
-    # (review of 7e1294d, finding 2, and of c5f79e8, finding 2).
-    ("preauth-reserved", SERVER, API,
-     "        let found = check(&self.value)?;\n        let Self { value, reserved } = self;\n        drop(reserved);\n",
-     "        let Self { value, reserved } = self;\n        drop(reserved);\n        let found = check(&value)?;\n",
+    # (reviews of 7e1294d, c5f79e8 and 77660fb, finding 2). The budget is
+    # sealed in unverified.rs and the credential checks take `&Held`, so
+    # moving one out of `accept` does not compile (ESCAPES below). These
+    # probes release inside `accept`, or launder a check through a second,
+    # empty body, and the route tests catch each.
+    ("preauth-reserved", SERVER, UNVERIFIED,
+     "        let found = check(&self.value, &Held(()))?;\n        let Self { value, reserved } = self;\n"
+     "        drop(reserved);\n",
+     "        let Self { value, reserved } = self;\n        drop(reserved);\n"
+     "        let found = check(&value, &Held(()))?;\n",
      ACCEPT),
-    ("preauth-signed-reserved", SERVER, AUTH, "        Some(raw) => raw.accept(proof)?.0,",
-     "        Some(raw) => {\n            let body = raw.accept(|_| Ok(()))?.0;\n            proof(&body)?;\n            body\n        }",
+    ("preauth-signed-reserved", SERVER, AUTH,
+     "            super::unverified::read_body(app, req, super::JSON_BODY_LIMIT)?\n"
+     "                .accept(|raw, _| proof(&hex::encode(&sha256::sha256(raw))))?\n"
+     "                .0\n",
+     "            let raw = super::unverified::read_body(app, req, super::JSON_BODY_LIMIT)?\n"
+     "                .accept(|_, _| Ok(()))?\n                .0;\n"
+     "            proof(&hex::encode(&sha256::sha256(&raw)))?;\n            raw\n",
      SIGNED),
-    ("preauth-claim-reserved", SERVER, PAIRING,
-     "    let mut pairings = app.pairings.lock().expect(\"pairings\");\n"
-     "    unverified.accept(|_| pairings.begin_claim(id, &enroll, now))?;",
-     "    unverified.accept(|_| Ok(()))?;\n"
-     "    let mut pairings = app.pairings.lock().expect(\"pairings\");\n"
-     "    pairings.begin_claim(id, &enroll, now)?;", CLAIMS),
-    ("preauth-token-reserve", SERVER, RENDER,
-     "    let reserved = app.reserve_body(reserve.unwrap_or(declared.unwrap_or(limit)))?;",
-     "    let _ = reserve;\n    let reserved = app.reserve_body(declared.unwrap_or(limit))?;", CLAIMS),
+    ("preauth-claim-laundered", SERVER, PAIRING, CLAIM_CHECK,
+     "    let (_, (enroll, enrolment, vault)) = unverified::token_body(app, req)?.accept(|body, _| {\n"
+     "        let enroll = render::field_str(body, \"enroll_token\")?.to_string();\n"
+     "        Ok((enroll, devices::enrolment_fields(body)?, vault_details(body)?))\n    })?;\n"
+     "    req.body = obsync_core::http::Body::from_bytes(Vec::new());\n"
+     "    let (_, mut pairings) = unverified::read_body(app, req, 0)?.accept(|_, held| {\n"
+     "        let pairings = app.pairings.lock().expect(\"pairings\");\n"
+     "        pairings.begin_claim(id, &enroll, now, held)?;\n        Ok(pairings)\n    })?;\n",
+     CLAIMS),
+    ("preauth-setup-laundered", SERVER, SETUP, SETUP_CHECK,
+     "    let (body, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    req.body = obsync_core::http::Body::from_bytes(Vec::new());\n"
+     "    let (_, (account_name, enrolment)) =\n"
+     "        unverified::read_body(app, req, 0)?.accept(|_, held| setup_fields(app, &body, held))?;\n",
+     SETUP_HELD),
+    ("preauth-token-reserve", SERVER, UNVERIFIED,
+     "    let bytes = reserve.unwrap_or(declared.unwrap_or(limit));",
+     "    let _ = reserve;\n    let bytes = declared.unwrap_or(limit);", CLAIMS),
     ("preauth-token-ceiling", SERVER, API, "pub const TOKEN_BODY_LIMIT: u64 = 16 * 1024;",
      "pub const TOKEN_BODY_LIMIT: u64 = JSON_BODY_LIMIT;", PARSE),
     ("preauth-token-parse-reserved", SERVER, API, "pub const TOKEN_BODY_RESERVE: u64 = JSON_BODY_LIMIT;",
      "pub const TOKEN_BODY_RESERVE: u64 = TOKEN_BODY_LIMIT;", PARSE),
-    # A file record's bound (review of 7e1294d, finding 1, and of c5f79e8,
-    # finding 1).
+    # A file record's bound (reviews of 7e1294d, c5f79e8 and 77660fb,
+    # finding 1, and its pre-review): decided in `kept`, measured exactly by
+    # `measured` and `version_len`, and sent by `file`, whose real-bound test
+    # keeps a record exactly at 450 MiB and cuts one a byte past it.
     ("record-bound", SERVER, RENDER, "            open = open && used + len <= FILE_RECORD_MAX as usize;",
      "            open = open && used + len <= FILE_RECORD_MAX as usize * 2;", BOUND),
     ("record-bound-inclusive", SERVER, RENDER, "            open = open && used + len <= FILE_RECORD_MAX as usize;",
@@ -127,18 +169,51 @@ CASES = [
      "    let mut used = skeleton\n        + sized\n            .iter()\n            .filter(|(_, head)| *head)\n"
      "            .map(|(len, _)| len)\n            .sum::<usize>();",
      "    let mut used = skeleton;", BOUND),
+    ("record-knows-its-heads", SERVER, RENDER, "        .map(|v| (version_len(v) + 1, f.heads.contains(&v.version_id)))",
+     "        .map(|v| (version_len(v) + 1, false))", PAST),
+    ("record-knows-every-head", SERVER, RENDER, "        .map(|v| (version_len(v) + 1, f.heads.contains(&v.version_id)))",
+     "        .map(|v| (version_len(v) + 1, f.heads.first() == Some(&v.version_id)))", PAST),
+    ("record-measure-halved", SERVER, RENDER,
+     "        .map(|v| (version_len(v) + 1, f.heads.contains(&v.version_id)))",
+     "        .map(|v| (version_len(v) / 2 + 1, f.heads.contains(&v.version_id)))", MEASURE),
+    ("record-measure-comma", SERVER, RENDER,
+     "        .map(|v| (version_len(v) + 1, f.heads.contains(&v.version_id)))",
+     "        .map(|v| (version_len(v), f.heads.contains(&v.version_id)))", MEASURE),
+    ("record-measure-over", SERVER, RENDER,
+     "        .map(|v| (version_len(v) + 1, f.heads.contains(&v.version_id)))",
+     "        .map(|v| (version_len(v) + 2, f.heads.contains(&v.version_id)))", MEASURE),
+    ("record-skeleton-last-comma", SERVER, RENDER,
+     "    let skeleton = file_of(f, Vec::new()).to_json().len() - 1;",
+     "    let skeleton = file_of(f, Vec::new()).to_json().len();", MEASURE),
+    ("record-skeleton-under", SERVER, RENDER,
+     "    let skeleton = file_of(f, Vec::new()).to_json().len() - 1;",
+     "    let skeleton = file_of(f, Vec::new()).to_json().len() - 2;", MEASURE),
+    ("record-decided-on-its-measure", SERVER, RENDER, "    kept(skeleton, &sized)\n",
+     "    kept(skeleton + 1, &sized)\n", PAST),
     ("record-sends-what-it-keeps", SERVER, RENDER,
      "        .filter(|(_, keep)| **keep)\n        .map(|(v, _)| version(v))",
-     "        .filter(|_| true)\n        .map(|(v, _)| version(v))", SENDS),
+     "        .filter(|_| true)\n        .map(|(v, _)| version(v))", PAST),
+    ("record-sends-the-kept-ones", SERVER, RENDER,
+     "        .zip(&keep)\n        .filter(|(_, keep)| **keep)\n        .map(|(v, _)| version(v))",
+     "        .take(keep.iter().filter(|keep| **keep).count())\n        .map(version)", PAST),
     ("record-counts-what-it-leaves", SERVER, RENDER,
-     "    let left_out = keep.iter().filter(|keep| !**keep).count();", "    let left_out = 0;", SENDS),
-    ("record-measures-the-text", SERVER, RENDER, "    version.to_json().len() + 1\n", "    0\n",
-     "a_versions_share_is_its_text_and_the_comma_after_it"),
+     "    let left_out = keep.iter().filter(|keep| !**keep).count();", "    let left_out = 0;", PAST),
+    ("version-length-ids", SERVER, RENDER,
+     "    let ids = |count: usize| 2 + count * 66 + count.saturating_sub(1);",
+     "    let ids = |count: usize| 2 + count * 66;", LENGTH),
+    ("version-length-manifest", SERVER, RENDER, "v.manifest_ct.len().div_ceil(3) * 4", "v.manifest_ct.len() / 3 * 4",
+     LENGTH),
+    ("version-length-numbers", SERVER, RENDER, "    let int = |value: u64| n(value).to_json().len();",
+     "    let int = |value: u64| value.to_string().len();", LENGTH),
+    ("version-length-own-ts", SERVER, RENDER, "        (\"ts\", int(ms_u64(v.ts))),",
+     "        (\"ts\", int(v.bytes)),", LENGTH),
+    ("version-length-own-parents", SERVER, RENDER, "        (\"parents\", ids(v.parents.len())),",
+     "        (\"parents\", ids(v.sids.len())),", LENGTH),
     ("record-bound-450-mib", SERVER, API, "pub const FILE_RECORD_MAX: u64 = 450 * 1024 * 1024;",
      "pub const FILE_RECORD_MAX: u64 = 64 * 1024 * 1024;", "a_retained_history_past_sixty_four_mib_is_served_whole"),
-    ("preauth-released", SERVER, API, "        self.budget.held.fetch_sub(self.bytes, Ordering::SeqCst);",
+    ("preauth-released", SERVER, UNVERIFIED, "        self.budget.held.fetch_sub(self.bytes, Ordering::SeqCst);",
      "        let _ = self.bytes;", BUDGET),
-    ("preauth-bare", SERVER, API, "                .bare())", ")", BUDGET),
+    ("preauth-bare", SERVER, UNVERIFIED, "        )\n        .bare()\n    })?;", "        )\n    })?;", BUDGET),
     ("nonce-share", SERVER, AUTH, "        if held >= self.share {", "        if false {", SHARE),
     ("nonce-share-reloaded", SERVER, AUTH, "            *held.entry(device.clone()).or_default() += 1;", "",
      "a_share_still_refuses_after_a_reload"),
@@ -160,8 +235,8 @@ CASES = [
      "pub const MIN_BODY_RATE: u64 = 64 * 1024;", "a_chunk_sent_at_256_kbit_per_second_arrives"),
     ("slow-body-chunk", SERVER, CHUNKS, "    if upload.slow {", "    if false {",
      "a_chunk_body_trickled_below_the_rate_floor_is_refused"),
-    ("slow-body-json", SERVER, RENDER,
-     "        Err(e) if e.kind() == ErrorKind::TimedOut => Err(slow_body(app, &req.body)),\n", "",
+    ("slow-body-json", SERVER, UNVERIFIED,
+     "        Err(e) if e.kind() == ErrorKind::TimedOut => Err(render::slow_body(app, &req.body)),\n", "",
      "a_json_body_trickled_below_the_rate_floor_is_refused_as_slow"),
     ("slow-body-status", SERVER, RENDER, "        503,\n        \"slow_body\",",
      "        500,\n        \"slow_body\",", "a_chunk_body_trickled_below_the_rate_floor_is_refused"),
@@ -173,11 +248,11 @@ CASES = [
     ("incomplete-logged-as-warn", SERVER, API,
      "matches!(line.decision, \"slow_body\" | \"body_incomplete\")",
      "matches!(line.decision, \"slow_body\")", INCOMPLETE),
-    ("incomplete-is-not-too-large", SERVER, RENDER,
-     "        Err(e) => Err(incomplete_body(app, &req.body, &e)),",
+    ("incomplete-is-not-too-large", SERVER, UNVERIFIED,
+     "        Err(e) => Err(render::incomplete_body(app, &req.body, &e)),",
      "        Err(_) => Err(ApiError::new(413, \"body_too_large\", \"request body exceeds the limit\")),",
      INCOMPLETE),
-    ("too-large-needs-the-ceiling", SERVER, RENDER,
+    ("too-large-needs-the-ceiling", SERVER, UNVERIFIED,
      " if e.kind() == ErrorKind::InvalidData && req.body.received() > limit => Err(",
      " if e.kind() == ErrorKind::InvalidData => Err(", INCOMPLETE),
     ("incomplete-retried", SERVER, RENDER, "        503,\n        \"body_incomplete\",",
@@ -199,16 +274,89 @@ CASES = [
      "http_reports_are_logged_for_what_they_are"),
 ]
 
+# What the seal forbids (reviews of 77660fb and its pre-review): each escape
+# must be refused by `cargo check` of the server as it ships, with this error.
+ESCAPES = [
+    ("escape-reseal", SETUP, SETUP_CHECK,
+     "    let (body, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    let (body, (account_name, enrolment)) =\n"
+     "        unverified::Unverified::new(body, app.reserve_body(super::TOKEN_BODY_RESERVE)?)\n"
+     "            .accept(|body, held| setup_fields(app, body, held))?;\n",
+     "named `new` found for struct `Unverified"),
+    ("escape-reseal-fields", SETUP, SETUP_CHECK,
+     "    let (body, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    let sealed = unverified::token_body(app, req)?;\n"
+     "    let (body, (account_name, enrolment)) = unverified::Unverified { value: body, ..sealed }\n"
+     "        .accept(|body, held| setup_fields(app, body, held))?;\n",
+     "fields `value` and `reserved` of struct `Unverified` are private"),
+    ("escape-reserve", SETUP, SETUP_CHECK,
+     "    let _reserved = app.bodies.reserve(super::TOKEN_BODY_RESERVE);\n" + SETUP_CHECK,
+     "method `reserve` is private"),
+    ("escape-release", SETUP, SETUP_CHECK,
+     "    app.bodies.held.store(0, std::sync::atomic::Ordering::SeqCst);\n" + SETUP_CHECK,
+     "field `held` of struct `BodyBudget` is private"),
+    ("escape-setup-check-after", SETUP, SETUP_CHECK,
+     "    let (body, ()) = unverified::token_body(app, req)?.accept(|_, _| Ok(()))?;\n"
+     "    let (account_name, enrolment) = setup_fields(app, &body, held)?;\n",
+     "cannot find value `held` in this scope"),
+    ("escape-claim-check-after", PAIRING, CLAIM_CHECK,
+     "    let (_, (enroll, enrolment, vault, mut pairings)) =\n"
+     "        unverified::token_body(app, req)?.accept(|body, _| {\n"
+     "            let enroll = render::field_str(body, \"enroll_token\")?.to_string();\n"
+     "            let pairings = app.pairings.lock().expect(\"pairings\");\n"
+     "            Ok((enroll, devices::enrolment_fields(body)?, vault_details(body)?, pairings))\n"
+     "        })?;\n"
+     "    pairings.begin_claim(id, &enroll, now, held)?;\n",
+     "cannot find value `held` in this scope"),
+    ("escape-test-held", PAIRING, CLAIM_CHECK,
+     "    let (_, (enroll, enrolment, vault, mut pairings)) =\n"
+     "        unverified::token_body(app, req)?.accept(|body, _| {\n"
+     "            let enroll = render::field_str(body, \"enroll_token\")?.to_string();\n"
+     "            let pairings = app.pairings.lock().expect(\"pairings\");\n"
+     "            Ok((enroll, devices::enrolment_fields(body)?, vault_details(body)?, pairings))\n"
+     "        })?;\n"
+     "    pairings.begin_claim(id, &enroll, now, &unverified::HELD_FOR_TESTS)?;\n",
+     "cannot find value `HELD_FOR_TESTS` in module `unverified`"),
+    ("escape-keep-held", SETUP, SETUP_CHECK,
+     "    let mut kept = None;\n"
+     "    let (body, ()) = unverified::token_body(app, req)?.accept(|_, held| {\n"
+     "        kept = Some(held);\n        Ok(())\n    })?;\n"
+     "    let (account_name, enrolment) = setup_fields(app, &body, kept.expect(\"held\"))?;\n",
+     "borrowed data escapes outside of closure"),
+]
+
 
 def main():
     wanted = set(sys.argv[1:])
-    unknown = wanted - {case[0] for case in CASES}
+    unknown = wanted - {case[0] for case in CASES + ESCAPES}
     if unknown:
         raise SystemExit("No such probe: " + ", ".join(sorted(unknown)))
     cases = [case for case in CASES if not wanted or case[0] in wanted]
-    originals = {Path(path): Path(path).read_bytes() for _, _, path, *_ in cases}
+    escapes = [case for case in ESCAPES if not wanted or case[0] in wanted]
+    originals = {Path(path): Path(path).read_bytes()
+                 for path in [case[2] for case in cases] + [case[1] for case in escapes]}
     failures = []
     try:
+        for name, path, old, new, refusal in escapes:
+            source = originals[Path(path)].decode()
+            if source.count(old) != 1:
+                raise RuntimeError(f"{name}: escape context moved")
+            Path(path).write_text(source.replace(old, new, 1))
+            try:
+                result = subprocess.run(
+                    ["cargo", "check", "-p", SERVER, "--lib", "--message-format", "short"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, timeout=600, check=False,
+                )
+            finally:
+                Path(path).write_bytes(originals[Path(path)])
+            errors = [line for line in result.stdout.splitlines() if ": error" in line]
+            refused = result.returncode != 0 and any(
+                line.startswith(path + ":") and refusal in line for line in errors)
+            print(f"{name}: {'REFUSED' if refused else 'NOT REFUSED'}", flush=True)
+            print("\n".join(errors), flush=True)
+            if not refused:
+                failures.append(name)
         for name, crate, path, old, new, selector in cases:
             source = originals[Path(path)].decode()
             if source.count(old) != 1:
@@ -239,8 +387,9 @@ def main():
         for path, original in originals.items():
             path.write_bytes(original)
     if failures:
-        raise SystemExit("Unkilled probes: " + ", ".join(failures))
-    print(f"All {len(cases)} server probes compiled and were killed.")
+        raise SystemExit("Unkilled probes or unrefused escapes: " + ", ".join(failures))
+    print(f"All {len(cases)} server probes compiled and were killed; "
+          f"all {len(escapes)} escapes were refused by a production build.")
 
 
 if __name__ == "__main__":

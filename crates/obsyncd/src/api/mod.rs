@@ -21,6 +21,7 @@ pub mod plugin;
 pub mod rand;
 pub mod render;
 pub mod setup;
+pub mod unverified;
 
 #[cfg(test)]
 mod app_test;
@@ -33,7 +34,7 @@ mod server_test;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -391,59 +392,6 @@ impl Recent {
     }
 }
 
-/// The body bytes reserved against [`PREAUTH_BODY_BUDGET`] right now.
-#[derive(Default)]
-struct BodyBudget {
-    held: AtomicU64,
-}
-
-/// One read's reservation against the budget, given back when the read that
-/// needed it ends, however it ends.
-pub struct Reserved<'a> {
-    budget: &'a BodyBudget,
-    bytes: u64,
-}
-
-impl Drop for Reserved<'_> {
-    fn drop(&mut self) {
-        self.budget.held.fetch_sub(self.bytes, Ordering::SeqCst);
-    }
-}
-
-/// What a caller sent before its credential verified -- the bytes, or what
-/// they parse to -- with the reservation that accounts for it. The value
-/// comes out only through [`Unverified::accept`], which runs the credential
-/// check with the reservation still held: nothing else releases it, so no
-/// handler can give it back while another request could still see the
-/// budget under-counted (review of 7e1294d).
-pub struct Unverified<'a, T> {
-    value: T,
-    reserved: Reserved<'a>,
-}
-
-impl<T> Unverified<'_, T> {
-    /// The value, to read what the check needs: a hash, a token.
-    pub fn peek(&self) -> &T {
-        &self.value
-    }
-
-    /// Run `check` with the reservation held, and hand back the value with
-    /// what the check found only if it passed. The reservation ends after
-    /// the check, either way.
-    ///
-    /// # Errors
-    /// Whatever `check` refuses with.
-    pub fn accept<R>(
-        self,
-        check: impl FnOnce(&T) -> Result<R, ApiError>,
-    ) -> Result<(T, R), ApiError> {
-        let found = check(&self.value)?;
-        let Self { value, reserved } = self;
-        drop(reserved);
-        Ok((value, found))
-    }
-}
-
 /// Cached readiness verdict (`docs/protocol.md`, "Health").
 struct ReadyCache {
     checked_at: u64,
@@ -476,7 +424,7 @@ pub struct App {
     joined: edge::JoinedLog,
     recent: Mutex<Recent>,
     ready: Mutex<ReadyCache>,
-    bodies: BodyBudget,
+    bodies: unverified::BodyBudget,
     gc_requested: AtomicBool,
     scrub_requested: AtomicBool,
     gc_running: AtomicBool,
@@ -543,7 +491,7 @@ impl App {
                 checked_at: 0,
                 verdict: Ok(()),
             }),
-            bodies: BodyBudget::default(),
+            bodies: unverified::BodyBudget::default(),
             gc_requested: AtomicBool::new(false),
             scrub_requested: AtomicBool::new(false),
             gc_running: AtomicBool::new(false),
@@ -637,51 +585,10 @@ impl App {
         self.scrub_requested.swap(false, Ordering::SeqCst)
     }
 
-    /// Reserve `bytes` of body read before any credential verifies, or refuse
-    /// the read before a byte of it is taken off the wire.
-    ///
-    /// # Errors
-    /// A bare `503` with `Retry-After: 1` when the reservation does not fit
-    /// under [`PREAUTH_BODY_BUDGET`], with one line naming the budget
-    /// (requirement 12). A bodiless request reserves nothing and always fits.
-    pub fn reserve_body(&self, bytes: u64) -> Result<Reserved<'_>, ApiError> {
-        let fits = |held: u64| {
-            held.checked_add(bytes)
-                .filter(|total| *total <= PREAUTH_BODY_BUDGET)
-        };
-        match self
-            .bodies
-            .held
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, fits)
-        {
-            Ok(_) => Ok(Reserved {
-                budget: &self.bodies,
-                bytes,
-            }),
-            Err(held) => {
-                self.log.warn(
-                    "preauth_body",
-                    &[
-                        ("decision", Val::word("refused")),
-                        ("bytes", Val::bytes(bytes)),
-                        ("held", Val::bytes(held)),
-                        ("budget", Val::bytes(PREAUTH_BODY_BUDGET)),
-                    ],
-                );
-                Err(ApiError::new(
-                    503,
-                    "preauth_budget_full",
-                    "unverified request bodies are at their ceiling; retry shortly",
-                )
-                .bare())
-            }
-        }
-    }
-
     /// Body bytes reserved right now, for the tests that pin the ceiling.
     #[cfg(test)]
     pub fn preauth_held(&self) -> u64 {
-        self.bodies.held.load(Ordering::SeqCst)
+        self.bodies.held()
     }
 
     /// The account id, or `409 not_set_up`.

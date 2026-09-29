@@ -544,27 +544,37 @@ fn claims_waiting_for_the_pairing_table_keep_their_bodies_inside_the_budget() {
     assert_eq!(h.app.preauth_held(), 0, "every reservation came back");
 }
 
-/// Review of c5f79e8, finding 2: an unverified body's reservation ends only
-/// after its check, whether the check passes or refuses. `accept` is the one
-/// way a body leaves `Unverified`, so this is every route's guarantee.
+/// Review of 77660fb, finding 2: the setup token is compared while its body
+/// is still reserved, for a token that does not match and for one that does.
+/// The comparison notes what the budget holds at that moment, so a handler
+/// that released the body before comparing would note nothing held.
 #[test]
-fn an_unverified_body_stays_reserved_until_its_check_has_run() {
-    let h = Harness::start("unverified-accept");
-    let hold = || crate::api::Unverified {
-        value: 7u8,
-        reserved: h.app.reserve_body(1000).expect("fits"),
-    };
-    let (value, seen) = hold()
-        .accept(|value| Ok((*value, h.app.preauth_held())))
-        .expect("passes");
-    assert_eq!((value, seen), (7, (7, 1000)), "reserved while checked");
+fn a_setup_token_is_compared_while_its_body_is_reserved() {
+    use std::sync::atomic::Ordering;
+    let h = Harness::start("setup-reserved");
+    let seen = || h.app.bodies.at_token_check.swap(0, Ordering::SeqCst);
+    let wrong = Req::post("/v1/setup")
+        .body(&format!(
+            r#"{{"setup_token":"{}","account_name":"vault","device":{{"name":"laptop","platform":"macos","app_version":"0.1.0"}}}}"#,
+            "00".repeat(32)
+        ))
+        .send(h.addr);
+    assert_eq!(
+        (wrong.status, wrong.code()),
+        (401, "bad_setup_token".to_string())
+    );
+    assert_eq!(
+        seen(),
+        crate::api::TOKEN_BODY_RESERVE,
+        "reserved while a wrong token was compared"
+    );
+    h.setup_account();
+    assert_eq!(
+        seen(),
+        crate::api::TOKEN_BODY_RESERVE,
+        "reserved while the right one was"
+    );
     assert_eq!(h.app.preauth_held(), 0, "and given back after");
-    let refused = hold().accept(|_| -> Result<(), crate::api::ApiError> {
-        assert_eq!(h.app.preauth_held(), 1000, "reserved while refused");
-        Err(crate::api::ApiError::bad_request("refused"))
-    });
-    assert!(refused.is_err());
-    assert_eq!(h.app.preauth_held(), 0, "and given back after a refusal");
 }
 
 /// And a signed body is reserved until its signature verified AND its nonce

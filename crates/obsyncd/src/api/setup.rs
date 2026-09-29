@@ -4,13 +4,15 @@
 
 use obsync_core::ct;
 use obsync_core::http::{Request, Response};
-use obsync_core::json::obj;
+use obsync_core::json::{Value, obj};
 
 use crate::log::Val;
 use crate::storage::types::DeviceState;
 
+use super::devices::Enrolment;
 use super::edge::ClientInfo;
 use super::render::{self, s};
+use super::unverified::{self, Held};
 use super::{ApiError, App, auth, devices};
 
 /// `POST /v1/setup`: create an account, or recover one with the token and vault proof.
@@ -24,44 +26,11 @@ use super::{ApiError, App, auth, devices};
 /// that does not match, `409 already_set_up` without proof,
 /// `409 recovery_unavailable` without registration, or `403 bad_recovery_proof`.
 pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
-    // The body is an unverified caller's until the token has matched, so the
+    // The body is an unverified caller's until the token has matched, so its
     // fields are read and the token compared inside `accept`, with the body
     // still reserved (`Unverified`).
-    let (body, (account_name, enrolment)) = render::token_body(app, req)?.accept(|body| {
-        let token = render::field_str(body, "setup_token")?;
-        let account_name =
-            render::text_field(render::field_str(body, "account_name")?, "account_name", 64)?;
-        let device = body
-            .get("device")
-            .ok_or_else(|| ApiError::bad_request("device must be an object"))?;
-        // Validated before the account is created, so a malformed platform
-        // cannot leave an account behind that no device can ever reach.
-        let enrolment = devices::enrolment_fields(device)?;
-
-        // The TOKEN first, and the account afterwards. Both refusals are
-        // documented and both still happen; what changes is what an
-        // unauthenticated caller learns from them. Asking the account first made
-        // `409 already_set_up` an answer anybody could get with a wrong token,
-        // which is a free "is this server claimed?" oracle on a public hostname.
-        // Now only a caller holding the token can tell the two apart
-        // (`docs/protocol.md`, "Setup and account").
-        let expected = app
-            .setup_token
-            .as_deref()
-            .ok_or_else(|| ApiError::new(409, "already_set_up", "no setup token is outstanding"))?;
-        if !ct::eq(expected.as_bytes(), token.as_bytes()) {
-            app.log.warn(
-                "setup_refused",
-                &[("decision", Val::word("bad_setup_token"))],
-            );
-            return Err(ApiError::new(
-                401,
-                "bad_setup_token",
-                "setup token does not match",
-            ));
-        }
-        Ok((account_name, enrolment))
-    })?;
+    let (body, (account_name, enrolment)) =
+        unverified::token_body(app, req)?.accept(|body, held| setup_fields(app, body, held))?;
     // The token matched in constant time, so this caller holds the
     // first-boot credential. The `409` below is answered to a caller that
     // proved it, and the `401` above to one that did not.
@@ -128,6 +97,61 @@ pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
             ("device_secret", s(&secret)),
         ]),
     ))
+}
+
+/// The account name and the first device's enrolment from a setup body,
+/// once its token has matched. Runs inside `accept`: until the token matches,
+/// the body is an unverified caller's.
+fn setup_fields(app: &App, body: &Value, held: &Held) -> Result<(String, Enrolment), ApiError> {
+    let token = render::field_str(body, "setup_token")?;
+    let account_name =
+        render::text_field(render::field_str(body, "account_name")?, "account_name", 64)?;
+    let device = body
+        .get("device")
+        .ok_or_else(|| ApiError::bad_request("device must be an object"))?;
+    // Validated before the account is created, so a malformed platform
+    // cannot leave an account behind that no device can ever reach.
+    let enrolment = devices::enrolment_fields(device)?;
+
+    // The TOKEN first, and the account afterwards. Both refusals are
+    // documented and both still happen; what changes is what an
+    // unauthenticated caller learns from them. Asking the account first made
+    // `409 already_set_up` an answer anybody could get with a wrong token,
+    // which is a free "is this server claimed?" oracle on a public hostname.
+    // Now only a caller holding the token can tell the two apart
+    // (`docs/protocol.md`, "Setup and account").
+    check_token(app, token, held)?;
+    Ok((account_name, enrolment))
+}
+
+/// Refuse unless `token` is the outstanding setup token, compared in constant
+/// time. The token is the credential, so this takes [`Held`]: the comparison
+/// and its refusal run only inside `accept`, with the body still reserved.
+///
+/// # Errors
+/// `409 already_set_up` when no setup token is outstanding, and
+/// `401 bad_setup_token` when this one does not match.
+fn check_token(app: &App, token: &str, _: &Held) -> Result<(), ApiError> {
+    let expected = app
+        .setup_token
+        .as_deref()
+        .ok_or_else(|| ApiError::new(409, "already_set_up", "no setup token is outstanding"))?;
+    #[cfg(test)]
+    app.bodies
+        .at_token_check
+        .store(app.preauth_held(), std::sync::atomic::Ordering::SeqCst);
+    if !ct::eq(expected.as_bytes(), token.as_bytes()) {
+        app.log.warn(
+            "setup_refused",
+            &[("decision", Val::word("bad_setup_token"))],
+        );
+        return Err(ApiError::new(
+            401,
+            "bad_setup_token",
+            "setup token does not match",
+        ));
+    }
+    Ok(())
 }
 
 /// `GET /v1/account`.

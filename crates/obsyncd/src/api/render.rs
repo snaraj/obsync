@@ -5,11 +5,9 @@
 //! are stated once and a change to a record is a one-file change.
 #![forbid(unsafe_code)]
 
-use std::io::ErrorKind;
-
 use obsync_core::base64;
 use obsync_core::hex;
-use obsync_core::http::{Body, Request};
+use obsync_core::http::Body;
 use obsync_core::json::{Value, obj, parse_limited};
 
 use crate::log::Val;
@@ -20,10 +18,7 @@ use crate::storage::types::{
 };
 use crate::types::{DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
-use super::{
-    ApiError, App, FILE_RECORD_MAX, JSON_BODY_LIMIT, TOKEN_BODY_LIMIT, TOKEN_BODY_RESERVE,
-    Unverified,
-};
+use super::{ApiError, App, FILE_RECORD_MAX, JSON_BODY_LIMIT};
 
 /// A JSON string.
 pub fn s(v: &str) -> Value {
@@ -163,24 +158,7 @@ pub fn version(v: &VersionRecord) -> Value {
 /// retention cap already makes it. Returns the record and how many versions
 /// it left out.
 pub fn file(f: &FileRecord) -> (Value, usize) {
-    file_measured(f, rendered_len)
-}
-
-/// A version's share of a record: its text and the comma after it.
-fn rendered_len(version: &Value) -> usize {
-    version.to_json().len() + 1
-}
-
-/// [`file`], with each version's share measured by `measure`: every version
-/// is rendered once to be measured, and the kept ones again to be sent, so a
-/// record past the bound never holds more than its own versions' text.
-fn file_measured(f: &FileRecord, measure: fn(&Value) -> usize) -> (Value, usize) {
-    let sized: Vec<(usize, bool)> = f
-        .versions
-        .iter()
-        .map(|v| (measure(&version(v)), f.heads.contains(&v.version_id)))
-        .collect();
-    let keep = kept(file_of(f, Vec::new()).to_json().len(), &sized);
+    let keep = kept_versions(f);
     let versions = f
         .versions
         .iter()
@@ -190,6 +168,57 @@ fn file_measured(f: &FileRecord, measure: fn(&Value) -> usize) -> (Value, usize)
         .collect();
     let left_out = keep.iter().filter(|keep| !**keep).count();
     (file_of(f, versions), left_out)
+}
+
+/// Which of `f`'s versions its record keeps, decided on its measure.
+fn kept_versions(f: &FileRecord) -> Vec<bool> {
+    let (skeleton, sized) = measured(f);
+    kept(skeleton, &sized)
+}
+
+/// What a record of `f` is made of, from its fields alone: the length of
+/// everything but its versions, and each version's share -- its text and the
+/// comma after it -- with whether it is a head. The last version has no
+/// comma after it, so the skeleton counts one less, and a record keeping any
+/// versions renders to exactly the skeleton and their shares (a test pins
+/// it). Measuring never renders a version, so a record past the bound costs
+/// only what it keeps.
+fn measured(f: &FileRecord) -> (usize, Vec<(usize, bool)>) {
+    let skeleton = file_of(f, Vec::new()).to_json().len() - 1;
+    let sized = f
+        .versions
+        .iter()
+        .map(|v| (version_len(v) + 1, f.heads.contains(&v.version_id)))
+        .collect();
+    (skeleton, sized)
+}
+
+/// The length of `version(v).to_json()`, from `v`'s fields alone (review of
+/// 77660fb): measuring a version never renders it, so a record past the
+/// bound costs only what it keeps. Every id is 32 bytes of hex; the manifest
+/// is padded base64; numbers are written as `n` writes them. A test pins it
+/// to the rendering across the shapes a version takes.
+fn version_len(v: &VersionRecord) -> usize {
+    // A list of quoted 64-character ids, with its brackets and commas.
+    let ids = |count: usize| 2 + count * 66 + count.saturating_sub(1);
+    let int = |value: u64| n(value).to_json().len();
+    let fields = [
+        ("version_id", 66),
+        ("parents", ids(v.parents.len())),
+        ("sids", ids(v.sids.len())),
+        ("bytes", int(v.bytes)),
+        ("manifest_ct", 2 + v.manifest_ct.len().div_ceil(3) * 4),
+        ("manifest_nonce", 2 + 2 * v.manifest_nonce.len()),
+        ("device_id", 34),
+        ("ts", int(ms_u64(v.ts))),
+        ("deleted", if v.deleted { 4 } else { 5 }),
+    ];
+    // The braces, each quoted key and its colon, and the commas between.
+    2 + (fields.len() - 1)
+        + fields
+            .iter()
+            .map(|(key, value)| key.len() + 3 + value)
+            .sum::<usize>()
 }
 
 /// Which versions a record keeps, given the size of everything else in it
@@ -330,86 +359,12 @@ pub fn quarantine(last: Option<&ScrubSummary>) -> Value {
     )
 }
 
-/// Read and parse a body whose credential rides inside it (setup, pairing
-/// claim), under [`TOKEN_BODY_LIMIT`].
-///
-/// The reservation covers the body AND its parse ([`TOKEN_BODY_RESERVE`]),
-/// and it stays with the value until the token verifies ([`Unverified`]), so
-/// what an unverified caller makes this process keep, waiting included,
-/// stays inside [`super::PREAUTH_BODY_BUDGET`].
-///
-/// # Errors
-/// As [`read_body`], and `400 bad_json` when the body does not parse.
-pub fn token_body<'a>(app: &'a App, req: &mut Request) -> Result<Unverified<'a, Value>, ApiError> {
-    let raw = read_reserved(app, req, TOKEN_BODY_LIMIT, Some(TOKEN_BODY_RESERVE))?;
-    let value = parse_json(&raw.value)?;
-    Ok(Unverified {
-        value,
-        reserved: raw.reserved,
-    })
-}
-
-/// Read a request body under an explicit ceiling.
-///
-/// Every caller reads its body before a credential has verified, so the read
-/// holds a reservation against [`super::PREAUTH_BODY_BUDGET`], and the body
-/// comes back [`Unverified`]: the reservation ends only when the caller's
-/// credential check has passed or failed. A chunked body's length is unknown
-/// until it ends, so it reserves the ceiling.
-///
-/// # Errors
-/// `413 body_too_large` above the ceiling, `503 slow_body` for a body slower
-/// than the rate floor, `503 body_incomplete` for one that ended or broke
-/// before it was whole, `400 bad_request` for a chunked body whose framing is
-/// not HTTP, and a bare `503` when the budget has no room for this body.
-pub fn read_body<'a>(
-    app: &'a App,
-    req: &mut Request,
-    limit: u64,
-) -> Result<Unverified<'a, Vec<u8>>, ApiError> {
-    read_reserved(app, req, limit, None)
-}
-
-/// [`read_body`], reserving `reserve` bytes, or the body's declared length
-/// when `None`.
-fn read_reserved<'a>(
-    app: &'a App,
-    req: &mut Request,
-    limit: u64,
-    reserve: Option<u64>,
-) -> Result<Unverified<'a, Vec<u8>>, ApiError> {
-    let declared = req.body.declared_len();
-    if let Some(declared) = declared
-        && declared > limit
-    {
-        return Err(ApiError::new(
-            413,
-            "body_too_large",
-            "request body exceeds the limit",
-        ));
-    }
-    let reserved = app.reserve_body(reserve.unwrap_or(declared.unwrap_or(limit)))?;
-    match req.body.read_to_vec(limit as usize) {
-        Ok(value) => Ok(Unverified { value, reserved }),
-        Err(e) if e.kind() == ErrorKind::TimedOut => Err(slow_body(app, &req.body)),
-        // The body refuses its ceiling once more than `limit` bytes of it
-        // have arrived, and only then; the same kind below that is framing.
-        Err(e) if e.kind() == ErrorKind::InvalidData && req.body.received() > limit => Err(
-            ApiError::new(413, "body_too_large", "request body exceeds the limit"),
-        ),
-        Err(e) if e.kind() == ErrorKind::InvalidData => Err(ApiError::bad_request(
-            "the chunked request body is not framed as HTTP",
-        )),
-        Err(e) => Err(incomplete_body(app, &req.body, &e)),
-    }
-}
-
 /// A body that ended, or whose connection broke, before it was whole: the
 /// client left, or something between it and the server gave up. Nothing
 /// was wrong with its size, so it is not `413`; the request never arrived,
 /// so a client retries it (`docs/protocol.md`, "Limits and headers"). One
 /// line with what did arrive and how the read ended.
-fn incomplete_body(app: &App, body: &Body, e: &std::io::Error) -> ApiError {
+pub(super) fn incomplete_body(app: &App, body: &Body, e: &std::io::Error) -> ApiError {
     app.log.warn(
         "request_body",
         &[
@@ -587,6 +542,7 @@ pub fn text_field(v: &str, name: &str, max: usize) -> Result<String, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::{TOKEN_BODY_LIMIT, TOKEN_BODY_RESERVE};
 
     /// The heap a parsed value holds: every `Vec` and `String` by its
     /// capacity, and 16 bytes of allocator bookkeeping for each.
@@ -760,50 +716,117 @@ mod tests {
         );
     }
 
-    /// And the record `file` sends is the one `kept` chose: with each
-    /// version measured 330,000 times larger, a small record passes the
-    /// bound, and what is sent and counted as left out follows `kept`.
+    /// Review of 77660fb, finding 1: `version_len` is the rendering's length,
+    /// for every shape a version takes -- no ids, many, each padding of the
+    /// manifest, numbers from 0 to one `n` writes as negative, and both
+    /// states of `deleted` -- with every field varied on its own.
     #[test]
-    fn a_record_measured_past_its_bound_sends_what_the_bound_keeps() {
-        fn inflated(version: &Value) -> usize {
-            rendered_len(version) * 330_000
+    fn a_versions_length_is_its_rendering_length() {
+        let numbers = [0, 9, 10, u64::MAX];
+        for (sids, parents) in [(0, 0), (0, 3), (1, 0), (2, 1), (5, 2)] {
+            for manifest in [0, 1, 2, 3, 4, 5, 767] {
+                for (at, bytes) in numbers.iter().enumerate() {
+                    let mut v = sized_version(0x50, sids, manifest);
+                    v.parents = (0..parents)
+                        .map(|n| VersionId::new([n as u8; 32]))
+                        .collect();
+                    v.bytes = *bytes;
+                    v.ts = UnixMs(numbers[(at + 1) % numbers.len()]);
+                    v.deleted = at % 2 == 1;
+                    assert_eq!(
+                        version_len(&v),
+                        version(&v).to_json().len(),
+                        "{sids} sids, {parents} parents, {manifest} bytes of manifest, bytes {bytes}"
+                    );
+                }
+            }
         }
-        let versions = vec![
-            sized_version(0x50, 2, 100),
-            sized_version(0x40, 1, 10),
-            sized_version(0x30, 2, 100),
-            sized_version(0x20, 2, 100),
-            sized_version(0x10, 1, 10),
-        ];
-        let record = record_of(versions, &[0x50, 0x20]);
-        let sized: Vec<(usize, bool)> = record
-            .versions
-            .iter()
-            .map(|v| (inflated(&version(v)), record.heads.contains(&v.version_id)))
-            .collect();
-        let keep = kept(file_of(&record, Vec::new()).to_json().len(), &sized);
-        let expected: Vec<String> = record
-            .versions
-            .iter()
-            .zip(&keep)
-            .filter(|(_, keep)| **keep)
-            .map(|(v, _)| format!("{:02x}", v.version_id.as_bytes()[0]))
-            .collect();
-        assert!(
-            keep.contains(&false) && expected.len() > 2,
-            "the bound leaves some out and keeps a non-head: {keep:?}"
-        );
-        let (record_json, left_out) = file_measured(&record, inflated);
-        assert_eq!(ids(&record_json), expected);
-        assert_eq!(left_out, keep.iter().filter(|keep| !**keep).count());
-        // Measured as sent, the same record is whole.
-        assert_eq!(file(&record).1, 0);
     }
 
+    /// Review of 77660fb's pre-review: what a record is measured to be is
+    /// what it renders to, whatever versions it keeps, so the bound is
+    /// decided on the record's true length -- neither over nor under it.
     #[test]
-    fn a_versions_share_is_its_text_and_the_comma_after_it() {
-        let value = version(&sized_version(0x50, 3, 100));
-        assert_eq!(rendered_len(&value), value.to_json().len() + 1);
+    fn a_records_measure_is_its_rendering_length() {
+        let records = [
+            record_of(vec![sized_version(0x50, 1, 10)], &[0x50]),
+            record_of(
+                vec![sized_version(0x50, 3, 767), sized_version(0x40, 0, 0)],
+                &[0x50],
+            ),
+            record_of(
+                vec![
+                    sized_version(0x50, 2, 5),
+                    sized_version(0x40, 1, 1),
+                    sized_version(0x10, 0, 2),
+                ],
+                &[0x50, 0x10],
+            ),
+        ];
+        for record in &records {
+            let (skeleton, sized) = measured(record);
+            let (sent, left_out) = file(record);
+            assert_eq!(left_out, 0);
+            assert_eq!(
+                skeleton + sized.iter().map(|(len, _)| len).sum::<usize>(),
+                sent.to_json().len(),
+                "{} versions",
+                sized.len()
+            );
+        }
+    }
+
+    /// And at the real bound, both sides of it: a head, a small version, a
+    /// wide one, and an old version that is a head too. Built so the record
+    /// renders to exactly 450 MiB, every version is kept -- decided from
+    /// their measure, without rendering 450 MiB. One byte wider, and through
+    /// `file` itself, the wide one is left out and the old head is still
+    /// sent. Only the kept versions are rendered, so the wide one costs its
+    /// sids and nothing more.
+    #[test]
+    fn a_record_at_the_bound_is_whole_and_one_byte_past_it_leaves_out_what_passes_it() {
+        let mut record = record_of(
+            [0x50, 0x40, 0x30, 0x10]
+                .into_iter()
+                .map(|id| sized_version(id, 1, 10))
+                .collect(),
+            &[0x50, 0x10],
+        );
+        let (skeleton, sized) = measured(&record);
+        // The text the third version may have for the record to be exactly
+        // at the bound, from its share without it.
+        let spare = FILE_RECORD_MAX as usize + sized[2].0
+            - skeleton
+            - sized.iter().map(|(len, _)| len).sum::<usize>()
+            - 1;
+        let wide = &mut record.versions[2];
+        (wide.sids, wide.manifest_ct, wide.bytes) = (Vec::new(), Vec::new(), 0);
+        let rest = spare - version_len(wide);
+        let count = (rest + 1) / 67;
+        wide.sids = vec![Sid::new([0x30; 32]); count];
+        let left = rest - (67 * count - 1);
+        wide.manifest_ct = vec![0xa5; left / 4 * 3];
+        wide.bytes = 10u64.pow((left % 4) as u32);
+        assert_eq!(
+            version_len(wide),
+            spare,
+            "the wide version is built to its length"
+        );
+        let (skeleton, sized) = measured(&record);
+        assert_eq!(
+            skeleton + sized.iter().map(|(len, _)| len).sum::<usize>(),
+            FILE_RECORD_MAX as usize,
+            "the record is exactly at the bound"
+        );
+        assert_eq!(kept_versions(&record), [true; 4], "and all of it is kept");
+        record.versions[2].bytes *= 10;
+        let (sent, left_out) = file(&record);
+        assert_eq!(
+            ids(&sent),
+            ["50", "40", "10"],
+            "both heads and the version that fits"
+        );
+        assert_eq!(left_out, 1, "the wide version, one byte past the bound");
     }
 
     #[test]
