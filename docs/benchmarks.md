@@ -128,3 +128,100 @@ A pass still runs: at every start, and a day after the last one began. After
 a restart over the same 10,000 chunks, the first pass worked 228 ms over
 9.3 s and then rested (a loopback server in a container, CPU read from its
 `/proc/<pid>/stat`).
+
+## Where the time goes (1.1.5, 2026-09-29)
+
+Measured on one Apple M1 Max laptop (macOS 27, APFS) that other work kept at
+load averages of 25 to 240, so every time below is a shape, not a floor: two
+builds are compared only in interleaved runs under the same load, as ratios,
+with the load named. Counts (requests, flushes) do not depend on load. The
+desktop rows drive two Obsidian 1.13.4 instances over DevTools against a
+loopback server; the route rows use a signed load generator holding N
+requests in flight on fresh four-device servers. Neither tool ships here;
+[the run record](validation-runs/2026-09-29-speed.md) has the method. The
+Linux rows are this repository's `scripts/ci/bench.sh`.
+
+### What a person waits for (1.1.4, load 25 to 57)
+
+| Path | Time | Where it goes |
+| --- | --- | --- |
+| A word typed on desktop A, until B's open editor shows it (20 rounds) | p50 2.25 s, p95 2.29 s | 2.01 s is Obsidian's own delay before it writes the note to disk; 0.15 s obsync's settle (`EDITOR_SETTLE_MS`); about 50 ms the server's three requests; 26 ms B's write |
+| First sync up, 7,703 files, 317 MiB | 224 s, 34 files/s | four pushes in flight, each p50 102 ms: `PUT` 46 ms and version post 29 ms as the plugin saw them; pushes/s fall from 48 to 28 as the vault grows, because every push waits for a rewrite of the plugin's whole state file |
+| First sync down, the same vault | 148 s, 52 notes/s | the server's share is 2.7 s of batched reads; the rest is B writing one note at a time, with two full flushes each (#202) |
+| Sync now with nothing changed, 7,700 notes | 3.7 to 4.2 s | every note up to 8 MiB is read and hashed again (#197) |
+
+### The server's time is flushes
+
+A new note costs five full flushes: the chunk `PUT` waits for the nonce log,
+the blob file and the blob directory; the version post for the nonce log and
+the journal. On this laptop one `F_FULLFSYNC` takes about 7 ms and the device
+barely overlaps them: 142 flushes/s from one thread, 178 from two, 220 from
+four, 333 from sixteen (each thread appending 100 bytes to its own file and
+calling `sync_all`, 3 s per row). In a `sample` profile of the server under
+the plugin's upload shape (a `PUT` and a version post per note, four in
+flight), 64 % of the request threads' blocked samples were flushes, 23 %
+`write`, 5 % creating a new fan-out directory, 4 % `rename`, 3 % opening
+the temporary file. The server's own code was too small to rank.
+
+### What 1.1.5 changes
+
+**Version posts commit in groups** ([storage](storage.md), durability rule
+2): posts queued behind the journal's flush share the next one, each still
+answered only once its own frames are durable. **SHA-256 runs 1.2× to
+1.7× as fast** here, without SIMD or `unsafe` (a rolling 16-word schedule,
+rounds that rename registers instead of shifting them). **Streamed bodies move 64 KiB
+per call** instead of 8 KiB: an 8 MiB chunk takes 128 reads and writes
+instead of 1,024.
+
+Interleaved on the lab Mac, three rounds, load 52 to 157, 1.1.4 → 1.1.5,
+median of rounds:
+
+| Route, requests in flight | Throughput | p50 | Server CPU per request |
+| --- | --- | --- | --- |
+| Version post, 16 | 45 → 146/s (3.2×) | 351 → 99 ms | 0.46× |
+| 4 MiB chunk `GET`, 4 | 308 → 482 MiB/s (1.56×) | 45 → 31 ms | 0.51× |
+| 4 MiB chunk `PUT`, 1 | 14 → 22 MiB/s (1.57×) | 157 → 98 ms | 0.66× |
+| Version post, 1 and 4; a note (`PUT` + post), 4 | 0.79×, 1.06×, 0.80× | | 1.00×, 0.90×, 1.07× |
+| Control, `GET /v1/account`, 1 (untouched) | 0.94× | | 1.08× |
+
+The last two rows are inside this laptop's noise: an earlier interleaved
+run of this change (four rounds, two hours earlier) put the same three at
+0.98×, 1.28× and 1.19× and the control at 1.19×; single posts alone, six
+rounds at load 31 to 65, came out at 0.97× (p50 19.4 → 20.6 ms) beside a
+control at 1.10×. At the plugin's four in flight most posts still
+find the journal idle. On real Obsidian, uploading to 1.1.5, the server
+made 2,417 posts durable with 2,140 journal flushes (0.89 per post) at
+load 60 to 240, and 1,569 with 1,394 (0.89) at load 80 to 160. The group
+commit pays when several devices post at once.
+
+`cargo test --release -p obsync-core -- --ignored sha256_throughput
+--nocapture` at each build, alternated three times, load 70 to 100: 1.21×
+to 1.74× (1.1.4 115, 115, 82 MB/s; 1.1.5 166, 139, 143 MB/s).
+
+On Linux, the harness above (`OBSYNC_BENCH_SCALE=full
+OBSYNC_BENCH_COMPOSE_OVERRIDE=<subnet override> scripts/ci/bench.sh <image>
+results/`) in the same laptop's Docker VM, images built with `docker build`
+from 1.1.4 and from 1.1.5, two runs each, alternated, load 60 to 245 at
+the start of each run:
+
+| Scenario | 1.1.4 | 1.1.5 |
+| --- | --- | --- |
+| B3, server CPU for 2 GiB up and down | 21.0 s, 18.3 s | 11.9 s, 11.0 s |
+| B3 up / down | 65 / 257, 68 / 310 MiB/s | 74 / 328, 83 / 339 MiB/s |
+| B1 fsyncs | 5.73, 5.70 per note | 5.69, 5.67 per note |
+| B1 | 82.1 s, 77.9 s | 76.7 s, 83.0 s |
+
+Moving 2 GiB up and down costs the server 42 % less CPU: every uploaded
+byte is hashed, and every downloaded byte copied, by the two paths the
+SHA-256 and buffer changes touch. A Linux `fsync` is fast enough that four
+clients rarely queue behind one, so B1's flushes and wall time do not move.
+
+### What still bounds each path
+
+Each needs a decision outside the server's code, and is not changed here:
+the plugin's per-push state rewrite (first sync up); B's one-note-at-a-time
+apply with two flushes per note (first sync down, #202); re-hashing every
+note (Sync now, #197); Obsidian's own save delay (typing); and, on the
+server, the five flushes a new note costs, which the protocol (two
+requests per note) and the blob layout (a new directory for most early
+chunks) fix.
