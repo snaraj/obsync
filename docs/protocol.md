@@ -132,7 +132,13 @@ and a test asserts every route it emits appears there.
   omitted from account responses. Old accounts without the field remain
   readable and retain their last-device safeguard.
 - `GET /v1/account` (device auth) → `{"account_id","name","created",
-  "quota_bytes","used_bytes","device_count"}`.
+  "quota_bytes","used_bytes","device_count"}`. `device_count` is how many
+  devices can sync: the active ones and those still pairing. A revoked
+  device, archived or not, stays a record and is not counted. A server
+  before 1.1.5 counted every record, revoked ones included; the field kept
+  its name because the one client that shows it prints "N device(s)", and
+  the devices that can sync is what that sentence means. The dashboard's
+  overview carries the same `account` object.
 
 ## Pairing
 

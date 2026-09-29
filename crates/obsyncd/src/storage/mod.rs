@@ -903,6 +903,19 @@ impl Store {
             .collect()
     }
 
+    /// How many devices can sync: the active ones and those still pairing.
+    /// A revoked device, archived or not, is kept as a record and is not one
+    /// of them (issue #268).
+    pub fn working_device_count(&self) -> u64 {
+        let index = self.index();
+        let working = index
+            .devices
+            .values()
+            .filter(|e| e.record.state != DeviceState::Revoked)
+            .count();
+        working as u64
+    }
+
     /// Change a device's name, policy or reported version.
     pub fn update_device(
         &self,

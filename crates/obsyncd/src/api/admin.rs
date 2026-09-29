@@ -408,7 +408,7 @@ pub fn overview(app: &App, req: &mut Request) -> Result<Response, ApiError> {
             .is_some_and(|s| s.minted_by.is_none())
     };
     let account = match app.store.account() {
-        Some(a) => render::account(&a, app.store.devices().len() as u64),
+        Some(a) => render::account(&a, app.store.working_device_count()),
         None => Value::Null,
     };
     let volumes: Vec<Value> = app.store.volumes().iter().map(render::volume).collect();

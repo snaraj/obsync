@@ -248,6 +248,18 @@ test('revoked devices fold under one row that counts them, closed until asked, a
   assert.deepEqual(state(), [true, 'false', 'Show']);
 });
 
+test('the overview says how many devices can sync, as the server counts them, not how many it lists (#268)', async () => {
+  const devices = [DEVICE, REVOKED(1), REVOKED(2), REVOKED(3)];
+  const { el, net } = await open({
+    routes: {
+      [`GET ${ADMIN}/overview`]: reply(200, overview({ account: { ...overview().account, device_count: 1 } })),
+      [`GET ${ADMIN}/devices`]: reply(200, { devices }),
+    },
+  });
+  assert.equal(el('acc-devices').textContent, '1', 'one device syncs; three revoked records are not devices');
+  assert.equal(net.of('GET', `${ADMIN}/devices`).length, 0, 'the figure is the server\'s, never a count of the list');
+});
+
 test('with no revoked device the fold is not there at all', async () => {
   const { el, names } = await foldPage([DEVICE]);
   assert.deepEqual(names('devices-body'), ['laptop']);

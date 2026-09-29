@@ -66,7 +66,9 @@ pub fn maybe<T>(v: Option<T>, render: impl FnOnce(T) -> Value) -> Value {
 }
 
 /// `GET /v1/account`. The device count is the caller's, because the record
-/// does not carry it and the store is the only place that knows.
+/// does not carry it and the store is the only place that knows. It counts
+/// the devices that can sync (`Store::working_device_count`): the one client
+/// that shows it before 1.1.5 prints it as "N device(s)", which is that.
 pub fn account(a: &AccountRecord, device_count: u64) -> Value {
     obj(vec![
         ("account_id", s(&a.account_id.to_string())),

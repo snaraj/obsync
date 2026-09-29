@@ -169,7 +169,7 @@ pub fn account(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Resp
         .store
         .account()
         .ok_or_else(|| ApiError::new(409, "not_set_up", "no account exists yet"))?;
-    let device_count = app.store.devices().len() as u64;
+    let device_count = app.store.working_device_count();
     Ok(Response::json(200, &render::account(&record, device_count)))
 }
 

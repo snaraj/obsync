@@ -72,7 +72,7 @@ authenticate WebAuthn credentials.
 
 | Page | What is on it |
 | --- | --- |
-| **Overview** | the account, version and file counts, storage per volume with its class name, sync activity as versions per hour over the last 24 hours, and the last scrub and garbage-collection summaries |
+| **Overview** | the account with how many devices can sync (revoked ones are on **Devices**, not in this figure), version and file counts, storage per volume with its class name, sync activity as versions per hour over the last 24 hours, and the last scrub and garbage-collection summaries |
 | **Devices** | every device by name, platform, app version, first paired, last sign-in, last seen, last edit, connecting address and country — and the revoke button |
 | **Pairing** | the pairing instructions; codes themselves are minted on a device, never here |
 | **Storage** | usage against the declared capacity, the free-space watermark, retention, scrub state and rate, and the quarantine list |

@@ -4994,6 +4994,71 @@ fn the_dashboard_archives_a_revoked_device_under_its_csrf_check() {
     assert_eq!(after.code(), "device_revoked", "still refused as revoked");
 }
 
+/// Issue #268: the account's `device_count` is how many devices can sync --
+/// active, or still pairing -- on the sync API and on the dashboard's
+/// overview alike. A revoked device, archived or not, stays a record and
+/// stays listed, and is not counted: "Devices 16" over a list of 4 that sync
+/// was the defect.
+#[test]
+fn the_device_count_is_the_devices_that_can_sync() {
+    let h = Harness::start_with(
+        "device-count",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let cookie = admin_cookie(&h, &creator);
+    let counts = || {
+        let api = Req::get("/v1/account")
+            .sign(&creator, NOW)
+            .send(h.addr)
+            .json()
+            .get("device_count")
+            .and_then(Value::as_u64);
+        let overview = Req::get("/v1/admin/overview")
+            .header("Cookie", &cookie)
+            .send(h.addr)
+            .json()
+            .get("account")
+            .and_then(|a| a.get("device_count"))
+            .and_then(Value::as_u64);
+        (api, overview)
+    };
+    assert_eq!(counts(), (Some(1), Some(1)));
+
+    let (id, claimant) = claim_pairing(&h, &creator);
+    assert_eq!(
+        counts(),
+        (Some(2), Some(2)),
+        "a device still pairing is counted"
+    );
+    approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
+    assert_eq!(counts(), (Some(2), Some(2)), "and so is one that paired");
+
+    let revoke = Req::post(&format!("/v1/devices/{}/revoke", claimant.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(revoke.status, 204, "{}", revoke.text());
+    assert_eq!(counts(), (Some(1), Some(1)), "a revoked device is not");
+    let archive = Req::post(&format!("/v1/devices/{}/archive", claimant.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(archive.status, 204, "{}", archive.text());
+    assert_eq!(counts(), (Some(1), Some(1)), "nor an archived one");
+
+    let listed = Req::get("/v1/devices")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json()
+        .get("devices")
+        .and_then(Value::as_array)
+        .map(<[Value]>::len);
+    assert_eq!(listed, Some(2), "both records stay listed");
+}
+
 #[test]
 fn pairing_claim_vault_is_bounded_before_enrolment_and_only_creator_can_read_it() {
     let h = Harness::start("pairing-vault");

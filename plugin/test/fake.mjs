@@ -774,6 +774,11 @@ export class FakeServer {
       return this.json(204, {});
     }
     if (path === "/v1/devices") return this.json(200, { devices: this.devices });
+    // obsyncd counts the devices that can sync, not every record (#268).
+    if (path === "/v1/account" && request.method === "GET") {
+      const device_count = this.devices.filter((device) => !device.revoked).length;
+      return this.json(200, { account_id: "a".repeat(32), name: "obsync", used_bytes: 0, quota_bytes: null, device_count });
+    }
 
     const devicePatch = /^\/v1\/devices\/([0-9a-f]{32})$/.exec(path);
     if (devicePatch && request.method === "PATCH") {

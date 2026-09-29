@@ -298,6 +298,21 @@ test("forgetting a revoked device takes it off this device's list while the serv
   assert.equal(logs.filter((line) => line.includes("action=forget")).length, 1, "one line per forget");
 });
 
+test("the account counts the devices that can sync, whatever the list still holds (#268)", async () => {
+  const { instance, server } = await plugin();
+  server.devices.push(
+    { ...SECOND_DEVICE, device_id: "cd".repeat(16), state: "pending" },
+    { ...REVOKED, device_id: "ab".repeat(16) },
+    { ...REVOKED },
+  );
+  const count = async () => (await instance.transport.account()).device_count;
+
+  assert.equal(await count(), 2, "this device and one still pairing, not the two revoked");
+  await instance.forgetRevoked(OTHER_DEVICE);
+  assert.equal(await count(), 2, "forgetting one changes no count");
+  assert.equal((await instance.transport.devices()).devices.length, 4, "while every record stays on the wire");
+});
+
 test("a device already forgotten is still refused as revoked, and still names its versions", async () => {
   const { instance, server } = await plugin();
   server.devices.push({ ...REVOKED, name: "Old phone" });

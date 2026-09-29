@@ -97,11 +97,12 @@ CASES = [
 ]
 
 
-def main():
-    originals = {Path(path): Path(path).read_bytes() for _, path, *_ in CASES}
+def run(cases, what):
+    """Apply each case alone, run its selector, restore the exact bytes."""
+    originals = {Path(path): Path(path).read_bytes() for _, path, *_ in cases}
     failures = []
     try:
-        for name, path, old, new, selector in CASES:
+        for name, path, old, new, selector in cases:
             source = originals[Path(path)].decode()
             if source.count(old) != 1:
                 raise RuntimeError(f"{name}: mutation context moved")
@@ -138,7 +139,11 @@ def main():
             path.write_bytes(original)
     if failures:
         raise SystemExit("Unkilled probes: " + ", ".join(failures))
-    print(f"All {len(CASES)} archive probes compiled and were killed.")
+    print(f"All {len(cases)} {what} probes compiled and were killed.")
+
+
+def main():
+    run(CASES, "archive")
 
 
 if __name__ == "__main__":
