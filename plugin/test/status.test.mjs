@@ -129,7 +129,11 @@ test("a wake ends the feed's pause after a failed read, and a new address takes 
 
 test("a chunk upload asleep in its backoff is sent to a newly adopted address within one step (#186)", async () => {
   const r = await started();
-  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  // The start's heartbeat reads the device names in the background (#195); a
+  // read still unsent when the server moves sleeps at the old address in the
+  // push's place, so the move waits for it.
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1 &&
+    r.host.logs.includes("devices decision=read reason=heartbeat devices=1 duration_ms=0"));
   const request = r.transport.options.request;
   const sent = [];
   r.transport.options.request = async (outgoing) => {
