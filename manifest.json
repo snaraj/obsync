@@ -4,7 +4,7 @@
   "version": "1.1.4",
   "minAppVersion": "1.13.0",
   "description": "Sync your vault across devices, end-to-end encrypted, through a server you run yourself.",
-  "author": "obsync contributors",
+  "author": "Samuel Naranjo",
   "authorUrl": "https://github.com/snaraj",
   "helpUrl": "https://snaraj.github.io/obsync/setup/",
   "isDesktopOnly": false
