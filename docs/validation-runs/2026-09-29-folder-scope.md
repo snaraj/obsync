@@ -229,3 +229,39 @@ Neither console held a warning for either; release 1.1.4 logged both as
    path_class=folder decision=deferred reason=stopped attempt=1`, reached
    the console almost two minutes after the new session had sent that very
    removal. Nothing is sent twice and nothing is lost; the lines mislead.
+
+## Round 3: an old session's requests after a reload (#272)
+
+Rigs A and B as above, fresh server and profiles. The server is stopped, A
+renames `W201 sel` to `W201 sel 2026`, and once A's requests are waiting in
+their backoff obsync is disabled and enabled again on A; 15 s later the
+server comes back, and every line the REPLACED plugin instance logs is
+recorded for three minutes (a per-instance tag on its log, lab only).
+Builds (`main.js` SHA-256): round 2's head, `c3ae7bc`,
+`b0e02369a7ed1540c3b901e47cb75645b7db70c5b326fc21d527b995e86d71c1`; this
+change, `178ad82`,
+`3ab1af16e1c772198d6422ee7a580ece44d1f4574ffe55beba18ebcc7cb58c4f`.
+
+Both builds log the same lines at the reload itself (+0.2 s): `engine stop`,
+the feed poll and three chunk uploads `decision=cancelled phase=sleeping`,
+and three `push path_class=file decision=cancelled reason=engine_stopped`.
+The folder removal's read of the old record had no stop signal and was
+asleep in its backoff.
+
+1. **`c3ae7bc`: fails (reproduces #272).** That read woke and was refused
+   four more times, `network=The previous plugin session is inactive.
+   decision=retry attempt=4` at +2.2 s through `attempt=7` at +41.3 s, then
+   `decision=gave_up attempts=8` and `push path_class=folder
+   decision=failed reason=0 unreachable: network=The previous plugin
+   session is inactive.` at +77.4 s, and last `state decision=refused
+   reason=superseded` (the replaced session's final save, #181): three
+   console warnings. 16 lines in all after the reload.
+2. **This change: passes.** At its next attempt, +2.2 s, the read ended
+   with one line, `http GET /v1/files/<id> decision=ended
+   reason=session_inactive`; then the replaced session's final save gave
+   #181's `state decision=refused reason=superseded`, 75 s earlier than
+   before, and the only console warning. Nothing else in the three
+   minutes. 11 lines in all after the reload, 9 of them the reload's own.
+   The new session's first pass sent both removals (`folders_queued=4`,
+   `published reason=deleted` twice); A owes nothing and B has no `W201
+   sel`.
