@@ -5,7 +5,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { hkdfSync, createHash } from "node:crypto";
-import { FakeHost, FakeServer, FakeTimers, KEYS, SETUP_TOKEN, memorySecrets, sandbox, rig, keys, statusItem } from "./fake.mjs";
+import { FakeHost, FakeServer, FakeTimers, KEYS, RECOVERY_HOLD_MS, SETUP_TOKEN, memorySecrets, sandbox, rig, keys, statusItem } from "./fake.mjs";
 const require = createRequire(import.meta.url);
 const { accountRecovery, forgottenCredential, FORGOTTEN_DEVICE } = require("../build/accountRecovery.js");
 const { ApiError, Transport } = require("../build/transport.js");
@@ -81,6 +81,13 @@ test("an updated paired device registers recovery before its last credential lea
   const wire = registration.json;
   assert.equal(wire.includes(derived.proof), false);
   assert.equal(wire.includes(KEYS.vrk), false);
+  // The key is new, so the server keeps its only device for the hold (1.1.5):
+  // the leave is refused by name and this device keeps its credential.
+  const held = await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
+  assert.deepEqual([held.decision, held.reason], ["refused", "recovery_too_new"]);
+  assert.equal(r.instance.state.data.deviceId, KEYS.deviceId);
+  assert.equal(r.server.devices[0].revoked, false);
+  r.server.clock += RECOVERY_HOLD_MS;
   await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
   assert.equal(r.server.devices[0].revoked, true);
   assert.equal(r.instance.state.data.deviceId, null);
@@ -244,6 +251,7 @@ test("a key changed while setup waits cannot adopt the old key's credential", as
 test("revoking this device directly exposes recovery without restarting the plugin", async (t) => {
   const r = await plugin(t);
   await r.instance.registerAccountRecovery();
+  r.server.clock += RECOVERY_HOLD_MS;
   await r.instance.revokeDevice(KEYS.deviceId);
   assert.equal(r.instance.forgottenDevice, true);
   assert.match(r.instance.statusText(), /no longer recognises/);
@@ -257,6 +265,9 @@ test("both devices can switch in order and leave no active credential on the old
   server.addDevice(otherId, otherSecret, "second");
   const a = await plugin(t, { server });
   const b = await plugin(t, { server, metadata: { deviceId: otherId, deviceSecret: otherSecret } });
+  // Registered a week ago: the hold has passed (1.1.5).
+  server.recoveryVerifier = (await accountRecovery(KEYS.vrk)).verifier;
+  server.recoveryAt = server.clock - RECOVERY_HOLD_MS;
   for (const r of [a, b]) {
     await r.instance.registerAccountRecovery();
     assert.deepEqual(await r.instance.leaveServer({ discardUnpushed: false, localOnly: false }), { decision: "left", revoked: true });
@@ -452,4 +463,117 @@ test("a setup token from elsewhere is refused in words (#154)", async (t) => {
   const told = r.notices.join(" | ");
   assert.match(told, /did not accept that setup token.*obsyncd setup-token/, told);
   assert.ok(!RAW_CODE.test(told), told);
+});
+
+/** Settings and Show sync status, recorded: every name and description drawn, and every button. */
+function recordDrawing(obsidian) {
+  const drawn = [], buttons = [];
+  Object.assign(obsidian.Setting.prototype, {
+    setName(value) { drawn.push(value); return this; },
+    setDesc(value) { drawn.push(value); return this; },
+    addButton(make) {
+      const button = { setButtonText(value) { button.text = value; return button; }, setCta() { return button; },
+        setDisabled() { return button; }, onClick(handler) { button.click = handler; return button; } };
+      buttons.push(button); make(button); return this;
+    },
+  });
+  return { drawn, buttons };
+}
+
+for (const mobile of [false, true]) test(`a recovery key this device did not register is a security warning, said once and standing until its own registration succeeds (${mobile ? "mobile" : "desktop"}, 1.1.5)`, async (t) => {
+  const r = await plugin(t);
+  const obsidian = r.box.require("obsidian");
+  const platform = obsidian.Platform.isMobile;
+  obsidian.Platform.isMobile = mobile;
+  t.after(() => { obsidian.Platform.isMobile = platform; });
+  const { RECOVERY_MISMATCH } = r.box.require(join(r.box.home, "build/accountRecovery.js"));
+  // Another credential registered first; the server cannot tell which key is the vault's.
+  r.server.recoveryVerifier = "b6".repeat(32);
+  r.server.recoveryAt = r.server.clock;
+
+  await r.instance.registerAccountRecovery();
+  assert.equal(r.instance.recoveryMismatch, true);
+  assert.deepEqual(r.notices, [`obsync security warning: ${RECOVERY_MISMATCH}`]);
+  const toast = obsidian.raised.at(-1);
+  assert.equal(toast.duration, 0, "it stays until the person dismisses it");
+  assert.equal(toast.hidden, false);
+  assert.deepEqual(r.logs, ["recovery decision=refused reason=recovery_mismatch warning=shown"]);
+  assert.match(RECOVERY_MISMATCH, /Another device set a different recovery key/);
+  assert.match(RECOVERY_MISMATCH, /a device may be compromised/);
+  assert.match(RECOVERY_MISMATCH, /revoke any device you do not recognise/);
+  assert.match(RECOVERY_MISMATCH, /ask whoever runs your server to clear the recovery key/);
+  assert.match(RECOVERY_MISMATCH, /Troubleshooting page, "Another device set a different recovery key"/);
+
+  // Every start asks again, and the warning stands without a second toast.
+  await r.instance.registerAccountRecovery();
+  assert.equal(r.notices.length, 1);
+  assert.equal(r.logs.at(-1), "recovery decision=refused reason=recovery_mismatch warning=standing");
+
+  // Settings and Show sync status carry it, first, with the guide one press away.
+  const { drawn, buttons } = recordDrawing(obsidian);
+  const { ObsyncSettingTab } = r.box.require(join(r.box.home, "build/ui/settings.js"));
+  const tab = new ObsyncSettingTab(r.instance.app, r.instance);
+  // A group of its own under the guide, so a hidden one leaves no trace in another group.
+  const group = () => tab.getSettingDefinitions()[1];
+  const row = () => group().items.find((item) => item.name === "Security warning");
+  assert.equal(group().heading, "Security");
+  assert.equal(group().visible(), true);
+  assert.equal(group().items.length, 1);
+  assert.equal(row().desc, RECOVERY_MISMATCH);
+  const opened = [];
+  r.instance.openSetupGuide = () => { opened.push("guide"); };
+  row().render(new obsidian.Setting({}));
+  assert.equal(buttons.at(-1).text, "Open the guide");
+  buttons.at(-1).click();
+  const { StatusModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
+  const element = () => ({ createEl: () => element(), empty: () => { drawn.length = 0; } });
+  const modal = new StatusModal({}, r.instance);
+  Object.assign(modal, { contentEl: element(), setTitle: () => {}, close: () => modal.onClose() });
+  const before = buttons.length;
+  modal.onOpen();
+  assert.deepEqual(drawn.slice(0, 2), ["Security warning", RECOVERY_MISMATCH], "above everything else");
+  assert.equal(buttons[before].text, "Open the guide", "the modal's first button is the warning's");
+  buttons[before].click();
+  assert.deepEqual(opened, ["guide", "guide"]);
+
+  // The operator's reset: the server forgets the key, this device's next
+  // registration stands, and the warning ends everywhere it was said.
+  r.server.recoveryVerifier = null;
+  r.server.recoveryAt = null;
+  await r.instance.registerAccountRecovery();
+  assert.equal(r.instance.recoveryMismatch, false);
+  assert.equal(r.server.recoveryVerifier, (await accountRecovery(KEYS.vrk)).verifier);
+  assert.deepEqual(r.logs.slice(-2), ["recovery decision=registered", "recovery decision=cleared reason=registered warning=cleared"]);
+  assert.equal(group().visible(), false);
+  assert.equal(drawn.includes(RECOVERY_MISMATCH), false, "Show sync status redrew without it");
+  assert.equal(toast.hidden, true, "and its toast goes with it");
+  modal.onClose();
+  assert.equal(r.notices.length, 1, "nothing more is said");
+});
+
+test("leaving ends the recovery-key warning with the pairing it was about (1.1.5)", async (t) => {
+  const server = new FakeServer();
+  server.addDevice("ab".repeat(16), "bc".repeat(32), "second");
+  const r = await plugin(t, { server });
+  server.recoveryVerifier = "b6".repeat(32);
+  await r.instance.registerAccountRecovery();
+  assert.equal(r.instance.recoveryMismatch, true);
+  const toast = r.box.require("obsidian").raised.at(-1);
+  assert.equal(toast.hidden, false);
+  assert.deepEqual(await r.instance.leaveServer({ discardUnpushed: false, localOnly: false }), { decision: "left", revoked: true });
+  assert.equal(r.instance.recoveryMismatch, false);
+  assert.equal(toast.hidden, true, "its toast goes with the pairing");
+});
+
+test("a mismatch answered after this device's credential ended says nothing (1.1.5, #233)", async (t) => {
+  const r = await plugin(t);
+  const { ApiError: BoxError } = r.box.require(join(r.box.home, "build/transport.js"));
+  r.instance.transport.registerRecovery = async () => {
+    r.instance.state.data.deviceId = null;
+    throw new BoxError(409, "recovery_mismatch", "this account already has recovery for a different vault key");
+  };
+  await r.instance.registerAccountRecovery();
+  assert.equal(r.instance.recoveryMismatch, false);
+  assert.deepEqual(r.notices, []);
+  assert.deepEqual(r.logs, ["recovery decision=unavailable reason=recovery_mismatch session=ended"]);
 });

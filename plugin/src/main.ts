@@ -55,7 +55,7 @@
 import { ItemView, MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
 import type { App, CliData, CliFlag, CliFlags, CliHandler } from "obsidian";
 import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
-import { accountRecovery, FORGOTTEN_DEVICE } from "./accountRecovery";
+import { accountRecovery, FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "./accountRecovery";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
@@ -451,10 +451,11 @@ export interface LeaveChoice {
 
 /**
  * Why the server did not remove this device, as the Leave dialog words it:
- * the last device, a server that does not know it, no answer from the server
- * (or an answer that was not obsync's), or any other refusal of its own.
+ * the last device, the last device while its recovery key is new (1.1.5), a
+ * server that does not know it, no answer from the server (or an answer that
+ * was not obsync's), or any other refusal of its own.
  */
-export type LeaveRefusal = "last_device" | "bad_signature" | "unreachable" | "refused";
+export type LeaveRefusal = "last_device" | "recovery_too_new" | "bad_signature" | "unreachable" | "refused";
 
 export type LeaveResult =
   | { decision: "left"; revoked: boolean }
@@ -469,6 +470,7 @@ export type LeaveResult =
  * that could not leave (S40, S70).
  */
 function leaveRefusal(error: unknown): { reason: LeaveRefusal; detail: string } {
+  if (error instanceof ApiError && error.code === "recovery_too_new") return { reason: error.code, detail: error.detail };
   if (error instanceof ApiError && (error.code === "last_device" || error.code === "bad_signature")) {
     return { reason: error.code, detail: error.detail };
   }
@@ -2944,6 +2946,14 @@ export default class ObsyncPlugin extends Plugin {
   firstStart: Promise<void> = Promise.resolve();
   /** The newer version the server reports, for the settings tab to name. */
   updateAvailable: string | null = null;
+  /**
+   * This device's recovery registration met a key it did not register (`409
+   * recovery_mismatch`, `registerAccountRecovery`): Show sync status and the
+   * settings tab say so until a registration succeeds or the device leaves.
+   */
+  recoveryMismatch = false;
+  /** Its sticky toast, taken down with it: a warning that ended must not stand on screen. */
+  private recoveryNotice: Notice | null = null;
   /** Whether this session has already raised the update notice. */
   private updateNotified = false;
   private statusEl: HTMLElement | null = null;
@@ -4482,6 +4492,8 @@ export default class ObsyncPlugin extends Plugin {
         );
       }
       this.updateAvailable = null;
+      this.recoveryMismatch = false;
+      this.recoveryNotice?.hide();
       this.forgottenDevice = false;
       this.setStatus({ kind: "idle" });
       if (reason === "unfinished") reason = "ok";
@@ -4669,7 +4681,31 @@ export default class ObsyncPlugin extends Plugin {
       const registered = await transport.registerRecovery(verifier);
       assertCurrent();
       this.log(`recovery decision=${registered.outcome === "ok" ? "registered" : "unconfirmed"}`);
+      // Its own key registered: the warning below has nothing left to say.
+      if (registered.outcome === "ok" && this.recoveryMismatch) {
+        this.recoveryMismatch = false;
+        this.recoveryNotice?.hide();
+        this.render();
+        this.log("recovery decision=cleared reason=registered warning=cleared");
+      }
     } catch (error) {
+      // A KEY THIS DEVICE DID NOT REGISTER (1.1.5). The server cannot tell
+      // which key this vault produced, and any device credential can register
+      // the first one, so this device says so, once a session, until a
+      // registration of its own succeeds: the operator's reset clears the
+      // other key and the next start registers this one. Only while this
+      // device still holds the credential that asked (#233, below).
+      if (this.state.data.deviceId === deviceId && error instanceof ApiError && error.code === "recovery_mismatch") {
+        const first = !this.recoveryMismatch;
+        this.recoveryMismatch = true;
+        // NOTICE-KIND security: never muted by any notice setting (requirement
+        // 4), sticky until dismissed; the notice service maps this call site.
+        if (first) this.recoveryNotice = new Notice(`obsync security warning: ${RECOVERY_MISMATCH}`, 0);
+        this.render();
+        // A refusal, so the console carries it at warn (`FAILURE_DECISION`).
+        this.log(`recovery decision=refused reason=recovery_mismatch warning=${first ? "shown" : "standing"}`);
+        return;
+      }
       // A refusal of a credential this device has since given up -- a leave
       // revoked it while the registration was out -- is that credential's,
       // logged and never said: it read "removed" over a device that left (#233).

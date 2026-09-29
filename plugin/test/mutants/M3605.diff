@@ -1,0 +1,12 @@
+# M3605: a mismatch answered after the credential ended is said anyway
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4386,7 +4386,7 @@
+       // registration of its own succeeds: the operator's reset clears the
+       // other key and the next start registers this one. Only while this
+       // device still holds the credential that asked (#233, below).
+-      if (this.state.data.deviceId === deviceId && error instanceof ApiError && error.code === "recovery_mismatch") {
++      if (error instanceof ApiError && error.code === "recovery_mismatch") {
+         const first = !this.recoveryMismatch;
+         this.recoveryMismatch = true;
+         // NOTICE-KIND security: never muted by any notice setting (requirement

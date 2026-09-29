@@ -15,6 +15,7 @@
 import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
 import type ObsyncPlugin from "../main";
 import type { LeaveChoice, LeaveRefusal } from "../main";
+import { RECOVERY_MISMATCH } from "../accountRecovery";
 import { formatBytes } from "../policy";
 import { KEYS_LOST } from "../state";
 import { RECENT_MAX, titles } from "../notices";
@@ -758,6 +759,9 @@ const LEAVE_LAST_DEVICE =
   "This account has no registered vault recovery yet, or the server is too old to support it. Update both server and plugin while a device still syncs, then keep the setup token and 24-word recovery phrase before leaving. You can also pair another device first. Leaving on this device only keeps every note and leaves this credential active on the server; losing that final credential before recovery is registered can strand the account.";
 const LEAVE_ONLY_HERE =
   "You can leave on this device only: this device forgets the server and its credential and keeps every note, and the 24 words still open the same vault. The server still lists this device until you remove it from another device's Devices list or the dashboard.";
+/** `409 recovery_too_new` (1.1.5): the words the server's own hold stands for. */
+const LEAVE_RECOVERY_TOO_NEW =
+  "This is the only device syncing this vault, and its recovery key was set less than 7 days ago. For your safety the server keeps its last device until that key is 7 days old, so a stolen device credential cannot lock you out of your own server. Pair another device first, or leave on this device only: it forgets the server and keeps every note, and the server lists this device until you remove it.";
 const LEAVING =
   "Leaving: stopping sync on this device, then asking the server to remove it. This takes a few seconds. You can close this window; a notice says when it is done.";
 const LEFT_ONLY_HERE =
@@ -900,6 +904,8 @@ export class LeaveServerModal extends Modal {
     this.contentEl.empty();
     const texts = reason === "bad_signature"
       ? [LEAVE_UNKNOWN_DEVICE]
+      : reason === "recovery_too_new"
+      ? [LEAVE_RECOVERY_TOO_NEW]
       : [
         reason === "unreachable"
           ? "The server did not answer, so it could not remove this device."
@@ -921,7 +927,7 @@ export class LeaveServerModal extends Modal {
     new Notice(
       revoked
         ? "This device left the server. Every note is still in this vault."
-        : this.refusal === "last_device"
+        : this.refusal === "last_device" || this.refusal === "recovery_too_new"
           ? "This device forgot the server, which still holds this device. Every note is still in this vault."
           : this.refusal === "bad_signature"
             ? "This device forgot the server, which did not recognise it. Every note is still in this vault."
@@ -1191,6 +1197,13 @@ export class StatusModal extends Modal {
 
   private render(): void {
     this.contentEl.empty();
+    // Above everything, until a registration of this device's own succeeds (1.1.5).
+    if (this.plugin.recoveryMismatch) {
+      new Setting(this.contentEl)
+        .setName("Security warning")
+        .setDesc(RECOVERY_MISMATCH)
+        .addButton((button) => button.setButtonText("Open the guide").setCta().onClick(() => { this.plugin.openSetupGuide(); }));
+    }
     this.nextStep();
     const data = this.plugin.state.data;
     const rows: [string, string, string?][] = [

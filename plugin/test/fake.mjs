@@ -631,6 +631,8 @@ export class FakeHost {
 
 /** The setup token this fake answers to, and the credential its setup mints. */
 export const SETUP_TOKEN = "5e".repeat(32);
+/** `storage::RECOVERY_HOLD_MS`: a new recovery key keeps the only active device this long (1.1.5). */
+export const RECOVERY_HOLD_MS = 7 * 24 * 60 * 60 * 1000;
 export const SETUP_DEVICE = "cc".repeat(16);
 export const SETUP_SECRET = "7b".repeat(32);
 
@@ -669,6 +671,8 @@ export class FakeServer {
     ];
     this.claimed = claimed;
     this.recoveryVerifier = null;
+    /** When `recoveryVerifier` was registered, on `clock`; `null` for a key from before 1.1.5. */
+    this.recoveryAt = null;
     this.recoveries = 0;
     if (!claimed) {
       this.devices = [];
@@ -793,7 +797,10 @@ export class FakeServer {
         if (body.recovery_proof === undefined) return this.error(409, "already_set_up", "this server already holds an account");
         if (this.recoveryVerifier === null) return this.error(409, "recovery_unavailable", "a paired device must register recovery first");
         if (!/^[0-9a-f]{64}$/.test(body.recovery_proof) || createHash("sha256").update(Buffer.from(body.recovery_proof, "hex")).digest("hex") !== this.recoveryVerifier) return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
-      } else this.recoveryVerifier = body.recovery_verifier ?? null;
+      } else {
+        this.recoveryVerifier = body.recovery_verifier ?? null;
+        this.recoveryAt = this.recoveryVerifier === null ? null : this.clock;
+      }
       this.claimed = true;
       const id = recovered ? (++this.recoveries).toString(16).padStart(32, "0") : SETUP_DEVICE;
       this.addDevice(id, SETUP_SECRET, body.device?.name ?? "device", body.device?.platform ?? "linux");
@@ -810,6 +817,7 @@ export class FakeServer {
       const verifier = json().recovery_verifier;
       if (!/^[0-9a-f]{64}$/.test(verifier)) return this.error(400, "bad_request");
       if (this.recoveryVerifier !== null && this.recoveryVerifier !== verifier) return this.error(409, "recovery_mismatch");
+      if (this.recoveryVerifier === null) this.recoveryAt = this.clock;
       this.recoveryVerifier = verifier;
       return this.json(204, {});
     }
@@ -852,6 +860,9 @@ export class FakeServer {
       const live = this.devices.filter((candidate) => !candidate.revoked);
       if (!device.revoked && live.length <= 1 && this.recoveryVerifier === null) {
         return this.error(409, "last_device", "the only active device cannot be revoked; pair another first");
+      }
+      if (!device.revoked && live.length <= 1 && this.recoveryAt !== null && this.clock - this.recoveryAt < RECOVERY_HOLD_MS) {
+        return this.error(409, "recovery_too_new", "this account's recovery key was set less than 7 days ago, and until it is 7 days old the only active device stays; pair another device first");
       }
       device.revoked = true;
       return this.json(204, {});

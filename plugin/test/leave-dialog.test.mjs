@@ -156,6 +156,35 @@ test("a last-device refusal offers leaving locally, and says what that leaves be
   assert.ok(d.notices.some((notice) => notice.includes("which still holds this device")));
 });
 
+test("a last device held while its recovery key is new says why in plain words and still offers leaving locally (1.1.5)", async (t) => {
+  const d = dialog(t, {
+    answers: [
+      { decision: "refused", reason: "recovery_too_new", detail: "SERVER DETAIL SENTINEL" },
+      { decision: "left", revoked: false },
+    ],
+  });
+
+  d.modal.onOpen();
+  await tick();
+  d.button("Leave").click();
+  await tick();
+
+  const text = d.drawn.join("\n");
+  assert.match(text, /only device syncing this vault, and its recovery key was set less than 7 days ago/);
+  assert.match(text, /a stolen device credential cannot lock you out/);
+  assert.match(text, /Pair another device first, or leave on this device only/);
+  assert.equal(text.includes("SERVER DETAIL SENTINEL"), false, "the plugin's words, not the server's detail");
+  assert.equal(/no registered vault recovery yet/.test(text), false, "not the unregistered-recovery explanation");
+
+  d.button("Leave on this device only").click();
+  await tick();
+  assert.deepEqual(d.choices, [
+    { discardUnpushed: false, localOnly: false },
+    { discardUnpushed: false, localOnly: true },
+  ]);
+  assert.ok(d.notices.some((notice) => notice.includes("which still holds this device")));
+});
+
 test("a count that grew while the dialog waited is redrawn, not overridden", async (t) => {
   const d = dialog(t, {
     answers: [

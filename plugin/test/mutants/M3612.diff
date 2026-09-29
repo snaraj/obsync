@@ -1,0 +1,12 @@
+# M3612: the warning's log line is not a refusal, so the console keeps it at debug
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4394,7 +4394,7 @@
+         if (first) this.recoveryNotice = new Notice(`obsync security warning: ${RECOVERY_MISMATCH}`, 0);
+         this.render();
+         // A refusal, so the console carries it at warn (`FAILURE_DECISION`).
+-        this.log(`recovery decision=refused reason=recovery_mismatch warning=${first ? "shown" : "standing"}`);
++        this.log(`recovery decision=mismatch reason=recovery_mismatch warning=${first ? "shown" : "standing"}`);
+         return;
+       }
+       // A refusal of a credential this device has since given up -- a leave

@@ -145,8 +145,8 @@ test("definitions are pure groups of named rows, and drawing a row returns nothi
   const groups = s.tab.getSettingDefinitions();
   s.tab.getSettingDefinitions();
   assert.deepEqual(s.calls, [], "listing the rows reads nothing and saves nothing");
-  assert.deepEqual(groups.map((group) => group.type), ["group", "group", "group", "group", "group", "group", "group"]);
-  assert.deepEqual(groups.map((group) => group.heading), ["Get started", "Server", "Sync folders on this device", "This device", "Devices", "Vault key", "Notifications"]);
+  assert.deepEqual(groups.map((group) => group.type), ["group", "group", "group", "group", "group", "group", "group", "group"]);
+  assert.deepEqual(groups.map((group) => group.heading), ["Get started", "Security", "Server", "Sync folders on this device", "This device", "Devices", "Vault key", "Notifications"]);
   for (const item of s.rows()) {
     assert.ok(typeof item.name === "string" && item.name !== "", "every row has a name for search");
     if (item.render === undefined) continue;

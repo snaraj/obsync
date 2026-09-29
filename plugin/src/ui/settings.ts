@@ -32,7 +32,7 @@
  * mobile reads whole files through the vault adapter.
  */
 
-import { FORGOTTEN_DEVICE } from "../accountRecovery";
+import { FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "../accountRecovery";
 import { Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
 import type { App, ButtonComponent, SettingDefinitionItem, SettingGroupItem } from "obsidian";
 import type ObsyncPlugin from "../main";
@@ -300,6 +300,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
     const enrolled = (): boolean => this.plugin.state.data.deviceId !== null;
     return [
       { heading: "Get started", rows: [this.setupGuide()] },
+      // A group of its own, so a hidden warning leaves no trace in another
+      // group's layout; second, because the guide stays the first row.
+      { heading: "Security", visible: () => this.plugin.recoveryMismatch, rows: [this.recoveryMismatch()] },
       { heading: "Server", rows: [this.serverUrl(), this.edgeHeaders(), this.connection(), this.updateAvailable()] },
       { heading: "Sync folders on this device", rows: [this.folderSelection(), this.selectedFolders(), this.saveScope(), this.heldDeletions()] },
       { heading: "This device", rows: [this.pairing(), this.setup(), this.deviceName(enrolled), this.perFile(enrolled), this.total(enrolled), this.saveDevice(enrolled), this.leaving(enrolled)] },
@@ -532,6 +535,21 @@ export class ObsyncSettingTab extends PluginSettingTab {
           button.setButtonText("Restore here").onClick(() => {
             void this.plugin.restoreHeldDeletions();
           }));
+      },
+    };
+  }
+
+  /**
+   * A recovery key this device did not register (1.1.5): under the guide, at
+   * the top of the tab, until a registration succeeds. The guide is the one address the plugin
+   * names (bundle.test.mjs); its Troubleshooting page has the entry.
+   */
+  private recoveryMismatch(): Row {
+    return {
+      name: "Security warning",
+      desc: RECOVERY_MISMATCH,
+      render: (setting) => {
+        setting.addButton((button) => button.setButtonText("Open the guide").setCta().onClick(() => { this.plugin.openSetupGuide(); }));
       },
     };
   }

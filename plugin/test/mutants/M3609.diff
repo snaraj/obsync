@@ -1,0 +1,11 @@
+# M3609: a hold refusal reaches the Leave dialog as a generic refusal
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -400,7 +400,6 @@
+  * that could not leave (S40, S70).
+  */
+ function leaveRefusal(error: unknown): { reason: LeaveRefusal; detail: string } {
+-  if (error instanceof ApiError && error.code === "recovery_too_new") return { reason: error.code, detail: error.detail };
+   if (error instanceof ApiError && (error.code === "last_device" || error.code === "bad_signature")) {
+     return { reason: error.code, detail: error.detail };
+   }

@@ -1,0 +1,12 @@
+# M3610: the Leave dialog does not explain the seven-day hold
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -903,8 +903,6 @@
+     this.contentEl.empty();
+     const texts = reason === "bad_signature"
+       ? [LEAVE_UNKNOWN_DEVICE]
+-      : reason === "recovery_too_new"
+-      ? [LEAVE_RECOVERY_TOO_NEW]
+       : [
+         reason === "unreachable"
+           ? "The server did not answer, so it could not remove this device."
