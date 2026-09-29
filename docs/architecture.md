@@ -1500,11 +1500,18 @@ against the selection after the move, the old name of a renamed selected
 folder was refused, so every other device kept an empty folder under it and a
 device paired later received one. Nothing wider is admitted: only removals the
 engine judged carry a selection; one judged against the whole vault is checked
-against the selection in force at the post; saving a selection restarts the
-engine, so a judgement queued under the old one is never sent and the next
-pass judges the record against the new one; and a file is always checked
-against the selection in force. The judgement lives in memory only: a removal
-whose post fails, or that a stop cuts off before it is sent, is not sent again.
+against the selection in force at the post; a narrower selection re-judges
+every removal still owed (below); and a file is always checked against the
+selection in force. The judgement is written down with the
+removal (`folderRemovals` in the plugin state, issue #265), because no later
+pass can judge the old name again: a post that fails is retried
+`FOLDER_POST_TRIES` times, and a removal still owed after that, or across a
+stop, a quit or a reload, is judged again by the next start's pass, or **Sync
+now**'s, against the selection it was judged in. A folder standing there
+again, or a record already retired, owes nothing. Saving a narrower selection
+re-judges every removal owed against it, so one outside it is refused, with a
+line, rather than published; a wider one leaves them as judged. A state
+written by 1.1.4 has no such field and owes nothing, and 1.1.4 drops it.
 
 Unloading the plugin invalidates pending startup and scope-change
 continuations. A cancelled folder change cannot restart sync or replace a

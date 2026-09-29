@@ -1253,10 +1253,11 @@ name. But your other devices still show an empty folder with the old name.
 first. Up to 1.1.4 the removal of the old folder was then checked against the
 new selection, where the old name no longer belongs, so it was never sent
 (issue #240). From 1.1.5 it is checked against the selection you renamed the
-folder in, and sent. It can still be left over when this device could not
-reach the server at that moment, or when Obsidian closed or you changed
-**Sync folders on this device** before it was sent: nothing sends it later.
-Nothing is lost: only the empty folder is left over.
+folder in, and sent; if the server could not be reached, or Obsidian closed
+first, this device keeps it owed and sends it once the server answers, at the
+latest when Obsidian starts next or you press **Sync now** (issue #265). It
+is left over only when you narrowed **Sync folders on this device** before it
+was sent. Nothing is lost: only the empty folder is left over.
 
 **How to fix it.** On a device that syncs the whole vault, delete the empty
 folder with the old name. That device sends the folder's removal, and your

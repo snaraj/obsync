@@ -1646,7 +1646,7 @@ export class SyncEngine {
     if (!this.trackedFolder(path, "folder_rename_from", folders)) return;
     const context = this.need();
     this.folderPublished(path);
-    this.folderRemovals.delete(path);
+    this.settleRemoval(path);
     const queued = this.queue.indexOf(path);
     if (queued !== -1) this.queue.splice(queued, 1);
     if (context.state.folderByPath(path) !== undefined) {
@@ -1802,7 +1802,7 @@ export class SyncEngine {
     // A folder stands here again, so a delete event still owed for the one
     // the pull path removed will never arrive (`deleted`, issue #96).
     context.trashed.delete(path);
-    this.folderRemovals.delete(path);
+    this.settleRemoval(path);
     if (context.createdFolders.delete(path)) {
       this.options.host.log("watch path_class=folder decision=echo_suppressed event=create");
       return;
@@ -1828,8 +1828,7 @@ export class SyncEngine {
       this.options.host.log("watch path_class=folder decision=echo_suppressed event=delete");
       return;
     }
-    this.folderRemovals.set(path, folders);
-    this.enqueue(path);
+    this.oweRemoval(path, folders);
   }
 
   /**
@@ -1929,6 +1928,31 @@ export class SyncEngine {
     const at = held.indexOf(path);
     if (at === -1) return;
     held.splice(at, 1);
+    this.saveFolderBarriers();
+  }
+
+  /**
+   * THIS DEVICE OWES THE SERVER A FOLDER'S REMOVAL, judged against `folders`
+   * -- and the debt outlives this engine (issue #265). A renamed selected
+   * folder's old name is in no selection once the rename is followed, so no
+   * later pass can judge its removal again: a post that failed, or a stop
+   * before it, left the empty folder on every other device for good. Written
+   * down with its judgement, it is settled by the post, and otherwise judged
+   * again by the next start's pass (`survey`).
+   */
+  private oweRemoval(path: string, folders: SyncFolders): void {
+    this.folderRemovals.set(path, folders);
+    this.options.state.data.folderRemovals[path] = folders === undefined ? null : [...folders];
+    this.saveFolderBarriers();
+    this.enqueue(path);
+  }
+
+  /** Owed no longer: posted, refused, nothing left to retire, or a folder there again. */
+  private settleRemoval(path: string): void {
+    this.folderRemovals.delete(path);
+    const owed = this.options.state.data.folderRemovals;
+    if (!Object.hasOwn(owed, path)) return;
+    delete owed[path];
     this.saveFolderBarriers();
   }
 
@@ -2274,11 +2298,22 @@ export class SyncEngine {
       const judged = this.folderRemovals.get(path);
       if (this.folderRemovals.delete(path)) {
         pathClass = "folder";
-        const versionId = await pushFolderDelete(context, path, judged);
-        if (versionId !== null) {
-          context.authored.add(versionId);
-          this.accepted(true);
+        try {
+          const versionId = await pushFolderDelete(context, path, judged);
+          if (versionId !== null) {
+            context.authored.add(versionId);
+            this.accepted(true);
+          }
+        } catch (error) {
+          // A refusal of the path is final, and said below; a stop keeps the
+          // debt for the next start; anything else is retried (issue #265).
+          if (error instanceof VaultPathError) this.settleRemoval(path);
+          if (error instanceof VaultPathError || !this.running) throw error;
+          this.retryRemoval(context, path, judged, error);
+          return;
         }
+        this.folderRetries.delete(path);
+        this.settleRemoval(path);
         return;
       }
       const recreate = this.folderPublishes.get(path);
@@ -2529,6 +2564,32 @@ export class SyncEngine {
     context.host.log(
       `push path_class=folder decision=retry reason=folder_post attempt=${attempt} budget=${FOLDER_POST_TRIES}`,
     );
+  }
+
+  /**
+   * A folder removal's post FAILED (issue #265). The debt is written down
+   * (`oweRemoval`), so within this engine the removal is posted again against
+   * the selection it was judged in, `FOLDER_POST_TRIES` attempts in all; past
+   * that it waits for the next start's pass, or Sync now's.
+   */
+  private retryRemoval(context: SyncContext, path: string, judged: SyncFolders, error: unknown): void {
+    const attempt = (this.folderRetries.get(path) ?? 0) + 1;
+    const message = errorText(error);
+    if (attempt >= FOLDER_POST_TRIES) {
+      this.folderRetries.delete(path);
+      context.host.log(
+        `push path_class=folder decision=expired reason=folder_removal attempt=${attempt} budget=${FOLDER_POST_TRIES} ` +
+          `held=next_pass error=${message}`,
+      );
+      this.report(refusalStatus(error) ?? { kind: "error", message: error instanceof ApiError ? PUSH_REFUSED : message });
+      return;
+    }
+    this.folderRetries.set(path, attempt);
+    context.host.log(
+      `push path_class=folder decision=retry reason=folder_removal attempt=${attempt} budget=${FOLDER_POST_TRIES} error=${message}`,
+    );
+    this.folderRemovals.set(path, judged);
+    this.enqueue(path);
   }
 
   /**
@@ -3814,6 +3875,13 @@ export class SyncEngine {
     // a pass where notes LEFT the selection, the folders that went left with
     // them (`settleVanished`).
     if (tombstones) {
+      // A REMOVAL THIS DEVICE STILL OWES (issue #265) is judged here again,
+      // against the selection it was judged in. A folder that stands again,
+      // or a record already retired, owes nothing.
+      const owed = context.state.data.folderRemovals;
+      for (const path of Object.keys(owed)) {
+        if (present.has(path) || context.state.folderByPath(path) === undefined) this.settleRemoval(path);
+      }
       for (const folder of Object.keys(context.state.data.folders)) {
         // A folder whose notes' deletions are held waits with them, as it
         // does in the watcher's burst (`heldFolders`): the person may yet put
@@ -3821,10 +3889,14 @@ export class SyncEngine {
         if (context.state.data.heldDeletions.some((path) => path.startsWith(`${folder}/`))) continue;
         if (!this.running) return;
         if (present.has(folder) || casedFolders.has(folder)) continue;
-        if (!this.trackedFolder(folder, "reconcile_folder_state")) { folderSkipped++; continue; }
+        const judged = owed[folder] ?? undefined;
+        if (!this.trackedFolder(folder, "reconcile_folder_state", judged)) {
+          folderSkipped++;
+          this.settleRemoval(folder);
+          continue;
+        }
         if (left.length > 0) { this.folderLeftScope(folder, context.state.data.syncFolders); continue; }
-        this.folderRemovals.set(folder, context.state.data.syncFolders);
-        this.enqueue(folder);
+        this.oweRemoval(folder, judged);
         folderQueued++;
       }
     }
@@ -3936,9 +4008,8 @@ export class SyncEngine {
       // handlers drop it: a path is a removal or a publication, never both,
       // and `pushNow` would otherwise answer the removal for both.
       this.folderPublished(from);
-      this.folderRemovals.set(from, context.state.data.syncFolders);
-      this.enqueue(from);
-      this.folderRemovals.delete(to);
+      this.oweRemoval(from, context.state.data.syncFolders);
+      this.settleRemoval(to);
       // ARMED BEFORE THE ENQUEUE, because `enqueue` drains synchronously as
       // far as its first await (`folderCreated`).
       this.publishFolder(to, true);

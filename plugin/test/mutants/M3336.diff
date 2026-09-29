@@ -1,0 +1,12 @@
+# M3336: an owed removal whose judged selection does not parse loads as judged against the whole vault (issue #265)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -499,7 +499,7 @@
+       try {
+         data.folderRemovals[path] = judged === null ? null : parseSyncFolders(judged);
+       } catch {
+-        continue;
++        data.folderRemovals[path] = null;
+       }
+     }
+   }

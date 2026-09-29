@@ -1,0 +1,12 @@
+# M3333: any selection saved re-judges the folder removals owed, a wider one too (issue #265)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3773,7 +3773,7 @@
+     // #265): judged against it, one outside it is refused, and said, by the
+     // next start's pass rather than published beyond what the person now
+     // syncs. A wider one leaves each as it was judged.
+-    if (folders !== undefined && expandsSyncScope(folders, previous)) {
++    if (folders !== undefined) {
+       state.data.folderRemovals = Object.fromEntries(Object.keys(owed).map((path) => [path, [...folders]]));
+     }
+     delete state.data.pendingScope;

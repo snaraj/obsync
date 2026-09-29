@@ -229,6 +229,16 @@ export interface ObsyncData {
    */
   folderBarriers: string[];
   /**
+   * Folder removals this device owes the server, each with the selection it
+   * was JUDGED against (`null`: the whole vault, checked against the selection
+   * in force). A renamed selected folder's old name is in no selection after
+   * the rename, so no later pass can judge its removal again: a post that
+   * failed, or a stop before it, left the empty folder on every other device
+   * for good (issue #265). Saving a narrower selection re-judges each against
+   * it (`main.ts`, `applyScope`).
+   */
+  folderRemovals: Record<string, string[] | null>;
+  /**
    * File id to a record the feed moved past because THIS device could not
    * write it -- a locked note, a read-only folder, a full disk, a chunk the
    * server does not hold -- with the path and the reason to show
@@ -311,6 +321,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     remoteOnly: {},
     retiredRoots: {},
     folderBarriers: [],
+    folderRemovals: {},
     parked: {},
     dropped: {},
     paused: {},
@@ -477,6 +488,19 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
     for (const path of barriers as unknown[]) {
       if (!isVaultPath(path) || data.folderBarriers.includes(path)) continue;
       data.folderBarriers.push(path);
+    }
+  }
+  // A removal whose path or judged selection does not parse is dropped, never
+  // widened: the next pass judges the record against the selection in force.
+  const removals = loaded["folderRemovals"];
+  if (isRecord(removals)) {
+    for (const [path, judged] of Object.entries(removals)) {
+      if (!isVaultPath(path)) continue;
+      try {
+        data.folderRemovals[path] = judged === null ? null : parseSyncFolders(judged);
+      } catch {
+        continue;
+      }
     }
   }
   // A held path is only ever a question: dropped here, the note's deletion is
@@ -887,6 +911,7 @@ export class State {
     // about.
     this.data.retiredRoots = {};
     this.data.folderBarriers = [];
+    this.data.folderRemovals = {};
     // And a parked record, which names a version on the server being left,
     // and the feed mark and the graves, which name entries and versions there
     // too: a mark carried to the next server would read its journal as a

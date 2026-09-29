@@ -1,0 +1,12 @@
+# M3328: the start-up pass judges an owed removal against the selection in force, not the one it was judged in (issue #265)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3889,7 +3889,7 @@
+         if (context.state.data.heldDeletions.some((path) => path.startsWith(`${folder}/`))) continue;
+         if (!this.running) return;
+         if (present.has(folder) || casedFolders.has(folder)) continue;
+-        const judged = owed[folder] ?? undefined;
++        const judged: SyncFolders = undefined;
+         if (!this.trackedFolder(folder, "reconcile_folder_state", judged)) {
+           folderSkipped++;
+           this.settleRemoval(folder);

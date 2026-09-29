@@ -1,0 +1,12 @@
+# M3329: a folder removal whose post fails is not retried (issue #265)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2588,8 +2588,6 @@
+     context.host.log(
+       `push path_class=folder decision=retry reason=folder_removal attempt=${attempt} budget=${FOLDER_POST_TRIES} error=${message}`,
+     );
+-    this.folderRemovals.set(path, judged);
+-    this.enqueue(path);
+   }
+ 
+   /**

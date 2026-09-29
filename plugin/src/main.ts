@@ -3765,15 +3765,24 @@ export default class ObsyncPlugin extends Plugin {
     const folders = pending.folders;
     const previous = state.data.syncFolders;
     const cursor = state.data.lastSeq;
+    const owed = state.data.folderRemovals;
     const widened = expandsSyncScope(previous, folders);
     state.data.syncFolders = folders;
     if (widened) state.data.lastSeq = 0;
+    // A NARROWER SELECTION RE-JUDGES EVERY FOLDER REMOVAL STILL OWED (issue
+    // #265): judged against it, one outside it is refused, and said, by the
+    // next start's pass rather than published beyond what the person now
+    // syncs. A wider one leaves each as it was judged.
+    if (folders !== undefined && expandsSyncScope(folders, previous)) {
+      state.data.folderRemovals = Object.fromEntries(Object.keys(owed).map((path) => [path, [...folders]]));
+    }
     delete state.data.pendingScope;
     try {
       await state.save();
     } catch (error) {
       state.data.syncFolders = previous;
       state.data.lastSeq = cursor;
+      state.data.folderRemovals = owed;
       state.data.pendingScope = pending;
       throw error;
     }

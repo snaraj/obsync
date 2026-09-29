@@ -74,7 +74,8 @@ test("a reference this vault never held, with no secret behind it, loads as an u
   assert.deepEqual({ ...state.data }, {
     vrk: null, deviceId: null, deviceSecret: null, deviceName: null, deviceTag: null,
     serverUrl: "https://sync.example.invalid", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-    retiredRoots: {}, folderBarriers: [], parked: {}, dropped: {}, paused: {}, heldDeletions: [], feedMark: null, graves: {},
+    retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: {}, paused: {}, heldDeletions: [],
+    feedMark: null, graves: {},
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "unconfirmed",
   });
   assert.deepEqual(copy.writes, [], "nothing is written until the person acts");

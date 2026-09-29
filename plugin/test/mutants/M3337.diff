@@ -1,0 +1,11 @@
+# M3337: leaving a server keeps the folder removals owed to it (issue #265)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -911,7 +911,6 @@
+     // about.
+     this.data.retiredRoots = {};
+     this.data.folderBarriers = [];
+-    this.data.folderRemovals = {};
+     // And a parked record, which names a version on the server being left,
+     // and the feed mark and the graves, which name entries and versions there
+     // too: a mark carried to the next server would read its journal as a

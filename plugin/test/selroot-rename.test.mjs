@@ -93,6 +93,7 @@ async function renameAndCheck({ server, timers, a, b, ids, keys }, from, to) {
   assert.equal(b.state.folderByPath(from), undefined, `B still records "${from}": ${told}`);
   assert.equal(a.state.folderByPath(from), undefined, `A still records "${from}" (its tombstone was never sent): ${told}`);
   assert.equal(await liveOnServer(server, keys, from), false, `the server still serves "${from}" to a device paired later: ${told}`);
+  assert.deepEqual(a.state.data.folderRemovals, {}, `a removal is still owed: ${told}`);
   assert.equal(a.host.logs.some((line) => line.includes("decision=not_synced reason=outside_sync_scope") && line.startsWith("push")), false, told);
 }
 
@@ -205,21 +206,23 @@ test("hostile: a whole-vault removal is refused when the selection narrowed befo
   assert.deepEqual(await deletedFrames(server, keys, ["Gone"]), [], `a removal outside the selection was published: ${told}`);
   assert.equal(await liveOnServer(server, keys, "Gone"), true, told);
   assert.equal(a.host.hasFolder("Gone"), true, told);
+  assert.deepEqual(b.state.data.folderRemovals, {}, "a refused removal is still owed");
 });
 
 /**
- * A SELECTION THE PERSON NARROWS BETWEEN THE RENAME AND THE POST.
+ * A REMOVAL OWED ACROSS A STOP (issue #265).
  *
- * Saving a selection stops the engine and starts a new one (`main.ts`,
- * `saveSyncFolders`), so a judgement queued under the old selection never
- * reaches the wire: the new engine's pass finds the old folder's record,
- * judges it against the narrower selection, and refuses it with a line. Four
- * moves in flight fill a desktop's four slots and keep the removal queued.
+ * The selected folder is renamed while four moves fill a desktop's four slots,
+ * so its removal waits in the queue, judged against the old selection; then
+ * the engine stops, as a quit or a saved selection stops it. The moves are let
+ * go, and the removal is left owed -- written down with its judgement, because
+ * no later pass can judge the old name again: it is in no selection now.
  */
-test("hostile: a rename's removal queued when the person narrows the selection is refused and logged", async (t) => {
-  const notes = Object.fromEntries(["N1", "N2", "N3", "N4"].map((name) => [`${name}.md`, `${name} SENTINEL\n`]));
-  const r = await setup(t, notes);
-  const { server, timers, a, b, ids, keys } = r;
+const NOTES4 = Object.fromEntries(["N1", "N2", "N3", "N4"].map((name) => [`${name}.md`, `${name} SENTINEL\n`]));
+
+async function renamedThenStopped(t) {
+  const r = await setup(t, NOTES4);
+  const { timers, a, ids } = r;
   const post = a.transport.postVersion.bind(a.transport);
   const holds = [];
   a.transport.postVersion = async (fileId, body) => {
@@ -228,27 +231,155 @@ test("hostile: a rename's removal queued when the person narrows the selection i
   };
   a.host.renameFolder(SEL, RENAMED);
   await timers.run(STEP_MS, () => holds.length === 4);
-  assert.ok(a.engine.queue.includes(SEL), "the removal was not queued behind the moves, so this test proves nothing");
+  assert.ok(a.engine.queue.includes(SEL), "the removal was not queued behind the moves, so this proves nothing");
   assert.deepEqual(a.engine.folderRemovals.get(SEL), [ROOT, SEL], "the removal was not judged against the old selection");
-
-  // What `saveSyncFolders` does: quiesce, put the new selection in force, start again.
   const quiet = a.engine.stopAndWait();
   for (const release of holds) release();
   await quiet;
-  a.state.data.syncFolders = [ROOT];
+  a.transport.postVersion = post;
+  assert.deepEqual(a.state.data.folderRemovals, { [SEL]: [ROOT, SEL] }, "the removal owed was not written down");
+  return r;
+}
+
+/** A new engine over the same vault and state, as a plugin reload or a saved selection makes one. */
+async function newEngine(t, { a, timers }) {
   const engine = new SyncEngine({ state: a.state, transport: a.transport, host: a.host, now: () => a.host.clock, timers });
   a.plugin.engine = engine;
   t.after(() => engine.stop());
   await engine.start();
+  return engine;
+}
+
+/** What `saveSyncFolders` puts in force once the old engine has stopped. */
+const save = (a, folders) => {
+  a.state.data.pendingScope = { folders };
+  return a.plugin.applyScope(a.state, "save", Date.now(), () => undefined);
+};
+
+/** The old folder gone from B and from the server, every note moved, and nothing owed. */
+async function retired(r) {
+  const { server, timers, a, b, ids, keys } = r;
+  await timers.run(STEP_MS, () => !b.host.hasFolder(SEL) &&
+    Object.keys(NOTES4).every((name) => b.state.fileByPath(`${RENAMED}/${name}`) !== undefined));
+  await timers.run(STEP_MS);
+  const told = story(server, a, b);
+  assert.equal(b.host.hasFolder(SEL), false, `B kept the old folder: ${told}`);
+  assert.equal(await liveOnServer(server, keys, SEL), false, told);
+  assert.deepEqual(await deletedFrames(server, keys, [SEL]), [SEL], `not exactly one tombstone, the old folder's: ${told}`);
+  for (const name of Object.keys(NOTES4)) assert.equal(b.state.fileByPath(`${RENAMED}/${name}`)?.fileId, ids[name], told);
+  assert.deepEqual(a.state.data.folderRemovals, {}, `the debt outlived its post: ${told}`);
+}
+
+test("hostile: a rename's removal owed when the person narrows the selection is refused and logged", async (t) => {
+  const r = await renamedThenStopped(t);
+  const { server, timers, a, b, keys } = r;
+  await save(a, [ROOT]);
+  assert.deepEqual(a.state.data.folderRemovals, { [SEL]: [ROOT] }, "the narrower selection did not re-judge the removal owed");
+  await newEngine(t, r);
   await timers.run(STEP_MS, () => a.host.logs.some((line) => line.startsWith("reconcile decision=queued")));
   await timers.run(STEP_MS);
-
   const told = story(server, a, b);
   assert.deepEqual(await deletedFrames(server, keys, [SEL]), [], `a removal outside the narrowed selection was published: ${told}`);
-  assert.ok(
-    a.host.logs.some((line) => line === "watch path_class=folder decision=not_synced reason=outside_sync_scope event=reconcile_folder_state"),
-    told,
-  );
+  assert.ok(a.host.logs.includes("watch path_class=folder decision=not_synced reason=outside_sync_scope event=reconcile_folder_state"), told);
   assert.equal(a.host.logs.some((line) => line.startsWith("folder path_class=folder decision=published reason=deleted")), false, told);
+  assert.deepEqual(a.state.data.folderRemovals, {}, "a refused removal is still owed");
   assert.deepEqual(a.state.data.syncFolders, [ROOT], told);
+});
+
+test("a wider selection saved meanwhile keeps the removal as it was judged, and it is sent (#265)", async (t) => {
+  const r = await renamedThenStopped(t);
+  await save(r.a, [ROOT, RENAMED, "Extra"]);
+  assert.deepEqual(r.a.state.data.folderRemovals, { [SEL]: [ROOT, SEL] }, "a wider selection re-judged the removal");
+  await newEngine(t, r);
+  await retired(r);
+});
+
+for (const [what, reload] of [["the engine starts again", false], ["the plugin reloads and a new engine takes over", true]]) {
+  test(`a renamed selected folder's removal stopped before its post is sent when ${what} (#265)`, async (t) => {
+    const r = await renamedThenStopped(t);
+    if (reload) await newEngine(t, r);
+    else await r.a.engine.start();
+    await retired(r);
+  });
+}
+
+test("a renamed selected folder's removal whose post fails is retried and sent (#265)", async (t) => {
+  const r = await setup(t);
+  const { a, keys } = r;
+  const oldId = await folderFileId(keys.manifestKey, SEL);
+  const post = a.transport.postVersion.bind(a.transport);
+  let posts = 0;
+  a.transport.postVersion = async (fileId, body) => {
+    if (fileId === oldId && posts++ === 0) throw new Error("fixture: the server could not be reached for this post");
+    return post(fileId, body);
+  };
+  await renameAndCheck(r, SEL, RENAMED);
+  assert.equal(posts, 2, "the removal was not posted exactly twice");
+  assert.ok(
+    a.host.logs.some((line) => line.startsWith("push path_class=folder decision=retry reason=folder_removal attempt=1 budget=3 ")),
+    a.host.logs.filter((line) => line.startsWith("push")).join(" | "),
+  );
+});
+
+test("a removal whose post keeps failing stops at its budget, stays owed, and Sync now sends it (#265)", async (t) => {
+  const r = await setup(t);
+  const { server, timers, a, b, keys } = r;
+  const oldId = await folderFileId(keys.manifestKey, SEL);
+  const post = a.transport.postVersion.bind(a.transport);
+  let refusing = true;
+  let posts = 0;
+  a.transport.postVersion = async (fileId, body) => {
+    if (fileId === oldId && refusing) {
+      posts++;
+      throw new Error("fixture: the server could not be reached for this post");
+    }
+    return post(fileId, body);
+  };
+  a.host.renameFolder(SEL, RENAMED);
+  await timers.run(STEP_MS, () => a.host.logs.some((line) => line.includes("decision=expired reason=folder_removal")));
+  await timers.run(STEP_MS);
+  const pushed = a.host.logs.filter((line) => line.startsWith("push")).join(" | ");
+  assert.equal(posts, 3, `the budget is not the one stated: ${pushed}`);
+  assert.ok(a.host.logs.some((line) => line.startsWith("push path_class=folder decision=expired reason=folder_removal attempt=3 budget=3 held=next_pass ")), pushed);
+  assert.deepEqual(a.state.data.folderRemovals, { [SEL]: [ROOT, SEL] }, "the debt was dropped at the end of its budget");
+  assert.equal(b.host.hasFolder(SEL), true, "the removal reached B after all, so this proves nothing");
+  refusing = false;
+  await a.engine.syncNow();
+  await timers.run(STEP_MS, () => !b.host.hasFolder(SEL));
+  assert.equal(b.host.hasFolder(SEL), false, story(server, a, b));
+  assert.equal(await liveOnServer(server, keys, SEL), false);
+  assert.deepEqual(a.state.data.folderRemovals, {});
+});
+
+test("a removal owed for a folder that stands again by the next start owes nothing, and nothing is published (#265)", async (t) => {
+  const r = await setup(t, NOTES4);
+  const { server, timers, a, b, ids, keys } = r;
+  const EMPTY = `${ROOT}/Empty`;
+  a.host.makeFolder(EMPTY);
+  await timers.run(STEP_MS, () => b.state.folderByPath(EMPTY) !== undefined);
+  // Four edits in flight fill the slots, so the folder's removal waits in the queue.
+  const post = a.transport.postVersion.bind(a.transport);
+  const holds = [];
+  a.transport.postVersion = async (fileId, body) => {
+    if (Object.values(ids).includes(fileId)) await new Promise((resolve) => holds.push(resolve));
+    return post(fileId, body);
+  };
+  for (const name of Object.keys(NOTES4)) a.host.write(`${SEL}/${name}`, `${name} edited\n`, 2000);
+  await timers.run(STEP_MS, () => holds.length === 4);
+  a.host.removeFolder(EMPTY);
+  assert.ok(a.engine.queue.includes(EMPTY), "the removal was not queued, so this proves nothing");
+  const quiet = a.engine.stopAndWait();
+  for (const release of holds) release();
+  await quiet;
+  a.transport.postVersion = post;
+  assert.deepEqual(Object.keys(a.state.data.folderRemovals), [EMPTY], "the removal owed was not written down");
+  // Made again while the engine was stopped.
+  a.host.explicitFolders.add(EMPTY);
+  await a.engine.start();
+  await timers.run(STEP_MS, () => a.host.logs.some((line) => line.startsWith("reconcile decision=queued")));
+  await timers.run(STEP_MS);
+  const told = story(server, a, b);
+  assert.deepEqual(await deletedFrames(server, keys, [EMPTY]), [], `a folder standing here was tombstoned: ${told}`);
+  assert.deepEqual(a.state.data.folderRemovals, {}, `a folder standing again is still owed a removal: ${told}`);
+  assert.equal(b.host.hasFolder(EMPTY), true, told);
 });

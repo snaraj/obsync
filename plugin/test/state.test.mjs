@@ -219,6 +219,8 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     // capitalisation off a selected folder, and a barrier is a record still
     // owed (`sync/pull.ts`, `sync/engine.ts`; review round 4).
     retiredRoots: { Notes: "f3" }, folderBarriers: ["Notes"],
+    // And a folder removal still owed (#265), a record on that server too.
+    folderRemovals: { "Notes sel": ["Notes sel"] },
     // And a parked record, which names a version on the server being left
     // (`sync/engine.ts`, `park`; issue #144).
     parked: { f5: { path: "Notes/locked.md", reason: "EPERM" } },
@@ -246,7 +248,8 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     {
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop", deviceTag: "7KQ4",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-      retiredRoots: {}, folderBarriers: [], parked: {}, dropped: { "Notes/empty.md": "f7" }, paused: {}, heldDeletions: [],
+      retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: { "Notes/empty.md": "f7" }, paused: {},
+      heldDeletions: [],
       feedMark: null, graves: {}, syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed",
     },
   );
@@ -292,4 +295,32 @@ test("byte sizes read and write the way the settings field shows them", () => {
   for (const bytes of [0, 1023, 1024, 512 * 1024 * 1024, 50 * 1024 * 1024 * 1024]) {
     assert.equal(policy.parseBytes(policy.formatBytes(bytes)), bytes, `${bytes} round-trips`);
   }
+});
+
+/**
+ * A FOLDER REMOVAL OWED IS WRITTEN DOWN WITH ITS JUDGEMENT (issue #265), and
+ * loaded as input: the data file is editable by anything that reaches the
+ * vault. A state written by 1.1.4 owes nothing; an entry whose path or judged
+ * selection does not parse is dropped, never widened to the whole vault.
+ */
+test("owed folder removals load with their judgement, 1.1.4 state owes none, and a malformed one is dropped (#265)", () => {
+  assert.deepEqual(parseData({ lastSeq: 3, folderBarriers: ["Notes"] }, false).folderRemovals, {}, "a 1.1.4 state owes nothing");
+  assert.deepEqual(defaultData(false).folderRemovals, {});
+  const loaded = parseData({
+    folderRemovals: {
+      "W201 sel": ["W201", "W201 sel"],
+      "Whole vault": null,
+      "/absolute": ["W201"],
+      ".obsidian/plugins": null,
+      "Up and out": ["../outside"],
+      "Not a list": "W201",
+      "Nested sel": ["W201", "W201/inner"],
+    },
+  }, false);
+  assert.deepEqual(loaded.folderRemovals, {
+    "W201 sel": ["W201", "W201 sel"],
+    "Whole vault": null,
+    // Canonicalised as any selection is: a parent covers its descendants.
+    "Nested sel": ["W201"],
+  });
 });
