@@ -908,34 +908,34 @@ class Bench:
         self.flow.prove(f"bench {name}: " + " ".join(f"{k}={v}" for k, v in result.items() if k != "latencies_ms"))
         return result
 
+    # What the plugin sends for a new note of at most 1 MiB (`DIRECT_PUT_MAX`,
+    # plugin/src/sync/push.ts, #195): the `PUT` and the version post, no
+    # `exists` first. B1 and B2 sent one until 1.1.5 (#275).
+    NOTE_REQUESTS = 2
+
     def push_notes(self, cred: Credential, count: int, size: int, concurrency: int) -> dict:
-        """B1's shape: per note, `exists`, `PUT`, version post -- as the plugin does."""
+        """B1's shape: per note, `PUT`, version post -- as the plugin sends a small note."""
         flow = self.flow
 
         def one(_: int) -> None:
             note = secrets.token_bytes(size)
-            sid = hashlib.sha256(note).hexdigest()
-            status, _, answer = flow.server.call(
-                "POST", "/v1/chunks/exists", body=json.dumps({"sids": [sid]}).encode("utf-8"), cred=cred
-            )
-            flow.expect(status, 200, "POST /v1/chunks/exists", answer)
-            put_chunk(flow, cred, note)
+            sid = put_chunk(flow, cred, note)
             post_version(flow, cred, secrets.token_hex(16), [], [sid], size)
 
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             list(pool.map(one, range(count)))
-        return {"files": count, "file_bytes": size, "concurrency": concurrency, "requests": 3 * count}
+        return {"files": count, "file_bytes": size, "concurrency": concurrency, "requests": self.NOTE_REQUESTS * count}
 
     def b1(self, cred: Credential, count: int, size: int, concurrency: int) -> None:
         result = self.measure("b1", lambda: self.push_notes(cred, count, size, concurrency))
         result["files_per_s"] = round(count / result["wall_s"], 1)
-        result["requests_per_s"] = round(3 * count / result["wall_s"], 1)
+        result["requests_per_s"] = round(self.NOTE_REQUESTS * count / result["wall_s"], 1)
 
     def b1_fsyncs(self, cred: Credential, count: int, size: int, concurrency: int) -> None:
         result = self.measure("b1-fsyncs", lambda: self.push_notes(cred, count, size, concurrency), fsyncs=True)
         total = sum(result["fsyncs"].values())
         result["fsyncs_per_file"] = round(total / count, 2)
-        result["fsyncs_per_request"] = round(total / (3 * count), 2)
+        result["fsyncs_per_request"] = round(total / (self.NOTE_REQUESTS * count), 2)
 
     def idle(self, name: str, seconds: int) -> None:
         self.measure(name, lambda: (time.sleep(seconds), {"idle_s": seconds})[1], fsyncs=self.strace)
@@ -969,10 +969,6 @@ class Bench:
                 watcher.start()
                 time.sleep(0.2)
                 started = time.monotonic()
-                status, _, answer = flow.server.call(
-                    "POST", "/v1/chunks/exists", body=json.dumps({"sids": [sid]}).encode("utf-8"), cred=pusher
-                )
-                flow.expect(status, 200, "POST /v1/chunks/exists", answer)
                 put_chunk(flow, pusher, edit)
                 parents = [post_version(flow, pusher, file_id, parents, [sid], len(edit))["version_id"]]
                 watcher.join(LONG_POLL_CLIENT_TIMEOUT + 5)

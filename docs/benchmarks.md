@@ -60,9 +60,9 @@ fsync calls with `strace -c` on every thread.
 
 | Scenario | What the harness does |
 | --- | --- |
-| B1 | N notes of 2 KiB, four requests in flight (the desktop default), each note `POST /v1/chunks/exists`, `PUT`, version post, as the plugin does |
+| B1 | N notes of 2 KiB, four requests in flight (the desktop default), each note `PUT` then version post, as the plugin sends a note of at most 1 MiB |
 | B1 fsyncs | the same shape for 500 notes under `strace`: fsync calls per note |
-| B2 wire | a device already long-polling; the other pushes a 1 KiB edit; time until the first has the version AND the bytes |
+| B2 wire | a device already long-polling; the other pushes a 1 KiB edit (`PUT`, version post); time until the first has the version AND the bytes |
 | B2 end to end | two real Obsidian instances (`scripts/ci/obsidian-drive.mjs`): an edit written into one vault, until the other vault's file holds it, read every 250 ms |
 | B3 | 2 GiB in 4 MiB chunks (the chunker's target), one in flight as the plugin's budget allows; down in batches of three |
 | B7 | a 60 s idle window on the fresh server, and again after B1 |
@@ -70,6 +70,13 @@ fsync calls with `strace -c` on every thread.
 `.github/workflows/bench.yml` runs it nightly on amd64 and arm64 and keeps the
 results as the run's artifact for 90 days; nothing is committed from CI. It is
 not a regression gate: shared runners are too noisy for a threshold.
+
+**The series breaks at 1.1.5 (#275).** Until then B1 and B2 sent a
+`POST /v1/chunks/exists` before each note's `PUT`, which the plugin stopped
+doing for notes of at most 1 MiB (#195). Every B1 and B2 figure below dated
+before this change was measured with that third request, one more signed
+request and nonce flush per note: compare B1's wall time, requests/s and
+fsyncs per note, and B2's latency, only within one side of the break.
 
 ## Baseline
 
@@ -208,8 +215,8 @@ the start of each run:
 | --- | --- | --- |
 | B3, server CPU for 2 GiB up and down | 21.0 s, 18.3 s | 11.9 s, 11.0 s |
 | B3 up / down | 65 / 257, 68 / 310 MiB/s | 74 / 328, 83 / 339 MiB/s |
-| B1 fsyncs | 5.73, 5.70 per note | 5.69, 5.67 per note |
-| B1 | 82.1 s, 77.9 s | 76.7 s, 83.0 s |
+| B1 fsyncs (with `exists`, before #275) | 5.73, 5.70 per note | 5.69, 5.67 per note |
+| B1 (with `exists`, before #275) | 82.1 s, 77.9 s | 76.7 s, 83.0 s |
 
 Moving 2 GiB up and down costs the server 42 % less CPU: every uploaded
 byte is hashed, and every downloaded byte copied, by the two paths the
