@@ -450,7 +450,12 @@ test("an iPhone with a DIFFERENT note at the new spelling still answers occupied
 
   r.a.host.rename("CaseMove/Rename me.md", "CaseMove/rename me.md");
   await r.timers.run(STEP_MS, () => r.b.logs.some((line) => line.startsWith("pull path_class=file decision=case_move_occupied ")));
-  await r.timers.run(STEP_MS);
+  // THE RECORD IS APPLIED WHEN THE FEED HAS MOVED PAST IT, not after a
+  // quiet spell (issue #277): the rule publishes the phone's own note first
+  // (`identify`), a whole push that a loaded machine did not finish inside
+  // one quiet window.
+  const seq = Number(/ seq=(\d+)$/.exec(r.b.logs.find((line) => line.startsWith("pull path_class=file decision=case_move_occupied ")))[1]);
+  await r.timers.run(STEP_MS, () => r.b.state.data.lastSeq >= seq);
 
   const texts = r.vault.entries().map((path) => r.vault.text(path)).filter((text) => text !== null);
   assert.ok(texts.includes(BODY) && texts.includes(THEIRS), `a note was lost: ${story(r)}`);
