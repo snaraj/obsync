@@ -347,8 +347,13 @@ function soleSpelling(names: string[], segment: string): string | null {
   return folded.length === 1 ? (folded[0] as string) : null;
 }
 
-/** The decisions that mean the plugin did NOT do what was asked, or fell back to a slower way of doing it (#221, #283). */
-const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback|throttle_unavailable)\b/;
+/**
+ * The decisions that mean the plugin did NOT do what was asked, or fell back
+ * to a slower way of doing it (#221, #283) -- and a stop still waiting past its
+ * budget, which holds every restart (#287). A press's or a pairing's wait is
+ * routine, and stays at debug.
+ */
+const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback|throttle_unavailable)\b|^engine decision=waiting\b/;
 
 /**
  * How long a device waits to start again after the server could not be

@@ -301,6 +301,19 @@ test("a feed that has stopped says so at warn, where the console shows it by def
   r.instance.onunload();
 });
 
+test("a stop still waiting past its budget says so at warn; a press's wait and a pairing's stay at debug (#287)", async (t) => {
+  const r = await loaded(t);
+  r.instance.log("engine decision=waiting on=sweep held_ms=12000 in_flight=3 budget_ms=10000");
+  r.instance.log("sync_now decision=waiting on=sweep held_ms=12000 behind=2 budget_ms=10000");
+  r.instance.log("pairing role=claimant decision=waiting reason=not_approved");
+  assert.deepEqual(r.said.filter(([, line]) => /^obsync (engine|sync_now|pairing) .*decision=waiting/.test(line)), [
+    ["warn", "obsync engine decision=waiting on=sweep held_ms=12000 in_flight=3 budget_ms=10000"],
+    ["debug", "obsync sync_now decision=waiting on=sweep held_ms=12000 behind=2 budget_ms=10000"],
+    ["debug", "obsync pairing role=claimant decision=waiting reason=not_approved"],
+  ]);
+  r.instance.onunload();
+});
+
 test("a phone keeps the page's own clock and makes no worker", async (t) => {
   const r = await loaded(t, { mobile: true });
   assert.equal(r.workers.length, 0);

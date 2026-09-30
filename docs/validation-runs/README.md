@@ -34,6 +34,16 @@ or its harnesses; a red leg there is a finding to read.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-09-29 a desktop feed that stops](2026-09-29-feed-wedge.md): #276 on
+  two macOS desktops, not reproduced, the mechanism unconfirmed. None of
+  these stalled:
+  - on origin/main, 34 runs of the reported shape, 23 upload bursts and 60
+    fuzz seeds;
+  - at the 1.1.5 instrumentation, 20 bursts and 10 runs through a hop.
+
+  With the pull chain held on purpose, origin/main stayed `idle` and silent.
+  The instrumented build named the step it waited on, in the status and in
+  one warning at 110 s.
 - [2026-09-28 an open note and the stale editor](2026-09-28-open-editor.md):
   #252 on the owner's iPhone, the Android emulator and a macOS desktop. A
   starved file watcher left an open note stale behind "syncing 1". The first
