@@ -37,6 +37,7 @@ const { pushFile, sidDigest } = require("../build/sync/push.js");
 const { ChunkRepair, REPAIR_EXISTS_SIDS, REPAIR_WALK_MS } = require("../build/sync/repair.js");
 const { CHUNK_MAX } = require("../build/chunker.js");
 const c = require("../build/crypto.js");
+const { caseOnly } = require("../build/vaultPath.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 const OTHER = "ffffffffffffffffffffffffffffffff";
@@ -450,6 +451,62 @@ test("the state's indexes equal a rebuild after any sequence of writes (#194)", 
   state.setFile("x.md", { fileId: lone, versionId: "", mtime: 0, size: 1, sha256: "" });
   state.data.files["x.md"] = { ...state.data.files["x.md"], fileId: ids[1] };
   assert.equal(state.pathByFileId(lone), undefined);
+});
+
+test("the case index answers what a walk of every record answers, through adds, moves, capital-only renames, deletes and loads (P10)", async () => {
+  const store = memoryStore();
+  let state = await State.open(store, false, store.secrets);
+  let seed = 11;
+  const random = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return Math.floor(seed / 65536) % n; };
+  // Spellings apart by capitals alone, and one pair that lowers alike at two
+  // lengths -- a dotted capital I lowers to two code units -- which share the
+  // index's bucket and are never twins (`caseOnly`).
+  const paths = ["Notes/a.md", "notes/A.md", "NOTES/a.md", "Notes/b.md", "notes/B.md", "c.md", "C.md", "İ.md", "i̇.md", "İ.md", "12"];
+  const ids = ["11".repeat(16), "22".repeat(16), "33".repeat(16), "44".repeat(16)];
+  const moves = { any: 0, capitals: 0, loads: 0 };
+  const check = (step) => {
+    const recorded = Object.keys(state.data.files);
+    for (const path of [...paths, "notes/a.MD", "D.md"]) {
+      const walked = recorded.filter((other) => caseOnly(other, path)).sort();
+      assert.deepEqual(state.caseTwins(path).sort(), walked, `twins of ${path} at step ${step}`);
+    }
+  };
+  for (let step = 0; step < 2000; step++) {
+    const path = paths[random(paths.length)];
+    const choice = random(10);
+    const record = state.fileByPath(path);
+    if (choice < 3) {
+      state.setFile(path, { fileId: ids[random(ids.length)], versionId: "", mtime: step, size: 1, sha256: "" });
+    } else if (choice < 5) {
+      state.forgetPath(path);
+    } else if (choice < 7) {
+      // A move, as the pull path and a rename make one: the record at its new name, then the old forgotten.
+      const to = paths[random(paths.length)];
+      if (record !== undefined && to !== path) { state.setFile(to, record); state.forgetPath(path); moves.any++; }
+    } else if (choice < 9) {
+      const to = paths.filter((other) => caseOnly(other, path))[0];
+      if (record !== undefined && to !== undefined && state.fileByPath(to) === undefined) {
+        state.setFile(to, record); state.forgetPath(path); moves.capitals++;
+      }
+    } else if (random(4) === 0) {
+      // A load from disk: a new session, whose index nothing has written.
+      await state.save();
+      state = await State.open(store, false, store.secrets);
+      moves.loads++;
+    } else if (random(10) === 0) {
+      state.forgetPairing();
+    }
+    check(step);
+  }
+  assert.ok(moves.any > 50 && moves.capitals > 50 && moves.loads > 10, JSON.stringify(moves));
+  // Derived, never persisted: the data file holds the capitals it recorded,
+  // and no lower-cased spelling of them.
+  state.forgetPairing();
+  state.setFile("NOTES/B.md", { fileId: ids[0], versionId: "", mtime: 0, size: 1, sha256: "" });
+  assert.deepEqual(state.caseTwins("notes/b.md"), ["NOTES/B.md"]);
+  await state.save();
+  const written = JSON.stringify(store.writes.at(-1));
+  assert.ok(written.includes("NOTES/B.md") && !written.includes("notes/b.md"), written);
 });
 
 // --- D: a copied vault --------------------------------------------------

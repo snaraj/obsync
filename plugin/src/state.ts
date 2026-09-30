@@ -669,6 +669,12 @@ interface Indexes {
   names: Set<string>;
   bytes: number;
   /**
+   * The paths under each lower-cased spelling (`caseTwins`): the push of
+   * every new note asked for a case-only twin of its name by walking every
+   * record, 0.8 ms of the main thread per push at 7,700 (P10).
+   */
+  folded: Map<string, Set<string>>;
+  /**
    * Where each path stands in `files`' own key order, which is the order the
    * waiting notes were always settled in (`besideNames`): insertion order, a
    * key replaced in place keeping its place.
@@ -682,21 +688,27 @@ const ARRAY_INDEX = /^(0|[1-9][0-9]*)$/;
 
 function indexed(indexes: Indexes, path: string, record: FileRecord, sign: 1 | -1): void {
   const paths = indexes.ids.get(record.fileId) ?? new Set<string>();
+  const fold = path.toLowerCase();
+  const spellings = indexes.folded.get(fold) ?? new Set<string>();
   if (sign === 1) {
     paths.add(path);
     indexes.ids.set(record.fileId, paths);
     if (record.name !== undefined) indexes.names.add(path);
+    spellings.add(path);
+    indexes.folded.set(fold, spellings);
   } else {
     paths.delete(path);
     if (paths.size === 0) indexes.ids.delete(record.fileId);
     indexes.names.delete(path);
+    spellings.delete(path);
+    if (spellings.size === 0) indexes.folded.delete(fold);
   }
   indexes.bytes += sign * record.size;
 }
 
 /** The indexes of `files` built from nothing: what the maintained ones must always equal. */
 function indexFiles(files: Record<string, FileRecord>): Indexes {
-  const indexes: Indexes = { of: files, ids: new Map(), names: new Set(), bytes: 0, order: new Map(), next: 0 };
+  const indexes: Indexes = { of: files, ids: new Map(), names: new Set(), bytes: 0, order: new Map(), next: 0, folded: new Map() };
   for (const [path, record] of Object.entries(files)) {
     indexes.order.set(path, indexes.next++);
     indexed(indexes, path, record, 1);
@@ -1082,6 +1094,11 @@ export class State {
     const place = (path: string): number =>
       ARRAY_INDEX.test(path) && Number(path) < 2 ** 32 - 1 ? Number(path) - 2 ** 32 : order.get(path) ?? Infinity;
     return [...names].filter((path) => this.data.files[path]?.name !== undefined).sort((a, b) => place(a) - place(b));
+  }
+
+  /** Recorded paths that differ from `path` by capitals alone (`caseOnly`), without a walk of every record. */
+  caseTwins(path: string): string[] {
+    return [...this.index.folded.get(path.toLowerCase()) ?? []].filter((recorded) => caseOnly(recorded, path));
   }
 
   setFile(path: string, record: FileRecord): void {

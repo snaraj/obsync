@@ -63,7 +63,7 @@ import {
 } from "../crypto";
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
 import { SyncFolders, assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
-import { VaultPathError, assertVaultPath, caseOnly } from "../vaultPath";
+import { VaultPathError, assertVaultPath } from "../vaultPath";
 
 /**
  * The ciphertext one push holds between encrypting a chunk and the server
@@ -393,12 +393,13 @@ export function pushFile(context: SyncContext, path: string, force = false, over
  * is published as THAT record, never as a new file. A host that keeps the two
  * spellings apart answers with the name itself, which is a different file.
  *
- * Asked only when some record differs from `path` by case alone, so a new
- * note costs one pass over the records and no vault walk.
+ * Asked only when some record differs from `path` by case alone, which the
+ * state answers from an index (`caseTwins`), so a new note costs no walk of
+ * the records and no vault walk.
  */
 async function recordedSpelling(context: SyncContext, path: string): Promise<string> {
   if (context.state.fileByPath(path) !== undefined) return path;
-  if (!Object.keys(context.state.data.files).some((recorded) => caseOnly(recorded, path))) return path;
+  if (context.state.caseTwins(path).length === 0) return path;
   const shown = await context.host.spelling(path);
   if (shown === null || shown === path || context.state.fileByPath(shown) === undefined) return path;
   context.host.log("push path_class=file decision=resolved reason=case_variant");
