@@ -1,0 +1,12 @@
+# M3963: the retry and give-up lines leave out the code the server's 5xx carried (#298, requirement 12)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -827,7 +827,7 @@
+       outcome = code === null || RESTART_CODES.has(code)
+         ? { kind: "settled", response }
+         : code !== NOT_OBSYNC && OBSYNC_CODE.test(code)
+-          ? { kind: "unsettled", status: response.status, reason: `status=${response.status} code=${code}`, answered: true }
++          ? { kind: "unsettled", status: response.status, reason: `status=${response.status}`, answered: true }
+           : { kind: "unsettled", status: response.status, reason: `status=${response.status}`, answered: false };
+     } catch (error) {
+       if (error === TIMED_OUT && letGo !== null) {

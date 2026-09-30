@@ -207,6 +207,16 @@ test("a terminator answering 5xx for a server that is not there is an outage too
   await r.instance.onload();
   assert.deepEqual(r.scheduled(), ["engine decision=retry_scheduled attempt=1 delay_ms=5000 status=503"]);
   assert.deepEqual(r.win.armed(), [5000]);
+  assert.equal(r.instance.statusText(), "offline — retrying");
+});
+
+test("a server answering a 5xx in its own coded error at start is retried like an outage, and says the read failed, never offline (#298)", async (t) => {
+  const r = await fixture(t);
+  r.plan((n) => { if (n === 1) throw new r.ApiError(500, "unreachable", "status=500 code=io_error", true); });
+  await r.instance.onload();
+  assert.deepEqual(r.scheduled(), ["engine decision=retry_scheduled attempt=1 delay_ms=5000 status=500"]);
+  assert.deepEqual(r.win.armed(), [5000]);
+  assert.match(r.instance.statusText(), /^error — Changes from your server could not be read\. /);
 });
 
 test("the device reporting its network back runs the pending retry now, and is nothing otherwise", async (t) => {

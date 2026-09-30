@@ -72,7 +72,7 @@ import {
   parseSyncFolders,
 } from "./syncScope";
 import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
-import { AFTER_START, EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
+import { AFTER_START, EngineStatus, FEED_FAILED, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
@@ -4053,8 +4053,9 @@ export default class ObsyncPlugin extends Plugin {
         return;
       }
       this.scheduleReconnect(attempt, error.status);
-      // Retried like absence, and said as what it is (`refusalStatus`).
-      this.setStatus(refusalStatus(error) ?? { kind: "offline" });
+      // Retried like absence, and said as what it is (`refusalStatus`): a 5xx
+      // the server answered in its own coded error as the read that failed (#298).
+      this.setStatus(refusalStatus(error) ?? (error.answered ? { kind: "error", message: FEED_FAILED } : { kind: "offline" }));
     }
   }
 

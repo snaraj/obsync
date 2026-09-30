@@ -903,6 +903,49 @@ test("every attempt says whether the server answered it, and decides nothing", a
   assert.deepEqual(refused, [true]);
 });
 
+test("a 5xx in obsync's own coded error is the server answering, retried all the same; a bare or foreign 5xx is not (#298)", async () => {
+  const hangs = () => { let answer; const pending = new Promise((resolve) => { answer = resolve; }); return { pending, answer: (value) => answer(value) }; };
+  const coded = { status: 500, text: JSON.stringify({ error: "io_error", detail: "SENTINEL" }) };
+  const heard = [];
+  const { transport, sent, logged } = harness([coded, coded, coded], { reachable: (answered, request) => heard.push(answered ? true : request) });
+  const failed = await transport.devices().catch((error) => error);
+  assert.equal(sent.length, 3, "retried as any 5xx is");
+  assert.deepEqual(heard, [true, true, true]);
+  assert.deepEqual([failed.code, failed.answered, failed.detail], ["unreachable", true, "status=500 code=io_error"]);
+  assert.ok(logged.some((line) => line.startsWith("http GET /v1/devices status=500 code=io_error decision=gave_up attempts=3 ")), logged.join("|"));
+  // A history read, which is never repeated, gives up the same way.
+  const once = harness([coded]);
+  const history = await once.transport.historyChanges(7, READ_CONTROL).catch((error) => error);
+  assert.deepEqual([history.code, history.answered], ["unreachable", true]);
+
+  // A proxy's own page, an empty 5xx, JSON that is not obsync's, or a code no obsync server writes.
+  for (const bare of [{ status: 502 }, { status: 503, text: "<html>SENTINEL</html>" }, { status: 500, text: JSON.stringify({ message: "SENTINEL" }) },
+    { status: 500, text: JSON.stringify({ error: "Bad Gateway SENTINEL" }) }]) {
+    const unheard = [];
+    const behind = harness([bare, bare, bare], { reachable: (answered, request) => unheard.push(answered ? true : request) });
+    const gone = await behind.transport.devices().catch((error) => error);
+    assert.deepEqual([gone.code, gone.answered, gone.detail], ["unreachable", false, `status=${bare.status}`], JSON.stringify(bare));
+    assert.deepEqual(unheard, Array(3).fill(`GET /v1/devices status=${bare.status}`), JSON.stringify(bare));
+  }
+
+  // An answer that came while a long poll waited (#288): that poll's timeout is not word of absence.
+  let now = 1757200000000;
+  const stuck = hangs();
+  const timers = deadlines();
+  const polled = [];
+  const EMPTY = { status: 200, text: JSON.stringify({ seq: 0, head_seq: 0, changes: [] }) };
+  const both = harness([() => stuck.pending, coded, coded, coded, EMPTY], { timers, now: () => now, reachable: (answered, request) => polled.push(answered ? true : request) });
+  const poll = watch(both.transport.changes(0, 55));
+  await turns(() => timers.pending().length === 1);
+  now += 1000;
+  await both.transport.devices().catch(() => undefined);
+  now += 69000;
+  timers.expire();
+  await turns(() => poll.settled);
+  assert.deepEqual(polled, [true, true, true, true], "the timed-out poll was reported unanswered");
+  assert.ok(both.logged.some((line) => / timeout budget_ms=\d+ answered_meanwhile=1 decision=retry /.test(line)), both.logged.join("|"));
+});
+
 test("a connection refused on the only attempt says nothing was sent and names the port; anything else stays unknown", () => {
   const refused = lostMessage("creating the account", { outcome: "lost", attempts: 1, reason: "network=net::ERR_CONNECTION_REFUSED" });
   assert.match(refused, /^creating the account: nothing answers at this address and port \(network=net::ERR_CONNECTION_REFUSED\), so nothing was sent\./);

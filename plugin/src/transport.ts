@@ -121,6 +121,11 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     readonly detail: string,
+    /**
+     * An `unreachable` the server itself answered: a 5xx in obsync's own
+     * coded error (#298). Retried as absence is, and said as a refusal.
+     */
+    readonly answered = false,
   ) {
     super(`${status} ${code}: ${detail}`);
     this.name = "ApiError";
@@ -626,11 +631,15 @@ function attemptMs(target: string, bytes: number): number {
 /**
  * What one attempt produced. `settled` means the server decided, whatever it
  * decided; `unsettled` means nothing did — no answer, or a 5xx that says the
- * server reached no conclusion either.
+ * server reached no conclusion either. `answered`: that 5xx came in obsync's
+ * own coded error, so the server was there to say it (#298).
  */
 type Attempt =
   | { kind: "settled"; response: HttpResponse }
-  | { kind: "unsettled"; status: number; reason: string };
+  | { kind: "unsettled"; status: number; reason: string; answered: boolean };
+
+/** An obsync refusal code (`StoreError::code`): what makes a 5xx the server's own answer. */
+const OBSYNC_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 
 /** The attempts and the wall clock one call may spend (`Patience`). */
 interface Budget {
@@ -810,10 +819,16 @@ export class Transport {
       // A 507 is the server's decision that it is full, not its absence:
       // retried eight times, a full server read `offline — retrying` for
       // minutes and never said why (S29, issue #155). So is a server that
-      // needs a restart (`RESTART_CODES`, #295).
-      outcome = response.status < 500 || response.status === 507 || RESTART_CODES.has(parseError(response.text).code)
+      // needs a restart (`RESTART_CODES`, #295). Any other 5xx in obsync's
+      // own coded error is its server answering that it failed (#298):
+      // retried all the same, and never word that it is gone. A bare 5xx --
+      // a proxy or a tunnel whose obsync is not there -- is.
+      const code = response.status < 500 || response.status === 507 ? null : parseError(response.text).code;
+      outcome = code === null || RESTART_CODES.has(code)
         ? { kind: "settled", response }
-        : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
+        : code !== NOT_OBSYNC && OBSYNC_CODE.test(code)
+          ? { kind: "unsettled", status: response.status, reason: `status=${response.status} code=${code}`, answered: true }
+          : { kind: "unsettled", status: response.status, reason: `status=${response.status}`, answered: false };
     } catch (error) {
       if (error === TIMED_OUT && letGo !== null) {
         void asked?.then(letGo, letGo);
@@ -837,10 +852,11 @@ export class Transport {
         reason: error === TIMED_OUT
           ? `timeout budget_ms=${sending.deadlineMs}${behind ? " answered_meanwhile=1" : ""}`
           : `network=${errorText(error)}`,
+        answered: false,
       };
       if (behind) return outcome;
     }
-    if (outcome.kind === "settled") {
+    if (outcome.kind === "settled" || outcome.answered) {
       this.answeredAt = this.now();
       this.options.reachable?.(true);
     } else {
@@ -918,7 +934,7 @@ export class Transport {
   private async pause(
     method: string,
     target: string,
-    outcome: { status: number; reason: string },
+    outcome: { status: number; reason: string; answered: boolean },
     attempt: number,
     budget: Budget,
     started: number,
@@ -930,7 +946,7 @@ export class Transport {
         `http ${method} ${target} ${outcome.reason} decision=gave_up attempts=${attempt}` +
           `${budget.interactive ? ` budget_ms=${INTERACTIVE_MS}` : ""} duration_ms=${this.now() - started}`,
       );
-      throw new ApiError(outcome.status, "unreachable", outcome.reason);
+      throw new ApiError(outcome.status, "unreachable", outcome.reason, outcome.answered);
     }
     const delay = Math.min(this.backoffMs(attempt), left);
     this.log(`http ${method} ${target} ${outcome.reason} decision=retry attempt=${attempt} backoff_ms=${delay}`);
@@ -1081,7 +1097,7 @@ export class Transport {
       }).catch(() => undefined);
       const outcome = await control.wait(pending);
       control.check();
-      if (outcome.kind !== "settled") throw new ApiError(outcome.status, "unreachable", "History read did not settle; retry explicitly.");
+      if (outcome.kind !== "settled") throw new ApiError(outcome.status, "unreachable", "History read did not settle; retry explicitly.", outcome.answered);
       const response = outcome.response;
       if (response.arrayBuffer.byteLength > maxBytes ||
           (metadata && (response.text.length > maxBytes || utf8(response.text).length > maxBytes))) {

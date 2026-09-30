@@ -1,8 +1,8 @@
 # M2809: a revoked device reads the rebuilt-server words, not its own
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -508,7 +508,7 @@
-   if (error.code === "unreachable") return { kind: "offline" };
+@@ -573,7 +573,7 @@
+   if (error.code === "unreachable") return error.answered ? null : { kind: "offline" };
    // Not narrowed by the predicate: every branch below is an `ApiError` too.
    if (forgottenCredential(error as unknown)) {
 -    return { kind: "error", code: "credential_rejected", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };

@@ -15,10 +15,12 @@ import { createRequire } from "node:module";
 import { FakeTimers, STEP_MS, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { SyncEngine, CALM_MS, FEED_STALL_MS, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, RESTART_NEEDED, NOT_OBSYNC_ANSWER, RESUMES, FEED_FAILED, REVOKED_DEVICE } = require("../build/sync/engine.js");
+const { SyncEngine, CALM_MS, FEED_STALL_MS, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, RESTART_NEEDED, NOT_OBSYNC_ANSWER, RESUMES, FEED_FAILED, PUSH_REFUSED, REVOKED_DEVICE } = require("../build/sync/engine.js");
 const { EDGE_REQUIRED } = require("../build/transport.js");
 
 const enc = (text) => new TextEncoder().encode(text);
+/** A proxy or a tunnel answering for a server that is not there: no obsync body (#298). */
+const BARE_502 = { status: 502, headers: {}, text: "", arrayBuffer: new ArrayBuffer(0) };
 const polls = (r) => r.server.requests.filter((request) => request.target.startsWith("/v1/changes?since="));
 
 async function started() {
@@ -173,8 +175,8 @@ test("a read beside a kept poll is a read: the feed's stall watch starts again f
 test("every answer after a 5xx reads beside the one long poll in flight, never sends another, and the feed never reads offline (#297)", async () => {
   const r = await started();
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
-  // The host's reachability (`main.ts`): a 5xx is unanswered, and the first
-  // answer after one wakes the feed.
+  // The host's reachability (`main.ts`): a bare 5xx is unanswered, and the
+  // first answer after one wakes the feed.
   const unanswered = [];
   let away = false;
   r.transport.options.reachable = (answered, request) => {
@@ -183,10 +185,11 @@ test("every answer after a 5xx reads beside the one long poll in flight, never s
     away = !answered;
     if (answered) r.engine.wake("answered");
   };
-  // A store that fails every chunk upload, and a poll that has waited: each
-  // answer after a 500 used to drop it, and each dropped poll stayed held.
+  // A proxy that fails every chunk upload with a bare 502, and a poll that
+  // has waited: each answer after a 5xx used to drop it, and each dropped
+  // poll stayed held.
   const gate = { failing: true };
-  refuse(r, (sent) => gate.failing && sent.method === "PUT", () => r.server.error(500, "io_error", "SENTINEL"));
+  refuse(r, (sent) => gate.failing && sent.method === "PUT", () => BARE_502);
   const before = polls(r).length;
   let most = 0;
   const woken = () => r.host.logs.filter((line) => line.startsWith("feed decision=woken reason=answered"));
@@ -201,9 +204,9 @@ test("every answer after a 5xx reads beside the one long poll in flight, never s
   assert.deepEqual(polls(r).slice(before).map((request) => /wait=(\d+)/.exec(request.target)[1]).filter((wait) => wait !== "0"), [], "a second long poll was sent");
   assert.deepEqual(woken().filter((line) => !/ dropped_poll=0 read_beside=1 polls_in_flight=1 /.test(line)), [], woken().join("\n"));
   assert.ok(!r.host.logs.some((line) => line.includes("/v1/changes?") && line.includes("decision=cancelled")), r.host.logs.join("\n"));
-  // Only the 500s were unanswered, and every read of the feed was answered.
-  // (A push that gives up at a 5xx says offline, as the server reached no
-  // conclusion, #155; the feed never did.)
+  // Only the 502s were unanswered, and every read of the feed was answered.
+  // (A push that gives up at a bare 5xx says offline, as nothing behind the
+  // proxy answered; the feed never did.)
   assert.ok(unanswered.length >= 3 && unanswered.every((request) => request.startsWith("PUT /v1/chunks/")), unanswered.join("\n"));
   assert.ok(!r.host.logs.some((line) => line.startsWith("feed decision=retry")), r.host.logs.join("\n"));
   gate.failing = false;
@@ -307,6 +310,54 @@ test("a chunk upload asleep in its backoff is sent to a newly adopted address wi
 // --- a refusal is not absence (#155, #177) --------------------------------
 
 const proxyPage = () => ({ status: 403, headers: {}, text: "<html>SENTINEL access denied</html>", arrayBuffer: new ArrayBuffer(0) });
+
+test("a 5xx in obsync's own error is the server answering: nothing reads offline, and a push that gives up says the server refused it; a bare 502 still reads offline (#298)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  // What the transport tells the host's reachability (`main.ts`), attempt by attempt.
+  const heard = [];
+  r.transport.options.reachable = (answered, request) => heard.push(answered ? "answered" : request);
+  const gate = { answer: () => r.server.error(500, "io_error", "SENTINEL") };
+  refuse(r, (sent) => gate.answer !== null && sent.method === "PUT", () => gate.answer());
+  const failed = () => r.host.logs.filter((line) => line.startsWith("push path_class=file decision=failed ")).length;
+  const from = r.statuses.length;
+  r.host.seed("Coded.md", "a note the store cannot take\n", 5000);
+  r.engine.changed("Coded.md");
+  await r.timers.run(STEP_MS, () => failed() === 1);
+  assert.deepEqual(heard.filter((word) => word !== "answered"), [], "the server's own 500 was taken for its absence");
+  assert.deepEqual(r.statuses.slice(from).filter((status) => status.kind === "offline"), []);
+  assert.ok(r.host.logs.some((line) => /^http PUT \/v1\/chunks\/\S+ status=500 code=io_error decision=gave_up attempts=2 /.test(line)), r.host.logs.join("\n"));
+  assert.ok(r.statuses.slice(from).some((status) => status.kind === "error" && status.message === PUSH_REFUSED), JSON.stringify(r.statuses.slice(from)));
+  // Behind a proxy whose obsync is not there, a bare 502 is no answer from it.
+  gate.answer = () => BARE_502;
+  const next = r.statuses.length;
+  r.host.seed("Coded.md", "the same note, edited while the server is gone\n", 6000);
+  r.engine.changed("Coded.md");
+  await r.timers.run(STEP_MS, () => failed() === 2);
+  assert.ok(heard.some((word) => /^PUT \/v1\/chunks\/\S+ status=502$/.test(word)), heard.join("\n"));
+  assert.ok(r.statuses.slice(next).some((status) => status.kind === "offline"), JSON.stringify(r.statuses.slice(next)));
+  gate.answer = null;
+  await r.timers.run(STEP_MS, () => r.state.fileByPath("Coded.md") !== undefined && r.last()?.kind === "idle");
+  await stopped(r);
+});
+
+test("a read of the feed answered a 5xx in obsync's own error says the changes could not be read, never offline, and clears at the next answered read (#298)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  const heard = [];
+  r.transport.options.reachable = (answered) => heard.push(answered);
+  const gate = { failing: true };
+  refuse(r, (sent) => gate.failing && sent.url.includes("/v1/changes?"), () => r.server.error(503, "journal_unverified", "SENTINEL"));
+  const from = r.statuses.length;
+  r.server.releaseFeed();
+  await r.timers.run(STEP_MS, () => r.host.logs.some((line) => line.startsWith("feed decision=retry ")));
+  assert.deepEqual(heard.filter((answered) => !answered), []);
+  assert.deepEqual(r.statuses.slice(from).filter((status) => status.kind === "offline"), []);
+  assert.deepEqual(r.last(), { kind: "error", code: "feed", message: FEED_FAILED });
+  gate.failing = false;
+  await r.timers.run(STEP_MS, () => r.last()?.kind === "idle");
+  await stopped(r);
+});
 
 test("a feed refusal names itself on the first read, never as offline, and clears itself on the next answer (#155)", async () => {
   for (const [name, answer, expected] of [

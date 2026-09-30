@@ -1,12 +1,12 @@
 # M1802: a 507 is unsettled again: a full server is retried as if it were absent
 --- a/plugin/src/transport.ts
 +++ b/plugin/src/transport.ts
-@@ -797,7 +797,7 @@
-       // retried eight times, a full server read `offline — retrying` for
-       // minutes and never said why (S29, issue #155). So is a server that
-       // needs a restart (`RESTART_CODES`, #295).
--      outcome = response.status < 500 || response.status === 507 || RESTART_CODES.has(parseError(response.text).code)
-+      outcome = response.status < 500 || RESTART_CODES.has(parseError(response.text).code)
+@@ -823,7 +823,7 @@
+       // own coded error is its server answering that it failed (#298):
+       // retried all the same, and never word that it is gone. A bare 5xx --
+       // a proxy or a tunnel whose obsync is not there -- is.
+-      const code = response.status < 500 || response.status === 507 ? null : parseError(response.text).code;
++      const code = response.status < 500 ? null : parseError(response.text).code;
+       outcome = code === null || RESTART_CODES.has(code)
          ? { kind: "settled", response }
-         : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
-     } catch (error) {
+         : code !== NOT_OBSYNC && OBSYNC_CODE.test(code)

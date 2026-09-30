@@ -554,7 +554,9 @@ export const VERIFY_FAILED =
  *
  * A REFUSAL IS NOT ABSENCE. Every one of these used to read `offline —
  * retrying`, which sends a person to their Wi-Fi about a revoked device, a
- * wrong clock or a full disk; only absence says offline here.
+ * wrong clock or a full disk; only absence says offline here. Nor is a 5xx
+ * the server answered in its own coded error (`ApiError.answered`, #298):
+ * retried as absence is, and worded by each caller for what it was doing.
  */
 export function refusalStatus(error: unknown, then = RESUMES): EngineStatus | null {
   if (!(error instanceof ApiError)) return null;
@@ -568,7 +570,7 @@ export function refusalStatus(error: unknown, then = RESUMES): EngineStatus | nu
   if (RESTART_CODES.has(error.code)) return { kind: "error", code: "restart", message: RESTART_NEEDED };
   const certificate = certificateRefusal(error);
   if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
-  if (error.code === "unreachable") return { kind: "offline" };
+  if (error.code === "unreachable") return error.answered ? null : { kind: "offline" };
   // Not narrowed by the predicate: every branch below is an `ApiError` too.
   if (forgottenCredential(error as unknown)) {
     return { kind: "error", code: "credential_rejected", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };

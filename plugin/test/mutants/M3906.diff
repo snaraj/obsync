@@ -1,11 +1,11 @@
 # M3906: the engine has no words for a faulted server: its settled refusal reads as a failed read or a refused change (#295)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -565,7 +565,6 @@
+@@ -567,7 +567,6 @@
    // brings it back (#295). Its words say what to press after the restart, in
    // every context: a change it refused goes again at the next walk, up to
    // `WALK_MS` later, or at once on Sync now (the desktop run, #295).
 -  if (RESTART_CODES.has(error.code)) return { kind: "error", code: "restart", message: RESTART_NEEDED };
    const certificate = certificateRefusal(error);
    if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
-   if (error.code === "unreachable") return { kind: "offline" };
+   if (error.code === "unreachable") return error.answered ? null : { kind: "offline" };

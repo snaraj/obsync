@@ -1,18 +1,12 @@
-# M3785: an answered poll leaves the count before its answer is reported, and the wake that answer raises drops it (#297)
+# M3962: the server's own 5xx is not an answer that came while a long poll waited (#298, #288)
 --- a/plugin/src/transport.ts
 +++ b/plugin/src/transport.ts
-@@ -856,13 +856,13 @@
-       };
+@@ -857,7 +857,7 @@
        if (behind) return outcome;
      }
-+    letGo?.();
      if (outcome.kind === "settled" || outcome.answered) {
-       this.answeredAt = this.now();
+-      this.answeredAt = this.now();
++      if (outcome.kind === "settled") this.answeredAt = this.now();
        this.options.reachable?.(true);
      } else {
        this.options.reachable?.(false, `${method} ${target} ${outcome.reason}`);
-     }
--    letGo?.();
-     return outcome;
-   }
- 
