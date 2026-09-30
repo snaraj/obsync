@@ -1,0 +1,12 @@
+# M3455: no write starts the answer clock
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -919,8 +919,6 @@
+   // window closed, and refused again, restarted it, and that typist's own
+   // save, which a starved machine wrote late, was paused as a rewrite storm.
+   const answerable = context.arrivals.get(path);
+-  context.arrivals.delete(path);
+-  context.arrivals.set(path, context.now());
+   try {
+     return await commit();
+   } catch (error) {

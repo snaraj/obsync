@@ -174,8 +174,9 @@ findings followed, both beyond this lane's change:
   device's merge the note, and each typist's last words (`A051 A052`, `B051 B052
   B`) went into its own copy.
 
-Neither is fixed here. Both are reported as a new defect, with this evidence.
-The run counts as a failure of this lane's head.
+Neither was fixed by the change above. Both were reported as #278, and are
+addressed in "Run 7's conditions on purpose" below. The run counts as a
+failure of this lane's head.
 
 ## Notices
 
@@ -194,7 +195,7 @@ the note's title, and it shows once for each merge the device announces.
   starved.
   Its "own" side was its previous merge, so every merge of the two typists'
   words was announced as if it held an edit made there. That was so before
-  this change too, and it is reported as a defect for the train's notice work.
+  this change too. It was reported as #279, and is changed below.
 
 This change does not change when a merge is announced. A typist that holds a
 save not yet sent now sends it first and merges one round trip later, and
@@ -239,6 +240,66 @@ Connection idle and the whole vault. The other status-bar item beside
 obsync's check mark is Obsidian's own core Sync ("Uninitialized"), not obsync.
 The file list still holds the copies the failing runs made: the reproduction's
 `Both-mun2v77v (conflict …)` and run 7's three after Resume.
+
+## Run 7's conditions on purpose (#278, #279)
+
+Run 7 starved the instances by accident. For #278 its conditions were made
+on purpose, on origin/main and on `a2a17fea` (this lane's head with #278's
+two changes and #279's), alternating run by run as above.
+
+- The instances were relaunched without the three Chromium switches, so a
+  hidden window is throttled as a user's is. The note was shown on all three.
+- Standard typing. 40 s into it all three windows were minimized through
+  Electron, which hides the pages (hidden about 74 s each). In the frozen
+  runs all three renderer processes were also stopped (`SIGSTOP`) for 45 s,
+  then continued. The driver read its verdict at the end of the idle minute,
+  the windows still hidden. The windows then came back, and 90 s later each
+  device was read: a pause, a copy, and whether every disk and editor held
+  the one expected text ("n/r": not recorded by that series' script).
+
+| Series | Run | Bundle | Verdict | Paused | Devices with copies | One text, editors = disks | Notices X / Y / Z | Hidden s X / Y / Z | Load at end (1 min) |
+|---|---|---|---|---|---|---|---|---|---|
+| minimized | 1 | main `19d32020` | pass | 0 | 0 | n/r | 0 / 0 / 47 | 77 / 75 / 74 | 18.46 |
+| frozen | 1 | main `19d32020` | **fail** | 0 | 0 | n/r | 0 / 1 / 54 | 76 / 75 / 74 | 31.34 |
+| frozen | 2 | head `a2a17fea` | **fail** | 0 | 3 | n/r | 0 / 0 / 0 | 103 / 102 / 101 | 30.21 |
+| frozen | 3 | main `19d32020` | pass | 0 | 0 | yes | 1 / 2 / 52 | 75 / 74 / 73 | 13.14 |
+| frozen | 4 | head `a2a17fea` | pass | 0 | 0 | yes | 1 / 1 / 0 | 75 / 74 / 73 | 7.69 |
+| frozen | 5 | head `a2a17fea` | pass | 0 | 0 | yes | 1 / 1 / 0 | 75 / 75 / 74 | 16.49 |
+| frozen | 6 | main `19d32020` | pass | 0 | 0 | yes | 2 / 2 / 53 | 75 / 74 / 73 | 23.06 |
+| frozen | 7 | main `19d32020` | pass | 0 | 0 | yes | 1 / 2 / 53 | 75 / 74 / 73 | 46.87 |
+| frozen | 8 | head `a2a17fea` | pass | 0 | 0 | yes | 1 / 1 / 0 | 75 / 75 / 74 | 14.97 |
+| frozen | 9 | head `a2a17fea` | pass | 0 | 0 | yes | 1 / 1 / 0 | 75 / 74 / 73 | 17.11 |
+| frozen | 10 | main `19d32020` | pass | 0 | 0 | yes | 2 / 1 / 53 | 75 / 75 / 74 | 14.13 |
+| frozen | 11 | main `19d32020` | pass | 0 | 0 | yes | 2 / 1 / 53 | 75 / 74 / 73 | 22.83 |
+| frozen | 12 | head `a2a17fea` | pass | 0 | 0 | yes | 1 / 1 / 0 | 75 / 74 / 73 | 32.90 |
+
+Frozen run 1 failed its verdict because a typist was still saving; 90 s
+later all three held the whole expected text, with no copy.
+
+Counted: no run paused the note, on either bundle: 0 of 7 on origin/main and
+0 of 6 on `a2a17fea`, so run 7's pause did not come back, but it did not come
+back on origin/main either at these loads (7 to 47). `a2a17fea` made copies
+in 1 of 6 frozen runs (run 2): both typists' last words, on all three devices.
+origin/main made none in 7. That is a live failure of this head, and #278 is
+not closed by it. The version graph of run 2 shows the typist whose pushes
+went out 42 s after the renderers continued closing every fork by rule over
+the third device's merge, four times, one of them over the other typist's
+own merge: what a device does once its merge breaker has tripped. Its trace
+of those minutes was overwritten by the next run. A cause that fits: while a
+push is late, each arriving version is left for it (#227's rule), and each
+such wait counts toward the breaker as a resolution that changed nothing.
+Not counting them conflicts with two existing tests, which pin that a run of
+such waits must trip it, so that change is not made here.
+
+Notices (#279): the third device showed 47 to 54 per run on origin/main and
+0 on `a2a17fea`, which shows a merge only when one side holds text typed
+there. The typists' counts (0 to 2) did not move.
+
+After the renderers were stopped and continued, every device on both bundles
+read `obsync: offline — retrying` for over a minute while the server answered
+(runs 3 to 12, 30 device-runs of 30): the long poll started on waking reached the server
+20 s after it was sent, and the client's 70 s budget ran out 5 s before the
+answer. It is reported as a separate defect.
 
 ## Not covered here
 

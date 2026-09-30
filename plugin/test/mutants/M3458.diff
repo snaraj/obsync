@@ -1,0 +1,11 @@
+# M3458: a large incoming version is downloaded in the feed's turn, holding up the notes behind it (M2062's mutation, its context moved at this head)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2711,7 +2711,6 @@
+    * has consumed it, and the mark moves past it (`processed`, issue #145).
+    */
+   private async receive(context: SyncContext, change: ChangeRecord): Promise<ApplyResult | null> {
+-    if (await this.background(context, change)) return null;
+     // An arrival no longer moves the clock an answer is measured from: only a
+     // write does (`pull.ts`, `commitMarked`, issue #278), and none lands over
+     // a save not yet judged, so no save needs judging here first.

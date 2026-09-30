@@ -414,7 +414,7 @@ export interface SyncContext {
    * path asks before it settles a collision on that note.
    */
   readonly answering: Map<string, { mtime: number; arrived: number | null }>;
-  /** When another device's version of each path last arrived here (`receive`). */
+  /** When this device last began writing another device's version into each path (`pull.ts`, `commitMarked`). */
   readonly arrivals: Map<string, number>;
   /**
    * Publish a local file NOW, out of the queue's turn, and wait for it.
@@ -2273,7 +2273,7 @@ export class SyncEngine {
 
   /**
    * Does this change ANSWER another device's version (issue #179)? It does
-   * when it lands within `ANSWER_MS` of that version's arrival, without recent trusted input here: a passive open editor is no evidence of typing, and two people typing in one note -- who answer each other's
+   * when it lands within `ANSWER_MS` of this device writing that version into the note, without recent trusted input here: a passive open editor is no evidence of typing, and two people typing in one note -- who answer each other's
    * versions too -- are #135's to settle. The answer is published like any
    * other edit; what it decides is what the pull path does when it next finds
    * this note COLLIDING with another device's change on the same lines
@@ -3004,41 +3004,18 @@ export class SyncEngine {
    */
   private async receive(context: SyncContext, change: ChangeRecord): Promise<ApplyResult | null> {
     if (await this.background(context, change)) return null;
-    // Another device's authenticated version arrives before its write can
-    // trigger a host plugin. Waiting until applyChange returns can miss a
-    // rewrite made by that plugin during the filesystem event itself.
-    const arrived = context.now();
-    const remember = async (): Promise<void> => {
-      const path = context.state.pathByFileId(change.file_id);
-      if (path === undefined || !inSyncScope(path, context.state.data.syncFolders)) return;
-      // Preserve a waiting save's verdict against the previous arrival before
-      // replacing that clock with a time later than the save being judged.
-      const stat = await context.host.stat(path);
-      const local = context.state.fileByPath(path);
-      if (stat !== null && local?.fileId === change.file_id &&
-        (local.mtime !== stat.mtime || local.size !== stat.size)) {
-        await this.answered(context, stat);
-        context.host.log(`watch decision=edit_verdict_preserved reason=arrival_advanced file=${change.file_id} seq=${change.seq}`);
-      }
-      context.arrivals.delete(path);
-      context.arrivals.set(path, arrived);
-    };
-    let incoming = false;
+    // An arrival no longer moves the clock an answer is measured from: only a
+    // write does (`pull.ts`, `commitMarked`, issue #278), and none lands over
+    // a save not yet judged, so no save needs judging here first.
     let result: ApplyResult;
     // What a stalled feed names (`watchFeed`): past the lane's decision, writing.
     if (this.step !== null) this.step = { ...this.step, name: "apply", since: this.nowFn() };
     try {
-      result = await applyChange(context, change, async () => {
-        incoming = true;
-        await remember();
-      });
+      result = await applyChange(context, change);
     } catch (error) {
       this.park(context, change.file_id, error);
       return null;
     }
-    // First materialisation and renames can establish a different tracked
-    // path. Only an authenticated ordinary version supplies this evidence.
-    if (incoming) await remember();
     if (context.state.data.parked[change.file_id] !== undefined) await this.retryOne(context, change.file_id);
     return result;
   }

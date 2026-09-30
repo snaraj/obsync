@@ -1567,10 +1567,14 @@ for a while. The note is paused on every device.
 device's version, with no keystroke just before it, as another plugin
 answering the sync, and pauses the note so the two devices do not rewrite it
 back and forth (see
-[Stop repeated rewrites](daily-use.md#stop-repeated-rewrites)). When Obsidian
-gets almost no processor time, your own save can reach the disk long after you
-typed it, and it looks like such an answer. This is a known defect. Nothing is
-lost while the note is paused: each device keeps its own text.
+[Stop repeated rewrites](daily-use.md#stop-repeated-rewrites)). Up to 1.1.4 it
+timed that from the version's arrival, even when the open editor had refused
+it, and it could read a note Obsidian was still saving. When Obsidian got
+almost no processor time, your own save reached the disk long after you typed
+it and looked like such an answer. From 1.1.5 the time counts only from a
+version obsync actually wrote into the note, and a note read while it is being
+saved is read again. Nothing is lost while the note is paused: each device
+keeps its own text.
 
 **How to fix it.**
 
@@ -1579,6 +1583,8 @@ lost while the note is paused: each device keeps its own text.
    `<note> (conflict from <device>, <date> UTC, <id>)` beside it.
 2. Copy any words missing from the note out of those copies, then delete the
    copies.
+3. Update obsync on every device that syncs this vault (Settings, Community
+   plugins, Check for updates).
 
 ## A note or folder took the other device's name
 

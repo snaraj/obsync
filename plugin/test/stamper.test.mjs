@@ -24,7 +24,7 @@ import { DEVICE_B, STEP_MS, pair, rig } from "./fake.mjs";
 const require = createRequire(import.meta.url);
 const { parseData } = require("../build/state.js");
 const { SCAN_MS, SyncEngine } = require("../build/sync/engine.js");
-const { ANSWER_MS, answerOf, applyChange } = require("../build/sync/pull.js");
+const { ANSWER_MS, EditorBusy, answerOf, applyChange } = require("../build/sync/pull.js");
 const { pushFile } = require("../build/sync/push.js");
 const { ApiError } = require("../build/transport.js");
 
@@ -715,7 +715,8 @@ for (const typed of [false, true]) test(`a later arrival cannot erase the verdic
   const next = await pushFile(ac, NOTE);
   const frame = run.server.journal.find(entry => entry.version_id === next.versionId);
   assert.equal(await b.engine.receive(bc, frame), "skipped", "the pending local save must publish before this fast-forward");
-  assert.ok(bc.arrivals.get(NOTE) > saved.mtime, "a later arrival replaces the old arrival time");
+  // It wrote nothing here, so it gave nothing to answer (#278).
+  assert.equal(bc.arrivals.get(NOTE), firstArrival, "a version that wrote nothing started the answer clock again");
   await b.engine.answered(bc, saved); // The debounced watcher finally settles.
   const posted = await pushFile(bc, NOTE);
   const { decryptRecordManifest } = require("../build/sync/pull.js");
@@ -809,6 +810,86 @@ test("a host plugin can recognize an arrival before the incoming write returns",
   };
   assert.equal(await b.engine.receive(bc, frame), "applied");
   assert.equal(observed, b.host.clock, "the filesystem event must already have the authenticated arrival's time");
+});
+
+/**
+ * A STARVED TYPIST'S LATE SAVE ANSWERS NOTHING (issue #278). B types in the
+ * note, so A's version is not written there: it is parked, and tried again as
+ * B's editing window closes, and refused again, the editor still holding the
+ * keystrokes. A machine starved for minutes then saves them, long after they
+ * were typed, a second after that retry. Nothing obsync wrote was answered,
+ * so the pair is settled as any other and the note is not paused.
+ */
+test("a version retried while nothing is written here starts no answer window (#278)", async (t) => {
+  const run = await devices(t, "# n10\nline: 0\n");
+  const { a, b, advance } = run;
+  await a.engine.stopAndWait();
+  await b.engine.stopAndWait();
+  const ac = manual(a.engine), bc = manual(b.engine);
+  await advance(ANSWER_MS + 1);
+  const typed = b.host.text(NOTE).replace("line: 0", "line: typed here");
+  b.host.editors.set(NOTE, typed);
+  b.host.inputAt.set(NOTE, b.host.clock);
+  // An editor holding unsaved typing takes no write, as the real host refuses it.
+  const writer = b.host.writer.bind(b.host);
+  b.host.writer = async (path, size) => {
+    const sink = await writer(path, size);
+    return { ...sink, commit: async (mtime) => {
+      if (path === NOTE && (b.host.typing(NOTE) || await b.host.editing(NOTE) === "unsaved")) throw new EditorBusy();
+      return await sink.commit(mtime);
+    } };
+  };
+  a.host.write(NOTE, a.host.text(NOTE).replace("line: 0", "line: there"), a.host.clock);
+  const next = await pushFile(ac, NOTE);
+  const frame = run.server.journal.find((entry) => entry.version_id === next.versionId);
+  const clock = bc.arrivals.get(NOTE);
+  assert.equal(await b.engine.receive(bc, frame), null, pulls(b.host));
+  await advance(10_000);
+  assert.equal(b.host.typing(NOTE), false);
+  assert.equal(await b.engine.receive(bc, frame), null, pulls(b.host));
+  assert.equal(bc.arrivals.get(NOTE), clock, "a refused write put back another clock than the one it found");
+  await advance(1000);
+  b.host.write(NOTE, typed, b.host.clock);
+  await b.engine.answered(bc, await b.host.stat(NOTE));
+  await advance(500);
+  // The parked version, tried once more now that the editor holds its save.
+  await applyChange(bc, frame);
+  assert.deepEqual(b.state.data.paused, {}, pulls(b.host));
+  assert.deepEqual(pauses(b.host), []);
+});
+
+/**
+ * A NOTE READ WHILE IT IS SAVED IS NO SIDE OF A PAIR (issue #278). Obsidian
+ * writes a note in place; a starved machine's merge read one cut short, and
+ * that part -- not any text the note was saved as -- overlapped the incoming
+ * version, and the pair went to the rewrite-storm rule. The note is looked at
+ * again before the pair is called unmerged.
+ */
+test("a note read while it is saved is looked at again before its pair is called unmerged (#278)", async () => {
+  const r = await rig();
+  const now = r.host.clock;
+  r.host.seed(NOTE, "# n10\nline: 0\n", now - 60_000);
+  const base = await pushFile(r.context, NOTE);
+  r.context.arrivals.set(NOTE, now - 1000);
+  const saved = "# n10\nline: 0\nmore: typed here\n";
+  r.host.seed(NOTE, saved, now);
+  const theirs = await r.server.publish({
+    fileId: base.fileId, path: NOTE, bytes: new TextEncoder().encode("# n10\nline: there\n"), mtime: now,
+    parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+  });
+  const read = r.host.read.bind(r.host);
+  let reads = 0;
+  r.host.read = async (path) => {
+    if (path !== NOTE || reads++ > 0) return await read(path);
+    // The save lands just after this read, which got the note cut short.
+    r.host.seed(NOTE, saved, now + 1);
+    return new TextEncoder().encode("# n10\n");
+  };
+  assert.equal(await applyChange(r.context, theirs), "skipped", pulls(r.host));
+  assert.ok(r.host.logs.some((line) => /^pull decision=deferred reason=saved_during_merge stage=unmerged duration_ms=\d+ /.test(line)), pulls(r.host));
+  assert.ok(!r.host.logs.some((line) => line.startsWith("pull decision=unmerged")), pulls(r.host));
+  assert.deepEqual(r.state.data.paused, {});
+  assert.equal(r.host.text(NOTE), saved);
 });
 
 // Native n14: A sees B's published automatic answer BEFORE B sees A's

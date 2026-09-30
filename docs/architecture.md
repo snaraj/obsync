@@ -777,8 +777,8 @@ long poll and needs its timeout raised.
    decides, and unchanged bytes post nothing (issue #175). For the same
    reason a change of a note of at most one chunk is read even when the record
    already describes its `(mtime, size)`, while another device's version of
-   that note has just arrived -- remembered until the first pass after it is
-   five seconds old: a plugin answering a sync can keep both numbers, a
+   that note has just been written here -- remembered until the first pass
+   after it is five seconds old: a plugin answering a sync can keep both numbers, a
    fixed-width stamp the size and a kept modified time the other (issue #179).
    Startup and periodic scans retain their metadata shortcut. Explicit
    **Sync now** sends what is queued, reads the feed once without waiting,
@@ -1371,8 +1371,15 @@ long poll and needs its timeout raised.
    1 ms p50 and 2 ms p95 over 200 live edits (2026-09-29 record).
 
    A NOTE TWO PLUGINS KEEP REWRITING IS PAUSED (issue #179). A change within
-   five seconds of a received version, without recent trusted Markdown editor
-   input, is marked inside its encrypted manifest as a background answer.
+   five seconds of this device writing a received version into the note,
+   without recent trusted Markdown editor input, is marked inside its
+   encrypted manifest as a background answer. The clock starts with the write,
+   not the arrival: a version whose write an open editor refused, tried again
+   as a typist's editing window closed, gave a plugin nothing to answer, and
+   the typist's own save, which a starved machine wrote late, was paused as a
+   rewrite storm (issue #278). A pair is called unmerged only from a note read
+   whole: Obsidian saves a note in place, so the note is looked at again after
+   the merge fails, and one that moved meanwhile is left to its own push.
    Merely showing a note is not input: a passive view can lag a file rewrite
    and appear unsaved. Captured keyboard and before-input events protect the
    note for ten seconds (including Obsidian's save debounce); an active IME

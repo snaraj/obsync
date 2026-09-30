@@ -1,0 +1,13 @@
+# M3463: a refused write takes back its early mark, and a push after the refusal sends the empty file (M3266's mutation, its context moved at this head)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -926,8 +926,7 @@
+   } catch (error) {
+     context.arrivals.delete(path);
+     if (answerable !== undefined) context.arrivals.set(path, answerable);
+-    if (unwritable(error) === "write_dropped") dropped[path] = fileId;
+-    else if (marked && dropped[path] === fileId) delete dropped[path];
++    if (marked && dropped[path] === fileId) delete dropped[path];
+     throw error;
+   }
+ }

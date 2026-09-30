@@ -1,0 +1,12 @@
+# M3452: a refused write keeps the answer clock it started
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -924,8 +924,6 @@
+   try {
+     return await commit();
+   } catch (error) {
+-    context.arrivals.delete(path);
+-    if (answerable !== undefined) context.arrivals.set(path, answerable);
+     if (unwritable(error) === "write_dropped") dropped[path] = fileId;
+     else if (marked && dropped[path] === fileId) delete dropped[path];
+     throw error;

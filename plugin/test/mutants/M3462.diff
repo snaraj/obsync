@@ -1,0 +1,12 @@
+# M3462: a name is marked only at the refusal, and a push that reads the empty file between the writes sends it (M3265's mutation, its context moved at this head)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -909,7 +909,7 @@
+  */
+ async function commitMarked(context: SyncContext, fileId: string, path: string, commit: () => Promise<VaultStat>): Promise<VaultStat> {
+   const dropped = context.state.data.dropped;
+-  const marked = dropped[path] === undefined;
++  const marked = false;
+   if (marked) dropped[path] = fileId;
+   // THE ANSWER CLOCK STARTS WITH A WRITE (issues #179, #278). A plugin answers
+   // what lands in a note, so the clock an edit is judged an answer by

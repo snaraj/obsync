@@ -192,6 +192,29 @@ test("a fresh device replaying a fork other devices made announces no merge of i
   );
 });
 
+test("a merge of two other devices' versions over this device's own merge is not announced (#279)", async () => {
+  // A device showing a note two others type in merges each arrival over its
+  // own last merge, and that merge holds nothing typed here.
+  const r = await rig();
+  const FILE = "26".repeat(16);
+  const [LAPTOP, DESKTOP] = ["1a".repeat(16), "2b".repeat(16)];
+  const publish = (bytes, parents, mtime, deviceId) => r.server.publish({
+    fileId: FILE, path: "Notes/Shared.md", bytes: enc(bytes), mtime, parents,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey, deviceId,
+  });
+  const base = await publish("one\ntwo\nthree\n", [], 1757200001000, LAPTOP);
+  const left = await publish("ONE\ntwo\nthree\n", [base.version_id], 1757200002000, LAPTOP);
+  const right = await publish("one\ntwo\nTHREE\n", [base.version_id], 1757200003000, DESKTOP);
+  for (const frame of [base, left]) await applyChange(r.context, frame);
+  assert.equal(await applyChange(r.context, { ...right, conflicted: true }), "merged");
+  const next = await publish("ONE\ntwo\nthree\nfour\n", [left.version_id], 1757200004000, LAPTOP);
+  assert.equal(await applyChange(r.context, { ...next, conflicted: true }), "merged");
+
+  assert.equal(r.host.text("Notes/Shared.md"), "ONE\ntwo\nTHREE\nfour\n");
+  assert.deepEqual(r.host.notices, [], "a merge of this device's own merge was announced");
+  assert.equal(r.host.logs.filter((line) => line.startsWith("pull decision=merged") && line.endsWith("announced=false")).length, 2);
+});
+
 test("a merge of an edit made here is still announced", async () => {
   // The other half of the rule: the same fork, with one side typed here and
   // not pushed yet, is this device's news.

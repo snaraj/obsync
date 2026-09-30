@@ -152,9 +152,9 @@ export const ANSWER_MS = 5000;
 
 /**
  * The arrival an edit made here at `mtime` ANSWERS, or `null`: made in the
- * `ANSWER_MS` after another device's version of the note arrived -- timed by
- * the edit itself, so one made before the version arrived answers nothing --
- * without recent trusted editor input. An idle open
+ * `ANSWER_MS` after this device wrote another device's version into the note
+ * (`commitMarked`) -- timed by the edit itself, so one made before that write
+ * answers nothing -- without recent trusted editor input. An idle open
  * editor does not exempt a plugin rewrite.
  */
 export async function answerOf(context: SyncContext, path: string, mtime: number): Promise<number | null> {
@@ -918,9 +918,21 @@ async function commitMarked(context: SyncContext, fileId: string, path: string, 
   const dropped = context.state.data.dropped;
   const marked = dropped[path] === undefined;
   if (marked) dropped[path] = fileId;
+  // THE ANSWER CLOCK STARTS WITH A WRITE (issues #179, #278). A plugin answers
+  // what lands in a note, so the clock an edit is judged an answer by
+  // (`answerOf`) starts just before this write -- the plugin may answer from
+  // inside its filesystem event -- and is put back when nothing landed. It
+  // started whenever a version arrived: a change retried as a typist's editing
+  // window closed, and refused again, restarted it, and that typist's own
+  // save, which a starved machine wrote late, was paused as a rewrite storm.
+  const answerable = context.arrivals.get(path);
+  context.arrivals.delete(path);
+  context.arrivals.set(path, context.now());
   try {
     return await commit();
   } catch (error) {
+    context.arrivals.delete(path);
+    if (answerable !== undefined) context.arrivals.set(path, answerable);
     if (unwritable(error) === "write_dropped") dropped[path] = fileId;
     else if (marked && dropped[path] === fileId) delete dropped[path];
     throw error;
@@ -1168,7 +1180,7 @@ async function deletionOwed(context: SyncContext, change: ChangeRecord): Promise
 /**
  * Apply one change-feed record.
  */
-export async function applyChange(context: SyncContext, change: ChangeRecord, incoming?: () => Promise<void>): Promise<ApplyResult> {
+export async function applyChange(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
   // The owner-only domain map rides the same feed under a reserved file id
   // (`domainmap.ts`). It is not a vault file: it has no path, it is sealed
   // under `K_map` rather than a manifest key, and the engine already read it
@@ -1215,10 +1227,6 @@ export async function applyChange(context: SyncContext, change: ChangeRecord, in
     if ((await context.host.inNestedVault(entry.path)) || (kept !== undefined && (await context.host.inNestedVault(kept)))) {
       throw new VaultPathError("nested_vault");
     }
-    // The engine must remember an authenticated arrival before a host plugin
-    // can answer the write below. Echoes, invalid manifests and nested vaults
-    // return before this point.
-    if (entry.v === 1) await incoming?.();
     const applied = await applyVersion(context, change, entry).catch((error: unknown) => {
       if (error instanceof EditorBusy) throw new Unwritable(entry.path, "active_editor");
       // A write THIS device's disk refused, or a chunk the server does not
@@ -2918,10 +2926,13 @@ async function resolve(
         // A MERGE THIS DEVICE TOOK NO PART IN IS NOT NEWS HERE (issue #164). A
         // first download, or a replay from zero, meets forks that other devices
         // edited and merged before this one joined, and the person here edited
-        // neither side: the note is announced only when one side is this
-        // device's own version, or holds an edit made here not pushed yet.
+        // neither side: the note is announced only when one side is an edit
+        // this device made, or holds one made here not pushed yet. A merge this
+        // device made is no edit (issue #279): a device open on a note two
+        // others type in merged every arrival over its own last merge, and
+        // announced each one, 58 in a minute.
         const recorded = context.state.fileByPath(localPath);
-        const ours = ownHead?.device_id === context.deviceId ||
+        const ours = (ownHead?.device_id === context.deviceId && ownHead.parents.length < 2) ||
           (before !== null && (recorded?.mtime !== before.mtime || recorded.size !== before.size));
         // A FAST-FORWARD OVER AN UNPUSHED EDIT IS THE PUSH'S TO PUBLISH. 1.1.2
         // kept a conflict copy of every version another device sent while
@@ -3027,6 +3038,14 @@ async function resolve(
         });
         await retireLostFolders(context, baseManifest.path, target, target === here ? theirManifest.path : here);
         return settled;
+      }
+      // A NOTE READ WHILE IT WAS SAVED IS NO SIDE OF A PAIR (issue #278).
+      // Obsidian writes a note in place, and a starved machine read one cut
+      // short: every text that note was saved as merged cleanly, the part read
+      // did not, and the pair was settled as a rewrite storm. So it is looked at
+      // again before it is called unmerged, as it is before a merge is written.
+      if (before !== null && !(await unmoved(context, localPath, before))) {
+        return deferred(context, change, `saved_during_merge stage=unmerged duration_ms=${context.now() - started}`);
       }
       context.host.log(`pull decision=unmerged reason=${merged.reason} file=${change.file_id}`);
     }
