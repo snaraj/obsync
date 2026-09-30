@@ -72,7 +72,7 @@ import {
   parseSyncFolders,
 } from "./syncScope";
 import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
-import { AFTER_START, EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
+import { AFTER_START, EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
@@ -567,6 +567,32 @@ const TWIN_WATCH_MS = 10_000;
  */
 const WRITE_AGAIN = 2;
 
+/**
+ * What Obsidian mobile's adapter keeps beside its documented surface (issue
+ * #246): Capacitor's filesystem, whose `readdir` answers a folder's entries
+ * with their sizes and dates, and the full path it takes. Undocumented, so
+ * nothing here assumes it: `pressListing` checks it on every press.
+ */
+interface ReaddirAdapter {
+  fs?: { readdir?: (path: string) => Promise<unknown> };
+  getFullPath?: (path: string) => string;
+}
+
+/** One `readdir` entry as Sync now uses it: a name, a kind, a size and a date, or the press falls back. */
+interface DiskEntry {
+  name: string;
+  type: "file" | "directory";
+  size: number;
+  mtime: number;
+}
+
+function isDiskEntry(entry: unknown): entry is DiskEntry {
+  if (typeof entry !== "object" || entry === null) return false;
+  const { name, type, size, mtime } = entry as Record<string, unknown>;
+  return typeof name === "string" && (type === "file" || type === "directory") &&
+    typeof size === "number" && Number.isFinite(size) && typeof mtime === "number" && Number.isFinite(mtime);
+}
+
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
   /** The temps this host's writers hold open now, which `sweep` never takes. */
@@ -576,6 +602,10 @@ export class ObsidianHost implements VaultHost {
   /** The engine passes running now, and their nested-vault answer per folder (`pass`). */
   private passes = 0;
   private nestedAnswers: Map<string, boolean> | null = null;
+  /** Sync now's `readdir` fell back this session, by reason: said once each (#246). */
+  private readonly fellBack = new Set<string>();
+  /** Files and bytes read since this host started (`VaultHost.readTotals`). */
+  private readonly totals = { files: 0, bytes: 0 };
   /** A directory this host could not fsync has been logged, once (`syncFolder`). */
   private folderSyncRefused = false;
   /** The linked folders this host has already told the user about, once each (issue #167). */
@@ -670,7 +700,7 @@ export class ObsidianHost implements VaultHost {
     const desktop = this.desktop;
     try {
       if (desktop !== null) await this.confine(desktop, path, ["absent", "file", "directory", "other"]);
-      if (await this.inNestedVault(path)) throw new VaultPathError("nested_vault");
+      if (await this.inNestedVault(path, kind)) throw new VaultPathError("nested_vault");
       return true;
     } catch (error) {
       if (!(error instanceof VaultPathError)) throw error;
@@ -738,9 +768,16 @@ export class ObsidianHost implements VaultHost {
    * asks the adapter, which the host app confines to the vault. Names only,
    * never content, on both.
    */
-  async inNestedVault(path: string): Promise<boolean> {
+  async inNestedVault(path: string, kind: "file" | "folder" = "folder"): Promise<boolean> {
     const segments = path.split("/");
     const desktop = this.desktop;
+    // A FILE HOLDS NO FOLDER (issue #282): on a phone `syncable` asked a
+    // listed note's own name too, one bridge call per note that no pass could
+    // cache -- 11 to 23 s over 7,700 notes in every Sync now on the emulator.
+    // Only `syncable` says "file". The feed and the post ask every name: a
+    // record can call a file what this phone now keeps as a folder of a vault
+    // of its own, and a deletion applied there would trash that whole folder.
+    if (desktop === null && kind === "file") segments.pop();
     // One answer per folder per engine pass (`pass`); outside one, every
     // question is asked. A folder that holds the plugin is named every time.
     const answers = this.nestedAnswers;
@@ -898,6 +935,11 @@ export class ObsidianHost implements VaultHost {
 
   /** Every vault file whose path this device may sync, and no other. */
   async list(): Promise<VaultStat[]> {
+    return await this.confirmed(await this.indexed());
+  }
+
+  /** `list` as Obsidian's index has it, before the disk is asked about any file. */
+  private async indexed(): Promise<VaultStat[]> {
     const folders = this.plugin.state.data.syncFolders;
     if (folders !== undefined) {
       const files: VaultStat[] = [];
@@ -924,12 +966,79 @@ export class ObsidianHost implements VaultHost {
         const entry = this.plugin.app.vault.getAbstractFileByPath(folder);
         if (entry instanceof TFolder) await visit(entry);
       }
-      return await this.confirmed(await this.unghosted(files));
+      return await this.unghosted(files);
     }
     const synced = await this.inventory();
     const skipped = this.plugin.app.vault.getFiles().length - synced.length;
     if (skipped !== 0) this.plugin.log(`list decision=skipped_unsyncable files=${skipped}`);
-    return await this.confirmed(await this.unghosted(synced));
+    return await this.unghosted(synced);
+  }
+
+  /**
+   * SYNC NOW ON A PHONE ASKS THE DISK, ONE FOLDER AT A TIME (issue #246, the
+   * owner's ruling of 2026-09-29). Reading every note again made a press
+   * minutes long on a phone of 7,700 notes; Obsidian's index alone never sees
+   * another app's edit. Obsidian mobile's adapter carries a `readdir` that
+   * answers a folder's names WITH their sizes and dates -- not documented, so
+   * its shape is checked on every press, and anything short of it sends the
+   * whole press to the documented check: the index, with one `stat` per file
+   * whose index disagrees with its record (`confirmed`, #245).
+   *
+   * THE INDEX STILL SAYS WHAT IS LISTED. `readdir` runs only on the folders
+   * that hold a listed file, never on one below them, so it reaches no folder
+   * -- a link, a hidden one -- that the listing does not; and its names are
+   * only matched against the listed file's own name in that folder: none of
+   * them becomes a path, and nothing it says is written anywhere. A listed
+   * file it does not name, and every file of a folder it cannot read, gets the
+   * documented check instead, never "unchanged". A new or vanished file is
+   * the index's to report, as on every other pass.
+   */
+  async pressListing(label: string): Promise<PressListing | null> {
+    if (this.desktop !== null) return null;
+    const files = await this.indexed();
+    const adapter = this.plugin.app.vault.adapter as unknown as ReaddirAdapter;
+    const fs = adapter.fs;
+    if (typeof fs?.readdir !== "function" || typeof adapter.getFullPath !== "function") return this.pressFallback(label, "no_readdir", files);
+    const byFolder = new Map<string, VaultStat[]>();
+    for (const file of files) {
+      const folder = file.path.slice(0, Math.max(0, file.path.lastIndexOf("/")));
+      const listed = byFolder.get(folder);
+      if (listed === undefined) byFolder.set(folder, [file]);
+      else listed.push(file);
+    }
+    const out: VaultStat[] = [];
+    const unanswered: VaultStat[] = [];
+    let unread = 0;
+    for (const [folder, listed] of byFolder) {
+      let entries: unknown;
+      try {
+        entries = await fs.readdir(adapter.getFullPath(folder));
+      } catch {
+        unread++;
+        unanswered.push(...listed);
+        continue;
+      }
+      if (!Array.isArray(entries) || !entries.every(isDiskEntry)) return this.pressFallback(label, "entry_shape", files);
+      const disk = new Map(entries.filter((entry) => entry.type === "file").map((entry) => [entry.name, entry]));
+      for (const file of listed) {
+        const entry = disk.get(file.path.slice(file.path.lastIndexOf("/") + 1));
+        if (entry === undefined) unanswered.push(file);
+        else out.push({ path: file.path, mtime: entry.mtime, size: entry.size });
+      }
+    }
+    if (unread > 0) this.log(`${label} decision=fallback reason=folder_unreadable folders=${unread}`);
+    return { files: [...out, ...(await this.confirmed(unanswered))], folders: byFolder.size - unread, source: "readdir" };
+  }
+
+  /** The documented check for the whole press, said once a session for each reason. */
+  private async pressFallback(label: string, reason: "no_readdir" | "entry_shape", files: VaultStat[]): Promise<PressListing> {
+    if (!this.fellBack.has(reason)) this.log(`${label} decision=fallback reason=${reason}`);
+    this.fellBack.add(reason);
+    return { files: await this.confirmed(files), folders: 0, source: "fallback" };
+  }
+
+  readTotals(): { files: number; bytes: number } {
+    return { ...this.totals };
   }
 
   /**
@@ -1200,6 +1309,13 @@ export class ObsidianHost implements VaultHost {
   }
 
   async read(path: string): Promise<Bytes> {
+    const bytes = await this.readOnce(path);
+    this.totals.files++;
+    this.totals.bytes += bytes.length;
+    return bytes;
+  }
+
+  private async readOnce(path: string): Promise<Bytes> {
     assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop === null) {
@@ -1253,6 +1369,8 @@ export class ObsidianHost implements VaultHost {
             if (bytesRead === 0) break;
             filled += bytesRead;
           }
+          if (offset === 0) this.totals.files++;
+          this.totals.bytes += filled;
           return buffer.subarray(0, filled);
         } finally {
           await handle.close();
@@ -5166,8 +5284,14 @@ export default class ObsyncPlugin extends Plugin {
         // Nothing counted, but the feed has not answered yet: not idle either.
         // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
         if (status.pending === 0) return "checking for changes";
-        return `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}` +
-          (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
+        {
+          // A FILE READ ONLY TO VERIFY IT IS NO CHANGE (#246): Sync now's
+          // content check read "syncing 7,700 files" on a vault with none.
+          const changes = status.pending - (status.checking ?? 0);
+          const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
+          if (changes === 0) return `checking ${files(status.pending)} for changes`;
+          return `syncing ${files(changes)}` + (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
+        }
       case "offline":
         // True of both places that set it: the running engine polls again
         // in seconds, and a stopped one is on the reconnect timer.

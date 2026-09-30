@@ -90,6 +90,28 @@ export interface VaultStat {
 }
 
 /**
+ * Sync now's listing on a host that asks the disk for every listed file's
+ * size and date at once (`VaultHost.pressListing`, issue #246): `readdir`
+ * when the host could, the index with a `stat` per suspect when it could not.
+ */
+export interface PressListing {
+  files: VaultStat[];
+  /** Folders the disk answered for. */
+  folders: number;
+  source: "readdir" | "fallback";
+}
+
+/** What a reconcile pass saw, for the press that asked for it (#246). */
+export interface PassTally {
+  /** Files Sync now reads again although nothing says they changed, queued after the lock. */
+  verify: VaultStat[];
+  files: number;
+  /** Listed files whose size or date differs from their record, or that have none. */
+  differing: number;
+  listing: PressListing | null;
+}
+
+/**
  * What a removal did.
  *
  * `kept` means the file is STILL THERE: it no longer held the content the
@@ -224,6 +246,16 @@ export interface VaultHost {
    * published or applied here. Only the host can see the folder that says so.
    */
   inNestedVault(path: string): Promise<boolean>;
+  /**
+   * SYNC NOW'S LISTING WHERE THE DISK CAN BE ASKED CHEAPLY (issue #246), or
+   * `null` where a press reads again what it verifies, as a desktop does.
+   * Every listed file carries the size and date the DISK holds, so a file
+   * another app changed differs from its record and is read, and an
+   * unchanged one is not read at all.
+   */
+  pressListing?(label: string): Promise<PressListing | null>;
+  /** Files and bytes this host has read since it started, for Sync now's line (#246). */
+  readTotals?(): { files: number; bytes: number };
   stat(path: string): Promise<VaultStat | null>;
   read(path: string): Promise<Bytes>;
   source(path: string, size: number): ByteSource;
@@ -472,7 +504,7 @@ async function untilStopped<T>(stop: AbortSignal | undefined, drop: AbortControl
 
 export type EngineStatus =
   | { kind: "idle" }
-  | { kind: "syncing"; pending: number; held?: string }
+  | { kind: "syncing"; pending: number; held?: string; checking?: number }
   | { kind: "offline" }
   | { kind: "error"; message: string; code?: string }
   | { kind: "paused"; message: string };
@@ -724,6 +756,13 @@ export const SYNC_NOW_VERIFY_MAX = CHUNK_MAX;
 export const SYNC_NOW_FEED_MS = INTERACTIVE_MS;
 
 /**
+ * What a press with nothing to send is measured against (issue #246): the
+ * patience the transport gives any request a person is waiting on. Its line
+ * states it beside the duration, over it or not.
+ */
+export const SYNC_NOW_BUDGET_MS = INTERACTIVE_MS;
+
+/**
  * How soon a PARKED record is tried again (issue #144): one minute, doubling
  * to half an hour for as long as anything stays parked. A retry of a file the
  * disk had no room for downloads it again, so a five-second loop moved 5.5 GB
@@ -824,6 +863,8 @@ export class SyncEngine {
   /** Ends the drain's wait for a push to land, when a path is queued (`drain`). */
   private wakeDrain: (() => void) | null = null;
   private readonly pushing = new Map<string, Promise<void>>();
+  /** Queued or in flight only for Sync now's content check (`enqueue`, #246). */
+  private readonly checking = new Set<string>();
   /** Paths asked for while their push was in flight: one follow-up each. */
   private readonly again = new Set<string>();
   private running = false;
@@ -2216,10 +2257,14 @@ export class SyncEngine {
     }
   }
 
-  private enqueue(path: string): void {
+  private enqueue(path: string, check = false): void {
     if (!this.running) return;
     // A held note waits for the feed, whichever pass or event asks (`holdBack`).
     if (this.holding?.paths.has(path) === true && this.options.state.fileByPath(path) === undefined) return;
+    // A READ THAT ONLY VERIFIES IS NO CHANGE (#246): the status counts it
+    // apart, and anything else that queues the path makes it a change again.
+    if (!check) this.checking.delete(path);
+    else if (!this.queue.includes(path)) this.checking.add(path);
     if (!this.queue.includes(path)) this.queue.push(path);
     void this.track(this.drain());
   }
@@ -2268,7 +2313,10 @@ export class SyncEngine {
           if (this.barrierPath === path) barrier = path;
           const work: Promise<void> = this.pushOne(path)
             .catch((error: unknown) => { failed.push(error); })
-            .finally(() => running.delete(path));
+            .finally(() => {
+              running.delete(path);
+              if (!this.queue.includes(path)) this.checking.delete(path);
+            });
           running.set(path, work);
           took = true;
         }
@@ -2990,7 +3038,10 @@ export class SyncEngine {
     // A NOTE WAITING ON AN EDITOR HERE IS NAMED (issue #252): a count
     // alone read "syncing 1" for minutes and said nothing of what to do.
     const held = records.find((entry) => entry.reason === "active_editor")?.path;
-    if (work > 0 || (this.running && !this.feedAnswered)) return { kind: "syncing", pending: work, ...(held === undefined ? {} : { held }) };
+    const checking = Math.min(work, this.checking.size);
+    if (work > 0 || (this.running && !this.feedAnswered)) {
+      return { kind: "syncing", pending: work, ...(held === undefined ? {} : { held }), ...(checking === 0 ? {} : { checking }) };
+    }
     return { kind: "idle" };
   }
 
@@ -3601,29 +3652,35 @@ export class SyncEngine {
    * recorded path the vault no longer has. This is what makes an edit made
    * while Obsidian was closed, or a file deleted in Finder, reach the server.
    */
-  reconcile(verifyUpTo = 0): Promise<void> {
-    return this.track(this.reconcileLocal(verifyUpTo));
+  reconcile(verifyUpTo = 0, press?: string): Promise<PassTally> {
+    return this.track(this.reconcileLocal(verifyUpTo, press));
   }
 
-  private async reconcileLocal(verifyUpTo: number): Promise<void> {
+  private async reconcileLocal(verifyUpTo: number, press?: string): Promise<PassTally> {
     const host = this.need().host;
-    const recheck: VaultStat[] = [];
-    await this.inPass(host, "reconcile", async () => this.survey(await host.list(), true, "reconcile", verifyUpTo, recheck));
+    const tally: PassTally = { verify: [], files: 0, differing: 0, listing: null };
+    await this.inPass(host, "reconcile", async () => {
+      // A PRESS ON A HOST THAT ASKS THE DISK (#246) compares every file by
+      // what the disk holds, and reads again nothing it finds unchanged.
+      tally.listing = press === undefined ? null : (await host.pressListing?.(press)) ?? null;
+      await this.survey(tally.listing?.files ?? await host.list(), true, "reconcile", tally.listing === null ? verifyUpTo : 0, tally);
+    });
     // SYNC NOW'S CONTENT CHECK AFTER THE LOCK: it only queues files the pass
     // found unchanged, and on a phone of 7,700 notes it held a page from
     // another device for minutes when it ran inside (#244, #246).
-    if (recheck.length === 0) return;
+    if (tally.verify.length === 0) return tally;
     host.pass?.(true);
     try {
-      for (const file of recheck) {
-        if (!this.running) return;
+      for (const file of tally.verify) {
+        if (!this.running) return tally;
         if (!(await host.syncable(file.path))) continue;
-        this.enqueue(file.path);
+        this.enqueue(file.path, true);
         this.examined++;
       }
     } finally {
       host.pass?.(false);
     }
+    return tally;
   }
 
   /**
@@ -3737,7 +3794,7 @@ export class SyncEngine {
    * decides nothing differently, because an unchanged file is not queued
    * either way.
    */
-  private async survey(files: VaultStat[], tombstones: boolean, label: string, verifyUpTo = 0, verify: VaultStat[] = []): Promise<void> {
+  private async survey(files: VaultStat[], tombstones: boolean, label: string, verifyUpTo = 0, tally?: PassTally): Promise<void> {
     const context = this.need();
     const started = context.now();
     const seen = new Set<string>();
@@ -3808,7 +3865,8 @@ export class SyncEngine {
     }
     // Sync now reads a recorded file's contents again only up to its ceiling
     // (`SYNC_NOW_VERIFY_MAX`, issue #197); what lies above is counted. The
-    // caller queues `verify`, after the lock (`reconcileLocal`).
+    // caller queues `tally.verify`, after the lock (`reconcileLocal`).
+    const verify = tally?.verify ?? [];
     let unread = 0;
     for (const file of files) {
       if (!this.running) return;
@@ -4178,6 +4236,10 @@ export class SyncEngine {
       }
     }
 
+    if (tally !== undefined) {
+      tally.files = seen.size;
+      tally.differing = fresh.length;
+    }
     const duration = context.now() - started;
     // The periodic pass is silent when it had nothing to say: one line every
     // 30 s about an unchanged vault buries the lines that matter. It speaks
@@ -4533,10 +4595,13 @@ export class SyncEngine {
    * Everything the user's "Sync now" command does (issue #197), in order:
    * what is queued here goes; one read of the feed, asked at once, brings
    * what waits on the server (`readFeed`); parked records and paused notes
-   * are tried again; and the reconcile pass finds what the watcher missed,
-   * reading again the contents of every file of at most
+   * are tried again; and the reconcile pass finds what the watcher missed.
+   * A desktop reads again the contents of every file of at most
    * `SYNC_NOW_VERIFY_MAX` bytes -- a plugin's rewrite that kept both a note's
-   * size and its date (#179). What that pass queues goes too.
+   * size and its date (#179). A phone asks the disk instead for every listed
+   * file's size and date (`VaultHost.pressListing`, #246), and reads only
+   * what differs: reading every file took minutes there. What the pass
+   * queues goes too.
    *
    * It resolves only once the queue it was asked to flush is empty. Joining
    * the running drain is not enough on its own: a path queued after that
@@ -4560,6 +4625,7 @@ export class SyncEngine {
     const inFlight = this.active;
     const written = this.written;
     const examined = this.examined;
+    const readBefore = this.options.host.readTotals?.() ?? { files: 0, bytes: 0 };
     const held = (): number => this.options.state.data.heldDeletions.length;
     const pending = held() > 0;
     let followUp = await this.flush();
@@ -4567,7 +4633,7 @@ export class SyncEngine {
     await this.retryParked(trigger);
     // A paused note before the pass, so what it holds is in it (issue #179).
     await this.resume(undefined, trigger);
-    await this.reconcile(verifyUpTo);
+    const tally = await this.reconcile(verifyUpTo, trigger === "sync_now" ? trigger : undefined);
     // The command that "syncs everything" did not send the deletions the user
     // is still being asked about, and says so rather than nothing (#172).
     if (pending && held() > 0) {
@@ -4578,10 +4644,13 @@ export class SyncEngine {
       );
     }
     followUp = (await this.flush()) || followUp;
+    const read = this.options.host.readTotals?.() ?? { files: 0, bytes: 0 };
     this.options.host.log(
       `${trigger} decision=${joined ? "joined_running_drain" : "drained"} queued=${queued} ` +
         `in_flight=${inFlight} follow_up=${followUp ? 1 : 0} examined=${this.examined - examined} ` +
-        `duration_ms=${this.nowFn() - started}`,
+        `listing=${tally.listing?.source ?? "index"} folders=${tally.listing?.folders ?? 0} files=${tally.files} ` +
+        `differing=${tally.differing} read=${read.files - readBefore.files} bytes=${read.bytes - readBefore.bytes} ` +
+        `duration_ms=${this.nowFn() - started} budget_ms=${SYNC_NOW_BUDGET_MS}`,
     );
     await this.repairTick();
     // What this press sent, for the one notice it answers with (`main.ts`,

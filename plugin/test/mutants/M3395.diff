@@ -1,0 +1,12 @@
+# M3395: a readdir answer is used without its shape being checked (#246)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1018,7 +1018,7 @@
+         unanswered.push(...listed);
+         continue;
+       }
+-      if (!Array.isArray(entries) || !entries.every(isDiskEntry)) return this.pressFallback(label, "entry_shape", files);
++      if (!Array.isArray(entries)) return this.pressFallback(label, "entry_shape", files);
+       const disk = new Map(entries.filter((entry) => entry.type === "file").map((entry) => [entry.name, entry]));
+       for (const file of listed) {
+         const entry = disk.get(file.path.slice(file.path.lastIndexOf("/") + 1));

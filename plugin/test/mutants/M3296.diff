@@ -1,13 +1,12 @@
 # M3296: the status words do not name the held note
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -4621,8 +4621,7 @@
-         // Nothing counted, but the feed has not answered yet: not idle either.
-         // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
-         if (status.pending === 0) return "checking for changes";
--        return `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}` +
--          (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
-+        return `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}`;
+@@ -5285,7 +5285,7 @@
+           const changes = status.pending - (status.checking ?? 0);
+           const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
+           if (changes === 0) return `checking ${files(status.pending)} for changes`;
+-          return `syncing ${files(changes)}` + (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
++          return `syncing ${files(changes)}`;
+         }
        case "offline":
          // True of both places that set it: the running engine polls again
-         // in seconds, and a stopped one is on the reconnect timer.

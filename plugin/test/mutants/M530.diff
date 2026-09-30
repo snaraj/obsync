@@ -1,12 +1,12 @@
 # M530: Sync now misses a silent rewrite with unchanged metadata
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4042,7 +4042,7 @@
+@@ -4600,7 +4600,7 @@
      await this.retryParked(trigger);
      // A paused note before the pass, so what it holds is in it (issue #179).
      await this.resume(undefined, trigger);
--    await this.reconcile(verifyUpTo);
-+    await this.reconcile();
+-    const tally = await this.reconcile(verifyUpTo, trigger === "sync_now" ? trigger : undefined);
++    const tally = await this.reconcile(0, trigger === "sync_now" ? trigger : undefined);
      // The command that "syncs everything" did not send the deletions the user
      // is still being asked about, and says so rather than nothing (#172).
      if (pending && held() > 0) {

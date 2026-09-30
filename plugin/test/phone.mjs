@@ -49,6 +49,8 @@
 const enc = (text) => new TextEncoder().encode(text);
 const parentOf = (path) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 const hidden = (path) => path.split("/").some((part) => part.startsWith("."));
+/** Where the emulator's Capacitor filesystem keeps the vault (`adapter.getFullPath`). */
+const FULL = "/storage/emulated/0/Documents/phone";
 
 export class PhoneVault {
   constructor(obsidian, { folds = true, delivery = "immediate", watcher = true, indexApi = true } = {}) {
@@ -85,6 +87,10 @@ export class PhoneVault {
     this.dropping = null;
     /** `(path) => void`, the moment an empty write has landed: where a test stops the process (#248). */
     this.onEmpty = null;
+    /** Every folder `adapter.fs.readdir` was asked about (#246). */
+    this.readdirs = [];
+    /** `(folder) => "unreadable" | "shape" | undefined`: that folder's `readdir` throws, or answers entries short of a date (#246). */
+    this.readdirFault = null;
     /** The adapter's one queue (`queue`). */
     this.chain = Promise.resolve();
     this.clock = 1757200000000;
@@ -112,6 +118,27 @@ export class PhoneVault {
           (vault.disk.get(child) === null ? out.folders : out.files).push(child);
         }
         return out;
+      },
+      // PRIVATE in Obsidian (#246): the full path Capacitor's filesystem takes,
+      // "…/" for the vault root as on the emulator, and that filesystem's
+      // `readdir`: a folder's entries as the STORAGE has them, each with a
+      // name, a type, a size and a date, whatever the index cached.
+      getFullPath: (path) => `${FULL}/${path}`,
+      fs: {
+        readdir: (full) => vault.queue(async () => {
+          const folder = full.slice(FULL.length + 1).replace(/\/$/, "");
+          vault.readdirs.push(folder);
+          const at = vault.real(folder);
+          const fault = vault.readdirFault?.(folder);
+          if (fault === "unreadable" || at === null || (at !== "" && vault.disk.get(at) !== null)) throw new Error(`ENOENT: ${full}`);
+          return vault.names(at).map((name) => {
+            const file = vault.disk.get(at === "" ? name : `${at}/${name}`);
+            const entry = file === null ? { name, type: "directory", size: 0, mtime: 0, ctime: 0 }
+              : { name, type: "file", size: file.bytes.length, mtime: file.mtime, ctime: file.mtime };
+            if (fault === "shape") delete entry.mtime;
+            return { ...entry, uri: `file://${full}/${name}` };
+          });
+        }),
       },
       rename: (from, to) => vault.queue(async () => vault.adapterRename(from, to)),
       mkdir: (path) => vault.queue(async () => vault.mkdirs(path, true)),

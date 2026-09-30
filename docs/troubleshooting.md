@@ -68,6 +68,7 @@ server again unless the entry says so.
 | A note another device had just written is empty everywhere | [A note became empty on every device](#a-note-became-empty-on-every-device) |
 | A note you emptied on a phone still has its text on your other devices | [A note you emptied on a phone keeps its text elsewhere](#a-note-you-emptied-on-a-phone-keeps-its-text-elsewhere) |
 | On a phone, Leave lists files your other devices already have | [Leave lists files your other devices already have](#leave-lists-files-your-other-devices-already-have) |
+| On a phone, a note another app changed keeps its old text on your other devices | [On a phone, a note another app rewrote stays old elsewhere](#on-a-phone-a-note-another-app-rewrote-stays-old-elsewhere) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
 | A computer you paired later shows an empty folder under a name another device renamed away | [An empty folder appeared on a computer paired later](#an-empty-folder-appeared-on-a-computer-paired-later) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
@@ -118,7 +119,7 @@ desktop status bar in the dark theme; yours follow your theme's colours.
 | Icon | Its words | What it means | What to do |
 | --- | --- | --- | --- |
 | <img src="assets/status-synced.png" alt="check mark" width="36" height="31"> | `obsync: idle` | Everything is in sync | Nothing |
-| <img src="assets/status-syncing.png" alt="turning wheel" width="36" height="31"> | `obsync: syncing 3 files` | Files are uploading, downloading or being checked | Nothing. A large file can take a while; **Show sync status** names the file that is moving. If the words go on `waiting for unsaved changes in <note>`, see [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file) |
+| <img src="assets/status-syncing.png" alt="turning wheel" width="36" height="31"> | `obsync: syncing 3 files`, or `obsync: checking 40 files for changes` | Files are uploading or downloading; or **Sync now** or **Verify all files** is reading files that show no change, to be sure | Nothing. A large file can take a while; **Show sync status** names the file that is moving. If the words go on `waiting for unsaved changes in <note>`, see [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file) |
 | <img src="assets/status-offline.png" alt="cloud with a line through it" width="36" height="31"> | `obsync: offline — retrying` | The device cannot reach the server; it keeps trying on its own | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
 | <img src="assets/status-error.png" alt="alert sign" width="36" height="31"> | `obsync: error — <reason>` | Sync stopped and needs you | [Sync stopped with an error](#sync-stopped-with-an-error) |
 | <img src="assets/status-paused.png" alt="pause sign" width="36" height="31"> | `obsync: paused — <note>` | One note is held because something on this device keeps rewriting it; every other note keeps syncing | [Stop repeated rewrites](daily-use.md#stop-repeated-rewrites) |
@@ -1212,8 +1213,8 @@ Obsidian was closed, still has its old contents on your other devices, and
 **Sync now** says there is nothing to send.
 
 **Why it happens.** obsync notices a changed file by its size and modified
-date, and **Sync now** also reads the contents of files up to 8 MiB. A
-program that rewrites a larger file and keeps both its size and its date
+date, and on a computer **Sync now** also reads the contents of files up to
+8 MiB. A program that rewrites a larger file and keeps both its size and its date
 (some encryption tools, or a copy that preserves dates) leaves nothing for
 those checks to see. Reading every large file at every press would cost a
 phone far more than this rare case is worth.
@@ -1223,6 +1224,26 @@ phone far more than this rare case is worth.
 1. Select **Verify all files** in the command palette. It reads every file,
    however large, and sends the ones that changed.
 2. It answers with how many files it checked and how many had changed.
+
+## On a phone, a note another app rewrote stays old elsewhere
+
+**What you see.** You changed a note on a phone with another app (a file
+manager, a text editor, a script), and your other devices still show the
+old text. **Sync now** on the phone says there is nothing to send.
+
+**Why it happens.** From 1.1.5, **Sync now** on a phone asks the phone's
+storage for every note's size and modified date and reads only the notes
+where either changed, instead of reading them all, which took minutes on a
+large vault (issue #246). An app that rewrote a note and kept both its size
+and its date leaves nothing for that check to see. If the phone's log says
+`sync_now decision=fallback`, Obsidian did not offer that check, and a
+press sees only what Obsidian itself noticed until it restarts.
+
+**How to fix it.**
+
+1. On the phone, select **Verify all files** in the command palette. It
+   reads every note and sends the ones that changed.
+2. It answers with how many notes it checked and how many had changed.
 
 ## Changes wait while Obsidian is in the background
 

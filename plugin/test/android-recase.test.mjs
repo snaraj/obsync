@@ -410,10 +410,11 @@ for (const folds of [true, false]) {
   });
 }
 
-// The lock covers a pass's comparison, not Sync now's content check: that
+// The lock covers a pass's comparison, not a press's content check: that
 // only queues unchanged files, and inside the lock it held another device's
-// page for minutes on a phone of 7,700 notes (#244, #246).
-test("a page from another device lands while a phone's Sync now content check runs, not after it (#244)", async (t) => {
+// page for minutes on a phone of 7,700 notes (#244, #246). A phone's Sync now
+// reads nothing unchanged any more (#246); Verify all files still does.
+test("a page from another device lands while a phone's Verify all files content check runs, not after it (#244)", async (t) => {
   const r = await seeded(t, { "Check/One.md": BODY, "Notes/Two.md": OTHER });
   let held = false;
   let release;
@@ -424,7 +425,7 @@ test("a page from another device lands while a phone's Sync now content check ru
     return syncable(path, kind);
   };
   let pressed = false;
-  const press = r.b.engine.syncNow().then(() => { pressed = true; });
+  const press = r.b.engine.verifyAll().then(() => { pressed = true; });
   await r.timers.run(STEP_MS, () => held);
 
   r.a.host.write("Notes/Two.md", THEIRS, 7000);
@@ -1231,4 +1232,210 @@ test("a note emptied on purpose while the phone runs is sent empty, even by a Sy
   const sent = (await sentPaths(r.server, r.keys.manifestKey)).slice(frames);
   assert.deepEqual(sent, [{ path: PATH, deleted: false, folder: false, device: PHONE, size: 0 }], again.logs.join(" | "));
   assert.deepEqual(again.logs.filter((line) => line.includes("reason=unfinished_download")), []);
+});
+
+// A FILE HOLDS NO FOLDER (#282): a phone asked every note whether it held a
+// config folder of its own -- one bridge call per note, which no pass could
+// cache: 11 to 23 s over 7,700 notes inside every Sync now on the emulator.
+test("a phone asks each folder once whether it is a vault of its own, never each note (#282)", async (t) => {
+  const notes = { "A/One.md": BODY, "A/Two.md": OTHER, "B/Three.md": CLASH, "B/Sub/Four.md": THEIRS, "Five.md": "RECASE SENTINEL: a note at the vault's root\n" };
+  const r = await seeded(t, notes);
+  await r.timers.run(STEP_MS);
+  const asked = [];
+  const exists = r.vault.adapter.exists;
+  r.vault.adapter.exists = (path, ...rest) => { asked.push(path); return exists(path, ...rest); };
+  r.b.host.pass(true);
+  try {
+    for (const path of Object.keys(notes)) assert.equal(await r.b.host.syncable(path), true, path);
+  } finally {
+    r.b.host.pass(false);
+  }
+  const own = ".obsidian/plugins/obsync-private-sync";
+  assert.deepEqual(asked.sort(), ["A", "B", "B/Sub"].map((folder) => `${folder}/${own}`), "one question per folder, none per note");
+  // A folder still asks about itself: a folder can be a vault of its own (#180).
+  asked.length = 0;
+  assert.equal(await r.b.host.syncable("B/Sub", "folder"), true);
+  assert.deepEqual(asked, [`B/${own}`, `B/Sub/${own}`]);
+});
+
+// BUT THE FEED ASKS A NOTE'S OWN NAME (#282): a record calls a file what the
+// phone may keep as a folder by now, and a deletion applied there trashes the
+// whole folder -- here a vault of its own, with its notes.
+test("a deletion from another device, of a note a phone now keeps as a vault of its own, removes nothing there (#282)", async (t) => {
+  const r = await seeded(t, { "Box.md": BODY, "Notes/Two.md": OTHER });
+  const id = r.ids["Box.md"];
+  // The note gives way to a folder of that name with nobody watching.
+  r.vault.disk.delete("Box.md");
+  r.vault.index.delete("Box.md");
+  r.vault.write("Box.md/.obsidian/plugins/obsync-private-sync/manifest.json", new TextEncoder().encode("{}"), 3000, false);
+  r.vault.write("Box.md/Inside.md", new TextEncoder().encode(THEIRS), 3000, false);
+  r.a.host.remove("Box.md");
+  const refused = `pull path_class=manifest decision=not_synced reason=nested_vault file=${id} `;
+  await r.timers.run(STEP_MS, () => r.b.logs.some((line) => line.startsWith(refused)) || r.vault.text("Box.md/Inside.md") === null);
+  assert.equal(r.vault.text("Box.md/Inside.md"), THEIRS, `the deletion reached the other vault: ${story(r)}`);
+  assert.ok(r.vault.entries().includes("Box.md/.obsidian/plugins/obsync-private-sync/manifest.json"), story(r));
+  assert.deepEqual(await phonePosts(r), [], story(r));
+});
+
+/**
+ * SYNC NOW ON A PHONE ASKS THE DISK, FOLDER BY FOLDER (#246). Reading every
+ * note again made a press minutes long on a phone of 7,700 notes, and
+ * Obsidian's index alone never sees another app's edit. The press asks
+ * Obsidian's `readdir` once per folder that holds a listed note -- sizes and
+ * dates as the storage has them -- and reads only what differs. Anything
+ * short of that shape sends the press to the index with a `stat` per suspect
+ * (#245), and a folder it cannot read gets that check alone.
+ */
+const EDITED = "RECASE SENTINEL: edited by another app on the phone\n";
+const ROOTED = "RECASE SENTINEL: a note at the vault's root\n";
+const PRESSED = { "A/One.md": BODY, "A/Two.md": OTHER, "B/Three.md": CLASH, "B/Sub/Four.md": THEIRS, "Five.md": ROOTED };
+
+/** Every adapter call a press makes, by kind and path, from now on. */
+function counted(r) {
+  const calls = { readBinary: [], stat: [] };
+  for (const name of Object.keys(calls)) {
+    const real = r.vault.adapter[name];
+    r.vault.adapter[name] = (path, ...rest) => { calls[name].push(path); return real(path, ...rest); };
+  }
+  r.vault.readdirs.length = 0;
+  return calls;
+}
+
+/** Another app writes `text` over `path`: the storage changes, Obsidian's index keeps what it saw. */
+function behindIndex(r, path, text, mtime) {
+  const record = r.b.state.fileByPath(path);
+  r.vault.cached.set(path, { mtime: record.mtime, size: record.size });
+  r.vault.write(path, new TextEncoder().encode(text), mtime, false);
+}
+
+async function pressed(r) {
+  let done = false;
+  const press = r.b.engine.syncNow().then(() => { done = true; });
+  await r.timers.run(STEP_MS, () => done);
+  await press;
+  return r.b.logs.filter((line) => line.startsWith("sync_now decision=")).pop();
+}
+
+test("a phone's Sync now asks each listed folder once, reads only what differs, and says what it read (#246)", async (t) => {
+  const r = await seeded(t, PRESSED);
+  await r.timers.run(STEP_MS);
+  behindIndex(r, "A/Two.md", EDITED, 9000);
+  // Emptied by another app: size 0 against a record that held text differs (#246, #248).
+  behindIndex(r, "B/Three.md", "", 9500);
+  const calls = counted(r);
+
+  const line = await pressed(r);
+  await r.timers.run(STEP_MS, () => r.a.host.text("A/Two.md") === EDITED && r.a.host.text("B/Three.md") === "");
+
+  assert.deepEqual([...r.vault.readdirs].sort(), ["", "A", "B", "B/Sub"], "one readdir per folder that holds a listed note");
+  assert.deepEqual([...new Set(calls.readBinary)].sort(), ["A/Two.md", "B/Three.md"], "only what differs is read");
+  assert.deepEqual(calls.stat.filter((path) => !["A/Two.md", "B/Three.md"].includes(path)), [], "no unchanged note is asked");
+  assert.match(line, new RegExp(`^sync_now decision=drained .* listing=readdir folders=4 files=5 differing=2 read=2 bytes=${EDITED.length} duration_ms=\\d+ budget_ms=10000$`), line);
+  assert.equal(r.a.host.text("A/Two.md"), EDITED);
+  assert.equal(r.a.host.text("B/Three.md"), "");
+  assert.equal(r.a.host.text("B/Sub/Four.md"), THEIRS);
+  assert.ok(!r.b.logs.some((line) => line.includes("decision=fallback")), r.b.logs.join(" | "));
+  assert.deepEqual(r.b.notices, []);
+});
+
+test("a phone whose Obsidian has no readdir falls back to the index and a stat per suspect, said once (#246)", async (t) => {
+  const r = await seeded(t, PRESSED);
+  await r.timers.run(STEP_MS);
+  delete r.vault.adapter.fs;
+  // One change the index saw, one it did not.
+  behindIndex(r, "A/Two.md", EDITED, 9000);
+  r.vault.write("B/Three.md", new TextEncoder().encode(EDITED), 9500, false);
+  const calls = counted(r);
+
+  await pressed(r);
+  await r.timers.run(STEP_MS, () => r.a.host.text("B/Three.md") === EDITED);
+  const line = await pressed(r);
+
+  assert.deepEqual(r.b.logs.filter((line) => line.includes("decision=fallback")), ["sync_now decision=fallback reason=no_readdir"]);
+  assert.match(line, /^sync_now decision=drained .* listing=fallback folders=0 files=5 differing=0 read=0 bytes=0 /, line);
+  assert.deepEqual([...new Set(calls.readBinary)], ["B/Three.md"], "the index's change is read, and nothing else");
+  assert.equal(r.a.host.text("B/Three.md"), EDITED);
+  assert.equal(r.a.host.text("A/Two.md"), OTHER, "a change the index never saw waits for the next start");
+  assert.deepEqual(calls.stat.filter((path) => path !== "B/Three.md"), [], "only the suspect is asked");
+});
+
+test("a readdir entry short of a date sends the whole press to the documented check (#246)", async (t) => {
+  const r = await seeded(t, PRESSED);
+  await r.timers.run(STEP_MS);
+  r.vault.readdirFault = (folder) => folder === "B" ? "shape" : undefined;
+  behindIndex(r, "A/Two.md", EDITED, 9000);
+  const calls = counted(r);
+
+  const line = await pressed(r);
+
+  assert.deepEqual(r.b.logs.filter((line) => line.includes("decision=fallback")), ["sync_now decision=fallback reason=entry_shape"]);
+  assert.match(line, /^sync_now decision=drained .* listing=fallback folders=0 files=5 differing=0 read=0 bytes=0 /, line);
+  assert.deepEqual(calls.readBinary, [], "no note judged by a malformed answer");
+  assert.equal(r.a.host.text("A/Two.md"), OTHER);
+});
+
+test("a folder readdir cannot read gets the documented check alone, never 'unchanged', and nothing is deleted (#246)", async (t) => {
+  const r = await seeded(t, PRESSED);
+  await r.timers.run(STEP_MS);
+  r.vault.readdirFault = (folder) => folder === "B" ? "unreadable" : undefined;
+  behindIndex(r, "A/Two.md", EDITED, 9000);
+  // A change in the unreadable folder that the index saw.
+  r.vault.write("B/Three.md", new TextEncoder().encode(EDITED), 9500, false);
+  const calls = counted(r);
+
+  const line = await pressed(r);
+  await r.timers.run(STEP_MS, () => r.a.host.text("A/Two.md") === EDITED && r.a.host.text("B/Three.md") === EDITED);
+
+  assert.ok(r.b.logs.includes("sync_now decision=fallback reason=folder_unreadable folders=1"), r.b.logs.join(" | "));
+  assert.match(line, /^sync_now decision=drained .* listing=readdir folders=3 files=5 differing=2 read=2 /, line);
+  assert.deepEqual([...new Set(calls.readBinary)].sort(), ["A/Two.md", "B/Three.md"]);
+  assert.deepEqual(calls.stat.filter((path) => !["A/Two.md", "B/Three.md"].includes(path)), [], "the unreadable folder's unchanged note is not asked");
+  assert.equal(r.a.host.text("A/Two.md"), EDITED);
+  assert.equal(r.a.host.text("B/Three.md"), EDITED);
+  assert.deepEqual((await phonePosts(r)).filter((sent) => sent.deleted), [], story(r));
+  assert.ok(Object.keys(PRESSED).every((path) => r.b.state.fileByPath(path) !== undefined), story(r));
+});
+
+test("a folder the index does not list is not read by a press, even when readdir names it (#246)", async (t) => {
+  const r = await seeded(t, PRESSED);
+  await r.timers.run(STEP_MS);
+  // A folder on the storage that Obsidian does not list -- a link, or one another app made.
+  r.vault.write("A/Linked/Inside.md", new TextEncoder().encode(EDITED), 9000, false);
+  const calls = counted(r);
+
+  const line = await pressed(r);
+
+  assert.deepEqual([...r.vault.readdirs].sort(), ["", "A", "B", "B/Sub"], "no folder below the listed ones");
+  assert.match(line, /^sync_now decision=drained .* listing=readdir folders=4 files=5 differing=0 read=0 bytes=0 /, line);
+  assert.deepEqual(calls.readBinary, []);
+  assert.ok(!(await phonePosts(r)).some((sent) => sent.path.startsWith("A/Linked")), story(r));
+});
+
+test("a press that only verifies says it is checking, and a real change beside it is counted as syncing (#246)", async (t) => {
+  const r = await seeded(t, PRESSED);
+  await r.timers.run(STEP_MS);
+  const statuses = [];
+  r.b.engine.onStatus = (status) => statuses.push(status);
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const read = r.vault.adapter.readBinary;
+  r.vault.adapter.readBinary = async (path) => { if (path === "A/One.md") await gate; return read(path); };
+  const text = (status) => { r.b.plugin.statusValue = status; return r.b.plugin.statusText(); };
+  let done = false;
+  const press = r.b.engine.verifyAll().then(() => { done = true; });
+  // Notes queued to be read again, four at a time, none of them changed.
+  await r.timers.run(STEP_MS, () => statuses.some((status) => status.checking === 4));
+  assert.deepEqual(statuses.slice(-4).map(text), [1, 2, 3, 4].map((n) => `checking ${n} file${n === 1 ? "" : "s"} for changes`));
+
+  // A real edit while the check is held: it is what "syncing" counts.
+  r.vault.write("B/Three.md", new TextEncoder().encode(EDITED), 9500, true);
+  await r.timers.run(STEP_MS, () => statuses.at(-1)?.pending - (statuses.at(-1)?.checking ?? 0) === 1)
+    .catch((error) => { throw new Error(`${error.message}: ${JSON.stringify(statuses)}`); });
+  assert.equal(text(statuses.at(-1)), "syncing 1 file");
+  release();
+  await r.timers.run(STEP_MS, () => done);
+  await press;
+  await r.timers.run(STEP_MS);
+  assert.equal(r.a.host.text("B/Three.md"), EDITED);
+  assert.ok(statuses.every((status) => status.kind !== "syncing" || (status.checking ?? 0) <= status.pending), JSON.stringify(statuses));
 });

@@ -1,0 +1,12 @@
+# M3400: a read queued only to verify is never counted apart (#246)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2264,7 +2264,7 @@
+     // A READ THAT ONLY VERIFIES IS NO CHANGE (#246): the status counts it
+     // apart, and anything else that queues the path makes it a change again.
+     if (!check) this.checking.delete(path);
+-    else if (!this.queue.includes(path)) this.checking.add(path);
++    else if (!this.queue.includes(path)) this.checking.delete(path);
+     if (!this.queue.includes(path)) this.queue.push(path);
+     void this.track(this.drain());
+   }

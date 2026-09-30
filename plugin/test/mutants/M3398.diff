@@ -1,0 +1,12 @@
+# M3398: a note is asked whether it is a vault of its own (#282)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -777,7 +777,7 @@
+     // Only `syncable` says "file". The feed and the post ask every name: a
+     // record can call a file what this phone now keeps as a folder of a vault
+     // of its own, and a deletion applied there would trash that whole folder.
+-    if (desktop === null && kind === "file") segments.pop();
++    if (desktop === null && kind === "file" && path === "") segments.pop();
+     // One answer per folder per engine pass (`pass`); outside one, every
+     // question is asked. A folder that holds the plugin is named every time.
+     const answers = this.nestedAnswers;

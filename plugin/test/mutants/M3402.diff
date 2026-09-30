@@ -1,0 +1,12 @@
+# M3402: the fallback is said at every press, not once a session (#246)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1032,7 +1032,7 @@
+ 
+   /** The documented check for the whole press, said once a session for each reason. */
+   private async pressFallback(label: string, reason: "no_readdir" | "entry_shape", files: VaultStat[]): Promise<PressListing> {
+-    if (!this.fellBack.has(reason)) this.log(`${label} decision=fallback reason=${reason}`);
++    this.log(`${label} decision=fallback reason=${reason}`);
+     this.fellBack.add(reason);
+     return { files: await this.confirmed(files), folders: 0, source: "fallback" };
+   }

@@ -785,8 +785,24 @@ long poll and needs its timeout raised.
    retries parked and paused files, then runs the startup pass re-chunking
    every admitted local file of at most one chunk (8 MiB): unchanged digests
    publish nothing, and a silent same-metadata rewrite is uploaded even long
-   after the arrival window expired. **Verify all files** re-chunks every
-   admitted file, however large. Both use the ordinary bounded streaming push
+   after the arrival window expired. A PHONE ASKS ITS STORAGE INSTEAD
+   (plugin 1.1.5, #246): reading every note again took minutes on a phone of
+   7,700 notes. Its press asks Obsidian mobile's adapter for one `readdir` per
+   folder that holds a listed file -- sizes and dates as the storage keeps
+   them, which is how it sees an edit another app made that Obsidian's index
+   never saw -- and reads only the files that differ from their records. That
+   `readdir` is not a documented API, so its shape is checked on every press:
+   any entry without a name, a kind, a size and a date sends the whole press
+   to the documented check, the index with a `stat` per suspect, logged once
+   a session (`decision=fallback reason=no_readdir|entry_shape`), and a
+   folder it cannot read gets that check alone. Its names are only matched
+   against the listed file's own name in the same folder: none becomes a
+   path, no folder below a listed one is read, and nothing it says is
+   written. What that misses is a rewrite by another app that kept both the
+   size and the date. While a press only re-reads files to verify them, the
+   status says `checking N files for changes`, not `syncing`: `syncing`
+   counts changes. **Verify all files** re-chunks every
+   admitted file, however large, on every device. Both use the ordinary bounded streaming push
    and device budget policy rather than buffering the whole vault, and
    neither keeps a plaintext hash to go faster: one in `data.json` would
    confirm a guessed note to anyone who can read it (issue #197).
@@ -1050,7 +1066,11 @@ long poll and needs its timeout raised.
    folder, by name only; a phone asks each folder once for this plugin's
    own folder at the path Obsidian loaded it from (`manifest.dir`), one
    question rather than a listing, which answers a turn later there
-   (plugin 1.1.4; 1.1.3 asked for `.obsidian` alone, #243). A desktop vault
+   (plugin 1.1.4; 1.1.3 asked for `.obsidian` alone, #243). Sorting its own
+   listing, a phone does not ask a note about itself, which cost a bridge
+   call per note (plugin 1.1.5, #282); what the feed applies and what the
+   phone publishes still ask every name, since a record can call a file what
+   the phone now keeps as a folder. A desktop vault
    that sits inside such a vault refuses to be set up, paired or started.
    Synced from both sides, each pass copied the outer vault into the inner
    one a level deeper, on every device (issue #180).
