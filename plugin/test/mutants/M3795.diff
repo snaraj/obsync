@@ -1,12 +1,12 @@
 # M3795: a pass drops a change whose push gave up while it was comparing (#293)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4508,7 +4508,7 @@
-     // the server took it after all, the file went, or it left the selection.
-     // One queued again is the queue's to count, and one whose push gave up
-     // during this pass is the next pass's to judge.
--    for (const [path, { failure }] of this.unsent) if (failure <= gaveUp) this.unsent.delete(path);
-+    for (const [path] of this.unsent) this.unsent.delete(path);
+@@ -4545,7 +4545,7 @@
+     // server's refusal stands through it), and one whose push gave up during
+     // this pass is the next pass's to judge.
+     for (const [path, { failure }] of this.unsent) {
+-      if (failure <= gaveUp && !this.queue.includes(path) && !this.pushing.has(path)) this.sent(path);
++      if (!this.queue.includes(path) && !this.pushing.has(path)) this.sent(path);
+     }
      if (verifyUpTo > 0) this.examined += queued;
      if (own !== null) {
-       context.host.log(

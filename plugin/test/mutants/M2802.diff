@@ -1,10 +1,10 @@
 # M2802: domain_mismatch is an ordinary push failure again: retried every scan, with an error
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2731,7 +2731,7 @@
-       // it while it is here. A new vault key has its own notice (`rekeyed`).
-       const refused = refusal === null && error instanceof ApiError && error.code !== "domain_mismatch";
-       this.unsent.set(path, { failure: ++this.failures, refused });
+@@ -2764,7 +2764,7 @@
+       // room for this one, and the words went with the file still here.
+       const full = refusal?.kind === "error" && refusal.code === "storage";
+       this.unsent.set(path, { failure: ++this.failures, refused, full });
 -      if (error instanceof ApiError && error.code === "domain_mismatch") {
 +      if (error instanceof ApiError && error.code === "never") {
          await this.rekeyed(context, path);

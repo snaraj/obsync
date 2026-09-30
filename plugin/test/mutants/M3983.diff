@@ -1,13 +1,12 @@
-# M3794: a pass that finds nothing to send leaves an unsent change counted for good (#293)
+# M3983: a pass drops a refused change it just sent again: a full server's words go while it is pushed (#300)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4544,9 +4544,6 @@
-     // One queued or pushed again is that push's to settle (#300: a full
+@@ -4545,7 +4545,7 @@
      // server's refusal stands through it), and one whose push gave up during
      // this pass is the next pass's to judge.
--    for (const [path, { failure }] of this.unsent) {
+     for (const [path, { failure }] of this.unsent) {
 -      if (failure <= gaveUp && !this.queue.includes(path) && !this.pushing.has(path)) this.sent(path);
--    }
++      if (failure <= gaveUp) this.sent(path);
+     }
      if (verifyUpTo > 0) this.examined += queued;
      if (own !== null) {
-       context.host.log(

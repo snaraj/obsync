@@ -1,11 +1,11 @@
 # M2814: the feed's failed read never reads offline: absence is forgotten
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3290,7 +3290,6 @@
+@@ -3327,7 +3327,6 @@
      // on their own push or on an editor -- and `idle` only when there is none
      // AND the feed's latest read was answered. Before that first answer the
      // device is checking, which is not idle either.
 -    if (this.absent) return { kind: "offline" };
      // A CHANGE THE SERVER REFUSED IS SAID BY NAME for as long as it is here
-     // (#299): gone when a push of it starts, or a pass finds nothing to send.
+     // (#299): gone when a push of it is taken, or a pass finds nothing to send.
      const refused = [...this.unsent].filter(([, entry]) => entry.refused).map(([path]) => path);

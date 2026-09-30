@@ -1,11 +1,11 @@
-# M296: a second save of the same size inside a coarse mtime step is never sent
+# M3982: a change taken keeps its unsent entry until a pass: a full server's or a refusal's words outlive the push that took it (#300)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
 @@ -2694,7 +2694,6 @@
+       const asked = context.now();
        const outcome = await pushFile(context, path, forced);
        // Taken, or on the server already: nothing of it is unsent (#300).
-       if (outcome.status !== "growing") this.sent(path);
--      if (outcome.status !== "growing") this.recheck(context, path, asked);
+-      if (outcome.status !== "growing") this.sent(path);
+       if (outcome.status !== "growing") this.recheck(context, path, asked);
        if (outcome.status === "unchanged") return;
        if (outcome.status === "growing") {
-         // The file moved while it was read: nothing was published, so this is

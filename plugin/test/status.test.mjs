@@ -422,6 +422,86 @@ test("a full server is said on the first chunk it refuses, stays through answere
   }
 });
 
+test("a full server stands for the files it refused while it takes a smaller note, through their own next pushes, until each is taken or leaves the vault (#300)", async () => {
+  const FULL = { kind: "error", code: "storage", message: SERVER_FULL };
+  const cleared = (r) => r.host.logs.includes("engine decision=cleared reason=storage");
+  for (const ending of ["taken", "deleted"]) {
+    const r = await started();
+    await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+    // The room left, in bytes of one chunk upload: a note fits, the two files do not.
+    let room = 1000;
+    const refused = refuse(r, (sent) => sent.method === "PUT" && sent.body?.byteLength > room,
+      () => r.server.error(507, "storage_full", "the volume is out of space"));
+    r.host.seed("Big.md", "a large file the server has no room for\n".repeat(64), 5000);
+    r.host.seed("Huge.md", "a larger file the server has no room for\n".repeat(128), 5001);
+    r.engine.changed("Big.md");
+    r.engine.changed("Huge.md");
+    await r.timers.run(STEP_MS, () => refused.length === 2 && r.engine.uploads().length === 0);
+    assert.deepEqual(r.engine.current(), FULL, ending);
+    // A small note written just after: the server takes it, and that says
+    // nothing of room for the files it refused.
+    r.host.seed("Small.md", "a small note it still takes\n", 6000);
+    r.engine.changed("Small.md");
+    await r.timers.run(STEP_MS, () => r.state.fileByPath("Small.md") !== undefined);
+    r.server.releaseFeed();
+    await r.timers.run(0, () => r.server.feedWaiters.length === 1);
+    assert.deepEqual(r.engine.current(), FULL, `${ending}: a write of another file cleared it`);
+    // The next pass sends both again into the same refusal: the words stand
+    // through those pushes, never syncing in between.
+    const mark = r.statuses.length;
+    await r.timers.run(STEP_MS, () => refused.length === 4 && r.engine.uploads().length === 0);
+    assert.deepEqual(r.statuses.slice(mark).filter((status) => status.code !== "storage"), [], `${ending}: the words went while the files were sent again`);
+    assert.ok(!cleared(r), ending);
+    if (ending === "taken") {
+      // Room for the smaller file: it is taken, and the larger one keeps the words.
+      room = 4000;
+      r.engine.changed("Big.md");
+      await r.timers.run(STEP_MS, () => r.state.fileByPath("Big.md") !== undefined && r.engine.uploads().length === 0);
+      assert.deepEqual(r.engine.current(), FULL, "one refused file taken cleared the words for the other");
+      assert.ok(!cleared(r), "said cleared with a refused file still here");
+      room = Infinity;
+      r.engine.changed("Huge.md");
+      await r.timers.run(STEP_MS, () => r.state.fileByPath("Huge.md") !== undefined && r.engine.uploads().length === 0);
+      assert.notEqual(r.engine.current().code, "storage", "the last refused file was taken and the words stayed");
+    } else {
+      // Removed the way a file manager removes them: only the next listing says.
+      const sent = refused.length;
+      r.host.files.delete("Big.md");
+      r.host.files.delete("Huge.md");
+      await r.timers.run(STEP_MS, () => r.engine.current().kind === "idle");
+      assert.equal(refused.length, sent, "a file the vault no longer holds was pushed again");
+    }
+    await r.timers.run(STEP_MS, () => r.engine.current().kind === "idle");
+    assert.ok(cleared(r), ending);
+    await stopped(r);
+  }
+});
+
+test("a full server that refused a note's deletion stands until that deletion is taken, and goes with it (#300)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  r.host.seed("Gone.md", "a note deleted while the server is full\n", 5000);
+  r.engine.changed("Gone.md");
+  await r.timers.run(STEP_MS, () => r.state.fileByPath("Gone.md") !== undefined && r.last()?.kind === "idle");
+  const fileId = r.state.fileByPath("Gone.md").fileId;
+  let full = true;
+  const refused = refuse(r, (sent) => full && sent.method === "POST" && sent.url.endsWith(`/v1/files/${fileId}/versions`),
+    () => r.server.error(507, "storage_full", "the volume is out of space"));
+  r.host.files.delete("Gone.md");
+  r.engine.deleted("Gone.md");
+  await r.timers.run(STEP_MS, () => refused.length === 1 && r.engine.uploads().length === 0);
+  assert.deepEqual(r.engine.current(), { kind: "error", code: "storage", message: SERVER_FULL });
+  // Room again: Sync now sends the deletion, and the words go with it, not at a later pass.
+  full = false;
+  let sent;
+  void r.engine.syncNow().then((count) => { sent = count; });
+  await r.timers.run(STEP_MS, () => sent !== undefined);
+  assert.ok(r.server.journal.some((frame) => frame.deleted && frame.file_id === fileId), "the deletion was taken");
+  assert.notEqual(r.engine.current().code, "storage", "the deletion was taken and the words stayed");
+  assert.ok(r.host.logs.includes("engine decision=cleared reason=storage"));
+  await stopped(r);
+});
+
 test("a journal volume with no room refuses the feed's read too: the device says out of storage, not offline, and the next answered read clears it (#292)", async () => {
   // Every signed request records its nonce on the journal volume first, so a
   // full one refuses reads as well; with nothing to write, only a read can
@@ -592,7 +672,7 @@ test("a change the server refuses is said by name for as long as it is unsent, o
   assert.equal(said.code, "push_refused");
   assert.match(said.message, REFUSED_TWO);
   assert.deepEqual(r.last(), said);
-  // The newest refusal by name: a push of a path always follows its last.
+  // By name, the last of them to become unsent: the set keeps that order.
   assert.match(refusedChange(["First.md", "Second.md"]), /^Your server refused the change to "Second" and 1 more\. /);
   // It stands through the feed's answered reads.
   r.server.releaseFeed();

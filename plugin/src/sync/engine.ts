@@ -548,10 +548,11 @@ export const FEED_FAILED =
 export const PUSH_REFUSED =
   "Your server refused a folder change from this device. obsync sends it again when Obsidian next starts, or at once when you select Sync now; if this stays, check your server's log.";
 /**
- * A change the server refused, said while it is unsent (#299): the newest
- * refusal by name -- a push of a path always follows its last, so the set's
- * order is the refusals' -- and one line for several. It goes again at the
- * next pass, at most `WALK_MS` away on a desktop, or at once on Sync now.
+ * A change the server refused, said while it is unsent (#299): by name the
+ * last of them to become unsent -- the set keeps the order paths entered it,
+ * and one refused again keeps its place (#300) -- and one line for several.
+ * It goes again at the next pass, at most `WALK_MS` away on a desktop, or at
+ * once on Sync now.
  */
 export function refusedChange(paths: readonly string[]): string {
   const more = paths.length > 1 ? ` and ${paths.length - 1} more` : "";
@@ -945,12 +946,15 @@ export class SyncEngine {
   /**
    * Paths whose push failed and whose change is still on this device only
    * (#293), each with the failure's number (`failures`): work, for the
-   * status, until a push of the path starts again -- the next scan's, most
-   * often -- or a pass that began after that failure did not send it again
-   * (`survey`). `refused`: the server answered that push with a refusal of
-   * its own, which the status says for as long as the change is here (#299).
+   * status, until a push of the path is taken -- the next scan's, most
+   * often (`sent`) -- or a pass that began after that failure did not send it
+   * again (`survey`), and through the push that sends it again (#300).
+   * `refused`: the server answered that push with a refusal of its own
+   * (#299); `full`: it refused it for want of room, a 507 (#300). Either is
+   * what the status says while the change is here, and a write of another
+   * path takes neither away.
    */
-  private readonly unsent = new Map<string, { failure: number; refused: boolean }>();
+  private readonly unsent = new Map<string, { failure: number; refused: boolean; full: boolean }>();
   private failures = 0;
   private running = false;
   private cancelled = false;
@@ -1404,6 +1408,17 @@ export class SyncEngine {
     this.refused = null;
     this.options.host.log(`engine decision=cleared reason=${refused.code ?? "error"}`);
     this.status(this.resting());
+  }
+
+  /**
+   * Nothing of `path`'s change is unsent any more: taken, or a pass found
+   * nothing to send (#293). The last change a full server refused takes its
+   * words with it, and says so as a cleared refusal does (#300).
+   */
+  private sent(path: string): void {
+    const entry = this.unsent.get(path);
+    if (entry === undefined || !this.unsent.delete(path) || !entry.full) return;
+    if (![...this.unsent.values()].some((other) => other.full)) this.options.host.log("engine decision=cleared reason=storage");
   }
 
   private need(): SyncContext {
@@ -2583,7 +2598,6 @@ export class SyncEngine {
 
   private async pushNow(path: string): Promise<void> {
     const context = this.need();
-    this.unsent.delete(path);
     // What the lines below name: a folder's removal is no file (issue #240).
     let pathClass = "file";
     try {
@@ -2650,6 +2664,7 @@ export class SyncEngine {
         const outcome = await pushDelete(context, path);
         if (outcome !== null) {
           context.authored.add(outcome.versionId);
+          this.sent(path);
           this.accepted(true);
           return;
         }
@@ -2678,6 +2693,8 @@ export class SyncEngine {
       if (await yieldName(context, path)) return;
       const asked = context.now();
       const outcome = await pushFile(context, path, forced);
+      // Taken, or on the server already: nothing of it is unsent (#300).
+      if (outcome.status !== "growing") this.sent(path);
       if (outcome.status !== "growing") this.recheck(context, path, asked);
       if (outcome.status === "unchanged") return;
       if (outcome.status === "growing") {
@@ -2743,13 +2760,17 @@ export class SyncEngine {
       // left, so nobody saw that the server refuses this note. `resting` names
       // it while it is here. A new vault key has its own notice (`rekeyed`).
       const refused = refusal === null && error instanceof ApiError && error.code !== "domain_mismatch";
-      this.unsent.set(path, { failure: ++this.failures, refused });
+      // A FULL SERVER IS SAID FOR THIS CHANGE (#300), not as a refusal any
+      // accepted write clears: a smaller note it took since said nothing of
+      // room for this one, and the words went with the file still here.
+      const full = refusal?.kind === "error" && refusal.code === "storage";
+      this.unsent.set(path, { failure: ++this.failures, refused, full });
       if (error instanceof ApiError && error.code === "domain_mismatch") {
         await this.rekeyed(context, path);
         return;
       }
       // A local fault is worded where it was raised, and said once.
-      if (refused) this.status(this.resting());
+      if (refused || full) this.status(this.resting());
       else this.report(refusal ?? { kind: "error", message });
     }
   }
@@ -3273,6 +3294,9 @@ export class SyncEngine {
    */
   private resting(): EngineStatus {
     if (this.refused !== null) return this.refused;
+    // A FULL SERVER STANDS FOR THE CHANGES IT REFUSED (#300), as a standing
+    // refusal does, until a push of each is taken or a pass drops it.
+    if ([...this.unsent.values()].some((entry) => entry.full)) return { kind: "error", code: "storage", message: SERVER_FULL };
     // Notes waiting on their own push to settle a fork, or on an editor or a
     // download here: work, by path (#296).
     const waiting: string[] = [];
@@ -3305,7 +3329,7 @@ export class SyncEngine {
     // device is checking, which is not idle either.
     if (this.absent) return { kind: "offline" };
     // A CHANGE THE SERVER REFUSED IS SAID BY NAME for as long as it is here
-    // (#299): gone when a push of it starts, or a pass finds nothing to send.
+    // (#299): gone when a push of it is taken, or a pass finds nothing to send.
     const refused = [...this.unsent].filter(([, entry]) => entry.refused).map(([path]) => path);
     if (refused.length > 0) return { kind: "error", code: "push_refused", message: refusedChange(refused) };
     // PATHS, NOT ENTRIES (#296): a note queued again while its push is in
@@ -4517,9 +4541,12 @@ export class SyncEngine {
     }
     // AN UNSENT CHANGE THIS PASS DID NOT SEND AGAIN IS NO LONGER WORK (#293):
     // the server took it after all, the file went, or it left the selection.
-    // One queued again is the queue's to count, and one whose push gave up
-    // during this pass is the next pass's to judge.
-    for (const [path, { failure }] of this.unsent) if (failure <= gaveUp) this.unsent.delete(path);
+    // One queued or pushed again is that push's to settle (#300: a full
+    // server's refusal stands through it), and one whose push gave up during
+    // this pass is the next pass's to judge.
+    for (const [path, { failure }] of this.unsent) {
+      if (failure <= gaveUp && !this.queue.includes(path) && !this.pushing.has(path)) this.sent(path);
+    }
     if (verifyUpTo > 0) this.examined += queued;
     if (own !== null) {
       context.host.log(

@@ -1,12 +1,12 @@
 # M3977: a change refused for another vault key is said as the server refusing it, over the new key's own notice (#299)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2729,7 +2729,7 @@
+@@ -2758,7 +2758,7 @@
        // code names was said once and replaced in the same tick by the work it
        // left, so nobody saw that the server refuses this note. `resting` names
        // it while it is here. A new vault key has its own notice (`rekeyed`).
 -      const refused = refusal === null && error instanceof ApiError && error.code !== "domain_mismatch";
 +      const refused = refusal === null && error instanceof ApiError;
-       this.unsent.set(path, { failure: ++this.failures, refused });
-       if (error instanceof ApiError && error.code === "domain_mismatch") {
-         await this.rekeyed(context, path);
+       // A FULL SERVER IS SAID FOR THIS CHANGE (#300), not as a refusal any
+       // accepted write clears: a smaller note it took since said nothing of
+       // room for this one, and the words went with the file still here.

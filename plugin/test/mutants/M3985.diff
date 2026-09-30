@@ -1,0 +1,12 @@
+# M3985: a full server's words are said cleared while another change it refused is still here (#300)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1418,7 +1418,7 @@
+   private sent(path: string): void {
+     const entry = this.unsent.get(path);
+     if (entry === undefined || !this.unsent.delete(path) || !entry.full) return;
+-    if (![...this.unsent.values()].some((other) => other.full)) this.options.host.log("engine decision=cleared reason=storage");
++    this.options.host.log("engine decision=cleared reason=storage");
+   }
+ 
+   private need(): SyncContext {
