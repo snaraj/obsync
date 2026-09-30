@@ -315,6 +315,18 @@ a focus or a press keeps the poll, and a read beside it answers in 12 to
 `offline`. No request waited on the device, and no `offline` appeared
 ([run record](validation-runs/2026-09-29-speed.md)).
 
+**A run of 5xx answers no longer piles up long polls (#297).** One rig
+behind a hop that answered every chunk upload 500 for 240 s. Before this
+change, each answer that came after a 500 dropped the long poll in
+flight, which `requestUrl` cannot withdraw. There were four drops, up to
+four polls held on the device at once, and two replacements that reached
+the hop 20.00 s after they left. After it, every wake but a new address
+or the network coming back keeps the poll and reads beside it. There was
+one poll held throughout, reads beside it in 9 to 18 ms, and no poll
+waiting on the device. A wake's line now says how many polls the device
+holds (`polls_in_flight`)
+([run record](validation-runs/2026-09-29-speed.md)).
+
 ### What still bounds each path
 
 Each needs a decision outside what 1.1.5 changes: B's one-note-at-a-time
