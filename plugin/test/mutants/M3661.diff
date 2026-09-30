@@ -1,0 +1,12 @@
+# M3661: a walk in flight is never counted (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3462,7 +3462,7 @@
+   private scanTick(): void {
+     if (!this.running) return;
+     this.scanHandle = null;
+-    const started = this.scanSince = this.nowFn();
++    const started = this.nowFn();
+     void this.track(this.scanLocal().finally(() => {
+       if (this.scanSince === started) this.scanSince = null;
+       if (this.running && this.scanHandle === null) {

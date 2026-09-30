@@ -1,0 +1,11 @@
+# M3654: the pull chain never records which pull holds it (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2721,7 +2721,6 @@
+     this.behind++;
+     const turn = async (): Promise<void> => {
+       this.behind--;
+-      this.holder = { label, since: this.nowFn() };
+       try {
+         await work();
+       } finally {

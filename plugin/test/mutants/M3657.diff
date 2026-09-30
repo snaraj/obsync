@@ -1,0 +1,11 @@
+# M3657: a press whose turn came keeps saying it waits (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4281,7 +4281,6 @@
+     } finally {
+       this.timers.clear(handle);
+       if (said) {
+-        this.pressWaits = null;
+         this.status(this.resting());
+       }
+     }

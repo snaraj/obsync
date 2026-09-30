@@ -878,6 +878,9 @@ export class State {
   /** Let a replacement plugin load wait for an already-dispatched metadata write. */
   settled(): Promise<void> { return this.flushing ?? Promise.resolve(); }
 
+  /** Whether a metadata write is in flight: a wait that sends no request, named by a stalled feed (#276). */
+  get saving(): boolean { return this.flushing !== null; }
+
   /** Refuse every write once a newer session has claimed the data file (`Lease`). */
   private assertHolder(): void {
     if (this.lease.holder !== this.claim) {

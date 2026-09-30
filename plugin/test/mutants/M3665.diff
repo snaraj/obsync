@@ -1,0 +1,11 @@
+# M3665: a record being written is said to be still deciding (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2809,7 +2809,6 @@
+     let incoming = false;
+     let result: ApplyResult;
+     // What a stalled feed names (`watchFeed`): past the lane's decision, writing.
+-    if (this.step !== null) this.step = { ...this.step, name: "apply", since: this.nowFn() };
+     try {
+       result = await applyChange(context, change, async () => {
+         incoming = true;

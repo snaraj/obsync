@@ -74,7 +74,7 @@ import {
   soleDomain,
 } from "../domainmap";
 import { State, isPushed } from "../state";
-import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, NOT_OBSYNC, SessionEnded, Transport, certificateRefusal } from "../transport";
+import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, MAX_WAIT_SECONDS, NOT_OBSYNC, SessionEnded, Transport, certificateRefusal } from "../transport";
 import { VaultPathError, errorText, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, sameChunks, settleBeside, stage, unwritableText, yieldName } from "./pull";
@@ -504,7 +504,7 @@ async function untilStopped<T>(stop: AbortSignal | undefined, drop: AbortControl
 
 export type EngineStatus =
   | { kind: "idle" }
-  | { kind: "syncing"; pending: number; held?: string; checking?: number }
+  | { kind: "syncing"; pending: number; held?: string; checking?: number; waiting?: string }
   | { kind: "offline" }
   | { kind: "error"; message: string; code?: string }
   | { kind: "paused"; message: string };
@@ -738,6 +738,28 @@ export const FEED_ERROR_BACKOFF_MS = 5000;
 export const POLL_STALE_MS = 5000;
 
 /**
+ * Twice the feed's long-poll budget (`MAX_WAIT_SECONDS`): a feed that has
+ * sent no read for this long is waiting on nothing the server holds, and it
+ * says what it is waiting on in one line (`watchFeed`, issue #276).
+ */
+export const FEED_STALL_MS = 2 * MAX_WAIT_SECONDS * 1000;
+
+/** Each pull of the chain (`exclusive`) in a person's words, for a status that waits on one (`inTurn`, #276). */
+export const PULL_WORDS: Record<string, string> = {
+  page: "changes from your other devices",
+  park_retry: "files that could not be written",
+  editor_retry: "a note open in an editor",
+  resume: "paused notes",
+  lane: "a large download",
+  recover: "the check of a restored server",
+  sweep: "the cleanup of interrupted writes",
+  restore_held: "notes being put back",
+  vanished: "files removed from this device",
+  bring_back: "notes coming back to this device",
+  pass: "a check of this vault's files",
+};
+
+/**
  * The largest file whose contents Sync now reads again (issue #197): one
  * chunk, which is where a plugin rewrites a note keeping its size and date
  * (#179), and what the arrival window reads for the same reason. A larger
@@ -944,6 +966,18 @@ export class SyncEngine {
   private editorHandle: unknown = null;
   /** The feed and a retry pass apply one at a time, never side by side. */
   private pulling: Promise<void> = Promise.resolve();
+  /** The pull running under `exclusive` now, and how many wait behind it: what a stalled feed names (#276). */
+  private holder: { label: string; since: number } | null = null;
+  private behind = 0;
+  /** The page's record in hand, the step it is at and since when (`receive`), and whether the lane waits its turn (`laneOne`): the same line's. */
+  private step: { seq: number; name: string; since: number } | null = null;
+  private laneTurn = false;
+  /** The one watch on the feed's latest read (`watchFeed`, #276). */
+  private feedWatch: unknown = null;
+  /** When the scan in flight began: a scan that never ends stops every later one (`scanTick`, #276). */
+  private scanSince: number | null = null;
+  /** The pull a Sync now press has waited on past its budget (`inTurn`): what the status names. */
+  private pressWaits: string | null = null;
   /** Whether the background lane is running: one large download at a time (`lane`). */
   private laning = false;
   /** The feed's long poll in flight, and how to drop it (`wake`, #195). */
@@ -1169,6 +1203,8 @@ export class SyncEngine {
     this.repairHandle = null;
     if (this.scanHandle !== null) this.timers.clear(this.scanHandle);
     this.scanHandle = null;
+    if (this.feedWatch !== null) this.timers.clear(this.feedWatch);
+    this.feedWatch = null;
     // What a stop leaves held, the next start's pass finds again.
     if (this.holding !== null && this.holding.handle !== null) this.timers.clear(this.holding.handle);
     this.holding = null;
@@ -1363,7 +1399,7 @@ export class SyncEngine {
     // Under the pull lock, as a pass is (`inPass`, issue #244): a debounce
     // left pending for a name the pull has just moved finds it gone before
     // the records follow, and deciding then publishes the pull's own move.
-    this.vanishHandle = this.timers.set(() => { void this.track(this.exclusive(() => this.settleVanished())); }, DEBOUNCE_MS);
+    this.vanishHandle = this.timers.set(() => { void this.track(this.exclusive("vanished", () => this.settleVanished())); }, DEBOUNCE_MS);
   }
 
   /**
@@ -1857,7 +1893,7 @@ export class SyncEngine {
    * pull at a time, because this writes as the feed does.
    */
   restoreHeldDeletions(): Promise<void> {
-    return this.track(this.exclusive(async () => {
+    return this.track(this.exclusive("restore_held", async () => {
       const asked = [...this.options.state.data.heldDeletions];
       if (!this.running || asked.length === 0) return;
       const context = this.need();
@@ -2795,11 +2831,12 @@ export class SyncEngine {
         this.poll = quick ? null : { sent: this.nowFn(), drop };
         this.reading = quick;
         const sent = ++this.feedReads;
+        this.watchFeed();
         // Ended by the stop, not waited out: a stopped engine's poll is one more
         // request against a credential that may be about to be given up (#157).
         // A wake drops it too (`wake`), so either ends this one request.
         const page = await untilStopped(context.signal, drop, () =>
-          context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal }));
+          context.transport.changes(context.state.data.lastSeq, quick ? 0 : MAX_WAIT_SECONDS, 1000, { signal: drop.signal }));
         this.poll = null;
         this.reading = false;
         if (!live()) return;
@@ -2897,8 +2934,49 @@ export class SyncEngine {
    * turn hands the next one on all the same (`then(work, work)`), so one
    * error cannot stop every later pull.
    */
-  private exclusive(work: () => Promise<void>): Promise<void> {
-    return (this.pulling = this.pulling.then(work, work));
+  private exclusive(label: string, work: () => Promise<void>): Promise<void> {
+    this.behind++;
+    const turn = async (): Promise<void> => {
+      this.behind--;
+      this.holder = { label, since: this.nowFn() };
+      try {
+        await work();
+      } finally {
+        this.holder = null;
+      }
+    };
+    return (this.pulling = this.pulling.then(turn, turn));
+  }
+
+  /**
+   * THE FEED SAYS WHEN IT HAS STOPPED (issue #276). Every read arms one
+   * watch for `FEED_STALL_MS`, twice the long-poll budget, and the next read
+   * disarms it. A watch that fires means no read followed: the feed is
+   * applying a page, waiting behind another pull, or waiting on a poll the
+   * server should have answered long ago. It writes one line naming which --
+   * with the page's record in hand and its step, the download lane's step
+   * and a metadata save in flight, the waits that send no request -- and
+   * changes nothing; a stop disarms it.
+   */
+  private watchFeed(): void {
+    const sent = this.nowFn();
+    if (this.feedWatch !== null) this.timers.clear(this.feedWatch);
+    this.feedWatch = this.timers.set(() => {
+      this.feedWatch = null;
+      const now = this.nowFn();
+      const { holder, step } = this;
+      this.options.host.log(
+        `feed decision=stalled waited_ms=${now - sent} budget_ms=${FEED_STALL_MS} ` +
+          `poll_ms=${this.poll === null ? "none" : now - this.poll.sent} reading=${this.reading ? 1 : 0} ` +
+          `answered=${this.feedAnswered ? 1 : 0} last_seq=${this.contextValue?.state.data.lastSeq ?? 0} ` +
+          `in_flight=${this.inFlight.size} pushing=${this.pushing.size} ` +
+          `chain=${holder === null ? "idle" : `${holder.label}:${now - holder.since}`} behind=${this.behind} ` +
+          `pulls=${this.pulls} step=${step === null ? "none" : `${step.name}:${step.seq}:${now - step.since}`} ` +
+          `lane=${!this.laning ? "idle" : this.laneTurn ? "turn" : "busy"} staged=${this.contextValue?.staged?.size ?? 0} ` +
+          `saving=${this.options.state.saving ? 1 : 0} ` +
+          `scan_ms=${this.scanSince === null ? "none" : now - this.scanSince}`,
+      );
+    }, FEED_STALL_MS);
   }
 
   /**
@@ -2947,6 +3025,8 @@ export class SyncEngine {
     };
     let incoming = false;
     let result: ApplyResult;
+    // What a stalled feed names (`watchFeed`): past the lane's decision, writing.
+    if (this.step !== null) this.step = { ...this.step, name: "apply", since: this.nowFn() };
     try {
       result = await applyChange(context, change, async () => {
         incoming = true;
@@ -3039,8 +3119,15 @@ export class SyncEngine {
     // alone read "syncing 1" for minutes and said nothing of what to do.
     const held = records.find((entry) => entry.reason === "active_editor")?.path;
     const checking = Math.min(work, this.checking.size);
-    if (work > 0 || (this.running && !this.feedAnswered)) {
-      return { kind: "syncing", pending: work, ...(held === undefined ? {} : { held }), ...(checking === 0 ? {} : { checking }) };
+    const on = this.pressWaits;
+    if (work > 0 || (this.running && !this.feedAnswered) || on !== null) {
+      return {
+        kind: "syncing",
+        pending: work,
+        ...(held === undefined ? {} : { held }),
+        ...(checking === 0 ? {} : { checking }),
+        ...(on === null ? {} : { waiting: on }),
+      };
     }
     return { kind: "idle" };
   }
@@ -3058,7 +3145,7 @@ export class SyncEngine {
     // Nothing paused waits for nothing: Sync now joins the pull queue only
     // when it has a note to bring back.
     if (Object.keys(this.options.state.data.paused).length === 0) return Promise.resolve();
-    return this.exclusive(async () => {
+    return this.exclusive("resume", async () => {
       if (!this.running) return;
       const context = this.need();
       const paused = context.state.data.paused;
@@ -3111,7 +3198,7 @@ export class SyncEngine {
   }
 
   private retryEditors(): Promise<void> {
-    return this.exclusive(async () => {
+    return this.exclusive("editor_retry", async () => {
       if (!this.running) return;
       const context = this.need();
       try {
@@ -3148,7 +3235,7 @@ export class SyncEngine {
 
   /** Try every parked record again: the timer's turn, the start, or Sync now. */
   private retryParked(trigger: string): Promise<void> {
-    return this.exclusive(async () => {
+    return this.exclusive("park_retry", async () => {
       if (!this.running || Object.keys(this.options.state.data.parked).length === 0) return;
       const context = this.need();
       const started = context.now();
@@ -3299,8 +3386,10 @@ export class SyncEngine {
       const ahead = this.ahead(context, fileId, before);
       if (ahead !== null) await stage(context, ahead);
       let outcome = "applied";
+      this.laneTurn = true;
       try {
-        await this.exclusive(async () => {
+        await this.exclusive("lane", async () => {
+          this.laneTurn = false;
           if (!this.running || this.contextValue !== context) {
             outcome = "stopped";
             return;
@@ -3362,7 +3451,7 @@ export class SyncEngine {
     // Whether any change of the page was more than this device's own version
     // coming back (`pull.ts`, ECHOES) or an entry a replay skips.
     let wrote = false;
-    await this.exclusive(async () => {
+    await this.exclusive("page", async () => {
       // What arrived and is not yet written is work, and the status counts it
       // down as it lands: a receiving device read `idle` through a thousand
       // notes and a gigabyte (issue #158, S46, S26).
@@ -3373,6 +3462,7 @@ export class SyncEngine {
         for (const change of page.changes) {
           if (!this.running) break;
           if (this.pulls > 0) this.status(this.resting());
+          this.step = { seq: change.seq, name: "receive", since: this.nowFn() };
           // Re-reading a rebuilt journal from zero (issue #145): what this
           // device already processed is not news, and applied again it is
           // yesterday's note over today's, a deletion undone, a rename reverted.
@@ -3388,6 +3478,7 @@ export class SyncEngine {
         }
       } finally {
         this.pulls = 0;
+        this.step = null;
         context.ahead = null;
         context.host.pass?.(false);
       }
@@ -3583,7 +3674,7 @@ export class SyncEngine {
       const path = context.state.pathByFileId(fileId);
       return path === undefined ? undefined : context.state.fileByPath(path)?.versionId;
     };
-    return this.exclusive(async () => {
+    return this.exclusive("bring_back", async () => {
       for (const [fileId, versionId] of Object.entries(lost.notes)) {
         // Stopped part way, what is left waits for the next start's catch-up (#281).
         if (!this.running) return;
@@ -3623,7 +3714,7 @@ export class SyncEngine {
   private recover(context: SyncContext, due: Suspicion): Promise<void> {
     // ONE PULL AT A TIME: the check re-sends and the rewind moves the cursor,
     // and neither may run beside a page or a parked record's retry.
-    return this.exclusive(async () => {
+    return this.exclusive("recover", async () => {
       const live = (): boolean => this.running && this.contextValue === context;
       if (!live()) return;
       const resent = await recoverLost(context, due, this.judged, live);
@@ -3698,7 +3789,7 @@ export class SyncEngine {
    */
   private inPass(host: VaultHost, label: string, work: () => Promise<void>): Promise<void> {
     const asked = this.nowFn();
-    return this.exclusive(async () => {
+    return this.exclusive("pass", async () => {
       if (!this.running) return;
       const waited = this.nowFn() - asked;
       if (waited > 0) host.log(`${label} decision=waited reason=pull_lock duration_ms=${waited} budget_ms=${SCAN_BUDGET_MS}`);
@@ -3724,7 +3815,9 @@ export class SyncEngine {
   private scanTick(): void {
     if (!this.running) return;
     this.scanHandle = null;
+    const started = this.scanSince = this.nowFn();
     void this.track(this.scanLocal().finally(() => {
+      if (this.scanSince === started) this.scanSince = null;
       if (this.running && this.scanHandle === null) {
         this.scanHandle = this.timers.set(() => this.scanTick(), SCAN_MS);
       }
@@ -3739,7 +3832,7 @@ export class SyncEngine {
     // in front of it; cleaning up is never a reason not to sync.
     if (!this.swept) {
       this.swept = true;
-      void this.track(this.exclusive(async () => {
+      void this.track(this.exclusive("sweep", async () => {
         await context.host.sweep?.().catch((error: unknown) =>
           context.host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
       }));
@@ -4630,9 +4723,9 @@ export class SyncEngine {
     const pending = held() > 0;
     let followUp = await this.flush();
     await this.readFeed();
-    await this.retryParked(trigger);
+    await this.inTurn(trigger, this.retryParked(trigger));
     // A paused note before the pass, so what it holds is in it (issue #179).
-    await this.resume(undefined, trigger);
+    await this.inTurn(trigger, this.resume(undefined, trigger));
     const tally = await this.reconcile(verifyUpTo, trigger === "sync_now" ? trigger : undefined);
     // The command that "syncs everything" did not send the deletions the user
     // is still being asked about, and says so rather than nothing (#172).
@@ -4657,6 +4750,36 @@ export class SyncEngine {
     // #182): versions the server took, not paths looked at -- the press
     // re-reads many notes, and most are unchanged.
     return { checked: this.examined - examined, sent: this.written - written };
+  }
+
+  /**
+   * A PRESS NEVER WAITS IN SILENCE (issue #276). Its retry and its resume
+   * take a turn of the pull chain (`exclusive`), behind whatever pull holds it.
+   * A turn that has not come within `SYNC_NOW_FEED_MS` is said -- in the status,
+   * which names that pull (`pressWaits`), and in one line -- and the press
+   * goes on waiting for it: the wait is reported, never cut short.
+   */
+  private async inTurn(trigger: string, turn: Promise<void>): Promise<void> {
+    let said = false;
+    const handle = this.timers.set(() => {
+      said = true;
+      const holder = this.holder;
+      this.pressWaits = holder?.label ?? "pull";
+      this.options.host.log(
+        `${trigger} decision=waiting on=${this.pressWaits} held_ms=${holder === null ? 0 : this.nowFn() - holder.since} ` +
+          `behind=${this.behind} budget_ms=${SYNC_NOW_FEED_MS}`,
+      );
+      this.status(this.resting());
+    }, SYNC_NOW_FEED_MS);
+    try {
+      await turn;
+    } finally {
+      this.timers.clear(handle);
+      if (said) {
+        this.pressWaits = null;
+        this.status(this.resting());
+      }
+    }
   }
 
   /** Drain, and once more when a path was queued after the joined drain took its last batch. */

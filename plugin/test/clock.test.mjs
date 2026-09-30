@@ -292,6 +292,14 @@ test("a desktop whose window cannot make a worker runs on the page's clock, and 
   r.instance.onunload();
 });
 
+test("a feed that has stopped says so at warn, where the console shows it by default (#276)", async (t) => {
+  const r = await loaded(t);
+  r.instance.log("feed decision=stalled waited_ms=110000 budget_ms=110000");
+  assert.deepEqual(r.said.filter(([, line]) => line.startsWith("obsync feed ")),
+    [["warn", "obsync feed decision=stalled waited_ms=110000 budget_ms=110000"]]);
+  r.instance.onunload();
+});
+
 test("a phone keeps the page's own clock and makes no worker", async (t) => {
   const r = await loaded(t, { mobile: true });
   assert.equal(r.workers.length, 0);

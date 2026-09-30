@@ -1,0 +1,11 @@
+# M3656: a press that waits on the chain does not say on what (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4269,7 +4269,6 @@
+     const handle = this.timers.set(() => {
+       said = true;
+       const holder = this.holder;
+-      this.pressWaits = holder?.label ?? "pull";
+       this.options.host.log(
+         `${trigger} decision=waiting on=${this.pressWaits} held_ms=${holder === null ? 0 : this.nowFn() - holder.since} ` +
+           `behind=${this.behind} budget_ms=${SYNC_NOW_FEED_MS}`,

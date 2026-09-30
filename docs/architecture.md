@@ -1154,6 +1154,26 @@ long poll and needs its timeout raised.
    and fetched beside the feed, so later notes keep arriving; it is applied
    under the same one-at-a-time rule, against the file's heads as they are
    then (issue #196).
+
+   A PULL THAT HOLDS THE OTHERS IS NAMED (plugin 1.1.5, issue #276). Every
+   step that writes what the server sent -- a feed page, a parked retry, a
+   note waiting on its editor, a resume, the download lane's apply, the
+   restore check, the start's temp sweep, the notes a held deletion puts
+   back -- takes its turn on one chain (`exclusive`), which records the step
+   holding it, since when, and how many wait behind it. A step that never
+   ends holds every later one, and a feed waiting behind it looks like a
+   device with nothing new. So each feed read arms a watch: no next read
+   within twice the long-poll budget (110 s) logs one warning,
+   `feed decision=stalled`, with the poll's age, whether a quick read or an
+   answer is in hand, the cursor, the uploads in flight, the holding step
+   and its age, the count behind it, and the waits that send no request: the
+   page's records left, its record in hand with its step (`receive` or
+   `apply`) and that step's age, whether the download lane waits its turn,
+   the downloads it has staged, a metadata save in flight, and the age of the
+   walk in progress. It changes nothing, and a stop disarms it. **Sync now** takes two turns on
+   the chain (its retry and its resume); a turn not come within 10 s is said
+   in the status (`waiting for` that step) and in one `decision=waiting`
+   line, and the press keeps waiting: a wait is reported, never cut short.
    Anything else -- the server out of reach, a refusal about this device, an
    I/O error -- is no fact about one record and keeps the feed's own retry.
    The filesystem causes are recognised on desktop only: the mobile adapter's

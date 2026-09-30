@@ -1,0 +1,11 @@
+# M3655: a pull that takes the chain is still counted as waiting behind it (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2720,7 +2720,6 @@
+   private exclusive(label: string, work: () => Promise<void>): Promise<void> {
+     this.behind++;
+     const turn = async (): Promise<void> => {
+-      this.behind--;
+       this.holder = { label, since: this.nowFn() };
+       try {
+         await work();

@@ -1,0 +1,12 @@
+# M3671: a stalled page does not say how many of its records are left (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2754,7 +2754,7 @@
+           `answered=${this.feedAnswered ? 1 : 0} last_seq=${this.contextValue?.state.data.lastSeq ?? 0} ` +
+           `in_flight=${this.inFlight.size} pushing=${this.pushing.size} ` +
+           `chain=${holder === null ? "idle" : `${holder.label}:${now - holder.since}`} behind=${this.behind} ` +
+-          `pulls=${this.pulls} step=${step === null ? "none" : `${step.name}:${step.seq}:${now - step.since}`} ` +
++          `pulls=0 step=${step === null ? "none" : `${step.name}:${step.seq}:${now - step.since}`} ` +
+           `lane=${!this.laning ? "idle" : this.laneTurn ? "turn" : "busy"} staged=${this.contextValue?.staged?.size ?? 0} ` +
+           `saving=${this.options.state.saving ? 1 : 0} ` +
+           `scan_ms=${this.scanSince === null ? "none" : now - this.scanSince}`,

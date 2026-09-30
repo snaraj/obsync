@@ -72,7 +72,7 @@ import {
   parseSyncFolders,
 } from "./syncScope";
 import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
-import { AFTER_START, EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
+import { AFTER_START, EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
@@ -348,7 +348,7 @@ function soleSpelling(names: string[], segment: string): string | null {
 }
 
 /** The decisions that mean the plugin did NOT do what was asked, or fell back to a slower way of doing it (#221). */
-const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback)\b/;
+const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback)\b/;
 
 /**
  * How long a device waits to start again after the server could not be
@@ -5280,18 +5280,20 @@ export default class ObsyncPlugin extends Plugin {
         // A bare `idle` over a selection of no folders read as all being well (issue #150, S30d).
         if (!this.state.paired) return "not paired";
         return this.state.data.syncFolders?.length === 0 ? "idle — syncing no folders" : "idle";
-      case "syncing":
+      case "syncing": {
+        // Sync now waiting on a pull says which (issue #276).
+        const waiting = status.waiting === undefined ? "" : `, waiting for ${PULL_WORDS[status.waiting] ?? "another sync step"}`;
         // Nothing counted, but the feed has not answered yet: not idle either.
         // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
-        if (status.pending === 0) return "checking for changes";
-        {
-          // A FILE READ ONLY TO VERIFY IT IS NO CHANGE (#246): Sync now's
-          // content check read "syncing 7,700 files" on a vault with none.
-          const changes = status.pending - (status.checking ?? 0);
-          const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
-          if (changes === 0) return `checking ${files(status.pending)} for changes`;
-          return `syncing ${files(changes)}` + (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
-        }
+        if (status.pending === 0) return `checking for changes${waiting}`;
+        // A FILE READ ONLY TO VERIFY IT IS NO CHANGE (#246): Sync now's
+        // content check read "syncing 7,700 files" on a vault with none.
+        const changes = status.pending - (status.checking ?? 0);
+        const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
+        if (changes === 0) return `checking ${files(status.pending)} for changes${waiting}`;
+        return `syncing ${files(changes)}` +
+          (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`) + waiting;
+      }
       case "offline":
         // True of both places that set it: the running engine polls again
         // in seconds, and a stopped one is on the reconnect timer.

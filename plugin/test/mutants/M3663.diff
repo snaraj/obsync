@@ -1,0 +1,12 @@
+# M3663: a stalled feed is logged at debug, hidden by default (#276)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -271,7 +271,7 @@
+ }
+ 
+ /** The decisions that mean the plugin did NOT do what was asked, or fell back to a slower way of doing it (#221). */
+-const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback)\b/;
++const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback)\b/;
+ 
+ /**
+  * How long a device waits to start again after the server could not be

@@ -1,0 +1,11 @@
+# M3666: a page that ended still names its last record (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3246,7 +3246,6 @@
+         }
+       } finally {
+         this.pulls = 0;
+-        this.step = null;
+         context.ahead = null;
+         context.host.pass?.(false);
+       }

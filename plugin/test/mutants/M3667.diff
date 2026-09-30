@@ -1,0 +1,11 @@
+# M3667: the download lane waiting its turn is not said (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3161,7 +3161,6 @@
+       const ahead = this.ahead(context, fileId, before);
+       if (ahead !== null) await stage(context, ahead);
+       let outcome = "applied";
+-      this.laneTurn = true;
+       try {
+         await this.exclusive("lane", async () => {
+           this.laneTurn = false;

@@ -1,0 +1,12 @@
+# M3669: a staged download is not counted (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2755,7 +2755,7 @@
+           `in_flight=${this.inFlight.size} pushing=${this.pushing.size} ` +
+           `chain=${holder === null ? "idle" : `${holder.label}:${now - holder.since}`} behind=${this.behind} ` +
+           `pulls=${this.pulls} step=${step === null ? "none" : `${step.name}:${step.seq}:${now - step.since}`} ` +
+-          `lane=${!this.laning ? "idle" : this.laneTurn ? "turn" : "busy"} staged=${this.contextValue?.staged?.size ?? 0} ` +
++          `lane=${!this.laning ? "idle" : this.laneTurn ? "turn" : "busy"} staged=0 ` +
+           `saving=${this.options.state.saving ? 1 : 0} ` +
+           `scan_ms=${this.scanSince === null ? "none" : now - this.scanSince}`,
+       );

@@ -497,6 +497,15 @@ test("a note waiting on unsaved changes here is named in the status (issue #252)
   assert.equal(r.instance.statusText(), "syncing 1 file, waiting for unsaved changes in Notes/open.md");
 });
 
+test("a Sync now waiting on another sync step names it in the status (issue #276)", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  r.instance.setStatus({ kind: "syncing", pending: 0, waiting: "sweep" });
+  assert.equal(r.instance.statusText(), "checking for changes, waiting for the cleanup of interrupted writes");
+  r.instance.setStatus({ kind: "syncing", pending: 2, waiting: "page" });
+  assert.equal(r.instance.statusText(), "syncing 2 files, waiting for changes from your other devices");
+});
+
 test("an unanswered attempt never hides an error, and an answer never clears the reconnect cycle's offline", async (t) => {
   const r = await fixture(t);
   await r.instance.onload();

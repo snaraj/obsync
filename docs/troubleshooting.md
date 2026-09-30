@@ -55,6 +55,7 @@ server again unless the entry says so.
 | A note or file never arrives on another device | [A file is not syncing](#a-file-is-not-syncing) |
 | On a computer, a change made while Obsidian's window is minimized or behind other windows arrives minutes later | [Changes wait while Obsidian is in the background](#changes-wait-while-obsidian-is-in-the-background) |
 | The status stays at `syncing 1 file` and another device's change to a note does not appear | [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file) |
+| This computer's changes reach your other devices, but theirs stop arriving here, or **Sync now** says `waiting for` a sync step | [Changes from your other devices stop arriving](#changes-from-your-other-devices-stop-arriving) |
 | The status reads idle, but a note from another device is not in the file list, or one it deleted is still listed | [A note that synced does not show in Obsidian](#a-note-that-synced-does-not-show-in-obsidian) |
 | Search does not find the words another device just added to a note | [A note that synced does not show in Obsidian](#a-note-that-synced-does-not-show-in-obsidian) |
 | A large file is missing on a phone | [A large file did not arrive on a phone](#a-large-file-did-not-arrive-on-a-phone) |
@@ -119,7 +120,7 @@ desktop status bar in the dark theme; yours follow your theme's colours.
 | Icon | Its words | What it means | What to do |
 | --- | --- | --- | --- |
 | <img src="assets/status-synced.png" alt="check mark" width="36" height="31"> | `obsync: idle` | Everything is in sync | Nothing |
-| <img src="assets/status-syncing.png" alt="turning wheel" width="36" height="31"> | `obsync: syncing 3 files`, or `obsync: checking 40 files for changes` | Files are uploading or downloading; or **Sync now** or **Verify all files** is reading files that show no change, to be sure | Nothing. A large file can take a while; **Show sync status** names the file that is moving. If the words go on `waiting for unsaved changes in <note>`, see [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file) |
+| <img src="assets/status-syncing.png" alt="turning wheel" width="36" height="31"> | `obsync: syncing 3 files`, or `obsync: checking 40 files for changes` | Files are uploading or downloading; or **Sync now** or **Verify all files** is reading files that show no change, to be sure | Nothing. A large file can take a while; **Show sync status** names the file that is moving. If the words go on `waiting for unsaved changes in <note>`, see [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file); if they go on `waiting for` another sync step, see [Changes from your other devices stop arriving](#changes-from-your-other-devices-stop-arriving) |
 | <img src="assets/status-offline.png" alt="cloud with a line through it" width="36" height="31"> | `obsync: offline — retrying` | The device cannot reach the server; it keeps trying on its own | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
 | <img src="assets/status-error.png" alt="alert sign" width="36" height="31"> | `obsync: error — <reason>` | Sync stopped and needs you | [Sync stopped with an error](#sync-stopped-with-an-error) |
 | <img src="assets/status-paused.png" alt="pause sign" width="36" height="31"> | `obsync: paused — <note>` | One note is held because something on this device keeps rewriting it; every other note keeps syncing | [Stop repeated rewrites](daily-use.md#stop-repeated-rewrites) |
@@ -1295,6 +1296,39 @@ typing, so it waits.
    update to 1.1.4.
 3. If a keystroke already saved the old text, the newer version is still in
    **Restore from history**.
+
+## Changes from your other devices stop arriving
+
+**What you see.** On a computer, what you change here still reaches your
+other devices, but their changes stop arriving here, and the status can still
+read `obsync: idle`. From 1.1.5, within about twenty seconds of **Sync now**
+the status's words say what it is waiting for, for example `obsync: checking
+for changes, waiting for the cleanup of interrupted writes`, and after about
+two minutes
+[the plugin's log](#how-to-collect-a-report) has a warning that starts with
+`obsync feed decision=stalled`.
+
+**Why it happens.** obsync writes what arrives from your server one step at
+a time, so that two writes never land on one note together. A step that does
+not end holds back every step after it, and the changes from your other
+devices wait behind it. The warning names the step that holds the others
+(`chain=`, with how long it has run in milliseconds) and how many wait behind
+it (`behind=`). When it names `page`, the step is the changes from your other
+devices themselves being written: a first sync of many notes can take longer
+than two minutes on a slow device, and if notes keep arriving, nothing is
+wrong. What keeps a step from ending is not known yet; the warning is there
+so that a report can say.
+
+**How to fix it.**
+
+1. Copy the `obsync feed decision=stalled` line from the plugin's log, or the
+   status's words after **Sync now**.
+2. Quit Obsidian completely (Cmd+Q on a Mac; on Windows and Linux, close
+   every Obsidian window) and open it again. The held step starts over.
+   Nothing you changed is lost: what had not been uploaded yet is found and
+   sent when obsync starts.
+3. [Collect a report](#how-to-collect-a-report) and open an issue with that
+   line, even if the restart fixed it.
 
 ## A note that synced does not show in Obsidian
 
