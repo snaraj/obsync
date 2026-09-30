@@ -1,0 +1,12 @@
+# M3990: the nested-vault check's readdir has no budget
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -909,7 +909,7 @@
+     const log = (line: string): void => this.log(line);
+     let names: string[];
+     try {
+-      names = await onTime(desktop.fs.promises.readdir(dir), "readdir", log);
++      names = await desktop.fs.promises.readdir(dir);
+     } catch (error) {
+       if (error instanceof WalkStalled) throw error;
+       return false;

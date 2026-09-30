@@ -280,6 +280,36 @@ export interface DesktopVault {
   base: string;
 }
 
+/** How long one read of the walk may go unanswered (#302); one directory or one entry answers in milliseconds. */
+const WALK_READ_MS = 15_000;
+
+/** A read of the walk that never answered: the walk fails, and the next scan walks again (#302). */
+class WalkStalled extends Error {
+  readonly code = "walk_stalled";
+}
+
+/**
+ * One read of the walk, or `WalkStalled` once `WALK_READ_MS` passes (#302).
+ * Closing a separate Settings window (Obsidian 1.13) focuses the main one, and
+ * the reads the walk that focus started never answered, while every new read
+ * answered in milliseconds: the walk held the pull chain, and the device
+ * received nothing until Obsidian restarted. A stall is the walk's failure,
+ * never an unreadable or empty folder: callers that skip those rethrow it.
+ */
+function onTime<T>(read: Promise<T>, call: string, log: (line: string) => void): Promise<T> {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const handle = window.setTimeout(() => {
+      log(`scan decision=stalled call=${call} duration_ms=${Date.now() - started} budget_ms=${WALK_READ_MS}`);
+      reject(new WalkStalled(`${call} gave no answer`));
+    }, WALK_READ_MS);
+    read.then(
+      (value) => { window.clearTimeout(handle); resolve(value); },
+      (error: unknown) => { window.clearTimeout(handle); reject(error); },
+    );
+  });
+}
+
 /**
  * Node's `lstat` as the walker's seam: absent is `null`, everything else is
  * the caller's problem. `ENOTDIR` counts as absent because it is what a
@@ -876,10 +906,12 @@ export class ObsidianHost implements VaultHost {
    * listed is not known to be a vault, and the walk skips it as unreadable.
    */
   private async holdsPlugin(desktop: DesktopVault, dir: string): Promise<boolean> {
+    const log = (line: string): void => this.log(line);
     let names: string[];
     try {
-      names = await desktop.fs.promises.readdir(dir);
-    } catch {
+      names = await onTime(desktop.fs.promises.readdir(dir), "readdir", log);
+    } catch (error) {
+      if (error instanceof WalkStalled) throw error;
       return false;
     }
     next: for (const name of names) {
@@ -888,7 +920,10 @@ export class ObsidianHost implements VaultHost {
       for (const step of ["plugins", PAIRING_ACTION, null]) {
         // A hidden entry the system will not stat (macOS answers `/.resolve`
         // with EINVAL) is no config folder; the question moves on.
-        const stat = await walker(desktop.fs).lstat(at).catch(() => null);
+        const stat = await onTime(walker(desktop.fs).lstat(at), "lstat", log).catch((error: unknown) => {
+          if (error instanceof WalkStalled) throw error;
+          return null;
+        });
         if (stat?.isDirectory() !== true) continue next;
         if (step !== null) at = desktop.path.resolve(at, step);
       }
@@ -1289,10 +1324,12 @@ export class ObsidianHost implements VaultHost {
       return;
     }
     const at = folder === "" ? desktop.path.resolve(desktop.base) : vaultTarget(desktop.base, folder, desktop.path);
+    const log = (line: string): void => this.log(line);
     let names: string[];
     try {
-      names = await desktop.fs.promises.readdir(at);
-    } catch {
+      names = await onTime(desktop.fs.promises.readdir(at), "readdir", log);
+    } catch (error) {
+      if (error instanceof WalkStalled) throw error;
       // Unreadable is not empty, and this listing never deletes anything.
       this.log("scan decision=skipped reason=unreadable_directory");
       return;
@@ -1318,7 +1355,7 @@ export class ObsidianHost implements VaultHost {
       // be synced: this listing only proposes paths, and `syncable()` walks
       // every component of each one before the engine acts on it.
       signal?.throwIfAborted();
-      const stat = await walker(desktop.fs).lstat(desktop.path.resolve(at, name));
+      const stat = await onTime(walker(desktop.fs).lstat(desktop.path.resolve(at, name)), "lstat", log);
       if (stat === null) continue;
       if (temps !== undefined && stat.isFile() && WRITE_TEMP.test(name)) temps.push(desktop.path.resolve(at, name));
       if (stat.isDirectory()) {

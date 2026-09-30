@@ -118,11 +118,16 @@ async function claimant(t, response, {
   // The Pairing code field `onOpen` draws, where a test asks about it.
   if (field !== null) modal.codeField = field;
   const previousWindow = globalThis.window;
-  globalThis.window = { setTimeout: (resolve, delay) => {
-    assert.equal(delay, 2000);
-    assert.ok(++waited <= waits, "terminal outcomes must not poll indefinitely");
-    onWait(modal, waited, plugin); resolve();
-  } };
+  globalThis.window = {
+    setTimeout: (resolve, delay) => {
+      // The budget of a disk read the nested-vault check makes (#302): armed, never run, since every read here answers.
+      if (delay === 15_000) return 0;
+      assert.equal(delay, 2000);
+      assert.ok(++waited <= waits, "terminal outcomes must not poll indefinitely");
+      onWait(modal, waited, plugin); resolve();
+    },
+    clearTimeout: () => undefined,
+  };
   t.after(() => { globalThis.window = previousWindow; });
   await modal.claim();
   // A claim handed to the background finishes there.

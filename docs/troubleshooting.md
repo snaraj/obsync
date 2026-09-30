@@ -1419,8 +1419,17 @@ devices wait behind it. The warning names the step that holds the others
 it (`behind=`). When it names `page`, the step is the changes from your other
 devices themselves being written: a first sync of many notes can take longer
 than two minutes on a slow device, and if notes keep arriving, nothing is
-wrong. What keeps a step from ending is not known yet; the warning is there
-so that a report can say.
+wrong.
+
+One cause is known and handled in 1.1.5. In Obsidian 1.13, Settings opens as
+a window of its own. Closing it can lose a disk read that a check of this
+vault's files has just started, and that check would then hold every later
+step (#302). From 1.1.5 such a read gives up after 15 seconds. The log has a
+warning such as `obsync scan decision=stalled call=readdir`, sync carries
+on, and the check runs again a few minutes later. If that warning keeps
+coming back, a disk under your vault is not answering, for example an
+external or network drive that went to sleep or dropped. Any other cause is
+not known yet; the warning is there so that a report can say.
 
 **How to fix it.**
 

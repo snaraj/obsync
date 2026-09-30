@@ -635,6 +635,78 @@ test("the engine's stop ends a desktop walk at its next read of the disk: the sc
 });
 
 /**
+ * A READ OF THE WALK THAT NEVER ANSWERS FAILS THE WALK (#302). Closing a
+ * separate Settings window (Obsidian 1.13) focused the main one while it was
+ * torn down, and the reads the focus walk made then never answered: the walk
+ * held the pull chain, and the device received nothing until Obsidian
+ * restarted. Each read has `WALK_READ_MS`; one that runs out fails the scan
+ * and the sweep with a line naming the call, and is never taken for an
+ * unreadable folder or a folder that is no vault, which the walk goes past.
+ */
+test("a walk read that never answers fails the walk within its budget, never read as an unreadable folder or a plain one (#302)", async (t) => {
+  const box = sandbox();
+  const root = mkdtempSync(join(tmpdir(), "obsync-scan-stall-"));
+  t.after(() => { rmSync(box.home, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); });
+  mkdirSync(join(root, "Notes", "Sub", ".cfg"), { recursive: true });
+  writeFileSync(join(root, "Notes", "a.md"), "a note\n");
+  // One read, named by its path, never answers; every other read is the disk's.
+  const hang = { readdir: null, lstat: null };
+  const never = (kind, path) => {
+    if (String(path) !== hang[kind]) return false;
+    hang[kind] = null;
+    return true;
+  };
+  const refused = new Set();
+  const stalling = { promises: { ...fs,
+    readdir: (path) => (never("readdir", path)
+      ? new Promise(() => {})
+      : refused.has(String(path)) ? Promise.reject(Object.assign(new Error("EACCES"), { code: "EACCES" })) : fs.readdir(path)),
+    lstat: (path, ...options) => (never("lstat", path) ? new Promise(() => {}) : fs.lstat(path, ...options)),
+  } };
+  const logs = [];
+  const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
+  const host = new ObsidianHost({ state: { data: {} }, app: { vault: { adapter: {} } }, log: (line) => logs.push(line) }, { fs: stalling, path: nodePath, base: root });
+  // The window's timers, read at each call: every read's budget is held here and run by hand.
+  const real = globalThis.window;
+  t.after(() => { globalThis.window = real; });
+  const budgets = new Map();
+  let next = 0;
+  globalThis.window = { ...real,
+    setTimeout: (fn, ms) => { if (ms !== 15_000) return real.setTimeout(fn, ms); budgets.set(++next, fn); return next; },
+    clearTimeout: (id) => { if (typeof id === "number") budgets.delete(id); else real.clearTimeout(id); },
+  };
+
+  // Every read that answered took its budget back, a refused one too.
+  refused.add(join(root, "Notes", "Sub"));
+  assert.deepEqual((await host.scan()).map((file) => file.path), ["Notes/a.md"]);
+  assert.ok(logs.includes("scan decision=skipped reason=unreadable_directory"), logs.join(" | "));
+  assert.equal(budgets.size, 0, "a read that answered left its budget armed");
+  refused.clear();
+
+  const stalled = async (kind, path, walk) => {
+    hang[kind] = path;
+    logs.length = 0;
+    const outcome = walk().then(() => "answered", (error) => error);
+    for (let turn = 0; turn < 50 && (hang[kind] !== null || budgets.size === 0); turn++) await new Promise(setImmediate);
+    assert.equal(hang[kind], null, `the walk never asked for ${kind} ${path}`);
+    assert.equal(budgets.size, 1, `the ${kind} that never answers has ${budgets.size} budgets armed, not one`);
+    const [[id, fire]] = budgets;
+    budgets.delete(id);
+    fire();
+    const error = await outcome;
+    assert.equal(error?.code, "walk_stalled", `${kind} ${path}: the walk ${error === "answered" ? "went on past it" : `failed as ${error}`}`);
+    assert.ok(logs.some((line) => new RegExp(`^scan decision=stalled call=${kind} duration_ms=\\d+ budget_ms=15000$`).test(line)), logs.join(" | "));
+    assert.equal(logs.includes("scan decision=skipped reason=unreadable_directory"), false, "a stall read as an unreadable folder");
+  };
+  await stalled("readdir", root, () => host.scan());
+  await stalled("lstat", join(root, "Notes", "a.md"), () => host.scan());
+  // The nested-vault check asks of a folder before the walk enters it.
+  await stalled("readdir", join(root, "Notes", "Sub"), () => host.scan());
+  await stalled("lstat", join(root, "Notes", "Sub", ".cfg"), () => host.scan());
+  await stalled("readdir", root, () => host.sweep());
+});
+
+/**
  * AN ECHO MARK IS ARMED FOR AN EVENT, AND SOME EVENTS NEVER COME (review
  * round 2, finding 5).
  *
