@@ -1,0 +1,11 @@
+# M3971: the status does not say a refused change: syncing over it (#299)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3294,7 +3294,6 @@
+     // A CHANGE THE SERVER REFUSED IS SAID BY NAME for as long as it is here
+     // (#299): gone when a push of it starts, or a pass finds nothing to send.
+     const refused = [...this.unsent].filter(([, entry]) => entry.refused).map(([path]) => path);
+-    if (refused.length > 0) return { kind: "error", code: "push_refused", message: refusedChange(refused) };
+     // PATHS, NOT ENTRIES (#296): a note queued again while its push is in
+     // flight is one file of work, and so is one a push gave up on (#293) or
+     // one waiting on an editor, queued or pushed again. The queued push still

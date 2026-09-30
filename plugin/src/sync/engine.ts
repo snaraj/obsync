@@ -539,6 +539,17 @@ export const FEED_FAILED =
   "Changes from your server could not be read. obsync tries again every few seconds; if this stays, check your server's log.";
 export const PUSH_REFUSED =
   "Your server refused a change from this device. It is sent again when the note next changes, or within a minute; if this stays, check your server's log.";
+/**
+ * A change the server refused, said while it is unsent (#299): the newest
+ * refusal by name -- a push of a path always follows its last, so the set's
+ * order is the refusals' -- and one line for several. It goes again at the
+ * next pass, at most `WALK_MS` away on a desktop, or at once on Sync now.
+ */
+export function refusedChange(paths: readonly string[]): string {
+  const more = paths.length > 1 ? ` and ${paths.length - 1} more` : "";
+  return `Your server refused the change to ${paths[paths.length - 1]}${more}. obsync sends it again within five minutes, ` +
+    "or at once when you select Sync now; if this stays, check your server's log.";
+}
 /** Said for a press, a Check or Sync now, that met a server not answering (#182). */
 export const NOT_ANSWERING = "Your server is not answering. Sync resumes by itself when it is back.";
 export const VERIFY_FAILED =
@@ -922,9 +933,10 @@ export class SyncEngine {
    * (#293), each with the failure's number (`failures`): work, for the
    * status, until a push of the path starts again -- the next scan's, most
    * often -- or a pass that began after that failure did not send it again
-   * (`survey`).
+   * (`survey`). `refused`: the server answered that push with a refusal of
+   * its own, which the status says for as long as the change is here (#299).
    */
-  private readonly unsent = new Map<string, number>();
+  private readonly unsent = new Map<string, { failure: number; refused: boolean }>();
   private failures = 0;
   private running = false;
   private cancelled = false;
@@ -2712,14 +2724,20 @@ export class SyncEngine {
       // STILL WORK (#293): the change is on this device only, and a 5xx's
       // `offline` is taken back by the next answered read, which read idle
       // over it. Counted until a push takes it (`resting`).
-      this.unsent.set(path, ++this.failures);
+      const refusal = refusalStatus(error);
+      // REFUSED, AND SAID FOR AS LONG AS IT IS (#299): a refusal no standing
+      // code names was said once and replaced in the same tick by the work it
+      // left, so nobody saw that the server refuses this note. `resting` names
+      // it while it is here. A new vault key has its own notice (`rekeyed`).
+      const refused = refusal === null && error instanceof ApiError && error.code !== "domain_mismatch";
+      this.unsent.set(path, { failure: ++this.failures, refused });
       if (error instanceof ApiError && error.code === "domain_mismatch") {
         await this.rekeyed(context, path);
         return;
       }
-      // A local fault is worded where it was raised; a refusal the server gave
-      // is said in plain words, its code left in the line above.
-      this.report(refusalStatus(error) ?? { kind: "error", message: error instanceof ApiError ? PUSH_REFUSED : message });
+      // A local fault is worded where it was raised, and said once.
+      if (refused) this.status(this.resting());
+      else this.report(refusal ?? { kind: "error", message });
     }
   }
 
@@ -3273,6 +3291,10 @@ export class SyncEngine {
     // AND the feed's latest read was answered. Before that first answer the
     // device is checking, which is not idle either.
     if (this.absent) return { kind: "offline" };
+    // A CHANGE THE SERVER REFUSED IS SAID BY NAME for as long as it is here
+    // (#299): gone when a push of it starts, or a pass finds nothing to send.
+    const refused = [...this.unsent].filter(([, entry]) => entry.refused).map(([path]) => path);
+    if (refused.length > 0) return { kind: "error", code: "push_refused", message: refusedChange(refused) };
     // PATHS, NOT ENTRIES (#296): a note queued again while its push is in
     // flight is one file of work, and so is one a push gave up on (#293) or
     // one waiting on an editor, queued or pushed again. The queued push still
@@ -4486,7 +4508,7 @@ export class SyncEngine {
     // the server took it after all, the file went, or it left the selection.
     // One queued again is the queue's to count, and one whose push gave up
     // during this pass is the next pass's to judge.
-    for (const [path, failure] of this.unsent) if (failure <= gaveUp) this.unsent.delete(path);
+    for (const [path, { failure }] of this.unsent) if (failure <= gaveUp) this.unsent.delete(path);
     if (verifyUpTo > 0) this.examined += queued;
     if (own !== null) {
       context.host.log(

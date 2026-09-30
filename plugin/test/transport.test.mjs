@@ -956,6 +956,10 @@ test("a connection refused on the only attempt says nothing was sent and names t
     { outcome: "lost", attempts: 1, reason: "network=net::ERR_CONNECTION_TIMED_OUT" },
     { outcome: "lost", attempts: 2, reason: "network=net::ERR_CONNECTION_REFUSED" },
   ]) assert.match(lostMessage("x", lost), /cannot say whether it happened/, JSON.stringify(lost));
+  // A 5xx in the server's own coded error was an answer (#298, #299): never "never answered".
+  const answered = lostMessage("approving that device", { outcome: "lost", attempts: 1, reason: "status=500 code=io_error", answered: true });
+  assert.match(answered, /^approving that device: your server answered with an error \(status=500 code=io_error\), so it may not have happened\. /);
+  assert.doesNotMatch(answered, /never answered/);
 });
 
 // --- patience: wake, the address per attempt, budgets, refusals ------------

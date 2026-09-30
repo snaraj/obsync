@@ -15,7 +15,7 @@ import { createRequire } from "node:module";
 import { FakeTimers, STEP_MS, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { SyncEngine, CALM_MS, FEED_STALL_MS, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, RESTART_NEEDED, NOT_OBSYNC_ANSWER, RESUMES, FEED_FAILED, PUSH_REFUSED, REVOKED_DEVICE } = require("../build/sync/engine.js");
+const { SyncEngine, CALM_MS, FEED_STALL_MS, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, RESTART_NEEDED, NOT_OBSYNC_ANSWER, RESUMES, FEED_FAILED, REVOKED_DEVICE, refusedChange } = require("../build/sync/engine.js");
 const { EDGE_REQUIRED } = require("../build/transport.js");
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -327,7 +327,7 @@ test("a 5xx in obsync's own error is the server answering: nothing reads offline
   assert.deepEqual(heard.filter((word) => word !== "answered"), [], "the server's own 500 was taken for its absence");
   assert.deepEqual(r.statuses.slice(from).filter((status) => status.kind === "offline"), []);
   assert.ok(r.host.logs.some((line) => /^http PUT \/v1\/chunks\/\S+ status=500 code=io_error decision=gave_up attempts=2 /.test(line)), r.host.logs.join("\n"));
-  assert.ok(r.statuses.slice(from).some((status) => status.kind === "error" && status.message === PUSH_REFUSED), JSON.stringify(r.statuses.slice(from)));
+  assert.ok(r.statuses.slice(from).some((status) => status.kind === "error" && status.message === refusedChange(["Coded.md"])), JSON.stringify(r.statuses.slice(from)));
   // Behind a proxy whose obsync is not there, a bare 502 is no answer from it.
   gate.answer = () => BARE_502;
   const next = r.statuses.length;
@@ -441,11 +441,15 @@ test("a journal volume with no room refuses the feed's read too: the device says
   await stopped(r);
 });
 
-/** A note whose chunk the server answers 500 on every attempt, until the push gives up (#293). */
+/**
+ * A note whose chunk a proxy answers a bare 502 on every attempt, obsync gone
+ * behind it, until the push gives up (#293): absence, never a refusal (#298),
+ * so what is left is work. A refusal of the server's own is #299's, below.
+ */
 async function unsent(r) {
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
   const gate = { failing: true };
-  const refused = refuse(r, (sent) => gate.failing && sent.method === "PUT", () => r.server.error(500, "io_error", "SENTINEL"));
+  const refused = refuse(r, (sent) => gate.failing && sent.method === "PUT", () => BARE_502);
   const from = r.statuses.length;
   r.host.seed("Unsent.md", "a note the server could not take\n", 5000);
   r.engine.changed("Unsent.md");
@@ -479,7 +483,7 @@ test("six unsent notes read six, never more, while a scan queues them all again 
   const r = await started();
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
   const gate = { failing: true };
-  refuse(r, (sent) => gate.failing && sent.method === "PUT", () => r.server.error(500, "io_error", "SENTINEL"));
+  refuse(r, (sent) => gate.failing && sent.method === "PUT", () => BARE_502);
   const from = r.statuses.length;
   const paths = Array.from({ length: 6 }, (_, i) => `Unsent-${i}.md`);
   paths.forEach((path, i) => { r.host.seed(path, `unsent note ${i}\n`, 5000 + i); r.engine.changed(path); });
@@ -557,6 +561,71 @@ test("a note a pass queues again while its push is in flight reads one file, nev
   await r.timers.run(STEP_MS, () => r.last()?.kind === "idle");
   assert.equal(r.state.fileByPath("Held.md")?.size, edited.length, "idle before the change made during the push was sent");
   assert.deepEqual(r.statuses.slice(from).filter((status) => status.kind === "syncing" && status.pending > 1), [], "one note counted twice");
+  await stopped(r);
+});
+
+// --- a change the server refuses is said while it is here (#299) ----------
+
+/** Every chunk upload answered in the server's own coded 500 while `gate.failing` (#298). */
+function refusing(r) {
+  const gate = { failing: true };
+  refuse(r, (sent) => gate.failing && sent.method === "PUT", () => r.server.error(500, "io_error", "SENTINEL"));
+  return gate;
+}
+const failures = (r) => r.host.logs.filter((line) => line.startsWith("push path_class=file decision=failed ")).length;
+const REFUSED_TWO = /^Your server refused the change to (First|Second)\.md and 1 more\. obsync sends it again within five minutes/;
+
+test("a change the server refuses is said by name for as long as it is unsent, one line for two, and goes when the notes land (#299)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  const gate = refusing(r);
+  const from = r.statuses.length;
+  r.host.seed("First.md", "refused first\n", 5000);
+  r.host.seed("Second.md", "refused second\n", 5001);
+  r.engine.changed("First.md");
+  r.engine.changed("Second.md");
+  await r.timers.run(STEP_MS, () => failures(r) === 2);
+  // Said as the pushes gave up, not replaced by the work they left.
+  const said = r.engine.current();
+  assert.equal(said.kind, "error");
+  assert.equal(said.code, "push_refused");
+  assert.match(said.message, REFUSED_TWO);
+  assert.deepEqual(r.last(), said);
+  // The newest refusal by name: a push of a path always follows its last.
+  assert.match(refusedChange(["First.md", "Second.md"]), /^Your server refused the change to Second\.md and 1 more\. /);
+  // It stands through the feed's answered reads.
+  r.server.releaseFeed();
+  await r.timers.run(0, () => r.server.feedWaiters.length === 1);
+  assert.deepEqual(r.engine.current(), said);
+  // The server takes both at the next pass: the refusal goes, and idle comes back.
+  gate.failing = false;
+  await r.timers.run(STEP_MS, () => ["First.md", "Second.md"].every((path) => r.state.fileByPath(path) !== undefined) && r.last()?.kind === "idle");
+  const refusals = r.statuses.slice(from).filter((status) => status.code === "push_refused");
+  assert.ok(refusals.length > 0 && refusals.every((status) => REFUSED_TWO.test(status.message) || /^Your server refused the change to (First|Second)\.md\. /.test(status.message)), JSON.stringify(refusals));
+  assert.deepEqual(r.engine.current(), { kind: "idle" });
+  await stopped(r);
+});
+
+test("a refused change the next pass finds nothing to send for is no longer said: gone, or put back as sent, and the device ends idle (#299)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  r.host.seed("Second.md", "as the server has it\n", 4000);
+  r.engine.changed("Second.md");
+  await r.timers.run(STEP_MS, () => r.state.fileByPath("Second.md") !== undefined && r.last()?.kind === "idle");
+  refusing(r);
+  r.host.seed("First.md", "a note the server refuses\n", 5000);
+  r.host.seed("Second.md", "an edit the server refuses\n", 6000);
+  r.engine.changed("First.md");
+  r.engine.changed("Second.md");
+  // Both said, and neither in flight: a push of either takes it out of the line.
+  await r.timers.run(STEP_MS, () => failures(r) >= 2 && REFUSED_TWO.test(r.engine.current().message ?? ""));
+  // Neither through an event, only as the next listing says: one removed the
+  // way a file manager removes it, one put back as it was sent.
+  const sent = failures(r);
+  r.host.files.delete("First.md");
+  r.host.seed("Second.md", "as the server has it\n", 4000);
+  await r.timers.run(STEP_MS, () => r.engine.current().kind === "idle");
+  assert.equal(failures(r), sent, "a change with nothing left to send was pushed again");
   await stopped(r);
 });
 
@@ -693,6 +762,17 @@ test("after a new vault key, an edit the server refuses for the old vault is sen
   await r.timers.run(1000, () => r.host.logs.filter((line) => line.startsWith("scan decision=")).length >= 1);
   await r.timers.run(STEP_MS);
   assert.equal(posts.length, before);
+  // Refused for another key again, once republished: dropped, and still no
+  // error. The key's notice says it; a push refusal would send the person
+  // to their server's log over their own key (#299).
+  const again = refuse(r, (sent) => sent.method === "POST" && sent.url.endsWith(`/v1/files/${fresh}/versions`),
+    () => r.server.error(409, "domain_mismatch", "the file belongs to another domain"));
+  r.host.seed("Old.md", "edited once more\n", 7000);
+  r.engine.changed("Old.md");
+  await r.timers.run(STEP_MS, () => r.host.logs.includes(`push path_class=file decision=dropped reason=domain_mismatch file=${fresh}`));
+  assert.equal(again.length, 1);
+  assert.notEqual(r.engine.current().code, "push_refused", JSON.stringify(r.engine.current()));
+  assert.ok(!r.statuses.some((status) => status.kind === "error"), "no error for a decision that is final");
   await stopped(r);
 });
 

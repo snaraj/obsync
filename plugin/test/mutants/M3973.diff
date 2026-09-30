@@ -1,0 +1,12 @@
+# M3973: a push that met absence -- a bare 5xx -- is said as the server refusing it (#299)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2729,7 +2729,7 @@
+       // code names was said once and replaced in the same tick by the work it
+       // left, so nobody saw that the server refuses this note. `resting` names
+       // it while it is here. A new vault key has its own notice (`rekeyed`).
+-      const refused = refusal === null && error instanceof ApiError && error.code !== "domain_mismatch";
++      const refused = error instanceof ApiError && error.code !== "domain_mismatch";
+       this.unsent.set(path, { failure: ++this.failures, refused });
+       if (error instanceof ApiError && error.code === "domain_mismatch") {
+         await this.rekeyed(context, path);

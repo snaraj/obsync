@@ -142,6 +142,8 @@ export interface Lost {
   outcome: "lost";
   attempts: number;
   reason: string;
+  /** The server answered, in its own coded 5xx (`ApiError.answered`, #298): it may not have happened (#299). */
+  answered?: boolean;
 }
 
 /** What a route that must not be repeated resolves to. */
@@ -164,6 +166,14 @@ export function lostMessage(what: string, lost: Lost): string {
       `${what}: nothing answers at this address and port (${lost.reason}), so nothing was sent. ` +
       "Check the Server URL, port included: it is the port your server publishes HTTPS on. If this address has worked " +
       "before, your server may be switched off."
+    );
+  }
+  // THE SERVER ANSWERED, WITH AN ERROR OF ITS OWN (#299): "never answered"
+  // was false, and it reached no conclusion it could say, so the person checks.
+  if (lost.answered === true) {
+    return (
+      `${what}: your server answered with an error (${lost.reason}), so it may not have happened. ` +
+      "Check, and try again if it did not; if this stays, check your server's log."
     );
   }
   return (
@@ -1041,7 +1051,7 @@ export class Transport {
       return { outcome: "ok", value: this.settle(method, target, outcome.response, 1, started, options.expected) };
     }
     this.log(`http ${method} ${target} ${outcome.reason} decision=lost attempts=1 duration_ms=${this.now() - started}`);
-    return { outcome: "lost", attempts: 1, reason: outcome.reason };
+    return { outcome: "lost", attempts: 1, reason: outcome.reason, answered: outcome.answered };
   }
 
   private async json<T>(method: string, target: string, options: CallOptions): Promise<T> {

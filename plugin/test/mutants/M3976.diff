@@ -1,0 +1,12 @@
+# M3976: a lost send forgets that the server answered it (#299)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1051,7 +1051,7 @@
+       return { outcome: "ok", value: this.settle(method, target, outcome.response, 1, started, options.expected) };
+     }
+     this.log(`http ${method} ${target} ${outcome.reason} decision=lost attempts=1 duration_ms=${this.now() - started}`);
+-    return { outcome: "lost", attempts: 1, reason: outcome.reason, answered: outcome.answered };
++    return { outcome: "lost", attempts: 1, reason: outcome.reason };
+   }
+ 
+   private async json<T>(method: string, target: string, options: CallOptions): Promise<T> {

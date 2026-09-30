@@ -274,6 +274,25 @@ test("a revoke that never landed is reported with its exact reason, not as done"
   );
 });
 
+test("a revoke the server answers with its own error says so, and that it may not have happened, never that it never answered (#299)", async () => {
+  let sent = 0;
+  const coded = (request) => async (sending) => {
+    if (!sending.url.endsWith("/revoke")) return request(sending);
+    sent++;
+    return { status: 500, headers: {}, text: JSON.stringify({ error: "io_error", detail: "SENTINEL" }), arrayBuffer: new ArrayBuffer(0) };
+  };
+  const { instance, server } = await plugin(coded);
+  server.devices.push({ ...SECOND_DEVICE });
+
+  await assert.rejects(() => instance.revokeDevice(OTHER_DEVICE), (error) => {
+    assert.match(error.message, /^revoking that device: your server answered with an error \(status=500 code=io_error\), so it may not have happened\. /);
+    assert.doesNotMatch(error.message, /never answered/);
+    return true;
+  });
+  assert.equal(sent, 1, "a revoke is never sent twice");
+  assert.equal(server.devices[1].revoked, false);
+});
+
 // ---- forgetting a revoked device (#247) -----------------------------------
 
 const REVOKED = { ...SECOND_DEVICE, revoked: true, state: "revoked" };
