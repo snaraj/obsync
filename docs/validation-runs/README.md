@@ -44,6 +44,129 @@ observed from what was still outstanding.
   With the pull chain held on purpose, origin/main stayed `idle` and silent.
   The instrumented build named the step it waited on, in the status and in
   one warning at 110 s.
+- [2026-09-29 two typists and a third device](2026-09-29-cotyping-three-devices.md):
+  #227, #278 and #279 on three desktop instances on one Mac, under load. At
+  origin/main one typist's last words went into a conflict copy in 1 of 5
+  runs with the note shown on the third device. The final head, alternated
+  with origin/main:
+  - renderers frozen: no copy in 10 runs, where origin/main made copies in
+    2 of 10. The driver's verdict on the head, read with the windows
+    hidden, failed in 9 on Obsidian's pending save; each held the whole
+    text 90 s after the windows returned;
+  - not frozen: 10 of 10 passed, and the third device's merge notices fell
+    from 58 a run to 0.
+
+  Two earlier heads each failed one run, one when the host starved all
+  three instances. Not covered: phones, Windows, a device on 1.1.4 or
+  earlier beside updated ones, more than one passive device.
+- [2026-09-29 folder records](2026-09-29-folder-scope.md): #240, #264,
+  #265, #266 and #272 on three desktop instances on one Mac, the third
+  paired later, each reproduced before its fix and passed after. A renamed
+  selected folder leaves no empty folder or live record behind; a queued
+  edit waits for its folder's new capitals; removals written down while the
+  server is down outlive a reload; after a reload, the old session's read
+  ends in one line at +2.2 s instead of retrying until +77.4 s. #266's live
+  replay did not reach the fixed branch; a direct removal of a folder
+  Obsidian had not listed did, 3 of 3 removed against 1.1.4's 3 of 3
+  `EISDIR`. #238's rename passes; its retry case is proven by the plugin
+  suite only. Left as found, and harmless: one redundant folder version
+  over a tombstone.
+- [2026-09-29 a replay over a vault the device holds](2026-09-29-held-replay.md):
+  #239, #241 and #281 on two desktop instances on one Mac, each reproduced
+  before its fix and passed after, with no notice and no extra copy. A note
+  moved out of the selection, edited meanwhile or not, comes back as one
+  move when the whole vault is chosen. Pairing again over a kept vault posts
+  no chunk and no version; a moved note's sequence reproduced 3 of 3 on
+  1.1.4 and passed 5 of 5. A widening cut short by quitting Obsidian brings
+  the note back at the next start. The first run also found a folder removal
+  refused with `EISDIR`, fixed in the final build.
+- [2026-09-29 one notice channel, and notice settings](2026-09-29-notices.md):
+  two desktop instances on one Mac. Three merges drew 3 toasts a side at
+  1.1.4 and, by default, 1 naming the note's title and the other device,
+  with all three in Recent; Every time, Recent only and Only what needs me
+  drew 3, 0 and 0, set through Settings, the command palette and Obsidian's
+  command line. Show sync status asked for twice opens one dialog (#269). A
+  second step, on 2026-09-30, drew 8 / 2 toasts where the train drew 25 / 2,
+  twenty Sync now presses in 2 instead of 20; the security warning's server
+  answer was simulated in the page. With room again after a full server,
+  one run read `syncing 1 file` for 90 s with the refused file unsent,
+  reported separately. Not run: a phone and Windows.
+- [2026-09-29 what an inspecting network sees](2026-09-29-observer-proof.md):
+  two desktop instances on one Mac, every byte of whole sessions recorded
+  between the plugin and the server, as a TLS-inspecting proxy holds them.
+  Four scans found no note content, file or folder name, vault key or key
+  derived from it, recovery word or pairing secret, and a positive control
+  on each capture failed as it should. One earlier scan failed on two single
+  recovery words that are the protocol's own field names; the scanner now
+  leaves such a word out and names it. A device secret alone can rename,
+  limit and revoke devices, but never read, forge or silently alter a note.
+  A server older than 1.1.5 is refused before any pairing code. A 1.1.4
+  desktop's feed stopped in one run of five. Not covered: Windows, Linux,
+  phones, a hop that rewrites traffic.
+- [2026-09-29 phone paths](2026-09-29-phone-paths.md): #244, #245, #246,
+  #248, #282 and #284 on an Android 15 emulator, not a physical phone, and a
+  macOS desktop, the plugin copied in by hand. #244, #245 and #248 each
+  failed at 1.1.4 and passed at the change. On 7,700 notes a Sync now with
+  nothing changed took 757, 761 and 713 ms, reading no note, against 218.9,
+  220.8 and 119.4 s on the train before it (2,170 to 24,272 ms under a
+  second run's load), and the check whether a path may sync 144 ms against
+  10,943 (#282). Where another app had put a folder in a synced note's
+  place, the desktop's deletion of the note was refused and the folder kept
+  (#284). Not validated: a physical Android phone, an iPhone or iPad, a stop
+  Android makes itself, a reference route with TLS, a production-path
+  install.
+- [2026-09-29 what obsync writes is listed](2026-09-29-reconcile-listing.md):
+  #253 and #267 on two desktop instances on one Mac, the receiver's file
+  watchers closed. At 1.1.4 its listing reflected none of six changes after
+  120 s; after, each was listed 1 to 4 ms after it reached the disk, and
+  search found a listed note's new words 0.6 s after they landed, where the
+  #253 build had not in 60 s. An open note's new words are still not in
+  search after 15 s. A natural `fseventsd` overload slowed events without
+  losing them, so it did not reproduce the report. Cost: 1 ms a note at the
+  median, 1.5 s over 1,000 notes. Not covered here: Windows and Linux,
+  where the CI journey runs.
+- [2026-09-29 recovery key hold, warning and reset](2026-09-29-recovery-lockout.md):
+  an author record, not an independent security verdict, on two and then
+  three desktop instances on macOS. Leaving from the only device within the
+  seven-day hold is refused (`409 recovery_too_new`) and it stays paired;
+  every other revoke is unchanged. `obsyncd recovery reset` refuses while
+  the server runs; stopped, it clears the key, rotates the setup token and
+  arms one re-enrolment: the old token was refused and the new one
+  re-enrolled the device in 2.4 s, while an account never reset refuses.
+  The security warning's server answer was simulated in the page, and a
+  1.1.4 snapshot dropping the key's time was not reached live. Not
+  investigated: a pairing dialog left open after approval.
+- [2026-09-29 revoked devices](2026-09-29-revoked-devices.md): #247 on two
+  desktop instances on one Mac, the dashboard in one of them, against 4
+  syncing and 12 revoked devices. Folded, Settings' Devices group at 375 px
+  is 959 px tall against 1964 px. Forget archives: the device is still
+  refused `403 device_revoked` and still named, a restart keeps it so, and a
+  1.1.4 server serves that journal; against a 1.1.4 server the person is
+  told to update and nothing changes. Not covered: a phone (375 px was
+  Obsidian's mobile emulation), Windows, the reference routes, a standalone
+  browser.
+- [2026-09-29 speed](2026-09-29-speed.md): two desktop instances on one Mac
+  at load averages up to 240, so absolute times are shapes. A typed word
+  reached the other editor in 2.25 s, nine tenths of it Obsidian's own save
+  delay. A first sync of 7,703 files wrote the plugin's state 211 to 253
+  times (0.22 to 0.27 GB) where 1.1.4 wrote it 7,451 times, 9.29 GB (#274).
+  A minimized window's timer throttling is lifted for each span of work
+  (#283). A woken, pressed or focused device keeps its long poll and is not
+  called offline (#288); a server's own `500` reads as syncing, a bare `502`
+  still as offline (#298). One first download stalled for 18 minutes, cause
+  open. Not covered: phones, Windows, Linux, several devices uploading on
+  real hardware, a clean machine.
+- [2026-09-29 a disk that fills before the watermark](2026-09-29-storage-full.md):
+  #291, #292 and #295 on one desktop instance against the shipped image in
+  Docker, its volumes smaller than they declare. Before, a full blob volume
+  answered `500` and the device read offline, then synced with a note not on
+  the server. Now it answers `507 storage_full` and the device says the
+  server is out of storage from +6.1 s; with room again the note synced
+  6.0 s after an edit, or by itself 246 s later. A full journal volume now
+  says the same; a faulted nonce log or journal, played by a lab proxy, asks
+  for a restart and Sync now, which then sent the note. The first build
+  showed #293 on the way: `synced` over a note still unsent. #294 is proven
+  by a server test only. Not attempted: a phone.
 - [2026-09-28 an open note and the stale editor](2026-09-28-open-editor.md):
   #252 on the owner's iPhone, the Android emulator and a macOS desktop. A
   starved file watcher left an open note stale behind "syncing 1". The first
