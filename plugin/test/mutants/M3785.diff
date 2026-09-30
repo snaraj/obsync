@@ -1,0 +1,18 @@
+# M3785: an answered poll leaves the count before its answer is reported, and the wake that answer raises drops it (#297)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -838,13 +838,13 @@
+       };
+       if (behind) return outcome;
+     }
++    letGo?.();
+     if (outcome.kind === "settled") {
+       this.answeredAt = this.now();
+       this.options.reachable?.(true);
+     } else {
+       this.options.reachable?.(false, `${method} ${target} ${outcome.reason}`);
+     }
+-    letGo?.();
+     return outcome;
+   }
+ 

@@ -1,4 +1,4 @@
-# M3773: Sync now drops the long poll and sends another, as before #288
+# M3778: a poll asleep in its backoff is kept, and the feed waits the backoff out (#297)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
 @@ -3028,7 +3028,7 @@
@@ -6,7 +6,7 @@
      const held = this.options.transport.pollsInFlight();
      const wanted = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);
 -    const kept = wanted && reason !== "address" && reason !== "online" && held > 0;
-+    const kept = wanted && reason !== "sync_now" && reason !== "address" && reason !== "online" && held > 0;
++    const kept = wanted && reason !== "address" && reason !== "online";
      // Asked for while the feed waits on the poll (`besidePoll`); a read beside it already under way is the one.
      const beside = kept ? this.catchUp : null;
      const dropped = wanted && !kept;

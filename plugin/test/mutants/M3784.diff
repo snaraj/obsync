@@ -1,0 +1,11 @@
+# M3784: a long poll past its deadline stays in the count after the platform lets go of it (#297)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -814,7 +814,6 @@
+         : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
+     } catch (error) {
+       if (error === TIMED_OUT && letGo !== null) {
+-        void asked?.then(letGo, letGo);
+         letGo = null;
+       }
+       // A session that ended sends nothing more, and says so once (#272).

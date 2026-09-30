@@ -82,7 +82,9 @@ test("a wake drops a long poll that has waited, reads at once, and never applies
   await r.timers.run(0, () => r.host.text("Arrived.md") !== null && r.server.feedWaiters.length === 2);
   assert.ok(!r.host.logs.some((line) => line.startsWith("feed decision=retry")), "a dropped poll is not a failed read");
   assert.equal(r.state.data.lastSeq, head, "the quick read brought it at once");
-  assert.ok(r.host.logs.includes(`feed decision=woken reason=online ended_pause=0 dropped_poll=1 read_beside=0 waited_ms=${POLL_STALE_MS}`), r.host.logs.join("\n"));
+  assert.ok(r.host.logs.includes(`feed decision=woken reason=online ended_pause=0 dropped_poll=1 read_beside=0 polls_in_flight=1 waited_ms=${POLL_STALE_MS}`), r.host.logs.join("\n"));
+  // `requestUrl` cannot withdraw it: the dropped poll is still held beside the one sent in its place (#297).
+  assert.equal(r.transport.pollsInFlight(), 2);
   const after = polls(r).slice(before).map((request) => /wait=(\d+)/.exec(request.target)[1]);
   assert.deepEqual(after, ["0", "55"]);
 
@@ -90,6 +92,7 @@ test("a wake drops a long poll that has waited, reads at once, and never applies
   r.server.releaseFeed();
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
   assert.equal(r.state.data.lastSeq, head, "the cursor never moves backwards");
+  assert.equal(r.transport.pollsInFlight(), 1, "an answered poll is let go of");
   r.engine.stop();
   r.server.releaseFeed();
   await r.engine.stopAndWait();
@@ -116,7 +119,7 @@ test("a window back in front keeps the one long poll in flight however long it w
   await r.timers.run(0, () => r.host.text("Arrived.md") !== null && r.host.logs.some((line) => line.startsWith("feed decision=read_beside")));
   assert.ok(!r.host.logs.some((line) => line.startsWith("feed decision=retry")), "a kept poll is not a failed read");
   assert.equal(r.state.data.lastSeq, head, "the read beside it brought the note at once");
-  assert.ok(r.host.logs.includes(`feed decision=woken reason=foreground ended_pause=0 dropped_poll=0 read_beside=1 waited_ms=${POLL_STALE_MS}`), r.host.logs.join("\n"));
+  assert.ok(r.host.logs.includes(`feed decision=woken reason=foreground ended_pause=0 dropped_poll=0 read_beside=1 polls_in_flight=1 waited_ms=${POLL_STALE_MS}`), r.host.logs.join("\n"));
   // ONE LONG POLL IN FLIGHT: the one that waited, neither ended nor sent
   // again. `requestUrl` cannot abort it, and on a desktop the poll that
   // replaced it waited behind it and ran out of its budget first.
@@ -167,6 +170,74 @@ test("a read beside a kept poll is a read: the feed's stall watch starts again f
   await r.engine.stopAndWait();
 });
 
+test("every answer after a 5xx reads beside the one long poll in flight, never sends another, and the feed never reads offline (#297)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  // The host's reachability (`main.ts`): a 5xx is unanswered, and the first
+  // answer after one wakes the feed.
+  const unanswered = [];
+  let away = false;
+  r.transport.options.reachable = (answered, request) => {
+    if (!answered) unanswered.push(request);
+    if (away !== answered) return;
+    away = !answered;
+    if (answered) r.engine.wake("answered");
+  };
+  // A store that fails every chunk upload, and a poll that has waited: each
+  // answer after a 500 used to drop it, and each dropped poll stayed held.
+  const gate = { failing: true };
+  refuse(r, (sent) => gate.failing && sent.method === "PUT", () => r.server.error(500, "io_error", "SENTINEL"));
+  const before = polls(r).length;
+  let most = 0;
+  const woken = () => r.host.logs.filter((line) => line.startsWith("feed decision=woken reason=answered"));
+  r.host.clock += POLL_STALE_MS;
+  r.host.seed("Unsent.md", "a note the store cannot take\n", 5000);
+  r.engine.changed("Unsent.md");
+  await r.timers.run(STEP_MS, () => {
+    most = Math.max(most, r.server.feedWaiters.length, r.transport.pollsInFlight());
+    return woken().length >= 3;
+  });
+  assert.equal(most, 1, "more than one long poll in flight");
+  assert.deepEqual(polls(r).slice(before).map((request) => /wait=(\d+)/.exec(request.target)[1]).filter((wait) => wait !== "0"), [], "a second long poll was sent");
+  assert.deepEqual(woken().filter((line) => !/ dropped_poll=0 read_beside=1 polls_in_flight=1 /.test(line)), [], woken().join("\n"));
+  assert.ok(!r.host.logs.some((line) => line.includes("/v1/changes?") && line.includes("decision=cancelled")), r.host.logs.join("\n"));
+  // Only the 500s were unanswered, and every read of the feed was answered.
+  // (A push that gives up at a 5xx says offline, as the server reached no
+  // conclusion, #155; the feed never did.)
+  assert.ok(unanswered.length >= 3 && unanswered.every((request) => request.startsWith("PUT /v1/chunks/")), unanswered.join("\n"));
+  assert.ok(!r.host.logs.some((line) => line.startsWith("feed decision=retry")), r.host.logs.join("\n"));
+  gate.failing = false;
+  await r.timers.run(STEP_MS, () => r.state.fileByPath("Unsent.md") !== undefined && r.last()?.kind === "idle" && r.server.feedWaiters.length === 1);
+  assert.equal(r.transport.pollsInFlight(), 1);
+  await stopped(r);
+});
+
+test("a long poll asleep in its backoff holds nothing on the wire: a wake drops it, reads and polls at once (#297)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  const request = r.transport.options.request;
+  let down = true;
+  r.transport.options.request = async (sent) => {
+    if (down && sent.url.includes("wait=55")) throw new Error("net::ERR_CONNECTION_REFUSED");
+    return request(sent);
+  };
+  const asleep = [];
+  r.transport.sleep = () => new Promise((resolve) => asleep.push(resolve));
+  // The next poll is refused and sleeps in its backoff, where only a wake ends it.
+  r.server.releaseFeed();
+  await r.timers.run(STEP_MS, () => asleep.length === 1);
+  assert.equal(r.transport.pollsInFlight(), 0);
+  down = false;
+  const before = polls(r).length;
+  r.host.clock += POLL_STALE_MS;
+  r.engine.wake("answered");
+  await r.timers.run(0, () => r.server.feedWaiters.length === 1);
+  assert.ok(r.host.logs.includes(`feed decision=woken reason=answered ended_pause=0 dropped_poll=1 read_beside=0 polls_in_flight=0 waited_ms=${POLL_STALE_MS}`), r.host.logs.join("\n"));
+  assert.deepEqual(polls(r).slice(before).map((sent) => /wait=(\d+)/.exec(sent.target)[1]), ["0", "55"]);
+  assert.equal(r.transport.pollsInFlight(), 1);
+  await stopped(r);
+});
+
 test("a wake ends the feed's pause after a failed read, and a new address takes any poll at once (#134, #186)", async () => {
   const r = await started();
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
@@ -185,14 +256,14 @@ test("a wake ends the feed's pause after a failed read, and a new address takes 
   const before = polls(r).length;
   r.engine.wake("online");
   await r.timers.run(0, () => polls(r).length > before);
-  assert.ok(r.host.logs.includes("feed decision=woken reason=online ended_pause=1 dropped_poll=0 read_beside=0 waited_ms=0"), r.host.logs.join("\n"));
+  assert.ok(r.host.logs.includes("feed decision=woken reason=online ended_pause=1 dropped_poll=0 read_beside=0 polls_in_flight=0 waited_ms=0"), r.host.logs.join("\n"));
   assert.match(polls(r)[before].target, /wait=0/, "the read after a failure asks without waiting");
   // The address changed: the poll in flight went to the old one, however fresh it is.
   await r.timers.run(0, () => r.server.feedWaiters.length === 1);
   const retries = r.host.logs.filter((line) => line.startsWith("feed decision=retry")).length;
   r.engine.wake("address");
   await r.timers.run(0, () => r.server.feedWaiters.length === 2);
-  assert.ok(r.host.logs.includes("feed decision=woken reason=address ended_pause=0 dropped_poll=1 read_beside=0 waited_ms=0"), r.host.logs.join("\n"));
+  assert.ok(r.host.logs.includes("feed decision=woken reason=address ended_pause=0 dropped_poll=1 read_beside=0 polls_in_flight=1 waited_ms=0"), r.host.logs.join("\n"));
   assert.equal(r.host.logs.filter((line) => line.startsWith("feed decision=retry")).length, retries, "a dropped poll is not a failed read");
   r.engine.stop();
   r.server.releaseFeed();

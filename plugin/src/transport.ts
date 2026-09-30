@@ -612,6 +612,9 @@ interface Pipe {
   readonly waiting: { bytes: number; resume: () => void }[];
 }
 
+/** A read of the feed that waits on the server (`wait` above 0): a long poll. */
+const LONG_POLL = /^\/v1\/changes\?.*\bwait=[1-9]/;
+
 /** One attempt's deadline: a long poll's wait plus grace, or the floor plus the bytes it moves. */
 function attemptMs(target: string, bytes: number): number {
   const wait = /^\/v1\/changes\?.*\bwait=(\d+)/.exec(target)?.[1];
@@ -693,6 +696,8 @@ export class Transport {
   private readonly maxAttempts: number;
   /** When the server last answered an attempt, on this transport's clock (`attempt`, #288). */
   private answeredAt = Number.NEGATIVE_INFINITY;
+  /** Long polls the platform still holds (`pollsInFlight`, #297). */
+  private polls = 0;
 
   constructor(private readonly options: TransportOptions) {
     this.now = options.now ?? (() => Date.now());
@@ -780,8 +785,12 @@ export class Transport {
     check();
     const sent = this.now();
     let outcome: Attempt;
+    // A long poll counts until this attempt has said what came of it -- or,
+    // past its deadline, until the platform lets go of it (#297).
+    let asked: Promise<HttpResponse> | undefined;
+    let letGo: (() => void) | null = null;
     try {
-      const response = await this.timed(this.options.request({
+      asked = this.options.request({
         url,
         method,
         headers,
@@ -791,7 +800,12 @@ export class Transport {
             ? { body: toArrayBuffer(sending.body) }
             : {}),
         throw: false,
-      }), sending.deadlineMs);
+      });
+      if (LONG_POLL.test(target)) {
+        this.polls++;
+        letGo = () => { this.polls--; };
+      }
+      const response = await this.timed(asked, sending.deadlineMs);
       // A 507 is the server's decision that it is full, not its absence:
       // retried eight times, a full server read `offline — retrying` for
       // minutes and never said why (S29, issue #155).
@@ -799,8 +813,13 @@ export class Transport {
         ? { kind: "settled", response }
         : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
     } catch (error) {
+      if (error === TIMED_OUT && letGo !== null) {
+        void asked?.then(letGo, letGo);
+        letGo = null;
+      }
       // A session that ended sends nothing more, and says so once (#272).
       if (error instanceof SessionEnded) {
+        letGo?.();
         this.log(`http ${method} ${target} decision=ended reason=session_inactive`);
         throw error;
       }
@@ -825,6 +844,7 @@ export class Transport {
     } else {
       this.options.reachable?.(false, `${method} ${target} ${outcome.reason}`);
     }
+    letGo?.();
     return outcome;
   }
 
@@ -967,6 +987,19 @@ export class Transport {
     this.sleepers.clear();
     for (const sleeper of asleep) sleeper.wake();
     if (asleep.length > 0) this.log(`http decision=woken reason=${reason} requests=${asleep.length}`);
+  }
+
+  /**
+   * Long polls sent and not yet over (#297): the one the feed waits on, every
+   * one a caller stopped waiting for, and every one past its deadline until
+   * the platform lets go of it. `requestUrl` cannot withdraw a request, so
+   * each keeps its connection to the end of the server's wait, and one sent
+   * again for the same url waits behind it on a desktop (#288). An answered
+   * poll counts until its attempt has reported it (`reachable`), so a wake
+   * that answer raises still finds it.
+   */
+  pollsInFlight(): number {
+    return this.polls;
   }
 
   /** When the soonest request asleep in its backoff tries again by itself, or `null`. */

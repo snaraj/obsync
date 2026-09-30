@@ -748,10 +748,11 @@ export const STOP_WAIT_MS = INTERACTIVE_MS;
 export const FOLDER_POST_TRIES = 3;
 export const FEED_ERROR_BACKOFF_MS = 5000;
 /**
- * How long a long poll must have waited before a wake drops it (#195). One
- * sent seconds ago rides a connection that is plainly alive; one that waited
- * longer may ride a socket a network change or a sleeping lid left dead, and
- * the quick read that replaces it costs one round trip.
+ * How long a long poll must have waited before a wake reads the feed at once,
+ * beside it or in its place (#195, `wake`). One sent seconds ago rides a
+ * connection that is plainly alive; one that waited longer may ride a socket
+ * a network change or a sleeping lid left dead, and the quick read costs one
+ * round trip.
  */
 export const POLL_STALE_MS = 5000;
 
@@ -2998,19 +2999,25 @@ export class SyncEngine {
    * The device's word that something changed (#134, #195): its network is
    * back, the app is in front of the person again, the address changed, or
    * Retry now was pressed. The feed's pause after a failed read ends now,
-   * and a long poll that has waited `POLL_STALE_MS` -- or any poll, when the
-   * address it went to is no longer the address -- is dropped for a read
-   * that asks at once.
+   * and the feed reads at once when its long poll has waited
+   * `POLL_STALE_MS`, or at any age for Sync now and a new address.
    *
-   * EXCEPT WHEN THE WINDOW COMES BACK, OR SYNC NOW WAITS FOR A READ (issue
-   * #288): then the poll stays in flight and a quick read beside it catches
-   * up (`besidePoll`). `requestUrl` cannot abort a poll, and the poll that
-   * replaced a dropped one asked the same url, so it waited behind it on the
-   * device: 20 s after a renderer stopped and continued -- a laptop waking --
-   * which ran it out of its budget, and every device read `offline` for a
-   * minute; after a focus or a press, an `offline` of a second. Requests
-   * asleep inside the transport are the transport's to wake
-   * (`Transport.wake`). One line, and only when something was done.
+   * THE POLL IN FLIGHT STAYS, and a quick read beside it catches up
+   * (`besidePoll`; #288, #297). `requestUrl` cannot abort a request: a dropped
+   * poll kept its connection for the rest of the server's wait, and the one
+   * sent in its place, for the same url, waited behind it on the device --
+   * 20 s after a laptop woke, and a minute of `offline` when that ran it out
+   * of its budget; and as every answer after a 5xx dropped another, eight
+   * in five minutes. A poll asleep in its backoff, with nothing on the wire,
+   * is dropped: that frees it.
+   *
+   * EXCEPT AFTER A NEW ADDRESS OR THE NETWORK COMING BACK (#195): the poll
+   * went to the old server, or rides a connection the change may have left
+   * dead, which would hold the feed's next page until its deadline. It is
+   * dropped at once, and the line says how many polls the device still holds
+   * (`polls_in_flight`), so a pile-up shows in the log. Requests asleep
+   * inside the transport are the transport's to wake (`Transport.wake`). One
+   * line, and only when something was done.
    */
   wake(reason: string): void {
     if (!this.running) return;
@@ -3019,11 +3026,12 @@ export class SyncEngine {
     pause?.();
     const poll = this.poll;
     const waited = poll === null ? 0 : this.nowFn() - poll.sent;
-    const front = reason === "foreground" || reason === "focus";
-    const stale = poll !== null && waited >= POLL_STALE_MS;
-    // Where a read beside the poll can be asked for: while the feed waits on it (`besidePoll`).
-    const beside = poll !== null && (reason === "sync_now" || (stale && front)) ? this.catchUp : null;
-    const dropped = poll !== null && beside === null && (reason === "address" || reason === "sync_now" || (stale && !front));
+    const held = this.options.transport.pollsInFlight();
+    const wanted = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);
+    const kept = wanted && reason !== "address" && reason !== "online" && held > 0;
+    // Asked for while the feed waits on the poll (`besidePoll`); a read beside it already under way is the one.
+    const beside = kept ? this.catchUp : null;
+    const dropped = wanted && !kept;
     if (dropped) {
       this.poll = null;
       this.feedAnswered = false;
@@ -3033,7 +3041,7 @@ export class SyncEngine {
     if (pause !== null || dropped || beside !== null) {
       this.options.host.log(
         `feed decision=woken reason=${reason} ended_pause=${pause === null ? 0 : 1} dropped_poll=${dropped ? 1 : 0} ` +
-          `read_beside=${beside === null ? 0 : 1} waited_ms=${waited}`,
+          `read_beside=${beside === null ? 0 : 1} polls_in_flight=${held} waited_ms=${waited}`,
       );
     }
     // THE WINDOW IS BACK IN FRONT (issue #198): a note moved in a file manager

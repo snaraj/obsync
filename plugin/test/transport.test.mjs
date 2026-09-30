@@ -548,6 +548,40 @@ test("an attempt that runs out while the server answered another is retried, sai
   assert.ok(alone.logged.some((line) => /timeout budget_ms=\d+ decision=retry attempt=1 /.test(line)), alone.logged.join("|"));
 });
 
+test("a long poll counts as in flight until the platform lets go of it, past its caller and its deadline; a quick read never does (#297)", async () => {
+  const hangs = () => { let answer; const pending = new Promise((resolve) => { answer = resolve; }); return { pending, answer: (value) => answer(value) }; };
+  const EMPTY = { status: 200, text: JSON.stringify({ seq: 0, head_seq: 0, changes: [] }) };
+  const stuck = hangs();
+  const quick = hangs();
+  const timers = deadlines();
+  // An answer is reported while its poll still counts: the wake that answer
+  // raises (`main.ts`, `reachability`) finds the poll, and does not drop it.
+  const counted = [];
+  let transport = null;
+  ({ transport } = harness([EMPTY, () => stuck.pending, () => quick.pending],
+    { timers, reachable: (answered) => counted.push(`${answered} ${transport.pollsInFlight()}`) }));
+  await transport.changes(0, 55);
+  assert.deepEqual(counted, ["true 1"]);
+  assert.equal(transport.pollsInFlight(), 0);
+  const drop = new AbortController();
+  const poll = watch(transport.changes(0, 55, 1000, { signal: drop.signal }));
+  await turns(() => timers.pending().length === 1);
+  assert.equal(transport.pollsInFlight(), 1);
+  const read = transport.changes(0, 0);
+  await turns(() => timers.pending().length === 2);
+  assert.equal(transport.pollsInFlight(), 1, "a read that does not wait is not a poll");
+  quick.answer(EMPTY);
+  await read;
+  // The caller stops waiting, and then the deadline passes: the platform still holds it.
+  drop.abort();
+  await turns(() => poll.settled);
+  timers.expire();
+  await turns();
+  assert.equal(transport.pollsInFlight(), 1);
+  stuck.answer(EMPTY);
+  await turns(() => transport.pollsInFlight() === 0);
+});
+
 test("each attempt's deadline fits its route: a long poll its wait, a transfer its bytes (#195)", async () => {
   const given = async (call, answer) => {
     const timers = deadlines();
@@ -603,7 +637,7 @@ const INTERNAL = [
   "manualBusy", "openManual", "closeManual",
   // And the retry machinery: the address read per attempt, the patience a
   // call is given, the pause `wake` ends early (issues #134, #182, #186).
-  "base", "budget", "until", "pause", "ended", "nap", "wake", "retryAt",
+  "base", "budget", "until", "pause", "ended", "nap", "wake", "retryAt", "pollsInFlight",
   // And the ceiling an answer is measured against (#202).
   "capped",
   // And the deadline each attempt is abandoned by (#195).

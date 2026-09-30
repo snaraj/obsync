@@ -1,14 +1,12 @@
 # M3547: a window back in front drops the long poll that waited and sends another, as before #288
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2969,8 +2969,8 @@
-     const front = reason === "foreground" || reason === "focus";
-     const stale = poll !== null && waited >= POLL_STALE_MS;
-     // Where a read beside the poll can be asked for: while the feed waits on it (`besidePoll`).
--    const beside = poll !== null && (reason === "sync_now" || (stale && front)) ? this.catchUp : null;
--    const dropped = poll !== null && beside === null && (reason === "address" || reason === "sync_now" || (stale && !front));
-+    const beside = poll !== null && reason === "sync_now" ? this.catchUp : null;
-+    const dropped = poll !== null && beside === null && (reason === "address" || reason === "sync_now" || stale);
-     if (dropped) {
-       this.poll = null;
-       this.feedAnswered = false;
+@@ -3028,7 +3028,7 @@
+     const waited = poll === null ? 0 : this.nowFn() - poll.sent;
+     const held = this.options.transport.pollsInFlight();
+     const wanted = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);
+-    const kept = wanted && reason !== "address" && reason !== "online" && held > 0;
++    const kept = wanted && reason === "sync_now" && held > 0;
+     // Asked for while the feed waits on the poll (`besidePoll`); a read beside it already under way is the one.
+     const beside = kept ? this.catchUp : null;
+     const dropped = wanted && !kept;

@@ -1,0 +1,12 @@
+# M3781: a quick read counts as a long poll in flight (#297)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -613,7 +613,7 @@
+ }
+ 
+ /** A read of the feed that waits on the server (`wait` above 0): a long poll. */
+-const LONG_POLL = /^\/v1\/changes\?.*\bwait=[1-9]/;
++const LONG_POLL = /^\/v1\/changes\?.*\bwait=\d/;
+ 
+ /** One attempt's deadline: a long poll's wait plus grace, or the floor plus the bytes it moves. */
+ function attemptMs(target: string, bytes: number): number {
