@@ -1058,15 +1058,21 @@ A phone also says it once in a notice. New and changed notes stay on the
 device, and the alert clears once the server accepts a change again. Up to
 1.1.3, a device that is already running shows it is offline and keeps
 retrying. The server's log and its dashboard show `volume_full` or
-`journal_full`.
+`journal_full`, or `storage_full` when the disk itself ran out. Up to 1.1.4 a
+disk that ran out answered `500 io_error` instead, and devices showed they
+were offline.
 
 **Why it happens.** The server refuses to write below a reserve of free space
 on its volumes, rather than fill the disk. The limit is the size you declared
-for each volume, minus what is already stored.
+for each volume, minus what is already stored. `storage_full` means the disk
+filled before that reserve was reached: the declared size is larger than the
+disk really holds, or something else on the disk used the space.
 
 **How to fix it,** on the server:
 
-1. Free space on the volume the refusal names, or grow the volume.
+1. Free space on the volume the refusal names, or grow the volume. After
+   `storage_full`, also lower the declared size to what the disk really holds,
+   so the reserve warns you next time.
 2. If you grew it, raise the declared size to match (`OBSYNC_BLOBS_CAPACITY`
    or `OBSYNC_JOURNAL_CAPACITY`, or the chart's claim sizes), then restart the
    server.
@@ -1114,6 +1120,7 @@ reads `offline — retrying`. The code below is in the obsync log line.
 | Reason | What it means | What to do |
 | --- | --- | --- |
 | `volume_full` or `journal_full` (HTTP 507) | the server's free-space watermark refused the write | free space on that volume, or grow it and the claim together |
+| `storage_full` (HTTP 507) | the disk itself had no room, before the watermark was reached | free space on that disk, and declare no more than it holds |
 | `quota_exceeded` (HTTP 507) | the account quota is exhausted | raise the quota, or remove files and let retention expire |
 | `not_obsync` | a proxy, access policy or sign-in page answered instead of obsync | check the Server URL, and the custom request headers in obsync settings |
 | `not_ready` (HTTP 503) | the server is not serving: a volume is unwritable, or it is replaying its journal | read the server's own log line, which names the volume and the I/O error |

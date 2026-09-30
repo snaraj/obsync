@@ -349,7 +349,10 @@ retain the account-wide authority described below.
   ≤ 8 MiB + 16 bytes (8 MiB plaintext plus the AES-GCM tag); larger
   declarations receive `413 body_too_large` before body storage. The server hashes while streaming to a temp file and refuses
   with `422 sid_mismatch` if `SHA-256(body) ≠ sid`, `507 volume_full` below
-  the watermark, `507 quota_exceeded` over the account quota, `503 slow_body`
+  the watermark, `507 storage_full` when the filesystem itself has no room
+  (`ENOSPC`, or a filesystem quota's `EDQUOT`: a capacity declared larger than
+  the disk; any write route answers it, server 1.1.5, and `500 io_error`
+  before), `507 quota_exceeded` over the account quota, `503 slow_body`
   when the body arrives more slowly than the minimum rate below. Success `201`
   (new) or `200` (already present). Idempotent.
 - `GET /v1/chunks/{sid}` → raw ciphertext with `Content-Length`; honors

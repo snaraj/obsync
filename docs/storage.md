@@ -541,6 +541,17 @@ which one it measured would send an operator to the wrong disk. A journal
 volume that fills anyway, below the declared capacity, is rule 3 above: the
 append is refused, rolled back, and never acknowledged.
 
+A volume the FILESYSTEM fills first -- a declared capacity larger than the
+disk, or a disk something else filled -- answers `507 storage_full` on
+whichever volume ran out (`ENOSPC`, or `EDQUOT` from a filesystem quota), so a
+device reads a full server rather than a fault it retries as absence. A
+refused chunk leaves nothing a start would not remove (rule 1). A refused
+journal append whose rollback succeeds leaves the journal unfaulted: the
+refused frame is cut away, and the next append lands once there is room. Only
+a rollback that fails as well faults the journal; that append still answers
+with the volume's own refusal, and every write after it is `503
+journal_faulted` until a restart.
+
 ### Where the measure runs
 
 The append path may not walk a directory, and everything that writes to this
