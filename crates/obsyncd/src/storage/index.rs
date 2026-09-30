@@ -91,6 +91,10 @@ pub(crate) struct Index {
     pub(crate) feed: Vec<(Seq, FileId, VersionId)>,
     pub(crate) seq: Seq,
     pub(crate) used_bytes: u64,
+    /// Bytes chunk puts hold from the watermark and quota check that admitted
+    /// them until the count that lands them (`storage::Reservation`, #301). In
+    /// flight, never stored: a snapshot and a start both begin at zero.
+    pub(crate) reserved_bytes: u64,
     pub(crate) last_gc: Option<GcSummary>,
     pub(crate) last_scrub: Option<ScrubSummary>,
 }

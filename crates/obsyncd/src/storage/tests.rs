@@ -430,32 +430,35 @@ fn the_watermark_and_the_quota_refuse_with_their_numbers() {
     assert!(captured.contains("duration_ms="), "{captured}");
 }
 
+/// The account record carries the quota; set it through the journal the same
+/// way setup does.
+fn set_quota(setup: &Setup, bytes: u64) {
+    let mut journal = setup.store.journal();
+    let index = setup.store.index();
+    let account = index.account.clone().expect("account");
+    setup
+        .store
+        .commit(&mut journal, index, |_| {
+            vec![Frame::Account {
+                account_id: account.account_id,
+                name: account.name.clone(),
+                created: account.created,
+                quota_bytes: Some(bytes),
+                recovery_verifier: account.recovery_verifier.clone(),
+                recovery_registered: account.recovery_registered,
+                recovery_cleared: account.recovery_cleared,
+            }]
+        })
+        .expect("quota is journalled");
+}
+
 #[test]
 fn a_quota_refuses_before_the_body_is_stored() {
     let dir = TempDir::new("store-quota");
     let cfg = config(&dir);
     let setup = ready(&cfg);
-    // The account record carries the quota; set it through the journal the
-    // same way setup does, then check the refusal names both numbers.
-    {
-        let mut journal = setup.store.journal();
-        let index = setup.store.index();
-        let account = index.account.clone().expect("account");
-        setup
-            .store
-            .commit(&mut journal, index, |_| {
-                vec![Frame::Account {
-                    account_id: account.account_id,
-                    name: account.name.clone(),
-                    created: account.created,
-                    quota_bytes: Some(8),
-                    recovery_verifier: account.recovery_verifier.clone(),
-                    recovery_registered: account.recovery_registered,
-                    recovery_cleared: account.recovery_cleared,
-                }]
-            })
-            .expect("quota is journalled");
-    }
+    // Then check the refusal names both numbers.
+    set_quota(&setup, 8);
     let body = vec![b'x'; 16];
     let sid = Sid::new(sha256(&body));
     let err = setup
@@ -470,6 +473,172 @@ fn a_quota_refuses_before_the_body_is_stored() {
         other => panic!("expected quota_exceeded, got {other}"),
     }
     assert!(!setup.store.chunk_exists(&sid));
+}
+
+/// A body that stops at its first read until the test lets it go: a put held
+/// after the check that admitted it, before its bytes are counted. It says
+/// when it is held on `held`, and goes on when `go` is sent or dropped, so a
+/// test that fails while it is held ends rather than waits.
+struct Held {
+    body: Vec<u8>,
+    at: usize,
+    held: std::sync::mpsc::Sender<()>,
+    go: Option<std::sync::mpsc::Receiver<()>>,
+}
+
+impl Read for Held {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(go) = self.go.take() {
+            let _ = self.held.send(());
+            let _ = go.recv();
+        }
+        let n = buf.len().min(self.body.len() - self.at);
+        buf[..n].copy_from_slice(&self.body[self.at..self.at + n]);
+        self.at += n;
+        Ok(n)
+    }
+}
+
+/// Two chunk bodies of `len` bytes whose sids fall in different lock stripes,
+/// so neither put waits on the other's chunk lock.
+fn two_chunks(len: usize) -> ((Vec<u8>, Sid), (Vec<u8>, Sid)) {
+    let (a, b) = (vec![b'a'; len], vec![b'b'; len]);
+    let (sid_a, sid_b) = (Sid::new(sha256(&a)), Sid::new(sha256(&b)));
+    assert_ne!(sid_a.as_bytes()[0], sid_b.as_bytes()[0], "two stripes");
+    ((a, sid_a), (b, sid_b))
+}
+
+#[test]
+fn puts_that_arrive_together_are_measured_against_each_other_and_exactly_one_is_refused() {
+    // Issue #301. The chunk lock serialises one sid, not the volume: two puts
+    // of different chunks each passed a check against the same `used_bytes`,
+    // and both landed. Each alone fits, both do not; the first is held after
+    // its check, and the second must be measured against the first's bytes.
+    // Once by the watermark (64 KiB declared, 32 KiB reserve, 32 KiB of room),
+    // once by a quota the watermark is nowhere near.
+    const LEN: usize = 20 * 1024;
+    let len = LEN as u64;
+    for by_quota in [false, true] {
+        let dir = TempDir::new("store-reserve");
+        let mut cfg = config(&dir);
+        if by_quota {
+            cfg.blobs_capacity = 1 << 30;
+        }
+        let setup = ready(&cfg);
+        if by_quota {
+            set_quota(&setup, 30 * 1024);
+        }
+        let ((a, sid_a), (b, sid_b)) = two_chunks(LEN);
+        thread::scope(|s| {
+            // Made here, so a failing assertion below drops `go` as it
+            // unwinds and the held put ends before the scope joins it.
+            let (held_tx, held) = std::sync::mpsc::channel();
+            let (go, go_rx) = std::sync::mpsc::channel::<()>();
+            let first = s.spawn(|| {
+                let mut body = Held {
+                    body: a,
+                    at: 0,
+                    held: held_tx,
+                    go: Some(go_rx),
+                };
+                setup
+                    .store
+                    .put_chunk(&setup.account, &sid_a, len, &mut body)
+            });
+            held.recv()
+                .expect("the first put passed its check and is writing");
+            let refused = setup
+                .store
+                .put_chunk(&setup.account, &sid_b, len, &mut &b[..])
+                .expect_err("measured against the bytes the first holds");
+            match (by_quota, refused) {
+                (false, StoreError::VolumeFull { free, watermark }) => {
+                    assert_eq!(
+                        free,
+                        CAPACITY - len,
+                        "free counts the first put's reservation"
+                    );
+                    assert_eq!(watermark, WATERMARK);
+                }
+                (true, StoreError::QuotaExceeded { used, quota }) => {
+                    assert_eq!(used, 2 * len, "used counts the first put's reservation");
+                    assert_eq!(quota, 30 * 1024);
+                }
+                (_, other) => {
+                    panic!("by_quota={by_quota}: expected the reserve's refusal, got {other}")
+                }
+            }
+            go.send(()).expect("the first put is waiting");
+            let landed = first.join().expect("the first put does not panic");
+            assert_eq!(landed.expect("the first put lands"), PutOutcome::Created);
+        });
+        assert!(setup.store.chunk_exists(&sid_a), "by_quota={by_quota}");
+        assert!(!setup.store.chunk_exists(&sid_b), "by_quota={by_quota}");
+        let index = setup.store.index();
+        assert_eq!(index.used_bytes, len, "by_quota={by_quota}: counted once");
+        assert_eq!(
+            index.reserved_bytes, 0,
+            "by_quota={by_quota}: and no longer held"
+        );
+    }
+}
+
+#[test]
+fn a_reservation_is_given_back_when_its_write_fails_and_when_it_panics() {
+    // Issue #301. 32 KiB of room above the reserve holds ONE 20 KiB chunk, so
+    // a reservation any of these failures leaked would refuse the good put
+    // that follows them.
+    const LEN: usize = 20 * 1024;
+    let len = LEN as u64;
+    let dir = TempDir::new("store-reserve-release");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let ((doomed, sid_doomed), (good, sid_good)) = two_chunks(LEN);
+    let held = || setup.store.index().reserved_bytes;
+
+    // A body shorter than it was declared.
+    let err = setup
+        .store
+        .put_chunk(&setup.account, &sid_doomed, len, &mut &doomed[..LEN / 2])
+        .expect_err("a short body is refused");
+    assert!(matches!(err, StoreError::LengthMismatch { .. }), "{err}");
+    assert_eq!(held(), 0, "a body that did not verify gives its bytes back");
+
+    // A volume that refuses the fsync.
+    setup.store.set_fault(Fault::BlobErrno {
+        phase: BlobPhase::Sync,
+        code: 5,
+    });
+    let err = setup
+        .store
+        .put_chunk(&setup.account, &sid_doomed, len, &mut &doomed[..])
+        .expect_err("the volume refused");
+    setup.store.set_fault(Fault::None);
+    assert!(matches!(err, StoreError::Io(_)), "{err}");
+    assert_eq!(held(), 0, "a failed write gives its bytes back");
+
+    // A panic part way through the body.
+    struct Panics;
+    impl Read for Panics {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            panic!("injected panic part way through a chunk body");
+        }
+    }
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        setup
+            .store
+            .put_chunk(&setup.account, &sid_doomed, len, &mut Panics)
+    }));
+    assert!(unwound.is_err(), "the put unwound");
+    assert_eq!(held(), 0, "a put that panicked gives its bytes back");
+
+    // And the one chunk there is room for is taken.
+    let landed = setup
+        .store
+        .put_chunk(&setup.account, &sid_good, len, &mut &good[..])
+        .expect("nothing leaked the room it needs");
+    assert_eq!(landed, PutOutcome::Created);
+    assert_eq!(held(), 0);
 }
 
 #[test]

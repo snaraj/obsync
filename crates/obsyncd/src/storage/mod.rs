@@ -317,6 +317,45 @@ pub struct Store {
     before_gc_unlink: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
+/// The bytes one chunk put holds against the watermark and the quota, from
+/// the check that admitted it until its bytes are counted (#301). Dropped
+/// uncounted -- a body that did not verify, a failed write, a panic -- it
+/// gives them back, so no exit path leaves the volume looking fuller than it
+/// is.
+struct Reservation<'a> {
+    store: &'a Store,
+    bytes: u64,
+}
+
+impl Reservation<'_> {
+    /// Count the landed chunk and give its bytes back in ONE hold of the
+    /// index lock, so no check ever sees them neither counted nor reserved.
+    fn count(mut self, sid: Sid, now: UnixMs) {
+        let store = self.store;
+        let mut index = store.index();
+        index.add_chunk(sid, self.bytes, now);
+        index.reserved_bytes = index.reserved_bytes.saturating_sub(self.bytes);
+        self.bytes = 0;
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        if self.bytes == 0 {
+            return;
+        }
+        // Past a panic the lock may be poisoned. What it guards is whole (the
+        // write that panicked held no index lock), and a second panic while
+        // unwinding would abort the process instead of answering 500.
+        let mut index = self
+            .store
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        index.reserved_bytes = index.reserved_bytes.saturating_sub(self.bytes);
+    }
+}
+
 impl Store {
     /// Open the volumes, replay the journal, and index the blobs.
     ///
@@ -558,25 +597,38 @@ impl Store {
                 }
             }
         }
-        {
-            let index = self.index();
+        // THE CHECK RESERVES WHAT IT ADMITS (#301). The chunk lock serialises
+        // one sid, not the volume, so puts of different chunks arrive
+        // together; checked against `used_bytes` alone, each saw the same
+        // total and all passed, and a small volume filled past its reserve.
+        // Every put is measured against what is counted AND what puts between
+        // their check and their count hold, and holds its own bytes from the
+        // moment it passes. A refused put holds nothing.
+        let reservation = {
+            let mut index = self.index();
             let stored = index.account().ok_or(StoreError::NotSetUp)?;
+            let held = index.used_bytes.saturating_add(index.reserved_bytes);
             let watermark = self.cfg.free_watermark.bytes_for(self.cfg.blobs_capacity);
-            let free = self.cfg.blobs_capacity.saturating_sub(index.used_bytes);
+            let free = self.cfg.blobs_capacity.saturating_sub(held);
             if free.saturating_sub(declared_len) < watermark {
                 return Err(StoreError::VolumeFull { free, watermark });
             }
             if let Some(quota) = stored.quota_bytes {
-                let used = index.used_bytes.saturating_add(declared_len);
+                let used = held.saturating_add(declared_len);
                 if used > quota {
                     return Err(StoreError::QuotaExceeded { used, quota });
                 }
             }
-        }
+            index.reserved_bytes = index.reserved_bytes.saturating_add(declared_len);
+            Reservation {
+                store: self,
+                bytes: declared_len,
+            }
+        };
         let written = self.blobs.write(sid, declared_len, body);
         self.prove(&self.blobs_proof, written.as_ref().map(|_| ()));
         written?;
-        self.index().add_chunk(*sid, declared_len, UnixMs::now());
+        reservation.count(*sid, UnixMs::now());
         Ok(PutOutcome::Created)
     }
 

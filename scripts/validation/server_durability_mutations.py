@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Reproduce the server durability guard probes (#191, #192, #203, #273, #291,
-#292, #294) from the repository root.
+#292, #294, #301) from the repository root.
 
 Each probe must compile and fail a behavioral regression. A probe is one or
 more exact substitutions, each of which must match exactly once. Sources are
@@ -35,6 +35,8 @@ FANOUT_START = "a_start_after_a_cut_upload_makes_every_fan_out_name_durable"
 NO_ROOM = "the_disk_cannot_hold"
 NONCE_NO_ROOM = "journal_volume_with_no_room"
 NONCE_NOT_READY = "a_faulted_nonce_log_is_not_ready_until_a_restart"
+TOGETHER = "puts_that_arrive_together_are_measured_against_each_other"
+GIVEN_BACK = "a_reservation_is_given_back_when_its_write_fails_and_when_it_panics"
 
 CASES = [
     # --- nonce log group commit (#191) ------------------------------------
@@ -294,6 +296,19 @@ CASES = [
         "                    io: e.kind(),\n                    rollback_io: e.kind(),\n"
         "                });\n                (\"truncated\", None)\n            }\n",
     )], "a_journal_append_the_disk_cannot_hold"),
+    # --- a chunk put reserves what its check admits (#301) --------------------
+    ("put-reserves-what-it-admits", STORE, [(
+        "            index.reserved_bytes = index.reserved_bytes.saturating_add(declared_len);\n", "",
+    )], TOGETHER),
+    ("an-uncounted-put-gives-its-bytes-back", STORE, [(
+        "        if self.bytes == 0 {\n            return;\n        }\n",
+        "        if self.bytes == 0 || self.bytes > 0 {\n            return;\n        }\n",
+    )], GIVEN_BACK),
+    ("a-counted-put-gives-its-bytes-back", STORE, [(
+        "        index.add_chunk(sid, self.bytes, now);\n"
+        "        index.reserved_bytes = index.reserved_bytes.saturating_sub(self.bytes);\n",
+        "        index.add_chunk(sid, self.bytes, now);\n",
+    )], TOGETHER),
 ]
 
 
