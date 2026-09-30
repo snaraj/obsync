@@ -278,6 +278,17 @@ export interface ObsyncData {
    */
   departed: Record<string, { path: string; versionId: string; size: number }>;
   /**
+   * A replay from zero not caught up yet (issues #239, #281): the last feed
+   * entry this device had read before it, and by file id the last version of
+   * its own the replay has passed as an echo so far. At its first catch-up
+   * the ones this device holds nowhere are brought back (`sync/engine.ts`,
+   * `returnLost`) and it is `null` again. It rides the saves the replay
+   * already makes, so a quit, an offline stretch or a folder change before
+   * that catch-up picks it up at the next start. A version before 1.1.5
+   * ignores it, and its next save drops it: 1.1.4 brings nothing back.
+   */
+  replaying: { through: number; notes: Record<string, string> } | null;
+  /**
    * Deletions held back from the other devices until the user answers: many
    * notes deleted at once here (issue #162), or a pass that could no longer
    * see them (issue #123). Their records stay in `files`, which is what Restore
@@ -344,6 +355,7 @@ export function defaultData(isMobile: boolean): ObsyncData {
     dropped: {},
     paused: {},
     departed: {},
+    replaying: null,
     heldDeletions: [],
     feedMark: null,
     graves: {},
@@ -571,6 +583,17 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       if (isHex(fileId, 16) && isRecord(away) && isVaultPath(away["path"]) && typeof away["versionId"] === "string" &&
         isHex(away["versionId"], 32)) data.departed[fileId] = { path: away["path"], versionId: away["versionId"], size: num(away["size"], 0) };
     }
+  }
+  // File ids and version ids the replay will ask the server for: input,
+  // judged as every id here is.
+  const replaying = loaded["replaying"];
+  if (isRecord(replaying) && Number.isSafeInteger(replaying["through"]) && (replaying["through"] as number) >= 0 &&
+    isRecord(replaying["notes"])) {
+    const notes: Record<string, string> = {};
+    for (const [fileId, versionId] of Object.entries(replaying["notes"])) {
+      if (isHex(fileId, 16) && typeof versionId === "string" && isHex(versionId, 32)) notes[fileId] = versionId;
+    }
+    data.replaying = { through: replaying["through"] as number, notes };
   }
   // The mark names a request path and the graves a request path and a
   // publication, so a malformed field is dropped rather than trusted: no mark
@@ -949,6 +972,7 @@ export class State {
     this.data.parked = {};
     this.data.paused = {};
     this.data.departed = {};
+    this.data.replaying = null;
     this.data.heldDeletions = [];
     this.data.feedMark = null;
     this.data.graves = {};

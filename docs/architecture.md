@@ -1681,7 +1681,10 @@ here (`published_move reason=identical`). Any other note of this device's that
 the replay passes as an echo and this device does not hold at that version --
 its new name deleted, hidden, or in a linked folder -- is fetched again from
 the file's heads once the replay catches up (`decision=downloaded_again`): two
-copies at most, nothing lost, nothing hidden. The cost is one
+copies at most, nothing lost, nothing hidden. What the replay has noted rides
+the saves it already makes (`replaying`, issue #281), so one stopped before it
+catches up -- Obsidian closed, the device offline, another folder change --
+carries on at the next start (`feed decision=resumed`). The cost is one
 `GET /v1/files/{id}` per note fetched again, one read of a local file whose
 size is that of such a note, and nothing where there is none.
 

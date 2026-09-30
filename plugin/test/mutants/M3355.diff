@@ -1,0 +1,12 @@
+# M3355: a replay that did not catch up is not read back from saved state (#281)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -586,7 +586,7 @@
+   }
+   // File ids and version ids the replay will ask the server for: input,
+   // judged as every id here is.
+-  const replaying = loaded["replaying"];
++  const replaying = loaded["replaying_unread"];
+   if (isRecord(replaying) && Number.isSafeInteger(replaying["through"]) && (replaying["through"] as number) >= 0 &&
+     isRecord(replaying["notes"])) {
+     const notes: Record<string, string> = {};

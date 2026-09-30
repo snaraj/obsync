@@ -287,7 +287,9 @@ test("an own version whose file id is recorded at another name is not adopted a 
 
   const started = engine();
   await started.start();
-  await timers.run(1000, () => r.state.fileByPath("Notes/p.md") !== undefined);
+  // Caught up and idle: what the first read brings back has been brought (#239, #281).
+  await timers.run(1000, () => r.state.fileByPath("Notes/p.md") !== undefined && r.state.data.lastSeq === r.server.seq &&
+    started.current().kind === "idle");
   await started.stopAndWait();
 
   assert.ok(!r.host.logs.some((line) => ADOPTED.test(line)), lines(r.host));

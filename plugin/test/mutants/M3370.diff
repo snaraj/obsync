@@ -1,11 +1,11 @@
 # M3370: the brought-back version is not applied, only asked for (#239)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3420,7 +3420,6 @@
-         if (before === versionId || context.state.data.departed[fileId] !== undefined) continue;
-         const started = context.now();
-         let outcome: string;
--        this.returning.add(versionId);
-         try {
-           await this.reconcileFile(fileId);
-           outcome = held(fileId) === before ? "not_applied" : "applied";
+@@ -3512,7 +3512,6 @@
+         if (before !== versionId && context.state.data.departed[fileId] === undefined) {
+           const started = context.now();
+           let outcome: string;
+-          this.returning.add(versionId);
+           try {
+             await this.reconcileFile(fileId);
+             outcome = held(fileId) === before ? "not_applied" : "applied";

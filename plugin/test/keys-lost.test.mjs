@@ -108,7 +108,7 @@ test("a crash that loses a pairing's secret write loads with no credential, keep
   assert.deepEqual({ ...recovered.data }, {
     vrk: null, deviceId: null, deviceSecret: null, deviceName: "Study laptop", deviceTag: null,
     serverUrl: SERVER, edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-    retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: {}, paused: {}, departed: {},
+    retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: {}, paused: {}, departed: {}, replaying: null,
     heldDeletions: [], feedMark: null, graves: {},
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "unconfirmed",
     notices: { level: "everything", merges: "once" },

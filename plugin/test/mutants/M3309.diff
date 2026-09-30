@@ -1,0 +1,11 @@
+# M3309: leaving the server keeps the replay the old pairing had not finished (#281)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -972,7 +972,6 @@
+     this.data.parked = {};
+     this.data.paused = {};
+     this.data.departed = {};
+-    this.data.replaying = null;
+     this.data.heldDeletions = [];
+     this.data.feedMark = null;
+     this.data.graves = {};

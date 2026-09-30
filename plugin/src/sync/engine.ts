@@ -876,13 +876,7 @@ export class SyncEngine {
    */
   private holding: { paths: Set<string>; since: number; handle: unknown; all: boolean } | null = null;
   private readonly expected = new Map<string, { path: string; behind: ReadonlySet<string> }>();
-  /**
-   * A replay from zero -- a widening (issue #239) -- until its first catch-up:
-   * the last entry this device had read before it, and by file id the last
-   * version of its own the replay passed as an echo (`processed`); `null`
-   * outside one. And the ones being brought back (`returnLost`).
-   */
-  private lost: { through: number; notes: Map<string, string> } | null = null;
+  /** The versions `returnLost` is bringing back (`SyncContext.returning`). */
   private readonly returning = new Set<string>();
   /** No record and no cursor at this start: a vault the server has not seen from here. */
   private emptyStart = false;
@@ -1058,9 +1052,16 @@ export class SyncEngine {
     this.expected.clear();
     this.holding = { paths: new Set(), since: this.nowFn(), handle: null, all: false };
     this.emptyStart = state.data.lastSeq === 0 && Object.keys(state.data.files).length === 0;
-    // A cursor at zero: a widening's replay over the feed this device has read
-    // to its mark, or a first read, which has no mark and notes nothing.
-    this.lost = state.data.lastSeq === 0 ? { through: state.data.feedMark?.seq ?? 0, notes: new Map() } : null;
+    // A cursor at zero: a replay from zero -- a widening's, over the feed this
+    // device has read to its mark, or a first read, which has no mark and
+    // notes nothing (`ObsyncData.replaying`). One stopped before its catch-up
+    // goes on from where it was saved (issue #281), and one started again
+    // keeps the mark it began at.
+    const unfinished = state.data.replaying;
+    if (state.data.lastSeq === 0) state.data.replaying = { through: unfinished?.through ?? state.data.feedMark?.seq ?? 0, notes: {} };
+    else if (unfinished !== null) {
+      host.log(`feed decision=resumed reason=replay_unfinished noted=${Object.keys(unfinished.notes).length} through=${unfinished.through}`);
+    }
     // A start's first pass walks: what moved while the app was closed shows there first.
     this.unwalked = 0;
     this.walkFor = "start";
@@ -1131,7 +1132,6 @@ export class SyncEngine {
     if (this.holding !== null && this.holding.handle !== null) this.timers.clear(this.holding.handle);
     this.holding = null;
     this.expected.clear();
-    this.lost = null;
     // And what `defer` held in memory is written now, not at a page that is not coming.
     void this.saveDeferred("stop");
     if (this.parkHandle !== null) this.timers.clear(this.parkHandle);
@@ -3497,10 +3497,10 @@ export class SyncEngine {
     // one carries a chunk; a deletion, a folder or a pause none -- of what it
     // had read before, is its newest so far; anything later of that file
     // settles it, this start's own posts among them (`returnLost`, #239).
-    if (this.lost !== null) {
-      const { through, notes } = this.lost;
-      if (result === "echo" && change.sids.length > 0 && change.seq <= through) notes.set(change.file_id, change.version_id);
-      else notes.delete(change.file_id);
+    const replay = state.data.replaying;
+    if (replay !== null) {
+      if (result === "echo" && change.sids.length > 0 && change.seq <= replay.through) replay.notes[change.file_id] = change.version_id;
+      else delete replay.notes[change.file_id];
     }
     state.data.feedMark = { seq: change.seq, fileId: change.file_id, versionId: change.version_id, ts: change.ts, replay: false };
   }
@@ -3522,34 +3522,42 @@ export class SyncEngine {
    * selection, or one whose last version was a deletion.
    */
   private returnLost(context: SyncContext): Promise<void> {
-    const lost = this.lost;
-    this.lost = null;
-    if (lost === null || lost.notes.size === 0) return Promise.resolve();
+    const lost = context.state.data.replaying;
+    if (lost === null) return Promise.resolve();
+    if (Object.keys(lost.notes).length === 0) {
+      context.state.data.replaying = null;
+      return Promise.resolve();
+    }
     const held = (fileId: string): string | undefined => {
       const path = context.state.pathByFileId(fileId);
       return path === undefined ? undefined : context.state.fileByPath(path)?.versionId;
     };
     return this.exclusive(async () => {
-      for (const [fileId, versionId] of lost.notes) {
+      for (const [fileId, versionId] of Object.entries(lost.notes)) {
+        // Stopped part way, what is left waits for the next start's catch-up (#281).
         if (!this.running) return;
         const before = held(fileId);
-        if (before === versionId || context.state.data.departed[fileId] !== undefined) continue;
-        const started = context.now();
-        let outcome: string;
-        this.returning.add(versionId);
-        try {
-          await this.reconcileFile(fileId);
-          outcome = held(fileId) === before ? "not_applied" : "applied";
-        } catch (error) {
-          outcome = `failed_${error instanceof ApiError ? error.code : error instanceof Unwritable ? error.reason : "error"}`;
-        } finally {
-          this.returning.delete(versionId);
+        if (before !== versionId && context.state.data.departed[fileId] === undefined) {
+          const started = context.now();
+          let outcome: string;
+          this.returning.add(versionId);
+          try {
+            await this.reconcileFile(fileId);
+            outcome = held(fileId) === before ? "not_applied" : "applied";
+          } catch (error) {
+            outcome = `failed_${error instanceof ApiError ? error.code : error instanceof Unwritable ? error.reason : "error"}`;
+          } finally {
+            this.returning.delete(versionId);
+          }
+          context.host.log(
+            `feed path_class=file decision=downloaded_again reason=not_held outcome=${outcome} file=${fileId} ` +
+              `budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+          );
         }
-        context.host.log(
-          `feed path_class=file decision=downloaded_again reason=not_held outcome=${outcome} file=${fileId} ` +
-            `budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
-        );
+        // And one whose read the stop cut short is asked for again then too.
+        if (this.running) delete lost.notes[fileId];
       }
+      context.state.data.replaying = null;
       await context.state.save();
     });
   }
@@ -4090,7 +4098,7 @@ export class SyncEngine {
         context.host.log(`${label} decision=failed reason=state_not_saved`);
       });
     }
-    if (own !== null && this.lost !== null) {
+    if (own !== null && context.state.data.replaying !== null) {
       const open = untracked.filter((file) => !settled.has(file.path));
       await this.rejoinUnseen(context, own.notes, open, seen, settled, label);
     }

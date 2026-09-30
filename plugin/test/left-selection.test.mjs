@@ -470,3 +470,109 @@ test("a post in flight when its note leaves does not replace a version recorded 
   assert.equal(r.a.state.data.departed[r.id]?.versionId, meanwhile, story(r));
   assert.ok(r.a.host.logs.includes(`push path_class=file decision=not_recorded reason=path_gone parent=kept file=${r.id}`), story(r));
 });
+
+/*
+ * A WIDENING THAT DID NOT CATCH UP (issue #281): Obsidian quit part way
+ * through its replay, another folder change was saved before it caught up,
+ * or the bring-back itself was cut short. What the replay had noted rides the
+ * saves it already made, and the next start carries on from there: the note
+ * this device holds nowhere still comes back at its old name, and nothing is
+ * published.
+ */
+
+/** Obsidian closed and opened again: a new engine over the state it saved. */
+async function reopen(r) {
+  await r.a.engine.stopAndWait();
+  r.a.state = r.a.plugin.state = await r.a.reload();
+  await r.a.plugin.startEngine();
+}
+
+/** The last feed entry of a file. */
+const lastOf = (r, id) => Math.max(...r.server.journal.filter((frame) => frame.file_id === id).map((frame) => frame.seq));
+
+/** A replay read one entry a page, and stopped at its first read once it has passed `seq`. */
+function stopAfter(r, seq) {
+  const changes = r.a.transport.changes.bind(r.a.transport);
+  const hook = { stopped: false, restore: () => { r.a.transport.changes = changes; } };
+  r.a.transport.changes = async (since, wait, limit, patience) => {
+    const cursor = r.a.state.data.lastSeq;
+    if (!hook.stopped && cursor >= seq && cursor < r.server.seq) {
+      hook.stopped = true;
+      r.a.engine.stop();
+    }
+    return changes(since, wait, hook.stopped ? limit : 1, patience);
+  };
+  return hook;
+}
+
+test("a widening stopped before it caught up brings the note back at the next start, and publishes nothing (#281)", async (t) => {
+  const r = await rig(t);
+  r.a.host.rename("Sel/n.md", ".stash/n.md");
+  // Something after the note, so its replay is not over when it stops.
+  r.b.host.write("Sel/later.md", EDIT, 3000);
+  await quiet(r);
+  const frames = r.server.journal.length;
+  const hook = stopAfter(r, lastOf(r, r.id));
+  await save(r, undefined);
+  await r.timers.run(STEP_MS, () => hook.stopped && !r.a.engine.started);
+  hook.restore();
+
+  await reopen(r);
+  await quiet(r);
+  assert.equal(r.a.host.text("Sel/n.md"), NOTE, story(r));
+  assert.equal(r.a.state.fileByPath("Sel/n.md")?.fileId, r.id, story(r));
+  assert.equal(r.a.host.text(".stash/n.md"), NOTE);
+  assert.deepEqual(posted(r, frames), [], `the replay published a note: ${story(r)}`);
+  assert.ok(r.a.host.logs.some((line) => line.startsWith("feed decision=resumed reason=replay_unfinished noted=1 ")), story(r));
+  assert.equal(r.a.state.data.replaying, null, story(r));
+});
+
+test("a widening saved again before the first caught up keeps what the first had read, and brings the note back (#281)", async (t) => {
+  const r = await rig(t);
+  r.a.host.rename("Sel/n.md", ".stash/n.md");
+  await quiet(r);
+  const frames = r.server.journal.length;
+  // Stopped after the first entry: long before the note's own version.
+  const hook = stopAfter(r, 1);
+  await save(r, ["Sel", "Other"]);
+  await r.timers.run(STEP_MS, () => hook.stopped && !r.a.engine.started);
+  hook.restore();
+  assert.ok((r.a.state.data.feedMark?.seq ?? 0) < lastOf(r, r.id), story(r));
+
+  await save(r, undefined);
+  await quiet(r);
+  assert.equal(r.a.host.text("Sel/n.md"), NOTE, story(r));
+  assert.equal(r.a.state.fileByPath("Sel/n.md")?.fileId, r.id, story(r));
+  assert.deepEqual(posted(r, frames), [], `the replay published a note: ${story(r)}`);
+});
+
+test("a bring-back a stop cut short goes on at the next start (#281)", async (t) => {
+  const r = await rig(t);
+  r.a.host.write("Sel/m.md", EDIT, 2000);
+  await r.timers.run(STEP_MS, () => settled(r.a, "Sel/m.md") && settled(r.b, "Sel/m.md"));
+  const second = r.a.state.fileByPath("Sel/m.md").fileId;
+  r.a.host.rename("Sel/n.md", ".stash/n.md");
+  r.a.host.rename("Sel/m.md", ".stash/m.md");
+  await quiet(r);
+  const frames = r.server.journal.length;
+  // Obsidian quits while the first of the two is being read: that read fails.
+  const getFile = r.a.transport.getFile.bind(r.a.transport);
+  let cut = false;
+  r.a.transport.getFile = async (id, ...rest) => {
+    if (!cut && (id === r.id || id === second)) {
+      cut = true;
+      r.a.engine.stop();
+      throw new Error("the request was cancelled by the stop");
+    }
+    return getFile(id, ...rest);
+  };
+  await save(r, undefined);
+  await r.timers.run(STEP_MS, () => cut && !r.a.engine.started);
+  r.a.transport.getFile = getFile;
+
+  await reopen(r);
+  await quiet(r);
+  assert.equal(r.a.host.text("Sel/n.md"), NOTE, story(r));
+  assert.equal(r.a.host.text("Sel/m.md"), EDIT, story(r));
+  assert.deepEqual(posted(r, frames), [], `the replay published a note: ${story(r)}`);
+});

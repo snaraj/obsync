@@ -75,7 +75,7 @@ test("a reference this vault never held, with no secret behind it, loads as an u
   assert.deepEqual({ ...state.data }, {
     vrk: null, deviceId: null, deviceSecret: null, deviceName: null, deviceTag: null,
     serverUrl: "https://sync.example.invalid", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-    retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: {}, paused: {}, departed: {},
+    retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: {}, paused: {}, departed: {}, replaying: null,
     heldDeletions: [], feedMark: null, graves: {},
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "unconfirmed",
     notices: { level: "needs-me", merges: "every" },

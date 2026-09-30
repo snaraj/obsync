@@ -1,12 +1,14 @@
-# M3364: a widening never looks for this device's notes it holds nowhere (#239)
+# M3304: a start after a replay that did not catch up carries nothing on (#281)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1058,7 +1058,7 @@
+@@ -1058,8 +1058,8 @@
      // goes on from where it was saved (issue #281), and one started again
      // keeps the mark it began at.
      const unfinished = state.data.replaying;
 -    if (state.data.lastSeq === 0) state.data.replaying = { through: unfinished?.through ?? state.data.feedMark?.seq ?? 0, notes: {} };
-+    if (state.data.lastSeq < 0) state.data.replaying = { through: unfinished?.through ?? state.data.feedMark?.seq ?? 0, notes: {} };
-     else if (unfinished !== null) {
+-    else if (unfinished !== null) {
++    state.data.replaying = state.data.lastSeq === 0 ? { through: unfinished?.through ?? state.data.feedMark?.seq ?? 0, notes: {} } : null;
++    if (unfinished !== null && state.data.lastSeq > 0) {
        host.log(`feed decision=resumed reason=replay_unfinished noted=${Object.keys(unfinished.notes).length} through=${unfinished.through}`);
      }
+     // A start's first pass walks: what moved while the app was closed shows there first.

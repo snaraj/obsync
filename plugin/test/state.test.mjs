@@ -136,6 +136,27 @@ test("where a note that left the selection went loads back, and only when well f
   assert.deepEqual((await State.open(saved, false, saved.secrets)).data.departed, state.data.departed);
 });
 
+/**
+ * A replay not caught up yet (issue #281): what it has noted so far loads
+ * back, each id judged as input; a 1.1.4 data file has none. A 1.1.4 build
+ * keeps only the fields it knows, so its next save drops it.
+ */
+test("a replay not caught up yet loads back, and only when well formed (#281)", async () => {
+  const id = (n) => n.toString(16).padStart(32, "0");
+  const version = "cd".repeat(32);
+  const notes = { [id(1)]: version, [id(2)]: "v2", "not-a-file-id": version, [id(3)]: 7 };
+  assert.deepEqual(parseData({ replaying: { through: 12, notes } }, false).replaying, { through: 12, notes: { [id(1)]: version } });
+  assert.equal(parseData({}, false).replaying, null, "a 1.1.4 data file");
+  for (const replaying of [{ through: -1, notes: {} }, { through: 1.5, notes: {} }, { through: 3 }, { notes: {} }, [3, {}]]) {
+    assert.equal(parseData({ replaying }, false).replaying, null, JSON.stringify(replaying));
+  }
+  const saved = store();
+  const state = await State.open(saved, false, saved.secrets);
+  state.data.replaying = { through: 12, notes: { [id(1)]: version } };
+  await state.save();
+  assert.deepEqual((await State.open(saved, false, saved.secrets)).data.replaying, state.data.replaying);
+});
+
 test("saves serialise and never lose the newest state", async () => {
   const backing = store();
   const state = await State.open(backing, false, backing.secrets);
@@ -266,6 +287,8 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     // And where a note that left the selection went (#239): the version it
     // names is on that server too.
     departed: { f8: { path: "Out/moved.md", versionId: "v8", size: 2 } },
+    // And a replay not caught up yet (#281): its versions are on that server too.
+    replaying: { through: 9, notes: { f9: "v9" } },
     // And a held deletion (#162), a question about records being dropped.
     heldDeletions: ["Notes/a.md"],
     // And the feed mark and the graves (#145), which name entries and
@@ -288,7 +311,7 @@ test("forgetting a pairing drops the identity and everything derived from it, an
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop", deviceTag: "7KQ4",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
       retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: { "Notes/empty.md": "f7" }, paused: {},
-      departed: {}, heldDeletions: [],
+      departed: {}, replaying: null, heldDeletions: [],
       feedMark: null, graves: {}, syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed",
       notices: { level: "needs-me", merges: "off" },
     },
