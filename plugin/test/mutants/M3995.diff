@@ -1,9 +1,9 @@
 # M3995: a read that was refused leaves its budget armed
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -305,7 +305,7 @@
-     }, WALK_READ_MS);
-     read.then(
+@@ -318,7 +318,7 @@
+     }, budget);
+     call.then(
        (value) => { window.clearTimeout(handle); resolve(value); },
 -      (error: unknown) => { window.clearTimeout(handle); reject(error); },
 +      (error: unknown) => { reject(error); },

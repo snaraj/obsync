@@ -1,0 +1,12 @@
+# M4026: the seam's fstat reaches the disk with no budget (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -338,7 +338,7 @@
+         unsynced += buffer.length;
+         return onTime(open.write(buffer), "write", buffer.length, log);
+       },
+-      stat: (options) => onTime(open.stat(options), "fstat", 0, log),
++      stat: (options) => open.stat(options),
+       close: () => onTime(open.close(), "close", 0, log),
+       sync: () => {
+         const bytes = unsynced;

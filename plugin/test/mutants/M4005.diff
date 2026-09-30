@@ -1,0 +1,11 @@
+# M4005: a stalled disk call is logged and never fails (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -314,7 +314,6 @@
+   return new Promise((resolve, reject) => {
+     const handle = window.setTimeout(() => {
+       log(`host decision=stalled call=${name} duration_ms=${Date.now() - started} budget_ms=${budget}`);
+-      reject(new DiskStalled());
+     }, budget);
+     call.then(
+       (value) => { window.clearTimeout(handle); resolve(value); },

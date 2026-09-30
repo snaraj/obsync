@@ -15,7 +15,7 @@ import { createRequire } from "node:module";
 import { FakeTimers, STEP_MS, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { SyncEngine, CALM_MS, FEED_STALL_MS, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, RESTART_NEEDED, NOT_OBSYNC_ANSWER, RESUMES, FEED_FAILED, REVOKED_DEVICE, refusedChange } = require("../build/sync/engine.js");
+const { SyncEngine, CALM_MS, FEED_ERROR_BACKOFF_MS, FEED_STALL_MS, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, RESTART_NEEDED, NOT_OBSYNC_ANSWER, RESUMES, FEED_FAILED, REVOKED_DEVICE, refusedChange } = require("../build/sync/engine.js");
 const { EDGE_REQUIRED } = require("../build/transport.js");
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -356,6 +356,46 @@ test("a read of the feed answered a 5xx in obsync's own error says the changes c
   assert.deepEqual(r.last(), { kind: "error", code: "feed", message: FEED_FAILED });
   gate.failing = false;
   await r.timers.run(STEP_MS, () => r.last()?.kind === "idle");
+  await stopped(r);
+});
+
+/**
+ * A DISK CALL THAT NEVER ANSWERED WHILE A PAGE WAS APPLIED IS THIS DEVICE'S
+ * (#307). The host's seam fails it with `disk_stalled` once its budget passes,
+ * and the feed reads the page again after its pause, from the change it
+ * stopped at: nothing is said of the server, and the note lands.
+ */
+test("a page whose apply met a disk call that never answered is read again from that change, with nothing said of the server, and the note lands (#307)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  // The first look at the arriving note meets the stall; every later one is the disk's.
+  const stat = r.host.stat.bind(r.host);
+  let looks = 0;
+  r.host.stat = async (path) => {
+    if (path === "Arrived.md" && looks++ === 0) {
+      throw Object.assign(new Error("This device's disk did not answer in time. obsync tries again by itself."), { code: "disk_stalled" });
+    }
+    return stat(path);
+  };
+  const from = r.statuses.length;
+  const body = "a note from another device\n";
+  await r.server.publish({
+    fileId: "0123456789abcdef0123456789abcd01",
+    path: "Arrived.md",
+    bytes: new TextEncoder().encode(body),
+    mtime: 7000,
+    domainKey: r.keys.domainKey,
+    manifestKey: r.keys.manifestKey,
+  });
+  r.server.releaseFeed();
+  await r.timers.run(STEP_MS, () => r.host.files.has("Arrived.md") && r.last()?.kind === "idle");
+  assert.ok(looks >= 2, "the note was not looked at again after the stall");
+  assert.equal(r.host.text("Arrived.md"), body);
+  assert.ok(
+    r.host.logs.includes(`feed decision=retry reason=disk_stalled status=unchanged retry_ms=${FEED_ERROR_BACKOFF_MS}`),
+    r.host.logs.filter((line) => line.startsWith("feed")).join(" | "),
+  );
+  assert.deepEqual(r.statuses.slice(from).filter((status) => status.kind === "error" || status.kind === "offline"), [], "a stall on this device's disk was said as the server's");
   await stopped(r);
 });
 

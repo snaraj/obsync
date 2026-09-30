@@ -1,0 +1,12 @@
+# M4014: the seam's mkdir reaches the disk with no budget (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -351,7 +351,7 @@
+   return {
+     promises: {
+       open: async (path, flags, mode) => bound(await onTime(calls.open(path, flags, mode), "open", 0, log)),
+-      mkdir: (path, options) => onTime(calls.mkdir(path, options), "mkdir", 0, log),
++      mkdir: (path, options) => calls.mkdir(path, options),
+       rename: (from, to) => onTime(calls.rename(from, to), "rename", 0, log),
+       link: (from, to) => onTime(calls.link(from, to), "link", 0, log),
+       unlink: (path) => onTime(calls.unlink(path), "unlink", 0, log),

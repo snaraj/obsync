@@ -1,0 +1,12 @@
+# M4018: the seam's readdir reaches the disk with no budget (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -355,7 +355,7 @@
+       rename: (from, to) => onTime(calls.rename(from, to), "rename", 0, log),
+       link: (from, to) => onTime(calls.link(from, to), "link", 0, log),
+       unlink: (path) => onTime(calls.unlink(path), "unlink", 0, log),
+-      readdir: (path) => onTime(calls.readdir(path), "readdir", 0, log),
++      readdir: (path) => calls.readdir(path),
+       rmdir: (path) => onTime(calls.rmdir(path), "rmdir", 0, log),
+       utimes: (path, atime, mtime) => onTime(calls.utimes(path, atime, mtime), "utimes", 0, log),
+       readFile: (path, encoding) => onTime(calls.readFile(path, encoding), "readFile", 0, log),

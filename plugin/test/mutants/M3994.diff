@@ -1,10 +1,10 @@
 # M3994: a read that answered leaves its budget armed, and says it stalled later
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -304,7 +304,7 @@
-       reject(new WalkStalled(`${call} gave no answer`));
-     }, WALK_READ_MS);
-     read.then(
+@@ -317,7 +317,7 @@
+       reject(new DiskStalled());
+     }, budget);
+     call.then(
 -      (value) => { window.clearTimeout(handle); resolve(value); },
 +      (value) => { resolve(value); },
        (error: unknown) => { window.clearTimeout(handle); reject(error); },

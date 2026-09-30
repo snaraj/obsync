@@ -72,7 +72,7 @@ import {
   parseSyncFolders,
 } from "./syncScope";
 import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
-import { AFTER_START, EngineStatus, FEED_FAILED, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
+import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
@@ -280,34 +280,89 @@ export interface DesktopVault {
   base: string;
 }
 
-/** How long one read of the walk may go unanswered (#302); one directory or one entry answers in milliseconds. */
-const WALK_READ_MS = 15_000;
+/**
+ * How long one disk call may go unanswered, plus a millisecond for each KiB
+ * it moves (#302, #307). A directory, an entry or an 8 MiB window answers in
+ * milliseconds; what this leaves a disk is 1 MiB/s.
+ */
+const DISK_CALL_MS = 15_000;
 
-/** A read of the walk that never answered: the walk fails, and the next scan walks again (#302). */
-class WalkStalled extends Error {
-  readonly code = "walk_stalled";
+/**
+ * A disk call that never answered (#302, #307). The operation fails and runs
+ * again: the walk at the next scan, a download when the feed reads its page
+ * again, a push at the next pass. Its words are what a push that met it says.
+ */
+class DiskStalled extends Error {
+  readonly code = DISK_STALLED;
+  constructor() {
+    super("This device's disk did not answer in time. obsync tries again by itself.");
+  }
 }
 
 /**
- * One read of the walk, or `WalkStalled` once `WALK_READ_MS` passes (#302).
- * Closing a separate Settings window (Obsidian 1.13) focuses the main one, and
- * the reads the walk that focus started never answered, while every new read
- * answered in milliseconds: the walk held the pull chain, and the device
- * received nothing until Obsidian restarted. A stall is the walk's failure,
- * never an unreadable or empty folder: callers that skip those rethrow it.
+ * One disk call, or `DiskStalled` once its budget passes (#302, #307). Closing
+ * a separate Settings window (Obsidian 1.13) focuses the main one, and the
+ * disk calls in flight at that instant never answered, while every new one
+ * answered in milliseconds. A walk, and then a first sync applying a page,
+ * held the pull chain on one of them, and the device received nothing until
+ * Obsidian restarted. A stall is the operation's failure, never an unreadable,
+ * empty or absent entry: callers that read those as such rethrow it.
  */
-function onTime<T>(read: Promise<T>, call: string, log: (line: string) => void): Promise<T> {
+function onTime<T>(call: Promise<T>, name: string, bytes: number, log: (line: string) => void): Promise<T> {
   const started = Date.now();
+  const budget = DISK_CALL_MS + Math.ceil(bytes / 1024);
   return new Promise((resolve, reject) => {
     const handle = window.setTimeout(() => {
-      log(`scan decision=stalled call=${call} duration_ms=${Date.now() - started} budget_ms=${WALK_READ_MS}`);
-      reject(new WalkStalled(`${call} gave no answer`));
-    }, WALK_READ_MS);
-    read.then(
+      log(`host decision=stalled call=${name} duration_ms=${Date.now() - started} budget_ms=${budget}`);
+      reject(new DiskStalled());
+    }, budget);
+    call.then(
       (value) => { window.clearTimeout(handle); resolve(value); },
       (error: unknown) => { window.clearTimeout(handle); reject(error); },
     );
   });
+}
+
+/**
+ * The desktop filesystem with every call on time (`onTime`), the handles it
+ * opens too: the one place a disk call is made, so none can hold the pull
+ * chain for ever (#307). A sync is measured by what was written since the last.
+ */
+function boundedFs(fs: NodeFs, log: (line: string) => void): NodeFs {
+  const calls = fs.promises;
+  const bound = (open: NodeFileHandle): NodeFileHandle => {
+    let unsynced = 0;
+    return {
+      read: (buffer, offset, length, position) => onTime(open.read(buffer, offset, length, position), "read", length, log),
+      write: (buffer) => {
+        unsynced += buffer.length;
+        return onTime(open.write(buffer), "write", buffer.length, log);
+      },
+      stat: (options) => onTime(open.stat(options), "fstat", 0, log),
+      close: () => onTime(open.close(), "close", 0, log),
+      sync: () => {
+        const bytes = unsynced;
+        unsynced = 0;
+        return onTime(open.sync(), "sync", bytes, log);
+      },
+      utimes: (atime, mtime) => onTime(open.utimes(atime, mtime), "futimes", 0, log),
+    };
+  };
+  return {
+    promises: {
+      open: async (path, flags, mode) => bound(await onTime(calls.open(path, flags, mode), "open", 0, log)),
+      mkdir: (path, options) => onTime(calls.mkdir(path, options), "mkdir", 0, log),
+      rename: (from, to) => onTime(calls.rename(from, to), "rename", 0, log),
+      link: (from, to) => onTime(calls.link(from, to), "link", 0, log),
+      unlink: (path) => onTime(calls.unlink(path), "unlink", 0, log),
+      readdir: (path) => onTime(calls.readdir(path), "readdir", 0, log),
+      rmdir: (path) => onTime(calls.rmdir(path), "rmdir", 0, log),
+      utimes: (path, atime, mtime) => onTime(calls.utimes(path, atime, mtime), "utimes", 0, log),
+      readFile: (path, encoding) => onTime(calls.readFile(path, encoding), "readFile", 0, log),
+      stat: (path) => onTime(calls.stat(path), "stat", 0, log),
+      lstat: (path, options) => onTime(calls.lstat(path, options), "lstat", 0, log),
+    },
+  };
 }
 
 /**
@@ -688,15 +743,16 @@ export class ObsidianHost implements VaultHost {
     private readonly plugin: ObsyncPlugin,
     desktop?: DesktopVault | null,
   ) {
+    const log = (line: string): void => this.log(line);
     if (desktop !== undefined) {
-      this.desktop = desktop;
+      this.desktop = desktop === null ? null : { ...desktop, fs: boundedFs(desktop.fs, log) };
       return;
     }
     const fs = nodeModule<NodeFs>("fs");
     const path = nodeModule<PathResolver>("path");
     const adapter = plugin.app.vault.adapter as { getBasePath?: () => string };
     const base = typeof adapter.getBasePath === "function" ? adapter.getBasePath() : null;
-    this.desktop = fs !== null && path !== null && base !== null ? { fs, path, base } : null;
+    this.desktop = fs !== null && path !== null && base !== null ? { fs: boundedFs(fs, log), path, base } : null;
   }
 
   /**
@@ -906,12 +962,11 @@ export class ObsidianHost implements VaultHost {
    * listed is not known to be a vault, and the walk skips it as unreadable.
    */
   private async holdsPlugin(desktop: DesktopVault, dir: string): Promise<boolean> {
-    const log = (line: string): void => this.log(line);
     let names: string[];
     try {
-      names = await onTime(desktop.fs.promises.readdir(dir), "readdir", log);
+      names = await desktop.fs.promises.readdir(dir);
     } catch (error) {
-      if (error instanceof WalkStalled) throw error;
+      if (error instanceof DiskStalled) throw error;
       return false;
     }
     next: for (const name of names) {
@@ -920,8 +975,8 @@ export class ObsidianHost implements VaultHost {
       for (const step of ["plugins", PAIRING_ACTION, null]) {
         // A hidden entry the system will not stat (macOS answers `/.resolve`
         // with EINVAL) is no config folder; the question moves on.
-        const stat = await onTime(walker(desktop.fs).lstat(at), "lstat", log).catch((error: unknown) => {
-          if (error instanceof WalkStalled) throw error;
+        const stat = await walker(desktop.fs).lstat(at).catch((error: unknown) => {
+          if (error instanceof DiskStalled) throw error;
           return null;
         });
         if (stat?.isDirectory() !== true) continue next;
@@ -1324,12 +1379,11 @@ export class ObsidianHost implements VaultHost {
       return;
     }
     const at = folder === "" ? desktop.path.resolve(desktop.base) : vaultTarget(desktop.base, folder, desktop.path);
-    const log = (line: string): void => this.log(line);
     let names: string[];
     try {
-      names = await onTime(desktop.fs.promises.readdir(at), "readdir", log);
+      names = await desktop.fs.promises.readdir(at);
     } catch (error) {
-      if (error instanceof WalkStalled) throw error;
+      if (error instanceof DiskStalled) throw error;
       // Unreadable is not empty, and this listing never deletes anything.
       this.log("scan decision=skipped reason=unreadable_directory");
       return;
@@ -1355,7 +1409,7 @@ export class ObsidianHost implements VaultHost {
       // be synced: this listing only proposes paths, and `syncable()` walks
       // every component of each one before the engine acts on it.
       signal?.throwIfAborted();
-      const stat = await onTime(walker(desktop.fs).lstat(desktop.path.resolve(at, name)), "lstat", log);
+      const stat = await walker(desktop.fs).lstat(desktop.path.resolve(at, name));
       if (stat === null) continue;
       if (temps !== undefined && stat.isFile() && WRITE_TEMP.test(name)) temps.push(desktop.path.resolve(at, name));
       if (stat.isDirectory()) {

@@ -7,14 +7,14 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ## 1.1.5 - Unreleased
 
-1.1.5 fixes the issues left open when 1.1.4 was released (#238 to #241,
-#244 to #248, #253) and those found while testing it on real computers and
-an Android emulator. Two people typing in one note on a busy computer now
-keep each other's words (#227). Pairing a new device gains a key exchange of
-its own, and your server keeps an account's only device for seven days after
-a recovery key is registered. In testing, changes from other devices
-sometimes stopped arriving on a computer while it read idle. One cause is
-found and fixed: closing obsync's settings in Obsidian 1.13 (#302). For any
+1.1.5 fixes the issues left open when 1.1.4 was released (#238 to #241, #244
+to #248, #253) and those found while testing it on real computers and an
+Android emulator. Two people typing in one note on a busy computer now keep
+each other's words (#227). Pairing a new device gains a key exchange of its
+own, and your server keeps an account's only device for seven days after a
+recovery key is registered. In testing, changes from other devices sometimes
+stopped arriving on a computer while it read idle. One cause is found and
+fixed: closing obsync's settings in Obsidian 1.13 (#302, #307). For any
 other, 1.1.5 says what the changes wait for, so that a report can find it
 (#276).
 
@@ -226,12 +226,14 @@ anything else they wait on past ten seconds is logged as a warning
 #285, #287).
 
 **Closing obsync's settings cannot stop a computer receiving changes.** In
-Obsidian 1.13, Settings opens as a window of its own. Closing it can lose a
-disk read that a check of your vault's files has just started. In testing,
-before this fix, changes from your other devices then stopped arriving until
-Obsidian restarted, while the status read idle. Such a read now gives up
-after 15 seconds and says so in the plugin's log, and sync carries on; the
-check runs again a few minutes later (#302).
+Obsidian 1.13, Settings opens as a window of its own. Closing it can lose the
+answer to a disk read or write obsync has just started. In testing, before
+this fix, changes from your other devices then stopped arriving until
+Obsidian restarted: while the status read idle, after a check of your vault's
+files (#302), and in a first sync after pairing, at "syncing 300 files"
+(#307). Every disk call now gives up after 15 seconds, and a second more for
+each MiB it moves, and says so in the plugin's log. What it was part of runs
+again, and sync carries on.
 
 **Routine answers are no longer console warnings, and the log names no path
 of yours.** A first setup finding no data yet, and a new device waiting for

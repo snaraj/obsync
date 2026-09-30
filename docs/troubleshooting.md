@@ -86,6 +86,7 @@ server again unless the entry says so.
 | --- | --- |
 | `obsync: error` and a reason | [Sync stopped with an error](#sync-stopped-with-an-error) |
 | "Changes from your server could not be read", and it stays | [Changes from your server could not be read](#changes-from-your-server-could-not-be-read) |
+| "This device's disk did not answer in time" | [Changes from your other devices stop arriving](#changes-from-your-other-devices-stop-arriving) |
 | The reason mentions the clock or `stale_timestamp` | [The clock is wrong](#the-clock-is-wrong) |
 | "This server no longer recognises this device" | [The server no longer recognises this device](#the-server-no-longer-recognises-this-device) |
 | My server says its storage is full | [The server has run out of storage](#the-server-has-run-out-of-storage) |
@@ -1435,14 +1436,18 @@ than two minutes on a slow device, and if notes keep arriving, nothing is
 wrong.
 
 One cause is known and handled in 1.1.5. In Obsidian 1.13, Settings opens as
-a window of its own. Closing it can lose a disk read that a check of this
-vault's files has just started, and that check would then hold every later
-step (#302). From 1.1.5 such a read gives up after 15 seconds. The log has a
-warning such as `obsync scan decision=stalled call=readdir`, sync carries
-on, and the check runs again a few minutes later. If that warning keeps
-coming back, a disk under your vault is not answering, for example an
-external or network drive that went to sleep or dropped. Any other cause is
-not known yet; the warning is there so that a report can say.
+a window of its own. Closing it can lose the answer to a disk read or write
+obsync has just started, and the step waiting for it would then hold every
+later step. In testing that was a check of this vault's files (#302), and a
+first sync that stopped at "syncing 300 files" (#307). From 1.1.5 every disk
+call gives up after 15 seconds, and a second more for each MiB it moves. The
+log has a warning such as `obsync host decision=stalled call=readdir`, sync
+carries on, and the step runs again. A change this device was sending at
+that moment reads "This device's disk did not answer in time. obsync tries
+again by itself." until it goes. If that warning keeps coming back, a disk
+under your vault is not answering, for example an external or network drive
+that went to sleep or dropped. Any other cause is not known yet; the warning
+is there so that a report can say.
 
 **How to fix it.**
 

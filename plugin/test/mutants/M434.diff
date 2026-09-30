@@ -1,8 +1,8 @@
 # M434: a file that merely wears the plugin folder's name makes a vault count as synced
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -924,7 +924,7 @@
-           if (error instanceof WalkStalled) throw error;
+@@ -979,7 +979,7 @@
+           if (error instanceof DiskStalled) throw error;
            return null;
          });
 -        if (stat?.isDirectory() !== true) continue next;

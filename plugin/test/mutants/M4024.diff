@@ -1,0 +1,12 @@
+# M4024: the seam's read reaches the disk with no budget (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -333,7 +333,7 @@
+   const bound = (open: NodeFileHandle): NodeFileHandle => {
+     let unsynced = 0;
+     return {
+-      read: (buffer, offset, length, position) => onTime(open.read(buffer, offset, length, position), "read", length, log),
++      read: (buffer, offset, length, position) => open.read(buffer, offset, length, position),
+       write: (buffer) => {
+         unsynced += buffer.length;
+         return onTime(open.write(buffer), "write", buffer.length, log);

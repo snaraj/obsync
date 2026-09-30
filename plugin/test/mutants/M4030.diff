@@ -1,0 +1,12 @@
+# M4030: a disk stall in a page's apply is taken for a failed read of the server (#307)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3033,7 +3033,7 @@
+         // A DISK CALL THAT NEVER ANSWERED (#307) is this device's, not the
+         // server's: the status goes on saying the work that waits, and after
+         // the pause the page is read again from the change it stopped at.
+-        const disk = (error as { code?: unknown }).code === DISK_STALLED;
++        const disk = false;
+         // What the failure means, said on the FIRST one (#155): a refusal names
+         // itself and stands until the server answers again; only absence reads
+         // offline; anything else is a read that failed, said as that.

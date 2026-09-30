@@ -539,6 +539,8 @@ export const RESUMES = "Sync resumes by itself.";
 export const AFTER_START = "Once that is fixed, select Sync now.";
 export const FEED_FAILED =
   "Changes from your server could not be read. obsync tries again every few seconds; if this stays, check your server's log.";
+/** The code of a disk call on this device that never answered (the host's `onTime`, #307). */
+export const DISK_STALLED = "disk_stalled";
 /**
  * A folder record the server refused past `FOLDER_POST_TRIES` (a note's own
  * refusal is `refusedChange`). Folders are the reconcile pass's business, not
@@ -3028,6 +3030,10 @@ export class SyncEngine {
         // the status says, and the retry goes on without it.
         this.answerFeed(Number.POSITIVE_INFINITY);
         this.feedAnswered = false;
+        // A DISK CALL THAT NEVER ANSWERED (#307) is this device's, not the
+        // server's: the status goes on saying the work that waits, and after
+        // the pause the page is read again from the change it stopped at.
+        const disk = (error as { code?: unknown }).code === DISK_STALLED;
         // What the failure means, said on the FIRST one (#155): a refusal names
         // itself and stands until the server answers again; only absence reads
         // offline; anything else is a read that failed, said as that.
@@ -3044,13 +3050,13 @@ export class SyncEngine {
           continue;
         }
         verify = true;
-        const message = errorText(error);
-        context.host.log(`feed decision=retry reason=${message} status=${refused.kind === "error" ? refused.code : refused.kind} retry_ms=${FEED_ERROR_BACKOFF_MS}`);
+        const message = disk ? DISK_STALLED : errorText(error);
+        context.host.log(`feed decision=retry reason=${message} status=${disk ? "unchanged" : refused.kind === "error" ? refused.code : refused.kind} retry_ms=${FEED_ERROR_BACKOFF_MS}`);
         // Absence is the feed's to say until its next read is answered, and
         // no longer than that (`resting`).
         this.absent = refused.kind === "offline";
         if (this.absent) this.status(this.resting());
-        else this.report(refused, true);
+        else if (!disk) this.report(refused, true);
         await new Promise<void>((resolve) => {
           this.feedPause = resolve;
           this.timers.set(resolve, FEED_ERROR_BACKOFF_MS);

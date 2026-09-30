@@ -1,0 +1,12 @@
+# M4007: a sync is measured as if nothing was written (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -343,7 +343,7 @@
+       sync: () => {
+         const bytes = unsynced;
+         unsynced = 0;
+-        return onTime(open.sync(), "sync", bytes, log);
++        return onTime(open.sync(), "sync", 0, log);
+       },
+       utimes: (atime, mtime) => onTime(open.utimes(atime, mtime), "futimes", 0, log),
+     };
