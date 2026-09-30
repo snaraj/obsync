@@ -513,7 +513,7 @@ test("a note a pass queues again while its push is in flight reads one file, nev
 // absent, and it does not come back by itself.
 const RESTART = { kind: "error", code: "restart", message: RESTART_NEEDED };
 
-test("a faulted server's words never promise that sync resumes by itself: the running engine, a refused start and a press each say the restart (#295)", () => {
+test("a faulted server's words never promise that sync resumes by itself: the running engine, a refused start and a press each say the restart and what to press after it (#295)", () => {
   const { refusalStatus, refusalText, AFTER_START } = require("../build/sync/engine.js");
   const { ApiError } = require("../build/transport.js");
   for (const code of ["journal_faulted", "nonce_log_faulted"]) {
@@ -521,11 +521,13 @@ test("a faulted server's words never promise that sync resumes by itself: the ru
     for (const status of [503, 500]) {
       const error = new ApiError(status, code, "SENTINEL");
       assert.deepEqual(refusalStatus(error), RESTART, `${code} ${status}: the running engine`);
-      assert.deepEqual(refusalStatus(error, AFTER_START), { ...RESTART, message: `${RESTART_NEEDED} ${AFTER_START}` },
-        `${code} ${status}: a refused start is never asked again by a timer, so it says what to press`);
+      assert.deepEqual(refusalStatus(error, AFTER_START), RESTART, `${code} ${status}: a refused start`);
       assert.equal(refusalText(error), RESTART_NEEDED, `${code} ${status}: a press`);
     }
   }
+  // A change it refused goes again at the next walk, up to five minutes after
+  // the restart, or at once on Sync now: the words say the press (the desktop run).
+  assert.ok(RESTART_NEEDED.endsWith("then select Sync now."), RESTART_NEEDED);
   assert.ok(!RESTART_NEEDED.includes(RESUMES) && !RESTART_NEEDED.includes("by itself"), RESTART_NEEDED);
 });
 

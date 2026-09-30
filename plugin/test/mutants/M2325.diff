@@ -2,9 +2,9 @@
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
 @@ -566,8 +566,6 @@
-   if (RESTART_CODES.has(error.code)) {
-     return { kind: "error", code: "restart", message: then === RESUMES ? RESTART_NEEDED : said(RESTART_NEEDED) };
-   }
+   // every context: a change it refused goes again at the next walk, up to
+   // `WALK_MS` later, or at once on Sync now (the desktop run, #295).
+   if (RESTART_CODES.has(error.code)) return { kind: "error", code: "restart", message: RESTART_NEEDED };
 -  const certificate = certificateRefusal(error);
 -  if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
    if (error.code === "unreachable") return { kind: "offline" };

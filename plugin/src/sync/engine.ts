@@ -523,7 +523,7 @@ export const CLOCK_OFF =
 export const SERVER_FULL =
   "Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota.";
 export const RESTART_NEEDED =
-  "Your server hit a storage error and refuses changes until it is restarted. Restart your obsync server.";
+  "Your server hit a storage error and refuses changes until it is restarted. Restart your obsync server, then select Sync now.";
 export const NOT_OBSYNC_ANSWER =
   "Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the Custom request headers in obsync settings.";
 /**
@@ -562,10 +562,10 @@ export function refusalStatus(error: unknown, then = RESUMES): EngineStatus | nu
   // First: a full server is never absence, whatever carried its answer.
   if (error.status === 507) return { kind: "error", code: "storage", message: said(SERVER_FULL) };
   // Nor is a faulted one, and it never resumes by itself: only a restart
-  // brings it back (#295). A refused start still says what to press after.
-  if (RESTART_CODES.has(error.code)) {
-    return { kind: "error", code: "restart", message: then === RESUMES ? RESTART_NEEDED : said(RESTART_NEEDED) };
-  }
+  // brings it back (#295). Its words say what to press after the restart, in
+  // every context: a change it refused goes again at the next walk, up to
+  // `WALK_MS` later, or at once on Sync now (the desktop run, #295).
+  if (RESTART_CODES.has(error.code)) return { kind: "error", code: "restart", message: RESTART_NEEDED };
   const certificate = certificateRefusal(error);
   if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
   if (error.code === "unreachable") return { kind: "offline" };

@@ -1,12 +1,12 @@
 # M3908: a faulted server's words promise that sync resumes by itself (#295)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -564,7 +564,7 @@
-   // Nor is a faulted one, and it never resumes by itself: only a restart
-   // brings it back (#295). A refused start still says what to press after.
-   if (RESTART_CODES.has(error.code)) {
--    return { kind: "error", code: "restart", message: then === RESUMES ? RESTART_NEEDED : said(RESTART_NEEDED) };
-+    return { kind: "error", code: "restart", message: said(RESTART_NEEDED) };
-   }
+@@ -565,7 +565,7 @@
+   // brings it back (#295). Its words say what to press after the restart, in
+   // every context: a change it refused goes again at the next walk, up to
+   // `WALK_MS` later, or at once on Sync now (the desktop run, #295).
+-  if (RESTART_CODES.has(error.code)) return { kind: "error", code: "restart", message: RESTART_NEEDED };
++  if (RESTART_CODES.has(error.code)) return { kind: "error", code: "restart", message: said(RESTART_NEEDED) };
    const certificate = certificateRefusal(error);
    if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
+   if (error.code === "unreachable") return { kind: "offline" };
