@@ -1275,6 +1275,12 @@ long poll and needs its timeout raised.
    this device's recorded version also starts a new run: it is independent
    progress, not an answer to this device's output. Repeated heads, unrelated
    forks and descendants of this device's output still consume the limit.
+   Waits for this device's own publication are not counted (issue #278): a
+   resolution that waited for its upload and started over is counted once,
+   as the fresh one, and one left for the push over a version that holds
+   nothing of this device's own is refunded. A starved machine that sent a
+   save forty seconds late had tripped the limit on such waits alone. A wait
+   over a version that does hold this device's output still counts.
    A tripped pair is settled by the rule above, which only ever keeps a
    version that already exists. Merge writes reserve the same per-path
    publication queue as uploads before making their bytes visible to an

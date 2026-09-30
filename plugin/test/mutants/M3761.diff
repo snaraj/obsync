@@ -1,0 +1,12 @@
+# M3761: a resolution left for this device's own push is counted by the merge breaker, which settles a late push's pair into copies (#278)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2745,7 +2745,7 @@
+   // holds nothing of this device's own. One that does -- a peer answering
+   // this device's output -- still counts: that is the loop the breaker is for.
+   const over = startedOver.delete(change);
+-  if (tally.generation === generation && (over || (context.forked.has(change.file_id) && !reaches(file.versions, change.version_id, localVersionId)))) {
++  if (tally.generation === generation && over) {
+     tally.count--;
+     context.host.log(`pull decision=merge_budget_refund reason=${over ? "started_over" : "own_push"} file=${change.file_id} seq=${change.seq} count=${tally.count}`);
+   }

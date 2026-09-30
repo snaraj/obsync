@@ -1566,8 +1566,9 @@ That is obsync refusing to throw away an edit, not a failure. See
 lines. Afterwards the last words one of them typed are missing from the note,
 and a note named `<note> (conflict from <device>, <date> UTC, <id>)` holds
 them. A notice said `obsync kept both versions of <note>: every device keeps
-the same one as the note, and the other is in "<copy>".` It happens most on a
-busy computer, and when a third device has the note open.
+the same one as the note, and the other is in "<copy>".`, or `obsync stopped
+merging <note>`. It happens most on a busy computer, and when a third device
+has the note open.
 
 **Why it happens.** Up to 1.1.4, a device could merge the two typists' versions
 together with words saved on it but not sent yet, so two devices sent two
@@ -1576,8 +1577,11 @@ merged every change as it arrived, it could then need more history than it
 reads at once to combine those merges, and settled them by a fixed rule
 instead: one side is the note, the other goes into the copy. From 1.1.5 a
 device sends what was typed before it merges, remembers the history it has
-been shown, and both typists' words stay in the note. A device still on 1.1.4
-or earlier can still make such a copy. Nothing is lost: the words are in the
+been shown, and both typists' words stay in the note. A computer that stalls
+sends its last save late, and every change that arrives meanwhile waits for
+it; up to 1.1.4 each wait counted toward stopping the merges, and enough of
+them stopped them. From 1.1.5 such a wait does not count. A device still on
+1.1.4 or earlier can still make such a copy. Nothing is lost: the words are in the
 copy.
 
 **How to fix it.**

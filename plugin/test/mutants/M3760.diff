@@ -1,0 +1,11 @@
+# M3760: a resolution that waited for this device's upload and started over is counted beside the fresh one (#278)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2765,7 +2765,6 @@
+  */
+ async function startOver(context: SyncContext, change: ChangeRecord, theirManifest: Manifest): Promise<ApplyResult> {
+   const result = await applyVersion(context, change, theirManifest);
+-  startedOver.add(change);
+   return result;
+ }
+ 

@@ -2735,6 +2735,20 @@ async function reconcile(
     }
     throw error;
   }
+  // A WAIT FOR THIS DEVICE'S OWN PUBLICATION MAKES NOTHING (#278). A starved
+  // machine sent a typist's save forty seconds late; every version arriving
+  // meanwhile waited for that upload and started over, or was left for the
+  // push (`deferred`), and each such wait was counted as a resolution that
+  // changed nothing: the breaker tripped and settled both typists' last words
+  // into copies. So a resolution that started over is refunded, its fresh one
+  // being counted; and so is one left for the push, when the version it met
+  // holds nothing of this device's own. One that does -- a peer answering
+  // this device's output -- still counts: that is the loop the breaker is for.
+  const over = startedOver.delete(change);
+  if (tally.generation === generation && (over || (context.forked.has(change.file_id) && !reaches(file.versions, change.version_id, localVersionId)))) {
+    tally.count--;
+    context.host.log(`pull decision=merge_budget_refund reason=${over ? "started_over" : "own_push"} file=${change.file_id} seq=${change.seq} count=${tally.count}`);
+  }
   // What the resolution LEFT: a write stamps its own commit (`resolve`), never
   // a later look, which could be the user's next save. One that wrote nothing
   // leaves the note as it found it -- unless one running beside it (the feed
@@ -2743,6 +2757,19 @@ async function reconcile(
   if (tally.left === prior) tally.left = found;
   return result;
 }
+
+/**
+ * Resolve a change again from the start, as a resolution of its own that the
+ * breaker counts in place of this one (`reconcile`). Marked once it returned,
+ * so the resolution that called this, and no other, finds the mark.
+ */
+async function startOver(context: SyncContext, change: ChangeRecord, theirManifest: Manifest): Promise<ApplyResult> {
+  const result = await applyVersion(context, change, theirManifest);
+  startedOver.add(change);
+  return result;
+}
+
+const startedOver = new WeakSet<ChangeRecord>();
 
 /** A note's `(mtime, size)` as one comparable value; nothing at all is `""`. */
 function stamp(stat: VaultStat | null): string {
@@ -2769,7 +2796,7 @@ async function resolve(
     context.host.log(`pull decision=waiting reason=upload_receipt file=${change.file_id} seq=${change.seq}`);
     await pending;
     context.host.log(`pull decision=retry reason=upload_completed file=${change.file_id} seq=${change.seq}`);
-    return await applyVersion(context, change, theirManifest);
+    return await startOver(context, change, theirManifest);
   }
   // A version that already holds ours is a fast-forward over an edit made
   // here and not pushed yet: its base is exactly the version recorded.
@@ -2973,7 +3000,7 @@ async function resolve(
           await writer.abort();
           await uploading;
           context.host.log(`pull decision=retry reason=upload_completed file=${change.file_id} seq=${change.seq}`);
-          return await applyVersion(context, change, theirManifest);
+          return await startOver(context, change, theirManifest);
         }
         // The upload may have completed during the merge's awaits, leaving
         // no pending promise but a newer parent. Re-read the graph instead of
@@ -2981,7 +3008,7 @@ async function resolve(
         if (context.state.fileByPath(localPath)?.versionId !== localVersionId) {
           await writer.abort();
           context.host.log(`pull decision=retry reason=merge_parent_advanced file=${change.file_id} seq=${change.seq}`);
-          return await applyVersion(context, change, theirManifest);
+          return await startOver(context, change, theirManifest);
         }
         // Reserve before the merged bytes reach the editor. Its watcher can
         // enqueue a push during commit, and that push must inherit this merge's

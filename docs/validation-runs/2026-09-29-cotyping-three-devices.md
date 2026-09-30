@@ -288,8 +288,10 @@ own merge: what a device does once its merge breaker has tripped. Its trace
 of those minutes was overwritten by the next run. A cause that fits: while a
 push is late, each arriving version is left for it (#227's rule), and each
 such wait counts toward the breaker as a resolution that changed nothing.
-Not counting them conflicts with two existing tests, which pin that a run of
-such waits must trip it, so that change is not made here.
+Not counting every such wait conflicts with two existing tests, which pin
+that a run of waits over a peer's answer to this device's output must trip
+it. The narrower change in "Waits for this device's own publication" below
+keeps them.
 
 Notices (#279): the third device showed 47 to 54 per run on origin/main and
 0 on `a2a17fea`, which shows a merge only when one side holds text typed
@@ -300,6 +302,80 @@ read `obsync: offline — retrying` for over a minute while the server answered
 (runs 3 to 12, 30 device-runs of 30): the long poll started on waking reached the server
 20 s after it was sent, and the client's 70 s budget ran out 5 s before the
 answer. It is reported as a separate defect.
+
+## Waits for this device's own publication (#278)
+
+The breaker now counts a resolution that waited for this device's upload
+and started over once, as the fresh resolution, and does not count one left
+for this device's push over a version that holds nothing of this device's
+own. A wait over a peer's answer to this device's output still counts.
+
+Same rigs and procedure as above. The server was rebuilt from the train with
+this change (`obsyncd` `17c03e0d…`), and both bundles ran against it. Bundles:
+origin/main `19d32020` and this head `505aeebe`
+(`505aeebef7f1c6f779fcb7d04efc09908b26affb64e0db3bf0b0f54c3a6eddf0`), 10 each,
+alternating run by run.
+
+### Frozen, three devices
+
+| Run | Bundle | Verdict | Paused | Devices with copies | One text, editors = disks | Notices X / Y / Z | Hidden s X / Y / Z | Load at end (1 min) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | main `19d32020` | pass | 0 | 0 | yes | 3 / 3 / 48 | 79 / 79 / 79 | 12.64 |
+| 2 | head `505aeebe` | pass | 0 | 0 | yes | 1 / 1 / 0 | 75 / 74 / 73 | 22.03 |
+| 3 | head `505aeebe` | **fail** | 0 | 0 | yes | 0 / 0 / 0 | 86 / 89 / 90 | 24.29 |
+| 4 | main `19d32020` | pass | 0 | 0 | yes | 2 / 2 / 53 | 77 / 77 / 76 | 16.41 |
+| 5 | main `19d32020` | **fail** | 0 | 0 | yes | 0 / 0 / 0 | 81 / 79 / 78 | 38.81 |
+| 6 | head `505aeebe` | **fail** | 0 | 0 | yes | 0 / 0 / 0 | 105 / 107 / 108 | 30.91 |
+| 7 | head `505aeebe` | **fail** | 0 | 0 | yes | 0 / 1 / 0 | 75 / 75 / 74 | 17.94 |
+| 8 | main `19d32020` | **fail** | 0 | 0 | yes | 0 / 1 / 0 | 76 / 74 / 73 | 24.06 |
+| 9 | main `19d32020` | **fail** | 0 | 3 | **no** | 0 / 0 / 0 | 76 / 75 / 74 | 26.24 |
+| 10 | head `505aeebe` | **fail** | 0 | 0 | yes | 0 / 0 / 0 | 78 / 80 / 79 | 18.09 |
+| 11 | head `505aeebe` | **fail** | 0 | 0 | yes | 0 / 1 / 0 | 75 / 75 / 74 | 15.60 |
+| 12 | main `19d32020` | **fail** | 0 | 0 | yes | 0 / 3 / 46 | 79 / 78 / 77 | 16.46 |
+| 13 | main `19d32020` | **fail** | 0 | 0 | yes | 0 / 0 / 44 | 76 / 75 / 73 | 31.38 |
+| 14 | head `505aeebe` | **fail** | 0 | 0 | yes | 0 / 0 / 0 | 79 / 77 / 77 | 39.46 |
+| 15 | head `505aeebe` | **fail** | 0 | 0 | yes | 0 / 1 / 0 | 77 / 80 / 83 | 22.31 |
+| 16 | main `19d32020` | **fail** | 0 | 0 | yes | 0 / 0 / 46 | 78 / 78 / 76 | 17.75 |
+| 17 | main `19d32020` | **fail** | 0 | 0 | yes | 0 / 1 / 44 | 84 / 83 / 82 | 15.17 |
+| 18 | head `505aeebe` | **fail** | 0 | 0 | yes | 0 / 0 / 0 | 76 / 76 / 73 | 17.11 |
+| 19 | head `505aeebe` | **fail** | 0 | 0 | yes | 0 / 1 / 0 | 76 / 75 / 74 | 11.28 |
+| 20 | main `19d32020` | **fail** | 0 | 3 | **no** | 0 / 1 / 50 | 76 / 75 / 75 | 19.12 |
+
+- **Paused:** none, on either bundle.
+- **Copies:** this head made none in 10 runs. After the windows came back, every run held the whole expected text on every disk and editor. origin/main made copies in 2 of 10 (runs 9 and 20), on all three devices. Both were #227's first defect, with the third device logging `refused reason=merge_ancestry_limit reads=64` and then `converged reason=unmerged`.
+- **Breaker:** no device on either bundle logged `merge_storm`. In 9 of 10 of this head's runs a typist logged `merge_budget_refund`, up to 18 in one run (run 6, 2 `started_over` and 16 `own_push`).
+- **Verdict:** the driver's verdict, read with the windows still hidden, failed in 9 of this head's 10 runs and in 7 of origin/main's 10. In every one, a typist's status read `waiting for unsaved changes`: its hidden editor had not yet saved keystrokes that arrived after the renderers continued. Obsidian's save was still pending, not obsync's. 90 s after the windows returned, every one of those runs held the whole text.
+- **Notices:** the third device showed 0 in each of this head's 10 runs. On origin/main it showed 44 to 53 in 7 runs, and 0 in runs 5, 8 and 9.
+
+### Unfrozen, three devices, the note shown on the third
+
+The instances were relaunched with the three Chromium switches, as in the
+first three-device series, and the standard run was used: 6 burners, no
+hiding, no stopping.
+
+| Run | Bundle | Result | Copies | Exact | Editor = disk | Notices X / Y / Z | Load at end (1 min) |
+|---|---|---|---|---|---|---|---|
+| 1 | main `19d32020` | pass | 0 | true | true | 0 / 0 / 58 | 23.67 |
+| 2 | head `505aeebe` | pass | 0 | true | true | 0 / 0 / 0 | 33.61 |
+| 3 | head `505aeebe` | pass | 0 | true | true | 0 / 0 / 0 | 29.60 |
+| 4 | main `19d32020` | pass | 0 | true | true | 0 / 0 / 58 | 19.00 |
+| 5 | main `19d32020` | pass | 0 | true | true | 0 / 0 / 58 | 17.89 |
+| 6 | head `505aeebe` | pass | 0 | true | true | 0 / 0 / 0 | 18.39 |
+| 7 | head `505aeebe` | pass | 0 | true | true | 0 / 0 / 0 | 27.39 |
+| 8 | main `19d32020` | pass | 0 | true | true | 0 / 0 / 58 | 19.56 |
+| 9 | main `19d32020` | pass | 0 | true | true | 0 / 0 / 58 | 15.98 |
+| 10 | head `505aeebe` | pass | 0 | true | true | 0 / 0 / 0 | 12.80 |
+
+All 10 passed: 5 of 5 on each bundle, `hidden_ms` 0 on every device, load
+13 to 34. The third device showed 58 notices per run on origin/main and 0
+on this head, and the typists 0 on both bundles.
+
+Visual sweep on this head after the last run, on all three instances: at rest,
+after Sync now, Show sync status and obsync's settings tab. Each read
+`obsync: idle` with no notice open and nothing parked, paused or held, and
+no console warning or error was raised during the sweep. Show sync status on
+the third device read idle, 32 files tracked, 0 remote-only. The file list
+holds the two copies origin/main made in frozen runs 9 and 20.
 
 ## Not covered here
 
