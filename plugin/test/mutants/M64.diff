@@ -1,13 +1,14 @@
 # M64: a folder rename moves the records and leaves the pending work behind
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1563,8 +1563,7 @@
-     // A dropped write's empty file may have no record and no work at all, only
-     // its mark (#242; review of 2e4cdca).
-     const { files, dropped } = this.options.state.data;
+@@ -1611,9 +1611,8 @@
+     // its mark (#242; review of 2e4cdca), and a note that left the selection
+     // only the name it went to (#239).
+     const { files, dropped, departed } = this.options.state.data;
 -    const pending = [...this.pending.keys(), ...this.queue, ...this.pushing.keys()];
--    for (const path of new Set([...Object.keys(files), ...Object.keys(dropped), ...pending])) {
-+    for (const path of new Set([...Object.keys(files), ...Object.keys(dropped)])) {
+     const away = Object.values(departed).map((entry) => entry.path);
+-    for (const path of new Set([...Object.keys(files), ...Object.keys(dropped), ...away, ...pending])) {
++    for (const path of new Set([...Object.keys(files), ...Object.keys(dropped), ...away])) {
        if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
      }
    }

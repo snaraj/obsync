@@ -1,12 +1,14 @@
 # M3172: a deletion adopted this run is an echo even when the replay has recorded the file again
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1133,7 +1133,7 @@
-     return "skipped";
-   }
-   const authored = context.authored.delete(change.version_id);
--  if ((authored || change.device_id === context.deviceId) && !(await deletionOwed(context, change))) return "echo";
-+  if (authored || (change.device_id === context.deviceId && !(await deletionOwed(context, change)))) return "echo";
+@@ -1185,8 +1185,8 @@
+   // deleted or hidden while it was out -- is applied as any other device's
+   // would be, once the engine has proved it is still the file's head
+   // (`returning`, issue #239).
+-  if ((authored || change.device_id === context.deviceId) && context.returning?.has(change.version_id) !== true &&
+-    !(await deletionOwed(context, change))) return "echo";
++  if ((authored || (change.device_id === context.deviceId && !(await deletionOwed(context, change)))) &&
++    context.returning?.has(change.version_id) !== true) return "echo";
    // A PAUSED NOTE TAKES NOTHING (issue #179): not from the feed, and not from
    // a push that was in flight when it paused and came back conflicted. Its
    // versions are asked of the server again, as the file stands then, when it

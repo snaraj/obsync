@@ -1,12 +1,12 @@
 # M41: 91: a file leaving the selection is published as a deletion
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1499,7 +1499,7 @@
-     const context = this.need();
-     if (!source || !target) {
-       if (target) this.changed(to);
--      else if (source) this.leftScope(from);
+@@ -1536,7 +1536,7 @@
+         context.host.log(`rename path_class=file decision=${refused === null ? "published_move reason=moved_back" : `forgotten reason=${refused}`} file=${away}`);
+         if (refused !== null) this.changed(to);
+       } else if (target) this.changed(to);
+-      else if (source) this.leftScope(from, to);
 +      else if (source) this.deleted(from);
-       if (this.carryMark(context, from, to)) this.saveMoved(context);
-       return;
-     }
+       else if (away !== undefined) {
+         if (vaultPathRefusal(to) === null) (context.state.data.departed[away] as { path: string }).path = to;
+         else delete context.state.data.departed[away];
