@@ -60,6 +60,9 @@ struct Setup {
     edge_mode: bool,
     dashboard: bool,
     plugin: bool,
+    /// `OBSYNC_BLOBS_CAPACITY`, when a test needs a volume the watermark
+    /// refuses; `64MiB` when `None`.
+    blobs_capacity: Option<&'static str>,
     /// Accumulate the structured log in memory instead of writing it to
     /// stderr, so a test can read the decision line a refusal owes
     /// (requirement 12). Off by default: every other test measures behavior
@@ -96,7 +99,10 @@ impl Harness {
                 "OBSYNC_JOURNAL_DIR",
                 dir.join("journal").display().to_string(),
             ),
-            ("OBSYNC_BLOBS_CAPACITY", "64MiB".to_string()),
+            (
+                "OBSYNC_BLOBS_CAPACITY",
+                setup.blobs_capacity.unwrap_or("64MiB").to_string(),
+            ),
             ("OBSYNC_JOURNAL_CAPACITY", "16MiB".to_string()),
             // A test volume is tiny, so the shipped 2 GiB watermark would
             // refuse the first byte. The threshold itself is exercised by the
@@ -1233,6 +1239,70 @@ fn a_chunk_the_disk_cannot_hold_is_507_storage_full_and_leaves_nothing_behind() 
         .sign_with(&cred, NOW, &nonce(), &sid)
         .send(h.addr);
     assert_eq!(put.status, 201, "{}", put.text());
+}
+
+/// Issue #304 over the wire. The watermark refuses a chunk before the store
+/// reads a byte of it. Answered over the unread upload, the close that
+/// followed reset a sender still writing it -- past the HTTP layer's own
+/// 1 MiB drain -- and a proxy in front answered the device with a bare 502,
+/// read as "offline", never the full server it is. The refused upload is now
+/// read to its end first: the whole body is taken, the 507 names the volume,
+/// and the connection stays good for the next request, as a proxy's would.
+#[test]
+fn a_chunk_the_watermark_refuses_is_read_to_its_end_before_the_507() {
+    let h = Harness::start_with(
+        "refused-read",
+        Setup {
+            blobs_capacity: Some("3MiB"),
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    // Three times the HTTP layer's drain: an independent wire number.
+    let body = vec![0x61; 3 * 1024 * 1024];
+    let (_, sid) = chunk(&body);
+    let req = Req::new("PUT", &format!("/v1/chunks/{sid}")).sign_with(&cred, NOW, &nonce(), &sid);
+    let mut head = format!("PUT {} HTTP/1.1\r\nHost: 127.0.0.1\r\n", req.target);
+    for (name, value) in req.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+    let mut wire = head.into_bytes();
+    wire.extend_from_slice(&body);
+    wire.extend_from_slice(b"GET /livez HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+
+    let mut stream = TcpStream::connect(h.addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("timeout");
+    let mut writer = stream.try_clone().expect("writer");
+    let send = std::thread::spawn(move || writer.write_all(&wire));
+    let mut raw = Vec::new();
+    let read = stream.read_to_end(&mut raw);
+    let sent = send.join().expect("writer joined");
+    let text = String::from_utf8_lossy(&raw);
+    assert!(
+        sent.is_ok(),
+        "the upload was cut off ({sent:?}); the server said: {text}"
+    );
+    assert!(
+        read.is_ok(),
+        "the connection was reset ({read:?}); the server said: {text}"
+    );
+    let answers: Vec<&str> = text
+        .match_indices("HTTP/1.1 ")
+        .map(|(at, _)| &text[at..at + 12])
+        .collect();
+    assert_eq!(
+        answers,
+        ["HTTP/1.1 507", "HTTP/1.1 200"],
+        "the refusal, then the next request on the same connection: {text}"
+    );
+    assert!(text.contains("volume_full"), "{text}");
+    let absent = Req::get(&format!("/v1/chunks/{sid}"))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(absent.status, 404, "the refused chunk was not stored");
 }
 
 #[test]

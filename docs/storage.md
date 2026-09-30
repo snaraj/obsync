@@ -545,6 +545,18 @@ reserve stored a 12.6 MB note and ran down to nothing free. The refusal's `free`
 and `used` count those reserved bytes, so a `volume_full` line can name less
 free space than the dashboard shows while uploads are in flight.
 
+A refused chunk is read to its end before the `507` is sent (server 1.1.5,
+issue #304). The watermark and the quota refuse before a byte of the chunk is
+read, and the HTTP layer drains at most 1 MiB of a body a handler left
+unread. Up to 1.1.4 a larger refused chunk was answered over the rest of its
+upload and the connection closed on it. A proxy or tunnel still writing that
+upload was reset, and it answered the device with a bare `502`, which the
+device reads as the server being unreachable, not full. The rest of the body
+is read only for a request that proved a device's credential, and only up to
+its declared length, which the chunk limit (8 MiB plus the 16-byte tag)
+already bounds. A sender below the rate floor is still ended as `503
+slow_body`.
+
 The journal volume has the same watermark applied to its own capacity, and
 refuses a frame that would take it below with `507 journal_full` before the
 volume is asked. Tracked journal usage is everything under the journal root —
