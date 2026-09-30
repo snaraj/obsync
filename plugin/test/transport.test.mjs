@@ -1051,6 +1051,28 @@ test("a full server's 507 is its refusal on the first answer; 500, 502, 503 and 
   }
 });
 
+test("a faulted server's 503 is its refusal on the first answer, on a retried route and a one-shot one alike; any other 503 is still absence (#295)", async () => {
+  for (const code of ["journal_faulted", "nonce_log_faulted"]) {
+    const faulted = () => ({ status: 503, text: JSON.stringify({ error: code, detail: "SENTINEL" }) });
+    const heard = [];
+    const read = harness([faulted()], { reachable: (answered) => heard.push(answered) });
+    await assert.rejects(read.transport.account(), (error) => error.status === 503 && error.code === code);
+    assert.equal(read.sent.length, 1, `${code}: answered once, never retried as if the server were gone`);
+    assert.deepEqual(read.slept, []);
+    assert.deepEqual(heard, [true], `${code}: a faulted server is a server that answered`);
+    // A version post is never repeated: refused, it is refused, not lost.
+    const post = harness([faulted()]);
+    await assert.rejects(post.transport.postVersion(FILE_ID, VERSION_POST), (error) => error.status === 503 && error.code === code);
+    assert.equal(post.sent.length, 1, code);
+  }
+  // Those two only: a nonce log that is merely unavailable, a proxy's page and a bare 503 are absence as before.
+  for (const text of [JSON.stringify({ error: "nonce_log_unavailable", detail: "SENTINEL" }), "<html>SENTINEL</html>", ""]) {
+    const { transport, sent } = harness([{ status: 503, text }, { status: 503, text }, { status: 503, text }]);
+    await assert.rejects(transport.account(), (error) => error.code === "unreachable" && error.status === 503);
+    assert.equal(sent.length, 3, `${text || "a bare 503"} is retried`);
+  }
+});
+
 test("a pressed button's call answers within its budget: two attempts, then unreachable, and the background keeps its eight (#182)", async () => {
   const time = clock();
   const off = () => Array.from({ length: 8 }, REFUSED_AT_CONNECT);

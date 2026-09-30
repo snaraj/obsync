@@ -74,7 +74,7 @@ import {
   soleDomain,
 } from "../domainmap";
 import { State, isPushed } from "../state";
-import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, MAX_WAIT_SECONDS, NOT_OBSYNC, SessionEnded, Transport, certificateRefusal } from "../transport";
+import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, MAX_WAIT_SECONDS, NOT_OBSYNC, RESTART_CODES, SessionEnded, Transport, certificateRefusal } from "../transport";
 import { VaultPathError, errorText, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, sameChunks, settleBeside, stage, unwritableText, yieldName } from "./pull";
@@ -522,6 +522,8 @@ export const CLOCK_OFF =
   "This device's clock is more than five minutes off, so your server refuses it. Set the date and time to update automatically.";
 export const SERVER_FULL =
   "Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota.";
+export const RESTART_NEEDED =
+  "Your server hit a storage error and refuses changes until it is restarted. Restart your obsync server.";
 export const NOT_OBSYNC_ANSWER =
   "Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the Custom request headers in obsync settings.";
 /**
@@ -559,6 +561,11 @@ export function refusalStatus(error: unknown, then = RESUMES): EngineStatus | nu
   const said = (message: string): string => (then === "" ? message : `${message} ${then}`);
   // First: a full server is never absence, whatever carried its answer.
   if (error.status === 507) return { kind: "error", code: "storage", message: said(SERVER_FULL) };
+  // Nor is a faulted one, and it never resumes by itself: only a restart
+  // brings it back (#295). A refused start still says what to press after.
+  if (RESTART_CODES.has(error.code)) {
+    return { kind: "error", code: "restart", message: then === RESUMES ? RESTART_NEEDED : said(RESTART_NEEDED) };
+  }
   const certificate = certificateRefusal(error);
   if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
   if (error.code === "unreachable") return { kind: "offline" };
@@ -1358,13 +1365,14 @@ export class SyncEngine {
   /**
    * The server answered a read (`write` false) or took a change (`write`
    * true): a refusal it no longer makes clears (#155). A full server still
-   * answers reads, so only a change it takes clears that one -- unless a read
-   * was what it refused (`refusedRead`, #292).
+   * answers reads, and so does one whose journal faulted, so only a change it
+   * takes clears either -- unless a read was what it refused (`refusedRead`,
+   * #292, #295).
    */
   private accepted(write: boolean): void {
     if (write) this.written++;
     const refused = this.refused;
-    if (refused === null || refused.kind !== "error" || (!write && refused.code === "storage" && !this.refusedRead)) return;
+    if (refused === null || refused.kind !== "error" || (!write && (refused.code === "storage" || refused.code === "restart") && !this.refusedRead)) return;
     this.refused = null;
     this.options.host.log(`engine decision=cleared reason=${refused.code ?? "error"}`);
     this.status(this.resting());

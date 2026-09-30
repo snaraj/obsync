@@ -1,12 +1,12 @@
 # M501: storage refusal is hidden as an offline repair
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -502,7 +502,7 @@
+@@ -560,7 +560,7 @@
    if (!(error instanceof ApiError)) return null;
    const said = (message: string): string => (then === "" ? message : `${message} ${then}`);
    // First: a full server is never absence, whatever carried its answer.
 -  if (error.status === 507) return { kind: "error", code: "storage", message: said(SERVER_FULL) };
 +  if (error.status === 507 && error.code !== "unreachable") return { kind: "error", code: "storage", message: said(SERVER_FULL) };
-   const certificate = certificateRefusal(error);
-   if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
-   if (error.code === "unreachable") return { kind: "offline" };
+   // Nor is a faulted one, and it never resumes by itself: only a restart
+   // brings it back (#295). A refused start still says what to press after.
+   if (RESTART_CODES.has(error.code)) {

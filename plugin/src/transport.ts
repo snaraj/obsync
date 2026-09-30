@@ -31,8 +31,9 @@
  * BACKOFF. A repeatable route retries on a network error or a 5xx with
  * exponential backoff and jitter, 1 s doubling to a 60 s ceiling, half fixed
  * and half random so a fleet of devices does not resynchronise on the same
- * second. 4xx never retries: a refusal is a decision, and so is `507`, the
- * one 5xx the server answers on purpose (requirement 8). A pause is not a
+ * second. 4xx never retries: a refusal is a decision, and so are the 5xx
+ * the server answers on purpose, `507` (requirement 8) and a faulted server's
+ * refusals (`RESTART_CODES`). A pause is not a
  * promise to wait it out: `wake` ends every pause at once when the device's
  * network is back, the app returns to the foreground, or the address changes,
  * and every attempt reads the server address afresh (issues #134, #186).
@@ -808,8 +809,9 @@ export class Transport {
       const response = await this.timed(asked, sending.deadlineMs);
       // A 507 is the server's decision that it is full, not its absence:
       // retried eight times, a full server read `offline — retrying` for
-      // minutes and never said why (S29, issue #155).
-      outcome = response.status < 500 || response.status === 507
+      // minutes and never said why (S29, issue #155). So is a server that
+      // needs a restart (`RESTART_CODES`, #295).
+      outcome = response.status < 500 || response.status === 507 || RESTART_CODES.has(parseError(response.text).code)
         ? { kind: "settled", response }
         : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
     } catch (error) {
@@ -1489,6 +1491,17 @@ export class Transport {
  * server itself made.
  */
 export const NOT_OBSYNC = "not_obsync";
+
+/**
+ * The codes of a server whose journal or nonce log is FAULTED: a write it
+ * could not take back, so it takes nothing more until it is restarted
+ * (`docs/storage.md`). Like a `507`, each is the server's decision, not its
+ * absence: retried as absence, a faulted server read `offline — retrying`
+ * and "resumes by itself" when only a restart brings it back (#295). Settled
+ * on the first answer whatever status carries them, and said as the restart
+ * they need (`refusalStatus`).
+ */
+export const RESTART_CODES: ReadonlySet<string> = new Set(["journal_faulted", "nonce_log_faulted"]);
 
 /**
  * A request the server refused because it did not come through the edge the

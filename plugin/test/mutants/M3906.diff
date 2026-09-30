@@ -1,0 +1,13 @@
+# M3906: the engine has no words for a faulted server: its settled refusal reads as a failed read or a refused change (#295)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -563,9 +563,6 @@
+   if (error.status === 507) return { kind: "error", code: "storage", message: said(SERVER_FULL) };
+   // Nor is a faulted one, and it never resumes by itself: only a restart
+   // brings it back (#295). A refused start still says what to press after.
+-  if (RESTART_CODES.has(error.code)) {
+-    return { kind: "error", code: "restart", message: then === RESUMES ? RESTART_NEEDED : said(RESTART_NEEDED) };
+-  }
+   const certificate = certificateRefusal(error);
+   if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
+   if (error.code === "unreachable") return { kind: "offline" };

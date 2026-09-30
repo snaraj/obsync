@@ -1,4 +1,4 @@
-# M3900: a storage refusal the feed's read met waits for a write like any other, so an answered read never clears it (#292)
+# M3907: a faulted journal's refusal clears on an answered read, while the journal still refuses every change (#295)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
 @@ -1362,7 +1362,7 @@
@@ -6,7 +6,7 @@
      if (write) this.written++;
      const refused = this.refused;
 -    if (refused === null || refused.kind !== "error" || (!write && (refused.code === "storage" || refused.code === "restart") && !this.refusedRead)) return;
-+    if (refused === null || refused.kind !== "error" || (!write && (refused.code === "storage" || refused.code === "restart"))) return;
++    if (refused === null || refused.kind !== "error" || (!write && refused.code === "storage" && !this.refusedRead)) return;
      this.refused = null;
      this.options.host.log(`engine decision=cleared reason=${refused.code ?? "error"}`);
      this.status(this.resting());

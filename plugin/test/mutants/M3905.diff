@@ -1,4 +1,4 @@
-# M1802: a 507 is unsettled again: a full server is retried as if it were absent
+# M3905: the transport retries a faulted server's 503 as absence, so its code never reaches the engine (#295)
 --- a/plugin/src/transport.ts
 +++ b/plugin/src/transport.ts
 @@ -797,7 +797,7 @@
@@ -6,7 +6,7 @@
        // minutes and never said why (S29, issue #155). So is a server that
        // needs a restart (`RESTART_CODES`, #295).
 -      outcome = response.status < 500 || response.status === 507 || RESTART_CODES.has(parseError(response.text).code)
-+      outcome = response.status < 500 || RESTART_CODES.has(parseError(response.text).code)
++      outcome = response.status < 500 || response.status === 507
          ? { kind: "settled", response }
          : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
      } catch (error) {

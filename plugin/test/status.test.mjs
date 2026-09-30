@@ -15,7 +15,7 @@ import { createRequire } from "node:module";
 import { FakeTimers, STEP_MS, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { SyncEngine, CALM_MS, FEED_STALL_MS, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, NOT_OBSYNC_ANSWER, RESUMES, FEED_FAILED, REVOKED_DEVICE } = require("../build/sync/engine.js");
+const { SyncEngine, CALM_MS, FEED_STALL_MS, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, RESTART_NEEDED, NOT_OBSYNC_ANSWER, RESUMES, FEED_FAILED, REVOKED_DEVICE } = require("../build/sync/engine.js");
 const { EDGE_REQUIRED } = require("../build/transport.js");
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -506,6 +506,94 @@ test("a note a pass queues again while its push is in flight reads one file, nev
   await r.timers.run(STEP_MS, () => r.last()?.kind === "idle");
   assert.equal(r.state.fileByPath("Held.md")?.size, edited.length, "idle before the change made during the push was sent");
   assert.deepEqual(r.statuses.slice(from).filter((status) => status.kind === "syncing" && status.pending > 1), [], "one note counted twice");
+  await stopped(r);
+});
+
+// A faulted server takes nothing until it is restarted (#295): it is not
+// absent, and it does not come back by itself.
+const RESTART = { kind: "error", code: "restart", message: RESTART_NEEDED };
+
+test("a faulted server's words never promise that sync resumes by itself: the running engine, a refused start and a press each say the restart (#295)", () => {
+  const { refusalStatus, refusalText, AFTER_START } = require("../build/sync/engine.js");
+  const { ApiError } = require("../build/transport.js");
+  for (const code of ["journal_faulted", "nonce_log_faulted"]) {
+    // Whatever status carries it.
+    for (const status of [503, 500]) {
+      const error = new ApiError(status, code, "SENTINEL");
+      assert.deepEqual(refusalStatus(error), RESTART, `${code} ${status}: the running engine`);
+      assert.deepEqual(refusalStatus(error, AFTER_START), { ...RESTART, message: `${RESTART_NEEDED} ${AFTER_START}` },
+        `${code} ${status}: a refused start is never asked again by a timer, so it says what to press`);
+      assert.equal(refusalText(error), RESTART_NEEDED, `${code} ${status}: a press`);
+    }
+  }
+  assert.ok(!RESTART_NEEDED.includes(RESUMES) && !RESTART_NEEDED.includes("by itself"), RESTART_NEEDED);
+});
+
+test("a faulted server that refuses the feed's read says it needs a restart, never offline or that it resumes, and the next answered read clears it (#295)", async () => {
+  for (const code of ["journal_faulted", "nonce_log_faulted"]) {
+    const r = await started();
+    await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+    let faulted = true;
+    const refused = refuse(r, (sent) => faulted && sent.url.includes("/v1/changes?"), () => r.server.error(503, code, "SENTINEL"));
+    r.server.releaseFeed();
+    await r.timers.run(STEP_MS, () => r.last()?.kind === "error");
+    assert.deepEqual(r.last(), RESTART, code);
+    assert.equal(refused.length, 1, `${code}: the first answer is the answer, never retried as absence`);
+    // The server restarts, and the feed's next read is answered.
+    faulted = false;
+    await r.timers.run(STEP_MS, () => r.last()?.kind === "idle");
+    assert.ok(!r.statuses.some((status) => status.kind === "offline"), `${code}: never offline`);
+    assert.ok(r.host.logs.includes("engine decision=cleared reason=restart"), r.host.logs.join("\n"));
+    await stopped(r);
+  }
+});
+
+test("a faulted nonce log refuses a change and the feed alike: the device says it needs a restart, never offline, and the restarted server's first answered read clears it (#295)", async () => {
+  // Every signed request records its nonce first, so a faulted nonce log
+  // refuses them all, and a read answered is the proof it was restarted.
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  let faulted = true;
+  const refused = refuse(r, (sent) => faulted && sent.url.includes("/v1/"), () => r.server.error(503, "nonce_log_faulted", "SENTINEL"));
+  r.host.seed("Faulted.md", "a note for a faulted server\n", 5000);
+  r.engine.changed("Faulted.md");
+  await r.timers.run(STEP_MS, () => r.last()?.kind === "error");
+  assert.deepEqual(r.last(), RESTART);
+  assert.equal(refused.length, 1, "the change's first refusal is the answer, never eight tries");
+  // The poll already waiting is answered; the feed's next read is refused.
+  r.server.releaseFeed();
+  await r.timers.run(STEP_MS, () => refused.length === 2);
+  assert.ok(refused[1].url.includes("/v1/changes?"), refused[1].url);
+  assert.deepEqual(r.last(), RESTART);
+  // Restarted: the feed's next read is answered, and that clears it before any change is taken.
+  faulted = false;
+  await r.timers.run(STEP_MS, () => r.host.logs.includes("engine decision=cleared reason=restart"));
+  assert.equal(r.state.fileByPath("Faulted.md"), undefined, "a read cleared it, not the change");
+  await r.timers.run(STEP_MS, () => r.state.fileByPath("Faulted.md") !== undefined && r.last()?.kind === "idle");
+  assert.ok(!r.statuses.some((status) => status.kind === "offline"), "a faulted server is never absence");
+  await stopped(r);
+});
+
+test("a faulted journal refuses a change while it still answers reads: the device says it needs a restart through them, and clears when a change is taken (#295)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  let faulted = true;
+  const refused = refuse(r, (sent) => faulted && sent.method === "POST" && sent.url.includes("/versions"), () => r.server.error(503, "journal_faulted", "SENTINEL"));
+  r.host.seed("Faulted.md", "a note for a faulted server\n", 5000);
+  r.engine.changed("Faulted.md");
+  await r.timers.run(STEP_MS, () => r.last()?.kind === "error");
+  assert.deepEqual(r.last(), RESTART);
+  assert.equal(refused.length, 1, "the version post's refusal is the answer");
+  // Reads are answered, and a faulted journal is still faulted: it stands.
+  r.server.releaseFeed();
+  await r.timers.run(0, () => r.server.feedWaiters.length === 1);
+  assert.deepEqual(r.last(), RESTART);
+  // Restarted: the note goes up, and the status says so by itself.
+  faulted = false;
+  r.engine.changed("Faulted.md");
+  await r.timers.run(STEP_MS, () => r.state.fileByPath("Faulted.md") !== undefined && r.last()?.kind === "idle");
+  assert.ok(!r.statuses.some((status) => status.kind === "offline"), "a faulted server is never absence");
+  assert.ok(r.host.logs.includes("engine decision=cleared reason=restart"), r.host.logs.join("\n"));
   await stopped(r);
 });
 

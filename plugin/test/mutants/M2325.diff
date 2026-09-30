@@ -1,10 +1,10 @@
 # M2325: the status reads an untrusted certificate as offline (certificate wording)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -503,8 +503,6 @@
-   const said = (message: string): string => (then === "" ? message : `${message} ${then}`);
-   // First: a full server is never absence, whatever carried its answer.
-   if (error.status === 507) return { kind: "error", code: "storage", message: said(SERVER_FULL) };
+@@ -566,8 +566,6 @@
+   if (RESTART_CODES.has(error.code)) {
+     return { kind: "error", code: "restart", message: then === RESUMES ? RESTART_NEEDED : said(RESTART_NEEDED) };
+   }
 -  const certificate = certificateRefusal(error);
 -  if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
    if (error.code === "unreachable") return { kind: "offline" };
