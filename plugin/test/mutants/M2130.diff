@@ -1,12 +1,12 @@
 # M2130: a note another device named is published at start instead of held for the feed
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3377,7 +3377,7 @@
+@@ -4495,7 +4495,7 @@
        // instead, and the feed adopts it by digest or settles the name by the
        // rule; a note no other device named goes out at once.
        if (this.holding !== null && context.state.fileByPath(file.path) === undefined &&
 -        (this.holding.all || (note !== undefined && note.device_id !== context.deviceId))) {
 +        (this.holding.all || false)) {
-         if (note !== undefined) this.expected.add(note.file_id);
+         if (note !== undefined) this.expected.set(note.file_id, { path: file.path, behind: note.behind });
          if (!this.holding.paths.has(file.path)) heldBack++;
          this.holdBack(file.path);

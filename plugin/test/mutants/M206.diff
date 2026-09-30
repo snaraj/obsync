@@ -1,9 +1,9 @@
 # M206: a folder moved out of the selection in Finder is published as deleted, so the other devices forget its folder records
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -951,9 +951,7 @@
+@@ -1585,9 +1585,7 @@
      }
-     for (const path of left) this.leftScope(path);
+     for (const [path, to] of left) this.leftScope(path, to);
      for (const folder of folders) {
 -      if (left.length > 0) this.folderLeftScope(folder, context.state.data.syncFolders);
 -      else if (holding) this.heldFolders.push(folder);

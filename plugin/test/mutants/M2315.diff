@@ -1,12 +1,12 @@
 # M2315: a device still pairing is not marked in the Devices list (#152)
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -973,7 +973,7 @@
+@@ -1064,7 +1064,7 @@
+   private deviceRow(device: DeviceRecord, named: string): Row {
      const self = device.device_id === this.plugin.state.data.deviceId;
      const seen = device.last_seen ? `, last seen ${new Date(device.last_seen).toLocaleString()}` : "";
-     // Enrolled by a pairing code, without the vault key yet (issue #152).
 -    const pending = device.state === "pending";
 +    const pending = false;
      const row: Row = {
-       name: `${device.name}${self ? " (this device)" : device.revoked ? " (revoked)" : pending ? " (not paired yet)" : ""}`,
+       name: `${device.name}${this.marked(device)}${named.slice(device.name.length)}`,
        desc: `${device.platform}, plugin ${device.app_version}${seen}${pending ? `. ${STILL_PAIRING}` : ""}`,

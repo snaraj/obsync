@@ -1,8 +1,8 @@
 # M1963: a held burst's folders are deleted everywhere at once
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -952,7 +952,7 @@
-     for (const path of left) this.leftScope(path);
+@@ -1586,7 +1586,7 @@
+     for (const [path, to] of left) this.leftScope(path, to);
      for (const folder of folders) {
        if (left.length > 0) this.folderLeftScope(folder, context.state.data.syncFolders);
 -      else if (holding) this.heldFolders.push(folder);

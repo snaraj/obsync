@@ -1,10 +1,10 @@
 # M3266: a refused write takes back its early mark, and a push after the refusal sends the empty file
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -914,8 +914,7 @@
-   try {
-     return await commit();
+@@ -933,8 +933,7 @@
    } catch (error) {
+     context.arrivals.delete(path);
+     if (answerable !== undefined) context.arrivals.set(path, answerable);
 -    if (unwritable(error) === "write_dropped") dropped[path] = fileId;
 -    else if (marked && dropped[path] === fileId) delete dropped[path];
 +    if (marked && dropped[path] === fileId) delete dropped[path];

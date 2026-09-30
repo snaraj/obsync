@@ -1,7 +1,7 @@
 # M3459: editor uploads can fork from merged bytes before the merge receipt (M717's mutation, its context moved at this head)
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2947,7 +2947,7 @@
+@@ -3014,7 +3014,7 @@
          // enqueue a push during commit, and that push must inherit this merge's
          // receipt rather than publish the new bytes onto the old parent.
          context.host.log(`pull decision=publishing reason=merge_receipt file=${change.file_id} seq=${change.seq}`);
@@ -10,8 +10,8 @@
            const stat = await commitMarked(context, change.file_id, localPath, () => writer.commit(context.now()));
            tally.left = stamp(stat);
            context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
-@@ -2988,7 +2988,7 @@
-           if (ours) context.host.notify(`obsync merged concurrent edits to ${target}.`);
+@@ -3062,7 +3062,7 @@
+           }
            context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq} announced=${ours}`);
            return "merged";
 -        });

@@ -1,9 +1,9 @@
 # M800: Native editor refusal escapes the per-note retry classification.
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -915,7 +915,7 @@
-     // return before this point.
-     if (entry.v === 1) await incoming?.();
+@@ -1228,7 +1228,7 @@
+       throw new VaultPathError("nested_vault");
+     }
      const applied = await applyVersion(context, change, entry).catch((error: unknown) => {
 -      if (error instanceof EditorBusy) throw new Unwritable(entry.path, "active_editor");
 +      if (false && error instanceof EditorBusy) throw new Unwritable(entry.path, "active_editor");

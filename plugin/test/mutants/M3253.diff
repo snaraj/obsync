@@ -1,10 +1,10 @@
 # M3253: a move across the selection's boundary leaves the mark behind, and the empty file goes out when it comes back (review of 2e4cdca, finding 2)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1500,7 +1500,6 @@
-     if (!source || !target) {
-       if (target) this.changed(to);
-       else if (source) this.leftScope(from);
+@@ -1736,7 +1736,6 @@
+         else delete context.state.data.departed[away];
+         this.saveMoved(context);
+       }
 -      if (this.carryMark(context, from, to)) this.saveMoved(context);
        return;
      }

@@ -1,12 +1,12 @@
 # M1926: a push of a name the vault resolves to a note recorded under other capitals mints a new file id
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -288,7 +288,7 @@
-  * note costs one pass over the records and no vault walk.
+@@ -398,7 +398,7 @@
+  * the records and no vault walk.
   */
  async function recordedSpelling(context: SyncContext, path: string): Promise<string> {
 -  if (context.state.fileByPath(path) !== undefined) return path;
 +  if (context.state.fileByPath(path) !== undefined || path !== "") return path;
-   if (!Object.keys(context.state.data.files).some((recorded) => caseOnly(recorded, path))) return path;
+   if (context.state.caseTwins(path).length === 0) return path;
    const shown = await context.host.spelling(path);
    if (shown === null || shown === path || context.state.fileByPath(shown) === undefined) return path;

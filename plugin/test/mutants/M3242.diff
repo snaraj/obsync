@@ -1,10 +1,10 @@
 # M3242: a lock or a full disk marks the file as a dropped write (recut into commitMarked)
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -914,7 +914,7 @@
-   try {
-     return await commit();
+@@ -933,7 +933,7 @@
    } catch (error) {
+     context.arrivals.delete(path);
+     if (answerable !== undefined) context.arrivals.set(path, answerable);
 -    if (unwritable(error) === "write_dropped") dropped[path] = fileId;
 +    if (unwritable(error) !== null) dropped[path] = fileId;
      else if (marked && dropped[path] === fileId) delete dropped[path];

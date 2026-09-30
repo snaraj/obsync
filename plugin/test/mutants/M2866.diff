@@ -1,10 +1,10 @@
 # M2866: a selection put in force stays pending too
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2482,7 +2482,6 @@
-     const widened = expandsSyncScope(previous, folders);
-     state.data.syncFolders = folders;
-     if (widened) state.data.lastSeq = 0;
+@@ -4377,7 +4377,6 @@
+     if (folders !== undefined && expandsSyncScope(folders, previous)) {
+       state.data.folderRemovals = Object.fromEntries(Object.keys(owed).map((path) => [path, [...folders]]));
+     }
 -    delete state.data.pendingScope;
      try {
        await state.save();

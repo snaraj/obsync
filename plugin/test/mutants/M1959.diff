@@ -1,7 +1,7 @@
 # M1959: a burst is never re-armed, so a slow multi-select splits under the floor
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -875,10 +875,7 @@
+@@ -1506,10 +1506,7 @@
        this.vanished.add(path);
        if (confirmed) this.confirmedDeletions.add(path);
      }
@@ -10,6 +10,6 @@
 -      this.timers.clear(this.vanishHandle);
 -    }
 +    if (this.vanishHandle !== null) return;
-     this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
-   }
- 
+     // Under the pull lock, as a pass is (`inPass`, issue #244): a debounce
+     // left pending for a name the pull has just moved finds it gone before
+     // the records follow, and deciding then publishes the pull's own move.

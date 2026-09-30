@@ -1,11 +1,11 @@
 # M2062: a large incoming version is downloaded in the feed's turn, holding up the notes behind it
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2472,7 +2472,6 @@
+@@ -3197,7 +3197,6 @@
     * has consumed it, and the mark moves past it (`processed`, issue #145).
     */
    private async receive(context: SyncContext, change: ChangeRecord): Promise<ApplyResult | null> {
 -    if (await this.background(context, change)) return null;
-     // Another device's authenticated version arrives before its write can
-     // trigger a host plugin. Waiting until applyChange returns can miss a
-     // rewrite made by that plugin during the filesystem event itself.
+     // An arrival no longer moves the clock an answer is measured from: only a
+     // write does (`pull.ts`, `commitMarked`, issue #278), and none lands over
+     // a save not yet judged, so no save needs judging here first.
