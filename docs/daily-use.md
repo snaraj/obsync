@@ -13,7 +13,7 @@ and each name ends in `(obsync)`, so typing `obsync` there lists them all:
 
 | Command | What it does |
 | --- | --- |
-| Sync now | Sends and fetches everything waiting now, and checks the contents of files up to 8 MiB |
+| Sync now | Sends and fetches everything waiting now. A computer also checks the contents of files up to 8 MiB; a phone asks its storage for each file's size and date and reads only the files that differ |
 | Verify all files | Checks every file's contents, however large. Slower; use it if you think another tool changed a file without changing its size or date |
 | Show sync status | What the engine is doing, and why it is not doing more |
 | Pair a new device | Mints a one-time pairing code on this device |
