@@ -149,12 +149,14 @@ words read `obsync: offline — retrying` (up to 1.1.3 the bar shows those words
 themselves), and nothing syncs in either direction.
 
 **Why it happens.** The device cannot reach the server at the **Server URL** in
-settings, or reaches something that is not the server. The plugin keeps trying
-by itself: 5 seconds apart at first, then less often, up to every 5 minutes,
-and again the moment the device reports its network is back. A device that is
-simply away from a home-only or VPN-only server resumes on its own when it
-returns, with nothing to press. In a test on a desktop, sync resumed about ten
-seconds after the server came back.
+settings, or reaches something that is not the server: a proxy or a tunnel that
+answers `502`, `503` or `504` with no obsync server behind it reads the same
+way. An error your obsync server answers itself does not (1.1.5). The plugin
+keeps trying by itself: 5 seconds apart at first, then less often, up to every
+5 minutes, and again the moment the device reports its network is back. A
+device that is simply away from a home-only or VPN-only server resumes on its
+own when it returns, with nothing to press. In a test on a desktop, sync
+resumed about ten seconds after the server came back.
 
 **How to fix it,** when the device stays offline on a network the server IS on:
 
@@ -1138,18 +1140,23 @@ it, and **Show sync status** repeats it.
 A running device names a refusal the first time the server makes it -- a
 full volume, a revoked device, a clock too far off, something in front of the
 server answering instead of it -- in words, and the words clear themselves
-once the server accepts again (issue #155). Only a server that does not answer
-reads `offline — retrying`. The code below is in the obsync log line.
+once the server accepts again (issue #155). An error the server answers in its
+own words, even a `5xx`, is retried and never reads offline (1.1.5): a change
+it keeps refusing reads `syncing` and is sent again at the next pass, and a
+read of changes that keeps failing reads "Changes from your server could not
+be read". Only a server that does not answer, or something in front of it
+answering for a server that is gone, reads `offline — retrying`. The code below
+is in the obsync log line.
 
 **How to fix it,** by what the reason says:
 
 | Reason | What it means | What to do |
 | --- | --- | --- |
-| `volume_full` or `journal_full` (HTTP 507) | the server's free-space watermark refused the write | free space on that volume, or grow it and the claim together |
-| `storage_full` (HTTP 507) | the disk itself had no room, before the watermark was reached | free space on that disk, and declare no more than it holds |
-| `quota_exceeded` (HTTP 507) | the account quota is exhausted | raise the quota, or remove files and let retention expire |
+| `volume_full` or `journal_full` (HTTP 507) | the server's free-space watermark refused the write; the device reads "Your server is out of storage" | free space on that volume, or grow it and the claim together |
+| `storage_full` (HTTP 507) | the disk itself had no room, before the watermark was reached; the same words | free space on that disk, and declare no more than it holds |
+| `quota_exceeded` (HTTP 507) | the account quota is exhausted; the same words | raise the quota, or remove files and let retention expire |
 | `not_obsync` | a proxy, access policy or sign-in page answered instead of obsync | check the Server URL, and the custom request headers in obsync settings |
-| `not_ready` (HTTP 503) | the server is not serving: a volume is unwritable, or it is replaying its journal | read the server's own log line, which names the volume and the I/O error |
+| `io_error` (HTTP 500) | a volume refused a read or a write; the device retries it, keeps a refused change to send again, and a read that keeps failing reads "Changes from your server could not be read" | the server's own log line names the volume and the I/O error |
 | `journal_faulted` or `nonce_log_faulted` (HTTP 503) | a write to the journal volume failed and could not be taken back, so the server takes nothing until it restarts | [The server needs a restart](#the-server-needs-a-restart) |
 | a credential-storage failure | Obsidian's secret storage is unavailable or unverified | reload Obsidian; if it keeps happening, reinstall obsync and pair this device again, with the recovery phrase or another syncing device at hand ([Where your keys are kept](community-plugin.md#where-your-keys-are-kept)); do not repeat server setup |
 
