@@ -1019,6 +1019,13 @@ export class SyncEngine {
    * It is what the status says first, and it clears itself.
    */
   private refused: EngineStatus | null = null;
+  /**
+   * Whether the standing refusal was the feed's own READ. A journal volume
+   * with no room refuses reads too, because every signed request records its
+   * nonce there (#292); then a read answered is the proof there is room
+   * again, and a full server a WRITE met still waits for a write.
+   */
+  private refusedRead = false;
   /** Whether the feed's latest read went unanswered: the status is `offline` until one is (#158). */
   private absent = false;
   /** Records of the page being applied that are not yet written: work the status counts (#158). */
@@ -1328,9 +1335,10 @@ export class SyncEngine {
    * they are; a refusal with a code STANDS -- it is what `resting` says until
    * the server accepts again -- and a failure with none is said once.
    */
-  private report(status: EngineStatus): void {
+  private report(status: EngineStatus, read = false): void {
     if (status.kind === "error" && status.code !== undefined && status.code !== "credential_rejected") {
       this.refused = status;
+      this.refusedRead = read;
       this.status(this.resting());
       return;
     }
@@ -1340,12 +1348,13 @@ export class SyncEngine {
   /**
    * The server answered a read (`write` false) or took a change (`write`
    * true): a refusal it no longer makes clears (#155). A full server still
-   * answers reads, so only a change it takes clears that one.
+   * answers reads, so only a change it takes clears that one -- unless a read
+   * was what it refused (`refusedRead`, #292).
    */
   private accepted(write: boolean): void {
     if (write) this.written++;
     const refused = this.refused;
-    if (refused === null || refused.kind !== "error" || (!write && refused.code === "storage")) return;
+    if (refused === null || refused.kind !== "error" || (!write && refused.code === "storage" && !this.refusedRead)) return;
     this.refused = null;
     this.options.host.log(`engine decision=cleared reason=${refused.code ?? "error"}`);
     this.status(this.resting());
@@ -2961,7 +2970,7 @@ export class SyncEngine {
         // no longer than that (`resting`).
         this.absent = refused.kind === "offline";
         if (this.absent) this.status(this.resting());
-        else this.report(refused);
+        else this.report(refused, true);
         await new Promise<void>((resolve) => {
           this.feedPause = resolve;
           this.timers.set(resolve, FEED_ERROR_BACKOFF_MS);

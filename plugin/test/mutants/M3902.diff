@@ -1,0 +1,12 @@
+# M3902: every storage refusal counts as a read's, so an answered read clears a full server a write met (#292)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1295,7 +1295,7 @@
+   private report(status: EngineStatus, read = false): void {
+     if (status.kind === "error" && status.code !== undefined && status.code !== "credential_rejected") {
+       this.refused = status;
+-      this.refusedRead = read;
++      this.refusedRead = true;
+       this.status(this.resting());
+       return;
+     }

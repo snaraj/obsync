@@ -299,6 +299,26 @@ test("a full server is said on the first chunk it refuses, stays through answere
   }
 });
 
+test("a journal volume with no room refuses the feed's read too: the device says out of storage, not offline, and the next answered read clears it (#292)", async () => {
+  // Every signed request records its nonce on the journal volume first, so a
+  // full one refuses reads as well; with nothing to write, only a read can
+  // show the room came back.
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  let full = true;
+  const refused = refuse(r, (sent) => full && sent.url.includes("/v1/changes?"), () => r.server.error(507, "storage_full", "the volume is out of space"));
+  r.server.releaseFeed();
+  await r.timers.run(STEP_MS, () => r.last()?.kind === "error");
+  assert.deepEqual(r.last(), { kind: "error", code: "storage", message: `${SERVER_FULL} ${RESUMES}` });
+  assert.equal(refused.length, 1, "the first 507 is the answer: never retried as absence");
+  assert.ok(!r.statuses.some((status) => status.kind === "offline"), "a full server is never absence");
+  // Room again, and nothing written since: the feed's next read is answered.
+  full = false;
+  await r.timers.run(STEP_MS, () => r.last()?.kind === "idle");
+  assert.ok(r.host.logs.includes("engine decision=cleared reason=storage"), r.host.logs.join("\n"));
+  await stopped(r);
+});
+
 test("a change sent around the server's edge says so, not that the server refused it, and clears when one gets through (#228)", async () => {
   const r = await started();
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
