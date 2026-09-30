@@ -1,0 +1,14 @@
+# M3997: Check after a refused address says to type one first, or asks the address saved before it (#303)
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -488,10 +488,6 @@
+           .addButton((button) => button.setButtonText("Check").onClick(() => {
+             // The field shows an address that was refused: Check neither says
+             // none was typed nor asks the address saved before it (#303).
+-            if (this.refusedUrl !== null) {
+-              this.say(`Server URL was not saved: ${this.refusedUrl}`);
+-              return;
+-            }
+             if (this.plugin.state.data.serverUrl === "") {
+               this.say("type your server's address in Server URL first.");
+               return;

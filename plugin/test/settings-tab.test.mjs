@@ -412,6 +412,42 @@ test("Check asks the server without a credential before setup, and says to type 
   assert.equal(s.obsidian.notices.at(-1), 'obsync: reached "obsync", 2 devices.');
 });
 
+test("Check after a refused address says it was not saved and asks no server, not even the one saved before (#303)", async (t) => {
+  const asked = [];
+  const s = open(t, {
+    transport: {
+      account: async () => { asked.push("account"); return { name: "obsync", device_count: 2 }; },
+      pluginManifest: async () => { asked.push("manifest"); return { version: "1.1.5" }; },
+    },
+  });
+  const field = () => s.render("Server URL").made.find((c) => c.kind === "text");
+  const check = () => { s.button(s.render("Connection").made, "Check").click(); return tick(); };
+  const refused = "obsync: Server URL was not saved: Mobile Obsidian only reaches HTTPS servers.";
+  s.plugin.isMobile = true;
+  // The iPhone pass: an address refused, then Check said to type one first while the field held it.
+  field().commit("http://lan.example.test");
+  await check();
+  assert.deepEqual(asked, [], "a refused address is asked nothing");
+  assert.equal(s.obsidian.notices.at(-1), refused);
+  // An address saved before is not the one the field shows: it is not asked either.
+  field().commit("sync.example.org");
+  field().commit("http://lan.example.test");
+  await check();
+  assert.deepEqual(asked, [], "the address saved before the refusal was asked");
+  assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org");
+  assert.equal(s.obsidian.notices.at(-1), refused);
+  // Corrected, Check asks the server again.
+  field().commit("phone.example.org");
+  await check();
+  assert.deepEqual(asked, ["manifest"]);
+  // Closing Settings puts the saved address back in the field, and the refusal goes with it.
+  field().commit("http://lan.example.test");
+  s.tab.hide();
+  await check();
+  assert.deepEqual(asked, ["manifest", "manifest"]);
+  assert.match(s.obsidian.notices.at(-1), /^obsync: reached your obsync server\./);
+});
+
 test("Check against a certificate this device does not trust says so and where to trust it, never 'nothing answered'", async (t) => {
   let ApiError;
   const s = open(t, { transport: { account: async () => { throw new ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID"); } } });
@@ -421,7 +457,7 @@ test("Check against a certificate this device does not trust says so and where t
   s.button(s.render("Connection").made, "Check").click();
   await tick(); await tick();
   assert.equal(s.obsidian.notices.at(-1), "obsync: This device does not trust your server's certificate, so it refused the connection. " +
-    "Trust that certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".");
+    "Trust that certificate on this device. See Troubleshooting, \"The certificate is not trusted on this device\".");
 });
 
 test("Check against a certificate for another name, or out of date, says which and what to do, never 'nothing answered' (#229)", async (t) => {

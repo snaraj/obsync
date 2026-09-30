@@ -1,10 +1,10 @@
 # M178: Check with no address sends a request to nowhere
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -482,7 +482,7 @@
-         this.unwatch = this.plugin.onStatusChange(describe);
-         setting
-           .addButton((button) => button.setButtonText("Check").onClick(() => {
+@@ -492,7 +492,7 @@
+               this.say(`Server URL was not saved: ${this.refusedUrl}`);
+               return;
+             }
 -            if (this.plugin.state.data.serverUrl === "") {
 +            if (false) {
                this.say("type your server's address in Server URL first.");

@@ -19,7 +19,7 @@ server again unless the entry says so.
 | The status bar icon is not the check mark | [Reading the status bar](#reading-the-status-bar) |
 | A second sync icon, red with a line through it, sits beside obsync's | [Reading the status bar](#reading-the-status-bar) |
 | The status bar shows a cloud with a line through it, and nothing syncs | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
-| "Use your server's https address", or on a phone "Mobile Obsidian only reaches HTTPS servers" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
+| "Use your server's https address", or on a phone "Mobile Obsidian only reaches HTTPS servers"; **Check** says "Server URL was not saved" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
 | **Check** takes about a minute, then says the server is unreachable | [Check says the server cannot be reached](#check-says-the-server-cannot-be-reached) |
 | One device connects and another does not, or a browser warns about the certificate | [The certificate is not trusted on this device](#the-certificate-is-not-trusted-on-this-device) |
 | obsync says the certificate was made for another name, or **Check** says nothing answered while a browser says the certificate is not valid for this name | [The certificate is for another name](#the-certificate-is-for-another-name) |
@@ -195,9 +195,14 @@ On a phone or tablet:
 
 > Mobile Obsidian only reaches HTTPS servers.
 
+If you select **Check** before you correct the address, Check says the same
+thing, after "Server URL was not saved:", and asks no server. It does not
+ask the address saved before either.
+
 **Why it happens.** The address starts with `http://`. Plain HTTP would send
 your credentials unencrypted, so the plugin accepts it only for a server on the
-same computer, and never on a phone.
+same computer, and never on a phone. An address the plugin refuses is not
+saved, even though the field still shows it.
 
 **How to fix it.**
 
@@ -263,7 +268,7 @@ Nothing in obsync or the server needs to change for this.
 **What you see.** One device connects and another does not. **Check**, the
 status and **Show sync status** on the failing device say:
 
-> This device does not trust your server's certificate, so it refused the connection. Trust that certificate on this device -- see Troubleshooting, "The certificate is not trusted on this device".
+> This device does not trust your server's certificate, so it refused the connection. Trust that certificate on this device. See Troubleshooting, "The certificate is not trusted on this device".
 
 Up to 1.1.3, **Check** ended with `net::ERR_CERT_AUTHORITY_INVALID` instead. A
 browser on that device warns about the certificate too.
@@ -302,7 +307,7 @@ proves an instance without it is refused.
 **What you see.** **Check** under **Connection**, the status bar's words and
 **Show sync status** say:
 
-> This device refused your server's certificate because it was made for another name than the one in the Server URL. Use the name it was made for in the Server URL, or make the certificate again for this name -- see Troubleshooting, "The certificate is for another name".
+> This device refused your server's certificate because it was made for another name than the one in the Server URL. Use the name it was made for in the Server URL, or make the certificate again for this name. See Troubleshooting, "The certificate is for another name".
 
 A browser on the same device, given the same address, says the certificate is
 not valid for this name (Chromium browsers show
@@ -454,7 +459,7 @@ no access of any kind.
 
 **What you see.** **Pair a new device** shows no code, only:
 
-> Your obsync server runs a version older than 1.1.5, or does not say which, so no code was made. Update your obsync server to 1.1.5 or later, then pair again -- see Troubleshooting, "Pairing says to update your obsync server".
+> Your obsync server runs a version older than 1.1.5, or does not say which, so no code was made. Update your obsync server to 1.1.5 or later, then pair again. See Troubleshooting, "Pairing says to update your obsync server".
 
 **Why it happens.** From 1.1.5, pairing adds a key exchange between the two
 devices, which the server has to pass on; an older server drops it, and the

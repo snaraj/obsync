@@ -252,6 +252,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
   /** Takes an outage's device list error back once the server answers again. */
   private unwatchDevices: (() => void) | null = null;
   private draftUrl: string | null = null;
+  /** Why the address the field shows was not saved, until one is or the tab closes; Check says it (#303). */
+  private refusedUrl: string | null = null;
   /** Stops the Connection row following the status, when the tab closes. */
   private unwatch: (() => void) | null = null;
   private draftHeaders: string | null = null;
@@ -284,6 +286,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     super.hide();
     this.unwatch?.();
     this.unwatch = null;
+    this.refusedUrl = null;
     this.draftScope = null;
     this.draftToken = "";
     this.draftName = null;
@@ -408,6 +411,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     const url = normalizeServerUrl(this.draftUrl);
     this.draftUrl = null;
     const refusal = serverUrlRefusal(url, this.plugin.isMobile);
+    this.refusedUrl = refusal;
     if (refusal !== null) {
       this.say(refusal);
       return;
@@ -482,6 +486,12 @@ export class ObsyncSettingTab extends PluginSettingTab {
         this.unwatch = this.plugin.onStatusChange(describe);
         setting
           .addButton((button) => button.setButtonText("Check").onClick(() => {
+            // The field shows an address that was refused: Check neither says
+            // none was typed nor asks the address saved before it (#303).
+            if (this.refusedUrl !== null) {
+              this.say(`Server URL was not saved: ${this.refusedUrl}`);
+              return;
+            }
             if (this.plugin.state.data.serverUrl === "") {
               this.say("type your server's address in Server URL first.");
               return;

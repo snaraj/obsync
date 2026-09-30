@@ -156,7 +156,7 @@ test("a certificate from an authority this device does not trust is said as that
   const { ApiError, CERT_UNTRUSTED, certificateRefusal } = require("../build/transport.js");
   const { refusalStatus, refusalText } = require("../build/sync/engine.js");
   assert.equal(CERT_UNTRUSTED, "This device does not trust your server's certificate, so it refused the connection. " +
-    "Trust that certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".");
+    "Trust that certificate on this device. See Troubleshooting, \"The certificate is not trusted on this device\".");
   const untrusted = [
     "network=net::ERR_CERT_AUTHORITY_INVALID",
     "network=The certificate for this server was signed by an unknown certifying authority.",
@@ -191,7 +191,7 @@ test("a certificate for another name or out of date is said as that, on every pa
   const { refusalStatus, refusalText } = require("../build/sync/engine.js");
   assert.equal(CERT_WRONG_NAME, "This device refused your server's certificate because it was made for another name than " +
     "the one in the Server URL. Use the name it was made for in the Server URL, or make the certificate again for this " +
-    "name -- see Troubleshooting, \"The certificate is for another name\".");
+    "name. See Troubleshooting, \"The certificate is for another name\".");
   assert.equal(CERT_OUT_OF_DATE, "This device refused your server's certificate because it has expired or is not valid " +
     "yet. Renew the certificate on your server, or check that this device's date and time are right.");
   const refused = [

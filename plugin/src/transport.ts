@@ -1552,8 +1552,8 @@ const UNTRUSTED_AUTHORITY = /ERR_CERT_AUTHORITY_INVALID|unknown certifying autho
 
 /** What an untrusted certificate says, with the one thing to do (troubleshooting, same heading). */
 export const CERT_UNTRUSTED =
-  "This device does not trust your server's certificate, so it refused the connection. Trust that certificate on this device " +
-  "-- see Troubleshooting, \"The certificate is not trusted on this device\".";
+  "This device does not trust your server's certificate, so it refused the connection. Trust that certificate on this device. " +
+  "See Troubleshooting, \"The certificate is not trusted on this device\".";
 
 /**
  * THE OTHER TWO CERTIFICATE REFUSALS, named the same way (issue #229): a
@@ -1567,7 +1567,7 @@ const OUT_OF_DATE = /ERR_CERT_DATE_INVALID|certificate for this server (?:has ex
 
 export const CERT_WRONG_NAME =
   "This device refused your server's certificate because it was made for another name than the one in the Server URL. " +
-  "Use the name it was made for in the Server URL, or make the certificate again for this name -- see Troubleshooting, " +
+  "Use the name it was made for in the Server URL, or make the certificate again for this name. See Troubleshooting, " +
   "\"The certificate is for another name\".";
 export const CERT_OUT_OF_DATE =
   "This device refused your server's certificate because it has expired or is not valid yet. Renew the certificate on " +

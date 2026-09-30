@@ -161,7 +161,7 @@ test("a start the server could not be reached for is retried, and the next one t
 test("a start refused by a certificate this device does not trust says so, is retried, and a start that gets through clears it", async (t) => {
   const r = await fixture(t);
   const said = "error — This device does not trust your server's certificate, so it refused the connection. Trust that " +
-    "certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".";
+    "certificate on this device. See Troubleshooting, \"The certificate is not trusted on this device\".";
   r.plan((n) => { if (n === 1) throw new r.ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID"); });
   await r.instance.onload();
   assert.deepEqual(r.win.armed(), [5000], "retried like absence: trusting the certificate needs no press here");

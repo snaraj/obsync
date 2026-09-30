@@ -203,7 +203,7 @@ const STILL_LISTED = " obsync could not remove this device from the server again
 const PAIR_INTRO =
   "On the new device, choose Pair this device in obsync and TYPE this code. It expires in ten minutes and carries the secret that unlocks your vault key on the new device. Don't email or message it to yourself, or send its link through a work chat: anyone who can read that channel could unlock your vault.";
 const SERVER_TOO_OLD =
-  "Your obsync server runs a version older than 1.1.5, or does not say which, so no code was made. Update your obsync server to 1.1.5 or later, then pair again -- see Troubleshooting, \"Pairing says to update your obsync server\".";
+  "Your obsync server runs a version older than 1.1.5, or does not say which, so no code was made. Update your obsync server to 1.1.5 or later, then pair again. See Troubleshooting, \"Pairing says to update your obsync server\".";
 const KEY_DROPPED =
   "did not keep the vault key and removed itself from the server: the code it used did not match this one, or pairing was cancelled on it. It does not sync; to pair it, make a new code and paste it whole there.";
 const KEY_UNCONFIRMED =
