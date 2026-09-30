@@ -104,6 +104,7 @@ server again unless the entry says so.
 | What you see | Go to |
 | --- | --- |
 | The server stops as it starts, its last line `listen_failed` | [The server cannot listen on its address](#the-server-cannot-listen-on-its-address) |
+| The server stops as it starts: "expected a size above the free-space watermark" | [The server refuses a volume size](#the-server-refuses-a-volume-size) |
 | The dashboard signs you out on every page | [The dashboard signs itself out on every page load](#the-dashboard-signs-itself-out-on-every-page-load) |
 | Repeated `dashboard_login_refused` lines in the log | [Repeated `dashboard_login_refused` lines](#repeated-dashboard_login_refused-lines) |
 | An occasional `replayed_nonce` | [A request arrived twice](#a-request-arrived-twice) |
@@ -982,6 +983,36 @@ names. The `io` word says why:
 `OBSYNC_LISTEN` to a free address and port above 1024 (the default is
 `[::]:8080`), and point your proxy at it. Then start the server again. Your
 devices wait and resume on their own.
+
+## The server refuses a volume size
+
+**What you see.** The server stops as it starts, with one line:
+
+```text
+obsyncd: configuration: OBSYNC_JOURNAL_CAPACITY is invalid: expected a size above the free-space watermark (OBSYNC_FREE_WATERMARK, by default the larger of 5% and 2GiB); at this size every write is refused
+```
+
+or the same for `OBSYNC_BLOBS_CAPACITY`. On Kubernetes the pod restarts with
+this line in its log. Up to 1.1.4 such a server started and said it was ready,
+then refused every write to that volume; a small journal refused even the
+account's setup.
+
+**Why it happens.** The server refuses a write that would leave a volume with
+less free space than a reserve: by default 5% of the size you declared, or
+2 GiB if that is larger. A volume declared no larger than its reserve could
+never take a single write. A 1 GiB or 2 GiB journal is the usual case.
+
+**How to fix it,** on the server:
+
+1. Declare the volume larger than its reserve, which is above 2 GiB with the
+   default. The guides use 4 GiB for the journal (`OBSYNC_JOURNAL_CAPACITY=4GiB`,
+   or `storage.journal.size: 4Gi` in the chart), and the disk must really
+   hold what you declare.
+2. If the disk cannot, and you run the server with `docker run` or systemd,
+   lower the reserve instead, below the size you declared: for example
+   `OBSYNC_FREE_WATERMARK=5%,256MiB`.
+3. Start the server again. It wrote nothing before it stopped, so nothing
+   needs repair.
 
 <a id="missing_auth-and-bad_signature"></a>
 

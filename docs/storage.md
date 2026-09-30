@@ -522,7 +522,9 @@ exposes no filesystem statistics, so `OBSYNC_BLOBS_CAPACITY` and
 claim sizes. Writes are refused with `507` when free space on the blob
 volume is below the larger of `OBSYNC_FREE_WATERMARK`'s two terms, or when
 the account's quota is exceeded. The dashboard shows both thresholds and the current
-values.
+values. Each declared capacity must exceed its own watermark: at or below it
+every write would be refused from the first, so the server refuses to start
+and names the variable.
 
 The journal volume has the same watermark applied to its own capacity, and
 refuses a frame that would take it below with `507 journal_full` before the
