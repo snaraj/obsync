@@ -120,6 +120,63 @@ used up (29 or 30 presses), then three minutes of the device's own reads.
   - console: `http GET /v1/changes… status=507 decision=refused
     code=storage_full` every 5 s, no error.
 
+## A faulted server (issues #294, #295)
+
+A server whose journal or nonce log is faulted takes nothing more until it is
+restarted. A write failed and taking it back failed too. The shipped server
+reaches that state only through such a double failure, and has no fault hook
+outside its tests. So `/readyz` answering `not_ready` for a faulted nonce log
+(#294) is proven by the server test
+`a_faulted_nonce_log_is_not_ready_until_a_restart`, not here.
+
+For the device (#295), the rig ran against the real server (image built from
+`13c4dbec`, `sha256:b076a3f78588…`, obsyncd 1.1.5) through a loopback proxy
+that exists only in the lane's lab. While switched on, the proxy answers what
+a faulted server answers, with the server's own code and detail:
+- `nonce_log_faulted` to every `/v1/` request (every signed request records
+  its nonce first);
+- `journal_faulted` to every version post (reads are still served).
+The restart is a real restart of the container, and the proxy stops refusing
+at that moment. Each journey is the same: a synced note, the fault, a new
+note, a minute of the device's own work, one Sync now press, the whole-app
+sweep, and then the restart.
+
+- Plugins:
+  - before: the train at `78ee6d26`
+    (`5e29e9583d41c3bfc2a3fd696cc4311951d9e120cda897d115dcb1dcf083d80f`);
+  - after, first: `13c4dbec` (`958753d9…`);
+  - after, final: `d75a7403`
+    (`3b091edd8f3cc0b7457a9e3b94233910d7280038262ebf55143f5e6378d30832`).
+
+| Journey (no id in docs/validation.md) | Before (`78ee6d26`) | After, first (`13c4dbec`) | After, final (`d75a7403`) |
+| --- | --- | --- | --- |
+| Nonce log faulted, a new note, desktop | fail: `offline — retrying` at +6.0 s, standing | pass: the restart words at +6.0 s, standing, never offline | pass: the same, with the final words |
+| Nonce log: Sync now while faulted | fail: "Your server is not answering. Sync resumes by itself when it is back." | pass: the restart words, once | pass: the same |
+| Nonce log: requests refused in the first 75 s | 32, retried eight at a time | 15 | 14 |
+| Nonce log: the restart | synced 7.1 s after it, with a press | cleared by the next read at +6.0 s, but `synced` while the note was still unsent until +131.6 s (issue #293) | with the press the words ask for: "sent 1 change." at +1.8 s, synced |
+| Journal faulted, a new note, desktop | — | pass: the restart words at +6.0 s, standing through a minute of answered reads; only the version posts refused (4) | pass: the same (3) |
+| Journal: the restart | — | fail: the restart words stood 294.8 s after the restart, until the next walk sent the note again | pass: with the press the words ask for, "sent 1 change." at +1.6 s, synced at +7.1 s |
+
+- **The journal's recovery is why the words changed.** A change the server
+  refused goes again at the next walk of the vault, up to five minutes later
+  (`WALK_MS`), and a person who has just restarted the server was still told
+  to restart it. The words now end "then select Sync now.", which sends it at
+  once.
+- **The nonce log's recovery shows issue #293 on this path.** A read clears
+  the refusal, and then the status reads `synced` over a note that is still
+  unsent until the next walk. The fix belongs to #293: an unsent change keeps
+  the status from `synced`.
+- **Sweep, after, final:**
+  - status item: the attention icon with the sentence;
+  - Show sync status: "What to do", the sentence, **Retry now**;
+  - notices: the Sync now answer is the sentence, once;
+  - console: warnings only, `http … status=503 decision=refused
+    code=nonce_log_faulted` or `code=journal_faulted`; no error-level,
+    uncaught or rejection line in any of the four after runs;
+  - settings: unchanged.
+- Not attempted: a phone. A phone says the sentence once in a notice, the
+  same as every standing refusal (#209).
+
 ## Also run
 
 - `scripts/ci/image-smoke.sh`, whose property 9 now sends one signed chunk

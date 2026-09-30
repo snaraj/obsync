@@ -242,7 +242,10 @@ so each is unspent and the device may send it again. A signed READ is refused
 too, and must be: its nonce is recorded like any other, and a read answered
 with its nonce unrecorded is one a crash makes replayable. A cut that itself
 fails leaves the log refusing every request, `503 nonce_log_faulted`, until
-a restart truncates the torn tail. The
+a restart truncates the torn tail. The flush that finds it logs one
+`event=nonce_log decision=faulted rollback_io=<kind>` line, and `/readyz`
+answers `503 not_ready` with `nonce log faulted; restart to recover` until
+then. The
 compaction threshold is still outstanding, so the next batch attempts the
 rewrite again. A flush that panics, which only a bug does, settles the same
 way: its whole batch is answered `503 nonce_log_unavailable`, cut back and

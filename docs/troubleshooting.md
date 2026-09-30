@@ -1079,6 +1079,32 @@ disk really holds, or something else on the disk used the space.
 3. Nothing is lost on the devices: they send what they hold once the server
    accepts writes again. [Storage](storage.md) explains the reserve.
 
+## The server needs a restart
+
+**What you see.** The alert icon, and its words read:
+
+> obsync: error — Your server hit a storage error and refuses changes until it is restarted. Restart your obsync server, then select Sync now.
+
+A phone also says it once in a notice. New and changed notes stay on the
+device. After the restart, **Sync now** sends them and clears the alert at
+once; without it, a change the server refused goes again at the next check of
+the vault, within five minutes. The server's log and its dashboard show
+`journal_faulted` or `nonce_log_faulted`, and `/readyz` answers `not_ready`.
+Up to 1.1.4 devices showed they were offline and said sync resumes by itself.
+
+**Why it happens.** A write to the journal volume failed, and taking it back
+failed too, usually because the volume was full or went read-only. The server
+then takes nothing more rather than build on a torn record. Only a restart
+clears it: the restart cuts the torn record and replays the rest.
+
+**How to fix it,** on the server:
+
+1. Read the line that says why: `event=journal_append_failed decision=faulted`
+   or `event=nonce_log decision=faulted`, and its `rollback_io=<kind>`.
+2. Fix that on the journal volume: free space, or make it writable again.
+3. Restart the server, then select **Sync now** on each device. Nothing is
+   lost on the devices: they send what they hold.
+
 ## Other refusals a device can show
 
 Setup and pairing say what happened and what to do in words (1.1.4), and the
@@ -1098,7 +1124,6 @@ entries above; none of them is a reason to repeat setup.
 | `503 body_incomplete` | a request's body ended or its connection broke before the whole body arrived: the device went offline mid-request, or a proxy in front of the server gave up on it; the server and its storage are fine | nothing: it retries by itself. If it repeats, check the proxy's body-size and timeout settings |
 | `503 nonce_share_full` | this one device has sent more signed requests in the last ten minutes than its share of the replay cache holds; other devices are unaffected | transient: its requests retry with backoff as its older ones age out. A device that keeps hitting it is misbehaving: update or revoke it |
 | `503 nonce_log_unavailable` | the server could not record replay state, so it refused the request rather than accept one it cannot prove is not a replay | the server's own log names the I/O error; treat it as a storage problem |
-| `503 nonce_log_faulted` | a record of replay state failed and could not be taken back off the journal volume, so the server refuses every signed request until it restarts | fix what the server's log names on the journal volume, then restart the server; nothing is lost on the devices |
 
 ## Sync stopped with an error
 
@@ -1125,7 +1150,7 @@ reads `offline — retrying`. The code below is in the obsync log line.
 | `quota_exceeded` (HTTP 507) | the account quota is exhausted | raise the quota, or remove files and let retention expire |
 | `not_obsync` | a proxy, access policy or sign-in page answered instead of obsync | check the Server URL, and the custom request headers in obsync settings |
 | `not_ready` (HTTP 503) | the server is not serving: a volume is unwritable, or it is replaying its journal | read the server's own log line, which names the volume and the I/O error |
-| `journal_faulted` (HTTP 503) | a journal write failed and the server refuses to acknowledge anything it cannot durably record | the server log names the cause; the volume is the place to look |
+| `journal_faulted` or `nonce_log_faulted` (HTTP 503) | a write to the journal volume failed and could not be taken back, so the server takes nothing until it restarts | [The server needs a restart](#the-server-needs-a-restart) |
 | a credential-storage failure | Obsidian's secret storage is unavailable or unverified | reload Obsidian; if it keeps happening, reinstall obsync and pair this device again, with the recovery phrase or another syncing device at hand ([Where your keys are kept](community-plugin.md#where-your-keys-are-kept)); do not repeat server setup |
 
 ## Changes from your server could not be read

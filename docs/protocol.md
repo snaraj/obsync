@@ -36,7 +36,9 @@ only this device is refused), `507 storage_full` (the journal volume has no
 room for that record, so every signed request is refused, a read included;
 server 1.1.5, and `503 nonce_log_unavailable` before), `503 nonce_log_faulted`
 (a refused record could not be cut back off the volume either, so every
-signed request is refused until the server restarts; server 1.1.5), `503
+signed request is refused, and `/readyz` answers `503 not_ready`, until the
+server restarts; server 1.1.5. Like `503 journal_faulted`, a client says it
+as the restart it needs and does not retry it as absence; plugin 1.1.5), `503
 nonce_log_unavailable` (the volume would not take that record for any other
 reason), `403 device_revoked` (answered from the device
 record before the signature is checked, because revocation destroys the
@@ -102,8 +104,9 @@ and a test asserts every route it emits appears there.
 
 - `GET /livez` → `200 ok` while the process runs.
 - `GET /readyz` → `200 {"ready":true}` when volumes are writable,
-  the journal is replayed and its usage is verified, and no shutdown is in
-  progress; else `503 not_ready`. A journal whose usage survey was refused is
+  the journal is replayed and its usage is verified, neither the journal nor
+  the nonce log is faulted (the nonce log since server 1.1.5), and no shutdown
+  is in progress; else `503 not_ready`. A journal whose usage survey was refused is
   re-surveyed by this probe, so a fixed volume answers `200` again without any
   write.
 
