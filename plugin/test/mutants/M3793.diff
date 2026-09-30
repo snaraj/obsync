@@ -1,12 +1,14 @@
 # M3793: an unsent note queued again is counted by the queue and the set both (#293)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3140,7 +3140,7 @@
-     // A change a push gave up on (#293), counted once: the queue counts one
-     // queued again, and a push of it takes it out of the set (`pushNow`).
-     let unsent = 0;
--    for (const path of this.unsent.keys()) if (!this.queue.includes(path)) unsent++;
-+    for (const _path of this.unsent.keys()) unsent++;
-     const work = this.queue.length + this.active + this.pulls + waiting + unsent;
+@@ -3259,8 +3259,8 @@
+     // flight is one file of work, and so is one a push gave up on (#293) or
+     // one waiting on an editor, queued or pushed again. The queued push still
+     // goes: it is the one that sends a change made during the first.
+-    const paths = new Set([...this.queue, ...this.pushing.keys(), ...this.unsent.keys(), ...waiting]);
+-    const work = paths.size + this.pulls;
++    const paths = [...new Set([...this.queue, ...this.pushing.keys(), ...waiting]), ...this.unsent.keys()];
++    const work = paths.length + this.pulls;
      // A NOTE WAITING ON AN EDITOR HERE IS NAMED (issue #252): a count
      // alone read "syncing 1" for minutes and said nothing of what to do.
+     const held = records.find((entry) => entry.reason === "active_editor")?.path;

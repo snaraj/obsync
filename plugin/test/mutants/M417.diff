@@ -1,12 +1,12 @@
 # M417: a note waiting on its push hides a parked file the user has to act on
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2560,7 +2560,7 @@
-     const waiting = (forked?.size ?? 0) + records.filter(working).length;
+@@ -3238,7 +3238,7 @@
+     for (const entry of records) if (working(entry)) waiting.push(entry.path);
      const parked = records.filter((entry) => !working(entry));
      const newest = parked[parked.length - 1];
 -    if (newest !== undefined) {
-+    if (newest !== undefined && waiting === 0) {
++    if (newest !== undefined && waiting.length === 0) {
        const more = parked.length > 1 ? ` (and ${parked.length - 1} more: Show sync status)` : "";
        return { kind: "error", message: unwritableText(newest.path, newest.reason) + more };
      }

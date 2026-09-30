@@ -1,8 +1,8 @@
 # M3294: a note waiting on its download is named as waiting on unsaved changes
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3258,7 +3258,7 @@
-     const work = this.queue.length + this.active + this.pulls + waiting + unsent;
+@@ -3263,7 +3263,7 @@
+     const work = paths.size + this.pulls;
      // A NOTE WAITING ON AN EDITOR HERE IS NAMED (issue #252): a count
      // alone read "syncing 1" for minutes and said nothing of what to do.
 -    const held = records.find((entry) => entry.reason === "active_editor")?.path;

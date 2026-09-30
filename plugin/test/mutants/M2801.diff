@@ -6,6 +6,6 @@
     */
    private resting(): EngineStatus {
 -    if (this.refused !== null) return this.refused;
-     const forked = this.contextValue?.forked;
-     for (const fileId of forked ?? []) {
-       const path = this.options.state.pathByFileId(fileId);
+     // Notes waiting on their own push to settle a fork, or on an editor or a
+     // download here: work, by path (#296).
+     const waiting: string[] = [];

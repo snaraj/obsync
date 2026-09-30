@@ -1,11 +1,11 @@
 # M2814: the feed's failed read never reads offline: absence is forgotten
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3250,7 +3250,6 @@
+@@ -3254,7 +3254,6 @@
      // on their own push or on an editor -- and `idle` only when there is none
      // AND the feed's latest read was answered. Before that first answer the
      // device is checking, which is not idle either.
 -    if (this.absent) return { kind: "offline" };
-     // A change a push gave up on (#293), counted once: the queue counts one
-     // queued again, and a push of it takes it out of the set (`pushNow`).
-     let unsent = 0;
+     // PATHS, NOT ENTRIES (#296): a note queued again while its push is in
+     // flight is one file of work, and so is one a push gave up on (#293) or
+     // one waiting on an editor, queued or pushed again. The queued push still

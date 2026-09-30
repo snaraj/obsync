@@ -411,6 +411,33 @@ test("a push that gives up while a pass compares the vault is still work after t
   await stopped(r);
 });
 
+test("a note a pass queues again while its push is in flight reads one file, never two, and the queued push sends what changed meanwhile (#296)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  // The note's chunk upload is held on the wire until the test lets it go.
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const request = r.transport.options.request;
+  const puts = refuse(r, (sent) => sent.method === "PUT", async (sent) => { await held; return request(sent); });
+  const from = r.statuses.length;
+  r.host.seed("Held.md", "sent first\n", 5000);
+  r.engine.changed("Held.md");
+  await r.timers.run(STEP_MS, () => puts.length === 1);
+  // The next pass finds the note unrecorded and queues it again behind its
+  // own push: one note, one file of work.
+  await r.timers.run(STEP_MS, () => r.host.logs.some((line) => line.startsWith("scan decision=queued ") && / queued=1 /.test(line)));
+  assert.deepEqual(r.engine.current(), { kind: "syncing", pending: 1 }, "one note counted twice");
+  // Changed with no event, as a sync tool or a script changes it: the push
+  // the pass queued is the one that sends it, so idle waits for that.
+  const edited = "changed while the first push was on the wire\n";
+  r.host.seed("Held.md", edited, 7000);
+  release();
+  await r.timers.run(STEP_MS, () => r.last()?.kind === "idle");
+  assert.equal(r.state.fileByPath("Held.md")?.size, edited.length, "idle before the change made during the push was sent");
+  assert.deepEqual(r.statuses.slice(from).filter((status) => status.kind === "syncing" && status.pending > 1), [], "one note counted twice");
+  await stopped(r);
+});
+
 test("a change sent around the server's edge says so, not that the server refused it, and clears when one gets through (#228)", async () => {
   const r = await started();
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);

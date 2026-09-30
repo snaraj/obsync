@@ -3224,14 +3224,18 @@ export class SyncEngine {
    */
   private resting(): EngineStatus {
     if (this.refused !== null) return this.refused;
+    // Notes waiting on their own push to settle a fork, or on an editor or a
+    // download here: work, by path (#296).
+    const waiting: string[] = [];
     const forked = this.contextValue?.forked;
     for (const fileId of forked ?? []) {
       const path = this.options.state.pathByFileId(fileId);
       if (path === undefined || !this.acting(path)) forked?.delete(fileId);
+      else waiting.push(path);
     }
     const records = Object.values(this.options.state.data.parked);
     const working = (entry: { reason: string }): boolean => entry.reason === "active_editor" || entry.reason === DOWNLOADING;
-    const waiting = (forked?.size ?? 0) + records.filter(working).length;
+    for (const entry of records) if (working(entry)) waiting.push(entry.path);
     const parked = records.filter((entry) => !working(entry));
     const newest = parked[parked.length - 1];
     if (newest !== undefined) {
@@ -3251,11 +3255,12 @@ export class SyncEngine {
     // AND the feed's latest read was answered. Before that first answer the
     // device is checking, which is not idle either.
     if (this.absent) return { kind: "offline" };
-    // A change a push gave up on (#293), counted once: the queue counts one
-    // queued again, and a push of it takes it out of the set (`pushNow`).
-    let unsent = 0;
-    for (const path of this.unsent.keys()) if (!this.queue.includes(path)) unsent++;
-    const work = this.queue.length + this.active + this.pulls + waiting + unsent;
+    // PATHS, NOT ENTRIES (#296): a note queued again while its push is in
+    // flight is one file of work, and so is one a push gave up on (#293) or
+    // one waiting on an editor, queued or pushed again. The queued push still
+    // goes: it is the one that sends a change made during the first.
+    const paths = new Set([...this.queue, ...this.pushing.keys(), ...this.unsent.keys(), ...waiting]);
+    const work = paths.size + this.pulls;
     // A NOTE WAITING ON AN EDITOR HERE IS NAMED (issue #252): a count
     // alone read "syncing 1" for minutes and said nothing of what to do.
     const held = records.find((entry) => entry.reason === "active_editor")?.path;
