@@ -1,11 +1,13 @@
 # M3234: two devices under one name are two rows nobody can tell apart, and one Obsidian key
+# re-pointed: the twin test moved into `named` (b3ae72b7, #247), shared with Revoke and Forget, where M3477 mutates it whole; this drops only the row's id
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -919,7 +919,6 @@
-     // draw (rig, 2026-09-27). Such a row carries the start of its device id.
-     const names = rows.map((row) => row.name);
-     rows.forEach((row, at) => {
--      if (names.indexOf(row.name) !== names.lastIndexOf(row.name)) row.name += ` · ${devices[at]?.device_id.slice(0, 8)}`;
-     });
-     rows.push({
-       name: "Device list",
+@@ -1066,7 +1066,7 @@
+     const seen = device.last_seen ? `, last seen ${new Date(device.last_seen).toLocaleString()}` : "";
+     const pending = device.state === "pending";
+     const row: Row = {
+-      name: `${device.name}${this.marked(device)}${named.slice(device.name.length)}`,
++      name: `${device.name}${this.marked(device)}`,
+       desc: `${device.platform}, plugin ${device.app_version}${seen}${pending ? `. ${STILL_PAIRING}` : ""}`,
+     };
+     if (device.revoked) {

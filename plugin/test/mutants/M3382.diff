@@ -1,13 +1,13 @@
 # M3382: a scan lists the vault before it waits for a pull, and compares after (#244)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3441,7 +3441,8 @@
+@@ -4075,7 +4075,8 @@
          this.walkFor = null;
          this.unwalked = 0;
        }
--      await this.inPass(context.host, "scan", async () => this.survey((await context.host.scan?.()) ?? await context.host.list(), false, "scan"));
-+      const own = (await context.host.scan?.()) ?? await context.host.list();
+-      await this.inPass(context.host, "scan", async () => this.survey((await context.host.scan?.(context.signal)) ?? await context.host.list(), false, "scan"));
++      const own = (await context.host.scan?.(context.signal)) ?? await context.host.list();
 +      await this.inPass(context.host, "scan", async () => this.survey(own, false, "scan"));
      } catch (error) {
-       context.host.log(
-         `scan decision=failed reason=${error instanceof Error ? error.message : String(error)} budget_ms=${SCAN_BUDGET_MS}`,
+       // A walk the stop ended (`stopAndWait`) is no failure of the scan.
+       context.host.log(this.running

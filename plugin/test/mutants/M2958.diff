@@ -5,8 +5,8 @@
   * budget, which holds every restart (#287). A press's or a pairing's wait is
   * routine, and stays at debug.
   */
--const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback)\b|^engine decision=waiting\b/;
-+const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved)\b|^engine decision=waiting\b/;
+-const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback|throttle_unavailable)\b|^engine decision=waiting\b/;
++const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|throttle_unavailable)\b|^engine decision=waiting\b/;
  
  /**
   * How long a device waits to start again after the server could not be

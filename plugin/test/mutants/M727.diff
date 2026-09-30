@@ -1,22 +1,13 @@
 # M727: unpublished typing is included in another criss-cross merge before its own upload
+# re-pointed: the criss-cross-only deferral became the rule for every merge (f89d3337, #227); this exempts exactly the criss-cross merges from it (M3440 removes it for all)
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2476,17 +2476,7 @@
-       const merged = shared === false ? { ok: false as const, reason: "overlap" as const }
-         : threeWayMerge(shared ?? decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
-       if (merged.ok) {
--        if (crossed) {
--          const own = await manifestOf(context, file, change, localVersionId);
--          if (own?.path === localPath && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {
--            // Two devices adding unpublished typing to another merge of a
--            // criss-cross create different merges of the same pair again.
--            // Publish this edit on its recorded parent before merging, so
--            // continued typing cannot grow that ambiguity one level per save.
--            context.host.log(`pull decision=deferred reason=unpublished_criss_cross file=${change.file_id} seq=${change.seq}`);
--            return await deferToPush(context, change, localPath);
--          }
--        }
-+        void crossed;
-         const text = new TextEncoder().encode(merged.text);
-         // A MERGE THIS DEVICE TOOK NO PART IN IS NOT NEWS HERE (issue #164). A
-         // first download, or a replay from zero, meets forks that other devices
+@@ -2939,7 +2939,7 @@
+         // the fork is merged from what is published, as a fast-forward over an
+         // unpushed edit is (below). A result that is the incoming version
+         // itself makes no merge at all.
+-        if (!ahead && !sameBytes(text, theirs)) {
++        if (!crossed && !ahead && !sameBytes(text, theirs)) {
+           // A head this device cannot open proves nothing about the note.
+           const own = await manifestOf(context, file, change, localVersionId).catch(() => null);
+           if (own !== null && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {

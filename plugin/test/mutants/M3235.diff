@@ -1,12 +1,12 @@
 # M3235: every device row carries its id, twin or not
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -919,7 +919,7 @@
-     // draw (rig, 2026-09-27). Such a row carries the start of its device id.
-     const names = rows.map((row) => row.name);
-     rows.forEach((row, at) => {
--      if (names.indexOf(row.name) !== names.lastIndexOf(row.name)) row.name += ` · ${devices[at]?.device_id.slice(0, 8)}`;
-+      if (true) row.name += ` · ${devices[at]?.device_id.slice(0, 8)}`;
-     });
-     rows.push({
-       name: "Device list",
+@@ -991,7 +991,7 @@
+     const names = devices.map((device) => `${device.name}${this.marked(device)}`);
+     const named = (at: number): string => {
+       const name = names[at] as string;
+-      return names.indexOf(name) === names.lastIndexOf(name) ? (devices[at] as DeviceRecord).name : `${(devices[at] as DeviceRecord).name} · ${(devices[at] as DeviceRecord).device_id.slice(0, 8)}`;
++      return false ? (devices[at] as DeviceRecord).name : `${(devices[at] as DeviceRecord).name} · ${(devices[at] as DeviceRecord).device_id.slice(0, 8)}`;
+     };
+     const rows = devices.map((device, at) => this.deviceRow(device, named(at)));
+     // The revoked rows are the last ones: the fold goes in front of them.
