@@ -533,6 +533,18 @@ values. Each declared capacity must exceed its own watermark: at or below it
 every write would be refused from the first, so the server refuses to start
 and names the variable.
 
+A chunk upload reserves what its check admits (server 1.1.5, issue #301). Its
+declared length is measured against the tracked usage PLUS every upload that
+has passed its own check and is not yet counted, under the one lock that
+checks. The admitted upload then holds its bytes until they are counted. A
+refused upload holds nothing. An upload that does not land (a body that does
+not verify, a write the volume refuses, a panic) gives its bytes back on the
+way out. Before, uploads of different chunks that arrived together were each
+measured against the same total and all passed: an 8 MiB volume with a 1 MiB
+reserve stored a 12.6 MB note and ran down to nothing free. The refusal's `free`
+and `used` count those reserved bytes, so a `volume_full` line can name less
+free space than the dashboard shows while uploads are in flight.
+
 The journal volume has the same watermark applied to its own capacity, and
 refuses a frame that would take it below with `507 journal_full` before the
 volume is asked. Tracked journal usage is everything under the journal root —

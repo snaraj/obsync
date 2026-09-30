@@ -177,10 +177,47 @@ sweep, and then the restart.
 - Not attempted: a phone. A phone says the sentence once in a notice, the
   same as every standing refusal (#209).
 
+## Uploads that arrive together (issue #301)
+
+The same rig with the blob volume DECLARED at 8 MiB and a 1 MiB reserve
+(`OBSYNC_BLOBS_CAPACITY=8MiB`, `OBSYNC_FREE_WATERMARK=1MiB`; the server's
+own `event=config` line reads `blobs_capacity=8388608 watermark_bytes=1048576`).
+The volume under it is an ordinary Docker volume, far larger, so only the
+watermark can stop a write: 7,340,032 bytes of room above the reserve. A
+small note synced first. Then a note of 12,765,790 bytes of incompressible
+text was written into the vault, so no chunk repeats another. In the before
+run every chunk was admitted, 5.4 MB past the room. A check that counted
+the chunks ahead of it would have refused the last large one, so each check
+saw a total that did not yet include the others in flight.
+
+- Builds: before, the train at `ddc5c249` (image `sha256:ed196b4dd78c…`);
+  after, this change (`966d00b3`, image `sha256:5fabb975098f…`). The plugin
+  is the train's own in both runs
+  (`68a4e38e3fd8f89b015d91b8cdc014ca51b6cc45aed95efee962e97151c0dcd6`).
+
+| Journey (no id in docs/validation.md) | Before (`ddc5c249`) | After (`966d00b3`) |
+| --- | --- | --- |
+| A note larger than the room, desktop | fail: the whole note stored, 12,765,908 bytes of chunks against 7,340,032 of room, no refusal; the device said synced | pass: 6,554,207 bytes stored, inside the room; the 6,211,717-byte chunk that would pass the reserve refused `507 volume_full` (`free=1834401 watermark=1048576`) |
+| What the device said | `synced` | "Your server is out of storage, …" at +5.6 s, standing |
+
+- **Server, after:** two `event=chunk_put … decision=volume_full` lines for
+  that one chunk in two minutes. The blob volume held 6,460 KiB (before:
+  12,528 KiB).
+- **Sweep, after:**
+  - status item: the attention icon with the sentence;
+  - Show sync status: "What to do" with **Retry now**;
+  - console: warnings only, `http PUT /v1/chunks/… status=507
+    decision=refused code=volume_full`, with no error-level, uncaught or
+    rejection line.
+- Not attempted: a phone. The server's admission does not depend on the
+  device.
+
 ## Also run
 
 - `scripts/ci/image-smoke.sh`, whose property 9 now sends one signed chunk
   onto the exhausted volume: `properties=11 decision=pass` on the after
   image; on the before image it refuses with `a chunk the full blob volume
   cannot hold was not refused 507 storage_full` (`answered 500, not 507:
-  'io_error'`).
+  'io_error'`). On the #301 image (`966d00b3`) it passes too,
+  `properties=11 decision=pass`: a chunk the disk cannot hold gives its
+  reservation back as it is refused.
