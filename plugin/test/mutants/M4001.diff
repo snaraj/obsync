@@ -1,0 +1,11 @@
+# M4001: a deletion with nothing recorded and nothing at the path leaves the out-of-storage words to the next pass (#305)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2675,7 +2675,6 @@
+         // and nothing of it is unsent: a change a full server refused leaves
+         // with the file, not at the next pass (#305).
+         if ((await context.host.stat(path)) === null) {
+-          this.sent(path);
+           return;
+         }
+       }

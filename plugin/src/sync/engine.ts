@@ -2671,8 +2671,13 @@ export class SyncEngine {
         // No tombstone was posted: either nothing was recorded to delete, or
         // the file is there after all and `pushDelete` refused to say it was
         // gone. A file that is there is a change, which is the rest of this
-        // function; a path with nothing at it and nothing recorded is done.
-        if ((await context.host.stat(path)) === null) return;
+        // function; a path with nothing at it and nothing recorded is done,
+        // and nothing of it is unsent: a change a full server refused leaves
+        // with the file, not at the next pass (#305).
+        if ((await context.host.stat(path)) === null) {
+          this.sent(path);
+          return;
+        }
       }
       // A DOWNLOAD THIS DEVICE COULD NOT WRITE IS NOT AN EDIT (#242). A phone
       // whose write stayed empty however often it was made parks the record

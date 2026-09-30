@@ -360,7 +360,8 @@ your server ran out of storage and refused a large file, a smaller note it
 still took made the status drop "out of storage" and read "syncing 1 file",
 with the large file still unsent. "Out of storage" now stays, in the status
 bar and in **Show sync status**, until that file is sent or leaves the
-vault, even while obsync tries to send it again (#300).
+vault, even while obsync tries to send it again. Deleting that file clears
+it at once (#300, #305).
 
 **The free-space reserve and an account's quota hold when uploads arrive
 together.** Each chunk upload was checked against the space already counted

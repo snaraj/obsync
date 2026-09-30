@@ -425,7 +425,7 @@ test("a full server is said on the first chunk it refuses, stays through answere
 test("a full server stands for the files it refused while it takes a smaller note, through their own next pushes, until each is taken or leaves the vault (#300)", async () => {
   const FULL = { kind: "error", code: "storage", message: SERVER_FULL };
   const cleared = (r) => r.host.logs.includes("engine decision=cleared reason=storage");
-  for (const ending of ["taken", "deleted"]) {
+  for (const ending of ["taken", "deleted", "deleted in Obsidian"]) {
     const r = await started();
     await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
     // The room left, in bytes of one chunk upload: a note fits, the two files do not.
@@ -463,13 +463,29 @@ test("a full server stands for the files it refused while it takes a smaller not
       r.engine.changed("Huge.md");
       await r.timers.run(STEP_MS, () => r.state.fileByPath("Huge.md") !== undefined && r.engine.uploads().length === 0);
       assert.notEqual(r.engine.current().code, "storage", "the last refused file was taken and the words stayed");
-    } else {
+    } else if (ending === "deleted") {
       // Removed the way a file manager removes them: only the next listing says.
       const sent = refused.length;
       r.host.files.delete("Big.md");
       r.host.files.delete("Huge.md");
       await r.timers.run(STEP_MS, () => r.engine.current().kind === "idle");
       assert.equal(refused.length, sent, "a file the vault no longer holds was pushed again");
+    } else {
+      // Deleted in Obsidian: the deletion's own push says the change left
+      // with the file, before the next pass is due (#305). Measured live, the
+      // words stood 3.7 minutes, until the next check of the vault's files.
+      const sent = refused.length;
+      // The pass that sent them again has ended and armed the next one.
+      await r.timers.run(0, () => r.engine.scanHandle !== null);
+      const pass = r.timers.entries.find((entry) => entry.handle === r.engine.scanHandle)?.due;
+      assert.ok(Number.isFinite(pass), "a next pass is armed, so the bound below says something");
+      for (const path of ["Big.md", "Huge.md"]) {
+        r.host.files.delete(path);
+        r.engine.deleted(path);
+      }
+      await r.timers.run(STEP_MS, () => r.engine.current().kind === "idle");
+      assert.ok(r.timers.now < pass, `the words stood until the pass due at ${pass} ms (now ${r.timers.now} ms)`);
+      assert.equal(refused.length, sent, "a deleted file was pushed again");
     }
     await r.timers.run(STEP_MS, () => r.engine.current().kind === "idle");
     assert.ok(cleared(r), ending);

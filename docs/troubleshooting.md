@@ -1087,7 +1087,9 @@ was restored from a backup older than this pairing.
 A phone also says it once in a notice. New and changed notes stay on the
 device. Once there is room, **Sync now** sends them and clears the alert at
 once; without it, a change the server refused goes again at the next check of
-the vault, within five minutes, or when the note next changes. Up to 1.1.4
+the vault, within five minutes, or when the note next changes. Deleting in
+Obsidian the file the server refused also clears the alert at once, when no
+other refused file is waiting. Up to 1.1.4
 the words said sync resumes by itself, and up to 1.1.3 a device that is
 already running shows it is offline and keeps retrying. The server's log and its dashboard show `volume_full` or
 `journal_full`, or `storage_full` when the disk itself ran out. Up to 1.1.4 a
