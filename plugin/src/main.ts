@@ -1165,7 +1165,7 @@ export class ObsidianHost implements VaultHost {
    * is then read under its composed name and reported unreadable, which
    * skips that subtree rather than proposing paths the index can never hold.
    */
-  async scan(): Promise<VaultStat[] | null> {
+  async scan(signal?: AbortSignal): Promise<VaultStat[] | null> {
     const desktop = this.desktop;
     if (desktop === null) return null;
     const files: VaultStat[] = [];
@@ -1180,7 +1180,7 @@ export class ObsidianHost implements VaultHost {
         this.log("scan decision=skipped reason=not_a_vault_folder");
         continue;
       }
-      await this.walk(desktop, root, files, 0);
+      await this.walk(desktop, root, files, 0, undefined, signal);
     }
     return files;
   }
@@ -1194,18 +1194,29 @@ export class ObsidianHost implements VaultHost {
    * leaves it. What they held came from the server and is fetched again. A
    * temp a writer of this host holds open is not a leftover. The walk is the
    * scan's, over the selected folders, which is where every write lands.
+   * A stop ends it at its next step (#287): what it has not removed, the
+   * next start's sweep finds.
    */
-  async sweep(): Promise<void> {
+  async sweep(signal?: AbortSignal): Promise<void> {
     const desktop = this.desktop;
     if (desktop === null) return;
     const started = Date.now();
     const found: string[] = [];
-    for (const root of this.plugin.state.data.syncFolders ?? [""]) await this.walk(desktop, root, [], 0, found);
     let removed = 0;
     let kept = 0;
+    try {
+      for (const root of this.plugin.state.data.syncFolders ?? [""]) await this.walk(desktop, root, [], 0, found, signal);
+    } catch (error) {
+      if (!signal?.aborted) throw error;
+    }
     for (const temp of found) {
+      if (signal?.aborted) break;
       if (this.temps.has(temp)) continue;
       await desktop.fs.promises.unlink(temp).then(() => removed++, () => kept++);
+    }
+    if (signal?.aborted) {
+      this.log(`host path_class=temp decision=deferred reason=stopped files=${removed} duration_ms=${Date.now() - started}`);
+      return;
     }
     if (removed + kept === 0) return;
     this.log(
@@ -1223,8 +1234,12 @@ export class ObsidianHost implements VaultHost {
     await this.settleRecase(false);
   }
 
-  /** One directory, then its subdirectories, to a bounded depth; `temps` collects `WRITE_TEMP` files. */
-  private async walk(desktop: DesktopVault, folder: string, out: VaultStat[], depth: number, temps?: string[]): Promise<void> {
+  /**
+   * One directory, then its subdirectories, to a bounded depth; `temps` collects `WRITE_TEMP` files.
+   * `signal` is the engine's stop, checked before every read of the disk (#287).
+   */
+  private async walk(desktop: DesktopVault, folder: string, out: VaultStat[], depth: number, temps?: string[], signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (depth > SCAN_MAX_DEPTH) {
       this.log(`scan decision=skipped reason=depth budget_depth=${SCAN_MAX_DEPTH}`);
       return;
@@ -1258,6 +1273,7 @@ export class ObsidianHost implements VaultHost {
       // neither walked nor listed. None of this is the AUTHORITY on what may
       // be synced: this listing only proposes paths, and `syncable()` walks
       // every component of each one before the engine acts on it.
+      signal?.throwIfAborted();
       const stat = await walker(desktop.fs).lstat(desktop.path.resolve(at, name));
       if (stat === null) continue;
       if (temps !== undefined && stat.isFile() && WRITE_TEMP.test(name)) temps.push(desktop.path.resolve(at, name));
@@ -1265,7 +1281,7 @@ export class ObsidianHost implements VaultHost {
         // A vault of its own is neither listed nor swept (`inNestedVault`);
         // the start's reconcile pass names it, asking of every folder.
         if (inSyncTree(path, folders) && !(await this.holdsPlugin(desktop, desktop.path.resolve(at, name)))) {
-          await this.walk(desktop, path, out, depth + 1, temps);
+          await this.walk(desktop, path, out, depth + 1, temps, signal);
         }
         continue;
       }

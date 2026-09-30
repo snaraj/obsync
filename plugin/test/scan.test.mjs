@@ -595,6 +595,45 @@ test("a host with no Node filesystem has no listing of its own", async (t) => {
   assert.equal(await host.scan(), null, "mobile answers null and the engine falls back to the index");
 });
 
+test("the engine's stop ends a desktop walk at its next read of the disk: the scan rejects, the sweep removes nothing and says so (#287)", async (t) => {
+  const { host, root, logs, opened, statted } = nativeHost(t, undefined);
+  mkdirSync(join(root, "Notes", "Deep"), { recursive: true });
+  writeFileSync(join(root, "Notes", "Deep", "a.md"), "a note\n");
+  const temp = `.obsync-write-${"ab".repeat(8)}.tmp`;
+  writeFileSync(join(root, temp), "left by a quit\n");
+
+  // A stop the walk sees as the signal it is handed: aborted once `stopped()` holds.
+  const stopWhen = (stopped) => ({ get aborted() { return stopped(); }, throwIfAborted() { if (stopped()) throw new Error("stopped"); } });
+  const fresh = () => { opened.length = 0; statted.length = 0; };
+
+  // Stopped before it began: nothing is read.
+  await assert.rejects(host.scan(AbortSignal.abort()));
+  assert.deepEqual([opened.length, statted.length], [0, 0], "a stopped walk read the disk");
+
+  // Stopped once the first directory has been read: no entry of it is looked at.
+  const afterRead = stopWhen(() => opened.length > 0);
+  await assert.rejects(host.scan(afterRead), /stopped/);
+  assert.deepEqual([opened.length, statted.length], [1, 0], "the walk read on after its stop");
+
+  // Stopped inside a folder: the folders below it are not read.
+  fresh();
+  await assert.rejects(host.scan(stopWhen(() => opened.some((path) => path.endsWith(`${nodePath.sep}Notes`)))), /stopped/);
+  assert.equal(opened.some((path) => path.endsWith("Deep")), false, "a subfolder was read after the stop");
+
+  // A sweep stopped at its first read: nothing is looked at, and that is said.
+  fresh();
+  await host.sweep(afterRead);
+  assert.equal(statted.length, 0, "the sweep's walk read on after its stop");
+  assert.match(logs.at(-1), /^host path_class=temp decision=deferred reason=stopped files=0 duration_ms=\d+$/);
+
+  // One stopped right after it found the temp: it is left for the next start.
+  fresh();
+  await host.sweep(stopWhen(() => statted.some((path) => path.endsWith(".tmp"))));
+  assert.ok(readdirSync(root).includes(temp), "a stopped sweep removed a file");
+  assert.match(logs.at(-1), /^host path_class=temp decision=deferred reason=stopped files=0 duration_ms=\d+$/);
+  assert.equal(logs.some((line) => line.startsWith("host path_class=temp decision=removed")), false);
+});
+
 /**
  * AN ECHO MARK IS ARMED FOR AN EVENT, AND SOME EVENTS NEVER COME (review
  * round 2, finding 5).

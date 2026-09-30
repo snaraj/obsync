@@ -1,0 +1,12 @@
+# M3692: the scan's walk is not handed the stop (#287)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1180,7 +1180,7 @@
+         this.log("scan decision=skipped reason=not_a_vault_folder");
+         continue;
+       }
+-      await this.walk(desktop, root, files, 0, undefined, signal);
++      await this.walk(desktop, root, files, 0);
+     }
+     return files;
+   }

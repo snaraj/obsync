@@ -26,7 +26,7 @@ import { createRequire } from "node:module";
 import { FakeTimers, STEP_MS, pair, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { SyncEngine, FEED_STALL_MS, LARGE_APPLY_BYTES, SYNC_NOW_FEED_MS } = require("../build/sync/engine.js");
+const { SyncEngine, FEED_STALL_MS, LARGE_APPLY_BYTES, SCAN_STALL_MS, STOP_WAIT_MS, SYNC_NOW_FEED_MS } = require("../build/sync/engine.js");
 const { bytesSource, chunkStream } = require("../build/chunker.js");
 const c = require("../build/crypto.js");
 
@@ -217,4 +217,158 @@ test("a device's own echo read before its push is answered holds nothing: the ne
   await timers.run(STEP_MS, () => a.host.text("Theirs.md") === "B SENTINEL\n" && settled(a, "Theirs.md"));
   assert.equal(b.host.text("Mine.md"), "A SENTINEL\n");
   assert.equal(a.host.logs.some((line) => line.startsWith("feed decision=stalled")), false);
+});
+
+/** A remote note laid on the server WITHOUT waking the parked poll: this fake answers that poll with an empty page. */
+async function quietly(r, path, text) {
+  const wake = r.server.releaseFeed;
+  r.server.releaseFeed = () => undefined;
+  try {
+    await r.server.publish({
+      fileId: "6b".repeat(16), path, bytes: new TextEncoder().encode(text),
+      mtime: 1600, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey, deviceId: OTHER,
+    });
+  } finally {
+    r.server.releaseFeed = wake;
+  }
+}
+
+test("a page read while another pull holds the chain is work, not idle, and idle comes back once it has applied (#286)", async (t) => {
+  const r = await rig();
+  const timers = new FakeTimers();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  r.host.sweep = () => gate;
+  const statuses = [];
+  const engine = new SyncEngine({
+    state: r.state, transport: r.transport, host: r.host, timers, now: () => timers.now,
+    onStatus: (status) => statuses.push(status),
+  });
+  t.after(() => { engine.stop(); release(); r.server.releaseFeed(); });
+  await engine.start();
+  await timers.run(1000, () => engine.holder?.label === "sweep" && engine.poll !== null && r.server.feedWaiters.length === 1);
+  await quietly(r, "Notes/waiting.md", "WAITING SENTINEL\n");
+  // Sync now's wake asks at once, and that read brings the note.
+  engine.wake("sync_now");
+  await timers.run(0, () => engine.poll === null && engine.feedAnswered && engine.behind === 2);
+  assert.deepEqual(engine.current(), { kind: "syncing", pending: 1 }, "a page waiting its turn read as idle");
+  assert.deepEqual(statuses.at(-1), { kind: "syncing", pending: 1 }, "and the status bar was not told");
+
+  release();
+  await timers.run(STEP_MS, () => r.host.text("Notes/waiting.md") === "WAITING SENTINEL\n" && settled({ state: r.state }, "Notes/waiting.md"));
+  await timers.run(0, () => statuses.at(-1).kind === "idle");
+  assert.deepEqual(engine.current(), { kind: "idle" });
+});
+
+test("a scan whose listing never returns says so once at its budget, naming the pull that holds the chain; one that ends, or a stop, says nothing (#285)", async (t) => {
+  const r = await rig();
+  const timers = new FakeTimers();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let again;
+  const second = new Promise((resolve) => { again = resolve; });
+  const engine = new SyncEngine({ state: r.state, transport: r.transport, host: r.host, timers, now: () => timers.now });
+  t.after(() => { engine.stop(); release(); again(); r.server.releaseFeed(); });
+  await engine.start();
+  const list = r.host.list.bind(r.host);
+  let hold = gate;
+  r.host.list = async () => { await hold; return list(); };
+  const scans = () => r.host.logs.filter((line) => line.startsWith("scan decision=stalled"));
+
+  // The first scan's listing, taken under the chain (`inPass`), does not return.
+  await timers.run(1000, () => engine.holder?.label === "pass");
+  const started = engine.scanSince;
+  timers.now = started + SCAN_STALL_MS - 1000;
+  await timers.run(0);
+  assert.deepEqual(scans(), [], "said before its budget ran out");
+  timers.now = started + SCAN_STALL_MS;
+  await timers.run(0, () => scans().length > 0);
+  assert.match(scans()[0], new RegExp(`^scan decision=stalled waited_ms=${SCAN_STALL_MS} budget_ms=${SCAN_STALL_MS} chain=pass:\\d+$`));
+  timers.now += 5 * SCAN_STALL_MS;
+  await timers.run(0);
+  assert.equal(scans().length, 1, "one line per scan, not one per minute");
+
+  // It returns: it ends, the next scans are armed and end, and none says a word.
+  release();
+  await timers.run(0, () => engine.scanSince === null);
+  for (let i = 0; i < 5; i++) {
+    timers.now += SCAN_STALL_MS;
+    await timers.run(1000, () => engine.scanSince === null);
+  }
+  assert.equal(scans().length, 1, "a scan that ended said it had stalled");
+
+  // One more held, and a stop: nothing more is said.
+  hold = second;
+  timers.now += SCAN_STALL_MS;
+  await timers.run(1000, () => engine.holder?.label === "pass");
+  engine.stop();
+  timers.now += 5 * SCAN_STALL_MS;
+  await timers.run(0);
+  assert.equal(scans().length, 1, "a stopped engine's scan said it had stalled");
+});
+
+test("a stop behind a pull that ignores its signal says on what once past its budget, and waits for it (#287)", async (t) => {
+  const { timers, engine, release, r } = await held(t);
+  let done = false;
+  void engine.stopAndWait().then(() => { done = true; });
+  const waiting = () => r.host.logs.filter((line) => line.startsWith("engine decision=waiting "));
+  timers.now += STOP_WAIT_MS - 1000;
+  await timers.run(0);
+  assert.deepEqual(waiting(), [], "said before its budget ran out");
+  timers.now += 1000;
+  await timers.run(0, () => waiting().length > 0);
+  assert.match(waiting()[0], new RegExp(`^engine decision=waiting on=sweep held_ms=\\d+ in_flight=\\d+ budget_ms=${STOP_WAIT_MS}$`));
+  timers.now += 60_000;
+  await timers.run(0);
+  assert.equal(done, false, "the stop abandoned the pull");
+  assert.equal(waiting().length, 1);
+  release();
+  await timers.run(0, () => done);
+});
+
+test("a stop ends a sweep that honours its signal, says nothing of waiting, and the next engine starts and syncs (#287)", async (t) => {
+  const r = await rig();
+  const timers = new FakeTimers();
+  let signal = null;
+  r.host.sweep = (given) => {
+    signal = given;
+    return new Promise((resolve) => given.addEventListener("abort", () => resolve(), { once: true }));
+  };
+  const engine = new SyncEngine({ state: r.state, transport: r.transport, host: r.host, timers, now: () => timers.now });
+  t.after(() => { engine.stop(); r.server.releaseFeed(); });
+  await engine.start();
+  await timers.run(1000, () => engine.holder?.label === "sweep");
+  assert.equal(signal.aborted, false);
+  let done = false;
+  void engine.stopAndWait().then(() => { done = true; });
+  await timers.run(0, () => done);
+  assert.equal(signal.aborted, true);
+
+  r.host.sweep = async () => undefined;
+  const next = new SyncEngine({ state: r.state, transport: r.transport, host: r.host, timers, now: () => timers.now });
+  t.after(() => next.stop());
+  await next.start();
+  await r.server.publish({
+    fileId: "7c".repeat(16), path: "Notes/after.md", bytes: new TextEncoder().encode("AFTER SENTINEL\n"),
+    mtime: 1700, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey, deviceId: OTHER,
+  });
+  await timers.run(STEP_MS, () => r.host.text("Notes/after.md") === "AFTER SENTINEL\n");
+  timers.now += 5 * STOP_WAIT_MS;
+  await timers.run(0);
+  assert.equal(r.host.logs.some((line) => line.startsWith("engine decision=waiting")), false, r.host.logs.join(" | "));
+});
+
+test("a stop ends a walk that honours its signal: the scan is deferred, not failed (#287)", async (t) => {
+  const r = await rig();
+  const timers = new FakeTimers();
+  r.host.scan = (signal) => new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  const engine = new SyncEngine({ state: r.state, transport: r.transport, host: r.host, timers, now: () => timers.now });
+  t.after(() => { engine.stop(); r.server.releaseFeed(); });
+  await engine.start();
+  await timers.run(1000, () => engine.holder?.label === "pass");
+  let done = false;
+  void engine.stopAndWait().then(() => { done = true; });
+  await timers.run(0, () => done);
+  assert.ok(r.host.logs.includes("scan decision=deferred reason=stopped"), r.host.logs.join(" | "));
+  assert.equal(r.host.logs.some((line) => line.startsWith("scan decision=failed")), false);
 });

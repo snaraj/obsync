@@ -203,16 +203,17 @@ export interface VaultHost {
    * the watcher did not already have. On desktop the host can read the
    * directory itself, and that is the only view that converges a change
    * Obsidian has not seen (issue #101). Mobile reaches the vault only through
-   * the adapter and answers `null`.
+   * the adapter and answers `null`. A walk the engine's stop aborts ends at
+   * its next step and rejects: part of a vault is no listing (#287).
    */
-  scan?(): Promise<VaultStat[] | null>;
+  scan?(signal?: AbortSignal): Promise<VaultStat[] | null>;
   /**
    * Remove the temp files this host's writes left when the device stopped in
    * the middle of them (issue #159). Called once per start, by its first
    * periodic scan under the pull lock (issue #195); a host whose writes leave
-   * nothing behind has none.
+   * nothing behind has none. A stop ends it at its next step (#287).
    */
-  sweep?(): Promise<void>;
+  sweep?(signal?: AbortSignal): Promise<void>;
   /**
    * Finish, or put back, what this host left half-done that the start pass
    * must see as it was: a re-case stopped between its two renames (issue
@@ -713,6 +714,14 @@ function within(paths: string[]): string {
 
 /** What one pass is measured against; an overrun is logged, never truncated. */
 export const SCAN_BUDGET_MS = 5000;
+/**
+ * A scan still running at 24 times that, two minutes, is not slow: it is
+ * stuck, or queued behind a pull that is, and it says which (`scanTick`,
+ * issue #285). The next scan is armed only when this one ends.
+ */
+export const SCAN_STALL_MS = 24 * SCAN_BUDGET_MS;
+/** A stop not done in the time a person waits on a click says what it waits on (`stopAndWait`, issue #287). */
+export const STOP_WAIT_MS = INTERACTIVE_MS;
 
 /**
  * How many times one folder record's post is attempted before the barrier it
@@ -976,6 +985,8 @@ export class SyncEngine {
   private feedWatch: unknown = null;
   /** When the scan in flight began: a scan that never ends stops every later one (`scanTick`, #276). */
   private scanSince: number | null = null;
+  /** That scan's watch (`scanTick`, #285). */
+  private scanWatch: unknown = null;
   /** The pull a Sync now press has waited on past its budget (`inTurn`): what the status names. */
   private pressWaits: string | null = null;
   /** Whether the background lane is running: one large download at a time (`lane`). */
@@ -1205,6 +1216,8 @@ export class SyncEngine {
     this.scanHandle = null;
     if (this.feedWatch !== null) this.timers.clear(this.feedWatch);
     this.feedWatch = null;
+    if (this.scanWatch !== null) this.timers.clear(this.scanWatch);
+    this.scanWatch = null;
     // What a stop leaves held, the next start's pass finds again.
     if (this.holding !== null && this.holding.handle !== null) this.timers.clear(this.holding.handle);
     this.holding = null;
@@ -1221,11 +1234,28 @@ export class SyncEngine {
     this.options.host.log("engine stop");
   }
 
-  /** Quiesce before changing local scope; retain enough state to retry queued work. */
+  /**
+   * Quiesce before changing local scope; retain enough state to retry queued work.
+   *
+   * A STOP THAT WAITS SAYS ON WHAT (issue #287). Every restart waits here --
+   * a reconnect, a change of Sync folders, a server switch, Leave -- and a
+   * pull that never ends kept all of them waiting in silence. The stop's
+   * signal reaches the host's walks (`sweep`, `scan`), which end at their
+   * next step; what does not end is named once past `STOP_WAIT_MS`, and still
+   * waited for: whether a stop may abandon it is the owner's to decide.
+   */
   async stopAndWait(): Promise<void> {
     const started = this.nowFn();
     this.stop();
+    const watch = this.timers.set(() => {
+      const holder = this.holder;
+      this.options.host.log(
+        `engine decision=waiting on=${holder?.label ?? "work"} held_ms=${holder === null ? 0 : this.nowFn() - holder.since} ` +
+          `in_flight=${this.inFlight.size} budget_ms=${STOP_WAIT_MS}`,
+      );
+    }, STOP_WAIT_MS);
     while (this.inFlight.size !== 0) await Promise.allSettled([...this.inFlight]);
+    this.timers.clear(watch);
     await this.options.state.save();
     this.options.host.log(`engine decision=quiesced duration_ms=${this.nowFn() - started}`);
     this.status({ kind: "idle" });
@@ -3428,11 +3458,15 @@ export class SyncEngine {
     // Whether any change of the page was more than this device's own version
     // coming back (`pull.ts`, ECHOES) or an entry a replay skips.
     let wrote = false;
+    // What arrived and is not yet written is work, and the status counts it
+    // down as it lands: a receiving device read `idle` through a thousand
+    // notes and a gigabyte (issue #158, S46, S26). Counted BEFORE the turn,
+    // so a page waiting behind another pull is not idle either (#286), and
+    // said then when it will wait; the turn always comes (`exclusive`), says
+    // the count itself, and its end sets it back.
+    this.pulls = page.changes.length;
+    if (this.pulls > 0 && (this.holder !== null || this.behind > 0)) this.status(this.resting());
     await this.exclusive("page", async () => {
-      // What arrived and is not yet written is work, and the status counts it
-      // down as it lands: a receiving device read `idle` through a thousand
-      // notes and a gigabyte (issue #158, S46, S26).
-      this.pulls = page.changes.length;
       context.ahead = new Prefetch(context, page.changes);
       context.host.pass?.(true);
       try {
@@ -3793,8 +3827,22 @@ export class SyncEngine {
     if (!this.running) return;
     this.scanHandle = null;
     const started = this.scanSince = this.nowFn();
+    // A SCAN THAT DOES NOT END SAYS SO (issue #285): the next one is armed
+    // when this one ends, so one that never does stops every later scan. One
+    // line past `SCAN_STALL_MS` naming the pull that holds the chain -- its
+    // own `pass` while it walks and compares, another pull while it waits for
+    // that lock; nothing changes, and its end or a stop disarms it.
+    const watch = this.scanWatch = this.timers.set(() => {
+      const now = this.nowFn();
+      this.options.host.log(
+        `scan decision=stalled waited_ms=${now - started} budget_ms=${SCAN_STALL_MS} ` +
+          `chain=${this.holder === null ? "idle" : `${this.holder.label}:${now - this.holder.since}`}`,
+      );
+    }, SCAN_STALL_MS);
     void this.track(this.scanLocal().finally(() => {
       if (this.scanSince === started) this.scanSince = null;
+      this.timers.clear(watch);
+      if (this.scanWatch === watch) this.scanWatch = null;
       if (this.running && this.scanHandle === null) {
         this.scanHandle = this.timers.set(() => this.scanTick(), SCAN_MS);
       }
@@ -3810,7 +3858,7 @@ export class SyncEngine {
     if (!this.swept) {
       this.swept = true;
       void this.track(this.exclusive("sweep", async () => {
-        await context.host.sweep?.().catch((error: unknown) =>
+        await context.host.sweep?.(context.signal).catch((error: unknown) =>
           context.host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
       }));
     }
@@ -3837,11 +3885,12 @@ export class SyncEngine {
         this.walkFor = null;
         this.unwalked = 0;
       }
-      await this.inPass(context.host, "scan", async () => this.survey((await context.host.scan?.()) ?? await context.host.list(), false, "scan"));
+      await this.inPass(context.host, "scan", async () => this.survey((await context.host.scan?.(context.signal)) ?? await context.host.list(), false, "scan"));
     } catch (error) {
-      context.host.log(
-        `scan decision=failed reason=${errorText(error)} budget_ms=${SCAN_BUDGET_MS}`,
-      );
+      // A walk the stop ended (`stopAndWait`) is no failure of the scan.
+      context.host.log(this.running
+        ? `scan decision=failed reason=${errorText(error)} budget_ms=${SCAN_BUDGET_MS}`
+        : "scan decision=deferred reason=stopped");
     }
   }
 

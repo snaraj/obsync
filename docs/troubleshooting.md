@@ -1331,13 +1331,15 @@ typing, so it waits.
 ## Changes from your other devices stop arriving
 
 **What you see.** On a computer, what you change here still reaches your
-other devices, but their changes stop arriving here, and the status can still
-read `obsync: idle`. From 1.1.5, within about twenty seconds of **Sync now**
-the status's words say what it is waiting for, for example `obsync: checking
-for changes, waiting for the cleanup of interrupted writes`, and after about
-two minutes
+other devices, but their changes stop arriving here; up to 1.1.4 the status
+could still read `obsync: idle` while they waited. Changing **Sync folders**,
+switching servers or **Leave** may not finish either. From 1.1.5, within
+about twenty seconds of **Sync now** the status's words say what it is
+waiting for, for example `obsync: checking for changes, waiting for the
+cleanup of interrupted writes`, and after about two minutes
 [the plugin's log](#how-to-collect-a-report) has a warning that starts with
-`obsync feed decision=stalled`.
+`obsync feed decision=stalled`, or `obsync scan decision=stalled` for a check
+of this vault's files that has not ended.
 
 **Why it happens.** obsync writes what arrives from your server one step at
 a time, so that two writes never land on one note together. A step that does
@@ -1352,8 +1354,8 @@ so that a report can say.
 
 **How to fix it.**
 
-1. Copy the `obsync feed decision=stalled` line from the plugin's log, or the
-   status's words after **Sync now**.
+1. Copy the `decision=stalled` warning from the plugin's log, or the status's
+   words after **Sync now**.
 2. Quit Obsidian completely (Cmd+Q on a Mac; on Windows and Linux, close
    every Obsidian window) and open it again. The held step starts over.
    Nothing you changed is lost: what had not been uploaded yet is found and

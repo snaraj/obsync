@@ -1,0 +1,12 @@
+# M3673: the scan's watch fires at half its budget (#285)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3838,7 +3838,7 @@
+         `scan decision=stalled waited_ms=${now - started} budget_ms=${SCAN_STALL_MS} ` +
+           `chain=${this.holder === null ? "idle" : `${this.holder.label}:${now - this.holder.since}`}`,
+       );
+-    }, SCAN_STALL_MS);
++    }, SCAN_STALL_MS / 2);
+     void this.track(this.scanLocal().finally(() => {
+       if (this.scanSince === started) this.scanSince = null;
+       this.timers.clear(watch);

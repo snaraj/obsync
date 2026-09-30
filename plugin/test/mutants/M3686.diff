@@ -1,0 +1,11 @@
+# M3686: a desktop walk stopped before it began reads the disk (#287)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1239,7 +1239,6 @@
+    * `signal` is the engine's stop, checked before every read of the disk (#287).
+    */
+   private async walk(desktop: DesktopVault, folder: string, out: VaultStat[], depth: number, temps?: string[], signal?: AbortSignal): Promise<void> {
+-    signal?.throwIfAborted();
+     if (depth > SCAN_MAX_DEPTH) {
+       this.log(`scan decision=skipped reason=depth budget_depth=${SCAN_MAX_DEPTH}`);
+       return;

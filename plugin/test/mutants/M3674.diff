@@ -1,0 +1,12 @@
+# M3674: a scan that ended leaves its watch armed (#285)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3841,8 +3841,6 @@
+     }, SCAN_STALL_MS);
+     void this.track(this.scanLocal().finally(() => {
+       if (this.scanSince === started) this.scanSince = null;
+-      this.timers.clear(watch);
+-      if (this.scanWatch === watch) this.scanWatch = null;
+       if (this.running && this.scanHandle === null) {
+         this.scanHandle = this.timers.set(() => this.scanTick(), SCAN_MS);
+       }

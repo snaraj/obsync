@@ -1154,6 +1154,10 @@ long poll and needs its timeout raised.
    and fetched beside the feed, so later notes keep arriving; it is applied
    under the same one-at-a-time rule, against the file's heads as they are
    then (issue #196).
+   Anything else -- the server out of reach, a refusal about this device, an
+   I/O error -- is no fact about one record and keeps the feed's own retry.
+   The filesystem causes are recognised on desktop only: the mobile adapter's
+   errors carry no errno.
 
    A PULL THAT HOLDS THE OTHERS IS NAMED (plugin 1.1.5, issue #276). Every
    step that writes what the server sent -- a feed page, a parked retry, a
@@ -1174,10 +1178,17 @@ long poll and needs its timeout raised.
    the chain (its retry and its resume); a turn not come within 10 s is said
    in the status (`waiting for` that step) and in one `decision=waiting`
    line, and the press keeps waiting: a wait is reported, never cut short.
-   Anything else -- the server out of reach, a refusal about this device, an
-   I/O error -- is no fact about one record and keeps the feed's own retry.
-   The filesystem causes are recognised on desktop only: the mobile adapter's
-   errors carry no errno.
+   The periodic scan is watched the same way (#285), because the next scan
+   is armed only when one ends: a scan still running after two minutes
+   (`SCAN_STALL_MS`) logs one `scan decision=stalled` line naming the pull
+   that holds the chain: its own `pass` while it walks and compares, another
+   pull while it waits for that lock. A page counts as
+   work from the moment it is read (#286), so the status is not `idle` while
+   the page waits its turn. A stop hands the host's walks -- the temp sweep
+   and the desktop scan -- its signal, and they end at their next read of the
+   disk (#287). What a stop still waits on past 10 s (`STOP_WAIT_MS`) is
+   named in one `engine decision=waiting` line and still waited for: a stop
+   never abandons a pull.
 4. **Conflicts.** Two heads on a text file with a reachable common ancestor
    → a homegrown three-way line merge. Each side's changed base intervals
    are compared independently, so adjacent line edits need no unchanged

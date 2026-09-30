@@ -1,0 +1,12 @@
+# M3683: the sweep is not handed the stop's signal (#287)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3858,7 +3858,7 @@
+     if (!this.swept) {
+       this.swept = true;
+       void this.track(this.exclusive("sweep", async () => {
+-        await context.host.sweep?.(context.signal).catch((error: unknown) =>
++        await context.host.sweep?.().catch((error: unknown) =>
+           context.host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
+       }));
+     }

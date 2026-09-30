@@ -1,0 +1,12 @@
+# M3689: a stopped sweep says nothing (#287)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1215,7 +1215,7 @@
+       await desktop.fs.promises.unlink(temp).then(() => removed++, () => kept++);
+     }
+     if (signal?.aborted) {
+-      this.log(`host path_class=temp decision=deferred reason=stopped files=${removed} duration_ms=${Date.now() - started}`);
++      ((line: string) => line)(`host path_class=temp decision=deferred reason=stopped files=${removed} duration_ms=${Date.now() - started}`);
+       return;
+     }
+     if (removed + kept === 0) return;
