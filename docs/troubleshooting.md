@@ -41,6 +41,7 @@ server again unless the entry says so.
 | Pairing says to update your obsync server | [Pairing says to update your obsync server](#pairing-says-to-update-your-obsync-server) |
 | The two devices show different match codes, or pairing warns that a device runs an older obsync | [The two devices show different match codes](#the-two-devices-show-different-match-codes) |
 | After approving, the device that made the code says the new device did not keep the key, or has not started syncing | [The device that made the code says the new device did not keep the key](#the-device-that-made-the-code-says-the-new-device-did-not-keep-the-key) |
+| **Pair a new device** closed as soon as you selected **Approve** | [Pair a new device closed after approving](#pair-a-new-device-closed-after-approving) |
 | You closed the recovery phrase without writing it down | [You closed the recovery phrase without checking it](#you-closed-the-recovery-phrase-without-checking-it) |
 | "obsync security warning: Another device set a different recovery key" | [Another device set a different recovery key](#another-device-set-a-different-recovery-key) |
 | Leave says the recovery key was set less than 7 days ago, or `409 recovery_too_new` | [The only device cannot leave in its first week](#the-only-device-cannot-leave-in-its-first-week) |
@@ -95,6 +96,9 @@ server again unless the entry says so.
 | What you see | Go to |
 | --- | --- |
 | A notice reads `obsync: 4 more — see Recent in Show sync status` | [A notice says there are more](#a-notice-says-there-are-more) |
+| A notice ends `(3 times)`, or **Sync now** pressed again changes no notice | [A notice says there are more](#a-notice-says-there-are-more) |
+| **Recent**, or `obsync-private-sync:recent`, shows `•••` where a pairing code was | [Recent hides the pairing code](#recent-hides-the-pairing-code) |
+| The status bar shows the alert sign while everything syncs | [Another device set a different recovery key](#another-device-set-a-different-recovery-key) |
 | Another device's edits appear in a note you are editing, and no notice says so | [obsync no longer says when it combines edits](#obsync-no-longer-says-when-it-combines-edits) |
 | `obsidian obsync-private-sync:notices` answers `Command ... not found`, or that the command line is not enabled | [The command line does not find obsync](#the-command-line-does-not-find-obsync) |
 | Two **Sync status** windows, one over the other | [Show sync status opened twice](#show-sync-status-opened-twice) |
@@ -420,7 +424,7 @@ to save a line it cannot send, naming the line and the character.
 3. If obsync says a line was not saved, correct what it names there, such as a
    curly quote, and leave the box again.
 4. Select **Check** again. On a device that is not paired yet, success reads
-   "Reached your obsync server."
+   "obsync: reached your obsync server."
 
 <a id="device_pending"></a>
 
@@ -498,13 +502,14 @@ older way, where the code alone opens the vault key.
 
 ## The device that made the code says the new device did not keep the key
 
-**What you see.** After you approved, **Pair a new device** says "The new
-device collected the vault key. Waiting for it to open the key and start
-syncing…", and then one of:
+**What you see.** After you approved, **Pair a new device** closed and said
+`obsync: approved "<device>": it finishes pairing by itself, and obsync tells
+you here when it has.` Instead of `obsync: "<device>" is paired: it holds the
+vault key now.`, a notice then said one of:
 
-> The new device did not keep the vault key and removed itself from the server: the code it used did not match this one, or pairing was cancelled on it. It does not sync. To pair it, make a new code here and paste it whole there.
+> obsync: "&lt;device&gt;" did not keep the vault key and removed itself from the server: the code it used did not match this one, or pairing was cancelled on it. It does not sync; to pair it, make a new code and paste it whole there.
 
-> The new device collected the vault key but has not started syncing within ten minutes. Look at it: if it asks whether to add its notes, answer there; if it says it could not open the vault key, remove it under Devices.
+> obsync: "&lt;device&gt;" collected the vault key but has not started syncing within ten minutes. Look at it: if it asks whether to add its notes, answer there; if it says it could not open the vault key, remove it under Devices.
 
 **Why it happens.** From 1.1.5 this device says a new device is paired only
 once it has kept the vault key and started syncing, not merely collected it.
@@ -519,6 +524,24 @@ been cancelled there, or its code did not match.
 3. Otherwise make a new code here and pair again. A device that says it could
    not open the vault key and is still listed under **Devices** can be
    removed there.
+
+## Pair a new device closed after approving
+
+**What you see.** You selected **Approve**, and **Pair a new device** closed at
+once with the notice `obsync: approved "<device>": it finishes pairing by
+itself, and obsync tells you here when it has.`
+
+**Why it happens.** From 1.1.5, once your approval reaches the server there is
+nothing left to do on this device: the new device collects the vault key, opens
+it and starts syncing by itself. This device keeps watching behind the closed
+dialog, for up to ten minutes, and says the outcome in one notice:
+`obsync: "<device>" is paired: it holds the vault key now.`, or why it is not
+([The device that made the code says the new device did not keep the
+key](#the-device-that-made-the-code-says-the-new-device-did-not-keep-the-key)).
+Quitting Obsidian meanwhile ends the watch, not the pairing.
+
+**How to fix it.** Nothing to fix. Look at the new device if no notice comes;
+**Devices** in obsync's settings lists it once it is paired.
 
 ## Pairing on a network you don't control
 
@@ -902,7 +925,10 @@ explains why the hold exists.
 ## Another device set a different recovery key
 
 **What you see.** A notice that stays until you dismiss it, and the same text
-at the top of **Show sync status** and of obsync's settings, under **Security**:
+at the top of **Show sync status** and of obsync's settings, under **Security**.
+From 1.1.5 the status bar shows the alert sign for as long as the warning
+stands, even while everything syncs, and its words end `— security warning:
+see Show sync status`:
 
 > obsync security warning: Another device set a different recovery key for this vault on your server, so your 24-word phrase cannot restore access there. If that was not you, a device may be compromised: revoke any device you do not recognise, then ask whoever runs your server to clear the recovery key; this device then registers yours by itself. Steps: the guide's Troubleshooting page, "Another device set a different recovery key".
 
@@ -1489,7 +1515,7 @@ every deleted note's content for 30 days by default.
 **What you see.** A folder you deleted on another device is still on a Mac,
 even after **Sync now** and a restart. From 1.1.4 obsync says so once:
 
-> obsync kept the folder "&lt;folder&gt;" here although &lt;device&gt; deleted it: it still holds 1 item that is not a synced note -- a hidden file, another app's data, or a note not sent yet -- and a folder is only removed when it is empty. Nothing in it was deleted. Delete the folder here if you no longer need what is in it.
+> obsync: kept the folder "&lt;folder&gt;" although &lt;device&gt; deleted it: it still holds 1 item that is not a synced note (a hidden file, another app's data, or a note not sent yet). Delete the folder here if you no longer need what is in it.
 
 Up to 1.1.3 the folder stays, empty, with no word.
 
@@ -1526,7 +1552,7 @@ the name of a folder that is a link (a symlink) on one device, and nothing in
 it ever arrives. Tested with a linked folder inside another folder. From
 1.1.4, the device with the link says once:
 
-> obsync doesn't sync linked folders: "&lt;folder&gt;" is a link, so it stays on this device only. Nothing in it is sent to your other devices, and nothing from them is written into it. To sync it, move the folder itself into the vault instead of linking to it.
+> obsync: does not sync linked folders: "&lt;folder&gt;" is a link, so it stays on this device only and nothing from your other devices is written into it. To sync it, move the folder itself into the vault instead of linking to it.
 
 and the empty folders an earlier version made on the other devices go at its
 next start.
@@ -1609,10 +1635,10 @@ That is obsync refusing to throw away an edit, not a failure. See
 **What you see.** Two people typed in one note at the same time, on different
 lines. Afterwards the last words one of them typed are missing from the note,
 and a note named `<note> (conflict from <device>, <date> UTC, <id>)` holds
-them. A notice said `obsync kept both versions of <note>: every device keeps
-the same one as the note, and the other is in "<copy>".`, or `obsync stopped
-merging <note>`. It happens most on a busy computer, and when a third device
-has the note open.
+them. A notice said `obsync: kept both versions of "<note>": <device>'s is in
+"<copy>".`, or `obsync: stopped combining edits to "<note>"` (up to 1.1.4:
+`obsync kept both versions of <note>` or `obsync stopped merging <note>`). It
+happens most on a busy computer, and when a third device has the note open.
 
 **Why it happens.** Up to 1.1.4, a device could merge the two typists' versions
 together with words saved on it but not sent yet, so two devices sent two
@@ -1639,8 +1665,8 @@ copy.
 ## A note paused while people typed in it on a very busy computer
 
 **What you see.** The status bar reads `obsync: paused — <note>`, and a notice
-says the note was rewritten on this device right after a sync, maybe by
-another plugin. No plugin rewrites your notes. You, or someone on another
+says a plugin keeps rewriting the note right after sync (up to 1.1.4: that it
+was rewritten on this device right after a sync, maybe by another plugin). No plugin rewrites your notes. You, or someone on another
 device, were typing in that note on a computer so busy that Obsidian stalled
 for a while. The note is paused on every device.
 
@@ -1891,7 +1917,7 @@ note or folder by capitals alone: it answers "Destination file already
 exists". Rename it on another device, or rename it here to a different name
 first and then to the one you want; obsync carries the rename everywhere. From
 1.1.4 an Android device RECEIVES such a rename from your other devices. If it
-ever cannot, it says "obsync could not change the capitals of ..." and keeps
+ever cannot, it says "obsync: could not change the capitals of ..." and keeps
 the old name; the same two renames on that device fix it.
 
 **If the other device is still on 1.0.x,** this device refuses the moves it
@@ -1954,11 +1980,29 @@ Nothing is lost: every notice, including the counted ones, is listed under
 **Recent** in **Show sync status**. A question, such as whether to delete notes
 everywhere, is never counted away: it always gets a notice of its own.
 
+The same notice again while its toast is up -- **Sync now** pressed twice
+with nothing to send, say -- is counted on that toast, `(2 times)`, instead of
+stacking a second one, and on one line of **Recent** the same way.
+
 **How to fix it.**
 
 1. Click or tap that notice, or the status bar icon, to open **Show sync
    status**.
 2. Read **Recent**; **Show all** lists every one kept since obsync started.
+
+## Recent hides the pairing code
+
+**What you see.** **Recent**, in **Show sync status**, or
+`obsidian obsync-private-sync:recent`, reads `Its prompt shows the code •••`
+where the notice itself showed six digits.
+
+**Why it happens.** A pairing's match code is for comparing on the two screens
+while you pair, and for nothing afterwards. From 1.1.5 obsync shows it on the
+notice and in the pairing dialog only; everything that outlives them -- Recent,
+the command line, the plugin's log -- has `•••` in its place.
+
+**How to fix it.** Nothing to fix. To compare codes, read the pairing dialog on
+each device, or the notice while it is up.
 
 ## obsync no longer says when it combines edits
 

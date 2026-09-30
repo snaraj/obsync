@@ -727,7 +727,7 @@ test("a recorded version a restored server no longer holds is re-sent, never a c
   assert.equal(manifest.deleted, false);
   assert.equal(new TextDecoder().decode(await c.decryptChunk(r.keys.domainKey, c.unhex(manifest.chunks[0].cid),
     r.server.chunks.get(manifest.chunks[0].sid))), "REPAIR PLAINTEXT SENTINEL");
-  assert.equal(r.host.notices.filter((notice) => /The server was restored to an earlier state; this device re-sent 1 change\./.test(notice)).length, 1);
+  assert.equal(r.host.notices.filter((notice) => /your server went back to an earlier state, so this device sent 1 change of its own again\./.test(notice)).length, 1);
   engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();
 });
 

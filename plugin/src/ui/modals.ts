@@ -12,13 +12,13 @@
  * typing 103 characters on a phone is not a plan.
  */
 
-import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
+import { App, Modal, Setting, type TextComponent } from "obsidian";
 import type ObsyncPlugin from "../main";
 import type { LeaveChoice, LeaveRefusal } from "../main";
 import { RECOVERY_MISMATCH } from "../accountRecovery";
 import { formatBytes } from "../policy";
 import { KEYS_LOST } from "../state";
-import { RECENT_MAX, titles } from "../notices";
+import { RECENT_MAX, titles, type NoticeKind } from "../notices";
 import { RemoteOnlyKind, remoteOnlyList, unwritableText } from "../sync/pull";
 import {
   PAIRING_WINDOW_MS,
@@ -53,8 +53,9 @@ import {
 import { hex, unhex } from "../crypto";
 import { ApiError, PairingClaimant, PairingEnvelope, PairingStatus, Sent, Transport, lostMessage } from "../transport";
 
-function fail(error: unknown): void {
-  new Notice(error instanceof Error ? error.message : String(error), 8000);
+/** A failure in its own words, as the answer to the person's click (`notices.ts`, kind `confirm`). */
+function fail(plugin: ObsyncPlugin, error: unknown): void {
+  plugin.notices.show({ kind: "confirm", text: error instanceof Error ? error.message : String(error) });
 }
 
 /** "1 note", "7 notes": the approval prompt and the claimant's question count the same way. */
@@ -62,9 +63,13 @@ function notes(count: number): string {
   return `${count} note${count === 1 ? "" : "s"}`;
 }
 
-/** A pairing refusal or outcome, in words (issue #154); the log line keeps the code. */
-function tell(text: string): void {
-  new Notice(`obsync: ${text}`, 12000);
+/**
+ * A pairing refusal or outcome, in words (issue #154); the log line keeps the
+ * code. The answer to a click by default; an `error` when it lands behind a
+ * closed dialog, where nobody is watching for it.
+ */
+function tell(plugin: ObsyncPlugin, text: string, kind: NoticeKind = "confirm"): void {
+  plugin.notices.show({ kind, text });
 }
 
 function reasonOf(error: unknown): string {
@@ -200,10 +205,10 @@ const PAIR_INTRO =
 const SERVER_TOO_OLD =
   "Your obsync server runs a version older than 1.1.5, or does not say which, so no code was made. Update your obsync server to 1.1.5 or later, then pair again -- see Troubleshooting, \"Pairing says to update your obsync server\".";
 const KEY_DROPPED =
-  "The new device did not keep the vault key and removed itself from the server: the code it used did not match this one, or pairing was cancelled on it. It does not sync. To pair it, make a new code here and paste it whole there.";
+  "did not keep the vault key and removed itself from the server: the code it used did not match this one, or pairing was cancelled on it. It does not sync; to pair it, make a new code and paste it whole there.";
 const KEY_UNCONFIRMED =
-  "The new device collected the vault key but has not started syncing within ten minutes. Look at it: if it asks whether to add its notes, answer there; if it says it could not open the vault key, remove it under Devices.";
-/** Two-second device-list reads for ten minutes, while the new device opens the key. */
+  "collected the vault key but has not started syncing within ten minutes. Look at it: if it asks whether to add its notes, answer there; if it says it could not open the vault key, remove it under Devices.";
+/** Two-second reads for ten minutes: while the new device collects the key, and again while it opens it. */
 const CONFIRM_POLLS = 300;
 
 /** A server-reported version as one safe log word. */
@@ -252,10 +257,7 @@ export class PairCreateModal extends Modal {
     const asking = this.asking;
     this.asking = null;
     if (asking !== null) {
-      void this.refuse(asking, "closed", "Pairing ended: closing that dialog refused the device that was waiting, and nothing was shared with it. To pair it, make a new code.");
-    } else if (this.collecting) {
-      this.collecting = false;
-      tell("Approved. The new device finishes pairing by itself; its own screen says when it has.");
+      void this.refuse(asking, "closed", "pairing ended: closing that dialog refused the device that was waiting, and nothing was shared with it. To pair it, make a new code.");
     }
   }
 
@@ -284,13 +286,13 @@ export class PairCreateModal extends Modal {
         .addButton((button) =>
           button.setButtonText("Copy code").onClick(() => {
             void navigator.clipboard.writeText(code);
-            new Notice("Pairing code copied. Type it into your other device; don't send it through work email or chat.", 8000);
+            tell(this.plugin, "pairing code copied. Type it into your other device; don't send it through work email or chat.");
           }),
         )
         .addButton((button) =>
           button.setButtonText("Copy link").onClick(() => {
             void navigator.clipboard.writeText(pairingLink(code));
-            new Notice("Pairing link copied. Open it on your other device; don't send it through work email or chat.", 8000);
+            tell(this.plugin, "pairing link copied. Open it on your other device; don't send it through work email or chat.");
           }),
         );
       const statusEl = this.contentEl.createEl("p", { text: "Waiting for the new device…" });
@@ -313,7 +315,7 @@ export class PairCreateModal extends Modal {
       }
     } catch (error) {
       this.plugin.log(`pairing role=creator decision=failed reason=${reasonOf(error)}`);
-      tell(refusalText(error));
+      tell(this.plugin, refusalText(error));
       this.close();
     }
   }
@@ -372,7 +374,7 @@ export class PairCreateModal extends Modal {
         button.setButtonText("Reject").onClick(() => {
           if (this.asking !== pairingId) return;
           this.asking = null;
-          void this.refuse(pairingId, "rejected", "Rejected: that device was refused, and nothing was shared with it.");
+          void this.refuse(pairingId, "rejected", "rejected: that device was refused, and nothing was shared with it.");
           this.close();
         }),
       );
@@ -409,23 +411,33 @@ export class PairCreateModal extends Modal {
       }
       value(await this.plugin.transport.pairingApprove(pairingId, sealed.envelope, sealed.nonce, creatorKey), "approving the new device");
       this.plugin.log(`pairing role=creator decision=approved kex=${kex}`);
+      // DONE HERE ONCE THE APPROVAL LANDS (1.1.5): what is left is the new
+      // device's to do, so this dialog closes, and the rest is watched
+      // behind it and said in a notice. `PS` is not needed past the seal.
       this.collecting = true;
+      this.plugin.register?.(() => { this.collecting = false; });
       answer.settingEl.remove();
-      statusEl.setText("Approved. Waiting for the new device to collect the vault key…");
-      await this.watch(pairingId, claimant, statusEl);
+      this.close();
+      tell(this.plugin, `approved "${claimant.name}": it finishes pairing by itself, and obsync tells you here when it has.`);
+      await this.watch(pairingId, claimant);
     } catch (error) {
       this.collecting = false;
       this.plugin.log(`pairing role=creator decision=failed reason=${reasonOf(error)}`);
-      tell(refusalText(error));
+      tell(this.plugin, refusalText(error), "error");
     }
   }
 
-  /** After approval: done when the server reports the key collected, and not before. */
-  private async watch(pairingId: string, claimant: PairingClaimant, statusEl: HTMLElement): Promise<void> {
-    while (this.collecting) {
+  /**
+   * After approval, behind the closed dialog: done when the server reports
+   * the key collected, and not before. No dialog ends it now, so it ends by
+   * itself with the code's ten minutes (`CONFIRM_POLLS`), whatever the
+   * server keeps answering, or when the plugin unloads (`approved`).
+   */
+  private async watch(pairingId: string, claimant: PairingClaimant): Promise<void> {
+    let state: PairingStatus["state"] | "ended" = "expired";
+    for (let poll = 1; poll <= CONFIRM_POLLS; poll++) {
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
       if (!this.collecting) return;
-      let state: PairingStatus["state"] | "ended";
       try {
         state = (await this.plugin.transport.pairingStatus(pairingId)).state;
       } catch (error) {
@@ -434,18 +446,16 @@ export class PairCreateModal extends Modal {
       }
       if (!this.collecting) return;
       if (state === "consumed") {
-        await this.confirmKept(claimant, statusEl);
+        await this.confirmKept(claimant);
         return;
       }
-      if (state === "expired" || state === "ended") {
-        this.collecting = false;
-        this.plugin.log(`pairing role=creator decision=failed reason=${state === "ended" ? "ended_unseen" : "not_collected"}`);
-        statusEl.setText(state === "ended"
-          ? "This pairing ended before this device saw the new one collect the vault key. If the new device is not under Devices, make a new code and pair it again."
-          : "The new device did not collect the vault key before the code expired, so nothing was shared with it. To pair it, make a new code and paste it there.");
-        return;
-      }
+      if (state === "expired" || state === "ended") break;
     }
+    this.collecting = false;
+    this.plugin.log(`pairing role=creator decision=failed reason=${state === "ended" ? "ended_unseen" : "not_collected"}`);
+    tell(this.plugin, state === "ended"
+      ? `pairing "${claimant.name}" ended before this device saw it collect the vault key. If it is not under Devices, make a new code and pair it again.`
+      : `"${claimant.name}" did not collect the vault key before the code expired, so nothing was shared with it. To pair it, make a new code and paste it there.`, "error");
   }
 
   /**
@@ -455,8 +465,7 @@ export class PairCreateModal extends Modal {
    * list decides (`keptOutcome`); a failed read decides nothing and is logged
    * once.
    */
-  private async confirmKept(claimant: PairingClaimant, statusEl: HTMLElement): Promise<void> {
-    statusEl.setText("The new device collected the vault key. Waiting for it to open the key and start syncing; if it asks whether to add its notes, answer there.");
+  private async confirmKept(claimant: PairingClaimant): Promise<void> {
     let unread = false;
     for (let poll = 1; poll <= CONFIRM_POLLS; poll++) {
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
@@ -474,22 +483,21 @@ export class PairCreateModal extends Modal {
       if (outcome === "kept") {
         this.collecting = false;
         this.plugin.log(`pairing role=creator decision=paired polls=${poll}`);
-        new Notice(`The new device, "${claimant.name}", is paired: it holds the vault key now.`);
+        tell(this.plugin, `"${claimant.name}" is paired: it holds the vault key now.`);
         void this.plugin.refreshDeviceNames();
-        this.close();
         return;
       }
       if (outcome === "dropped") {
         this.collecting = false;
         this.plugin.log(`pairing role=creator decision=failed reason=key_not_kept polls=${poll}`);
-        statusEl.setText(KEY_DROPPED);
+        tell(this.plugin, `"${claimant.name}" ${KEY_DROPPED}`, "error");
         return;
       }
     }
     if (!this.collecting) return;
     this.collecting = false;
     this.plugin.log(`pairing role=creator decision=failed reason=key_unconfirmed polls=${CONFIRM_POLLS}`);
-    statusEl.setText(KEY_UNCONFIRMED);
+    tell(this.plugin, `"${claimant.name}" ${KEY_UNCONFIRMED}`, "error");
   }
 
   /** The release the server reports (`GET /v1/plugin/manifest`), or `null` when it reports none. */
@@ -507,10 +515,10 @@ export class PairCreateModal extends Modal {
     try {
       value(await this.plugin.transport.pairingReject(pairingId), "refusing the new device");
       this.plugin.log(`pairing role=creator decision=refused reason=${reason}`);
-      if (told !== null) tell(told);
+      if (told !== null) tell(this.plugin, told);
     } catch (error) {
       this.plugin.log(`pairing role=creator decision=failed reason=${reasonOf(error)} refusing=${reason}`);
-      tell(refusalText(error));
+      tell(this.plugin, refusalText(error));
     }
   }
 }
@@ -621,10 +629,12 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
     waiting.code = kex === null
       ? await matchCode(secret, claim.pairingId, claim.deviceId)
       : await matchCodeV2(secret, claim.pairingId, claim.deviceId, kex.publicKey);
-    const asked = `Waiting for approval on the other device. Its prompt shows the code ${waiting.code}: if it shows another, choose Reject there.`
+    const asked = (code: string): string => `Waiting for approval on the other device. Its prompt shows the code ${code}: if it shows another, choose Reject there.`
       + (kex === null ? " That device runs an older obsync; update it so pairing can protect the code you shared." : "");
-    waiting.show(asked);
-    if (resumed) tell(`still pairing this device. ${asked}`);
+    waiting.show(asked(waiting.code));
+    // The code is for comparing now, never for keeping: Recent, the command
+    // line and the log read "•••" in its place (`SyncNotice.code`).
+    if (resumed) plugin.notices.show({ kind: "question", key: "pairing", text: `still pairing this device. ${asked("{code}")}`, code: waiting.code });
     for (;;) {
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
       assertCurrent();
@@ -703,7 +713,7 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
       }
       await plugin.restartEngine();
       plugin.log(`pairing role=claimant decision=paired duration_ms=${Date.now() - started}`);
-      new Notice("This device is paired. The first sync is running.");
+      tell(plugin, "this device is paired, and its first sync is running.");
       return true;
     }
   } catch (error) {
@@ -717,7 +727,7 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
     let stale = false;
     try { assertCurrent(); } catch { stale = true; }
     if (stale || kept) {
-      tell(refusalText(error));
+      tell(plugin, refusalText(error), "error");
       return kept;
     }
     let text = Object.hasOwn(CLAIM_ENDED, reason) ? CLAIM_ENDED[reason] as string : `${refusalText(error)} ${PAIR_AGAIN}`;
@@ -726,7 +736,7 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
     state.holdClaim(null);
     if (reason !== "superseded") {
       waiting.show(text);
-      tell(text);
+      tell(plugin, text, "error");
     }
     return false;
   }
@@ -799,7 +809,7 @@ export class PairClaimModal extends Modal {
     this.waiting = null;
     if (waiting === null || this.plugin.waiting !== waiting) return;
     waiting.show = () => undefined;
-    tell("still waiting for approval in the background. Approve this device on the other device, and pairing finishes by itself; the code works for ten minutes from when it was made.");
+    tell(this.plugin, "still waiting for approval in the background. Approve this device on the other device, and pairing finishes by itself; the code works for ten minutes from when it was made.");
   }
 
   private show(text: string): void {
@@ -817,7 +827,7 @@ export class PairClaimModal extends Modal {
     const paired = alreadyPaired(this.plugin);
     if (paired !== null) {
       this.plugin.log("pairing role=claimant decision=refused reason=already_paired");
-      fail(new Error(paired));
+      fail(this.plugin, new Error(paired));
       this.close();
       return;
     }
@@ -830,7 +840,7 @@ export class PairClaimModal extends Modal {
       // pairs with it copies that vault into itself, one level per sync.
       const nested = await this.plugin.nestedRefusal("pairing role=claimant");
       if (nested !== null) {
-        fail(new Error(nested));
+        fail(this.plugin, new Error(nested));
         this.close();
         return;
       }
@@ -879,7 +889,7 @@ export class PairClaimModal extends Modal {
       this.plugin.log(`pairing role=claimant decision=failed reason=${reasonOf(error)}`);
       const text = refusalText(error);
       this.show(text);
-      tell(text);
+      tell(this.plugin, text);
     } finally {
       this.busy = false;
     }
@@ -910,7 +920,7 @@ const LEAVE_RECOVERY_TOO_NEW =
 const LEAVING =
   "Leaving: stopping sync on this device, then asking the server to remove it. This takes a few seconds. You can close this window; a notice says when it is done.";
 const LEFT_ONLY_HERE =
-  "This device has left. Your server still lists it until you remove it from another device's Devices list or the dashboard.";
+  "this device has left; your server still lists it until you remove it from another device's Devices list or the dashboard.";
 
 /**
  * Leaving a server, with the whole cost stated before the button (issue #79).
@@ -969,7 +979,7 @@ export class LeaveServerModal extends Modal {
     try {
       unpushed = await this.plugin.unpushedEdits();
     } catch (error) {
-      fail(error);
+      fail(this.plugin, error);
       this.close();
       return;
     }
@@ -1019,7 +1029,7 @@ export class LeaveServerModal extends Modal {
     try {
       result = await this.plugin.leaveServer(choice);
     } catch (error) {
-      fail(error);
+      fail(this.plugin, error);
       if (this.live) this.screen();
       return;
     } finally {
@@ -1035,7 +1045,7 @@ export class LeaveServerModal extends Modal {
     // The count is taken with the queue stopped, so a set that grew since the
     // dialog drew it is the user's own editing: draw the new one and ask again.
     if (result.reason === "unpushed_edits") {
-      new Notice("This device has changes the server never received. Leaving was not done.", 8000);
+      tell(this.plugin, "this device has changes your server never received, so it did not leave.");
       this.draw(result.unpushed);
       return;
     }
@@ -1069,15 +1079,14 @@ export class LeaveServerModal extends Modal {
   }
 
   private left(revoked: boolean): void {
-    new Notice(
+    tell(this.plugin,
       revoked
-        ? "This device left the server. Every note is still in this vault."
+        ? "this device left the server; every note is still in this vault."
         : this.refusal === "last_device" || this.refusal === "recovery_too_new"
-          ? "This device forgot the server, which still holds this device. Every note is still in this vault."
+          ? "this device forgot the server, which still lists it; every note is still in this vault."
           : this.refusal === "bad_signature"
-            ? "This device forgot the server, which did not recognise it. Every note is still in this vault."
+            ? "this device forgot the server, which did not recognise it; every note is still in this vault."
             : LEFT_ONLY_HERE,
-      10000,
     );
     this.onLeft();
     if (!this.live || this.mode !== "switch") {
@@ -1107,13 +1116,13 @@ export class LeaveServerModal extends Modal {
 
   private async adopt(typed: string, mode: "pair" | "setup"): Promise<void> {
     if (typed.trim() === "") {
-      new Notice("Enter the new server's address first.");
+      tell(this.plugin, "enter the new server's address first.");
       return;
     }
     try {
       await this.plugin.setServerUrl(typed);
     } catch (error) {
-      fail(error);
+      fail(this.plugin, error);
       return;
     }
     if (!this.live) return;
@@ -1217,13 +1226,13 @@ export class RecoveryPhraseModal extends Modal {
         .onClick(() => {
           const wrong = asked.filter((position) => answers.get(position) !== words[position - 1]);
           if (wrong.length > 0) {
-            new Notice(`Word ${wrong.join(", ")} does not match. Check the list again.`);
+            tell(this.plugin, `word ${wrong.join(", ")} does not match; check the list again.`);
             return;
           }
           this.plugin.state.data.recoveryPhrase = "confirmed";
           this.plugin.log("phrase decision=confirmed");
           void this.plugin.state.save().catch(() => {});
-          new Notice("Recovery phrase confirmed.");
+          tell(this.plugin, "recovery phrase confirmed.");
           this.close();
         }),
     );
@@ -1246,7 +1255,7 @@ export class VaultKeyModal extends Modal {
     const opened = this.opened = {};
     let session: ReturnType<ObsyncPlugin["captureSession"]>;
     try { session = this.plugin.captureSession(); }
-    catch (error) { fail(error); return; }
+    catch (error) { fail(this.plugin, error); return; }
     const assertCurrent = (): void => {
       session.assertCurrent();
       if (this.opened !== opened) throw new Error("This vault-key dialog was closed. Open it again before restoring a key.");
@@ -1270,10 +1279,10 @@ export class VaultKeyModal extends Modal {
             assertCurrent();
             await this.plugin.restoreVaultKey(hex(entropy));
             assertCurrent();
-            new Notice("Vault key restored.");
+            tell(this.plugin, "vault key restored.");
             this.close();
           } catch (error) {
-            fail(error);
+            fail(this.plugin, error);
           }
         }),
       )
@@ -1301,7 +1310,7 @@ export class VaultKeyModal extends Modal {
             assertCurrent();
             this.close();
             new RecoveryPhraseModal(this.app, this.plugin, true).open();
-          } catch (error) { fail(error); }
+          } catch (error) { fail(this.plugin, error); }
         }),
       );
   }
@@ -1393,7 +1402,7 @@ export class StatusModal extends Modal {
         .setDesc("Paused: repeated rewrites after sync were detected on a paired device. Stop the plugin rewriting synced notes, then resume.")
         .addButton((button) =>
           button.setButtonText("Resume").onClick(() => {
-            void this.plugin.resumeNote(fileId).then(() => this.close(), fail);
+            void this.plugin.resumeNote(fileId).then(() => this.close(), (error: unknown) => fail(this.plugin, error));
           }),
         );
     }
@@ -1588,10 +1597,10 @@ export class RemoteOnlyModal extends Modal {
               void (async () => {
                 try {
                   await this.plugin.fetchRemoteOnly(entry.fileId);
-                  new Notice(`Fetched ${entry.path}.`);
+                  this.plugin.notices.show({ kind: "confirm", text: "fetched {notes}.", paths: [entry.path] });
                   this.render();
                 } catch (error) {
-                  fail(error);
+                  fail(this.plugin, error);
                 }
               })();
             }),

@@ -238,7 +238,7 @@ test("Settings offers a copy Pair this device and Start fresh, and Start fresh l
   assert.equal(saved.serverUrl, "", "the copied server address goes too");
   assert.equal(saved.deviceId, null);
   assert.equal(copy.instance.state.copied, false);
-  assert.ok(copy.obsidian.notices.includes("obsync: this vault starts fresh. It is not paired with any server, and your notes are unchanged. Set it up or pair it here when you are ready."));
+  assert.ok(copy.obsidian.notices.includes("obsync: this vault starts fresh: it is not paired with any server, and your notes are unchanged. Set it up or pair it here when you are ready."));
   assert.ok(copy.logs.includes("state decision=started_fresh reason=copied_vault"));
   assert.equal(updates, 1);
   assert.match(pairing().desc, /^Not paired yet\./);
@@ -260,7 +260,7 @@ test("a storage fault keeps the protective stop: no tab, no status bar, and word
   assert.deepEqual(faulted.bars, []);
   assert.equal(faulted.obsidian.notices.length, 1);
   const [notice] = faulted.obsidian.notices;
-  assert.match(notice, /^obsync could not read or save this vault's sync credentials in Obsidian's secret storage\. Sync is stopped/);
+  assert.match(notice, /^obsync: could not read or save this vault's sync credentials in Obsidian's secret storage\. Sync is stopped/);
   assert.equal(/missing_secret|Do not/.test(notice), false, notice);
   assert.ok(faulted.logs.includes("state decision=stopped reason=missing_secret"));
   assert.deepEqual(faulted.writes, []);

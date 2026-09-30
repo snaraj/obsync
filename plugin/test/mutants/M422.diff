@@ -1,14 +1,14 @@
 # M422: a vault inside a synced vault that was paired before the check starts syncing
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3179,12 +3179,7 @@
+@@ -4022,12 +4022,7 @@
        // Before anything is sent, and a refusal like any other below: the
        // status says why until the person acts, and no timer retries it. The
        // notice comes once, as the status turns to it.
 -      const nested = await this.nestedRefusal("engine");
        if (!wanted(engine)) return superseded();
 -      if (nested !== null) {
--        if (this.statusValue.kind !== "error" || this.statusValue.message !== nested) new Notice(`obsync: ${nested}`, 15000);
+-        if (this.statusValue.kind !== "error" || this.statusValue.message !== nested) this.notices.show({ kind: "error", text: nested });
 -        throw new Error(nested);
 -      }
        await engine.start();

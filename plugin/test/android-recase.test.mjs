@@ -81,7 +81,9 @@ async function phone(t, r, fresh = false, id = PHONE, secret = PHONE_SECRET) {
     deviceName: () => "phone",
   });
   const host = new main.ObsidianHost(plugin, null);
-  host.notify = (message) => notices.push(message);
+  // What the person reads: each notice's words, as its toast says them (`notices.ts`).
+  const words = box.require(join(box.home, "build/notices.js"));
+  host.notify = (notice) => notices.push(words.toastText(notice));
   plugin.host = host;
   const transport = new Transport({
     request: async (request) => {
@@ -553,8 +555,8 @@ test("a re-case that cannot be put back is kept and said once, and no pass delet
   await again.engine.syncNow();
   await r.timers.run(STEP_MS);
   assert.ok(again.logs.some((line) => /^vault path_class=file decision=failed reason=not_indexed via=temp /.test(line)), story({ ...r, b: again }));
-  assert.deepEqual(again.notices.filter((message) => message.startsWith("obsync could not finish renaming")), [
-    'obsync could not finish renaming "CaseMove/Rename me.md" to "CaseMove/rename me.md" on this device. Nothing was deleted. Restart Obsidian to finish.',
+  assert.deepEqual(again.notices.filter((message) => message.startsWith("obsync: could not finish renaming")), [
+    'obsync: could not finish renaming "Rename me" to "rename me" here; nothing was deleted. Restart Obsidian to finish.',
   ]);
   assert.deepEqual(again.state.data.pendingRecase?.temp, r.temp, "a failed recovery forgot the re-case");
   assert.equal(r.vault.text("CaseMove/Rename me.md"), BODY);
@@ -583,10 +585,10 @@ test("a re-case whose name something else took meanwhile is kept under its hidde
   await r.timers.run(STEP_MS);
   const hidden = r.temp.slice(r.temp.lastIndexOf("/") + 1);
   assert.ok(again.logs.some((line) => /^vault path_class=file decision=failed reason=occupied via=temp /.test(line)), story({ ...r, b: again }));
-  assert.deepEqual(again.notices.filter((message) => message.startsWith("obsync could not finish renaming")), [
-    'obsync could not finish renaming "CaseMove/Rename me.md" to "CaseMove/rename me.md" on this device. Nothing was ' +
-      `deleted: something else there took that name first, so the note is kept in the same folder as "${hidden}", which ` +
-      "Obsidian does not show. Rename the other one, then restart Obsidian to finish.",
+  assert.deepEqual(again.notices.filter((message) => message.startsWith("obsync: could not finish renaming")), [
+    'obsync: could not finish renaming "Rename me" to "rename me" here; nothing was deleted. Something else took that ' +
+      `name first, so the note is kept beside it as "${hidden}", which Obsidian does not show: rename the other one, ` +
+      "then restart Obsidian to finish.",
   ]);
   assert.equal(r.vault.text(r.temp), BODY, "the note under the hidden name was touched");
   assert.equal(r.vault.text("CaseMove/RENAME ME.md"), THEIRS);
@@ -734,9 +736,8 @@ test("a re-case Android could not make is refused, said once, and never publishe
   const refusal = r.b.logs.find((line) => line.includes("reason=recase_failed"));
   assert.match(refusal, /^pull path_class=file decision=case_move_refused reason=recase_failed file=[0-9a-f]{32} seq=\d+$/);
   assert.deepEqual(r.b.notices, [
-    'obsync could not change the capitals of "CaseMove/Rename me.md" to "CaseMove/rename me.md" on this device, so it ' +
-      'keeps its old name here. Nothing was deleted. To match your other devices, rename it here to a different name ' +
-      'first, then to "rename me.md".',
+    'obsync: could not change the capitals of "Rename me" to "rename me" here, so it keeps its old name; nothing was ' +
+      'deleted. To match your other devices, rename it to any other name first, then to "rename me".',
   ]);
   assert.ok(r.b.logs.some((line) => /^vault path_class=file decision=refused reason=temp_step via=temp /.test(line)), story(r));
   assert.equal(r.b.logs.some((line) => /same_name_tiebreak|applied_beside|local_edit_kept/.test(line)), false, story(r));
@@ -861,11 +862,12 @@ for (const { kind, notes, ghost, root, left } of [
       [`watch path_class=${kind === "note" ? "file" : "folder"} decision=held reason=case_twin_deleted files=${held.length} held=${held.length}`], story(r));
     // Asked once; the pass after it holds the deletion without asking again,
     // and Sync now answers for what it did not send, as it always does (#172).
+    const name = (path) => path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/, "");
     assert.deepEqual(r.b.notices, [
-      `obsync did not delete "${root}" from your other devices: it was deleted on this device through "${ghost}", ` +
-        `a second name Obsidian showed for the same ${kind}. Put it back here with Restore here, or delete it everywhere.`,
-      `obsync is still holding back ${held.length} deletions: Sync now does not send them. Put the notes back, or, if you really ` +
-        'deleted them, confirm it under Settings, obsync, "Deletions held back".',
+      `obsync: did not delete "${name(root)}" from your other devices: it was deleted here through "${name(ghost)}", ` +
+        `a second name Obsidian showed for the same ${kind}. Choose Restore here to put it back, or Delete everywhere.`,
+      `obsync: ${held.length} deletion${held.length === 1 ? " is" : "s are"} still held back, so Sync now does not send them. ` +
+        "Choose Delete everywhere if you meant them, or Restore here to put the notes back.",
     ], story(r));
 
     await r.b.plugin.restoreHeldDeletions();
@@ -932,7 +934,7 @@ for (const folds of [true, false]) {
     // The page went on past it, as after #234, and the record stays: nothing was removed.
     assert.deepEqual(r.b.logs.filter((line) => line.startsWith("feed decision=retry")), [], story(r));
     assert.equal(r.b.state.data.files["Gone/Box.md"]?.fileId, id, story(r));
-    assert.deepEqual(r.b.notices.map((text) => /\(not_a_file\)/.test(text)), [true], story(r));
+    assert.deepEqual(r.b.notices.map((text) => /^obsync: skipped a change from .+: it was damaged or named a file this device cannot write/.test(text)), [true], story(r));
     // The phone's own next pass finds the note gone from its storage and says
     // so: the very deletion the desktop made, the same version, and still
     // nothing removed here.

@@ -226,11 +226,14 @@ for (const passive of [false, true]) for (const reverseResume of [false, true]) 
     new RegExp(`file=${fileId} seq=\\d+ answer_ms=\\d+ duration_ms=\\d+ budget_ms=${ANSWER_MS}$`),
     story(),
   );
-  const told = (host) => host.notices.filter((notice) => notice.startsWith(`${NOTE} was rewritten on this device`));
+  // ONE SENTENCE wherever the storm was seen (`pausedNotice`): B saw it, and
+  // A was told by B's pause; the log says which.
+  const told = (host) => host.notices.filter((notice) => notice.startsWith('obsync: paused syncing "n10"'));
   assert.equal(told(b.host).length, 1, story());
-  assert.match(told(b.host)[0], /^Notes\/n10\.md was rewritten on this device right after a sync, on the same lines another device changed\. Another plugin may be rewriting it .*obsync paused syncing it here; nothing was deleted\. .*Sync now, or press Resume in Show sync status\.$/);
-  assert.equal(told(a.host).length, 0, story());
-  assert.equal(a.host.notices.filter((notice) => notice.startsWith(`obsync paused syncing ${NOTE}`)).length, 1, story());
+  assert.match(told(b.host)[0], /^obsync: paused syncing "n10": a plugin \(such as one that stamps "updated:"\) keeps rewriting it right after sync, which would bounce it between your devices\. Stop that plugin changing synced notes, then press Resume in Show sync status; nothing was deleted\.$/);
+  assert.equal(told(a.host).length, 1, story());
+  assert.ok(a.host.logs.some((line) => line.startsWith("pull decision=paused reason=peer_rewrite_storm")), story());
+  assert.ok(!a.host.logs.some((line) => line.startsWith("pull decision=paused reason=rewrite_storm")), story());
   assert.ok(rig.versions().length <= 10, story());
   assert.deepEqual(b.statuses.at(-1), { kind: "paused", message: `${NOTE} (Show sync status)` }, story());
 
@@ -240,7 +243,7 @@ for (const passive of [false, true]) for (const reverseResume of [false, true]) 
   const after = b.host.logs.slice(pausedAt.log).filter((line) => line.startsWith("pull") && line.includes(`file=${fileId}`));
   assert.ok(after.every((line) => line.includes("decision=skipped reason=paused")), story());
   assert.ok(copiesOf(a.host, NOTE).length <= 1 && copiesOf(b.host, NOTE).length <= 1, story());
-  const keptBoth = (host) => host.notices.filter((notice) => notice.startsWith(`obsync kept both versions of ${NOTE}`));
+  const keptBoth = (host) => host.notices.filter((notice) => notice.startsWith('obsync: kept both versions of "n10"'));
   assert.ok(keptBoth(a.host).length <= 1 && keptBoth(b.host).length <= 1, story());
   const held = b.host.text(NOTE);
 
@@ -298,7 +301,7 @@ test("with the note open nowhere, the first device whose answer collides pauses 
   assert.ok(stopped <= 10, story);
   assert.equal(copiesOf(a.host, NOTE).length, copies, story);
   assert.ok(copies <= 1, story);
-  assert.equal(other.host.notices.filter((notice) => notice.startsWith(`${NOTE} was rewritten`)).length, 0, story);
+  assert.equal(other.host.logs.filter((line) => line.startsWith("pull decision=paused reason=rewrite_storm")).length, 0, story);
   for (const stamper of stampers) stamper.remove();
   await advance(10_000);
   await a.engine.syncNow();

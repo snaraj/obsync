@@ -64,6 +64,7 @@ import {
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
 import { SyncFolders, assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
 import { VaultPathError, assertVaultPath } from "../vaultPath";
+import { quoted } from "../notices";
 
 /**
  * The ciphertext one push holds between encrypting a chunk and the server
@@ -774,10 +775,15 @@ async function stillGone(context: SyncContext, path: string, record: FileState, 
     `age_ms=${context.now() - decided}`);
   const now = same ? undefined : context.state.pathByFileId(record.fileId);
   if (now !== undefined && (await context.host.stat(now)) !== null) {
-    context.host.notify(
-      `obsync did not delete "${path}" from your other devices: it was changed on another device before this ` +
-        `deletion reached the server, so the note is back here${now === path ? "" : ` as "${now}"`}.`,
-    );
+    // The note by the name it was deleted under, and by the one it is back under when they differ.
+    context.host.notify({
+      kind: "info", paths: [now],
+      text: now === path
+        ? "did not delete {notes} from your other devices: another device changed {it} before the deletion reached " +
+          "your server, so this device has {it} back."
+        : `did not delete ${quoted(path)} from your other devices: another device changed it before the deletion reached ` +
+          "your server, so this device has it back as {notes}.",
+    });
   }
   return gone;
 }

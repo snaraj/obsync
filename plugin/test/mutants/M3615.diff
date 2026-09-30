@@ -1,11 +1,11 @@
 # M3615: leaving leaves the warning's toast standing on screen
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -4184,7 +4184,6 @@
+@@ -4858,7 +4858,6 @@
        }
        this.updateAvailable = null;
        this.recoveryMismatch = false;
--      this.recoveryNotice?.hide();
+-      this.notices.close(RECOVERY_WARNING);
        this.forgottenDevice = false;
        this.setStatus({ kind: "idle" });
        if (reason === "unfinished") reason = "ok";

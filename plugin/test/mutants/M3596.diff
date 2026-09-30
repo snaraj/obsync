@@ -1,0 +1,13 @@
+# M3596: every notice reads the settings, even after unload tore the state down
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -298,7 +298,8 @@
+   /** Why this notice stays off the screen, as the log line's fields, or `null` to show it. */
+   private quiet(notice: SyncNotice, now: number): string | null {
+     // Asked, never read ahead: only the kinds that answer to a setting read one (`toasts`).
+-    const settings = (): NoticeSettings => this.screen.settings();
++    const read = this.screen.settings();
++    const settings = (): NoticeSettings => read;
+     let last = -Infinity;
+     if (notice.kind === "combined") {
+       for (const path of notice.paths ?? []) {

@@ -25,6 +25,18 @@ const notes = require("../build/notices.js");
 const PLUGIN_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
+ * The real notice channel (`main.ts`, `noticeChannel`) for a stub plugin in
+ * `box`: its notices land on the sandbox's recorded toasts, as a person would
+ * see them. The channel's own decision lines stay out of the stub's log; the
+ * notice-channel tests read those.
+ */
+export function channel(box, plugin) {
+  return box.require(join(box.home, "build/main.js")).noticeChannel({
+    get state() { return plugin.state; }, log: () => undefined, showStatus: () => plugin.showStatus?.(), act: (action) => plugin.act?.(action),
+  });
+}
+
+/**
  * A throwaway directory where `obsidian` resolves to a stub, the way
  * Obsidian's own loader makes it resolve. `build/` is always copied in;
  * `dist/` only when asked, because `build.mjs` deletes and recreates `dist/`
@@ -605,16 +617,16 @@ export class FakeHost {
    * the channel kept off the screen throws, on a phone as on a desktop: no
    * setting may silence a control, and every test that raises one proves it.
    */
-  notify(notice, actions = []) {
-    const message = typeof notice === "string" ? notice : `obsync: ${notes.sentence(notice)}`;
+  notify(notice) {
+    if (typeof notice !== "object" || notice === null || !(notice.kind in notes.STAYS_MS)) throw new Error(`a notice without a kind: ${JSON.stringify(notice)}`);
+    const message = notes.toastText(notice);
     this.notices.push(message);
-    if (typeof notice !== "string") this.said.push(notice);
-    if (actions.length > 0) this.asked.push({ message, actions });
+    this.said.push(notice);
+    if (notice.actions?.length) this.asked.push({ message, actions: notice.actions });
     const before = this.toasts.length;
-    this.channel.show(notice, actions);
-    const control = typeof notice === "string" ? actions.length > 0 : notes.NON_MUTABLE.has(notice.kind);
-    if (control && this.toasts.length === before) {
-      throw new Error(`a ${typeof notice === "string" ? "question" : notice.kind} was kept off the screen under ${JSON.stringify(this.noticeSettings)}`);
+    this.channel.show(notice);
+    if (notes.NON_MUTABLE.has(notice.kind) && this.toasts.length === before) {
+      throw new Error(`a ${notice.kind} was kept off the screen under ${JSON.stringify(this.noticeSettings)}`);
     }
   }
 

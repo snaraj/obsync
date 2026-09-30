@@ -1,0 +1,12 @@
+# M3927: the answer to a click in Settings is kept quiet under Only what needs me
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -399,7 +399,7 @@
+ 
+   /** The answer to the person's own click, through the notice channel (`notices.ts`, kind `confirm`). */
+   private say(text: string): void {
+-    this.plugin.notices.show({ kind: "confirm", text });
++    this.plugin.notices.show({ kind: "info", text });
+   }
+ 
+   /** What was typed into Server URL, normalised, refused or adopted once; nothing when nothing was typed. */

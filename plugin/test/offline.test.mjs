@@ -728,7 +728,7 @@ test("every name taken means the copy is refused, and nothing is claimed", async
     r.host.logs.some((line) => line.includes("decision=refused") && line.includes("reason=no_free_conflict_name")),
     r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
-  assert.match(r.host.notices.join(" "), /could not place the other device's copy/);
+  assert.match(r.host.notices.join(" "), /found no free name for .+'s copy beside it/);
 });
 
 test("the copy's writer is released on success as well as on failure", async () => {

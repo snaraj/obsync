@@ -1,11 +1,11 @@
 # M3608: leaving keeps a warning about the server it left
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -4183,7 +4183,6 @@
-         );
+@@ -4857,7 +4857,6 @@
+         });
        }
        this.updateAvailable = null;
 -      this.recoveryMismatch = false;
-       this.recoveryNotice?.hide();
+       this.notices.close(RECOVERY_WARNING);
        this.forgottenDevice = false;
        this.setStatus({ kind: "idle" });

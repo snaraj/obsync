@@ -1,12 +1,12 @@
 # M1857: closing the creator dialog leaves a claim on screen waiting (#153)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -250,7 +250,7 @@
+@@ -257,7 +257,7 @@
      const asking = this.asking;
      this.asking = null;
      if (asking !== null) {
--      void this.refuse(asking, "closed", "Pairing ended: closing that dialog refused the device that was waiting, and nothing was shared with it. To pair it, make a new code.");
+-      void this.refuse(asking, "closed", "pairing ended: closing that dialog refused the device that was waiting, and nothing was shared with it. To pair it, make a new code.");
 +      void asking;
-     } else if (this.collecting) {
-       this.collecting = false;
-       tell("Approved. The new device finishes pairing by itself; its own screen says when it has.");
+     }
+   }
+ 

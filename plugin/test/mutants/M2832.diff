@@ -1,11 +1,11 @@
 # M2832: a phone never says a refusal that needs the person
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3087,7 +3087,6 @@
+@@ -5311,7 +5311,6 @@
      // A PHONE HAS NOTHING ELSE THAT CATCHES THE EYE (#209): a refusal that
      // needs the person is said once in a notice there, as it turns to it.
      const refusal = status.kind === "error" && status.code !== undefined ? status.message : null;
--    if (Platform.isMobile && refusal !== null && refusal !== this.noticed) new Notice(`obsync: ${refusal}`, 15000);
+-    if (Platform.isMobile && refusal !== null && refusal !== this.noticed) this.notices.show({ kind: "error", text: refusal });
      this.noticed = refusal;
      for (const watcher of this.watchers) watcher();
    }

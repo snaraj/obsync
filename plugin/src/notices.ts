@@ -33,8 +33,9 @@ export interface SyncNotice {
   readonly kind: NoticeKind;
   /**
    * One plain sentence, without the "obsync: " every toast begins with.
-   * `{notes}` stands for the notes' titles and `{device}` for the device's
-   * name, so one sentence reads right for one note or a burst of them.
+   * `{notes}` stands for the notes' titles, `{it}` for "it" or "them" as
+   * they number, and `{device}` for the device's name, so one sentence reads
+   * right for one note or a burst of them. `{code}` is `code`.
    */
   readonly text: string;
   /** The notes it is about, as vault paths: shown by title, opened from Recent. */
@@ -53,6 +54,14 @@ export interface SyncNotice {
    */
   readonly key?: string;
   readonly actions?: readonly NoticeAction[];
+  /** What a click on the toast opens. */
+  readonly open?: () => void;
+  /**
+   * A one-time code the person must compare, such as a pairing's match
+   * code: the toast shows it in `{code}`, and nothing that outlives the toast
+   * does -- Recent, the command line and every log line read `MASK`.
+   */
+  readonly code?: string;
 }
 
 export type NoticeLevel = "everything" | "needs-me";
@@ -78,8 +87,14 @@ export const STAYS_MS: Readonly<Record<NoticeKind, number>> = {
   question: 0, security: 0, error: 0, conflict: 8000, combined: 8000, info: 8000, confirm: 4000,
 };
 
-/** A notice not yet given a kind keeps the ten seconds every notice had before 1.1.5. */
-const UNSORTED_MS = 10_000;
+/**
+ * Long enough to read: a toast that goes by itself stays at least a second
+ * plus a quarter second a word, up to twenty seconds (`stays`).
+ */
+const READ_MS_PER_WORD = 250;
+const READ_MAX_MS = 20_000;
+/** What Recent, the command line and the log keep of a notice's `code`. */
+export const MASK = "•••";
 /** How many obsync toasts may be on screen before the rest become one "N more" toast. */
 export const VISIBLE_MAX = 3;
 /** How many notices Recent keeps, newest last. */
@@ -101,13 +116,15 @@ export function noticeSettings(value: unknown): NoticeSettings {
 }
 
 /**
- * Whether a notice of this kind may become a toast under these settings.
- * `question` and `security` answer yes whatever the settings hold.
+ * Whether a notice of this kind may become a toast under the settings.
+ * `question` and `security` answer yes whatever the settings hold. Only
+ * `combined` and `info` read them at all, so `settings` is asked, never read
+ * ahead: a notice after unload tore the state down reads nothing.
  */
-export function toasts(kind: NoticeKind, settings: NoticeSettings): boolean {
+export function toasts(kind: NoticeKind, settings: () => NoticeSettings): boolean {
   if (NON_MUTABLE.has(kind)) return true;
-  if (kind === "combined") return settings.level === "everything" && settings.merges !== "off";
-  if (kind === "info") return settings.level === "everything";
+  if (kind === "combined") return settings().level === "everything" && settings().merges !== "off";
+  if (kind === "info") return settings().level === "everything";
   return true;
 }
 
@@ -122,6 +139,16 @@ export function titles(paths: readonly string[]): string[] {
   return paths.map((path, index) => names.indexOf(names[index] as string) === names.lastIndexOf(names[index] as string) ? names[index] as string : bare(path));
 }
 
+/** One name as a person knows it, quoted: a note by its title, a folder or any other file by its own name. */
+export function quoted(path: string): string {
+  return `"${titles([path])[0] ?? path}"`;
+}
+
+/** "1 note", "3 notes": a count and what it counts. */
+export function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 /** `"Plan"`, `2 notes ("Plan" and "Log")`, `3 notes ("Plan", "Log" and 1 more)`. */
 export function named(paths: readonly string[]): string {
   const unique = [...new Set(paths)];
@@ -132,10 +159,30 @@ export function named(paths: readonly string[]): string {
   return `${shown.length} ${noun} (${listed})`;
 }
 
-/** The sentence for these notes; `times` above one says the same thing happened again. */
-export function sentence(notice: SyncNotice, paths: readonly string[] = notice.paths ?? [], times = 1): string {
-  const text = notice.text.replace(/\{(notes|device)\}/g, (_, slot: string) => slot === "notes" ? named(paths) : notice.device ?? "another device");
+/**
+ * The sentence for these notes; `times` above one says the same thing
+ * happened again. The code is shown only where `shown` says so: the toast.
+ */
+export function sentence(notice: SyncNotice, paths: readonly string[] = notice.paths ?? [], times = 1, shown = false): string {
+  const unique = new Set(paths).size;
+  const slots: Record<string, string> = {
+    notes: named(paths), it: unique > 1 ? "them" : "it", device: notice.device ?? "another device",
+    code: shown ? notice.code ?? MASK : MASK,
+  };
+  const text = notice.text.replace(/\{(notes|it|device|code)\}/g, (_, slot: string) => slots[slot] as string);
   return times > 1 ? text.replace(/\.?$/, ` (${times} times).`) : text;
+}
+
+/** What a toast of this notice says: "obsync: ", or "obsync security warning: ", and the sentence. */
+export function toastText(notice: SyncNotice, paths?: readonly string[], times?: number): string {
+  return `obsync${notice.kind === "security" ? " security warning" : ""}: ${sentence(notice, paths, times, true)}`;
+}
+
+/** How long a toast of this kind and these words stays (`STAYS_MS`, `READ_MS_PER_WORD`); 0 is until dismissed. */
+export function stays(kind: NoticeKind, text: string): number {
+  if (STAYS_MS[kind] === 0) return 0;
+  const words = text.split(/\s+/).filter(Boolean).length;
+  return Math.max(STAYS_MS[kind], Math.min(READ_MAX_MS, 1000 + words * READ_MS_PER_WORD));
 }
 
 /**
@@ -188,8 +235,15 @@ interface Group extends Toast {
   times: number;
 }
 
+/** A Recent line as kept: the notice, and how many times in a row it happened (`remember`). */
+interface Kept {
+  entry: RecentEntry;
+  notice: SyncNotice;
+  times: number;
+}
+
 export class NoticeChannel {
-  private readonly recentList: RecentEntry[] = [];
+  private readonly recentList: Kept[] = [];
   /** The toast of each key on screen now, a notice of that key joins it (`show`). */
   private readonly groups = new Map<string, Group>();
   /** One toast per key that is never merged: questions and security notices. */
@@ -200,9 +254,10 @@ export class NoticeChannel {
 
   constructor(private readonly screen: NoticeScreen) {}
 
-  /** Every notice so far this session, newest first. */
+  /** Every notice so far this session, newest first; one said again in a row is one line that counts it. */
   recent(): readonly RecentEntry[] {
-    return [...this.recentList].reverse();
+    return this.recentList.map(({ entry, notice, times }) =>
+      times > 1 ? { ...entry, text: sentence(notice, entry.paths, times) } : entry).reverse();
   }
 
   /** Take the question or security notice of this key off the screen. */
@@ -211,24 +266,21 @@ export class NoticeChannel {
     this.slots.delete(key);
   }
 
-  show(notice: SyncNotice | string, actions: readonly NoticeAction[] = []): void {
-    if (typeof notice === "string") {
-      this.unsortedNotice(notice, actions);
-      return;
-    }
+  show(notice: SyncNotice): void {
     const now = this.screen.now();
     const { kind } = notice;
-    const text = sentence(notice);
-    this.remember({ at: now, kind, text, paths: notice.paths ?? [], ...notice.device === undefined ? {} : { device: notice.device } });
+    this.remember({ at: now, kind, text: sentence(notice), paths: notice.paths ?? [], ...notice.device === undefined ? {} : { device: notice.device } }, notice);
     const quiet = this.quiet(notice, now);
     if (quiet !== null) {
       this.screen.log(`notice decision=quiet kind=${kind} ${quiet}`);
       return;
     }
     const key = notice.key ?? `${kind}\u0000${notice.text}\u0000${notice.device ?? ""}`;
+    const text = toastText(notice);
+    const ms = stays(kind, text);
     if (NON_MUTABLE.has(kind)) {
-      this.slot(key, `obsync: ${text}`, STAYS_MS[kind], notice.actions ?? []);
-      this.screen.log(`notice decision=shown kind=${kind} stays_ms=${STAYS_MS[kind]}`);
+      this.slot(key, text, ms, notice);
+      this.screen.log(`notice decision=shown kind=${kind} stays_ms=${ms}`);
       return;
     }
     // A notice with buttons is its own toast: joined, they would act for the first note only.
@@ -236,7 +288,7 @@ export class NoticeChannel {
     if (group !== undefined && live(group, now)) {
       for (const path of notice.paths ?? []) if (!group.paths.includes(path)) group.paths.push(path);
       group.times++;
-      group.drawn.update(`obsync: ${sentence(group.notice, group.paths, group.paths.length <= 1 ? group.times : 1)}`);
+      group.drawn.update(toastText(group.notice, group.paths, group.paths.length <= 1 ? group.times : 1));
       this.screen.log(`notice decision=joined kind=${kind} since_ms=${now - group.at} budget_ms=${group.ms} count=${group.times}`);
       return;
     }
@@ -246,14 +298,15 @@ export class NoticeChannel {
       this.screen.log(`notice decision=folded kind=${kind} visible=${visible} budget=${VISIBLE_MAX} count=${this.overflow?.count ?? 0}`);
       return;
     }
-    const drawn = this.screen.draw(`obsync: ${text}`, STAYS_MS[kind], notice.actions ?? []);
-    this.groups.set(key, { drawn, at: now, ms: STAYS_MS[kind], notice, paths: [...notice.paths ?? []], times: 1 });
-    this.screen.log(`notice decision=shown kind=${kind} stays_ms=${STAYS_MS[kind]}`);
+    const drawn = this.screen.draw(text, ms, notice.actions ?? [], notice.open);
+    this.groups.set(key, { drawn, at: now, ms, notice, paths: [...notice.paths ?? []], times: 1 });
+    this.screen.log(`notice decision=shown kind=${kind} stays_ms=${ms}`);
   }
 
   /** Why this notice stays off the screen, as the log line's fields, or `null` to show it. */
   private quiet(notice: SyncNotice, now: number): string | null {
-    const settings = this.screen.settings();
+    // Asked, never read ahead: only the kinds that answer to a setting read one (`toasts`).
+    const settings = (): NoticeSettings => this.screen.settings();
     let last = -Infinity;
     if (notice.kind === "combined") {
       for (const path of notice.paths ?? []) {
@@ -264,52 +317,43 @@ export class NoticeChannel {
         for (const [path, at] of this.combinedAt) if (now - at >= ONCE_IDLE_MS) this.combinedAt.delete(path);
       }
     }
-    if (!toasts(notice.kind, settings)) return `reason=setting level=${settings.level} merges=${settings.merges}`;
-    if (notice.kind === "combined" && settings.merges === "once" && now - last < ONCE_IDLE_MS) {
+    if (!toasts(notice.kind, settings)) return `reason=setting level=${settings().level} merges=${settings().merges}`;
+    if (notice.kind === "combined" && settings().merges === "once" && now - last < ONCE_IDLE_MS) {
       return `reason=once_per_note since_ms=${now - last} budget_ms=${ONCE_IDLE_MS}`;
     }
     return null;
   }
 
   /** A question or security notice: its own toast, replacing the one of its key. */
-  private slot(key: string, text: string, ms: number, actions: readonly NoticeAction[]): void {
+  private slot(key: string, text: string, ms: number, notice: SyncNotice): void {
     this.close(key);
-    this.slots.set(key, { drawn: this.screen.draw(text, ms, actions), at: this.screen.now(), ms });
+    this.slots.set(key, { drawn: this.screen.draw(text, ms, notice.actions ?? [], notice.open), at: this.screen.now(), ms });
   }
 
   /**
-   * A notice raised as bare words, before its call site names its kind: shown
-   * exactly as before 1.1.5 -- ten seconds, or until answered when it has
-   * buttons, one held-deletions question on screen at a time -- and never
-   * kept quiet by a setting, since nothing says what it is. Recorded in Recent,
-   * and not held here once drawn: nothing ever counts or joins it.
+   * THE SAME THING SAID AGAIN, WITH NOTHING BETWEEN, IS ONE LINE THAT COUNTS
+   * IT, as its toast does (1.1.5): twenty presses of Sync now were twenty
+   * lines, and fifty would push a security warning out of Recent.
    */
-  private unsortedNotice(message: string, actions: readonly NoticeAction[]): void {
-    const now = this.screen.now();
-    this.remember({ at: now, kind: actions.length === 0 ? "info" : "question", text: message, paths: [] });
-    const held = actions.some((action) => action.kind === "delete_everywhere" || action.kind === "restore_here");
-    const fetch = actions.find((action) => action.kind === "fetch");
-    if (held || fetch !== undefined) {
-      this.slot(held ? HELD : `fetch\u0000${fetch?.kind === "fetch" ? fetch.fileId : ""}`, message, 0, actions);
-      this.screen.log("notice decision=shown kind=unsorted stays_ms=0");
+  private remember(entry: RecentEntry, notice: SyncNotice): void {
+    const last = this.recentList[this.recentList.length - 1];
+    if (last !== undefined && last.entry.kind === entry.kind && last.entry.text === entry.text
+      && last.entry.device === entry.device && last.entry.paths.join("\u0000") === entry.paths.join("\u0000")) {
+      last.times++;
+      last.entry = { ...last.entry, at: entry.at };
       return;
     }
-    this.screen.draw(message, UNSORTED_MS, actions);
-    this.screen.log(`notice decision=shown kind=unsorted stays_ms=${UNSORTED_MS}`);
-  }
-
-  private remember(entry: RecentEntry): void {
-    this.recentList.push(entry);
+    this.recentList.push({ entry, notice, times: 1 });
     if (this.recentList.length > RECENT_MAX) this.recentList.shift();
   }
 
-  /** obsync toasts this channel holds on screen now (bare words are not held); the ones gone are forgotten. */
+  /** obsync toasts on screen now; the ones gone are forgotten. */
   private visible(now: number): number {
-    let count = 0;
-    for (const [key, group] of this.groups) if (live(group, now)) count++; else this.groups.delete(key);
-    for (const [key, slot] of this.slots) if (live(slot, now)) count++; else this.slots.delete(key);
-    if (this.overflow !== null && live(this.overflow, now)) count++;
-    return count;
+    let up = 0;
+    for (const [key, group] of this.groups) if (live(group, now)) up++; else this.groups.delete(key);
+    for (const [key, slot] of this.slots) if (live(slot, now)) up++; else this.slots.delete(key);
+    if (this.overflow !== null && live(this.overflow, now)) up++;
+    return up;
   }
 
   /**

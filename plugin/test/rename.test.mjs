@@ -704,7 +704,7 @@ test("a selected folder renamed where no device may sync publishes nothing and s
   assert.equal(a.state.data.folders["Notes"], undefined, "a record for a folder this device cannot see was kept");
   // Once, not once per note: three refusals are one decision to the user.
   assert.equal(a.host.notices.length, 1, a.host.notices.join(" | "));
-  assert.match(a.host.notices[0], /moved out of the folders this device syncs.*Nothing was deleted/s);
+  assert.match(a.host.notices[0], /moved out of the folders this device syncs.*nothing was deleted/s);
 });
 
 /**

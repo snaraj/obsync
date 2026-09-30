@@ -106,7 +106,8 @@ function refuse(host, matches, code, stage) {
 /** How many times the chunk this frame names was fetched. */
 const fetches = (r, frame) => r.server.requests.filter((request) => request.target === `/v1/chunks/${frame.sids[0]}`).length;
 
-const notices = (r, path) => r.host.notices.filter((notice) => notice.includes(path));
+/** The notices that name `path`, as a person reads it: by its title (`notices.ts`). */
+const notices = (r, path) => r.host.notices.filter((notice) => notice.includes(`"${path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/, "")}"`));
 
 test("a locked note is parked: every later change arrives, and the status names the file, never offline", async (t) => {
   const r = await rig();
@@ -133,6 +134,8 @@ test("a locked note is parked: every later change arrives, and the status names 
   assert.equal(d.statuses.some((status) => status.kind === "offline"), false, "a local refusal is not the network");
   assert.equal(notices(r, "Notes/n17.md").length, 1, "one notice names the file");
   assert.match(notices(r, "Notes/n17.md")[0], /the file is locked/);
+  // It needs the person: on screen until dismissed, under the quietest settings a person can choose.
+  assert.ok(r.host.toasts.some((toast) => toast.text.includes('"n17"') && toast.ms === 0 && !toast.hidden), JSON.stringify(r.host.toasts));
   assert.ok(
     r.host.logs.some((line) => line === `feed decision=parked reason=EPERM file=${N17} parked=1 retry_ms=60000`),
     "the park is one structured line with its reason and its retry budget",

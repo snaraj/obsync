@@ -1,12 +1,12 @@
 # M2915: a failed re-case is said again for every version that asks for it
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1755,7 +1755,7 @@
+@@ -2133,7 +2133,7 @@
      // folder's capitals are, and said once, before the decision is logged.
      if (outcome === "occupied" && (await context.host.spelling(manifest.path)) === localPath) {
        const told = `recase\u0000${change.file_id}`;
 -      if (!context.refused.has(told)) {
 +      if (true) {
          context.refused.add(told);
-         context.host.notify(
-           `obsync could not change the capitals of "${localPath}" to "${manifest.path}" on this device, so it keeps ` +
+         context.host.notify({
+           kind: "error", paths: [localPath],

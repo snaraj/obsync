@@ -1962,8 +1962,8 @@ yesterday is not re-applied over today, and the first entry after it replaces
 the mark and ends the replay. A version this device still records but the
 server no longer holds as a head is never kept over an identical head the
 server does hold (`pull.ts`, identical bytes). One notice per run that
-re-sent: "The server was restored to an earlier state; this device re-sent N
-changes."
+re-sent: "your server went back to an earlier state, so this device sent N
+changes of its own again."
 
 The same code runs on desktop and mobile: reads through the ordinary
 transport and re-sends through `pushFile`, so a file above the mobile ceiling
@@ -1988,21 +1988,32 @@ pinned-key verifier is not part of this installation path.
 ### 6.4 Notices
 
 Every notice the plugin shows goes through one channel, `plugin/src/notices.ts`
-(`VaultHost.notify` and `ObsidianHost.notify` are its adapters). A notice is a
-kind, one sentence, the notes it is about and the device, by name. The channel
-decides whether it becomes a toast and records every notice, shown or not, in
-Recent: the newest 50 since obsync started, listed in Show sync status and printed
-by `obsync-private-sync:recent`.
+(`VaultHost.notify` and `ObsidianHost.notify` are its adapters; the settings
+tab and the dialogs call it directly). A notice is a kind, one sentence, the
+notes it is about and the device, by name; nothing is raised without a kind,
+and nothing but the channel draws a toast. The channel decides whether it
+becomes a toast and records every notice, shown or not, in Recent: the newest
+50 since obsync started, listed in Show sync status and printed by
+`obsync-private-sync:recent`.
 
-| Kind | For | Stays | Under "Only what needs me" |
+| Kind | For, for example | Stays | Under "Only what needs me" |
 | --- | --- | --- | --- |
-| `question` | a decision only the person can make, such as held deletions | until answered; one per key | shown |
-| `security` | something that protects the vault | until dismissed | shown |
-| `error` | something stopped and needs the person | until dismissed | shown |
-| `conflict` | a conflict copy was kept | 8 s | shown |
-| `combined` | edits made here and another device's combined into one note | 8 s | Recent only |
-| `info` | anything else worth knowing | 8 s | Recent only |
-| `confirm` | the answer to the person's own click or command | 4 s | shown |
+| `question` | a decision only the person can make: held deletions, a resumed pairing's match code, an unconfirmed recovery phrase | until answered or dismissed; one per key | shown |
+| `security` | something that protects the vault: another device's recovery key | until dismissed | shown |
+| `error` | something stopped and needs the person: a paused or unwritable note, a device on another vault key, sync stopped, a pairing that ended behind its closed dialog | until dismissed | shown |
+| `conflict` | a copy was kept: both versions, two notes with one name, a note left in place | 8 s or more | shown |
+| `combined` | edits made here and another device's combined into one note | 8 s or more | Recent only |
+| `info` | anything else worth knowing: a folder kept, a newer version not downloaded, an update | 8 s or more | Recent only |
+| `confirm` | the answer to the person's own click, press or command, a refusal included | 4 s or more | shown |
+
+"Or more" is long enough to read: a toast that goes by itself stays a second
+plus a quarter second a word, when that is longer, up to twenty seconds
+(`stays`). A `security` toast begins "obsync security warning:" where every
+other begins "obsync:", and while one stands the status bar shows the alert
+sign, check or not, its words ending "— security warning: see Show sync
+status"; no setting changes either. A toast whose notice names what to open
+opens it on a click: "N more" opens Show sync status, the update notice
+Community plugins, and the recovery-phrase reminder obsync's settings.
 
 No setting keeps a `question` or `security` notice off the screen, on any
 platform (requirement 4); nothing in the channel branches on the platform, and
@@ -2014,19 +2025,33 @@ then nothing for that note until it has gone five minutes without one
 
 A second notice of the same event while its toast is up joins that toast --
 `2 notes ("Plan" and "Log")`, `(3 times)` -- instead of stacking; a notice with
-buttons never joins. Beyond three obsync toasts on screen the rest are counted
+buttons never joins. That is how twenty presses of Sync now with nothing to
+send are one toast counting them, and how a phone's refusal said again while
+it stands is not a second one. Recent counts the same way: a notice said again
+with nothing between is one line, `(20 times)`, so a run of presses never
+pushes a security warning out of its fifty lines. Beyond three obsync toasts on screen the rest are counted
 on one "N more — see Recent in Show sync status" toast, which opens Show sync
 status and stays until dismissed once it counts an error. Each decision logs
 one line, `notice decision=shown|joined|folded|quiet kind=...`, with the budget
 it was measured against (`since_ms`/`budget_ms`, `visible`/`budget`).
 
-**Wording.** One plain sentence per event, after "obsync: ", in lower case. A
-note is its title in quotes: its name without `.md`; any other file keeps its
-extension; its folder only when two notes in one sentence share a title. A
-device is its name ("another device" while unknown), never its id. No internal
-term reaches a person -- concurrent, manifest, tombstone, version, sid, seq,
-chunk, domain, envelope, status codes, file ids -- and when the person must
-act, the sentence says what to do. Paths and ids stay in log lines.
+**Wording.** One plain sentence per event, after "obsync: ", in lower case; a
+status line or a refusal the plugin also shows elsewhere keeps its own capital.
+A note is its title in quotes (`{notes}`): its name without `.md`; any other
+file keeps its extension; its folder only when two notes in one sentence share
+a title. A folder is its own name in quotes. `{it}` reads "it" for one note and
+"them" for several, so a sentence joined by a burst stays grammatical. A device
+is its name (`{device}`; "another device" while unknown), never its id. No
+internal term reaches a person -- concurrent, manifest, tombstone, version
+record, sid, seq, chunk, domain, envelope, status codes, file ids -- and when
+the person must act, the sentence says what to do. One event is one sentence
+wherever the code meets it: a note paused by a plugin's rewrites says the same
+thing whichever device saw it, and a copy kept beside a note says the same
+thing on every path that makes one. Paths and ids stay in log lines.
+
+**A code is never kept.** A pairing's match code is on its toast (`{code}`,
+`SyncNotice.code`) and in the pairing dialog, and nowhere that outlives them:
+Recent, the command line and every log line read `•••` in its place.
 
 **Settings, palette and command line.** Both settings are in Settings under
 Notifications, are palette commands a hotkey can take (`Notifications: ...`,

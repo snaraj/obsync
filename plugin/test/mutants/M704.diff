@@ -1,7 +1,7 @@
 # M704: Resume records the peer head over restored local bytes
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3114,7 +3114,7 @@
+@@ -3260,7 +3260,7 @@
      context.host.log(`pull decision=refused reason=resume_peer_shape file=${fileId} duration_ms=${context.now() - started} budget_bytes=${CHUNK_MAX}`);
      throw new ManifestError("resume_peer_shape");
    }
@@ -9,4 +9,4 @@
 +  const landed = await materialise(context, fileId, recorded, { ...record, mtime: before.mtime, size: before.size });
    if (landed === null) return "saved_meanwhile";
    await recordAt(context, { ...restored, file_id: fileId }, path, landed);
-   context.host.notify(`obsync resumed ${path}. What this device held while it was paused is in "${kept}".`);
+   context.host.notify({ kind: "confirm", paths: [path], text: `resumed {notes}; what this device held while it was paused is in ${quoted(kept)}.` });

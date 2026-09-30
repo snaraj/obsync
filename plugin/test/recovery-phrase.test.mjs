@@ -14,7 +14,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { KEYS, memorySecrets, sandbox, statusItem } from "./fake.mjs";
+import { KEYS, channel, memorySecrets, sandbox, statusItem } from "./fake.mjs";
 
 const tick = () => new Promise(setImmediate);
 
@@ -60,6 +60,7 @@ function plugin(data = {}) {
 function dialog(b, p, confirmFirst, afterClose) {
   const drawn = [];
   const element = () => ({ createEl: (tag, attributes = {}) => { drawn.push(`${tag}: ${attributes.text ?? ""}`); return element(); }, empty() {} });
+  p.notices ??= channel(b, p);
   const modal = new b.modals.RecoveryPhraseModal({}, p, confirmFirst, afterClose);
   modal.contentEl = element();
   modal.setTitle = () => {};
@@ -109,7 +110,7 @@ test("Escape on the words at setup leaves them unconfirmed, owed one reminder; p
   assert.equal(p.state.data.recoveryPhrase, "confirmed", "closing after the check does not undo it");
   assert.deepEqual(p.calls, ["save", "save"]);
   assert.deepEqual(p.logs, ["phrase decision=skipped", "phrase decision=confirmed"]);
-  assert.ok(b.obsidian.notices.includes("Recovery phrase confirmed."));
+  assert.ok(b.obsidian.notices.includes("obsync: recovery phrase confirmed."));
 });
 
 test("the words shown from the palette offer the check to an unconfirmed device, and closing them records nothing (#170)", async (t) => {
@@ -190,9 +191,16 @@ test("the start after a skipped confirmation says so once, and never again on it
   const r = await fixture(t, { vrk: KEYS.vrk, deviceId: null, deviceSecret: null, serverUrl: "", recoveryPhrase: "skipped" });
   await r.instance.onload();
   await tick();
-  const reminders = () => r.obsidian.notices.filter((message) => message.startsWith("obsync: your 24-word recovery phrase is not confirmed."));
+  const reminders = () => r.obsidian.notices.filter((message) => message.startsWith("obsync: your 24-word recovery phrase is not confirmed:"));
   assert.equal(reminders().length, 1);
-  assert.match(reminders()[0], /Open obsync's settings, Vault key, and choose Show and confirm\./);
+  assert.match(reminders()[0], /In obsync's settings, under Vault key, choose Show and confirm\./);
+  // A question: it stays until dismissed, and a click on it opens those settings.
+  const reminder = r.obsidian.raised.find((toast) => toast.message === reminders()[0]);
+  assert.equal(reminder.duration, 0);
+  let opened = 0;
+  r.instance.openSettings = () => { opened++; };
+  reminder.containerEl.dispatch("click");
+  assert.equal(opened, 1);
   assert.equal(r.metadata().recoveryPhrase, "unconfirmed", "the reminder is spent");
   assert.ok(r.logs.includes("phrase decision=reminded"));
   await r.instance.onload();

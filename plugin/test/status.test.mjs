@@ -754,7 +754,7 @@ test("after a new vault key, an edit the server refuses for the old vault is sen
   const fresh = r.state.fileByPath("Old.md").fileId;
   assert.equal(posts.length, 1, "one attempt at the old file: the answer is final");
   assert.equal(r.server.files.get(fresh).heads.length, 1, "the note is on the server under the new key");
-  assert.equal(r.host.notices.filter((notice) => notice.includes("vault key changed")).length, 1);
+  assert.equal(r.host.notices.filter((notice) => notice.includes("before this vault's key changed")).length, 1);
   assert.ok(r.host.logs.includes(`push path_class=file decision=republish reason=domain_mismatch file=${old}`), r.host.logs.join("\n"));
   assert.ok(!r.statuses.some((status) => status.kind === "error"), "no error for a decision that is final");
   // A full scan cycle later nothing is re-queued: no loop.

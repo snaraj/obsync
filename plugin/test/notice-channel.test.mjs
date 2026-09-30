@@ -117,11 +117,12 @@ test("NO SETTING SILENCES A CONTROL: a question and a security notice reach the 
         const before = host.toasts.length;
         host.notify({ kind, text: `${kind} SENTINEL: do this now.`, key: kind });
         const drawn = host.toasts.slice(before);
-        assert.deepEqual(drawn.map((toast) => [toast.text, toast.ms, toast.hidden]), [[`obsync: ${kind} SENTINEL: do this now.`, 0, false]],
+        const said = kind === "security" ? "obsync security warning" : "obsync";
+        assert.deepEqual(drawn.map((toast) => [toast.text, toast.ms, toast.hidden]), [[`${said}: ${kind} SENTINEL: do this now.`, 0, false]],
           `${kind} on ${isMobile ? "a phone" : "a desktop"} under ${JSON.stringify(chosen)}`);
       }
-      // A question raised as bare words, the way every held deletion still asks in 1.1.5.
-      host.notify("obsync is still holding back 3 deletions. Delete them there too?", [{ kind: "delete_everywhere" }, { kind: "restore_here" }]);
+      // The held-deletions question, as the engine asks it (`HELD`).
+      host.notify({ kind: "question", key: n.HELD, text: "3 deletions are still held back. Delete them there too?", actions: [{ kind: "delete_everywhere" }, { kind: "restore_here" }] });
       assert.equal(host.toasts.at(-1).ms, 0);
       assert.equal(host.toasts.at(-1).hidden, false);
     }
@@ -154,11 +155,14 @@ function typing(c, path = "Both-mun1mwp3.md", seconds = 60) {
   }
 }
 
-test("Once per note: the first combine in a note is shown, the rest of the session is not, and Recent has every one", () => {
+/** Recent after thirty-one combines in a row: one line that counts every one. */
+const TYPED = ["combined your edits to \"Both-mun1mwp3\" with MacBook's (31 times)."];
+
+test("Once per note: the first combine in a note is shown, the rest of the session is not, and Recent counts every one", () => {
   const c = channel({ level: "everything", merges: "once" });
   typing(c);
   assert.deepEqual(c.toasts.map((toast) => toast.text), ["obsync: combined your edits to \"Both-mun1mwp3\" with MacBook's."]);
-  assert.equal(c.channel.recent().length, 31, "every combine is in Recent");
+  assert.deepEqual(c.channel.recent().map((entry) => entry.text), TYPED, "every combine is in Recent, counted");
   assert.ok(c.logs.some((line) => /^notice decision=quiet kind=combined reason=once_per_note since_ms=2000 budget_ms=300000$/.test(line)), c.logs.join(" | "));
   // Five minutes without one, and the next is news again.
   c.advance(n.ONCE_IDLE_MS);
@@ -193,7 +197,7 @@ test("Every time: each combine is shown, repeats counted on the toast that is up
   assert.equal(c.toasts.length, 8, c.toasts.map((toast) => toast.text).join(" | "));
   assert.equal(c.toasts[0].text, "obsync: combined your edits to \"Both-mun1mwp3\" with MacBook's (4 times).");
   assert.ok(c.toasts.every((toast) => toast.ms === 8000));
-  assert.equal(c.channel.recent().length, 31);
+  assert.deepEqual(c.channel.recent().map((entry) => entry.text), TYPED);
 });
 
 test("Recent only, and Only what needs me, keep every combine off the screen and in Recent", () => {
@@ -201,12 +205,42 @@ test("Recent only, and Only what needs me, keep every combine off the screen and
     const c = channel(settings);
     typing(c);
     assert.deepEqual(c.toasts, [], JSON.stringify(settings));
-    assert.equal(c.channel.recent().length, 31);
+    assert.deepEqual(c.channel.recent().map((entry) => entry.text), TYPED);
     assert.ok(c.logs.every((line) => line.startsWith("notice decision=quiet kind=combined reason=setting ")), c.logs[0]);
   }
 });
 
 // --- floods, questions, Recent ---------------------------------------------
+
+test("the same notice again with nothing between is one Recent line that counts it, so sixty presses never push a warning out", () => {
+  const c = channel();
+  c.channel.show({ kind: "security", key: "w", text: "WARNING SENTINEL." });
+  for (let i = 0; i < 60; i++) {
+    c.advance(250);
+    c.channel.show({ kind: "confirm", text: "NOTHING SENTINEL." });
+  }
+  const recent = c.channel.recent();
+  assert.deepEqual(recent.map((entry) => [entry.kind, entry.text]), [["confirm", "NOTHING SENTINEL (60 times)."], ["security", "WARNING SENTINEL."]]);
+  assert.equal(recent[0].at, c.now(), "the line keeps the latest time");
+  // Another device, another note, or anything between is a line of its own.
+  c.channel.show(combine("Plan.md"));
+  c.channel.show(combine("Plan.md", "iPhone"));
+  c.channel.show(combine("Log.md", "iPhone"));
+  c.channel.show(combine("Log.md", "iPhone"));
+  assert.deepEqual(c.channel.recent().slice(0, 3).map((entry) => entry.text), [
+    "combined your edits to \"Log\" with iPhone's (2 times).",
+    "combined your edits to \"Plan\" with iPhone's.",
+    "combined your edits to \"Plan\" with MacBook's.",
+  ]);
+  // The same words about another note or device are another line too, whose Open and device are its own.
+  c.channel.show({ kind: "info", text: "MOVED SENTINEL.", paths: ["One.md"] });
+  c.channel.show({ kind: "info", text: "MOVED SENTINEL.", paths: ["Two.md"] });
+  c.channel.show({ kind: "error", text: "KEY SENTINEL.", device: "Phone" });
+  c.channel.show({ kind: "error", text: "KEY SENTINEL.", device: "Laptop" });
+  assert.deepEqual(c.channel.recent().slice(0, 4).map((entry) => [entry.text, entry.paths, entry.device]), [
+    ["KEY SENTINEL.", [], "Laptop"], ["KEY SENTINEL.", [], "Phone"], ["MOVED SENTINEL.", ["Two.md"], undefined], ["MOVED SENTINEL.", ["One.md"], undefined],
+  ]);
+});
 
 test("a flood is three toasts and one 'N more' that opens Show sync status; an error folded in keeps it up; a question is never folded", () => {
   const c = channel();
@@ -253,30 +287,66 @@ test("a notice with buttons is its own toast: joined, its button would act for t
   ]);
 });
 
-test("a question replaces the question of its key, and closing it takes it away; bare words keep their old ten seconds", () => {
-  const c = channel({ level: "needs-me", merges: "off" });
-  c.channel.show({ kind: "question", text: "FIRST?", key: "held", actions: [{ kind: "restore_here" }] });
-  c.channel.show({ kind: "question", text: "SECOND?", key: "held", actions: [{ kind: "restore_here" }] });
+test("a question replaces the question of its key, and closing it takes it away; an offer to fetch is not a question", () => {
+  const c = channel({ level: "everything", merges: "off" });
+  c.channel.show({ kind: "question", text: "FIRST?", key: n.HELD, actions: [{ kind: "restore_here" }] });
+  c.channel.show({ kind: "question", text: "SECOND?", key: n.HELD, actions: [{ kind: "restore_here" }] });
   assert.deepEqual(c.toasts.map((toast) => toast.hidden), [true, false]);
-  c.channel.close("held");
+  c.channel.close(n.HELD);
   assert.deepEqual(c.toasts.map((toast) => toast.hidden), [true, true]);
-  c.channel.show("obsync: WORDS WITHOUT A KIND.");
-  c.channel.show("obsync: A FILE WAITS.", [{ kind: "fetch", fileId: "ab".repeat(16) }]);
-  c.channel.show("obsync: HOLDING.", [{ kind: "delete_everywhere" }, { kind: "restore_here" }]);
+  c.channel.show({ kind: "info", text: "{notes} waits on the server.", paths: ["big.bin"], actions: [{ kind: "fetch", fileId: "ab".repeat(16) }] });
+  c.channel.show({ kind: "question", text: "HOLDING?", key: n.HELD, actions: [{ kind: "delete_everywhere" }, { kind: "restore_here" }] });
   assert.deepEqual(c.toasts.slice(2).map((toast) => [toast.text, toast.ms, toast.hidden]), [
-    ["obsync: WORDS WITHOUT A KIND.", 10000, false], ["obsync: A FILE WAITS.", 0, false], ["obsync: HOLDING.", 0, false],
-  ], "shown whatever the settings, and a fetch never takes the held question away");
+    ["obsync: \"big.bin\" waits on the server.", 8000, false], ["obsync: HOLDING?", 0, false],
+  ], "the offer goes by itself, and the held question never takes it away");
+  c.channel.close(n.HELD);
+  assert.equal(c.toasts[2].hidden, false);
+});
+
+test("a toast stays long enough to read it, and one about the vault's safety says so first", () => {
+  const c = channel();
+  const words = (count) => Array.from({ length: count }, (_, i) => `w${i}`).join(" ");
+  c.channel.show({ kind: "confirm", text: "done." });
+  c.channel.show({ kind: "confirm", text: `${words(40)}.` });
+  c.channel.show({ kind: "info", text: `${words(200)}.` });
+  // Four seconds for the answer to a click, a quarter second a word past that, twenty at most.
+  assert.deepEqual(c.toasts.map((toast) => toast.ms), [4000, 1000 + 41 * 250, 20000]);
+  assert.equal(n.stays("error", words(300)), 0, "what waits for the person waits");
+  c.channel.show({ kind: "security", key: "k", text: "ANOTHER KEY SENTINEL." });
+  assert.equal(c.toasts.at(-1).text, "obsync security warning: ANOTHER KEY SENTINEL.");
+  assert.equal(c.channel.recent()[0].text, "ANOTHER KEY SENTINEL.");
+});
+
+test("a pairing code is on its toast and nowhere else: Recent, the command line and the log read •••", () => {
+  const c = channel();
+  c.channel.show({ kind: "question", key: "pairing", text: "its prompt shows the code {code}: if it shows another, choose Reject there.", code: "482 913" });
+  assert.equal(c.toasts[0].text, "obsync: its prompt shows the code 482 913: if it shows another, choose Reject there.");
+  assert.equal(c.channel.recent()[0].text, "its prompt shows the code •••: if it shows another, choose Reject there.");
+  assert.ok(!c.logs.join("\n").includes("482"), c.logs.join(" | "));
+  assert.ok(!JSON.stringify(c.channel.recent()).includes("482"));
+  // Many notes or one, the sentence reads right.
+  assert.equal(n.sentence({ kind: "error", text: "paused {notes}: stop rewriting {it}.", paths: ["A.md"] }), 'paused "A": stop rewriting it.');
+  assert.equal(n.sentence({ kind: "error", text: "paused {notes}: stop rewriting {it}.", paths: ["A.md", "B.md"] }), 'paused 2 notes ("A" and "B"): stop rewriting them.');
+});
+
+test("a click on a toast opens what its notice names, a question's too", () => {
+  const c = channel();
+  const opened = [];
+  c.channel.show({ kind: "info", text: "AN UPDATE SENTINEL.", open: () => opened.push("manager") });
+  c.channel.show({ kind: "question", text: "CONFIRM THE WORDS SENTINEL.", open: () => opened.push("settings") });
+  for (const toast of c.toasts) toast.open();
+  assert.deepEqual(opened, ["manager", "settings"]);
 });
 
 test("Recent keeps the newest fifty, newest first, quiet ones included", () => {
   const c = channel({ level: "needs-me", merges: "off" });
   for (let i = 0; i < 60; i++) {
-    c.channel.show(i % 2 === 0 ? { kind: "info", text: `ENTRY ${i}.` } : `obsync: ENTRY ${i}.`);
+    c.channel.show({ kind: i % 2 === 0 ? "info" : "confirm", text: `ENTRY ${i}.` });
     c.advance(1000);
   }
   const recent = c.channel.recent();
   assert.equal(recent.length, n.RECENT_MAX);
-  assert.equal(recent[0].text, "obsync: ENTRY 59.");
+  assert.equal(recent[0].text, "ENTRY 59.");
   assert.equal(recent[1].text, "ENTRY 58.", "a quiet one is there too");
   assert.equal(recent.at(-1).text, "ENTRY 10.");
   assert.ok(recent[0].at > recent[1].at);
@@ -396,17 +466,18 @@ test("the CLI shows Recent newest first and Show sync status, as words or docume
   const p = await plugin(t);
   assert.equal(await p.cliRun("recent"), "Nothing since obsync started.");
   assert.deepEqual(JSON.parse(await p.cliRun("recent", { format: "json" })), [], "an empty list, not an error");
-  p.instance.host.notify(`obsync refused a change from another device. File id ${"ab".repeat(16)}.`);
+  // An id that reached a notice's words by mistake is still never printed.
+  p.instance.host.notify({ kind: "info", text: `ID SENTINEL ${"ab".repeat(16)}.` });
   p.instance.host.notify(combine("Notes/Both.md"));
   const lines = (await p.cliRun("recent")).split("\n");
   assert.equal(lines.length, 2);
   assert.match(lines[0], /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d {2}combined your edits to "Both" with MacBook's\.$/);
-  assert.match(lines[1], /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d {2}obsync refused a change from another device\. File id …\.$/);
+  assert.match(lines[1], /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d {2}ID SENTINEL …\.$/);
   const recent = JSON.parse(await p.cliRun("recent", { format: "json" }));
   assert.deepEqual(recent.map((entry) => Object.keys(entry)), [["time", "kind", "note_title", "device", "text"], ["time", "kind", "note_title", "device", "text"]]);
   assert.deepEqual(recent.map(({ time, ...entry }) => entry), [
     { kind: "combined", note_title: "Both", device: "MacBook", text: "combined your edits to \"Both\" with MacBook's." },
-    { kind: "info", note_title: null, device: null, text: "obsync refused a change from another device. File id …." },
+    { kind: "info", note_title: null, device: null, text: "ID SENTINEL …." },
   ]);
   for (const { time } of recent) assert.match(time, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/, "UTC RFC 3339");
 

@@ -33,7 +33,7 @@
  */
 
 import { FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "../accountRecovery";
-import { Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
+import { PluginSettingTab, Setting, normalizePath } from "obsidian";
 import type { App, ButtonComponent, SettingDefinitionItem, SettingGroupItem } from "obsidian";
 import type ObsyncPlugin from "../main";
 import { formatBytes, parseBytes, type Policy } from "../policy";
@@ -41,7 +41,7 @@ import { platformLabel } from "../pairing";
 import { parseSyncFolders } from "../syncScope";
 import { refusalStatus, refusalText } from "../sync/engine";
 import { KEYS_LOST, type EdgeHeader } from "../state";
-import { LEVELS, MERGES } from "../notices";
+import { LEVELS, MERGES, count } from "../notices";
 import { HEADER_NAME, ownHeader, type DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
 import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVERY_UNCONFIRMED, RecoveryPhraseModal, VaultKeyModal, confirmFirst, literal, secretText } from "./modals";
@@ -397,6 +397,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
     };
   }
 
+  /** The answer to the person's own click, through the notice channel (`notices.ts`, kind `confirm`). */
+  private say(text: string): void {
+    this.plugin.notices.show({ kind: "confirm", text });
+  }
+
   /** What was typed into Server URL, normalised, refused or adopted once; nothing when nothing was typed. */
   private adoptServerUrl(): void {
     if (this.draftUrl === null) return;
@@ -404,7 +409,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.draftUrl = null;
     const refusal = serverUrlRefusal(url, this.plugin.isMobile);
     if (refusal !== null) {
-      new Notice(refusal);
+      this.say(refusal);
       return;
     }
     this.plugin.state.data.serverUrl = url;
@@ -442,12 +447,12 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.draftHeaders = null;
     if ("refusal" in parsed) {
       this.plugin.log(`edge decision=refused reason=${parsed.reason}`);
-      new Notice(`Custom request headers were not saved: ${parsed.refusal}`, 12000);
+      this.say(`custom request headers were not saved: ${parsed.refusal}`);
       return false;
     }
     this.plugin.state.data.edgeHeaders = parsed.headers;
     this.plugin.log(`edge decision=kept headers=${parsed.headers.length} trimmed=${parsed.trimmed.length}`);
-    if (parsed.trimmed.length !== 0) new Notice(["Custom request headers saved.", ...parsed.trimmed].join(" "), 8000);
+    if (parsed.trimmed.length !== 0) this.say(["custom request headers saved.", ...parsed.trimmed].join(" "));
     // State reports persistence failure and stops sync through its host hook.
     void this.plugin.state.save().catch(() => {});
     return true;
@@ -478,7 +483,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
         setting
           .addButton((button) => button.setButtonText("Check").onClick(() => {
             if (this.plugin.state.data.serverUrl === "") {
-              new Notice("Type your server's address in Server URL first.");
+              this.say("type your server's address in Server URL first.");
               return;
             }
             checking = true;
@@ -490,8 +495,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
             // works (2026-09-24 battery, S08; #137). The plugin manifest is the
             // route that needs no credential.
             const check = this.plugin.state.paired
-              ? this.plugin.transport.account({ interactive: true }).then((account) => `Reached "${account.name}", ${account.device_count} device(s).`)
-              : this.plugin.transport.pluginManifest({ interactive: true }).then(() => "Reached your obsync server. Next: Setup or recover on your first device, or Pair this device.");
+              ? this.plugin.transport.account({ interactive: true }).then((account) => `reached "${account.name}", ${count(account.device_count, "device")}.`)
+              : this.plugin.transport.pluginManifest({ interactive: true }).then(() => "reached your obsync server. Next: Setup or recover on your first device, or Pair this device.");
             // Nothing answering is said with the address and what to try: a
             // Check is how a wrong address or a switched-off server is found.
             const url = this.plugin.state.data.serverUrl;
@@ -500,7 +505,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
                 ? `Nothing answered at ${url}. Check the Server URL, port included; if it has worked before, your server may be switched off or out of this network's reach.`
                 : refusalText(error);
             void check
-              .then((text) => { new Notice(text); }, (error: unknown) => { new Notice(unanswered(error), 8000); })
+              .then((text) => { this.say(text); }, (error: unknown) => { this.say(unanswered(error)); })
               .finally(() => {
                 checking = false;
                 button.setDisabled(false);
@@ -529,7 +534,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
         setting.addButton((button) =>
           button.setButtonText("Delete everywhere").setDestructive().onClick(() => {
             this.plugin.confirmHeldDeletions();
-            new Notice("obsync: the deletions were published. Your other devices will remove those notes.", 8000);
+            this.say("the deletions were sent; your other devices remove those notes.");
           }));
         setting.addButton((button) =>
           button.setButtonText("Restore here").onClick(() => {
@@ -729,12 +734,12 @@ export class ObsyncSettingTab extends PluginSettingTab {
           });
           void this.saveScopeDraft().then((told) => {
             if (told === null) return;
-            new Notice(told === "withdrawn"
-              ? "Folder selection unchanged: sync goes on with the folders it had."
-              : ["Folder selection saved on this device.", ...told].join(" "));
+            this.say(told === "withdrawn"
+              ? "folder selection unchanged: sync goes on with the folders it had."
+              : ["folder selection saved on this device.", ...told].join(" "));
             this.update();
           }).catch((error: unknown) => {
-            new Notice(message(error), 10000);
+            this.say(message(error));
           }).finally(() => {
             // Obsidian components are thenable. Never return one to a Promise.
             button.setDisabled(false).setButtonText("Save");
@@ -789,7 +794,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.plugin.log("state decision=started_fresh reason=copied_vault");
     // State reports persistence failure and stops sync through its host hook.
     void this.plugin.state.save().then(() => {
-      new Notice("obsync: this vault starts fresh. It is not paired with any server, and your notes are unchanged. Set it up or pair it here when you are ready.");
+      this.say("this vault starts fresh: it is not paired with any server, and your notes are unchanged. Set it up or pair it here when you are ready.");
       this.left();
     }, () => {});
   }
@@ -812,10 +817,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
     try {
       const told = await this.saveScopeDraft();
       if (told === null || told === "withdrawn") return false;
-      if (told.length !== 0) new Notice(told.join(" "));
+      if (told.length !== 0) this.say(told.join(" "));
       return true;
     } catch (error) {
-      new Notice(message(error), 10000);
+      this.say(message(error));
       return false;
     }
   }
@@ -899,7 +904,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
         const bytes = parseBytes(typed);
         if (bytes === null) {
           this.plugin.log(`policy decision=refused reason=unreadable_size field=${key}`);
-          new Notice(`${row}: "${typed.trim()}" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`);
+          this.say(`${row}: "${typed.trim()}" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`);
           typed = formatBytes(policy[key]);
           field.setValue(typed);
           return;
@@ -908,7 +913,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
         policy[key] = bytes;
         this.plugin.log(`policy decision=kept field=${key} bytes=${bytes}`);
         setting.setDesc(describe());
-        void this.plugin.state.save().catch((error: unknown) => { new Notice(message(error), 8000); });
+        void this.plugin.state.save().catch((error: unknown) => { this.say(message(error)); });
       });
     });
   }
@@ -921,11 +926,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
       render: (setting) => {
         setting.addButton((button) => button.setButtonText("Save").setCta().onClick(() => {
           void this.plugin.saveDeviceSettings(this.draftName ?? this.plugin.deviceName()).then(() => {
-            new Notice("This device's settings are saved.");
+            this.say("this device's settings are saved.");
             this.draftName = null;
             this.update();
           }).catch((error: unknown) => {
-            new Notice(message(error), 8000);
+            this.say(message(error));
           });
         }));
       },
@@ -1102,11 +1107,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private async revoke(device: DeviceRecord, named: string): Promise<void> {
     try {
       await this.plugin.revokeDevice(device.device_id);
-      new Notice(`${named} is revoked.`);
+      this.say(`${named} is revoked.`);
       this.deviceList = null;
       this.update();
     } catch (error) {
-      new Notice(`${named} was not revoked: ${message(error)}`, 10000);
+      this.say(`${named} was not revoked: ${message(error)}`);
     }
   }
 
@@ -1135,11 +1140,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private async forget(device: DeviceRecord, named: string): Promise<void> {
     try {
       await this.plugin.forgetRevoked(device.device_id);
-      new Notice(`${named} is forgotten.`);
+      this.say(`${named} is forgotten.`);
       this.deviceList = null;
       this.update();
     } catch (error) {
-      new Notice(`${named} was not forgotten: ${refusalText(error)}`, 10000);
+      this.say(`${named} was not forgotten: ${refusalText(error)}`);
     }
   }
 

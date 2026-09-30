@@ -54,7 +54,7 @@ const LATER = 1757300000000;
 /** Forty days before the rigs' clock: past any retention a server can have. */
 const OLD = 1757200000000 - 40 * 24 * 60 * 60 * 1000;
 const OTHER_DEVICE = "ffffffffffffffffffffffffffffffff";
-const RESTORED_NOTICE = /The server was restored to an earlier state; this device re-sent (\d+) change/;
+const RESTORED_NOTICE = /your server went back to an earlier state, so this device sent (\d+) changes? of its own again/;
 
 /**
  * Every HEAD the server holds for a vault file, decrypted: what a device

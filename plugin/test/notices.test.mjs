@@ -68,7 +68,8 @@ test("a copy the other device renames aside is announced once, under the name it
   assert.notEqual(first, renamed, "the fixture must rename the copy for this to prove anything");
   announceCopies(r.context);
 
-  assert.deepEqual(r.host.notices, [`obsync kept both versions of ${NOTE}. The other device's copy is "${renamed}".`]);
+  assert.deepEqual(r.host.notices, ['obsync: kept both versions of "Same": another device\'s is in "Same (conflict from laptop, 2026-01-02 0304)".']);
+  assert.deepEqual(r.host.toasts.map((toast) => toast.text), r.host.notices, "a conflict copy is shown under the quietest settings");
   assert.equal(r.host.text(renamed), THEIRS, "the named file is not the copy");
   announceCopies(r.context, true);
   assert.equal(r.host.notices.length, 1, "the copy was announced twice");
@@ -84,7 +85,7 @@ test("a copy nobody renames is announced where it is once the wait is over", asy
   assert.deepEqual(r.host.notices, [], "announced before the owner of the name had its chance to move it");
   r.host.clock += 1;
   announceCopies(r.context);
-  assert.deepEqual(r.host.notices, [`obsync kept both versions of ${NOTE}. The other device's copy is "${copy}".`]);
+  assert.deepEqual(r.host.notices, [`obsync: kept both versions of "Same": another device's is in "${copy.slice(copy.lastIndexOf("/") + 1, -3)}".`]);
 });
 
 /** One engine over the rig, one fake clock, and every status it reports. */
@@ -164,7 +165,7 @@ test("one deletion met twice while the edit here cannot be sent gives one notice
 
   assert.deepEqual(r.host.trashed, [], "the edit was deleted");
   assert.equal(r.host.notices.length, 1, r.host.notices.join(" | "));
-  assert.match(r.host.notices[0], /^obsync did not delete Notes\/n16\.md: it holds changes this device has not uploaded yet/);
+  assert.match(r.host.notices[0], /^obsync: kept "n16": .+ deleted it without having seen the changes made here, so they are sent again/);
 });
 
 test("a fresh device replaying a fork other devices made announces no merge of its own", async () => {
@@ -254,19 +255,20 @@ test("one question about held deletions is on screen at a time, and it goes when
   const plugin = { state: { data: {} }, log: () => undefined, act: () => undefined };
   plugin.notices = main.noticeChannel(plugin);
   const host = new main.ObsidianHost(plugin, null);
-  const held = [{ kind: "delete_everywhere" }, { kind: "restore_here" }];
+  const { HELD } = box.require(join(box.home, "build", "notices.js"));
+  const ask = (text) => ({ kind: "question", key: HELD, text, actions: [{ kind: "delete_everywhere" }, { kind: "restore_here" }] });
   const from = raised.length;
-  host.notify("obsync: you deleted 119 notes. Delete them on your other devices too?", held);
-  host.notify("obsync is still holding back 119 deletions from your other devices. Delete them there too?", held);
-  host.notify("obsync put 2 note(s) back on this device, and deleted nothing anywhere.");
-  host.notify("obsync is still holding back 227 deletions from your other devices. Delete them there too?", held);
+  host.notify(ask("you deleted 119 notes. Delete them on your other devices too?"));
+  host.notify(ask("119 deletions are still held back from your other devices. Delete them there too?"));
+  host.notify({ kind: "confirm", text: "put 2 notes back on this device and deleted nothing." });
+  host.notify(ask("227 deletions are still held back from your other devices. Delete them there too?"));
   const shown = () => raised.slice(from).map((notice) => !notice.hidden);
   assert.deepEqual(shown(), [false, false, true, true], "only the newest question, and the statement, are on screen");
   host.closeQuestion();
   assert.deepEqual(shown(), [false, false, true, false], "nothing held, no question");
   // An offer to fetch a file asks something else, and a held-deletions question never takes it away.
-  host.notify("obsync: a file is waiting on the server.", [{ kind: "fetch", fileId: "ab".repeat(16) }]);
-  host.notify("obsync is still holding back 1 deletions from your other devices. Delete them there too?", held);
+  host.notify({ kind: "info", text: "a file is waiting on the server.", actions: [{ kind: "fetch", fileId: "ab".repeat(16) }] });
+  host.notify(ask("1 deletion is still held back from your other devices. Delete it there too?"));
   assert.deepEqual(shown().slice(-2), [true, true]);
   // A plugin that unloads takes its question with it; the next load asks afresh.
   const loaded = new main.default();

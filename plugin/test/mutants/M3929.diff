@@ -1,0 +1,12 @@
+# M3929: a dialog's refusal is kept quiet under Only what needs me
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -55,7 +55,7 @@
+ 
+ /** A failure in its own words, as the answer to the person's click (`notices.ts`, kind `confirm`). */
+ function fail(plugin: ObsyncPlugin, error: unknown): void {
+-  plugin.notices.show({ kind: "confirm", text: error instanceof Error ? error.message : String(error) });
++  plugin.notices.show({ kind: "info", text: error instanceof Error ? error.message : String(error) });
+ }
+ 
+ /** "1 note", "7 notes": the approval prompt and the claimant's question count the same way. */

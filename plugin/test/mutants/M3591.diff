@@ -1,0 +1,12 @@
+# M3591: a security warning's toast no longer says so first
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -173,7 +173,7 @@
+ 
+ /** What a toast of this notice says: "obsync: ", or "obsync security warning: ", and the sentence. */
+ export function toastText(notice: SyncNotice, paths?: readonly string[], times?: number): string {
+-  return `obsync${notice.kind === "security" ? " security warning" : ""}: ${sentence(notice, paths, times, true)}`;
++  return `obsync${""}: ${sentence(notice, paths, times, true)}`;
+ }
+ 
+ /** How long a toast of this kind and these words stays (`STAYS_MS`, `READ_MS_PER_WORD`); 0 is until dismissed. */

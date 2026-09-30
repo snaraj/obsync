@@ -1,17 +1,17 @@
 # M3567: Recent records only the notices that were shown
 --- a/plugin/src/notices.ts
 +++ b/plugin/src/notices.ts
-@@ -219,12 +219,12 @@
+@@ -269,12 +269,12 @@
+   show(notice: SyncNotice): void {
      const now = this.screen.now();
      const { kind } = notice;
-     const text = sentence(notice);
--    this.remember({ at: now, kind, text, paths: notice.paths ?? [], ...notice.device === undefined ? {} : { device: notice.device } });
+-    this.remember({ at: now, kind, text: sentence(notice), paths: notice.paths ?? [], ...notice.device === undefined ? {} : { device: notice.device } }, notice);
      const quiet = this.quiet(notice, now);
      if (quiet !== null) {
        this.screen.log(`notice decision=quiet kind=${kind} ${quiet}`);
        return;
      }
-+    this.remember({ at: now, kind, text, paths: notice.paths ?? [], ...notice.device === undefined ? {} : { device: notice.device } });
++    this.remember({ at: now, kind, text: sentence(notice), paths: notice.paths ?? [], ...notice.device === undefined ? {} : { device: notice.device } }, notice);
      const key = notice.key ?? `${kind}\u0000${notice.text}\u0000${notice.device ?? ""}`;
-     if (NON_MUTABLE.has(kind)) {
-       this.slot(key, `obsync: ${text}`, STAYS_MS[kind], notice.actions ?? []);
+     const text = toastText(notice);
+     const ms = stays(kind, text);

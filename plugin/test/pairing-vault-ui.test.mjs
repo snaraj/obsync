@@ -33,7 +33,8 @@ async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", valu
     state: "active", revoked: false, last_sign_in: 1000, last_seen: 2000, ...fields });
   let reads = 0;
   const plugin = {
-    state: { data: { vrk: VRK } },
+    // The quietest notices a person can choose: every word of pairing is still said.
+    state: { data: { vrk: VRK, notices: { level: "needs-me", merges: "off" } } },
     log: (line) => logs.push(line),
     refreshDeviceNames: async () => { calls.push("names"); },
     transport: {
@@ -59,17 +60,23 @@ async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", valu
       },
     },
   };
+  // Every answer goes through the real notice channel onto the stub's toasts (`notices.ts`).
+  plugin.notices = box.require(join(box.home, "build/main.js")).noticeChannel({ ...plugin, log: () => undefined });
   const modal = new PairCreateModal({}, plugin);
   let closed = 0;
   modal.contentEl = { empty() {} };
   modal.close = () => { closed++; modal.onClose(); };
   const previousWindow = globalThis.window;
-  globalThis.window = { setTimeout: (resolve) => resolve() };
+  // Each two-second wait a turn of the event loop: a wait that never ended
+  // would otherwise starve every timer, the test runner's own included.
+  globalThis.window = { setTimeout: (resolve) => setImmediate(resolve) };
+  // The watch behind a closed dialog ends with its test, whatever happened in it.
+  t.after(() => { modal.collecting = false; });
   t.after(() => { globalThis.window = previousWindow; });
   const claimant = { device_id: device, name: "iPhone 7KQ4", platform: "ios", app_version: "1.1.4",
     vault: await pairing.sealPairingVault(secret, id, { name: "Plans <2026>", notes }) };
   return {
-    modal, secret, id, device, claimant, buttons, messages, calls, logs, notices, pairing, ApiError, row, closed: () => closed,
+    modal, secret, id, device, claimant, buttons, messages, calls, logs, notices, obsidian, pairing, ApiError, row, closed: () => closed,
     status: { setText: (text) => messages.push(text) },
     press: async (label) => { await buttons.find((button) => button.text === label).click(); },
   };
@@ -152,13 +159,15 @@ test("the creator says paired only once the server reports the key collected (#1
   const r = await prompt(t, { statuses: ["approved", "approved", "consumed"] });
   await r.modal.approve(r.id, r.secret, r.claimant, r.status);
   await r.press("Approve");
-  await until(() => r.closed() === 1, "the dialog closed once the key was kept");
+  await until(() => r.notices.some((notice) => notice.includes("is paired")), "the new device was said paired once it kept the key");
   const approvals = r.calls.filter((call) => call.approve);
   assert.equal(approvals.length, 1, "the envelope is posted exactly once");
   assert.deepEqual(r.calls.filter((call) => !call.approve), ["status", "status", "status", "devices", "names"]);
-  assert.ok(r.messages.includes("Approved. Waiting for the new device to collect the vault key…"));
+  // DONE ONCE THE APPROVAL LANDS (1.1.5): the dialog closed with the
+  // approval, said so, and the rest was said in a notice behind it.
+  assert.equal(r.notices[0], 'obsync: approved "iPhone 7KQ4": it finishes pairing by itself, and obsync tells you here when it has.');
   const paired = r.notices.filter((notice) => notice.includes("is paired"));
-  assert.deepEqual(paired, ['The new device, "iPhone 7KQ4", is paired: it holds the vault key now.']);
+  assert.deepEqual(paired, ['obsync: "iPhone 7KQ4" is paired: it holds the vault key now.']);
   assert.equal(r.buttons.length, 0, "no answer is offered twice");
   assert.equal(r.closed(), 1);
   assert.ok(r.logs.includes("pairing role=creator decision=paired polls=1"));
@@ -178,10 +187,10 @@ test("a claim that is never collected is never announced as paired (#153)", asyn
     };
     await r.modal.approve(r.id, r.secret, r.claimant, r.status);
     await r.press("Approve");
-    await until(() => r.messages.at(-1).includes(words), words);
+    await until(() => r.notices.at(-1)?.includes(words), words);
     assert.ok(!r.notices.some((notice) => notice.includes("is paired")), r.notices.join(" | "));
-    assert.ok(r.messages.at(-1).includes(words), r.messages.at(-1));
-    assert.ok(!RAW.test(r.messages.at(-1)));
+    assert.equal(r.closed(), 1, "the dialog closed with the approval; the outcome is a notice");
+    assert.ok(!RAW.test(r.notices.at(-1)));
   }
 });
 
@@ -208,11 +217,11 @@ test("Reject refuses the claim, says so, and closes (#153)", async t => {
   await r.modal.approve(r.id, r.secret, r.claimant, r.status);
   await r.press("Reject"); await settle();
   assert.deepEqual(r.calls, ["reject"], "refused once: closing afterwards refuses nothing more");
-  assert.ok(r.notices.some((notice) => notice.includes("Rejected: that device was refused")));
+  assert.ok(r.notices.some((notice) => notice.includes("rejected: that device was refused")));
   assert.equal(r.closed(), 1);
 });
 
-test("closing with a claim on screen refuses it; closing after approval says it finishes by itself (#153)", async t => {
+test("closing with a claim on screen refuses it; an approval closes the dialog and says it finishes by itself (#153)", async t => {
   const asked = await prompt(t);
   await asked.modal.approve(asked.id, asked.secret, asked.claimant, asked.status);
   asked.modal.onClose(); await settle();
@@ -232,6 +241,34 @@ test("closing with a claim on screen refuses it; closing after approval says it 
   assert.ok(!approved.notices.some((notice) => notice.includes("is paired")));
 });
 
+test("behind the closed dialog the wait ends by itself: with the code's ten minutes, or when the plugin unloads (1.1.5)", async t => {
+  // A server that never settles the pairing: three hundred reads, two seconds
+  // apart, are the code's ten minutes, and then one notice says so.
+  const never = await prompt(t, { statuses: Array(400).fill("approved") });
+  await never.modal.approve(never.id, never.secret, never.claimant, never.status);
+  await never.press("Approve");
+  await until(() => never.logs.includes("pairing role=creator decision=failed reason=not_collected"), "the wait ended");
+  assert.equal(never.calls.filter((call) => call === "status").length, 300);
+  assert.match(never.notices.at(-1), /^obsync: "iPhone 7KQ4" did not collect the vault key before the code expired/);
+  // A plugin that unloads ends it at once, and says nothing more.
+  const unloads = [];
+  const gone = await prompt(t, { statuses: Array(400).fill("approved") });
+  gone.modal.plugin.register = (callback) => { unloads.push(callback); };
+  gone.modal.plugin.transport.pairingStatus = async () => {
+    gone.calls.push("status");
+    if (gone.calls.filter((call) => call === "status").length === 2) for (const unload of unloads) unload();
+    return { state: "approved", claimant: null };
+  };
+  await gone.modal.approve(gone.id, gone.secret, gone.claimant, gone.status);
+  await gone.press("Approve");
+  await until(() => gone.calls.filter((call) => call === "status").length === 2, "the wait began");
+  for (let turn = 0; turn < 20; turn++) await settle();
+  assert.equal(unloads.length, 1, "the wait registered its end with the plugin");
+  assert.equal(gone.calls.filter((call) => call === "status").length, 2);
+  assert.ok(!gone.logs.some((line) => line.includes("reason=not_collected")), gone.logs.join(" | "));
+  assert.ok(!gone.notices.some((notice) => notice.includes("did not collect")), gone.notices.join(" | "));
+});
+
 test("a refused approval is told in words, never as a server code (#154)", async t => {
   const r = await prompt(t);
   r.modal.plugin.transport.pairingApprove = async () => { throw new r.ApiError(410, "pairing_expired", "the pairing has expired"); };
@@ -246,7 +283,10 @@ test("a refused approval is told in words, never as a server code (#154)", async
 // --- Owner ruling, 2026-09-29: "paired" only once the new device kept the key,
 // and a server older than 1.1.5 refused before any code is made (lab leg B3).
 
-/** Approve a claim that the server then reports collected, and wait for the dialog's last word. */
+/** The creator's last word on a kept key: its log line (the dialog closed with the approval). */
+const paired = (r) => r.logs.some((line) => line.includes("decision=paired"));
+
+/** Approve a claim that the server then reports collected, and wait for the creator's last word. */
 async function collected(t, rows, done) {
   const r = await prompt(t, { statuses: ["consumed"], rows });
   await r.modal.approve(r.id, r.secret, r.claimant, r.status);
@@ -256,10 +296,9 @@ async function collected(t, rows, done) {
 }
 
 test("collection is not pairing: paired waits for the new device's first sync, not its sign-in", async t => {
-  const r = await collected(t, (poll, row) => [poll === 1 ? row({ last_seen: 1000 }) : row({ last_seen: 1500 })], (r) => r.closed() === 1);
-  assert.ok(r.messages.some((text) => text.startsWith("The new device collected the vault key. Waiting for it to open the key")), r.messages.join(" | "));
+  const r = await collected(t, (poll, row) => [poll === 1 ? row({ last_seen: 1000 }) : row({ last_seen: 1500 })], paired);
   assert.equal(r.calls.filter((call) => call === "devices").length, 2, "signed in but not yet synced is still open");
-  assert.deepEqual(r.notices.filter((notice) => notice.includes("is paired")), ['The new device, "iPhone 7KQ4", is paired: it holds the vault key now.']);
+  assert.deepEqual(r.notices.filter((notice) => notice.includes("is paired")), ['obsync: "iPhone 7KQ4" is paired: it holds the vault key now.']);
   assert.ok(r.logs.includes("pairing role=creator decision=paired polls=2"), r.logs.join(" | "));
 });
 
@@ -271,9 +310,9 @@ test("a new device that did not keep the key is never announced as paired, and t
   ]) {
     const r = await collected(t, answer, (r) => r.logs.some((line) => line.includes("reason=key_not_kept")));
     assert.ok(!r.notices.some((notice) => notice.includes("is paired")), `${what}: ${r.notices.join(" | ")}`);
-    assert.match(r.messages.at(-1), /^The new device did not keep the vault key and removed itself from the server/, what);
-    assert.ok(!RAW.test(r.messages.at(-1)), what);
-    assert.equal(r.closed(), 0, `${what}: the outcome stays on screen`);
+    assert.match(r.notices.at(-1), /^obsync: "iPhone 7KQ4" did not keep the vault key and removed itself from the server/, what);
+    assert.ok(!RAW.test(r.notices.at(-1)), what);
+    assert.equal(r.obsidian.raised.at(-1).duration, 0, `${what}: the outcome stays on screen until dismissed`);
     assert.ok(r.logs.includes("pairing role=creator decision=failed reason=key_not_kept polls=1"), what);
   }
 });
@@ -282,22 +321,22 @@ test("a new device that never confirms within ten minutes is told so, not called
   const r = await collected(t, (poll, row) => [row({ last_seen: 1000 })], (r) => r.logs.some((line) => line.includes("reason=key_unconfirmed")));
   assert.equal(r.calls.filter((call) => call === "devices").length, 300);
   assert.ok(!r.notices.some((notice) => notice.includes("is paired")), r.notices.join(" | "));
-  assert.match(r.messages.at(-1), /has not started syncing within ten minutes/);
+  assert.match(r.notices.at(-1), /^obsync: "iPhone 7KQ4" collected the vault key but has not started syncing within ten minutes/);
   assert.ok(r.logs.includes("pairing role=creator decision=failed reason=key_unconfirmed polls=300"));
 });
 
 test("a new device whose sync starts in the second of its sign-in is paired, not left unconfirmed (#290)", async t => {
   // Seen live: the heartbeat shared the sign-in's second, `last_seen` never
   // passed `last_sign_in`, and a device syncing 7,700 notes read "not confirmed".
-  const r = await collected(t, (poll, row) => [poll === 1 ? row({ last_seen: 1000, last_heartbeat: null }) : row({ last_seen: 1000, last_heartbeat: 1000 })], (r) => r.closed() === 1);
+  const r = await collected(t, (poll, row) => [poll === 1 ? row({ last_seen: 1000, last_heartbeat: null }) : row({ last_seen: 1000, last_heartbeat: 1000 })], paired);
   assert.equal(r.calls.filter((call) => call === "devices").length, 2, "signed in, no heartbeat yet, is still open");
-  assert.deepEqual(r.notices.filter((notice) => notice.includes("is paired")), ['The new device, "iPhone 7KQ4", is paired: it holds the vault key now.']);
+  assert.deepEqual(r.notices.filter((notice) => notice.includes("is paired")), ['obsync: "iPhone 7KQ4" is paired: it holds the vault key now.']);
   assert.ok(r.logs.includes("pairing role=creator decision=paired polls=2"), r.logs.join(" | "));
   assert.ok(!r.logs.some((line) => line.includes("key_unconfirmed")), r.logs.join(" | "));
 });
 
 test("a failed device-list read decides nothing: it is logged once and the wait goes on", async t => {
-  const r = await collected(t, (poll, row) => (poll < 3 ? new Error("offline") : [row()]), (r) => r.closed() === 1);
+  const r = await collected(t, (poll, row) => (poll < 3 ? new Error("offline") : [row()]), paired);
   assert.equal(r.logs.filter((line) => line.includes("reason=devices_unread")).length, 1, r.logs.join(" | "));
   assert.ok(r.logs.includes("pairing role=creator decision=paired polls=3"));
 });

@@ -269,7 +269,7 @@ test("the folder-capitalisation notice says to update the other device only when
   const older = await refusedMove("1.0.6");
   assert.equal(older.host.notices.length, 1, older.host.notices.join(" | "));
   assert.ok(
-    older.host.notices[0].includes('"Old Mac" runs obsync 1.0.6 and this device runs 1.1.4: update it'),
+    older.host.notices[0].includes("Old Mac runs obsync 1.0.6 and this device 1.1.4: update it"),
     older.host.notices[0],
   );
 

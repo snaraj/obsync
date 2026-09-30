@@ -201,9 +201,9 @@ for (const [selection, from, to, notes, count] of [
       assert.equal(a.state.fileByPath("Notes/n1.md").fileId, ids["Notes/n1.md"], "the note that stayed is untouched");
       // Once, with the count, and one line saying the same (requirement 12).
       assert.equal(a.host.notices.length, 1, a.host.notices.join(" | "));
-      assert.match(a.host.notices[0], new RegExp(`${count} note\\(s\\) moved out of the folders this device syncs`));
+      assert.match(a.host.notices[0], new RegExp(`${count} notes moved out of the folders this device syncs`));
       assert.match(a.host.notices[0], /they stay on your other devices/);
-      assert.match(a.host.notices[0], /moved out of the folders this device syncs.*Nothing was deleted/s);
+      assert.match(a.host.notices[0], /moved out of the folders this device syncs.*nothing was deleted/s);
       assert.ok(
         a.host.logs.some((line) => line === `scope decision=left_selection files=${count}`),
         a.host.logs.filter((line) => line.startsWith("scope")).join(" | "),
@@ -325,7 +325,7 @@ for (const [what, notes] of [
       assert.equal(a.state.fileByPath(path), undefined, "the record for a note that left the selection was kept");
     }
     assert.equal(a.host.notices.length, 1, a.host.notices.join(" | "));
-    assert.match(a.host.notices[0], new RegExp(`${leaving.length} note\\(s\\) moved out of the folders this device syncs`));
+    assert.match(a.host.notices[0], new RegExp(`${leaving.length} notes moved out of the folders this device syncs`));
     assert.ok(
       a.host.logs.some((line) => /^reconcile decision=queued .* removed=0 .* left=\d+$/.test(line) && line.endsWith(`left=${leaving.length}`)),
       a.host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),

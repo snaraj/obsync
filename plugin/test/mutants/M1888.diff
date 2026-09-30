@@ -1,11 +1,11 @@
 # M1888: the reminder after a skipped confirmation is raised at every start (#170)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1880,7 +1880,6 @@
+@@ -3447,7 +3447,6 @@
      // a recurring popup: Settings and Show sync status keep saying it
      // quietly until the words are confirmed (issue #170).
      if (state.data.recoveryPhrase === "skipped" && state.data.vrk !== null) {
 -      state.data.recoveryPhrase = "unconfirmed";
        this.log("phrase decision=reminded");
-       new Notice("obsync: your 24-word recovery phrase is not confirmed. Without it and without a paired device this vault cannot be recovered. Open obsync's settings, Vault key, and choose Show and confirm.", 15000);
-       void state.save().catch(() => {});
+       // A question only the person can answer, never kept quiet (requirement
+       // 4); a click opens the settings that answer it.

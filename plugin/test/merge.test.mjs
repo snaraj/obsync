@@ -142,12 +142,12 @@ test("more than a handful of resolutions of one file in a window stops the mergi
   const storms = r.host.logs.filter((line) => line.includes("reason=merge_storm"));
   assert.equal(storms.length, 1, r.host.logs.filter((l) => l.startsWith("pull")).join(" | "));
   assert.match(storms[0], /decision=refused reason=merge_storm file=[0-9a-f]{32} count=6 window_ms=60000/);
-  const told = r.host.notices.filter((notice) => notice.includes("stopped merging"));
+  const told = r.host.notices.filter((notice) => notice.includes("stopped combining edits"));
   assert.equal(told.length, 1, "the user is told once, not once per version");
   // What was seen, and no cause this device cannot see: every device here is
   // current, and a notice that blamed an out-of-date one sent S89 looking for
   // one (issue #179).
-  assert.match(told[0], /resolved it more than 5 times in a row in under a minute without the note changing here\./);
+  assert.match(told[0], /combined more than 5 times in a minute without changing here\./);
   assert.doesNotMatch(told[0], /up to date/);
   // And the breaker never drops content. Tripped, it merges nothing more, and
   // the pair is still settled by the rule every device shares (issue #135):
@@ -237,7 +237,7 @@ test("the breaker speaks once per window and forgets when the window passes", as
     return applyChange(r.context, theirs);
   };
   const storms = () => r.host.logs.filter((line) => line.includes("reason=merge_storm"));
-  const notices = () => r.host.notices.filter((notice) => notice.includes("stopped merging"));
+  const notices = () => r.host.notices.filter((notice) => notice.includes("stopped combining edits"));
 
   // Seven inside one window: five are merged or kept, and rounds six and seven
   // are both over the limit. Two trips, ONE notice.
@@ -512,8 +512,8 @@ for (const [ours, theirs] of [["Jobs/p1.md", "Work/p1.md"], ["Work/p1.md", "Jobs
     assert.equal(r.host.text("Work/p1.md"), null);
     assert.equal(r.state.pathByFileId(base.fileId), "Jobs/p1.md");
     const told = r.host.notices.filter((notice) => notice.includes("renamed differently"));
-    assert.deepEqual(told, [`obsync: "Beta" was renamed differently on two devices: "${ours.split("/")[0]}" here and ` +
-      `"${theirs.split("/")[0]}" on another. Every device now uses "Jobs"; no note was copied or deleted. To use the other ` +
+    assert.deepEqual(told, [`obsync: "Beta" was renamed differently here ("${ours.split("/")[0]}") and on iPhone ` +
+      `("${theirs.split("/")[0]}"); every device now uses "Jobs", and nothing was copied or deleted. To use the other ` +
       "name, rename it again."]);
     assert.ok(r.host.logs.some((line) => line.startsWith(`pull decision=renamed_twice kept=${ours.startsWith("Jobs") ? "ours" : "theirs"} base=known`)),
       r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
@@ -575,9 +575,9 @@ test("one file's identical heads are closed at most five times in a minute from 
   assert.deepEqual(closed, [1, 1, 1, 1, 1, 0], r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
   assert.ok(r.host.logs.some((line) => line.startsWith(`pull decision=refused reason=closing_storm file=${fileId} count=6 window_ms=60000`)));
   assert.equal(r.host.text(NAMED), SHARED, "nothing was lost");
-  const told = r.host.notices.filter((notice) => notice.startsWith("obsync stopped settling"));
-  assert.deepEqual(told, [`obsync stopped settling ${NAMED}: another device keeps giving it a different name. Every ` +
-    "device keeps the same text and nothing was deleted. Update obsync on every device, and the name settles at the next edit."]);
+  const told = r.host.notices.filter((notice) => notice.startsWith("obsync: stopped renaming"));
+  assert.deepEqual(told, ['obsync: stopped renaming "p1": iPhone keeps giving it a different name. Every device has the same ' +
+    "text and nothing was deleted; update obsync on every device, and the name settles at the next edit."]);
 
   // The window passes, and the next pair is closed again.
   r.host.clock += 60_001;

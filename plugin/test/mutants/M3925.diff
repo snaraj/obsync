@@ -1,0 +1,12 @@
+# M3925: a conflict copy is kept quiet under Only what needs me
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -211,7 +211,7 @@
+ /** A conflict copy, said one way wherever it is made: the note by title, the copy by its own. */
+ function keptBoth(context: SyncContext, path: string, copy: string, device?: string): void {
+   context.host.notify({
+-    kind: "conflict", text: `kept both versions of {notes}: {device}'s is in ${quoted(copy)}.`, paths: [path],
++    kind: "info", text: `kept both versions of {notes}: {device}'s is in ${quoted(copy)}.`, paths: [path],
+     ...device === undefined ? {} : { device },
+   });
+ }

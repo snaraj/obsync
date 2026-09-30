@@ -125,7 +125,7 @@ test("a deferred settlement describes an already-published edit truthfully and r
   r.host.read = async path => { const bytes = await read(path); r.host.seed(path, "newer edit\n", 3000); return bytes; };
   await applyChange(r.context, deletion);
   assert.equal(r.host.notices.length, 1);
-  assert.match(r.host.notices[0], /already on the server/);
+  assert.match(r.host.notices[0], /which your server already holds/);
   r.host.read = read;
   await applyChange(r.context, deletion);
   assert.equal(r.server.files.get(base.fileId).heads.length, 1);

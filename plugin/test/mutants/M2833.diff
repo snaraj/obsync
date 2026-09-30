@@ -1,12 +1,12 @@
 # M2833: Sync now answers nothing when the server answered
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3433,7 +3433,7 @@
+@@ -4147,7 +4147,7 @@
      if (!running) await this.startEngine();
      if (everything && this.engine) ({ checked, sent } = await this.engine.verifyAll());
      else if (running) sent = (await running.syncNow()) ?? 0;
 -    if (away) return;
 +    if (away || sent >= 0) return;
      const status = this.shown();
-     const files = `${checked} file${checked === 1 ? "" : "s"}`;
      // Deletions still held: the question the press raised about them is its
+     // answer, and "up to date" beside it would be false (the rig, 2026-09-27).

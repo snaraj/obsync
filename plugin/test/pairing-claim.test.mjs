@@ -144,7 +144,7 @@ test("a vault inside a vault that syncs with obsync refuses to pair before any r
   assert.deepEqual(result.held, [], "no claim was held");
   assert.equal(result.restarted, 0);
   assert.deepEqual(result.notices, [
-    `This folder is inside the synced vault "${nodePath.basename(outer)}". Syncing it too would copy that vault into ` +
+    `obsync: This folder is inside the synced vault "${nodePath.basename(outer)}". Syncing it too would copy that vault into ` +
       "itself. Open the outer vault instead, or use Selected folders there.",
   ]);
   assert.ok(result.logs.some((line) => /^pairing role=claimant decision=refused reason=nested_vault duration_ms=\d+$/.test(line)),
@@ -176,7 +176,7 @@ test("a claimant waits on its envelope, then keeps its credential and the key in
   assert.equal(result.restarted, 1);
   assert.ok(result.logs.includes("pairing role=claimant decision=waiting reason=not_approved"));
   assert.ok(result.logs.some((line) => /^pairing role=claimant decision=paired duration_ms=\d+$/.test(line)), result.logs.join(" | "));
-  assert.ok(result.notices.some((notice) => notice.includes("This device is paired")));
+  assert.ok(result.notices.some((notice) => notice.includes("this device is paired, and its first sync is running")));
 });
 
 test("the claim names this device by what it is and its own tag, never the bare platform (#152)", async (t) => {
@@ -241,7 +241,7 @@ test("a rejected approved-key save never starts sync, and takes the collected de
   assert.equal(result.saves.length, 0);
   assert.deepEqual(result.calls, ["claim", "envelope", "survey", "revoke"], "collection activated it, so it is revoked");
   assert.ok(result.notices.some((notice) => notice.includes("fixture key save failed")));
-  assert.ok(!result.notices.some((notice) => notice.includes("This device is paired")));
+  assert.ok(!result.notices.some((notice) => notice.includes("this device is paired, and its first sync is running")));
 });
 
 test("every refusal that ends a claim ends it in words, and only not_approved polls again (#153, #154)", async (t) => {
@@ -347,7 +347,7 @@ test("closing the dialog while waiting keeps waiting behind it, and still pairs 
   }, { onWait: (modal, waited) => { if (waited === 1) modal.onClose(); } });
   assert.deepEqual(result.calls, ["claim", "envelope", "envelope", "survey"]);
   assert.ok(result.notices.some((notice) => notice.includes("still waiting for approval in the background")), result.notices.join(" | "));
-  assert.ok(result.notices.some((notice) => notice.includes("This device is paired")));
+  assert.ok(result.notices.some((notice) => notice.includes("this device is paired, and its first sync is running")));
   assert.equal(result.restarted, 1);
   assert.equal(result.saves.at(-1).vrk, KEYS.vrk);
 });
@@ -518,7 +518,7 @@ async function resumed(t, claimedAt, response, before = () => {}) {
   before(plugin);
   plugin.resumePairing();
   await plugin.waiting?.done;
-  return { calls, logs, held, notices, restarted, state: state.data, pairing };
+  return { calls, logs, held, notices, restarted, state: state.data, pairing, plugin };
 }
 
 test("a restarted device resumes collecting its held claim inside the window and pairs", async (t) => {
@@ -531,6 +531,13 @@ test("a restarted device resumes collecting its held claim inside the window and
   const code = await result.pairing.matchCode(secret, id, KEYS.deviceId);
   assert.ok(result.notices.some((notice) => notice.includes("still pairing this device") && notice.includes(code)), result.notices.join(" | "));
   assert.ok(result.logs.some((line) => /^pairing role=claimant decision=resumed age_ms=\d+ window_ms=600000$/.test(line)));
+  // THE CODE IS FOR COMPARING NOW, never for keeping (1.1.5): the toast shows
+  // it, and Recent -- which the command line prints -- and the log read •••.
+  const kept = result.plugin.notices.recent().find((entry) => entry.text.startsWith("still pairing this device"));
+  assert.equal(kept.kind, "question");
+  assert.ok(kept.text.includes("Its prompt shows the code •••: if it shows another, choose Reject there."), kept.text);
+  assert.ok(!JSON.stringify(result.plugin.notices.recent()).includes(code), "the code reached Recent");
+  assert.ok(!result.logs.join("\n").includes(code), "the code reached the log");
 });
 
 test("a claim an older session was still collecting is resumed, not dropped, by a reload", async (t) => {

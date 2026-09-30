@@ -19,7 +19,7 @@ import test from "node:test";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { fakeState, sandbox } from "./fake.mjs";
+import { channel, fakeState, sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
@@ -101,6 +101,7 @@ async function plugin(server, { version = "0.1.0", settings = recordingSettings(
   instance.updateAvailable = null;
   instance.updateNotified = false;
   instance.log = (line) => logs.push(line);
+  instance.notices = channel(box, instance);
   return { instance, adapter, logs, settings, notices: obsidian.notices, raised: obsidian.raised, ObsyncPlugin };
 }
 
@@ -129,7 +130,7 @@ test("the notice and the settings line direct updates to Obsidian's plugin manag
   assert.equal(notices.length, 1);
   const notice = notices[0];
   assert.equal(notice,
-    "Self Hosted Private Sync 9.9.9 is available (this device runs 0.1.0). "
+    "obsync: Self Hosted Private Sync 9.9.9 is available (this device runs 0.1.0). "
     + "Open Settings → Community plugins → Check for updates.");
   // A phone-width notice wraps or truncates: what survives must be the name
   // and the versions, so neither may come after the instruction.
@@ -137,7 +138,7 @@ test("the notice and the settings line direct updates to Obsidian's plugin manag
   assert.ok(notice.indexOf("0.1.0") < notice.indexOf("Settings"), notice);
   assert.doesNotMatch(notice, /\.zip|reinstall|releases\/tag|\/v1\/plugin\/bundle/);
   assert.equal(instance.updateAvailable, "9.9.9");
-  assert.equal(instance.updateLine(), notice, "the settings tab says the same thing");
+  assert.equal(`obsync: ${instance.updateLine()}`, notice, "the settings tab says the same thing");
 });
 
 test("a second version reads the same way, with its own two numbers", async () => {
@@ -146,7 +147,7 @@ test("a second version reads the same way, with its own two numbers", async () =
   await instance.checkForUpdate();
 
   assert.equal(notices[0],
-    "Self Hosted Private Sync 2.0.0 is available (this device runs 1.0.5). "
+    "obsync: Self Hosted Private Sync 2.0.0 is available (this device runs 1.0.5). "
     + "Open Settings → Community plugins → Check for updates.");
 });
 

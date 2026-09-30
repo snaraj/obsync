@@ -1,11 +1,11 @@
 # M3614: a warning that ended leaves its toast standing on screen
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -4375,7 +4375,6 @@
+@@ -5057,7 +5057,6 @@
        // Its own key registered: the warning below has nothing left to say.
        if (registered.outcome === "ok" && this.recoveryMismatch) {
          this.recoveryMismatch = false;
--        this.recoveryNotice?.hide();
+-        this.notices.close(RECOVERY_WARNING);
          this.render();
          this.log("recovery decision=cleared reason=registered warning=cleared");
        }

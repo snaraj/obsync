@@ -1,11 +1,11 @@
 # M3554: Only what needs me still shows info
 --- a/plugin/src/notices.ts
 +++ b/plugin/src/notices.ts
-@@ -107,7 +107,7 @@
- export function toasts(kind: NoticeKind, settings: NoticeSettings): boolean {
+@@ -124,7 +124,7 @@
+ export function toasts(kind: NoticeKind, settings: () => NoticeSettings): boolean {
    if (NON_MUTABLE.has(kind)) return true;
-   if (kind === "combined") return settings.level === "everything" && settings.merges !== "off";
--  if (kind === "info") return settings.level === "everything";
+   if (kind === "combined") return settings().level === "everything" && settings().merges !== "off";
+-  if (kind === "info") return settings().level === "everything";
 +  if (kind === "info") return true;
    return true;
  }

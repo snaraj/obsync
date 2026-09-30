@@ -829,11 +829,10 @@ test("the startup scan drops the ghost record, publishes nothing, and disarms th
   // True of a fleet already on 1.1.4, and still the order a mixed one needs:
   // no "update every device" to a person whose devices all run this version.
   assert.ok(a.host.notices.includes(
-    "obsync: this device holds records for one folder under two capitalisations, and the notes under the " +
-      "spelling it no longer shows are already tracked under the one it does. It has stopped tracking the " +
-      "old spelling and deleted nothing. If another device shows TWO folders whose names differ only in " +
-      "capitalisation, delete the stale one there only once every device runs obsync 1.1.0 or later and " +
-      "has synced once since updating -- see Troubleshooting, \"Two folders that differ only in capitalisation\".",
+    "obsync: found one folder recorded under two spellings and kept the one this device shows; nothing was deleted. " +
+      "If another device shows two folders whose names differ only in capitals, delete the stale one there only once " +
+      "every device runs obsync 1.1.0 or later and has synced since; see Troubleshooting, \"Two folders that differ only " +
+      "in capitalisation\".",
   ), a.host.notices.join(" | "));
 
   // And now the tombstone the stale folder's deletion publishes elsewhere
@@ -2137,7 +2136,7 @@ test("a folder record whose post keeps failing expires with a decision, and the 
       line.includes("push path_class=folder decision=expired reason=folder_post attempt=3 budget=3")),
     b.host.logs.filter((line) => line.startsWith("push")).join(" | "),
   );
-  assert.equal(b.host.notices.filter((message) => message.includes("folder record")).length, 1, b.host.notices.join(" | "));
+  assert.equal(b.host.notices.filter((message) => message.includes("your server refused a folder")).length, 1, b.host.notices.join(" | "));
   // NO STALL: the queue drained, and the moves this device owed are on the
   // wire -- refused there, and said so, which is the honest outcome.
   await timers.run(STEP_MS, () =>

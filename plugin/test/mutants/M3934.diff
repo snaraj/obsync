@@ -1,0 +1,12 @@
+# M3934: a click on the update notice opens nothing
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -5179,7 +5179,7 @@
+       // is an alias of `messageEl`, the text element INSIDE it, so a tap that
+       // landed on the box's padding would only dismiss. A click on the text
+       // bubbles up to the box, so one listener covers both.
+-      this.notices.show({ kind: "info", text: updateMessage(remote.version, this.manifest.version), open: () => this.openPluginManager() });
++      this.notices.show({ kind: "info", text: updateMessage(remote.version, this.manifest.version) });
+     } catch (error) {
+       if (this.isCurrent(generation)) this.log(`update decision=skipped reason=${errorText(error)}`);
+     }

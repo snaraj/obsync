@@ -1,11 +1,11 @@
 # M1977: one deletion met twice gives two notices
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1374,7 +1374,6 @@
+@@ -1782,7 +1782,6 @@
   * says nothing at all (#178).
   */
  function notifyKeptDeletion(context: SyncContext, change: ChangeRecord, path: string, onServer: boolean): void {
 -  if (context.refused.has(change.file_id)) return;
    context.refused.add(change.file_id);
-   context.host.notify(
-     `obsync did not delete ${path}: ` + (onServer
+   context.host.notify({
+     kind: "info", paths: [path], device: context.deviceNameFor(change.device_id),

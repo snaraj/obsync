@@ -1,0 +1,12 @@
+# M3923: a paused note is kept quiet under Only what needs me
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -231,7 +231,7 @@
+  */
+ function pausedNotice(path: string): SyncNotice {
+   return {
+-    kind: "error", paths: [path],
++    kind: "info", paths: [path],
+     text: "paused syncing {notes}: a plugin (such as one that stamps \"updated:\") keeps rewriting {it} right after sync, " +
+       "which would bounce {it} between your devices. Stop that plugin changing synced notes, then press Resume in " +
+       "Show sync status; nothing was deleted.",

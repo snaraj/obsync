@@ -247,35 +247,62 @@ test("Pair this device in the palette opens the code dialog, and on a device tha
       `obsync: This device already syncs with https://sync.example.invalid as "${p.instance.deviceName()}", so nothing was claimed. ` +
         "To add another device, choose Pair a new device here. To pair this one again, use Leave this server in obsync's settings first.",
     ]);
-    assert.deepEqual(logs, ["pairing role=claimant decision=refused reason=already_paired source=palette"]);
+    assert.deepEqual(logs, ["pairing role=claimant decision=refused reason=already_paired source=palette", "notice decision=shown kind=confirm stays_ms=10250"]);
   }
 });
 
 test("Sync now always answers once: sent, nothing to send, or the server not answering (#182)", async (t) => {
   const p = await plugin(t);
   const notices = () => p.obsidian.notices.filter((notice) => notice.startsWith("obsync:"));
+  // Each press below comes after the last answer went: read, or its time up.
+  const press = async (everything) => { for (const toast of p.obsidian.raised) toast.hide(); await p.instance.syncNow(everything); };
   p.sending(2);
-  await p.instance.syncNow();
+  await press();
   assert.deepEqual(notices(), ["obsync: sent 2 changes."]);
   p.sending(0);
-  await p.instance.syncNow();
+  await press();
   assert.equal(notices().at(-1), "obsync: nothing to send; this device is up to date.");
   // Deletions still held back: the engine's question about them answers the
   // press (#172), and "up to date" beside it was false (the rig, 2026-09-27).
   p.instance.state.data.heldDeletions = ["Notes/gone.md"];
   const holding = notices().length;
-  await p.instance.syncNow();
+  await press();
   assert.deepEqual(notices().slice(holding), [], "up to date, beside deletions it still holds back");
   p.sending(2);
-  await p.instance.syncNow();
+  await press();
   assert.deepEqual(notices().slice(holding), ["obsync: sent 2 changes."]);
   p.instance.state.data.heldDeletions = [];
   p.sending(0);
   // The server stops answering: the press answers at once, and only once.
   p.instance.transport.options.reachable(false);
   const before = notices().length;
-  await p.instance.syncNow();
+  await press();
   assert.deepEqual(notices().slice(before), ["obsync: Your server is not answering. Sync resumes by itself when it is back."]);
+});
+
+test("presses in a row with the same answer are one toast that counts them, never a stack (lab L, 1.1.5)", async (t) => {
+  // Seen live: twenty-nine presses of Sync now stacked twenty-nine "nothing to send" toasts.
+  const p = await plugin(t);
+  // Under the quietest settings: the answer to a press is always said.
+  p.instance.state.data.notices = { level: "needs-me", merges: "off" };
+  const answers = () => p.obsidian.raised.filter((toast) => toast.message.startsWith("obsync: nothing to send"));
+  p.sending(0);
+  for (let pressed = 1; pressed <= 20; pressed++) await p.instance.syncNow();
+  assert.equal(answers().length, 1, "one toast");
+  assert.equal(answers()[0].message, "obsync: nothing to send; this device is up to date (20 times).");
+  assert.equal(answers()[0].hidden, false);
+  // Another answer is a toast of its own; the same one once that toast went is a new one.
+  p.sending(2);
+  await p.instance.syncNow();
+  assert.equal(p.obsidian.raised.at(-1).message, "obsync: sent 2 changes.");
+  answers()[0].hide();
+  p.sending(0);
+  await p.instance.syncNow();
+  assert.equal(answers().length, 2);
+  assert.equal(answers()[1].message, "obsync: nothing to send; this device is up to date.");
+  // Recent counts them as the toast did, so fifty presses never push a warning out of it.
+  assert.deepEqual(p.instance.notices.recent().filter((entry) => entry.text.startsWith("nothing to send")).map((entry) => entry.text),
+    ["nothing to send; this device is up to date.", "nothing to send; this device is up to date (20 times)."], "Recent has every answer, counted");
 });
 
 test("Verify all files is its own command and answers once with what it checked and found (#197)", async (t) => {
@@ -283,20 +310,22 @@ test("Verify all files is its own command and answers once with what it checked 
   const notices = () => p.obsidian.notices.filter((notice) => notice.startsWith("obsync:"));
   const verify = p.commands.find((command) => command.id === "verify-all");
   assert.equal(verify.name, "Verify all files (obsync)");
+  // Each press below comes after the last answer went: read, or its time up.
+  const press = async () => { for (const toast of p.obsidian.raised) toast.hide(); await p.instance.syncNow(true); };
   p.sending(9);
   p.verifying({ checked: 3, sent: 0 });
   await verify.callback();
   await new Promise(setImmediate);
   assert.deepEqual(notices(), ["obsync: checked 3 files; none had changed."], "the command ran the full check, not Sync now");
   p.verifying({ checked: 1, sent: 1 });
-  await p.instance.syncNow(true);
+  await press();
   assert.equal(notices().at(-1), "obsync: checked 1 file; 1 had changed and was sent.");
   p.verifying({ checked: 4, sent: 2 });
-  await p.instance.syncNow(true);
+  await press();
   assert.equal(notices().at(-1), "obsync: checked 4 files; 2 had changed and were sent.");
   p.instance.transport.options.reachable(false);
   const before = notices().length;
-  await p.instance.syncNow(true);
+  await press();
   assert.deepEqual(notices().slice(before), ["obsync: Your server is not answering. Sync resumes by itself when it is back."]);
 });
 
@@ -327,6 +356,15 @@ test("on a phone a refusal that needs the person is said once in a notice; on a 
   phone.instance.setStatus({ ...clock });
   phone.instance.setStatus({ kind: "error", message: "a parked file names itself in its own notice" });
   assert.deepEqual(phone.obsidian.notices.filter((notice) => notice.includes("SENTINEL")), ["obsync: CLOCK SENTINEL"]);
+  assert.equal(phone.obsidian.raised.find((toast) => toast.message.includes("SENTINEL")).message, "obsync: CLOCK SENTINEL",
+    "the same refusal still standing is not said again");
+  // Back while its toast still stands: that toast counts it, and no second one stacks (1.1.5).
+  phone.instance.setStatus({ kind: "idle" });
+  phone.instance.setStatus(clock);
+  assert.equal(phone.obsidian.notices.filter((notice) => notice.includes("SENTINEL")).length, 1);
+  assert.equal(phone.obsidian.raised.find((toast) => toast.message.includes("SENTINEL")).message, "obsync: CLOCK SENTINEL (2 times).");
+  // Dismissed, then back: a toast of its own.
+  for (const toast of phone.obsidian.raised) toast.hide();
   phone.instance.setStatus({ kind: "idle" });
   phone.instance.setStatus(clock);
   assert.equal(phone.obsidian.notices.filter((notice) => notice.includes("SENTINEL")).length, 2, "again, when it comes back");

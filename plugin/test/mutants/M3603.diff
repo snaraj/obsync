@@ -1,12 +1,12 @@
 # M3603: the security warning toasts again at every start
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -4387,7 +4387,7 @@
+@@ -5069,7 +5069,7 @@
        // other key and the next start registers this one. Only while this
        // device still holds the credential that asked (#233, below).
        if (this.state.data.deviceId === deviceId && error instanceof ApiError && error.code === "recovery_mismatch") {
 -        const first = !this.recoveryMismatch;
 +        const first = true;
          this.recoveryMismatch = true;
-         // NOTICE-KIND security: never muted by any notice setting (requirement
-         // 4), sticky until dismissed; the notice service maps this call site.
+         // A `security` notice: no setting keeps it off the screen (requirement
+         // 4), and it stays until dismissed.

@@ -1,12 +1,12 @@
 # M1866: a failure after the key is kept takes the paired device back (#153)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -524,7 +524,7 @@
+@@ -726,7 +726,7 @@
      // Nothing is taken back or dropped from here, and a kept key is kept.
      let stale = false;
      try { assertCurrent(); } catch { stale = true; }
 -    if (stale || kept) {
 +    if (stale) {
-       tell(refusalText(error));
+       tell(plugin, refusalText(error), "error");
        return kept;
      }

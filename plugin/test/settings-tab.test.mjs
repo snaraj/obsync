@@ -98,6 +98,9 @@ function open(t, overrides) {
   const obsidian = box.require("obsidian");
   const made = widgets(obsidian);
   const { plugin, calls } = stubPlugin(overrides);
+  // Every answer goes through the real notice channel onto the stub's toasts
+  // (`notices.ts`); its own decision lines are its tests' (`notice-channel`).
+  plugin.notices ??= box.require(join(box.home, "build/main.js")).noticeChannel({ ...plugin, log: () => undefined });
   const settings = box.require(join(box.home, "build/ui/settings.js"));
   // Obsidian's index of this vault's folders, keyed by the spelling the
   // directory keeps, and a host on a volume that FOLDS case -- the owner's
@@ -255,7 +258,7 @@ test("a bare host name becomes an https URL; an explicit scheme is kept; mobile 
   field().commit("http://lan.example.test");
   assert.equal(s.plugin.state.data.serverUrl, "https://sync.example.org", "refused, not stored");
   assert.deepEqual(s.calls, ["state.save", "wake:address"], "a refused address wakes nothing");
-  assert.deepEqual(s.obsidian.notices, ["Mobile Obsidian only reaches HTTPS servers."]);
+  assert.deepEqual(s.obsidian.notices, ["obsync: Mobile Obsidian only reaches HTTPS servers."]);
   field().commit("phone.example.org");
   assert.equal(s.plugin.state.data.serverUrl, "https://phone.example.org", "completed to https, so accepted on mobile");
 });
@@ -268,7 +271,7 @@ test("plain http is refused on every platform, loopback on a desktop excepted", 
   field().commit("http://lan.example.test:8080");
   assert.equal(s.plugin.state.data.serverUrl, "", "refused, not stored");
   assert.deepEqual(s.obsidian.notices.length, 1);
-  assert.match(s.obsidian.notices[0], /^Use your server's https address\. Plain HTTP would send the setup token/);
+  assert.match(s.obsidian.notices[0], /^obsync: Use your server's https address\. Plain HTTP would send the setup token/);
   // Only this computer itself may be reached in plain http: the README's one-computer trial.
   for (const url of ["http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080", "http://127.1.2.3"]) {
     field().commit(url);
@@ -333,7 +336,7 @@ test("a header pasted from a command line or wrapped in quotes is unwrapped, sav
     for (const fn of area.inputEl.listeners.change) fn();
     assert.deepEqual(s.plugin.state.data.edgeHeaders, headers, typed);
     assert.deepEqual(s.calls, ["state.save"], "saved once, when the field is left");
-    assert.deepEqual(s.obsidian.notices, told === null ? [] : [`Custom request headers saved. ${told}`], typed);
+    assert.deepEqual(s.obsidian.notices, told === null ? [] : [`obsync: custom request headers saved. ${told}`], typed);
     assert.equal(area.value, headers.map((h) => `${h.name}: ${h.value}`).join("\n"), "the field shows what is kept");
     assert.ok(s.plugin.logs.includes(`edge decision=kept headers=${headers.length} trimmed=${told === null ? 0 : 1}`), s.plugin.logs.join("\n"));
   }
@@ -362,7 +365,7 @@ test("a header that cannot be sent is refused as it is entered, naming the line 
     s.plugin.state.data.edgeHeaders = [{ name: "X-Before", value: "kept" }];
     const area = s.render("Custom request headers").made.find((c) => c.kind === "textarea");
     area.commit(typed);
-    assert.deepEqual(s.obsidian.notices, [`Custom request headers were not saved: ${refusal}`], typed);
+    assert.deepEqual(s.obsidian.notices, [`obsync: custom request headers were not saved: ${refusal}`], typed);
     assert.deepEqual(s.plugin.state.data.edgeHeaders, [{ name: "X-Before", value: "kept" }], typed);
     assert.deepEqual(s.calls, [], "a refusal saves nothing");
     assert.ok(s.plugin.logs.includes(`edge decision=refused reason=${reason}`), s.plugin.logs.join("\n"));
@@ -392,19 +395,21 @@ test("Check asks the server without a credential before setup, and says to type 
     },
   });
   const check = () => { s.button(s.render("Connection").made, "Check").click(); return tick(); };
+  // The answer to a click is said under the quietest settings too.
+  s.plugin.state.data.notices = { level: "needs-me", merges: "off" };
   await check();
   assert.deepEqual(asked, [], "no address, no request");
-  assert.deepEqual(s.obsidian.notices, ["Type your server's address in Server URL first."]);
+  assert.deepEqual(s.obsidian.notices, ["obsync: type your server's address in Server URL first."]);
 
   s.plugin.state.data.serverUrl = "https://sync.example.org";
   await check();
   assert.deepEqual(asked, ["manifest"], "before setup the signed read would only say 'not paired'");
-  assert.match(s.obsidian.notices.at(-1), /^Reached your obsync server\. Next: Setup or recover/);
+  assert.match(s.obsidian.notices.at(-1), /^obsync: reached your obsync server\. Next: Setup or recover/);
 
   s.plugin.state.paired = true;
   await check();
   assert.deepEqual(asked, ["manifest", "account"]);
-  assert.equal(s.obsidian.notices.at(-1), 'Reached "obsync", 2 device(s).');
+  assert.equal(s.obsidian.notices.at(-1), 'obsync: reached "obsync", 2 devices.');
 });
 
 test("Check against a certificate this device does not trust says so and where to trust it, never 'nothing answered'", async (t) => {
@@ -415,14 +420,14 @@ test("Check against a certificate this device does not trust says so and where t
   s.plugin.state.paired = true;
   s.button(s.render("Connection").made, "Check").click();
   await tick(); await tick();
-  assert.equal(s.obsidian.notices.at(-1), "This device does not trust your server's certificate, so it refused the connection. " +
+  assert.equal(s.obsidian.notices.at(-1), "obsync: This device does not trust your server's certificate, so it refused the connection. " +
     "Trust that certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".");
 });
 
 test("Check against a certificate for another name, or out of date, says which and what to do, never 'nothing answered' (#229)", async (t) => {
   for (const [reason, said] of [
-    ["network=net::ERR_CERT_COMMON_NAME_INVALID", /^This device refused your server's certificate because it was made for another name/],
-    ["network=net::ERR_CERT_DATE_INVALID", /^This device refused your server's certificate because it has expired or is not valid yet/],
+    ["network=net::ERR_CERT_COMMON_NAME_INVALID", /^obsync: This device refused your server's certificate because it was made for another name/],
+    ["network=net::ERR_CERT_DATE_INVALID", /^obsync: This device refused your server's certificate because it has expired or is not valid yet/],
   ]) {
     let ApiError;
     const s = open(t, { transport: { pluginManifest: async () => { throw new ApiError(0, "unreachable", reason); } } });
@@ -456,7 +461,7 @@ test("Check reads 'Checking…' at once, asks with a person's patience, and answ
   answer.reject(new ApiError(0, "unreachable", "network=ERR_CONNECTION_REFUSED SENTINEL"));
   await tick(); await tick();
   assert.equal(s.obsidian.notices.at(-1),
-    "Nothing answered at https://sync.example.org. Check the Server URL, port included; if it has worked before, your server may be switched off or out of this network's reach.");
+    "obsync: Nothing answered at https://sync.example.org. Check the Server URL, port included; if it has worked before, your server may be switched off or out of this network's reach.");
   assert.doesNotMatch(s.obsidian.notices.join("\n"), /unreachable|SENTINEL|^0 /);
   assert.equal(setting.desc, "idle", "the row says the status again");
   assert.equal(check.disabled, false);
@@ -470,7 +475,7 @@ test("Check reads 'Checking…' at once, asks with a person's patience, and answ
   ({ setting, check } = press());
   answer.reject(new ApiError(418, "teapot", "TEAPOT SENTINEL"));
   await tick(); await tick();
-  assert.equal(s.obsidian.notices.at(-1), "Your server refused this request; the obsync log names the reason.");
+  assert.equal(s.obsidian.notices.at(-1), "obsync: Your server refused this request; the obsync log names the reason.");
 });
 
 test("the Connection row says what the status bar says while Settings is open, and stops following when it closes (#182)", (t) => {
@@ -657,7 +662,9 @@ test("a folder selection the device refuses stops Set up and Pair this device be
   await tick();
   assert.deepEqual(s.calls, []);
   assert.equal(opened, 0);
-  assert.deepEqual(s.obsidian.notices, ["SCOPE REFUSAL SENTINEL", "SCOPE REFUSAL SENTINEL"]);
+  // The same refusal twice while its toast is up is that one toast, counting (`notices.ts`).
+  assert.deepEqual(s.obsidian.notices, ["obsync: SCOPE REFUSAL SENTINEL"]);
+  assert.equal(s.obsidian.raised.at(-1).message, "obsync: SCOPE REFUSAL SENTINEL (2 times).");
 
   // With nothing to apply, Pair this device opens the dialog at once.
   s.render("Folder selection").made[0].change("whole");
@@ -929,7 +936,7 @@ test("Forget on a revoked device asks first, says what that device will see, for
   s.button(s.render("Old phone (revoked)").made, "Forget").click();
   await tick();
   assert.deepEqual(forgets(), [`forget:${gone}`]);
-  assert.deepEqual(s.obsidian.notices, ["Old phone is forgotten."], "one brief confirmation");
+  assert.deepEqual(s.obsidian.notices, ["obsync: Old phone is forgotten."], "one brief confirmation");
   assert.equal(s.updates(), drawn + 1);
   assert.equal(s.row("Device list").desc, "Reading the device list…", "and the list is read again");
 
@@ -938,12 +945,12 @@ test("Forget on a revoked device asks first, says what that device will see, for
   refusal = new Error("your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.");
   s.button(s.render("Old phone (revoked)").made, "Forget").click();
   await tick();
-  assert.equal(s.obsidian.notices.at(-1), "Old phone was not forgotten: your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.");
+  assert.equal(s.obsidian.notices.at(-1), "obsync: Old phone was not forgotten: your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.");
   const { ApiError } = s.box.require(join(s.box.home, "build/transport.js"));
   refusal = new ApiError(409, "sentinel_refusal", "SENTINEL");
   s.button(s.render("Old phone (revoked)").made, "Forget").click();
   await tick();
-  assert.equal(s.obsidian.notices.at(-1), "Old phone was not forgotten: Your server refused this request; the obsync log names the reason.");
+  assert.equal(s.obsidian.notices.at(-1), "obsync: Old phone was not forgotten: Your server refused this request; the obsync log names the reason.");
   assert.doesNotMatch(s.obsidian.notices.join("\n"), /sentinel_refusal|SENTINEL|409/, "never a code");
 });
 
@@ -987,7 +994,7 @@ test("Save to server sends the drafted name and clears the draft", async (t) => 
   s.button(s.render("Save to server").made, "Save").click();
   await tick();
   assert.deepEqual(s.calls, ["saveDevice:Kitchen"]);
-  assert.deepEqual(s.obsidian.notices, ["This device's settings are saved."]);
+  assert.deepEqual(s.obsidian.notices, ["obsync: this device's settings are saved."]);
   assert.equal(s.updates(), 1);
   assert.equal(s.render("Name").made[0].value, "macos-1a2b", "the field reads the saved name again");
 });
@@ -1026,7 +1033,7 @@ for (const failure of [false, true]) test(`folder Save ${failure ? "failure" : "
   assert.equal(cancel.removed, true, "the Cancel goes with the wait");
   assert.deepEqual(s.calls, ["save"]);
   assert.equal(s.updates(), failure ? 0 : 1);
-  assert.deepEqual(s.obsidian.notices, [failure ? "SAVE FAILURE SENTINEL" : "Folder selection saved on this device."]);
+  assert.deepEqual(s.obsidian.notices, [failure ? "obsync: SAVE FAILURE SENTINEL" : "obsync: folder selection saved on this device."]);
 });
 
 test("Cancel while a folder Save waits keeps the selection there was, and says so (#185)", async (t) => {
@@ -1045,7 +1052,7 @@ test("Cancel while a folder Save waits keeps the selection there was, and says s
   assert.equal(cancel.disabled, true, "one press of Cancel");
   for (let waited = 0; button.disabled && waited < 20; waited++) await tick();
   assert.deepEqual(s.calls, ["save", "cancelScopeChange"]);
-  assert.deepEqual(s.obsidian.notices, ["Folder selection unchanged: sync goes on with the folders it had."]);
+  assert.deepEqual(s.obsidian.notices, ["obsync: folder selection unchanged: sync goes on with the folders it had."]);
   assert.equal(cancel.removed, true);
   assert.equal(button.text, "Save");
 });
@@ -1129,7 +1136,7 @@ test("a folder the vault does not have is asked about first, Cancel holds the fo
   save.click();
   await tick();
   assert.deepEqual(s.calls, ['saveSyncFolders:["Nopes"]']);
-  assert.deepEqual(s.obsidian.notices, ["Folder selection saved on this device."]);
+  assert.deepEqual(s.obsidian.notices, ["obsync: folder selection saved on this device."]);
   assert.equal(s.plugin.logs.at(-1), "scope decision=confirmed reason=not_a_folder folders=1");
 
   // A FILE by that name is not a folder either: the host's lookup finds the
@@ -1154,7 +1161,7 @@ test("a folder typed in another case is saved the way the vault spells it, and t
   // Re-cased, and then one canonical selection: the parent covers its child.
   assert.deepEqual(s.calls, ['saveSyncFolders:["Notes"]'], "the typed spelling was saved");
   assert.deepEqual(s.obsidian.notices, [
-    'Folder selection saved on this device. "notes" is saved as "Notes", the way this vault spells it.',
+    'obsync: folder selection saved on this device. "notes" is saved as "Notes", the way this vault spells it.',
   ]);
   assert.deepEqual(s.plugin.logs, ["scope decision=recased reason=vault_spelling folders=1"]);
 
@@ -1167,7 +1174,7 @@ test("a folder typed in another case is saved the way the vault spells it, and t
   s.plugin.host.spelling = async () => null;
   await saveTyped(s, "Espa\u00f1ol");
   assert.deepEqual(s.calls, ['saveSyncFolders:["Espa\u00f1ol"]']);
-  assert.deepEqual(s.obsidian.notices, ["Folder selection saved on this device."]);
+  assert.deepEqual(s.obsidian.notices, ["obsync: folder selection saved on this device."]);
 
   // A volume that keeps two spellings apart has no `notes` at all: that is a
   // folder the vault does not have, asked about, never quietly swapped for
@@ -1188,7 +1195,7 @@ test("an empty selection is saved and says that nothing syncs", async (t) => {
 
   assert.deepEqual(s.calls, ["saveSyncFolders:[]"]);
   assert.deepEqual(s.obsidian.notices, [
-    "Folder selection saved on this device. No folder is selected, so nothing syncs on this device.",
+    "obsync: folder selection saved on this device. No folder is selected, so nothing syncs on this device.",
   ]);
 });
 
@@ -1200,7 +1207,7 @@ test("a hidden folder is refused in plain words, before any question, with the r
 
   assert.deepEqual(s.calls, [], "the refused selection reached the save");
   assert.equal(s.obsidian.notices.length, 1);
-  assert.match(s.obsidian.notices[0], /^That selection cannot be saved: each line must be a folder inside this vault/);
+  assert.match(s.obsidian.notices[0], /^obsync: That selection cannot be saved: each line must be a folder inside this vault/);
   assert.match(s.obsidian.notices[0], /names start with a dot/);
   assert.equal(/hidden_segment|\(/.test(s.obsidian.notices[0]), false, s.obsidian.notices[0]);
   assert.deepEqual(s.plugin.logs, ["scope decision=refused reason=hidden_segment"]);
@@ -1264,7 +1271,7 @@ test("a download ceiling takes decimal and binary units, and an unreadable one i
     field.commit("1 MX");
     assert.equal(policy[key], bytes, "an unreadable value changes nothing");
     assert.deepEqual(s.obsidian.notices, [
-      `${row}: "1 MX" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`,
+      `obsync: ${row}: "1 MX" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`,
     ]);
     assert.equal(field.value, formatBytes(bytes), "and the field shows what is kept, not what was refused");
     assert.equal(s.plugin.logs.at(-1), `policy decision=refused reason=unreadable_size field=${key}`);

@@ -1,7 +1,7 @@
 # M3600: a recovery_mismatch registration is not recognised as a key this device did not register
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -4386,7 +4386,7 @@
+@@ -5068,7 +5068,7 @@
        // registration of its own succeeds: the operator's reset clears the
        // other key and the next start registers this one. Only while this
        // device still holds the credential that asked (#233, below).
@@ -9,4 +9,4 @@
 +      if (this.state.data.deviceId === deviceId && error instanceof ApiError && error.code === "recovery_mismatch_never") {
          const first = !this.recoveryMismatch;
          this.recoveryMismatch = true;
-         // NOTICE-KIND security: never muted by any notice setting (requirement
+         // A `security` notice: no setting keeps it off the screen (requirement

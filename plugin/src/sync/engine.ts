@@ -62,7 +62,7 @@
 import { forgottenCredential, FORGOTTEN_DEVICE } from "../accountRecovery";
 import { ByteSource, CHUNK_MAX } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
-import type { SyncNotice } from "../notices";
+import { count, HELD, type SyncNotice } from "../notices";
 import {
   DomainMap,
   DomainMapError,
@@ -353,8 +353,8 @@ export interface VaultHost {
   editing(path: string): Promise<"unsaved" | "saved" | null>;
   /** Recent trusted editor input, including a composition still in progress. */
   typing(path: string): boolean;
-  /** Tell the person, through the one notice channel (`notices.ts`); bare words are a notice not yet given a kind. */
-  notify(notice: SyncNotice | string, actions?: NoticeAction[]): void;
+  /** Tell the person, through the one notice channel (`notices.ts`). */
+  notify(notice: SyncNotice): void;
   /** Take the held-deletions question off the screen once nothing is held (`hold`). */
   closeQuestion?(): void;
   log(line: string): void;
@@ -733,6 +733,8 @@ export const BULK_WINDOW_MS = 5000;
 
 /** The two answers a held deletion waits for, on every notice that asks. */
 const HELD_ACTIONS: NoticeAction[] = [{ kind: "delete_everywhere" }, { kind: "restore_here" }];
+/** The held-deletions question: one on screen, whichever asked last (`HELD`). */
+const HELD_QUESTION = { kind: "question", key: HELD, actions: HELD_ACTIONS } as const;
 
 /** ` (in Folder)` when every path shares one folder, and nothing when they share none. */
 function within(paths: string[]): string {
@@ -1142,10 +1144,10 @@ export class SyncEngine {
       // v0.1 derives one domain key per engine, so a vault split across
       // domains is one this version cannot write correctly. Refusing is the
       // fail-closed answer; syncing the part it understands is not.
-      host.notify(
-        "obsync: this vault's domain map declares more than one sharing domain, " +
-          "which this version cannot sync. Nothing was read or written.",
-      );
+      host.notify({
+        kind: "error",
+        text: "this vault is shared in a way this version of obsync cannot sync. Update obsync on this device; nothing was read or written.",
+      });
       throw new DomainMapError("more_than_one_domain");
     }
     const domainKey = await deriveDomainKey(key, domainId);
@@ -1615,11 +1617,10 @@ export class SyncEngine {
     context.host.log(
       `watch decision=held reason=bulk_deletion files=${paths.length} held=${held.length} floor=${BULK_DELETION_MIN}`,
     );
-    context.host.notify(
-      `obsync: you deleted ${paths.length} notes${within(paths)}. Delete them on your other devices too? ` +
-        "They stay there until you choose.",
-      HELD_ACTIONS,
-    );
+    context.host.notify({
+      ...HELD_QUESTION,
+      text: `you deleted ${count(paths.length, "note")}${within(paths)}. Delete them on your other devices too? They stay there until you choose.`,
+    });
   }
 
   /** Persist what is held; a hold that cannot be saved stops the engine rather than be forgotten. */
@@ -1930,15 +1931,15 @@ export class SyncEngine {
     context.host.log("rename path_class=file decision=not_published reason=moved_out_of_scope");
     if (this.exited++ > 0) return;
     void Promise.resolve().then(() => {
-      const count = this.exited;
+      const moved = this.exited;
       this.exited = 0;
-      context.host.log(`scope decision=left_selection files=${count}`);
-      context.host.notify(
-        `obsync: ${count} note(s) moved out of the folders this device syncs; they stay on your other devices. ` +
-          "Nothing was deleted: they are still in this vault and the server keeps their history. This device " +
-          "no longer syncs them -- move them back into a selected folder, or add their new folder under " +
-          "Sync folders on this device.",
-      );
+      context.host.log(`scope decision=left_selection files=${moved}`);
+      const [it, stays] = moved === 1 ? ["it", "it stays"] : ["them", "they stay"];
+      context.host.notify({
+        kind: "info",
+        text: `${count(moved, "note")} moved out of the folders this device syncs, so this device stops syncing ${it}; ` +
+          `${stays} on your other devices, and nothing was deleted. Move ${it} back, or add the new folder under Sync folders.`,
+      });
     });
   }
 
@@ -2033,11 +2034,11 @@ export class SyncEngine {
         `watch decision=restored reason=bulk_deletion restored=${restored} held=${left} asked=${asked.length} ` +
           `duration_ms=${context.now() - started}`,
       );
-      context.host.notify(
-        `obsync put ${restored} note(s) back on this device, and deleted nothing anywhere.` + (left === 0 ? ""
-          : ` ${left} could not be put back yet and are still held back: try Restore here again once the server can be reached.`),
-        left === 0 ? [] : HELD_ACTIONS,
-      );
+      const put = `put ${count(restored, "note")} back on this device and deleted nothing`;
+      context.host.notify(left === 0 ? { kind: "confirm", text: `${put}.` } : {
+        ...HELD_QUESTION,
+        text: `${put}; ${left} more could not be put back yet. Try Restore here again once your server answers.`,
+      });
     }));
   }
 
@@ -2760,10 +2761,10 @@ export class SyncEngine {
     context.host.log(`push path_class=file decision=${again ? "republish" : "dropped"} reason=domain_mismatch file=${record?.fileId ?? "untracked"}`);
     if (!this.rekeyNoticeShown) {
       this.rekeyNoticeShown = true;
-      context.host.notify(
-        "obsync: edits made on this device before its vault key changed could not be sent to the old vault. " +
-          "They are still here, and obsync sends them under the new key.",
-      );
+      context.host.notify({
+        kind: "info",
+        text: "edits made here before this vault's key changed are sent again under the new key; nothing here changed.",
+      });
     }
     await context.state.save();
     if (again) this.enqueue(path);
@@ -2843,13 +2844,11 @@ export class SyncEngine {
       this.report(refusalStatus(error) ?? { kind: "error", message: error instanceof ApiError ? PUSH_REFUSED : message });
       if (!this.folderPostNoticeShown) {
         this.folderPostNoticeShown = true;
-        context.host.notify(
-          "obsync could not tell your other devices about a folder this device published or renamed: the server " +
-            `refused the folder record ${FOLDER_POST_TRIES} times. Nothing was lost here and nothing was deleted ` +
-            "anywhere. Until this device syncs again, another device may still show that folder under its old " +
-            "capitalisation and refuse the notes moved inside it; this device republishes the folder the next time " +
-            "it starts.",
-        );
+        context.host.notify({
+          kind: "info",
+          text: "your server refused a folder this device created or renamed, so your other devices may show its old " +
+            "name until this device sends it again: when Obsidian next starts, or at once when you select Sync now. Nothing was lost.",
+        });
       }
       return;
     }
@@ -3237,10 +3236,12 @@ export class SyncEngine {
         `retry_ms=${error.reason === "active_editor" ? 1000 : this.parkDelay}`,
     );
     if (!known && error.reason !== "active_editor") {
-      context.host.notify(
-        `obsync: ${unwritableText(error.path, error.reason)}. Every other change keeps arriving. This file is ` +
-          "tried again by itself, and at once when you run Sync now after fixing it.",
-      );
+      context.host.notify({
+        kind: "error",
+        text: `${unwritableText("{notes}", error.reason)}. Everything else keeps syncing; obsync tries {it} again by itself, ` +
+          "and at once when you run Sync now after fixing it.",
+        paths: [error.path],
+      });
     }
     this.status(this.resting());
   }
@@ -3929,9 +3930,10 @@ export class SyncEngine {
       }
       await context.state.save();
       if (resent > 0) {
-        context.host.notify(
-          `obsync: The server was restored to an earlier state; this device re-sent ${resent} change${resent === 1 ? "" : "s"}.`,
-        );
+        context.host.notify({
+          kind: "info",
+          text: `your server went back to an earlier state, so this device sent ${count(resent, "change")} of its own again.`,
+        });
       }
     });
   }
@@ -4395,17 +4397,14 @@ export class SyncEngine {
       );
       if (!this.bulkNoticeShown) {
         this.bulkNoticeShown = true;
-        context.host.notify(
-          kept.length > 0
-            ? `obsync is still holding back ${missing.length} deletions${within(missing)} from your other devices. ` +
-                "Delete them there too?"
-            : `obsync stopped ${missing.length} deletions it was about to send to your other devices: ` +
-              `it can no longer see ${missing.length} of the ${tracked} notes it syncs here, and nothing ` +
-              "asked for them to be deleted. A folder renamed or moved outside Obsidian looks exactly like " +
-              "this. Put it back, or select it under its new name in Sync folders -- or, if you really did " +
-              "delete them, confirm it under Settings, obsync, \"Deletions held back\".",
-          HELD_ACTIONS,
-        );
+        context.host.notify({
+          ...HELD_QUESTION,
+          text: kept.length > 0
+            ? `${count(missing.length, "deletion")}${within(missing)} ${missing.length === 1 ? "is" : "are"} still held back from your other devices. Delete them there too?`
+            : `held back ${count(missing.length, "deletion")}: ${missing.length} of the ${tracked} notes this device syncs ` +
+              "are missing, and nothing in Obsidian deleted them. A folder renamed or moved outside Obsidian looks like " +
+              "this: put it back, or select its new name in Sync folders. If you did delete them, choose Delete everywhere.",
+        });
       }
     } else if (tombstones) {
       if (held.length > 0) this.hold([]);
@@ -4896,13 +4895,13 @@ export class SyncEngine {
     // whole of the repair and which the user cannot act on.
     if (!this.caseGhostNoticeShown && folderOf(path) !== folderOf(to)) {
       this.caseGhostNoticeShown = true;
-      context.host.notify(
-        "obsync: this device holds records for one folder under two capitalisations, and the notes under the " +
-          "spelling it no longer shows are already tracked under the one it does. It has stopped tracking the " +
-          "old spelling and deleted nothing. If another device shows TWO folders whose names differ only in " +
-          "capitalisation, delete the stale one there only once every device runs obsync 1.1.0 or later and " +
-          "has synced once since updating -- see Troubleshooting, \"Two folders that differ only in capitalisation\".",
-      );
+      context.host.notify({
+        kind: "info",
+        text: "found one folder recorded under two spellings and kept the one this device shows; nothing was deleted. " +
+          "If another device shows two folders whose names differ only in capitals, delete the stale one there only once " +
+          "every device runs obsync 1.1.0 or later and has synced since; see Troubleshooting, \"Two folders that differ only " +
+          "in capitalisation\".",
+      });
     }
     return true;
   }
@@ -4953,11 +4952,11 @@ export class SyncEngine {
     // The command that "syncs everything" did not send the deletions the user
     // is still being asked about, and says so rather than nothing (#172).
     if (pending && held() > 0) {
-      this.options.host.notify(
-        `obsync is still holding back ${held()} deletions: Sync now does not send them. Put ` +
-          "the notes back, or, if you really deleted them, confirm it under Settings, obsync, \"Deletions held back\".",
-        HELD_ACTIONS,
-      );
+      this.options.host.notify({
+        ...HELD_QUESTION,
+        text: `${count(held(), "deletion")} ${held() === 1 ? "is" : "are"} still held back, so Sync now does not send them. ` +
+          "Choose Delete everywhere if you meant them, or Restore here to put the notes back.",
+      });
     }
     followUp = (await this.flush()) || followUp;
     const read = this.options.host.readTotals?.() ?? { files: 0, bytes: 0 };
@@ -5119,7 +5118,7 @@ export class SyncEngine {
           ? "Server repair needs a device with safe file-range reads for a file larger than 8 MiB. Keep a synced desktop online; this device cannot automatically supply that file."
           : "Server repair could not restore a missing chunk from this device's current files. Keep another synced device online and check the server scrub report.";
         this.status({ kind: "error", message });
-        if (!this.repairNoticeShown) { host.notify(`obsync: ${message}`); this.repairNoticeShown = true; }
+        if (!this.repairNoticeShown) { host.notify({ kind: "error", text: message }); this.repairNoticeShown = true; }
       }
     } catch (error) {
       // Do not expose a source path or untrusted transport/manifest error.

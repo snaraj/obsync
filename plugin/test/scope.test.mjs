@@ -523,7 +523,7 @@ test("invalid saved scope refuses plugin startup with a visible state decision",
   instance.manifest = { id: "obsync-private-sync" };
   instance.loadData = async () => ({ syncFolders: null });
   await assert.rejects(instance.onload(), /sync folders must be a list/);
-  assert.deepEqual(logs, ["state decision=stopped reason=invalid_sync_folders"]);
+  assert.deepEqual(logs, ["state decision=stopped reason=invalid_sync_folders", "notice decision=shown kind=error stays_ms=0"]);
   assert.equal(instance.engine, null);
 });
 
@@ -648,7 +648,7 @@ test("moving local content into a selected folder creates a new identity; moving
     r.host.logs.filter((line) => line.startsWith("rename")).join(" | "),
   );
   assert.equal(r.host.notices.length, 1, r.host.notices.join(" | "));
-  assert.match(r.host.notices[0], /moved out of the folders this device syncs.*Nothing was deleted/s);
+  assert.match(r.host.notices[0], /moved out of the folders this device syncs.*nothing was deleted/s);
   const stopped = engine.stopAndWait();
   r.server.releaseFeed();
   await stopped;

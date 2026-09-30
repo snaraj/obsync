@@ -1,0 +1,12 @@
+# M3936: the folder-capitals notice names the sending device by a stale name
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1822,7 +1822,7 @@
+   const behind = sender !== undefined && isNewer(context.host.appVersion, sender.app_version) ? sender : undefined;
+   context.host.log(`pull path_class=folder decision=notified reason=folder_case sender=${behind === undefined ? "not_older" : "older"}`);
+   context.host.notify({
+-    kind: "info", device: sender?.name ?? context.deviceNameFor(deviceId),
++    kind: "info", device: context.deviceNameFor(deviceId),
+     text: `{device} spells the folder ${quoted(folder)} with different capitals, so the notes under it stay where they are ` +
+       "here. " + (behind === undefined
+       ? "Rename the folder on one device so both spell it the same way, and let each sync once"

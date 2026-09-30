@@ -1,0 +1,12 @@
+# M3938: each press's answer is a toast of its own, so a run of presses stacks them (lab L)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4159,7 +4159,7 @@
+       : everything ? `checked ${count(checked, "file")}; ${sent > 0 ? `${sent} had changed and ${sent === 1 ? "was" : "were"} sent` : "none had changed"}.`
+       : sent > 0 ? `sent ${count(sent, "change")}.`
+       : (this.engine?.context?.state.data.heldDeletions.length ?? 0) > 0 ? null : "nothing to send; this device is up to date.";
+-    if (answer !== null) this.notices.show({ kind: "confirm", text: answer });
++    if (answer !== null) this.notices.show({ kind: "confirm", text: answer, key: String(Math.random()) });
+   }
+ 
+   /** Resume in Show sync status: sync one paused note again (issue #179). */

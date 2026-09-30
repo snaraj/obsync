@@ -92,7 +92,7 @@ test("Restore here puts every note back with its bytes, and makes no copy and no
   assert.deepEqual(copies(a.host), [], "a copy was made here");
   assert.deepEqual(copies(b.host), [], "a copy was made on the other device");
   assert.deepEqual(a.state.data.heldDeletions, []);
-  assert.equal(a.host.notices.at(-1), "obsync put 20 note(s) back on this device, and deleted nothing anywhere.");
+  assert.equal(a.host.notices.at(-1), "obsync: put 20 notes back on this device and deleted nothing.");
   // And a later pass finds nothing to send: the notes are exactly as recorded.
   await a.engine.syncNow();
   await timers.run(STEP_MS);
@@ -274,7 +274,7 @@ test("the hold, and Restore here, survive a restart", async (t) => {
   assert.deepEqual(tombstones(d.server), [], `${tombstones(d.server).length} held deletions were published by a restart`);
   assert.equal(engine.heldDeletionCount, gone.length);
   assert.deepEqual(d.host.asked, [{
-    message: "obsync is still holding back 12 deletions (in Notes) from your other devices. Delete them there too?",
+    message: "obsync: 12 deletions (in Notes) are still held back from your other devices. Delete them there too?",
     actions: HELD_ACTIONS,
   }]);
 
@@ -301,6 +301,6 @@ test("a note that cannot be put back now stays held, and says so", async (t) => 
 
   assert.equal(d.engine.heldDeletionCount, NOTES.length, "an unanswered restore dropped the question");
   assert.deepEqual(tombstones(d.server), []);
-  assert.match(d.host.notices.at(-1), /^obsync put 0 note\(s\) back on this device, and deleted nothing anywhere\. 20 could not be put back yet/);
+  assert.match(d.host.notices.at(-1), /^obsync: put 0 notes back on this device and deleted nothing; 20 more could not be put back yet/);
   assert.deepEqual(d.host.asked.at(-1).actions, HELD_ACTIONS);
 });

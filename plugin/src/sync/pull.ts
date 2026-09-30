@@ -105,6 +105,7 @@ import { ApiError, ChangeRecord, DeviceRecord, FileRecord, Patience, ReadControl
 // record above, which is a different thing with the same name.
 import type { FileRecord as FileState } from "../state";
 import { admissionReason, admit, formatBytes } from "../policy";
+import { count, quoted, type SyncNotice } from "../notices";
 import { VaultPathError, assertVaultPath, caseOnly, vaultPathRefusal } from "../vaultPath";
 import {
   assertFolderScope,
@@ -205,6 +206,36 @@ export function unwritableText(path: string, reason: string): string {
   if (reason === "downloading") return `Downloading ${path}`;
   if (reason === "unknown_chunk") return `Cannot download ${path}: ${UNWRITABLE[reason]}`;
   return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;
+}
+
+/** A conflict copy, said one way wherever it is made: the note by title, the copy by its own. */
+function keptBoth(context: SyncContext, path: string, copy: string, device?: string): void {
+  context.host.notify({
+    kind: "conflict", text: `kept both versions of {notes}: {device}'s is in ${quoted(copy)}.`, paths: [path],
+    ...device === undefined ? {} : { device },
+  });
+}
+
+/** Two notes that took one name, said one way wherever the tie is broken. */
+function twoNamed(context: SyncContext, path: string, moved: string, device?: string): void {
+  context.host.notify({
+    kind: "conflict", text: `found two different notes named {notes}: this device's is now ${quoted(moved)}, and {device}'s keeps the name.`,
+    paths: [path], ...device === undefined ? {} : { device },
+  });
+}
+
+/**
+ * A note paused because a plugin answers every sync by rewriting it: one
+ * sentence wherever the storm was seen -- here, by the other device, or
+ * while the person typed.
+ */
+function pausedNotice(path: string): SyncNotice {
+  return {
+    kind: "error", paths: [path],
+    text: "paused syncing {notes}: a plugin (such as one that stamps \"updated:\") keeps rewriting {it} right after sync, " +
+      "which would bounce {it} between your devices. Stop that plugin changing synced notes, then press Resume in " +
+      "Show sync status; nothing was deleted.",
+  };
 }
 
 /** A record this device cannot write for a reason local to that one file or chunk. */
@@ -600,13 +631,12 @@ function notifyFolderTwin(context: SyncContext, selected: string, twin: string):
   const key = `twin\u0000${selected}`;
   if (context.refused.has(key)) return;
   context.refused.add(key);
-  context.host.notify(
-    `obsync: another device published a folder called "${twin}", and this device syncs "${selected}" -- ` +
-      "two names that differ only in capitalisation. On a device that keeps those two apart they are two " +
-      `folders, so nothing here was renamed, moved or deleted and this device keeps syncing "${selected}". ` +
-      "If that device instead renamed the folder you sync here, rename it here to match -- see " +
-      'Troubleshooting, "Two folders that differ only in capitalisation".',
-  );
+  context.host.notify({
+    kind: "info",
+    text: `another device named a folder ${quoted(twin)}, which differs from ${quoted(selected)} only in capitals, so this ` +
+      `device keeps syncing ${quoted(selected)} and changed nothing. If that device renamed your folder, rename it here ` +
+      'to match; see Troubleshooting, "Two folders that differ only in capitalisation".',
+  });
 }
 
 export async function decryptRecordManifest(
@@ -1121,19 +1151,20 @@ function refuse(context: SyncContext, change: ChangeRecord, reason: string): App
   const key = `key\u0000${change.device_id}`;
   if (reason === "undecryptable" && !context.refused.has(key)) {
     context.refused.add(key);
-    const name = context.deviceNameFor(change.device_id);
-    context.host.notify(
-      `obsync cannot read changes from "${name}": they are sealed with a different vault key. This device skips ` +
-        `them and keeps receiving everything else; nothing was written here. On "${name}", restore this vault's ` +
-        "recovery phrase (obsync settings, Recovery phrase), or leave the server there and pair it again.",
-    );
+    context.host.notify({
+      kind: "error", device: context.deviceNameFor(change.device_id),
+      text: "cannot read changes from {device}: they are locked with a different vault key, so this device skips them " +
+        "and keeps syncing everything else. On {device}, restore this vault's recovery phrase (obsync settings, " +
+        "Recovery phrase), or leave the server there and pair it again.",
+    });
   }
   if (reason !== "undecryptable" && !context.refused.has(change.file_id)) {
     context.refused.add(change.file_id);
-    context.host.notify(
-      `obsync refused a change from another device: it does not name a file or folder this device can write inside this vault (${reason}). ` +
-        `Nothing was written. File id ${change.file_id}.`,
-    );
+    context.host.notify({
+      kind: "info", device: context.deviceNameFor(change.device_id),
+      text: "skipped a change from {device}: it was damaged or named a file this device cannot write, so nothing was " +
+        "written and everything else keeps syncing.",
+    });
   }
   return "refused";
 }
@@ -1276,7 +1307,7 @@ async function applyPause(context: SyncContext, change: ChangeRecord, manifest: 
   context.state.data.paused[manifest.target] = { path, remote: true };
   await context.state.save();
   context.host.log(`pull decision=paused reason=peer_rewrite_storm file=${manifest.target} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);
-  context.host.notify(`obsync paused syncing ${path}: another device detected repeated rewrites after sync. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);
+  context.host.notify(pausedNotice(path));
   return "skipped";
 }
 
@@ -1404,12 +1435,12 @@ function notifyKeptFolder(context: SyncContext, change: ChangeRecord, path: stri
   const key = `kept\u0000${path}`;
   if (context.refused.has(key)) return;
   context.refused.add(key);
-  context.host.notify(
-    `obsync kept the folder "${path}" here although ${context.deviceNameFor(change.device_id)} deleted it: it ` +
-      `still holds ${items} item${items === 1 ? "" : "s"} that ${items === 1 ? "is" : "are"} not a synced note -- ` +
-      "a hidden file, another app's data, or a note not sent yet -- and a folder is only removed when it is " +
-      "empty. Nothing in it was deleted. Delete the folder here if you no longer need what is in it.",
-  );
+  context.host.notify({
+    kind: "info", device: context.deviceNameFor(change.device_id),
+    text: `kept the folder ${quoted(path)} although {device} deleted it: it still holds ${count(items, "item")} that ` +
+      `${items === 1 ? "is" : "are"} not a synced note (a hidden file, another app's data, or a note not sent yet). ` +
+      "Delete the folder here if you no longer need what is in it.",
+  });
 }
 
 /**
@@ -1753,13 +1784,12 @@ async function openEditing(
 function notifyKeptDeletion(context: SyncContext, change: ChangeRecord, path: string, onServer: boolean): void {
   if (context.refused.has(change.file_id)) return;
   context.refused.add(change.file_id);
-  context.host.notify(
-    `obsync did not delete ${path}: ` + (onServer
-      ? "another device deleted it without having seen the version here, which is already on the server, so the " +
-        "note is kept."
-      : "it holds changes this device has not uploaded yet. Another device deleted that note; this copy is kept " +
-        "here and is uploaded as a new version."),
-  );
+  context.host.notify({
+    kind: "info", paths: [path], device: context.deviceNameFor(change.device_id),
+    text: onServer
+      ? "kept {notes}: {device} deleted {it} without having seen the changes made here, which your server already holds."
+      : "kept {notes}: {device} deleted {it} without having seen the changes made here, so they are sent again.",
+  });
 }
 
 /**
@@ -1791,15 +1821,15 @@ async function notifyFolderCase(context: SyncContext, folder: string, deviceId: 
   }
   const behind = sender !== undefined && isNewer(context.host.appVersion, sender.app_version) ? sender : undefined;
   context.host.log(`pull path_class=folder decision=notified reason=folder_case sender=${behind === undefined ? "not_older" : "older"}`);
-  context.host.notify(
-    `obsync: another device spells the folder "${folder}" with different capitalisation than this one shows. ` +
-      "Notes under it are kept where they are; nothing was written, moved or deleted here. " +
-      (behind === undefined
-        ? "Rename the folder on one device so both spell it the same way, and let each sync once"
-        : `"${behind.name}" runs obsync ${behind.app_version} and this device runs ${context.host.appVersion}: update ` +
-          "it and let it sync once, or rename the folder here to match") +
-      ' -- see Troubleshooting, "Two folders that differ only in capitalisation".',
-  );
+  context.host.notify({
+    kind: "info", device: sender?.name ?? context.deviceNameFor(deviceId),
+    text: `{device} spells the folder ${quoted(folder)} with different capitals, so the notes under it stay where they are ` +
+      "here. " + (behind === undefined
+      ? "Rename the folder on one device so both spell it the same way, and let each sync once"
+      : `{device} runs obsync ${behind.app_version} and this device ${context.host.appVersion}: update it and let it ` +
+        "sync once, or rename the folder here to match") +
+      '; see Troubleshooting, "Two folders that differ only in capitalisation".',
+  });
 }
 
 async function applyVersion(context: SyncContext, change: ChangeRecord, entry: Manifest | FolderManifest | PauseManifest): Promise<ApplyResult> {
@@ -1981,12 +2011,12 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
       const told = `older\u0000${change.file_id}`;
       if (!context.refused.has(told)) {
         context.refused.add(told);
-        context.host.notify(
-          `obsync did not download the newer version of ${manifest.path} (${formatBytes(manifest.size)}): it is ` +
-            `${admissionReason(policy, admission.reason)}. This device keeps its older copy. Fetch the newer one ` +
-            "when you need it, here or under Show remote-only files.",
-          [{ kind: "fetch", fileId: change.file_id }],
-        );
+        context.host.notify({
+          kind: "info", paths: [manifest.path], actions: [{ kind: "fetch", fileId: change.file_id }],
+          text: `did not download the newer version of {notes} (${formatBytes(manifest.size)}): it is ` +
+            `${admissionReason(policy, admission.reason)}. This device keeps its older copy; Fetch the newer one ` +
+            "here or in Show remote-only files when you need it.",
+        });
       }
     }
     context.state.data.remoteOnly[change.file_id] = { path: manifest.path, size: manifest.size };
@@ -2105,11 +2135,11 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
       const told = `recase\u0000${change.file_id}`;
       if (!context.refused.has(told)) {
         context.refused.add(told);
-        context.host.notify(
-          `obsync could not change the capitals of "${localPath}" to "${manifest.path}" on this device, so it keeps ` +
-            "its old name here. Nothing was deleted. To match your other devices, rename it here to a different " +
-            `name first, then to "${manifest.path.slice(manifest.path.lastIndexOf("/") + 1)}".`,
-        );
+        context.host.notify({
+          kind: "error", paths: [localPath],
+          text: `could not change the capitals of {notes} to ${quoted(manifest.path)} here, so it keeps its old name; ` +
+            `nothing was deleted. To match your other devices, rename it to any other name first, then to ${quoted(manifest.path)}.`,
+        });
       }
       context.host.log(
         `pull path_class=file decision=case_move_refused reason=recase_failed file=${change.file_id} seq=${change.seq}`,
@@ -2712,11 +2742,11 @@ async function reconcile(
       context.refused.add(change.file_id);
       // What was seen, and nothing it cannot know: this device cannot tell
       // what the others run, so it blames none of them (issue #179).
-      context.host.notify(
-        `obsync stopped merging ${localPath}: this device resolved it more than ${MERGE_STORM_LIMIT} times in a row ` +
-          `in under a minute without the note changing here. Every device keeps the same version as the note and ` +
-          `the other beside it as a copy.`,
-      );
+      context.host.notify({
+        kind: "conflict", paths: [localPath],
+        text: `stopped combining edits to {notes}: it was combined more than ${MERGE_STORM_LIMIT} times in a minute ` +
+          "without changing here. Every device keeps the same note, and the other edits beside it as a copy.",
+      });
     }
   }
   // Settled now, or left for a push again (`deferred`), which counts it anew.
@@ -3092,7 +3122,7 @@ async function resolve(
       context.state.data.paused[change.file_id] = { path: localPath, remote: true };
       await context.state.save();
       context.host.log(`pull decision=paused reason=peer_rewrite_overlap file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);
-      context.host.notify(`obsync paused syncing ${localPath}: another device rewrote lines while you were typing. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);
+      context.host.notify(pausedNotice(localPath));
     }
     await publishPause(context, change.file_id, localPath, true);
     return "skipped";
@@ -3128,12 +3158,7 @@ async function rewriteStorm(context: SyncContext, change: ChangeRecord, localPat
     `pull decision=paused reason=rewrite_storm file=${change.file_id} seq=${change.seq} ` +
       `answer_ms=${stat.mtime - arrived} duration_ms=${context.now() - arrived} budget_ms=${ANSWER_MS}`,
   );
-  context.host.notify(
-    `${localPath} was rewritten on this device right after a sync, on the same lines another device changed. ` +
-      "Another plugin may be rewriting it (for example one that stamps \"updated:\"), and left alone the note " +
-      "would bounce between your devices. obsync paused syncing it here; nothing was deleted. Stop that plugin " +
-      "changing synced notes, then run Sync now, or press Resume in Show sync status.",
-  );
+  context.host.notify(pausedNotice(localPath));
   await publishPause(context, change.file_id, localPath, true);
   return true;
 }
@@ -3238,7 +3263,7 @@ export async function resumePaused(context: SyncContext, fileId: string): Promis
   const landed = await materialise(context, fileId, restore, { ...record, mtime: before.mtime, size: before.size });
   if (landed === null) return "saved_meanwhile";
   await recordAt(context, { ...restored, file_id: fileId }, path, landed);
-  context.host.notify(`obsync resumed ${path}. What this device held while it was paused is in "${kept}".`);
+  context.host.notify({ kind: "confirm", paths: [path], text: `resumed {notes}; what this device held while it was paused is in ${quoted(kept)}.` });
   return "kept_beside";
 }
 
@@ -3435,10 +3460,7 @@ async function converge(
     context.state.setFile(localPath, { ...held, versionId: closed });
     await context.state.save();
   }
-  context.host.notify(
-    `obsync kept both versions of ${localPath}: every device keeps the same one as the note, ` +
-      `and the other is in "${copy}".`,
-  );
+  keptBoth(context, localPath, copy, context.deviceNameFor(change.device_id));
   context.host.log(
     `pull decision=converged reason=unmerged role=${keeping ? "keep" : "yield"} closed=${closed} ` +
       `file=${change.file_id} seq=${change.seq}`,
@@ -3665,10 +3687,11 @@ function closingAllowed(context: SyncContext, change: ChangeRecord, path: string
   );
   if (!context.refused.has(`closing\u0000${change.file_id}`)) {
     context.refused.add(`closing\u0000${change.file_id}`);
-    context.host.notify(
-      `obsync stopped settling ${path}: another device keeps giving it a different name. Every device keeps the ` +
-        "same text and nothing was deleted. Update obsync on every device, and the name settles at the next edit.",
-    );
+    context.host.notify({
+      kind: "error", paths: [path], device: context.deviceNameFor(change.device_id),
+      text: "stopped renaming {notes}: {device} keeps giving it a different name. Every device has the same text and " +
+        "nothing was deleted; update obsync on every device, and the name settles at the next edit.",
+    });
   }
   return false;
 }
@@ -3998,11 +4021,11 @@ async function moveAside(
         `pull path_class=file bytes=${before.size} decision=move_aside_refused ` +
           `reason=${room.reason} file=${record.fileId}`,
       );
-      context.host.notify(
-        `obsync left ${from} where it is: copying it to a name of its own would need more memory ` +
-          `than this device allows (${admissionReason(context.state.data.policy, room.reason)}). ` +
-          `Your note is untouched, and the other device's version is beside it.`,
-      );
+      context.host.notify({
+        kind: "conflict", paths: [from],
+        text: "left {notes} where it is, with the other device's note beside it: moving it to a name of its own would " +
+          `need more memory than this device allows (${admissionReason(context.state.data.policy, room.reason)}).`,
+      });
       return null;
     }
   }
@@ -4015,14 +4038,13 @@ async function moveAside(
       `pull path_class=file decision=move_aside_refused reason=${reason} file=${record.fileId}`,
     );
     if (copy === null) return null;
-    context.host.notify(
-      reason === "unheld"
-        ? `obsync left ${from} where it is: this device cannot move a note aside without risking text ` +
-            `typed while it does, so it keeps both notes instead. Your note is untouched, and the text ` +
-            `it had a moment ago is in "${copy}".`
-        : `obsync left ${from} where it is: it changed while obsync was moving it. Your note and its ` +
-            `new text are untouched, and the text it had a moment ago is in "${copy}".`,
-    );
+    context.host.notify({
+      kind: "conflict", paths: [from],
+      text: (reason === "unheld"
+        ? "left {notes} where it is and kept both notes: moving it now could lose text being typed. "
+        : "left {notes} where it is: it changed while obsync was moving it. ") +
+        `Its text from a moment ago is in ${quoted(copy)}.`,
+    });
     return null;
   };
   let landed: Awaited<ReturnType<typeof writeBeside>>;
@@ -4391,10 +4413,7 @@ async function takeVacated(
   context.host.log(
     `pull path_class=file bytes=${manifest.size} decision=applied seq=${change.seq}`,
   );
-  context.host.notify(
-    `obsync found two different notes named ${manifest.path}. This device's is now "${moved}", ` +
-      `and the other device's keeps the name.`,
-  );
+  twoNamed(context, manifest.path, moved, context.deviceNameFor(change.device_id));
   return "applied";
 }
 
@@ -4469,10 +4488,7 @@ async function renameOnto(
         `role=${keep ? "keep" : moved === null ? "kept_both" : "rename"} file=${keep ? change.file_id : ours.fileId} seq=${change.seq}`,
     );
     if (moved !== null) {
-      context.host.notify(
-        `obsync found two different notes named ${manifest.path}. This device's is now "${moved}", ` +
-          `and the other device's keeps the name.`,
-      );
+      twoNamed(context, manifest.path, moved, context.deviceNameFor(change.device_id));
     }
   }
   return await updateSettled(context, change, manifest, settled);
@@ -4795,10 +4811,7 @@ export async function yieldName(context: SyncContext, path: string): Promise<boo
   const moved = await moveAside(context, path, { ...ours, mtime: stat.mtime }, new Date(context.now()));
   if (moved === null) return false;
   context.host.log(`push decision=same_name_tiebreak winner=${waiting.fileId} role=rename file=${ours.fileId}`);
-  context.host.notify(
-    `obsync found two different notes named ${path}. This device's is now "${moved}", ` +
-      `and the other device's keeps the name.`,
-  );
+  twoNamed(context, path, moved);
   await settleBeside(context, context.state.data.lastSeq, "push");
   return true;
 }
@@ -4853,7 +4866,7 @@ export function announceCopies(context: SyncContext, now = false): void {
     if (!now && !settled && context.now() - copy.at < COPY_SETTLE_MS) continue;
     context.copies?.delete(fileId);
     if (path === undefined) continue;
-    context.host.notify(`obsync kept both versions of ${copy.name}. The other device's copy is "${path}".`);
+    keptBoth(context, copy.name, path);
   }
 }
 
@@ -4944,16 +4957,15 @@ async function keepBothAt(
     context.host.log(
       `pull path_class=file decision=refused reason=no_free_conflict_name names=${CONFLICT_COPY_NAMES} file=${change.file_id} seq=${change.seq}`,
     );
-    context.host.notify(
-      `obsync kept your version of ${theirManifest.path} and could not place the other device's copy: ` +
-        `every name it tried was already taken. Nothing here was changed, and the other version is still on the server.`,
-    );
+    context.host.notify({
+      kind: "error", paths: [theirManifest.path], device: context.deviceNameFor(change.device_id),
+      text: "kept your version of {notes} but found no free name for {device}'s copy beside it; nothing here changed, " +
+        "and {device}'s version is still on your server.",
+    });
     return null;
   }
   if (announce) {
-    context.host.notify(
-      `obsync kept both versions of ${theirManifest.path}. The other device's copy is "${copy.path}".`,
-    );
+    keptBoth(context, theirManifest.path, copy.path, context.deviceNameFor(change.device_id));
   }
   context.host.log(
     `pull decision=conflict_copy file=${change.file_id} seq=${change.seq} bytes=${theirManifest.size} name_attempt=${copy.attempt}`,
@@ -5049,11 +5061,12 @@ function settledName(context: SyncContext, change: ChangeRecord, base: string | 
   const key = `renamed\u0000${unit(base ?? kept)}`;
   if (!context.refused.has(key)) {
     context.refused.add(key);
-    context.host.notify(
-      `obsync: ${base === undefined ? "a note or folder" : `"${unit(base)}"`} was renamed differently on two devices: ` +
-        `"${unit(ours)}" here and "${unit(theirs)}" on another. Every device now uses "${unit(kept)}"; no note was ` +
-        "copied or deleted. To use the other name, rename it again.",
-    );
+    context.host.notify({
+      kind: "info", device: context.deviceNameFor(change.device_id),
+      text: `${base === undefined ? "a note or folder" : quoted(unit(base))} was renamed differently here ` +
+        `(${quoted(unit(ours))}) and on {device} (${quoted(unit(theirs))}); every device now uses ${quoted(unit(kept))}, ` +
+        "and nothing was copied or deleted. To use the other name, rename it again.",
+    });
   }
   return kept;
 }

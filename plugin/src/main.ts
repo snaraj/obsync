@@ -60,7 +60,7 @@ import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
 import { KEYS_LOST, State, StateStorageError, dataLease, isPushed, type Held, type ObsyncData } from "./state";
-import { HELD, LEVELS, MERGES, NOTICE_DEFAULTS, NoticeChannel, scrub, titles, type Drawn, type NoticeSettings, type SyncNotice } from "./notices";
+import { HELD, LEVELS, MERGES, NOTICE_DEFAULTS, NoticeChannel, count, quoted, scrub, titles, type Drawn, type NoticeSettings, type SyncNotice } from "./notices";
 import {
   assertFolderCaseScope,
   assertFolderScope,
@@ -127,6 +127,9 @@ const WRITE_TEMP = /^\.obsync-(?:write|restore)-[0-9a-f]+\.tmp$/;
  * is not among them: it is the name being taken, the refusal `link` is for.
  */
 const LINK_UNSUPPORTED = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR", "ENOSYS", "EXDEV"]);
+
+/** The key of the recovery-key security warning's toast, which ends with the warning. */
+const RECOVERY_WARNING = "recovery_mismatch";
 
 /** The words on a notice's buttons (`VaultHost.notify`). */
 const NOTICE_BUTTONS: Record<NoticeAction["kind"], string> = {
@@ -730,11 +733,11 @@ export class ObsidianHost implements VaultHost {
     if (error.refusal !== "symlink_component" || error.at === undefined || this.linked.has(error.at)) return;
     this.linked.add(error.at);
     this.log("host path_class=folder decision=excluded reason=symlink_component");
-    this.notify(
-      `obsync doesn't sync linked folders: "${error.at}" is a link, so it stays on this device only. Nothing in it ` +
-        "is sent to your other devices, and nothing from them is written into it. To sync it, move the folder " +
-        "itself into the vault instead of linking to it.",
-    );
+    this.notify({
+      kind: "info",
+      text: `does not sync linked folders: ${quoted(error.at)} is a link, so it stays on this device only and nothing ` +
+        "from your other devices is written into it. To sync it, move the folder itself into the vault instead of linking to it.",
+    });
   }
 
   /**
@@ -853,11 +856,12 @@ export class ObsidianHost implements VaultHost {
     if (this.nested.has(folder)) return true;
     this.nested.add(folder);
     this.log("host path_class=folder decision=excluded reason=nested_vault");
-    this.notify(
-      `obsync does not sync "${folder}": that folder is a vault of its own with obsync installed, and syncing it ` +
-        "from this vault too would copy this vault into itself. Nothing in it was changed. To sync it from this " +
-        "vault again, uninstall obsync in that folder's own vault.",
-    );
+    this.notify({
+      kind: "info",
+      text: `does not sync ${quoted(folder)}: that folder is a vault of its own with obsync installed, and syncing it ` +
+        "from here too would copy this vault into itself. Nothing in it changed; to sync it from this vault, " +
+        "uninstall obsync in that folder's own vault.",
+    });
     return true;
   }
 
@@ -2484,12 +2488,11 @@ export class ObsidianHost implements VaultHost {
     const folder = state.data.files[twin] === undefined;
     this.log(`watch path_class=${folder ? "folder" : "file"} decision=held reason=case_twin_deleted files=${fresh.length} held=${state.data.heldDeletions.length}`);
     this.plugin.engine?.heldAsked();
-    this.notify(
-      `obsync did not delete "${twin}" from your other devices: it was deleted on this device through "${via}", a ` +
-        `second name Obsidian showed for the same ${folder ? "folder" : "note"}. Put it back here with Restore here, or ` +
-        "delete it everywhere.",
-      [{ kind: "delete_everywhere" }, { kind: "restore_here" }],
-    );
+    this.notify({
+      kind: "question", key: HELD, actions: [{ kind: "delete_everywhere" }, { kind: "restore_here" }],
+      text: `did not delete ${quoted(twin)} from your other devices: it was deleted here through ${quoted(via)}, a ` +
+        `second name Obsidian showed for the same ${folder ? "folder" : "note"}. Choose Restore here to put it back, or Delete everywhere.`,
+    });
   }
 
   /**
@@ -2580,14 +2583,14 @@ export class ObsidianHost implements VaultHost {
       this.log(`vault path_class=${kind} decision=failed reason=${failed} via=temp duration_ms=${took}`);
       if (this.recaseTold) return;
       this.recaseTold = true;
-      this.notify(
-        `obsync could not finish renaming "${from}" to "${to}" on this device. Nothing was deleted` +
+      this.notify({
+        kind: "error",
+        text: `could not finish renaming ${quoted(from)} to ${quoted(to)} here; nothing was deleted. ` +
           (failed === "occupied"
-            ? `: something else there took that name first, so the ${kind === "folder" ? "folder" : "note"} is kept in the ` +
-              `same folder as "${temp.slice(temp.lastIndexOf("/") + 1)}", which Obsidian does not show. Rename the other ` +
-              "one, then restart Obsidian to finish."
-            : ". Restart Obsidian to finish."),
-      );
+            ? `Something else took that name first, so the ${kind === "folder" ? "folder" : "note"} is kept beside it as ` +
+              `"${temp.slice(temp.lastIndexOf("/") + 1)}", which Obsidian does not show: rename the other one, then restart Obsidian to finish.`
+            : "Restart Obsidian to finish."),
+      });
       return;
     }
     if (returned) this.log(`vault path_class=${kind} decision=returned via=temp duration_ms=${took}`);
@@ -3275,8 +3278,8 @@ export class ObsidianHost implements VaultHost {
    * (owner's rig, 2026-09-27: eight at once). `closeQuestion` takes it away
    * once nothing is held any more.
    */
-  notify(notice: SyncNotice | string, actions: NoticeAction[] = []): void {
-    this.plugin.notices.show(notice, actions);
+  notify(notice: SyncNotice): void {
+    this.plugin.notices.show(notice);
   }
 
   /** Take the held-deletions question off the screen: answered, released, or this plugin unloading. */
@@ -3302,12 +3305,12 @@ export default class ObsyncPlugin extends Plugin {
   updateAvailable: string | null = null;
   /**
    * This device's recovery registration met a key it did not register (`409
-   * recovery_mismatch`, `registerAccountRecovery`): Show sync status and the
-   * settings tab say so until a registration succeeds or the device leaves.
+   * recovery_mismatch`, `registerAccountRecovery`): Show sync status, the
+   * settings tab and the status item say so until a registration succeeds or
+   * the device leaves. Its toast (`RECOVERY_WARNING`) is taken down with it:
+   * a warning that ended must not stand on screen.
    */
   recoveryMismatch = false;
-  /** Its sticky toast, taken down with it: a warning that ended must not stand on screen. */
-  private recoveryNotice: Notice | null = null;
   /** Whether this session has already raised the update notice. */
   private updateNotified = false;
   private statusEl: HTMLElement | null = null;
@@ -3385,7 +3388,8 @@ export default class ObsyncPlugin extends Plugin {
       if (superseded) return;
       this.log(`state decision=stopped reason=${error.reason}`);
       if (this.statusEl) this.setStatus({ kind: "error", message: error.message });
-      new Notice(error.message, 15000);
+      // Its words begin "obsync could not...": said once, after the toast's own "obsync:".
+      this.notices.show({ kind: "error", text: error.message.replace(/^obsync /, "") });
     }, () => this.isCurrent(generation), dataLease(this.app, this.manifest.id), this.heldReference()).catch((error: unknown) => {
       if (!this.isCurrent(generation)) return null;
       throw error;
@@ -3431,13 +3435,13 @@ export default class ObsyncPlugin extends Plugin {
     // are here; the tab offers Pair this device and Start fresh.
     if (state.copied) {
       this.log("state decision=not_paired reason=copied_vault");
-      new Notice(`obsync: ${COPIED_VAULT} Both are in obsync's settings, under This device.`, 15000);
+      this.notices.show({ kind: "error", text: `${COPIED_VAULT} Both are in obsync's settings, under This device.` });
     }
     // AND A DEVICE A CRASH LEFT WITH NO KEYS the same way in (issue #230).
     if (state.keysLost) {
       const { dataRevision, secretRevision } = state.keysLost;
       this.log(`state decision=recovered reason=credential_behind data_revision=${dataRevision} secret_revision=${secretRevision}`);
-      new Notice(`obsync: ${KEYS_LOST} Pair this device is in obsync's settings, under This device.`, 15000);
+      this.notices.show({ kind: "error", text: `${KEYS_LOST} Pair this device is in obsync's settings, under This device.` });
     }
     // ONE reminder, at the start after a confirmation was skipped, and never
     // a recurring popup: Settings and Show sync status keep saying it
@@ -3445,7 +3449,13 @@ export default class ObsyncPlugin extends Plugin {
     if (state.data.recoveryPhrase === "skipped" && state.data.vrk !== null) {
       state.data.recoveryPhrase = "unconfirmed";
       this.log("phrase decision=reminded");
-      new Notice("obsync: your 24-word recovery phrase is not confirmed. Without it and without a paired device this vault cannot be recovered. Open obsync's settings, Vault key, and choose Show and confirm.", 15000);
+      // A question only the person can answer, never kept quiet (requirement
+      // 4); a click opens the settings that answer it.
+      this.notices.show({
+        kind: "question", open: () => this.openSettings(),
+        text: "your 24-word recovery phrase is not confirmed: without it and without a paired device this vault cannot " +
+          "be recovered. In obsync's settings, under Vault key, choose Show and confirm.",
+      });
       void state.save().catch(() => {});
     }
 
@@ -3468,7 +3478,7 @@ export default class ObsyncPlugin extends Plugin {
           return;
         }
         this.log("pairing role=claimant decision=refused reason=already_paired source=palette");
-        new Notice(`obsync: ${paired}`, 12000);
+        this.notices.show({ kind: "confirm", text: paired });
       },
     });
     this.addCommand({
@@ -4015,7 +4025,7 @@ export default class ObsyncPlugin extends Plugin {
       const nested = await this.nestedRefusal("engine");
       if (!wanted(engine)) return superseded();
       if (nested !== null) {
-        if (this.statusValue.kind !== "error" || this.statusValue.message !== nested) new Notice(`obsync: ${nested}`, 15000);
+        if (this.statusValue.kind !== "error" || this.statusValue.message !== nested) this.notices.show({ kind: "error", text: nested });
         throw new Error(nested);
       }
       await engine.start();
@@ -4130,7 +4140,7 @@ export default class ObsyncPlugin extends Plugin {
     const away = this.shown().kind === "offline";
     if (away) {
       this.wake("sync_now");
-      new Notice(`obsync: ${NOT_ANSWERING}`);
+      this.notices.show({ kind: "confirm", text: NOT_ANSWERING });
     }
     let sent = 0;
     let checked = 0;
@@ -4140,16 +4150,17 @@ export default class ObsyncPlugin extends Plugin {
     else if (running) sent = (await running.syncNow()) ?? 0;
     if (away) return;
     const status = this.shown();
-    const files = `${checked} file${checked === 1 ? "" : "s"}`;
     // Deletions still held: the question the press raised about them is its
     // answer, and "up to date" beside it would be false (the rig, 2026-09-27).
     // Asked of the engine, which an unload has taken away, never of the state.
-    const answer = status.kind === "offline" ? `obsync: ${NOT_ANSWERING}`
-      : status.kind === "error" ? `obsync: ${status.message}`
-      : everything ? `obsync: checked ${files}; ${sent > 0 ? `${sent} had changed and ${sent === 1 ? "was" : "were"} sent` : "none had changed"}.`
-      : sent > 0 ? `obsync: sent ${sent} change${sent === 1 ? "" : "s"}.`
-      : (this.engine?.context?.state.data.heldDeletions.length ?? 0) > 0 ? null : "obsync: nothing to send; this device is up to date.";
-    if (answer !== null) new Notice(answer);
+    // The same answer to presses in a row is ONE toast that counts them
+    // (the channel's join): twenty-nine presses stacked twenty-nine (lab L).
+    const answer = status.kind === "offline" ? NOT_ANSWERING
+      : status.kind === "error" ? status.message
+      : everything ? `checked ${count(checked, "file")}; ${sent > 0 ? `${sent} had changed and ${sent === 1 ? "was" : "were"} sent` : "none had changed"}.`
+      : sent > 0 ? `sent ${count(sent, "change")}.`
+      : (this.engine?.context?.state.data.heldDeletions.length ?? 0) > 0 ? null : "nothing to send; this device is up to date.";
+    if (answer !== null) this.notices.show({ kind: "confirm", text: answer });
   }
 
   /** Resume in Show sync status: sync one paused note again (issue #179). */
@@ -4404,7 +4415,7 @@ export default class ObsyncPlugin extends Plugin {
     if (!this.isCurrent(generation) || this.changingScope) return;
     try {
       await this.applyScope(this.state, "start", Date.now(), () => undefined);
-      new Notice("obsync: the folder selection you saved before Obsidian closed is now in effect.", 8000);
+      this.notices.show({ kind: "info", text: "the folder selection you saved before Obsidian closed is now in effect." });
     } catch {
       this.log("scope decision=failed reason=not_saved trigger=start");
     }
@@ -4841,14 +4852,14 @@ export default class ObsyncPlugin extends Plugin {
         await state.forgetPreviousCredential();
         previous = "dropped";
       } catch {
-        new Notice(
-          "obsync: this device left the server. Obsidian's secret storage refused to drop the older credential record; the next pairing on this device replaces it.",
-          10000,
-        );
+        this.notices.show({
+          kind: "info",
+          text: "this device left the server; Obsidian's secret storage kept an old sign-in record, which the next pairing here replaces.",
+        });
       }
       this.updateAvailable = null;
       this.recoveryMismatch = false;
-      this.recoveryNotice?.hide();
+      this.notices.close(RECOVERY_WARNING);
       this.forgottenDevice = false;
       this.setStatus({ kind: "idle" });
       if (reason === "unfinished") reason = "ok";
@@ -4954,7 +4965,7 @@ export default class ObsyncPlugin extends Plugin {
       }
       const nested = await this.nestedRefusal("setup");
       if (nested !== null) {
-        new Notice(`obsync: ${nested}`, 12000);
+        this.notices.show({ kind: "confirm", text: nested });
         return;
       }
       // Persist the key BEFORE a one-time request can create its account. A
@@ -4995,7 +5006,10 @@ export default class ObsyncPlugin extends Plugin {
       state.data.deviceSecret = result.device_secret;
       await state.save();
       assertCurrent();
-      new Notice(result.recovered ? "Account recovered and this device re-enrolled." : "Account created and this device enrolled.");
+      this.notices.show({
+        kind: "confirm",
+        text: result.recovered ? "recovered your vault on this server; this device syncs with it again." : "set up your server's vault; this device syncs with it.",
+      });
       if (freshKey) {
         await this.startEngine();
         assertCurrent();
@@ -5022,7 +5036,7 @@ export default class ObsyncPlugin extends Plugin {
               : code === "bad_recovery_proof"
                 ? `These recovery words do not open this server’s vault, and no device was enrolled. Restore its correct 24-word phrase, or ${pairHere}; a different vault needs a server of its own.`
                 : refusalText(error);
-      new Notice(`obsync: ${text}`, 12000);
+      this.notices.show({ kind: "confirm", text });
     } finally {
       this.enrolling = false;
     }
@@ -5044,7 +5058,7 @@ export default class ObsyncPlugin extends Plugin {
       // Its own key registered: the warning below has nothing left to say.
       if (registered.outcome === "ok" && this.recoveryMismatch) {
         this.recoveryMismatch = false;
-        this.recoveryNotice?.hide();
+        this.notices.close(RECOVERY_WARNING);
         this.render();
         this.log("recovery decision=cleared reason=registered warning=cleared");
       }
@@ -5058,9 +5072,9 @@ export default class ObsyncPlugin extends Plugin {
       if (this.state.data.deviceId === deviceId && error instanceof ApiError && error.code === "recovery_mismatch") {
         const first = !this.recoveryMismatch;
         this.recoveryMismatch = true;
-        // NOTICE-KIND security: never muted by any notice setting (requirement
-        // 4), sticky until dismissed; the notice service maps this call site.
-        if (first) this.recoveryNotice = new Notice(`obsync security warning: ${RECOVERY_MISMATCH}`, 0);
+        // A `security` notice: no setting keeps it off the screen (requirement
+        // 4), and it stays until dismissed.
+        if (first) this.notices.show({ kind: "security", key: RECOVERY_WARNING, text: RECOVERY_MISMATCH });
         this.render();
         // A refusal, so the console carries it at warn (`FAILURE_DECISION`).
         this.log(`recovery decision=refused reason=recovery_mismatch warning=${first ? "shown" : "standing"}`);
@@ -5127,7 +5141,7 @@ export default class ObsyncPlugin extends Plugin {
       this.log("dashboard decision=opened");
       window.open(target.url, "_blank");
     } catch (error) {
-      new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 8000);
+      this.notices.show({ kind: "confirm", text: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -5166,10 +5180,7 @@ export default class ObsyncPlugin extends Plugin {
       // is an alias of `messageEl`, the text element INSIDE it, so a tap that
       // landed on the box's padding would only dismiss. A click on the text
       // bubbles up to the box, so one listener covers both.
-      const notice = new Notice(updateMessage(remote.version, this.manifest.version), 15000);
-      notice.containerEl.addEventListener("click", () => {
-        this.openPluginManager();
-      });
+      this.notices.show({ kind: "info", text: updateMessage(remote.version, this.manifest.version), open: () => this.openPluginManager() });
     } catch (error) {
       if (this.isCurrent(generation)) this.log(`update decision=skipped reason=${errorText(error)}`);
     }
@@ -5203,8 +5214,8 @@ export default class ObsyncPlugin extends Plugin {
     else if (action.kind === "restore_here") void this.restoreHeldDeletions();
     else {
       void this.fetchRemoteOnly(action.fileId).then(
-        (path) => new Notice(`Fetched ${path}.`),
-        (error: unknown) => new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 10000),
+        (path) => this.notices.show({ kind: "confirm", text: "fetched {notes}.", paths: [path] }),
+        (error: unknown) => this.notices.show({ kind: "confirm", text: error instanceof Error ? error.message : String(error) }),
       );
     }
   }
@@ -5291,11 +5302,17 @@ export default class ObsyncPlugin extends Plugin {
   private render(): void {
     const status = this.shown();
     const quiet = !this.state.paired || this.state.data.syncFolders?.length === 0;
-    this.indicator.update(indicated(status, quiet), `obsync: ${this.statusText()}`);
+    // WHILE THE SECURITY WARNING STANDS, a calm status item is the alert
+    // (1.1.5): a check beside "a device may be compromised" read as all well.
+    // No setting changes this; the warning and the icon end together.
+    const shown = indicated(status, quiet);
+    const warned = this.recoveryMismatch && (shown === "synced" || shown === "quiet");
+    this.indicator.update(warned ? "attention" : shown,
+      `obsync: ${this.statusText()}${this.recoveryMismatch ? " — security warning: see Show sync status" : ""}`);
     // A PHONE HAS NOTHING ELSE THAT CATCHES THE EYE (#209): a refusal that
     // needs the person is said once in a notice there, as it turns to it.
     const refusal = status.kind === "error" && status.code !== undefined ? status.message : null;
-    if (Platform.isMobile && refusal !== null && refusal !== this.noticed) new Notice(`obsync: ${refusal}`, 15000);
+    if (Platform.isMobile && refusal !== null && refusal !== this.noticed) this.notices.show({ kind: "error", text: refusal });
     this.noticed = refusal;
     for (const watcher of this.watchers) watcher();
   }

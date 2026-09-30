@@ -1,0 +1,12 @@
+# M3928: a pairing or leaving answer is kept quiet under Only what needs me
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -68,7 +68,7 @@
+  * code. The answer to a click by default; an `error` when it lands behind a
+  * closed dialog, where nobody is watching for it.
+  */
+-function tell(plugin: ObsyncPlugin, text: string, kind: NoticeKind = "confirm"): void {
++function tell(plugin: ObsyncPlugin, text: string, kind: NoticeKind = "info"): void {
+   plugin.notices.show({ kind, text });
+ }
+ 

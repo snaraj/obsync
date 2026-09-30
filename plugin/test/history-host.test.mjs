@@ -357,7 +357,7 @@ test("the fallback never replaces a file that took the name, and leaves no parti
 
 test("a notice that asks something carries one button per answer, stays up, and a press answers it", (t) => {
   // Issues #161 and #162: the sync layer names the answers, the host draws
-  // them. A statement still goes after ten seconds.
+  // them. A statement goes by itself, after long enough to read it.
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true }));
   const obsidian = box.require("obsidian");
@@ -368,12 +368,12 @@ test("a notice that asks something carries one button per answer, stays up, and 
   const h = new ObsidianHost(plugin, null);
   const raised = obsidian.raised.length;
 
-  h.notify("STATEMENT SENTINEL");
-  h.notify("QUESTION SENTINEL", [{ kind: "delete_everywhere" }, { kind: "restore_here" }, { kind: "fetch", fileId: "ab".repeat(16) }]);
+  h.notify({ kind: "info", text: "STATEMENT SENTINEL." });
+  h.notify({ kind: "question", text: "QUESTION SENTINEL?", actions: [{ kind: "delete_everywhere" }, { kind: "restore_here" }, { kind: "fetch", fileId: "ab".repeat(16) }] });
 
   const [statement, question] = obsidian.raised.slice(raised);
   assert.equal(statement.messageEl.children, undefined, "a statement grew buttons");
-  assert.equal(statement.duration, 10000);
+  assert.equal(statement.duration, 8000);
   assert.equal(question.duration, 0, "a question went away before it was answered");
   const buttons = question.messageEl.children;
   assert.deepEqual(buttons.map((button) => `${button.tag}:${button.text}`), ["button:Delete everywhere", "button:Restore here", "button:Fetch"]);

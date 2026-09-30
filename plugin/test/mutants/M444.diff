@@ -1,10 +1,10 @@
 # M444: turning the plugin off and on gives each object its own lease, and the old one's late save rolls the new one back
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1848,7 +1848,7 @@
-       this.log(`state decision=stopped reason=${error.reason}`);
+@@ -3390,7 +3390,7 @@
        if (this.statusEl) this.setStatus({ kind: "error", message: error.message });
-       new Notice(error.message, 15000);
+       // Its words begin "obsync could not...": said once, after the toast's own "obsync:".
+       this.notices.show({ kind: "error", text: error.message.replace(/^obsync /, "") });
 -    }, () => this.isCurrent(generation), dataLease(this.app, this.manifest.id), this.heldReference()).catch((error: unknown) => {
 +    }, () => this.isCurrent(generation), undefined, this.heldReference()).catch((error: unknown) => {
        if (!this.isCurrent(generation)) return null;

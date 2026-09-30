@@ -95,7 +95,7 @@ test("an updated paired device registers recovery before its last credential lea
   await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
   assert.notEqual(r.instance.state.data.deviceId, KEYS.deviceId);
   assert.equal(r.instance.state.data.vrk, KEYS.vrk);
-  assert.ok(r.notices.some((text) => text.includes("Account recovered")));
+  assert.ok(r.notices.some((text) => text.includes("recovered your vault on this server")));
 });
 
 test("forgotten credentials show recovery and reset metadata without touching notes, key or address", async (t) => {
@@ -134,7 +134,7 @@ test("setup recovers a forgotten enrollment with its retained key, without unins
   assert.notEqual(r.instance.state.data.deviceId, KEYS.deviceId);
   assert.equal(r.instance.forgottenDevice, false);
   assert.equal(r.instance.state.data.vrk, KEYS.vrk);
-  assert.ok(r.notices.some((text) => text.includes("Account recovered")));
+  assert.ok(r.notices.some((text) => text.includes("recovered your vault on this server")));
 });
 
 test("a wrong token and a wrong vault key never enrol a recovery device", async (t) => {
@@ -161,7 +161,7 @@ test("an operator-cleared account re-enrols the restored key, which then carries
   assert.equal(server.recoveryVerifier, (await accountRecovery(KEYS.vrk)).verifier);
   assert.notEqual(server.recoveryAt, null);
   assert.equal(server.recoveryArmed, false);
-  assert.ok(r.notices.some((text) => text.includes("Account recovered")));
+  assert.ok(r.notices.some((text) => text.includes("recovered your vault on this server")));
   // The request carried the proof, because the key was restored, not freshly made.
   const setup = server.requests.find((request) => request.target.endsWith("/v1/setup"));
   assert.ok(JSON.parse(setup.json).recovery_proof, "a restored key proves the vault");
@@ -529,13 +529,21 @@ for (const mobile of [false, true]) test(`a recovery key this device did not reg
   r.server.recoveryVerifier = "b6".repeat(32);
   r.server.recoveryAt = r.server.clock;
 
+  // The quietest notices a person can choose keep nothing of it off the screen (requirement 4).
+  r.instance.state.data.notices = { level: "needs-me", merges: "off" };
+  const item = r.instance.statusEl;
+  assert.equal(item.getAttribute("data-state"), "synced");
   await r.instance.registerAccountRecovery();
   assert.equal(r.instance.recoveryMismatch, true);
   assert.deepEqual(r.notices, [`obsync security warning: ${RECOVERY_MISMATCH}`]);
   const toast = obsidian.raised.at(-1);
   assert.equal(toast.duration, 0, "it stays until the person dismisses it");
   assert.equal(toast.hidden, false);
-  assert.deepEqual(r.logs, ["recovery decision=refused reason=recovery_mismatch warning=shown"]);
+  assert.deepEqual(r.logs, ["notice decision=shown kind=security stays_ms=0", "recovery decision=refused reason=recovery_mismatch warning=shown"]);
+  // WHILE IT STANDS, THE STATUS ITEM IS THE ALERT, never the check (lab J,
+  // finding A), and its words say where the warning is.
+  assert.equal(item.getAttribute("data-state"), "attention");
+  assert.equal(item.label, "obsync: idle — security warning: see Show sync status");
   assert.match(RECOVERY_MISMATCH, /Another device set a different recovery key/);
   assert.match(RECOVERY_MISMATCH, /a device may be compromised/);
   assert.match(RECOVERY_MISMATCH, /revoke any device you do not recognise/);
@@ -583,8 +591,11 @@ for (const mobile of [false, true]) test(`a recovery key this device did not reg
   assert.equal(r.server.recoveryArmed, false, "this device's registration spent the arm");
   assert.deepEqual(r.logs.slice(-2), ["recovery decision=registered", "recovery decision=cleared reason=registered warning=cleared"]);
   assert.equal(group().visible(), false);
-  assert.equal(drawn.includes(RECOVERY_MISMATCH), false, "Show sync status redrew without it");
+  // Its words stay in Recent, which is what was said; the warning itself is gone.
+  assert.equal(drawn.includes("Security warning"), false, "Show sync status redrew without it");
   assert.equal(toast.hidden, true, "and its toast goes with it");
+  assert.equal(item.getAttribute("data-state"), "synced", "and the alert with it");
+  assert.equal(item.label, "obsync: idle");
   modal.onClose();
   assert.equal(r.notices.length, 1, "nothing more is said");
 });

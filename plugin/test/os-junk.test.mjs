@@ -97,7 +97,7 @@ async function vault(t) {
     log: (line) => logs.push(line),
   };
   const host = new ObsidianHost(plugin, { fs: { promises: { ...realFsPromises } }, path: nodePath, base: root });
-  host.notify = (message) => notices.push(message);
+  host.notify = (notice) => notices.push(require("../build/notices.js").toastText(notice));
   const server = new FakeServer();
   const { state } = await fakeState(false);
   plugin.state = state;
@@ -214,7 +214,7 @@ test("a folder holding something else is kept, with the OS files, and the user i
   assert.deepEqual(readdirSync(join(v.root, "Projects", "Beta")).sort(), [".DS_Store", ".another-apps-data"]);
   assert.ok(v.logs.some((line) => line.includes("folder path_class=folder decision=kept reason=not_empty items=1")), v.logs.join(" | "));
   assert.equal(v.notices.length, 1, v.notices.join(" | "));
-  assert.ok(v.notices[0].includes('"Projects/Beta"'), v.notices[0]);
+  assert.ok(v.notices[0].includes('the folder "Beta"'), v.notices[0]);
   assert.ok(v.notices[0].includes("MacBook deleted it"), v.notices[0]);
   assert.ok(v.notices[0].includes("1 item "), v.notices[0]);
 

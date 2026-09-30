@@ -668,7 +668,7 @@ test("when no name is free this device keeps its own note and takes none", async
 
   assert.equal(r.host.text(NOTE), MINE, "the note was moved or replaced with nowhere to put it");
   assert.equal(r.state.fileByPath(NOTE).fileId, HIGHER, "and this device still holds it under its own id");
-  assert.match(r.host.notices.join(" "), /could not place/);
+  assert.match(r.host.notices.join(" "), /found no free name for .+'s copy beside it/);
   // A refusal is terminal. The name is free to write into only because the
   // move RENAMED the note out of it, so a device that moved nothing must
   // never reach the write at that name -- not even to find it occupied.
@@ -2029,8 +2029,8 @@ test("at its push, a note with no id yet yields the name to the lower id waiting
   assert.equal(r.host.files.get(moved[0]).mtime, 2000, "the moved note took a time it never had");
   assert.ok(r.host.logs.includes(`push decision=same_name_tiebreak winner=${LOWEST} role=rename file=${record.fileId}`),
     r.host.logs.join(" | "));
-  assert.deepEqual(r.host.notices, [`obsync found two different notes named ${NOTE}. This device's is now "${moved[0]}", ` +
-    "and the other device's keeps the name."]);
+  assert.deepEqual(r.host.notices, [`obsync: found two different notes named "Same": this device's is now "${moved[0].slice(moved[0].lastIndexOf("/") + 1, -3)}", ` +
+    "and another device's keeps the name."]);
 });
 
 test("at its push, a note with no id yet that sorts below the waiting one keeps the name, and its id is kept for the push (#122)", async () => {

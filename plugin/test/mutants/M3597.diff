@@ -1,0 +1,12 @@
+# M3597: while the security warning stands the status item shows the check
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -5306,7 +5306,7 @@
+     // No setting changes this; the warning and the icon end together.
+     const shown = indicated(status, quiet);
+     const warned = this.recoveryMismatch && (shown === "synced" || shown === "quiet");
+-    this.indicator.update(warned ? "attention" : shown,
++    this.indicator.update(shown,
+       `obsync: ${this.statusText()}${this.recoveryMismatch ? " — security warning: see Show sync status" : ""}`);
+     // A PHONE HAS NOTHING ELSE THAT CATCHES THE EYE (#209): a refusal that
+     // needs the person is said once in a notice there, as it turns to it.

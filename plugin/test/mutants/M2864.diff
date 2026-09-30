@@ -1,10 +1,10 @@
 # M2864: a leave that fails outright leaves the dialog without its buttons
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -511,7 +511,6 @@
+@@ -1030,7 +1030,6 @@
        result = await this.plugin.leaveServer(choice);
      } catch (error) {
-       fail(error);
+       fail(this.plugin, error);
 -      if (this.live) this.screen();
        return;
      } finally {
