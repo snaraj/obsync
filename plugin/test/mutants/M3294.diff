@@ -1,12 +1,12 @@
 # M3294: a note waiting on its download is named as waiting on unsaved changes
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3033,7 +3033,7 @@
+@@ -3094,7 +3094,7 @@
      const work = this.queue.length + this.active + this.pulls + waiting;
      // A NOTE WAITING ON AN EDITOR HERE IS NAMED (issue #252): a count
      // alone read "syncing 1" for minutes and said nothing of what to do.
 -    const held = records.find((entry) => entry.reason === "active_editor")?.path;
 +    const held = records.find(working)?.path;
      const checking = Math.min(work, this.checking.size);
-     if (work > 0 || (this.running && !this.feedAnswered)) {
-       return { kind: "syncing", pending: work, ...(held === undefined ? {} : { held }), ...(checking === 0 ? {} : { checking }) };
+     const on = this.pressWaits;
+     if (work > 0 || (this.running && !this.feedAnswered) || on !== null) {

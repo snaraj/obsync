@@ -1,12 +1,12 @@
 # M3236: one file syncing is counted as files
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -5283,7 +5283,7 @@
-           // A FILE READ ONLY TO VERIFY IT IS NO CHANGE (#246): Sync now's
-           // content check read "syncing 7,700 files" on a vault with none.
-           const changes = status.pending - (status.checking ?? 0);
--          const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
-+          const files = (n: number): string => `${n} files`;
-           if (changes === 0) return `checking ${files(status.pending)} for changes`;
-           return `syncing ${files(changes)}` + (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
-         }
+@@ -5297,7 +5297,7 @@
+         // A FILE READ ONLY TO VERIFY IT IS NO CHANGE (#246): Sync now's
+         // content check read "syncing 7,700 files" on a vault with none.
+         const changes = status.pending - (status.checking ?? 0);
+-        const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
++        const files = (n: number): string => `${n} files`;
+         if (changes === 0) return `checking ${files(status.pending)} for changes${waiting}`;
+         return `syncing ${files(changes)}` +
+           (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`) + waiting;

@@ -1,12 +1,12 @@
 # M3237: the syncing count says nothing of what it counts
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -5285,7 +5285,7 @@
-           const changes = status.pending - (status.checking ?? 0);
-           const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
-           if (changes === 0) return `checking ${files(status.pending)} for changes`;
--          return `syncing ${files(changes)}` + (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
-+          return `syncing ${changes}` + (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
-         }
+@@ -5299,7 +5299,7 @@
+         const changes = status.pending - (status.checking ?? 0);
+         const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
+         if (changes === 0) return `checking ${files(status.pending)} for changes${waiting}`;
+-        return `syncing ${files(changes)}` +
++        return `syncing ${changes}` +
+           (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`) + waiting;
+       }
        case "offline":
-         // True of both places that set it: the running engine polls again

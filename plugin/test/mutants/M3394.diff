@@ -1,11 +1,11 @@
 # M3394: Verify all files' content check runs under the pull lock, and a page waits for it (#244)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3636,10 +3636,11 @@
+@@ -3737,10 +3737,11 @@
      // found unchanged, and on a phone of 7,700 notes it held a page from
      // another device for minutes when it ran inside (#244, #246).
      if (tally.verify.length === 0) return tally;
-+    await this.exclusive(async () => {
++    await this.exclusive("reconcile", async () => {
      host.pass?.(true);
      try {
        for (const file of tally.verify) {
@@ -14,7 +14,7 @@
          if (!(await host.syncable(file.path))) continue;
          this.enqueue(file.path, true);
          this.examined++;
-@@ -3647,6 +3648,7 @@
+@@ -3748,6 +3749,7 @@
      } finally {
        host.pass?.(false);
      }
