@@ -416,6 +416,12 @@ for (const folds of [true, false]) {
 // reads nothing unchanged any more (#246); Verify all files still does.
 test("a page from another device lands while a phone's Verify all files content check runs, not after it (#244)", async (t) => {
   const r = await seeded(t, { "Check/One.md": BODY, "Notes/Two.md": OTHER });
+  // THE HOLD IS THE PRESS'S. The phone's own write of the seeded notes is
+  // still settling (`settle`, the watcher's debounce), and that settle asks
+  // `syncable` too: on a loaded machine it came after the hold was set and
+  // took it, the press ran unheld, and the guard below fired (2 of 50
+  // whole-file runs, lane K). Nothing settles once the watcher has nothing pending.
+  await r.timers.run(STEP_MS, () => r.b.engine.pending.size === 0);
   let held = false;
   let release;
   const check = new Promise((resolve) => { release = resolve; });

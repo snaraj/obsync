@@ -1,0 +1,12 @@
+# M3696: the #244 test's hold is never held: its guard must say the test proved nothing
+--- a/plugin/test/android-recase.test.mjs
++++ b/plugin/test/android-recase.test.mjs
+@@ -427,7 +427,7 @@
+   const check = new Promise((resolve) => { release = resolve; });
+   const syncable = r.b.host.syncable.bind(r.b.host);
+   r.b.host.syncable = async (path, kind) => {
+-    if (path === "Check/One.md" && !held) { held = true; await check; }
++    if (path === "Check/One.md" && !held) { held = true; }
+     return syncable(path, kind);
+   };
+   let pressed = false;
