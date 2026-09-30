@@ -1293,7 +1293,8 @@ devices minutes later, often only once you bring the window forward.
 **Why it happens.** A hidden Obsidian window slows its own timers to about one
 a minute, and obsync up to 1.1.3 waited on those timers before each upload.
 From 1.1.4 obsync keeps time in a small background worker that a hidden window
-does not slow.
+does not slow. From 1.1.5, while it has changes to send or receive, it also
+asks the window to run at full speed, and gives that back once it is done.
 
 **How to fix it.**
 
@@ -1303,7 +1304,10 @@ does not slow.
    for a warning that starts with `obsync timers decision=fallback`. It means
    Obsidian on this computer did not let obsync start its worker, so a change
    made in the background can again take minutes, and uploads at once when the
-   window comes forward. Open an issue with that line.
+   window comes forward. A warning that starts with
+   `obsync host decision=throttle_unavailable` means this Obsidian did not let
+   obsync keep the window at full speed, so syncing runs slower while it is in
+   the background. Open an issue with the line you found.
 
 ## A note stays at syncing 1 file
 

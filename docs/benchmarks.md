@@ -267,10 +267,53 @@ download is unchanged, 140 s before, 161 s and 135 s after. The first
 download after the change stalled part way and was stopped; it did not
 recur in the two runs after it ([run record](validation-runs/2026-09-29-speed.md)).
 
-**A minimized Obsidian window syncs far slower.** Mid-upload, rig A made
-1.35 notes/s over 20 s minimized and 37 over the next 20 s shown without
-focus (load 27). Its renderer sat at 0.1 % CPU while minimized, with
-`setTimeout(0)` taking up to 224 ms: the window, not obsync, set the pace.
+**A minimized Obsidian window syncs far slower, and 1.1.5 lifts that
+while it has work (#283).** Mid-upload, rig A made 1.35 notes/s over 20 s
+minimized and 37 over the next 20 s shown without focus (load 27). Its
+renderer sat at 0.1 % CPU while minimized, with `setTimeout(0)` taking up
+to 224 ms: the window, not obsync, set the pace. On rig A alone, with no
+sync running, every page timer of 10 ms or more waited for a one-second
+wake-up while minimized, and obsync's worker clock (#221) took three times
+its delay:
+
+| Wait asked for | Shown | Minimized | Minimized, throttling lifted |
+| --- | --- | --- | --- |
+| 10 ms page timer | 11 to 12 ms | 994 to 1,021 ms | 12 ms |
+| 100 ms page timer | 101 ms | 996 to 1,010 ms | 102 ms |
+| 1,000 ms page timer | 1,002 ms | 2,000 to 2,012 ms | 1,002 ms |
+| Ten chained 10 ms timers | 111 ms | 9.7 to 37 s | 111 to 117 ms |
+| 100 ms worker timer | 103 to 107 ms | 295 to 304 ms | 103 to 108 ms |
+
+The upload slowdown depends on load and the timers do not. At load 5 to
+8 the 1.1.5 upload made 30.4, 27.2 and 36.0 notes/s over 30 s minimized
+against 37.1, 31.2 and 31.2 shown, within 20 %, while the download made
+33.5 and 31.2 minimized against 64.1 and 56.7 shown. So the plugin now
+lifts its window's background throttling while it has work and puts it
+back when none is left, a line each (`host decision=throttle_lifted` /
+`throttle_restored`). The same rigs after the change, at load 9 to 37:
+uploads 36.8, 31.6 and 22.2 minimized against 37.9, 36.0 and 30.2 shown;
+downloads 52.9, 26.4 and 24.7 against 39.2, 53.8 and 23.6. The load moved
+too much within the run to read a ratio closer than that. A 20-note folder
+renamed on A reached B in 1.2 to 1.3 s with A shown, and in 1.4 to 1.6 s
+with A minimized for 30 s or for more than five minutes. The whole session
+lifted and restored 18 times on the two rigs, one span of work each. An
+idle renderer cost the same with the throttling restored as with it left
+lifted: 16 ms of CPU a minute.
+
+**A device woken after a stall no longer reads `offline` (#288).** Two
+rigs had their renderers stopped for 25 s, 2 s into a long poll, and were
+then shown again. Before this change, the window's return dropped the
+poll, and its replacement waited 20.01 s on the device before it reached
+the server. It then ran out of its 70 s budget five seconds before its
+answer, and A read `offline — retrying` for 56 s. A second request for a
+URL still in flight waits 20 s on the device, and one whose URL differs
+does not. The same queue follows a Sync now press or a focus that dropped
+a poll, with no stop at all. Before the change, five of six presses and
+focuses on one rig led to a false `offline`. After it, a window's return,
+a focus or a press keeps the poll, and a read beside it answers in 12 to
+27 ms. A timeout while the server answered something else is not
+`offline`. No request waited on the device, and no `offline` appeared
+([run record](validation-runs/2026-09-29-speed.md)).
 
 ### What still bounds each path
 
@@ -280,7 +323,9 @@ note (Sync now, #197); Obsidian's own save delay (typing); and, on the
 server, the five flushes a new note costs (six while the store is young,
 #273), which the protocol (two requests per note) and the blob layout (a
 new directory for most early chunks) fix. What remains of the upload's
-slowdown across the thousands is smaller: the push of a new note still
-scans every record for a case-only twin of its name (`recordedSpelling`),
-3.9 ms at 7,700 records on this laptop, about 15 s over the whole first
-sync.
+slowdown across the thousands is smaller. The push of a new note no longer
+scans every record for a case-only twin of its name: a state index answers
+(P10). The main thread's time per new-note push at 7,700 to 9,500 records
+went from 1.15 to 0.38 ms. That is about 3 s over a 7,700-note first sync,
+measured over the real push path at load 18 to 20; an earlier estimate of
+3.9 ms and 15 s came from a microbenchmark on a loaded machine.
