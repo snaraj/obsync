@@ -660,10 +660,28 @@ impl From<io::Error> for StoreError {
 }
 
 impl StoreError {
+    /// Whether the FILESYSTEM refused for want of room: `ENOSPC`, or a
+    /// filesystem quota's `EDQUOT`. The watermark cannot see either coming
+    /// when a declared capacity is larger than the disk (the standard library
+    /// has no statvfs), so this is how a really full disk reaches a device,
+    /// and it must read as full, never as a server fault (issue #291).
+    pub fn out_of_space(&self) -> bool {
+        matches!(
+            self,
+            StoreError::Io(e) if matches!(
+                e.kind(),
+                io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded
+            )
+        )
+    }
+
     /// The snake_case refusal code for this error (`docs/protocol.md`).
     ///
     /// A `&'static str`, so it can be logged without carrying runtime data.
-    pub const fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
+        if self.out_of_space() {
+            return "storage_full";
+        }
         match self {
             StoreError::SidMismatch { .. } => "sid_mismatch",
             StoreError::LengthMismatch { .. } => "length_mismatch",
@@ -774,6 +792,39 @@ mod tests {
         };
         assert_eq!(err.to_string(), "unsafe posture on the server_key: symlink");
         assert_eq!(err.code(), "unsafe_posture");
+    }
+
+    #[test]
+    fn a_filesystem_with_no_room_is_storage_full_and_nothing_else_is() {
+        // ENOSPC is 28 on Linux and macOS alike; EDQUOT differs, so its KIND.
+        for full in [
+            io::Error::from_raw_os_error(28),
+            io::Error::from(io::ErrorKind::StorageFull),
+            io::Error::from(io::ErrorKind::QuotaExceeded),
+        ] {
+            let err = StoreError::from(full);
+            assert!(err.out_of_space(), "{err}");
+            assert_eq!(err.code(), "storage_full", "{err}");
+        }
+        // Every other refusal of the volume stays a fault of the server.
+        for other in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::ReadOnlyFilesystem,
+            io::ErrorKind::NotADirectory,
+            io::ErrorKind::FileTooLarge,
+        ] {
+            let err = StoreError::from(io::Error::from(other));
+            assert!(!err.out_of_space(), "{err}");
+            assert_eq!(err.code(), "io_error", "{err}");
+        }
+        // A journal a full volume FAULTED stays faulted: only a restart
+        // clears it, so it must never read as a full disk that frees itself.
+        let faulted = StoreError::JournalFaulted {
+            io: io::ErrorKind::StorageFull,
+            rollback_io: io::ErrorKind::StorageFull,
+        };
+        assert!(!faulted.out_of_space());
+        assert_eq!(faulted.code(), "journal_faulted");
     }
 
     #[test]

@@ -1369,6 +1369,9 @@ fn a_full_blob_volume_refuses_per_phase_and_leaves_that_phase_s_residue() {
             StoreError::Io(ref e) => assert_eq!(e.kind(), kind, "{phase:?}: {err}"),
             other => panic!("{phase:?}: expected the volume's own error, got {other}"),
         }
+        // A disk with no room is full, not faulty: the code a device reads
+        // as "out of storage" (issue #291).
+        assert_eq!(err.code(), "storage_full", "{phase:?}");
         assert!(
             !store.chunk_exists(&sid),
             "{phase:?}: nothing was acknowledged"
@@ -1378,7 +1381,7 @@ fn a_full_blob_volume_refuses_per_phase_and_leaves_that_phase_s_residue() {
         // (AGENTS.md requirements 6 and 12).
         let captured = log.captured();
         assert!(
-            captured.contains("decision=io_error"),
+            captured.contains("decision=storage_full"),
             "{phase:?}: {captured}"
         );
         assert!(

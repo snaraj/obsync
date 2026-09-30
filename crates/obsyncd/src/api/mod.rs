@@ -291,6 +291,11 @@ impl From<StoreError> for ApiError {
             StoreError::UnknownVersion => ApiError::new(404, code, "no such version"),
             StoreError::NotSetUp => ApiError::new(409, code, "no account exists yet"),
             StoreError::AlreadySetUp => ApiError::new(409, code, "the account already exists"),
+            // The same decision `code` took, so the status and the code agree:
+            // a disk with no room is full, whatever the watermark believed.
+            ref full if full.out_of_space() => {
+                ApiError::new(507, code, "the volume is out of space")
+            }
             StoreError::Io(_) => ApiError::new(500, code, "the volume refused"),
             // Start-time only: a refused posture never opens a listener.
             StoreError::Locked => {

@@ -135,6 +135,10 @@ is a comment and counts for nothing.
   7. the count -- the script calls `prove` exactly `PROPERTIES` times, so the
      SUMMARY line's `properties=` is that number and a property that returns
      without proving anything cannot pass unnoticed.
+  8. the write -- `api_flow.py full` sends one signed chunk onto the full
+     volume and a failure reaches `deny` (issue #291: the chunk must be `507
+     storage_full`, never the 500 a device retries as absence), and the
+     throwaway reads `v1/tmp` back empty under a refusal of its own.
 """
 
 from __future__ import annotations
@@ -786,6 +790,11 @@ REFUSED_DENY = '  || deny "a full blob volume was still answering ready after ${
 REFUSED_PATTERN = '    *\'"not_ready"\'*) refused="${body}"; break ;;\n'
 SAID_DENY = '  || { printf \'image-smoke: full-volume server log:\\n%s\\n\' "$(docker logs "${full}" 2>&1 | tail -n 20)"; \\\n       deny \'the server did not say what the full blob volume returned (event=readiness decision=not_ready volume=blobs io=StorageFull)\'; }'
 # The hardening every run in this script carries.
+# The write half (issue #291): the device that signs the chunk, and the two
+# refusals, verbatim, that the negative tests below make unconditional.
+WRITER = "scripts/ci/api_flow.py"
+WRITE_DENY = "  || deny 'a chunk the full blob volume cannot hold was not refused 507 storage_full'\n"
+RESIDUE_DENY = "  || deny 'the refused chunk left a temporary on the full blob volume'\n"
 HARDENING = (
     ("--read-only",),
     ("--cap-drop", "ALL"),
@@ -1076,6 +1085,26 @@ def ninth_refusals(text: str) -> list[str]:
             "volume is freed"
         )
 
+    # 8: the write. One signed chunk onto the full volume, and the temporary
+    # a refused stream must not leave, each under a refusal that can fire.
+    def refuses(command: list[str]) -> bool:
+        if "||" not in command:
+            return False
+        alternative = _split_on_or(command)[1]
+        return "deny" in alternative and not any(w in alternative for w in NEVER_REFUSES)
+
+    writes = [c for c in block if WRITER in c and "full" in c]
+    if not writes or not all(refuses(c) for c in writes):
+        found.append(
+            f"{SMOKE_NAME}: property 9 does not refuse unless a chunk onto the full "
+            f"volume is 507 storage_full ({WRITER} full)"
+        )
+    reads = [c for c in block if _runs(c) and _mentions([c], "v1/tmp")]
+    if not reads or not all(refuses(c) and _image_of(c) == FILLER_IMAGE for c in reads):
+        found.append(
+            f"{SMOKE_NAME}: property 9 does not refuse a temporary the refused chunk left"
+        )
+
     # 7: the count the SUMMARY prints.
     proofs = [c for c in commands(text) if c[0] == "prove"]
     if len(proofs) != PROPERTIES:
@@ -1250,6 +1279,16 @@ class ImageSmokeContract(unittest.TestCase):
         found = self.mutate(WIRE_DETAIL, "the volume said something")
         self.kills(found, "does not require the wire refusal")
 
+    # --- the write half (issue #291) -----------------------------------------
+
+    def test_a_write_whose_answer_nobody_checks_is_refused(self):
+        found = self.mutate(WRITE_DENY, "  || true\n")
+        self.kills(found, "a chunk onto the full volume is 507 storage_full")
+
+    def test_a_temporary_nobody_refuses_is_refused(self):
+        found = self.mutate(RESIDUE_DENY, "  || :\n")
+        self.kills(found, "a temporary the refused chunk left")
+
 
 # ---------------------------------------------------------------------------
 # The ninth property, EXECUTED.
@@ -1291,9 +1330,19 @@ case "$1" in
       inspect) printf 'running\n'; exit 0 ;;
     esac
     exit 0 ;;
-  volume|run|stop|rm|image) exit 0 ;;
+  run)
+    case "$*" in *v1/tmp*) [ -z "${STUB_RESIDUE}" ] || exit 1 ;; esac
+    exit 0 ;;
+  volume|stop|rm|image|exec) exit 0 ;;
 esac
 exit 0
+"""
+
+# `python3` answers for the device that sends the chunk (`api_flow.py full`):
+# it takes the token off stdin, and its exit status is the world's.
+WRITER_STUB = r"""#!/bin/sh
+cat >/dev/null
+exit "${STUB_PUT_EXIT}"
 """
 
 # A ready answer, the 503 the full volume gives, and the log line the server
@@ -1310,10 +1359,12 @@ def ninth_source(text: str) -> str:
     return text[start:end]
 
 
-def run_ninth(text: str, bodies: list[str], log_line: bool = True) -> tuple[int, str]:
+def run_ninth(
+    text: str, bodies: list[str], log_line: bool = True, put_exit: int = 0, residue: bool = False
+) -> tuple[int, str]:
     """Run property 9 against a scripted world; return its status and output.
 
-    Nothing here starts a container: `docker` and `curl` are stubs, `sleep` is
+    Nothing here starts a container: `docker`, `curl` and `python3` are stubs, `sleep` is
     a no-op so a 60 s budget costs nothing, and `deny` and `prove` are the
     script's own words reduced to what this judges -- did it refuse, and did
     it reach the ninth proof.
@@ -1342,7 +1393,7 @@ def run_ninth(text: str, bodies: list[str], log_line: bool = True) -> tuple[int,
         root = Path(tmp)
         binaries = root / "bin"
         binaries.mkdir()
-        for name, body in (("docker", NINTH_DOCKER_STUB), ("curl", CURL_STUB)):
+        for name, body in (("docker", NINTH_DOCKER_STUB), ("curl", CURL_STUB), ("python3", WRITER_STUB)):
             stub = binaries / name
             stub.write_text(body, encoding="utf-8")
             stub.chmod(0o755)
@@ -1363,6 +1414,8 @@ def run_ninth(text: str, bodies: list[str], log_line: bool = True) -> tuple[int,
                 "STUB_CURL_BODIES": str(root / "bodies"),
                 "STUB_CURL_N": str(root / "n"),
                 "STUB_LOGS": str(root / "logs"),
+                "STUB_PUT_EXIT": str(put_exit),
+                "STUB_RESIDUE": "yes" if residue else "",
             },
             capture_output=True,
             text=True,
@@ -1414,6 +1467,15 @@ class TheNinthPropertyRuns(unittest.TestCase):
     def test_a_server_that_never_said_why_cannot_reach_the_proof(self):
         status, output = run_ninth(self.text, WORLD_HAPPY, log_line=False)
         self.refuses(status, output, "did not say what the full blob volume returned")
+
+    def test_a_chunk_not_refused_507_storage_full_cannot_reach_the_proof(self):
+        # The device's exit status: a 500, a 201, or no answer at all (#291).
+        status, output = run_ninth(self.text, WORLD_HAPPY, put_exit=1)
+        self.refuses(status, output, "was not refused 507 storage_full")
+
+    def test_a_temporary_left_behind_cannot_reach_the_proof(self):
+        status, output = run_ninth(self.text, WORLD_HAPPY, residue=True)
+        self.refuses(status, output, "left a temporary")
 
     def test_the_unconditional_recovery_guard_would_have_passed(self):
         # The round-1 finding, executed rather than argued: with the guard

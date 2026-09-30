@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Reproduce the server durability guard probes (#191, #192, #203, #273) from the
-repository root.
+"""Reproduce the server durability guard probes (#191, #192, #203, #273, #291)
+from the repository root.
 
 Each probe must compile and fail a behavioral regression. A probe is one or
 more exact substitutions, each of which must match exactly once. Sources are
@@ -19,6 +19,7 @@ JOURNAL = "crates/obsyncd/src/storage/journal.rs"
 INDEX = "crates/obsyncd/src/storage/index.rs"
 SCRUB = "crates/obsyncd/src/storage/scrub.rs"
 BLOBS = "crates/obsyncd/src/storage/blobs.rs"
+TYPES = "crates/obsyncd/src/storage/types.rs"
 SERVE = "crates/obsyncd/src/cli/serve.rs"
 
 GROUP = "concurrent_requests_share_an_fsync_and_none_is_answered_before_its_own"
@@ -31,6 +32,7 @@ GROWTH = "a_snapshot_is_due_after_the_journal_grows_past_the_floor_and_the_last_
 SNAPSHOT = "a_snapshot_is_written_with_no_guard_held_and_a_crash_part_way_loses_nothing"
 FANOUT = "a_new_fan_out_directory_is_durable_in_its_parent_before_its_chunk_is_acknowledged"
 FANOUT_START = "a_start_after_a_cut_upload_makes_every_fan_out_name_durable"
+NO_ROOM = "the_disk_cannot_hold"
 
 CASES = [
     # --- nonce log group commit (#191) ------------------------------------
@@ -237,6 +239,24 @@ CASES = [
         "            if left > 0 {",
         "            if left > u64::MAX - 1 {",
     )], FANOUT_START),
+    # --- a disk with no room is a full server, not a fault (#291) ------------
+    ("storage-full-code", TYPES, [(
+        "        if self.out_of_space() {\n            return \"storage_full\";\n        }\n", "",
+    )], NO_ROOM),
+    ("storage-full-status", API, [(
+        "            ref full if full.out_of_space() => {\n"
+        "                ApiError::new(507, code, \"the volume is out of space\")\n            }\n", "",
+    )], NO_ROOM),
+    ("storage-full-counts-a-filesystem-quota", TYPES, [(
+        "                io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded\n",
+        "                io::ErrorKind::StorageFull\n",
+    )], "a_full_blob_volume_refuses_per_phase_and_leaves_that_phase_s_residue"),
+    ("clean-no-room-leaves-the-journal-unfaulted", JOURNAL, [(
+        "            Ok(()) => (\"truncated\", None),\n",
+        "            Ok(()) => {\n                self.faulted = Some(Faulted {\n"
+        "                    io: e.kind(),\n                    rollback_io: e.kind(),\n"
+        "                });\n                (\"truncated\", None)\n            }\n",
+    )], "a_journal_append_the_disk_cannot_hold"),
 ]
 
 

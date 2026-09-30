@@ -201,26 +201,30 @@ test("a revoked device reads 'removed from your server' at once, and the feed st
   await stopped(r);
 });
 
-test("a full server is said on the first chunk it refuses, stays through answered reads, and clears when it takes a change (#155)", async () => {
-  const r = await started();
-  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
-  let full = true;
-  const refused = refuse(r, (sent) => full && sent.method === "PUT", () => r.server.error(507, "volume_full", "free space is below the watermark"));
-  r.host.seed("Big.md", "a note for a full server\n", 5000);
-  r.engine.changed("Big.md");
-  await r.timers.run(STEP_MS, () => r.last()?.kind === "error");
-  assert.deepEqual(r.last(), { kind: "error", code: "storage", message: `${SERVER_FULL} ${RESUMES}` });
-  assert.equal(refused.length, 1, "the first 507 is the answer: never eight tries");
-  // The feed is answered: a full server still answers reads, so it stands.
-  r.server.releaseFeed();
-  await r.timers.run(0, () => r.server.feedWaiters.length === 1);
-  assert.equal(r.last().code, "storage");
-  // Room is made; the note goes up, and the status says so by itself.
-  full = false;
-  r.engine.changed("Big.md");
-  await r.timers.run(STEP_MS, () => r.state.fileByPath("Big.md") !== undefined && r.last()?.kind === "idle");
-  assert.ok(r.host.logs.includes("engine decision=cleared reason=storage"));
-  await stopped(r);
+test("a full server is said on the first chunk it refuses, stays through answered reads, and clears when it takes a change (#155, #291)", async () => {
+  // The watermark's refusal, and the disk's own when a capacity declared
+  // larger than the disk leaves the watermark nothing to see (#291).
+  for (const [code, detail] of [["volume_full", "free space is below the watermark"], ["storage_full", "the volume is out of space"]]) {
+    const r = await started();
+    await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+    let full = true;
+    const refused = refuse(r, (sent) => full && sent.method === "PUT", () => r.server.error(507, code, detail));
+    r.host.seed("Big.md", "a note for a full server\n", 5000);
+    r.engine.changed("Big.md");
+    await r.timers.run(STEP_MS, () => r.last()?.kind === "error");
+    assert.deepEqual(r.last(), { kind: "error", code: "storage", message: `${SERVER_FULL} ${RESUMES}` }, code);
+    assert.equal(refused.length, 1, `${code}: the first 507 is the answer: never eight tries`);
+    // The feed is answered: a full server still answers reads, so it stands.
+    r.server.releaseFeed();
+    await r.timers.run(0, () => r.server.feedWaiters.length === 1);
+    assert.equal(r.last().code, "storage", code);
+    // Room is made; the note goes up, and the status says so by itself.
+    full = false;
+    r.engine.changed("Big.md");
+    await r.timers.run(STEP_MS, () => r.state.fileByPath("Big.md") !== undefined && r.last()?.kind === "idle");
+    assert.ok(r.host.logs.includes("engine decision=cleared reason=storage"), code);
+    await stopped(r);
+  }
 });
 
 test("a change sent around the server's edge says so, not that the server refused it, and clears when one gets through (#228)", async () => {

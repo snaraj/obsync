@@ -762,6 +762,7 @@ test("each cause of a failed repair says its own words, and none of them sends t
   const cases = [
     ["a wrong clock", () => new ApiError(401, "stale_timestamp", "SENTINEL"), { code: "clock", message: `${words.CLOCK_OFF} ${words.RESUMES}` }, "clock"],
     ["a full server", () => new ApiError(507, "volume_full", "SENTINEL"), { code: "storage", message: `${words.SERVER_FULL} ${words.RESUMES}` }, "storage"],
+    ["a server whose disk has no room (#291)", () => new ApiError(507, "storage_full", "SENTINEL"), { code: "storage", message: `${words.SERVER_FULL} ${words.RESUMES}` }, "storage"],
     ["a proxy's page", () => new ApiError(403, "not_obsync", "SENTINEL"), { code: "edge", message: `${words.NOT_OBSYNC_ANSWER} ${words.RESUMES}` }, "edge"],
     ["a revoked device", () => new ApiError(403, "device_revoked", "SENTINEL"), { code: "credential_rejected", message: words.REVOKED_DEVICE }, "credential_rejected"],
     ["a file this device could not read", () => new Error("SENTINEL local fault"), { code: undefined, message: words.VERIFY_FAILED }, "read_or_write_failed"],

@@ -125,8 +125,8 @@ deny() {
     fi
   done
   # SPACE, which the server's own account cannot give. A volume with no room
-  # left refuses every write the start makes and exits `refusal=io_error`;
-  # so does a mount owned by somebody else. The log now names the kind
+  # left refuses every write the start makes and exits `refusal=storage_full`,
+  # a mount owned by somebody else `refusal=io_error`. The log names the kind
   # (issue #19) and this names the number behind `StorageFull`: how much room
   # the two volumes have, read from INSIDE them because the obsync image is
   # distroless and carries no `df`, and how much the daemon itself is holding,
@@ -467,10 +467,11 @@ prove 'provisioning precondition: root-owned 0755 volumes holding no root are re
 # WHICH REFUSAL: the FILESYSTEM's, never the watermark's. The watermark is
 # arithmetic -- declared capacity minus the bytes the server has tracked --
 # and it refuses writes; `/readyz` never consults it. Here BLOBS_CAPACITY is
-# declared over a FULL_BLOBS_SIZE volume and nothing is written, so it cannot
-# fire, and the `io=StorageFull` required below is the kind the kernel
-# returned for the probe's own write: ENOSPC, not a number the server
-# computed. A declaration larger than the disk is the one case the watermark
+# declared over a FULL_BLOBS_SIZE volume that holds no chunk, so the watermark
+# sees gigabytes free and cannot fire: the `io=StorageFull` required below is
+# the kind the kernel returned for the probe's own write, ENOSPC, not a number
+# the server computed, and the one chunk the property sends meets the same
+# ENOSPC. A declaration larger than the disk is the one case the watermark
 # cannot protect, which is what makes it the case worth running.
 #
 # The volume is a tmpfs-backed local volume rather than `--tmpfs`, and the
@@ -481,12 +482,12 @@ prove 'provisioning precondition: root-owned 0755 volumes holding no root are re
 # is mounted, so the digest-pinned throwaway can fill it and empty it again
 # while the server serves, under the same hardening as every property above.
 #
-# NOT PROVEN HERE, deliberately: a chunk PUT over the limit. `PUT /v1/chunks
-# /{sid}` is HMAC-SHA256 authenticated over method, path, timestamp, nonce and
-# body hash (AGENTS.md, "Security invariants"), and this smoke has no signing
-# client. Writing one in shell would mean the smoke testing a client this
-# repository does not ship, which is worth less than exhausting the volume for
-# real and requiring the server's own account of it and its recovery.
+# The chunk is signed as a device signs it -- `PUT /v1/chunks/{sid}` is
+# HMAC-SHA256 authenticated (AGENTS.md, "Security invariants") -- by the one
+# device this repository ships for that, scripts/ci/api_flow.py, whose `full`
+# phase speaks plain HTTP to this loopback port and nowhere else. NOT PROVEN
+# HERE: the watermark's own `507 volume_full`, which the storage tests prove
+# at the declared capacity.
 docker volume create --driver local --opt type=tmpfs --opt device=tmpfs \
   --opt "o=size=${FULL_BLOBS_SIZE},mode=0700,uid=65532,gid=65532" "${full_blobs}" >/dev/null \
   || deny "could not create a ${FULL_BLOBS_SIZE} blob volume to exhaust"
@@ -555,6 +556,17 @@ status="$(docker container inspect --format '{{.State.Status}}' "${full}")"
 [ "${status}" = running ] \
   || deny "the server ${status} on a full volume; a full volume is a refusal, never an exit"
 
+# A write onto the full volume: the account lands on the journal volume, which
+# has room, and one chunk the blob volume cannot hold is `507 storage_full`, a
+# full server, which a device says as "out of storage" -- never the 500 it
+# retries as absence (issue #291). The refused stream leaves no temporary.
+docker exec "${full}" obsyncd setup-token \
+  | python3 -B scripts/ci/api_flow.py full --host 127.0.0.1 --address 127.0.0.1 --port "${full_port##*:}" \
+  || deny 'a chunk the full blob volume cannot hold was not refused 507 storage_full'
+docker run --rm --user 0 --volume "${full_blobs}:/data/blobs" "${throwaway}" \
+  sh -c 'test -z "$(ls -A /data/blobs/v1/tmp)"' \
+  || deny 'the refused chunk left a temporary on the full blob volume'
+
 # And it comes back. A volume an operator has just grown, or collected, must
 # make the server ready again with no restart.
 docker run --rm --user 0 --volume "${full_blobs}:/data/blobs" "${throwaway}" \
@@ -571,7 +583,7 @@ done
 [ -n "${recovered}" ] \
   || deny "the server did not become ready again within ${READY_BUDGET_SECONDS}s of the volume being freed: '${body}'"
 docker stop --time 10 "${full}" >/dev/null
-prove "full blob volume: ENOSPC from the filesystem (${FULL_BLOBS_SIZE} of tmpfs, ${BLOBS_CAPACITY} declared) answered 503 not_ready and logged io=StorageFull without exiting, and the server was ready again once the space came back"
+prove "full blob volume: ENOSPC from the filesystem (${FULL_BLOBS_SIZE} of tmpfs, ${BLOBS_CAPACITY} declared) answered 503 not_ready and logged io=StorageFull without exiting, refused a signed chunk 507 storage_full with no temporary left, and the server was ready again once the space came back"
 
 # (10) THE CHART'S OWN ENVIRONMENT, run. Every property above configures the
 # image from constants written at the top of this file, so all of them can be

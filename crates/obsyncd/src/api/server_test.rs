@@ -1178,6 +1178,99 @@ fn a_faulted_journal_answers_readyz_with_the_reason_to_restart() {
     assert_eq!(after.code(), "journal_faulted");
 }
 
+/// `ENOSPC`, the same number on Linux and on macOS.
+const ENOSPC: i32 = 28;
+
+#[test]
+fn a_chunk_the_disk_cannot_hold_is_507_storage_full_and_leaves_nothing_behind() {
+    // A capacity declared larger than the disk: the watermark still sees
+    // room and the filesystem does not. That refusal is a full server, which
+    // a device says as "out of storage", never a fault it retries as absence
+    // (issue #291).
+    let h = Harness::start_with(
+        "chunk-enospc",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let (body, sid) = chunk(b"ciphertext-with-no-room");
+    h.app.store.set_fault(crate::storage::Fault::BlobErrno {
+        phase: crate::storage::BlobPhase::Stream,
+        code: ENOSPC,
+    });
+    let refused = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+    h.app.store.set_fault(crate::storage::Fault::None);
+
+    assert_eq!(refused.status, 507, "{}", refused.text());
+    assert_eq!(refused.code(), "storage_full");
+    assert_eq!(
+        refused.json().get("detail").and_then(Value::as_str),
+        Some("the volume is out of space")
+    );
+    assert_eq!(
+        std::fs::read_dir(h.dir.join("blobs/v1/tmp"))
+            .expect("tmp")
+            .count(),
+        0,
+        "the refused stream left no temporary behind"
+    );
+    let log = h.captured();
+    assert!(
+        log.contains("event=chunk_put")
+            && log.contains("decision=storage_full io=StorageFull")
+            && log.contains("status=507"),
+        "the server's own account names the code and the kind: {log}"
+    );
+
+    // Room again: the same chunk is taken, and nothing needed undoing.
+    let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+    assert_eq!(put.status, 201, "{}", put.text());
+}
+
+#[test]
+fn a_journal_append_the_disk_cannot_hold_is_507_storage_full_and_the_journal_takes_the_next() {
+    // The journal's half of issue #291. The rollback succeeds, so the
+    // journal is NOT faulted: the refused frame is cut away, the refusal is a
+    // full disk like any other, and the next write lands once there is room.
+    let h = Harness::start("journal-enospc");
+    let cred = h.setup_account();
+    h.app
+        .store
+        .set_fault(crate::storage::Fault::JournalAppendErrno {
+            code: ENOSPC,
+            at: crate::storage::AppendPhase::Write,
+        });
+    let refused = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio laptop"}"#)
+        .sign(&cred, NOW)
+        .send(h.addr);
+    h.app.store.set_fault(crate::storage::Fault::None);
+
+    assert_eq!(refused.status, 507, "{}", refused.text());
+    assert_eq!(refused.code(), "storage_full");
+    assert_eq!(
+        h.app.store.journal_faulted(),
+        None,
+        "a refusal the rollback undid leaves the journal taking frames"
+    );
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(ready.status, 200, "{}", ready.text());
+    let renamed = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio laptop"}"#)
+        .sign(&cred, NOW + crate::api::READY_CACHE_SECS + 1)
+        .send(h.addr);
+    assert_eq!(renamed.status, 200, "{}", renamed.text());
+}
+
 /// Every byte the journal ROOT holds, walked independently of the server.
 fn journal_root_bytes(dir: &Path) -> u64 {
     fn walk(path: &Path) -> u64 {

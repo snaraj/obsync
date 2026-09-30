@@ -963,7 +963,8 @@ test("a chunk upload asleep in its backoff goes on at the new address, asking fi
 });
 
 test("a full server's 507 is its refusal on the first answer; 500, 502, 503 and 504 are still absence (#155)", async () => {
-  for (const code of ["volume_full", "journal_full", "quota_exceeded"]) {
+  // `storage_full`: the disk itself had no room, whatever the watermark saw (#291).
+  for (const code of ["volume_full", "journal_full", "quota_exceeded", "storage_full"]) {
     const heard = [];
     const { transport, sent, slept } = harness(
       [{ status: 507, text: JSON.stringify({ error: code, detail: "free space is below the watermark" }) }],
