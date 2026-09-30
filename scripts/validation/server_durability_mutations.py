@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Reproduce the server durability guard probes (#191, #192, #203, #273, #291)
-from the repository root.
+"""Reproduce the server durability guard probes (#191, #192, #203, #273, #291,
+#292) from the repository root.
 
 Each probe must compile and fail a behavioral regression. A probe is one or
 more exact substitutions, each of which must match exactly once. Sources are
@@ -33,6 +33,7 @@ SNAPSHOT = "a_snapshot_is_written_with_no_guard_held_and_a_crash_part_way_loses_
 FANOUT = "a_new_fan_out_directory_is_durable_in_its_parent_before_its_chunk_is_acknowledged"
 FANOUT_START = "a_start_after_a_cut_upload_makes_every_fan_out_name_durable"
 NO_ROOM = "the_disk_cannot_hold"
+NONCE_NO_ROOM = "journal_volume_with_no_room"
 
 CASES = [
     # --- nonce log group commit (#191) ------------------------------------
@@ -73,13 +74,16 @@ CASES = [
         "",
     )], "a_refused_batch_is_cut_back_so_the_next_one_lands_on_a_clean_line"),
     # --- a flush that panics settles its batch (drop guard) -----------------
+    # Retargeted in 1.1.5 (#292): the outcome carries the refusal and whether
+    # the log is faulted now; the subject, the batch settled, is the same.
     ("panicked-flight-settles", AUTH, [(
-        "        let _ = self.batch.outcome.set(Err(std::io::ErrorKind::Other));\n", "",
+        "        let _ = self.batch.outcome.set(Err(Refused {\n"
+        "            io: std::io::ErrorKind::Other,\n            faulted,\n        }));\n", "",
     )], PANIC),
     ("panicked-flight-unspends", AUTH, [(
         "        for (ts, entry) in &self.batch.entries {\n            state.unspend(*ts, entry);\n"
-        "        }\n        state.durable = Some(file);\n",
-        "        state.durable = Some(file);\n",
+        "        }\n        let faulted = file.faulted();\n        state.durable = Some(file);\n",
+        "        let faulted = file.faulted();\n        state.durable = Some(file);\n",
     )], PANIC),
     ("panicked-flight-wakes", AUTH, [(
         "        drop(state);\n        cache.settled.notify_all();\n",
@@ -251,6 +255,20 @@ CASES = [
         "                io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded\n",
         "                io::ErrorKind::StorageFull\n",
     )], "a_full_blob_volume_refuses_per_phase_and_leaves_that_phase_s_residue"),
+    # --- the nonce log on a journal volume with no room (#292) ---------------
+    ("nonce-no-room-is-storage-full", AUTH, [(
+        "    if matches!(\n        refused.io,\n"
+        "        std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded\n    ) {\n"
+        "        return ApiError::new(507, \"storage_full\", \"the volume is out of space\");\n    }\n", "",
+    )], NONCE_NO_ROOM),
+    ("nonce-faulted-log-never-reads-full", AUTH, [(
+        "    if refused.faulted {\n", "    if false && refused.faulted {\n",
+    )], "a_faulted_nonce_log_says_so_until_a_restart_and_never_that_it_is_full"),
+    ("nonce-no-room-leaves-the-nonce-unspent", AUTH, [(
+        "            for (ts, entry) in &self.batch.entries {\n                state.unspend(*ts, entry);\n"
+        "            }\n        }\n        let faulted = file.faulted();\n",
+        "        }\n        let faulted = file.faulted();\n",
+    )], NONCE_NO_ROOM),
     ("clean-no-room-leaves-the-journal-unfaulted", JOURNAL, [(
         "            Ok(()) => (\"truncated\", None),\n",
         "            Ok(()) => {\n                self.faulted = Some(Faulted {\n"

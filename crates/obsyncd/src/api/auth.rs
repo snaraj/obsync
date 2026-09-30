@@ -112,9 +112,9 @@ impl Clock for FakeClock {
 /// the outcome to every member. Requests that arrive during a flush wait and
 /// form the next batch, so c concurrent requests cost about one fsync, not c.
 /// No request is answered before the batch holding its nonce is durable; a
-/// batch the volume refuses answers every member `503` and takes their
-/// nonces back out of `seen`, so each is still unspent and a retry is not
-/// refused as a replay.
+/// batch the volume refuses answers every member with a refusal (`refusal`)
+/// and takes their nonces back out of `seen`, so each is still unspent and a
+/// retry is not refused as a replay.
 pub struct NonceCache {
     state: Mutex<NonceState>,
     /// Signalled whenever a flush settles.
@@ -155,7 +155,17 @@ struct NonceState {
 #[derive(Default)]
 struct Batch {
     entries: Vec<(u64, Nonce)>,
-    outcome: Arc<OnceLock<Result<(), std::io::ErrorKind>>>,
+    outcome: Arc<OnceLock<Result<(), Refused>>>,
+}
+
+/// Why the volume would not take a batch: what it answered, and whether the
+/// log is faulted -- a cut-back that failed too, so nothing more is written
+/// until a restart. Together they pick the refusal every member is answered
+/// with (`refusal`); the batch is refused and its nonces unspent either way.
+#[derive(Clone, Copy, Debug)]
+struct Refused {
+    io: std::io::ErrorKind,
+    faulted: bool,
 }
 
 impl NonceState {
@@ -289,8 +299,10 @@ impl NonceCache {
     /// in flight; `503 nonce_cache_full` when the cache is at its ceiling and
     /// `503 nonce_share_full` when this device holds its whole share of it --
     /// refusing beats forgetting a nonce that is still inside its window --
-    /// and `503 nonce_log_unavailable` when the volume will not take the
-    /// batch the record was written in.
+    /// and, when the volume will not take the batch the record was written
+    /// in, `507 storage_full` for a volume with no room, `503
+    /// nonce_log_faulted` for a log that takes nothing until a restart, and
+    /// `503 nonce_log_unavailable` otherwise.
     pub fn remember(&self, device: &str, nonce: &str, now: u64) -> Result<(), ApiError> {
         let entry = (device.to_string(), nonce.to_string());
         let mut state = self.state();
@@ -339,7 +351,7 @@ impl NonceCache {
         let outcome = Arc::clone(&state.open.outcome);
         loop {
             if let Some(settled) = outcome.get() {
-                return settled.map_err(|_| unavailable());
+                return settled.map_err(refusal);
             }
             state = match state.durable.take() {
                 // A flush that panics has settled its batch on the way out
@@ -466,8 +478,12 @@ impl<'a> Flight<'a> {
                 state.unspend(*ts, entry);
             }
         }
+        let faulted = file.faulted();
         state.durable = self.file.take();
-        let _ = self.batch.outcome.set(written.map_err(|e| e.kind()));
+        let _ = self.batch.outcome.set(written.map_err(|e| Refused {
+            io: e.kind(),
+            faulted,
+        }));
         cache.settled.notify_all();
         self.state.take().expect("a flight ends locked")
     }
@@ -495,8 +511,12 @@ impl Drop for Flight<'_> {
         for (ts, entry) in &self.batch.entries {
             state.unspend(*ts, entry);
         }
+        let faulted = file.faulted();
         state.durable = Some(file);
-        let _ = self.batch.outcome.set(Err(std::io::ErrorKind::Other));
+        let _ = self.batch.outcome.set(Err(Refused {
+            io: std::io::ErrorKind::Other,
+            faulted,
+        }));
         // Dropped while unwinding, this guard poisons the lock; the state it
         // guards is whole again, and every lock taken on it says so
         // (`NonceCache::state`).
@@ -507,7 +527,27 @@ impl Drop for Flight<'_> {
 
 /// The refusal every member of a batch the volume would not take gets. The
 /// flush that failed has already logged the one line (requirement 12).
-fn unavailable() -> ApiError {
+///
+/// Always a refusal, and only its words differ (issue #292). A journal
+/// volume with no room is a full server, `507 storage_full` -- the code the
+/// store gives the same disk -- which a device says as "out of storage"
+/// rather than retrying it as absence. A FAULTED log takes nothing until a
+/// restart, so it never says so: it has a 503 of its own. Anything else the
+/// volume answered is `503 nonce_log_unavailable`, as before.
+fn refusal(refused: Refused) -> ApiError {
+    if refused.faulted {
+        return ApiError::new(
+            503,
+            "nonce_log_faulted",
+            "replay state cannot be recorded until the server restarts",
+        );
+    }
+    if matches!(
+        refused.io,
+        std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded
+    ) {
+        return ApiError::new(507, "storage_full", "the volume is out of space");
+    }
     ApiError::new(
         503,
         "nonce_log_unavailable",
@@ -1295,7 +1335,8 @@ mod tests {
                     let e = c
                         .remember(DEVICE, &nonce(n), 1_000)
                         .expect_err("the batch was refused");
-                    assert_eq!((e.status, e.code), (503, "nonce_log_unavailable"));
+                    // A volume with no room: a full server (#292), still a refusal.
+                    assert_eq!((e.status, e.code), (507, "storage_full"));
                 });
             }
         });
@@ -1369,7 +1410,7 @@ mod tests {
         let e = c
             .remember(DEVICE, &nonce(41), now)
             .expect_err("the append was refused");
-        assert_eq!(e.code, "nonce_log_unavailable");
+        assert_eq!(e.code, "storage_full");
         assert_eq!(
             lines_on_disk(&dir),
             0,
@@ -1394,7 +1435,7 @@ mod tests {
                     let e = c
                         .remember(device, &nonce(n), now)
                         .expect_err("the batch was refused");
-                    assert_eq!(e.code, "nonce_log_unavailable");
+                    assert_eq!(e.code, "storage_full");
                 });
             }
         });
@@ -1679,9 +1720,13 @@ mod tests {
         let before = handle.load(Ordering::Acquire);
 
         c.set_fault(NonceFault::ShortWriteStuck { code: ENOSPC });
-        c.remember(DEVICE, &nonce(2), 1_000)
+        let e = c
+            .remember(DEVICE, &nonce(2), 1_000)
             .expect_err("the volume refused");
         c.set_fault(NonceFault::None);
+        // Faulted by this very batch: a restart is the only way back, so it is
+        // never the full server a device expects to clear by itself (#292).
+        assert_eq!((e.status, e.code), (503, "nonce_log_faulted"));
 
         let landed = handle.load(Ordering::Acquire);
         assert!(
@@ -1702,7 +1747,7 @@ mod tests {
             c.remember(DEVICE, &nonce(3), 1_000)
                 .expect_err("a faulted log takes nothing more")
                 .code,
-            "nonce_log_unavailable"
+            "nonce_log_faulted"
         );
         drop(c);
         let restarted = cache(&dir, 1_000, 2, &log);
@@ -1710,6 +1755,48 @@ mod tests {
         restarted
             .remember(DEVICE, &nonce(2), 1_000)
             .expect("the refused nonce was never spent");
+    }
+
+    /// `EDQUOT`: Linux and macOS disagree on the number, and both map to
+    /// `ErrorKind::QuotaExceeded`.
+    #[cfg(target_os = "linux")]
+    const EDQUOT: i32 = 122;
+    #[cfg(not(target_os = "linux"))]
+    const EDQUOT: i32 = 69;
+
+    #[test]
+    fn a_journal_volume_with_no_room_is_storage_full_and_the_nonce_stays_unspent() {
+        // Issue #292. The refusal is the same refusal: nothing is answered as
+        // accepted, the batch is cut back, the nonce is still unspent. Only
+        // its words are a full server's, which a device says as "out of
+        // storage" rather than retrying it as absence.
+        for fault in [
+            NonceFault::SyncFails { code: ENOSPC },
+            NonceFault::ShortWrite { code: ENOSPC },
+            NonceFault::SyncFails { code: EDQUOT },
+        ] {
+            let dir = volume("nonce-no-room");
+            let log = Log::buffered(LogLevel::Debug);
+            let c = cache(&dir, 1_000, 8, &log);
+            c.remember(DEVICE, &nonce(1), 1_000).expect("accepted");
+
+            c.set_fault(fault);
+            let e = c
+                .remember(DEVICE, &nonce(2), 1_000)
+                .expect_err("the volume refused");
+            c.set_fault(NonceFault::None);
+            assert_eq!((e.status, e.code), (507, "storage_full"), "{fault:?}");
+            assert_eq!(c.len(), 1, "{fault:?}: the refused nonce is not held");
+            assert_eq!(lines_on_disk(&dir), 1, "{fault:?}: nor written down");
+            assert!(
+                log.captured()
+                    .contains("event=nonce_log decision=refused io="),
+                "{fault:?}: {}",
+                log.captured()
+            );
+            c.remember(DEVICE, &nonce(2), 1_000)
+                .expect("the refused request, sent again, is not a replay");
+        }
     }
 
     #[test]

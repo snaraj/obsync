@@ -443,6 +443,11 @@ impl NonceLog {
         Ok(())
     }
 
+    /// Whether a cut-back failed, so nothing more is written until a restart.
+    pub const fn faulted(&self) -> bool {
+        self.faulted.is_some()
+    }
+
     /// Lines the file holds, for the caller's compaction threshold.
     pub fn lines(&self) -> usize {
         #[cfg(test)]

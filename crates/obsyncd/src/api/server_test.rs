@@ -1271,6 +1271,84 @@ fn a_journal_append_the_disk_cannot_hold_is_507_storage_full_and_the_journal_tak
     assert_eq!(renamed.status, 200, "{}", renamed.text());
 }
 
+/// One signed rename, built the same way every time: the same nonce, so the
+/// second send is the same request byte for byte.
+fn rename_request(cred: &Cred, nonce: &str, name: &str) -> Req {
+    let body = format!(r#"{{"name":"{name}"}}"#);
+    let hash = hex::encode(&sha256::sha256(body.as_bytes()));
+    Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(&body)
+        .sign_with(cred, NOW, nonce, &hash)
+}
+
+#[test]
+fn a_journal_volume_with_no_room_refuses_signed_requests_507_storage_full_and_applies_nothing() {
+    // Issue #292. Every signed request records its nonce on the journal
+    // volume before anything is answered, a read included: a read answered
+    // with its nonce unrecorded is one a crash makes replayable. So a journal
+    // volume with no room refuses them all -- as a full server, which a
+    // device says as "out of storage", not as a 503 it retries as absence.
+    let h = Harness::start("nonce-no-room");
+    let cred = h.setup_account();
+    let spent_once = nonce();
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::SyncFails { code: ENOSPC });
+    let refused = rename_request(&cred, &spent_once, "renamed while full").send(h.addr);
+    let read = Req::get("/v1/account").sign(&cred, NOW).send(h.addr);
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::None);
+
+    for (what, res) in [("the write", &refused), ("the read", &read)] {
+        assert_eq!(res.status, 507, "{what}: {}", res.text());
+        assert_eq!(res.code(), "storage_full", "{what}");
+    }
+    // Still a refusal: nothing was applied...
+    let devices = Req::get("/v1/devices").sign(&cred, NOW).send(h.addr);
+    assert_eq!(devices.status, 200, "{}", devices.text());
+    assert!(
+        !devices.text().contains("renamed while full"),
+        "{}",
+        devices.text()
+    );
+    // ...and the nonce was never spent: the same request, byte for byte, is
+    // taken once there is room.
+    let again = rename_request(&cred, &spent_once, "renamed while full").send(h.addr);
+    assert_eq!(again.status, 200, "{}", again.text());
+}
+
+#[test]
+fn a_faulted_nonce_log_says_so_until_a_restart_and_never_that_it_is_full() {
+    // The cut-back failed too, so the log takes nothing more until a restart
+    // truncates the torn tail. A device that read that as a full server would
+    // wait for room that changes nothing (issue #292).
+    let h = Harness::start("nonce-faulted");
+    let cred = h.setup_account();
+    let refused_nonce = nonce();
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::ShortWriteStuck { code: ENOSPC });
+    let faulting = rename_request(&cred, &refused_nonce, "renamed while faulted").send(h.addr);
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::None);
+    let after = Req::get("/v1/account").sign(&cred, NOW).send(h.addr);
+    for (what, res) in [
+        ("the request that faulted it", &faulting),
+        ("the next", &after),
+    ] {
+        assert_eq!(res.status, 503, "{what}: {}", res.text());
+        assert_eq!(res.code(), "nonce_log_faulted", "{what}");
+    }
+
+    // A restart truncates the tail; the refused nonce was never recorded.
+    let dir = h.stop();
+    let h = Harness::start_in(dir, Setup::default());
+    let again = rename_request(&cred, &refused_nonce, "renamed while faulted").send(h.addr);
+    assert_eq!(again.status, 200, "{}", again.text());
+}
+
 /// Every byte the journal ROOT holds, walked independently of the server.
 fn journal_root_bytes(dir: &Path) -> u64 {
     fn walk(path: &Path) -> u64 {
