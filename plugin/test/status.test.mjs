@@ -406,7 +406,8 @@ test("a full server is said on the first chunk it refuses, stays through answere
     r.host.seed("Big.md", "a note for a full server\n", 5000);
     r.engine.changed("Big.md");
     await r.timers.run(STEP_MS, () => r.last()?.kind === "error");
-    assert.deepEqual(r.last(), { kind: "error", code: "storage", message: `${SERVER_FULL} ${RESUMES}` }, code);
+    assert.deepEqual(r.last(), { kind: "error", code: "storage", message: SERVER_FULL }, code);
+    assert.ok(SERVER_FULL.endsWith("then select Sync now.") && !r.last().message.includes(RESUMES), "a full server says what to press, never that it resumes by itself (#295)");
     assert.equal(refused.length, 1, `${code}: the first 507 is the answer: never eight tries`);
     // The feed is answered: a full server still answers reads, so it stands.
     r.server.releaseFeed();
@@ -431,7 +432,7 @@ test("a journal volume with no room refuses the feed's read too: the device says
   const refused = refuse(r, (sent) => full && sent.url.includes("/v1/changes?"), () => r.server.error(507, "storage_full", "the volume is out of space"));
   r.server.releaseFeed();
   await r.timers.run(STEP_MS, () => r.last()?.kind === "error");
-  assert.deepEqual(r.last(), { kind: "error", code: "storage", message: `${SERVER_FULL} ${RESUMES}` });
+  assert.deepEqual(r.last(), { kind: "error", code: "storage", message: SERVER_FULL });
   assert.equal(refused.length, 1, "the first 507 is the answer: never retried as absence");
   assert.ok(!r.statuses.some((status) => status.kind === "offline"), "a full server is never absence");
   // Room again, and nothing written since: the feed's next read is answered.
@@ -573,7 +574,7 @@ function refusing(r) {
   return gate;
 }
 const failures = (r) => r.host.logs.filter((line) => line.startsWith("push path_class=file decision=failed ")).length;
-const REFUSED_TWO = /^Your server refused the change to (First|Second)\.md and 1 more\. obsync sends it again within five minutes/;
+const REFUSED_TWO = /^Your server refused the change to "(First|Second)" and 1 more\. obsync sends it again within five minutes/;
 
 test("a change the server refuses is said by name for as long as it is unsent, one line for two, and goes when the notes land (#299)", async () => {
   const r = await started();
@@ -592,7 +593,7 @@ test("a change the server refuses is said by name for as long as it is unsent, o
   assert.match(said.message, REFUSED_TWO);
   assert.deepEqual(r.last(), said);
   // The newest refusal by name: a push of a path always follows its last.
-  assert.match(refusedChange(["First.md", "Second.md"]), /^Your server refused the change to Second\.md and 1 more\. /);
+  assert.match(refusedChange(["First.md", "Second.md"]), /^Your server refused the change to "Second" and 1 more\. /);
   // It stands through the feed's answered reads.
   r.server.releaseFeed();
   await r.timers.run(0, () => r.server.feedWaiters.length === 1);
@@ -601,7 +602,7 @@ test("a change the server refuses is said by name for as long as it is unsent, o
   gate.failing = false;
   await r.timers.run(STEP_MS, () => ["First.md", "Second.md"].every((path) => r.state.fileByPath(path) !== undefined) && r.last()?.kind === "idle");
   const refusals = r.statuses.slice(from).filter((status) => status.code === "push_refused");
-  assert.ok(refusals.length > 0 && refusals.every((status) => REFUSED_TWO.test(status.message) || /^Your server refused the change to (First|Second)\.md\. /.test(status.message)), JSON.stringify(refusals));
+  assert.ok(refusals.length > 0 && refusals.every((status) => REFUSED_TWO.test(status.message) || /^Your server refused the change to "(First|Second)"\. /.test(status.message)), JSON.stringify(refusals));
   assert.deepEqual(r.engine.current(), { kind: "idle" });
   await stopped(r);
 });

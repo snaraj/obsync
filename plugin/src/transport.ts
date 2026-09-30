@@ -172,8 +172,8 @@ export function lostMessage(what: string, lost: Lost): string {
   // was false, and it reached no conclusion it could say, so the person checks.
   if (lost.answered === true) {
     return (
-      `${what}: your server answered with an error (${lost.reason}), so it may not have happened. ` +
-      "Check, and try again if it did not; if this stays, check your server's log."
+      `${what}: your server answered with an error, so it may not have happened. ` +
+      "See whether it did, and try again if not; if this stays, check your server's log."
     );
   }
   return (

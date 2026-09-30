@@ -285,7 +285,8 @@ test("a revoke the server answers with its own error says so, and that it may no
   server.devices.push({ ...SECOND_DEVICE });
 
   await assert.rejects(() => instance.revokeDevice(OTHER_DEVICE), (error) => {
-    assert.match(error.message, /^revoking that device: your server answered with an error \(status=500 code=io_error\), so it may not have happened\. /);
+    assert.match(error.message, /^revoking that device: your server answered with an error, so it may not have happened\. /);
+    assert.ok(!/status=|code=/.test(error.message), `a code is for the log, never the words: ${error.message}`);
     assert.doesNotMatch(error.message, /never answered/);
     return true;
   });

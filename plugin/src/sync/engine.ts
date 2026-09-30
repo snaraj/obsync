@@ -62,7 +62,7 @@
 import { forgottenCredential, FORGOTTEN_DEVICE } from "../accountRecovery";
 import { ByteSource, CHUNK_MAX } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
-import { count, HELD, type SyncNotice } from "../notices";
+import { count, HELD, quoted, type SyncNotice } from "../notices";
 import {
   DomainMap,
   DomainMapError,
@@ -521,24 +521,32 @@ export const REVOKED_DEVICE =
 export const CLOCK_OFF =
   "This device's clock is more than five minutes off, so your server refuses it. Set the date and time to update automatically.";
 export const SERVER_FULL =
-  "Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota.";
+  "Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota, then select Sync now.";
 export const RESTART_NEEDED =
   "Your server hit a storage error and refuses changes until it is restarted. Restart your obsync server, then select Sync now.";
 export const NOT_OBSYNC_ANSWER =
   "Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the Custom request headers in obsync settings.";
 /**
- * HOW A REFUSAL THAT CLEARS ELSEWHERE ENDS -- a full server, a wrong clock,
- * something in front of the server, the edge (#155, #228). A running engine
- * keeps asking, so its sync resumes by itself. A refused START is never asked
- * again by a timer (#129), so it says what to press. A press -- a Check, the
- * device list -- answers for itself and promises neither.
+ * HOW A REFUSAL THAT CLEARS ELSEWHERE ENDS -- a wrong clock, something in
+ * front of the server, the edge (#155, #228). A running engine keeps asking,
+ * so its sync resumes by itself. A refused START is never asked again by a
+ * timer (#129), so it says what to press. A press -- a Check, the device
+ * list -- answers for itself and promises neither. A server that refuses
+ * CHANGES -- full (`SERVER_FULL`) or faulted (`RESTART_NEEDED`) -- is none of
+ * these: its words say what to press in every context (`refusalStatus`).
  */
 export const RESUMES = "Sync resumes by itself.";
 export const AFTER_START = "Once that is fixed, select Sync now.";
 export const FEED_FAILED =
   "Changes from your server could not be read. obsync tries again every few seconds; if this stays, check your server's log.";
+/**
+ * A folder record the server refused past `FOLDER_POST_TRIES` (a note's own
+ * refusal is `refusedChange`). Folders are the reconcile pass's business, not
+ * the walk's, so it goes again at the next start's pass or at once on Sync
+ * now's (`case-rename.test.mjs`, the folder record that expires).
+ */
 export const PUSH_REFUSED =
-  "Your server refused a change from this device. It is sent again when the note next changes, or within a minute; if this stays, check your server's log.";
+  "Your server refused a folder change from this device. obsync sends it again when Obsidian next starts, or at once when you select Sync now; if this stays, check your server's log.";
 /**
  * A change the server refused, said while it is unsent (#299): the newest
  * refusal by name -- a push of a path always follows its last, so the set's
@@ -547,7 +555,7 @@ export const PUSH_REFUSED =
  */
 export function refusedChange(paths: readonly string[]): string {
   const more = paths.length > 1 ? ` and ${paths.length - 1} more` : "";
-  return `Your server refused the change to ${paths[paths.length - 1]}${more}. obsync sends it again within five minutes, ` +
+  return `Your server refused the change to ${quoted(paths[paths.length - 1] as string)}${more}. obsync sends it again within five minutes, ` +
     "or at once when you select Sync now; if this stays, check your server's log.";
 }
 /** Said for a press, a Check or Sync now, that met a server not answering (#182). */
@@ -572,8 +580,12 @@ export const VERIFY_FAILED =
 export function refusalStatus(error: unknown, then = RESUMES): EngineStatus | null {
   if (!(error instanceof ApiError)) return null;
   const said = (message: string): string => (then === "" ? message : `${message} ${then}`);
-  // First: a full server is never absence, whatever carried its answer.
-  if (error.status === 507) return { kind: "error", code: "storage", message: said(SERVER_FULL) };
+  // First: a full server is never absence, whatever carried its answer. Its
+  // refusal ends only when a change is taken (`accepted`), and a change it
+  // refused goes again at the next walk, up to `WALK_MS` later, unless Sync
+  // now sends it at once (the desktop run, #295): so, like the restart words
+  // below, its words end with that press in every context, never "resumes".
+  if (error.status === 507) return { kind: "error", code: "storage", message: SERVER_FULL };
   // Nor is a faulted one, and it never resumes by itself: only a restart
   // brings it back (#295). Its words say what to press after the restart, in
   // every context: a change it refused goes again at the next walk, up to

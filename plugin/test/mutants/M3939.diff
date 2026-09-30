@@ -1,4 +1,4 @@
-# M501: storage refusal is hidden as an offline repair
+# M3939: a full server says sync resumes by itself, which waits for the next walk (#295)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
 @@ -585,7 +585,7 @@
@@ -6,7 +6,7 @@
    // now sends it at once (the desktop run, #295): so, like the restart words
    // below, its words end with that press in every context, never "resumes".
 -  if (error.status === 507) return { kind: "error", code: "storage", message: SERVER_FULL };
-+  if (error.status === 507 && error.code !== "unreachable") return { kind: "error", code: "storage", message: SERVER_FULL };
++  if (error.status === 507) return { kind: "error", code: "storage", message: said(SERVER_FULL) };
    // Nor is a faulted one, and it never resumes by itself: only a restart
    // brings it back (#295). Its words say what to press after the restart, in
    // every context: a change it refused goes again at the next walk, up to

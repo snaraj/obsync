@@ -1,0 +1,12 @@
+# M3940: a never-repeated action the server answered puts the server's code in the words (#299)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -172,7 +172,7 @@
+   // was false, and it reached no conclusion it could say, so the person checks.
+   if (lost.answered === true) {
+     return (
+-      `${what}: your server answered with an error, so it may not have happened. ` +
++      `${what}: your server answered with an error (${lost.reason}), so it may not have happened. ` +
+       "See whether it did, and try again if not; if this stays, check your server's log."
+     );
+   }

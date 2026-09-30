@@ -1077,15 +1077,14 @@ was restored from a backup older than this pairing.
 
 **What you see.** The alert icon, and its words read:
 
-> obsync: error — Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota. Sync resumes by itself.
-
-If Obsidian started while this was so, it ends "Once that is fixed, select
-Sync now." instead: nothing tries a refused start again by itself.
+> obsync: error — Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota, then select Sync now.
 
 A phone also says it once in a notice. New and changed notes stay on the
-device, and the alert clears once the server accepts a change again. Up to
-1.1.3, a device that is already running shows it is offline and keeps
-retrying. The server's log and its dashboard show `volume_full` or
+device. Once there is room, **Sync now** sends them and clears the alert at
+once; without it, a change the server refused goes again at the next check of
+the vault, within five minutes, or when the note next changes. Up to 1.1.4
+the words said sync resumes by itself, and up to 1.1.3 a device that is
+already running shows it is offline and keeps retrying. The server's log and its dashboard show `volume_full` or
 `journal_full`, or `storage_full` when the disk itself ran out. Up to 1.1.4 a
 disk that ran out answered `500 io_error` instead, and a journal volume that
 ran out `503 nonce_log_unavailable`, and devices showed they were offline.
@@ -1104,8 +1103,9 @@ disk really holds, or something else on the disk used the space.
 2. If you grew it, raise the declared size to match (`OBSYNC_BLOBS_CAPACITY`
    or `OBSYNC_JOURNAL_CAPACITY`, or the chart's claim sizes), then restart the
    server.
-3. Nothing is lost on the devices: they send what they hold once the server
-   accepts writes again. [Storage](storage.md) explains the reserve.
+3. On a device, select **Sync now**. Nothing is lost on the devices: they
+   send what they hold once the server accepts writes again.
+   [Storage](storage.md) explains the reserve.
 
 ## The server needs a restart
 
