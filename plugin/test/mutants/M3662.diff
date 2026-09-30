@@ -1,11 +1,11 @@
 # M3662: a walk that ended is still counted as running (#276)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3464,7 +3464,6 @@
-     this.scanHandle = null;
-     const started = this.scanSince = this.nowFn();
+@@ -3841,7 +3841,6 @@
+       );
+     }, SCAN_STALL_MS);
      void this.track(this.scanLocal().finally(() => {
 -      if (this.scanSince === started) this.scanSince = null;
+       this.timers.clear(watch);
+       if (this.scanWatch === watch) this.scanWatch = null;
        if (this.running && this.scanHandle === null) {
-         this.scanHandle = this.timers.set(() => this.scanTick(), SCAN_MS);
-       }

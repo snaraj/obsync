@@ -1,12 +1,12 @@
 # M1984: the feed's long poll does not hear the stop
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2495,7 +2495,7 @@
+@@ -2615,7 +2615,7 @@
          // Ended by the stop, not waited out: a stopped engine's poll is one more
          // request against a credential that may be about to be given up (#157).
          // A wake drops it too (`wake`), so either ends this one request.
 -        const page = await untilStopped(context.signal, drop, () =>
 +        const page = await untilStopped(undefined, drop, () =>
-           context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal }));
+           context.transport.changes(context.state.data.lastSeq, quick ? 0 : MAX_WAIT_SECONDS, 1000, { signal: drop.signal }));
          this.poll = null;
          this.reading = false;

@@ -1,12 +1,12 @@
 # M3661: a walk in flight is never counted (#276)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3462,7 +3462,7 @@
+@@ -3826,7 +3826,7 @@
    private scanTick(): void {
      if (!this.running) return;
      this.scanHandle = null;
 -    const started = this.scanSince = this.nowFn();
 +    const started = this.nowFn();
-     void this.track(this.scanLocal().finally(() => {
-       if (this.scanSince === started) this.scanSince = null;
-       if (this.running && this.scanHandle === null) {
+     // A SCAN THAT DOES NOT END SAYS SO (issue #285): the next one is armed
+     // when this one ends, so one that never does stops every later scan. One
+     // line past `SCAN_STALL_MS` naming the pull that holds the chain -- its

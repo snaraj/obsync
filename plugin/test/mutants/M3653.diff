@@ -1,12 +1,12 @@
 # M3653: a stop leaves the feed's watch armed (#276)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1132,8 +1132,6 @@
+@@ -1215,8 +1215,6 @@
      this.repairHandle = null;
      if (this.scanHandle !== null) this.timers.clear(this.scanHandle);
      this.scanHandle = null;
 -    if (this.feedWatch !== null) this.timers.clear(this.feedWatch);
 -    this.feedWatch = null;
+     if (this.scanWatch !== null) this.timers.clear(this.scanWatch);
+     this.scanWatch = null;
      // What a stop leaves held, the next start's pass finds again.
-     if (this.holding !== null && this.holding.handle !== null) this.timers.clear(this.holding.handle);
-     this.holding = null;

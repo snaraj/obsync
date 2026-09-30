@@ -1,11 +1,11 @@
 # M2042: every periodic scan walks the vault for temp files, not only a start's first
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3046,7 +3046,6 @@
+@@ -3857,7 +3857,6 @@
      // of this start is in the middle of one, and beside this scan rather than
      // in front of it; cleaning up is never a reason not to sync.
      if (!this.swept) {
 -      this.swept = true;
-       void this.track(this.exclusive(async () => {
-         await context.host.sweep?.().catch((error: unknown) =>
+       void this.track(this.exclusive("sweep", async () => {
+         await context.host.sweep?.(context.signal).catch((error: unknown) =>
            context.host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));

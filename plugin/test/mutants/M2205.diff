@@ -1,7 +1,7 @@
 # M2205: Sync now reads the feed before sending what is queued
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4698,8 +4698,8 @@
+@@ -4754,8 +4754,8 @@
      const readBefore = this.options.host.readTotals?.() ?? { files: 0, bytes: 0 };
      const held = (): number => this.options.state.data.heldDeletions.length;
      const pending = held() > 0;

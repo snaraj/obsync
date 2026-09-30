@@ -1,7 +1,7 @@
 # M2813: idle before the feed has answered once
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3097,7 +3097,7 @@
+@@ -3128,7 +3128,7 @@
      const held = records.find((entry) => entry.reason === "active_editor")?.path;
      const checking = Math.min(work, this.checking.size);
      const on = this.pressWaits;

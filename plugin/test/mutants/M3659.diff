@@ -1,12 +1,12 @@
 # M3659: the status drops a press's wait when nothing else is pending (#276)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2902,7 +2902,7 @@
-     // alone read "syncing 1" for minutes and said nothing of what to do.
+@@ -3128,7 +3128,7 @@
      const held = records.find((entry) => entry.reason === "active_editor")?.path;
+     const checking = Math.min(work, this.checking.size);
      const on = this.pressWaits;
 -    if (work > 0 || (this.running && !this.feedAnswered) || on !== null) {
 +    if (work > 0 || (this.running && !this.feedAnswered)) {
-       return { kind: "syncing", pending: work, ...(held === undefined ? {} : { held }), ...(on === null ? {} : { waiting: on }) };
-     }
-     return { kind: "idle" };
+       return {
+         kind: "syncing",
+         pending: work,

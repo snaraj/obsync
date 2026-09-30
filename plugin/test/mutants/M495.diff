@@ -1,7 +1,7 @@
 # M495: Sync now leaves every held note paused
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4702,7 +4702,6 @@
+@@ -4758,7 +4758,6 @@
      await this.readFeed();
      await this.inTurn(trigger, this.retryParked(trigger));
      // A paused note before the pass, so what it holds is in it (issue #179).

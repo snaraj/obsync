@@ -1,7 +1,7 @@
 # M530: Sync now misses a silent rewrite with unchanged metadata
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4703,7 +4703,7 @@
+@@ -4759,7 +4759,7 @@
      await this.inTurn(trigger, this.retryParked(trigger));
      // A paused note before the pass, so what it holds is in it (issue #179).
      await this.inTurn(trigger, this.resume(undefined, trigger));
