@@ -1,0 +1,11 @@
+# M3404: a phone's removal takes whatever holds the name, a folder too (#284)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2626,7 +2626,6 @@
+       // deletion of a note whose name a folder has taken since trashed that
+       // folder and everything in it, on a phone alone. Refused in the words
+       // a computer's walk uses (`confine`).
+-      if (entry.type !== "file") throw new VaultPathError("not_a_file");
+     }
+     if (expect === undefined) {
+       await this.remove(path);

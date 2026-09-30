@@ -906,6 +906,37 @@ for (const folds of [true, false]) {
     assert.deepEqual(r.b.logs.filter((line) => line.startsWith("feed decision=retry")), [], story(r));
     assert.deepEqual(await phonePosts(r), [], `the phone published something: ${story(r)}`);
   });
+
+  test(`on ${kind}, a deletion of a note whose name a folder has taken since is refused, and the folder stays (#284)`, async (t) => {
+    const r = await seeded(t, { "Gone/Box.md": BODY, "Gone/Kept.md": OTHER }, { folds });
+    const id = r.ids["Gone/Box.md"];
+    await r.timers.run(STEP_MS);
+    // The note gives way to a folder of that name, with a note in it, with
+    // nobody watching: the phone still records a note there.
+    r.vault.disk.delete("Gone/Box.md");
+    r.vault.index.delete("Gone/Box.md");
+    r.vault.write("Gone/Box.md/Inside.md", new TextEncoder().encode(THEIRS), 3000, false);
+    r.a.host.remove("Gone/Box.md");
+    await r.timers.run(STEP_MS, () => r.a.state.fileByPath("Gone/Box.md") === undefined);
+    r.a.host.write("Gone/Kept.md", `${OTHER}and a later line\n`, 2000);
+    await r.timers.run(STEP_MS, () => r.vault.text("Gone/Kept.md") === `${OTHER}and a later line\n`);
+    assert.equal(r.vault.text("Gone/Box.md/Inside.md"), THEIRS, `the deletion took the folder: ${story(r)}`);
+    assert.ok(r.b.logs.some((line) => line.startsWith(`pull path_class=manifest decision=refused reason=not_a_file file=${id} `)), story(r));
+    assert.deepEqual(r.b.logs.filter((line) => line.startsWith("host path_class=file decision=")), [], story(r));
+    // The page went on past it, as after #234, and the record stays: nothing was removed.
+    assert.deepEqual(r.b.logs.filter((line) => line.startsWith("feed decision=retry")), [], story(r));
+    assert.equal(r.b.state.data.files["Gone/Box.md"]?.fileId, id, story(r));
+    assert.deepEqual(r.b.notices.map((text) => /\(not_a_file\)/.test(text)), [true], story(r));
+    // The phone's own next pass finds the note gone from its storage and says
+    // so: the very deletion the desktop made, the same version, and still
+    // nothing removed here.
+    await r.b.engine.reconcile();
+    await r.timers.run(STEP_MS, () => r.b.state.data.files["Gone/Box.md"] === undefined);
+    const tombstone = r.server.journal.find((frame) => frame.file_id === id && frame.deleted);
+    assert.ok(r.b.logs.includes(`push path_class=tombstone decision=deleted version=${tombstone?.version_id}`), story(r));
+    assert.deepEqual(await phonePosts(r), [], story(r));
+    assert.equal(r.vault.text("Gone/Box.md/Inside.md"), THEIRS, story(r));
+  });
 }
 
 /** Save a folder selection on the phone as Settings does, releasing the parked poll the stop waits for. */
