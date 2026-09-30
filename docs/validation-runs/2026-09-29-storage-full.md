@@ -74,6 +74,52 @@ is a full server, `refusalStatus`), which the plugin suite proves for
 `storage_full`; a phone adds one notice when the status turns to it. No
 Android emulator or phone was brought up in this lane.
 
+## The journal volume (issue #292)
+
+Every signed request records its nonce on the journal volume before it is
+answered, a read included. So a journal volume the disk fills refuses them
+all at the nonce log, and until 1.1.5 it said `503 nonce_log_unavailable`, a
+server that is not there. The same rig and plugin, with the journal volume a
+16 MiB tmpfs declared as 4 GiB (the blob volume ordinary), filled to 0 bytes
+free while the device was idle and synced. Nothing was written after the
+fill: **Sync now**, pressed until the nonce file's last page of slack was
+used up (29 or 30 presses), then three minutes of the device's own reads.
+
+- Builds: before, the train at `50bbb997` (image `sha256:59e79f0acaa8…`); after,
+  this change (image `sha256:586bc99f7b34…`), with the plugin before the
+  engine change (`cdfc140d…`) and after it
+  (`eff6761543b17d5e4bd981703a1ddc9a0355f73bc331a3ae75189fdb737aba17`).
+
+| # | Journey | Before (`50bbb997`) | After, server only | After, server and plugin |
+| --- | --- | --- | --- | --- |
+| V11, journal | A journal volume the disk fills, desktop, nothing edited | fail: `offline — retrying`, then `checking for changes` and `offline — retrying` again, for three minutes; Sync now said "Your server is not answering." | pass: "Your server is out of storage, …" at once, standing | pass: the same |
+| V11, journal, recovery | Room back, nothing edited | synced 5.6 s later | fail: still "out of storage" 320 s later; an edit cleared it in 5.7 s | pass: synced 5.6 s later |
+| V11, disk, recovery again | The blob volume journey above, on this build | — | — | pass: "out of storage" at +6.0 s, standing through a minute of answered reads, synced 6.0 s after the room came back with an edit |
+
+- **Server, before:** every signed request was refused, `GET /v1/changes`
+  and `GET /v1/devices` included. The server logged `event=nonce_log
+  decision=refused io=StorageFull batch=1` and `event=request … status=503
+  decision=nonce_log_unavailable`. The device gave up each round after eight
+  attempts, about 90 s.
+- **Server, after:** the same refusals, logged `status=507
+  decision=storage_full`, answered at the first attempt. Nothing was answered
+  as accepted, and the device's reads were refused like its writes.
+- **The middle column is why the plugin changed.** A full server's words stood
+  until a change was taken, because a full blob volume still answers reads.
+  A full journal refuses reads too, and with nothing to write the status
+  outlived the full disk. An answered read now clears a storage refusal that a
+  read met (`refusedRead`), and a storage refusal that a write met still waits
+  for a write, as the blob journey shows.
+- **Sweep, after:**
+  - status item: the attention icon with the sentence;
+  - Show sync status: "What to do" with **Retry now**;
+  - notices: the Sync now press's answer was "Your server is out of
+    storage, …" once, where the before build said "Your server is not
+    answering." twice. The three "nothing to send" notices beside it are the
+    presses the server still answered, before the slack ran out;
+  - console: `http GET /v1/changes… status=507 decision=refused
+    code=storage_full` every 5 s, no error.
+
 ## Also run
 
 - `scripts/ci/image-smoke.sh`, whose property 9 now sends one signed chunk

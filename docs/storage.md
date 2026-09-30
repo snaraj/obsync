@@ -232,13 +232,17 @@ before it entered the window, so either file answers the window.
 
 The rewrite holds what was durable before the batch that triggered it, and
 that batch is appended after it. Any failure inside the sequence, or in the
-append, refuses every request in the batch with `503
-nonce_log_unavailable` and one `event=nonce_log decision=refused batch=<n>`
-line. Nothing already durable changes: `v1/nonces` holds what it held, a
-refused append is cut back off the file before anything else is written,
-and the nonces the refused requests carried were never recorded, so each is
-unspent and the device may send it again. A cut that itself fails leaves the
-log refusing every request until a restart truncates the torn tail. The
+append, refuses every request in the batch and logs one `event=nonce_log
+decision=refused batch=<n>` line. A volume with no room is `507
+storage_full`, the code the store gives the same disk. Anything else is `503
+nonce_log_unavailable`. Nothing already durable changes: `v1/nonces` holds
+what it held, a refused append is cut back off the file before anything else
+is written, and the nonces the refused requests carried were never recorded,
+so each is unspent and the device may send it again. A signed READ is refused
+too, and must be: its nonce is recorded like any other, and a read answered
+with its nonce unrecorded is one a crash makes replayable. A cut that itself
+fails leaves the log refusing every request, `503 nonce_log_faulted`, until
+a restart truncates the torn tail. The
 compaction threshold is still outstanding, so the next batch attempts the
 rewrite again. A flush that panics, which only a bug does, settles the same
 way: its whole batch is answered `503 nonce_log_unavailable`, cut back and

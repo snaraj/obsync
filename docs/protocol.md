@@ -32,8 +32,13 @@ the journal volume and are fsynced before the request is answered), `503
 nonce_cache_full` (the replay cache is at its ceiling; refusing beats
 forgetting a nonce still inside its window), `503 nonce_share_full` (this
 device holds its whole share of that cache, 50,000 nonces, a quarter of it;
-only this device is refused), `503 nonce_log_unavailable`
-(the volume would not take that record), `403 device_revoked` (answered from the device
+only this device is refused), `507 storage_full` (the journal volume has no
+room for that record, so every signed request is refused, a read included;
+server 1.1.5, and `503 nonce_log_unavailable` before), `503 nonce_log_faulted`
+(a refused record could not be cut back off the volume either, so every
+signed request is refused until the server restarts; server 1.1.5), `503
+nonce_log_unavailable` (the volume would not take that record for any other
+reason), `403 device_revoked` (answered from the device
 record before the signature is checked, because revocation destroys the
 wrapped secret and leaves nothing to check it against; archiving that device
 does not change this answer, because it does not remove the record),

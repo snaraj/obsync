@@ -298,7 +298,8 @@ start loads back what the window still covers. Without that, a request
 captured 299 s before a restart is replayable 1 s after it. The file is
 compacted once it passes twice the cache's own ceiling, a torn final line
 costs only itself, and a volume that will not take the record refuses the
-request (`503 nonce_log_unavailable`): a request answered without its nonce
+request, a read included (`507 storage_full` when the volume has no room,
+`503 nonce_log_unavailable` otherwise): a request answered without its nonce
 written down is one a crash makes replayable.
 
 This gives integrity and authentication even on a hop without TLS (the

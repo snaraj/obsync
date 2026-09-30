@@ -1059,8 +1059,8 @@ device, and the alert clears once the server accepts a change again. Up to
 1.1.3, a device that is already running shows it is offline and keeps
 retrying. The server's log and its dashboard show `volume_full` or
 `journal_full`, or `storage_full` when the disk itself ran out. Up to 1.1.4 a
-disk that ran out answered `500 io_error` instead, and devices showed they
-were offline.
+disk that ran out answered `500 io_error` instead, and a journal volume that
+ran out `503 nonce_log_unavailable`, and devices showed they were offline.
 
 **Why it happens.** The server refuses to write below a reserve of free space
 on its volumes, rather than fill the disk. The limit is the size you declared
@@ -1098,6 +1098,7 @@ entries above; none of them is a reason to repeat setup.
 | `503 body_incomplete` | a request's body ended or its connection broke before the whole body arrived: the device went offline mid-request, or a proxy in front of the server gave up on it; the server and its storage are fine | nothing: it retries by itself. If it repeats, check the proxy's body-size and timeout settings |
 | `503 nonce_share_full` | this one device has sent more signed requests in the last ten minutes than its share of the replay cache holds; other devices are unaffected | transient: its requests retry with backoff as its older ones age out. A device that keeps hitting it is misbehaving: update or revoke it |
 | `503 nonce_log_unavailable` | the server could not record replay state, so it refused the request rather than accept one it cannot prove is not a replay | the server's own log names the I/O error; treat it as a storage problem |
+| `503 nonce_log_faulted` | a record of replay state failed and could not be taken back off the journal volume, so the server refuses every signed request until it restarts | fix what the server's log names on the journal volume, then restart the server; nothing is lost on the devices |
 
 ## Sync stopped with an error
 
