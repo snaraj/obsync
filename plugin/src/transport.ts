@@ -430,6 +430,8 @@ export interface DeviceRecord {
   last_seen: number;
   /** Its first authenticated request as an active device, throttled to one per 15 min; `null` before any. */
   last_sign_in?: number | null;
+  /** Its latest heartbeat, which only a started sync sends (#290); `null` before any, absent from a server that predates it. */
+  last_heartbeat?: number | null;
   revoked: boolean;
   /** Taken off the device lists (#247). A server before 1.1.5 states nothing. */
   archived?: boolean;

@@ -1,0 +1,11 @@
+# M3405: the pairing is kept only once seen in a later second than the sign-in, as before #290
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -199,7 +199,6 @@
+ export function keptOutcome(row: KeptRow | undefined): "kept" | "dropped" | "open" {
+   if (row === undefined || row.revoked || row.state === "revoked") return "dropped";
+   if (row.state !== "active") return "open";
+-  if (typeof row.last_heartbeat === "number") return "kept";
+   if (typeof row.last_sign_in !== "number" || typeof row.last_seen !== "number") return "open";
+   return row.last_seen > row.last_sign_in ? "kept" : "open";
+ }

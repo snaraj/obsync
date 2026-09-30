@@ -3409,6 +3409,57 @@ fn edit_event() -> SeenEvent {
     }
 }
 
+#[test]
+fn a_heartbeat_is_listed_apart_from_a_sign_in_it_shares_a_second_with() {
+    // Issue #290: seen events are stamped in whole seconds, so a new device's
+    // start heartbeat and its sign-in can share one. `last_seen` then equals
+    // `last_sign_in`, and only the heartbeat's own field says a sync started.
+    // It lives through a replay and a snapshot like the fields beside it.
+    let dir = TempDir::new("store-heartbeat");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let device = setup.device;
+    let at = UnixMs(1_757_200_000_000);
+    let seen = |store: &Store| {
+        let d = store.device(&device).expect("device");
+        (d.last_sign_in, d.last_seen, d.last_heartbeat)
+    };
+    let event = |kind| SeenEvent {
+        ts: at,
+        kind,
+        address: None,
+        country: None,
+    };
+    setup
+        .store
+        .record_seen(&device, event(SeenKind::SignIn))
+        .expect("sign-in");
+    assert_eq!(
+        seen(&setup.store),
+        (Some(at), Some(at), None),
+        "a sign-in is no heartbeat"
+    );
+    setup
+        .store
+        .record_seen(&device, event(SeenKind::Heartbeat))
+        .expect("heartbeat");
+    assert_eq!(seen(&setup.store), (Some(at), Some(at), Some(at)));
+    drop(setup);
+    let replayed = open(&cfg);
+    assert_eq!(
+        seen(&replayed),
+        (Some(at), Some(at), Some(at)),
+        "from frames"
+    );
+    replayed.snapshot().expect("snapshot");
+    drop(replayed);
+    assert_eq!(
+        seen(&open(&cfg)),
+        (Some(at), Some(at), Some(at)),
+        "from a snapshot"
+    );
+}
+
 /// Every record the journal holds, in the order it holds them.
 fn journal_records(store: &Store) -> Vec<Record> {
     let mut records = Vec::new();

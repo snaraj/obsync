@@ -173,6 +173,7 @@ export interface KeptRow {
   revoked: boolean;
   last_seen?: number | null;
   last_sign_in?: number | null;
+  last_heartbeat?: number | null;
 }
 
 /**
@@ -184,10 +185,21 @@ export interface KeptRow {
  * that sync's heartbeat moves `last_seen` past the sign-in. So: `kept` once
  * active and seen after signing in, `dropped` once revoked or gone, and
  * `open` while it is still deciding.
+ *
+ * A HEARTBEAT IS THE EVIDENCE, NOT A LATER SECOND (issue #290). The server
+ * stamps these fields in whole seconds, and a sync that starts in the second
+ * of its sign-in leaves `last_seen` EQUAL to `last_sign_in`: the creator
+ * waited out its ten minutes on a device that was syncing all along. Only a
+ * started sync sends a heartbeat -- the engine's start, never the claim or
+ * the survey -- a pending device's is refused, and the row is minted for this
+ * claim, so any `last_heartbeat` on an active row is a kept key. A server
+ * that does not list the field is read by the comparison alone, which can
+ * only wait longer, never say "paired" sooner.
  */
 export function keptOutcome(row: KeptRow | undefined): "kept" | "dropped" | "open" {
   if (row === undefined || row.revoked || row.state === "revoked") return "dropped";
   if (row.state !== "active") return "open";
+  if (typeof row.last_heartbeat === "number") return "kept";
   if (typeof row.last_sign_in !== "number" || typeof row.last_seen !== "number") return "open";
   return row.last_seen > row.last_sign_in ? "kept" : "open";
 }

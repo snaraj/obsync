@@ -279,11 +279,28 @@ devices and seals the envelope under a key derived from BOTH the exchange AND
 - **Paired means kept.** Collection (`consumed`) proves only that the envelope
   left the server: a claimant that cannot open it, or whose person cancels,
   revokes itself. So the creator says "paired" only once the claimant's row in
-  `GET /v1/devices` is `active` with `last_seen` after `last_sign_in` -- the
-  sign-in is its first request after collection (reading the server's vault
-  before it keeps the key), and the later `last_seen` is the heartbeat of the
-  sync a kept key starts. A row that is revoked or gone reads "did not keep
-  the vault key"; neither within ten minutes reads "not confirmed".
+  `GET /v1/devices` is `active` and shows the sync a kept key starts:
+  - A `last_heartbeat` at all (server 1.1.5, issue #290) proves it. Only a
+    started sync sends a heartbeat: never the claim, never the survey. A
+    pending device's heartbeat is refused, and the row is minted for this
+    claim.
+  - Otherwise, `last_seen` after `last_sign_in`. The sign-in is the
+    claimant's first request after collection, reading the server's vault
+    before it keeps the key.
+
+  Seen events are stamped in whole seconds, so a heartbeat in the second of
+  the sign-in leaves `last_seen` equal to `last_sign_in`. That is why the
+  heartbeat's own field decides, whatever second it shares.
+
+  A row that is revoked or gone reads "did not keep the vault key"; neither
+  within ten minutes reads "not confirmed".
+
+  **Skew.**
+  - A 1.1.4 server is refused before any code is made.
+  - A server that does not list `last_heartbeat` (a 1.1.5 build before #290)
+    is read by the comparison alone. A same-second start there waits out the
+    ten minutes and reads "not confirmed", never "paired" early.
+  - A client that does not read the field sees what it saw before.
 
 ## Devices
 
@@ -294,13 +311,16 @@ retain the account-wide authority described below.
 
 - `GET /v1/devices` → `{"devices":[{"device_id","name","platform",
   "app_version","created","last_seen","last_sign_in","last_edit",
-  "address","country","policy":{"per_file_max_bytes","total_budget_bytes"},
+  "last_heartbeat","address","country",
+  "policy":{"per_file_max_bytes","total_budget_bytes"},
   "state":"pending|active|revoked","revoked":false,"archived":false}]}`. Only
   `active` devices count for the last-device rule. `archived` (server 1.1.5)
   is a property of a REVOKED device and never a state of its own: an archived
   device is still listed, still `"revoked":true`, and still named, so a client
   that does not read the field shows exactly what it showed before. A client
   that does read it leaves those devices out of the lists a person manages.
+  `last_heartbeat` (server 1.1.5, #290) is the device's latest heartbeat, in
+  the same whole-second stamps as `last_seen`, and `null` before any.
 - `PATCH /v1/devices/{id}` `{"name"?, "policy"?}` (self or any paired
   device) → `200` the device.
 - `POST /v1/devices/{id}/revoke` → `204`. A device cannot revoke itself

@@ -91,6 +91,8 @@ pub fn device(d: &DeviceRecord) -> Value {
         ("last_seen", maybe(d.last_seen, ms)),
         ("last_sign_in", maybe(d.last_sign_in, ms)),
         ("last_edit", maybe(d.last_edit, ms)),
+        // Server 1.1.5, additive: what a pairing creator reads as "kept" (#290).
+        ("last_heartbeat", maybe(d.last_heartbeat, ms)),
         ("address", maybe(d.address.as_deref(), s)),
         ("country", maybe(d.country.as_deref(), s)),
         ("policy", policy(&d.policy)),

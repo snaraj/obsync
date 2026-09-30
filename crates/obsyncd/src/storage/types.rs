@@ -106,6 +106,10 @@ pub struct DeviceRecord {
     pub last_sign_in: Option<UnixMs>,
     /// Last version this device wrote.
     pub last_edit: Option<UnixMs>,
+    /// Last heartbeat: only a started sync sends one, so a pairing creator
+    /// reads it as the new device having kept the vault key (issue #290). Its
+    /// presence is the evidence, whatever second it shares with a sign-in.
+    pub last_heartbeat: Option<UnixMs>,
     /// Connecting address, as the edge or a trusted proxy reported it.
     pub address: Option<String>,
     /// Country, as the edge reported it.

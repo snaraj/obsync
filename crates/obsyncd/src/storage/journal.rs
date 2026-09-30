@@ -1585,6 +1585,7 @@ fn device_value(record: &DeviceRecord, wrapped: &[u8; 32]) -> Value {
         ("seen", opt_num(record.last_seen.map(|t| t.0))),
         ("sign_in", opt_num(record.last_sign_in.map(|t| t.0))),
         ("edit", opt_num(record.last_edit.map(|t| t.0))),
+        ("beat", opt_num(record.last_heartbeat.map(|t| t.0))),
         ("addr", opt_text(&record.address)),
         ("country", opt_text(&record.country)),
         ("pfm", num(record.policy.per_file_max_bytes)),
@@ -1606,6 +1607,8 @@ fn device_from(value: &Value) -> Result<(DeviceRecord, [u8; 32]), StoreError> {
         last_seen: field_opt_num(value, "seen").map(UnixMs),
         last_sign_in: field_opt_num(value, "sign_in").map(UnixMs),
         last_edit: field_opt_num(value, "edit").map(UnixMs),
+        // Absent from a record an earlier 1.1.5 build wrote: no heartbeat known.
+        last_heartbeat: field_opt_num(value, "beat").map(UnixMs),
         address: field_opt_text(value, "addr"),
         country: field_opt_text(value, "country"),
         policy: DevicePolicy {

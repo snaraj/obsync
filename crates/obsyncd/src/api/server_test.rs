@@ -3619,6 +3619,62 @@ fn a_device_reports_its_ceilings_by_heartbeat() {
     );
 }
 
+#[test]
+fn a_new_device_s_heartbeat_is_listed_even_in_the_second_of_its_sign_in() {
+    // Issue #290. The clock here is frozen, so every seen event shares one
+    // second: the new device's survey signs it in, its sync's heartbeat
+    // follows, and `last_seen` equals `last_sign_in`. A creator comparing the
+    // two never read "paired"; `last_heartbeat` says the sync started.
+    let h = Harness::start("heartbeat-same-second");
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    let row = || {
+        let v = Req::get("/v1/devices")
+            .sign(&creator, NOW)
+            .send(h.addr)
+            .json();
+        v.get("devices")
+            .and_then(Value::as_array)
+            .expect("rows")
+            .iter()
+            .find(|d| d.get("device_id").and_then(Value::as_str) == Some(claimant.id.as_str()))
+            .cloned()
+            .expect("the claimant is listed")
+    };
+    let field = |row: &Value, name: &str| row.get(name).cloned().expect(name);
+    let beat = || {
+        Req::post("/v1/devices/heartbeat")
+            .body(r#"{"app_version":"1.1.5"}"#)
+            .sign(&claimant, NOW)
+            .send(h.addr)
+    };
+    // A pending device's heartbeat is refused and records nothing.
+    assert_eq!(beat().status, 403);
+    assert_eq!(field(&row(), "last_heartbeat"), Value::Null);
+    approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
+    // The survey: an active device's first request signs it in, no heartbeat.
+    let survey = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(survey.status, 200, "{}", survey.text());
+    let surveyed = row();
+    assert_eq!(field(&surveyed, "last_sign_in"), Value::from(NOW * 1000));
+    assert_eq!(
+        field(&surveyed, "last_heartbeat"),
+        Value::Null,
+        "a sign-in is no heartbeat"
+    );
+    // The kept key's sync: its heartbeat, in the same second.
+    let started = beat();
+    assert_eq!(started.status, 204, "{}", started.text());
+    let synced = row();
+    assert_eq!(
+        field(&synced, "last_seen"),
+        field(&synced, "last_sign_in"),
+        "the second hides the order"
+    );
+    assert_eq!(field(&synced, "last_heartbeat"), Value::from(NOW * 1000));
+}
+
 /// Every member name of a JSON object, sorted: what a response says about a
 /// record, exhaustively, so a field ADDED to it is a failure and not a
 /// silently accepted extra.

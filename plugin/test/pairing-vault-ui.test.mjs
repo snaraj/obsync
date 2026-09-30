@@ -286,6 +286,16 @@ test("a new device that never confirms within ten minutes is told so, not called
   assert.ok(r.logs.includes("pairing role=creator decision=failed reason=key_unconfirmed polls=300"));
 });
 
+test("a new device whose sync starts in the second of its sign-in is paired, not left unconfirmed (#290)", async t => {
+  // Seen live: the heartbeat shared the sign-in's second, `last_seen` never
+  // passed `last_sign_in`, and a device syncing 7,700 notes read "not confirmed".
+  const r = await collected(t, (poll, row) => [poll === 1 ? row({ last_seen: 1000, last_heartbeat: null }) : row({ last_seen: 1000, last_heartbeat: 1000 })], (r) => r.closed() === 1);
+  assert.equal(r.calls.filter((call) => call === "devices").length, 2, "signed in, no heartbeat yet, is still open");
+  assert.deepEqual(r.notices.filter((notice) => notice.includes("is paired")), ['The new device, "iPhone 7KQ4", is paired: it holds the vault key now.']);
+  assert.ok(r.logs.includes("pairing role=creator decision=paired polls=2"), r.logs.join(" | "));
+  assert.ok(!r.logs.some((line) => line.includes("key_unconfirmed")), r.logs.join(" | "));
+});
+
 test("a failed device-list read decides nothing: it is logged once and the wait goes on", async t => {
   const r = await collected(t, (poll, row) => (poll < 3 ? new Error("offline") : [row()]), (r) => r.closed() === 1);
   assert.equal(r.logs.filter((line) => line.includes("reason=devices_unread")).length, 1, r.logs.join(" | "));

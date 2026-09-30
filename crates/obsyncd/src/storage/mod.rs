@@ -1122,6 +1122,7 @@ impl Store {
             last_seen: None,
             last_sign_in: None,
             last_edit: None,
+            last_heartbeat: None,
             address: None,
             country: None,
             policy: DevicePolicy::default(),

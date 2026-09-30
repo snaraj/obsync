@@ -170,3 +170,19 @@ test("a collected key counts as kept only once the new device was seen after sig
   assert.equal(p.keptOutcome(row({ state: "revoked" })), "dropped");
   assert.equal(p.keptOutcome(undefined), "dropped", "a device no longer listed took itself back");
 });
+
+// Issue #290: the server stamps in whole seconds, so a sync that starts in
+// the second of its sign-in leaves `last_seen` equal to `last_sign_in`. Its
+// heartbeat is the evidence, and nothing else is.
+test("a heartbeat in the second of the sign-in counts as kept; no heartbeat, a revoked row or a pending one never does", () => {
+  const row = (fields) => ({ state: "active", revoked: false, last_sign_in: 1000, last_seen: 1000, ...fields });
+  assert.equal(p.keptOutcome(row({ last_heartbeat: 1000 })), "kept", "the same second as the sign-in");
+  assert.equal(p.keptOutcome(row({ last_heartbeat: 1000, last_sign_in: null, last_seen: null })), "kept");
+  assert.equal(p.keptOutcome(row({})), "open", "a server that does not list the field: the comparison alone");
+  assert.equal(p.keptOutcome(row({ last_heartbeat: null })), "open", "no heartbeat yet");
+  assert.equal(p.keptOutcome(row({ last_heartbeat: "1000" })), "open", "only a number is a heartbeat");
+  assert.equal(p.keptOutcome(row({ last_heartbeat: 1000, state: "revoked", revoked: true })), "dropped");
+  assert.equal(p.keptOutcome(row({ last_heartbeat: 1000, revoked: true })), "dropped");
+  assert.equal(p.keptOutcome(row({ last_heartbeat: 1000, state: "pending" })), "open");
+  assert.equal(p.keptOutcome(row({ last_heartbeat: 1000, state: undefined })), "open");
+});

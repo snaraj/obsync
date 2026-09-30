@@ -194,7 +194,9 @@ impl Index {
                         crate::storage::types::SeenKind::Edit => {
                             entry.record.last_edit = Some(event.ts);
                         }
-                        crate::storage::types::SeenKind::Heartbeat => {}
+                        crate::storage::types::SeenKind::Heartbeat => {
+                            entry.record.last_heartbeat = Some(event.ts);
+                        }
                     }
                     entry.record.last_seen = Some(event.ts);
                     if event.address.is_some() {
