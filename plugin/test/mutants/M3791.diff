@@ -1,12 +1,12 @@
-# M2812: queued and in-flight pushes are not work: the drain reads idle with pushes left
+# M3791: the status does not count an unsent change (#293)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3255,7 +3255,7 @@
+@@ -3141,7 +3141,7 @@
      // queued again, and a push of it takes it out of the set (`pushNow`).
      let unsent = 0;
      for (const path of this.unsent.keys()) if (!this.queue.includes(path)) unsent++;
 -    const work = this.queue.length + this.active + this.pulls + waiting + unsent;
-+    const work = this.pulls + waiting + unsent;
++    const work = this.queue.length + this.active + this.pulls + waiting;
      // A NOTE WAITING ON AN EDITOR HERE IS NAMED (issue #252): a count
      // alone read "syncing 1" for minutes and said nothing of what to do.
      const held = records.find((entry) => entry.reason === "active_editor")?.path;

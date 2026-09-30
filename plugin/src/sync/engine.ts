@@ -907,6 +907,15 @@ export class SyncEngine {
   private readonly checking = new Set<string>();
   /** Paths asked for while their push was in flight: one follow-up each. */
   private readonly again = new Set<string>();
+  /**
+   * Paths whose push failed and whose change is still on this device only
+   * (#293), each with the failure's number (`failures`): work, for the
+   * status, until a push of the path starts again -- the next scan's, most
+   * often -- or a pass that began after that failure did not send it again
+   * (`survey`).
+   */
+  private readonly unsent = new Map<string, number>();
+  private failures = 0;
   private running = false;
   private cancelled = false;
   /** One per start: `stop` aborts it, which ends every request that start is waiting on. */
@@ -2538,6 +2547,7 @@ export class SyncEngine {
 
   private async pushNow(path: string): Promise<void> {
     const context = this.need();
+    this.unsent.delete(path);
     // What the lines below name: a folder's removal is no file (issue #240).
     let pathClass = "file";
     try {
@@ -2688,6 +2698,10 @@ export class SyncEngine {
       }
       const message = errorText(error);
       context.host.log(`push path_class=${pathClass} decision=failed reason=${message}`);
+      // STILL WORK (#293): the change is on this device only, and a 5xx's
+      // `offline` is taken back by the next answered read, which read idle
+      // over it. Counted until a push takes it (`resting`).
+      this.unsent.set(path, ++this.failures);
       if (error instanceof ApiError && error.code === "domain_mismatch") {
         await this.rekeyed(context, path);
         return;
@@ -3204,7 +3218,9 @@ export class SyncEngine {
    * A note counts only while something is in flight for it -- its debounce,
    * the queue, a push. Nothing in flight means nothing here will change it:
    * a pair no rule settles, a push that never came. Those are dropped rather
-   * than left reading `syncing` for good.
+   * than left reading `syncing` for good. A change a push gave up on is
+   * counted with nothing in flight (#293): the next pass sends it again, or
+   * finds nothing left to send and drops it (`survey`).
    */
   private resting(): EngineStatus {
     if (this.refused !== null) return this.refused;
@@ -3235,7 +3251,11 @@ export class SyncEngine {
     // AND the feed's latest read was answered. Before that first answer the
     // device is checking, which is not idle either.
     if (this.absent) return { kind: "offline" };
-    const work = this.queue.length + this.active + this.pulls + waiting;
+    // A change a push gave up on (#293), counted once: the queue counts one
+    // queued again, and a push of it takes it out of the set (`pushNow`).
+    let unsent = 0;
+    for (const path of this.unsent.keys()) if (!this.queue.includes(path)) unsent++;
+    const work = this.queue.length + this.active + this.pulls + waiting + unsent;
     // A NOTE WAITING ON AN EDITOR HERE IS NAMED (issue #252): a count
     // alone read "syncing 1" for minutes and said nothing of what to do.
     const held = records.find((entry) => entry.reason === "active_editor")?.path;
@@ -4043,6 +4063,8 @@ export class SyncEngine {
     const started = context.now();
     const seen = new Set<string>();
     const fresh: VaultStat[] = [];
+    // The pushes that had given up when this pass began (#293).
+    const gaveUp = this.failures;
     let skipped = 0;
     // FOLDERS ARE THE RECONCILE PASS'S BUSINESS, not the periodic scan's.
     // The scan is additive and never publishes a tombstone, and a folder
@@ -4437,6 +4459,11 @@ export class SyncEngine {
       this.enqueue(file.path);
       queued++;
     }
+    // AN UNSENT CHANGE THIS PASS DID NOT SEND AGAIN IS NO LONGER WORK (#293):
+    // the server took it after all, the file went, or it left the selection.
+    // One queued again is the queue's to count, and one whose push gave up
+    // during this pass is the next pass's to judge.
+    for (const [path, failure] of this.unsent) if (failure <= gaveUp) this.unsent.delete(path);
     if (verifyUpTo > 0) this.examined += queued;
     if (own !== null) {
       context.host.log(

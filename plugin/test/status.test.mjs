@@ -319,6 +319,98 @@ test("a journal volume with no room refuses the feed's read too: the device says
   await stopped(r);
 });
 
+/** A note whose chunk the server answers 500 on every attempt, until the push gives up (#293). */
+async function unsent(r) {
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  const gate = { failing: true };
+  const refused = refuse(r, (sent) => gate.failing && sent.method === "PUT", () => r.server.error(500, "io_error", "SENTINEL"));
+  const from = r.statuses.length;
+  r.host.seed("Unsent.md", "a note the server could not take\n", 5000);
+  r.engine.changed("Unsent.md");
+  const failed = () => r.host.logs.filter((line) => line.startsWith("push path_class=file decision=failed ")).length;
+  await r.timers.run(STEP_MS, () => failed() === 1);
+  assert.ok(refused.length > 1, "the chunk was tried again before the push gave up");
+  // The feed is answered: the server is there again, and the note is not on it.
+  r.server.releaseFeed();
+  await r.timers.run(0, () => r.server.feedWaiters.length === 1);
+  assert.equal(r.state.fileByPath("Unsent.md"), undefined);
+  return { gate, from, failed };
+}
+
+test("a change a push gave up on at a 5xx is work until a push takes it: never idle over an unsent note (#293)", async () => {
+  const r = await started();
+  const { gate, from, failed } = await unsent(r);
+  assert.deepEqual(r.engine.current(), { kind: "syncing", pending: 1 }, "idle over an unsent note");
+  // Each scan sends it again, into the same 500: still work, never idle.
+  await r.timers.run(STEP_MS, () => failed() >= 3);
+  assert.deepEqual(r.statuses.slice(from).filter((status) => status.kind === "idle"), [], "a status said idle while the note was unsent");
+  assert.deepEqual(r.statuses.slice(from).filter((status) => status.kind === "syncing" && status.pending > 1), [], "one note counted twice");
+  assert.deepEqual(r.engine.current(), { kind: "syncing", pending: 1 });
+  // The server takes it at the next scan's push, and idle comes back.
+  gate.failing = false;
+  await r.timers.run(STEP_MS, () => r.state.fileByPath("Unsent.md") !== undefined && r.last()?.kind === "idle");
+  assert.equal(r.server.journal.at(-1).file_id, r.state.fileByPath("Unsent.md").fileId);
+  await stopped(r);
+});
+
+test("six unsent notes read six, never more, while a scan queues them all again behind four uploads (#293)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  const gate = { failing: true };
+  refuse(r, (sent) => gate.failing && sent.method === "PUT", () => r.server.error(500, "io_error", "SENTINEL"));
+  const from = r.statuses.length;
+  const paths = Array.from({ length: 6 }, (_, i) => `Unsent-${i}.md`);
+  paths.forEach((path, i) => { r.host.seed(path, `unsent note ${i}\n`, 5000 + i); r.engine.changed(path); });
+  const failed = () => r.host.logs.filter((line) => line.startsWith("push path_class=file decision=failed ")).length;
+  // Every push gives up, and a scan sends every note again: two rounds.
+  await r.timers.run(STEP_MS, () => failed() >= 12);
+  const counted = r.statuses.slice(from).filter((status) => status.kind === "syncing").map((status) => status.pending);
+  assert.ok(counted.includes(6), `six unsent notes were counted: ${counted}`);
+  assert.deepEqual(counted.filter((pending) => pending > 6), [], `a note counted twice: ${counted}`);
+  gate.failing = false;
+  await r.timers.run(STEP_MS, () => paths.every((path) => r.state.fileByPath(path) !== undefined) && r.last()?.kind === "idle");
+  await stopped(r);
+});
+
+test("an unsent change the next pass finds nothing to send for is no longer work: gone, or put back as sent (#293)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  r.host.seed("Undone.md", "as the server has it\n", 4000);
+  r.engine.changed("Undone.md");
+  await r.timers.run(STEP_MS, () => r.state.fileByPath("Undone.md") !== undefined && r.last()?.kind === "idle");
+  const { failed } = await unsent(r);
+  r.host.seed("Undone.md", "an edit the server could not take\n", 6000);
+  r.engine.changed("Undone.md");
+  await r.timers.run(STEP_MS, () => failed() >= 2 && r.engine.current().pending === 2);
+  // Neither through an event, only as the next listing says: one removed
+  // the way a file manager removes it, one put back as it was sent.
+  const sent = failed();
+  r.host.files.delete("Unsent.md");
+  r.host.seed("Undone.md", "as the server has it\n", 4000);
+  await r.timers.run(STEP_MS, () => r.engine.current().kind === "idle");
+  assert.equal(failed(), sent, "a change with nothing left to send was pushed again");
+  await stopped(r);
+});
+
+test("a push that gives up while a pass compares the vault is still work after that pass (#293)", async () => {
+  const r = await started();
+  const { failed } = await unsent(r);
+  // A note the pass compares after it has queued the unsent one, held until
+  // that push has given up again, and then not this device's to sync.
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const syncable = r.host.syncable.bind(r.host);
+  r.host.syncable = async (path, kind) => (path === "Later.md" ? (await held, false) : syncable(path, kind));
+  r.host.seed("Later.md", "compared last\n", 6000);
+  const from = r.statuses.length;
+  await r.timers.run(STEP_MS, () => failed() === 2);
+  release();
+  await r.timers.run(STEP_MS, () => r.host.logs.some((line) => line.startsWith("scan decision=queued ") && / skipped=1 /.test(line)));
+  assert.deepEqual(r.engine.current(), { kind: "syncing", pending: 1 }, "the pass judged a push that gave up during it");
+  assert.deepEqual(r.statuses.slice(from).filter((status) => status.kind === "idle"), []);
+  await stopped(r);
+});
+
 test("a change sent around the server's edge says so, not that the server refused it, and clears when one gets through (#228)", async () => {
   const r = await started();
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
