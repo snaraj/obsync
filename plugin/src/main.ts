@@ -347,8 +347,8 @@ function soleSpelling(names: string[], segment: string): string | null {
   return folded.length === 1 ? (folded[0] as string) : null;
 }
 
-/** The decisions that mean the plugin did NOT do what was asked, or fell back to a slower way of doing it (#221). */
-const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback)\b/;
+/** The decisions that mean the plugin did NOT do what was asked, or fell back to a slower way of doing it (#221, #283). */
+const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback|throttle_unavailable)\b/;
 
 /**
  * How long a device waits to start again after the server could not be
@@ -628,6 +628,8 @@ export class ObsidianHost implements VaultHost {
   private readonly unghosting = new Set<string>();
   /** Obsidian's adapter offers no reconcile here, said once (`reconcile`). */
   private reconcileTold = false;
+  /** The window's throttling could not be lifted, said once (`hurry`). */
+  private throttleTold = false;
   /** Entries being put back under their own names now: their `create` events are that put-back's own (`settleRecase`). */
   private readonly returning = new Set<string>();
   /** Obsidian's index could not be corrected here, said once (`unghost`). */
@@ -743,6 +745,39 @@ export class ObsidianHost implements VaultHost {
   pass(open: boolean): void {
     this.passes = Math.max(0, this.passes + (open ? 1 : -1));
     this.nestedAnswers = this.passes === 0 ? null : this.nestedAnswers ?? new Map();
+  }
+
+  /**
+   * A MINIMIZED OR COVERED WINDOW SYNCS AT FULL SPEED WHILE THERE IS WORK
+   * (issue #283). Such a window's page is a background page: Chromium and the
+   * OS run its every step last, and a first sync that made 37 notes a second
+   * shown made 1.35 minimized. So while the engine has work in hand
+   * (`VaultHost.hurry`) the window's background throttling is lifted, through
+   * the Electron window Obsidian gives the page (`electronWindow`), and put
+   * back the moment none is left. It is looked up at every change; where it is
+   * absent or refuses, the window keeps the pace it always had, and one line
+   * says so. Desktop only: a phone has no such window.
+   */
+  hurry(busy: boolean): void {
+    if (!Platform.isDesktopApp) return;
+    const started = Date.now();
+    const reason = busy ? "work" : "idle";
+    try {
+      const contents = (window as unknown as { electronWindow?: { webContents?: { setBackgroundThrottling?: unknown } } })
+        .electronWindow?.webContents;
+      const set = contents?.setBackgroundThrottling;
+      if (typeof set !== "function") return this.unthrottled("absent", reason, started);
+      set.call(contents, !busy);
+    } catch {
+      return this.unthrottled("failed", reason, started);
+    }
+    this.log(`host decision=${busy ? "throttle_lifted" : "throttle_restored"} reason=${reason} duration_ms=${Date.now() - started}`);
+  }
+
+  private unthrottled(why: "absent" | "failed", at: string, started: number): void {
+    if (this.throttleTold) return;
+    this.throttleTold = true;
+    this.log(`host decision=throttle_unavailable reason=${why} at=${at} duration_ms=${Date.now() - started}`);
   }
 
   /**

@@ -1,0 +1,11 @@
+# M3542: a window without the means to lift its throttling says nothing (#283)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -777,7 +777,6 @@
+   private unthrottled(why: "absent" | "failed", at: string, started: number): void {
+     if (this.throttleTold) return;
+     this.throttleTold = true;
+-    this.log(`host decision=throttle_unavailable reason=${why} at=${at} duration_ms=${Date.now() - started}`);
+   }
+ 
+   /**

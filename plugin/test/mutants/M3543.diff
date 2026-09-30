@@ -1,0 +1,11 @@
+# M3543: a stop leaves the throttling lifted until a calm that never comes (#283)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1207,7 +1207,6 @@
+     if (this.contextValue !== null) announceCopies(this.contextValue, true);
+     this.cancelled = true;
+     this.running = false;
+-    this.pace();
+     this.halt.abort();
+     this.answerFeed(Number.POSITIVE_INFINITY);
+     for (const entry of this.pending.values()) this.timers.clear(entry.handle);

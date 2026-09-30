@@ -1,5 +1,6 @@
 /**
- * Timers a hidden window does not slow (issue #221).
+ * Timers a hidden window does not slow (issue #221), and the full pace a
+ * hidden window keeps while there is sync work (#283, the last section).
  *
  * WHAT IS DRIVEN. `workerClock` over a page clock and a worker that are both
  * fakes and fire only when told, so "the worker's message came first" and
@@ -21,7 +22,7 @@ import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { KEYS, memorySecrets, sandbox, statusItem } from "./fake.mjs";
+import { KEYS, STEP_MS, memorySecrets, pair, sandbox, settled, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { WORKER_SOURCE, spawnWorker, workerClock } = require("../build/clock.js");
@@ -321,4 +322,106 @@ test("a reload of the same plugin instance closes the question its old host aske
   await r.instance.firstStart;
   r.instance.host.notify("Holding deletions again", [{ kind: "delete_everywhere" }, { kind: "restore_here" }]);
   assert.equal(question.hidden, true, "the replaced host left its question on screen beside the new one");
+});
+
+// --- a background window's pace (#283) ---------------------------------------
+
+/**
+ * WHAT IS DRIVEN. Two real engines over the fake server, each host recording
+ * what it is told of the work in hand (`VaultHost.hurry`); then the real
+ * `ObsidianHost` over a fake of the Electron window Obsidian gives the page.
+ * What lifting the throttling does to a minimized window's pace is a
+ * real-device measurement (`docs/benchmarks.md`), not something Node can show.
+ */
+test("the host is told of sync work once as it begins and once after CALM_MS without any, never per note, never for a waiting poll, and at once at a stop (#283)", async (t) => {
+  const { CALM_MS } = require("../build/sync/engine.js");
+  const { server, timers, a, b } = await pair(t);
+  const told = { a: [], b: [] };
+  a.host.hurry = (busy) => told.a.push(busy);
+  b.host.hurry = (busy) => told.b.push(busy);
+  // Nothing to sync: the feed's first read answered, its poll waiting on the server.
+  await a.engine.start();
+  await timers.run(CALM_MS);
+  assert.deepEqual(told.a, [], "a waiting poll is no work");
+  const paths = Array.from({ length: 20 }, (_, i) => `Notes/n${i}.md`);
+  paths.forEach((path, i) => a.host.write(path, `NOTE SENTINEL ${i}\n`, 1000 + i));
+  // While work is in flight the virtual clock crawls, 2 ms a turn, so that
+  // no amount of load can walk it through CALM_MS inside one span; the wait
+  // ends once the feed has read the uploads back too.
+  const CRAWL_MS = 2;
+  const caughtUp = (device) => device.state.data.lastSeq >= server.seq;
+  await timers.run(CRAWL_MS, () => paths.every((path) => settled(a, path)) && server.journal.length >= paths.length && caughtUp(a));
+  await timers.run(CALM_MS);
+  assert.deepEqual(told.a, [true, false], "twenty uploads, one span of work");
+  // Twenty notes read back, one span too.
+  await b.engine.start();
+  await timers.run(CRAWL_MS, () => paths.every((path) => settled(b, path)) && caughtUp(b));
+  await timers.run(CALM_MS);
+  assert.deepEqual(told.b, [true, false]);
+  await timers.run(CALM_MS);
+  assert.deepEqual(told, { a: [true, false], b: [true, false] }, "both polls waiting: no work");
+  // A stop ends the span at once, not after the calm.
+  a.host.write("Notes/late.md", "LATE SENTINEL\n", 5000);
+  await timers.run(STEP_MS, () => told.a.length === 3);
+  a.engine.stop();
+  assert.deepEqual(told.a, [true, false, true, false]);
+});
+
+test("the desktop host lifts its window's background throttling for work and puts it back after, a line each; a window without the means, or one that refuses, keeps its pace and says so once (#283)", async (t) => {
+  const box = sandbox();
+  t.after(() => rmSync(box.home, { recursive: true, force: true }));
+  const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
+  const { Platform } = box.require("obsidian");
+  const previous = globalThis.window;
+  t.after(() => { globalThis.window = previous; Object.assign(Platform, { isMobile: false, isDesktopApp: true }); });
+  // Every line goes out through the plugin's own logger, at the level it picks.
+  const Plugin = box.require(join(box.home, "build/main.js")).default;
+  const warned = [];
+  const { warn, debug } = console;
+  console.warn = (line) => warned.push(line);
+  console.debug = () => undefined;
+  t.after(() => Object.assign(console, { warn, debug }));
+  const logs = [];
+  const plugin = { state: { data: {} }, log: (line) => { logs.push(line); Plugin.prototype.log.call(null, line); } };
+  const asked = [];
+  const electron = { electronWindow: { webContents: { setBackgroundThrottling(allowed) { asked.push(allowed); } } } };
+  const said = () => logs.splice(0).map((line) => line.replace(/ duration_ms=\d+$/, ""));
+
+  globalThis.window = { ...previous, ...electron };
+  const host = new ObsidianHost(plugin, null);
+  host.hurry(true);
+  host.hurry(false);
+  assert.deepEqual(asked, [false, true]);
+  assert.deepEqual(said(), ["host decision=throttle_lifted reason=work", "host decision=throttle_restored reason=idle"]);
+
+  // Absent: the window keeps its pace, said once however many changes follow.
+  globalThis.window = { ...previous };
+  host.hurry(true);
+  host.hurry(false);
+  host.hurry(true);
+  assert.deepEqual(said(), ["host decision=throttle_unavailable reason=absent at=work"]);
+  // Looked up at every change: a window that has it again is asked again.
+  globalThis.window = { ...previous, ...electron };
+  host.hurry(false);
+  assert.deepEqual(asked, [false, true, true]);
+  assert.deepEqual(said(), ["host decision=throttle_restored reason=idle"]);
+
+  // Refused: the same one line.
+  globalThis.window = { ...previous, electronWindow: { webContents: { setBackgroundThrottling() { throw new Error("SENTINEL refused"); } } } };
+  const refused = new ObsidianHost(plugin, null);
+  refused.hurry(true);
+  refused.hurry(false);
+  assert.deepEqual(said(), ["host decision=throttle_unavailable reason=failed at=work"]);
+
+  // A phone has no such window: nothing is asked and nothing is said.
+  Object.assign(Platform, { isMobile: true, isDesktopApp: false });
+  globalThis.window = { ...previous, ...electron };
+  new ObsidianHost(plugin, null).hurry(true);
+  assert.deepEqual(asked, [false, true, true]);
+  assert.deepEqual(said(), []);
+  // A window that keeps its slow pace is a fallback, at warn (`docs/troubleshooting.md`); the rest is routine.
+  assert.deepEqual(warned.map((line) => line.replace(/ duration_ms=\d+$/, "")), [
+    "obsync host decision=throttle_unavailable reason=absent at=work",
+    "obsync host decision=throttle_unavailable reason=failed at=work",
+  ]);
 });

@@ -364,6 +364,8 @@ export interface VaultHost {
    * (`main.ts`, `inNestedVault`, issue #198); outside a pass it asks afresh.
    */
   pass?(open: boolean): void;
+  /** The engine has sync work in hand, or none left: said once at each change (`SyncEngine.pace`, issue #283). */
+  hurry?(busy: boolean): void;
 }
 
 export interface SyncContext {
@@ -663,6 +665,13 @@ export const WALK_MS = 5 * 60 * 1000;
  * `recordAt`).
  */
 export const SAVE_COALESCE_MS = 1500;
+/**
+ * How long the engine is idle before its host is told no work is left
+ * (`pace`, issue #283): notes read back one page at a time while another
+ * device uploads, or saved one after another while someone types, are one
+ * span of work, not one per note.
+ */
+export const CALM_MS = 5000;
 
 /**
  * How long a start holds back the local notes whose names the feed already
@@ -1012,6 +1021,11 @@ export class SyncEngine {
   private absent = false;
   /** Records of the page being applied that are not yet written: work the status counts (#158). */
   private pulls = 0;
+  /** Whether the server held more of the feed than the latest page: the next read is answered at once (#283). */
+  private feedBehind = false;
+  /** What the host was last told of the work in hand, and the wait before it is told none is left (`pace`, #283). */
+  private hurried = false;
+  private calmHandle: unknown = null;
   /** Versions the server has taken from this device since it started: what a Sync now press reports (#182). */
   private written = 0;
   /** Files a press's pass queued to have their contents read, since this engine started: what Verify all files reports (#197). */
@@ -1204,6 +1218,7 @@ export class SyncEngine {
     if (this.contextValue !== null) announceCopies(this.contextValue, true);
     this.cancelled = true;
     this.running = false;
+    this.pace();
     this.halt.abort();
     this.answerFeed(Number.POSITIVE_INFINITY);
     for (const entry of this.pending.values()) this.timers.clear(entry.handle);
@@ -1277,6 +1292,32 @@ export class SyncEngine {
 
   private status(status: EngineStatus): void {
     this.onStatus(status);
+  }
+
+  /**
+   * WORK IN HAND, SAID AT ITS EDGES (issue #283): pushes queued or in
+   * flight, a feed page being applied or more pages the server already
+   * holds, a large download in the lane. A long poll waiting on the server is
+   * none. A desktop window minimized or covered runs as a background page:
+   * each of its timers waits for a one-second wake-up, and on a busy machine
+   * its every step comes last -- a first sync ran 27 times slower minimized
+   * than shown at load 27, and a download half as fast at load 6. The
+   * host is told once when work begins and once when none has been left for
+   * `CALM_MS`, or at a stop, never per note, and does what its platform
+   * allows (`main.ts`, `hurry`).
+   */
+  private pace(): void {
+    const busy = this.running && (this.draining || this.pulls > 0 || this.laning || this.feedBehind);
+    if (busy || !this.running) {
+      if (this.calmHandle !== null) this.timers.clear(this.calmHandle);
+      this.calmHandle = null;
+      if (busy !== this.hurried) this.options.host.hurry?.(this.hurried = busy);
+    } else if (this.hurried && this.calmHandle === null) {
+      this.calmHandle = this.timers.set(() => {
+        this.calmHandle = null;
+        this.options.host.hurry?.(this.hurried = false);
+      }, CALM_MS);
+    }
   }
 
   /**
@@ -2353,6 +2394,7 @@ export class SyncEngine {
       return this.drainWork;
     }
     this.drainWork = this.drainQueue();
+    this.pace();
     return this.drainWork;
   }
 
@@ -2407,6 +2449,7 @@ export class SyncEngine {
       if (this.running) this.status(this.resting());
     } finally {
       this.draining = false;
+      this.pace();
     }
   }
 
@@ -2872,6 +2915,7 @@ export class SyncEngine {
         if (!live()) return;
         this.feedAnswered = true;
         this.absent = false;
+        this.feedBehind = page.seq < page.head_seq;
         this.accepted(false);
         // A restore the repair pass noticed while this read waited is answered
         // before anything the read brought is applied.
@@ -2882,6 +2926,8 @@ export class SyncEngine {
         this.poll = null;
         this.reading = false;
         if (!live()) return;
+        this.feedBehind = false;
+        this.pace();
         // A wake dropped the poll (`wake`): the next read asks at once, and
         // whatever the dropped one brings later is discarded unread.
         if (error instanceof ApiError && error.code === "cancelled") continue;
@@ -3350,6 +3396,7 @@ export class SyncEngine {
     if (this.laning || !this.running) return;
     this.laning = true;
     void this.track(this.laneRun(this.need()));
+    this.pace();
   }
 
   private async laneRun(context: SyncContext): Promise<void> {
@@ -3377,6 +3424,7 @@ export class SyncEngine {
       }
     } finally {
       this.laning = false;
+      this.pace();
     }
   }
 
@@ -3465,6 +3513,7 @@ export class SyncEngine {
     // said then when it will wait; the turn always comes (`exclusive`), says
     // the count itself, and its end sets it back.
     this.pulls = page.changes.length;
+    this.pace();
     if (this.pulls > 0 && (this.holder !== null || this.behind > 0)) this.status(this.resting());
     await this.exclusive("page", async () => {
       context.ahead = new Prefetch(context, page.changes);
@@ -3528,6 +3577,7 @@ export class SyncEngine {
     // happens to carry a change -- which kept every device reading `offline —
     // retrying` for minutes after its server was back.
     this.status(this.resting());
+    this.pace();
   }
 
   /**
