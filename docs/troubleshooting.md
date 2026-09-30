@@ -191,6 +191,8 @@ resumed about ten seconds after the server came back.
 
 > Use your server's https address. Plain HTTP would send the setup token and every request unencrypted; it is accepted only for this computer itself (localhost or 127.0.0.1).
 
+![The plugin's settings with Server URL holding http://lan.example.test, and the notice asking for the server's https address](assets/server-url-refused.png)
+
 On a phone or tablet:
 
 > Mobile Obsidian only reaches HTTPS servers.
@@ -198,6 +200,8 @@ On a phone or tablet:
 If you select **Check** before you correct the address, Check says the same
 thing, after "Server URL was not saved:", and asks no server. It does not
 ask the address saved before either.
+
+![Check selected with the refused address still in Server URL: the notice reads Server URL was not saved, then asks for the https address](assets/check-server-url-not-saved.png)
 
 **Why it happens.** The address starts with `http://`. Plain HTTP would send
 your credentials unencrypted, so the plugin accepts it only for a server on the
@@ -1083,6 +1087,8 @@ was restored from a backup older than this pairing.
 **What you see.** The alert icon, and its words read:
 
 > obsync: error — Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota, then select Sync now.
+
+![Show sync status on a computer: What to do says the server is out of storage, with Retry now, and State reads the same error](assets/server-out-of-storage.png)
 
 A phone also says it once in a notice. New and changed notes stay on the
 device. Once there is room, **Sync now** sends them and clears the alert at
