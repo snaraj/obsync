@@ -690,6 +690,16 @@ impl App {
                 io: None,
             });
         }
+        // The nonce log beside it, for the same reason: faulted, it refuses
+        // every signed request until a restart, reads included, while the
+        // volume under it still takes the probe write (#294).
+        if let Some(kind) = self.nonces.faulted() {
+            self.not_ready("journal", &std::io::Error::from(kind));
+            return Err(NotReady {
+                reason: "nonce log faulted; restart to recover",
+                io: None,
+            });
+        }
         // Second, and the reason this probe does more than look: a journal
         // whose usage could not be surveyed refuses every write, and until
         // the survey is retried nothing can tell whether it still would. The

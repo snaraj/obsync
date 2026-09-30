@@ -443,9 +443,10 @@ impl NonceLog {
         Ok(())
     }
 
-    /// Whether a cut-back failed, so nothing more is written until a restart.
-    pub const fn faulted(&self) -> bool {
-        self.faulted.is_some()
+    /// What the cut-back answered, if one failed: nothing more is written
+    /// until a restart.
+    pub const fn faulted(&self) -> Option<io::ErrorKind> {
+        self.faulted
     }
 
     /// Lines the file holds, for the caller's compaction threshold.

@@ -126,6 +126,8 @@ pub struct NonceCache {
     /// Most nonces one device holds: [`NONCE_DEVICE_SHARE`], or the whole
     /// capacity where a test shrinks that below it.
     share: usize,
+    /// What faulted the log, set once by the flush that found it (`faulted`).
+    faulted: OnceLock<std::io::ErrorKind>,
     #[cfg(test)]
     syncing: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -158,14 +160,15 @@ struct Batch {
     outcome: Arc<OnceLock<Result<(), Refused>>>,
 }
 
-/// Why the volume would not take a batch: what it answered, and whether the
-/// log is faulted -- a cut-back that failed too, so nothing more is written
-/// until a restart. Together they pick the refusal every member is answered
-/// with (`refusal`); the batch is refused and its nonces unspent either way.
+/// Why the volume would not take a batch: what it answered, and what the
+/// cut-back answered if the log is faulted -- a cut-back that failed too, so
+/// nothing more is written until a restart. Together they pick the refusal
+/// every member is answered with (`refusal`); the batch is refused and its
+/// nonces unspent either way.
 #[derive(Clone, Copy, Debug)]
 struct Refused {
     io: std::io::ErrorKind,
-    faulted: bool,
+    faulted: Option<std::io::ErrorKind>,
 }
 
 impl NonceState {
@@ -261,6 +264,7 @@ impl NonceCache {
             log: log.clone(),
             capacity,
             share: NONCE_DEVICE_SHARE.min(capacity),
+            faulted: OnceLock::new(),
         })
     }
 
@@ -399,6 +403,32 @@ impl NonceCache {
             .map_or(0, NonceLog::take_appends)
     }
 
+    /// What faulted the log, if a flush found it faulted: every signed
+    /// request is refused until a restart, so readiness is false while this
+    /// is set (#294). Kept beside the file rather than read from it, because
+    /// a flush in flight holds the file, and asking must not wait on the
+    /// volume.
+    pub fn faulted(&self) -> Option<std::io::ErrorKind> {
+        self.faulted.get().copied()
+    }
+
+    /// Remember the fault a flush found, and say so once, with what the
+    /// failed cut-back answered (requirement 12): the refusal lines before it
+    /// name only what the append answered.
+    fn found(&self, faulted: Option<std::io::ErrorKind>) {
+        if let Some(kind) = faulted
+            && self.faulted.set(kind).is_ok()
+        {
+            self.log.error(
+                "nonce_log",
+                &[
+                    ("decision", Val::word("faulted")),
+                    ("rollback_io", Val::io_kind(kind)),
+                ],
+            );
+        }
+    }
+
     /// How many nonces are held.
     pub fn len(&self) -> usize {
         self.state().seen.len()
@@ -480,6 +510,9 @@ impl<'a> Flight<'a> {
         }
         let faulted = file.faulted();
         state.durable = self.file.take();
+        // Before any member is answered, so no refusal that names the fault
+        // reaches a device while readiness still says ready.
+        cache.found(faulted);
         let _ = self.batch.outcome.set(written.map_err(|e| Refused {
             io: e.kind(),
             faulted,
@@ -513,6 +546,7 @@ impl Drop for Flight<'_> {
         }
         let faulted = file.faulted();
         state.durable = Some(file);
+        cache.found(faulted);
         let _ = self.batch.outcome.set(Err(Refused {
             io: std::io::ErrorKind::Other,
             faulted,
@@ -535,7 +569,7 @@ impl Drop for Flight<'_> {
 /// restart, so it never says so: it has a 503 of its own. Anything else the
 /// volume answered is `503 nonce_log_unavailable`, as before.
 fn refusal(refused: Refused) -> ApiError {
-    if refused.faulted {
+    if refused.faulted.is_some() {
         return ApiError::new(
             503,
             "nonce_log_faulted",
@@ -1749,8 +1783,20 @@ mod tests {
                 .code,
             "nonce_log_faulted"
         );
+        // Kept where readiness can ask it without the file, and said once,
+        // with what the cut answered (#294).
+        assert_eq!(c.faulted(), Some(std::io::ErrorKind::StorageFull));
+        assert_eq!(
+            log.captured()
+                .matches("event=nonce_log decision=faulted rollback_io=StorageFull")
+                .count(),
+            1,
+            "{}",
+            log.captured()
+        );
         drop(c);
         let restarted = cache(&dir, 1_000, 2, &log);
+        assert_eq!(restarted.faulted(), None, "a start clears the state");
         assert_eq!(restarted.len(), 1, "the durable line survives");
         restarted
             .remember(DEVICE, &nonce(2), 1_000)
@@ -1787,6 +1833,7 @@ mod tests {
             c.set_fault(NonceFault::None);
             assert_eq!((e.status, e.code), (507, "storage_full"), "{fault:?}");
             assert_eq!(c.len(), 1, "{fault:?}: the refused nonce is not held");
+            assert_eq!(c.faulted(), None, "{fault:?}: a clean cut is no fault");
             assert_eq!(lines_on_disk(&dir), 1, "{fault:?}: nor written down");
             assert!(
                 log.captured()

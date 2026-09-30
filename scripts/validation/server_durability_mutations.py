@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Reproduce the server durability guard probes (#191, #192, #203, #273, #291,
-#292) from the repository root.
+#292, #294) from the repository root.
 
 Each probe must compile and fail a behavioral regression. A probe is one or
 more exact substitutions, each of which must match exactly once. Sources are
@@ -34,6 +34,7 @@ FANOUT = "a_new_fan_out_directory_is_durable_in_its_parent_before_its_chunk_is_a
 FANOUT_START = "a_start_after_a_cut_upload_makes_every_fan_out_name_durable"
 NO_ROOM = "the_disk_cannot_hold"
 NONCE_NO_ROOM = "journal_volume_with_no_room"
+NONCE_NOT_READY = "a_faulted_nonce_log_is_not_ready_until_a_restart"
 
 CASES = [
     # --- nonce log group commit (#191) ------------------------------------
@@ -261,13 +262,31 @@ CASES = [
         "        std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded\n    ) {\n"
         "        return ApiError::new(507, \"storage_full\", \"the volume is out of space\");\n    }\n", "",
     )], NONCE_NO_ROOM),
+    # Re-anchored in 1.1.5 (#294): the refusal carries what the cut answered
+    # now; the subject, a faulted log never answered 507, is the same.
     ("nonce-faulted-log-never-reads-full", AUTH, [(
-        "    if refused.faulted {\n", "    if false && refused.faulted {\n",
+        "    if refused.faulted.is_some() {\n", "    if false && refused.faulted.is_some() {\n",
     )], "a_faulted_nonce_log_says_so_until_a_restart_and_never_that_it_is_full"),
     ("nonce-no-room-leaves-the-nonce-unspent", AUTH, [(
         "            for (ts, entry) in &self.batch.entries {\n                state.unspend(*ts, entry);\n"
         "            }\n        }\n        let faulted = file.faulted();\n",
         "        }\n        let faulted = file.faulted();\n",
+    )], NONCE_NO_ROOM),
+    # --- readiness asks the nonce log (#294) ----------------------------------
+    ("readiness-asks-the-nonce-log", API, [(
+        "        if let Some(kind) = self.nonces.faulted() {\n"
+        "            self.not_ready(\"journal\", &std::io::Error::from(kind));\n"
+        "            return Err(NotReady {\n"
+        "                reason: \"nonce log faulted; restart to recover\",\n"
+        "                io: None,\n            });\n        }\n", "",
+    )], NONCE_NOT_READY),
+    ("the-flush-remembers-the-fault", AUTH, [(
+        "        cache.found(faulted);\n        let _ = self.batch.outcome.set(written",
+        "        let _ = self.batch.outcome.set(written",
+    )], NONCE_NOT_READY),
+    ("a-clean-cut-is-no-fault", AUTH, [(
+        "        if let Some(kind) = faulted\n",
+        "        if let Some(kind) = faulted.or(Some(std::io::ErrorKind::Other))\n",
     )], NONCE_NO_ROOM),
     ("clean-no-room-leaves-the-journal-unfaulted", JOURNAL, [(
         "            Ok(()) => (\"truncated\", None),\n",

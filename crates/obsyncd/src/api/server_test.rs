@@ -1349,6 +1349,54 @@ fn a_faulted_nonce_log_says_so_until_a_restart_and_never_that_it_is_full() {
     assert_eq!(again.status, 200, "{}", again.text());
 }
 
+#[test]
+fn a_faulted_nonce_log_is_not_ready_until_a_restart() {
+    // Issue #294. A faulted log refuses every signed request, while the
+    // journal volume under it still takes the probe write: readiness asks
+    // the log, as it asks the journal, or it says ready over a server that
+    // can answer nothing signed (AGENTS.md requirement 7).
+    let h = Harness::start_with(
+        "nonce-faulted-ready",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    assert_eq!(Req::get("/readyz").send(h.addr).status, 200);
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::ShortWriteStuck { code: ENOSPC });
+    let faulting = rename_request(&cred, &nonce(), "renamed while faulted").send(h.addr);
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::None);
+    assert_eq!(faulting.code(), "nonce_log_faulted", "{}", faulting.text());
+
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let not_ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(not_ready.status, 503, "{}", not_ready.text());
+    assert_eq!(not_ready.code(), "not_ready");
+    assert_eq!(
+        not_ready.json().get("detail").and_then(Value::as_str),
+        Some("nonce log faulted; restart to recover"),
+        "the refusal names the state and the way back"
+    );
+    let said = h.captured();
+    for line in [
+        "event=nonce_log decision=faulted rollback_io=StorageFull",
+        "event=readiness decision=not_ready volume=journal io=StorageFull",
+    ] {
+        assert_eq!(said.matches(line).count(), 1, "{line}: {said}");
+    }
+
+    // A restart truncates the torn tail and the log takes records again.
+    let dir = h.stop();
+    let h = Harness::start_in(dir, Setup::default());
+    let ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(ready.status, 200, "{}", ready.text());
+}
+
 /// Every byte the journal ROOT holds, walked independently of the server.
 fn journal_root_bytes(dir: &Path) -> u64 {
     fn walk(path: &Path) -> u64 {
