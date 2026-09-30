@@ -342,9 +342,9 @@ alternating run by run.
 | 20 | main `19d32020` | **fail** | 0 | 3 | **no** | 0 / 1 / 50 | 76 / 75 / 75 | 19.12 |
 
 - **Paused:** none, on either bundle.
-- **Copies:** this head made none in 10 runs. After the windows came back, every run held the whole expected text on every disk and editor. origin/main made copies in 2 of 10 (runs 9 and 20), on all three devices. Both were #227's first defect, with the third device logging `refused reason=merge_ancestry_limit reads=64` and then `converged reason=unmerged`.
+- **Copies:** this head made none in 10 runs. After the windows came back, every one of this head's runs held the whole expected text on every disk and editor. origin/main made copies in 2 of 10 (runs 9 and 20), on all three devices. Both were #227's first defect, with the third device logging `refused reason=merge_ancestry_limit reads=64` and then `converged reason=unmerged`.
 - **Breaker:** no device on either bundle logged `merge_storm`. In 9 of 10 of this head's runs a typist logged `merge_budget_refund`, up to 18 in one run (run 6, 2 `started_over` and 16 `own_push`).
-- **Verdict:** the driver's verdict, read with the windows still hidden, failed in 9 of this head's 10 runs and in 7 of origin/main's 10. In every one, a typist's status read `waiting for unsaved changes`: its hidden editor had not yet saved keystrokes that arrived after the renderers continued. Obsidian's save was still pending, not obsync's. 90 s after the windows returned, every one of those runs held the whole text.
+- **Verdict:** the driver's verdict, read with the windows still hidden, failed in 9 of this head's 10 runs and in 8 of origin/main's 10. In every one, a typist's status read `waiting for unsaved changes`: its hidden editor had not yet saved keystrokes that arrived after the renderers continued. Obsidian's save was still pending, not obsync's. 90 s after the windows returned, every one of this head's runs held the whole text; origin/main's runs 9 and 20 had made copies instead (below).
 - **Notices:** the third device showed 0 in each of this head's 10 runs. On origin/main it showed 44 to 53 in 7 runs, and 0 in runs 5, 8 and 9.
 
 ### Unfrozen, three devices, the note shown on the third

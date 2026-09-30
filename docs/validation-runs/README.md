@@ -19,8 +19,8 @@ system; it is not a device run, and only a record below is
 
 | Client | Recorded on a device | Proven in CI |
 | --- | --- | --- |
-| macOS | Every run below | `desktop-matrix.yml`, `obsidian-macos`: the official Obsidian app, two instances, through setup, pairing, notes both ways, a rename and folders, against the server behind Caddy; `plugin-tests` on macOS |
-| iPhone | Every run below | Nothing: no CI job runs a phone |
+| macOS | The runs below that name it; most recently [2026-09-29](2026-09-29-storage-full.md) | `desktop-matrix.yml`, `obsidian-macos`: the official Obsidian app, two instances, through setup, pairing, notes both ways, a rename and folders, against the server behind Caddy; `plugin-tests` on macOS |
+| iPhone | The runs below that name it; most recently [2026-09-28](2026-09-28-open-editor.md) | Nothing: no CI job runs a phone |
 | iPad | Not yet recorded | Nothing |
 | Windows | [2026-09-27](2026-09-27-windows-11-vm.md): Windows 11 on ARM64 in a virtual machine, the 1.1.4 build | `desktop-matrix.yml`, `obsidian-windows`: the same journeys, plus a case-only rename, the trash and a file another program holds open on NTFS; `plugin-tests` on Windows |
 | Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the same journeys with the official AppImage, the authority trusted in each instance's own NSS store, and a third instance without it refused |
