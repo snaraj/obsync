@@ -1,0 +1,12 @@
+# M3774: the offline line names no request (#288, requirement 12)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -5243,7 +5243,7 @@
+     // The request it gave up on is named (#288): an `offline` of a second
+     // beside a dropped poll said nothing of which request, or why.
+     this.log(answered ? "engine decision=online reason=answered"
+-      : `engine decision=offline reason=unanswered${request === undefined ? "" : ` request=${request}`}`);
++      : "engine decision=offline reason=unanswered");
+     this.render();
+     if (answered) {
+       this.engine?.wake("answered");

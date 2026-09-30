@@ -1,0 +1,14 @@
+# M3547: a window back in front drops the long poll that waited and sends another, as before #288
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2969,8 +2969,8 @@
+     const front = reason === "foreground" || reason === "focus";
+     const stale = poll !== null && waited >= POLL_STALE_MS;
+     // Where a read beside the poll can be asked for: while the feed waits on it (`besidePoll`).
+-    const beside = poll !== null && (reason === "sync_now" || (stale && front)) ? this.catchUp : null;
+-    const dropped = poll !== null && beside === null && (reason === "address" || reason === "sync_now" || (stale && !front));
++    const beside = poll !== null && reason === "sync_now" ? this.catchUp : null;
++    const dropped = poll !== null && beside === null && (reason === "address" || reason === "sync_now" || stale);
+     if (dropped) {
+       this.poll = null;
+       this.feedAnswered = false;

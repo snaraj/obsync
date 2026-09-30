@@ -475,6 +475,15 @@ test("a start still inside the transport's retries already reads offline, and th
   assert.deepEqual(r.win.armed(), [], "an outage the transport rode out arms no reconnect");
 });
 
+test("the offline line names the request that went unanswered, and why (#288)", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  r.instance.transport.options.reachable(false, "GET /v1/changes?since=4&wait=55&limit=1000 timeout budget_ms=70000");
+  assert.ok(r.logs.includes("engine decision=offline reason=unanswered request=GET /v1/changes?since=4&wait=55&limit=1000 timeout budget_ms=70000"), r.logs.join("\n"));
+  r.instance.transport.options.reachable(true);
+  assert.ok(r.logs.includes("engine decision=online reason=answered"));
+});
+
 test("an answer puts back the syncing it covered, and never a status raised since", async (t) => {
   const r = await fixture(t);
   await r.instance.onload();

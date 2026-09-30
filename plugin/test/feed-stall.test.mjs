@@ -248,9 +248,9 @@ test("a page read while another pull holds the chain is work, not idle, and idle
   await engine.start();
   await timers.run(1000, () => engine.holder?.label === "sweep" && engine.poll !== null && r.server.feedWaiters.length === 1);
   await quietly(r, "Notes/waiting.md", "WAITING SENTINEL\n");
-  // Sync now's wake asks at once, and that read brings the note.
+  // Sync now's wake asks at once, beside the long poll it keeps (#288), and that read brings the note.
   engine.wake("sync_now");
-  await timers.run(0, () => engine.poll === null && engine.feedAnswered && engine.behind === 2);
+  await timers.run(0, () => engine.poll !== null && engine.feedAnswered && engine.behind === 2);
   assert.deepEqual(engine.current(), { kind: "syncing", pending: 1 }, "a page waiting its turn read as idle");
   assert.deepEqual(statuses.at(-1), { kind: "syncing", pending: 1 }, "and the status bar was not told");
 

@@ -3407,8 +3407,8 @@ export default class ObsyncPlugin extends Plugin {
       edgeHeaders: () => state.data.edgeHeaders,
       log: (line) => this.log(line),
       // Only this session's transport speaks for the status bar.
-      reachable: (answered) => {
-        if (this.transport === transport) this.reachability(answered);
+      reachable: (answered, unanswered) => {
+        if (this.transport === transport) this.reachability(answered, unanswered);
       },
       // An attempt nothing answers is abandoned (#195), and a backoff ends, on time in a hidden window (#221).
       timers,
@@ -5261,10 +5261,13 @@ export default class ObsyncPlugin extends Plugin {
    * feed had said it read `offline — retrying` for minutes after its server
    * was back. Said once per change, not per attempt.
    */
-  private reachability(answered: boolean): void {
+  private reachability(answered: boolean, request?: string): void {
     if (this.unanswered !== answered) return;
     this.unanswered = !answered;
-    this.log(answered ? "engine decision=online reason=answered" : "engine decision=offline reason=unanswered");
+    // The request it gave up on is named (#288): an `offline` of a second
+    // beside a dropped poll said nothing of which request, or why.
+    this.log(answered ? "engine decision=online reason=answered"
+      : `engine decision=offline reason=unanswered${request === undefined ? "" : ` request=${request}`}`);
     this.render();
     if (answered) {
       this.engine?.wake("answered");

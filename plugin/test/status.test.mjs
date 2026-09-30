@@ -15,7 +15,7 @@ import { createRequire } from "node:module";
 import { FakeTimers, STEP_MS, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { SyncEngine, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, NOT_OBSYNC_ANSWER, RESUMES, FEED_FAILED, REVOKED_DEVICE } = require("../build/sync/engine.js");
+const { SyncEngine, CALM_MS, FEED_STALL_MS, POLL_STALE_MS, CLOCK_OFF, SERVER_FULL, NOT_OBSYNC_ANSWER, RESUMES, FEED_FAILED, REVOKED_DEVICE } = require("../build/sync/engine.js");
 const { EDGE_REQUIRED } = require("../build/transport.js");
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -82,7 +82,7 @@ test("a wake drops a long poll that has waited, reads at once, and never applies
   await r.timers.run(0, () => r.host.text("Arrived.md") !== null && r.server.feedWaiters.length === 2);
   assert.ok(!r.host.logs.some((line) => line.startsWith("feed decision=retry")), "a dropped poll is not a failed read");
   assert.equal(r.state.data.lastSeq, head, "the quick read brought it at once");
-  assert.ok(r.host.logs.includes(`feed decision=woken reason=online ended_pause=0 dropped_poll=1 waited_ms=${POLL_STALE_MS}`), r.host.logs.join("\n"));
+  assert.ok(r.host.logs.includes(`feed decision=woken reason=online ended_pause=0 dropped_poll=1 read_beside=0 waited_ms=${POLL_STALE_MS}`), r.host.logs.join("\n"));
   const after = polls(r).slice(before).map((request) => /wait=(\d+)/.exec(request.target)[1]);
   assert.deepEqual(after, ["0", "55"]);
 
@@ -90,6 +90,78 @@ test("a wake drops a long poll that has waited, reads at once, and never applies
   r.server.releaseFeed();
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
   assert.equal(r.state.data.lastSeq, head, "the cursor never moves backwards");
+  r.engine.stop();
+  r.server.releaseFeed();
+  await r.engine.stopAndWait();
+});
+
+test("a window back in front keeps the one long poll in flight however long it waited, reads beside it at once, and never moves the cursor back (#288)", async () => {
+  const r = await started();
+  const told = [];
+  r.host.hurry = (busy) => told.push(busy);
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  const before = polls(r).length;
+  const waits = () => polls(r).slice(before).map((request) => /wait=(\d+)/.exec(request.target)[1]);
+  // Another device's note lands, and nothing tells the waiting poll: its
+  // answer waits in a renderer that was stopped, or a lid slept on it.
+  const deaf = r.server.feedWaiters;
+  r.server.feedWaiters = [];
+  await r.server.publish({ fileId: "ab".repeat(16), path: "Arrived.md", bytes: enc("today's note\n"), mtime: 1000,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  r.server.feedWaiters = deaf;
+  const head = r.server.seq;
+  r.host.clock += POLL_STALE_MS;
+  r.engine.wake("foreground");
+  // No virtual time passes: the read is the wake's, not a pause running out.
+  await r.timers.run(0, () => r.host.text("Arrived.md") !== null && r.host.logs.some((line) => line.startsWith("feed decision=read_beside")));
+  assert.ok(!r.host.logs.some((line) => line.startsWith("feed decision=retry")), "a kept poll is not a failed read");
+  assert.equal(r.state.data.lastSeq, head, "the read beside it brought the note at once");
+  assert.ok(r.host.logs.includes(`feed decision=woken reason=foreground ended_pause=0 dropped_poll=0 read_beside=1 waited_ms=${POLL_STALE_MS}`), r.host.logs.join("\n"));
+  // ONE LONG POLL IN FLIGHT: the one that waited, neither ended nor sent
+  // again. `requestUrl` cannot abort it, and on a desktop the poll that
+  // replaced it waited behind it and ran out of its budget first.
+  assert.deepEqual(waits(), ["0"]);
+  assert.equal(r.server.feedWaiters.length, 1);
+  assert.ok(!r.host.logs.some((line) => line.includes("decision=cancelled")), r.host.logs.join("\n"));
+  // Focus, the desktop's own word, is the same wake.
+  r.host.clock += POLL_STALE_MS;
+  r.engine.wake("focus");
+  await r.timers.run(0, () => r.host.logs.filter((line) => line.startsWith("feed decision=read_beside")).length === 2);
+  assert.deepEqual(waits(), ["0", "0"]);
+  assert.equal(r.server.feedWaiters.length, 1);
+
+  // The kept poll's answer arrives, naming the old cursor: the cursor stays
+  // where the read beside it left it, and the next poll goes out from there.
+  r.server.releaseFeed();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1 && waits().length === 3);
+  assert.equal(r.state.data.lastSeq, head, "the cursor never moves backwards");
+  assert.deepEqual(waits(), ["0", "0", "55"]);
+  assert.match(polls(r).at(-1).target, new RegExp(`since=${head}&`));
+  // That old-cursor page is not more to read: with the next poll waiting,
+  // the window's full pace is given back after the calm (#283).
+  await r.timers.run(CALM_MS);
+  assert.equal(told.at(-1), false, JSON.stringify(told));
+  r.engine.stop();
+  r.server.releaseFeed();
+  await r.engine.stopAndWait();
+});
+
+test("a read beside a kept poll is a read: the feed's stall watch starts again from it (#276, #288)", async () => {
+  const r = await started();
+  await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  // Most of the watch's time passes with the poll waiting; the window comes back.
+  r.timers.now += FEED_STALL_MS - 20_000;
+  await r.timers.run(0);
+  r.host.clock += POLL_STALE_MS;
+  r.engine.wake("foreground");
+  await r.timers.run(0, () => r.host.logs.some((line) => line.startsWith("feed decision=read_beside")));
+  // Past where the poll's own watch would have fired: the feed read, so it did not stall.
+  r.timers.now += 30_000;
+  await r.timers.run(0);
+  assert.ok(!r.host.logs.some((line) => line.startsWith("feed decision=stalled")), r.host.logs.join("\n"));
+  // And a feed that then reads nothing more says so, from the read beside.
+  r.timers.now += FEED_STALL_MS;
+  await r.timers.run(0, () => r.host.logs.some((line) => line.startsWith("feed decision=stalled")));
   r.engine.stop();
   r.server.releaseFeed();
   await r.engine.stopAndWait();
@@ -113,14 +185,14 @@ test("a wake ends the feed's pause after a failed read, and a new address takes 
   const before = polls(r).length;
   r.engine.wake("online");
   await r.timers.run(0, () => polls(r).length > before);
-  assert.ok(r.host.logs.includes("feed decision=woken reason=online ended_pause=1 dropped_poll=0 waited_ms=0"), r.host.logs.join("\n"));
+  assert.ok(r.host.logs.includes("feed decision=woken reason=online ended_pause=1 dropped_poll=0 read_beside=0 waited_ms=0"), r.host.logs.join("\n"));
   assert.match(polls(r)[before].target, /wait=0/, "the read after a failure asks without waiting");
   // The address changed: the poll in flight went to the old one, however fresh it is.
   await r.timers.run(0, () => r.server.feedWaiters.length === 1);
   const retries = r.host.logs.filter((line) => line.startsWith("feed decision=retry")).length;
   r.engine.wake("address");
   await r.timers.run(0, () => r.server.feedWaiters.length === 2);
-  assert.ok(r.host.logs.includes("feed decision=woken reason=address ended_pause=0 dropped_poll=1 waited_ms=0"), r.host.logs.join("\n"));
+  assert.ok(r.host.logs.includes("feed decision=woken reason=address ended_pause=0 dropped_poll=1 read_beside=0 waited_ms=0"), r.host.logs.join("\n"));
   assert.equal(r.host.logs.filter((line) => line.startsWith("feed decision=retry")).length, retries, "a dropped poll is not a failed read");
   r.engine.stop();
   r.server.releaseFeed();

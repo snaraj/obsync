@@ -1002,6 +1002,8 @@ export class SyncEngine {
   private laning = false;
   /** The feed's long poll in flight, and how to drop it (`wake`, #195). */
   private poll: { sent: number; drop: AbortController } | null = null;
+  /** Asks the feed, while its long poll waits, for a quick read beside it (`besidePoll`, #288). */
+  private catchUp: (() => void) | null = null;
   /** Ends the feed's pause after a failed read at once (`wake`). */
   private feedPause: (() => void) | null = null;
   /**
@@ -2908,14 +2910,16 @@ export class SyncEngine {
         // Ended by the stop, not waited out: a stopped engine's poll is one more
         // request against a credential that may be about to be given up (#157).
         // A wake drops it too (`wake`), so either ends this one request.
-        const page = await untilStopped(context.signal, drop, () =>
+        const reading = untilStopped(context.signal, drop, () =>
           context.transport.changes(context.state.data.lastSeq, quick ? 0 : MAX_WAIT_SECONDS, 1000, { signal: drop.signal }));
+        const page = quick ? await reading : await this.besidePoll(context, reading, drop);
         this.poll = null;
         this.reading = false;
         if (!live()) return;
         this.feedAnswered = true;
         this.absent = false;
-        this.feedBehind = page.seq < page.head_seq;
+        // A kept poll's page can name an older cursor than a read beside it left (#288).
+        this.feedBehind = Math.max(page.seq, context.state.data.lastSeq) < page.head_seq;
         this.accepted(false);
         // A restore the repair pass noticed while this read waited is answered
         // before anything the read brought is applied.
@@ -2970,12 +2974,20 @@ export class SyncEngine {
   /**
    * The device's word that something changed (#134, #195): its network is
    * back, the app is in front of the person again, the address changed, or
-   * Retry now was pressed. The feed's pause after a failed read ends now, and
-   * a long poll that has waited `POLL_STALE_MS` -- or any poll, when the
-   * address it went to is no longer the address, or Sync now waits for a
-   * read (`readFeed`) -- is dropped for a read that asks at once. Requests
+   * Retry now was pressed. The feed's pause after a failed read ends now,
+   * and a long poll that has waited `POLL_STALE_MS` -- or any poll, when the
+   * address it went to is no longer the address -- is dropped for a read
+   * that asks at once.
+   *
+   * EXCEPT WHEN THE WINDOW COMES BACK, OR SYNC NOW WAITS FOR A READ (issue
+   * #288): then the poll stays in flight and a quick read beside it catches
+   * up (`besidePoll`). `requestUrl` cannot abort a poll, and the poll that
+   * replaced a dropped one asked the same url, so it waited behind it on the
+   * device: 20 s after a renderer stopped and continued -- a laptop waking --
+   * which ran it out of its budget, and every device read `offline` for a
+   * minute; after a focus or a press, an `offline` of a second. Requests
    * asleep inside the transport are the transport's to wake
-   * (`Transport.wake`). One line, and only when something was ended.
+   * (`Transport.wake`). One line, and only when something was done.
    */
   wake(reason: string): void {
     if (!this.running) return;
@@ -2984,14 +2996,22 @@ export class SyncEngine {
     pause?.();
     const poll = this.poll;
     const waited = poll === null ? 0 : this.nowFn() - poll.sent;
-    const dropped = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);
+    const front = reason === "foreground" || reason === "focus";
+    const stale = poll !== null && waited >= POLL_STALE_MS;
+    // Where a read beside the poll can be asked for: while the feed waits on it (`besidePoll`).
+    const beside = poll !== null && (reason === "sync_now" || (stale && front)) ? this.catchUp : null;
+    const dropped = poll !== null && beside === null && (reason === "address" || reason === "sync_now" || (stale && !front));
     if (dropped) {
       this.poll = null;
       this.feedAnswered = false;
       poll.drop.abort();
     }
-    if (pause !== null || dropped) {
-      this.options.host.log(`feed decision=woken reason=${reason} ended_pause=${pause === null ? 0 : 1} dropped_poll=${dropped ? 1 : 0} waited_ms=${waited}`);
+    beside?.();
+    if (pause !== null || dropped || beside !== null) {
+      this.options.host.log(
+        `feed decision=woken reason=${reason} ended_pause=${pause === null ? 0 : 1} dropped_poll=${dropped ? 1 : 0} ` +
+          `read_beside=${beside === null ? 0 : 1} waited_ms=${waited}`,
+      );
     }
     // THE WINDOW IS BACK IN FRONT (issue #198): a note moved in a file manager
     // behind it is found now, by a walk that starts at once -- or by the next
@@ -3002,6 +3022,45 @@ export class SyncEngine {
         this.timers.clear(this.scanHandle);
         this.scanTick();
       }
+    }
+  }
+
+  /**
+   * The long poll's answer, and while it waits, a quick read beside it each
+   * time a wake asks (`wake`, issue #288): read and applied here, in the
+   * feed's own turn, so nothing is applied twice and nothing out of order,
+   * while the poll stays the one in flight. It is the read a Sync now press
+   * waits for (`readFeed`). A read beside it that fails ends the poll too,
+   * and the feed's own failure path says what happened.
+   */
+  private async besidePoll(context: SyncContext, reading: Promise<ChangesPage>, drop: AbortController): Promise<ChangesPage> {
+    try {
+      for (;;) {
+        const asked = new Promise<null>((resolve) => { this.catchUp = () => resolve(null); });
+        const answer = await Promise.race([reading, asked]).finally(() => { this.catchUp = null; });
+        if (answer !== null) return answer;
+        const started = this.nowFn();
+        let changes = 0;
+        for (let behind = true; behind && this.running;) {
+          // A read like any other: the stall watch starts again from it (#276),
+          // and a press asked before it is answered by it.
+          this.watchFeed();
+          const sent = ++this.feedReads;
+          this.reading = true;
+          const page = await context.transport.changes(context.state.data.lastSeq, 0, 1000, { signal: context.signal })
+            .finally(() => { this.reading = false; });
+          this.absent = false;
+          this.accepted(false);
+          await this.track(this.applyPage(context, page));
+          this.answerFeed(sent);
+          changes += page.changes.length;
+          behind = page.seq < page.head_seq;
+        }
+        context.host.log(`feed decision=read_beside changes=${changes} seq=${context.state.data.lastSeq} duration_ms=${this.nowFn() - started}`);
+      }
+    } catch (error) {
+      drop.abort();
+      throw error;
     }
   }
 
@@ -3500,7 +3559,14 @@ export class SyncEngine {
    * Its records are applied one pull at a time beside a retry pass
    * (`exclusive`), and a record this device cannot write is parked (`receive`).
    */
-  private async applyPage(context: SyncContext, page: ChangesPage): Promise<void> {
+  private async applyPage(context: SyncContext, asked: ChangesPage): Promise<void> {
+    // A POLL'S PAGE AFTER A READ BESIDE IT (issue #288) was asked from an
+    // older cursor: what that read applied is not applied again, and the
+    // cursor never goes back.
+    const cursor = context.state.data.lastSeq;
+    const page = asked.seq < cursor || asked.changes.some((change) => change.seq <= cursor)
+      ? { ...asked, seq: Math.max(asked.seq, cursor), changes: asked.changes.filter((change) => change.seq > cursor) }
+      : asked;
     await this.learnNames(context, page.changes);
     let replayed = 0;
     // Whether any change of the page was more than this device's own version
@@ -4869,9 +4935,9 @@ export class SyncEngine {
   /**
    * One read of the feed, sent at once and applied, for Sync now (issue #197).
    * The feed has ONE reader, its loop, so this asks the loop for its next read
-   * instead of reading beside it -- two readers from one cursor would apply
-   * the same records twice. The long poll in flight is dropped (`wake`), and
-   * whatever it brings later is discarded unread, as every dropped poll's is.
+   * instead of reading on its own -- two readers from one cursor would apply
+   * the same records twice. The loop reads beside the long poll in flight,
+   * which stays in flight (`besidePoll`, #288).
    * Answered once a read sent after the ask is applied, or fails, or a stop
    * (`answerFeed`) -- or after `SYNC_NOW_FEED_MS`, when the press goes on and
    * the read goes on without it. A read already in flight that asks without

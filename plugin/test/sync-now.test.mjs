@@ -154,6 +154,10 @@ test("Sync now sends what is queued, then reads the feed at once, then retries, 
   assert.deepEqual(events, ["post", "feed", "read", "retry", "pass"], r.host.logs.slice(-12).join(" | "));
   assert.equal(r.host.text("Notes/remote.md"), "REMOTE SENTINEL\n", "what waited on the server landed before the press returned");
   assert.equal(reads.slice(asked).filter((url) => url.includes("wait=0")).length, 1, "ONE read of the feed for the press");
+  // Beside the long poll, which stays the one in flight (#288): a poll sent
+  // again asks the same url and waits behind it on a desktop.
+  assert.equal(reads.slice(asked).filter((url) => url.includes("wait=55")).length, 0, "the press sent no second long poll");
+  assert.ok(!r.host.logs.some((line) => line.includes("decision=cancelled")), r.host.logs.slice(-12).join(" | "));
   engine.stop();
 });
 

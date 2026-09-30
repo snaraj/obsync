@@ -246,11 +246,12 @@ export interface TransportOptions {
   maxAttempts?: number;
   /**
    * Told after every attempt whether the server answered it (any status it
-   * settles on: below 500, or 507). It reports and decides nothing: the
-   * retries, and what a request finally returns or throws, are the same with
-   * or without it.
+   * settles on: below 500, or 507), and, for one it did not, which request
+   * and why (`GET /v1/changes?... timeout budget_ms=70000`, #288). It reports
+   * and decides nothing: the retries, and what a request finally returns or
+   * throws, are the same with or without it.
    */
-  reachable?: (answered: boolean) => void;
+  reachable?: (answered: boolean, unanswered?: string) => void;
   /**
    * The clock an attempt is abandoned by (`attemptMs`, #195). The plugin gives
    * the renderer's; without it an attempt waits as long as the platform lets
@@ -690,6 +691,8 @@ export class Transport {
   private readonly random: () => number;
   private readonly log: (line: string) => void;
   private readonly maxAttempts: number;
+  /** When the server last answered an attempt, on this transport's clock (`attempt`, #288). */
+  private answeredAt = Number.NEGATIVE_INFINITY;
 
   constructor(private readonly options: TransportOptions) {
     this.now = options.now ?? (() => Date.now());
@@ -775,6 +778,7 @@ export class Transport {
       headers["X-Obsync-Sig"] = await signRequest(await signing.key, method, target, ts, nonce, sending.digest);
     }
     check();
+    const sent = this.now();
     let outcome: Attempt;
     try {
       const response = await this.timed(this.options.request({
@@ -800,15 +804,27 @@ export class Transport {
         this.log(`http ${method} ${target} decision=ended reason=session_inactive`);
         throw error;
       }
+      // AN ANSWER THAT CAME WHILE THIS ONE WAITED (issue #288): the server
+      // was there, and the wait was on this device -- a request queued behind
+      // one `requestUrl` could not abort reached the server 20 s late and ran
+      // out of its budget five seconds before its answer. It is retried like
+      // any timeout, and it is not word that the server is unreachable.
+      const behind = error === TIMED_OUT && this.answeredAt > sent;
       outcome = {
         kind: "unsettled",
         status: 0,
         reason: error === TIMED_OUT
-          ? `timeout budget_ms=${sending.deadlineMs}`
+          ? `timeout budget_ms=${sending.deadlineMs}${behind ? " answered_meanwhile=1" : ""}`
           : `network=${errorText(error)}`,
       };
+      if (behind) return outcome;
     }
-    this.options.reachable?.(outcome.kind === "settled");
+    if (outcome.kind === "settled") {
+      this.answeredAt = this.now();
+      this.options.reachable?.(true);
+    } else {
+      this.options.reachable?.(false, `${method} ${target} ${outcome.reason}`);
+    }
     return outcome;
   }
 

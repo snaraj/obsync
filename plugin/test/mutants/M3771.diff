@@ -1,0 +1,12 @@
+# M3771: a kept poll's old-cursor page reads as more to read, and the window's full pace stays lifted (#288, #283)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2889,7 +2889,7 @@
+         this.feedAnswered = true;
+         this.absent = false;
+         // A kept poll's page can name an older cursor than a read beside it left (#288).
+-        this.feedBehind = Math.max(page.seq, context.state.data.lastSeq) < page.head_seq;
++        this.feedBehind = page.seq < page.head_seq;
+         this.accepted(false);
+         // A restore the repair pass noticed while this read waited is answered
+         // before anything the read brought is applied.

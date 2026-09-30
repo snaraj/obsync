@@ -513,6 +513,41 @@ test("an attempt nothing answers within its deadline is unanswered: retried and 
   assert.equal(posting.sent.length, 1);
 });
 
+test("an attempt that runs out while the server answered another is retried, said so, and not word that the server is unreachable (#288)", async () => {
+  // A long poll left waiting on the device -- behind one `requestUrl` could
+  // not abort -- while a quick read beside it was answered at once.
+  const hangs = () => { let answer; const pending = new Promise((resolve) => { answer = resolve; }); return { pending, answer: (value) => answer(value) }; };
+  const EMPTY = { status: 200, text: JSON.stringify({ seq: 0, head_seq: 0, changes: [] }) };
+  const run = async (answeredMeanwhile) => {
+    let now = 1757200000000;
+    const stuck = hangs();
+    const timers = deadlines();
+    const heard = [];
+    const { transport, logged } = harness(answeredMeanwhile ? [() => stuck.pending, DEVICES, EMPTY] : [() => stuck.pending, EMPTY],
+      { timers, now: () => now, reachable: (answered, request) => heard.push(request === undefined ? answered : request) });
+    const poll = transport.changes(0, 55);
+    await turns(() => timers.pending().length === 1);
+    now += 1000;
+    if (answeredMeanwhile) assert.deepEqual(await transport.devices(), { devices: [] });
+    now += 69000;
+    const polled = watch(poll);
+    timers.expire();
+    await turns(() => polled.settled);
+    assert.deepEqual(await poll, { seq: 0, head_seq: 0, changes: [] }, "the retry is answered");
+    return { heard, logged };
+  };
+  const meanwhile = await run(true);
+  assert.deepEqual(meanwhile.heard, [true, true], "the timeout is not reported unanswered");
+  assert.ok(meanwhile.logged.some((line) => /^http GET \/v1\/changes\?since=0&wait=55&limit=1000 timeout budget_ms=\d+ answered_meanwhile=1 decision=retry attempt=1 /.test(line)), meanwhile.logged.join("|"));
+  // With nothing answered since it was sent, the same timeout is word of an
+  // unreachable server, and names the request it gave up on.
+  const alone = await run(false);
+  assert.equal(alone.heard.length, 2);
+  assert.match(alone.heard[0], /^GET \/v1\/changes\?since=0&wait=55&limit=1000 timeout budget_ms=\d+$/);
+  assert.equal(alone.heard[1], true);
+  assert.ok(alone.logged.some((line) => /timeout budget_ms=\d+ decision=retry attempt=1 /.test(line)), alone.logged.join("|"));
+});
+
 test("each attempt's deadline fits its route: a long poll its wait, a transfer its bytes (#195)", async () => {
   const given = async (call, answer) => {
     const timers = deadlines();

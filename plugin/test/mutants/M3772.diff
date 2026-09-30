@@ -1,0 +1,11 @@
+# M3772: a read beside a kept poll leaves the stall watch running from the poll: a false stall line (#288, #276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3014,7 +3014,6 @@
+         for (let behind = true; behind && this.running;) {
+           // A read like any other: the stall watch starts again from it (#276),
+           // and a press asked before it is answered by it.
+-          this.watchFeed();
+           const sent = ++this.feedReads;
+           this.reading = true;
+           const page = await context.transport.changes(context.state.data.lastSeq, 0, 1000, { signal: context.signal })
