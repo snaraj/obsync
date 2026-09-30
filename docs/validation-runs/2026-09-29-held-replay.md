@@ -100,6 +100,33 @@ second; A deletes the attachment; B leaves and pairs again.
    name, no version posted, and one copy of the note, with the same bytes,
    on both devices.
 
+## Issue #281: Obsidian closed before the widening caught up
+
+A later build of the 1.1.5 train, the same two profiles, each Obsidian now
+with a home folder of its own. Builds (`main.js` SHA-256): the train before
+the fix,
+`f07c70d782414e8b11c0e124e76a491f8218d1106b39c5f9470c122325359e01`; with
+the fix,
+`1f71c0aa99a9e4f19e0399cd52a626d7b686f1ab198c1b2c07619ac1dd08b94e`.
+
+A syncs the folder `Sel` only and creates `Sel/Moved.md` and twenty other
+notes there; B receives them. A moves `Sel/Moved.md` to `Out/Moved.md`,
+then deletes it there. A chooses **Whole vault** and saves; A's replay is
+slowed to one entry every 400 ms (instrumentation of the test, not of
+obsync), and Obsidian A is quit as soon as the replay has passed the note's
+entry. Obsidian A is then opened again.
+
+1. **Before the fix: reproduced.** A's saved state at the quit had its cursor
+   on the note's entry (16), already read, and nothing about the replay.
+   Opened again, A
+   carried on from there, never brought the note back, and read idle: B held
+   `Sel/Moved.md`, A did not.
+2. **With the fix: passed.** A's saved state at the quit had its cursor at 22,
+   past the note's entry (20), and the unfinished replay with the note in it.
+   Opened again, A brought the note back at `Sel/Moved.md`, under its own
+   file id, and the replay record was cleared. The feed ended at the same
+   entry as before the restart: A published nothing.
+
 ## Visual sweep
 
 After each journey at the final build, on both devices: the status item read
@@ -108,7 +135,9 @@ status** showed the server, the device, idle, three notes tracked and nothing
 remote-only; the obsync settings tab showed the connection idle and the
 folder selection as saved. The only warning lines were the expected ones: A's
 first read of a vault map that did not exist yet (`404 unknown_file`), and
-B's wait for approval while pairing (`409 not_approved`).
+B's wait for approval while pairing (`409 not_approved`). After the #281
+journey, both devices read idle with no notice and no warning line, **Show
+sync status** counted 21 notes on each, and its Recent list was empty.
 
 ## Timing
 
@@ -126,4 +155,5 @@ about two minutes each.
 Both issues reproduced on 1.1.4 and passed at this branch, with no notice and
 no extra copy on either device. Pairing again over a kept vault now posts
 nothing, and a note moved out of the selection is published as one move when
-the selection covers it again.
+the selection covers it again. A widening cut short by quitting Obsidian still
+brings back, at the next start, the note this device no longer held (#281).
