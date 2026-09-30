@@ -1,10 +1,10 @@
 # M1861: a page from an unknown device is applied before the names are read (#164)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3143,7 +3143,6 @@
-    * (`exclusive`), and a record this device cannot write is parked (`receive`).
-    */
-   private async applyPage(context: SyncContext, page: ChangesPage): Promise<void> {
+@@ -3537,7 +3537,6 @@
+     const page = asked.seq < cursor || asked.changes.some((change) => change.seq <= cursor)
+       ? { ...asked, seq: Math.max(asked.seq, cursor), changes: asked.changes.filter((change) => change.seq > cursor) }
+       : asked;
 -    await this.learnNames(context, page.changes);
      let replayed = 0;
      // Whether any change of the page was more than this device's own version

@@ -1,12 +1,12 @@
 # M3324: a request's network failure line carries the error's raw words (issue #266)
 --- a/plugin/src/transport.ts
 +++ b/plugin/src/transport.ts
-@@ -772,7 +772,7 @@
+@@ -813,7 +813,7 @@
          status: 0,
          reason: error === TIMED_OUT
-           ? `timeout budget_ms=${sending.deadlineMs}`
+           ? `timeout budget_ms=${sending.deadlineMs}${behind ? " answered_meanwhile=1" : ""}`
 -          : `network=${errorText(error)}`,
 +          : `network=${error instanceof Error ? error.message : String(error)}`,
        };
+       if (behind) return outcome;
      }
-     this.options.reachable?.(outcome.kind === "settled");

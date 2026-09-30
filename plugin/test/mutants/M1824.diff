@@ -1,11 +1,11 @@
 # M1824: a wake logs a dropped poll but leaves it waiting
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1922,7 +1922,6 @@
+@@ -2974,7 +2974,6 @@
      if (dropped) {
        this.poll = null;
        this.feedAnswered = false;
 -      poll.drop.abort();
      }
-     if (pause !== null || dropped) {
-       this.options.host.log(`feed decision=woken reason=${reason} ended_pause=${pause === null ? 0 : 1} dropped_poll=${dropped ? 1 : 0} waited_ms=${waited}`);
+     beside?.();
+     if (pause !== null || dropped || beside !== null) {

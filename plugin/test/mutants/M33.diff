@@ -1,7 +1,7 @@
 # M33: 121: drain() resolves immediately while draining (the 1.0.6 early return)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1920,10 +1920,7 @@
+@@ -2361,10 +2361,7 @@
     * rather than when a push in flight lands (#196).
     */
    private drain(): Promise<void> {
@@ -11,5 +11,5 @@
 -    }
 +    if (this.draining) return Promise.resolve();
      this.drainWork = this.drainQueue();
+     this.pace();
      return this.drainWork;
-   }

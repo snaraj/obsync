@@ -1,8 +1,8 @@
 # M2815: an answer after silence does not hurry the feed
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3006,7 +3006,6 @@
-     this.log(answered ? "engine decision=online reason=answered" : "engine decision=offline reason=unanswered");
+@@ -5246,7 +5246,6 @@
+       : `engine decision=offline reason=unanswered${request === undefined ? "" : ` request=${request}`}`);
      this.render();
      if (answered) {
 -      this.engine?.wake("answered");

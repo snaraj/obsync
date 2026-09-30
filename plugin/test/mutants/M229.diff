@@ -1,7 +1,7 @@
 # M229: a push turns the status bar back to idle while a file is still parked (the S74 flicker)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1561,7 +1561,7 @@
+@@ -2418,7 +2418,7 @@
        this.barriers.clear();
        this.barrierPath = null;
        // A drain a stop ended has no word on the status: `stopAndWait` says it.
@@ -9,4 +9,4 @@
 +      if (this.running) this.status({ kind: "idle" });
      } finally {
        this.draining = false;
-     }
+       this.pace();

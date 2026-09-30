@@ -1,8 +1,8 @@
 # M2966: the transport's deadlines run on the page's clock
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2111,7 +2111,7 @@
-         if (this.transport === transport) this.reachability(answered);
+@@ -3387,7 +3387,7 @@
+         if (this.transport === transport) this.reachability(answered, unanswered);
        },
        // An attempt nothing answers is abandoned (#195), and a backoff ends, on time in a hidden window (#221).
 -      timers,

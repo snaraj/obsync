@@ -1,12 +1,12 @@
 # M1823: a wake drops any long poll, however fresh
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2568,7 +2568,7 @@
-     pause?.();
-     const poll = this.poll;
-     const waited = poll === null ? 0 : this.nowFn() - poll.sent;
--    const dropped = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);
-+    const dropped = poll !== null;
+@@ -2970,7 +2970,7 @@
+     const stale = poll !== null && waited >= POLL_STALE_MS;
+     // Where a read beside the poll can be asked for: while the feed waits on it (`besidePoll`).
+     const beside = poll !== null && (reason === "sync_now" || (stale && front)) ? this.catchUp : null;
+-    const dropped = poll !== null && beside === null && (reason === "address" || reason === "sync_now" || (stale && !front));
++    const dropped = poll !== null && beside === null;
      if (dropped) {
        this.poll = null;
        this.feedAnswered = false;

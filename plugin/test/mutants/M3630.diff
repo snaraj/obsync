@@ -1,7 +1,7 @@
 # M3630: an ended session's refusal is a network failure again, retried through the whole backoff (issue #272)
 --- a/plugin/src/transport.ts
 +++ b/plugin/src/transport.ts
-@@ -785,10 +785,6 @@
+@@ -798,10 +798,6 @@
          : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
      } catch (error) {
        // A session that ended sends nothing more, and says so once (#272).
@@ -9,6 +9,6 @@
 -        this.log(`http ${method} ${target} decision=ended reason=session_inactive`);
 -        throw error;
 -      }
-       outcome = {
-         kind: "unsettled",
-         status: 0,
+       // AN ANSWER THAT CAME WHILE THIS ONE WAITED (issue #288): the server
+       // was there, and the wait was on this device -- a request queued behind
+       // one `requestUrl` could not abort reached the server 20 s late and ran
