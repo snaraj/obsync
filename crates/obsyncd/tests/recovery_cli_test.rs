@@ -108,6 +108,7 @@ mod tests {
                     .env("OBSYNC_JOURNAL_DIR", &cfg.journal_dir)
                     .env("OBSYNC_BLOBS_CAPACITY", cfg.blobs_capacity.to_string())
                     .env("OBSYNC_JOURNAL_CAPACITY", cfg.journal_capacity.to_string())
+                    .env("OBSYNC_FREE_WATERMARK", "1%,64KiB")
                     .env("OBSYNC_SERVER_KEY", "09".repeat(32))
                     .arg(verb);
                 // Preserve only the coverage collector's output destination;

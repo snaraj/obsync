@@ -71,10 +71,14 @@ if [ "$#" -ne 1 ] || [ -z "${1:-}" ]; then
 fi
 image="$1"
 
-# The README's own capacities are hundreds of gigabytes; these are the smallest
-# values that configure the same code paths on a laptop or a CI runner.
-readonly BLOBS_CAPACITY='1GiB'
-readonly JOURNAL_CAPACITY='256MiB'
+# Declared, not allocated: the server has no statvfs and takes these numbers on
+# trust, so they reserve nothing on a laptop or a runner. Each must stand above
+# the free-space watermark -- by default the larger of 5% and 2 GiB, which no
+# guide changes -- or the server refuses to start (issue #289). The sizes the
+# compose, podman and binary end-to-end runs declare; the journal is the one
+# docs/server.md and the chart document.
+readonly BLOBS_CAPACITY='8GiB'
+readonly JOURNAL_CAPACITY='4GiB'
 # The size of the blob volume property 9 exhausts. Small enough to fill in a
 # moment, large enough that the server's own layout fits in it with room.
 readonly FULL_BLOBS_SIZE='8m'
@@ -460,6 +464,15 @@ prove 'provisioning precondition: root-owned 0755 volumes holding no root are re
 # that volume, and it is the signal Kubernetes takes the pod out of service
 # on, so it is the one an operator's cluster acts upon.
 #
+# WHICH REFUSAL: the FILESYSTEM's, never the watermark's. The watermark is
+# arithmetic -- declared capacity minus the bytes the server has tracked --
+# and it refuses writes; `/readyz` never consults it. Here BLOBS_CAPACITY is
+# declared over a FULL_BLOBS_SIZE volume and nothing is written, so it cannot
+# fire, and the `io=StorageFull` required below is the kind the kernel
+# returned for the probe's own write: ENOSPC, not a number the server
+# computed. A declaration larger than the disk is the one case the watermark
+# cannot protect, which is what makes it the case worth running.
+#
 # The volume is a tmpfs-backed local volume rather than `--tmpfs`, and the
 # difference matters: a `--tmpfs` mount belongs to one container and nothing
 # else can reach it -- `docker cp` into it writes past the mount, into the
@@ -558,7 +571,7 @@ done
 [ -n "${recovered}" ] \
   || deny "the server did not become ready again within ${READY_BUDGET_SECONDS}s of the volume being freed: '${body}'"
 docker stop --time 10 "${full}" >/dev/null
-prove "full blob volume: an exhausted volume answered 503 not_ready and logged io=StorageFull without exiting, and the server was ready again once the space came back"
+prove "full blob volume: ENOSPC from the filesystem (${FULL_BLOBS_SIZE} of tmpfs, ${BLOBS_CAPACITY} declared) answered 503 not_ready and logged io=StorageFull without exiting, and the server was ready again once the space came back"
 
 # (10) THE CHART'S OWN ENVIRONMENT, run. Every property above configures the
 # image from constants written at the top of this file, so all of them can be

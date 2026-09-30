@@ -152,10 +152,12 @@ readonly PROBE_ADDRESS='203.0.113.9'
 readonly READY_BUDGET_SECONDS=120
 readonly PULL_ATTEMPTS=3
 readonly PULL_BACKOFF_SECONDS=5
-# Small enough to configure the same code paths on a laptop or a runner; the
+# Declared, not allocated, so they reserve nothing on a laptop or a runner, and
+# above the free-space watermark the compose file leaves at its default (the
+# larger of 5% and 2 GiB), or the server refuses to start (issue #289). The
 # compose file has no default for either, and step (1) proves it refuses.
-readonly BLOBS_CAPACITY='1GiB'
-readonly JOURNAL_CAPACITY='256MiB'
+readonly BLOBS_CAPACITY='8GiB'
+readonly JOURNAL_CAPACITY='4GiB'
 
 project="obsync-smoke-$$-${RANDOM}"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/compose-smoke.XXXXXX")"

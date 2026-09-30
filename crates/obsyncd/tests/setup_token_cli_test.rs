@@ -54,6 +54,7 @@ mod tests {
             .env("OBSYNC_JOURNAL_DIR", fixture.join("journal"))
             .env("OBSYNC_BLOBS_CAPACITY", "64MiB")
             .env("OBSYNC_JOURNAL_CAPACITY", "16MiB")
+            .env("OBSYNC_FREE_WATERMARK", "1%,64KiB")
             .env("OBSYNC_SERVER_KEY", "09".repeat(32))
             .arg("setup-token");
         // Preserve only the coverage collector's output destination.

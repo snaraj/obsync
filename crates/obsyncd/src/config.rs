@@ -486,6 +486,21 @@ impl Config {
                 "expected at least one term above zero",
             ));
         }
+        // A volume no larger than its own free-space threshold refuses every
+        // write from the first one, while the volume itself takes the
+        // readiness probe: the server would answer ready and turn away even
+        // an account's setup (issue #289).
+        for (var, capacity) in [
+            ("OBSYNC_BLOBS_CAPACITY", self.blobs_capacity),
+            ("OBSYNC_JOURNAL_CAPACITY", self.journal_capacity),
+        ] {
+            if self.free_watermark.bytes_for(capacity) >= capacity {
+                return Err(invalid(
+                    var,
+                    "expected a size above the free-space watermark (OBSYNC_FREE_WATERMARK, by default the larger of 5% and 2GiB); at this size every write is refused",
+                ));
+            }
+        }
         if self
             .blobs_mirrors
             .iter()
@@ -852,6 +867,59 @@ mod tests {
         assert_eq!(
             ConfigError::Missing("OBSYNC_BLOBS_CAPACITY").to_string(),
             "OBSYNC_BLOBS_CAPACITY is required"
+        );
+    }
+
+    #[test]
+    fn a_volume_no_larger_than_its_watermark_is_refused_at_start() {
+        // The default watermark is 5% or 2 GiB, whichever is larger.
+        for (var, value) in [
+            ("OBSYNC_JOURNAL_CAPACITY", "1GiB"),
+            ("OBSYNC_JOURNAL_CAPACITY", "2GiB"),
+            ("OBSYNC_BLOBS_CAPACITY", "2GiB"),
+        ] {
+            assert!(
+                matches!(
+                    parse(&[(var, value)]),
+                    Err(ConfigError::Invalid { var: named, .. }) if named == var
+                ),
+                "{var}={value} would refuse every write (issue #289)"
+            );
+        }
+        // One byte above the threshold takes a write, and so starts.
+        let above = (2 * GIB + 1).to_string();
+        for var in ["OBSYNC_BLOBS_CAPACITY", "OBSYNC_JOURNAL_CAPACITY"] {
+            assert!(parse(&[(var, above.as_str())]).is_ok(), "{var}={above}");
+        }
+        // The percentage term counts too: 100% of the 250 GiB blob volume is
+        // all of it, with no size term at all.
+        assert!(
+            matches!(
+                parse(&[("OBSYNC_FREE_WATERMARK", "100%")]),
+                Err(ConfigError::Invalid {
+                    var: "OBSYNC_BLOBS_CAPACITY",
+                    ..
+                })
+            ),
+            "a 100% watermark leaves no volume a write"
+        );
+        // Measured against the operator's watermark, not the default.
+        assert!(
+            parse(&[
+                ("OBSYNC_JOURNAL_CAPACITY", "16MiB"),
+                ("OBSYNC_FREE_WATERMARK", "1%,64KiB"),
+            ])
+            .is_ok()
+        );
+        assert!(
+            matches!(
+                parse(&[("OBSYNC_FREE_WATERMARK", "10%,4GiB")]),
+                Err(ConfigError::Invalid {
+                    var: "OBSYNC_JOURNAL_CAPACITY",
+                    ..
+                })
+            ),
+            "a 4 GiB journal under a 4 GiB watermark takes no write"
         );
     }
 
