@@ -969,7 +969,10 @@ test("a sending device never reads idle while pushes are still queued, echo page
   const from = r.statuses.length;
   for (let i = 0; i < 12; i++) r.host.seed(`Out/${i}.md`, `sent ${i}\n`, 2000 + i);
   // Queued as a find-and-replace or a pasted folder does: all at once, then drained in batches.
-  const queued = () => r.engine.queue.length + r.engine.active;
+  // The engine's own facts, the ones `resting` reads: `active` is the drain's
+  // count of slots, set when its loop next wakes, so it still held a push that
+  // had landed while a feed page said idle (proxy CI at 343aa1d8).
+  const queued = () => r.engine.queue.length + r.engine.pushing.size;
   const seen = [];
   const said = r.engine.onStatus;
   r.engine.onStatus = (status) => { said(status); seen.push([status.kind, queued()]); };
