@@ -257,6 +257,16 @@ CASES = [
         "            for path in &left {\n                fs::remove_file(path)?;\n            }\n"
         "            if !left.is_empty() {\n",
     )], START_REPAIR),
+    # The flush underneath, not the call (review of ca4bcc7b): the directory
+    # opened and not flushed, or nothing done, is not a start's fsync.
+    ("start-sync-opens-without-flushing", BLOBS, [(
+        "        let _ = step;\n        fsync_dir(dir)\n",
+        "        let _ = step;\n        File::open(dir).map(|_| ()).map_err(StoreError::Io)\n",
+    )], START_REPAIR),
+    ("start-sync-does-nothing", BLOBS, [(
+        "        let _ = step;\n        fsync_dir(dir)\n",
+        "        let _ = step;\n        let _ = dir;\n        Ok(())\n",
+    )], START_REPAIR),
     ("start-layout-v1-fsync-omitted", BLOBS, [(
         "            self.start_sync(StartStep::Layout, &v1)?;\n", "",
     )], START_LAYOUT),

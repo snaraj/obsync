@@ -59,11 +59,6 @@ pub(crate) struct Blobs {
     /// Fan-out directories whose names a start made durable, because the
     /// last stop left an upload behind (`Blobs::open`).
     synced_at_open: u64,
-    /// What the last start did to its volume, in order: each directory whose
-    /// fsync returned, and each temp it removed. Tests only: it is how a test
-    /// sees the repair itself rather than a counter beside it.
-    #[cfg(test)]
-    start_trace: Vec<String>,
     #[cfg(test)]
     fault: Mutex<Fault>,
     /// Called from inside the quarantine move. Tests only, and the point of
@@ -99,8 +94,6 @@ impl Blobs {
             mirrors: mirrors.to_vec(),
             unsynced: Mutex::new(HashSet::new()),
             synced_at_open: 0,
-            #[cfg(test)]
-            start_trace: Vec::new(),
             #[cfg(test)]
             fault: Mutex::new(Fault::None),
             #[cfg(test)]
@@ -149,17 +142,19 @@ impl Blobs {
             for path in &left {
                 fs::remove_file(path)?;
                 #[cfg(test)]
-                self.start_trace.push(format!("removed {}", path.display()));
+                disk_trace(format!("removed {}", path.display()));
             }
             removed += left.len() as u64;
         }
         Ok((self, removed))
     }
 
-    /// A start's directory fsync. A test's refusal and its trace sit on the
-    /// call itself, so a start that skips the fsync loses both: no hook or
-    /// counter beside the call can pass for it (review of 39400b59).
-    fn start_sync(&mut self, step: StartStep, dir: &Path) -> Result<(), StoreError> {
+    /// A start's directory fsync, which a test can refuse by step. What a
+    /// test sees done is recorded by `fsync_dir` itself, once the directory's
+    /// own flush returned (`take_disk_trace`): a start that skips the call, or
+    /// opens the directory without flushing it, records nothing (reviews of
+    /// 39400b59 and ca4bcc7b).
+    fn start_sync(&self, step: StartStep, dir: &Path) -> Result<(), StoreError> {
         #[cfg(test)]
         self.errno_at(match step {
             StartStep::Layout => BlobPhase::StartLayoutSync,
@@ -167,18 +162,7 @@ impl Blobs {
         })?;
         #[cfg(not(test))]
         let _ = step;
-        let synced = fsync_dir(dir);
-        #[cfg(test)]
-        if synced.is_ok() {
-            self.start_trace.push(format!("synced {}", dir.display()));
-        }
-        synced
-    }
-
-    /// What the last start did, in order (`start_trace`). Tests only.
-    #[cfg(test)]
-    pub(crate) fn start_trace(&self) -> &[String] {
-        &self.start_trace
+        fsync_dir(dir)
     }
 
     /// Directories whose names the last start made durable (`open`).
@@ -651,12 +635,37 @@ fn fsync_parent(path: &Path) -> Result<(), StoreError> {
 fn fsync_dir(dir: &Path) -> Result<(), StoreError> {
     match File::open(dir) {
         Ok(handle) => {
-            handle.sync_all()?;
+            let flushed = handle.sync_all();
+            #[cfg(test)]
+            if flushed.is_ok() {
+                disk_trace(format!("synced {}", dir.display()));
+            }
+            flushed?;
             Ok(())
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(StoreError::Io(e)),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What this thread's filesystem calls did, in order: each directory
+    /// whose own flush returned (`fsync_dir`) and each temp a start removed.
+    /// Tests only, and made by the operations themselves, so nothing beside a
+    /// call can pass for it.
+    static DISK_TRACE: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn disk_trace(event: String) {
+    DISK_TRACE.with(|trace| trace.borrow_mut().push(event));
+}
+
+/// This thread's filesystem record since it was last taken. Tests only.
+#[cfg(test)]
+pub(crate) fn take_disk_trace() -> Vec<String> {
+    DISK_TRACE.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
 }
 
 fn read_dir_sorted(dir: &Path) -> Result<Vec<PathBuf>, StoreError> {
@@ -814,9 +823,10 @@ mod tests {
             refused_start(&root, BlobPhase::StartLayoutSync, start);
             assert!(root.join("v1/tmp").is_dir(), "{start}: the layout exists");
         }
-        let (reopened, _) = Blobs::open(&root, &[]).expect("a start the volume lets fsync");
+        take_disk_trace();
+        Blobs::open(&root, &[]).expect("a start the volume lets fsync");
         assert_eq!(
-            reopened.start_trace(),
+            take_disk_trace(),
             [
                 format!("synced {}", root.display()),
                 format!("synced {}", root.join("v1").display()),
@@ -856,17 +866,18 @@ mod tests {
             refused_start(&root, BlobPhase::StartRepairSync, start);
             assert_eq!(temps(), 1, "{start}: the temp outlives a failed repair");
         }
+        take_disk_trace();
         let (reopened, removed) = Blobs::open(&root, &[]).expect("a start the volume lets fsync");
         assert_eq!(
             (removed, reopened.synced_at_open()),
             (1, 2),
             "the temp goes once v1/ and its one first level are durable"
         );
-        // The repair itself, in order: the layout, the first level whose
-        // name the cut left unsynced, and only then the temp that called
-        // for it.
+        // The repair itself, as the filesystem calls recorded it, in order:
+        // the layout, the first level whose name the cut left unsynced, and
+        // only then the temp that called for it.
         assert_eq!(
-            reopened.start_trace(),
+            take_disk_trace(),
             [
                 format!("synced {}", root.display()),
                 format!("synced {}", root.join("v1").display()),
