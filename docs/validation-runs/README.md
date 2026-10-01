@@ -36,15 +36,23 @@ observed from what was still outstanding.
 
 - [2026-09-30 the 1.1.5 train](2026-09-30-train-1.1.5.md): the train's
   closing run on three macOS desktops and an Android 15 emulator, with the
-  coordinator's iPhone and Windows rows. J1 to J11 pass. final8 is the
-  final build.
+  coordinator's iPhone and Windows rows. J1 to J11 pass. final10 is the
+  final build; final9 and final10 ran on the desktops only.
   - **#307:** closing a Settings window during a first sync stopped a
     desktop for good: 1 run of 5 on final3, and 1 of 5 on final4 at its
     start. final5 to final7 wedged 0 of 25 runs, through the start's retry
-    and the feed's. final8 does not touch the disk seam.
+    and the feed's. final9, which awaits a disk change past the bound
+    instead of letting it go, wedged 0 of 5.
   - **The bound's cost:** a Sync now press was 10 % slower on final5 and
     3 % on final6. final7 is inside noise at this sample, with a point
-    estimate of +68 ms. final8 does not touch the read path.
+    estimate of +68 ms. final9 and final10 are inside noise against final8.
+  - **#311:** a new device wrote every version the server keeps and trashed
+    every note deleted elsewhere: on final9, 22 extra writes and 17 notes in
+    its trash. final10 skips all 34 superseded versions, and its trash stays
+    empty.
+  - **#310:** an uploading desktop missed the sid of 473 of 2,000 new notes
+    on final9 and read each back from the server, one a second. final10
+    missed none.
   - **#308:** a phone's out-of-storage toast stood for hours after the
     server had room again. It now goes with the refusal.
   - **#309:** after Delete everywhere, Recent ended on the question. On
@@ -52,7 +60,7 @@ observed from what was still outstanding.
     devices too.", and the other desktop held none of the notes 0.8 s
     later.
   - **Not attempted:** a physical Android phone, the final build on the
-    iPhone and Windows, and either reference route.
+    iPhone, Windows and the phone, and either reference route.
 - [2026-09-30 1.1.5 beside 1.1.4](2026-09-30-version-skew.md): servers and
   devices on different versions, both ways round, on macOS desktops, and one
   device taken back to 1.1.4 and on to 1.1.5 again.
