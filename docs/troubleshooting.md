@@ -877,6 +877,12 @@ was forgotten, so it reads what a revoked device reads, and goes on reading it:
 
 > obsync: error — This device was removed from your server. Your notes and vault key are safe here. Pair it again from a device that still syncs: obsync settings, Pair this device.
 
+![Show sync status on a forgotten device: the words that it was removed from the server, with Pair again, and its notes and vault key still here](assets/device-forgotten.png)
+
+Its settings say so under **Pairing**:
+
+![The forgotten device's settings: Pairing says the server no longer recognises this device, with Pair this device; Setup or recover is empty](assets/device-forgotten-settings.png)
+
 What changed is the other devices: its row is gone from their **Devices** list
 and from the dashboard.
 
