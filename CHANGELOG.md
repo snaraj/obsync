@@ -11,7 +11,8 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 to #248, #253) and those found while testing it on real computers and an
 Android emulator. Two people typing in one note on a busy computer now keep
 each other's words (#227). Pairing a new device gains a key exchange of its
-own, and your server keeps an account's only device for seven days after a
+own that a copy of the code cannot open or fake, and needs 1.1.5 on both
+devices; your server keeps an account's only device for seven days after a
 recovery key is registered. In testing, changes from other devices sometimes
 stopped arriving on a computer while it read idle. One cause is found and
 fixed: closing obsync's settings in Obsidian 1.13 (#302, #307). For any
@@ -20,10 +21,16 @@ other, 1.1.5 says what the changes wait for, so that a report can find it
 
 Update the server first, then every device. A 1.1.5 device keeps syncing
 with a 1.1.4 server, and a 1.1.4 device with a 1.1.5 server; the notes below
-say where a mixed pair behaves differently.
+say where a mixed pair behaves differently. Pairing is the exception: to pair
+a new device, the server and both devices need 1.1.5.
 
 ### Before you update
 
+- **Pairing needs 1.1.5 everywhere.** A 1.1.5 device pairs only with
+  another 1.1.5 device, through a 1.1.5 server. It refuses a code made on an
+  older device, and a claim from one, and says to update that device: the
+  older pairing lets anyone who saw the code open your vault key. Devices
+  already paired keep syncing across versions.
 - **Volume sizes.** The server now refuses to start, naming the variable,
   when `OBSYNC_BLOBS_CAPACITY` or `OBSYNC_JOURNAL_CAPACITY` is not larger
   than its free-space reserve (`OBSYNC_FREE_WATERMARK`, by default the
