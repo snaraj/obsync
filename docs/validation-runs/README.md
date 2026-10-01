@@ -36,16 +36,21 @@ observed from what was still outstanding.
 
 - [2026-09-30 the 1.1.5 train](2026-09-30-train-1.1.5.md): the train's
   closing run on three macOS desktops and an Android 15 emulator, with the
-  coordinator's iPhone and Windows rows. J1 to J11 pass.
+  coordinator's iPhone and Windows rows. J1 to J11 pass. final8 is the
+  final build.
   - **#307:** closing a Settings window during a first sync stopped a
     desktop for good: 1 run of 5 on final3, and 1 of 5 on final4 at its
     start. final5 to final7 wedged 0 of 25 runs, through the start's retry
-    and the feed's.
+    and the feed's. final8 does not touch the disk seam.
   - **The bound's cost:** a Sync now press was 10 % slower on final5 and
     3 % on final6. final7 is inside noise at this sample, with a point
-    estimate of +68 ms.
+    estimate of +68 ms. final8 does not touch the read path.
   - **#308:** a phone's out-of-storage toast stood for hours after the
     server had room again. It now goes with the refusal.
+  - **#309:** after Delete everywhere, Recent ended on the question. On
+    final8 the answer is its own notice, "deleting N notes on your other
+    devices too.", and the other desktop held none of the notes 0.8 s
+    later.
   - **Not attempted:** a physical Android phone, the final build on the
     iPhone and Windows, and either reference route.
 - [2026-09-30 1.1.5 beside 1.1.4](2026-09-30-version-skew.md): servers and
