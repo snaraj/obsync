@@ -19,12 +19,12 @@ system; it is not a device run, and only a record below is
 
 | Client | Recorded on a device | Proven in CI |
 | --- | --- | --- |
-| macOS | The runs below that name it; most recently [2026-09-29](2026-09-29-storage-full.md) | `desktop-matrix.yml`, `obsidian-macos`: the official Obsidian app, two instances, through setup, pairing, notes both ways, a rename and folders, against the server behind Caddy; `plugin-tests` on macOS |
-| iPhone | The runs below that name it; most recently [2026-09-28](2026-09-28-open-editor.md) | Nothing: no CI job runs a phone |
+| macOS | The runs below that name it; most recently [2026-09-30](2026-09-30-train-1.1.5.md) | `desktop-matrix.yml`, `obsidian-macos`: the official Obsidian app, two instances, through setup, pairing, notes both ways, a rename and folders, against the server behind Caddy; `plugin-tests` on macOS |
+| iPhone | The runs below that name it; most recently [2026-09-30](2026-09-30-train-1.1.5.md) | Nothing: no CI job runs a phone |
 | iPad | Not yet recorded | Nothing |
-| Windows | [2026-09-27](2026-09-27-windows-11-vm.md): Windows 11 on ARM64 in a virtual machine, the 1.1.4 build | `desktop-matrix.yml`, `obsidian-windows`: the same journeys, plus a case-only rename, the trash and a file another program holds open on NTFS; `plugin-tests` on Windows |
+| Windows | [2026-09-27](2026-09-27-windows-11-vm.md): Windows 11 on ARM64 in a virtual machine, the 1.1.4 build; most recently [2026-09-30](2026-09-30-train-1.1.5.md), a 1.1.5 train build | `desktop-matrix.yml`, `obsidian-windows`: the same journeys, plus a case-only rename, the trash and a file another program holds open on NTFS; `plugin-tests` on Windows |
 | Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the same journeys with the official AppImage, the authority trusted in each instance's own NSS store, and a third instance without it refused |
-| Android | [2026-09-27](2026-09-27-android-emulator.md): an Android 15 emulator, not a physical phone, the 1.1.4 build | Nothing: no CI job runs a phone |
+| Android | [2026-09-27](2026-09-27-android-emulator.md): an Android 15 emulator, not a physical phone, the 1.1.4 build; most recently [2026-09-30](2026-09-30-train-1.1.5.md), the same emulator on the 1.1.5 train's builds | Nothing: no CI job runs a phone |
 
 `desktop-matrix.yml` runs nightly and on pull requests that change the plugin
 or its harnesses; a red leg there is a finding to read.
@@ -34,6 +34,20 @@ or its harnesses; a red leg there is a finding to read.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-09-30 the 1.1.5 train](2026-09-30-train-1.1.5.md): the train's
+  closing run on three macOS desktops and an Android 15 emulator, with the
+  coordinator's iPhone and Windows rows. J1 to J11 pass.
+  - **#307:** closing a Settings window during a first sync stopped a
+    desktop for good: 1 run of 5 on final3, and 1 of 5 on final4 at its
+    start. final5 to final7 wedged 0 of 25 runs, through the start's retry
+    and the feed's.
+  - **The bound's cost:** a Sync now press was 10 % slower on final5 and
+    3 % on final6. final7 is inside noise at this sample, with a point
+    estimate of +68 ms.
+  - **#308:** a phone's out-of-storage toast stood for hours after the
+    server had room again. It now goes with the refusal.
+  - **Not attempted:** a physical Android phone, the final build on the
+    iPhone and Windows, and either reference route.
 - [2026-09-29 a desktop feed that stops](2026-09-29-feed-wedge.md): #276 on
   two macOS desktops, not reproduced, the mechanism unconfirmed. None of
   these stalled:
