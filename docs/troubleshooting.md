@@ -466,6 +466,8 @@ no access of any kind.
 
 > Your obsync server runs a version older than 1.1.5, or does not say which, so no code was made. Update your obsync server to 1.1.5 or later, then pair again. See Troubleshooting, "Pairing says to update your obsync server".
 
+![Pair a new device on a computer, showing no code, only the words asking to update the obsync server to 1.1.5 or later](assets/pair-older-server.png)
+
 **Why it happens.** From 1.1.5, pairing adds a key exchange between the two
 devices, which the server has to pass on; an older server drops it, and the
 new device could never finish pairing through it. So before it makes a code,
@@ -845,6 +847,8 @@ dashboard's **Devices** page, **Forget** answers with one of:
 > &lt;name&gt; was not forgotten: your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.
 
 > &lt;name&gt; was not forgotten: it can still sync. Revoke it first.
+
+![The notice after Forget on a device named Old laptop: it was not forgotten, because the server is too old to forget devices](assets/forget-too-old.png)
 
 **Why it happens.** Forgetting takes a device off the lists, and it is offered
 for a device that can no longer sync. The first answer is a server still
