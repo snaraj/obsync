@@ -34,6 +34,12 @@ or its harnesses; a red leg there is a finding to read.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-10-01 pairing with a commitment](2026-10-01-pairing-commitment.md):
+  the pairing repair on macOS desktops, with a lab intermediary rewriting
+  keys in flight. Two 1.1.5 devices pair and sync both ways; a 1.1.4 device
+  on either side is refused in words; a changed creator key ends the claim
+  before any code shows, and a changed new-device key makes the two codes
+  differ. No phone took part.
 - [2026-09-30 the 1.1.5 train](2026-09-30-train-1.1.5.md): the train's
   closing run on three macOS desktops and an Android 15 emulator, with the
   coordinator's iPhone and Windows rows. J1 to J11 pass. final10 is the
@@ -65,8 +71,9 @@ observed from what was still outstanding.
 - [2026-09-30 1.1.5 beside 1.1.4](2026-09-30-version-skew.md): servers and
   devices on different versions, both ways round, on macOS desktops, and one
   device taken back to 1.1.4 and on to 1.1.5 again.
-  - **Held as the CHANGELOG says:** pairing either way (`kex=legacy` with a
-    1.1.4 side), notes, renames and deletes through either server, Forget
+  - **Held as the CHANGELOG then said:** pairing either way (`kex=legacy`
+    with a 1.1.4 side, superseded 2026-10-01: 1.1.5 now refuses a 1.1.4
+    device in either role), notes, renames and deletes through either server, Forget
     and Leave against a 1.1.4 server, and a full disk faced by a 1.1.4
     device.
   - **Not reached:** the notes 1.1.5 was bringing back when the device went

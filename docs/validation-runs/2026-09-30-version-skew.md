@@ -1,5 +1,12 @@
 # 1.1.5 beside 1.1.4: servers and devices on different versions — 2026-09-30
 
+> **Superseded in part, 2026-10-01.** The pairing this run saw between a
+> 1.1.5 device and a 1.1.4 one (`kex=legacy`, with a warning) no longer
+> happens: 1.1.5 now refuses a device older than 1.1.5 in either role, and
+> the creator's key crosses in `POST /v1/pairing/{id}/reveal`, not with the
+> approval ([2026-10-01 pairing with a commitment](2026-10-01-pairing-commitment.md)).
+> Everything else below stands as observed.
+
 Run by an agent for the user, on the user's computer, with disposable
 servers, disposable vaults and isolated Obsidian profiles. None of the user's own
 vaults or devices took part.

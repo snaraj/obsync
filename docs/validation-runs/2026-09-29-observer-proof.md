@@ -1,5 +1,12 @@
 # What an inspecting network sees — 2026-09-29
 
+> **Superseded in part, 2026-10-01.** The pairing this run saw between a
+> 1.1.5 device and a 1.1.4 one (`kex=legacy`, with a warning) no longer
+> happens: 1.1.5 now refuses a device older than 1.1.5 in either role, and
+> the creator's key crosses in `POST /v1/pairing/{id}/reveal`, not with the
+> approval ([2026-10-01 pairing with a commitment](2026-10-01-pairing-commitment.md)).
+> Everything else below stands as observed.
+
 The user's requirement: a person using Obsidian on a work laptop, behind an
 employer's VPN, must not expose their notes. This run proves, on a byte
 capture of a real session, that an employer's TLS inspection or a VPN that
