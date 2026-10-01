@@ -399,7 +399,15 @@ impl Req {
         stream.flush().expect("flush");
 
         let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).expect("read response");
+        match stream.read_to_end(&mut raw) {
+            // A server that answers before it has read the whole body closes
+            // with bytes unread, so a reset can follow its answer: the answer
+            // that arrived is what the test judges.
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset && !raw.is_empty() => {}
+            read => {
+                read.expect("read response");
+            }
+        }
         Res::parse(&raw)
     }
 }
