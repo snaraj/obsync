@@ -55,5 +55,22 @@
     "reason": "won't fix",
     "comment": "printing the setup token on stdout IS this command (#73): the operator reads it with no shell in the image. Deliberate, not a mistake; the structured log records only decision=printed",
     "disposition": "https://github.com/snaraj/obsync/issues/73"
+  },
+  {
+    "rule": "rust/cleartext-logging",
+    "path": "crates/obsyncd/src/cli/recovery.rs",
+    "line_is": "Output::Human => println!(\"{}\", human(args.mode, &found)),",
+    "reviewed_sha256": "19198ee68e79886e8499d535c2c459555c07bd04913b8c8dd58bb8b71d614490",
+    "reason": "false positive",
+    "comment": "the recovery reset's operator report, human(): when a recovery key was registered and when its hold ends, in UTC, in fixed sentences; no key, token, path or identifier is printed",
+    "disposition": "https://github.com/snaraj/obsync/issues/23"
+  },
+  {
+    "rule": "rust/cleartext-logging",
+    "path": "crates/obsyncd/src/cli/recovery.rs",
+    "within": "test-module",
+    "reason": "used in tests",
+    "comment": "an assertion's failure message showing the test's own report text, inside the file's trailing #[cfg(test)] mod",
+    "disposition": "https://github.com/snaraj/obsync/issues/22"
   }
 ]
