@@ -2511,14 +2511,20 @@ export class SyncEngine {
         }
         this.active = running.size;
         if (took) this.status(this.resting());
-        if (running.size === 0) break;
+        if (running.size === 0) {
+          // The records the pushes held in memory (`pushFile`, issue #274) are
+          // written once the queue is empty: a note pushed alone is saved as
+          // soon as it would have been, only no longer inside its slot.
+          await this.saveDeferred("drained");
+          // A NOTE QUEUED WHILE THAT SAVE RAN found this drain still running
+          // and could only wake it, with nothing listening (#313): it is taken
+          // here, or it waits unsent for the next change anywhere.
+          if (this.running && failed.length === 0 && this.queue.length > 0) continue;
+          break;
+        }
         await Promise.race([new Promise<void>((wake) => { this.wakeDrain = wake; }), ...running.values()]);
         this.wakeDrain = null;
       }
-      // The records the pushes held in memory (`pushFile`, issue #274) are
-      // written once the queue is empty: a note pushed alone is saved as soon
-      // as it would have been, only no longer inside its slot.
-      await this.saveDeferred("drained");
       if (failed.length > 0) throw failed[0];
       // Nothing is queued behind anything any more, so no barrier can still
       // mean something. Expiring them here is what keeps one armed for a path

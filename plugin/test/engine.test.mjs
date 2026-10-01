@@ -1073,6 +1073,42 @@ test("the growing-file guard waits for a file to stop changing", async () => {
   engine.stop();
 });
 
+test("a note queued while the drain saves its records is still sent (#313)", async () => {
+  const rigged = await rig();
+  const { host, state } = rigged;
+  const timers = new FakeTimers();
+  const engine = engineOf(rigged, timers);
+  await engine.start();
+  await timers.run(1000);
+
+  // Hold the save the drain makes once its queue is empty (#274), as a slow
+  // disk does, and make the second note while it is held.
+  const save = state.save.bind(state);
+  let release = null;
+  state.save = () => {
+    const exiting = engine.draining && engine.queue.length === 0 && engine.active === 0 && engine.pushing.size === 0;
+    if (release !== null || !exiting) return save();
+    return new Promise((resolve, reject) => { release = () => save().then(resolve, reject); });
+  };
+  host.seed("First.md", "the first note", 3000);
+  engine.changed("First.md");
+  await timers.run(1000, () => release !== null);
+  assert.notEqual(release, null, "the drain never saved its records");
+  host.seed("Second.md", "made while the save ran", 3100);
+  engine.changed("Second.md");
+  await timers.run(1000, () => engine.queue.includes("Second.md"));
+  assert.equal(engine.queue.includes("Second.md"), true, "the second note never reached the queue");
+
+  release();
+  // No time passes: what sends the second note is the drain that saved, not a
+  // later timer that happens to queue something else (on the Windows runner
+  // nothing did, for two minutes).
+  const sent = await timers.run(0, () => state.fileByPath("Second.md") !== undefined, 2000).catch(() => false);
+  assert.equal(sent, true, `a note queued during the save was left: queue=${engine.queue} draining=${engine.draining}`);
+  assert.notEqual(state.fileByPath("First.md"), undefined);
+  engine.stop();
+});
+
 test("a new note gone before it settled is dropped in one line, and nothing is sent (#313)", async () => {
   const rigged = await rig();
   const { host, state } = rigged;
