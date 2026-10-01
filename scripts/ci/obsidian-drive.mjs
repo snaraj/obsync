@@ -458,8 +458,18 @@ async function openVault(instance) {
 
 async function setServer(instance, url) {
   const main = await instance.main();
-  await main.run(openSettings, PLUGIN_ID);
-  await until(`${instance.name}: this plugin's settings`, () => instance.anywhere(settingsShow, LABELS.serverUrl));
+  // Asked again while it does not show, as a person clicks the tab again: once,
+  // on a macOS runner, the Settings window stayed on the Community plugins page
+  // the trust step had opened and never took the plugin's tab.
+  let asked = 0;
+  await until(`${instance.name}: this plugin's settings`, async () => {
+    if (await instance.anywhere(settingsShow, LABELS.serverUrl)) return true;
+    if (Date.now() - asked >= 5_000) {
+      asked = Date.now();
+      await main.run(openSettings, PLUGIN_ID);
+    }
+    return false;
+  });
   await until(`${instance.name}: the ${LABELS.serverUrl} field`, () =>
     instance.anywhere(fillSetting, "settings", LABELS.serverUrl, url));
   // The plugin stores the normalised address (a default port dropped), so the
