@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath, { join, resolve } from "node:path";
-import { sandbox } from "./fake.mjs";
+import { sandbox, scratch } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { assertVaultPath, isVaultPath, vaultPathRefusal, vaultTarget } = require("../build/vaultPath.js");
@@ -114,7 +114,7 @@ test("the root proof confines an absolute target on its own", () => {
 function desktopHost({ files = [] } = {}) {
   const box = sandbox();
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
-  const root = mkdtempSync(join(tmpdir(), "obsync-vault-"));
+  const root = scratch("obsync-vault-");
   const logs = [];
   const removed = [];
   const trashed = [];
@@ -190,11 +190,14 @@ test("the desktop host refuses every path that would leave the vault root", asyn
   assert.equal(existsSync(join(root, ".obsidian")), false, "the plugin's own folder was not touched");
 });
 
-test("the desktop host reads only from inside the vault", async () => {
+test("the desktop host reads only from inside the vault", async (t) => {
   const { host, root } = desktopHost();
   mkdirSync(join(root, "Notes"));
   writeFileSync(join(root, "Notes", "Ideas.md"), "inside\n");
-  writeFileSync(resolve(root, "..", "obsync-outside.md"), "outside\n");
+  // Beside the vault, in the temp folder itself: removed with the test.
+  const beside = resolve(root, "..", "obsync-outside.md");
+  t.after(() => rmSync(beside, { force: true }));
+  writeFileSync(beside, "outside\n");
 
   const source = host.source("Notes/Ideas.md", 7);
   assert.equal(new TextDecoder().decode(await source.read(0, 7)), "inside\n");

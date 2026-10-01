@@ -37,6 +37,23 @@ export function channel(box, plugin) {
 }
 
 /**
+ * A TEMP DIRECTORY THIS TEST PROCESS REMOVES WHEN IT ENDS, whatever its tests
+ * did, a failed assertion included. The sandboxes and vaults below were left
+ * behind by every run: a million of them (573 GiB) filled the machine the
+ * suite ran on. A test that removes its own earlier changes nothing here.
+ * `npm test` (`test/run.mjs`) refuses a suite that leaves anything behind.
+ */
+const scratches = new Set();
+process.on("exit", () => {
+  for (const dir of scratches) rmSync(dir, { recursive: true, force: true });
+});
+export function scratch(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  scratches.add(dir);
+  return dir;
+}
+
+/**
  * A throwaway directory where `obsidian` resolves to a stub, the way
  * Obsidian's own loader makes it resolve. `build/` is always copied in;
  * `dist/` only when asked, because `build.mjs` deletes and recreates `dist/`
@@ -44,7 +61,7 @@ export function channel(box, plugin) {
  * unconditionally would race the bundle test's rebuild.
  */
 export function sandbox({ dist = false } = {}) {
-  const home = mkdtempSync(join(tmpdir(), "obsync-sandbox-"));
+  const home = scratch("obsync-sandbox-");
   mkdirSync(join(home, "node_modules", "obsidian"), { recursive: true });
   writeFileSync(
     join(home, "node_modules", "obsidian", "package.json"),

@@ -38,7 +38,7 @@ import { promises as realFsPromises } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
-import { FakeServer, KEYS, fakeState, keys, sandbox } from "./fake.mjs";
+import { FakeServer, KEYS, fakeState, keys, sandbox, scratch } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
@@ -59,8 +59,8 @@ async function vault({ fs: injected } = {}) {
   const { applyChange } = box.require(join(box.home, "build", "sync", "pull.js"));
   const obsidian = box.require("obsidian");
   obsidian.notices.length = 0;
-  const root = mkdtempSync(join(tmpdir(), "obsync-vault-"));
-  const outside = mkdtempSync(join(tmpdir(), "obsync-outside-"));
+  const root = scratch("obsync-vault-");
+  const outside = scratch("obsync-outside-");
   const logs = [];
   const adapter = {
     getBasePath: () => root,
@@ -310,7 +310,7 @@ function parentSwap(root, replace) {
 }
 
 test("the reviewer's case: a parent swapped inside the open writes nothing outside", async () => {
-  const outsideDir = mkdtempSync(join(tmpdir(), "obsync-outside-"));
+  const outsideDir = scratch("obsync-outside-");
   let swapper = null;
   const wrote = [];
   const { root, logs, context, publish, applyChange } = await vault({
@@ -385,7 +385,7 @@ test("a parent swapped inside a read is refused before a byte is returned", asyn
 });
 
 test("a parent swapped around the rename is refused, hard link and all", async () => {
-  const outsideDir = mkdtempSync(join(tmpdir(), "obsync-outside-"));
+  const outsideDir = scratch("obsync-outside-");
   let swapper = null;
   const { root, logs, context, publish, applyChange } = await vault({
     fs: {
@@ -416,7 +416,7 @@ test("a parent swapped around the rename is refused, hard link and all", async (
 });
 
 test("a target swapped for a symlink after the rename is refused, and the plant removed", async () => {
-  const outsideDir = mkdtempSync(join(tmpdir(), "obsync-outside-"));
+  const outsideDir = scratch("obsync-outside-");
   const secret = join(outsideDir, "secret.md");
   writeFileSync(secret, "outside\n");
   // The rename lands our file, and the name is then made to mean the
@@ -447,7 +447,7 @@ test("a target swapped for a symlink after the rename is refused, and the plant 
 });
 
 test("a temp file swapped for a symlink between the open and the write is refused", async () => {
-  const outsideDir = mkdtempSync(join(tmpdir(), "obsync-outside-"));
+  const outsideDir = scratch("obsync-outside-");
   const secret = join(outsideDir, "secret.md");
   writeFileSync(secret, "outside\n");
   // The hostile filesystem: the instant the exclusive-create open returns,

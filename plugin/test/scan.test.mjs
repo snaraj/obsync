@@ -731,7 +731,9 @@ test("every call of the desktop filesystem seam, and of a handle it opens, fails
     hang = null;
     return new Promise(() => {});
   };
-  const handleOf = (real) => ({
+  // Every real handle opened, so a case whose call never answered still closes it.
+  const handles = [];
+  const handleOf = (real) => (handles.push(real), {
     read: (...args) => answer("read", () => real.read(...args)),
     write: (buffer) => answer("write", () => real.write(buffer)),
     stat: (options) => answer("fstat", () => real.stat(options)),
@@ -828,6 +830,7 @@ test("every call of the desktop filesystem seam, and of a handle it opens, fails
     assert.equal(error?.code, "disk_stalled", `${name}: ${error === "answered" ? "answered with nothing from the disk" : `failed as ${error}`}`);
     assert.equal(error.message, "This device's disk did not answer in time. obsync tries again by itself.");
     assert.ok(logs.some((line) => new RegExp(`^host decision=stalled call=${name} duration_ms=\\d+ budget_ms=${budget}$`).test(line)), logs.join(" | "));
+    for (const real of handles.splice(0)) await real.close().catch(() => {});
   }
   // The filesystem the host finds for itself, on a desktop, is the bounded one too.
   const found = new ObsidianHost(plugin).desktop.fs.promises;

@@ -53,7 +53,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
-import { rig, sandbox } from "./fake.mjs";
+import { rig, sandbox, scratch } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -1204,7 +1204,7 @@ test("a hidden folder something else wrote into is kept, and reported", async (t
  * the vault's deletion by a name that leads out of the vault.
  */
 test("a hidden folder swapped for a link refuses the removal", async (t) => {
-  const outside = mkdtempSync(join(tmpdir(), "obsync-outside-"));
+  const outside = scratch("obsync-outside-");
   t.after(() => rmSync(outside, { recursive: true, force: true }));
   let swapped = false;
   const r = await native(

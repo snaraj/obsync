@@ -93,7 +93,6 @@ readonly HOST='obsync-proxy.invalid'
 readonly HTTPS_PORT="${OBSYNC_PROXY_HTTPS_PORT:-18643}"
 readonly READY_BUDGET_SECONDS=120
 
-scratch="$(mktemp -d "${TMPDIR:-/tmp}/proxy-e2e.XXXXXX")"
 created=''
 started_at="$(date +%s)"
 step_at="${started_at}"
@@ -157,6 +156,10 @@ python3 -c 'import socket,sys; s=socket.socket(); s.bind(("127.0.0.1", int(sys.a
   || deny "127.0.0.1:${HTTPS_PORT} is taken"
 prove "preflight: ${image}, ${proxy} from deploy/proxies/compose.yml, ${proxies_subnet} and ${FRONT_SUBNET} unclaimed, port ${HTTPS_PORT} free"
 
+# Made only now, with its removal armed in the same breath: a scratch made
+# before the preflight was left behind by every refusal (552 of them in one
+# temp folder).
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/proxy-e2e.XXXXXX")"
 trap cleanup EXIT
 
 # (2) A throwaway authority and a leaf for the one name the proxy serves. The
