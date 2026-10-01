@@ -4137,6 +4137,16 @@ export default class ObsyncPlugin extends Plugin {
       if (this.engine !== engine) { engine.stop(); return; }
       const attempt = (this.reconnect?.attempt ?? 0) + 1;
       this.teardownEngine();
+      // A DISK CALL THAT NEVER ANSWERED (#307) is no refusal. The start is
+      // made again after the reconnect's pause, as an outage's is, and the
+      // status says the disk's words, which promise exactly that. Read live:
+      // a start that met one stopped for good under words saying it retries.
+      if ((error as { code?: unknown }).code === DISK_STALLED) {
+        this.log("engine decision=stopped reason=start_stalled code=disk_stalled");
+        this.scheduleReconnect(attempt, 0);
+        this.setStatus({ kind: "error", message: (error as Error).message });
+        return;
+      }
       if (!unreachable(error)) {
         // A refusal, or a local fault: visible until the person acts, and
         // never knocked on again by a timer (issue #129).

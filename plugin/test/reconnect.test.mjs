@@ -158,6 +158,30 @@ test("a start the server could not be reached for is retried, and the next one t
   assert.equal(r.logs.filter((line) => line.startsWith("engine decision=resumed")).length, 1);
 });
 
+/**
+ * A START THAT MET A DISK CALL THAT NEVER ANSWERED IS MADE AGAIN (#307).
+ * Live, the start's lstat was lost as the Settings window closed: the bound
+ * failed it 15 s later, and the start was taken for a refusal, which nothing
+ * retries, under words saying obsync tries again by itself. It stopped for good.
+ */
+test("a start that met a disk call that never answered is made again after the pause, and says so until it gets through (#307)", async (t) => {
+  const r = await fixture(t);
+  const words = "This device's disk did not answer in time. obsync tries again by itself.";
+  r.plan((n) => { if (n === 1) throw Object.assign(new Error(words), { code: "disk_stalled" }); });
+  await r.instance.onload();
+  assert.equal(r.instance.engine, null, "the engine that could not start is torn down");
+  assert.deepEqual(r.win.armed(), [5000], "no start is armed again: the device stops for good");
+  assert.deepEqual(r.scheduled(), ["engine decision=retry_scheduled attempt=1 delay_ms=5000 status=0"]);
+  assert.ok(r.logs.includes("engine decision=stopped reason=start_stalled code=disk_stalled"), r.logs.join("\n"));
+  assert.equal(r.instance.statusText(), `error — ${words}`);
+
+  r.win.fire();
+  await settle();
+  assert.deepEqual(r.running(), [r.engines[1]]);
+  assert.ok(r.logs.includes("engine decision=resumed attempt=1"));
+  assert.equal(r.instance.statusText(), "idle", "the words went with the start that got through");
+});
+
 test("a start refused by a certificate this device does not trust says so, is retried, and a start that gets through clears it", async (t) => {
   const r = await fixture(t);
   const said = "error — This device does not trust your server's certificate, so it refused the connection. Trust that " +
