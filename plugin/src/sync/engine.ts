@@ -2024,6 +2024,9 @@ export class SyncEngine {
     this.heldFolders = [];
     this.vanish(held, true);
     this.options.host.log(`reconcile decision=confirmed reason=bulk_deletion queued=${held.length}`);
+    // THE ANSWER IS SAID, as Restore here's is (#309): Recent kept the
+    // question with nothing after it, and read as still waiting on the user.
+    this.options.host.notify({ kind: "confirm", text: `deleting ${count(held.length, "note")} on your other devices too.` });
   }
 
   /**

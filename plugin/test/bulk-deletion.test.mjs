@@ -111,6 +111,8 @@ test("the user's confirmation publishes exactly what was held", async (t) => {
   assert.equal(tombstones(server).length, NOTES.length, "the confirmed deletions never reached the server");
   assert.equal(engine.heldDeletionCount, 0, "the hold outlived the confirmation");
   assert.ok((host.questionsClosed ?? 0) >= 1, "the answered question was left on screen");
+  // The answer is said, so Recent never ends on the question (#309).
+  assert.equal(host.notices.at(-1), `obsync: deleting ${NOTES.length} notes on your other devices too.`);
   assert.ok(
     host.logs.some((line) => line.includes(`decision=confirmed reason=bulk_deletion queued=${NOTES.length}`)),
     host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),

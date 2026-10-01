@@ -1,0 +1,12 @@
+# M4054: Delete everywhere's answer counts the notes the next hold holds, none (#309)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2026,7 +2026,7 @@
+     this.options.host.log(`reconcile decision=confirmed reason=bulk_deletion queued=${held.length}`);
+     // THE ANSWER IS SAID, as Restore here's is (#309): Recent kept the
+     // question with nothing after it, and read as still waiting on the user.
+-    this.options.host.notify({ kind: "confirm", text: `deleting ${count(held.length, "note")} on your other devices too.` });
++    this.options.host.notify({ kind: "confirm", text: `deleting ${count(this.options.state.data.heldDeletions.length, "note")} on your other devices too.` });
+   }
+ 
+   /**

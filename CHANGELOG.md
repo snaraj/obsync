@@ -186,6 +186,8 @@ key. The reminder to confirm your recovery phrase is now a question that
 stays until you act on it. On a phone, the notice that says what your server
 refuses, such as "Your server is out of storage", goes as soon as the server
 takes changes again; it stood for hours beside a synced check (#308).
+**Delete everywhere** now says what it does, as **Restore here** already
+did, so Recent no longer ends on a question you answered (#309).
 
 **A device that only shows a note while two others type in it no longer
 announces every merge.** It said "obsync merged concurrent edits to <note>."

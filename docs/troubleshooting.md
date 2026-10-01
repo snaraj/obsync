@@ -1654,7 +1654,9 @@ restart; smaller deletions go at once.
 
 **Fix.** Choose **Delete everywhere** to delete them on every device, or
 **Restore here** to put them back on this device. Both answers are also under
-Settings, obsync, **Deletions held back**.
+Settings, obsync, **Deletions held back**. From 1.1.5, either answer is said
+in a short notice, and in Recent: "deleting 20 notes on your other devices
+too", or "put 20 notes back on this device and deleted nothing".
 
 ## A conflict copy appeared
 
