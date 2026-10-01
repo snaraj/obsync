@@ -37,7 +37,8 @@ observed from what was still outstanding.
 - [2026-09-30 the 1.1.5 train](2026-09-30-train-1.1.5.md): the train's
   closing run on three macOS desktops and an Android 15 emulator, with the
   coordinator's iPhone and Windows rows. J1 to J11 pass. final10 is the
-  final build; final9 and final10 ran on the desktops only.
+  final build; final9 ran on the desktops only, and final10 on the
+  desktops and, for #311 and #310, on the iPhone.
   - **#307:** closing a Settings window during a first sync stopped a
     desktop for good: 1 run of 5 on final3, and 1 of 5 on final4 at its
     start. final5 to final7 wedged 0 of 25 runs, through the start's retry
