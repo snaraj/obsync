@@ -315,10 +315,13 @@ requires the refusal.
    fsynced before going deeper, so every directory on an acknowledged
    chunk's path is durable (1.1.5, #273). A directory whose parent's
    `fsync` failed is remembered, and the next chunk under it fsyncs that
-   parent again. A start that removes a leftover temp fsyncs `v1/` and each
+   parent again. A start that finds a leftover temp fsyncs `v1/` and each
    first-level directory once (`fanout_synced=` on the same SUMMARY): the
    cut may have fallen between a directory's creation and its parent's
-   `fsync`. On a fresh store most early chunks open a new leaf, so they cost
+   `fsync`. The temp goes only after that repair succeeds, so a start that
+   fails or stops part way leaves it, and the next start repairs again.
+   Every start fsyncs the volume and `v1/`, which name `v1/` and `v1/tmp/`,
+   whether or not it created them. On a fresh store most early chunks open a new leaf, so they cost
    one more flush (two for the first of each 256 first levels).
 2. Journal append: frame = `u32 len | u32 crc32 | payload`; `write`,
    `fsync(segment)`; only then respond. Startup replay stops at the first

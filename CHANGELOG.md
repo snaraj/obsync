@@ -373,7 +373,10 @@ the file inside it, a piece of a file that opened one of the server's new
 storage folders could be lost with that folder. The server now makes each
 new folder durable before it confirms the upload. That costs one more disk
 flush for such a piece, which is most pieces while a store is young; on
-Linux the benchmark's time did not change (#273).
+Linux the benchmark's time did not change (#273). After a crash, the start
+that makes those folders durable keeps the trace of the crash until it has,
+so a start that fails part way repairs again at the next one, rather than
+taking the folders as saved.
 
 **A server that needs a restart says so.** When a write to the journal
 fails and taking it back fails too, the server takes nothing more until it

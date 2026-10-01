@@ -252,6 +252,10 @@ pub(crate) enum BlobPhase {
     Rename,
     /// Persisting a new fan-out directory's name in its parent.
     DirParentSync,
+    /// A start persisting the layout's names: `v1/` and `v1/tmp/`.
+    StartLayoutSync,
+    /// A start persisting the fan-out names after a cut upload.
+    StartRepairSync,
     /// Copying into a quarantine-local temporary file.
     QuarantineCopy,
     /// The quarantine copy's file fsync.
