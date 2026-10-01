@@ -1126,7 +1126,13 @@ export class FakeServer {
       if (since > this.seq) return this.error(416, "seq_ahead", `since ${since} is beyond head ${this.seq}`);
       const limit = Number(params.get("limit") ?? 1000);
       const remaining = this.journal.filter((frame) => frame.seq > since);
-      const changes = remaining.slice(0, limit);
+      // A frame names its file's heads as they are when the page is served,
+      // not as they were when it was journaled: obsyncd builds every page
+      // from its index (`storage/index.rs`, `changes`).
+      const changes = remaining.slice(0, limit).map((frame) => {
+        const file = this.files.get(frame.file_id);
+        return file === undefined ? frame : { ...frame, heads: file.heads, conflicted: file.heads.length > 1 };
+      });
       if (changes.length > 0) {
         return this.json(200, { seq: remaining.length > limit ? changes[changes.length - 1].seq : this.seq, head_seq: this.seq, changes });
       }

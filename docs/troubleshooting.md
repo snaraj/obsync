@@ -63,6 +63,7 @@ server again unless the entry says so.
 | A photo or PDF from a phone on a weak connection never arrives on the other devices | [A photo or PDF from my phone never arrives on my other devices](#a-photo-or-pdf-from-my-phone-never-arrives-on-my-other-devices) |
 | Notes you deleted on one device disappeared everywhere | [Notes deleted on one device disappeared everywhere](#notes-deleted-on-one-device-disappeared-everywhere) |
 | A note you deleted is back on one device after you changed Sync folders | [A deleted note came back after changing Sync folders](#a-deleted-note-came-back-after-changing-sync-folders) |
+| A device you just paired has notes you deleted elsewhere in its trash | [A newly paired device's trash holds notes deleted elsewhere](#a-newly-paired-devices-trash-holds-notes-deleted-elsewhere) |
 | After you renamed one of your Sync folders, your other devices still show an empty folder with the old name | [A renamed Sync folder left an empty folder behind](#a-renamed-sync-folder-left-an-empty-folder-behind) |
 | A note you moved out of your Sync folders is missing on that device after it went back to the whole vault | [A note moved out of Sync folders is missing after syncing the whole vault again](#a-note-moved-out-of-sync-folders-is-missing-after-syncing-the-whole-vault-again) |
 | After pairing a device again, a note you once renamed shows up under its old name too | [A renamed note came back under its old name after pairing again](#a-renamed-note-came-back-under-its-old-name-after-pairing-again) |
@@ -1767,15 +1768,40 @@ you deleted it (issue #237).
 
 **How to fix it.**
 
-1. Update obsync on this device to 1.1.4 or later. From then on the device
-   deletes such a note again as the history reaches your deletion, and sends
-   nothing.
+1. Update obsync on this device to 1.1.5 or later. It skips the versions
+   your deletion came after and never writes the note back (#311). 1.1.4
+   wrote it back and then deleted it again, sending nothing.
 2. For a note that came back before you updated, delete it again, or add a
    folder under **Sync folders on this device** and save: the next read of
    the history removes it. If you edited it meanwhile, your edit is kept and
    reaches your other devices, like any edit to a note deleted elsewhere.
-3. Reading the history again downloads such a note once more and moves it to
-   the trash again, so this device's trash may hold one more copy.
+3. On 1.1.4, reading the history again also downloaded such a note once
+   more and moved it to the trash, so this device's trash may hold a copy.
+
+## A newly paired device's trash holds notes deleted elsewhere
+
+**What you see.** You paired a device, paired one again, or added a folder
+under **Sync folders on this device**. Afterwards its trash holds notes you
+had deleted on your other devices: the system trash on a computer, or the
+vault's `.trash` folder, depending on Settings, **Files and links**,
+**Deleted files**. The first sync may also have taken longer than the number
+of notes suggests.
+
+**Why it happens.** A device in that state reads your vault's history from
+the start. Your server keeps every version from the last 30 days and at
+least ten of each note, deleted notes included. Up to 1.1.4, the device
+wrote each of those versions in turn. A note deleted elsewhere was
+downloaded, written, then moved to this device's trash, so every note you
+deleted in that window landed there (#311).
+
+**How to fix it.**
+
+1. Update obsync on every device to 1.1.5 or later before you pair the next
+   one. A version a later one replaced is then skipped without being
+   downloaded, so the trash stays empty and each note is written once.
+2. The notes already in that trash are copies of notes you deleted. Your
+   other devices and your server's history have what they had. Empty that
+   trash, or restore a note from it, as you would any deleted note.
 
 ## A renamed Sync folder left an empty folder behind
 

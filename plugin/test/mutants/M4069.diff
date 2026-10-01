@@ -1,0 +1,12 @@
+# M4069: the file's current version is skipped as history too (#311)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2005,7 +2005,7 @@
+   // is now. Only at a free name: a note already standing there is compared
+   // first, so one kept at an older version is adopted, never copied
+   // (`sameNameTiebreak`, issue #163). A frame naming no heads proves nothing.
+-  if (localPath === undefined && change.heads.length > 0 && !change.heads.includes(change.version_id) &&
++  if (localPath === undefined && change.heads.length > 0 &&
+     (await competing(context, manifest.path, change.file_id)) === null) {
+     context.host.log(`pull decision=skipped reason=superseded_in_feed file=${change.file_id} seq=${change.seq}`);
+     return "skipped";

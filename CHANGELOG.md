@@ -311,6 +311,18 @@ it finishes. If Obsidian does not allow it, the log says
 `host decision=throttle_unavailable` and sync runs as before. Tried on
 macOS; Windows and Linux use the same call; phones are unchanged (#283).
 
+**A device you pair writes each note once, as it is now, and its trash
+stays empty.** A device that pairs, pairs again, or adds Sync folders
+reads your server's history from the start. It used to write every
+version your server keeps of a note, one over the other. It also wrote
+each note deleted elsewhere in the last 30 days, then moved it to its
+trash: a new laptop's Trash filled with notes you had already deleted.
+It now skips a version a later one replaced, without downloading it,
+whenever the note is not already on that device. A lab desktop paired
+against 9,801 notes ended with 17 deleted notes in its trash before the
+fix and none after it, and downloaded 8.3 MiB less
+([2026-09-30 run](docs/validation-runs/2026-09-30-train-1.1.5.md), #311).
+
 **A first sync from a computer rewrites obsync's data file far less.** For
 a 7,703-file vault, 7,451 writes of the file became 211 to 253 over three
 runs, and the upload took 233 to 281 s instead of 302 s (#274). A new

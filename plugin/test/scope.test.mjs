@@ -1368,6 +1368,10 @@ for (const placement of ["before the widening", "between the rewind and the firs
  * deleted too. An edit made here before the deletion is an echo as well, so
  * the record the replay leaves is an ANCESTOR of what the deletion names; a
  * folder is the same rule one kind over.
+ *
+ * The replay now serves the phone's version as what it is, history: the
+ * deletion is its file's head, so it is skipped unwritten (#311). The
+ * folder's record still arrives, and its deletion is applied again here.
  */
 for (const kind of ["note", "note edited here first", "folder"]) {
   test(`a widening does not bring back a ${kind} this device deleted, and sends no deletion again (#237)`, async (t) => {
@@ -1417,10 +1421,12 @@ for (const kind of ["note", "note edited here first", "folder"]) {
     assert.equal(a.state.data.graves[id]?.versionId, deletion.version_id, "its grave is not the deletion this device made");
     assert.deepEqual(server.journal.slice(frames).filter((frame) => frame.deleted), [], `a deletion was sent again: ${story}`);
     assert.equal(b.host.text(path), null);
-    assert.ok(a.host.logs.includes(`pull path_class=tombstone decision=reapplied reason=own_deletion_returned file=${id} seq=${deletion.seq}`), story);
-    assert.ok(a.host.logs.some((line) => line.startsWith(`pull path_class=file decision=unburied file=${id} `) &&
-      line.endsWith(` grave=${deletion.version_id}`)), story);
+    const theirs = server.journal.find((frame) => frame.file_id === id && !frame.deleted && frame.device_id !== KEYS.deviceId);
+    assert.ok(a.host.logs.includes(`pull decision=skipped reason=superseded_in_feed file=${id} seq=${theirs.seq}`), story);
+    assert.equal(a.host.logs.some((line) => line.includes(`decision=unburied file=${id} `)), false, story);
     if (kind === "folder") {
+      assert.ok(a.host.logs.includes(
+        `pull path_class=tombstone decision=reapplied reason=own_deletion_returned file=${folderId} seq=${own(folderId)[0].seq}`), story);
       assert.equal(a.host.resolveFolder("Notes/Sub"), undefined, `the deleted folder came back: ${story}`);
       assert.equal(a.state.folderByPath("Notes/Sub"), undefined);
       assert.equal(a.state.data.graves[folderId]?.versionId, own(folderId)[0]?.version_id);
@@ -1448,7 +1454,46 @@ test("this device's own deletion removes the version it deleted, and stays an ec
   };
   assert.equal(await replay("35".repeat(16), "Notes/deleted.md", false), "deleted");
   assert.equal(r.host.text("Notes/deleted.md"), null);
+  // Brought back by another device, after the deletion: recorded again here,
+  // and said, since the grave goes with it.
+  const grave = r.state.data.graves["35".repeat(16)].versionId;
+  const back = await r.server.publish({ fileId: "35".repeat(16), path: "Notes/deleted.md", bytes: enc("BACK SENTINEL"), mtime: 3000,
+    domainKey, manifestKey, parents: [grave] });
+  assert.equal(await applyChange(r.context, back), "applied");
+  assert.equal(r.host.text("Notes/deleted.md"), "BACK SENTINEL");
+  assert.equal(r.state.data.graves["35".repeat(16)], undefined);
+  assert.ok(r.host.logs.includes(
+    `pull path_class=file decision=unburied file=${"35".repeat(16)} version=${back.version_id} grave=${grave}`), r.host.logs.join(" | "));
   assert.equal(await replay("36".repeat(16), "Notes/edited.md", true), "echo");
   assert.equal(r.host.text("Notes/edited.md"), "EDIT SENTINEL");
+
+  // And over this device's own edit: a note kept here at the version before
+  // it is adopted by the replay, so the record is the deletion's ANCESTOR,
+  // not its parent, and the deletion is still owed.
+  const kept = "37".repeat(16);
+  r.host.seed("Notes/kept.md", "BASE SENTINEL", 5000);
+  const base = await r.server.publish({ fileId: kept, path: "Notes/kept.md", bytes: enc("BASE SENTINEL"), mtime: 1000, domainKey, manifestKey });
+  const mine = await r.server.publish({
+    fileId: kept, path: "Notes/kept.md", bytes: enc("OWN EDIT SENTINEL"), mtime: 2000, domainKey, manifestKey,
+    parents: [base.version_id], deviceId: KEYS.deviceId,
+  });
+  await r.server.publishTombstone({ fileId: kept, path: "Notes/kept.md", manifestKey, parents: [mine.version_id], deviceId: KEYS.deviceId });
+  const results = [];
+  for (const change of (await r.transport.changes(0, 0)).changes.filter((frame) => frame.file_id === kept)) {
+    results.push(await applyChange(r.context, change));
+  }
+  assert.deepEqual(results, ["applied", "echo", "deleted"], r.host.logs.join(" | "));
+  assert.equal(r.host.text("Notes/kept.md"), null);
+
+  // And a deletion this run posted itself -- the start's walk, answered with
+  // the one the server held -- met over a record that a page served before it
+  // landed had written: still owed, never an echo.
+  const raced = "38".repeat(16);
+  const first = await r.server.publish({ fileId: raced, path: "Notes/raced.md", bytes: enc("RACED SENTINEL"), mtime: 1000, domainKey, manifestKey });
+  assert.equal(await applyChange(r.context, first), "applied");
+  const gone = await r.server.publishTombstone({ fileId: raced, path: "Notes/raced.md", manifestKey, parents: [first.version_id], deviceId: KEYS.deviceId });
+  r.context.authored.add(gone.version_id);
+  assert.equal(await applyChange(r.context, gone), "deleted", r.host.logs.join(" | "));
+  assert.equal(r.host.text("Notes/raced.md"), null);
 });
 

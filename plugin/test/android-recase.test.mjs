@@ -996,7 +996,10 @@ test("on Android, a widening does not bring back a note this phone deleted, nor 
 
   await widen();
   await settledHere();
-  assert.ok(r.b.logs.includes(`pull path_class=tombstone decision=reapplied reason=own_deletion_returned file=${id} seq=${deletion.seq}`), story(r));
+  // The desktop's version is history when the replay serves it: never written (#311).
+  const theirs = r.server.journal.find((frame) => frame.file_id === id && !frame.deleted);
+  const skips = () => r.b.logs.filter((line) => line === `pull decision=skipped reason=superseded_in_feed file=${id} seq=${theirs.seq}`).length;
+  assert.equal(skips(), 1, story(r));
 
   // The emulator's state, which a replay before this one left: the record back
   // at the old version, the note on no spelling of the storage, no grave.
@@ -1004,6 +1007,11 @@ test("on Android, a widening does not bring back a note this phone deleted, nor 
   assert.deepEqual(await r.b.plugin.unpushedEdits(), ["R237/One.md"]);
   await widen();
   await settledHere();
+  // The start's walk sends the deletion for the record it finds without its
+  // note (the server answers with the one it holds), and the replay skips the
+  // desktop's version again: nothing comes back to be deleted a second time.
+  assert.equal(skips(), 2, story(r));
+  assert.equal(r.b.logs.some((line) => line.includes(`decision=reapplied reason=own_deletion_returned file=${id} `)), false, story(r));
   assert.equal(r.a.host.text("R237/One.md"), null);
   assert.equal(r.a.host.text("R237/Two.md"), OTHER);
   assert.deepEqual(r.b.notices, []);

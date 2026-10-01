@@ -795,8 +795,10 @@ export class Prefetch {
       this.held.has(change.sids[0] as string) || !admit(state.data.policy, local, change.bytes).ok) return false;
     const path = state.pathByFileId(change.file_id);
     const record = path === undefined ? undefined : state.fileByPath(path);
+    // A version a later one replaced, of a file held nowhere here, is skipped (`applyVersion`).
+    if (record === undefined) return change.heads.length === 0 || change.heads.includes(change.version_id);
     // A version this device holds, or a rename of the bytes it holds, fetches nothing.
-    return record === undefined || (record.versionId !== change.version_id && record.sha256 !== (await sidDigest(change.sids)));
+    return record.versionId !== change.version_id && record.sha256 !== (await sidDigest(change.sids));
   }
 
   private async fetch(index: number, sid: string, patience: Patience): Promise<Bytes | null> {
@@ -1989,6 +1991,23 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
   const heldNote = context.expected?.get(change.file_id);
   if (heldNote !== undefined && heldNote.path !== manifest.path && heldNote.behind.has(change.version_id)) {
     context.host.log(`pull decision=skipped reason=behind_held file=${change.file_id} seq=${change.seq}`);
+    return "skipped";
+  }
+
+  // A FIRST READ WRITES WHAT A NOTE IS, NOT EVERY VERSION IT WAS (issue
+  // #311). A device with no record of a file -- a new one, or one paired
+  // again -- replays the feed from zero, and the feed holds every version
+  // retention keeps: each was written over the one before it, and a note
+  // deleted elsewhere was downloaded, written, then moved to this device's
+  // trash. A feed entry names its file's heads as they are when the page is
+  // served (`docs/protocol.md`, Change feed), so a version that is not one of
+  // them has a descendant later in the same feed, which brings the file as it
+  // is now. Only at a free name: a note already standing there is compared
+  // first, so one kept at an older version is adopted, never copied
+  // (`sameNameTiebreak`, issue #163). A frame naming no heads proves nothing.
+  if (localPath === undefined && change.heads.length > 0 && !change.heads.includes(change.version_id) &&
+    (await competing(context, manifest.path, change.file_id)) === null) {
+    context.host.log(`pull decision=skipped reason=superseded_in_feed file=${change.file_id} seq=${change.seq}`);
     return "skipped";
   }
 
