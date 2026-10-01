@@ -1,0 +1,11 @@
+# M4035: a phone's refusal toast stays up after the refusal ends (#308)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -5408,7 +5408,6 @@
+     // stood for hours beside a synced check, after the server had room again.
+     const refusal = status.kind === "error" && status.code !== undefined ? status.message : null;
+     if (Platform.isMobile && refusal !== this.noticed) {
+-      this.notices.close(REFUSAL_NOTICE);
+       if (refusal !== null) this.notices.show({ kind: "error", key: REFUSAL_NOTICE, text: refusal });
+     }
+     this.noticed = refusal;

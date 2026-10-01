@@ -1,0 +1,12 @@
+# M4036: a phone's refusal toast has no key, so nothing can take it down (#308)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -5409,7 +5409,7 @@
+     const refusal = status.kind === "error" && status.code !== undefined ? status.message : null;
+     if (Platform.isMobile && refusal !== this.noticed) {
+       this.notices.close(REFUSAL_NOTICE);
+-      if (refusal !== null) this.notices.show({ kind: "error", key: REFUSAL_NOTICE, text: refusal });
++      if (refusal !== null) this.notices.show({ kind: "error", text: refusal });
+     }
+     this.noticed = refusal;
+     for (const watcher of this.watchers) watcher();

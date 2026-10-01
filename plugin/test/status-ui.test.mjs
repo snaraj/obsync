@@ -358,16 +358,19 @@ test("on a phone a refusal that needs the person is said once in a notice; on a 
   assert.deepEqual(phone.obsidian.notices.filter((notice) => notice.includes("SENTINEL")), ["obsync: CLOCK SENTINEL"]);
   assert.equal(phone.obsidian.raised.find((toast) => toast.message.includes("SENTINEL")).message, "obsync: CLOCK SENTINEL",
     "the same refusal still standing is not said again");
-  // Back while its toast still stands: that toast counts it, and no second one stacks (1.1.5).
+  // It ends, and its toast goes with it; Recent keeps the line (#308). "Your
+  // server is out of storage" stood for hours over a phone syncing again.
+  const up = () => phone.obsidian.raised.filter((toast) => toast.message.includes("SENTINEL") && !toast.hidden).map((toast) => toast.message);
   phone.instance.setStatus({ kind: "idle" });
-  phone.instance.setStatus(clock);
-  assert.equal(phone.obsidian.notices.filter((notice) => notice.includes("SENTINEL")).length, 1);
-  assert.equal(phone.obsidian.raised.find((toast) => toast.message.includes("SENTINEL")).message, "obsync: CLOCK SENTINEL (2 times).");
-  // Dismissed, then back: a toast of its own.
-  for (const toast of phone.obsidian.raised) toast.hide();
-  phone.instance.setStatus({ kind: "idle" });
+  assert.deepEqual(up(), [], "a refusal that ended left its toast up");
+  assert.ok(phone.instance.notices.recent().some((entry) => entry.text.includes("CLOCK SENTINEL")), "Recent lost the refusal");
+  // Back: a toast of its own, the only one up.
   phone.instance.setStatus(clock);
   assert.equal(phone.obsidian.notices.filter((notice) => notice.includes("SENTINEL")).length, 2, "again, when it comes back");
+  assert.deepEqual(up(), ["obsync: CLOCK SENTINEL"]);
+  // Another refusal in its place: its toast, and the first one's goes.
+  phone.instance.setStatus({ kind: "error", code: "storage", message: "STORAGE SENTINEL" });
+  assert.deepEqual(up(), ["obsync: STORAGE SENTINEL"]);
 
   const desktop = await plugin(t);
   desktop.instance.setStatus(clock);

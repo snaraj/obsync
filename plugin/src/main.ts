@@ -130,6 +130,8 @@ const LINK_UNSUPPORTED = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR", "E
 
 /** The key of the recovery-key security warning's toast, which ends with the warning. */
 const RECOVERY_WARNING = "recovery_mismatch";
+/** The key of a phone's refusal toast, which ends with the refusal (#308). */
+const REFUSAL_NOTICE = "refusal";
 
 /** The words on a notice's buttons (`VaultHost.notify`). */
 const NOTICE_BUTTONS: Record<NoticeAction["kind"], string> = {
@@ -5411,9 +5413,14 @@ export default class ObsyncPlugin extends Plugin {
     this.indicator.update(warned ? "attention" : shown,
       `obsync: ${this.statusText()}${this.recoveryMismatch ? " — security warning: see Show sync status" : ""}`);
     // A PHONE HAS NOTHING ELSE THAT CATCHES THE EYE (#209): a refusal that
-    // needs the person is said once in a notice there, as it turns to it.
+    // needs the person is said once in a notice there, as it turns to it, and
+    // its toast goes when it ends (#308). "Your server is out of storage"
+    // stood for hours beside a synced check, after the server had room again.
     const refusal = status.kind === "error" && status.code !== undefined ? status.message : null;
-    if (Platform.isMobile && refusal !== null && refusal !== this.noticed) this.notices.show({ kind: "error", text: refusal });
+    if (Platform.isMobile && refusal !== this.noticed) {
+      this.notices.close(REFUSAL_NOTICE);
+      if (refusal !== null) this.notices.show({ kind: "error", key: REFUSAL_NOTICE, text: refusal });
+    }
     this.noticed = refusal;
     for (const watcher of this.watchers) watcher();
   }

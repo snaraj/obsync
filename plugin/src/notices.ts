@@ -260,10 +260,12 @@ export class NoticeChannel {
       times > 1 ? { ...entry, text: sentence(notice, entry.paths, times) } : entry).reverse();
   }
 
-  /** Take the question or security notice of this key off the screen. */
+  /** Take the toast of this key off the screen, whatever its kind (#308); Recent keeps its line. */
   close(key: string): void {
     this.slots.get(key)?.drawn.hide();
     this.slots.delete(key);
+    this.groups.get(key)?.drawn.hide();
+    this.groups.delete(key);
   }
 
   show(notice: SyncNotice): void {

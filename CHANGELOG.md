@@ -183,7 +183,9 @@ shows the alert icon. The pairing match code shows only on its own notice,
 never in Recent, the command line or the log, and **Pair a new device**
 closes once you approve; a notice says when the new device holds the vault
 key. The reminder to confirm your recovery phrase is now a question that
-stays until you act on it.
+stays until you act on it. On a phone, the notice that says what your server
+refuses, such as "Your server is out of storage", goes as soon as the server
+takes changes again; it stood for hours beside a synced check (#308).
 
 **A device that only shows a note while two others type in it no longer
 announces every merge.** It said "obsync merged concurrent edits to <note>."
