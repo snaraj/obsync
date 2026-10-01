@@ -3,8 +3,9 @@
 // optionally beside a third paired instance that types nothing (issue #227).
 //
 // usage: node scripts/validation/cotype-live.mjs <portX> <titleX> <portY> <titleY> <durationMs> <intervalMs> <idleMs> [traceDir]
-//   <port*>   an instance's --remote-debugging-port; <title*> a regex matching its vault window's title
-//   PASSIVE="<port>|<title regex>"  a third paired instance that types nothing; PASSIVE_OPEN=1 shows the note there
+//   <port*>   an instance's --remote-debugging-port; <title*> text in its vault window's title, such as
+//             "rig-B - Obsidian". Obsidian's separate Settings window ("Settings - ...") is never picked.
+//   PASSIVE="<port>|<title>"  a third paired instance that types nothing; PASSIVE_OPEN=1 shows the note there
 //
 // Standard run (docs/validation-runs/2026-09-29-cotyping-three-devices.md): six CPU burners beside it,
 // `60000 200 60000` -- a minute of typing at 200 ms a keystroke on each side, then a minute of nobody typing.
@@ -36,8 +37,7 @@ const START = "# Both\nthe line nobody edits\nthe last fixed line\n";
 
 async function pick(port, sel) {
   const all = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).filter((t) => t.type === "page");
-  const re = new RegExp(sel);
-  const hits = all.filter((t) => re.test(t.title));
+  const hits = all.filter((t) => t.title.includes(sel) && !t.title.startsWith("Settings - "));
   if (hits.length !== 1) throw new Error(`${hits.length} targets match ${sel} on port ${port}`);
   return hits[0];
 }
@@ -57,18 +57,26 @@ async function session(port, sel) {
     }
   });
   const send = (method, params = {}) => new Promise((ok, bad) => { const id = next++; pending.set(id, { ok, bad }); ws.send(JSON.stringify({ id, method, params })); });
-  const js = async (expression) => {
-    const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: true });
+  const answer = (r) => {
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description?.split("\n")[0] ?? r.exceptionDetails.text);
     return r.result.value;
   };
-  return { send, js, close: () => ws.close() };
+  const js = async (expression) => answer(await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: true }));
+  // A function run in the page with its values passed as arguments, never written into its code.
+  const call = async (functionDeclaration, ...values) => {
+    const { result } = await send("Runtime.evaluate", { expression: "globalThis" });
+    return answer(await send("Runtime.callFunctionOn", {
+      objectId: result.objectId, functionDeclaration, arguments: values.map((value) => ({ value })),
+      awaitPromise: true, returnByValue: true, userGesture: true,
+    }));
+  };
+  return { send, js, call, close: () => ws.close() };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // The trace: obsync's own log lines, and the note's text at each save the vault reports.
-const HOOK = `(() => {
-  window.__cotype = { note: ${JSON.stringify(NOTE)}, lines: [], notices: [], hiddenMs: 0, hiddenAt: document.hidden ? Date.now() : null };
+const HOOK = `function (note) {
+  window.__cotype = { note, lines: [], notices: [], hiddenMs: 0, hiddenAt: document.hidden ? Date.now() : null };
   if (!window.__cotypeVisibility) {
     document.addEventListener("visibilitychange", () => {
       const c = window.__cotype;
@@ -104,9 +112,9 @@ const HOOK = `(() => {
   }
   require("electron").remote.getCurrentWindow().showInactive();
   return "hooked";
-})()`;
-const OPEN = `(async () => {
-  const f = app.vault.getAbstractFileByPath(${JSON.stringify(NOTE)});
+}`;
+const OPEN = `async function (note) {
+  const f = app.vault.getAbstractFileByPath(note);
   if (!f) return "missing";
   const leaf = app.workspace.getLeaf(false);
   await leaf.openFile(f, { state: { mode: "source" } });
@@ -115,15 +123,15 @@ const OPEN = `(async () => {
   if (!v.editor) return "no editor";
   v.editor.focus();
   return "open " + v.getMode();
-})()`;
+}`;
 const CURSOR = {
   end: `(() => { const e = app.workspace.activeLeaf.view.editor; e.focus(); const l = e.lastLine(); e.setCursor({ line: l, ch: e.getLine(l).length }); return true; })()`,
   line1: `(() => { const e = app.workspace.activeLeaf.view.editor; e.focus(); e.setCursor({ line: 0, ch: e.getLine(0).length }); return true; })()`,
 };
-const READ = `(async () => {
-  const view = app.workspace.getLeavesOfType("markdown").map((l) => l.view).find((v) => v.file?.path === ${JSON.stringify(NOTE)});
-  const disk = await app.vault.adapter.read(${JSON.stringify(NOTE)});
-  const copies = app.vault.getFiles().map((f) => f.path).filter((p) => p.startsWith(${JSON.stringify(STEM + " (conflict")}));
+const READ = `async function (note, copy) {
+  const view = app.workspace.getLeavesOfType("markdown").map((l) => l.view).find((v) => v.file?.path === note);
+  const disk = await app.vault.adapter.read(note);
+  const copies = app.vault.getFiles().map((f) => f.path).filter((p) => p.startsWith(copy));
   const status = document.querySelector(".obsync-status");
   const c = window.__cotype;
   return JSON.stringify({ editor: view?.editor?.getValue() ?? null, disk, copies,
@@ -131,7 +139,7 @@ const READ = `(async () => {
     hidden_ms: c ? c.hiddenMs + (c.hiddenAt === null ? 0 : Date.now() - c.hiddenAt) : null,
     lines: window.__cotype?.lines ?? [],
     notices: (window.__cotype?.notices ?? []).map(({ at, node }) => ({ at, text: (node.textContent || "").trim() })) });
-})()`;
+}`;
 
 function stream(prefix, lead, n) {
   let s = "";
@@ -141,21 +149,21 @@ function stream(prefix, lead, n) {
 
 const X = await session(px, tx);
 const Y = await session(py, ty);
-// An optional third device that types nothing: PASSIVE="<port>|<title regex>", PASSIVE_OPEN=1 to show the note there.
+// An optional third device that types nothing: PASSIVE="<port>|<title>", PASSIVE_OPEN=1 to show the note there.
 const [pz, tz] = (process.env.PASSIVE ?? "").split("|");
 const Z = pz ? await session(pz, tz) : null;
 const sides = [["X", X], ["Y", Y], ...(Z ? [["Z", Z]] : [])];
-console.log("note", NOTE, "hook", ...(await Promise.all(sides.map(([, s]) => s.js(HOOK)))));
-await X.js(`(async () => { await app.vault.create(${JSON.stringify(NOTE)}, ${JSON.stringify(START)}); return "created"; })()`);
+console.log("note", NOTE, "hook", ...(await Promise.all(sides.map(([, s]) => s.call(HOOK, NOTE)))));
+await X.call(`async function (note, text) { await app.vault.create(note, text); return "created"; }`, NOTE, START);
 for (const [name, s] of sides.slice(1)) {
   let arrived = false;
   for (let i = 0; i < 120 && !arrived; i++) {
-    arrived = await s.js(`(async () => (await app.vault.adapter.exists(${JSON.stringify(NOTE)})) && (await app.vault.adapter.read(${JSON.stringify(NOTE)})) === ${JSON.stringify(START)})()`);
+    arrived = await s.call(`async function (note, text) { return (await app.vault.adapter.exists(note)) && (await app.vault.adapter.read(note)) === text; }`, NOTE, START);
     if (!arrived) await sleep(500);
   }
   if (!arrived) throw new Error(`the note never arrived on ${name}`);
 }
-console.log("open", await X.js(OPEN), await Y.js(OPEN), Z && process.env.PASSIVE_OPEN === "1" ? await Z.js(OPEN) : "");
+console.log("open", await X.call(OPEN, NOTE), await Y.call(OPEN, NOTE), Z && process.env.PASSIVE_OPEN === "1" ? await Z.call(OPEN, NOTE) : "");
 await sleep(1500);
 
 const n = Math.ceil(DURATION / INTERVAL / 5) + 2;
@@ -178,7 +186,7 @@ const typedMs = Date.now() - t0;
 console.log(`typed: X ${ai} chars (${typedA.slice(-9)}), Y ${bi} chars (${typedB.slice(-9)}) in ${typedMs} ms; idle ${IDLE} ms`);
 await sleep(IDLE);
 const read = {};
-for (const [name, s] of sides) read[name] = JSON.parse(await s.js(READ));
+for (const [name, s] of sides) read[name] = JSON.parse(await s.call(READ, NOTE, `${STEM} (conflict`));
 const all = Object.values(read);
 const expected = `# Both${typedB}\nthe line nobody edits\nthe last fixed line\n${typedA}`;
 const verdict = {
