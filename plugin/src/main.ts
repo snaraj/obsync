@@ -329,16 +329,37 @@ function watchDisk(): void {
   }
 }
 
+/** One line for a disk call past its budget, or answering after it (`onTime`). */
+function diskLine(decision: string, name: string, started: number, budget: number, outcome = ""): string {
+  return `host decision=${decision} call=${name} duration_ms=${Date.now() - started} budget_ms=${budget}${outcome}`;
+}
+
 /**
- * One disk call, or `DiskStalled` once its budget passes (#302, #307). Closing
- * a separate Settings window (Obsidian 1.13) focuses the main one, and the
- * disk calls in flight at that instant never answered, while every new one
- * answered in milliseconds. A walk, and then a first sync applying a page,
- * held the pull chain on one of them, and the device received nothing until
- * Obsidian restarted. A stall is the operation's failure, never an unreadable,
- * empty or absent entry: callers that read those as such rethrow it.
+ * One disk call on the watchdog (#302, #307). A READ fails with `DiskStalled`
+ * once its budget passes. Closing a separate Settings window (Obsidian 1.13)
+ * focuses the main one, and the disk calls in flight at that instant never
+ * answered, while every new one answered in milliseconds. A walk, and then a
+ * first sync applying a page, held the pull chain on one of them, and the
+ * device received nothing until Obsidian restarted. A stall is the operation's
+ * failure, never an unreadable, empty or absent entry: callers that read those
+ * as such rethrow it. A read that answers after its budget changes nothing:
+ * the answer is logged, and a handle it brings is closed (`late`).
+ *
+ * A CHANGE TO THE DISK IS NEVER LET GO (`changes`; review of a0dc7fc2,
+ * finding 1). A rename, link, unlink, create or write past its budget may
+ * still land, or may have landed and lost only its answer, and what its caller
+ * does next -- release a hold, try the next name, remove a temp -- rests on
+ * knowing which. So it is logged once at its budget and awaited still, as it
+ * was before the bound: its caller owns it until the disk says.
  */
-function onTime<T>(call: Promise<T>, name: string, bytes: number, log: (line: string) => void): Promise<T> {
+function onTime<T>(
+  call: Promise<T>,
+  name: string,
+  bytes: number,
+  log: (line: string) => void,
+  changes = false,
+  late?: (value: T) => void,
+): Promise<T> {
   const started = Date.now();
   const budget = DISK_CALL_MS + Math.ceil(bytes / 1024);
   return new Promise((resolve, reject) => {
@@ -346,23 +367,36 @@ function onTime<T>(call: Promise<T>, name: string, bytes: number, log: (line: st
     diskCalls.set(id, {
       started,
       budget,
-      fail: () => {
-        log(`host decision=stalled call=${name} duration_ms=${Date.now() - started} budget_ms=${budget}`);
-        reject(new DiskStalled());
-      },
+      fail: changes
+        ? () => log(diskLine("overrun", name, started, budget, " outcome=awaited"))
+        : () => {
+            log(diskLine("stalled", name, started, budget));
+            reject(new DiskStalled());
+          },
     });
     diskWatch ??= window.setInterval(watchDisk, DISK_WATCH_MS);
     call.then(
-      (value) => { if (diskCalls.delete(id)) resolve(value); },
-      (error: unknown) => { if (diskCalls.delete(id)) reject(error); },
+      (value) => {
+        if (diskCalls.delete(id)) return resolve(value);
+        log(diskLine("late", name, started, budget, " outcome=answered"));
+        if (changes) resolve(value);
+        else late?.(value);
+      },
+      (error: unknown) => {
+        if (diskCalls.delete(id)) return reject(error);
+        log(diskLine("late", name, started, budget, " outcome=refused"));
+        if (changes) reject(error);
+      },
     );
   });
 }
 
 /**
- * The desktop filesystem with every call on time (`onTime`), the handles it
- * opens too: the one place a disk call is made, so none can hold the pull
- * chain for ever (#307). A sync is measured by what was written since the last.
+ * The desktop filesystem on the watchdog (`onTime`), the handles it opens too:
+ * the one place a disk call is made, so no read can hold the pull chain for
+ * ever (#307), and no change is let go before the disk answers it. A sync is
+ * measured by what was written since the last. A handle a late read-only
+ * open brings has no caller left, so it is closed.
  */
 function boundedFs(fs: NodeFs, log: (line: string) => void): NodeFs {
   const calls = fs.promises;
@@ -372,28 +406,30 @@ function boundedFs(fs: NodeFs, log: (line: string) => void): NodeFs {
       read: (buffer, offset, length, position) => onTime(open.read(buffer, offset, length, position), "read", length, log),
       write: (buffer) => {
         unsynced += buffer.length;
-        return onTime(open.write(buffer), "write", buffer.length, log);
+        return onTime(open.write(buffer), "write", buffer.length, log, true);
       },
       stat: (options) => onTime(open.stat(options), "fstat", 0, log),
       close: () => onTime(open.close(), "close", 0, log),
       sync: () => {
         const bytes = unsynced;
         unsynced = 0;
-        return onTime(open.sync(), "sync", bytes, log);
+        return onTime(open.sync(), "sync", bytes, log, true);
       },
-      utimes: (atime, mtime) => onTime(open.utimes(atime, mtime), "futimes", 0, log),
+      utimes: (atime, mtime) => onTime(open.utimes(atime, mtime), "futimes", 0, log, true),
     };
   };
+  const closeLate = (handle: NodeFileHandle): void => void handle.close().catch(() => undefined);
   return {
     promises: {
-      open: async (path, flags, mode) => bound(await onTime(calls.open(path, flags, mode), "open", 0, log)),
-      mkdir: (path, options) => onTime(calls.mkdir(path, options), "mkdir", 0, log),
-      rename: (from, to) => onTime(calls.rename(from, to), "rename", 0, log),
-      link: (from, to) => onTime(calls.link(from, to), "link", 0, log),
-      unlink: (path) => onTime(calls.unlink(path), "unlink", 0, log),
+      open: async (path, flags, mode) =>
+        bound(await onTime(calls.open(path, flags, mode), "open", 0, log, flags !== "r", closeLate)),
+      mkdir: (path, options) => onTime(calls.mkdir(path, options), "mkdir", 0, log, true),
+      rename: (from, to) => onTime(calls.rename(from, to), "rename", 0, log, true),
+      link: (from, to) => onTime(calls.link(from, to), "link", 0, log, true),
+      unlink: (path) => onTime(calls.unlink(path), "unlink", 0, log, true),
       readdir: (path) => onTime(calls.readdir(path), "readdir", 0, log),
-      rmdir: (path) => onTime(calls.rmdir(path), "rmdir", 0, log),
-      utimes: (path, atime, mtime) => onTime(calls.utimes(path, atime, mtime), "utimes", 0, log),
+      rmdir: (path) => onTime(calls.rmdir(path), "rmdir", 0, log, true),
+      utimes: (path, atime, mtime) => onTime(calls.utimes(path, atime, mtime), "utimes", 0, log, true),
       readFile: (path, encoding) => onTime(calls.readFile(path, encoding), "readFile", 0, log),
       stat: (path) => onTime(calls.stat(path), "stat", 0, log),
       lstat: (path, options) => onTime(calls.lstat(path, options), "lstat", 0, log),
@@ -2953,6 +2989,8 @@ export class ObsidianHost implements VaultHost {
     } catch {
       // Nothing moved, so nothing is removed and the name is still the
       // user's. A host that cannot make this move cannot make the promise.
+      // The move is a change the watchdog never lets go (`onTime`), so this is
+      // the disk's own refusal, or a stalled look BEFORE the move was asked.
       this.log("host path_class=file decision=kept reason=move_refused");
       await fs.promises.rmdir(folder).catch(() => undefined);
       await drop();
@@ -2996,7 +3034,10 @@ export class ObsidianHost implements VaultHost {
     let handle: NodeFileHandle;
     try {
       handle = await fs.promises.open(hold, "r");
-    } catch {
+    } catch (error) {
+      // A stalled open says nothing of the hold: it stays, and the removal
+      // fails rather than end as if its bytes were gone (review of a0dc7fc2).
+      if (error instanceof DiskStalled) throw error;
       this.log("host path_class=file decision=restore_failed reason=hold_gone");
       return "removed";
     }

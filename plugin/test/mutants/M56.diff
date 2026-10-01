@@ -1,14 +1,17 @@
 # M56: a save made through an open descriptor after the move is not noticed
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -881,40 +881,8 @@
+@@ -3031,43 +3031,8 @@
      // first: the descriptor keeps the inode alive across its own unlink, and
      // what it says afterwards is still readable. Nothing here is the last
      // name of bytes this device has not published.
 -    let handle: NodeFileHandle;
 -    try {
 -      handle = await fs.promises.open(hold, "r");
--    } catch {
+-    } catch (error) {
+-      // A stalled open says nothing of the hold: it stays, and the removal
+-      // fails rather than end as if its bytes were gone (review of a0dc7fc2).
+-      if (error instanceof DiskStalled) throw error;
 -      this.log("host path_class=file decision=restore_failed reason=hold_gone");
 -      return "removed";
 -    }

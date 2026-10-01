@@ -33,7 +33,7 @@ import { createRequire } from "node:module";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
-import { FakeTimers, KEYS, rig, sandbox } from "./fake.mjs";
+import { FakeTimers, KEYS, diskWatchdog, rig, sandbox, until } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
@@ -635,44 +635,6 @@ test("the engine's stop ends a desktop walk at its next read of the disk: the sc
 });
 
 /**
- * The desktop host's disk watchdog (`watchDisk`, #307), run by hand: its
- * clock stands still until `at` moves it, and its tick runs only when the
- * test calls `tick`. `tick` is null while no watchdog is armed, so a tick that
- * finds every call answered and stops the watchdog shows each one took its
- * entry back. Waits use `performance.now`: `Date.now` is the frozen clock.
- */
-const watchdog = (t) => {
-  const real = { window: globalThis.window, now: Date.now };
-  const start = real.now();
-  let now = start;
-  const dog = { tick: null, at: (ms) => { now = start + ms; } };
-  Date.now = () => now;
-  globalThis.window = { ...real.window,
-    setInterval: (fn, ms) => {
-      assert.equal(ms, 1000, "the watchdog does not tick once a second");
-      assert.equal(dog.tick, null, "a second watchdog was armed while one runs");
-      dog.tick = fn;
-      return "watchdog";
-    },
-    // An earlier test's host, loaded on its own, stops its own watchdog up to a tick after its last call.
-    clearInterval: (id) => {
-      if (id === "watchdog") dog.tick = null;
-      else real.window.clearInterval(id);
-    },
-  };
-  t.after(() => { globalThis.window = real.window; Date.now = real.now; });
-  return dog;
-};
-
-/**
- * Waits by the wall clock, never by a count of turns (a disk under load takes
- * more of them), until `done` holds or five seconds pass.
- */
-const until = async (done) => {
-  for (const end = performance.now() + 5000; !done() && performance.now() < end;) await new Promise((resolve) => setTimeout(resolve, 1));
-};
-
-/**
  * One call that never answers, made by `outcome`'s operation: it is still
  * waiting a millisecond before its budget, fails with `disk_stalled` and one
  * line naming it at its budget, and the watchdog stops with nothing left in
@@ -691,6 +653,28 @@ const stallsAt = async (dog, label, outcome, name, budget, logs) => {
   assert.equal(error.message, "This device's disk did not answer in time. obsync tries again by itself.");
   assert.ok(logs.includes(`host decision=stalled call=${name} duration_ms=${budget} budget_ms=${budget}`), logs.join(" | "));
   assert.equal(dog.tick, null, `${label}: the watchdog runs on with nothing in flight`);
+  dog.at(0);
+};
+
+/**
+ * One change to the disk that never answers, made by `outcome`'s operation:
+ * nothing is said a millisecond before its budget; at its budget one line
+ * says it overran, the watchdog stops with nothing left to watch, and the
+ * change is still awaited -- never failed, so no caller acts on a guess about
+ * whether it landed (review of a0dc7fc2, finding 1). The clock is back at its
+ * start afterwards.
+ */
+const overrunsAt = async (dog, label, outcome, name, budget, logs) => {
+  assert.notEqual(dog.tick, null, `${label}: no watchdog is armed for the change`);
+  const settled = () => Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve("still waiting"), 20))]);
+  dog.at(budget - 1);
+  dog.tick();
+  assert.equal(logs.some((line) => line.startsWith("host decision=overrun")), false, `${label} overran before its budget of ${budget} ms`);
+  dog.at(budget);
+  dog.tick();
+  assert.ok(logs.includes(`host decision=overrun call=${name} duration_ms=${budget} budget_ms=${budget} outcome=awaited`), logs.join(" | "));
+  assert.equal(await settled(), "still waiting", `${label} was let go at its budget`);
+  assert.equal(dog.tick, null, `${label}: the watchdog runs on with nothing left to watch`);
   dog.at(0);
 };
 
@@ -727,7 +711,7 @@ test("a walk read that never answers fails the walk within its budget, never rea
   const logs = [];
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
   const host = new ObsidianHost({ state: { data: {} }, app: { vault: { adapter: {} } }, log: (line) => logs.push(line) }, { fs: stalling, path: nodePath, base: root });
-  const dog = watchdog(t);
+  const dog = diskWatchdog(t);
 
   // Every read that answered took its entry back, a refused one too.
   refused.add(join(root, "Notes", "Sub"));
@@ -756,27 +740,33 @@ test("a walk read that never answers fails the walk within its budget, never rea
 });
 
 /**
- * EVERY DISK CALL OF THE DESKTOP HOST IS ON TIME (#307). The walk's reads
- * were bounded (#302), and then a first sync stopped for good on the page
- * apply's read of a file it compared: the calls in flight when the Settings
- * window closes never answer, whichever path made them. So the seam bounds
- * every call, and every call on a handle it opens: 15 s, plus a millisecond
- * per KiB a read, a write or a sync moves. A call that answers answers as the
- * disk does, and takes its budget back.
+ * EVERY DISK CALL OF THE DESKTOP HOST IS WATCHED (#307), AND ONLY A READ IS
+ * LET GO. The walk's reads were bounded (#302), and then a first sync stopped
+ * for good on the page apply's read of a file it compared: the calls in
+ * flight when the Settings window closes never answer, whichever path made
+ * them. So every call, and every call on a handle the seam opens, has 15 s,
+ * plus a millisecond per KiB a read, a write or a sync moves. A read that
+ * never answers fails at its budget; one that answers after it is logged, and
+ * a handle it brings is closed. A CHANGE -- a create, a rename, a link, an
+ * unlink, a write -- is logged at its budget and awaited still: it may have
+ * landed, and what its caller releases next depends on which (review of
+ * a0dc7fc2, finding 1). A call that answers in time answers as the disk does,
+ * and takes its entry back.
  */
-test("every call of the desktop filesystem seam, and of a handle it opens, fails within its budget when it never answers, and answers as the disk does otherwise (#307)", async (t) => {
+test("a read of the desktop filesystem seam fails at its budget when it never answers, a change is awaited past it, and each answers as the disk does, late too (#307)", async (t) => {
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-seam-stall-"));
   t.after(() => { rmSync(box.home, { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }); });
   writeFileSync(join(root, "a.md"), "a".repeat(5000));
-  mkdirSync(join(root, "gone"));
-  // Each call is the disk's, or never answers once `hang` names it and the
-  // calls of that name it lets through first have been made.
+  // Each call is the disk's, or held once `hang` names it and the calls of
+  // that name it lets through first have been made; `release` then asks it of
+  // the disk, late, and settles it as the disk answers.
   let hang = null;
+  let release = null;
   const answer = (name, call) => {
     if (hang?.name !== name || hang.first-- > 0) return call();
     hang = null;
-    return new Promise(() => {});
+    return new Promise((resolve, reject) => { release = () => call().then(resolve, reject); });
   };
   // Every real handle opened, so a case whose call never answered still closes it.
   const handles = [];
@@ -797,7 +787,7 @@ test("every call of the desktop filesystem seam, and of a handle it opens, fails
   const plugin = { state: { data: {} }, app: { vault: { adapter: { getBasePath: () => root } } }, log: (line) => logs.push(line) };
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
   const bounded = new ObsidianHost(plugin, { fs: seam, path: nodePath, base: root }).desktop.fs.promises;
-  const dog = watchdog(t);
+  const dog = diskWatchdog(t);
   // The watchdog stops at a tick that finds every call answered.
   const answered = (label) => {
     assert.notEqual(dog.tick, null, `${label} armed no watchdog`);
@@ -811,31 +801,50 @@ test("every call of the desktop filesystem seam, and of a handle it opens, fails
     return handle;
   };
   const eight = new Uint8Array(3000);
-  // Each call, the budget it has, and what the disk answers when it answers.
+  // Each call, the budget it has, whether it changes the disk, and what the
+  // disk answers when it answers. Each runs twice and again late, so each puts
+  // back what it changed.
   const calls = [
-    ["open", 15_000, () => bounded.open(file, "r").then((handle) => handle.close())],
-    ["mkdir", 15_000, () => bounded.mkdir(join(root, "made"), { recursive: true })],
-    ["link", 15_000, () => bounded.link(file, join(root, "linked.md"))],
-    ["rename", 15_000, () => bounded.rename(join(root, "linked.md"), join(root, "moved.md"))],
-    ["unlink", 15_000, () => bounded.unlink(join(root, "moved.md"))],
-    ["readdir", 15_000, async () => assert.deepEqual((await bounded.readdir(root)).sort(), (await fs.readdir(root)).sort())],
-    ["rmdir", 15_000, () => bounded.rmdir(join(root, "gone")).then(() => mkdirSync(join(root, "gone")))],
-    ["utimes", 15_000, () => bounded.utimes(file, 1, 2)],
-    ["readFile", 15_000, async () => assert.equal(await bounded.readFile(file, "utf8"), "a".repeat(5000))],
-    ["stat", 15_000, async () => assert.equal((await bounded.stat(file)).size, 5000)],
-    ["lstat", 15_000, async () => assert.equal((await bounded.lstat(file, { bigint: true })).size, 5000n)],
+    ["open", 15_000, false, () => bounded.open(file, "r").then((handle) => handle.close())],
+    ["open", 15_000, true, async () => {
+      await (await bounded.open(join(root, "new.md"), "wx")).close();
+      await fs.unlink(join(root, "new.md"));
+    }],
+    ["mkdir", 15_000, true, () => bounded.mkdir(join(root, "made"), { recursive: true })],
+    ["link", 15_000, true, async () => {
+      await bounded.link(file, join(root, "linked.md"));
+      await fs.unlink(join(root, "linked.md"));
+    }],
+    ["rename", 15_000, true, async () => {
+      writeFileSync(join(root, "from.md"), "f");
+      await bounded.rename(join(root, "from.md"), join(root, "to.md"));
+      await fs.unlink(join(root, "to.md"));
+    }],
+    ["unlink", 15_000, true, async () => {
+      writeFileSync(join(root, "doomed.md"), "d");
+      await bounded.unlink(join(root, "doomed.md"));
+    }],
+    ["readdir", 15_000, false, async () => assert.deepEqual((await bounded.readdir(root)).sort(), (await fs.readdir(root)).sort())],
+    ["rmdir", 15_000, true, async () => {
+      mkdirSync(join(root, "gone"), { recursive: true });
+      await bounded.rmdir(join(root, "gone"));
+    }],
+    ["utimes", 15_000, true, () => bounded.utimes(file, 1, 2)],
+    ["readFile", 15_000, false, async () => assert.equal(await bounded.readFile(file, "utf8"), "a".repeat(5000))],
+    ["stat", 15_000, false, async () => assert.equal((await bounded.stat(file)).size, 5000)],
+    ["lstat", 15_000, false, async () => assert.equal((await bounded.lstat(file, { bigint: true })).size, 5000n)],
     // A read or a write is measured by what it moves; a sync by what was written since the last.
-    ["read", 15_005, async () => {
+    ["read", 15_005, false, async () => {
       const handle = await opened("r");
       assert.equal((await handle.read(new Uint8Array(5000), 0, 5000, 0)).bytesRead, 5000);
       await handle.close();
     }],
-    ["write", 15_003, async () => {
+    ["write", 15_003, true, async () => {
       const handle = await opened("r+");
       assert.equal((await handle.write(eight)).bytesWritten, 3000);
       await handle.close();
     }],
-    ["sync", 15_006, async () => {
+    ["sync", 15_006, true, async () => {
       const handle = await opened("r+");
       await handle.write(eight);
       await handle.sync();
@@ -844,29 +853,50 @@ test("every call of the desktop filesystem seam, and of a handle it opens, fails
       await handle.sync();
       await handle.close();
     }, 1],
-    ["fstat", 15_000, async () => {
+    ["fstat", 15_000, false, async () => {
       const handle = await opened("r");
       assert.equal((await handle.stat({ bigint: true })).size, BigInt((await fs.stat(file)).size));
       await handle.close();
     }],
-    ["futimes", 15_000, async () => {
+    ["futimes", 15_000, true, async () => {
       const handle = await opened("r+");
       await handle.utimes(1, 2);
       await handle.close();
     }],
-    ["close", 15_000, async () => (await opened("r")).close()],
+    ["close", 15_000, false, async () => (await opened("r")).close()],
   ];
-  for (const [name, budget, call, first = 0] of calls) {
+  for (const [name, budget, changes, call, first = 0] of calls) {
+    const label = `${name}${changes ? " (a change)" : ""}`;
     // Answered: as the disk answers, and no entry left in flight.
     await call();
-    answered(name);
-    // Never answered: the call fails at its budget, with one line naming it.
+    answered(label);
+    // Unanswered: a read fails at its budget, a change is awaited past it,
+    // each with one line naming it.
     hang = { name, first };
     logs.length = 0;
     const outcome = call().then(() => "answered", (error) => error);
     await until(() => hang === null);
-    assert.equal(hang, null, `${name} was never asked of the disk`);
-    await stallsAt(dog, name, outcome, name, budget, logs);
+    assert.equal(hang, null, `${label} was never asked of the disk`);
+    if (changes) await overrunsAt(dog, label, outcome, name, budget, logs);
+    else await stallsAt(dog, label, outcome, name, budget, logs);
+    // The disk answers at last: the answer is logged, a change's caller has
+    // it as the disk gave it, and a handle a late read-only open brings is
+    // closed, since nobody is left to close it.
+    const opens = handles.length;
+    dog.at(budget + 1000);
+    await release();
+    await until(() => logs.some((line) => line.startsWith(`host decision=late call=${name} `)));
+    assert.ok(logs.includes(`host decision=late call=${name} duration_ms=${budget + 1000} budget_ms=${budget} outcome=answered`), `${label}: ${logs.join(" | ")}`);
+    if (changes) {
+      const said = await Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve("still waiting after its answer"), 2000))]);
+      assert.equal(said, "answered", `${label}: its caller never had the disk's answer`);
+    }
+    if (name === "open" && !changes) {
+      await until(() => handles.length > opens && handles.at(-1).fd === -1);
+      assert.equal(handles.at(-1).fd, -1, "the handle a late open brought was left open");
+    }
+    dog.at(0);
+    if (dog.tick !== null) answered(`${label}, answered late`);
     for (const real of handles.splice(0)) await real.close().catch(() => {});
   }
   // Calls in flight together have an entry each: one that answers never takes another's.
@@ -875,6 +905,7 @@ test("every call of the desktop filesystem seam, and of a handle it opens, fails
   const beside = bounded.readdir(root).then(() => "answered", (error) => error);
   assert.deepEqual((await bounded.readdir(root)).sort(), (await fs.readdir(root)).sort());
   await stallsAt(dog, "a readdir beside one that answered", beside, "readdir", 15_000, logs);
+  await release();
   // The filesystem the host finds for itself, on a desktop, is the bounded one too.
   const found = new ObsidianHost(plugin).desktop.fs.promises;
   await found.readdir(root);

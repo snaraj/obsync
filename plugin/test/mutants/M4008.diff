@@ -1,11 +1,11 @@
 # M4008: writes are not counted toward the next sync (#307)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -335,7 +335,6 @@
+@@ -405,7 +405,6 @@
      return {
        read: (buffer, offset, length, position) => onTime(open.read(buffer, offset, length, position), "read", length, log),
        write: (buffer) => {
 -        unsynced += buffer.length;
-         return onTime(open.write(buffer), "write", buffer.length, log);
+         return onTime(open.write(buffer), "write", buffer.length, log, true);
        },
        stat: (options) => onTime(open.stat(options), "fstat", 0, log),

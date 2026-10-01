@@ -1,9 +1,9 @@
 # M4004: a disk call's budget ignores the bytes it moves (#307)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -340,7 +340,7 @@
-  */
- function onTime<T>(call: Promise<T>, name: string, bytes: number, log: (line: string) => void): Promise<T> {
+@@ -361,7 +361,7 @@
+   late?: (value: T) => void,
+ ): Promise<T> {
    const started = Date.now();
 -  const budget = DISK_CALL_MS + Math.ceil(bytes / 1024);
 +  const budget = DISK_CALL_MS;

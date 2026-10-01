@@ -1450,11 +1450,15 @@ a window of its own. Closing it can lose the answer to a disk read or write
 obsync has just started, and the step waiting for it would then hold every
 later step. In testing that was a check of this vault's files (#302), and a
 first sync that stopped at "syncing 300 files" (#307). From 1.1.5 every disk
-call gives up after 15 seconds, and a second more for each MiB it moves. The
+read gives up after 15 seconds, and a second more for each MiB it reads. The
 log has a warning such as `obsync host decision=stalled call=readdir`, sync
 carries on, and the step runs again. A change this device was sending at
 that moment reads "This device's disk did not answer in time. obsync tries
-again by itself." until it goes. If that warning keeps coming back, a disk
+again by itself." until it goes. A write is never given up on, because it may
+have landed and only its answer been lost: one past that time is logged as
+`decision=overrun call=rename`, say, and waited for. If its answer never
+comes, it is the step this warning names, and the fix below applies. If
+either warning keeps coming back, a disk
 under your vault is not answering, for example an external or network drive
 that went to sleep or dropped. Any other cause is not known yet; the warning
 is there so that a report can say.

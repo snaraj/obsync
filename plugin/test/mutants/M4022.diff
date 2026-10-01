@@ -1,9 +1,9 @@
 # M4022: the seam's stat reaches the disk with no budget (#307)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -359,7 +359,7 @@
-       rmdir: (path) => onTime(calls.rmdir(path), "rmdir", 0, log),
-       utimes: (path, atime, mtime) => onTime(calls.utimes(path, atime, mtime), "utimes", 0, log),
+@@ -431,7 +431,7 @@
+       rmdir: (path) => onTime(calls.rmdir(path), "rmdir", 0, log, true),
+       utimes: (path, atime, mtime) => onTime(calls.utimes(path, atime, mtime), "utimes", 0, log, true),
        readFile: (path, encoding) => onTime(calls.readFile(path, encoding), "readFile", 0, log),
 -      stat: (path) => onTime(calls.stat(path), "stat", 0, log),
 +      stat: (path) => calls.stat(path),

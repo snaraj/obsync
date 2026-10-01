@@ -1,10 +1,10 @@
 # M4021: the seam's readFile reaches the disk with no budget (#307)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -358,7 +358,7 @@
+@@ -430,7 +430,7 @@
        readdir: (path) => onTime(calls.readdir(path), "readdir", 0, log),
-       rmdir: (path) => onTime(calls.rmdir(path), "rmdir", 0, log),
-       utimes: (path, atime, mtime) => onTime(calls.utimes(path, atime, mtime), "utimes", 0, log),
+       rmdir: (path) => onTime(calls.rmdir(path), "rmdir", 0, log, true),
+       utimes: (path, atime, mtime) => onTime(calls.utimes(path, atime, mtime), "utimes", 0, log, true),
 -      readFile: (path, encoding) => onTime(calls.readFile(path, encoding), "readFile", 0, log),
 +      readFile: (path, encoding) => calls.readFile(path, encoding),
        stat: (path) => onTime(calls.stat(path), "stat", 0, log),

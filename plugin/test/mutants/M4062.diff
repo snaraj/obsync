@@ -1,0 +1,13 @@
+# M4062: a change that answers after its budget never reaches its caller (review of a0dc7fc2)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -379,8 +379,7 @@
+       (value) => {
+         if (diskCalls.delete(id)) return resolve(value);
+         log(diskLine("late", name, started, budget, " outcome=answered"));
+-        if (changes) resolve(value);
+-        else late?.(value);
++        if (!changes) late?.(value);
+       },
+       (error: unknown) => {
+         if (diskCalls.delete(id)) return reject(error);

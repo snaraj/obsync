@@ -1,0 +1,11 @@
+# M4064: a call that answers after its budget says nothing (review of a0dc7fc2)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -378,7 +378,6 @@
+     call.then(
+       (value) => {
+         if (diskCalls.delete(id)) return resolve(value);
+-        log(diskLine("late", name, started, budget, " outcome=answered"));
+         if (changes) resolve(value);
+         else late?.(value);
+       },

@@ -47,6 +47,45 @@ const scratches = new Set();
 process.on("exit", () => {
   for (const dir of scratches) rmSync(dir, { recursive: true, force: true });
 });
+/**
+ * The desktop host's disk watchdog (`watchDisk`, #307), run by hand: its
+ * clock stands still until `at` moves it, and its tick runs only when the
+ * test calls `tick`. `tick` is null while no watchdog is armed, so a tick that
+ * finds every call answered and stops the watchdog shows each one took its
+ * entry back. Waits use `performance.now` (`until`): `Date.now` is the frozen
+ * clock. An earlier test's host, loaded on its own, stops its own watchdog up
+ * to a tick after its last call: that stop goes to the real timer.
+ */
+export function diskWatchdog(t) {
+  const real = { window: globalThis.window, now: Date.now };
+  const start = real.now();
+  let now = start;
+  const dog = { tick: null, at: (ms) => { now = start + ms; } };
+  Date.now = () => now;
+  globalThis.window = { ...real.window,
+    setInterval: (fn, ms) => {
+      if (ms !== 1000) throw new Error(`the watchdog ticks every ${ms} ms, not once a second`);
+      if (dog.tick !== null) throw new Error("a second watchdog was armed while one runs");
+      dog.tick = fn;
+      return "watchdog";
+    },
+    clearInterval: (id) => {
+      if (id === "watchdog") dog.tick = null;
+      else real.window.clearInterval(id);
+    },
+  };
+  t.after(() => { globalThis.window = real.window; Date.now = real.now; });
+  return dog;
+}
+
+/**
+ * Waits by the wall clock, never by a count of turns (a disk under load takes
+ * more of them), until `done` holds or five seconds pass.
+ */
+export async function until(done) {
+  for (const end = performance.now() + 5000; !done() && performance.now() < end;) await new Promise((resolve) => setTimeout(resolve, 1));
+}
+
 export function scratch(prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   scratches.add(dir);

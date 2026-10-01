@@ -1,9 +1,9 @@
 # M190: a removal the filesystem refuses leaves an empty hidden folder behind
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1217,7 +1217,6 @@
-       // Nothing moved, so nothing is removed and the name is still the
-       // user's. A host that cannot make this move cannot make the promise.
+@@ -2992,7 +2992,6 @@
+       // The move is a change the watchdog never lets go (`onTime`), so this is
+       // the disk's own refusal, or a stalled look BEFORE the move was asked.
        this.log("host path_class=file decision=kept reason=move_refused");
 -      await fs.promises.rmdir(folder).catch(() => undefined);
        await drop();

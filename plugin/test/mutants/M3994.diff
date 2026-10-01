@@ -1,12 +1,12 @@
 # M3994: a read that answered leaves its budget armed, and says it stalled later
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -353,7 +353,7 @@
-     });
+@@ -377,7 +377,7 @@
      diskWatch ??= window.setInterval(watchDisk, DISK_WATCH_MS);
      call.then(
--      (value) => { if (diskCalls.delete(id)) resolve(value); },
-+      (value) => { if (diskCalls.has(id)) resolve(value); },
-       (error: unknown) => { if (diskCalls.delete(id)) reject(error); },
-     );
-   });
+       (value) => {
+-        if (diskCalls.delete(id)) return resolve(value);
++        if (diskCalls.has(id)) return resolve(value);
+         log(diskLine("late", name, started, budget, " outcome=answered"));
+         if (changes) resolve(value);
+         else late?.(value);

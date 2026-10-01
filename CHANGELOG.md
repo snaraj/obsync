@@ -235,9 +235,10 @@ answer to a disk read or write obsync has just started. In testing, before
 this fix, changes from your other devices then stopped arriving until
 Obsidian restarted: while the status read idle, after a check of your vault's
 files (#302), and in a first sync after pairing, at "syncing 300 files"
-(#307). Every disk call now gives up after 15 seconds, and a second more for
-each MiB it moves, and says so in the plugin's log. What it was part of runs
-again, and sync carries on.
+(#307). Every disk read now gives up after 15 seconds, and a second more for
+each MiB it reads, and says so in the plugin's log. What it was part of runs
+again, and sync carries on. A write is never given up on, since it may have
+landed: one that runs past that time is noted in the log and waited for.
 
 **Routine answers are no longer console warnings, and the log names no path
 of yours.** A first setup finding no data yet, and a new device waiting for
