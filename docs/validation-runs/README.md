@@ -39,7 +39,8 @@ observed from what was still outstanding.
   keys in flight. Two 1.1.5 devices pair and sync both ways; a 1.1.4 device
   on either side is refused in words; a changed creator key ends the claim
   before any code shows, and a changed new-device key makes the two codes
-  differ. No phone took part.
+  differ. An iPhone pairs with a desktop over HTTPS, syncs both ways on Wi-Fi
+  and on cellular, and leaves the server.
 - [2026-09-30 the 1.1.5 train](2026-09-30-train-1.1.5.md): the train's
   closing run on three macOS desktops and an Android 15 emulator, with the
   coordinator's iPhone and Windows rows. J1 to J11 pass. final10 is the
