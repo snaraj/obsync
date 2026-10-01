@@ -1,6 +1,6 @@
 # Delete-versus-edit decision, 2026-09-24
 
-The owner chose edit-wins behavior for #178: one live head, deletion retained
+The user chose edit-wins behavior for #178: one live head, deletion retained
 in history, and no repeat deletion notices after settlement.
 
 Obsidian's [Sync troubleshooting](https://obsidian.md/help/sync/troubleshoot)
@@ -10,7 +10,7 @@ recovering deleted notes separately from current files. Notion's
 [delete and restore guide](https://www.notion.com/help/duplicate-delete-and-restore-content)
 describes Trash and restoration before editing a deleted page. These sources
 do not establish a universal delete-versus-edit winner. The exact winner here
-is the owner's explicit decision, not a claimed guarantee about either product.
+is the user's explicit decision, not a claimed guarantee about either product.
 
 The implementation uses existing version-graph parents: the live settlement
 names the recorded edit and the deletion, leaving unrelated live heads alone.

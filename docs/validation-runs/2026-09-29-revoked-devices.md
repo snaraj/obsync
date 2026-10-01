@@ -1,7 +1,7 @@
 # 2026-09-29 Revoked devices: the fold, and forgetting one (#247)
 
-Agent-operated, for the owner, on the owner's computer, with a disposable
-server and disposable vaults. No owner vault and no owner device took part.
+Agent-operated, for the user, on the user's computer, with a disposable
+server and disposable vaults. None of the user's own vaults or devices took part.
 
 ## Why this shape
 
@@ -36,7 +36,7 @@ device_revoked` again, with its name still on the list.
   Installed by copying the three files into the vault and reloading the
   plugin, which is not a production-path install.
 - Devices: two isolated Obsidian 1.13.4 instances on macOS 27 (Apple
-  silicon), each with its own profile beside the owner's own, and the
+  silicon), each with its own profile beside the user's own, and the
   dashboard in a `<webview>` on one of them, signed in with a one-time link
   the plugin minted.
 

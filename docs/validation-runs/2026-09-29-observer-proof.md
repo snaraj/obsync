@@ -1,6 +1,6 @@
 # What an inspecting network sees — 2026-09-29
 
-The owner's requirement: a person using Obsidian on a work laptop, behind an
+The user's requirement: a person using Obsidian on a work laptop, behind an
 employer's VPN, must not expose their notes. This run proves, on a byte
 capture of a real session, that an employer's TLS inspection or a VPN that
 terminates TLS sees only metadata and ciphertext — never note content, file or
@@ -23,7 +23,7 @@ DOES capture a device secret at setup or pairing can do without the vault key.
   with the `afbf7e7` builds on one side for the version-skew legs. Run 3
   (the final head, `64abf24`): the plugin rebuilt (`main.js`
   `5a856ea67dcb613ef997e683199ce01895d2c68b51afbad4e541e71ef6a8c1ff`), the
-  same `obsyncd` (no server change after `26361c8`). Run 4 (the owner's
+  same `obsyncd` (no server change after `26361c8`). Run 4 (the user's
   ruling, `e6b19a7`): the plugin rebuilt (`main.js`
   `3f8e51114c831484ceeefd534676231fe16047f747a60e94f4c39402282ff73e`), the
   same `obsyncd`, and a bundle whose `manifest.json` says 1.1.5, as the
@@ -154,7 +154,7 @@ The same two rigs and the same recording hop, on the `26361c8` builds.
    could not open the vault key it was sent: … Nothing was shared."), removed
    itself (`device_revoked … by_device=<itself>`), and stayed unpaired: it
    failed closed, but late, and the creator still announced it as paired.
-   The owner's ruling moved the refusal before any code (run 4, below).
+   The user's ruling moved the refusal before any code (run 4, below).
 5. **The final head** (`64abf24`, run 3). Leg 1 again: 170 940 and then
    462 718 on both screens, no warning; the scan: 10 connections, 100
    requests, 98 responses, 26 needles in 325 encodings,
@@ -181,7 +181,7 @@ alone does not open a v2 envelope, that a substituted or stripped exchange key
 changes the match code, and that a malformed key is refused
 (`plugin/test/pairing-v2.test.mjs`, mutants M3510-M3513).
 
-## The owner's ruling, live (run 4)
+## The user's ruling, live (run 4)
 
 The ruling: a server older than 1.1.5 is refused before any code exists
 ("fail closed, say it early"), and the creator says "paired" only once the new

@@ -1,7 +1,7 @@
 # 2026-09-29 Android emulator: phone paths (#244, #245, #248, #246, #282, #284)
 
-Agent-operated, for the owner, on the owner's computer, with a disposable
-server and disposable vaults. No owner vault and no owner device took part.
+Agent-operated, for the user, on the user's computer, with a disposable
+server and disposable vaults. None of the user's own vaults or devices took part.
 The phone is an **emulator**, not a physical Android phone. Each journey ran
 at the 1.1.4 release and again at this change, on the same devices and the
 same server.
@@ -21,7 +21,7 @@ same server.
   those journeys do not reach before their verdict. Each copy was installed
   by a manual file copy and a reload, not a production-path install.
 - Desktop: a macOS 27 laptop (Apple silicon), Obsidian 1.13.4, in an isolated
-  profile beside the owner's own.
+  profile beside the user's own.
 - Phone: an Android 15 emulator (system image `android-35`, Google APIs,
   arm64-v8a; emulator 37.1.11), Obsidian 1.13.8 from the official release
   APK, versionCode 367, the vault in Device storage.

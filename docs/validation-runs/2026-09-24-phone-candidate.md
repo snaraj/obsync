@@ -1,6 +1,6 @@
 # Native iPhone installation and 1.1.2 acceptance, 2026-09-24
 
-This record uses the owner's iPhone through iPhone Mirroring, with a separate
+This record uses the user's iPhone through iPhone Mirroring, with a separate
 synthetic **Candidate 112 phone** vault. The existing **LAN Demo** test vault
 was left on its directory build. No private vault was opened.
 
@@ -56,7 +56,7 @@ before creating the invitation:
 
 ![Empty Pair this device form on the phone, with no code entered](../assets/phone-candidate/empty-pairing.png)
 
-With explicit owner authorization, the one-use code was transferred through
+With the user's explicit authorization, the one-use code was transferred through
 the UI using temporary memory only and approved on the desktop. No code was
 printed, saved or captured. The phone received the desktop's additional files
 and showed **20 files and two folders**, with exactly one of each of the ten

@@ -1505,7 +1505,7 @@ long poll and needs its timeout raised.
    with a warning until it can be published.
 5. **Policy.** Per device: `perFileMaxBytes` (desktop 0 = unlimited; mobile
    512 MiB, the practical whole-file read ceiling in a WebView) and
-   `totalBudgetBytes` (mobile 50 GiB by owner ruling). Files above a
+   `totalBudgetBytes` (mobile 50 GiB by default). Files above a
    ceiling are not downloaded; they appear in the plugin's "Remote only"
    view with an on-demand fetch. Excluding never deletes: a copy already on
    the device when a newer version arrives above a ceiling stays, is listed

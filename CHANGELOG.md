@@ -2270,7 +2270,7 @@ device again.
   itself: an explicit value wins, and the smoke proves that too.
 - **A standalone Helm path.** `chart/README.md` carries the exact OCI install
   command, the Secret command for the server key, and a minimal `values.yaml`
-  that produces a running pod outside the owner's own platform. No chart
+  that produces a running pod outside the reference deployment's platform. No chart
   DEFAULT moved: `deploymentReady: false`, the reference StorageClasses and the
   reference ingress peer are fail-closed on purpose, and the new file is about
   which of them a stranger must replace with their own.
@@ -2372,7 +2372,7 @@ which carries every V1 through V16 outcome in its own row.
   (paired first); an iPhone 15 Pro Max on iOS 26.6.1 whose Obsidian version
   was not recorded during the run, with plugin 0.1.19 installed from the
   community directory; server `obsyncd` 0.1.19 from release commit `e47e3d4`.
-  The run was driven by the coordinator agent lane with the owner at the
+  The run was driven by the coordinator agent lane with the user at the
   keyboard for the passcode, the local-network prompt, the firewall changes,
   and one live edit.
 - Passed: the production-path install on both devices; V1 first-time setup and

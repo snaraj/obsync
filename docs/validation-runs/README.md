@@ -206,7 +206,7 @@ observed from what was still outstanding.
   showed #293 on the way: `synced` over a note still unsent. #294 is proven
   by a server test only. Not attempted: a phone.
 - [2026-09-28 an open note and the stale editor](2026-09-28-open-editor.md):
-  #252 on the owner's iPhone, the Android emulator and a macOS desktop. A
+  #252 on the user's iPhone, the Android emulator and a macOS desktop. A
   starved file watcher left an open note stale behind "syncing 1". The first
   fix passed an idle editor both ways and failed when both devices typed at
   once (it read `TextFileView.data`, which follows every keystroke); the fix
@@ -302,7 +302,7 @@ app versions, the server commit, and timings. In practice that is this header
 plus one row per scenario:
 
 - **Date and operator role.** The ISO date, and the role that ran it
-  (`owner`), never a person's name.
+  (`user`), never a person's name.
 - **Route.** Kubernetes or Compose, per `docs/validation.md` "Routes", and the
   CLASS of TLS terminator in front of the server. The deployment's own tuple
   (proxy, route, certificate) stays with the person who runs it, not here.

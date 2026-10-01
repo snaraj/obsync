@@ -1,7 +1,7 @@
 # 2026-09-27 Android emulator and desktop, 1.1.4 candidate
 
-Agent-operated, for the owner, on the owner's computer, with a disposable
-server and disposable vaults. No owner vault and no owner device took part.
+Agent-operated, for the user, on the user's computer, with a disposable
+server and disposable vaults. None of the user's own vaults or devices took part.
 This is the first Android record: the phone is an **emulator**, not a physical
 Android phone, and every line below says so where it matters.
 
@@ -24,7 +24,7 @@ Android phone, and every line below says so where it matters.
   was installed by a manual file copy and a reload, which is not a
   production-path install.
 - Desktop: a macOS 27 laptop (Apple silicon), Obsidian 1.13.4, in an isolated
-  profile beside the owner's own.
+  profile beside the user's own.
 - Phone: an Android 15 emulator (system image `android-35`, Google APIs,
   arm64-v8a; emulator 37.1.11), running Obsidian 1.13.8 from the official
   release APK, versionCode 367. The vault is in Device storage, which folds
@@ -104,7 +104,7 @@ for the acts and the vault manager's own menu for J3.
   beside the copy under the new one. The next pairing then asked about "1
   note the server's vault does not" hold; **Cancel** uploaded nothing and
   removed the device again, as designed. Reproduced at the fake level on
-  this train and on 1.1.3: pre-existing, scoped to 1.1.5 by the owner's cut.
+  this train and on 1.1.3: pre-existing, scoped to 1.1.5 by the user's scope cut.
 - **A note moved out of the selection stayed missing after widening (#239,
   1.1.5).** J6 moved a note out of the phone's selected folders; when J10's
   setup widened the phone back to the whole vault, the note under its old

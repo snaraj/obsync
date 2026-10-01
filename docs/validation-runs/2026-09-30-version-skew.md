@@ -1,8 +1,8 @@
 # 1.1.5 beside 1.1.4: servers and devices on different versions — 2026-09-30
 
-Run by an agent for the owner, on the owner's computer, with disposable
-servers, disposable vaults and isolated Obsidian profiles. No owner vault and
-no owner device took part.
+Run by an agent for the user, on the user's computer, with disposable
+servers, disposable vaults and isolated Obsidian profiles. None of the user's own
+vaults or devices took part.
 
 People update the server and their devices at different times, so for a while
 a 1.1.4 device syncs through a 1.1.5 server, or the other way round. The 1.1.5

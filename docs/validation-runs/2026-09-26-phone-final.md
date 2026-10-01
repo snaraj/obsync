@@ -1,7 +1,7 @@
 # 2026-09-26 final 1.1.3 native phone acceptance
 
 Author-operated validation using a disposable server and synthetic vaults.
-Owner vaults were excluded. This record keeps final-candidate evidence
+The user's vaults were excluded. This record keeps final-candidate evidence
 separate from the earlier device runs.
 
 ## Build and devices
@@ -79,11 +79,11 @@ timestamp continued changing. The phone's local timestamp was also observed
 changing during the window.
 
 The final phone readback encountered a paused, then locked Mirroring session
-requiring owner authentication. Continuous phone activity for the complete
+requiring the user's authentication. Continuous phone activity for the complete
 window is not established by that first measurement; it proves only the
 server/desktop hold.
 
-After owner authentication, a second hold ran from 21:22:34.272 to
+After the user's authentication, a second hold ran from 21:22:34.272 to
 21:28:29.560 UTC: **355.288 seconds** and **zero version POSTs**. Both
 fixtures remained enabled, the desktop retained all twenty characters, and
 there was still one head and one preservation copy. The phone stayed
@@ -225,10 +225,10 @@ server. Their installed plugins were removed with those vaults; both ZIPs
 were moved to Files trash. The corrected vault's exact test secret was
 cleared and verified by its scoped helper before deletion. The first vault
 was deleted natively; no separate OS-level secret-absence claim is made.
-The owner removed the older obsync validation certificate profile at the
+The user removed the older obsync validation certificate profile at the
 passcode prompt, and its absence was verified. The current QA Safari tab
 and its route-specific history entry were removed. Unrelated profiles,
-browsing history, and owner vaults were preserved.
+browsing history, and the user's vaults were preserved.
 
 The desktop registration was revoked, its exact test secret cleared, its
 plugins disabled, and its QA window closed and vault registration removed.
@@ -242,5 +242,5 @@ Scenarios not explicitly recorded here were not attempted in this run;
 earlier records retain their original build scope. Bug-fix closure support comes from the implementation, regression
 and mutation evidence, and the applicable native results together. It does
 not mean every historical issue's requested device variant was rerun.
-This record does not establish independent final-head approval, owner merge,
+This record does not establish independent final-head approval, the user's merge,
 exact-main CI, immutable publication, distribution, or production activation.

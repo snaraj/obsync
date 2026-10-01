@@ -5,7 +5,7 @@
 Report suspected vulnerabilities privately through GitHub's security
 advisory form for this repository ("Report a vulnerability"). Do not open a
 public issue for anything security-sensitive. Reports are read by the
-owner; expect a reply within a week.
+maintainer; expect a reply within a week.
 
 ## Supported versions
 

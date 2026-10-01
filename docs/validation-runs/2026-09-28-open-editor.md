@@ -1,6 +1,6 @@
 # An open note and the stale editor — 2026-09-28
 
-Issue #252: on the owner's Mac, a note open in Obsidian stayed at
+Issue #252: on the user's Mac, a note open in Obsidian stayed at
 `obsync: syncing 1` after a phone changed it, and nothing said why. This run
 finds the cause, checks a first fix on a real iPhone, records how that fix
 failed, and checks the fix that replaced it.
@@ -10,7 +10,7 @@ failed, and checks the fix that replaced it.
 - Desktop: Obsidian 1.13.4 on macOS 27.0, an isolated profile with its own
   disposable vault (the lab vault, about 7,700 files), driven through its
   DevTools port.
-- Phones: the owner's iPhone, Obsidian 1.13.7, a disposable vault per build,
+- Phones: the user's iPhone, Obsidian 1.13.7, a disposable vault per build,
   driven through iPhone Mirroring; and an Android 15 emulator, Obsidian
   1.13.4, driven through its DevTools port.
 - Server: obsyncd from this branch on the Mac's loopback. The iPhone reached

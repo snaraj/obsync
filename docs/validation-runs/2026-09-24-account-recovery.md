@@ -1,6 +1,6 @@
 # Account recovery, 2026-09-24
 
-The owner selected setup-token plus vault-key-proof re-enrollment for #142.
+The user selected setup-token plus vault-key-proof re-enrollment for #142.
 The implementation derives a separate authentication proof from the vault key
 using the existing HKDF-SHA-256 primitive and a new protocol label. The server
 stores only its SHA-256 verifier, immutably, in the account journal and snapshot.
@@ -76,7 +76,7 @@ above record the observed build, including the manual Refresh used in step 3.
 
 For a manual bundle update, disabling and enabling the community plugin loaded
 the new code. **Reload plugins** refreshed the installed-plugin list but did
-not reload this running plugin. This validation made no changes to the owner's
+not reload this running plugin. This validation made no changes to the user's
 usual Obsidian application or vault.
 
 ## Fresh-install phrase recovery
@@ -107,7 +107,7 @@ another server and phone recovery remain distinct checks.
 The current `bd68df43…` bundle opened the Switch server warning in the recovered
 synthetic vault while other test devices remained enrolled. The guide's new
 capture is cropped from that actual dialog. Selecting **Cancel** returned to
-the paired settings. The owner subsequently authorized actual Leave for this synthetic recovered
+the paired settings. The user subsequently authorized actual Leave for this synthetic recovered
 device. With the same bundle, the **Leave** confirmation was submitted through
 the native UI. Every one of the **330 files** then present retained its exact
 SHA-256. The device ID and server URL cleared, file records became empty, and

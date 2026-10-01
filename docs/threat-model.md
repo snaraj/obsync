@@ -168,7 +168,7 @@ Native app-restart persistence remains separate acceptance evidence.
    terminator and the browser from ever being plaintext, and makes a
    dashboard served over plain HTTP by IP address unsupported by
    construction ([`security/dashboard.md`](security/dashboard.md)).
-2. Single copy on one node (owner-accepted; mirrors and replicas are the
+2. Single copy on one node (accepted for the reference deployment; mirrors and replicas are the
    path).
 3. Desktop vault-boundary races: the plugin binds every path component with
    no-follow stats before and after each open and rename, which closes a
