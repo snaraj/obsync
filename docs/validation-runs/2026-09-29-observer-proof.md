@@ -37,7 +37,7 @@ DOES capture a device secret at setup or pairing can do without the vault key.
   TLS-inspecting proxy holds after it decrypts — TLS is only the envelope
   around them (`docs/threat-model.md` residual risk 4, the terminator→server
   hop is itself plain HTTP).
-- Lab and scripts: `/Users/samuel/.claude/jobs/fd5a687c/tmp/lab-G/`.
+- Lab and scripts: a disposable lab folder, `lab-G/` below, removed after the run.
 
 ## What the session did (all through the hop)
 

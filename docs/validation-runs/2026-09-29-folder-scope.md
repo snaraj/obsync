@@ -173,9 +173,9 @@ then C is paired.
    went through `adapter.rmdir("W201/Sub2", false)` (Obsidian had not listed
    the folder yet), which threw `ERR_FS_EISDIR`; C logged `feed
    decision=retry reason=Path is a directory: rm returned EISDIR (is a
-   directory) /Users/<name>/.../rig-C/W201/Sub2 status=feed retry_ms=5000`
-   and kept an empty `W201/Sub2` with no record. One C line named an
-   absolute path.
+   directory) <vault>/W201/Sub2 status=feed retry_ms=5000` (the vault's
+   absolute path shown here as `<vault>`), and kept an empty `W201/Sub2`
+   with no record. One C line named an absolute path.
 2. **`7e9b45b`:** the replay did not reach that branch this time (every
    removal found the folder listed; 6 removal calls, none failed): the
    defect needs Obsidian's index to lag the pull path, which a loaded

@@ -4,7 +4,7 @@
  * A filesystem error names the absolute path it failed on, in its `path` and
  * `dest` and in its message. A device paired later logged
  * `feed decision=retry reason=Path is a directory: rm returned EISDIR (is a
- * directory) /Users/<name>/<vault>/W201/Sub2`, naming the person's home and
+ * directory) <home>/<vault>/W201/Sub2`, naming the person's home and
  * vault folders in a log they may share. The errors here are Node's own, made
  * by the calls that fail that way.
  */
