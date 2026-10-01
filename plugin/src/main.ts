@@ -1483,16 +1483,19 @@ export class ObsidianHost implements VaultHost {
    * Open a vault file for reading and prove, AFTER the open, that the name
    * still means the file the walk approved and that every directory on the
    * way to it is still the same directory. The caller closes the handle.
+   * The size is the open file's, from the stat that proved it: a whole-file
+   * read asks the disk nothing more before it reads.
    */
-  private async openBound(desktop: DesktopVault, path: string): Promise<NodeFileHandle> {
+  private async openBound(desktop: DesktopVault, path: string): Promise<{ handle: NodeFileHandle; size: number }> {
     const found = await this.confine(desktop, path, ["file"]);
     const handle = await desktop.fs.promises.open(found.target, "r");
     const refusal = await chainRefusal(found.chain, walker(desktop.fs));
-    if (refusal !== null || !sameFile(found.stat, await fstat(handle))) {
+    const opened = refusal === null ? await fstat(handle) : null;
+    if (opened === null || !sameFile(found.stat, opened)) {
       await handle.close();
       throw new VaultPathError(refusal ?? "target_identity");
     }
-    return handle;
+    return { handle, size: opened.size };
   }
 
   async read(path: string): Promise<Bytes> {
@@ -1508,9 +1511,8 @@ export class ObsidianHost implements VaultHost {
     if (desktop === null) {
       return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(path));
     }
-    const handle = await this.openBound(desktop, path);
+    const { handle, size } = await this.openBound(desktop, path);
     try {
-      const size = (await fstat(handle)).size;
       const buffer = new Uint8Array(size);
       let filled = 0;
       while (filled < size) {
@@ -1547,7 +1549,7 @@ export class ObsidianHost implements VaultHost {
       // a folder that changes between two windows is refused at the next
       // one, and a few `lstat` calls beside an 8 MiB read cost nothing.
       read: async (offset, length) => {
-        const handle = await this.openBound(desktop, path);
+        const { handle } = await this.openBound(desktop, path);
         try {
           const buffer = new Uint8Array(length);
           let filled = 0;

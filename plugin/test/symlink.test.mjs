@@ -689,6 +689,28 @@ test("a file whose id is past 2^53 is told from its neighbour: one swapped in du
   assert.equal(swap, null, "the swap really happened");
 });
 
+/**
+ * A read takes the size of the file it opened, from the stat that proved the
+ * open (#307): the walk's look is older, and a note written between the two
+ * would be read short. The proof's stat is the only one: a second, for the
+ * size alone, was one more disk call for every note a press reads.
+ */
+test("a note that grows between the walk and the open is read whole, as it is when opened (#307)", async () => {
+  let grow = null;
+  const { root, host } = await vault({ fs: { promises: { ...realFsPromises, open: async (path, flags, mode) => {
+    if (flags === "r" && grow !== null) {
+      grow();
+      grow = null;
+    }
+    return realFsPromises.open(path, flags, mode);
+  } } } });
+  writeFileSync(join(root, "note.md"), "first line\n");
+  // Written in place, so the name still means the file the walk approved.
+  grow = () => writeFileSync(join(root, "note.md"), "first line\nand a second, written as it opened\n");
+  assert.equal(new TextDecoder().decode(await host.read("note.md")), "first line\nand a second, written as it opened\n");
+  assert.equal(grow, null, "the note really grew between the walk and the open");
+});
+
 test("a file's time and size read exactly as they did before identity was read as a bigint (#224)", async () => {
   const { root, host } = await vault();
   writeFileSync(join(root, "note.md"), "some bytes\n");

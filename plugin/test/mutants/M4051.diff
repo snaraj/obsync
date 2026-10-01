@@ -1,0 +1,12 @@
+# M4051: a read opens whatever file the name means by then, never compared with the one the walk approved (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1491,7 +1491,7 @@
+     const handle = await desktop.fs.promises.open(found.target, "r");
+     const refusal = await chainRefusal(found.chain, walker(desktop.fs));
+     const opened = refusal === null ? await fstat(handle) : null;
+-    if (opened === null || !sameFile(found.stat, opened)) {
++    if (opened === null) {
+       await handle.close();
+       throw new VaultPathError(refusal ?? "target_identity");
+     }
