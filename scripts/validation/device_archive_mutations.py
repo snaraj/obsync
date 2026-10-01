@@ -12,7 +12,8 @@ from their exact starting bytes in finally, including on failure or interrupt.
 Never run beside another build or source editor in this worktree.
 """
 from pathlib import Path
-import subprocess
+
+from kills import Judge
 
 STORE = "crates/obsyncd/src/storage/mod.rs"
 INDEX = "crates/obsyncd/src/storage/index.rs"
@@ -101,6 +102,7 @@ def run(cases, what):
     """Apply each case alone, run its selector, restore the exact bytes."""
     originals = {Path(path): Path(path).read_bytes() for _, path, *_ in cases}
     failures = []
+    judge = Judge({("obsyncd", case[-1]) for case in cases})
     try:
         for name, path, old, new, selector in cases:
             source = originals[Path(path)].decode()
@@ -118,25 +120,16 @@ def run(cases, what):
                 mutated = head + line + tail.replace(line, "", 1)
             Path(path).write_text(mutated)
             try:
-                result = subprocess.run(
-                    ["cargo", "test", "-p", "obsyncd", "--lib", selector],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, timeout=600, check=False,
-                )
-                compiled = "could not compile" not in result.stdout
-                killed = compiled and result.returncode != 0 and "FAILED" in result.stdout
-                print(f"{name}: {'KILLED' if killed else 'NOT A KILL'}", flush=True)
-                if not killed:
-                    failures.append(name)
-                    print(result.stdout, flush=True)
-                else:
-                    print("\n".join(line for line in result.stdout.splitlines()
-                                    if "FAILED" in line or "test result:" in line), flush=True)
+                verdict, evidence = judge.test(selector)
+                print(f"{name}: {verdict}\n{evidence}", flush=True)
+                if verdict != "KILLED":
+                    failures.append(f"{name} ({verdict})")
             finally:
                 Path(path).write_bytes(originals[Path(path)])
     finally:
         for path, original in originals.items():
             path.write_bytes(original)
+        judge.close()
     if failures:
         raise SystemExit("Unkilled probes: " + ", ".join(failures))
     print(f"All {len(cases)} {what} probes compiled and were killed.")

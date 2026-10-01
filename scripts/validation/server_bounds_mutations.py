@@ -15,6 +15,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from kills import Judge
+
 CORE = "obsync-core"
 SERVER = "obsyncd"
 HTTP = "crates/obsync-core/src/http/server.rs"
@@ -55,15 +57,16 @@ PROBE_BODY = """    match std::fs::remove_file(&path) {
         .create_new(true)
         .mode(0o600)
         .open(&path)?;"""
-CLAIM_CHECK = """    let (_, (enrolment, vault, mut pairings)) =
-        unverified::token_body(app, req)?.accept(|held| {
+CLAIM_CHECK = """    let (_, (enrolment, vault, claimant_pub, mut pairings)) = unverified::token_body(app, req)?
+        .accept(|held| {
             let parsed = held.json()?;
             let enroll = parsed.credential("enroll_token")?;
             let enrolment = devices::enrolment_fields(parsed.value())?;
             let vault = vault_details(parsed.value())?;
+            let claimant_pub = public_key_field(parsed.value(), "claimant_pub")?;
             let pairings = app.pairings.lock().expect("pairings");
             pairings.begin_claim(id, &enroll, now)?;
-            Ok((enrolment, vault, pairings))
+            Ok((enrolment, vault, claimant_pub, pairings))
         })?;
 """
 SETUP_CHECK = """    let (_, (body, (account_name, enrolment))) =
@@ -90,12 +93,13 @@ SETUP_RELEASED = """    let (raw, ()) = unverified::token_body(app, req)?.accept
     let outside = render::parse_json(&raw)?;
 """
 # The claim's fields and table lock inside `accept`, and `begin_claim` after it.
-CLAIM_AFTER = """    let (_, (enroll, enrolment, vault, mut pairings)) =
-        unverified::token_body(app, req)?.accept(|held| {
+CLAIM_AFTER = """    let (_, (enroll, enrolment, vault, claimant_pub, mut pairings)) = unverified::token_body(app, req)?
+        .accept(|held| {
             let parsed = held.json()?;
             let enroll = parsed.credential("enroll_token")?.as_str().to_string();
             let pairings = app.pairings.lock().expect("pairings");
-            Ok((enroll, devices::enrolment_fields(parsed.value())?, vault_details(parsed.value())?, pairings))
+            Ok((enroll, devices::enrolment_fields(parsed.value())?, vault_details(parsed.value())?,
+                public_key_field(parsed.value(), "claimant_pub")?, pairings))
         })?;
 """
 CASES = [
@@ -416,6 +420,7 @@ def main():
                  + [edit[0] for guard in guards for edit in guard[2]]
                  + [by_name[guard[1]][1] for guard in guards]}
     failures = []
+    judge = Judge({(case[1], case[-1]) for case in cases})
     try:
         for name, path, old, new, refusal in escapes:
             source = originals[Path(path)].decode()
@@ -470,29 +475,16 @@ def main():
                 raise RuntimeError(f"{name}: mutation context moved")
             Path(path).write_text(source.replace(old, new, 1))
             try:
-                result = subprocess.run(
-                    ["cargo", "test", "-p", crate, "--lib", selector],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, timeout=600, check=False,
-                )
-                output = result.stdout
-                compiled = "could not compile" not in output
-                killed = compiled and result.returncode != 0 and "FAILED" in output
-            except subprocess.TimeoutExpired as expired:
-                output = expired.stdout or ""
-                killed = False
+                verdict, evidence = judge.test(selector, crate)
             finally:
                 Path(path).write_bytes(originals[Path(path)])
-            print(f"{name}: {'KILLED' if killed else 'NOT A KILL'}", flush=True)
-            if not killed:
-                failures.append(name)
-                print(output, flush=True)
-            else:
-                print("\n".join(line for line in output.splitlines()
-                                if "FAILED" in line or "test result:" in line), flush=True)
+            print(f"{name}: {verdict}\n{evidence}", flush=True)
+            if verdict != "KILLED":
+                failures.append(f"{name} ({verdict})")
     finally:
         for path, original in originals.items():
             path.write_bytes(original)
+        judge.close()
     if failures:
         raise SystemExit("Unkilled probes, unrefused escapes or unpinned guards: " + ", ".join(failures))
     print(f"All {len(cases)} server probes compiled and were killed; "
