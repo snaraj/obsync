@@ -185,13 +185,20 @@ cannot ask for it.
   plan, `cleared` or `none` for an apply; `setup_token`: `rotate` for a plan,
   `rotated` for an apply; `re_enrolment`: `arm` for a plan, `armed` for an
   apply), `error` (`code`, `message`), `next_actions`, `observed_at` and
-  `duration_ms`. Times are UTC RFC 3339.
+  `duration_ms`. Times are UTC RFC 3339. A refused plan has no `data`; a
+  refused apply says in `data` how far it got: `setup_token` (`standing`,
+  `removed_unconfirmed` when the folder holding it could not be synced, or
+  `rotated`) and `reset` (`not_reached` or `refused`).
 - Exit status: `0` the step did what was asked, including a reset with no key
   to clear, which still rotates the token and arms; `1` refused, with the
-  reason in the output and nothing changed; `2` the command or the
-  configuration is malformed. Each run logs one
-  `event=recovery_reset mode=… decision=…` line. Nothing either step prints or
-  logs is a secret.
+  reason in the output; `2` the command or the configuration is malformed. An
+  apply removes the old setup token before it resets the key, so a refusal
+  after that removal says the token is gone and the key is not reset yet;
+  `obsyncd recovery reset plan` shows what stands, and `apply` again, once the
+  cause is fixed, finishes the reset. Any other refusal changed nothing. Each
+  run logs one `event=recovery_reset mode=… decision=…` line, and an apply's
+  refusal also names `setup_token=`. Nothing either step prints or logs is a
+  secret.
 
 Under Compose:
 

@@ -60,7 +60,7 @@
     "rule": "rust/cleartext-logging",
     "path": "crates/obsyncd/src/cli/recovery.rs",
     "line_is": "Output::Human => println!(\"{}\", human(args.mode, &found)),",
-    "reviewed_sha256": "19198ee68e79886e8499d535c2c459555c07bd04913b8c8dd58bb8b71d614490",
+    "reviewed_sha256": "4a4a5d7e963983ac5aa8e5a8dc151662d6473de88acc87f322dbb72d17cacfda",
     "reason": "false positive",
     "comment": "the recovery reset's operator report, human(): when a recovery key was registered and when its hold ends, in UTC, in fixed sentences; no key, token, path or identifier is printed",
     "disposition": "https://github.com/snaraj/obsync/issues/23"

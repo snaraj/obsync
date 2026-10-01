@@ -27,7 +27,9 @@
 //! - **The old token dies first.** `apply` removes the standing setup token,
 //!   durably, before it writes the arm, so the next start mints a new one and
 //!   a token captured earlier never meets an armed account. A removal that
-//!   fails refuses the step with nothing armed.
+//!   fails refuses the step with nothing armed. A refusal after the removal
+//!   says so, the token's step and the reset's alike, and how to finish:
+//!   `apply` again completes it.
 //! - **Nothing secret in any output.** The verifier, or anything derived from
 //!   it, is never printed or logged; only whether one stands, and when it was
 //!   registered.
@@ -115,25 +117,92 @@ struct Found {
     cleared: bool,
 }
 
+/// How far `apply` got with the setup token before a refusal (review of
+/// a0dc7fc2, finding 2). The token goes first, so a refusal after it has
+/// changed something, and the operator is told what.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TokenStep {
+    /// Not reached, or refused itself: the token stands as it was.
+    Standing,
+    /// Removed, but the folder holding it could not be synced: the removal
+    /// may not survive a crash.
+    Removed,
+    /// Removed durably: the old token no longer works.
+    Rotated,
+}
+
+impl TokenStep {
+    fn word(self) -> &'static str {
+        match self {
+            TokenStep::Standing => "standing",
+            TokenStep::Removed => "removed_unconfirmed",
+            TokenStep::Rotated => "rotated",
+        }
+    }
+}
+
+/// A refusal, and how far the step had got with the token.
+#[derive(Debug)]
+struct Refusal {
+    error: StoreError,
+    token: TokenStep,
+}
+
+impl From<StoreError> for Refusal {
+    fn from(error: StoreError) -> Self {
+        Refusal {
+            error,
+            token: TokenStep::Standing,
+        }
+    }
+}
+
+/// Make a folder's entries durable: fsync the directory.
+fn sync_folder(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
 /// Remove the standing setup token so the next start mints another
-/// (`cli::serve::setup_token`), and make the removal durable. None standing
-/// is already rotated.
-fn rotate_setup_token(cfg: &Config) -> Result<(), StoreError> {
+/// (`cli::serve::setup_token`), and make the removal durable with `sync`. None
+/// standing is already rotated.
+fn rotate_setup_token(
+    cfg: &Config,
+    sync: &dyn Fn(&std::path::Path) -> std::io::Result<()>,
+) -> Result<(), Refusal> {
     let path = PathClass::SetupToken.path(&cfg.journal_dir);
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(StoreError::from(e).into()),
     }
     if let Some(dir) = path.parent() {
-        std::fs::File::open(dir)?.sync_all()?;
+        sync(dir).map_err(|e| Refusal {
+            error: e.into(),
+            token: TokenStep::Removed,
+        })?;
     }
     Ok(())
 }
 
+/// `apply`'s two changes, in their order: the token, durably, then the
+/// account frame that clears the verifier and arms one re-enrolment.
+fn reset(
+    cfg: &Config,
+    store: &Store,
+    sync: &dyn Fn(&std::path::Path) -> std::io::Result<()>,
+) -> Result<bool, Refusal> {
+    rotate_setup_token(cfg, sync)?;
+    store
+        .reset_recovery(UnixMs::now())
+        .map_err(|error| Refusal {
+            error,
+            token: TokenStep::Rotated,
+        })
+}
+
 /// Open the volumes as a start does, read the account, and in `apply` rotate
 /// the setup token, then clear its verifier and arm one re-enrolment.
-fn execute(cfg: &Config, log: &Log, mode: Mode) -> Result<Found, StoreError> {
+fn execute(cfg: &Config, log: &Log, mode: Mode) -> Result<Found, Refusal> {
     let storage = cfg.storage();
     let posture = Posture::enforce(&storage, log)?;
     let server_key =
@@ -146,10 +215,7 @@ fn execute(cfg: &Config, log: &Log, mode: Mode) -> Result<Found, StoreError> {
         .map(|_| account.recovery_registered);
     let cleared = match mode {
         Mode::Plan => false,
-        Mode::Apply => {
-            rotate_setup_token(cfg)?;
-            store.reset_recovery(UnixMs::now())?
-        }
+        Mode::Apply => reset(cfg, &store, &sync_folder)?,
     };
     Ok(Found {
         registered,
@@ -183,31 +249,48 @@ pub fn run(cfg: &Config, log: &Log, args: Args) -> i32 {
             ]);
             0
         }
-        Err(e) => {
+        Err(refusal) => {
             match args.output {
-                Output::Human => eprintln!("obsyncd recovery reset: {e}. {}", next_after(&e)),
-                Output::Json => println!("{}", json(args.mode, Err(&e), duration).to_json()),
+                Output::Human => eprintln!(
+                    "obsyncd recovery reset: {}. {}",
+                    refusal.error,
+                    next_after(&refusal)
+                ),
+                Output::Json => println!("{}", json(args.mode, Err(&refusal), duration).to_json()),
             }
             let mut fields = vec![
                 ("mode", Val::word(mode_word)),
                 ("decision", Val::word("refused")),
-                ("reason", Val::word(e.code())),
+                ("reason", Val::word(refusal.error.code())),
             ];
-            fields.extend(error_fields(&e));
+            if args.mode == Mode::Apply {
+                fields.push(("setup_token", Val::word(refusal.token.word())));
+            }
+            fields.extend(error_fields(&refusal.error));
             timed.refused(&fields);
             1
         }
     }
 }
 
-/// What to do after a refusal, in one sentence.
-fn next_after(e: &StoreError) -> &'static str {
-    match e {
-        StoreError::Locked => {
+/// What to do after a refusal: what it changed, if anything, and the way to
+/// finish. `apply` again completes a reset refused part-way: a token already
+/// gone is already rotated.
+fn next_after(refusal: &Refusal) -> &'static str {
+    match (refusal.token, &refusal.error) {
+        (TokenStep::Standing, StoreError::Locked) => {
             "Stop the server first: this reads and writes the journal the running server holds."
         }
-        StoreError::NotSetUp => "This server holds no account, so there is no recovery key.",
-        _ => "The log line names the reason; nothing was changed.",
+        (TokenStep::Standing, StoreError::NotSetUp) => {
+            "This server holds no account, so there is no recovery key."
+        }
+        (TokenStep::Standing, _) => "The log line names the reason; nothing was changed.",
+        (TokenStep::Removed, _) => {
+            "The old setup token is removed, but its removal could not be made durable, and the recovery key was not reset. Fix what the log line names, run obsyncd recovery reset plan to see what stands, then apply again: it finishes the reset."
+        }
+        (TokenStep::Rotated, _) => {
+            "The old setup token is removed and no longer works, but the reset of the recovery key was refused. Fix what the log line names, run obsyncd recovery reset plan to see what stands, then apply again: it finishes the reset."
+        }
     }
 }
 
@@ -259,8 +342,10 @@ fn human(mode: Mode, found: &Found) -> String {
     }
 }
 
-/// The result as one JSON object: the same fields on success and refusal.
-fn json(mode: Mode, outcome: Result<&Found, &StoreError>, duration_ms: u64) -> Value {
+/// The result as one JSON object: the same fields on success and refusal. An
+/// `apply` refused says in `data` how far it got: the token's step, and
+/// whether the reset was reached.
+fn json(mode: Mode, outcome: Result<&Found, &Refusal>, duration_ms: u64) -> Value {
     let text = |t: &str| Value::Str(t.to_string());
     let time = |t: Option<UnixMs>| t.map_or(Value::Null, |t| Value::Str(utc(t)));
     let (state, data, error, next): (&str, Value, Value, Vec<&str>) = match outcome {
@@ -306,14 +391,34 @@ fn json(mode: Mode, outcome: Result<&Found, &StoreError>, duration_ms: u64) -> V
                 next,
             )
         }
-        Err(e) => (
+        Err(refusal) => (
             "refused",
-            Value::Null,
+            match mode {
+                Mode::Plan => Value::Null,
+                Mode::Apply => obj(vec![
+                    ("setup_token", text(refusal.token.word())),
+                    (
+                        "reset",
+                        text(if refusal.token == TokenStep::Rotated {
+                            "refused"
+                        } else {
+                            "not_reached"
+                        }),
+                    ),
+                ]),
+            },
             obj(vec![
-                ("code", text(e.code())),
-                ("message", text(&e.to_string())),
+                ("code", text(refusal.error.code())),
+                ("message", text(&refusal.error.to_string())),
             ]),
-            vec![next_after(e)],
+            match refusal.token {
+                TokenStep::Standing => vec![next_after(refusal)],
+                TokenStep::Removed | TokenStep::Rotated => vec![
+                    "fix what the log line names",
+                    "obsyncd recovery reset plan",
+                    "obsyncd recovery reset apply",
+                ],
+            },
         ),
     };
     obj(vec![
@@ -679,6 +784,12 @@ mod tests {
                 "{}",
                 lines[0]
             );
+            assert_eq!(
+                lines[0].contains("setup_token=standing"),
+                mode == "apply",
+                "an apply's refusal names the token's step, a plan's has none: {}",
+                lines[0]
+            );
         }
         assert_eq!(
             held.account().expect("account").recovery_verifier,
@@ -690,7 +801,8 @@ mod tests {
             Some(token),
             "a refused apply leaves the serving token where it stands"
         );
-        let refused = json(Mode::Apply, Err(&StoreError::Locked), 0);
+        let locked = Refusal::from(StoreError::Locked);
+        let refused = json(Mode::Apply, Err(&locked), 0);
         assert_eq!(
             refused.get("state").and_then(Value::as_str),
             Some("refused")
@@ -702,7 +814,20 @@ mod tests {
                 .and_then(Value::as_str),
             Some("journal_locked")
         );
-        assert_eq!(refused.get("data"), Some(&Value::Null));
+        let data = refused.get("data").expect("data");
+        assert_eq!(
+            data.get("setup_token").and_then(Value::as_str),
+            Some("standing")
+        );
+        assert_eq!(
+            data.get("reset").and_then(Value::as_str),
+            Some("not_reached")
+        );
+        assert_eq!(
+            json(Mode::Plan, Err(&locked), 0).get("data"),
+            Some(&Value::Null),
+            "a plan changes nothing, refused or not"
+        );
         json::parse(refused.to_json().as_bytes())
             .expect("one valid JSON object, refusals included");
         drop(held);
@@ -715,6 +840,106 @@ mod tests {
             "no account"
         );
         assert!(decisions(&log.captured())[0].contains("reason=not_set_up"));
+    }
+
+    /// A REFUSAL AFTER THE OLD TOKEN WENT SAYS SO (review of a0dc7fc2, finding
+    /// 2). The folder sync refused after the unlink, and the journal refused
+    /// the reset after a durable removal: each names the token's step and the
+    /// reset's, never "nothing was changed", and `apply` again finishes it.
+    #[test]
+    fn a_reset_refused_after_the_token_went_says_how_far_it_got_and_apply_again_finishes_it() {
+        use crate::storage::{AppendPhase, Fault};
+        let dir = TempDir::new("recovery-reset-part-way");
+        let cfg = config(&dir);
+        let bogus = "b6".repeat(32);
+        let store = serving(&cfg, Some(&bogus), UnixMs(1));
+        start_token(&cfg, &store);
+        drop(store);
+        let store = serving_again(&cfg);
+        let verifier = |store: &Store| store.account().expect("account").recovery_verifier;
+
+        // The unlink lands; the sync of its folder is refused.
+        let refused_sync = |_: &std::path::Path| -> std::io::Result<()> {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        };
+        let Err(refusal) = reset(&cfg, &store, &refused_sync) else {
+            panic!("a refused folder sync went unreported");
+        };
+        assert_eq!(refusal.token, TokenStep::Removed);
+        assert_eq!(standing_token(&cfg), None, "the unlink landed");
+        assert_eq!(
+            verifier(&store),
+            Some(bogus.clone()),
+            "the reset was not reached"
+        );
+        let said = next_after(&refusal);
+        assert!(
+            said.contains("could not be made durable") && !said.contains("nothing was changed"),
+            "{said}"
+        );
+        let value = json(Mode::Apply, Err(&refusal), 0);
+        let data = value
+            .get("data")
+            .expect("an apply refused part-way says how far");
+        assert_eq!(
+            data.get("setup_token").and_then(Value::as_str),
+            Some("removed_unconfirmed")
+        );
+        assert_eq!(
+            data.get("reset").and_then(Value::as_str),
+            Some("not_reached")
+        );
+
+        // The removal is durable; the journal refuses the reset's frame.
+        store.set_fault(Fault::JournalAppendErrno {
+            code: 28,
+            at: AppendPhase::Write,
+        });
+        let Err(refusal) = reset(&cfg, &store, &sync_folder) else {
+            panic!("a refused reset went unreported");
+        };
+        assert_eq!(refusal.token, TokenStep::Rotated);
+        assert_eq!(
+            verifier(&store),
+            Some(bogus.clone()),
+            "the refused frame changed the account"
+        );
+        let said = next_after(&refusal);
+        assert!(
+            said.contains("no longer works")
+                && said.contains("apply again")
+                && !said.contains("nothing was changed"),
+            "{said}"
+        );
+        let value = json(Mode::Apply, Err(&refusal), 0);
+        let data = value.get("data").expect("data");
+        assert_eq!(
+            data.get("setup_token").and_then(Value::as_str),
+            Some("rotated")
+        );
+        assert_eq!(data.get("reset").and_then(Value::as_str), Some("refused"));
+        assert!(
+            value
+                .get("next_actions")
+                .and_then(Value::as_array)
+                .is_some_and(
+                    |next| next.contains(&Value::Str("obsyncd recovery reset apply".into()))
+                ),
+            "the refusal says how to finish"
+        );
+        json::parse(value.to_json().as_bytes()).expect("one valid JSON object");
+
+        // Apply again, the cause gone, finishes the reset.
+        store.set_fault(Fault::None);
+        assert!(
+            matches!(reset(&cfg, &store, &sync_folder), Ok(true)),
+            "apply again did not finish the reset"
+        );
+        assert_eq!(verifier(&store), None);
+        assert!(
+            store.account().expect("account").recovery_cleared.is_some(),
+            "armed"
+        );
     }
 
     #[test]
