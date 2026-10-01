@@ -2356,7 +2356,12 @@ export class SyncEngine {
   ): Promise<void> {
     const stat = await context.host.stat(path);
     if (!stat) {
-      if (context.state.fileByPath(path) === undefined) return;
+      // Gone before it settled, and never sent: nothing to publish, and the
+      // one way a note made here leaves the queue unsaid (#313).
+      if (context.state.fileByPath(path) === undefined) {
+        context.host.log("watch path_class=file decision=dropped reason=absent_at_settle");
+        return;
+      }
       // A pending change can settle between a filesystem rename and its
       // watcher event. Ask where the note went through the same bounded
       // move check as a delete event before publishing any tombstone.

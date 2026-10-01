@@ -1073,6 +1073,21 @@ test("the growing-file guard waits for a file to stop changing", async () => {
   engine.stop();
 });
 
+test("a new note gone before it settled is dropped in one line, and nothing is sent (#313)", async () => {
+  const rigged = await rig();
+  const { host, state } = rigged;
+  const timers = new FakeTimers();
+  const engine = engineOf(rigged, timers);
+  await engine.start();
+  host.seed("Brief.md", "here a moment", 3000);
+  engine.changed("Brief.md");
+  host.files.delete("Brief.md");
+  await timers.run(1000);
+  assert.equal(state.fileByPath("Brief.md"), undefined, "a note that never settled was recorded");
+  assert.ok(host.logs.includes("watch path_class=file decision=dropped reason=absent_at_settle"), host.logs.join(" | "));
+  engine.stop();
+});
+
 /**
  * A SAVE THE MODIFICATION TIME CANNOT SEE (issue #175). FAT32 keeps a file's
  * modification time to the even second, so a second save of the same size

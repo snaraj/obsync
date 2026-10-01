@@ -289,6 +289,26 @@ function pluginState(pluginId) {
   return { paired: plugin.state.paired, server: plugin.state.data.serverUrl };
 }
 
+/** What this instance knows about each note, stage by stage (#313): run in the page. */
+function noteStages(pluginId, paths) {
+  const plugin = app.plugins.plugins[pluginId];
+  const engine = plugin?.engine;
+  const has = (holder, file) => holder instanceof Map || holder instanceof Set ? holder.has(file)
+    : Array.isArray(holder) ? holder.includes(file) : null;
+  return {
+    events: window.obsyncE2eEvents ?? null,
+    engine: engine ? { running: engine.running, draining: engine.draining, hurried: engine.hurried } : null,
+    notes: paths.map((file) => ({
+      file,
+      indexed: app.vault.getAbstractFileByPath(file) !== null,
+      debounce: has(engine?.pending, file),
+      queued: has(engine?.queue, file),
+      pushing: has(engine?.pushing, file),
+      record: plugin?.state?.fileByPath(file) !== undefined,
+    })),
+  };
+}
+
 function openSettings(pluginId) {
   app.setting.open();
   app.setting.openTabById(pluginId);
@@ -763,13 +783,36 @@ async function starvedWatcher(a, b) {
   const listedAll = (paths) => inVault(b, (want) => want.every(([file, shown]) =>
     (app.vault.getAbstractFileByPath(file) !== null) === shown), paths);
   const before = { kept: `kept ${randomBytes(6).toString("hex")}\n`, gone: `gone ${randomBytes(6).toString("hex")}, longer\n` };
+  const watched = ["e2e/watched/kept.md", "e2e/watched/gone.md"];
+  await inVault(a, () => {
+    window.obsyncE2eEvents = [];
+    const heard = (kind) => (file) => {
+      if (file.path.startsWith("e2e/watched")) window.obsyncE2eEvents.push(`${kind} ${file.path}`);
+    };
+    window.obsyncE2eRefs = [app.vault.on("create", heard("create")), app.vault.on("modify", heard("modify"))];
+  });
   await inVault(a, async (texts) => {
     await app.vault.createFolder("e2e/watched");
     await app.vault.create("e2e/watched/kept.md", texts.kept);
     await app.vault.create("e2e/watched/gone.md", texts.gone);
   }, before);
-  await until("b lists the notes it is sent while its watcher works", () =>
-    listedAll([["e2e/watched/kept.md", true], ["e2e/watched/gone.md", true]]), SYNC_BUDGET_MS);
+  try {
+    await until("b lists the notes it is sent while its watcher works", () =>
+      listedAll(watched.map((file) => [file, true])), SYNC_BUDGET_MS);
+  } catch (error) {
+    // #313: a note made on a that never left it. What a knew about each one
+    // names the stage that lost it: Obsidian's event, the engine's debounce,
+    // its queue or push, or the record a push leaves.
+    if (!(error instanceof Denied)) throw error;
+    const knew = await inVault(a, noteStages, PLUGIN_ID, watched);
+    const disk = watched.map((file) => `${file}=${fs.existsSync(path.join(a.vault, file)) ? "on_disk" : "absent"}`);
+    throw new Denied(`${error.message}; a: ${disk.join(" ")} ${JSON.stringify(knew)}`);
+  } finally {
+    await inVault(a, () => {
+      for (const ref of window.obsyncE2eRefs ?? []) app.vault.offref(ref);
+      delete window.obsyncE2eRefs;
+    });
+  }
   const closed = await inVault(b, () => {
     const keys = Object.keys(app.vault.adapter.watchers ?? {});
     for (const key of keys) app.vault.adapter.stopWatchPath(key);
