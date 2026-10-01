@@ -87,6 +87,9 @@ async function note() {
   r.path = "Notes/repair-private-marker.md";
   r.host.seed(r.path, "REPAIR PLAINTEXT SENTINEL", 1000);
   await pushFile(r.context, r.path);
+  // The read-back path: a record that remembers no chunk, as one written
+  // before 1.1.4 loads (a push now remembers its own, #310).
+  delete r.state.fileByPath(r.path).sid;
   r.frame = r.server.journal.at(-1);
   r.sid = r.frame.sids[0];
   r.ciphertext = r.server.chunks.get(r.sid);
@@ -165,9 +168,13 @@ test("a note waiting beside its name is repaired like any other, never reported 
   const copy = r.state.pathByFileId("33".repeat(16));
   assert.equal(r.state.fileByPath(copy).name, r.path);
   r.server.chunks.delete(frame.sids[0]);
+  r.server.requests.length = 0;
   const repair = new ChunkRepair(r.context);
-  assert.deepEqual(await repair.step(), { kind: "checked" }, "the note at the name");
+  // Both remember their one chunk (#310), so one question finds the
+  // missing one, and the note beside its name is read back and repaired.
   assert.deepEqual(await repair.step(), { kind: "repaired", bytes: theirs.length }, "the note beside it");
+  const [question] = r.server.requests.filter((request) => request.target === "/v1/chunks/exists");
+  assert.equal(JSON.parse(question.json).sids.length, 2, "one question for both notes");
 });
 
 test("healthy remembered chunks are audited without reading or stat-ing local plaintext", async () => {

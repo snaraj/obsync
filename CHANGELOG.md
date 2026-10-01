@@ -323,6 +323,14 @@ against 9,801 notes ended with 17 deleted notes in its trash before the
 fix and none after it, and downloaded 8.3 MiB less
 ([2026-09-30 run](docs/validation-runs/2026-09-30-train-1.1.5.md), #311).
 
+**A computer that sends a vault no longer reads a third of it back.** After
+the device that set obsync up sent a 9,800-note vault, it asked the server
+for about a third of those notes again, one a second for about an hour,
+while it checked that the server still held them. It now remembers what
+it sent. A lab desktop given 2,000 new notes read 290 of them back in the
+five minutes after a restart before the fix, and none after it
+([2026-09-30 run](docs/validation-runs/2026-09-30-train-1.1.5.md), #310).
+
 **A first sync from a computer rewrites obsync's data file far less.** For
 a 7,703-file vault, 7,451 writes of the file became 211 to 253 over three
 runs, and the upload took 233 to 281 s instead of 302 s (#274). A new

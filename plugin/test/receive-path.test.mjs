@@ -640,6 +640,20 @@ test("a remembered sid that is not its version's is never believed (#198)", asyn
   assert.ok(r.server.chunks.has(lost));
 });
 
+test("a record that remembers no chunk, met after ones that do, is read back in the same walk (#198)", async () => {
+  const r = await pulled(3);
+  // The last record remembers no chunk, as one written before 1.1.4 loads, and the server lost it.
+  const last = r.state.fileByPath(pathOf(2));
+  const sid = last.sid;
+  delete last.sid;
+  r.server.chunks.delete(sid);
+  const repair = new ChunkRepair(r.context);
+  const steps = [];
+  for (let n = 0; n < 4; n++) steps.push(await repair.step());
+  assert.deepEqual(steps.filter((step) => step.kind === "repaired"), [{ kind: "repaired", bytes: textOf(2).length }], JSON.stringify(steps));
+  assert.ok(r.server.chunks.has(sid));
+});
+
 test("a remembered sid is read from the data file only as a sid, and a record without one loads as before (#198)", () => {
   const record = { fileId: "12".repeat(16), versionId: "34".repeat(32), mtime: 1, size: 20, sha256: "ab".repeat(32) };
   const data = parseData({ files: { "a.md": { ...record, sid: "cd".repeat(32) }, "b.md": { ...record, sid: "../x" }, "c.md": record } }, false);
@@ -653,7 +667,10 @@ test("a walk learns the sid of a note it read back, and the next walk only asks 
   r.host.seed(pathOf(0), textOf(0), 1000);
   await pushFile(r.context, pathOf(0));
   const frame = r.server.journal.at(-1);
-  assert.equal(r.state.fileByPath(pathOf(0)).sid, undefined, "a push leaves it to its echo or the walk");
+  // A push remembers the one chunk it posted, whenever its echo comes (#310).
+  assert.equal(r.state.fileByPath(pathOf(0)).sid, frame.sids[0]);
+  // A record without one, as one written before 1.1.4 loads.
+  delete r.state.fileByPath(pathOf(0)).sid;
   r.server.requests.length = 0;
   const repair = new ChunkRepair(r.context);
   assert.deepEqual(await repair.step(), { kind: "checked" });

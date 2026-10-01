@@ -614,6 +614,12 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
       mtime: stat.mtime,
       size: stat.size,
       sha256: digest,
+      // Its one chunk, for the repair walk (#198), as the pull records one
+      // (`recordAt`). Left to the echo, it was lost whenever the feed brought
+      // the version back before this acknowledgement: a third of an
+      // uploading device's notes, each read back from the server once a
+      // second for an hour after setup (#310).
+      ...(sids.length === 1 ? { sid: sids[0] as string } : {}),
     });
     // A NEW NOTE OF ONE CHUNK WAITS FOR THE NEXT SAVE (issue #274), as a note
     // the pull creates does (#194). The data file is rewritten whole, and a
