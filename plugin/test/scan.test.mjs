@@ -635,6 +635,65 @@ test("the engine's stop ends a desktop walk at its next read of the disk: the sc
 });
 
 /**
+ * The desktop host's disk watchdog (`watchDisk`, #307), run by hand: its
+ * clock stands still until `at` moves it, and its tick runs only when the
+ * test calls `tick`. `tick` is null while no watchdog is armed, so a tick that
+ * finds every call answered and stops the watchdog shows each one took its
+ * entry back. Waits use `performance.now`: `Date.now` is the frozen clock.
+ */
+const watchdog = (t) => {
+  const real = { window: globalThis.window, now: Date.now };
+  const start = real.now();
+  let now = start;
+  const dog = { tick: null, at: (ms) => { now = start + ms; } };
+  Date.now = () => now;
+  globalThis.window = { ...real.window,
+    setInterval: (fn, ms) => {
+      assert.equal(ms, 1000, "the watchdog does not tick once a second");
+      assert.equal(dog.tick, null, "a second watchdog was armed while one runs");
+      dog.tick = fn;
+      return "watchdog";
+    },
+    clearInterval: (id) => {
+      assert.equal(id, "watchdog", "a timer other than the watchdog was cleared");
+      dog.tick = null;
+    },
+  };
+  t.after(() => { globalThis.window = real.window; Date.now = real.now; });
+  return dog;
+};
+
+/**
+ * Waits by the wall clock, never by a count of turns (a disk under load takes
+ * more of them), until `done` holds or five seconds pass.
+ */
+const until = async (done) => {
+  for (const end = performance.now() + 5000; !done() && performance.now() < end;) await new Promise((resolve) => setTimeout(resolve, 1));
+};
+
+/**
+ * One call that never answers, made by `outcome`'s operation: it is still
+ * waiting a millisecond before its budget, fails with `disk_stalled` and one
+ * line naming it at its budget, and the watchdog stops with nothing left in
+ * flight. The clock is back at its start afterwards.
+ */
+const stallsAt = async (dog, label, outcome, name, budget, logs) => {
+  assert.notEqual(dog.tick, null, `${label}: no watchdog is armed for the call`);
+  const settled = () => Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve("still waiting"), 20))]);
+  dog.at(budget - 1);
+  dog.tick();
+  assert.equal(await settled(), "still waiting", `${label} failed before its budget of ${budget} ms`);
+  dog.at(budget);
+  dog.tick();
+  const error = await Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve("still waiting after its budget"), 2000))]);
+  assert.equal(error?.code, "disk_stalled", `${label}: ${error === "answered" ? "went on past it" : `failed as ${error}`}`);
+  assert.equal(error.message, "This device's disk did not answer in time. obsync tries again by itself.");
+  assert.ok(logs.includes(`host decision=stalled call=${name} duration_ms=${budget} budget_ms=${budget}`), logs.join(" | "));
+  assert.equal(dog.tick, null, `${label}: the watchdog runs on with nothing in flight`);
+  dog.at(0);
+};
+
+/**
  * A READ OF THE WALK THAT NEVER ANSWERS FAILS THE WALK (#302). Closing a
  * separate Settings window (Obsidian 1.13) focused the main one while it was
  * torn down, and the reads the focus walk made then never answered: the walk
@@ -667,37 +726,24 @@ test("a walk read that never answers fails the walk within its budget, never rea
   const logs = [];
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
   const host = new ObsidianHost({ state: { data: {} }, app: { vault: { adapter: {} } }, log: (line) => logs.push(line) }, { fs: stalling, path: nodePath, base: root });
-  // The window's timers, read at each call: every read's budget is held here and run by hand.
-  const real = globalThis.window;
-  t.after(() => { globalThis.window = real; });
-  const budgets = new Map();
-  let next = 0;
-  globalThis.window = { ...real,
-    setTimeout: (fn, ms) => { if (ms !== 15_000) return real.setTimeout(fn, ms); budgets.set(++next, fn); return next; },
-    clearTimeout: (id) => { if (typeof id === "number") budgets.delete(id); else real.clearTimeout(id); },
-  };
+  const dog = watchdog(t);
 
-  // Every read that answered took its budget back, a refused one too.
+  // Every read that answered took its entry back, a refused one too.
   refused.add(join(root, "Notes", "Sub"));
   assert.deepEqual((await host.scan()).map((file) => file.path), ["Notes/a.md"]);
   assert.ok(logs.includes("scan decision=skipped reason=unreadable_directory"), logs.join(" | "));
-  assert.equal(budgets.size, 0, "a read that answered left its budget armed");
+  assert.notEqual(dog.tick, null, "the walk's reads armed no watchdog");
+  dog.tick();
+  assert.equal(dog.tick, null, "a read that answered left its entry in flight");
   refused.clear();
 
   const stalled = async (kind, path, walk) => {
     hang[kind] = path;
     logs.length = 0;
     const outcome = walk().then(() => "answered", (error) => error);
-    // Waited on by the wall clock, never by a count of turns: a disk under load takes more of them.
-    for (const until = Date.now() + 5000; (hang[kind] !== null || budgets.size === 0) && Date.now() < until;) await new Promise((resolve) => real.setTimeout(resolve, 1));
+    await until(() => hang[kind] === null);
     assert.equal(hang[kind], null, `the walk never asked for ${kind} ${path}`);
-    assert.equal(budgets.size, 1, `the ${kind} that never answers has ${budgets.size} budgets armed, not one`);
-    const [[id, fire]] = budgets;
-    budgets.delete(id);
-    fire();
-    const error = await Promise.race([outcome, new Promise((resolve) => real.setTimeout(() => resolve("still waiting after its budget"), 2000))]);
-    assert.equal(error?.code, "disk_stalled", `${kind} ${path}: the walk ${error === "answered" ? "went on past it" : `failed as ${error}`}`);
-    assert.ok(logs.some((line) => new RegExp(`^host decision=stalled call=${kind} duration_ms=\\d+ budget_ms=15000$`).test(line)), logs.join(" | "));
+    await stallsAt(dog, `the walk's ${kind} of ${path}`, outcome, kind, 15_000, logs);
     assert.equal(logs.includes("scan decision=skipped reason=unreadable_directory"), false, "a stall read as an unreadable folder");
   };
   await stalled("readdir", root, () => host.scan());
@@ -750,19 +796,17 @@ test("every call of the desktop filesystem seam, and of a handle it opens, fails
   const plugin = { state: { data: {} }, app: { vault: { adapter: { getBasePath: () => root } } }, log: (line) => logs.push(line) };
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
   const bounded = new ObsidianHost(plugin, { fs: seam, path: nodePath, base: root }).desktop.fs.promises;
-  // The window's timers, read at each call: every disk budget is held here and run by hand.
-  const real = globalThis.window;
-  t.after(() => { globalThis.window = real; });
-  const budgets = new Map();
-  let next = 0;
-  globalThis.window = { ...real,
-    setTimeout: (fn, ms) => { if (ms < 15_000) return real.setTimeout(fn, ms); budgets.set(++next, { fn, ms }); return next; },
-    clearTimeout: (id) => { if (typeof id === "number") budgets.delete(id); else real.clearTimeout(id); },
+  const dog = watchdog(t);
+  // The watchdog stops at a tick that finds every call answered.
+  const answered = (label) => {
+    assert.notEqual(dog.tick, null, `${label} armed no watchdog`);
+    dog.tick();
+    assert.equal(dog.tick, null, `${label} left its entry in flight`);
   };
   const file = join(root, "a.md");
   const opened = async (flags) => {
     const handle = await bounded.open(file, flags);
-    assert.equal(budgets.size, 0, "the open that answered left its budget armed");
+    answered("the open that answered");
     return handle;
   };
   const eight = new Uint8Array(3000);
@@ -812,32 +856,28 @@ test("every call of the desktop filesystem seam, and of a handle it opens, fails
     ["close", 15_000, async () => (await opened("r")).close()],
   ];
   for (const [name, budget, call, first = 0] of calls) {
-    // Answered: as the disk answers, and no budget left armed.
+    // Answered: as the disk answers, and no entry left in flight.
     await call();
-    assert.equal(budgets.size, 0, `${name} answered and left its budget armed`);
-    // Never answered: the call fails within its budget, with one line naming it.
+    answered(name);
+    // Never answered: the call fails at its budget, with one line naming it.
     hang = { name, first };
     logs.length = 0;
     const outcome = call().then(() => "answered", (error) => error);
-    // Waited on by the wall clock, never by a count of turns: a real sync takes more of them.
-    for (const until = Date.now() + 5000; (hang !== null || budgets.size === 0) && Date.now() < until;) await new Promise((resolve) => real.setTimeout(resolve, 1));
+    await until(() => hang === null);
     assert.equal(hang, null, `${name} was never asked of the disk`);
-    assert.deepEqual([...budgets.values()].map((armed) => armed.ms), [budget], `${name} has the wrong budgets armed`);
-    const [[id, { fn }]] = budgets;
-    budgets.delete(id);
-    fn();
-    const error = await Promise.race([outcome, new Promise((resolve) => real.setTimeout(() => resolve("still waiting after its budget"), 2000))]);
-    assert.equal(error?.code, "disk_stalled", `${name}: ${error === "answered" ? "answered with nothing from the disk" : `failed as ${error}`}`);
-    assert.equal(error.message, "This device's disk did not answer in time. obsync tries again by itself.");
-    assert.ok(logs.some((line) => new RegExp(`^host decision=stalled call=${name} duration_ms=\\d+ budget_ms=${budget}$`).test(line)), logs.join(" | "));
+    await stallsAt(dog, name, outcome, name, budget, logs);
     for (const real of handles.splice(0)) await real.close().catch(() => {});
   }
+  // Calls in flight together have an entry each: one that answers never takes another's.
+  hang = { name: "readdir", first: 0 };
+  logs.length = 0;
+  const beside = bounded.readdir(root).then(() => "answered", (error) => error);
+  assert.deepEqual((await bounded.readdir(root)).sort(), (await fs.readdir(root)).sort());
+  await stallsAt(dog, "a readdir beside one that answered", beside, "readdir", 15_000, logs);
   // The filesystem the host finds for itself, on a desktop, is the bounded one too.
   const found = new ObsidianHost(plugin).desktop.fs.promises;
-  const listing = found.readdir(root);
-  assert.deepEqual([...budgets.values()].map((armed) => armed.ms), [15_000], "the host's own filesystem call has no budget");
-  await listing;
-  assert.equal(budgets.size, 0, "the host's own filesystem call left its budget armed");
+  await found.readdir(root);
+  answered("the host's own readdir");
 });
 
 /**

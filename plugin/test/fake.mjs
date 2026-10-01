@@ -167,6 +167,9 @@ module.exports = {
   globalThis.window ??= {
     setTimeout: (fn, ms) => setTimeout(fn, ms).unref(),
     clearTimeout: (handle) => clearTimeout(handle),
+    // The desktop disk calls' one watchdog (`watchDisk` in main.ts, #307).
+    setInterval: (fn, ms) => setInterval(fn, ms).unref(),
+    clearInterval: (handle) => clearInterval(handle),
     Blob, URL,
     // What the worker's script does, on the same timers: `clock.test.mjs` runs the script itself.
     Worker: class {

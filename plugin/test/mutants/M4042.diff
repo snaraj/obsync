@@ -1,0 +1,12 @@
+# M4042: a disk call fails a millisecond before its budget (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -319,7 +319,7 @@
+ function watchDisk(): void {
+   const now = Date.now();
+   for (const [id, call] of diskCalls) {
+-    if (now - call.started < call.budget) continue;
++    if (now - call.started < call.budget - 1) continue;
+     diskCalls.delete(id);
+     call.fail();
+   }

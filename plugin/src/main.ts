@@ -301,6 +301,34 @@ class DiskStalled extends Error {
   }
 }
 
+/** How often the one watchdog looks at the disk calls in flight: a stall fails within its budget and this (#307). */
+const DISK_WATCH_MS = 1000;
+
+/**
+ * THE DISK CALLS IN FLIGHT, AND ONE WATCHDOG FOR ALL OF THEM (#307). A timer
+ * armed and cleared for every call cost a desktop Sync now press half a
+ * second in ten, on 9,815 files (measured live: 4.6 s, then 5.1 s), because
+ * a press makes some ten calls a file. A call now costs an entry here. The
+ * watchdog runs while any call is in flight and stops at the first tick that
+ * finds none, so calls made one after another arm it once.
+ */
+const diskCalls = new Map<number, { started: number; budget: number; fail: () => void }>();
+let diskCallCount = 0;
+let diskWatch: number | null = null;
+
+function watchDisk(): void {
+  const now = Date.now();
+  for (const [id, call] of diskCalls) {
+    if (now - call.started < call.budget) continue;
+    diskCalls.delete(id);
+    call.fail();
+  }
+  if (diskCalls.size === 0 && diskWatch !== null) {
+    window.clearInterval(diskWatch);
+    diskWatch = null;
+  }
+}
+
 /**
  * One disk call, or `DiskStalled` once its budget passes (#302, #307). Closing
  * a separate Settings window (Obsidian 1.13) focuses the main one, and the
@@ -314,13 +342,19 @@ function onTime<T>(call: Promise<T>, name: string, bytes: number, log: (line: st
   const started = Date.now();
   const budget = DISK_CALL_MS + Math.ceil(bytes / 1024);
   return new Promise((resolve, reject) => {
-    const handle = window.setTimeout(() => {
-      log(`host decision=stalled call=${name} duration_ms=${Date.now() - started} budget_ms=${budget}`);
-      reject(new DiskStalled());
-    }, budget);
+    const id = diskCallCount++;
+    diskCalls.set(id, {
+      started,
+      budget,
+      fail: () => {
+        log(`host decision=stalled call=${name} duration_ms=${Date.now() - started} budget_ms=${budget}`);
+        reject(new DiskStalled());
+      },
+    });
+    diskWatch ??= window.setInterval(watchDisk, DISK_WATCH_MS);
     call.then(
-      (value) => { window.clearTimeout(handle); resolve(value); },
-      (error: unknown) => { window.clearTimeout(handle); reject(error); },
+      (value) => { if (diskCalls.delete(id)) resolve(value); },
+      (error: unknown) => { if (diskCalls.delete(id)) reject(error); },
     );
   });
 }

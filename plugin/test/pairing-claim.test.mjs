@@ -120,13 +120,14 @@ async function claimant(t, response, {
   const previousWindow = globalThis.window;
   globalThis.window = {
     setTimeout: (resolve, delay) => {
-      // The budget of a disk read the nested-vault check makes (#302): armed, never run, since every read here answers.
-      if (delay === 15_000) return 0;
       assert.equal(delay, 2000);
       assert.ok(++waited <= waits, "terminal outcomes must not poll indefinitely");
       onWait(modal, waited, plugin); resolve();
     },
     clearTimeout: () => undefined,
+    // The disk watchdog of the nested-vault check's reads (#302, #307): armed, never run, since every read here answers.
+    setInterval: () => 0,
+    clearInterval: () => undefined,
   };
   t.after(() => { globalThis.window = previousWindow; });
   await modal.claim();

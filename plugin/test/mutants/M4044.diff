@@ -1,0 +1,12 @@
+# M4044: the disk watchdog ticks every 15 s, so a stall can wait twice its budget (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -302,7 +302,7 @@
+ }
+ 
+ /** How often the one watchdog looks at the disk calls in flight: a stall fails within its budget and this (#307). */
+-const DISK_WATCH_MS = 1000;
++const DISK_WATCH_MS = 15_000;
+ 
+ /**
+  * THE DISK CALLS IN FLIGHT, AND ONE WATCHDOG FOR ALL OF THEM (#307). A timer

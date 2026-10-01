@@ -1,0 +1,11 @@
+# M4041: no disk watchdog is ever armed, so a call that never answers waits for ever (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -351,7 +351,6 @@
+         reject(new DiskStalled());
+       },
+     });
+-    diskWatch ??= window.setInterval(watchDisk, DISK_WATCH_MS);
+     call.then(
+       (value) => { if (diskCalls.delete(id)) resolve(value); },
+       (error: unknown) => { if (diskCalls.delete(id)) reject(error); },

@@ -1,0 +1,12 @@
+# M4049: disk calls in flight together share one entry, so one that answers takes the other's (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -342,7 +342,7 @@
+   const started = Date.now();
+   const budget = DISK_CALL_MS + Math.ceil(bytes / 1024);
+   return new Promise((resolve, reject) => {
+-    const id = diskCallCount++;
++    const id = diskCallCount;
+     diskCalls.set(id, {
+       started,
+       budget,

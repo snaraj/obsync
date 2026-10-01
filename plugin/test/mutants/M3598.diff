@@ -1,12 +1,12 @@
 # M3598: the status item's words hide the standing security warning
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -5307,7 +5307,7 @@
+@@ -5445,7 +5445,7 @@
      const shown = indicated(status, quiet);
      const warned = this.recoveryMismatch && (shown === "synced" || shown === "quiet");
      this.indicator.update(warned ? "attention" : shown,
 -      `obsync: ${this.statusText()}${this.recoveryMismatch ? " — security warning: see Show sync status" : ""}`);
 +      `obsync: ${this.statusText()}`);
      // A PHONE HAS NOTHING ELSE THAT CATCHES THE EYE (#209): a refusal that
-     // needs the person is said once in a notice there, as it turns to it.
-     const refusal = status.kind === "error" && status.code !== undefined ? status.message : null;
+     // needs the person is said once in a notice there, as it turns to it, and
+     // its toast goes when it ends (#308). "Your server is out of storage"

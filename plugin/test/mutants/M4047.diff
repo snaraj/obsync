@@ -1,0 +1,11 @@
+# M4047: a stalled disk call is failed and kept, so the watchdog never stops (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -320,7 +320,6 @@
+   const now = Date.now();
+   for (const [id, call] of diskCalls) {
+     if (now - call.started < call.budget) continue;
+-    diskCalls.delete(id);
+     call.fail();
+   }
+   if (diskCalls.size === 0 && diskWatch !== null) {
