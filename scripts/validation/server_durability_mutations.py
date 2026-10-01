@@ -32,6 +32,8 @@ GROWTH = "a_snapshot_is_due_after_the_journal_grows_past_the_floor_and_the_last_
 SNAPSHOT = "a_snapshot_is_written_with_no_guard_held_and_a_crash_part_way_loses_nothing"
 FANOUT = "a_new_fan_out_directory_is_durable_in_its_parent_before_its_chunk_is_acknowledged"
 FANOUT_START = "a_start_after_a_cut_upload_makes_every_fan_out_name_durable"
+START_REPAIR = "a_cut_upload_keeps_its_temp_until_a_start_repairs_its_fan_out"
+START_LAYOUT = "a_start_whose_layout_fsync_fails_tries_it_again_at_the_next"
 NO_ROOM = "the_disk_cannot_hold"
 NONCE_NO_ROOM = "journal_volume_with_no_room"
 NONCE_NOT_READY = "a_faulted_nonce_log_is_not_ready_until_a_restart"
@@ -243,9 +245,21 @@ CASES = [
         "                self.errno_at(BlobPhase::DirParentSync)?;\n                fsync_parent(step)?;\n",
     )], FANOUT),
     ("fanout-synced-once-a-cut-start", BLOBS, [(
-        "            if left > 0 {",
-        "            if left > u64::MAX - 1 {",
+        "            if !left.is_empty() {",
+        "            if false && !left.is_empty() {",
     )], FANOUT_START),
+    # The repair's own fsync, not a hook or counter beside it (review of 39400b59).
+    ("start-repair-fsync-omitted", BLOBS, [(
+        "                        self.start_sync(StartStep::Repair, &outer)?;\n", "",
+    )], START_REPAIR),
+    ("start-removes-temps-before-the-repair", BLOBS, [(
+        "            if !left.is_empty() {\n",
+        "            for path in &left {\n                fs::remove_file(path)?;\n            }\n"
+        "            if !left.is_empty() {\n",
+    )], START_REPAIR),
+    ("start-layout-v1-fsync-omitted", BLOBS, [(
+        "            self.start_sync(StartStep::Layout, &v1)?;\n", "",
+    )], START_LAYOUT),
     # --- a disk with no room is a full server, not a fault (#291) ------------
     ("storage-full-code", TYPES, [(
         "        if self.out_of_space() {\n            return \"storage_full\";\n        }\n", "",

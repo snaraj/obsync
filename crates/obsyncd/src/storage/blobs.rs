@@ -39,6 +39,15 @@ const DIR_MODE: u32 = 0o700;
 /// One chunk as the volume holds it: its id, its length, and when it landed.
 pub(crate) type Chunk = (Sid, u64, UnixMs);
 
+/// Which of a start's fsyncs `Blobs::start_sync` makes.
+#[derive(Clone, Copy)]
+enum StartStep {
+    /// The volume and `v1/`, on every start.
+    Layout,
+    /// A first-level directory, when the last stop cut an upload short.
+    Repair,
+}
+
 /// The blob volume and its mirrors.
 pub(crate) struct Blobs {
     root: PathBuf,
@@ -50,6 +59,11 @@ pub(crate) struct Blobs {
     /// Fan-out directories whose names a start made durable, because the
     /// last stop left an upload behind (`Blobs::open`).
     synced_at_open: u64,
+    /// What the last start did to its volume, in order: each directory whose
+    /// fsync returned, and each temp it removed. Tests only: it is how a test
+    /// sees the repair itself rather than a counter beside it.
+    #[cfg(test)]
+    start_trace: Vec<String>,
     #[cfg(test)]
     fault: Mutex<Fault>,
     /// Called from inside the quarantine move. Tests only, and the point of
@@ -86,6 +100,8 @@ impl Blobs {
             unsynced: Mutex::new(HashSet::new()),
             synced_at_open: 0,
             #[cfg(test)]
+            start_trace: Vec::new(),
+            #[cfg(test)]
             fault: Mutex::new(Fault::None),
             #[cfg(test)]
             mid_move: Mutex::new(None),
@@ -106,10 +122,8 @@ impl Blobs {
             // Every start, not only the one that creates them: a start that
             // stopped between creating `v1/` or `tmp/` and this fsync left
             // a name that exists without being durable.
-            #[cfg(test)]
-            self.errno_at(BlobPhase::StartLayoutSync)?;
-            fsync_dir(&volume)?;
-            fsync_dir(&v1)?;
+            self.start_sync(StartStep::Layout, &volume)?;
+            self.start_sync(StartStep::Layout, &v1)?;
             let left: Vec<PathBuf> = read_dir_sorted(&tmp)?
                 .into_iter()
                 .filter(|path| path.is_file())
@@ -127,19 +141,44 @@ impl Blobs {
                 self.synced_at_open += 1;
                 for outer in read_dir_sorted(&v1)? {
                     if outer.is_dir() && outer != tmp {
-                        #[cfg(test)]
-                        self.errno_at(BlobPhase::StartRepairSync)?;
-                        fsync_dir(&outer)?;
+                        self.start_sync(StartStep::Repair, &outer)?;
                         self.synced_at_open += 1;
                     }
                 }
             }
             for path in &left {
                 fs::remove_file(path)?;
+                #[cfg(test)]
+                self.start_trace.push(format!("removed {}", path.display()));
             }
             removed += left.len() as u64;
         }
         Ok((self, removed))
+    }
+
+    /// A start's directory fsync. A test's refusal and its trace sit on the
+    /// call itself, so a start that skips the fsync loses both: no hook or
+    /// counter beside the call can pass for it (review of 39400b59).
+    fn start_sync(&mut self, step: StartStep, dir: &Path) -> Result<(), StoreError> {
+        #[cfg(test)]
+        self.errno_at(match step {
+            StartStep::Layout => BlobPhase::StartLayoutSync,
+            StartStep::Repair => BlobPhase::StartRepairSync,
+        })?;
+        #[cfg(not(test))]
+        let _ = step;
+        let synced = fsync_dir(dir);
+        #[cfg(test)]
+        if synced.is_ok() {
+            self.start_trace.push(format!("synced {}", dir.display()));
+        }
+        synced
+    }
+
+    /// What the last start did, in order (`start_trace`). Tests only.
+    #[cfg(test)]
+    pub(crate) fn start_trace(&self) -> &[String] {
+        &self.start_trace
     }
 
     /// Directories whose names the last start made durable (`open`).
@@ -775,7 +814,15 @@ mod tests {
             refused_start(&root, BlobPhase::StartLayoutSync, start);
             assert!(root.join("v1/tmp").is_dir(), "{start}: the layout exists");
         }
-        Blobs::open(&root, &[]).expect("a start the volume lets fsync");
+        let (reopened, _) = Blobs::open(&root, &[]).expect("a start the volume lets fsync");
+        assert_eq!(
+            reopened.start_trace(),
+            [
+                format!("synced {}", root.display()),
+                format!("synced {}", root.join("v1").display()),
+            ],
+            "a start whose layout already exists still fsyncs the volume and v1/"
+        );
     }
 
     #[test]
@@ -800,6 +847,11 @@ mod tests {
         drop(store);
         let temps = || fs::read_dir(root.join("v1/tmp")).expect("tmp").count();
         assert_eq!(temps(), 1, "the cut leaves its temp");
+        let temp = read_dir_sorted(&root.join("v1/tmp"))
+            .expect("tmp")
+            .remove(0);
+        let first_level = root.join("v1").join(&sid.to_string()[0..2]);
+        assert!(first_level.is_dir(), "the cut made its first level");
         for start in ["the first start after the cut", "the start after that"] {
             refused_start(&root, BlobPhase::StartRepairSync, start);
             assert_eq!(temps(), 1, "{start}: the temp outlives a failed repair");
@@ -809,6 +861,18 @@ mod tests {
             (removed, reopened.synced_at_open()),
             (1, 2),
             "the temp goes once v1/ and its one first level are durable"
+        );
+        // The repair itself, in order: the layout, the first level whose
+        // name the cut left unsynced, and only then the temp that called
+        // for it.
+        assert_eq!(
+            reopened.start_trace(),
+            [
+                format!("synced {}", root.display()),
+                format!("synced {}", root.join("v1").display()),
+                format!("synced {}", first_level.display()),
+                format!("removed {}", temp.display()),
+            ]
         );
         assert_eq!(temps(), 0);
     }
