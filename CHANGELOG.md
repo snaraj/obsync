@@ -293,7 +293,9 @@ history it catches up on renamed a folder and back, or made and deleted one
 file up to 8 MiB at each press; it now asks the phone's storage for each
 file's size and date and reads only the files that differ. On an Android
 emulator with 7,700 notes, a press with nothing changed took 757 ms instead
-of 218.9 s. A rewrite by another app that keeps a file's size and date is
+of 218.9 s; on a 1.1.5 build, an Android 15 emulator with 9,814 notes took
+850–969 ms ([2026-09-30 run](docs/validation-runs/2026-09-30-train-1.1.5.md)).
+A rewrite by another app that keeps a file's size and date is
 left to **Verify all files**. Every check of the vault also asks each
 folder, not each note, whether it is a vault of its own. Seen on Android;
 not yet run on an iPhone or iPad. obsync first checks that the storage

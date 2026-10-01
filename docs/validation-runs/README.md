@@ -48,6 +48,17 @@ observed from what was still outstanding.
     server had room again. It now goes with the refusal.
   - **Not attempted:** a physical Android phone, the final build on the
     iPhone and Windows, and either reference route.
+- [2026-09-30 1.1.5 beside 1.1.4](2026-09-30-version-skew.md): servers and
+  devices on different versions, both ways round, on macOS desktops, and one
+  device taken back to 1.1.4 and on to 1.1.5 again.
+  - **Held as the CHANGELOG says:** pairing either way (`kex=legacy` with a
+    1.1.4 side), notes, renames and deletes through either server, Forget
+    and Leave against a 1.1.4 server, and a full disk faced by a 1.1.4
+    device.
+  - **Not reached:** the notes 1.1.5 was bringing back when the device went
+    back (#281).
+  - **Found:** going back to 1.1.5 met #302, a closed Settings window
+    stopping a desktop's receiving, fixed in this train.
 - [2026-09-29 a desktop feed that stops](2026-09-29-feed-wedge.md): #276 on
   two macOS desktops, not reproduced, the mechanism unconfirmed. None of
   these stalled:
