@@ -1,0 +1,11 @@
+# M4094: a later creator key replaces the one the code was compared with
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -670,7 +670,6 @@
+   const holdCreator = async (key: unknown): Promise<string> => {
+     if (typeof key !== "string") throw new ClaimEnded("unverified");
+     if (creatorKey !== null) {
+-      if (key !== creatorKey) throw new ClaimEnded("unverified");
+       return key;
+     }
+     if (!(await keptCommitment(v2.commitment, claim.pairingId, key).catch(() => false))) throw new ClaimEnded("unverified");

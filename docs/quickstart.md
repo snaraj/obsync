@@ -221,11 +221,13 @@ server with its own certificate authority, see
 4. Back on the computer, check the device name, that both screens show the
    same match code, and, on updated devices, the new device's vault name and
    note count before approving. If these are not the vault you intended, or
-   the match codes differ, select **Reject**. The phone receives the vault key
-   encrypted under a pairing secret that never touches the server; until you
+   the match codes differ, select **Reject**. The phone shows its code once
+   the computer asks. The phone receives the vault key encrypted under a key
+   the two devices agree on, which never touches the server; until you
    approve, the phone has no authority of any kind. If the phone's dialog is
-   closed or Obsidian restarts while it waits, pairing still finishes once you
-   approve within the code's ten minutes; after that, pair again with a new
+   closed while it waits, obsync shows its code in a notice and pairing still
+   finishes once you approve within the code's ten minutes; if Obsidian
+   restarts on the phone, or the ten minutes pass, pair again with a new
    code.
 
    ![Pair a new device on the computer: Approve "Android ASXT" (Android, obsync 1.1.4)? Approve only if the new device shows the code 791 131. It will sync vault "lab-android" (23 notes). Approve and Reject below](assets/pair-approve-phone.png)

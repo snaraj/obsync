@@ -868,6 +868,7 @@ impl App {
             Route::PairingCreate => pairing::create(self, req, client),
             Route::PairingClaim(id) => pairing::claim(self, req, client, &id),
             Route::PairingState(id) => pairing::state(self, req, client, &id),
+            Route::PairingReveal(id) => pairing::reveal(self, req, client, &id),
             Route::PairingApprove(id) => pairing::approve(self, req, client, &id),
             Route::PairingReject(id) => pairing::reject(self, req, client, &id),
             Route::PairingEnvelope(id) => pairing::envelope(self, req, client, &id),
@@ -1079,6 +1080,7 @@ fn demands_credential(route: &Route) -> bool {
         | Route::RecoveryRegister
         | Route::PairingCreate
         | Route::PairingState(_)
+        | Route::PairingReveal(_)
         | Route::PairingApprove(_)
         | Route::PairingReject(_)
         | Route::PairingEnvelope(_)
@@ -1191,6 +1193,8 @@ pub enum Route {
     PairingClaim(String),
     /// `GET /v1/pairing/{id}`
     PairingState(String),
+    /// `POST /v1/pairing/{id}/reveal`
+    PairingReveal(String),
     /// `POST /v1/pairing/{id}/approve`
     PairingApprove(String),
     /// `POST /v1/pairing/{id}/reject`
@@ -1277,6 +1281,10 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
         ("GET", ["v1", "pairing", id]) => {
             (Route::PairingState((*id).to_string()), "/v1/pairing/{id}")
         }
+        ("POST", ["v1", "pairing", id, "reveal"]) => (
+            Route::PairingReveal((*id).to_string()),
+            "/v1/pairing/{id}/reveal",
+        ),
         ("POST", ["v1", "pairing", id, "approve"]) => (
             Route::PairingApprove((*id).to_string()),
             "/v1/pairing/{id}/approve",

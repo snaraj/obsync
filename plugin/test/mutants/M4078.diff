@@ -1,0 +1,12 @@
+# M4078: the commitment leaves out the pairing id
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -149,7 +149,7 @@
+  * "Pairing v2"). The pairing id makes each commitment good for one pairing.
+  */
+ export async function pairingCommitment(pairingId: string, creatorKey: string): Promise<Bytes> {
+-  const committed = concat(utf8(COMMIT_LABEL), utf8(pairingId), checkedPublicKey(creatorKey));
++  const committed = concat(utf8(COMMIT_LABEL), checkedPublicKey(creatorKey));
+   return (await sha256(committed)).subarray(0, COMMITMENT_BYTES);
+ }
+ 

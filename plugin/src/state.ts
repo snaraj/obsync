@@ -1032,7 +1032,7 @@ export class State {
     this.serializedSecret = serialized;
   }
 
-  /** The held pairing claim as stored, or `null` (`pairing.ts`, `readClaim`). */
+  /** A pairing claim an obsync before 1.1.5 held for a restart, or `null` (`ObsyncPlugin.resumePairing`). */
   heldClaim(): string | null {
     try {
       const raw = this.secrets.getSecret(claimRef(this.installationId));
@@ -1044,9 +1044,10 @@ export class State {
 
   /**
    * Hold a pairing claim, or drop it with `null` (`SecretStorage` declares no
-   * delete, so dropping writes it empty). Best effort, and read back: a claim
-   * not kept costs a restart its resume and nothing else, so this answers
-   * whether it was kept instead of stopping the state.
+   * delete, so dropping writes it empty). 1.1.5 holds none: its claims carry
+   * a private key that is never written down, and the start drops one an
+   * older obsync left. Best effort, and read back: this answers whether it
+   * was written instead of stopping the state.
    */
   holdClaim(claim: string | null): boolean {
     if (this.failure !== null || this.lease.holder !== this.claim) return false;

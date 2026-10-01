@@ -1,0 +1,11 @@
+# M4096: a new claim leaves the earlier code on screen
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -880,7 +880,6 @@
+       this.busy = true;
+       // Whatever an earlier claim showed goes first: its code belongs to a
+       // pairing this one ends, and must not sit beside the next prompt.
+-      this.show(CLAIMING);
+       if (this.plugin.forgottenDevice) await this.plugin.resetForgottenEnrollment();
+       await stopWaiting(this.plugin);
+       if (this.closed) return;

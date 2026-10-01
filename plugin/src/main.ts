@@ -75,10 +75,10 @@ import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, Ses
 import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
-import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
+import { newDeviceTag, newVaultKey, PAIRING_ACTION, pastedToken, platformLabel, refusalFor, refusalText } from "./pairing";
 import { COPIED_VAULT, ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
 import {
-  LeaveServerModal, PairClaimModal, PairCreateModal, RecentModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, alreadyPaired, awaitApproval,
+  LeaveServerModal, PairClaimModal, PairCreateModal, RecentModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, alreadyPaired,
 } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
 import { Indicator, indicated } from "./ui/indicator";
@@ -4667,22 +4667,19 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   /**
-   * Finish a pairing a restart interrupted, inside its window, or say to pair
-   * again (issue #153). Never the recovery phrase: a claim holds no key yet.
+   * A claim an obsync before 1.1.5 held across a restart (issue #153) is
+   * dropped, never finished: it would open its key the way 1.1.5 no longer
+   * pairs. The server destroys its pending device at the window's end, and a
+   * device not yet paired is told to pair again.
    */
   resumePairing(): void {
     const state = this.state;
-    const held = readClaim(state.heldClaim());
-    if (held === null) return;
-    // A claim an older session was collecting is this session's now: that
-    // session stops at its next step and leaves the entry alone.
-    if (state.paired || held.serverUrl !== state.data.serverUrl) {
-      this.log("pairing role=claimant decision=dropped reason=stale_claim");
-      state.holdClaim(null);
-      return;
+    if (state.heldClaim() === null) return;
+    this.log("pairing role=claimant decision=dropped reason=held_before_update");
+    state.holdClaim(null);
+    if (!state.paired) {
+      this.notices.show({ kind: "error", text: "pairing this device stopped when obsync updated, and nothing was shared. Make a new code on your other device with Pair a new device, and pair again." });
     }
-    this.log(`pairing role=claimant decision=resumed age_ms=${Date.now() - held.claimedAt} window_ms=${PAIRING_WINDOW_MS}`);
-    awaitApproval(this, this.app, held, () => undefined, true);
   }
 
   /** Name another device's copies right after a pairing or a rename (issue #164). */

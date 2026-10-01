@@ -1,0 +1,12 @@
+# M4091: a refused reveal leaves the claim for the close to refuse
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -391,8 +391,6 @@
+     } catch (error) {
+       // Nothing to compare, so nothing to ask: the claim is refused here,
+       // and the close that follows has nothing left to refuse.
+-      this.asking = null;
+-      await this.refuse(pairingId, "unrevealed", null);
+       throw error;
+     }
+     this.plugin.log("pairing role=creator decision=revealed");

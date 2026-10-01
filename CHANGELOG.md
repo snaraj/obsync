@@ -97,12 +97,18 @@ check read them again. The phone now asks its storage about such a file
 
 ### Pairing, recovery and your devices
 
-**Pairing a new device is safer when both devices and your server run
-1.1.5.** Besides the pairing code, the two devices make a one-time key
-exchange, and your vault key travels sealed under both, so a copy of the
-code alone no longer opens it. Keep typing the code into the other device
-rather than emailing or messaging it. If one of the two devices runs an
-older obsync, pairing works as before and says so. The device that made the
+**Pairing a new device is safer, even if someone saw the code.** Besides
+the pairing code, the two devices make a one-time key exchange, and your
+vault key travels sealed under both, so a copy of the code alone no longer
+opens it. The code also carries a fingerprint of the key the device that made
+it will use, and the six-digit match code both screens show is made from
+both devices' keys, so someone who saw the code and sits between your
+devices and your server cannot make the two screens agree. Approve only when
+they do. Both devices and your server need 1.1.5: a device running an older
+obsync is refused with the words to update it, whichever device made the
+code, because the older pairing lets the code alone open your vault key.
+Keep typing the code into the other device rather than emailing or messaging
+it. The device that made the
 code says "paired" only once the new device has kept the key and started
 syncing, and tells you plainly if it did not; a new device that starts
 syncing the second it signs in is no longer reported, ten minutes later, as

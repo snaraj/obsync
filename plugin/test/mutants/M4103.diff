@@ -1,0 +1,12 @@
+# M4103: the reveal is sent once and never retried
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -230,7 +230,7 @@
+   { method: "PUT", path: new RegExp(`^/v1/chunks/${SID}$`), idempotent: true },
+   { method: "POST", path: /^\/v1\/chunks\/exists$/, idempotent: true },
+   { method: "POST", path: /^\/v1\/chunks\/get$/, idempotent: true },
+-  { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/reveal$`), idempotent: true },
++  { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/reveal$`), idempotent: false },
+   { method: "GET", path: new RegExp(`^/v1/pairing/${ID}/envelope$`), idempotent: false },
+   { method: "POST", path: /^\/v1\/setup$/, idempotent: false },
+   { method: "POST", path: /^\/v1\/account\/recovery$/, idempotent: false },

@@ -5,20 +5,24 @@
  * then sync runs automatically. Two roles live here:
  *
  * - CREATOR (an already-paired device): mints a pairing through the server,
- *   generates the 16-byte pairing secret `PS` LOCALLY, shows the code, polls
- *   for a claimant, asks the user to approve it by name and platform, and
- *   posts `{VRK}` sealed under `K_pair = HKDF(PS, "obsync/v1/pair",
- *   pairing_id)`. The vault key is the whole envelope: which paths live in
- *   which domain is read from the synced map (`domainmap.ts`), which `VRK`
- *   is exactly what unlocks.
+ *   makes the 16-byte pairing secret `PS` and an ephemeral P-256 key pair
+ *   LOCALLY, shows a code that carries `PS` and a commitment to its public
+ *   key, polls for a claimant, fixes the claim it reads, reveals its key, asks
+ *   the user to compare six digits and approve, and posts `{VRK}` sealed under
+ *   the key the two devices agreed (`docs/protocol.md`, "Pairing v2"). The
+ *   vault key is the whole envelope: which paths live in which domain is read
+ *   from the synced map (`domainmap.ts`), which `VRK` is exactly what unlocks.
  * - CLAIMANT (the new device): reads the code, claims the pairing with the
- *   enroll token to get its device credential, fetches the sealed envelope
- *   once, and opens it with `PS`.
+ *   enroll token and its own ephemeral public key to get its device
+ *   credential, checks the creator's revealed key against the code's
+ *   commitment, shows the same six digits, fetches the sealed envelope once,
+ *   and opens it.
  *
  * `PS` never reaches the server, so the server — and the TLS terminator in
- * front of it — sees only ciphertext of the vault key. The code itself is
- * the whole secret: it is shown as text, as a copy button and as an
- * `obsidian://obsync-private-sync/pair?code=…` link, and it expires in ten minutes.
+ * front of it — sees only ciphertext of the vault key, and a copy of the code
+ * alone opens nothing. The code is shown as text, as a copy button and as an
+ * `obsidian://obsync-private-sync/pair?code=…` link, and it expires in ten
+ * minutes. 1.1.5 pairs this way only: a device before it is told to update.
  *
  * FIRST DEVICE. `newVault()` generates the 32-byte `VRK` on the device and
  * `recoveryPhrase()` renders it as 24 BIP-0039 words with the standard 8-bit
@@ -26,13 +30,14 @@
  * is unrecoverable, by design (`docs/threat-model.md`).
  *
  * PLATFORM. Identical everywhere. The `obsidian://` link is what makes
- * pairing bearable on iOS and Android, where typing 104 characters is not.
+ * pairing bearable on iOS and Android, where typing 128 characters is not.
  */
 
 import {
   Bytes,
   base32,
   base64,
+  bytesEqual,
   concat,
   derivePairingV2Key,
   exportPairingPublicKey,
@@ -41,7 +46,6 @@ import {
   hkdf,
   importPairingPublicKey,
   PAIRING_PUBLIC_KEY_BYTES,
-  pairingKey,
   randomBytes,
   sha256,
   unbase32,
@@ -56,6 +60,8 @@ import { WORDLIST } from "./wordlist";
 export const PAIRING_ID_BYTES = 16;
 export const ENROLL_TOKEN_BYTES = 32;
 export const PAIRING_SECRET_BYTES = 16;
+/** The creator's commitment to its v2 key, carried by the code (`pairingCommitment`). */
+export const COMMITMENT_BYTES = 16;
 export const VRK_BYTES = 32;
 export const PHRASE_WORDS = 24;
 /** The directory identity also owns the pairing URI action. */
@@ -67,6 +73,8 @@ export interface PairingCode {
   pairingId: string;
   enrollToken: string;
   pairingSecret: Bytes;
+  /** The creator's commitment to its key (`pairingCommitment`). */
+  commitment: Bytes;
 }
 
 /** What a paired device seals for a new one. */
@@ -75,13 +83,18 @@ export interface VaultEnvelope {
 }
 
 /**
- * The pairing code: `base32(pairing_id || enroll_token || PS)`, RFC 4648
- * uppercase and unpadded, 64 bytes in and 103 characters out. Whitespace and
- * dashes are ignored on the way back in, so a user may break it up.
+ * The pairing code: `base32(pairing_id || enroll_token || PS || commitment)`,
+ * RFC 4648 uppercase and unpadded, 80 bytes in and 128 characters out.
+ * Whitespace and dashes are ignored on the way back in, so a user may break
+ * it up. A code before 1.1.5 has no commitment: 64 bytes, 103 characters.
  */
-export function encodePairingCode(pairingId: string, enrollToken: string, pairingSecret: Bytes): string {
-  return base32(concat(unhex(pairingId), unhex(enrollToken), pairingSecret));
+export function encodePairingCode(pairingId: string, enrollToken: string, pairingSecret: Bytes, commitment: Bytes): string {
+  return base32(concat(unhex(pairingId), unhex(enrollToken), pairingSecret, commitment));
 }
+
+/** What a device holding a code from before 1.1.5 is told. */
+export const OLDER_CREATOR =
+  "That code comes from a device running obsync older than 1.1.5, which pairs in a way that no longer protects your vault key. Update obsync on that device, then make a new code there with Pair a new device.";
 
 /** Quotes and brackets a copy picked up around what was meant (issue #154). */
 function unwrap(text: string): string {
@@ -100,14 +113,18 @@ export function decodePairingCode(code: string): PairingCode {
   } catch {
     throw new Error("That is not a pairing code. Paste the code, or the link, exactly as your other device shows it under Pair a new device.");
   }
-  const expected = PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES + PAIRING_SECRET_BYTES;
-  if (raw.length < expected) {
+  const secretEnd = PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES + PAIRING_SECRET_BYTES;
+  // Exactly a code before 1.1.5 says so; anything else short of the
+  // commitment was cut short, and nothing short of it pairs at all.
+  if (raw.length === secretEnd) throw new Error(OLDER_CREATOR);
+  if (raw.length < secretEnd + COMMITMENT_BYTES) {
     throw new Error("That pairing code is incomplete. Copy all of it again from your other device, or use its Copy link.");
   }
   return {
     pairingId: hex(raw.subarray(0, PAIRING_ID_BYTES)),
     enrollToken: hex(raw.subarray(PAIRING_ID_BYTES, PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES)),
-    pairingSecret: raw.subarray(PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES, expected),
+    pairingSecret: raw.subarray(PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES, secretEnd),
+    commitment: raw.subarray(secretEnd, secretEnd + COMMITMENT_BYTES),
   };
 }
 
@@ -115,34 +132,30 @@ export function pairingLink(code: string): string {
   return `obsidian://${PAIRING_ACTION}/pair?code=${encodeURIComponent(code)}`;
 }
 
-/**
- * A fixed 16-bit marker in the first two bytes of a creator-generated pairing
- * secret. It is the CAPABILITY SIGNAL for pairing v2: the claimant reads it
- * from the code it was handed OUT OF BAND (never from the server or the
- * network, which an interceptor controls), so a stripped key-exchange field
- * cannot silently downgrade the pairing -- the claimant already knows the
- * creator is v2-capable and shows a v2 match code the stripped path cannot
- * reproduce.
- *
- * It costs nothing the design relies on: 112 bits of `PS` remain random and
- * v2's confidentiality rests on the ECDH exchange, not on `PS`. It does not
- * change the code's length, so a 1.1.4 device decodes a v2 code unchanged and
- * simply pairs the legacy way. A 1.1.4 creator's fully random secret matches
- * the marker with probability 2^-16; that one pairing then shows mismatched
- * codes and is retried with a fresh code (`docs/protocol.md`).
- */
-export const PAIRING_V2_MARKER = Uint8Array.from([0x0b, 0x5c]);
-
 export function newPairingSecret(): Bytes {
-  const secret = randomBytes(PAIRING_SECRET_BYTES);
-  secret[0] = PAIRING_V2_MARKER[0] as number;
-  secret[1] = PAIRING_V2_MARKER[1] as number;
-  return secret;
+  return randomBytes(PAIRING_SECRET_BYTES);
 }
 
-/** Does this pairing secret carry the v2 capability marker (creator is v2)? */
-export function isV2Secret(secret: Bytes): boolean {
-  return secret.length >= 2 && secret[0] === PAIRING_V2_MARKER[0] && secret[1] === PAIRING_V2_MARKER[1];
+const COMMIT_LABEL = "obsync/v2/pair-commit";
+
+/**
+ * THE CREATOR'S COMMITMENT (review of PR #306): the first 16 bytes of
+ * `SHA-256("obsync/v2/pair-commit" || pairing_id || creator_pub)`, the key
+ * raw. The creator makes a fresh key pair for each code, BEFORE the code, and
+ * the code carries this, so the claimant learns which key to expect through
+ * the one channel nobody on the network can change, while a reader of the
+ * code learns nothing that computes a match code. The key itself is revealed
+ * only after the creator has fixed the claim it answers (`docs/protocol.md`,
+ * "Pairing v2"). The pairing id makes each commitment good for one pairing.
+ */
+export async function pairingCommitment(pairingId: string, creatorKey: string): Promise<Bytes> {
+  const committed = concat(utf8(COMMIT_LABEL), utf8(pairingId), checkedPublicKey(creatorKey));
+  return (await sha256(committed)).subarray(0, COMMITMENT_BYTES);
+}
+
+/** Whether a revealed creator key is the one the code committed to. */
+export async function keptCommitment(commitment: Bytes, pairingId: string, creatorKey: string): Promise<boolean> {
+  return bytesEqual(await pairingCommitment(pairingId, creatorKey), commitment);
 }
 
 /** The first server release that carries the two key-exchange fields. */
@@ -208,55 +221,9 @@ export function newVaultKey(): Bytes {
   return randomBytes(VRK_BYTES);
 }
 
-async function envelopeKey(pairingSecret: Bytes, pairingId: string): Promise<CryptoKey> {
-  const key = await pairingKey(pairingSecret, pairingId);
-  return crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-}
-
 /**
- * Seal `{VRK}` for the claimant. The AAD is the pairing id, so an
- * envelope cannot be replayed into a different pairing even if the same `PS`
- * were somehow reused.
- */
-export async function sealEnvelope(
-  pairingSecret: Bytes,
-  pairingId: string,
-  envelope: VaultEnvelope,
-): Promise<{ envelope: string; nonce: string }> {
-  const nonce = randomBytes(12);
-  const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: nonce, additionalData: utf8(pairingId), tagLength: 128 },
-      await envelopeKey(pairingSecret, pairingId),
-      utf8(JSON.stringify(envelope)),
-    ),
-  );
-  return { envelope: base64(ciphertext), nonce: hex(nonce) };
-}
-
-export async function openEnvelope(
-  pairingSecret: Bytes,
-  pairingId: string,
-  envelope: string,
-  nonce: string,
-): Promise<VaultEnvelope> {
-  const plaintext = new Uint8Array(
-    await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: unhex(nonce), additionalData: utf8(pairingId), tagLength: 128 },
-      await envelopeKey(pairingSecret, pairingId),
-      unbase64(envelope),
-    ),
-  );
-  const parsed = JSON.parse(new TextDecoder().decode(plaintext)) as VaultEnvelope;
-  if (typeof parsed.vrk !== "string" || parsed.vrk.length !== VRK_BYTES * 2) {
-    throw new Error("pairing: the envelope carries no vault key");
-  }
-  return { vrk: parsed.vrk };
-}
-
-/**
- * The v2 vault-key envelope (`docs/protocol.md` "Pairing"). What v1 does with
- * `PS` alone, v2 does with the ECDH-derived key, and it BINDS the sealed key to
+ * The v2 vault-key envelope (`docs/protocol.md` "Pairing v2"). It is sealed
+ * under the ECDH-derived key, salted with `PS`, and it BINDS the sealed key to
  * the pairing and to BOTH public keys through the AEAD's additional data, so an
  * envelope cannot be replayed into another pairing or opened against a
  * substituted key. The 65-byte raw public keys are the additional data,
@@ -408,46 +375,35 @@ export async function openPairingVault(secret: Bytes, id: string, sealed: Sealed
   return checkedVault(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext)));
 }
 
-const MATCH_LABEL = "obsync/v1/pair-match";
 
-/**
- * The code both screens show while a pairing waits for approval (issue
- * #152): six digits of `HKDF(PS, "obsync/v1/pair-match", pairing_id + ":" +
- * device_id)`. Each side computes it alone -- the creator from the claimant
- * id the pairing poll names, the claimant from the id its claim returned --
- * from a secret the server never sees, so the server cannot make two screens
- * agree, and a second device racing a leaked code holds another id and shows
- * another code. Nothing about it crosses the wire: a device older than 1.1.4
- * shows none, and pairs as before.
- */
+/** Four bytes as the six digits both screens show (issue #152): big-endian, modulo 1,000,000, `ddd ddd`. */
 function sixDigits(bytes: Bytes): string {
   const value = new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0) % 1_000_000;
   const digits = String(value).padStart(6, "0");
   return `${digits.slice(0, 3)} ${digits.slice(3)}`;
 }
 
-export async function matchCode(secret: Bytes, pairingId: string, deviceId: string): Promise<string> {
-  return sixDigits(await hkdf(secret, utf8(MATCH_LABEL), utf8(`${pairingId}:${deviceId}`), 4));
-}
-
 const MATCH_LABEL_V2 = "obsync/v2/pair-match";
 
 /**
- * The v2 match code, `docs/protocol.md` "Pairing". It additionally binds the
- * claimant's public key: `HKDF(PS, "obsync/v2/pair-match", pairing_id + ":" +
- * device_id + ":" + claimant_pub)`, six digits. The creator derives it from the
- * key it RECEIVED, the claimant from the key it SENT, so a substituted or
- * STRIPPED key exchange makes the two screens show different codes -- the
- * signal to the person not to approve. A device pairing the legacy way shows
- * `matchCode` (v1) instead.
+ * The v2 match code, `docs/protocol.md` "Pairing v2": six digits of
+ * `HKDF(PS, "obsync/v2/pair-match", pairing_id || claimant_pub ||
+ * creator_pub)`, the keys raw. Every input on the claimant's screen came
+ * through the code or from itself: `PS` and the id, its own key, and the
+ * creator's, checked against the commitment. The creator's inputs are its
+ * own and the claimant key it FIXED before revealing its own. No device id:
+ * the server chooses those, and could choose one after reading the creator's
+ * key. So whoever substitutes a key must choose it before the creator's key
+ * is known, and the two codes then agree by chance alone, one in a million.
  */
 export async function matchCodeV2(
   secret: Bytes,
   pairingId: string,
-  deviceId: string,
   claimantKey: string,
+  creatorKey: string,
 ): Promise<string> {
-  return sixDigits(await hkdf(secret, utf8(MATCH_LABEL_V2), utf8(`${pairingId}:${deviceId}:${claimantKey}`), 4));
+  const info = concat(utf8(pairingId), checkedPublicKey(claimantKey), checkedPublicKey(creatorKey));
+  return sixDigits(await hkdf(secret, utf8(MATCH_LABEL_V2), info, 4));
 }
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -483,9 +439,9 @@ export function pastedToken(text: string): string {
 }
 
 /**
- * A claim waiting for its vault key: everything a device that restarted needs
- * to finish it inside the ten minutes, and nothing it keeps afterwards (issue
- * #153). It lives in its own native secret entry, never in the credential.
+ * A claim waiting for its vault key, in memory only: its ephemeral private
+ * key cannot be written down, so a restart ends it (issue #153 held a claim
+ * from before 1.1.5 across one; `ObsyncPlugin.resumePairing` drops such a one).
  */
 export interface PendingClaim {
   pairingId: string;
@@ -496,27 +452,6 @@ export interface PendingClaim {
   serverUrl: string;
   /** Unix ms; the pairing was made before it, so it ends by `+ PAIRING_WINDOW_MS`. */
   claimedAt: number;
-}
-
-/** A held claim as stored, or `null` for anything that is not exactly one. */
-export function readClaim(text: string | null): PendingClaim | null {
-  let value: unknown;
-  try {
-    value = text === null || text === "" ? null : JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const claim = value as PendingClaim | null;
-  const hexOf = (field: unknown, bytes: number): boolean =>
-    typeof field === "string" && new RegExp(`^[0-9a-f]{${bytes * 2}}$`).test(field);
-  if (claim === null || typeof claim !== "object" || !hexOf(claim.pairingId, PAIRING_ID_BYTES) ||
-      !hexOf(claim.pairingSecret, PAIRING_SECRET_BYTES) || !hexOf(claim.deviceId, 16) ||
-      !hexOf(claim.deviceSecret, 32) || typeof claim.serverUrl !== "string" ||
-      !Number.isSafeInteger(claim.claimedAt)) {
-    return null;
-  }
-  const { pairingId, pairingSecret, deviceId, deviceSecret, serverUrl, claimedAt } = claim;
-  return { pairingId, pairingSecret, deviceId, deviceSecret, serverUrl, claimedAt };
 }
 
 const PAIR_ELSEWHERE = "on a device that already syncs, choose Pair a new device, then paste its code here with Pair this device";

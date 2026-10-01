@@ -1,0 +1,11 @@
+# M4076: a code from before 1.1.5 decodes as if it carried a commitment
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -116,7 +116,6 @@
+   const secretEnd = PAIRING_ID_BYTES + ENROLL_TOKEN_BYTES + PAIRING_SECRET_BYTES;
+   // Exactly a code before 1.1.5 says so; anything else short of the
+   // commitment was cut short, and nothing short of it pairs at all.
+-  if (raw.length === secretEnd) throw new Error(OLDER_CREATOR);
+   if (raw.length < secretEnd + COMMITMENT_BYTES) {
+     throw new Error("That pairing code is incomplete. Copy all of it again from your other device, or use its Copy link.");
+   }

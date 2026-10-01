@@ -39,7 +39,7 @@ server again unless the entry says so.
 | Pairing says the code expired, or was already used | [Pairing says the code expired or was already used](#pairing-says-the-code-expired-or-was-already-used) |
 | The new device keeps waiting for approval | [The new device waits for approval](#the-new-device-waits-for-approval) |
 | Pairing says to update your obsync server | [Pairing says to update your obsync server](#pairing-says-to-update-your-obsync-server) |
-| The two devices show different match codes, or pairing warns that a device runs an older obsync | [The two devices show different match codes](#the-two-devices-show-different-match-codes) |
+| The two devices show different match codes, pairing says a device runs obsync older than 1.1.5, or the new device says the other device's key does not match the code | [The two devices show different match codes](#the-two-devices-show-different-match-codes) |
 | After approving, the device that made the code says the new device did not keep the key, or has not started syncing | [The device that made the code says the new device did not keep the key](#the-device-that-made-the-code-says-the-new-device-did-not-keep-the-key) |
 | **Pair a new device** closed as soon as you selected **Approve** | [Pair a new device closed after approving](#pair-a-new-device-closed-after-approving) |
 | You closed the recovery phrase without writing it down | [You closed the recovery phrase without checking it](#you-closed-the-recovery-phrase-without-checking-it) |
@@ -489,28 +489,38 @@ than 1.1.5 or missing. A server started without its plugin bundle
 
 ## The two devices show different match codes
 
-**What you see.** While pairing, the approval question on the device that made
-the code shows one six-digit match code, and the new device's "Waiting for
-approval" shows another. Or a pairing screen adds "That device runs an older
-obsync; update it so pairing can protect the code you shared.".
+**What you see.** One of these:
 
-**Why it happens.** From 1.1.5, when both devices run 1.1.5, pairing adds a key
-exchange between them, and the match code covers it. The two codes differ when
-something between the two devices changed the pairing on the way. A warning
-with matching codes means one device runs an older obsync: pairing works the
-older way, where the code alone opens the vault key.
+- the approval question on the device that made the code shows one six-digit
+  match code, and the new device shows another;
+- the device that made the code says "That device runs obsync older than
+  1.1.5, which pairs in a way that no longer protects your vault key, so it
+  was refused and nothing was shared.";
+- the new device, given the code, says "That code comes from a device running
+  obsync older than 1.1.5…";
+- the new device says "The other device's key does not match the code this
+  device was given, so pairing stopped and nothing was shared.".
+
+**Why it happens.** From 1.1.5 the pairing code also carries a fingerprint of
+the key the device that made it will use, and the match code is made from both
+devices' keys. If something between the two devices changed a key on the way,
+the new device finds that the key does not match the code, or the two codes
+differ. A device before 1.1.5 pairs the older way, where the code alone opens
+your vault key, so a 1.1.5 device refuses to pair with it, whichever device
+made the code.
 
 **How to fix it.**
 
-1. Select **Reject** on the device that made the code. If it was approved
-   anyway, the new device refuses the vault key it was sent and removes itself
-   from the server, and the device that made the code says "The new device did
-   not keep the vault key and removed itself from the server…". Nothing syncs
-   to it.
-2. Update obsync on the older device, if the warning named one, then pair
-   again with a new code.
-3. If both devices run 1.1.5 or later and the codes still differ, pair on a
-   network you trust
+1. If the device that made the code is asking, select **Reject** there. If it
+   was approved anyway, the new device refuses the vault key it was sent and
+   removes itself from the server, and the device that made the code says "The
+   new device did not keep the vault key and removed itself from the server…".
+   Nothing syncs to it.
+2. If a message names a device running obsync older than 1.1.5, update obsync
+   on that device (Settings, Community plugins, Check for updates), then make a
+   new code and pair again.
+3. If both devices run 1.1.5 or later and the codes still differ, or the key
+   does not match, pair on a network you trust
    ([Pairing on a network you don't control](#pairing-on-a-network-you-dont-control)).
 
 ## The device that made the code says the new device did not keep the key
@@ -575,12 +585,11 @@ setup and pairing:
 - **The pairing code.** It never crosses the network on its own, but it
   carries a secret that helps open the sealed envelope your vault key travels
   in, and that envelope does cross the network when you approve the new device.
-  From 1.1.5, when both devices run 1.1.5, the envelope also needs a key
-  exchange that only the two devices hold, so a copy of the code alone no
-  longer opens it; a 1.1.5 device makes no code through a server older than
-  1.1.5. When one device runs an older obsync, pairing warns you and works the
-  older way, where the code alone opens it. Either way, keep the code out of
-  work channels.
+  From 1.1.5 the envelope also needs a key exchange that only the two devices
+  hold, so a copy of the code alone no longer opens it, and someone who saw
+  the code cannot make the two screens' match codes agree; a 1.1.5 device
+  pairs with neither a server nor a device older than 1.1.5. Still, keep the
+  code out of work channels.
 
 **How to fix it.**
 

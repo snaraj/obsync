@@ -85,11 +85,6 @@
     "body_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
     "sig": "6418a21e8d1e507aadf70f197f71a64900da961926f52f6da1a3428be844ce40"
   },
-  "pairing": {
-    "pairing_secret": "101112131415161718191a1b1c1d1e1f",
-    "pairing_id": "fedcba9876543210fedcba9876543210",
-    "key": "e0b3e98e7a708bf8fd1a1cf57514047859cef64c456ce92d62dd0bc5fe03bfe0"
-  },
   "chunker": {
     "seed": "obsync/v1/gear",
     "gear_first_8": [

@@ -403,7 +403,7 @@ test("a forgotten device can claim pairing only after its stale enrollment is cl
   r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   const { PairClaimModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
   const { encodePairingCode } = r.box.require(join(r.box.home, "build/pairing.js"));
-  const modal = new PairClaimModal(r.instance.app, r.instance, encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16)));
+  const modal = new PairClaimModal(r.instance.app, r.instance, encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16), new Uint8Array(16)));
   modal.contentEl = { empty() {}, createEl: () => ({ setText() {} }) };
   modal.close = () => modal.onClose();
   let claims = 0;
@@ -445,9 +445,9 @@ test("closing pairing while its forgotten identity resets prevents a claim", asy
     r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
     const { PairClaimModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
     const { encodePairingCode } = r.box.require(join(r.box.home, "build/pairing.js"));
-    const code = incomplete ? "incomplete code" : encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16));
+    const code = incomplete ? "incomplete code" : encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16), new Uint8Array(16));
     const modal = new PairClaimModal(r.instance.app, r.instance, code);
-    modal.contentEl = { empty() {} };
+    modal.contentEl = { empty() {}, createEl: () => ({ setText() {} }) };
     modal.close = () => modal.onClose();
     const reset = r.instance.resetForgottenEnrollment.bind(r.instance);
     r.instance.resetForgottenEnrollment = async () => { await reset(); modal.close(); };

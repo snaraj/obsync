@@ -1,12 +1,13 @@
-# M3931: a resumed claim's match code is written into Recent and the command line
+# M3931: the code a closed claim raises is written into the notice, not masked outside the toast
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -634,7 +634,7 @@
-     waiting.show(asked(waiting.code));
-     // The code is for comparing now, never for keeping: Recent, the command
-     // line and the log read "•••" in its place (`SyncNotice.code`).
--    if (resumed) plugin.notices.show({ kind: "question", key: "pairing", text: `still pairing this device. ${asked("{code}")}`, code: waiting.code });
-+    if (resumed) plugin.notices.show({ kind: "question", key: "pairing", text: `still pairing this device. ${asked(waiting.code)}` });
-     for (;;) {
-       await new Promise((resolve) => window.setTimeout(resolve, 2000));
-       assertCurrent();
+@@ -602,8 +602,7 @@
+   plugin.notices.show({
+     kind: "question",
+     key: "pairing",
+-    text: "pairing this device: the other device's prompt shows the code {code}. Approve there only if it shows this one; if it shows another, choose Reject there.",
+-    code,
++    text: `pairing this device: the other device's prompt shows the code ${code}. Approve there only if it shows this one; if it shows another, choose Reject there.`,
+   });
+ }
+ 

@@ -126,6 +126,8 @@ export class ApiError extends Error {
      * coded error (#298). Retried as absence is, and said as a refusal.
      */
     readonly answered = false,
+    /** The refusal's other body fields, such as the `creator_pub` a pairing wait carries. */
+    readonly fields: Readonly<Record<string, unknown>> = {},
   ) {
     super(`${status} ${code}: ${detail}`);
     this.name = "ApiError";
@@ -228,6 +230,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", path: new RegExp(`^/v1/chunks/${SID}$`), idempotent: true },
   { method: "POST", path: /^\/v1\/chunks\/exists$/, idempotent: true },
   { method: "POST", path: /^\/v1\/chunks\/get$/, idempotent: true },
+  { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/reveal$`), idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/pairing/${ID}/envelope$`), idempotent: false },
   { method: "POST", path: /^\/v1\/setup$/, idempotent: false },
   { method: "POST", path: /^\/v1\/account\/recovery$/, idempotent: false },
@@ -879,10 +882,10 @@ export class Transport {
   /** A settled response: 2xx is returned, 4xx is thrown as the decision it is. */
   private settle(method: string, target: string, response: HttpResponse, attempts: number, started: number, expected?: string): HttpResponse {
     if (response.status >= 400) {
-      const { code, detail } = parseError(response.text);
+      const { code, detail, fields } = parseError(response.text);
       const decision = code === expected ? "expected" : "refused";
       this.log(`http ${method} ${target} status=${response.status} decision=${decision} code=${code} duration_ms=${this.now() - started}`);
-      throw new ApiError(response.status, code, detail);
+      throw new ApiError(response.status, code, detail, false, fields);
     }
     this.log(`http ${method} ${target} status=${response.status} decision=ok attempts=${attempts} duration_ms=${this.now() - started}`);
     return response;
@@ -1215,11 +1218,13 @@ export class Transport {
     return this.json("GET", `/v1/pairing/${pairingId}`, { auth: "device", ...patience });
   }
 
-  pairingApprove(pairingId: string, envelope: string, nonce: string, creatorKey?: string): Promise<Sent<void>> {
-    return this.once("POST", `/v1/pairing/${pairingId}/approve`, {
-      auth: "device",
-      json: creatorKey === undefined ? { envelope, nonce } : { envelope, nonce, creator_pub: creatorKey },
-    });
+  /** Pairing v2: this creator's key, once it holds the claim it answers. The same key again is a retry. */
+  async pairingReveal(pairingId: string, creatorKey: string): Promise<void> {
+    await this.json("POST", `/v1/pairing/${pairingId}/reveal`, { auth: "device", json: { creator_pub: creatorKey } });
+  }
+
+  pairingApprove(pairingId: string, envelope: string, nonce: string): Promise<Sent<void>> {
+    return this.once("POST", `/v1/pairing/${pairingId}/approve`, { auth: "device", json: { envelope, nonce } });
   }
 
   pairingReject(pairingId: string): Promise<Sent<void>> {
@@ -1601,17 +1606,17 @@ function decode<T>(response: HttpResponse): T {
 }
 
 /** obsync refuses with `{"error": code, "detail": text}`; anything else is the edge's. */
-function parseError(text: string): { code: string; detail: string } {
+function parseError(text: string): { code: string; detail: string; fields: Record<string, unknown> } {
   try {
     const parsed: unknown = JSON.parse(text);
     if (typeof parsed === "object" && parsed !== null && typeof (parsed as Record<string, unknown>)["error"] === "string") {
-      const record = parsed as Record<string, unknown>;
-      return { code: record["error"] as string, detail: typeof record["detail"] === "string" ? record["detail"] : "" };
+      const { error, detail, ...fields } = parsed as Record<string, unknown>;
+      return { code: error as string, detail: typeof detail === "string" ? detail : "", fields };
     }
   } catch {
     // Not JSON at all: certainly not obsync's.
   }
-  return { code: NOT_OBSYNC, detail: text.slice(0, 200) };
+  return { code: NOT_OBSYNC, detail: text.slice(0, 200), fields: {} };
 }
 
 export interface MultipartPart {

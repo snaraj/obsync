@@ -1,7 +1,7 @@
 # M515: claimant decoding trusts authenticated malformed metadata
 --- a/plugin/src/pairing.ts
 +++ b/plugin/src/pairing.ts
-@@ -201,7 +201,7 @@
+@@ -372,7 +372,7 @@
      { name: "AES-GCM", iv: unhex(sealed.nonce), additionalData: utf8(id), tagLength: 128 },
      await vaultDetailsKey(secret, id), unbase64(sealed.envelope),
    );
@@ -9,4 +9,4 @@
 +  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext));
  }
  
- const MATCH_LABEL = "obsync/v1/pair-match";
+ 

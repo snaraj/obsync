@@ -1,0 +1,12 @@
+# M4088: a name past printable ASCII is shown
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -61,7 +61,7 @@
+   if (typeof text !== "string" || text.length < 1 || text.length > max) return false;
+   for (let at = 0; at < text.length; at++) {
+     const code = text.charCodeAt(at);
+-    if (code < 0x20 || code > 0x7e) return false;
++    if (code < 0x20) return false;
+   }
+   return true;
+ }

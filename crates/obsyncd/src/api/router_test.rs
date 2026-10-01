@@ -46,6 +46,10 @@ fn every_pairing_route_resolves_with_its_id() {
         Route::PairingState(ID.to_string())
     );
     assert_eq!(
+        route("POST", &format!("/v1/pairing/{ID}/reveal")),
+        Route::PairingReveal(ID.to_string())
+    );
+    assert_eq!(
         route("POST", &format!("/v1/pairing/{ID}/approve")),
         Route::PairingApprove(ID.to_string())
     );
@@ -244,6 +248,7 @@ fn exactly_the_documented_unauthenticated_routes_answer_without_a_credential() {
         ("GET", "/v1/account".to_string()),
         ("POST", "/v1/pairing".to_string()),
         ("GET", format!("/v1/pairing/{ID}")),
+        ("POST", format!("/v1/pairing/{ID}/reveal")),
         ("POST", format!("/v1/pairing/{ID}/approve")),
         ("POST", format!("/v1/pairing/{ID}/reject")),
         ("GET", format!("/v1/pairing/{ID}/envelope")),
@@ -282,7 +287,7 @@ fn exactly_the_documented_unauthenticated_routes_answer_without_a_credential() {
     }
     // Every route in the table is named above exactly once, so neither list
     // can go stale while the other grows.
-    assert_eq!(public.len() + credentialed.len(), 42);
+    assert_eq!(public.len() + credentialed.len(), 43);
 }
 
 #[test]

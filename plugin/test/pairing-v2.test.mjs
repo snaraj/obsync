@@ -3,11 +3,13 @@
  * from opening the vault-key envelope (`docs/protocol.md`, "Pairing").
  *
  * The chain is exercised against the platform's own WebCrypto: a known-answer
- * derived key from fixed JWK keys, a creator-seal/claimant-open round trip, the
- * AAD and shared-secret binding that makes a substituted OR stripped key fail,
- * the match code that shows the two screens a different number when a key is
- * substituted or stripped, the capability marker in the pairing secret, and the
- * legacy fallback for a 1.1.4 peer.
+ * derived key, commitment and match code from fixed JWK keys, a creator-seal /
+ * claimant-open round trip, the AAD and shared-secret binding that makes a
+ * substituted OR stripped key fail, the commitment the code carries to the
+ * creator's key, and the code's length rules: 1.1.5 pairs this way only, and
+ * a code from before it is refused. The ORDER that makes the match code an authentication -- the creator
+ * fixes the claim before its key goes out -- is the dialogs', and is tested
+ * there (`pairing-vault-ui.test.mjs`, `pairing-claim.test.mjs`).
  */
 import { strict as assert } from "node:assert";
 import test from "node:test";
@@ -81,14 +83,16 @@ test("an envelope sealed for one claimant does not open for another", async () =
   await assert.rejects(() => p.openEnvelopeV2(other, KAT.creatorRaw, ps, KAT.pairingId, sealed.envelope, sealed.nonce));
 });
 
-test("the pairing secret alone does not open a v2 envelope", async () => {
-  // A copy of the code and a record of the approval give PS, the pairing id,
-  // both public keys and the sealed envelope, but neither private key: the
-  // PS-only (legacy) open is refused.
+test("the pairing secret and both public keys alone do not open an envelope", async () => {
+  // A copy of the code and a record of the exchange give PS, the pairing id,
+  // both public keys and the sealed envelope, but neither private key: a
+  // key pair of the reader's own, against either public key, opens nothing.
   const creator = await fixed(KAT.creatorPriv, KAT.creatorRaw);
+  const reader = await p.newPairingKeyExchange();
   const ps = c.unhex(KAT.psHex);
   const sealed = await p.sealEnvelopeV2(creator, KAT.claimantRaw, ps, KAT.pairingId, { vrk: VRK });
-  await assert.rejects(() => p.openEnvelope(ps, KAT.pairingId, sealed.envelope, sealed.nonce));
+  await assert.rejects(() => p.openEnvelopeV2(reader, KAT.creatorRaw, ps, KAT.pairingId, sealed.envelope, sealed.nonce));
+  await assert.rejects(() => p.openEnvelopeV2(reader, KAT.claimantRaw, ps, KAT.pairingId, sealed.envelope, sealed.nonce));
 });
 
 test("the wrong pairing secret fails the open", async () => {
@@ -99,32 +103,60 @@ test("the wrong pairing secret fails the open", async () => {
   await assert.rejects(() => p.openEnvelopeV2(claimant, KAT.creatorRaw, wrongPs, KAT.pairingId, sealed.envelope, sealed.nonce));
 });
 
-test("the v2 match code binds the claimant key: substitute or strip and the screens differ", async () => {
-  const ps = c.unhex(KAT.psHex);
-  const deviceId = "aabbccddeeff00112233445566778899";
-  // Both screens with the SAME claimant key agree.
-  const claimantScreen = await p.matchCodeV2(ps, KAT.pairingId, deviceId, KAT.claimantRaw);
-  const creatorScreen = await p.matchCodeV2(ps, KAT.pairingId, deviceId, KAT.claimantRaw);
-  assert.equal(claimantScreen, creatorScreen);
-  // An interceptor that SUBSTITUTES its own key makes the creator's screen differ.
-  const attacker = await p.newPairingKeyExchange();
-  const substituted = await p.matchCodeV2(ps, KAT.pairingId, deviceId, attacker.publicKey);
-  assert.notEqual(substituted, claimantScreen);
-  // A STRIPPED key makes the creator fall back to the v1 code, which the v2
-  // claimant's code never equals for these fixed inputs.
-  const stripped = await p.matchCode(ps, KAT.pairingId, deviceId);
-  assert.notEqual(stripped, claimantScreen);
+test("the commitment and the match code are the known-answer vector's", async () => {
+  assert.equal(c.hex(await p.pairingCommitment(KAT.pairingId, KAT.creatorRaw)), KAT.commitmentHex);
+  assert.equal(await p.matchCodeV2(c.unhex(KAT.psHex), KAT.pairingId, KAT.claimantRaw, KAT.creatorRaw), KAT.matchCode);
 });
 
-test("a creator-minted pairing secret carries the v2 capability marker", () => {
-  const secret = p.newPairingSecret();
-  assert.equal(secret.length, 16);
-  assert.equal(secret[0], p.PAIRING_V2_MARKER[0]);
-  assert.equal(secret[1], p.PAIRING_V2_MARKER[1]);
-  assert.equal(p.isV2Secret(secret), true);
-  // A secret without the marker (a 1.1.4 creator's) reads as legacy.
-  const legacy = c.unhex("00010102030405060708090a0b0c0d0e");
-  assert.equal(p.isV2Secret(legacy), false);
+test("the match code takes its two keys by role, and the raw keys, not their spelling", async () => {
+  const ps = c.unhex(KAT.psHex);
+  // The two keys trade places: another input, another vector.
+  assert.notEqual(await p.matchCodeV2(ps, KAT.pairingId, KAT.creatorRaw, KAT.claimantRaw), KAT.matchCode);
+  // The same point spelled with its spare low bits set is the same key; a key
+  // that is not a point never reaches the derivation.
+  const respelled = `${KAT.creatorRaw.slice(0, -1)}${String.fromCharCode(KAT.creatorRaw.at(-1).charCodeAt(0) + 1)}`;
+  assert.equal(c.hex(c.unbase64url(respelled)), c.hex(c.unbase64url(KAT.creatorRaw)), "the spare bits carry nothing");
+  assert.equal(await p.matchCodeV2(ps, KAT.pairingId, KAT.claimantRaw, respelled), KAT.matchCode);
+  await assert.rejects(() => p.matchCodeV2(ps, KAT.pairingId, KAT.claimantRaw, "not a key"));
+});
+
+test("the commitment holds its own key for its own pairing, and refuses another key, another pairing, a non-key", async () => {
+  const commitment = c.unhex(KAT.commitmentHex);
+  assert.equal(commitment.length, p.COMMITMENT_BYTES);
+  assert.equal(await p.keptCommitment(commitment, KAT.pairingId, KAT.creatorRaw), true);
+  // The claimant's key is a valid point, and not the one committed to.
+  assert.equal(await p.keptCommitment(commitment, KAT.pairingId, KAT.claimantRaw), false);
+  // The same key revealed in another pairing is not this commitment's.
+  assert.equal(await p.keptCommitment(commitment, "fe".repeat(16), KAT.creatorRaw), false);
+  const flipped = Uint8Array.from(commitment); flipped[15] ^= 1;
+  assert.equal(await p.keptCommitment(flipped, KAT.pairingId, KAT.creatorRaw), false, "every byte of it is compared");
+  await assert.rejects(() => p.keptCommitment(commitment, KAT.pairingId, "not a key"));
+});
+
+test("a code carries its commitment; one from before 1.1.5 says so, and one cut short is refused", () => {
+  const id = KAT.pairingId, token = "11".repeat(32), ps = c.unhex(KAT.psHex), commitment = c.unhex(KAT.commitmentHex);
+  const code = p.encodePairingCode(id, token, ps, commitment);
+  assert.equal(code.length, 128);
+  assert.deepEqual(p.decodePairingCode(code), { pairingId: id, enrollToken: token, pairingSecret: ps, commitment });
+  // What a device before 1.1.5 makes: the same three parts and no commitment.
+  const older = c.base32(Uint8Array.from([...c.unhex(id), ...c.unhex(token), ...ps]));
+  assert.equal(older.length, 103);
+  assert.throws(() => p.decodePairingCode(older), (error) => error.message === p.OLDER_CREATOR);
+  // A code cut anywhere short of its commitment pairs nothing.
+  for (const cut of [100, 105, 110, 120, 127]) {
+    assert.throws(() => p.decodePairingCode(code.slice(0, cut)), /incomplete/, String(cut));
+  }
+});
+
+test("a creator's pairing secret is sixteen bytes, all of them random", () => {
+  const seen = new Set();
+  for (let i = 0; i < 64; i++) {
+    const secret = p.newPairingSecret();
+    assert.equal(secret.length, 16);
+    seen.add(c.hex(secret.subarray(0, 2)));
+  }
+  // The 1.1.5 pre-release marker fixed these two bytes; nothing does now.
+  assert.ok(seen.size > 1, "the first two bytes vary");
 });
 
 test("a public key of the wrong length, prefix or alphabet is refused", () => {
@@ -137,15 +169,6 @@ test("a public key of the wrong length, prefix or alphabet is refused", () => {
   // Not base64url.
   assert.throws(() => p.checkedPublicKey("not a key!!!"));
   assert.throws(() => p.checkedPublicKey(42));
-});
-
-test("the legacy envelope still round-trips under a v2-marked secret (1.1.4 peer fallback)", async () => {
-  // A v2 creator pairing with a 1.1.4 claimant seals the legacy way with the
-  // same (v2-marked) PS; the legacy claimant opens it exactly as before.
-  const secret = p.newPairingSecret();
-  const sealed = await p.sealEnvelope(secret, KAT.pairingId, { vrk: VRK });
-  const opened = await p.openEnvelope(secret, KAT.pairingId, sealed.envelope, sealed.nonce);
-  assert.equal(opened.vrk, VRK);
 });
 
 test("a server version counts as v2-capable only at 1.1.5 or later, three numbers, nothing else", () => {

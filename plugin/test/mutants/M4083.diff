@@ -1,0 +1,12 @@
+# M4083: the code commits to a key the creator never reveals
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -299,7 +299,7 @@
+       // THE KEY BEFORE THE CODE (review of PR #306): the code commits to this
+       // device's key, which goes out only once a claim is fixed (`approve`).
+       const kex = await newPairingKeyExchange();
+-      const commitment = await pairingCommitment(pairing.pairing_id, kex.publicKey);
++      const commitment = await pairingCommitment(pairing.pairing_id, (await newPairingKeyExchange()).publicKey);
+       const code = encodePairingCode(pairing.pairing_id, pairing.enroll_token, secret, commitment);
+       const codeEl = this.contentEl.createEl("pre", { cls: "obsync-code", text: code });
+       new Setting(this.contentEl)

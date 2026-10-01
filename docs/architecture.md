@@ -358,13 +358,15 @@ that phrase the vault is unrecoverable by design.
 
 1. On a paired device the user opens "Pair a new device". The plugin calls
    `POST /v1/pairing`, receives `{pairing_id, enroll_token}` (10-minute
-   expiry), generates a 16-byte pairing secret `PS` locally, and shows one
-   code: `base32(pairing_id || enroll_token || PS)`, as text, as a copy
-   button, and as an `obsidian://obsync-private-sync/pair?code=…` link. `PS` never
-   reaches the server.
+   expiry), generates a 16-byte pairing secret `PS` and an ephemeral P-256
+   key pair locally, and shows one code: `base32(pairing_id || enroll_token
+   || PS || C)`, where `C` commits to its public key, as text, as a copy
+   button, and as an `obsidian://obsync-private-sync/pair?code=…` link. `PS`
+   never reaches the server.
 2. On the new device the user pastes or opens the code. The plugin claims
-   the pairing (`POST /v1/pairing/{id}/claim` with the enroll token and
-   `{name, platform, app_version}`), receiving `{device_id,
+   the pairing (`POST /v1/pairing/{id}/claim` with the enroll token,
+   `{name, platform, app_version}` and its own ephemeral public key),
+   receiving `{device_id,
    device_secret}`. The device is PENDING: it can sign requests, but every
    device-authenticated route refuses it (`403 device_pending`) except
    polling this pairing's envelope (`409 not_approved`). A claimant has no
@@ -373,17 +375,22 @@ that phrase the vault is unrecoverable by design.
    for the claimant's vault. A separate `obsync/v1/pair-vault` HKDF label and
    AES-GCM binding to the pairing ID keep these details blind to the server;
    the creator decrypts them before showing approval (protocol: Pairing).
-3. The paired device polls the pairing and asks about the claim by the
-   claimant's name ("Mac 7KQ4": what it is and a tag it made itself), what it
-   is, when it asked, and a match code both screens derive from `PS` and the
-   claimant's device id (protocol: Pairing). Sealed vault details that do not
-   open under `PS` mean the claimant holds another code, and it is refused
-   before anyone is asked. On approval it encrypts `{VRK}` with `K_pair =
-   HKDF(PS, "obsync/v1/pair", pairing_id)` under AES-GCM and posts the
-   envelope. The server stores it for one fetch, and the paired device says
-   "paired" only once the server reports it fetched.
-4. The new device fetches the envelope (a signed request), decrypts it with
-   `PS`, and persists `VRK` and its credential together, in one write to the
+3. The paired device polls the pairing, fixes the claim it reads, and only
+   then reveals its public key (`POST /v1/pairing/{id}/reveal`); the new
+   device reads it on its wait and checks it against `C`. Both screens then
+   show a six-digit match code derived from `PS`, the pairing and both keys,
+   and the paired device asks about the claim by the claimant's name ("Mac
+   7KQ4": what it is and a tag it made itself), what it is, when it asked,
+   and that code (protocol: "Pairing v2"). Because the claim was fixed before
+   the key went out, whoever substituted a key chose it blind, and the codes
+   differ. Sealed vault details that do not open under `PS` mean the
+   claimant holds another code, and it is refused before anyone is asked; so
+   is a claim with no key, a device before 1.1.5. On approval it seals
+   `{VRK}` under the two devices' ECDH agreement, salted with `PS`, and posts
+   the envelope. The server stores it for one fetch, and the paired device
+   says "paired" only once the server reports it fetched.
+4. The new device fetches the envelope (a signed request), opens it with its
+   own private key and `PS`, and persists `VRK` and its credential together, in one write to the
    native secret store, before sync starts. Collecting the envelope is what
    activates the device; rejection, or expiry before collection, approved or
    not, destroys the pending credential. A claimant that cannot open or keep
@@ -1998,7 +2005,7 @@ becomes a toast and records every notice, shown or not, in Recent: the newest
 
 | Kind | For, for example | Stays | Under "Only what needs me" |
 | --- | --- | --- | --- |
-| `question` | a decision only the person can make: held deletions, a resumed pairing's match code, an unconfirmed recovery phrase | until answered or dismissed; one per key | shown |
+| `question` | a decision only the person can make: held deletions, the match code of a pairing whose dialog closed, an unconfirmed recovery phrase | until answered or dismissed; one per key | shown |
 | `security` | something that protects the vault: another device's recovery key | until dismissed | shown |
 | `error` | something stopped and needs the person: a paused or unwritable note, a device on another vault key, sync stopped, a pairing that ended behind its closed dialog | until dismissed | shown |
 | `conflict` | a copy was kept: both versions, two notes with one name, a note left in place | 8 s or more | shown |

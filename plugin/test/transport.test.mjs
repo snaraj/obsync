@@ -655,6 +655,7 @@ const CALLS = [
   ["pairingCreate", [], false],
   ["pairingClaim", [PAIRING_ID, "11".repeat(32), INFO], false],
   ["pairingStatus", [PAIRING_ID], true],
+  ["pairingReveal", [PAIRING_ID, "BB".repeat(43)], true],
   ["pairingApprove", [PAIRING_ID, "AAAA", "33".repeat(12)], false],
   ["pairingReject", [PAIRING_ID], false],
   ["pairingEnvelope", [PAIRING_ID], false],
@@ -1274,6 +1275,23 @@ test("a chunk PUT signs the sid as its body digest only for the body encryptChun
  * is still thrown, and every other refusal of the same call is still a
  * warning.
  */
+/**
+ * A refusal's other fields reach the caller (review of PR #306): a pairing
+ * wait carries the creator's revealed key in its `409 not_approved`, and the
+ * claimant reads it there. The code and detail are not repeated as fields.
+ */
+test("a refusal's other body fields ride its ApiError, and its code and detail stay out of them", async () => {
+  const h = harness([
+    { status: 409, text: JSON.stringify({ error: "not_approved", detail: "approval pending", creator_pub: "KEY" }) },
+    { status: 409, text: JSON.stringify({ error: "not_approved", detail: "approval pending" }) },
+    { status: 404, text: "<html>an edge page</html>" },
+  ]);
+  await assert.rejects(h.transport.pairingEnvelope(PAIRING_ID), (error) =>
+    error.code === "not_approved" && error.detail === "approval pending" && JSON.stringify(error.fields) === '{"creator_pub":"KEY"}');
+  await assert.rejects(h.transport.pairingEnvelope(PAIRING_ID), (error) => JSON.stringify(error.fields) === "{}");
+  await assert.rejects(h.transport.pairingEnvelope(PAIRING_ID), (error) => JSON.stringify(error.fields) === "{}");
+});
+
 test("a refusal the caller expects is logged as expected, and nothing else is", async () => {
   const refused = (status, code) => ({ status, text: JSON.stringify({ error: code, detail: "" }) });
   const h = harness([

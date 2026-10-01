@@ -1,0 +1,12 @@
+# M4101: a refusal's other fields are dropped
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -885,7 +885,7 @@
+       const { code, detail, fields } = parseError(response.text);
+       const decision = code === expected ? "expected" : "refused";
+       this.log(`http ${method} ${target} status=${response.status} decision=${decision} code=${code} duration_ms=${this.now() - started}`);
+-      throw new ApiError(response.status, code, detail, false, fields);
++      throw new ApiError(response.status, code, detail, false, {});
+     }
+     this.log(`http ${method} ${target} status=${response.status} decision=ok attempts=${attempts} duration_ms=${this.now() - started}`);
+     return response;

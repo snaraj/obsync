@@ -1,0 +1,12 @@
+# M4079: the commitment is eight bytes
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -150,7 +150,7 @@
+  */
+ export async function pairingCommitment(pairingId: string, creatorKey: string): Promise<Bytes> {
+   const committed = concat(utf8(COMMIT_LABEL), utf8(pairingId), checkedPublicKey(creatorKey));
+-  return (await sha256(committed)).subarray(0, COMMITMENT_BYTES);
++  return (await sha256(committed)).subarray(0, 8);
+ }
+ 
+ /** Whether a revealed creator key is the one the code committed to. */

@@ -1,0 +1,12 @@
+# M4092: the envelope is sealed for the creator's own key
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -438,7 +438,7 @@
+       // Under the ephemeral P-256 agreement with the key this device fixed and
+       // compared (`approve` asks only about a claim that carries one), so a
+       // captured code alone opens nothing.
+-      const sealed = await sealEnvelopeV2(kex, claimant.claimant_pub as string, secret, pairingId, { vrk });
++      const sealed = await sealEnvelopeV2(kex, kex.publicKey, secret, pairingId, { vrk });
+       value(await this.plugin.transport.pairingApprove(pairingId, sealed.envelope, sealed.nonce), "approving the new device");
+       this.plugin.log("pairing role=creator decision=approved");
+       // DONE HERE ONCE THE APPROVAL LANDS (1.1.5): what is left is the new

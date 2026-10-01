@@ -25,5 +25,7 @@
   "creatorRaw": "BFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY",
   "psHex": "0b5c0102030405060708090a0b0c0d0e",
   "pairingId": "0123456789abcdef0123456789abcdef",
-  "derivedKeyHex": "609971ccce788e9ab022c122c67a91fd0247bb571568e95592b4742b4c3b1ded"
+  "derivedKeyHex": "609971ccce788e9ab022c122c67a91fd0247bb571568e95592b4742b4c3b1ded",
+  "commitmentHex": "a827dbf14a32f8691dfd0c16280ce8f2",
+  "matchCode": "177 784"
 }

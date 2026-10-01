@@ -1888,6 +1888,95 @@ fn repeated_forwarding_fields_from_a_trusted_proxy_are_said_once_a_minute() {
     );
 }
 
+/// Pairing v2's two keys as the wire carries them: the public halves of the
+/// sentinel scalars 01..01 and 02..02 (`plugin/test/fixtures/pairing-v2.json`).
+const CLAIMANT_PUB: &str =
+    "BG_wO5SSQc4drdQ1GeaWDgqFtBppoFwygQOqK84VlMoWPE91OlW_AdxT9sCwx-7ni0DG_30lqW4igrmJzvccFEo";
+const CREATOR_PUB: &str =
+    "BFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY";
+
+#[test]
+fn the_creator_key_reaches_the_waiting_claimant_only_once_revealed() {
+    // Review of PR #306: the creator reveals its key after the claim, and
+    // the claimant's wait carries it, so both screens show a code before
+    // anyone approves. Only the creator reveals, once a claim exists, and
+    // one key per pairing.
+    let h = Harness::start("pairing-reveal");
+    let creator = h.setup_account();
+    let v = Req::post("/v1/pairing")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let text = |name: &str| {
+        v.get(name)
+            .and_then(Value::as_str)
+            .expect("pairing field")
+            .to_string()
+    };
+    let (id, token) = (text("pairing_id"), text("enroll_token"));
+    let reveal = |by: &Cred, key: &str| {
+        Req::post(&format!("/v1/pairing/{id}/reveal"))
+            .body(&format!(r#"{{"creator_pub":"{key}"}}"#))
+            .sign(by, NOW)
+            .send(h.addr)
+    };
+    let wait = |claimant: &Cred| {
+        Req::get(&format!("/v1/pairing/{id}/envelope"))
+            .sign(claimant, NOW)
+            .send(h.addr)
+    };
+
+    let early = reveal(&creator, CREATOR_PUB);
+    assert_eq!((early.status, early.code()), (409, "not_claimed".into()));
+
+    let claimed = Req::post(&format!("/v1/pairing/{id}/claim"))
+        .body(&format!(
+            r#"{{"enroll_token":"{token}","name":"phone","platform":"ios","app_version":"1.1.5","claimant_pub":"{CLAIMANT_PUB}"}}"#
+        ))
+        .send(h.addr);
+    assert_eq!(claimed.status, 201, "{}", claimed.text());
+    let claimant = Cred::from_json(&claimed.json());
+
+    let before = wait(&claimant);
+    assert_eq!((before.status, before.code()), (409, "not_approved".into()));
+    assert_eq!(
+        before.json().get("creator_pub"),
+        None,
+        "nothing revealed yet"
+    );
+
+    let pending = reveal(&claimant, CREATOR_PUB);
+    assert_eq!(pending.status, 403, "a pending claimant reveals nothing");
+    let malformed = reveal(&creator, "not-a-key");
+    assert_eq!(malformed.status, 400);
+    assert_eq!(reveal(&creator, CREATOR_PUB).status, 204);
+    assert_eq!(reveal(&creator, CREATOR_PUB).status, 204, "a retry");
+    let other = reveal(&creator, CLAIMANT_PUB);
+    assert_eq!(
+        (other.status, other.code()),
+        (409, "already_revealed".into())
+    );
+
+    let revealed = wait(&claimant);
+    assert_eq!(revealed.code(), "not_approved");
+    assert_eq!(
+        revealed.json().get("creator_pub").and_then(Value::as_str),
+        Some(CREATOR_PUB)
+    );
+
+    let approve = Req::post(&format!("/v1/pairing/{id}/approve"))
+        .body(r#"{"envelope":"Y2lwaGVy","nonce":"0123456789abcdef01234567"}"#)
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(approve.status, 204, "{}", approve.text());
+    let fetched = wait(&claimant);
+    assert_eq!(fetched.status, 200, "{}", fetched.text());
+    assert_eq!(
+        fetched.json().get("creator_pub").and_then(Value::as_str),
+        Some(CREATOR_PUB)
+    );
+}
+
 #[test]
 fn the_pairing_flow_runs_end_to_end() {
     let h = Harness::start("pairing");

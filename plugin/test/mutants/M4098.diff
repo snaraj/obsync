@@ -1,0 +1,13 @@
+# M4098: closing the dialog after its code shows raises nothing
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -853,8 +853,7 @@
+     waiting.background = true;
+     // The comparison is the point of the code: a code already derived is
+     // raised at once, and one still to come is raised when it comes.
+-    if (waiting.code !== null) showCode(this.plugin, waiting.code);
+-    else tell(this.plugin, "still waiting in the background. When the other device asks you to approve this one, obsync shows the code to compare here: approve there only if both show the same code.");
++    tell(this.plugin, "still waiting in the background. When the other device asks you to approve this one, obsync shows the code to compare here: approve there only if both show the same code.");
+   }
+ 
+   private show(text: string): void {

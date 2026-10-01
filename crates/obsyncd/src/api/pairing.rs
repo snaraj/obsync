@@ -121,8 +121,10 @@ pub struct Pairing {
     pub claimant: Option<Claimant>,
     /// The key envelope and its nonce, held for exactly one fetch.
     pub envelope: Option<(String, String)>,
-    /// The creator's ephemeral P-256 public key for pairing v2, posted with
-    /// the envelope and returned with it, verbatim. `None` for a legacy pairing.
+    /// The creator's ephemeral P-256 public key for pairing v2, revealed after
+    /// the claim and before approval ([`PairingTable::reveal`]), and returned
+    /// verbatim to the claimant while it waits and with the envelope. `None`
+    /// for a legacy pairing.
     pub creator_pub: Option<String>,
 }
 
@@ -312,6 +314,50 @@ impl PairingTable {
         }
     }
 
+    /// The creator reveals its pairing v2 public key for a claimed pairing.
+    ///
+    /// The claimant reads it while it waits ([`PairingTable::take_envelope`])
+    /// and checks it against the commitment its code carried, so the server
+    /// only holds it. The same key again answers as the first did, so a
+    /// retry is safe; a different one is refused, because a creator holds
+    /// one key per pairing (`docs/protocol.md`, "Pairing v2").
+    ///
+    /// # Errors
+    /// `404 unknown_pairing`, `403 not_creator`, `410 pairing_expired`,
+    /// `409 not_claimed`, `409 already_approved`, `409 already_revealed`.
+    pub fn reveal(
+        &mut self,
+        id: &str,
+        actor: &DeviceId,
+        creator_pub: &str,
+        now: u64,
+    ) -> Result<(), ApiError> {
+        let p = self.entries.get_mut(id).ok_or_else(unknown)?;
+        if &p.creator != actor {
+            return Err(not_creator());
+        }
+        if p.expires <= now {
+            return Err(expired());
+        }
+        match p.state {
+            State::Claimed => {}
+            State::Open => return Err(not_claimed()),
+            _ => return Err(already_approved()),
+        }
+        if p.creator_pub
+            .as_deref()
+            .is_some_and(|held| held != creator_pub)
+        {
+            return Err(ApiError::new(
+                409,
+                "already_revealed",
+                "the pairing's creator key is already revealed",
+            ));
+        }
+        p.creator_pub = Some(creator_pub.to_string());
+        Ok(())
+    }
+
     /// The creator posts the key envelope for a claimed pairing.
     ///
     /// # Errors
@@ -323,7 +369,6 @@ impl PairingTable {
         actor: &DeviceId,
         envelope: &str,
         nonce: &str,
-        creator_pub: Option<&str>,
         now: u64,
     ) -> Result<DeviceId, ApiError> {
         let p = self.entries.get_mut(id).ok_or_else(unknown)?;
@@ -344,7 +389,6 @@ impl PairingTable {
             .expect("a claimed pairing has one")
             .device_id;
         p.envelope = Some((envelope.to_string(), nonce.to_string()));
-        p.creator_pub = creator_pub.map(str::to_string);
         p.state = State::Approved;
         Ok(claimant)
     }
@@ -423,11 +467,13 @@ impl PairingTable {
             return Err(expired());
         }
         if p.state != State::Approved {
-            return Err(ApiError::new(
-                409,
-                "not_approved",
-                "the pairing is not approved yet",
-            ));
+            let waiting = ApiError::new(409, "not_approved", "the pairing is not approved yet");
+            // A revealed creator key rides the wait: the claimant shows its
+            // match code from it before anyone approves.
+            return Err(match &p.creator_pub {
+                Some(key) => waiting.with_field("creator_pub", s(key)),
+                None => waiting,
+            });
         }
         activate()?;
         let (envelope, nonce) = p.envelope.take().ok_or_else(consumed)?;
@@ -644,6 +690,36 @@ pub fn state(
     ))
 }
 
+/// `POST /v1/pairing/{id}/reveal`: the creator reveals its pairing v2 key
+/// ([`PairingTable::reveal`]). Its code committed to the key before any
+/// claim existed; the claimant checks the two agree.
+///
+/// # Errors
+/// `400 bad_request`, `404 unknown_pairing`, `403 not_creator`,
+/// `409 not_claimed`, `409 already_approved`, `409 already_revealed`,
+/// `410 pairing_expired`.
+pub fn reveal(
+    app: &App,
+    req: &mut Request,
+    client: &ClientInfo,
+    id: &str,
+) -> Result<Response, ApiError> {
+    let authed = auth::device(app, req, client)?;
+    let body = render::parse_json(&authed.body)?;
+    let creator_pub = public_key_field(&body, "creator_pub")?
+        .ok_or_else(|| ApiError::bad_request("creator_pub is required"))?;
+    let now = app.clock.unix_secs();
+    app.pairings
+        .lock()
+        .expect("pairings")
+        .reveal(id, &authed.id, &creator_pub, now)?;
+    app.log.info(
+        "pairing_revealed",
+        &[("by_device", Val::device(&authed.id))],
+    );
+    Ok(Response::empty(204))
+}
+
 /// `POST /v1/pairing/{id}/approve`: the creator posts the key envelope.
 ///
 /// # Errors
@@ -667,16 +743,12 @@ pub fn approve(
     if !super::is_hex(nonce, 24) {
         return Err(ApiError::bad_request("nonce must be 24 hex characters"));
     }
-    let creator_pub = public_key_field(&body, "creator_pub")?;
     let now = app.clock.unix_secs();
-    let claimant = app.pairings.lock().expect("pairings").approve(
-        id,
-        &authed.id,
-        envelope,
-        nonce,
-        creator_pub.as_deref(),
-        now,
-    )?;
+    let claimant = app
+        .pairings
+        .lock()
+        .expect("pairings")
+        .approve(id, &authed.id, envelope, nonce, now)?;
     // Approval grants nothing yet: the claimant becomes active when it
     // collects the envelope, inside the ten minutes (`envelope` below).
     app.log.info(
@@ -922,10 +994,41 @@ mod tests {
         );
     }
 
+    /// The `creator_pub` a `not_approved` refusal carries, if any.
+    fn waiting_key(t: &mut PairingTable, claimant: &DeviceId) -> Option<String> {
+        let e = take(t, claimant).expect_err("still waiting");
+        assert_eq!(e.code, "not_approved");
+        e.fields
+            .iter()
+            .find(|(name, _)| name == "creator_pub")
+            .map(|(_, v)| v.as_str().expect("text").to_string())
+    }
+
     #[test]
-    fn approve_stores_the_creator_pub_and_collection_returns_it_once() {
+    fn a_revealed_creator_pub_rides_the_wait_and_the_envelope() {
         let (mut t, creator, claimant) = claimed();
-        t.approve("p1", &creator, "ct", "aa", Some("CREATORKEY"), NOW)
+        assert_eq!(waiting_key(&mut t, &claimant), None, "nothing revealed yet");
+        assert_eq!(
+            t.reveal("p1", &claimant, "CREATORKEY", NOW)
+                .expect_err("the creator's alone")
+                .code,
+            "not_creator"
+        );
+        t.reveal("p1", &creator, "CREATORKEY", NOW)
+            .expect("revealed");
+        t.reveal("p1", &creator, "CREATORKEY", NOW)
+            .expect("the same key again is a retry");
+        assert_eq!(
+            t.reveal("p1", &creator, "OTHERKEY", NOW)
+                .expect_err("one key per pairing")
+                .code,
+            "already_revealed"
+        );
+        assert_eq!(
+            waiting_key(&mut t, &claimant).as_deref(),
+            Some("CREATORKEY")
+        );
+        t.approve("p1", &creator, "ct", "aa", NOW)
             .expect("approved");
         let (env, nonce, key) = t
             .take_envelope("p1", &claimant, NOW, || Ok(()))
@@ -934,6 +1037,26 @@ mod tests {
             (env.as_str(), nonce.as_str(), key.as_deref()),
             ("ct", "aa", Some("CREATORKEY"))
         );
+    }
+
+    #[test]
+    fn a_reveal_needs_a_live_claim_not_yet_approved() {
+        let (mut t, creator) = table();
+        let refused = |t: &mut PairingTable, id: &str, now: u64| {
+            t.reveal(id, &creator, "CREATORKEY", now)
+                .expect_err("refused")
+                .code
+        };
+        assert_eq!(refused(&mut t, "p1", NOW), "not_claimed");
+        assert_eq!(refused(&mut t, "nope", NOW), "unknown_pairing");
+        let (mut t, creator, _) = claimed();
+        assert_eq!(
+            refused(&mut t, "p1", NOW + PAIRING_TTL_SECS),
+            "pairing_expired"
+        );
+        t.approve("p1", &creator, "ct", "aa", NOW)
+            .expect("approved");
+        assert_eq!(refused(&mut t, "p1", NOW), "already_approved");
     }
 
     /// A fetch whose activation always succeeds, inside the ten minutes.
@@ -1039,26 +1162,26 @@ mod tests {
     fn approve_requires_a_claim_and_the_creator() {
         let (mut t, creator) = table();
         assert_eq!(
-            t.approve("p1", &creator, "ct", "aa", None, NOW)
+            t.approve("p1", &creator, "ct", "aa", NOW)
                 .expect_err("no claim")
                 .code,
             "not_claimed"
         );
         let (mut t, creator, claimant) = claimed();
         assert_eq!(
-            t.approve("p1", &claimant, "ct", "aa", None, NOW)
+            t.approve("p1", &claimant, "ct", "aa", NOW)
                 .expect_err("wrong actor")
                 .code,
             "not_creator"
         );
-        t.approve("p1", &creator, "ct", "aa", None, NOW)
+        t.approve("p1", &creator, "ct", "aa", NOW)
             .expect("creator approves");
         assert_eq!(
             t.state_for("p1", &creator, NOW).expect("state").0,
             State::Approved
         );
         assert_eq!(
-            t.approve("p1", &creator, "ct", "aa", None, NOW)
+            t.approve("p1", &creator, "ct", "aa", NOW)
                 .expect_err("twice")
                 .code,
             "already_approved"
@@ -1069,7 +1192,7 @@ mod tests {
     fn approve_after_expiry_is_refused() {
         let (mut t, creator, _) = claimed();
         let e = t
-            .approve("p1", &creator, "ct", "aa", None, NOW + PAIRING_TTL_SECS)
+            .approve("p1", &creator, "ct", "aa", NOW + PAIRING_TTL_SECS)
             .expect_err("expired");
         assert_eq!(e.code, "pairing_expired");
     }
@@ -1081,7 +1204,7 @@ mod tests {
             take(&mut t, &claimant).expect_err("not approved yet").code,
             "not_approved"
         );
-        t.approve("p1", &creator, "ct", "aa", None, NOW)
+        t.approve("p1", &creator, "ct", "aa", NOW)
             .expect("approved");
         assert_eq!(
             take(&mut t, &creator)
@@ -1099,7 +1222,7 @@ mod tests {
     #[test]
     fn an_unrelated_device_cannot_fetch_the_envelope() {
         let (mut t, creator, _) = claimed();
-        t.approve("p1", &creator, "ct", "aa", None, NOW)
+        t.approve("p1", &creator, "ct", "aa", NOW)
             .expect("approved");
         assert_eq!(
             take(&mut t, &dev(9)).expect_err("stranger").code,
@@ -1126,7 +1249,7 @@ mod tests {
     fn an_approved_pairing_refuses_a_reject_and_keeps_its_claimant() {
         for consume in [false, true] {
             let (mut t, creator, claimant) = claimed();
-            t.approve("p1", &creator, "ct", "aa", None, NOW)
+            t.approve("p1", &creator, "ct", "aa", NOW)
                 .expect("approved");
             if consume {
                 take(&mut t, &claimant).expect("fetched");
@@ -1183,7 +1306,7 @@ mod tests {
     fn approve_names_the_device_to_activate() {
         let (mut t, creator, claimant) = claimed();
         assert_eq!(
-            t.approve("p1", &creator, "ct", "aa", None, NOW)
+            t.approve("p1", &creator, "ct", "aa", NOW)
                 .expect("creator approves"),
             claimant,
             "the caller logs exactly that device; collection activates it"
@@ -1214,7 +1337,7 @@ mod tests {
     fn an_expired_approved_pairing_hands_back_its_device_unless_collected() {
         for consume in [false, true] {
             let (mut t, creator, claimant) = claimed();
-            t.approve("p1", &creator, "ct", "aa", None, NOW)
+            t.approve("p1", &creator, "ct", "aa", NOW)
                 .expect("approved");
             if consume {
                 take(&mut t, &claimant).expect("fetched");
@@ -1247,7 +1370,7 @@ mod tests {
             })
             .expect_err("not approved yet");
         assert_eq!(e.code, "not_approved");
-        t.approve("p1", &creator, "ct", "aa", None, NOW)
+        t.approve("p1", &creator, "ct", "aa", NOW)
             .expect("approved");
         let e = t
             .take_envelope("p1", &creator, NOW, || {
@@ -1293,7 +1416,7 @@ mod tests {
         for approve in [false, true] {
             let (mut t, creator, claimant) = claimed();
             if approve {
-                t.approve("p1", &creator, "ct", "aa", None, NOW)
+                t.approve("p1", &creator, "ct", "aa", NOW)
                     .expect("approved");
             }
             let e = t
@@ -1351,7 +1474,7 @@ mod tests {
     fn a_swept_pairing_tells_its_creator_how_it_ended() {
         for consume in [false, true] {
             let (mut t, creator, claimant) = claimed();
-            t.approve("p1", &creator, "ct", "aa", None, NOW)
+            t.approve("p1", &creator, "ct", "aa", NOW)
                 .expect("approved");
             if consume {
                 take(&mut t, &claimant).expect("fetched");
@@ -1411,7 +1534,7 @@ mod tests {
     #[test]
     fn a_consumed_pairing_does_not_flip_back_to_expired() {
         let (mut t, creator, claimant) = claimed();
-        t.approve("p1", &creator, "ct", "aa", None, NOW)
+        t.approve("p1", &creator, "ct", "aa", NOW)
             .expect("approved");
         take(&mut t, &claimant).expect("fetched");
         let (state, _) = t

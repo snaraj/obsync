@@ -309,11 +309,22 @@ test("a device a crash left with no keys pairs again, under an installation of i
   const { PairClaimModal } = box.require(join(box.home, "build/ui/modals.js"));
   const pairingId = "12".repeat(16), token = "34".repeat(32), secret = new Uint8Array(16).fill(56);
   const claimed = { device_id: "cd".repeat(16), device_secret: "ef".repeat(32) };
-  const sealed = await pairing.sealEnvelope(secret, pairingId, { vrk: KEYS.vrk });
+  // The other device's side of a pairing: its key, committed to in the code,
+  // and the vault key sealed for the key this claim sends.
+  const creator = await pairing.newPairingKeyExchange();
+  let claimantKey = null;
   const calls = [];
   Object.assign(instance.transport, {
-    pairingClaim: async (id, enrollToken) => { calls.push("claim"); assert.equal(id, pairingId); assert.equal(enrollToken, token); return { outcome: "ok", value: claimed }; },
-    pairingEnvelope: async () => { calls.push("envelope"); return { outcome: "ok", value: sealed }; },
+    pairingClaim: async (id, enrollToken, info) => {
+      calls.push("claim"); assert.equal(id, pairingId); assert.equal(enrollToken, token);
+      claimantKey = info.claimant_pub;
+      return { outcome: "ok", value: claimed };
+    },
+    pairingEnvelope: async () => {
+      calls.push("envelope");
+      const sealed = await pairing.sealEnvelopeV2(creator, claimantKey, secret, pairingId, { vrk: KEYS.vrk });
+      return { outcome: "ok", value: { ...sealed, creator_pub: creator.publicKey } };
+    },
     revokeDevice: async (id) => { calls.push(`revoke:${id}`); return { outcome: "ok", value: undefined }; },
   });
   Object.assign(instance, {
@@ -324,7 +335,8 @@ test("a device a crash left with no keys pairs again, under an installation of i
   const previous = globalThis.window;
   globalThis.window = { ...previous, setTimeout: (resolve) => resolve() };
   t.after(() => { globalThis.window = previous; });
-  const modal = new PairClaimModal(instance.app, instance, pairing.encodePairingCode(pairingId, token, secret));
+  const code = pairing.encodePairingCode(pairingId, token, secret, await pairing.pairingCommitment(pairingId, creator.publicKey));
+  const modal = new PairClaimModal(instance.app, instance, code);
   Object.assign(modal, { contentEl: { createEl: () => ({ setText: () => {} }), empty: () => {} }, close: () => modal.onClose() });
   await modal.claim();
   await instance.waiting?.done;

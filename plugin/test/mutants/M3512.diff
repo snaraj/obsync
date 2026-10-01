@@ -1,12 +1,12 @@
-# M3512: the v2 match code does not bind the claimant key, so a substituted key goes unseen
+# M3512: the match code leaves out the creator's key
 --- a/plugin/src/pairing.ts
 +++ b/plugin/src/pairing.ts
-@@ -388,7 +388,7 @@
-   deviceId: string,
+@@ -402,7 +402,7 @@
    claimantKey: string,
+   creatorKey: string,
  ): Promise<string> {
--  return sixDigits(await hkdf(secret, utf8(MATCH_LABEL_V2), utf8(`${pairingId}:${deviceId}:${claimantKey}`), 4));
-+  return sixDigits(await hkdf(secret, utf8(MATCH_LABEL_V2), utf8(`${pairingId}:${deviceId}`), 4));
+-  const info = concat(utf8(pairingId), checkedPublicKey(claimantKey), checkedPublicKey(creatorKey));
++  const info = concat(utf8(pairingId), checkedPublicKey(claimantKey));
+   return sixDigits(await hkdf(secret, utf8(MATCH_LABEL_V2), info, 4));
  }
  
- const PLATFORM_LABELS: Record<string, string> = {

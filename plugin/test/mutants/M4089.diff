@@ -1,0 +1,12 @@
+# M4089: a name past its length is shown
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -58,7 +58,7 @@
+ 
+ /** What a server lets a device name itself: 1 to `max` printable ASCII characters (`render::text_field`). */
+ function printable(text: unknown, max: number): boolean {
+-  if (typeof text !== "string" || text.length < 1 || text.length > max) return false;
++  if (typeof text !== "string" || text.length < 1) return false;
+   for (let at = 0; at < text.length; at++) {
+     const code = text.charCodeAt(at);
+     if (code < 0x20 || code > 0x7e) return false;

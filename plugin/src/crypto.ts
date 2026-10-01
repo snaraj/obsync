@@ -48,7 +48,6 @@ export const LABEL = {
   conflict: "obsync/v1/conflict",
   chunk: "obsync/v1/chunk",
   nonce: "obsync/v1/nonce",
-  pair: "obsync/v1/pair",
   pairV2: "obsync/v2/pair",
   signature: "obsync/v1",
 } as const;
@@ -424,10 +423,6 @@ export async function conflictFileId(manifestKey: Bytes, fileId: string, version
   return hex(mac.subarray(0, 16));
 }
 
-/** `K_pair = HKDF(PS, salt="obsync/v1/pair", info=utf8(pairing_id))`. */
-export function pairingKey(pairingSecret: Bytes, pairingId: string): Promise<Bytes> {
-  return hkdf(pairingSecret, utf8(LABEL.pair), utf8(pairingId), KEY_BYTES);
-}
 
 /**
  * `cid = HMAC-SHA-256(K_d, P)`: the keyed content id of a plaintext chunk.

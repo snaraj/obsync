@@ -77,6 +77,7 @@ answers the same.
 | `POST /v1/pairing` | **no** | mints a pairing and an enroll token |
 | `POST /v1/pairing/{id}/claim` | **no** | mints a device credential |
 | `GET /v1/pairing/{id}` | yes | read |
+| `POST /v1/pairing/{id}/reveal` | yes | holds one key; the same key again answers `204` again |
 | `POST /v1/pairing/{id}/approve` | **no** | consumes the pairing |
 | `POST /v1/pairing/{id}/reject` | **no** | destroys the pending device; refuses an approved pairing |
 | `GET /v1/pairing/{id}/envelope` | **no** | single use; then `410 envelope_consumed` |
@@ -191,19 +192,25 @@ ignores the optional field, so its approval prompt cannot name the new vault.
   collects the envelope the creator approved. Since 1.1.4 an expired pairing
   still answers `410 pairing_expired` for an hour to a claim carrying its
   token (the server remembers at most 256), while any other token reads `404
-  unknown_pairing`, as it would for a live pairing. Since 1.1.5 the claim may
-  carry `claimant_pub` (the pairing v2 key exchange, below); the server
-  validates its shape and returns it to the creator verbatim.
+  unknown_pairing`, as it would for a live pairing. Since 1.1.5 the claim
+  carries `claimant_pub` (pairing v2, below); the server validates its shape
+  and returns it to the creator verbatim.
 - `GET /v1/pairing/{id}` (device auth, creator only) → `{"state":"open|
   claimed|approved|consumed|expired","claimant":{"device_id","name",
   "platform","app_version","claimant_pub"?}|null}`. For the same hour after
   expiry the creator reads `expired` or, if the key was collected, `consumed`,
   with a `null` claimant.
+- `POST /v1/pairing/{id}/reveal` (device auth, creator only, 1.1.5)
+  `{"creator_pub":"<87 base64url>"}` → `204`: the creator's pairing v2 key,
+  held verbatim and returned to the waiting claimant (below). `409
+  not_claimed` before a claim, `409 already_approved` after the approval,
+  `410 pairing_expired` after the ten minutes, and `409 already_revealed`
+  for a key other than the one already revealed; the same key again answers
+  `204` again.
 - `POST /v1/pairing/{id}/approve` (device auth, creator only)
-  `{"envelope":"<base64 AES-GCM ciphertext>","nonce":"<24hex>","creator_pub"?}`
-  → `204`. Approval activates nothing by itself (1.1.4; earlier servers
-  activated the claimant here). `creator_pub` is the pairing v2 key exchange
-  (below), returned once with the envelope.
+  `{"envelope":"<base64 AES-GCM ciphertext>","nonce":"<24hex>"}` → `204`.
+  Approval activates nothing by itself (1.1.4; earlier servers activated the
+  claimant here).
 - `POST /v1/pairing/{id}/reject` (device auth, creator only) → `204`; the
   pending device and its wrapped secret are destroyed. Only a CLAIMED pairing
   is rejectable: an unclaimed one is `409 not_claimed` and one the creator
@@ -217,73 +224,77 @@ ignores the optional field, so its approval prompt cannot name the new vault.
   The claimant pairs again.
 - `GET /v1/pairing/{id}/envelope` (device auth, claimant only) →
   `409 not_approved` until the creator approves (the claimant polls this),
+  carrying `"creator_pub"` beside `"error"` once the creator revealed it;
   then `{"envelope","nonce","creator_pub"?}` exactly once; `410
   envelope_consumed` afterwards, and `410 pairing_expired` once the ten
   minutes have passed. Collecting it moves the device to state `active`: the
   activation is journaled before the envelope is answered, and a refused
   journal write consumes nothing.
 
-The approval prompt and the waiting claimant show the same six-digit match
-code (1.1.4), which neither side sends: each computes
-`HKDF(PS, "obsync/v1/pair-match", pairing_id + ":" + device_id)`, reads its
-first four bytes as a big-endian integer modulo 1,000,000 and shows it as
-`ddd ddd` -- the creator from the claimant id the pairing poll names, the
-claimant from the id its claim returned. The server, which never holds `PS`,
-cannot make two screens agree, and a second device claiming a leaked code
-holds another id and shows another code. A 1.1.3 device shows no code and
-ignores one; either side pairs as before.
+### Pairing v2: one way only (1.1.5)
 
-### Pairing v2: the key exchange (plugin 1.1.5)
+Before 1.1.5 the code's pairing secret `PS` alone sealed the vault-key
+envelope, and the two screens compared `HKDF(PS, "obsync/v1/pair-match",
+pairing_id + ":" + device_id)`: anyone who read the code could open the key,
+and whoever chose the device id could make the two codes agree. 1.1.5 pairs
+only as below, and refuses a device that would pair the old way, in either
+role.
 
-The code carries the pairing secret `PS`. In legacy pairing `PS` alone seals
-the vault-key envelope, so the code must travel only over a channel the person
-trusts. Pairing v2 adds an ephemeral P-256 ECDH exchange between the two
-devices and seals the envelope under a key derived from BOTH the exchange AND
-`PS`, so a copy of the code alone no longer opens the envelope.
-
-- **Keys on the wire.** Each side generates an ephemeral P-256 key pair whose
-  private key is non-extractable and never leaves the device. The public key
-  crosses raw-uncompressed (65 bytes, `0x04` prefix) as base64url: the
-  claimant's as `claimant_pub` in the claim, the creator's as `creator_pub` in
-  the approve and returned once with the envelope. The server validates the
-  shape (87 base64url characters decoding to 65 bytes beginning `0x04`), holds
-  the two fields verbatim with the in-memory pairing, never logs them and does
-  no elliptic-curve mathematics on them.
+- **Keys.** Each side generates an ephemeral P-256 key pair whose private
+  key is non-extractable and never leaves the device, fresh for each code.
+  The public key crosses raw-uncompressed (65 bytes, `0x04` prefix) as
+  base64url: the claimant's as `claimant_pub` in the claim, the creator's as
+  `creator_pub` in the reveal. The server validates the shape (87 base64url
+  characters decoding to 65 bytes beginning `0x04`), holds the two fields
+  verbatim with the in-memory pairing, never logs them and does no
+  elliptic-curve mathematics on them.
+- **The code commits to the creator's key.** The creator makes its key pair
+  before the code, and the code is `base32(pairing_id || enroll_token || PS
+  || C)`, 80 bytes and 128 characters, where `C = SHA-256(
+  "obsync/v2/pair-commit" || pairing_id || creator_pub)[0..16]`, the key raw.
+  The code is the one channel the network cannot change, so the claimant
+  learns which key to expect from it; a reader of the code learns nothing
+  that computes a match code. A 64-byte code (a device before 1.1.5) is
+  refused with the words to update that device; anything else short of 80
+  bytes is incomplete.
+- **The order is the authentication.** The creator reads the claim once and
+  FIXES it: the claimant key it holds is the one it compares and seals for,
+  and it never reads the claim again. Only then does it reveal its key. So
+  whoever puts a key into the claim chooses it without knowing the creator's.
+  The claimant shows no code until the reveal reaches it on its
+  `not_approved` poll, checks it against `C` (a key that fails ends the
+  claim: nothing shared, the words say the key does not match the code), and
+  from then on accepts no other creator key, waiting or with the envelope.
+- **Match code.** Six digits of `HKDF(ikm = PS, salt = "obsync/v2/pair-match",
+  info = pairing_id || claimant_pub || creator_pub)`, the keys raw, as a
+  big-endian integer modulo 1,000,000, shown `ddd ddd`. Every input on the
+  claimant's screen came through the code or from itself; no device id is an
+  input, because the server chooses those and could choose one after reading
+  the creator's key. A substituted key then agrees by chance alone, one in a
+  million per attempt, and each attempt costs the person a new code.
 - **Seal.** `K = HKDF-SHA-256(ikm = ECDH(claimant, creator), salt = PS,
   info = "obsync/v2/pair" || pairing_id)`; the envelope is AES-256-GCM over
-  `{"vrk":…}` with a random 12-byte nonce and additional data
-  `pairing_id || claimant_pub || creator_pub` (the raw 65-byte keys), so it
-  cannot be replayed into another pairing or opened against a substituted key.
-- **Match code v2.** `HKDF(PS, "obsync/v2/pair-match", pairing_id + ":" +
-  device_id + ":" + claimant_pub)`, six digits as before. The creator derives
-  it from the key it RECEIVED, the claimant from the key it SENT, so a
-  substituted OR stripped key makes the two screens differ -- the signal not to
-  approve.
-- **Capability signal.** A creator-minted `PS` reserves a fixed 16-bit marker
-  in its first two bytes (112 bits stay random; v2's confidentiality rests on
-  the ECDH exchange). The claimant reads the marker from the code it was handed
-  OUT OF BAND, never from the network, so a stripped `claimant_pub` cannot
-  silently downgrade the exchange: the claimant already knows the creator is v2
-  and shows a v2 code the stripped path cannot reproduce. The marker does not
-  change the code's length, so a 1.1.4 device decodes a v2 code unchanged and
-  pairs the legacy way.
-- **The server first.** A 1.1.4 server drops both key fields, which no
-  device can tell from a key stripped on the way. So before `POST
-  /v1/pairing` a 1.1.5 creator reads `GET /v1/plugin/manifest` and makes no
-  code unless the `version` it reports is 1.1.5 or later (`major.minor.patch`,
-  a pre-release counts); an older version, a malformed one, or none (`404
-  plugin_unavailable`, a server without its plugin bundle) is refused with
-  one sentence: update the obsync server to 1.1.5 or later, then pair. The
-  version is unauthenticated, and that is safe here: a forged or stripped
-  answer can only cause the refusal, never a weaker pairing, because the
-  marker and the strip detection above are unchanged.
-- **Skew between devices.** Two 1.1.5 devices pair v2. A 1.1.5 claimant
-  handed a 1.1.4 creator's code (no marker) pairs the legacy way and warns
-  that the other device runs an older obsync. A 1.1.4 claimant sends no
-  `claimant_pub`, so a 1.1.5 creator seals the legacy way and warns the same.
-  A 1.1.4 creator's fully random `PS` carries the marker with probability
-  2^-16; that one pairing then shows mismatched codes and is retried with a
-  fresh code.
+  `{"vrk":…}` with a random 12-byte nonce and additional data `pairing_id ||
+  claimant_pub || creator_pub` (the raw keys), so it cannot be replayed into
+  another pairing or opened against a substituted key. A copy of the code and
+  a record of every request open nothing.
+- **What is refused.** A claim without `claimant_pub` (a device before 1.1.5,
+  or a key stripped on the way: the two look the same) is rejected on the
+  creator, which says to update the new device; a claim whose name or
+  `app_version` is not what a server accepts (1 to 64, and 1 to 32, printable
+  ASCII) is rejected as one no obsync server sends. The claimant refuses an
+  envelope without `creator_pub`. A claim a device before 1.1.5 held across a
+  restart is dropped at the next start, never finished; one the update
+  interrupted after it collected its key leaves its device listed with no
+  keeper, to be revoked under Devices.
+- **The server first.** A server before 1.1.5 drops the key fields and has
+  no reveal, so before `POST /v1/pairing` a 1.1.5 creator reads `GET
+  /v1/plugin/manifest` and makes no code unless the `version` it reports is
+  1.1.5 or later (`major.minor.patch`, a pre-release counts); an older
+  version, a malformed one, or none (`404 plugin_unavailable`) is refused
+  with one sentence: update the obsync server to 1.1.5 or later, then pair.
+  The version is unauthenticated, and that is safe here: a forged answer can
+  only cause the refusal, or reach a server that cannot complete the reveal.
 - **Paired means kept.** Collection (`consumed`) proves only that the envelope
   left the server: a claimant that cannot open it, or whose person cancels,
   revokes itself. So the creator says "paired" only once the claimant's row in

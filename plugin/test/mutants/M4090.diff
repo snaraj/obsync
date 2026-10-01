@@ -1,0 +1,11 @@
+# M4090: the key goes out for a claim the dialog no longer asks about
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -385,7 +385,6 @@
+     // now does this device's key go out, for this claimant's key alone.
+     // Whoever put a key in the claim chose it without knowing ours.
+     const code = await matchCodeV2(secret, pairingId, claimantKey, kex.publicKey);
+-    if (this.asking !== pairingId) return;
+     try {
+       await this.plugin.transport.pairingReveal(pairingId, kex.publicKey);
+     } catch (error) {
