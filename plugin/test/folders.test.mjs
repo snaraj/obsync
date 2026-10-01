@@ -199,8 +199,19 @@ for (const { name, from, to } of directions) {
     assert.equal(follows.host.text("Tree/Keep/kept.md"), "a note that stays\n", `the sibling was lost: ${told}`);
     assert.equal(follows.host.hasFolder("Tree/Keep"), true, `the sibling folder went: ${told}`);
     assert.equal(follows.host.hasFolder("Tree"), true, `the trunk went with the branch: ${told}`);
-    assert.ok(follows.host.logs.some((line) =>
-      line.includes("folder path_class=folder decision=removed reason=tombstone")));
+    // The folder's tombstone and its note's are two pushes, and the queue runs
+    // them side by side (`engine.ts`, `drainQueue`), so the feed may carry
+    // either first: the tombstone removes the emptied folder itself, or,
+    // overtaking the note, finds it occupied, keeps it without a word and
+    // leaves it to the empty-parent walk the note's deletion runs
+    // (`os-junk.test.mjs`, #184, holds that order still). Either way it went,
+    // and nobody was told it was kept.
+    const folderLines = follows.host.logs.filter((line) => line.startsWith("folder "));
+    assert.ok(folderLines.some((line) =>
+      /^folder path_class=folder decision=removed reason=(tombstone|empty_parent)( |$)/.test(line)),
+      `the folder left by neither its tombstone nor the empty-parent walk: ${folderLines.join(" | ")}; ${told}`);
+    assert.deepEqual(follows.host.said.filter((notice) => notice.text.startsWith("kept the folder")), [],
+      `a folder on its way out was announced as kept: ${told}`);
 
     // And now the trunk itself: every record under it goes, deepest first.
     acts.host.removeFolder("Tree");
