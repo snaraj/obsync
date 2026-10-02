@@ -410,13 +410,16 @@ history/request/diagnostic behavior; manual entry alone does not establish that.
 Reconciliation cannot recover a one-time credential that never reached native
 storage. For that case, the new setup operation must durably identify the exact
 orphan device without exposing its secret. Return `needs_action`; under explicit
-native recovery approval revoke that orphan through the trusted recovery session,
-then enroll through the existing setup-token plus vault-proof recovery flow.
-The plugin retains the vault key it saved before setup. There is never a second
-active identity for the abandoned installation; the revoked orphan stays in audit
-history. If the orphan cannot be identified or account recovery is unavailable,
-stop for owner recovery rather than guess or repeat enrollment. WP3 must implement
-this outcome before interrupted first setup can pass acceptance.
+native recovery approval make one replacement enrollment through the existing
+setup-token plus vault-proof recovery flow, using the vault key the plugin saved
+before setup. Verify the replacement's native credential persistence, restart
+and heartbeat before ordinarily revoking the exactly bound orphan. The interim
+two-active-device state is partial progress, not completion; the revoked orphan
+stays in audit history. Preserve the existing last-device and recovery-age guards.
+If the orphan cannot be identified, recovery is unavailable or the replacement
+response is also lost, stop in `needs_action` for reconciliation; do not repeat
+enrollment. WP3 must implement this outcome before interrupted first setup can
+pass acceptance.
 
 Current onboarding stages are `prerequisites → existing-target → management-auth →
 plugin-installed → plugin-configured → content-device-active → sync-verified`.

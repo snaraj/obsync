@@ -257,11 +257,16 @@ the authorized deployment workflow converge it.
 Begin with neither a content account nor a management grant. Exercise the actual
 protected setup-token handoff or documented native owner-input fallback, expire
 an abandoned handoff and interrupt first setup once. Prove secret material never
-reaches agent output, and resumption does not create another active identity.
+reaches agent output, and resumption does not blindly repeat enrollment.
 Include interruption after durable server enrollment but before native credential
 persistence. Inventory cannot recover the lost secret: require `needs_action`,
-exact orphan attribution/revocation, explicit native recovery enrollment and one
-active replacement. An unidentifiable orphan or unavailable recovery stops safely.
+exact orphan attribution and one explicitly approved native recovery enrollment.
+Verify the replacement's native persistence, restart and heartbeat before ordinary
+revocation of the exactly bound orphan. Two active devices is a partial outcome;
+completion requires one active replacement and a revoked orphan. Preserve the
+last-device and recovery-age guards. An unidentifiable orphan, unavailable recovery
+or another lost enrollment response stops in `needs_action` for reconciliation,
+without repeated enrollment.
 
 **Deferred deployment completion proof.** Independently inspect running image
 digest, effective env/values, mounts, ownership, single writer, readiness and
