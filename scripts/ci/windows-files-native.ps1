@@ -6,6 +6,7 @@ if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows') { throw '
 $Shell = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\powershell.exe')
 if (!$SelectedUser) {
     $Node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+    if ((& $Node --version) -cne 'v26.10.0' -or $LASTEXITCODE -ne 0) { throw 'Controller runtime differs.' }
     $Accounts = @()
     try {
         $Passwords = @(([Guid]::NewGuid().ToString('N') + 'aA1!'), ([Guid]::NewGuid().ToString('N') + 'aA1!'))
@@ -56,7 +57,12 @@ if (!$SelectedUser) {
     exit 0
 }
 if (![IO.Path]::IsPathRooted($Node) -or ![IO.File]::Exists($Node)) { throw 'Pinned runtime path required.' }
-if ((& $Node --version) -cne 'v26.10.0') { throw 'Pinned runtime required.' }
+$RuntimeVersion = & $Node --version
+$RuntimeExit = $LASTEXITCODE
+if ($RuntimeVersion -cne 'v26.10.0' -or $RuntimeExit -ne 0) {
+    $VersionClass = if ($RuntimeVersion -is [string] -and $RuntimeVersion -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { $RuntimeVersion } else { 'no_version' }
+    throw ('Selected-user runtime refused: exit=' + $RuntimeExit + '; version=' + $VersionClass)
+}
 $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $User = $Identity.User
 if ($Identity.Owner.Value -cne $User.Value) { throw 'An ordinary selected-user token is required.' }
