@@ -16,6 +16,10 @@ such a file is held for that run only, and judged again by the next engine.
   `main.js` `34797c29613f28104157e09de46dc713be862269bdebca11c587ebe8c2522b11`;
   `manifest.json` `ed84bd8d8d6f4e316d96ecddc8e097704a8719367781ac35d61cff7b4dba463d`;
   `styles.css` `43dd0db8ccce20e88a3c63ec2ea35e46ce4133912c0e797da036e37a6499287b`.
+- The device: a macOS desktop (laptop). Its model, the macOS version and the Obsidian version: not recorded
+  during the run. The plugin arrived by the lab script copying the built `main.js`, `manifest.json` and
+  `styles.css` into the vault's plugin folder (not through Community Plugins); the page reported plugin
+  version 1.1.5.
 - The vault synced `Crash/Kept.md` and `Crash/Old.md` (sentinel text), then
   Obsidian was quit. While it was stopped, `Crash/Fresh.md` was made empty (a
   new file) and `Crash/Old.md` emptied (a recorded note), and the
@@ -41,10 +45,10 @@ such a file is held for that run only, and judged again by the next engine.
 
 ## Not covered here
 
-- A phone. The empty landing #248 is about is Android's dropped write; this
+- A phone (deferred to #314, v1.1.6). The empty landing #248 is about is Android's dropped write; this
   run proves the start's hold and its end on a desktop, where an emptied note
   takes the same path. The landing itself is held to the plugin's tests.
-- A second device reading the two empty notes back.
+- A second device reading the two empty notes back (#314).
 - A reload (Obsidian quit and started) after the blind start; the plugin's
   tests cover it beside the restart in place.
 
