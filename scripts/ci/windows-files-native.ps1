@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows') { throw 'Hosted Windows runner required.' }
 $Shell = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\powershell.exe')
-$Node = (Get-Command node -CommandType Application).Source
+$Node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
 if ((& $Node --version) -cne 'v26.10.0') { throw 'Pinned runtime required.' }
 $User = [Security.Principal.WindowsIdentity]::GetCurrent().User
 $Root = [IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), 'obsync native ' + [Guid]::NewGuid().ToString('N'))
