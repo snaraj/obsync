@@ -1,9 +1,8 @@
-# The only client native interop surface. See AGENTS.md requirement 5.
-# Fixed source; request data arrives on stdin. Never dot-source this file.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $WarningPreference = 'Stop'
+$PSModuleAutoLoadingPreference = 'None'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false, $true)
 
 function Refuse([string] $Reason) {
@@ -108,6 +107,10 @@ try {
   if ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName -ine $Executable) { Refuse 'os_powershell_required' }
   Inspect-Parents $Executable $true
   if (Inspect-One $Executable $false $true) { Refuse 'os_powershell_required' }
+  $Json = $PSHOME+'\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'
+  Inspect-Parents $Json $true
+  if (Inspect-One $Json $false $true) { Refuse 'os_module_required' }
+  Import-Module $Json
   $Characters = [char[]]::new(16385)
   $Reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.UTF8Encoding]::new($false, $true), $false, 4096)
   $Count = 0
@@ -195,6 +198,6 @@ try {
 } catch {
   $Reason = $_.Exception.Data['obsync_reason']
   if ($Reason -isnot [string] -or $Reason -cnotmatch '^[a-z_]{1,48}$') { $Reason = 'windows_files_refused' }
-  [Console]::Error.WriteLine(([ordered]@{v=1;ok=$false;reason=$Reason;exception=$_.Exception.GetType().Name;line=$_.InvocationInfo.ScriptLineNumber} | ConvertTo-Json -Compress))
+  [Console]::Error.WriteLine('{"v":1,"ok":false,"reason":"'+$Reason+'","exception":"'+$_.Exception.GetType().Name+'","line":'+$_.InvocationInfo.ScriptLineNumber+'}')
   exit 4
 }

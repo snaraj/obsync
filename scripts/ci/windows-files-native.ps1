@@ -20,25 +20,11 @@ $Created = $false
 try {
     $Trust = [IO.Path]::Combine($Root, 'trust')
     $RequestText = [ordered]@{v=1;op='setup';path=$Trust;destination=''} | ConvertTo-Json -Compress
-    $RoundTrip = ConvertFrom-Json -InputObject $RequestText
-    if ($RoundTrip.path -cne $Trust -or $RoundTrip.op -cne 'setup') { throw 'Native JSON producer round trip failed.' }
     $Request = [Text.UTF8Encoding]::new($false, $true).GetBytes($RequestText)
-    $Hash = [Security.Cryptography.SHA256]::Create()
-    try { Write-Output ('producer_json_sha256=' + [BitConverter]::ToString($Hash.ComputeHash($Request)).Replace('-', '').ToLowerInvariant()) } finally { $Hash.Dispose() }
-    # Temporary hosted-only diagnostic copy: print a digest, never input text.
-    # The embedded helper exercised by Node below remains byte-for-byte original.
-    $Diagnostic = [IO.Path]::Combine($Root, 'setup-diagnostic.ps1')
-    $Original = [IO.File]::ReadAllText([IO.Path]::GetFullPath('cli/windows-files.ps1'))
-    $At = '$Request = ConvertFrom-Json -InputObject $Raw'
-    $Trace = '$h=[Security.Cryptography.SHA256]::Create();try{[Console]::Out.WriteLine("consumer_json_sha256="+[BitConverter]::ToString($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($Raw))).Replace("-","").ToLowerInvariant())}finally{$h.Dispose()}'
-    $Received = [IO.Path]::Combine($Root, 'received.json')
-    $Trace += ';[IO.File]::WriteAllText(''' + $Received.Replace("'", "''") + ''',$Raw,[Text.UTF8Encoding]::new($false,$true))'
-    if (!$Original.Contains($At)) { throw 'Diagnostic source marker differs.' }
-    [IO.File]::WriteAllText($Diagnostic, $Original.Replace($At, $Trace + "`n" + $At), [Text.UTF8Encoding]::new($false, $true))
     # Use an explicit UTF-8 byte pipe, as the Node adapter does. PowerShell's
     # object pipeline must not choose serialization for this JSON protocol.
     $Start = [Diagnostics.ProcessStartInfo]::new($Shell)
-    $Start.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + $Diagnostic + '"'
+    $Start.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + [IO.Path]::GetFullPath('cli/windows-files.ps1') + '"'
     $Start.UseShellExecute = $false
     $Start.RedirectStandardInput = $true
     # .NET Framework chooses this encoding when constructing the child's
@@ -52,16 +38,7 @@ try {
         $Setup.StandardInput.BaseStream.Write($Request, 0, $Request.Length)
         $Setup.StandardInput.Close()
         if (!$Setup.WaitForExit(15000)) { $Setup.Kill(); $Setup.WaitForExit(); throw 'Trusted OS setup timed out.' }
-        if ($Setup.ExitCode -ne 0) {
-            if ([IO.File]::Exists($Received)) {
-                $Actual = [IO.File]::ReadAllText($Received)
-                $Index = 0
-                while ($Index -lt [Math]::Min($Actual.Length, $RequestText.Length) -and $Actual[$Index] -ceq $RequestText[$Index]) { $Index++ }
-                Write-Output ('json_lengths=' + $RequestText.Length + ',' + $Actual.Length + '; first_difference=' + $Index)
-                if ($Index -lt [Math]::Min($Actual.Length, $RequestText.Length)) { Write-Output ('json_codepoints=' + [int]$RequestText[$Index] + ',' + [int]$Actual[$Index]) }
-            }
-            throw 'Trusted OS setup failed.'
-        }
+        if ($Setup.ExitCode -ne 0) { throw 'Trusted OS setup failed.' }
     } finally { $Setup.Dispose() }
     $Receipt = [IO.Path]::Combine($Trust, 'powershell.json')
     $Digest = (Get-FileHash -LiteralPath $Receipt -Algorithm SHA256).Hash.ToLowerInvariant()

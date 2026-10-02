@@ -126,26 +126,27 @@ export class WindowsFiles {
             SystemRoot: system.slice(0, -"\\System32".length),
             PSModulePath: `${system}\\WindowsPowerShell\\v1.0\\Modules`,
           }, stdio: ["pipe", "pipe", "pipe"] });
-        let output = "", diagnostics = "", size = 0, refused = false;
+        let output = "", diagnostics = "", size = 0, refused = "";
         const decoder = new TextDecoder("utf-8", { fatal: true });
-        const fail = () => { refused = true; child.kill(); };
-        const timer = setTimeout(fail, op === "publish" ? 120000 : 15000);
-        const cancellation = setInterval(() => { try { check(); } catch { fail(); } }, 100);
-        child.stdin.on("error", fail);
+        const fail = (reason: string) => { refused ||= reason; child.kill(); };
+        const timer = setTimeout(() => fail("deadline"), op === "publish" ? 120000 : 15000);
+        const cancellation = setInterval(() => { try { check(); } catch { fail("cancelled"); } }, 100);
+        child.stdin.on("error", () => fail("stdin"));
         child.stdout.on("data", data => {
-          if ((size += data.length) > 256) { fail(); return; }
-          try { output += decoder.decode(data, { stream: true }); } catch { fail(); }
+          if ((size += data.length) > 256) { fail("output_budget"); return; }
+          try { output += decoder.decode(data, { stream: true }); } catch { fail("output_encoding"); }
         });
         child.stderr.on("data", data => {
-          if ((size += data.length) > 256) { fail(); return; }
-          try { diagnostics += new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { fail(); }
+          if ((size += data.length) > 256) { fail("output_budget"); return; }
+          try { diagnostics += new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { fail("output_encoding"); }
         });
         child.on("error", () => { clearTimeout(timer); clearInterval(cancellation); reject(Error("windows_files_refused")); });
         child.on("close", code => {
           clearTimeout(timer);
           clearInterval(cancellation);
+          try { output += decoder.decode(); } catch { refused ||= "output_encoding"; }
           if (refused || code !== 0 || diagnostics || output.replace(/\r?\n$/, "") !== '{"v":1,"ok":true}') {
-            let detail = "";
+            let detail = refused ? `:${refused}` : "";
             try {
               const value = JSON.parse(diagnostics) as { v: number; ok: boolean; reason: string; exception: string; line: number };
               if (value.v === 1 && value.ok === false && /^[a-z_]{1,48}$/.test(value.reason) &&
