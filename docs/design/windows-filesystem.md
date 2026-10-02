@@ -61,11 +61,12 @@ self-inspection after executing an ambiently chosen binary would not solve it.
 
 ## Evidence still required
 
-`.github/workflows/windows-files.yml` builds the actual plugin and runs
+The `windows-files` job in `.github/workflows/desktop-matrix.yml` builds the actual plugin and runs
 `scripts/ci/windows-files-native.ps1` on a disposable hosted Windows runner.
 It uses the real shared adapter, private synthetic fixtures, a temporary
 ordinary second account, hard links, junctions, collisions and a fresh process
-for publication. It verifies identity, sentinel bytes, and actual denial of
+for publication. When the CLI source is present, it builds and exercises that
+candidate in the same job. It verifies identity, sentinel bytes, and actual denial of
 listing, reading and replacement. The driver removes only its own account and
 exact fixture. No hosted result has been claimed for this candidate.
 

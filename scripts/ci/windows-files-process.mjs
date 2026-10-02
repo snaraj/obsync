@@ -4,11 +4,35 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { readFile, writeFile, mkdir, link, symlink, lstat, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const [phase, root, receipt, digest] = process.argv.slice(2);
 assert.equal(process.platform, 'win32');
 assert.match(phase, /^(prepare|publish)$/);
 const { WindowsFiles } = createRequire(import.meta.url)('../../plugin/build/windowsFiles.js');
+if (phase === 'prepare') {
+  const raw = await readFile(receipt);
+  assert.equal(createHash('sha256').update(raw).digest('hex'), digest);
+  const trust = JSON.parse(raw), shell = trust.powershell.path;
+  const source = createRequire(import.meta.url)('../../plugin/build/windowsHelperData.js').source;
+  const system = shell.slice(0, -'\\WindowsPowerShell\\v1.0\\powershell.exe'.length);
+  const input = JSON.stringify({ v: 1, op: 'inspect', path: root, destination: '' });
+  for (const [name, code] of [
+    ['startup', "[Console]::Out.WriteLine('probe')"],
+    ['stdin', "$r=[IO.StreamReader]::new([Console]::OpenStandardInput(),[Text.UTF8Encoding]::new($false,$true),$false,4096);[Console]::Out.WriteLine($r.ReadToEnd().Length)"],
+    ['helper', source],
+  ]) {
+    const started = performance.now();
+    const result = spawnSync(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(code, 'utf16le').toString('base64')], {
+      input, encoding: 'utf8', timeout: 5000, maxBuffer: 1024, windowsHide: true,
+      cwd: system, env: { SystemRoot: system.slice(0, -'\\System32'.length) },
+    });
+    console.log(JSON.stringify({ event: 'native_launch_probe', name, status: result.status, signal: result.signal,
+      error: result.error?.code, stdout_bytes: result.stdout?.length, stderr_bytes: result.stderr?.length,
+      duration_ms: Math.round(performance.now() - started) }));
+  }
+}
 const files = await WindowsFiles.fromReceipt(receipt, digest);
 const stage = join(root, 'stage'), destination = join(root, 'complete');
 if (phase === 'prepare') {

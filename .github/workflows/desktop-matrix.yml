@@ -46,6 +46,8 @@ on:
     paths:
       - '.github/workflows/desktop-matrix.yml'
       - 'plugin/**'
+      - 'cli/windows-files.ps1'
+      - 'scripts/ci/windows-files-*'
       - 'scripts/ci/obsidian-drive.mjs'
       - 'scripts/ci/obsidian-e2e.sh'
       - 'scripts/ci/obsidian-host.sh'
@@ -272,7 +274,7 @@ jobs:
           npm test
 
   windows-files:
-    if: github.event_name == 'workflow_dispatch' && inputs.journey == 'windows-files'
+    if: github.event_name != 'workflow_dispatch' || inputs.journey == 'full' || inputs.journey == 'windows-files'
     runs-on: windows-2025
     timeout-minutes: 12
     permissions:
@@ -293,7 +295,7 @@ jobs:
           test "$(npm --version)" = 11.19.1
           npm ci --prefix plugin --ignore-scripts --no-audit --no-fund
           npm run build --prefix plugin
-          node cli/build.mjs
+          if [[ -f cli/build.mjs ]]; then node cli/build.mjs; fi
       - name: Exercise native custody, context recovery and installation
         shell: powershell
         run: ./scripts/ci/windows-files-native.ps1
