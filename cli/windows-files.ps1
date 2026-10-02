@@ -118,6 +118,8 @@ try {
   }
   if ($Count -gt 16384) { Refuse 'request_budget' }
   $Raw = [string]::new($Characters, 0, $Count).TrimEnd([char[]]@("`r", "`n"))
+  if (!$Raw.StartsWith('{')) { Refuse 'request_prefix' }
+  if (!$Raw.EndsWith('}')) { Refuse 'request_suffix' }
   $Request = ConvertFrom-Json -InputObject $Raw
   $Names = @($Request.PSObject.Properties.Name)
   if ($Names.Count -ne 4 -or @($Names | Where-Object { $_ -cnotin @('v', 'op', 'path', 'destination') }).Count -ne 0 -or

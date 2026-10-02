@@ -123,7 +123,7 @@ export class WindowsFiles {
         const child = this.spawn.spawn(this.powershell.path,
           ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", this.command],
           { shell: false, windowsHide: true, cwd: system, env: { SystemRoot: system.slice(0, -"\\System32".length) }, stdio: ["pipe", "pipe", "pipe"] });
-        let output = "", size = 0, refused = false;
+        let output = "", diagnostics = "", size = 0, refused = false;
         const decoder = new TextDecoder("utf-8", { fatal: true });
         const fail = () => { refused = true; child.kill(); };
         const timer = setTimeout(fail, op === "publish" ? 120000 : 15000);
@@ -133,12 +133,24 @@ export class WindowsFiles {
           if ((size += data.length) > 256) { fail(); return; }
           try { output += decoder.decode(data, { stream: true }); } catch { fail(); }
         });
-        child.stderr.on("data", data => { if (data.length) fail(); });
+        child.stderr.on("data", data => {
+          if ((size += data.length) > 256) { fail(); return; }
+          try { diagnostics += new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { fail(); }
+        });
         child.on("error", () => { clearTimeout(timer); clearInterval(cancellation); reject(Error("windows_files_refused")); });
         child.on("close", code => {
           clearTimeout(timer);
           clearInterval(cancellation);
-          if (refused || code !== 0 || output.replace(/\r?\n$/, "") !== '{"v":1,"ok":true}') reject(Error("windows_files_refused")); else resolve();
+          if (refused || code !== 0 || diagnostics || output.replace(/\r?\n$/, "") !== '{"v":1,"ok":true}') {
+            let detail = "";
+            try {
+              const value = JSON.parse(diagnostics) as { v: number; ok: boolean; reason: string; exception: string; line: number };
+              if (value.v === 1 && value.ok === false && /^[a-z_]{1,48}$/.test(value.reason) &&
+                  /^[A-Za-z]{1,64}$/.test(value.exception) && Number.isInteger(value.line) && value.line > 0 && value.line < 10000)
+                detail = `:${value.reason}:${value.exception}:${value.line}`;
+            } catch { /* Unrecognized output never reaches diagnostics. */ }
+            reject(Error(`windows_files_refused${detail}`));
+          } else resolve();
         });
         child.stdin.end(request);
       });
