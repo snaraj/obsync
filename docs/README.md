@@ -26,6 +26,7 @@ version you run. There is no beta channel and no pre-release tag.
 | [Conflicts](conflicts.md) | What a conflict copy is and what to do with it |
 | [Troubleshooting](troubleshooting.md) | What you see, why it happens, how to fix it, and how to report a problem |
 | [Recovery](recovery.md) | A lost device, a lost server, a moved server, a rotated token |
+| [Export and offline copies](export.md) | Encrypted copies, opening plain notes offline, format and platform limits |
 
 ## Run a server
 

@@ -310,6 +310,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
       { heading: "Sync folders on this device", rows: [this.folderSelection(), this.selectedFolders(), this.saveScope(), this.heldDeletions()] },
       { heading: "This device", rows: [this.pairing(), this.setup(), this.deviceName(enrolled), this.perFile(enrolled), this.total(enrolled), this.saveDevice(enrolled), this.leaving(enrolled)] },
       { heading: "Devices", visible: () => this.plugin.state.paired, rows: this.deviceRows() },
+      { heading: "Export", rows: [{ name: "Export and open a copy", desc: "Encrypted copies, offline recovery, and plain local notes outside this vault.", render: (setting) => { setting.addButton((button) => button.setButtonText("Open").onClick(() => this.plugin.showExport())); } }] },
       { heading: "Vault key", rows: [this.recoveryPhrase()] },
       { heading: "Notifications", rows: [this.noticeLevel(), this.combinedEdits(), this.recentActivity()] },
     ];

@@ -1313,7 +1313,7 @@ class TheShippedFile(unittest.TestCase):
             (
                 LOGGING_RULE,
                 "crates/obsyncd/src/cli/export.rs",
-                line_of("crates/obsyncd/src/cli/export.rs", "files written"),
+                line_of("crates/obsyncd/src/cli/export.rs", "println!("),
                 "false positive",
             ),
         ):

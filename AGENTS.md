@@ -82,12 +82,28 @@ Numbered for citation, repo-scoped, none negotiable in code:
    runtime dependencies; its only build inputs are the pinned Node toolchain,
    one exact `typescript` compiler pin, and the vendored official Obsidian
    API type declarations under `plugin/vendor/` with their license. The
-   dashboard is hand-written HTML, CSS, and JavaScript with no framework and
+   standalone CLI uses exactly Node 26.10.0 built-ins (including WebCrypto and
+   SQLite) and zero npm runtime packages. Node is an independently trusted,
+   pinned prerequisite; CLI exports reuse the plugin's crypto and format
+   modules. This narrow CLI exception does not change the Rust or plugin
+   dependency rules. The dashboard is hand-written HTML, CSS, and JavaScript with no framework and
    no remote asset. Cryptography on the device uses the platform's built-in
    WebCrypto; cryptography on the server is implemented in
-   `crates/obsync-core` against published test vectors. The single permitted
-   FFI surface is `crates/obsyncd/src/signal.rs` (SIGTERM/SIGINT delivery);
-   every other file carries `#![forbid(unsafe_code)]`. CI tooling (cosign,
+   `crates/obsync-core` against published test vectors. The only Rust FFI
+   surface is `crates/obsyncd/src/signal.rs` (SIGTERM/SIGINT delivery);
+   every other Rust file carries `#![forbid(unsafe_code)]`. The owner-approved
+   client exception is exactly `cli/windows-files.ps1`: its only native import
+   is `kernel32.dll!MoveFileExW`, called with fixed `MOVEFILE_WRITE_THROUGH`
+   (`0x8`) to publish an owned directory to an absent sibling on local NTFS.
+   No replacement, copy fallback, reboot scheduling, arbitrary DLL/symbol,
+   native helper binary or runtime dependency is permitted. Private DACL
+   creation and file flushing use OS PowerShell 5.1's built-in .NET Framework.
+   The plugin embeds the exact helper source and hash into `main.js`; it does
+   not depend on an installed CLI. A future CLI package reuses that source.
+   Windows operations remain unavailable at product boundaries until hosted
+   native custody, recovery and durability evidence passes. This exception
+   does not authorize another FFI surface.
+   CI tooling (cosign,
    helm, gitleaks, Python for the contract suites, a throwaway competitor
    container for benchmarks) is tooling, ships nothing, and is pinned by
    version and checksum. A dependency of any other kind is an owner
@@ -223,10 +239,17 @@ addresses. `TestProviderNeutrality` pins zero provider names under
 `make check` is the canonical gate and CI runs the same battery:
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test --workspace`, coverage against `RUST_COVERAGE_FLOOR`, the plugin
-build and `node --test`, chart lint plus the pin scripts under `scripts/ci`,
+build and `node --test`, `node cli/build.mjs` and `node cli/test.mjs`,
+chart lint plus the pin scripts under `scripts/ci`,
 the contract suites (`python3 -B -m unittest discover -s scripts/ci`), and
 both secret scans. Frontend and backend checks run once, natively; only the
 final image stage is per-target.
+
+The CLI's initial ratchet-only passing-test floor is 12 on POSIX and 2 on
+Windows (which currently refuses persistence). `cli/test.mjs` enforces it;
+skipped tests never count. Native CLI jobs exercise actual subprocesses on
+macOS, Windows and both Linux architectures. Hosted success is required before
+advertising the corresponding installation or filesystem capability.
 
 Releases follow requirement 10. The publisher's read-only authorization job
 verifies the exact run, repository, workflow path, push event, main branch,

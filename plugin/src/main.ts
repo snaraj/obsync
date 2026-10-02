@@ -1,3 +1,4 @@
+import { ExportModal } from "./ui/export";
 /**
  * The obsync Obsidian plugin: lifecycle, commands, the vault host, and the
  * update notice.
@@ -3495,6 +3496,7 @@ export default class ObsyncPlugin extends Plugin {
   /** The Show sync status and Recent dialogs last opened; asked for again while one shows, it comes forward (#269). */
   private statusDialog: StatusModal | null = null;
   private recentDialog: RecentModal | null = null;
+  private exportDialog: ExportModal | null = null;
   private statusValue: EngineStatus = { kind: "idle" };
   forgottenDevice = false;
   /** A pairing claim waiting for its vault key (issue #153); it signs its own collection. */
@@ -3631,6 +3633,7 @@ export default class ObsyncPlugin extends Plugin {
 
     this.addCommand({ id: "sync-now", name: "Sync now (obsync)", callback: () => void this.syncNow() });
     this.addCommand({ id: "verify-all", name: "Verify all files (obsync)", callback: () => void this.syncNow(true) });
+    this.addCommand({ id: "export-copy", name: "Export or open a copy (obsync)", callback: () => this.showExport() });
     this.addCommand({ id: "restore-history", name: "Restore from history (obsync)", callback: () => new HistoryModal(this.app, this).open() });
     this.addCommand({
       id: "pair-device",
@@ -3813,8 +3816,12 @@ export default class ObsyncPlugin extends Plugin {
     this.recentDialog = this.oneDialog(this.recentDialog, () => new RecentModal(this.app, this), "recent");
   }
 
+  showExport(): void {
+    this.exportDialog = this.oneDialog(this.exportDialog, () => new ExportModal(this.app, this), "export");
+  }
+
   /** One dialog, however often it is asked for (#269): the one showing comes forward, or a new one opens. */
-  private oneDialog<D extends StatusModal | RecentModal>(showing: D | null, make: () => D, name: string): D {
+  private oneDialog<D extends StatusModal | RecentModal | ExportModal>(showing: D | null, make: () => D, name: string): D {
     if (showing?.isShown() === true) {
       this.log(`${name} decision=forward reason=already_open`);
       showing.forward();

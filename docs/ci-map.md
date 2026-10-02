@@ -31,6 +31,7 @@ emptying the configuration cannot also drop the context that names the socket.
 | `application` | `cargo test --workspace` | The Rust battery, including the doctrine pins. |
 | `application` | `./scripts/ci/coverage.sh` against `RUST_COVERAGE_FLOOR` | Line coverage meets the ratchet-only floor (requirement 9), measured with the pinned `llvm-tools` component and no crate. The floor is ONE fact in three places -- AGENTS.md, the Makefile, and this workflow's env -- and `test_coverage_floor.py` fails the gate if they disagree, if any of the three stops declaring it, or if the step that consumes it is removed. |
 | `application` | `npm ci --ignore-scripts --no-audit --no-fund`, `npm run build`, `npm test` in `plugin/` | The plugin builds from its lockfile with no install hook executed, and its tests pass under `node --test`. |
+| `application` | `node cli/build.mjs`, `node cli/test.mjs` | Shared offline export code builds into the CLI; real processes exercise local plans, crash recovery, confinement, installation and export readback. Passing-test floors exclude skips. |
 | `application` | `node --test dashboard/test/` | The dashboard's pure functions hold. The dashboard has no `package.json` by design, so this needs no install step. |
 | `application` | `scripts/ci/makefile-invariants.sh` | `make check` and this workflow run one battery — plus the two `docker build` commands `make image` and the `container` job share, and the smoke that follows them. Both sides are read for what they RUN, never for what they mention: the Makefile's tab-indented recipe lines, and every step `run:` value resolved by `scripts/ci/workflow_runs.py` through the fail-closed YAML reader. A step or job carrying an `if:`, and a segment behind a `false &&` or a `||`, are not the battery and do not count. The check can still fail — it mutates a copy of each file thirteen ways (deleting a canonical command, naming it in a comment, neutralizing it as `true # …` or `echo '…'`, and putting it behind a `false &&`, a `||` or an `if:`) and requires the comparison to refuse every one. |
 | `chart` | `helm lint chart`, `helm template smoke chart --kube-version v1.36.0` | The chart renders against the platform's Kubernetes target and satisfies its own required, closed `values.schema.json`. |
@@ -307,6 +308,14 @@ wrong — the three peer labels, the upstream Service, and the body ceiling. An
 | `static-binary` | `docker build --target server`, the binary uploaded | The static linux/amd64 server for the Windows leg, from this commit |
 | `obsidian-windows` | the plugin, that binary, then `scripts/ci/obsidian-host.sh` (Git Bash) | The same journeys with the official installer run silently, the server under WSL 1 in an Alpine distribution imported for the run, Caddy in front, the authority in the machine Root store; plus a rename by capitalisation alone, a note moved to the trash, and an edit to a note another process holds open |
 | `plugin-tests` (windows-2025, macos-15) | `npm ci`, `npm run build`, `npm test` | The plugin suite on NTFS and APFS, not only on the ext4 of the gate |
+
+## `cli-native.yml` — pull requests, main pushes and manual dispatch
+
+The CLI process suite runs on `ubuntu-24.04`, `ubuntu-24.04-arm`, `windows-2025`
+and `macos-15`, using pinned Node 26.10.0 / npm 11.19.1. Windows currently proves
+read-only discovery and explicit write/install/export refusal. A passing job
+does not establish Windows credential custody. Publisher provenance and public
+download/install acceptance remain separate release checks.
 
 ## `bench.yml` — nightly, manual dispatch, and pull requests that change the harness
 

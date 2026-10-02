@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { windowsHelperModule } from "./windows-helper.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const buildDir = join(root, "build");
@@ -68,8 +69,12 @@ function __load(id) {
 `;
 
 async function main() {
-  const files = (await jsFiles(buildDir)).sort();
+  const helperFile = join(buildDir, "windowsHelperData.js");
+  const files = (await jsFiles(buildDir)).filter(file => file !== helperFile);
   if (files.length === 0) throw new Error("build.mjs: build/ is empty — run tsc first");
+  await writeFile(helperFile, await windowsHelperModule());
+  files.push(helperFile);
+  files.sort();
 
   const parts = ["var __modules = {};\n"];
   for (const file of files) {

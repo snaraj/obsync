@@ -2,6 +2,7 @@
 /target/
 plugin/dist/
 plugin/node_modules/
+cli/dist/
 .DS_Store
 __pycache__/
 

@@ -633,6 +633,19 @@ jobs:
               --source "${tree}" --tag "${TAG}" --platform "linux/${arch}" --output "${archive}"
             printf '%s=%s\n' "${arch}" "${archive}" >> "${GITHUB_OUTPUT}"
           done
+      - name: Export the CLI archive from the pinned shared build
+        id: cli
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          tree="${RUNNER_TEMP}/cli-dist"
+          docker buildx build --target cli-dist --platform linux/amd64 \
+            --build-arg "SOURCE_SHA=${SOURCE_SHA}" --output "type=local,dest=${tree}" .
+          archive="${RUNNER_TEMP}/obsync-cli-${VERSION}.zip"
+          python3 -B scripts/ci/cli_package_contract.py --source "${tree}" --output "${archive}" \
+            --version "${VERSION}" --source-sha "${SOURCE_SHA}"
+          printf 'path=%s\n' "${archive}" >> "${GITHUB_OUTPUT}"
       - name: Attest the native plugin build and server archives
         # Native provenance derives its source from the OIDC workflow SHA,
         # already bound to SOURCE_SHA before the first publication write.
@@ -645,6 +658,7 @@ jobs:
             ${{ steps.plugin.outputs.directory }}/styles.css
             ${{ steps.server.outputs.amd64 }}
             ${{ steps.server.outputs.arm64 }}
+            ${{ steps.cli.outputs.path }}
           create-storage-record: false
           push-to-registry: false
       - name: Verify the native build provenance before release publication
@@ -652,6 +666,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLUGIN_DIRECTORY: ${{ steps.plugin.outputs.directory }}
           SERVER_ARCHIVES: ${{ steps.server.outputs.amd64 }} ${{ steps.server.outputs.arm64 }}
+          CLI_BUNDLE: ${{ steps.cli.outputs.path }}
           ATTESTATION_BUNDLE: ${{ steps.native_attestation.outputs.bundle-path }}
         run: ./scripts/ci/verify-native-provenance.sh "${PLUGIN_DIRECTORY}" "${SOURCE_SHA}" "${ATTESTATION_BUNDLE}"
       - name: Build the deterministic release evidence manifest
@@ -663,6 +678,7 @@ jobs:
           CHART_DIGEST: ${{ steps.chart.outputs.digest }}
           PLUGIN_DIGEST: ${{ steps.plugin.outputs.digest }}
           PLUGIN_PATH: ${{ steps.plugin.outputs.path }}
+          CLI_PATH: ${{ steps.cli.outputs.path }}
           SERVER_AMD64: ${{ steps.server.outputs.amd64 }}
           SERVER_ARM64: ${{ steps.server.outputs.arm64 }}
         run: |
@@ -683,6 +699,7 @@ jobs:
                   --chart "${CHART}" --chart-digest "${CHART_DIGEST}"
                   --plugin-digest "${PLUGIN_DIGEST}" --plugin-bundle "${PLUGIN_PATH}"
                   "${server[@]}")
+            if [ -n "${CLI_PATH:-}" ]; then args+=(--cli-bundle "${CLI_PATH}"); fi
             if [ "${command}" = release-manifest ]; then
               python3 -B scripts/ci/release_contract.py "${command}" --output "${path}" "${args[@]}"
             else
@@ -700,6 +717,7 @@ jobs:
           PLUGIN_DIGEST: ${{ steps.plugin.outputs.digest }}
           PLUGIN_PATH: ${{ steps.plugin.outputs.path }}
           PLUGIN_DIRECTORY: ${{ steps.plugin.outputs.directory }}
+          CLI_PATH: ${{ steps.cli.outputs.path }}
           SERVER_AMD64: ${{ steps.server.outputs.amd64 }}
           SERVER_ARM64: ${{ steps.server.outputs.arm64 }}
           MANIFEST_PATH: ${{ steps.manifest.outputs.path }}
@@ -712,6 +730,11 @@ jobs:
           assets=("${MANIFEST_PATH}" "${PLUGIN_PATH}" "${PLUGIN_DIRECTORY}/main.js"
                   "${PLUGIN_DIRECTORY}/manifest.json" "${PLUGIN_DIRECTORY}/styles.css")
           server=()
+          cli=()
+          if [ -n "${CLI_PATH:-}" ]; then
+            assets+=("${CLI_PATH}")
+            cli=(--cli-bundle "${CLI_PATH}")
+          fi
           if [ -n "${SERVER_AMD64:-}${SERVER_ARM64:-}" ]; then
             assets+=("${SERVER_AMD64}" "${SERVER_ARM64}")
             server=(--server-archive "linux/amd64=${SERVER_AMD64}"
@@ -727,7 +750,7 @@ jobs:
             --main-run-id "${MAIN_RUN_ID}" --version "${VERSION}" \
             --image "${IMAGE}" --image-digest "${IMAGE_DIGEST}" \
             --chart "${CHART}" --chart-digest "${CHART_DIGEST}" \
-            --plugin-digest "${PLUGIN_DIGEST}" --plugin-bundle "${PLUGIN_PATH}" "${server[@]}"
+            --plugin-digest "${PLUGIN_DIGEST}" --plugin-bundle "${PLUGIN_PATH}" "${server[@]}" "${cli[@]}"
           existing="${RUNNER_TEMP}/existing-release.json"
           releases_page="${RUNNER_TEMP}/existing-releases-page.json"
           api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"

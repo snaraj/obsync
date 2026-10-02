@@ -667,13 +667,14 @@ reporting it.
 - **Replica server (v0.3):** a second `obsyncd` in replica mode follows the
   primary's change feed and fetches chunks, giving a warm copy on another
   node. Promotion is an operator action.
-- **Export (v0.1):** `obsyncd export --domain` writes that domain's stored
-  CIPHERTEXT, which the operator decrypts on a device holding the key; the
-  server implements no AES and never could write plaintext
-  (`docs/architecture.md` 3 and 5.1). Its payload assembles a selected newest
-  head; retained-version metadata in the manifest is not a backup of every
-  historical payload. The key it accepts (`--key-file`) does not decrypt content.
-  Both export and check are offline recovery tools, not a full restore proof.
+- **Export:** `obsyncd export --domain <id> --out <file.obsync>` writes that
+  domain's ciphertext in the [portable export format](export.md), including
+  every current head and its chunks. `--history` additionally selects every
+  retained version and its chunks. The server accepts no content key,
+  implements no AES, and cannot write plaintext. Its unkeyed inventory digest
+  detects corruption; it cannot attest completeness or freshness. Both export
+  and check are offline recovery tools, not a full restore proof or a server
+  backup.
 
 ### Offline check and recovery verdicts
 

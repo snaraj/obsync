@@ -1,0 +1,38 @@
+name: CLI native acceptance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.10.0'
+          check-latest: false
+      - name: Build shared package with exact toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v26.10.0
+          test "$(npm --version)" = 11.19.1
+          npm ci --prefix plugin --ignore-scripts --no-audit --no-fund
+          node cli/build.mjs
+      - name: Exercise native process, durability, installation and offline export behavior
+        shell: bash
+        run: node cli/test.mjs

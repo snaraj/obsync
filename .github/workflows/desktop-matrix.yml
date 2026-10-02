@@ -35,6 +35,13 @@ on:
   schedule:
     - cron: '53 4 * * *'
   workflow_dispatch:
+    inputs:
+      journey:
+        description: Native journey to execute on this source ref
+        type: choice
+        required: true
+        default: full
+        options: [full, windows-files]
   pull_request:
     paths:
       - '.github/workflows/desktop-matrix.yml'
@@ -54,6 +61,7 @@ concurrency:
 
 jobs:
   obsidian-linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.journey != 'windows-files'
     name: obsidian-linux (${{ matrix.keyring }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -110,6 +118,7 @@ jobs:
           exit 0
 
   obsidian-macos:
+    if: github.event_name != 'workflow_dispatch' || inputs.journey != 'windows-files'
     runs-on: macos-15
     timeout-minutes: 45
     permissions:
@@ -152,6 +161,7 @@ jobs:
           exit 0
 
   static-binary:
+    if: github.event_name != 'workflow_dispatch' || inputs.journey != 'windows-files'
     # The server's static linux/amd64 build from this commit, for the WSL leg.
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -185,6 +195,7 @@ jobs:
           retention-days: 1
 
   obsidian-windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.journey != 'windows-files'
     needs: static-binary
     runs-on: windows-2025
     timeout-minutes: 45
@@ -229,6 +240,7 @@ jobs:
           exit 0
 
   plugin-tests:
+    if: github.event_name != 'workflow_dispatch' || inputs.journey != 'windows-files'
     strategy:
       fail-fast: false
       matrix:
@@ -258,3 +270,30 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npm run build
           npm test
+
+  windows-files:
+    if: github.event_name == 'workflow_dispatch' && inputs.journey == 'windows-files'
+    runs-on: windows-2025
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.10.0'
+          check-latest: false
+      - name: Build exact plugin and CLI candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v26.10.0
+          test "$(npm --version)" = 11.19.1
+          npm ci --prefix plugin --ignore-scripts --no-audit --no-fund
+          npm run build --prefix plugin
+          node cli/build.mjs
+      - name: Exercise native custody, context recovery and installation
+        shell: powershell
+        run: ./scripts/ci/windows-files-native.ps1

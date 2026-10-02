@@ -598,14 +598,14 @@ anyone but the owner access to anything, and no wording in this repository
 should suggest otherwise.
 
 **Manual access on the host** is the only access path beyond a paired
-device: `obsyncd export --domain <id> --key-file <file> --out <dir>`
-reconstructs that domain's stored ciphertext from the volumes -- file records
-carry their domain in clear (5.1 item 4), so the filter is exact -- and the
-operator decrypts it on a device that holds the key. The key file must be
-readable by its owner alone (`chmod 600`), and `--key-file -` reads the key
-from standard input instead. The older `--key <hex>` still works but prints
-a warning: a key on the command line is visible in the process list and
-kept in shell history. It is the same binary; opening
+device: `obsyncd export --domain <id> --out <file.obsync>`
+copies that domain's stored ciphertext from the volumes -- file records
+carry their domain in clear (5.1 item 4), so the filter is exact. It includes
+every current head; `--history` also includes retained versions. The server
+accepts no content key: `--key` and `--key-file` are refused. The operator
+opens the copy offline on a device holding the vault key, using the format
+and platform capabilities in [Export and offline copies](export.md). The
+server export authenticates no inventory completeness or freshness. Opening
 storage performs the recovery and posture changes described in
 [Offline check and recovery verdicts](storage.md#offline-check-and-recovery-verdicts).
 Use a restored copy with the server stopped, preserving the pristine backup.

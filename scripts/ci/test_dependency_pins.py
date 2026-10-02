@@ -14,6 +14,10 @@ class NodeToolchainPins(unittest.TestCase):
         package = json.loads((ROOT / "plugin/package.json").read_text())
         lock = json.loads((ROOT / "plugin/package-lock.json").read_text())
         engines = package["engines"]
+        cli = json.loads((ROOT / "cli/package.json").read_text())
+        self.assertEqual(cli["engines"], engines)
+        self.assertNotIn("dependencies", cli)
+        self.assertNotIn("devDependencies", cli)
         self.assertEqual(lock["packages"][""]["engines"], engines)
 
         node = engines["node"]

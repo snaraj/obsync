@@ -27,8 +27,21 @@ RUN test "$(node --version)" = "v26.10.0" && \
     test "$(npm --version)" = "11.19.1" && \
     npm ci --ignore-scripts --no-audit --no-fund
 COPY plugin/ ./
+COPY cli/windows-files.ps1 /src/cli/windows-files.ps1
 COPY manifest.json /src/manifest.json
 RUN npm run build && npm test
+
+# The CLI is a separate native release archive; neither Node nor the CLI is
+# added to the server image. Its shared modules use this same compiler/source.
+FROM plugin AS cli-build
+WORKDIR /src
+COPY cli/ cli/
+COPY VERSION LICENSE ./
+ARG SOURCE_SHA
+RUN node cli/build.mjs --release-source "${SOURCE_SHA}"
+
+FROM scratch AS cli-dist
+COPY --from=cli-build /src/cli/dist/ /
 
 # ---------------------------------------------------------------------------
 # bundle -- exactly the three files a user installs into .obsidian/plugins.

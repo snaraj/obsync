@@ -214,7 +214,7 @@ test("clicking the indicator opens Show sync status (#156)", async (t) => {
 
 test("the palette finds every command under 'obsync', and their ids have not changed (#156)", async (t) => {
   const p = await plugin(t);
-  assert.deepEqual(p.commands.map((command) => command.id), ["sync-now", "verify-all", "restore-history", "pair-device", "pair-this-device", "show-recovery-phrase",
+  assert.deepEqual(p.commands.map((command) => command.id), ["sync-now", "verify-all", "export-copy", "restore-history", "pair-device", "pair-this-device", "show-recovery-phrase",
     "open-dashboard", "open-setup-guide", "remote-only", "status", "leave-server", "switch-server",
     "notices-everything", "notices-needs-me", "merges-once", "merges-every", "merges-off", "recent"]);
   for (const command of p.commands) assert.match(command.name, /obsync/, command.name);
@@ -534,4 +534,16 @@ test("Show sync status asked for again while it shows is that one dialog, brough
   assert.equal(draws, before + 1);
   assert.equal(bodies.at(-1), listed.containerEl);
   assert.equal(logs.filter((line) => line === "recent decision=forward reason=already_open").length, 1);
+
+  p.obsidian.Platform.isDesktopApp = false; // Refusal dialog uses the same lifetime as the desktop form.
+  const exporting = p.commands.find((candidate) => candidate.id === "export-copy");
+  exporting.callback();
+  const copy = shown.at(-1);
+  exporting.callback();
+  assert.equal(shown.length, 3, "one status, Recent and export dialog");
+  assert.equal(bodies.at(-1), copy.containerEl);
+  copy.close();
+  exporting.callback();
+  assert.equal(shown.length, 3);
+  assert.notEqual(shown.at(-1), copy);
 });

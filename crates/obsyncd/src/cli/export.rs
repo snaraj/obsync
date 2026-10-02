@@ -1,83 +1,70 @@
-//! `obsyncd export`: reconstruct a domain's data from the volumes.
-//!
-//! **What this does in v0.1, plainly.** It exports CIPHERTEXT. For each file
-//! the store holds it writes `<out>/<file_id>.bin.enc`, the newest head's
-//! chunks concatenated in order, plus `<out>/manifest.json` listing every
-//! retained version with its sids and its encrypted manifest.
-//!
-//! It DOES filter by domain: a file record carries its domain in clear
-//! (docs/architecture.md §5.1 item 4), so `--domain` exports that domain's
-//! files and no others. Which PATHS a domain covers is still owner-only and
-//! still invisible here; the server needs only the label.
-//!
-//! It does not write plaintext. That needs AES-256-GCM, which the server
-//! deliberately does not implement (docs/architecture.md §3: "The server
-//! performs no AES and no asymmetric operation in v1"). Plaintext export
-//! lands with that primitive in a later version; until then the operator
-//! decrypts the exported ciphertext on a device that holds the key, and the
-//! `--key` argument is accepted so the command line does not change when
-//! that lands.
+//! Ciphertext-only portable exports. Format: `docs/export.md`.
 #![forbid(unsafe_code)]
-
-use std::fs::{self, File};
-use std::io::{self, Write};
-use std::path::Path;
-
-use obsync_core::hex;
-use obsync_core::json::{self, Value};
 
 use crate::config::Config;
 use crate::log::{Log, Val};
 use crate::storage::{Posture, Store, StoreError, load_or_create_server_key};
-use crate::types::{DomainId, Sid};
+use crate::types::{DomainId, FileId, Seq, Sid};
+use obsync_core::json::{self, Value};
+use obsync_core::sha256::{Sha256, sha256};
+use obsync_core::{base64, hex};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 
-/// What one export wrote.
-#[derive(Clone, Debug, PartialEq, Eq)]
+const MAGIC: &[u8] = b"OBSYNC-EXPORT-1\n";
+const INDEX_MAX: usize = 64 * 1024 * 1024;
+
+/// Counts for the verified selection; missing chunks prevent publication.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExportReport {
-    /// Files written.
+    /// Selected file identities, including control records and deletions.
     pub files: u64,
-    /// Versions listed in the manifest.
+    /// Selected versions.
     pub versions: u64,
-    /// Chunks assembled.
+    /// Unique ciphertext chunks copied.
     pub chunks: u64,
-    /// Ciphertext bytes written.
+    /// Ciphertext bytes copied.
     pub bytes: u64,
-    /// Chunks a version named that the volume no longer holds.
+    /// Required chunks that could not be opened.
     pub missing: Vec<Sid>,
 }
-
 impl ExportReport {
-    /// Whether every chunk selected for export could be read.
+    /// A missing chunk never produces a published archive.
     pub fn ok(&self) -> bool {
         self.missing.is_empty()
     }
-
-    /// Print the counts for an operator.
+    /// An unkeyed digest proves integrity only, never completeness.
     pub fn print(&self) {
-        println!("files written:  {}", self.files);
-        println!("versions:       {}", self.versions);
-        println!("chunks:         {}", self.chunks);
-        println!("bytes:          {}", self.bytes);
-        println!("missing chunks: {}", self.missing.len());
+        println!(
+            "files: {} versions: {} chunks: {} bytes: {}",
+            self.files, self.versions, self.chunks, self.bytes
+        );
         for sid in &self.missing {
-            println!("  {sid}");
+            println!("missing chunk: {sid}");
         }
-        println!("content: ciphertext (plaintext export lands with AES-GCM)");
-        println!("result: {}", if self.ok() { "ok" } else { "FAILED" });
+        println!("content: ciphertext; completeness and freshness: not authenticated by a device");
+        println!(
+            "result: {}",
+            if self.ok() {
+                "ok"
+            } else {
+                "FAILED; no archive published"
+            }
+        );
     }
 }
 
-/// Export every file's newest head as ciphertext, with a manifest beside it.
+/// Export all current heads, or all retained versions when explicitly requested.
+/// Opening the store holds its existing exclusive offline lock throughout.
 pub fn run(
     cfg: &Config,
     domain: &DomainId,
-    key: &[u8; 32],
     out: &Path,
+    history: bool,
 ) -> Result<ExportReport, StoreError> {
-    // Accepted so the command line is stable when decryption lands; the
-    // server holds no AES implementation to use it with today.
-    let _ = key;
-
     let log = Log::new(cfg.log_level);
     let storage = cfg.storage();
     let posture = Posture::enforce(&storage, &log)?;
@@ -87,123 +74,202 @@ pub fn run(
     if !store.domain_exists(domain) {
         return Err(StoreError::UnknownDomain);
     }
-    let started = log.start("export", storage.blobs_capacity);
-    fs::create_dir_all(out)?;
-
-    let mut report = ExportReport {
-        files: 0,
-        versions: 0,
-        chunks: 0,
-        bytes: 0,
-        missing: Vec::new(),
-    };
-    let mut entries: Vec<Value> = Vec::new();
-    let mut after = None;
-    loop {
-        let (page, next) = store.files_page(after.as_ref(), 256);
-        if page.is_empty() {
-            break;
-        }
-        for summary in page {
-            if summary.domain_id != *domain {
-                continue;
-            }
-            let Some(record) = store.file(&summary.file_id) else {
-                continue;
-            };
-            let head = record
-                .versions
-                .iter()
-                .find(|v| record.heads.contains(&v.version_id));
-            let mut versions: Vec<Value> = Vec::new();
-            for version in &record.versions {
-                report.versions += 1;
-                versions.push(json::obj(vec![
-                    ("version_id", Value::Str(version.version_id.to_string())),
-                    (
-                        "sids",
-                        Value::Array(
-                            version
-                                .sids
-                                .iter()
-                                .map(|sid| Value::Str(sid.to_string()))
-                                .collect(),
-                        ),
-                    ),
-                    ("bytes", Value::Int(version.bytes as i64)),
-                    ("deleted", Value::Bool(version.deleted)),
-                    ("manifest_ct", Value::Str(hex::encode(&version.manifest_ct))),
-                    (
-                        "manifest_nonce",
-                        Value::Str(hex::encode(&version.manifest_nonce)),
-                    ),
-                ]));
-            }
-            entries.push(json::obj(vec![
-                ("file_id", Value::Str(summary.file_id.to_string())),
-                (
-                    "heads",
-                    Value::Array(
-                        record
-                            .heads
-                            .iter()
-                            .map(|id| Value::Str(id.to_string()))
-                            .collect(),
-                    ),
-                ),
-                ("conflicted", Value::Bool(record.conflicted)),
-                ("versions", Value::Array(versions)),
-            ]));
-
-            if let Some(head) = head.filter(|head| !head.deleted && !head.sids.is_empty()) {
-                let path = out.join(format!("{}.bin.enc", summary.file_id));
-                let mut file = File::create(&path)?;
-                for sid in &head.sids {
-                    match store.open_chunk(sid) {
-                        Ok((mut chunk, len)) => {
-                            io::copy(&mut chunk, &mut file)?;
-                            report.chunks += 1;
-                            report.bytes += len;
-                        }
-                        Err(_) => report.missing.push(*sid),
-                    }
-                }
-                file.sync_all()?;
-                report.files += 1;
-            }
-        }
-        after = next;
-        if after.is_none() {
-            break;
-        }
-    }
-
-    let manifest = json::obj(vec![
-        ("v", Value::Int(1)),
-        ("domain", Value::Str(domain.to_string())),
-        ("payload", Value::Str("ciphertext".to_string())),
-        ("files", Value::Array(entries)),
-    ]);
-    let mut file = File::create(out.join("manifest.json"))?;
-    file.write_all(manifest.to_json().as_bytes())?;
-    file.sync_all()?;
-
+    let started = log.start("export", INDEX_MAX as u64);
+    let result = write_archive(&store, domain, out, history);
     started.summary(
         &log,
         &[
-            ("files", Val::count(report.files)),
-            ("versions", Val::count(report.versions)),
-            ("chunks", Val::count(report.chunks)),
-            ("bytes", Val::bytes(report.bytes)),
-            ("missing", Val::count(report.missing.len() as u64)),
-            ("payload", Val::word("ciphertext")),
             (
                 "decision",
-                Val::word(if report.ok() { "ok" } else { "failed" }),
+                Val::word(match &result {
+                    Ok(report) if report.ok() => "ok",
+                    _ => "refused",
+                }),
             ),
+            ("index_budget", Val::bytes(INDEX_MAX as u64)),
         ],
     );
-    Ok(report)
+    result
+}
+
+fn write_archive(
+    store: &Store,
+    domain: &DomainId,
+    out: &Path,
+    history: bool,
+) -> Result<ExportReport, StoreError> {
+    if out.symlink_metadata().is_ok() {
+        return Err(io::Error::from(io::ErrorKind::AlreadyExists).into());
+    }
+    let parent = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut report = ExportReport::default();
+    let mut files: BTreeMap<FileId, (Value, Vec<Value>)> = BTreeMap::new();
+    let mut chunks = BTreeSet::new();
+    let snapshot = store.head_seq();
+    if snapshot.0 > 9_007_199_254_740_991 {
+        return Err(io::Error::other("export sequence exceeds exact integer range").into());
+    }
+    let mut since = Seq(0);
+    let mut metadata_bytes = 0;
+    while since < snapshot {
+        let page = store.changes(since, 256)?;
+        for change in page.changes {
+            let v = change.version;
+            if v.domain_id != *domain || (!history && !change.heads.contains(&v.version_id)) {
+                continue;
+            }
+            if v.bytes > 9_007_199_254_740_991 {
+                return Err(io::Error::other("export size exceeds exact integer range").into());
+            }
+            let version = json::obj(vec![
+                ("version_id", Value::Str(v.version_id.to_string())),
+                (
+                    "parents",
+                    Value::Array(
+                        v.parents
+                            .iter()
+                            .map(|p| Value::Str(p.to_string()))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "sids",
+                    Value::Array(v.sids.iter().map(|s| Value::Str(s.to_string())).collect()),
+                ),
+                ("bytes", Value::Int(v.bytes as i64)),
+                ("manifest_ct", Value::Str(base64::encode(&v.manifest_ct))),
+                ("manifest_nonce", Value::Str(hex::encode(&v.manifest_nonce))),
+                ("deleted", Value::Bool(v.deleted)),
+            ]);
+            metadata_bytes += version.to_json().len()
+                + if files.contains_key(&v.file_id) {
+                    1
+                } else {
+                    change.heads.len() * 67 + 150
+                };
+            if metadata_bytes > INDEX_MAX {
+                return Err(io::Error::other("export metadata budget exceeded (64 MiB)").into());
+            }
+            chunks.extend(v.sids);
+            let heads = Value::Array(
+                change
+                    .heads
+                    .iter()
+                    .map(|h| Value::Str(h.to_string()))
+                    .collect(),
+            );
+            files
+                .entry(v.file_id)
+                .or_insert_with(|| (heads, Vec::new()))
+                .1
+                .push(version);
+            report.versions += 1;
+        }
+        since = page.seq;
+    }
+    report.files = files.len() as u64;
+    let index = json::obj(vec![
+        ("v", Value::Int(1)),
+        ("source", Value::Str("server".into())),
+        (
+            "scope",
+            Value::Str(if history { "history" } else { "current" }.into()),
+        ),
+        ("snapshot", Value::Int(snapshot.0 as i64)),
+        (
+            "files",
+            Value::Array(
+                files
+                    .into_iter()
+                    .map(|(id, (heads, versions))| {
+                        json::obj(vec![
+                            ("file_id", Value::Str(id.to_string())),
+                            ("domain_id", Value::Str(domain.to_string())),
+                            ("heads", heads),
+                            ("versions", Value::Array(versions)),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+    ])
+    .to_json();
+    if index.len() > INDEX_MAX {
+        return Err(io::Error::other("export metadata budget exceeded (64 MiB)").into());
+    }
+    // Kernel randomness names only this attempt; create_new is the ownership proof.
+    let mut random = [0u8; 16];
+    File::open("/dev/urandom")?.read_exact(&mut random)?;
+    let temporary = parent.join(format!(".obsync-export-{}", hex::encode(&random)));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)?;
+    let result = (|| {
+        file.write_all(MAGIC)?;
+        file.write_all(&(index.len() as u32).to_be_bytes())?;
+        file.write_all(index.as_bytes())?;
+        file.write_all(&sha256(index.as_bytes()))?;
+        file.write_all(&[0u8; 32])?; // No device authenticator: this process has no content key.
+        let mut buffer = [0u8; 64 * 1024];
+        for sid in chunks {
+            let (mut chunk, size) = match store.open_chunk(&sid) {
+                Ok(chunk) => chunk,
+                Err(StoreError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {
+                    report.missing.push(sid);
+                    return Ok(report);
+                }
+                Err(e) => return Err(e),
+            };
+            if size > 8 * 1024 * 1024 + 16 {
+                return Err(io::Error::other("export chunk exceeds protocol bound").into());
+            }
+            file.write_all(&(size as u32).to_be_bytes())?;
+            let mut hash = Sha256::new();
+            let mut copied = 0;
+            loop {
+                let n = chunk.read(&mut buffer)?;
+                if n == 0 {
+                    break;
+                }
+                copied += n as u64;
+                if copied > size {
+                    return Err(io::Error::other("export chunk changed").into());
+                }
+                hash.update(&buffer[..n]);
+                file.write_all(&buffer[..n])?;
+            }
+            let actual = Sid::new(hash.finalize());
+            if copied != size {
+                return Err(StoreError::LengthMismatch {
+                    declared: size,
+                    actual: copied,
+                });
+            }
+            if actual != sid {
+                return Err(StoreError::SidMismatch {
+                    expected: sid,
+                    actual,
+                });
+            }
+            report.chunks += 1;
+            report.bytes += size;
+        }
+        file.sync_all()?;
+        fs::hard_link(&temporary, out)?; // Never replaces an existing name.
+        if let Err(error) = File::open(parent).and_then(|dir| dir.sync_all()) {
+            fs::remove_file(out)?;
+            return Err(error.into());
+        }
+        Ok(report)
+    })();
+    drop(file);
+    fs::remove_file(&temporary)?;
+    result
 }
 
 #[cfg(test)]
@@ -217,7 +283,6 @@ mod tests {
     use crate::types::FileId;
     use obsync_core::sha256::sha256;
 
-    const KEY: [u8; 32] = [5u8; 32];
     const ONE: DomainId = DomainId::new([0xd1; 16]);
     const TWO: DomainId = DomainId::new([0xd2; 16]);
     const ABSENT: DomainId = DomainId::new([0xd3; 16]);
@@ -289,16 +354,23 @@ mod tests {
         let (first, second) = seed(&cfg);
 
         let out = dir.path().join("out-one");
-        let report = run(&cfg, &ONE, &KEY, &out).expect("export runs");
+        let report = run(&cfg, &ONE, &out, false).expect("export runs");
         assert_eq!(report.files, 1, "one file is in this domain");
         assert_eq!(report.versions, 1);
         assert!(report.missing.is_empty());
-        assert!(out.join(format!("{first}.bin.enc")).is_file());
-        assert!(
-            !out.join(format!("{second}.bin.enc")).exists(),
-            "the other domain's file was not written"
+        let archive = fs::read(&out).expect("archive");
+        assert!(archive.starts_with(MAGIC));
+        let n =
+            u32::from_be_bytes(archive[MAGIC.len()..MAGIC.len() + 4].try_into().unwrap()) as usize;
+        let manifest = std::str::from_utf8(&archive[MAGIC.len() + 4..MAGIC.len() + 4 + n]).unwrap();
+        assert_eq!(
+            &archive[MAGIC.len() + 4 + n..MAGIC.len() + 4 + n + 32],
+            &sha256(manifest.as_bytes())
         );
-        let manifest = fs::read_to_string(out.join("manifest.json")).expect("manifest");
+        assert_eq!(
+            &archive[MAGIC.len() + 4 + n + 32..MAGIC.len() + 4 + n + 64],
+            &[0u8; 32]
+        );
         assert!(manifest.contains(&ONE.to_string()));
         assert!(manifest.contains(&first.to_string()));
         assert!(
@@ -308,10 +380,18 @@ mod tests {
 
         // The other domain exports its own file, and nothing else.
         let other = dir.path().join("out-two");
-        let report = run(&cfg, &TWO, &KEY, &other).expect("export runs");
+        let report = run(&cfg, &TWO, &other, false).expect("export runs");
         assert_eq!(report.files, 1);
-        assert!(other.join(format!("{second}.bin.enc")).is_file());
-        assert!(!other.join(format!("{first}.bin.enc")).exists());
+        let bytes = fs::read(&other).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains(&second.to_string()));
+        assert!(!text.contains(&first.to_string()));
+        let before = fs::read(&out).unwrap();
+        assert!(
+            run(&cfg, &ONE, &out, false).is_err(),
+            "cannot replace an archive"
+        );
+        assert_eq!(fs::read(&out).unwrap(), before);
     }
 
     #[test]
@@ -321,9 +401,84 @@ mod tests {
         seed(&cfg);
         let out = dir.path().join("out");
         assert!(matches!(
-            run(&cfg, &ABSENT, &KEY, &out),
+            run(&cfg, &ABSENT, &out, false),
             Err(StoreError::UnknownDomain)
         ));
         assert!(!out.exists(), "a refused export creates no directory");
+    }
+    #[test]
+    fn every_head_is_exported_and_history_is_explicit() {
+        let dir = TempDir::new("export-heads");
+        let cfg = config(&dir);
+        let (id, _) = seed(&cfg);
+        let log = Log::new(LogLevel::Error);
+        let storage = cfg.storage();
+        let posture = Posture::enforce(&storage, &log).unwrap();
+        let store = Store::open(&storage, [9u8; 32], &posture, log).unwrap();
+        let original = store.file(&id).unwrap().versions[0].clone();
+        let account_id = store.account().unwrap().account_id;
+        for n in [3u8, 4] {
+            let body = vec![n; 32];
+            let sid = Sid::new(sha256(&body));
+            store
+                .put_chunk(&account_id, &sid, 32, &mut &body[..])
+                .unwrap();
+            let manifest = vec![n; 32];
+            let parents = vec![original.version_id];
+            store
+                .append_version(NewVersion {
+                    account_id,
+                    file_id: id,
+                    domain_id: ONE,
+                    version_id: version_id_of(&id, &parents, &manifest, &[sid]),
+                    parents,
+                    sids: vec![sid],
+                    bytes: 16,
+                    manifest_ct: manifest,
+                    manifest_nonce: [n; 12],
+                    device_id: original.device_id,
+                    deleted: false,
+                })
+                .unwrap();
+        }
+        assert_eq!(store.file(&id).unwrap().heads.len(), 2);
+        drop(store);
+        let current = run(&cfg, &ONE, &dir.path().join("current"), false).unwrap();
+        assert_eq!((current.files, current.versions, current.chunks), (1, 2, 2));
+        let history = run(&cfg, &ONE, &dir.path().join("history"), true).unwrap();
+        assert_eq!((history.files, history.versions, history.chunks), (1, 3, 3));
+    }
+
+    #[test]
+    fn unavailable_or_changed_ciphertext_never_publishes() {
+        for missing in [true, false] {
+            let dir = TempDir::new("export-unavailable");
+            let cfg = config(&dir);
+            let (id, _) = seed(&cfg);
+            let log = Log::new(LogLevel::Error);
+            let storage = cfg.storage();
+            let posture = Posture::enforce(&storage, &log).unwrap();
+            let store = Store::open(&storage, [9u8; 32], &posture, log).unwrap();
+            let sid = store.file(&id).unwrap().versions[0].sids[0];
+            let path = store.chunk_path(&sid);
+            drop(store);
+            if missing {
+                fs::remove_file(path).unwrap();
+            } else {
+                let mut ciphertext = fs::read(&path).unwrap();
+                ciphertext[0] ^= 1;
+                fs::write(path, ciphertext).unwrap();
+            }
+            let out = dir.path().join("refused");
+            let result = run(&cfg, &ONE, &out, false);
+            assert!(result.is_err() || !result.unwrap().ok());
+            assert!(!out.exists());
+            assert!(!fs::read_dir(dir.path()).unwrap().any(|e| {
+                e.unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".obsync-export-")
+            }));
+        }
     }
 }

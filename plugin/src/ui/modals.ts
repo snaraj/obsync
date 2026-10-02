@@ -1528,7 +1528,7 @@ export class StatusModal extends Modal {
  * of any other dialog instead -- its keys first, so Escape closes it first --
  * and is drawn afresh.
  */
-function forward(modal: Modal, draw: () => void): void {
+export function forward(modal: Modal, draw: () => void): void {
   modal.app.keymap.popScope(modal.scope);
   modal.app.keymap.pushScope(modal.scope);
   modal.containerEl.ownerDocument.body.appendChild(modal.containerEl);

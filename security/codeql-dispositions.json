@@ -42,7 +42,7 @@
     "rule": "rust/cleartext-logging",
     "path": "crates/obsyncd/src/cli/export.rs",
     "line_contains": "println!",
-    "reviewed_sha256": "b730cec6fc94125a9677891d55c8846cd00f600024f4e73eb094d33be50a555c",
+    "reviewed_sha256": "189f84825d531926b9ae5a6394e88f323ac49f3706aaaafe968bf2853b776ca8",
     "reason": "false positive",
     "comment": "ExportReport::print, the operator report: counts, ciphertext chunk sids and fixed content/result labels; every println! in this file is in that report",
     "disposition": "https://github.com/snaraj/obsync/issues/23"

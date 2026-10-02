@@ -39,6 +39,10 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
+if __package__:
+    from .cli_package_contract import CLI_MAX_BYTES, CLI_RUNTIME, cli_archive_record
+else:
+    from cli_package_contract import CLI_MAX_BYTES, CLI_RUNTIME, cli_archive_record
 
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -172,6 +176,10 @@ class Version:
     @property
     def server_archives(self) -> bool:
         return (self.major, self.minor, self.patch) >= SERVER_ARCHIVES_FROM
+
+    @property
+    def cli_bundle(self) -> bool:
+        return (self.major, self.minor, self.patch) >= (1, 2, 0)
 
     @property
     def plugin_id(self) -> str:
@@ -1337,6 +1345,7 @@ def build_release_manifest(
     plugin_digest: str,
     plugin_bundle: bytes | None = None,
     server_archives: Mapping[str, bytes] | None = None,
+    cli_bundle: bytes | None = None,
 ) -> dict[str, object]:
     """The one canonical, deterministic publication evidence asset."""
     validate_release_destinations(repository, image, chart)
@@ -1397,6 +1406,13 @@ def build_release_manifest(
             server_archives, parsed, files)
     elif server_archives is not None:
         raise ContractError(f"release {parsed} predates the server archives")
+    if parsed.cli_bundle:
+        try:
+            manifest["artifacts"]["cli_bundle"] = cli_archive_record(cli_bundle, str(parsed), source_sha)
+        except (ValueError, TypeError, KeyError, zipfile.BadZipFile) as error:
+            raise ContractError(f"CLI package refused: {error}") from error
+    elif cli_bundle is not None:
+        raise ContractError(f"release {parsed} predates the CLI bundle")
     return manifest
 
 
@@ -1414,6 +1430,7 @@ def validate_release_manifest_record(
     plugin_digest: str,
     plugin_bundle: bytes | None = None,
     server_archives: Mapping[str, bytes] | None = None,
+    cli_bundle: bytes | None = None,
 ) -> None:
     expected = build_release_manifest(
         repository=repository,
@@ -1427,6 +1444,7 @@ def validate_release_manifest_record(
         plugin_digest=plugin_digest,
         plugin_bundle=plugin_bundle,
         server_archives=server_archives,
+        cli_bundle=cli_bundle,
     )
     if manifest != expected:
         raise ContractError("release manifest is not the exact canonical evidence record")
@@ -1465,6 +1483,7 @@ def build_release_notes(manifest: Mapping[str, object], changelog: str | None = 
     asset_name = release_manifest_asset_name(tag)
     asset_digest = "sha256:" + hashlib.sha256(_canonical_json(manifest)).hexdigest()
     servers = ""
+    cli = ""
     provenance = ""
     if version.server_archives:
         archives = _object(artifacts.get("server_archives"), "release manifest server archives")
@@ -1473,12 +1492,17 @@ def build_release_notes(manifest: Mapping[str, object], changelog: str | None = 
             servers += f"| Server ({platform}) | `{archive.get('name')}` (`{archive.get('digest')}`) |\n"
         provenance = ("The plugin files and server archives carry this workflow's build "
                       "provenance (`gh attestation verify`).\n")
+    if version.cli_bundle:
+        client = _object(artifacts.get("cli_bundle"), "release manifest CLI bundle")
+        cli = f"| CLI (Node {CLI_RUNTIME['version']} prerequisite) | `{client.get('name')}` (`{client.get('digest')}`) |\n"
+        provenance = "The plugin files, server archives and CLI bundle carry this workflow's build provenance (`gh attestation verify`).\n"
     evidence = (
         "| Artifact | Reference |\n| --- | --- |\n"
         f"| Image | `{image.get('repository')}:{image.get('tag')}@{image.get('digest')}` |\n"
         f"| Chart | `{chart.get('repository')}:{chart.get('tag')}@{chart.get('digest')}` |\n"
         f"| Plugin | `{plugin.get('name')}` (`{plugin.get('digest')}`) |\n"
         f"{servers}"
+        f"{cli}"
         "\nImage and chart are signed with keyless Cosign by this workflow identity.\n"
         f"{provenance}"
         f"\nPublication evidence: `{asset_name}` (`{asset_digest}`).\n"
@@ -1576,6 +1600,20 @@ def _validate_release_assets(
                 "digest": _require_digest(record.get("digest"), "server archive asset digest"),
                 "size": size, "content_type": "application/gzip", "state": "uploaded",
             }
+    if version.cli_bundle:
+        record = _object(artifacts.get("cli_bundle"), "CLI bundle asset")
+        name, size = f"obsync-cli-{version}.zip", record.get("size")
+        digest = record.get("manifest_sha256")
+        if (set(record) != {"name", "digest", "size", "content_type", "runtime", "manifest_sha256"} or
+                record.get("name") != name or record.get("content_type") != "application/zip" or
+                record.get("runtime") != CLI_RUNTIME or isinstance(size, bool) or
+                not isinstance(size, int) or not 0 < size <= CLI_MAX_BYTES or
+                not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) or digest == "0" * 64):
+            raise ContractError("CLI asset declaration is invalid")
+        expected[name] = {"digest": require_publishable_digest(record.get("digest"), "CLI asset digest"),
+                          "size": size, "content_type": "application/zip", "state": "uploaded"}
+    elif not version.legacy and "cli_bundle" in artifacts:
+        raise ContractError("release predates the CLI bundle")
     if len(records) != len(expected):
         raise ContractError("GitHub Release must carry the exact versioned asset inventory")
     seen: set[str] = set()
@@ -2048,6 +2086,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--chart-digest", required=True)
         command.add_argument("--plugin-digest", required=True)
         command.add_argument("--plugin-bundle", type=Path)
+        command.add_argument("--cli-bundle", type=Path)
         # PLATFORM=PATH, once per production platform, from 1.1.4 on.
         command.add_argument("--server-archive", action="append", default=[])
 
@@ -2074,6 +2113,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _manifest_arguments(args: argparse.Namespace) -> dict:
+    cli_bundle = None
+    if getattr(args, "cli_bundle", None):
+        with args.cli_bundle.open("rb") as stream:
+            cli_bundle = stream.read(CLI_MAX_BYTES + 1)
     plugin_bundle = None
     if args.plugin_bundle:
         with args.plugin_bundle.open("rb") as stream:
@@ -2100,6 +2143,7 @@ def _manifest_arguments(args: argparse.Namespace) -> dict:
         "plugin_digest": args.plugin_digest,
         "plugin_bundle": plugin_bundle,
         "server_archives": server_archives,
+        "cli_bundle": cli_bundle,
     }
 
 
