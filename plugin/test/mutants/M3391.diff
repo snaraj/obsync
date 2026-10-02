@@ -1,7 +1,7 @@
 # M3391: a version the record already holds counts as a download not finished (#248)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4514,7 +4514,7 @@
+@@ -4520,7 +4520,7 @@
      for (const file of emptied) {
        const record = context.state.fileByPath(file.path);
        const note = own?.notes.get(file.path);

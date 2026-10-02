@@ -1229,8 +1229,8 @@ for (const existing of [false, true]) {
   });
 }
 
-for (const existing of [false, true]) {
-test(`${existing ? "a note emptied" : "a new note made empty"} while the phone was stopped is held when the start cannot read the feed, and the next start that can sends it (#248)`, async (t) => {
+for (const existing of [false, true]) for (const restart of ["a reload", "a restart in place"]) {
+test(`${existing ? "a note emptied" : "a new note made empty"} while the phone was stopped is held when the start cannot read the feed, and the next start that can sends it, after ${restart} (#248)`, async (t) => {
   const PATH = "Crash/Fresh.md";
   const r = await seeded(t, { "Crash/Kept.md": BODY, ...(existing ? { [PATH]: OTHER } : {}) });
   r.b.kill();
@@ -1247,18 +1247,36 @@ test(`${existing ? "a note emptied" : "a new note made empty"} while the phone w
   assert.deepEqual((await sentPaths(r.server, r.keys.manifestKey)).filter((frame) => frame.device === PHONE && !frame.folder), [],
     `a start that could not read the feed sent an empty new note: ${blind.logs.join(" | ")}`);
   assert.equal(blind.state.data.dropped[PATH], "unverified");
-  blind.kill();
 
   // The next start reads the feed: no version is ahead at that name, so the
-  // empty note is the person's own, and it is sent as it always was.
-  const next = await phone(t, r);
-  assert.equal(next.state.data.dropped[PATH], undefined, "an unverified mark outlived its run");
-  await next.engine.start();
+  // empty note is the person's own, and it is sent as it always was -- after
+  // a load, and after the application's own restart in place, which keeps the
+  // State and builds a new engine on it (`main.ts`, the engine start).
+  let next = blind;
+  const from = blind.logs.length;
+  if (restart === "a reload") {
+    blind.kill();
+    next = await phone(t, r);
+    assert.equal(next.state.data.dropped[PATH], undefined, "an unverified mark outlived its run");
+    await next.engine.start();
+  } else {
+    await blind.engine.stopAndWait();
+    const { SyncEngine } = r.box.require(join(r.box.home, "build/sync/engine.js"));
+    const engine = new SyncEngine({ state: blind.state, transport: blind.transport, host: blind.host, now: () => r.vault.clock, timers: r.timers });
+    blind.plugin.engine = engine;
+    t.after(() => engine.stop());
+    next = { ...blind, engine };
+    await engine.start();
+  }
   await r.timers.run(STEP_MS, () => r.server.journal.length > frames && next.state.fileByPath(PATH)?.size === 0);
   await r.timers.run(STEP_MS);
+  await next.engine.syncNow();
+  await r.timers.run(STEP_MS);
+  const lines = restart === "a reload" ? next.logs : next.logs.slice(from);
   const sent = (await sentPaths(r.server, r.keys.manifestKey)).slice(frames);
-  assert.deepEqual(sent, [{ path: PATH, deleted: false, folder: false, device: PHONE, size: 0 }], next.logs.join(" | "));
-  assert.deepEqual(next.logs.filter((line) => line.includes("reason=unfinished_download")), []);
+  assert.deepEqual(sent, [{ path: PATH, deleted: false, folder: false, device: PHONE, size: 0 }], lines.join(" | "));
+  assert.deepEqual(lines.filter((line) => line.includes("reason=unfinished_download")), []);
+  assert.equal(next.state.data.dropped[PATH], undefined, "an unverified mark outlived its run");
   assert.equal(r.a.host.text(PATH), "");
 });
 }

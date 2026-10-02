@@ -1,7 +1,7 @@
 # M4105: a walk that fails holds a recorded note by its id, for good, so a note emptied on purpose is never sent (review of 5f183db1)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4515,7 +4515,7 @@
+@@ -4521,7 +4521,7 @@
        const record = context.state.fileByPath(file.path);
        const note = own?.notes.get(file.path);
        const ahead = note !== undefined && note.version_id !== record?.versionId;

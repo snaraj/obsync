@@ -1135,6 +1135,12 @@ export class SyncEngine {
   /** Derive the keys and open the loops. Requires a paired, keyed device. */
   start(): Promise<void> {
     this.cancelled = false;
+    // AN UNVERIFIED MARK IS ONE RUN'S (issue #248; review of 6a4da232): a
+    // restart in place keeps the State a load would have dropped it from, so
+    // the start drops it here, and this run's first pass, a new engine's,
+    // walks the feed again and judges each such file afresh.
+    const dropped = this.options.state.data.dropped;
+    for (const [path, mark] of Object.entries(dropped)) if (mark === UNVERIFIED_LANDING) delete dropped[path];
     const halt = this.halt = new AbortController();
     // A start its stop cut short -- the map read of a restart against a server
     // that is gone -- ends quietly, as one stopped between two steps does.

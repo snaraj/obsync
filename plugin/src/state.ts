@@ -172,7 +172,8 @@ export const GRAVES_MAX = 1000;
  * tell a download's landing from a note emptied here (issue #248; a new file
  * has no file id to be held by). Like any mark it keeps the file unsent and
  * lets the feed's version be written over it, for this run only: a load keeps
- * file ids alone, so the next start judges the file again against the feed.
+ * file ids alone, and an engine's start drops it, so the next start judges the
+ * file again against the feed.
  */
 export const UNVERIFIED_LANDING = "unverified";
 
@@ -574,7 +575,6 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   }
   const dropped = loaded["dropped"];
   if (isRecord(dropped)) {
-    // `UNVERIFIED_LANDING` is no file id and is not loaded: by design.
     for (const [path, fileId] of Object.entries(dropped)) {
       if (isVaultPath(path) && typeof fileId === "string" && isHex(fileId, 16)) data.dropped[path] = fileId;
     }

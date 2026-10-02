@@ -2,8 +2,8 @@
 --- a/plugin/src/state.ts
 +++ b/plugin/src/state.ts
 @@ -576,7 +576,7 @@
+   const dropped = loaded["dropped"];
    if (isRecord(dropped)) {
-     // `UNVERIFIED_LANDING` is no file id and is not loaded: by design.
      for (const [path, fileId] of Object.entries(dropped)) {
 -      if (isVaultPath(path) && typeof fileId === "string" && isHex(fileId, 16)) data.dropped[path] = fileId;
 +      if (isVaultPath(path) && typeof fileId === "string" && (isHex(fileId, 16) || fileId === "unverified")) data.dropped[path] = fileId;
