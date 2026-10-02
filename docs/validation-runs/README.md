@@ -34,6 +34,10 @@ or its harnesses; a red leg there is a finding to read.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-10-01 a start that cannot read the feed](2026-10-01-blind-start.md):
+  #248 on a macOS desktop, the final bytes. Notes emptied while obsync was
+  stopped are held while the start's walk of the feed is cut, through a Sync
+  now; a restart in place that reads the feed sends both, and no mark is left.
 - [2026-10-01 pairing with a commitment](2026-10-01-pairing-commitment.md):
   the pairing repair on macOS desktops, with a lab intermediary rewriting
   keys in flight. Two 1.1.5 devices pair and sync both ways; a 1.1.4 device
