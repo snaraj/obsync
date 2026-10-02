@@ -1,0 +1,15 @@
+# M3396: a folder readdir cannot read counts as unchanged (#246)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1015,7 +1015,10 @@
+         entries = await fs.readdir(adapter.getFullPath(folder));
+       } catch {
+         unread++;
+-        unanswered.push(...listed);
++        for (const file of listed) {
++          const record = this.plugin.state.data.files[file.path];
++          out.push(record === undefined ? file : { path: file.path, mtime: record.mtime, size: record.size });
++        }
+         continue;
+       }
+       if (!Array.isArray(entries) || !entries.every(isDiskEntry)) return this.pressFallback(label, "entry_shape", files);

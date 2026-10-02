@@ -1,7 +1,7 @@
 # M222: a parked file with a damaged reason is named as "Cannot write X here: undefined"
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -204,7 +204,7 @@
+@@ -205,7 +205,7 @@
    if (reason === "active_editor") return `Waiting for unsaved changes in ${path} to be saved; its newer version follows`;
    if (reason === "downloading") return `Downloading ${path}`;
    if (reason === "unknown_chunk") return `Cannot download ${path}: ${UNWRITABLE[reason]}`;
@@ -9,4 +9,4 @@
 +  return `Cannot write ${path} here: ${UNWRITABLE[reason]}`;
  }
  
- /** A record this device cannot write for a reason local to that one file or chunk. */
+ /** A conflict copy, said one way wherever it is made: the note by title, the copy by its own. */

@@ -1,0 +1,12 @@
+# M3383: a pass that waited for a pull says nothing (#244)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3993,7 +3993,7 @@
+     return this.exclusive("pass", async () => {
+       if (!this.running) return;
+       const waited = this.nowFn() - asked;
+-      if (waited > 0) host.log(`${label} decision=waited reason=pull_lock duration_ms=${waited} budget_ms=${SCAN_BUDGET_MS}`);
++      if (waited < 0) host.log(`${label} decision=waited reason=pull_lock duration_ms=${waited} budget_ms=${SCAN_BUDGET_MS}`);
+       host.pass?.(true);
+       try {
+         await work();

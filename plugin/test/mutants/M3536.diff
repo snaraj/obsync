@@ -1,0 +1,27 @@
+# M3536: the case index is built only with the other indexes, lazily, and goes stale after (P10)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -694,14 +694,10 @@
+     paths.add(path);
+     indexes.ids.set(record.fileId, paths);
+     if (record.name !== undefined) indexes.names.add(path);
+-    spellings.add(path);
+-    indexes.folded.set(fold, spellings);
+   } else {
+     paths.delete(path);
+     if (paths.size === 0) indexes.ids.delete(record.fileId);
+     indexes.names.delete(path);
+-    spellings.delete(path);
+-    if (spellings.size === 0) indexes.folded.delete(fold);
+   }
+   indexes.bytes += sign * record.size;
+ }
+@@ -712,6 +708,8 @@
+   for (const [path, record] of Object.entries(files)) {
+     indexes.order.set(path, indexes.next++);
+     indexed(indexes, path, record, 1);
++    const spellings = indexes.folded.get(path.toLowerCase()) ?? new Set<string>();
++    indexes.folded.set(path.toLowerCase(), spellings.add(path));
+   }
+   return indexes;
+ }

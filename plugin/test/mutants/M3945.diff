@@ -1,0 +1,12 @@
+# M3945: a counted Recent line does not say how many times
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -257,7 +257,7 @@
+   /** Every notice so far this session, newest first; one said again in a row is one line that counts it. */
+   recent(): readonly RecentEntry[] {
+     return this.recentList.map(({ entry, notice, times }) =>
+-      times > 1 ? { ...entry, text: sentence(notice, entry.paths, times) } : entry).reverse();
++      entry).reverse();
+   }
+ 
+   /** Take the toast of this key off the screen, whatever its kind (#308); Recent keeps its line. */

@@ -1,0 +1,13 @@
+# M3347: a saved destination's version id is trusted unchecked (#239)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -580,8 +580,7 @@
+   const departed = loaded["departed"];
+   if (isRecord(departed)) {
+     for (const [fileId, away] of Object.entries(departed)) {
+-      if (isHex(fileId, 16) && isRecord(away) && isVaultPath(away["path"]) && typeof away["versionId"] === "string" &&
+-        isHex(away["versionId"], 32)) data.departed[fileId] = { path: away["path"], versionId: away["versionId"], size: num(away["size"], 0) };
++      if (isHex(fileId, 16) && isRecord(away) && isVaultPath(away["path"]) && typeof away["versionId"] === "string") data.departed[fileId] = { path: away["path"], versionId: away["versionId"], size: num(away["size"], 0) };
+     }
+   }
+   // File ids and version ids the replay will ask the server for: input,

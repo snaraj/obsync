@@ -37,6 +37,8 @@ async function device(t, url, { serverUrl } = {}) {
   instance.state = state;
   instance.transport = { dashboardLoginLink: async () => ({ outcome: "ok", value: { url, expires: 1 } }) };
   instance.log = (line) => logs.push(line);
+  // Its answers go through the real notice channel (`notices.ts`), whose own lines are its tests'.
+  instance.notices = box.require(join(box.home, "build", "main.js")).noticeChannel({ state, log: () => undefined });
   const previous = globalThis.window;
   globalThis.window = { open: (target, disposition) => opened.push(`${target} ${disposition}`) };
   t.after(() => { globalThis.window = previous; });

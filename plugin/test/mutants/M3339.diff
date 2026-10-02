@@ -1,0 +1,12 @@
+# M3339: the domain map's first read logs its expected absence as a refusal again
+--- a/plugin/src/domainmap.ts
++++ b/plugin/src/domainmap.ts
+@@ -186,7 +186,7 @@
+   let file;
+   try {
+     // A vault whose map was never written answers `unknown_file`: the answer, not a failure.
+-    file = await transport.getFile(keys.fileId, { ...patience, expected: "unknown_file" });
++    file = await transport.getFile(keys.fileId, patience);
+   } catch (error) {
+     if (error instanceof ApiError && error.status === 404) return null;
+     throw error;

@@ -1,0 +1,12 @@
+# M3559: no cap: a flood stacks every toast
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -241,7 +241,7 @@
+       return;
+     }
+     const visible = this.visible(now);
+-    if (visible >= VISIBLE_MAX) {
++    if (visible >= Infinity) {
+       this.fold(kind, now);
+       this.screen.log(`notice decision=folded kind=${kind} visible=${visible} budget=${VISIBLE_MAX} count=${this.overflow?.count ?? 0}`);
+       return;

@@ -1,0 +1,12 @@
+# M3650: a stalled feed writes no line (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2748,7 +2748,7 @@
+       this.feedWatch = null;
+       const now = this.nowFn();
+       const { holder, step } = this;
+-      this.options.host.log(
++      ((line: string) => line)(
+         `feed decision=stalled waited_ms=${now - sent} budget_ms=${FEED_STALL_MS} ` +
+           `poll_ms=${this.poll === null ? "none" : now - this.poll.sent} reading=${this.reading ? 1 : 0} ` +
+           `answered=${this.feedAnswered ? 1 : 0} last_seq=${this.contextValue?.state.data.lastSeq ?? 0} ` +

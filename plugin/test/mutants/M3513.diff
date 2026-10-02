@@ -1,0 +1,12 @@
+# M3513: the v2 key derivation drops the pairing secret from the salt (code no longer needed)
+--- a/plugin/src/crypto.ts
++++ b/plugin/src/crypto.ts
+@@ -257,7 +257,7 @@
+   const shared = new Uint8Array(
+     await crypto.subtle.deriveBits({ name: "ECDH", public: peerPublic }, privatePair.privateKey, 256),
+   );
+-  return hkdf(shared, pairingSecret, concat(utf8(LABEL.pairV2), utf8(pairingId)), KEY_BYTES);
++  return hkdf(shared, new Uint8Array(0), concat(utf8(LABEL.pairV2), utf8(pairingId)), KEY_BYTES);
+ }
+ 
+ /**

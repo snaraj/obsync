@@ -1,0 +1,12 @@
+# M3786: a 5xx in obsync's own coded error is taken for the server's absence again (#298)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -856,7 +856,7 @@
+       };
+       if (behind) return outcome;
+     }
+-    if (outcome.kind === "settled" || outcome.answered) {
++    if (outcome.kind === "settled") {
+       this.answeredAt = this.now();
+       this.options.reachable?.(true);
+     } else {

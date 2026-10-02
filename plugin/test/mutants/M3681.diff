@@ -1,0 +1,12 @@
+# M3681: a stop's watch fires at half its budget (#287)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1253,7 +1253,7 @@
+         `engine decision=waiting on=${holder?.label ?? "work"} held_ms=${holder === null ? 0 : this.nowFn() - holder.since} ` +
+           `in_flight=${this.inFlight.size} budget_ms=${STOP_WAIT_MS}`,
+       );
+-    }, STOP_WAIT_MS);
++    }, STOP_WAIT_MS / 2);
+     while (this.inFlight.size !== 0) await Promise.allSettled([...this.inFlight]);
+     this.timers.clear(watch);
+     await this.options.state.save();

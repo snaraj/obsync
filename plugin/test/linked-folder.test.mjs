@@ -104,7 +104,9 @@ async function vault(t) {
     deviceName: () => "sentinel-device",
   };
   const host = new ObsidianHost(plugin, { base: root, path: nodePath, fs: { promises: realFsPromises } });
-  host.notify = (message) => notices.push(message);
+  // What the person reads: each notice's words, as its toast says them (`notices.ts`).
+  const words = box.require(join(box.home, "build", "notices.js"));
+  host.notify = (notice) => notices.push(words.toastText(notice));
   r.context.host = host;
   const timers = new FakeTimers();
   const transport = new Transport({
@@ -123,7 +125,7 @@ async function vault(t) {
     r.server.releaseFeed();
     await engine.stopAndWait();
   });
-  const linked = (message) => message.startsWith("obsync doesn't sync linked folders");
+  const linked = (message) => message.startsWith("obsync: does not sync linked folders");
   return { ...r, root, outside, host, logs, notices, engine, timers, linked };
 }
 
@@ -152,7 +154,7 @@ test("a linked folder's create event publishes nothing, and the user is told onc
   );
   const told = v.notices.filter(v.linked);
   assert.equal(told.length, 1, v.notices.join(" | "));
-  assert.ok(told[0].includes('"Notes/linked"'), told[0]);
+  assert.ok(told[0].includes('"linked"'), told[0]);
   assert.ok(told[0].includes("stays on this device only"), told[0]);
   // And the real folder beside it is published as ever.
   assert.equal(v.server.files.has(await c.folderFileId(v.keys.manifestKey, "Notes")), true, "the real folder was not published");

@@ -1,0 +1,12 @@
+# M3560: the "N more" toast goes after eight seconds though it counts an error
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -318,7 +318,7 @@
+    * error, which is drawn again as a sticky toast to do so.
+    */
+   private fold(kind: NoticeKind, now: number): void {
+-    const sticky = STAYS_MS[kind] === 0;
++    const sticky = STAYS_MS[kind] < 0;
+     const current = this.overflow !== null && live(this.overflow, now) ? this.overflow : null;
+     const count = (current?.count ?? 0) + 1;
+     const words = `obsync: ${count} more — see Recent in Show sync status.`;

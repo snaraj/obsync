@@ -1,0 +1,11 @@
+# M4038: a start that met a disk stall says it tries again, and arms nothing (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4145,7 +4145,6 @@
+       // a start that met one stopped for good under words saying it retries.
+       if ((error as { code?: unknown }).code === DISK_STALLED) {
+         this.log("engine decision=stopped reason=start_stalled code=disk_stalled");
+-        this.scheduleReconnect(attempt, 0);
+         this.setStatus({ kind: "error", message: (error as Error).message });
+         return;
+       }

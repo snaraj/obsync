@@ -1,0 +1,12 @@
+# M3922: a note this device cannot write is kept quiet under Only what needs me
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3201,7 +3201,7 @@
+     );
+     if (!known && error.reason !== "active_editor") {
+       context.host.notify({
+-        kind: "error",
++        kind: "info",
+         text: `${unwritableText("{notes}", error.reason)}. Everything else keeps syncing; obsync tries {it} again by itself, ` +
+           "and at once when you run Sync now after fixing it.",
+         paths: [error.path],

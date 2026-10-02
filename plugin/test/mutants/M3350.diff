@@ -1,0 +1,12 @@
+# M3350: a note that leaves the selection is forgotten without where it went (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1715,7 +1715,7 @@
+     if (queued !== -1) this.queue.splice(queued, 1);
+     const record = context.state.fileByPath(from);
+     if (record !== undefined) {
+-      if (to !== null && vaultPathRefusal(to) === null) {
++      if (to !== null && Date.now() < 0) {
+         context.state.data.departed[record.fileId] = { path: to, versionId: record.versionId, size: record.size };
+       }
+       context.state.forgetPath(from);

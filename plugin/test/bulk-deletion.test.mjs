@@ -84,7 +84,7 @@ test("a selected folder that left the vault while Obsidian was closed publishes 
     host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),
   );
   assert.equal(host.notices.length, 1, `the user was told ${host.notices.length} times`);
-  assert.match(host.notices[0], /stopped 7 deletions/);
+  assert.match(host.notices[0], /^obsync: held back 7 deletions: 7 of the 7 notes this device syncs are missing/);
   assert.match(host.notices[0], /Sync folders/, "the notice does not say how to put it right");
 
   // AND IT STAYS HELD. A second pass finds the same thing and must not talk
@@ -111,6 +111,8 @@ test("the user's confirmation publishes exactly what was held", async (t) => {
   assert.equal(tombstones(server).length, NOTES.length, "the confirmed deletions never reached the server");
   assert.equal(engine.heldDeletionCount, 0, "the hold outlived the confirmation");
   assert.ok((host.questionsClosed ?? 0) >= 1, "the answered question was left on screen");
+  // The answer is said, so Recent never ends on the question (#309).
+  assert.equal(host.notices.at(-1), `obsync: deleting ${NOTES.length} notes on your other devices too.`);
   assert.ok(
     host.logs.some((line) => line.includes(`decision=confirmed reason=bulk_deletion queued=${NOTES.length}`)),
     host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),
@@ -238,8 +240,10 @@ test("Sync now with a hold pending publishes none of it, and says the hold is st
     host.logs.filter((line) => line.startsWith("reconcile")).join(" | "),
   );
   assert.equal(host.notices.length, 2, host.notices.join(" | "));
-  assert.match(host.notices[1], /still holding back 12 deletions/);
-  assert.match(host.notices[1], /Deletions held back/);
+  assert.match(host.notices[1], /12 deletions are still held back, so Sync now does not send them/);
+  assert.match(host.notices[1], /Choose Delete everywhere if you meant them, or Restore here/);
+  // ONE QUESTION ON SCREEN: the one Sync now raised replaced the one the pass raised.
+  assert.deepEqual(host.toasts.map((toast) => toast.hidden), [true, false], JSON.stringify(host.toasts.map((toast) => toast.text)));
 });
 
 test("a pending hold is never published by a pass, even once fewer than half are missing", async (t) => {
@@ -264,7 +268,7 @@ test("a pending hold is never published by a pass, even once fewer than half are
   assert.deepEqual(tombstones(server), [], `a pass published ${tombstones(server).length} held deletions`);
   assert.equal(engine.heldDeletionCount, 9);
   assert.equal(host.notices.length, 2, host.notices.join(" | "));
-  assert.match(host.notices[1], /still holding back 9 deletions/);
+  assert.match(host.notices[1], /9 deletions are still held back, so Sync now does not send them/);
 
   // Only the user's word publishes it, and exactly what is still missing.
   engine.confirmHeldDeletions();

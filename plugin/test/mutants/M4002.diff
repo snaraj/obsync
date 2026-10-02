@@ -1,0 +1,12 @@
+# M4002: a seam the host is given is not bounded (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -745,7 +745,7 @@
+   ) {
+     const log = (line: string): void => this.log(line);
+     if (desktop !== undefined) {
+-      this.desktop = desktop === null ? null : { ...desktop, fs: boundedFs(desktop.fs, log) };
++      this.desktop = desktop;
+       return;
+     }
+     const fs = nodeModule<NodeFs>("fs");

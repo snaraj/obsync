@@ -1,9 +1,9 @@
 # M2155: a page leaves its host pass open
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2788,7 +2788,6 @@
-       } finally {
+@@ -3680,7 +3680,6 @@
          this.pulls = 0;
+         this.step = null;
          context.ahead = null;
 -        context.host.pass?.(false);
        }

@@ -1,7 +1,7 @@
 # M2342: every count of notes is plural (iPhone pass)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -48,7 +48,7 @@
+@@ -60,7 +60,7 @@
  
  /** "1 note", "7 notes": the approval prompt and the claimant's question count the same way. */
  function notes(count: number): string {
@@ -9,4 +9,4 @@
 +  return `${count} notes`;
  }
  
- /** A pairing refusal or outcome, in words (issue #154); the log line keeps the code. */
+ /**

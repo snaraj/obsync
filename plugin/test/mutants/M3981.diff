@@ -1,0 +1,11 @@
+# M3981: the status does not say a full server for the changes it refused (#300)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3296,7 +3296,6 @@
+     if (this.refused !== null) return this.refused;
+     // A FULL SERVER STANDS FOR THE CHANGES IT REFUSED (#300), as a standing
+     // refusal does, until a push of each is taken or a pass drops it.
+-    if ([...this.unsent.values()].some((entry) => entry.full)) return { kind: "error", code: "storage", message: SERVER_FULL };
+     // Notes waiting on their own push to settle a fork, or on an editor or a
+     // download here: work, by path (#296).
+     const waiting: string[] = [];

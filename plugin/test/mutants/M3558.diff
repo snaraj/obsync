@@ -1,0 +1,10 @@
+# M3558: a toast whose time is up still counts as on screen
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -335,5 +335,5 @@
+ 
+ /** A toast still on screen: not hidden, and inside its time. */
+ function live(toast: Toast, now: number): boolean {
+-  return toast.drawn.shown() && (toast.ms === 0 || now < toast.at + toast.ms);
++  return toast.drawn.shown();
+ }

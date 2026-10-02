@@ -1,0 +1,10 @@
+# M3488: the fake server counts every device record, revoked ones included (#268)
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -777,5 +777,5 @@
+     // obsyncd counts the devices that can sync, not every record (#268).
+     if (path === "/v1/account" && request.method === "GET") {
+-      const device_count = this.devices.filter((device) => !device.revoked).length;
++      const device_count = this.devices.length;
+       return this.json(200, { account_id: "a".repeat(32), name: "obsync", used_bytes: 0, quota_bytes: null, device_count });
+     }

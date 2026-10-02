@@ -1,0 +1,12 @@
+# M3766: a resolution that found this device's upload in flight starts over uncounted as such, and is counted twice (#278)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2796,7 +2796,7 @@
+     context.host.log(`pull decision=waiting reason=upload_receipt file=${change.file_id} seq=${change.seq}`);
+     await pending;
+     context.host.log(`pull decision=retry reason=upload_completed file=${change.file_id} seq=${change.seq}`);
+-    return await startOver(context, change, theirManifest);
++    return await applyVersion(context, change, theirManifest);
+   }
+   // A version that already holds ours is a fast-forward over an edit made
+   // here and not pushed yet: its base is exactly the version recorded.

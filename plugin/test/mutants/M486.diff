@@ -1,7 +1,7 @@
 # M486: a paused note keeps taking the other device's versions, and its plugin keeps answering them
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -880,10 +880,6 @@
+@@ -1203,10 +1203,6 @@
    // a push that was in flight when it paused and came back conflicted. Its
    // versions are asked of the server again, as the file stands then, when it
    // is resumed (`engine.ts`, `resume`).
@@ -9,6 +9,6 @@
 -    context.host.log(`pull path_class=file decision=skipped reason=paused file=${change.file_id} seq=${change.seq}`);
 -    return "skipped";
 -  }
-   try {
-     const entry = await decodeRecordManifest(context, change);
-     // NOTHING INTO A VAULT OF ITS OWN, AND NOTHING OUT OF ONE (issue #180):
+   // NOR DOES A NOTE THAT LEFT THE SELECTION (issues #91, #239). This device
+   // keeps it under its new name and no longer syncs it; written again at the
+   // old one, it was a second copy here. What another device did to it

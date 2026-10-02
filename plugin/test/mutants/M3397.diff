@@ -1,0 +1,11 @@
+# M3397: a press follows a folder readdir names below the listed ones (#246)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1020,6 +1020,7 @@
+       }
+       if (!Array.isArray(entries) || !entries.every(isDiskEntry)) return this.pressFallback(label, "entry_shape", files);
+       const disk = new Map(entries.filter((entry) => entry.type === "file").map((entry) => [entry.name, entry]));
++      for (const entry of entries) if (entry.type === "directory" && !entry.name.startsWith(".")) byFolder.set(folder === "" ? entry.name : `${folder}/${entry.name}`, byFolder.get(folder === "" ? entry.name : `${folder}/${entry.name}`) ?? []);
+       for (const file of listed) {
+         const entry = disk.get(file.path.slice(file.path.lastIndexOf("/") + 1));
+         if (entry === undefined) unanswered.push(file);

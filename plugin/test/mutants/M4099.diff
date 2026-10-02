@@ -1,0 +1,11 @@
+# M4099: the claim's key leaves the claim
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -909,7 +909,6 @@
+           platform: this.plugin.platformName(),
+           app_version: this.plugin.manifest.version,
+           vault,
+-          claimant_pub: keyExchange.kex.publicKey,
+         }),
+         "claiming the pairing",
+       );

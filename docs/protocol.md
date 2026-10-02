@@ -32,10 +32,19 @@ the journal volume and are fsynced before the request is answered), `503
 nonce_cache_full` (the replay cache is at its ceiling; refusing beats
 forgetting a nonce still inside its window), `503 nonce_share_full` (this
 device holds its whole share of that cache, 50,000 nonces, a quarter of it;
-only this device is refused), `503 nonce_log_unavailable`
-(the volume would not take that record), `403 device_revoked` (answered from the device
+only this device is refused), `507 storage_full` (the journal volume has no
+room for that record, so every signed request is refused, a read included;
+server 1.1.5, and `503 nonce_log_unavailable` before), `503 nonce_log_faulted`
+(a refused record could not be cut back off the volume either, so every
+signed request is refused, and `/readyz` answers `503 not_ready`, until the
+server restarts; server 1.1.5. Like `503 journal_faulted`, a client says it
+as the restart it needs and does not retry it as absence; plugin 1.1.5), `503
+nonce_log_unavailable` (the volume would not take that record for any other
+reason), `403 device_revoked` (answered from the device
 record before the signature is checked, because revocation destroys the
-wrapped secret and leaves nothing to check it against), `403 device_pending`
+wrapped secret and leaves nothing to check it against; archiving that device
+does not change this answer, because it does not remove the record),
+`403 device_pending`
 (a claimed device that has not yet collected the envelope its creator
 approved, answered only AFTER its signature verifies; only that pairing's
 envelope endpoint admits it, with `409 not_approved` until the approval).
@@ -68,12 +77,14 @@ answers the same.
 | `POST /v1/pairing` | **no** | mints a pairing and an enroll token |
 | `POST /v1/pairing/{id}/claim` | **no** | mints a device credential |
 | `GET /v1/pairing/{id}` | yes | read |
+| `POST /v1/pairing/{id}/reveal` | yes | holds one key; the same key again answers `204` again |
 | `POST /v1/pairing/{id}/approve` | **no** | consumes the pairing |
 | `POST /v1/pairing/{id}/reject` | **no** | destroys the pending device; refuses an approved pairing |
 | `GET /v1/pairing/{id}/envelope` | **no** | single use; then `410 envelope_consumed` |
 | `GET /v1/devices` | yes | read |
 | `PATCH /v1/devices/{id}` | **no** | write |
 | `POST /v1/devices/{id}/revoke` | **no** | write, and one-way |
+| `POST /v1/devices/{id}/archive` | **no** | write; a second send leaves the same state and answers `204` |
 | `POST /v1/devices/heartbeat` | **no** | write |
 | `POST /v1/chunks/exists` | yes | a read; POST only because the sid list is long |
 | `POST /v1/chunks/get` | yes | a read; same reason |
@@ -86,7 +97,7 @@ answers the same.
 A client that loses the answer to a **no** row must not re-send it. The
 outcome is unknown, not failed: the request may already have been applied.
 Settle it by reading what the server holds — the file record for a version
-post, the device list for a revoke — or tell the user, with the reason, that
+post, the device list for a revoke or an archive — or tell the user, with the reason, that
 it is unknown. The plugin's table is `ROUTES` in `plugin/src/transport.ts`
 and a test asserts every route it emits appears there.
 
@@ -94,8 +105,9 @@ and a test asserts every route it emits appears there.
 
 - `GET /livez` → `200 ok` while the process runs.
 - `GET /readyz` → `200 {"ready":true}` when volumes are writable,
-  the journal is replayed and its usage is verified, and no shutdown is in
-  progress; else `503 not_ready`. A journal whose usage survey was refused is
+  the journal is replayed and its usage is verified, neither the journal nor
+  the nonce log is faulted (the nonce log since server 1.1.5), and no shutdown
+  is in progress; else `503 not_ready`. A journal whose usage survey was refused is
   re-surveyed by this probe, so a fixed volume answers `200` again without any
   write.
 
@@ -117,19 +129,39 @@ and a test asserts every route it emits appears there.
   `HKDF-SHA-256(VRK, salt=utf8("obsync/v1/account-recovery"), info="", L=32)`.
   The verifier is lowercase hex `SHA-256(proof)`. The server compares hashes
   in constant time, never receives VRK or a content decryption key, and returns
-  `403 bad_recovery_proof` for a wrong proof. `409 recovery_unavailable` means
-  no verifier was registered before credentials were lost. A valid recovery
-  enrolls a new active device on the same account, without renaming it,
-  replacing content or reviving revoked credentials. It is never auto-retried.
+  `403 bad_recovery_proof` for a wrong proof. An account with no verifier
+  answers `409 recovery_unavailable`, whatever the proof, unless the
+  operator's offline `obsyncd recovery reset apply` has armed it since. That
+  step rotates the setup token and arms exactly one re-enrolment: a
+  `recovery_proof` then registers the verifier it derives (timed, so the
+  last-device hold applies from then) and enrols. The server has nothing to
+  check that proof against, so the authority is the offline reset and the new
+  token only it hands out; the proof only chooses the verifier. The first
+  verifier registered after the reset spends the arm, by this route or by a
+  device's `POST /v1/account/recovery`, and a later recovery is proved against
+  it. No device-authenticated request can clear a verifier or arm this.
+  A valid recovery enrolls a new active device on the same account, without
+  renaming it, replacing content or reviving revoked credentials. It is never
+  auto-retried. A server before 1.1.5 answers `409 recovery_unavailable`
+  instead of re-enrolling.
 - `POST /v1/account/recovery` (device auth)
   `{"recovery_verifier":"<64hex>"}` → `204`. Register once after the client has
   successfully opened its vault. Repeating the same verifier is harmless;
   `409 recovery_mismatch` refuses replacement. Invalid shape is `400` before
   storage changes. The verifier survives journal replay and snapshots but is
   omitted from account responses. Old accounts without the field remain
-  readable and retain their last-device safeguard.
+  readable and retain their last-device safeguard. Since 1.1.5 the server
+  also records when the verifier was registered, and nothing but the
+  operator's offline `obsyncd recovery reset apply` removes a verifier; no
+  route does.
 - `GET /v1/account` (device auth) → `{"account_id","name","created",
-  "quota_bytes","used_bytes","device_count"}`.
+  "quota_bytes","used_bytes","device_count"}`. `device_count` is how many
+  devices can sync: the active ones and those still pairing. A revoked
+  device, archived or not, stays a record and is not counted. A server
+  before 1.1.5 counted every record, revoked ones included; the field kept
+  its name because the one client that shows it prints "N device(s)", and
+  the devices that can sync is what that sentence means. The dashboard's
+  overview carries the same `account` object.
 
 ## Pairing
 
@@ -160,12 +192,21 @@ ignores the optional field, so its approval prompt cannot name the new vault.
   collects the envelope the creator approved. Since 1.1.4 an expired pairing
   still answers `410 pairing_expired` for an hour to a claim carrying its
   token (the server remembers at most 256), while any other token reads `404
-  unknown_pairing`, as it would for a live pairing.
+  unknown_pairing`, as it would for a live pairing. Since 1.1.5 the claim
+  carries `claimant_pub` (pairing v2, below); the server validates its shape
+  and returns it to the creator verbatim.
 - `GET /v1/pairing/{id}` (device auth, creator only) → `{"state":"open|
   claimed|approved|consumed|expired","claimant":{"device_id","name",
-  "platform","app_version"}|null}`. For the same hour after expiry the
-  creator reads `expired` or, if the key was collected, `consumed`, with a
-  `null` claimant.
+  "platform","app_version","claimant_pub"?}|null}`. For the same hour after
+  expiry the creator reads `expired` or, if the key was collected, `consumed`,
+  with a `null` claimant.
+- `POST /v1/pairing/{id}/reveal` (device auth, creator only, 1.1.5)
+  `{"creator_pub":"<87 base64url>"}` → `204`: the creator's pairing v2 key,
+  held verbatim and returned to the waiting claimant (below). `409
+  not_claimed` before a claim, `409 already_approved` after the approval,
+  `410 pairing_expired` after the ten minutes, and `409 already_revealed`
+  for a key other than the one already revealed; the same key again answers
+  `204` again.
 - `POST /v1/pairing/{id}/approve` (device auth, creator only)
   `{"envelope":"<base64 AES-GCM ciphertext>","nonce":"<24hex>"}` → `204`.
   Approval activates nothing by itself (1.1.4; earlier servers activated the
@@ -183,21 +224,102 @@ ignores the optional field, so its approval prompt cannot name the new vault.
   The claimant pairs again.
 - `GET /v1/pairing/{id}/envelope` (device auth, claimant only) →
   `409 not_approved` until the creator approves (the claimant polls this),
-  then `{"envelope","nonce"}` exactly once; `410 envelope_consumed`
-  afterwards, and `410 pairing_expired` once the ten minutes have passed.
-  Collecting it moves the device to state `active`: the activation is
-  journaled before the envelope is answered, and a refused journal write
-  consumes nothing.
+  carrying `"creator_pub"` beside `"error"` once the creator revealed it;
+  then `{"envelope","nonce","creator_pub"?}` exactly once; `410
+  envelope_consumed` afterwards, and `410 pairing_expired` once the ten
+  minutes have passed. Collecting it moves the device to state `active`: the
+  activation is journaled before the envelope is answered, and a refused
+  journal write consumes nothing.
 
-The approval prompt and the waiting claimant show the same six-digit match
-code (1.1.4), which neither side sends: each computes
-`HKDF(PS, "obsync/v1/pair-match", pairing_id + ":" + device_id)`, reads its
-first four bytes as a big-endian integer modulo 1,000,000 and shows it as
-`ddd ddd` -- the creator from the claimant id the pairing poll names, the
-claimant from the id its claim returned. The server, which never holds `PS`,
-cannot make two screens agree, and a second device claiming a leaked code
-holds another id and shows another code. A 1.1.3 device shows no code and
-ignores one; either side pairs as before.
+### Pairing v2: one way only (1.1.5)
+
+Before 1.1.5 the code's pairing secret `PS` alone sealed the vault-key
+envelope, and the two screens compared `HKDF(PS, "obsync/v1/pair-match",
+pairing_id + ":" + device_id)`: anyone who read the code could open the key,
+and whoever chose the device id could make the two codes agree. 1.1.5 pairs
+only as below, and refuses a device that would pair the old way, in either
+role.
+
+- **Keys.** Each side generates an ephemeral P-256 key pair whose private
+  key is non-extractable and never leaves the device, fresh for each code.
+  The public key crosses raw-uncompressed (65 bytes, `0x04` prefix) as
+  base64url: the claimant's as `claimant_pub` in the claim, the creator's as
+  `creator_pub` in the reveal. The server validates the shape (87 base64url
+  characters decoding to 65 bytes beginning `0x04`), holds the two fields
+  verbatim with the in-memory pairing, never logs them and does no
+  elliptic-curve mathematics on them.
+- **The code commits to the creator's key.** The creator makes its key pair
+  before the code, and the code is `base32(pairing_id || enroll_token || PS
+  || C)`, 80 bytes and 128 characters, where `C = SHA-256(
+  "obsync/v2/pair-commit" || pairing_id || creator_pub)[0..16]`, the key raw.
+  The code is the one channel the network cannot change, so the claimant
+  learns which key to expect from it; a reader of the code learns nothing
+  that computes a match code. A 64-byte code (a device before 1.1.5) is
+  refused with the words to update that device; anything else short of 80
+  bytes is incomplete.
+- **The order is the authentication.** The creator reads the claim once and
+  FIXES it: the claimant key it holds is the one it compares and seals for,
+  and it never reads the claim again. Only then does it reveal its key. So
+  whoever puts a key into the claim chooses it without knowing the creator's.
+  The claimant shows no code until the reveal reaches it on its
+  `not_approved` poll, checks it against `C` (a key that fails ends the
+  claim: nothing shared, the words say the key does not match the code), and
+  from then on accepts no other creator key, waiting or with the envelope.
+- **Match code.** Six digits of `HKDF(ikm = PS, salt = "obsync/v2/pair-match",
+  info = pairing_id || claimant_pub || creator_pub)`, the keys raw, as a
+  big-endian integer modulo 1,000,000, shown `ddd ddd`. Every input on the
+  claimant's screen came through the code or from itself; no device id is an
+  input, because the server chooses those and could choose one after reading
+  the creator's key. A substituted key then agrees by chance alone, one in a
+  million per attempt, and each attempt costs the person a new code.
+- **Seal.** `K = HKDF-SHA-256(ikm = ECDH(claimant, creator), salt = PS,
+  info = "obsync/v2/pair" || pairing_id)`; the envelope is AES-256-GCM over
+  `{"vrk":…}` with a random 12-byte nonce and additional data `pairing_id ||
+  claimant_pub || creator_pub` (the raw keys), so it cannot be replayed into
+  another pairing or opened against a substituted key. A copy of the code and
+  a record of every request open nothing.
+- **What is refused.** A claim without `claimant_pub` (a device before 1.1.5,
+  or a key stripped on the way: the two look the same) is rejected on the
+  creator, which says to update the new device; a claim whose name or
+  `app_version` is not what a server accepts (1 to 64, and 1 to 32, printable
+  ASCII) is rejected as one no obsync server sends. The claimant refuses an
+  envelope without `creator_pub`. A claim a device before 1.1.5 held across a
+  restart is dropped at the next start, never finished; one the update
+  interrupted after it collected its key leaves its device listed with no
+  keeper, to be revoked under Devices.
+- **The server first.** A server before 1.1.5 drops the key fields and has
+  no reveal, so before `POST /v1/pairing` a 1.1.5 creator reads `GET
+  /v1/plugin/manifest` and makes no code unless the `version` it reports is
+  1.1.5 or later (`major.minor.patch`, a pre-release counts); an older
+  version, a malformed one, or none (`404 plugin_unavailable`) is refused
+  with one sentence: update the obsync server to 1.1.5 or later, then pair.
+  The version is unauthenticated, and that is safe here: a forged answer can
+  only cause the refusal, or reach a server that cannot complete the reveal.
+- **Paired means kept.** Collection (`consumed`) proves only that the envelope
+  left the server: a claimant that cannot open it, or whose person cancels,
+  revokes itself. So the creator says "paired" only once the claimant's row in
+  `GET /v1/devices` is `active` and shows the sync a kept key starts:
+  - A `last_heartbeat` at all (server 1.1.5, issue #290) proves it. Only a
+    started sync sends a heartbeat: never the claim, never the survey. A
+    pending device's heartbeat is refused, and the row is minted for this
+    claim.
+  - Otherwise, `last_seen` after `last_sign_in`. The sign-in is the
+    claimant's first request after collection, reading the server's vault
+    before it keeps the key.
+
+  Seen events are stamped in whole seconds, so a heartbeat in the second of
+  the sign-in leaves `last_seen` equal to `last_sign_in`. That is why the
+  heartbeat's own field decides, whatever second it shares.
+
+  A row that is revoked or gone reads "did not keep the vault key"; neither
+  within ten minutes reads "not confirmed".
+
+  **Skew.**
+  - A 1.1.4 server is refused before any code is made.
+  - A server that does not list `last_heartbeat` (a 1.1.5 build before #290)
+    is read by the comparison alone. A same-second start there waits out the
+    ten minutes and reads "not confirmed", never "paired" early.
+  - A client that does not read the field sees what it saw before.
 
 ## Devices
 
@@ -208,13 +330,33 @@ retain the account-wide authority described below.
 
 - `GET /v1/devices` → `{"devices":[{"device_id","name","platform",
   "app_version","created","last_seen","last_sign_in","last_edit",
-  "address","country","policy":{"per_file_max_bytes","total_budget_bytes"},
-  "state":"pending|active|revoked","revoked":false}]}`. Only `active`
-  devices count for the last-device rule.
+  "last_heartbeat","address","country",
+  "policy":{"per_file_max_bytes","total_budget_bytes"},
+  "state":"pending|active|revoked","revoked":false,"archived":false}]}`. Only
+  `active` devices count for the last-device rule. `archived` (server 1.1.5)
+  is a property of a REVOKED device and never a state of its own: an archived
+  device is still listed, still `"revoked":true`, and still named, so a client
+  that does not read the field shows exactly what it showed before. A client
+  that does read it leaves those devices out of the lists a person manages.
+  `last_heartbeat` (server 1.1.5, #290) is the device's latest heartbeat, in
+  the same whole-second stamps as `last_seen`, and `null` before any.
 - `PATCH /v1/devices/{id}` `{"name"?, "policy"?}` (self or any paired
   device) → `200` the device.
 - `POST /v1/devices/{id}/revoke` → `204`. A device cannot revoke itself
-  while it is the only active device unless account recovery is registered.
+  while it is the only active device unless account recovery is registered:
+  `409 last_device` without it, and since 1.1.5 `409 recovery_too_new` while
+  the verifier is younger than seven days, a constant. A verifier registered
+  before 1.1.5 carries no time and counts as older.
+- `POST /v1/devices/{id}/archive` (server 1.1.5) → `204`: a REVOKED device is
+  taken off the device lists a person manages. Nothing is destroyed: the
+  record still answers that device `403 device_revoked`, and still names the
+  versions it wrote. `409 device_not_revoked` for an active or pending device
+  (revoke it first), `409 own_device` for the asking device, `404
+  unknown_device`; a second archive of the same device answers `204`. The
+  flag is on the journal before the `204`, inside the `device_update` frame,
+  so a server that predates it replays that frame as the no-op update it
+  reads rather than refusing the journal. A server before 1.1.5 answers `404
+  not_found` (no route).
 - `POST /v1/devices/heartbeat` `{"app_version","policy"}` → `204`; updates
   `last_seen` and the reported policy. Sent on start and hourly.
 
@@ -226,7 +368,10 @@ retain the account-wide authority described below.
   ≤ 8 MiB + 16 bytes (8 MiB plaintext plus the AES-GCM tag); larger
   declarations receive `413 body_too_large` before body storage. The server hashes while streaming to a temp file and refuses
   with `422 sid_mismatch` if `SHA-256(body) ≠ sid`, `507 volume_full` below
-  the watermark, `507 quota_exceeded` over the account quota, `503 slow_body`
+  the watermark, `507 storage_full` when the filesystem itself has no room
+  (`ENOSPC`, or a filesystem quota's `EDQUOT`: a capacity declared larger than
+  the disk; any write route answers it, server 1.1.5, and `500 io_error`
+  before), `507 quota_exceeded` over the account quota, `503 slow_body`
   when the body arrives more slowly than the minimum rate below. Success `201`
   (new) or `200` (already present). Idempotent.
 - `GET /v1/chunks/{sid}` → raw ciphertext with `Content-Length`; honors
@@ -604,8 +749,12 @@ device whose link opened it is revoked.
 - `GET /v1/admin/devices` → as `/v1/devices` plus `history:[{"ts","event":
   "sign_in|edit|heartbeat","address","country"}]` bounded by retention.
 - `POST /v1/admin/devices/{id}/revoke` → `204`; `409 last_device` when the
-  target is the only ACTIVE device and account recovery is unregistered. Revocation also closes the dashboard
+  target is the only ACTIVE device and account recovery is unregistered, and
+  `409 recovery_too_new` when it is registered and younger than seven days. Revocation also closes the dashboard
   sessions that device's links opened and drops the links it minted.
+- `POST /v1/admin/devices/{id}/archive` → `204`; as `POST
+  /v1/devices/{id}/archive`: a revoked device only (`409
+  device_not_revoked`), `404 unknown_device`.
 - `GET /v1/admin/storage` → `{"volumes":[<volume>…],"retention":{"days",
   "versions"},"watermark":{"spec":"5%,2GiB"},"gc":{"state":"idle|running",
   "last":<gc>|null},"scrub":{"state":"idle|running","rate_bytes_per_sec",

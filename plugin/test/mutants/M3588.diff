@@ -1,0 +1,15 @@
+# M3588: a dialog asked for while it shows opens a second one over it (#269)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3253,11 +3253,6 @@
+ 
+   /** One dialog, however often it is asked for (#269): the one showing comes forward, or a new one opens. */
+   private oneDialog<D extends StatusModal | RecentModal>(showing: D | null, make: () => D, name: string): D {
+-    if (showing?.isShown() === true) {
+-      this.log(`${name} decision=forward reason=already_open`);
+-      showing.forward();
+-      return showing;
+-    }
+     const dialog = make();
+     dialog.open();
+     return dialog;

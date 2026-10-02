@@ -1,0 +1,12 @@
+# M3340: a version this device wrote is dropped as an echo even when the engine brings it back (#239)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1185,7 +1185,7 @@
+   // deleted or hidden while it was out -- is applied as any other device's
+   // would be, once the engine has proved it is still the file's head
+   // (`returning`, issue #239).
+-  if ((authored || change.device_id === context.deviceId) && context.returning?.has(change.version_id) !== true &&
++  if ((authored || change.device_id === context.deviceId) && true &&
+     !(await deletionOwed(context, change))) return "echo";
+   // A PAUSED NOTE TAKES NOTHING (issue #179): not from the feed, and not from
+   // a push that was in flight when it paused and came back conflicted. Its

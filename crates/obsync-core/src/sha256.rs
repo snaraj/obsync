@@ -37,56 +37,85 @@ const H0: [u32; 8] = [
 
 /// One 64-byte block through the FIPS 180-4 compression function.
 ///
-/// The block is a fixed-size array, so the schedule load carries no bounds
-/// check. Nothing allocates here and the message schedule lives on the
-/// stack.
+/// Shaped for the scalar pipeline, the only one this crate may use (no SIMD
+/// or SHA instructions without `unsafe`, AGENTS.md requirement 5). The
+/// message schedule is a rolling window of 16 words, each computed as the
+/// round that needs it arrives, instead of 64 words filled before the first
+/// round. The rounds run eight to a turn with the eight working variables'
+/// ROLES rotated in the source rather than their values moved along, so a
+/// round writes two registers where it wrote eight. `Ch` and `Maj` take their
+/// equivalent two- and three-operation forms. Same arithmetic, same digests:
+/// the vectors and the differential test below pin it, and it runs about
+/// 1.6x the previous loop (`sha256_throughput`, `docs/benchmarks.md`).
+/// Nothing allocates, and every index is masked or exact, so none is checked.
+#[inline(always)]
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
-    let mut w = [0u32; 64];
+    let mut w = [0u32; 16];
     let (words, _) = block.as_chunks::<4>();
     for (word, bytes) in w.iter_mut().zip(words.iter()) {
         *word = u32::from_be_bytes(*bytes);
     }
-    for i in 16..64 {
-        let x = w[i - 15];
-        let y = w[i - 2];
-        let s0 = x.rotate_right(7) ^ x.rotate_right(18) ^ (x >> 3);
-        let s1 = y.rotate_right(17) ^ y.rotate_right(19) ^ (y >> 10);
-        w[i] = w[i - 16]
-            .wrapping_add(s0)
-            .wrapping_add(w[i - 7])
-            .wrapping_add(s1);
+    // W[t] for t >= 16, written over W[t - 16], its slot in the window.
+    macro_rules! schedule {
+        ($t:expr) => {{
+            let x = w[($t + 1) & 15];
+            let y = w[($t + 14) & 15];
+            let s0 = x.rotate_right(7) ^ x.rotate_right(18) ^ (x >> 3);
+            let s1 = y.rotate_right(17) ^ y.rotate_right(19) ^ (y >> 10);
+            w[$t & 15] = w[$t & 15]
+                .wrapping_add(s0)
+                .wrapping_add(w[($t + 9) & 15])
+                .wrapping_add(s1);
+            w[$t & 15]
+        }};
     }
-
+    // One round, FIPS 180-4 6.2.2 step 3, naming the variables by their
+    // role in THIS round: only `d` (becoming the next `e`) and `h` (becoming
+    // the next `a`) are written.
+    macro_rules! round {
+        ($a:ident, $b:ident, $c:ident, $d:ident, $e:ident, $f:ident, $g:ident, $h:ident, $k:expr, $w:expr) => {
+            let t1 = $h
+                .wrapping_add($e.rotate_right(6) ^ $e.rotate_right(11) ^ $e.rotate_right(25))
+                .wrapping_add($g ^ ($e & ($f ^ $g)))
+                .wrapping_add($k.wrapping_add($w));
+            let t2 = ($a.rotate_right(2) ^ $a.rotate_right(13) ^ $a.rotate_right(22))
+                .wrapping_add(($a & $b) | ($c & ($a | $b)));
+            $d = $d.wrapping_add(t1);
+            $h = t1.wrapping_add(t2);
+        };
+    }
     let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
-    for (k, wi) in K.iter().zip(w.iter()) {
-        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-        let ch = (e & f) ^ (!e & g);
-        let t1 = h
-            .wrapping_add(s1)
-            .wrapping_add(ch)
-            .wrapping_add(*k)
-            .wrapping_add(*wi);
-        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-        let maj = (a & b) ^ (a & c) ^ (b & c);
-        let t2 = s0.wrapping_add(maj);
-        h = g;
-        g = f;
-        f = e;
-        e = d.wrapping_add(t1);
-        d = c;
-        c = b;
-        b = a;
-        a = t1.wrapping_add(t2);
+    macro_rules! eight {
+        ($k:expr, $w:ident, $t:expr) => {
+            round!(a, b, c, d, e, f, g, h, $k[0], $w!($t));
+            round!(h, a, b, c, d, e, f, g, $k[1], $w!($t + 1));
+            round!(g, h, a, b, c, d, e, f, $k[2], $w!($t + 2));
+            round!(f, g, h, a, b, c, d, e, $k[3], $w!($t + 3));
+            round!(e, f, g, h, a, b, c, d, $k[4], $w!($t + 4));
+            round!(d, e, f, g, h, a, b, c, $k[5], $w!($t + 5));
+            round!(c, d, e, f, g, h, a, b, $k[6], $w!($t + 6));
+            round!(b, c, d, e, f, g, h, a, $k[7], $w!($t + 7));
+        };
+    }
+    // The first sixteen rounds read the block's own words.
+    macro_rules! loaded {
+        ($t:expr) => {
+            w[$t & 15]
+        };
     }
 
-    state[0] = state[0].wrapping_add(a);
-    state[1] = state[1].wrapping_add(b);
-    state[2] = state[2].wrapping_add(c);
-    state[3] = state[3].wrapping_add(d);
-    state[4] = state[4].wrapping_add(e);
-    state[5] = state[5].wrapping_add(f);
-    state[6] = state[6].wrapping_add(g);
-    state[7] = state[7].wrapping_add(h);
+    let (ks, _) = K.as_chunks::<8>();
+    for (turn, k) in ks.iter().enumerate() {
+        let t = turn * 8;
+        if turn < 2 {
+            eight!(k, loaded, t);
+        } else {
+            eight!(k, schedule, t);
+        }
+    }
+    for (word, add) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
+        *word = word.wrapping_add(add);
+    }
 }
 
 /// Streaming SHA-256 state: feed it with [`Sha256::update`], take the digest

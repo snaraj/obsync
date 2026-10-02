@@ -1,14 +1,14 @@
 # M219: one Finder move is decided several times over, one decision line per deleted note
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -875,10 +875,6 @@
+@@ -1505,10 +1505,6 @@
+     for (const path of paths) {
        this.vanished.add(path);
        if (confirmed) this.confirmedDeletions.add(path);
-     }
+-    }
 -    if (this.vanishHandle !== null) {
 -      if (now - this.burstStarted >= BULK_WINDOW_MS) return;
 -      this.timers.clear(this.vanishHandle);
--    }
-     this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
-   }
- 
+     }
+     // Under the pull lock, as a pass is (`inPass`, issue #244): a debounce
+     // left pending for a name the pull has just moved finds it gone before

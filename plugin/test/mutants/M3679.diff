@@ -1,0 +1,11 @@
+# M3679: a page counted before its turn is not told to the status (#286)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3580,7 +3580,6 @@
+     // the count itself, and its end sets it back.
+     this.pulls = page.changes.length;
+     this.pace();
+-    if (this.pulls > 0 && (this.holder !== null || this.behind > 0)) this.status(this.resting());
+     await this.exclusive("page", async () => {
+       context.ahead = new Prefetch(context, page.changes);
+       context.host.pass?.(true);

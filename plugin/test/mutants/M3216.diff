@@ -1,11 +1,11 @@
 # M3216: a new held-deletions question stacks under the one already on screen
---- a/plugin/src/main.ts
-+++ b/plugin/src/main.ts
-@@ -2758,7 +2758,6 @@
-     // (owner's rig, 2026-09-27: eight at once). A new one replaces the last;
-     // `closeQuestion` takes it away once nothing is held any more.
-     const asks = actions.some((action) => action.kind === "delete_everywhere" || action.kind === "restore_here");
--    if (asks) this.closeQuestion();
-     const notice = new Notice(message, actions.length === 0 ? 10000 : 0);
-     if (asks) this.question = notice;
-     for (const action of actions) {
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -317,7 +317,6 @@
+ 
+   /** A question or security notice: its own toast, replacing the one of its key. */
+   private slot(key: string, text: string, ms: number, notice: SyncNotice): void {
+-    this.close(key);
+     this.slots.set(key, { drawn: this.screen.draw(text, ms, notice.actions ?? [], notice.open), at: this.screen.now(), ms });
+   }
+ 

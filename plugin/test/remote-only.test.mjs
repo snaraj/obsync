@@ -81,8 +81,8 @@ test("the older copy is named as older, in the list and in one notice offering F
   assert.equal(host.notices.length, 1, host.notices.join(" | "));
   assert.equal(
     host.notices[0],
-    `obsync did not download the newer version of ${PATH} (${BIG.length} B): it is above this device's per-file ceiling (16 B). ` +
-      "This device keeps its older copy. Fetch the newer one when you need it, here or under Show remote-only files.",
+    `obsync: did not download the newer version of "clip.bin" (${BIG.length} B): it is above this device's per-file ceiling (16 B). ` +
+      "This device keeps its older copy; Fetch the newer one here or in Show remote-only files when you need it.",
   );
   assert.deepEqual(host.asked.map(({ actions }) => actions), [[{ kind: "fetch", fileId: FILE }]]);
 

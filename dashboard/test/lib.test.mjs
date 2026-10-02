@@ -16,6 +16,7 @@ import {
   buildDeviceRows,
   csrfToken,
   filterLogs,
+  foldDeviceRows,
   formatBytes,
   formatDuration,
   formatPolicyBytes,
@@ -407,6 +408,64 @@ test('buildDeviceRows: hostile input', () => {
   assert.equal(row.glyph, 'g-device');
   assert.equal(row.revoked, false);
   assert.equal(row.pending, false);
+});
+
+// The Android record, 2026-09-27 (#247): 4 working devices and 12 revoked.
+test('foldDeviceRows: the working devices keep their order, and the revoked fold under one count', () => {
+  const revoked = Array.from({ length: 12 }, (_, i) => ({ device_id: `r${i}`, name: 'Android RFV2', revoked: true, last_seen: 1757200000000 + i }));
+  const working = [
+    { device_id: 'a', name: 'Mac W4RC', last_seen: 1757200000000 },
+    { device_id: 'b', name: 'Android RFV2', last_seen: 1757100000000 },
+    { device_id: 'c', name: 'iPhone EDVF', last_seen: 1757000000000 },
+    { device_id: 'p', name: 'Mac 7KQ4', state: 'pending', last_seen: 1757300000000 },
+  ];
+  const rows = buildDeviceRows([...revoked, ...working]);
+  const fold = foldDeviceRows(rows);
+  assert.deepEqual(fold.working.map((r) => r.id), ['a', 'b', 'c', 'p'], 'active by last seen, then pending, as the table always listed them');
+  assert.equal(fold.revoked.length, 12);
+  assert.ok(fold.revoked.every((r) => r.revoked));
+  assert.deepEqual(fold.revoked.map((r) => r.id), rows.slice(4).map((r) => r.id), 'the revoked in their own order');
+  assert.equal(fold.label, '12 revoked devices');
+  assert.equal(foldDeviceRows(rows.slice(0, 5)).label, '1 revoked device');
+});
+
+test('foldDeviceRows: nothing revoked is no fold, and hostile input folds to nothing', () => {
+  const none = foldDeviceRows(buildDeviceRows(DEVICES.filter((d) => !d.revoked)));
+  assert.equal(none.label, '');
+  assert.equal(none.revoked.length, 0);
+  assert.equal(none.working.length, 2);
+  assert.equal(none.archived, 0);
+  assert.equal(none.archivedNote, '');
+  for (const hostile of [undefined, null, {}, 'x']) {
+    assert.deepEqual(foldDeviceRows(hostile), {
+      working: [], revoked: [], label: '', archived: 0, archivedNote: '',
+    });
+  }
+});
+
+// A device somebody forgot is off the page and still on the server (#247):
+// the record answers that device, and names the versions it wrote.
+test('foldDeviceRows: a forgotten device is in neither list, and is counted in one sentence', () => {
+  const rows = buildDeviceRows([
+    { device_id: 'a', name: 'Mac W4RC', last_seen: 3 },
+    { device_id: 'r', name: 'Old phone', revoked: true, last_seen: 2 },
+    { device_id: 'x', name: 'Older phone', revoked: true, archived: true, last_seen: 1 },
+  ]);
+  assert.deepEqual(rows.map((r) => r.archived), [false, false, true], 'the flag survives the shaping');
+  const fold = foldDeviceRows(rows);
+  assert.deepEqual(fold.working.map((r) => r.id), ['a']);
+  assert.deepEqual(fold.revoked.map((r) => r.id), ['r'], 'the archived one is not under the fold either');
+  assert.equal(fold.label, '1 revoked device');
+  assert.equal(fold.archived, 1);
+  assert.match(fold.archivedNote, /^1 forgotten device is not listed\./);
+  assert.match(fold.archivedNote, /refuse that device by, and to name the versions it wrote/);
+
+  const two = foldDeviceRows(buildDeviceRows([
+    { device_id: 'x', name: 'One', revoked: true, archived: true },
+    { device_id: 'y', name: 'Two', revoked: true, archived: true },
+  ]));
+  assert.deepEqual([two.working.length, two.revoked.length, two.label], [0, 0, ''], 'no fold with nothing to fold');
+  assert.match(two.archivedNote, /^2 forgotten devices are not listed\./);
 });
 
 test('buildDeviceRows: a device still pairing is marked and follows the paired ones; the revoked go last (#152)', () => {

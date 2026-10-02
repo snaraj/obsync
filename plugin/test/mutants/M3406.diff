@@ -1,0 +1,14 @@
+# M3406: a heartbeat counts as kept before a revoked or pending row is ruled out (#290)
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -197,9 +197,9 @@
+  * only wait longer, never say "paired" sooner.
+  */
+ export function keptOutcome(row: KeptRow | undefined): "kept" | "dropped" | "open" {
++  if (typeof row?.last_heartbeat === "number") return "kept";
+   if (row === undefined || row.revoked || row.state === "revoked") return "dropped";
+   if (row.state !== "active") return "open";
+-  if (typeof row.last_heartbeat === "number") return "kept";
+   if (typeof row.last_sign_in !== "number" || typeof row.last_seen !== "number") return "open";
+   return row.last_seen > row.last_sign_in ? "kept" : "open";
+ }

@@ -66,7 +66,9 @@ pub fn maybe<T>(v: Option<T>, render: impl FnOnce(T) -> Value) -> Value {
 }
 
 /// `GET /v1/account`. The device count is the caller's, because the record
-/// does not carry it and the store is the only place that knows.
+/// does not carry it and the store is the only place that knows. It counts
+/// the devices that can sync (`Store::working_device_count`): the one client
+/// that shows it before 1.1.5 prints it as "N device(s)", which is that.
 pub fn account(a: &AccountRecord, device_count: u64) -> Value {
     obj(vec![
         ("account_id", s(&a.account_id.to_string())),
@@ -89,6 +91,8 @@ pub fn device(d: &DeviceRecord) -> Value {
         ("last_seen", maybe(d.last_seen, ms)),
         ("last_sign_in", maybe(d.last_sign_in, ms)),
         ("last_edit", maybe(d.last_edit, ms)),
+        // Server 1.1.5, additive: what a pairing creator reads as "kept" (#290).
+        ("last_heartbeat", maybe(d.last_heartbeat, ms)),
         ("address", maybe(d.address.as_deref(), s)),
         ("country", maybe(d.country.as_deref(), s)),
         ("policy", policy(&d.policy)),
@@ -96,6 +100,11 @@ pub fn device(d: &DeviceRecord) -> Value {
         // plugin read it and a pending device is not a revoked one.
         ("state", s(d.state.as_word())),
         ("revoked", b(d.revoked())),
+        // An archived device is still listed, and still revoked: a client
+        // that does not know this field shows exactly what it showed before
+        // (issue #247). Leaving it out instead would have made a 1.1.4
+        // device list disagree with a 1.1.5 one about who exists.
+        ("archived", b(d.archived)),
     ])
 }
 

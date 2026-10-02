@@ -75,6 +75,25 @@ test("old transports remain bound to their old state and cannot issue after repl
   assert.equal(r.requests.length, 0);
 });
 
+/**
+ * THE OLD SESSION'S CALL ENDS AT ITS NEXT ATTEMPT, SAID ONCE (issue #272). The
+ * plugin's request function refuses for a session a reload replaced; read as a
+ * network failure, that refusal was retried through the whole backoff, up to
+ * two minutes, and every retry was logged into the new session.
+ */
+test("a call of a session a reload replaced ends at its first attempt with one line, and is never retried (#272)", async (t) => {
+  const r = await fixture(t, identity());
+  await r.instance.onload();
+  const old = r.instance.transport;
+  await r.instance.onload();
+  assert.notEqual(r.instance.transport, old, "the reload made no new transport, so this proves nothing");
+  const fileId = "aa".repeat(16);
+  const mark = r.logs.length;
+  await assert.rejects(old.getFile(fileId), (error) => error.name === "SessionEnded" && /inactive/.test(error.message));
+  assert.deepEqual(r.logs.slice(mark), [`http GET /v1/files/${fileId} decision=ended reason=session_inactive`]);
+  assert.equal(r.requests.length, 0);
+});
+
 for (const stage of ["response", "save"]) {
   test(`setup's superseded ${stage} completion leaves replacement identity untouched`, async (t) => {
     const r = await fixture(t, { ...identity(), deviceId: null, deviceSecret: null });
@@ -241,7 +260,7 @@ test("a current recovery dialog persists its derived key before reporting succes
   assert.equal(r.metadata().credentialRevision, 2);
   assert.equal(r.starts(), 1);
   assert.equal(dialog.closed(), 1);
-  assert.ok(r.obsidian.notices.includes("Vault key restored."));
+  assert.ok(r.obsidian.notices.includes("obsync: vault key restored."));
 });
 
 for (const cancellation of ["reload", "close"]) {
@@ -261,7 +280,7 @@ for (const cancellation of ["reload", "close"]) {
     assert.deepEqual(r.metadata(), metadata);
     assert.equal(r.starts(), starts);
     assert.ok(r.obsidian.notices.some((message) => message.includes(cancellation === "reload" ? "previous plugin session is inactive" : "dialog was closed")));
-    assert.ok(!r.obsidian.notices.includes("Vault key restored."));
+    assert.ok(!r.obsidian.notices.includes("obsync: vault key restored."));
   });
 }
 
@@ -293,7 +312,7 @@ test("new-key dialog handles a rejected save without showing recovery or an unha
   assert.equal(dialog.recoveryShown(), 0);
   assert.equal(dialog.closed(), 0);
   assert.equal(r.starts(), 0);
-  assert.ok(r.obsidian.notices.some((message) => message.startsWith("obsync could not read or save this vault's sync credentials")));
+  assert.ok(r.obsidian.notices.some((message) => message.startsWith("obsync: could not read or save this vault's sync credentials")));
 });
 
 for (const cause of ["storage failure", "unload", "same-instance reload"]) {
@@ -366,7 +385,7 @@ for (const action of ["Restore", "Create a new vault key"]) {
     assert.equal(r.metadata().credentialRevision, 2);
     assert.equal(dialog.closed(), 1, "the old callback must not close a later dialog");
     assert.equal(dialog.recoveryShown(), 0);
-    assert.ok(!r.obsidian.notices.includes("Vault key restored."));
+    assert.ok(!r.obsidian.notices.includes("obsync: vault key restored."));
     assert.ok(r.obsidian.notices.some((message) => message.includes("dialog was closed")));
   });
 }

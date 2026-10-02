@@ -1,0 +1,14 @@
+# M4040: the disk watchdog runs on for ever once every call has answered (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -322,10 +322,6 @@
+     if (now - call.started < call.budget) continue;
+     diskCalls.delete(id);
+     call.fail();
+-  }
+-  if (diskCalls.size === 0 && diskWatch !== null) {
+-    window.clearInterval(diskWatch);
+-    diskWatch = null;
+   }
+ }
+ 

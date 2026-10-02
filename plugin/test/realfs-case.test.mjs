@@ -210,7 +210,7 @@ async function vault(t, folderOnDisk, { fold = false } = {}) {
     deviceName: () => "sentinel-device",
   };
   const host = new ObsidianHost(plugin, { base: root, path: nodePath, fs: fold ? folding(root) : { promises: fsPromises } });
-  host.notify = (message) => notices.push(message);
+  host.notify = (notice) => notices.push(require("../build/notices.js").toastText(notice));
   r.context.host = host;
   // The two counters an assertion about "nothing was downloaded" and one
   // about "the scan really ran" need; silence is not evidence of either.

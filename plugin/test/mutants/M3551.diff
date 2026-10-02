@@ -1,0 +1,12 @@
+# M3551: a security notice is merged and folded like any other, not its own toast
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -270,7 +270,7 @@
+     const key = notice.key ?? `${kind}\u0000${notice.text}\u0000${notice.device ?? ""}`;
+     const text = toastText(notice);
+     const ms = stays(kind, text);
+-    if (NON_MUTABLE.has(kind)) {
++    if (kind === "question") {
+       this.slot(key, text, ms, notice);
+       this.screen.log(`notice decision=shown kind=${kind} stays_ms=${ms}`);
+       return;

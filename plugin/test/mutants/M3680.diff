@@ -1,0 +1,12 @@
+# M3680: a stop that waits says nothing (#287)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1249,7 +1249,7 @@
+     this.stop();
+     const watch = this.timers.set(() => {
+       const holder = this.holder;
+-      this.options.host.log(
++      ((line: string) => line)(
+         `engine decision=waiting on=${holder?.label ?? "work"} held_ms=${holder === null ? 0 : this.nowFn() - holder.since} ` +
+           `in_flight=${this.inFlight.size} budget_ms=${STOP_WAIT_MS}`,
+       );

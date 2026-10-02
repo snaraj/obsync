@@ -23,7 +23,6 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
-  rmdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -71,8 +70,11 @@ async function vault(t) {
       return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     },
     remove: async (path) => unlinkSync(join(root, path)),
-    // The adapter's own removal, which refuses a folder that is not empty.
-    rmdir: async (path) => rmdirSync(join(root, path)),
+    // The adapter's own removal as Obsidian 1.13.4's desktop adapter makes it:
+    // `fs.rm`, which without `recursive` refuses EVERY directory with
+    // `EISDIR`, empty or not (read off a live rig, issue #266). Modelled as
+    // `rmdir(2)`, this fixture hid that the host's fallback never worked.
+    rmdir: async (path, recursive) => realFsPromises.rm(join(root, path), { recursive }),
   };
   const plugin = {
     state: { data: {} },
@@ -83,8 +85,8 @@ async function vault(t) {
         getAbstractFileByPath: () => null,
         getFileByPath: () => null,
         // Obsidian's index holds no dot-named path and none of this vault, so
-        // the host takes the adapter's non-recursive removal: the path on
-        // which a `.DS_Store` stops `rmdir` outright.
+        // the host removes the folder itself: the path on which a `.DS_Store`
+        // stops `rmdir` outright.
         getFolderByPath: () => null,
         getAllFolders: () => [],
         getConfig: (key) => (key === "trashOption" ? "none" : undefined),
@@ -95,7 +97,7 @@ async function vault(t) {
     log: (line) => logs.push(line),
   };
   const host = new ObsidianHost(plugin, { fs: { promises: { ...realFsPromises } }, path: nodePath, base: root });
-  host.notify = (message) => notices.push(message);
+  host.notify = (notice) => notices.push(require("../build/notices.js").toastText(notice));
   const server = new FakeServer();
   const { state } = await fakeState(false);
   plugin.state = state;
@@ -194,6 +196,14 @@ for (const names of [[".DS_Store"], ["Thumbs.db", "desktop.ini"], finder]) {
   });
 }
 
+test("an empty folder made and deleted in one replay, before Obsidian indexed it, goes without stopping the feed (#241 live run)", async (t) => {
+  const v = await vault(t);
+  const created = await kept(v, "J10/Old", []);
+  const tombstone = await v.folder("J10/Old", { deleted: true, parents: [created.version_id] });
+  assert.equal(await v.applyChange(v.context, tombstone), "deleted", v.logs.join(" | "));
+  assert.equal(existsSync(join(v.root, "J10", "Old")), false, "the empty folder was kept");
+});
+
 test("a folder holding something else is kept, with the OS files, and the user is told once with the count (#184)", async (t) => {
   const v = await vault(t);
   const created = await kept(v, "Projects/Beta", [".DS_Store", ".another-apps-data"]);
@@ -204,7 +214,7 @@ test("a folder holding something else is kept, with the OS files, and the user i
   assert.deepEqual(readdirSync(join(v.root, "Projects", "Beta")).sort(), [".DS_Store", ".another-apps-data"]);
   assert.ok(v.logs.some((line) => line.includes("folder path_class=folder decision=kept reason=not_empty items=1")), v.logs.join(" | "));
   assert.equal(v.notices.length, 1, v.notices.join(" | "));
-  assert.ok(v.notices[0].includes('"Projects/Beta"'), v.notices[0]);
+  assert.ok(v.notices[0].includes('the folder "Beta"'), v.notices[0]);
   assert.ok(v.notices[0].includes("MacBook deleted it"), v.notices[0]);
   assert.ok(v.notices[0].includes("1 item "), v.notices[0]);
 
@@ -298,4 +308,36 @@ test("the mobile host removes a folder holding only OS files, and counts what ke
   files.add("Gamma/.plugin-data");
   assert.equal(await host.trashFolder("Gamma"), 2, "the folder was not kept, or not counted");
   assert.deepEqual([...files].sort(), ["Gamma/.DS_Store", "Gamma/.plugin-data"], "a kept folder lost a file");
+});
+
+/**
+ * AN EMPTY FOLDER OBSIDIAN HAS NOT INDEXED YET IS REMOVED, ONCE (issue #266).
+ *
+ * A device paired later replays the history fast enough that a folder the
+ * pull path made moments ago is not in Obsidian's index yet, so the host
+ * removes it itself. The adapter's own removal refused every directory with
+ * `EISDIR`, the page failed and retried, and the folder stayed for good. The
+ * walked directory goes by `rmdir(2)`: an entry that arrives meanwhile keeps
+ * it, and one already gone is no failure.
+ */
+test("an empty folder Obsidian has not indexed goes, and a removal that finds it gone or filled fails nothing (#266)", async (t) => {
+  const v = await vault(t);
+  mkdirSync(join(v.root, "W201", "Sub2"), { recursive: true });
+  assert.equal(await v.host.trashFolder("W201/Sub2"), 0);
+  assert.equal(existsSync(join(v.root, "W201", "Sub2")), false, "the empty folder stayed");
+  assert.equal(await v.host.trashFolder("W201/Sub2"), 0, "a folder already gone was a failure");
+
+  const fs = v.host.desktop.fs.promises;
+  const rmdir = fs.rmdir;
+  t.after(() => { fs.rmdir = rmdir; });
+  // Gone between the listing and the removal: removed, not a failure.
+  mkdirSync(join(v.root, "W201", "Gone"));
+  fs.rmdir = async (target) => { rmSync(target, { recursive: true }); return rmdir(target); };
+  assert.equal(await v.host.trashFolder("W201/Gone"), 0);
+  // Filled between the listing and the removal: kept, with what arrived.
+  mkdirSync(join(v.root, "W201", "Filled"));
+  fs.rmdir = async (target) => { writeFileSync(join(target, "Arrived.md"), "ARRIVED\n"); return rmdir(target); };
+  assert.equal(await v.host.trashFolder("W201/Filled"), 1, "a folder that filled up was not kept");
+  assert.equal(readFileSync(join(v.root, "W201", "Filled", "Arrived.md"), "utf8"), "ARRIVED\n");
+  assert.deepEqual(v.notices, []);
 });

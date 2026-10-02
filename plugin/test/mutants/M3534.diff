@@ -1,0 +1,16 @@
+# M3534: the case index is not updated on a move: a name is indexed only as its file id's first (P10)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -694,8 +694,10 @@
+     paths.add(path);
+     indexes.ids.set(record.fileId, paths);
+     if (record.name !== undefined) indexes.names.add(path);
+-    spellings.add(path);
+-    indexes.folded.set(fold, spellings);
++    if (paths.size === 1) {
++      spellings.add(path);
++      indexes.folded.set(fold, spellings);
++    }
+   } else {
+     paths.delete(path);
+     if (paths.size === 0) indexes.ids.delete(record.fileId);

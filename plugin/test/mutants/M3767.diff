@@ -1,0 +1,12 @@
+# M3767: a merge that met this device's upload midway starts over uncounted as such, and is counted twice (#278)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3000,7 +3000,7 @@
+           await writer.abort();
+           await uploading;
+           context.host.log(`pull decision=retry reason=upload_completed file=${change.file_id} seq=${change.seq}`);
+-          return await startOver(context, change, theirManifest);
++          return await applyVersion(context, change, theirManifest);
+         }
+         // The upload may have completed during the merge's awaits, leaving
+         // no pending promise but a newer parent. Re-read the graph instead of

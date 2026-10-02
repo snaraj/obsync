@@ -1,0 +1,15 @@
+# M3678: a page is counted only once it has its turn (#286)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3578,10 +3578,9 @@
+     // so a page waiting behind another pull is not idle either (#286), and
+     // said then when it will wait; the turn always comes (`exclusive`), says
+     // the count itself, and its end sets it back.
+-    this.pulls = page.changes.length;
+     this.pace();
+-    if (this.pulls > 0 && (this.holder !== null || this.behind > 0)) this.status(this.resting());
+     await this.exclusive("page", async () => {
++      this.pulls = page.changes.length;
+       context.ahead = new Prefetch(context, page.changes);
+       context.host.pass?.(true);
+       try {

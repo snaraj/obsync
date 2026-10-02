@@ -18,13 +18,27 @@ class Button {
 
 /** No notice says a status, a server code or a cryptographic detail (issue #154). */
 const RAW = /\b(401|403|404|409|410)\b|not_approved|not_claimant|pairing_expired|bad_signature|envelope_consumed|OperationError|decrypt|AES|GCM|byte/;
+/** A six-digit match code, wherever it appears. */
+const SIX = /\b\d{3} \d{3}\b/;
 
 const id = "12".repeat(16), token = "34".repeat(32), secret = new Uint8Array(16).fill(56);
 
+/** What a claim held across a restart looks like; 1.1.5 never writes one, so anything not `null` is one. */
+const heldClaims = (result) => result.held.filter((value) => value !== null);
+
+/**
+ * A claimant dialog over a scripted server. The creator behind the code holds
+ * `creator`, whose key the code commits to; `response` answers each envelope
+ * poll and is handed `waiting(key)`, the not-approved refusal carrying a
+ * revealed creator key or none, `sealFor(kex)`, an envelope that key pair
+ * sealed for this claimant's own key, with its `creator_pub`, and `sealed`,
+ * the honest creator's. `code` is the code pasted, or a function of the honest
+ * code; `prelude(modal)` runs before the claim starts.
+ */
 async function claimant(t, response, {
   onWait = () => {}, beforeKeySave = async () => {}, beforeClaim = async () => {},
   unknown = 0, answer = null, data = {}, root = null, revoke = () => ({ outcome: "ok", value: undefined }),
-  code = null, waits = 3, onRestart = () => {}, field = null,
+  code = null, waits = 3, onRestart = () => {}, field = null, prelude = () => {},
 } = {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
@@ -55,8 +69,14 @@ async function claimant(t, response, {
   const { ApiError } = box.require(join(box.home, "build/transport.js"));
   const pairing = box.require(join(box.home, "build/pairing.js"));
   const notices = box.require("obsidian").notices;
-  const sealed = await pairing.sealEnvelope(secret, id, { vrk: KEYS.vrk });
+  // The creator behind the code, and a stranger holding a key of its own.
+  const creator = await pairing.newPairingKeyExchange();
+  const attacker = await pairing.newPairingKeyExchange();
+  const honest = pairing.encodePairingCode(id, token, secret, await pairing.pairingCommitment(id, creator.publicKey));
   const calls = [], saves = [], logs = [], held = [], shown = [], claims = [], surveyed = [];
+  const waiting = (key) => new ApiError(409, "not_approved", "approval pending", false, key === undefined ? {} : { creator_pub: key });
+  const sealFor = async (by, ps = secret) =>
+    ({ ...(await pairing.sealEnvelopeV2(by, claims[0].claimant_pub, ps, id, { vrk: KEYS.vrk })), creator_pub: by.publicKey });
   let restarted = 0, waited = 0;
   const state = { data: { vrk: null, deviceId: null, deviceSecret: null, deviceName: null, deviceTag: "7KQ4", serverUrl: "https://sync.example.invalid", ...data },
     // `State.paired`, over the same three fields.
@@ -71,7 +91,7 @@ async function claimant(t, response, {
   const Plugin = box.require(join(box.home, "build/main.js")).default;
   const plugin = Object.assign(new Plugin(), {
     state,
-    manifest: { version: "1.1.4" }, platformName: () => "ios",
+    manifest: { version: "1.1.5" }, platformName: () => "ios",
     log: (line) => logs.push(line),
     notesUnknownTo: async (vrk) => {
       assert.equal(vrk, KEYS.vrk, "the survey reads the vault with the key the envelope carried");
@@ -92,7 +112,7 @@ async function claimant(t, response, {
         assert.equal(pairingId, id); assert.equal(enrollToken, token);
         claims.push(info);
         calls.push("claim");
-        await beforeClaim(plugin);
+        await beforeClaim(plugin, { shown });
         return { outcome: "ok", value: { device_id: KEYS.deviceId, device_secret: KEYS.deviceSecret } };
       },
       pairingStatus: async () => { calls.push("creator-status"); throw new Error("creator-only route"); },
@@ -100,7 +120,9 @@ async function claimant(t, response, {
         assert.equal(pairingId, id); calls.push("envelope");
         assert.equal(plugin.credential(state)?.id, KEYS.deviceId, "the claim signs its own collection");
         assert.equal(state.data.deviceSecret, data.deviceSecret ?? null, "no credential is kept before its key");
-        return response({ ApiError, sealed, plugin, modal, pairing, attempt: calls.filter((call) => call === "envelope").length });
+        const sealed = await sealFor(creator);
+        return response({ ApiError, sealed, plugin, modal, pairing, claims, creator, attacker, waiting, sealFor,
+          attempt: calls.filter((call) => call === "envelope").length });
       },
       revokeDevice: async (deviceId) => {
         calls.push(deviceId === KEYS.deviceId ? "revoke" : `revoke:${deviceId}`);
@@ -111,24 +133,35 @@ async function claimant(t, response, {
   // The real host: over no filesystem unless a test names the vault root on disk.
   const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
   plugin.host = new ObsidianHost(plugin, root === null ? null : { fs: { promises: fsPromises }, path: nodePath, base: root });
-  const modal = new PairClaimModal({ vault: { getName: () => "Pairing test vault", getMarkdownFiles: () => [1, 2] } }, plugin,
-    code ?? pairing.encodePairingCode(id, token, secret));
+  const pasted = typeof code === "function" ? code(honest, pairing) : code ?? honest;
+  const modal = new PairClaimModal({ vault: { getName: () => "Pairing test vault", getMarkdownFiles: () => [1, 2] } }, plugin, pasted);
   modal.contentEl = { createEl: () => ({ setText: (text) => shown.push(text) }), empty: () => {} };
   modal.close = () => modal.onClose();
   // The Pairing code field `onOpen` draws, where a test asks about it.
   if (field !== null) modal.codeField = field;
   const previousWindow = globalThis.window;
-  globalThis.window = { setTimeout: (resolve, delay) => {
-    assert.equal(delay, 2000);
-    assert.ok(++waited <= waits, "terminal outcomes must not poll indefinitely");
-    onWait(modal, waited, plugin); resolve();
-  } };
+  globalThis.window = {
+    setTimeout: (resolve, delay) => {
+      assert.equal(delay, 2000);
+      assert.ok(++waited <= waits, "terminal outcomes must not poll indefinitely");
+      onWait(modal, waited, plugin); resolve();
+    },
+    clearTimeout: () => undefined,
+    // The disk watchdog of the nested-vault check's reads (#302, #307): armed, never run, since every read here answers.
+    setInterval: () => 0,
+    clearInterval: () => undefined,
+  };
   t.after(() => { globalThis.window = previousWindow; });
+  prelude(modal);
   await modal.claim();
   // A claim handed to the background finishes there.
   await plugin.waiting?.done;
-  return { calls, saves, logs, notices, restarted, asked, held, shown, claims, surveyed, plugin, pairing, modal, state: state.data, current: plugin.state.data };
+  return { calls, saves, logs, notices, restarted, asked, held, shown, claims, surveyed, plugin, pairing, modal, creator, attacker,
+    state: state.data, current: plugin.state.data };
 }
+
+/** The approval: the honest creator's envelope, at the first poll. */
+const approved = ({ sealed }) => ({ outcome: "ok", value: sealed });
 
 test("a vault inside a vault that syncs with obsync refuses to pair before any request (#180)", async (t) => {
   // S96: the folder `Sub` of a synced vault, opened as a vault of its own and
@@ -144,7 +177,7 @@ test("a vault inside a vault that syncs with obsync refuses to pair before any r
   assert.deepEqual(result.held, [], "no claim was held");
   assert.equal(result.restarted, 0);
   assert.deepEqual(result.notices, [
-    `This folder is inside the synced vault "${nodePath.basename(outer)}". Syncing it too would copy that vault into ` +
+    `obsync: This folder is inside the synced vault "${nodePath.basename(outer)}". Syncing it too would copy that vault into ` +
       "itself. Open the outer vault instead, or use Selected folders there.",
   ]);
   assert.ok(result.logs.some((line) => /^pairing role=claimant decision=refused reason=nested_vault duration_ms=\d+$/.test(line)),
@@ -153,8 +186,8 @@ test("a vault inside a vault that syncs with obsync refuses to pair before any r
 
 test("a claimant waits on its envelope, then keeps its credential and the key in one save before restarting sync (#153)", async (t) => {
   let during;
-  const result = await claimant(t, ({ ApiError, sealed, attempt }) => {
-    if (attempt === 1) throw new ApiError(409, "not_approved", "approval pending");
+  const result = await claimant(t, ({ sealed, attempt, waiting }) => {
+    if (attempt === 1) throw waiting();
     return { outcome: "ok", value: sealed };
   }, { onWait: (modal, waited, plugin) => {
     void modal.claim(); // Repeated taps do not claim twice.
@@ -162,25 +195,24 @@ test("a claimant waits on its envelope, then keeps its credential and the key in
   } });
   assert.deepEqual(result.calls, ["claim", "envelope", "envelope", "survey"]);
   assert.deepEqual(result.asked, [], "a vault holding nothing new pairs without a question");
-  // HELD, NOT KEPT: while it waited, the credential was the claim's alone.
+  // NOT KEPT, AND NOT HELD: while it waited, the credential was the claim's
+  // alone, in memory, beside a private key that cannot be written down.
   assert.equal(during.saves, null, "no credential is stored before the key");
-  const claim = JSON.parse(during.held);
-  assert.deepEqual(claim, { ...claim, pairingId: id, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret,
-    serverUrl: "https://sync.example.invalid", pairingSecret: Buffer.from(secret).toString("hex") });
+  assert.equal(during.held, null, "nothing of the claim is written down for a restart");
   assert.equal(result.saves.length, 1, "credential and key are one save");
   assert.equal(result.saves[0].deviceId, KEYS.deviceId);
   assert.equal(result.saves[0].deviceSecret, KEYS.deviceSecret);
   assert.equal(result.saves[0].vrk, KEYS.vrk);
-  assert.equal(result.held.at(-1), null, "the held claim is dropped once the key is kept");
+  assert.deepEqual(heldClaims(result), []);
   assert.equal(result.plugin.waiting, null);
   assert.equal(result.restarted, 1);
   assert.ok(result.logs.includes("pairing role=claimant decision=waiting reason=not_approved"));
   assert.ok(result.logs.some((line) => /^pairing role=claimant decision=paired duration_ms=\d+$/.test(line)), result.logs.join(" | "));
-  assert.ok(result.notices.some((notice) => notice.includes("This device is paired")));
+  assert.ok(result.notices.some((notice) => notice.includes("this device is paired, and its first sync is running")));
 });
 
 test("the claim names this device by what it is and its own tag, never the bare platform (#152)", async (t) => {
-  const result = await claimant(t, ({ sealed }) => ({ outcome: "ok", value: sealed }), { data: { deviceTag: null } });
+  const result = await claimant(t, approved, { data: { deviceTag: null } });
   const [info] = result.claims;
   assert.equal(info.platform, "ios");
   assert.notEqual(info.name, "ios");
@@ -191,21 +223,21 @@ test("the claim names this device by what it is and its own tag, never the bare 
   assert.equal(result.plugin.deviceName(), info.name, "the server is told the name this device shows");
 });
 
-test("the claimant shows the match code only this claim's device and secret produce (#152)", async (t) => {
-  const result = await claimant(t, ({ sealed }) => ({ outcome: "ok", value: sealed }));
-  const code = await result.pairing.matchCode(secret, id, KEYS.deviceId);
+test("the claimant shows the match code its own key and the creator's committed key make (#152)", async (t) => {
+  const result = await claimant(t, ({ attempt, waiting, creator, sealed }) => {
+    if (attempt === 1) throw waiting(creator.publicKey);
+    return { outcome: "ok", value: sealed };
+  });
+  const code = await result.pairing.matchCodeV2(secret, id, result.claims[0].claimant_pub, result.creator.publicKey);
   assert.match(code, /^\d{3} \d{3}$/);
-  assert.ok(result.shown.some((text) => text.includes(`the code ${code}`)), result.shown.join(" | "));
-  // A second device racing the same leaked code holds another id, and so another code.
-  assert.notEqual(await result.pairing.matchCode(secret, id, "ab".repeat(16)), code);
+  assert.ok(result.shown.includes(`Waiting for approval on the other device. Its prompt shows the code ${code}: if it shows another, choose Reject there.`),
+    result.shown.join(" | "));
+  // Its own key went out with the claim: the creator computes the same code from it.
+  assert.equal(typeof result.claims[0].claimant_pub, "string");
 });
 
 test("a pasted pairing link pairs like the code it carries (#154)", async (t) => {
-  const box = sandbox();
-  t.after(() => rmSync(box.home, { recursive: true, force: true }));
-  const pairing = box.require(join(box.home, "build/pairing.js"));
-  const link = pairing.pairingLink(pairing.encodePairingCode(id, token, secret));
-  const result = await claimant(t, ({ sealed }) => ({ outcome: "ok", value: sealed }), { code: ` "${link}"\n` });
+  const result = await claimant(t, approved, { code: (honest, pairing) => ` "${pairing.pairingLink(honest)}"\n` });
   assert.deepEqual(result.calls, ["claim", "envelope", "survey"]);
   assert.equal(result.restarted, 1);
 });
@@ -214,7 +246,7 @@ test("sync stays stopped while the approved key save is pending", async (t) => {
   let release, entered;
   const held = new Promise((resolve) => { release = resolve; });
   const saving = new Promise((resolve) => { entered = resolve; });
-  const finished = claimant(t, ({ sealed }) => ({ outcome: "ok", value: sealed }), {
+  const finished = claimant(t, approved, {
     beforeKeySave: async (observation) => { entered(observation); await held; },
   });
   let before;
@@ -234,14 +266,14 @@ test("sync stays stopped while the approved key save is pending", async (t) => {
 });
 
 test("a rejected approved-key save never starts sync, and takes the collected device back (#153)", async (t) => {
-  const result = await claimant(t, ({ sealed }) => ({ outcome: "ok", value: sealed }), {
+  const result = await claimant(t, approved, {
     beforeKeySave: async () => { throw new Error("fixture key save failed"); },
   });
   assert.equal(result.restarted, 0);
   assert.equal(result.saves.length, 0);
   assert.deepEqual(result.calls, ["claim", "envelope", "survey", "revoke"], "collection activated it, so it is revoked");
   assert.ok(result.notices.some((notice) => notice.includes("fixture key save failed")));
-  assert.ok(!result.notices.some((notice) => notice.includes("This device is paired")));
+  assert.ok(!result.notices.some((notice) => notice.includes("this device is paired, and its first sync is running")));
 });
 
 test("every refusal that ends a claim ends it in words, and only not_approved polls again (#153, #154)", async (t) => {
@@ -258,7 +290,7 @@ test("every refusal that ends a claim ends it in words, and only not_approved po
       assert.deepEqual(result.calls, ["claim", "envelope", ...taken]);
       assert.equal(result.state.vrk, null);
       assert.equal(result.state.deviceId, null, "no credential remains");
-      assert.equal(result.held.at(-1), null, "the held claim is dropped");
+      assert.deepEqual(heldClaims(result), [], "nothing was held");
       assert.equal(result.restarted, 0);
       assert.ok(result.notices.length > 0 && result.notices.every((notice) => notice.trim() !== "" && !RAW.test(notice)),
         result.notices.join(" | "));
@@ -292,14 +324,13 @@ test("an unclassified local error cannot masquerade as pending approval", async 
 });
 
 test("a mistyped pairing secret ends the claim in words, takes the device back and keeps nothing (#153)", async (t) => {
-  const result = await claimant(t, async ({ pairing }) => {
-    const other = new Uint8Array(16).fill(57);
-    return { outcome: "ok", value: await pairing.sealEnvelope(other, id, { vrk: KEYS.vrk }) };
-  });
+  // The creator's own key, but sealed under another secret: what a code read
+  // with one character wrong leaves this device holding.
+  const result = await claimant(t, async ({ sealFor, creator }) => ({ outcome: "ok", value: await sealFor(creator, new Uint8Array(16).fill(57)) }));
   assert.deepEqual(result.calls, ["claim", "envelope", "revoke"]);
   assert.deepEqual(result.saves, [], "no credential and no key were kept");
   assert.equal(result.state.deviceId, null);
-  assert.equal(result.held.at(-1), null);
+  assert.deepEqual(heldClaims(result), []);
   assert.equal(result.restarted, 0);
   assert.ok(result.notices.some((notice) => notice.includes("does not match the other device's")), result.notices.join(" | "));
   assert.ok(result.notices.every((notice) => notice.trim() !== "" && !RAW.test(notice)), result.notices.join(" | "));
@@ -308,20 +339,20 @@ test("a mistyped pairing secret ends the claim in words, takes the device back a
 });
 
 test("a device that cannot be taken back says where to revoke it (#153)", async (t) => {
-  const result = await claimant(t, async ({ pairing }) => (
-    { outcome: "ok", value: await pairing.sealEnvelope(new Uint8Array(16), id, { vrk: KEYS.vrk }) }
+  const result = await claimant(t, async ({ sealFor, creator }) => (
+    { outcome: "ok", value: await sealFor(creator, new Uint8Array(16)) }
   ), { revoke: () => ({ outcome: "lost", reason: "network", attempts: 1 }) });
   assert.ok(result.notices.some((notice) => notice.includes("revoke it from the other device's Devices list")), result.notices.join(" | "));
 });
 
 test("a failure after the key is kept never takes the paired device back (#153)", async (t) => {
-  const result = await claimant(t, ({ sealed }) => ({ outcome: "ok", value: sealed }), {
+  const result = await claimant(t, approved, {
     onRestart: () => { throw new Error("fixture engine start failed"); },
   });
   assert.deepEqual(result.calls, ["claim", "envelope", "survey"], "nothing is revoked once the key is kept");
   assert.equal(result.saves.at(-1).vrk, KEYS.vrk);
   assert.equal(result.state.deviceId, KEYS.deviceId);
-  assert.equal(result.held.at(-1), null);
+  assert.deepEqual(heldClaims(result), []);
   assert.ok(result.notices.some((notice) => notice.includes("fixture engine start failed")));
   assert.ok(!result.notices.some((notice) => notice.includes("Pair a new device")), "a paired device is not told to pair again");
 });
@@ -340,16 +371,40 @@ test("a never-approved claim is not revoked: the server destroys it at the end o
   assert.ok(!result.calls.includes("revoke"), "nothing the server may hold as active");
 });
 
+/** The question a claim whose dialog closed raises with its code. */
+const CODE_NOTICE = /pairing this device: the other device's prompt shows the code \d{3} \d{3}\. Approve there only if it shows this one/;
+
 test("closing the dialog while waiting keeps waiting behind it, and still pairs (#153)", async (t) => {
-  const result = await claimant(t, ({ ApiError, sealed, attempt }) => {
-    if (attempt === 1) throw new ApiError(409, "not_approved", "approval pending");
+  const result = await claimant(t, ({ sealed, attempt, waiting, creator }) => {
+    if (attempt === 1) throw waiting(creator.publicKey);
     return { outcome: "ok", value: sealed };
   }, { onWait: (modal, waited) => { if (waited === 1) modal.onClose(); } });
   assert.deepEqual(result.calls, ["claim", "envelope", "envelope", "survey"]);
-  assert.ok(result.notices.some((notice) => notice.includes("still waiting for approval in the background")), result.notices.join(" | "));
-  assert.ok(result.notices.some((notice) => notice.includes("This device is paired")));
+  // Closed before the creator's key came: it says a code will come, and the
+  // code comes as a notice, since the comparison is the point of it.
+  const handed = result.notices.findIndex((notice) => notice.includes("still waiting in the background. When the other device asks you to approve this one, obsync shows the code to compare here"));
+  const shown = result.notices.findIndex((notice) => CODE_NOTICE.test(notice));
+  assert.ok(handed >= 0 && shown > handed, result.notices.join(" | "));
+  assert.ok(result.notices.some((notice) => notice.includes("this device is paired, and its first sync is running")));
   assert.equal(result.restarted, 1);
   assert.equal(result.saves.at(-1).vrk, KEYS.vrk);
+});
+
+test("closing the dialog once its code shows raises the code at once, never the bare waiting words", async (t) => {
+  const result = await claimant(t, ({ sealed, attempt, waiting, creator }) => {
+    if (attempt === 1) throw waiting(creator.publicKey);
+    return { outcome: "ok", value: sealed };
+  }, { onWait: (modal, waited) => { if (waited === 2) modal.onClose(); } });
+  assert.ok(result.notices.some((notice) => CODE_NOTICE.test(notice)), result.notices.join(" | "));
+  assert.ok(!result.notices.some((notice) => notice.includes("still waiting in the background")), result.notices.join(" | "));
+  assert.equal(result.saves.at(-1).vrk, KEYS.vrk);
+  // The code is for comparing now, never for keeping: what outlives the
+  // toast -- Recent, and every log line -- reads "•••" in its place.
+  const kept = result.plugin.notices.recent().find((entry) => entry.text.startsWith("pairing this device:"));
+  assert.ok(kept?.text.includes("the code •••."), JSON.stringify(kept));
+  for (const line of [...result.logs, ...result.plugin.notices.recent().map((entry) => entry.text)]) {
+    assert.ok(!/\b\d{3} \d{3}\b/.test(line), line);
+  }
 });
 
 test("closing during an already-dispatched envelope still keeps its key and pairs", async (t) => {
@@ -378,15 +433,111 @@ for (const stage of ["claim", "envelope", "key save"]) {
     assert.equal(result.restarted, 0);
     assert.equal(result.saves.length, stage === "key save" ? 1 : 0);
     assert.ok(result.notices.some((notice) => notice.includes("previous plugin session is inactive")));
-    // The newer session resumes a held claim; this one neither drops nor revokes it.
+    // The newer session owns the state: this one neither revokes nor writes
+    // anything down for it, and nothing of the claim was ever held.
     assert.ok(!result.calls.includes("revoke"));
-    if (stage !== "claim") assert.notEqual(result.held.at(-1), null);
+    assert.deepEqual(result.held, []);
   });
 }
 
-// ---- issue #141: a second vault is never merged in silently -----------------
+// ---- review of PR #306: the order is the authentication --------------------
 
-const approved = ({ sealed }) => ({ outcome: "ok", value: sealed });
+test("a claimant shows no code until the creator's key is in, then the code both keys make, and pairs", async (t) => {
+  const result = await claimant(t, async ({ attempt, waiting, creator, sealed }) => {
+    if (attempt === 1) throw waiting();
+    if (attempt === 2) throw waiting(creator.publicKey);
+    return { outcome: "ok", value: sealed };
+  });
+  const [info] = result.claims;
+  assert.equal(typeof info.claimant_pub, "string", "the claim offered this device's key");
+  const code = await result.pairing.matchCodeV2(secret, id, info.claimant_pub, result.creator.publicKey);
+  const at = result.shown.findIndex((text) => text.includes(`Its prompt shows the code ${code}:`));
+  assert.ok(at > 0, result.shown.join(" | "));
+  assert.ok(result.shown.slice(0, at).every((text) => !SIX.test(text)), `no code before the creator's key: ${result.shown.join(" | ")}`);
+  assert.ok(result.shown.slice(0, at).some((text) => text.includes("a code appears here: approve there only if both screens show the same code")),
+    result.shown.join(" | "));
+  assert.ok(result.logs.includes("pairing role=claimant decision=compare"));
+  assert.deepEqual(result.calls, ["claim", "envelope", "envelope", "envelope", "survey"]);
+  assert.equal(result.saves.at(-1).vrk, KEYS.vrk);
+  assert.equal(result.restarted, 1);
+  assert.deepEqual(heldClaims(result), [], "its private key cannot be written down, so nothing of it is");
+});
+
+test("a revealed key the code did not commit to ends the claim, before any code is shown", async (t) => {
+  const result = await claimant(t, ({ waiting, attacker }) => { throw waiting(attacker.publicKey); });
+  assert.ok(result.shown.every((text) => !SIX.test(text)), result.shown.join(" | "));
+  assert.ok(!result.logs.includes("pairing role=claimant decision=compare"));
+  assert.ok(result.notices.some((notice) => notice.includes("The other device's key does not match the code")), result.notices.join(" | "));
+  assert.ok(result.notices.every((notice) => !RAW.test(notice)), result.notices.join(" | "));
+  assert.ok(result.logs.some((line) => line.startsWith("pairing role=claimant decision=failed reason=unverified ")), result.logs.join(" | "));
+  assert.deepEqual(result.calls, ["claim", "envelope"], "nothing collected, so nothing to take back");
+  assert.deepEqual(result.saves.filter((save) => save.vrk !== null), []);
+  assert.equal(result.restarted, 0);
+});
+
+test("once its code is shown, the claim holds to that key: another, waiting or with the envelope, ends it", async (t) => {
+  for (const late of ["waiting", "envelope"]) {
+    const result = await claimant(t, async ({ attempt, waiting, sealFor, creator, attacker }) => {
+      if (attempt === 1) throw waiting(creator.publicKey);
+      if (late === "waiting") throw waiting(attacker.publicKey);
+      return { outcome: "ok", value: await sealFor(attacker) };
+    });
+    assert.ok(result.logs.includes("pairing role=claimant decision=compare"), late);
+    assert.ok(result.notices.some((notice) => notice.includes("The other device's key does not match the code")), `${late}: ${result.notices.join(" | ")}`);
+    assert.ok(result.logs.some((line) => line.startsWith("pairing role=claimant decision=failed reason=unverified ")), late);
+    assert.deepEqual(result.saves.filter((save) => save.vrk !== null), [], late);
+    assert.equal(result.restarted, 0, late);
+    // Collected, the server may hold it active: it is taken back.
+    assert.deepEqual(result.calls, late === "waiting" ? ["claim", "envelope", "envelope"] : ["claim", "envelope", "envelope", "revoke"], late);
+  }
+});
+
+test("an envelope with no creator key is refused, never opened some weaker way", async (t) => {
+  const result = await claimant(t, async ({ attempt, waiting, creator, sealed }) => {
+    if (attempt === 1) throw waiting(creator.publicKey);
+    const { creator_pub, ...bare } = sealed;
+    assert.equal(creator_pub, creator.publicKey);
+    return { outcome: "ok", value: bare };
+  });
+  assert.deepEqual(result.saves.filter((save) => save.vrk !== null), [], "nothing was opened");
+  assert.ok(result.logs.some((line) => line.startsWith("pairing role=claimant decision=failed reason=unverified ")), result.logs.join(" | "));
+  assert.deepEqual(result.calls, ["claim", "envelope", "envelope", "revoke"]);
+});
+
+test("a code from before 1.1.5, or one cut short of its commitment, is refused before any request", async (t) => {
+  const cases = [
+    // id, token and secret alone: what an obsync before 1.1.5 makes.
+    ["older", (honest, pairing) => pairing.encodePairingCode(id, token, secret, new Uint8Array(0)),
+      "That code comes from a device running obsync older than 1.1.5"],
+    // 68 bytes: past the secret, short of the commitment.
+    ["cut", (honest) => honest.slice(0, 110), "That pairing code is incomplete."],
+  ];
+  for (const [label, code, words] of cases) {
+    const result = await claimant(t, () => assert.fail("an envelope was asked for"), { code });
+    assert.deepEqual(result.calls, [], `${label}: nothing reached the server`);
+    assert.deepEqual(result.claims, [], label);
+    assert.deepEqual(result.saves, [], `${label}: not even the device's name was kept`);
+    assert.deepEqual(result.held, [], label);
+    assert.ok(result.notices.some((notice) => notice.includes(words)), `${label}: ${result.notices.join(" | ")}`);
+    assert.ok(result.shown.at(-1).includes(words), `${label}: ${result.shown.join(" | ")}`);
+    assert.ok(result.notices.every((notice) => !RAW.test(notice)), label);
+  }
+});
+
+test("a new claim clears what the dialog showed before its request goes out", async (t) => {
+  // A code an earlier claim showed belongs to a pairing this one ends: it
+  // must not sit on screen while the new claim's request is held.
+  const stale = "Waiting for approval on the other device. Its prompt shows the code 123 456: if it shows another, choose Reject there.";
+  let during;
+  await claimant(t, approved, {
+    prelude: (modal) => { modal.show(stale); },
+    beforeClaim: async (plugin, { shown }) => { during = [...shown]; },
+  });
+  assert.equal(during[0], stale, "the earlier text was on screen");
+  assert.equal(during.at(-1), "Claiming the pairing…", during.join(" | "));
+});
+
+// ---- issue #141: a second vault is never merged in silently -----------------
 
 test("a vault holding notes the server's vault does not know is asked before its first sync, and Cancel takes the device back", async (t) => {
   const result = await claimant(t, approved, { unknown: 3, answer: "Cancel" });
@@ -438,7 +589,10 @@ test("answering Pair and upload keeps the key and starts the first sync", async 
 test("while the vault is compared after approval, the dialog says so, not that it waits for approval (#236)", async (t) => {
   // A phone with 6,069 files read "Waiting for approval on the other device"
   // for 62 s after the person had approved there.
-  const result = await claimant(t, approved, { unknown: 0, answer: null });
+  const result = await claimant(t, ({ attempt, waiting, creator, sealed }) => {
+    if (attempt === 1) throw waiting(creator.publicKey);
+    return { outcome: "ok", value: sealed };
+  }, { unknown: 0, answer: null });
   assert.deepEqual(result.surveyed, [
     "Approved. Comparing the notes here with your server's vault before anything is sent. A large vault takes a minute.",
   ]);
@@ -485,95 +639,55 @@ test("a key from another vault is a phrase this device has not confirmed; the sa
   assert.equal(same.saves.at(-1).recoveryPhrase, "confirmed");
 });
 
-// ---- issue #153: a restart resumes a held claim inside its window ----------
+// ---- issue #153 after 1.1.5: a claim held from before the update is dropped -
 
-/** The plugin as a restart finds it: no dialog, a claim held in its own entry. */
-async function resumed(t, claimedAt, response, before = () => {}) {
+/**
+ * The plugin as a restart finds it: no dialog, and `held` in the claim's own
+ * secret entry -- only an obsync before 1.1.5 ever wrote one there.
+ */
+function restartedWith(t, { data = {}, held = [] } = {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
-  const { ApiError } = box.require(join(box.home, "build/transport.js"));
-  const pairing = box.require(join(box.home, "build/pairing.js"));
   const notices = box.require("obsidian").notices;
-  const sealed = await pairing.sealEnvelope(secret, id, { vrk: KEYS.vrk });
-  const claim = { pairingId: id, pairingSecret: Buffer.from(secret).toString("hex"), deviceId: KEYS.deviceId,
-    deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid", claimedAt };
-  const calls = [], logs = [], held = [JSON.stringify(claim)];
-  let restarted = 0;
-  const state = { data: { vrk: null, deviceId: null, deviceSecret: null, deviceTag: "7KQ4", serverUrl: claim.serverUrl },
-    get paired() { return this.data.vrk !== null && this.data.deviceId !== null; },
-    assertAvailable() {}, save: async () => {},
-    heldClaim: () => held.at(-1), holdClaim: (value) => { held.push(value); return true; } };
+  const logs = [];
+  const state = { data: { vrk: null, deviceId: null, deviceSecret: null, deviceTag: "7KQ4", serverUrl: "https://sync.example.invalid", ...data },
+    get paired() { return this.data.vrk !== null && this.data.deviceId !== null && this.data.deviceSecret !== null; },
+    assertAvailable() {}, save: async () => assert.fail("dropping a held claim writes nothing else"),
+    heldClaim: () => held.at(-1) ?? null, holdClaim: (value) => { held.push(value); return true; } };
   const Plugin = box.require(join(box.home, "build/main.js")).default;
-  const plugin = Object.assign(new Plugin(), {
-    state, app: {}, manifest: { version: "1.1.4" }, log: (line) => logs.push(line),
-    notesUnknownTo: async () => 0, restartEngine: async () => { restarted++; },
-    transport: {
-      pairingEnvelope: async () => { calls.push("envelope"); return response({ ApiError, sealed }); },
-      revokeDevice: async () => { calls.push("revoke"); return { outcome: "ok" }; },
-    },
-  });
-  const previousWindow = globalThis.window;
-  globalThis.window = { setTimeout: (resolve) => resolve() };
-  t.after(() => { globalThis.window = previousWindow; });
-  before(plugin);
+  // No route at all: whatever a drop does, it sends nothing.
+  const plugin = Object.assign(new Plugin(), { state, app: {}, manifest: { version: "1.1.5" }, log: (line) => logs.push(line), transport: {} });
   plugin.resumePairing();
-  await plugin.waiting?.done;
-  return { calls, logs, held, notices, restarted, state: state.data, pairing };
+  return { logs, held, notices, plugin, state: state.data };
 }
 
-test("a restarted device resumes collecting its held claim inside the window and pairs", async (t) => {
-  const result = await resumed(t, Date.now() - 60_000, ({ sealed }) => ({ outcome: "ok", value: sealed }));
-  assert.deepEqual(result.calls, ["envelope"]);
-  assert.equal(result.restarted, 1);
-  assert.equal(result.state.vrk, KEYS.vrk);
-  assert.equal(result.state.deviceId, KEYS.deviceId);
-  assert.equal(result.held.at(-1), null);
-  const code = await result.pairing.matchCode(secret, id, KEYS.deviceId);
-  assert.ok(result.notices.some((notice) => notice.includes("still pairing this device") && notice.includes(code)), result.notices.join(" | "));
-  assert.ok(result.logs.some((line) => /^pairing role=claimant decision=resumed age_ms=\d+ window_ms=600000$/.test(line)));
+const OLD_CLAIM = JSON.stringify({ pairingId: id, pairingSecret: Buffer.from(secret).toString("hex"), deviceId: KEYS.deviceId,
+  deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid", claimedAt: Date.now() - 60_000 });
+
+test("a claim an obsync before 1.1.5 held across the update is dropped, never finished, and the device is told to pair again", async (t) => {
+  // Finishing it would open its key the way 1.1.5 no longer pairs.
+  const result = restartedWith(t, { held: [OLD_CLAIM] });
+  assert.equal(result.held.at(-1), null, "the entry is emptied");
+  assert.equal(result.plugin.waiting, null, "nothing is collected");
+  assert.equal(result.state.vrk, null);
+  assert.equal(result.state.deviceId, null, "its credential is never adopted");
+  assert.deepEqual(result.logs.filter((line) => line.startsWith("pairing ")), ["pairing role=claimant decision=dropped reason=held_before_update"]);
+  assert.equal(result.notices.length, 1, result.notices.join(" | "));
+  assert.ok(result.notices[0].includes("pairing this device stopped when obsync updated") && result.notices[0].includes("Pair a new device"),
+    result.notices[0]);
+  assert.ok(result.notices.every((notice) => !RAW.test(notice) && !/recovery phrase/i.test(notice)));
 });
 
-test("a claim an older session was still collecting is resumed, not dropped, by a reload", async (t) => {
-  const result = await resumed(t, Date.now() - 60_000, ({ sealed }) => ({ outcome: "ok", value: sealed }),
-    (plugin) => { plugin.waiting = { claim: { deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret }, stop: false, done: Promise.resolve(false) }; });
-  assert.deepEqual(result.calls, ["envelope"]);
-  assert.equal(result.restarted, 1);
-  assert.equal(result.state.vrk, KEYS.vrk);
-  assert.ok(!result.logs.includes("pairing role=claimant decision=dropped reason=stale_claim"));
-});
-
-test("a restarted device past the window says pair again, not the recovery phrase, and takes itself back", async (t) => {
-  const result = await resumed(t, Date.now() - 11 * 60_000, () => assert.fail("an expired claim collects nothing"));
-  assert.deepEqual(result.calls, ["revoke"], "it may have collected before the restart");
-  assert.equal(result.held.at(-1), null);
-  assert.equal(result.state.deviceId, null);
-  assert.ok(result.notices.some((notice) => notice.includes("expired") && notice.includes("Pair a new device")), result.notices.join(" | "));
-  assert.ok(result.notices.every((notice) => !/recovery phrase/i.test(notice)));
-});
-
-test("a restarted device that collected but never kept the key takes itself back and says so", async (t) => {
-  const result = await resumed(t, Date.now() - 60_000, ({ ApiError }) => { throw new ApiError(410, "envelope_consumed", "taken"); });
-  assert.deepEqual(result.calls, ["envelope", "revoke"]);
-  assert.ok(result.notices.some((notice) => notice.includes("stopped before keeping it")), result.notices.join(" | "));
-});
-
-test("a held claim is dropped, unread, once the device is paired or on another server", async (t) => {
-  for (const data of [{ vrk: "11".repeat(32), deviceId: "22".repeat(16), deviceSecret: "33".repeat(32) }, { serverUrl: "https://other.example.invalid" }]) {
-    const box = sandbox();
-    t.after(() => rmSync(box.home, { recursive: true, force: true }));
-    const held = [JSON.stringify({ pairingId: id, pairingSecret: "00".repeat(16), deviceId: KEYS.deviceId,
-      deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid", claimedAt: Date.now() })];
-    const Plugin = box.require(join(box.home, "build/main.js")).default;
-    const state = { data: { vrk: null, deviceId: null, deviceSecret: null, serverUrl: "https://sync.example.invalid", ...data },
-      get paired() { return this.data.vrk !== null && this.data.deviceId !== null; },
-      heldClaim: () => held.at(-1), holdClaim: (value) => { held.push(value); return true; } };
-    const logs = [];
-    const plugin = Object.assign(new Plugin(), { state, log: (line) => logs.push(line), transport: {} });
-    plugin.resumePairing();
-    assert.equal(plugin.waiting, null);
-    assert.equal(held.at(-1), null);
-    assert.ok(logs.includes("pairing role=claimant decision=dropped reason=stale_claim"));
-  }
+test("a paired device drops a leftover held claim without a word, and a device holding none drops nothing", async (t) => {
+  const paired = restartedWith(t, { data: SYNCING, held: [OLD_CLAIM] });
+  assert.equal(paired.held.at(-1), null);
+  assert.deepEqual(paired.logs.filter((line) => line.startsWith("pairing ")), ["pairing role=claimant decision=dropped reason=held_before_update"]);
+  assert.deepEqual(paired.notices, [], "a device that syncs is not told to pair again");
+  assert.equal(paired.state.deviceId, SYNCING.deviceId, "its own credential is untouched");
+  const none = restartedWith(t);
+  assert.deepEqual(none.held, [], "nothing was written");
+  assert.deepEqual(none.logs, []);
+  assert.deepEqual(none.notices, []);
 });
 
 test("a held claim lives in its own secret entry beside the credential, never in it (#153)", async () => {

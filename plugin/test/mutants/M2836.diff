@@ -1,10 +1,10 @@
 # M2836: a deletion the server took is not counted as sent
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1775,7 +1775,6 @@
-         const outcome = await pushDelete(context, path);
+@@ -2665,7 +2665,6 @@
          if (outcome !== null) {
            context.authored.add(outcome.versionId);
+           this.sent(path);
 -          this.accepted(true);
            return;
          }

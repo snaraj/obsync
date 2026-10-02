@@ -1,0 +1,11 @@
+# M3700: a folder removed while unlisted is not reconciled, so a late event's listing stays (#266, #253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2932,7 +2932,6 @@
+     // reported by a late or starved file event: tell Obsidian it is gone, as
+     // every other removal on disk does (#253). Usually the listing already
+     // agrees, and this costs one lookup.
+-    if (unlisted) await this.reconcile(path, "folder", false);
+     return 0;
+   }
+ 

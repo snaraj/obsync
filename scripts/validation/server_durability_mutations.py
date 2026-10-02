@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Reproduce the server durability guard probes (#191, #192, #203) from the
-repository root.
+"""Reproduce the server durability guard probes (#191, #192, #203, #273, #291,
+#292, #294, #301) from the repository root.
 
 Each probe must compile and fail a behavioral regression. A probe is one or
 more exact substitutions, each of which must match exactly once. Sources are
@@ -8,7 +8,8 @@ restored from their exact starting bytes in finally, including on failure or
 interrupt. Never run beside another build or source editor in this worktree.
 """
 from pathlib import Path
-import subprocess
+
+from kills import Judge
 import sys
 
 AUTH = "crates/obsyncd/src/api/auth.rs"
@@ -18,6 +19,8 @@ STORE = "crates/obsyncd/src/storage/mod.rs"
 JOURNAL = "crates/obsyncd/src/storage/journal.rs"
 INDEX = "crates/obsyncd/src/storage/index.rs"
 SCRUB = "crates/obsyncd/src/storage/scrub.rs"
+BLOBS = "crates/obsyncd/src/storage/blobs.rs"
+TYPES = "crates/obsyncd/src/storage/types.rs"
 SERVE = "crates/obsyncd/src/cli/serve.rs"
 
 GROUP = "concurrent_requests_share_an_fsync_and_none_is_answered_before_its_own"
@@ -28,6 +31,15 @@ READ = "a_snapshot_is_read_a_file_at_a_time_to_the_index_it_was_written_from"
 FSYNC = "a_writer_s_fsync_holds_the_journal_and_never_the_index_and_nothing_is_applied_before_it"
 GROWTH = "a_snapshot_is_due_after_the_journal_grows_past_the_floor_and_the_last_snapshot"
 SNAPSHOT = "a_snapshot_is_written_with_no_guard_held_and_a_crash_part_way_loses_nothing"
+FANOUT = "a_new_fan_out_directory_is_durable_in_its_parent_before_its_chunk_is_acknowledged"
+FANOUT_START = "a_start_after_a_cut_upload_makes_every_fan_out_name_durable"
+START_REPAIR = "a_cut_upload_keeps_its_temp_until_a_start_repairs_its_fan_out"
+START_LAYOUT = "a_start_whose_layout_fsync_fails_tries_it_again_at_the_next"
+NO_ROOM = "the_disk_cannot_hold"
+NONCE_NO_ROOM = "journal_volume_with_no_room"
+NONCE_NOT_READY = "a_faulted_nonce_log_is_not_ready_until_a_restart"
+TOGETHER = "puts_that_arrive_together_are_measured_against_each_other"
+GIVEN_BACK = "a_reservation_is_given_back_when_its_write_fails_and_when_it_panics"
 
 CASES = [
     # --- nonce log group commit (#191) ------------------------------------
@@ -68,13 +80,16 @@ CASES = [
         "",
     )], "a_refused_batch_is_cut_back_so_the_next_one_lands_on_a_clean_line"),
     # --- a flush that panics settles its batch (drop guard) -----------------
+    # Retargeted in 1.1.5 (#292): the outcome carries the refusal and whether
+    # the log is faulted now; the subject, the batch settled, is the same.
     ("panicked-flight-settles", AUTH, [(
-        "        let _ = self.batch.outcome.set(Err(std::io::ErrorKind::Other));\n", "",
+        "        let _ = self.batch.outcome.set(Err(Refused {\n"
+        "            io: std::io::ErrorKind::Other,\n            faulted,\n        }));\n", "",
     )], PANIC),
     ("panicked-flight-unspends", AUTH, [(
         "        for (ts, entry) in &self.batch.entries {\n            state.unspend(*ts, entry);\n"
-        "        }\n        state.durable = Some(file);\n",
-        "        state.durable = Some(file);\n",
+        "        }\n        let faulted = file.faulted();\n        state.durable = Some(file);\n",
+        "        let faulted = file.faulted();\n        state.durable = Some(file);\n",
     )], PANIC),
     ("panicked-flight-wakes", AUTH, [(
         "        drop(state);\n        cache.settled.notify_all();\n",
@@ -105,9 +120,12 @@ CASES = [
         "        let mut index = index;\n        for record in &records {\n            index.apply(record);\n"
         "        }\n        drop(index);\n        let written = journal.append_all(&records);",
     )], FSYNC),
+    # Retargeted in 1.1.5: the frames are built for a whole group commit now
+    # (`Store::write_versions`); the subject, the post's own edit event, is
+    # the same.
     ("edit-event-folded-into-the-post", STORE, [(
-        "            frames.extend(edit.map(|event| Frame::Seen { device_id, event }));\n",
-        "",
+        "                if let Some(event) = &post.edit {\n",
+        "                if let Some(event) = post.edit.as_ref().filter(|_| false) {\n",
     )], "a_post_journals_the_frames_it_always_did_and_every_replay_derives_the_same_device"),
     # --- snapshots (#192) ----------------------------------------------------
     ("growth-trigger", STORE, [(
@@ -216,6 +234,106 @@ CASES = [
         "index.seq <= since && !self.stopping.load(Ordering::SeqCst)",
         "index.seq <= since",
     )], "releasing_waiters_answers_a_long_poll_at_once_and_every_later_one"),
+    # --- a new fan-out directory's name (#273) -------------------------------
+    ("fanout-parent-fsync", BLOBS, [(
+        "            if self.unsynced().contains(step) {",
+        "            if false && self.unsynced().contains(step) {",
+    )], FANOUT),
+    ("fanout-existing-is-not-durable", BLOBS, [(
+        "                #[cfg(test)]\n                self.errno_at(BlobPhase::DirParentSync)?;\n"
+        "                fsync_parent(step)?;\n                self.unsynced().remove(step);\n",
+        "                self.unsynced().remove(step);\n                #[cfg(test)]\n"
+        "                self.errno_at(BlobPhase::DirParentSync)?;\n                fsync_parent(step)?;\n",
+    )], FANOUT),
+    ("fanout-synced-once-a-cut-start", BLOBS, [(
+        "            if !left.is_empty() {",
+        "            if false && !left.is_empty() {",
+    )], FANOUT_START),
+    # The repair's own fsync, not a hook or counter beside it (review of 39400b59).
+    ("start-repair-fsync-omitted", BLOBS, [(
+        "                        self.start_sync(StartStep::Repair, &outer)?;\n", "",
+    )], START_REPAIR),
+    ("start-removes-temps-before-the-repair", BLOBS, [(
+        "            if !left.is_empty() {\n",
+        "            for path in &left {\n                fs::remove_file(path)?;\n            }\n"
+        "            if !left.is_empty() {\n",
+    )], START_REPAIR),
+    # The flush underneath, not the call (review of ca4bcc7b): the directory
+    # opened and not flushed, or nothing done, is not a start's fsync.
+    ("start-sync-opens-without-flushing", BLOBS, [(
+        "        let _ = step;\n        fsync_dir(dir)\n",
+        "        let _ = step;\n        File::open(dir).map(|_| ()).map_err(StoreError::Io)\n",
+    )], START_REPAIR),
+    ("start-sync-does-nothing", BLOBS, [(
+        "        let _ = step;\n        fsync_dir(dir)\n",
+        "        let _ = step;\n        let _ = dir;\n        Ok(())\n",
+    )], START_REPAIR),
+    ("start-layout-v1-fsync-omitted", BLOBS, [(
+        "            self.start_sync(StartStep::Layout, &v1)?;\n", "",
+    )], START_LAYOUT),
+    # --- a disk with no room is a full server, not a fault (#291) ------------
+    ("storage-full-code", TYPES, [(
+        "        if self.out_of_space() {\n            return \"storage_full\";\n        }\n", "",
+    )], NO_ROOM),
+    ("storage-full-status", API, [(
+        "            ref full if full.out_of_space() => {\n"
+        "                ApiError::new(507, code, \"the volume is out of space\")\n            }\n", "",
+    )], NO_ROOM),
+    ("storage-full-counts-a-filesystem-quota", TYPES, [(
+        "                io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded\n",
+        "                io::ErrorKind::StorageFull\n",
+    )], "a_full_blob_volume_refuses_per_phase_and_leaves_that_phase_s_residue"),
+    # --- the nonce log on a journal volume with no room (#292) ---------------
+    ("nonce-no-room-is-storage-full", AUTH, [(
+        "    if matches!(\n        refused.io,\n"
+        "        std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded\n    ) {\n"
+        "        return ApiError::new(507, \"storage_full\", \"the volume is out of space\");\n    }\n", "",
+    )], NONCE_NO_ROOM),
+    # Re-anchored in 1.1.5 (#294): the refusal carries what the cut answered
+    # now; the subject, a faulted log never answered 507, is the same.
+    ("nonce-faulted-log-never-reads-full", AUTH, [(
+        "    if refused.faulted.is_some() {\n", "    if false && refused.faulted.is_some() {\n",
+    )], "a_faulted_nonce_log_says_so_until_a_restart_and_never_that_it_is_full"),
+    ("nonce-no-room-leaves-the-nonce-unspent", AUTH, [(
+        "            for (ts, entry) in &self.batch.entries {\n                state.unspend(*ts, entry);\n"
+        "            }\n        }\n        let faulted = file.faulted();\n",
+        "        }\n        let faulted = file.faulted();\n",
+    )], NONCE_NO_ROOM),
+    # --- readiness asks the nonce log (#294) ----------------------------------
+    ("readiness-asks-the-nonce-log", API, [(
+        "        if let Some(kind) = self.nonces.faulted() {\n"
+        "            self.not_ready(\"journal\", &std::io::Error::from(kind));\n"
+        "            return Err(NotReady {\n"
+        "                reason: \"nonce log faulted; restart to recover\",\n"
+        "                io: None,\n            });\n        }\n", "",
+    )], NONCE_NOT_READY),
+    ("the-flush-remembers-the-fault", AUTH, [(
+        "        cache.found(faulted);\n        let _ = self.batch.outcome.set(written",
+        "        let _ = self.batch.outcome.set(written",
+    )], NONCE_NOT_READY),
+    ("a-clean-cut-is-no-fault", AUTH, [(
+        "        if let Some(kind) = faulted\n",
+        "        if let Some(kind) = faulted.or(Some(std::io::ErrorKind::Other))\n",
+    )], NONCE_NO_ROOM),
+    ("clean-no-room-leaves-the-journal-unfaulted", JOURNAL, [(
+        "            Ok(()) => (\"truncated\", None),\n",
+        "            Ok(()) => {\n                self.faulted = Some(Faulted {\n"
+        "                    io: e.kind(),\n                    rollback_io: e.kind(),\n"
+        "                });\n                (\"truncated\", None)\n            }\n",
+    )], "a_journal_append_the_disk_cannot_hold"),
+    # --- a chunk put reserves what its check admits (#301) --------------------
+    ("put-reserves-what-it-admits", STORE, [(
+        "            index.reserved_bytes = index.reserved_bytes.saturating_add(declared_len);\n", "",
+    )], TOGETHER),
+    ("an-uncounted-put-gives-its-bytes-back", STORE, [(
+        "        if self.bytes == 0 {\n            return;\n        }\n",
+        "        if self.bytes == 0 || self.bytes > 0 {\n            return;\n        }\n",
+    )], GIVEN_BACK),
+    ("a-counted-put-gives-its-bytes-back", STORE, [(
+        "        index.add_chunk(sid, self.bytes, now);\n"
+        "        index.reserved_bytes = index.reserved_bytes.saturating_sub(self.bytes);\n",
+        "        index.add_chunk(sid, self.bytes, now);\n",
+    )], TOGETHER),
 ]
 
 
@@ -225,6 +343,7 @@ def main():
     paths = {Path(path) for _, path, _, _ in chosen}
     originals = {path: path.read_bytes() for path in paths}
     failures = []
+    judge = Judge({("obsyncd", case[-1]) for case in chosen})
     try:
         for name, path, edits, selector in chosen:
             source = originals[Path(path)].decode()
@@ -234,25 +353,16 @@ def main():
                 source = source.replace(old, new, 1)
             Path(path).write_text(source)
             try:
-                result = subprocess.run(
-                    ["cargo", "test", "-p", "obsyncd", "--lib", selector],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, timeout=300, check=False,
-                )
-                compiled = "could not compile" not in result.stdout
-                killed = compiled and result.returncode != 0 and "FAILED" in result.stdout
-                print(f"{name}: {'KILLED' if killed else 'NOT A KILL'}", flush=True)
-                if not killed:
-                    failures.append(name)
-                    print(result.stdout, flush=True)
-                else:
-                    print("\n".join(line for line in result.stdout.splitlines()
-                                    if "FAILED" in line or "test result:" in line), flush=True)
+                verdict, evidence = judge.test(selector)
+                print(f"{name}: {verdict}\n{evidence}", flush=True)
+                if verdict != "KILLED":
+                    failures.append(f"{name} ({verdict})")
             finally:
                 Path(path).write_bytes(originals[Path(path)])
     finally:
         for path, original in originals.items():
             path.write_bytes(original)
+        judge.close()
     if failures:
         raise SystemExit("Unkilled probes: " + ", ".join(failures))
     print(f"All {len(chosen)} server probes compiled and were killed.")

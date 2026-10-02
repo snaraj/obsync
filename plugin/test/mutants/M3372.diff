@@ -1,0 +1,12 @@
+# M3372: a note another device wrote last is taken for this device's unseen move (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4015,7 +4015,7 @@
+     const bySize = new Map<number, HeldNote[]>();
+     for (const note of notes.values()) {
+       // Missing is what the listing of the selection says, so only a name in it can be.
+-      if (note.device_id !== context.deviceId || !inSyncScope(note.path, context.state.data.syncFolders) || seen.has(note.path) ||
++      if (!inSyncScope(note.path, context.state.data.syncFolders) || seen.has(note.path) ||
+         context.state.pathByFileId(note.file_id) !== undefined || context.state.data.departed[note.file_id] !== undefined) continue;
+       bySize.set(note.size, [...(bySize.get(note.size) ?? []), note]);
+     }

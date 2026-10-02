@@ -1,10 +1,10 @@
 # M296: a second save of the same size inside a coarse mtime step is never sent
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2023,7 +2023,6 @@
-       if (await yieldName(context, path)) return;
-       const asked = context.now();
+@@ -2694,7 +2694,6 @@
        const outcome = await pushFile(context, path, forced);
+       // Taken, or on the server already: nothing of it is unsent (#300).
+       if (outcome.status !== "growing") this.sent(path);
 -      if (outcome.status !== "growing") this.recheck(context, path, asked);
        if (outcome.status === "unchanged") return;
        if (outcome.status === "growing") {

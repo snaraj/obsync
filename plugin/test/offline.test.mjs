@@ -728,7 +728,7 @@ test("every name taken means the copy is refused, and nothing is claimed", async
     r.host.logs.some((line) => line.includes("decision=refused") && line.includes("reason=no_free_conflict_name")),
     r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
-  assert.match(r.host.notices.join(" "), /could not place the other device's copy/);
+  assert.match(r.host.notices.join(" "), /found no free name for .+'s copy beside it/);
 });
 
 test("the copy's writer is released on success as well as on failure", async () => {
@@ -764,17 +764,16 @@ function desktopVault(t, r, promises = fsp) {
     rmSync(box.home, { recursive: true, force: true });
   });
   mkdirSync(join(root, "Notes"));
-  const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
+  const { ObsidianHost, noticeChannel } = box.require(join(box.home, "build/main.js"));
   const logs = [];
   const vault = { adapter: {
     exists: async (path) => existsSync(join(root, path)),
     mkdir: async (path) => fsp.mkdir(join(root, path), { recursive: true }),
     writeBinary: async () => assert.fail("the overwriting adapter was used"),
   } };
-  const host = new ObsidianHost(
-    { state: r.state, app: { vault }, log: (line) => logs.push(line) },
-    { base: root, path: nodePath, fs: { promises } },
-  );
+  const plugin = { state: r.state, app: { vault }, log: (line) => logs.push(line) };
+  plugin.notices = noticeChannel(plugin);
+  const host = new ObsidianHost(plugin, { base: root, path: nodePath, fs: { promises } });
   return { root, host, logs, context: { ...r.context, host } };
 }
 

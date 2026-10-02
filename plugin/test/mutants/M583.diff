@@ -5,8 +5,8 @@
          // itself and stands until the server answers again; only absence reads
          // offline; anything else is a read that failed, said as that.
          const refused = refusalStatus(error) ?? { kind: "error", code: "feed", message: FEED_FAILED };
--        if (refused.kind === "error" && refused.code === "forgotten_device") {
+-        if (refused.kind === "error" && refused.code === "credential_rejected") {
 +        if (false) {
-           context.host.log("feed decision=stopped reason=forgotten_device");
+           context.host.log("feed decision=stopped reason=credential_rejected");
            this.status(refused);
            this.stop();

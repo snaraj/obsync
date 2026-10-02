@@ -1,0 +1,12 @@
+# M4027: the seam's close reaches the disk with no budget (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -409,7 +409,7 @@
+         return onTime(open.write(buffer), "write", buffer.length, log, true);
+       },
+       stat: (options) => onTime(open.stat(options), "fstat", 0, log),
+-      close: () => onTime(open.close(), "close", 0, log),
++      close: () => open.close(),
+       sync: () => {
+         const bytes = unsynced;
+         unsynced = 0;

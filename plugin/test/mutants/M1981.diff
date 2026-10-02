@@ -1,11 +1,11 @@
 # M1981: stop() claims idle while the work it stopped is still running
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -723,6 +723,7 @@
+@@ -1233,6 +1233,7 @@
      this.repair?.cancel();
      this.repair = null;
      this.options.host.log("engine stop");
 +    this.status({ kind: "idle" });
    }
  
-   /** Quiesce before changing local scope; retain enough state to retry queued work. */
+   /**

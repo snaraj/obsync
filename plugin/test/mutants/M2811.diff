@@ -1,12 +1,12 @@
 # M2811: only a page carrying a change re-derives the status: an empty answer leaves offline standing
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2409,7 +2409,7 @@
+@@ -3608,7 +3608,7 @@
      // said is taken back by the next answer, not by the next page that
      // happens to carry a change -- which kept every device reading `offline —
      // retrying` for minutes after its server was back.
 -    this.status(this.resting());
 +    if (page.changes.length > 0) this.status(this.resting());
+     this.pace();
    }
  
-   /**

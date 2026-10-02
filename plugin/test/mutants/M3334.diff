@@ -1,0 +1,12 @@
+# M3334: a folder removal owed for a folder that stands again stays owed (issue #265)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3880,7 +3880,7 @@
+       // or a record already retired, owes nothing.
+       const owed = context.state.data.folderRemovals;
+       for (const path of Object.keys(owed)) {
+-        if (present.has(path) || context.state.folderByPath(path) === undefined) this.settleRemoval(path);
++        if (context.state.folderByPath(path) === undefined) this.settleRemoval(path);
+       }
+       for (const folder of Object.keys(context.state.data.folders)) {
+         // A folder whose notes' deletions are held waits with them, as it

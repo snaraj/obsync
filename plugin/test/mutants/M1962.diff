@@ -1,12 +1,12 @@
 # M1962: Delete everywhere is asked about again instead of published
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1265,7 +1265,7 @@
+@@ -2022,7 +2022,7 @@
      // The folders deleted with them go after them, as they would have.
      for (const folder of this.heldFolders) this.vanishedFolders.add(folder);
      this.heldFolders = [];
 -    this.vanish(held, true);
 +    this.vanish(held);
      this.options.host.log(`reconcile decision=confirmed reason=bulk_deletion queued=${held.length}`);
-   }
- 
+     // THE ANSWER IS SAID, as Restore here's is (#309): Recent kept the
+     // question with nothing after it, and read as still waiting on the user.

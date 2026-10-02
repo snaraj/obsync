@@ -1,11 +1,11 @@
 # M495: Sync now leaves every held note paused
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4041,7 +4041,6 @@
+@@ -4758,7 +4758,6 @@
      await this.readFeed();
-     await this.retryParked(trigger);
+     await this.inTurn(trigger, this.retryParked(trigger));
      // A paused note before the pass, so what it holds is in it (issue #179).
--    await this.resume(undefined, trigger);
-     await this.reconcile(verifyUpTo);
+-    await this.inTurn(trigger, this.resume(undefined, trigger));
+     const tally = await this.reconcile(verifyUpTo, trigger === "sync_now" ? trigger : undefined);
      // The command that "syncs everything" did not send the deletions the user
      // is still being asked about, and says so rather than nothing (#172).

@@ -1,0 +1,11 @@
+# M4093: a revealed key is held without its commitment checked
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -673,7 +673,6 @@
+       if (key !== creatorKey) throw new ClaimEnded("unverified");
+       return key;
+     }
+-    if (!(await keptCommitment(v2.commitment, claim.pairingId, key).catch(() => false))) throw new ClaimEnded("unverified");
+     creatorKey = key;
+     waiting.code = await matchCodeV2(secret, claim.pairingId, v2.kex.publicKey, key);
+     waiting.show(asked(waiting.code));

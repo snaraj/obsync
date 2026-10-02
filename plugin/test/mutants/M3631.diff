@@ -1,0 +1,11 @@
+# M3631: a chunk upload's landed probe swallows an ended session, and the body is sent again (issue #272)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1288,7 +1288,6 @@
+     } catch (error) {
+       // The probe saves bytes; it can never cost a chunk. An ended session
+       // ends the upload here, its one line already said (#272).
+-      if (error instanceof SessionEnded) throw error;
+       return false;
+     }
+   }

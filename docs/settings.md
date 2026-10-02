@@ -96,10 +96,19 @@ keeps both versions for you to review ([`conflicts.md`](conflicts.md)).
 
 ![The Devices section listing Laptop (this device) and Desk computer, each with a Revoke button, and the Device list row with Refresh](assets/settings-devices.png)
 
-Every device on the account, one row each, with **Revoke** beside each one not
-already revoked; **Device list** → **Refresh** reads the list again.
-Revocation destroys that device's wrapped secret on the server and is final —
-a revoked device is paired again as a new device.
+Every device that syncs, one row each, with **Revoke** beside it; **Device
+list** → **Refresh** reads the list again. Revocation destroys that device's
+wrapped secret on the server and is final — a revoked device is paired again
+as a new device.
+
+Revoked devices do not sit among them. They are counted on one row,
+**N revoked devices**, whose **Show** lists them and whose **Hide** puts them
+away again; with none revoked the row is absent. Each revoked row carries
+**Forget**, which asks first and then takes that device off this list for
+good. It could not sync either way, and nothing about it changes on the
+server: it is still refused for what it is, and the notes it wrote still
+carry its name. A server older than 1.1.5 cannot do this and says so
+([Troubleshooting](troubleshooting.md#a-device-could-not-be-forgotten)).
 
 ## Vault key
 

@@ -1,9 +1,9 @@
 # M2207: a stop leaves a Sync now waiting on the feed
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1051,7 +1051,6 @@
-     this.cancelled = true;
+@@ -1211,7 +1211,6 @@
      this.running = false;
+     this.pace();
      this.halt.abort();
 -    this.answerFeed(Number.POSITIVE_INFINITY);
      for (const entry of this.pending.values()) this.timers.clear(entry.handle);

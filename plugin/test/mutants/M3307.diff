@@ -1,0 +1,12 @@
+# M3307: a note whose read a stop cut short is not asked for again (#281)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3527,7 +3527,7 @@
+           );
+         }
+         // And one whose read the stop cut short is asked for again then too.
+-        if (this.running) delete lost.notes[fileId];
++        delete lost.notes[fileId];
+       }
+       context.state.data.replaying = null;
+       await context.state.save();

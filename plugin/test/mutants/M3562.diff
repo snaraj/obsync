@@ -1,0 +1,12 @@
+# M3562: a note's title keeps its .md
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -117,7 +117,7 @@
+  * folder, so the two can be told apart.
+  */
+ export function titles(paths: readonly string[]): string[] {
+-  const bare = (path: string): string => path.endsWith(".md") ? path.slice(0, -3) : path;
++  const bare = (path: string): string => path;
+   const names = paths.map((path) => bare(path.slice(path.lastIndexOf("/") + 1)));
+   return paths.map((path, index) => names.indexOf(names[index] as string) === names.lastIndexOf(names[index] as string) ? names[index] as string : bare(path));
+ }

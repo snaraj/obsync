@@ -443,6 +443,12 @@ impl NonceLog {
         Ok(())
     }
 
+    /// What the cut-back answered, if one failed: nothing more is written
+    /// until a restart.
+    pub const fn faulted(&self) -> Option<io::ErrorKind> {
+        self.faulted
+    }
+
     /// Lines the file holds, for the caller's compaction threshold.
     pub fn lines(&self) -> usize {
         #[cfg(test)]

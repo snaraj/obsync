@@ -12,9 +12,12 @@
 //! index alone. A write holds the journal for its whole life -- validate,
 //! append, fsync, apply -- and the index only to validate and to apply, never
 //! across the volume, so one writer's fsync stalls the next writer and no
-//! reader. A fixed table of SID locks serializes chunk mutation before either
-//! lock; GC takes the table in order. Streaming and hashing hold only a SID
-//! lock, so a slow upload never blocks the feed.
+//! reader. Version posts that queue behind an fsync are made durable by the
+//! next one together (`Store::append`, group commit), so a burst of posts
+//! costs one fsync per turn of the journal rather than one each. A fixed
+//! table of SID locks serializes chunk mutation before either lock; GC takes
+//! the table in order. Streaming and hashing hold only a SID lock, so a slow
+//! upload never blocks the feed.
 //!
 //! Free space: the standard library exposes no `statvfs`, and running `df`
 //! from library code would make the server depend on a shell. The watermark
@@ -37,7 +40,7 @@ mod tests;
 #[cfg(test)]
 pub(crate) mod testutil;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -69,6 +72,88 @@ pub use self::types::{
 /// The domain separator device secrets rest under
 /// (docs/architecture.md §3.6).
 const WRAP_SALT: &[u8] = b"obsync/v1/wrap";
+
+/// The most posts one group commit carries (`Store::append_grouped`), and
+/// the most bytes of manifest and chunk list it adds up before it stops
+/// taking more: a batch's frames are encoded into one buffer, which this
+/// keeps near one ordinary post's size however many connections queue. The
+/// first post of a turn is always taken, whatever its size.
+const GROUP_MAX_POSTS: usize = 64;
+const GROUP_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// One version post waiting for the journal.
+struct Queued {
+    v: NewVersion,
+    accept_existing: bool,
+    edit: Option<SeenEvent>,
+}
+
+impl Queued {
+    /// What this post adds to a batch's frame buffer, roughly: its manifest
+    /// and its id lists.
+    fn weight(&self) -> usize {
+        self.v.manifest_ct.len() + 32 * (self.v.sids.len() + self.v.parents.len())
+    }
+}
+
+/// A post's answer, and how many posts the fsync that answered it carried.
+type Answer = (Result<AppendOutcome, StoreError>, usize);
+
+/// The group commit's shared state (`Store::append_grouped`): posts waiting
+/// for a turn of the journal, in arrival order, each under its ticket, and
+/// the answers a leader has made that their threads have not collected.
+#[derive(Default)]
+struct VersionQueue {
+    next: u64,
+    waiting: VecDeque<(u64, Queued)>,
+    answered: HashMap<u64, Answer>,
+}
+
+impl VersionQueue {
+    fn enqueue(&mut self, post: Queued) -> u64 {
+        let ticket = self.next;
+        self.next += 1;
+        self.waiting.push_back((ticket, post));
+        ticket
+    }
+
+    /// The next batch: waiting posts in arrival order, at most one per file
+    /// and within the caps. A post whose file an EARLIER waiting post names
+    /// stays queued, in its place, for a later turn -- whether that earlier
+    /// post was taken or itself left for the caps -- so one file's posts are
+    /// always made durable in the order they arrived.
+    fn batch(&mut self) -> Vec<(u64, Queued)> {
+        let mut files = HashSet::new();
+        let mut batch: Vec<(u64, Queued)> = Vec::new();
+        let mut weight = 0;
+        let mut rest = VecDeque::new();
+        for (ticket, post) in self.waiting.drain(..) {
+            let first_of_file = files.insert(post.v.file_id);
+            let fits = batch.is_empty()
+                || (batch.len() < GROUP_MAX_POSTS && weight + post.weight() <= GROUP_MAX_BYTES);
+            if first_of_file && fits {
+                weight += post.weight();
+                batch.push((ticket, post));
+            } else {
+                rest.push_back((ticket, post));
+            }
+        }
+        self.waiting = rest;
+        batch
+    }
+}
+
+/// How long a newly registered recovery key keeps the account's last active
+/// device from being revoked: seven days (`docs/recovery.md`).
+///
+/// The server cannot tell a verifier the vault key produced from one it did
+/// not: any device credential may register the first one. The key's own
+/// devices meet a key they did not register as `409 recovery_mismatch` at
+/// their next start and say so, and this hold is the time that warning has to
+/// be read and acted on before the last device can go. A constant, not a
+/// setting: a security hold an operator could shorten is one an attacker's
+/// instructions could shorten too (AGENTS.md requirement 4).
+pub const RECOVERY_HOLD_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
 /// A crash point, armed by a test so recovery can be proven rather than
 /// argued (AGENTS.md, "Testing doctrine": injected fault points).
@@ -165,6 +250,12 @@ pub(crate) enum BlobPhase {
     Sync,
     /// The `rename` into place.
     Rename,
+    /// Persisting a new fan-out directory's name in its parent.
+    DirParentSync,
+    /// A start persisting the layout's names: `v1/` and `v1/tmp/`.
+    StartLayoutSync,
+    /// A start persisting the fan-out names after a cut upload.
+    StartRepairSync,
     /// Copying into a quarantine-local temporary file.
     QuarantineCopy,
     /// The quarantine copy's file fsync.
@@ -196,6 +287,10 @@ pub struct Store {
     /// striped table avoids an unbounded map of locks controlled by uploads.
     chunk_locks: [Mutex<()>; 256],
     journal: Mutex<Journal>,
+    /// Version posts waiting for the journal, and the answers of those a
+    /// group commit has made durable (`Store::append`). Taken after the
+    /// journal, never before it.
+    versions: Mutex<VersionQueue>,
     index: Mutex<Index>,
     changed: Condvar,
     /// Set once the server is stopping: every long-poll answers at once
@@ -224,6 +319,45 @@ pub struct Store {
     /// Called between a collection's durable frame and its first unlink.
     #[cfg(test)]
     before_gc_unlink: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
+}
+
+/// The bytes one chunk put holds against the watermark and the quota, from
+/// the check that admitted it until its bytes are counted (#301). Dropped
+/// uncounted -- a body that did not verify, a failed write, a panic -- it
+/// gives them back, so no exit path leaves the volume looking fuller than it
+/// is.
+struct Reservation<'a> {
+    store: &'a Store,
+    bytes: u64,
+}
+
+impl Reservation<'_> {
+    /// Count the landed chunk and give its bytes back in ONE hold of the
+    /// index lock, so no check ever sees them neither counted nor reserved.
+    fn count(mut self, sid: Sid, now: UnixMs) {
+        let store = self.store;
+        let mut index = store.index();
+        index.add_chunk(sid, self.bytes, now);
+        index.reserved_bytes = index.reserved_bytes.saturating_sub(self.bytes);
+        self.bytes = 0;
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        if self.bytes == 0 {
+            return;
+        }
+        // Past a panic the lock may be poisoned. What it guards is whole (the
+        // write that panicked held no index lock), and a second panic while
+        // unwinding would abort the process instead of answering 500.
+        let mut index = self
+            .store
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        index.reserved_bytes = index.reserved_bytes.saturating_sub(self.bytes);
+    }
 }
 
 impl Store {
@@ -270,6 +404,7 @@ impl Store {
                 ("frames", Val::count(replay.frames)),
                 ("truncated_bytes", Val::bytes(replay.truncated_bytes)),
                 ("tmp_removed", Val::count(leftovers)),
+                ("fanout_synced", Val::count(blobs.synced_at_open())),
                 ("chunks", Val::count(chunk_count)),
                 ("strays", Val::count(strays)),
                 ("bytes", Val::bytes(index.used_bytes)),
@@ -291,6 +426,7 @@ impl Store {
             blobs,
             chunk_locks: std::array::from_fn(|_| Mutex::new(())),
             journal: Mutex::new(journal),
+            versions: Mutex::new(VersionQueue::default()),
             index: Mutex::new(index),
             changed: Condvar::new(),
             stopping: AtomicBool::new(false),
@@ -465,25 +601,38 @@ impl Store {
                 }
             }
         }
-        {
-            let index = self.index();
+        // THE CHECK RESERVES WHAT IT ADMITS (#301). The chunk lock serialises
+        // one sid, not the volume, so puts of different chunks arrive
+        // together; checked against `used_bytes` alone, each saw the same
+        // total and all passed, and a small volume filled past its reserve.
+        // Every put is measured against what is counted AND what puts between
+        // their check and their count hold, and holds its own bytes from the
+        // moment it passes. A refused put holds nothing.
+        let reservation = {
+            let mut index = self.index();
             let stored = index.account().ok_or(StoreError::NotSetUp)?;
+            let held = index.used_bytes.saturating_add(index.reserved_bytes);
             let watermark = self.cfg.free_watermark.bytes_for(self.cfg.blobs_capacity);
-            let free = self.cfg.blobs_capacity.saturating_sub(index.used_bytes);
+            let free = self.cfg.blobs_capacity.saturating_sub(held);
             if free.saturating_sub(declared_len) < watermark {
                 return Err(StoreError::VolumeFull { free, watermark });
             }
             if let Some(quota) = stored.quota_bytes {
-                let used = index.used_bytes.saturating_add(declared_len);
+                let used = held.saturating_add(declared_len);
                 if used > quota {
                     return Err(StoreError::QuotaExceeded { used, quota });
                 }
             }
-        }
+            index.reserved_bytes = index.reserved_bytes.saturating_add(declared_len);
+            Reservation {
+                store: self,
+                bytes: declared_len,
+            }
+        };
         let written = self.blobs.write(sid, declared_len, body);
         self.prove(&self.blobs_proof, written.as_ref().map(|_| ()));
         written?;
-        self.index().add_chunk(*sid, declared_len, UnixMs::now());
+        reservation.count(*sid, UnixMs::now());
         Ok(PutOutcome::Created)
     }
 
@@ -544,7 +693,8 @@ impl Store {
             ("bytes", Val::bytes(v.bytes)),
             ("chunks", Val::count(v.sids.len() as u64)),
         ];
-        match self.append_version_inner(v, accept_existing, edit) {
+        let (answer, batch) = self.append_grouped(v, accept_existing, edit);
+        match answer {
             Ok(outcome) => {
                 fields.push(("seq", Val::seq(outcome.seq)));
                 fields.push(("conflicted", Val::flag(outcome.conflicted)));
@@ -553,6 +703,11 @@ impl Store {
                     // The id the caller did NOT post, and the one it is now
                     // expected to store: the only line that states it.
                     fields.push(("version", Val::version(&outcome.version_id)));
+                }
+                if outcome.decision == AppendDecision::Appended {
+                    // How many posts the one fsync that made this one durable
+                    // carried: the group commit, visible on every post.
+                    fields.push(("batch", Val::count(batch as u64)));
                 }
                 timed.done(&fields);
                 Ok(outcome)
@@ -566,21 +721,192 @@ impl Store {
         }
     }
 
-    fn append_version_inner(
+    /// Queue one post for the journal and wait for its answer: GROUP COMMIT.
+    ///
+    /// Posts that arrive while an fsync is in flight are made durable by the
+    /// next one, together. The journal mutex elects the leader: whoever holds
+    /// it takes the queued posts (at most one per file, in arrival order),
+    /// checks each against the index as it stands, writes the frames of every
+    /// one that appends, fsyncs ONCE, applies them, and leaves every member
+    /// its answer. A member reads its answer only while it holds the journal
+    /// mutex, and the leader keeps that mutex until the fsync has returned and
+    /// the index shows the frames: no post is answered before it is durable,
+    /// and no reader sees a frame that is not (`docs/storage.md`, durability
+    /// rule 6). A batch the volume refuses is rolled back whole by the
+    /// journal, and each member is then tried alone.
+    ///
+    /// Batched posts name DISTINCT files, which is what makes checking them
+    /// together the same as checking them one after another: a post reads its
+    /// own file's graph, the device, the account and the chunk inventory, and
+    /// its frames change only its own file's graph and the device's activity,
+    /// so no member's check can depend on another member's frames. A second
+    /// post for a file already in the batch waits for the next turn, and sees
+    /// the first.
+    ///
+    /// Returns the answer and how many posts its fsync carried.
+    fn append_grouped(
         &self,
         v: NewVersion,
         accept_existing: bool,
         edit: Option<SeenEvent>,
-    ) -> Result<AppendOutcome, StoreError> {
+    ) -> Answer {
         let expected = version_id_of(&v.file_id, &v.parents, &v.manifest_ct, &v.sids);
         if expected != v.version_id {
-            return Err(StoreError::VersionIdMismatch {
-                expected,
-                actual: v.version_id,
-            });
+            let actual = v.version_id;
+            return (Err(StoreError::VersionIdMismatch { expected, actual }), 0);
         }
+        let ticket = self.versions().enqueue(Queued {
+            v,
+            accept_existing,
+            edit,
+        });
         let mut journal = self.journal();
+        loop {
+            let batch = {
+                let mut queue = self.versions();
+                if let Some(answer) = queue.answered.remove(&ticket) {
+                    return answer;
+                }
+                queue.batch()
+            };
+            // Never empty: this post has no answer, and while this thread
+            // holds the journal no other leader is part way through a batch,
+            // so the post is still queued and a batch takes the oldest post.
+            assert!(!batch.is_empty(), "an unanswered post left the queue");
+            let answers = self.commit_batch(&mut journal, batch);
+            self.versions().answered.extend(answers);
+        }
+    }
+
+    fn versions(&self) -> MutexGuard<'_, VersionQueue> {
+        self.versions.lock().expect("version queue lock")
+    }
+
+    /// Posts waiting for the journal right now. Tests only.
+    #[cfg(test)]
+    pub(crate) fn queued_versions(&self) -> usize {
+        self.versions().waiting.len()
+    }
+
+    /// One turn of the journal: check every member, make the frames of those
+    /// that append durable with one fsync, and answer them all.
+    fn commit_batch(&self, journal: &mut Journal, batch: Vec<(u64, Queued)>) -> Vec<(u64, Answer)> {
         let index = self.index();
+        let mut answers = Vec::with_capacity(batch.len());
+        let mut writers = Vec::new();
+        for (ticket, post) in batch {
+            match Self::check_version(&index, &post.v, post.accept_existing) {
+                Ok(None) => writers.push((ticket, post)),
+                Ok(Some(held)) => answers.push((ticket, (Ok(held), 0))),
+                Err(e) => answers.push((ticket, (Err(e), 0))),
+            }
+        }
+        if writers.is_empty() {
+            return answers;
+        }
+        match self.write_versions(journal, index, &writers) {
+            Ok(outcomes) => {
+                let carried = writers.len();
+                answers.extend(
+                    writers
+                        .into_iter()
+                        .zip(outcomes)
+                        .map(|((ticket, _), outcome)| (ticket, (Ok(outcome), carried))),
+                );
+            }
+            // A batch refused -- by the watermark, by the volume -- was
+            // rolled back whole (durability rule 3). Each post is then tried
+            // alone, as it would have been without a batch: refused only when
+            // its OWN frames do not fit, told its OWN failure, and a journal
+            // the refusal faulted refuses each at once without touching the
+            // volume again.
+            Err(_) if writers.len() > 1 => {
+                for member in writers {
+                    answers.extend(self.commit_batch(journal, vec![member]));
+                }
+            }
+            Err(e) => {
+                let (ticket, _) = writers.pop().expect("one writer");
+                answers.push((ticket, (Err(e), 0)));
+            }
+        }
+        answers
+    }
+
+    /// Append the checked posts' frames with one fsync for all of them, and
+    /// read their outcomes from the index they were then applied to.
+    fn write_versions(
+        &self,
+        journal: &mut Journal,
+        index: MutexGuard<'_, Index>,
+        writers: &[(u64, Queued)],
+    ) -> Result<Vec<AppendOutcome>, StoreError> {
+        let now = UnixMs::now();
+        let first = self.commit(journal, index, |first| {
+            let mut seq = first;
+            let mut frames = Vec::with_capacity(writers.len() * 2);
+            for (_, post) in writers {
+                let v = &post.v;
+                frames.push(Frame::Version(VersionRecord {
+                    file_id: v.file_id,
+                    domain_id: v.domain_id,
+                    version_id: v.version_id,
+                    parents: v.parents.clone(),
+                    sids: v.sids.clone(),
+                    bytes: v.bytes,
+                    manifest_ct: v.manifest_ct.clone(),
+                    manifest_nonce: v.manifest_nonce,
+                    device_id: v.device_id,
+                    ts: now,
+                    deleted: v.deleted,
+                    seq,
+                }));
+                seq = seq.next();
+                if let Some(event) = &post.edit {
+                    frames.push(Frame::Seen {
+                        device_id: v.device_id,
+                        event: event.clone(),
+                    });
+                    seq = seq.next();
+                }
+            }
+            frames
+        })?;
+        let index = self.index();
+        let mut seq = first;
+        let outcomes = writers
+            .iter()
+            .map(|(_, post)| {
+                let entry = index
+                    .files
+                    .get(&post.v.file_id)
+                    .expect("the version's file");
+                let outcome = AppendOutcome {
+                    seq,
+                    version_id: post.v.version_id,
+                    heads: entry.heads.clone(),
+                    conflicted: entry.conflicted,
+                    decision: AppendDecision::Appended,
+                };
+                seq = Seq(seq.0 + if post.edit.is_some() { 2 } else { 1 });
+                outcome
+            })
+            .collect();
+        drop(index);
+        self.changed.notify_all();
+        Ok(outcomes)
+    }
+
+    /// Whether one post may append against the index as it stands:
+    /// `Ok(None)` when it may, `Ok(Some(_))` for a version the store already
+    /// holds (or, for a caller that accepts one, its twin), and the refusal
+    /// otherwise. Reads nothing a version frame of ANOTHER file changes
+    /// (`Store::append_grouped`).
+    fn check_version(
+        index: &Index,
+        v: &NewVersion,
+        accept_existing: bool,
+    ) -> Result<Option<AppendOutcome>, StoreError> {
         match index.account_id() {
             Some(id) if id == v.account_id => {}
             _ => return Err(StoreError::NotSetUp),
@@ -611,13 +937,13 @@ impl Store {
         }
         if let Some(existing) = index.version(&v.file_id, &v.version_id) {
             let entry = index.files.get(&v.file_id).expect("the version's file");
-            return Ok(AppendOutcome {
+            return Ok(Some(AppendOutcome {
                 seq: existing.seq,
                 version_id: v.version_id,
                 heads: entry.heads.clone(),
                 conflicted: entry.conflicted,
                 decision: AppendDecision::Existed,
-            });
+            }));
         }
         // A DIFFERENT ID FOR A POSITION THE GRAPH ALREADY HOLDS.
         //
@@ -633,13 +959,13 @@ impl Store {
             && let Some((seq, version_id)) = index.twin(&v.file_id, &v.parents, &v.sids, v.deleted)
         {
             let entry = index.files.get(&v.file_id).expect("the twin's file");
-            return Ok(AppendOutcome {
+            return Ok(Some(AppendOutcome {
                 seq,
                 version_id,
                 heads: entry.heads.clone(),
                 conflicted: entry.conflicted,
                 decision: AppendDecision::Deduplicated,
-            });
+            }));
         }
         let missing: Vec<Sid> = v
             .sids
@@ -662,41 +988,7 @@ impl Store {
                 max: FILE_MAX_HEADS,
             });
         }
-        let now = UnixMs::now();
-        let file_id = v.file_id;
-        let version_id = v.version_id;
-        let device_id = v.device_id;
-        let seq = self.commit(&mut journal, index, |seq| {
-            let mut frames = vec![Frame::Version(VersionRecord {
-                file_id: v.file_id,
-                domain_id: v.domain_id,
-                version_id: v.version_id,
-                parents: v.parents,
-                sids: v.sids,
-                bytes: v.bytes,
-                manifest_ct: v.manifest_ct,
-                manifest_nonce: v.manifest_nonce,
-                device_id,
-                ts: now,
-                deleted: v.deleted,
-                seq,
-            })];
-            frames.extend(edit.map(|event| Frame::Seen { device_id, event }));
-            frames
-        })?;
-        let index = self.index();
-        let entry = index.files.get(&file_id).expect("the version's file");
-        let outcome = AppendOutcome {
-            seq,
-            version_id,
-            heads: entry.heads.clone(),
-            conflicted: entry.conflicted,
-            decision: AppendDecision::Appended,
-        };
-        drop(index);
-        drop(journal);
-        self.changed.notify_all();
-        Ok(outcome)
+        Ok(None)
     }
 
     /// A file with its heads and its retained versions, newest first.
@@ -770,10 +1062,11 @@ impl Store {
 
     /// Create the one account. Valid once (docs/protocol.md, `/v1/setup`).
     pub fn setup(&self, name: &str) -> Result<AccountId, StoreError> {
-        self.setup_with_recovery(name, None)
+        self.setup_with_recovery(name, None, UnixMs::now())
     }
 
-    /// Create an account and its optional recovery verifier in one durable frame.
+    /// Create an account and its optional recovery verifier in one durable
+    /// frame; a verifier is registered at `now`.
     ///
     /// # Errors
     /// An existing account, randomness failure, or a refused journal append.
@@ -781,6 +1074,7 @@ impl Store {
         &self,
         name: &str,
         recovery_verifier: Option<String>,
+        now: UnixMs,
     ) -> Result<AccountId, StoreError> {
         let mut journal = self.journal();
         let index = self.index();
@@ -794,7 +1088,9 @@ impl Store {
                 name: name.to_string(),
                 created: UnixMs::now(),
                 quota_bytes: None,
+                recovery_registered: recovery_verifier.as_ref().map(|_| now),
                 recovery_verifier,
+                recovery_cleared: None,
             }]
         })?;
         self.log
@@ -802,30 +1098,60 @@ impl Store {
         Ok(account_id)
     }
 
-    /// Register recovery once; a different verifier cannot replace the original.
+    /// Register recovery once, at `now`; a different verifier cannot replace
+    /// the original. Only the operator's reset clears it
+    /// ([`Store::reset_recovery`]). Registering spends the re-enrolment that
+    /// reset armed, whoever registers.
     ///
     /// # Errors
     /// An absent account or a refused journal append.
-    pub fn register_recovery(&self, verifier: &str) -> Result<bool, StoreError> {
+    pub fn register_recovery(&self, verifier: &str, now: UnixMs) -> Result<bool, StoreError> {
         let mut journal = self.journal();
         let index = self.index();
         let account = index.account.clone().ok_or(StoreError::NotSetUp)?;
-        if let Some(existing) = account.recovery_verifier {
+        if let Some(existing) = &account.recovery_verifier {
             return Ok(obsync_core::ct::eq(
                 existing.as_bytes(),
                 verifier.as_bytes(),
             ));
         }
         self.commit(&mut journal, index, |_| {
-            vec![Frame::Account {
-                account_id: account.account_id,
-                name: account.name,
-                created: account.created,
-                quota_bytes: account.quota_bytes,
-                recovery_verifier: Some(verifier.to_string()),
-            }]
+            vec![account_frame(
+                account,
+                Some(verifier.to_string()),
+                Some(now),
+                None,
+            )]
         })?;
+        // Once per account: the request line beside it names the device.
+        self.log.info(
+            "recovery_registered",
+            &[("decision", Val::word("registered")), ("at", Val::ts(now))],
+        );
         Ok(true)
+    }
+
+    /// Forget the account's recovery verifier and arm one re-enrolment, at
+    /// `now`: the operator's reset (`obsyncd recovery reset apply`,
+    /// `docs/recovery.md`), which rotates the setup token before it calls this.
+    /// Reachable from the server's own volumes only, never over HTTP.
+    /// Afterwards the account's last active device cannot be revoked, and the
+    /// first registration of a verifier spends the arm: a device that opens
+    /// the vault, or one recovery with the new token (`api::setup::create`).
+    ///
+    /// Returns whether there was a verifier to forget.
+    ///
+    /// # Errors
+    /// `NotSetUp`, or a refused journal append.
+    pub fn reset_recovery(&self, now: UnixMs) -> Result<bool, StoreError> {
+        let mut journal = self.journal();
+        let index = self.index();
+        let account = index.account.clone().ok_or(StoreError::NotSetUp)?;
+        let had = account.recovery_verifier.is_some();
+        self.commit(&mut journal, index, |_| {
+            vec![account_frame(account, None, None, Some(now))]
+        })?;
+        Ok(had)
     }
 
     /// The account, with the usage the volumes actually hold.
@@ -852,10 +1178,12 @@ impl Store {
             last_seen: None,
             last_sign_in: None,
             last_edit: None,
+            last_heartbeat: None,
             address: None,
             country: None,
             policy: DevicePolicy::default(),
             state: d.state,
+            archived: false,
         };
         let wrapped = self.wrap(device_id.as_bytes(), &d.secret);
         let stored = record.clone();
@@ -902,6 +1230,19 @@ impl Store {
             .collect()
     }
 
+    /// How many devices can sync: the active ones and those still pairing.
+    /// A revoked device, archived or not, is kept as a record and is not one
+    /// of them (issue #268).
+    pub fn working_device_count(&self) -> u64 {
+        let index = self.index();
+        let working = index
+            .devices
+            .values()
+            .filter(|e| e.record.state != DeviceState::Revoked)
+            .count();
+        working as u64
+    }
+
     /// Change a device's name, policy or reported version.
     pub fn update_device(
         &self,
@@ -921,6 +1262,7 @@ impl Store {
                 name,
                 policy,
                 app_version,
+                archived: None,
             }]
         })?;
         Ok(self.index().devices[id].record.clone())
@@ -974,14 +1316,28 @@ impl Store {
     /// deliberately no unguarded revoke beside this one, and no unguarded
     /// delete either: [`Store::delete_device`] takes a PENDING device only,
     /// so the rejected-claim path cannot reach a paired one (issue #88).
+    /// [`Store::archive_device`] destroys nothing at all.
     ///
     /// A device waiting for pairing approval is not a way out of the
     /// refusal: it holds no vault key and cannot pair a replacement.
     ///
+    /// A registered recovery key lifts the refusal, because the setup token
+    /// and the vault's phrase re-enrol a device (`docs/recovery.md`) -- but
+    /// not for [`RECOVERY_HOLD_MS`] after it was registered, measured against
+    /// `now`. Any device credential can register the first key, and one the
+    /// vault key never produced must not be able to end every credential the
+    /// key's own devices hold before they have said so (`409
+    /// recovery_mismatch` at their next start). A key with no registration
+    /// time was registered before 1.1.5 and keeps the older rule: the hold
+    /// guards an account that had NO key, and every key such an account gets
+    /// from 1.1.5 on carries its time. A clock behind the registration reads
+    /// as age zero, so a clock stepped back holds longer, never shorter.
+    ///
     /// # Errors
     /// `UnknownDevice` when there is no such device, `LastActiveDevice` when
-    /// it is the only active one.
-    pub fn revoke_device_unless_last(&self, id: &DeviceId) -> Result<(), StoreError> {
+    /// it is the only active one and no recovery key is registered,
+    /// `RecoveryTooNew` when that key is younger than the hold.
+    pub fn revoke_device_unless_last(&self, id: &DeviceId, now: UnixMs) -> Result<(), StoreError> {
         let mut journal = self.journal();
         let index = self.index();
         let target_is_active = index
@@ -991,14 +1347,27 @@ impl Store {
             .record
             .active();
         let active = index.devices.values().filter(|e| e.record.active()).count();
-        if target_is_active
-            && active <= 1
-            && index
-                .account
-                .as_ref()
-                .is_none_or(|a| a.recovery_verifier.is_none())
-        {
-            return Err(StoreError::LastActiveDevice);
+        if target_is_active && active <= 1 {
+            let account = index.account.as_ref();
+            if account.is_none_or(|a| a.recovery_verifier.is_none()) {
+                return Err(StoreError::LastActiveDevice);
+            }
+            if let Some(registered) = account.and_then(|a| a.recovery_registered) {
+                let age = now.0.saturating_sub(registered.0);
+                if age < RECOVERY_HOLD_MS {
+                    self.log.warn(
+                        "device_revoke_refused",
+                        &[
+                            ("device", Val::device(id)),
+                            ("decision", Val::word("refused")),
+                            ("reason", Val::word("recovery_too_new")),
+                            ("recovery_age_ms", Val::ms(age)),
+                            ("budget_ms", Val::ms(RECOVERY_HOLD_MS)),
+                        ],
+                    );
+                    return Err(StoreError::RecoveryTooNew);
+                }
+            }
         }
         self.commit(&mut journal, index, |_| {
             vec![Frame::DeviceRevoke { device_id: *id }]
@@ -1051,6 +1420,48 @@ impl Store {
                 ("decision", Val::word("deleted")),
             ],
         );
+        Ok(())
+    }
+
+    /// Archive a REVOKED device: it leaves the routine device lists, and
+    /// everything else about it stays (issue #247).
+    ///
+    /// NOTHING IS DESTROYED. The record is what answers that device `403
+    /// device_revoked` rather than the answer an unknown id gets, and it is
+    /// what names the versions it wrote wherever history is read, so a device
+    /// list without it is a shorter list and not a shorter memory. The flag
+    /// rides the ordinary `DeviceUpdate` frame, fsynced with every other
+    /// write before the answer, and a server that predates the flag replays
+    /// that frame as the no-op update it reads.
+    ///
+    /// Only a revoked device, decided under the same hold of the index lock
+    /// as the append: a device that still syncs is revoked first, so a person
+    /// can never tidy away a device that is still allowed in, and a pending
+    /// one is a claim its pairing removes.
+    ///
+    /// # Errors
+    /// `UnknownDevice` when there is no such device, `DeviceNotRevoked` when
+    /// it is active or pending.
+    pub fn archive_device(&self, id: &DeviceId) -> Result<(), StoreError> {
+        let mut journal = self.journal();
+        let index = self.index();
+        let state = index
+            .devices
+            .get(id)
+            .map(|entry| entry.record.state)
+            .ok_or(StoreError::UnknownDevice)?;
+        if state != DeviceState::Revoked {
+            return Err(StoreError::DeviceNotRevoked);
+        }
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::DeviceUpdate {
+                device_id: *id,
+                name: None,
+                policy: None,
+                app_version: None,
+                archived: Some(true),
+            }]
+        })?;
         Ok(())
     }
 
@@ -1787,6 +2198,25 @@ pub(crate) fn error_fields(e: &StoreError) -> Vec<(&'static str, Val)> {
         ],
         StoreError::Io(e) => vec![("io", Val::io(e))],
         _ => Vec::new(),
+    }
+}
+
+/// The account frame that records `account` with this recovery state and
+/// every other field as it stands.
+fn account_frame(
+    account: AccountRecord,
+    recovery_verifier: Option<String>,
+    recovery_registered: Option<UnixMs>,
+    recovery_cleared: Option<UnixMs>,
+) -> Frame {
+    Frame::Account {
+        account_id: account.account_id,
+        name: account.name,
+        created: account.created,
+        quota_bytes: account.quota_bytes,
+        recovery_verifier,
+        recovery_registered,
+        recovery_cleared,
     }
 }
 

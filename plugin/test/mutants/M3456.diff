@@ -1,0 +1,13 @@
+# M3456: a note read while it was saved is called unmerged (#278)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2997,9 +2997,6 @@
+       // short: every text that note was saved as merged cleanly, the part read
+       // did not, and the pair was settled as a rewrite storm. So it is looked at
+       // again before it is called unmerged, as it is before a merge is written.
+-      if (before !== null && !(await unmoved(context, localPath, before))) {
+-        return deferred(context, change, `saved_during_merge stage=unmerged duration_ms=${context.now() - started}`);
+-      }
+       context.host.log(`pull decision=unmerged reason=${merged.reason} file=${change.file_id}`);
+     }
+   }

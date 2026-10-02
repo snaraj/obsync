@@ -1,11 +1,20 @@
 # M1941: the files the operating system wrote are left in a folder the adapter is then asked to remove
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1704,7 +1704,7 @@
-     const folder = this.plugin.app.vault.getFolderByPath(path);
-     if (folder) await this.plugin.app.fileManager.trashFile(folder);
-     else {
--      for (const file of junk) await (desktop !== null ? desktop.fs.promises.unlink(file) : adapter.remove(file));
+@@ -3119,7 +3119,7 @@
+       // for good, and the page failed. `rmdir(2)` takes the walked directory
+       // only while it is empty: an entry that arrived since the listing keeps
+       // it, and one already gone is gone.
+-      for (const file of junk) await desktop.fs.promises.unlink(file);
++      for (const file of junk) void file;
+       try {
+         await desktop.fs.promises.rmdir(found.target);
+       } catch (error) {
+@@ -3128,7 +3128,7 @@
+         if (code !== "ENOENT") throw error;
+       }
+     } else {
+-      for (const file of junk) await adapter.remove(file);
 +      for (const file of junk) void file;
        await adapter.rmdir(path, false);
      }

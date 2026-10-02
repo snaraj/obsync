@@ -1,0 +1,13 @@
+# M3619: the fake re-enrols an account no one has reset (fidelity)
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -805,9 +805,6 @@
+       if (recovered) {
+         if (body.recovery_proof === undefined) return this.error(409, "already_set_up", "this server already holds an account");
+         // No key and no reset since: the token alone recovers nothing (1.1.4's answer).
+-        if (this.recoveryVerifier === null && !this.recoveryArmed) {
+-          return this.error(409, "recovery_unavailable", "no recovery key is registered for this account");
+-        }
+         if (!/^[0-9a-f]{64}$/.test(body.recovery_proof)) return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
+         const derived = createHash("sha256").update(Buffer.from(body.recovery_proof, "hex")).digest("hex");
+         if (this.recoveryVerifier === null) {

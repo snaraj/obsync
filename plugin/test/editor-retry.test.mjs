@@ -42,10 +42,13 @@ async function setup(t) {
 
 test("an active editor stays pending, other notes arrive, and its latest head retries without another save", async (t) => {
   const r = await setup(t);
-  await r.server.publish({ fileId: "ab".repeat(16), path: "Notes/Other.md", bytes: enc("OTHER"), mtime: 4000,
+  const other = await r.server.publish({ fileId: "ab".repeat(16), path: "Notes/Other.md", bytes: enc("OTHER"), mtime: 4000,
     domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
-  // The page is counted down as it lands (#158): wait for its last record, not its first write.
-  await r.timers.run(STEP_MS, () => r.host.text("Notes/Other.md") === "OTHER" && r.statuses.at(-1).pending === 1);
+  // The page is counted down as it lands (#158): wait for its last record, not its first write -- the cursor past
+  // it, where the count said as that record began cannot stand in for the one after it (#296).
+  await r.timers.run(STEP_MS, () => r.state.data.lastSeq >= other.seq && r.statuses.at(-1).pending === 1);
+  assert.equal(r.host.text("Notes/Other.md"), "OTHER");
+  assert.deepEqual(r.engine.current(), { kind: "syncing", pending: 1, held: NOTE }, "the note waiting on typing is its own work");
   assert.equal(r.host.text(NOTE), "BASE");
   assert.equal(r.statuses.at(-1).kind, "syncing", "a saved but active editor is not idle");
   assert.equal(r.statuses.at(-1).pending, 1);

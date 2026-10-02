@@ -1,0 +1,12 @@
+# M3509: a host that cannot see its leaves reconciles under any view (#267)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1559,7 +1559,7 @@
+    */
+   private inView(path: string): boolean {
+     const workspace = this.plugin.app.workspace as Partial<App["workspace"]>;
+-    if (typeof workspace.iterateAllLeaves !== "function") return true;
++    if (typeof workspace.iterateAllLeaves !== "function") return false;
+     let found = false;
+     workspace.iterateAllLeaves((leaf) => {
+       if ((leaf.view as { file?: TAbstractFile | null }).file?.path === path) found = true;

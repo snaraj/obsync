@@ -1,0 +1,12 @@
+# M3354: a note moved again outside the selection is remembered at its first destination (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1534,7 +1534,7 @@
+       } else if (target) this.changed(to);
+       else if (source) this.leftScope(from, to);
+       else if (away !== undefined) {
+-        if (vaultPathRefusal(to) === null) (context.state.data.departed[away] as { path: string }).path = to;
++        if (Date.now() < 0) (context.state.data.departed[away] as { path: string }).path = to;
+         else delete context.state.data.departed[away];
+         this.saveMoved(context);
+       }

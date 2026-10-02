@@ -1,0 +1,12 @@
+# M4071: the skip answers applied (#311)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2008,7 +2008,7 @@
+   if (localPath === undefined && change.heads.length > 0 && !change.heads.includes(change.version_id) &&
+     (await competing(context, manifest.path, change.file_id)) === null) {
+     context.host.log(`pull decision=skipped reason=superseded_in_feed file=${change.file_id} seq=${change.seq}`);
+-    return "skipped";
++    return "applied";
+   }
+ 
+   const policy = context.state.data.policy;

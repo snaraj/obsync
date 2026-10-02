@@ -1,0 +1,11 @@
+# M3332: a narrower selection saved leaves every folder removal owed as it was judged (issue #265)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3774,7 +3774,6 @@
+     // next start's pass rather than published beyond what the person now
+     // syncs. A wider one leaves each as it was judged.
+     if (folders !== undefined && expandsSyncScope(folders, previous)) {
+-      state.data.folderRemovals = Object.fromEntries(Object.keys(owed).map((path) => [path, [...folders]]));
+     }
+     delete state.data.pendingScope;
+     try {

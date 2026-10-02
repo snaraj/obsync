@@ -1,0 +1,12 @@
+# M3545: the host is told the work is over the moment the engine is idle, page by page (#283)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1278,7 +1278,7 @@
+    */
+   private pace(): void {
+     const busy = this.running && (this.draining || this.pulls > 0 || this.laning || this.feedBehind);
+-    if (busy || !this.running) {
++    if (busy || !this.running || this.hurried) {
+       if (this.calmHandle !== null) this.timers.clear(this.calmHandle);
+       this.calmHandle = null;
+       if (busy !== this.hurried) this.options.host.hurry?.(this.hurried = busy);

@@ -1,0 +1,12 @@
+# M3323: a failed push's line carries the error's raw words (issue #266)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2696,7 +2696,7 @@
+         context.host.log("push path_class=file decision=stood_down reason=path_gone");
+         return;
+       }
+-      const message = errorText(error);
++      const message = error instanceof Error ? error.message : String(error);
+       context.host.log(`push path_class=${pathClass} decision=failed reason=${message}`);
+       // STILL WORK (#293): the change is on this device only, and a 5xx's
+       // `offline` is taken back by the next answered read, which read idle

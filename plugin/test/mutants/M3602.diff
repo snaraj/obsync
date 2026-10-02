@@ -1,0 +1,12 @@
+# M3602: the security warning times out instead of staying until dismissed
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -84,7 +84,7 @@
+ 
+ /** How long each kind stays: 0 is until answered or dismissed. */
+ export const STAYS_MS: Readonly<Record<NoticeKind, number>> = {
+-  question: 0, security: 0, error: 0, conflict: 8000, combined: 8000, info: 8000, confirm: 4000,
++  question: 0, security: 15000, error: 0, conflict: 8000, combined: 8000, info: 8000, confirm: 4000,
+ };
+ 
+ /**

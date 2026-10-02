@@ -1,0 +1,12 @@
+# M3604: a registration that succeeds leaves the warning standing
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -5055,7 +5055,7 @@
+       assertCurrent();
+       this.log(`recovery decision=${registered.outcome === "ok" ? "registered" : "unconfirmed"}`);
+       // Its own key registered: the warning below has nothing left to say.
+-      if (registered.outcome === "ok" && this.recoveryMismatch) {
++      if (false) {
+         this.recoveryMismatch = false;
+         this.notices.close(RECOVERY_WARNING);
+         this.render();

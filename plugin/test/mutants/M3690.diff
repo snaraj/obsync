@@ -1,0 +1,12 @@
+# M3690: the sweep's walk is not handed the stop (#287)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1205,7 +1205,7 @@
+     let removed = 0;
+     let kept = 0;
+     try {
+-      for (const root of this.plugin.state.data.syncFolders ?? [""]) await this.walk(desktop, root, [], 0, found, signal);
++      for (const root of this.plugin.state.data.syncFolders ?? [""]) await this.walk(desktop, root, [], 0, found);
+     } catch (error) {
+       if (!signal?.aborted) throw error;
+     }

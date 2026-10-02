@@ -1,0 +1,12 @@
+# M4107: an engine's start keeps the last run's unverified marks, so a restart in place never sends the note (review of 6a4da232)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1140,7 +1140,7 @@
+     // the start drops it here, and this run's first pass, a new engine's,
+     // walks the feed again and judges each such file afresh.
+     const dropped = this.options.state.data.dropped;
+-    for (const [path, mark] of Object.entries(dropped)) if (mark === UNVERIFIED_LANDING) delete dropped[path];
++    for (const [path, mark] of Object.entries(dropped)) if (mark === UNVERIFIED_LANDING && path === "") delete dropped[path];
+     const halt = this.halt = new AbortController();
+     // A start its stop cut short -- the map read of a restart against a server
+     // that is gone -- ends quietly, as one stopped between two steps does.

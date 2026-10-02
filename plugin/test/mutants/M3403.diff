@@ -1,0 +1,12 @@
+# M3403: the feed and the post skip a file's own name too (#282)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -768,7 +768,7 @@
+    * asks the adapter, which the host app confines to the vault. Names only,
+    * never content, on both.
+    */
+-  async inNestedVault(path: string, kind: "file" | "folder" = "folder"): Promise<boolean> {
++  async inNestedVault(path: string, kind: "file" | "folder" = "file"): Promise<boolean> {
+     const segments = path.split("/");
+     const desktop = this.desktop;
+     // A FILE HOLDS NO FOLDER (issue #282): on a phone `syncable` asked a

@@ -37,6 +37,7 @@ const { pushFile, sidDigest } = require("../build/sync/push.js");
 const { ChunkRepair, REPAIR_EXISTS_SIDS, REPAIR_WALK_MS } = require("../build/sync/repair.js");
 const { CHUNK_MAX } = require("../build/chunker.js");
 const c = require("../build/crypto.js");
+const { caseOnly } = require("../build/vaultPath.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 const OTHER = "ffffffffffffffffffffffffffffffff";
@@ -452,6 +453,62 @@ test("the state's indexes equal a rebuild after any sequence of writes (#194)", 
   assert.equal(state.pathByFileId(lone), undefined);
 });
 
+test("the case index answers what a walk of every record answers, through adds, moves, capital-only renames, deletes and loads (P10)", async () => {
+  const store = memoryStore();
+  let state = await State.open(store, false, store.secrets);
+  let seed = 11;
+  const random = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return Math.floor(seed / 65536) % n; };
+  // Spellings apart by capitals alone, and one pair that lowers alike at two
+  // lengths -- a dotted capital I lowers to two code units -- which share the
+  // index's bucket and are never twins (`caseOnly`).
+  const paths = ["Notes/a.md", "notes/A.md", "NOTES/a.md", "Notes/b.md", "notes/B.md", "c.md", "C.md", "İ.md", "i̇.md", "İ.md", "12"];
+  const ids = ["11".repeat(16), "22".repeat(16), "33".repeat(16), "44".repeat(16)];
+  const moves = { any: 0, capitals: 0, loads: 0 };
+  const check = (step) => {
+    const recorded = Object.keys(state.data.files);
+    for (const path of [...paths, "notes/a.MD", "D.md"]) {
+      const walked = recorded.filter((other) => caseOnly(other, path)).sort();
+      assert.deepEqual(state.caseTwins(path).sort(), walked, `twins of ${path} at step ${step}`);
+    }
+  };
+  for (let step = 0; step < 2000; step++) {
+    const path = paths[random(paths.length)];
+    const choice = random(10);
+    const record = state.fileByPath(path);
+    if (choice < 3) {
+      state.setFile(path, { fileId: ids[random(ids.length)], versionId: "", mtime: step, size: 1, sha256: "" });
+    } else if (choice < 5) {
+      state.forgetPath(path);
+    } else if (choice < 7) {
+      // A move, as the pull path and a rename make one: the record at its new name, then the old forgotten.
+      const to = paths[random(paths.length)];
+      if (record !== undefined && to !== path) { state.setFile(to, record); state.forgetPath(path); moves.any++; }
+    } else if (choice < 9) {
+      const to = paths.filter((other) => caseOnly(other, path))[0];
+      if (record !== undefined && to !== undefined && state.fileByPath(to) === undefined) {
+        state.setFile(to, record); state.forgetPath(path); moves.capitals++;
+      }
+    } else if (random(4) === 0) {
+      // A load from disk: a new session, whose index nothing has written.
+      await state.save();
+      state = await State.open(store, false, store.secrets);
+      moves.loads++;
+    } else if (random(10) === 0) {
+      state.forgetPairing();
+    }
+    check(step);
+  }
+  assert.ok(moves.any > 50 && moves.capitals > 50 && moves.loads > 10, JSON.stringify(moves));
+  // Derived, never persisted: the data file holds the capitals it recorded,
+  // and no lower-cased spelling of them.
+  state.forgetPairing();
+  state.setFile("NOTES/B.md", { fileId: ids[0], versionId: "", mtime: 0, size: 1, sha256: "" });
+  assert.deepEqual(state.caseTwins("notes/b.md"), ["NOTES/B.md"]);
+  await state.save();
+  const written = JSON.stringify(store.writes.at(-1));
+  assert.ok(written.includes("NOTES/B.md") && !written.includes("notes/b.md"), written);
+});
+
 // --- D: a copied vault --------------------------------------------------
 
 test("a copied vault publishes none of the notes the server holds, adopts an older copy, and pushes its own (#194)", async () => {
@@ -583,6 +640,20 @@ test("a remembered sid that is not its version's is never believed (#198)", asyn
   assert.ok(r.server.chunks.has(lost));
 });
 
+test("a record that remembers no chunk, met after ones that do, is read back in the same walk (#198)", async () => {
+  const r = await pulled(3);
+  // The last record remembers no chunk, as one written before 1.1.4 loads, and the server lost it.
+  const last = r.state.fileByPath(pathOf(2));
+  const sid = last.sid;
+  delete last.sid;
+  r.server.chunks.delete(sid);
+  const repair = new ChunkRepair(r.context);
+  const steps = [];
+  for (let n = 0; n < 4; n++) steps.push(await repair.step());
+  assert.deepEqual(steps.filter((step) => step.kind === "repaired"), [{ kind: "repaired", bytes: textOf(2).length }], JSON.stringify(steps));
+  assert.ok(r.server.chunks.has(sid));
+});
+
 test("a remembered sid is read from the data file only as a sid, and a record without one loads as before (#198)", () => {
   const record = { fileId: "12".repeat(16), versionId: "34".repeat(32), mtime: 1, size: 20, sha256: "ab".repeat(32) };
   const data = parseData({ files: { "a.md": { ...record, sid: "cd".repeat(32) }, "b.md": { ...record, sid: "../x" }, "c.md": record } }, false);
@@ -596,7 +667,10 @@ test("a walk learns the sid of a note it read back, and the next walk only asks 
   r.host.seed(pathOf(0), textOf(0), 1000);
   await pushFile(r.context, pathOf(0));
   const frame = r.server.journal.at(-1);
-  assert.equal(r.state.fileByPath(pathOf(0)).sid, undefined, "a push leaves it to its echo or the walk");
+  // A push remembers the one chunk it posted, whenever its echo comes (#310).
+  assert.equal(r.state.fileByPath(pathOf(0)).sid, frame.sids[0]);
+  // A record without one, as one written before 1.1.4 loads.
+  delete r.state.fileByPath(pathOf(0)).sid;
   r.server.requests.length = 0;
   const repair = new ChunkRepair(r.context);
   assert.deepEqual(await repair.step(), { kind: "checked" });
@@ -749,4 +823,94 @@ test("the nested-vault answer is kept per folder for one pass and asked afresh o
   host.pass(true);
   assert.equal(await host.inNestedVault("A/B/y.md"), true, "and the next pass finds it");
   host.pass(false);
+});
+
+// --- The send path's saves (#274) ------------------------------------------
+
+/** Notes at the vault's root: a folder record would add a save of its own. */
+const rootOf = (i) => `n${String(i).padStart(5, "0")}.md`;
+
+/** An uploading device over a vault of `count` new notes, and the server they go to. */
+async function uploader(count, store = memoryStore()) {
+  const { server, k } = await vaultServer();
+  const host = new FakeHost();
+  for (let i = 0; i < count; i++) host.seed(rootOf(i), textOf(i), 1757000000000 + i);
+  return { server, k, d: await device(server, { host, store }) };
+}
+
+test("a first sync writes its new notes with the queue, not once per note, and the pages of its own echoes cost no write (#274)", async () => {
+  const count = 60;
+  const { server, d } = await uploader(count);
+  await d.engine.start();
+  // No virtual time passes, so no timer can save.
+  await d.timers.run(0, () => server.journal.length >= count && d.store.writes.some((write) => recorded(write).size === count));
+  const echoPages = server.requests.filter((request) => request.target.startsWith("/v1/changes")).length;
+  assert.ok(echoPages >= 10, `the device read its own echoes back: ${echoPages} pages`);
+  const saved = d.store.writes.filter((write) => recorded(write).size > 0);
+  // The feed's first page may be saved beside the queue's; never one per note or per page.
+  assert.ok(saved.length <= 2, `${saved.length} writes: ${saved.map((write) => recorded(write).size)}`);
+  assert.ok(d.host.logs.some((line) => /^state decision=saved reason=drained records=\d+ budget_ms=1500 duration_ms=\d+$/.test(line)),
+    d.host.logs.join(" | "));
+  await stopped(d, server);
+});
+
+test("an upload frees its slot before its note's record is saved (#274)", async () => {
+  const count = 60;
+  const { server, k, d } = await uploader(count);
+  // Every save that carries a note's record waits until the test lets it go:
+  // an upload that waited for its save would stop the queue at four.
+  const save = d.store.saveData;
+  let release = () => undefined;
+  const held = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  d.store.saveData = async (value) => {
+    if (Object.keys(value.files ?? {}).length > 0) {
+      calls++;
+      await held;
+    }
+    return save(value);
+  };
+  await d.engine.start();
+  // No virtual time passes, so no timer can save.
+  await d.timers.run(0, () => server.journal.length >= count);
+  assert.equal((await server.noteFiles(k.manifestKey)).length, count, "every note went up while a save was held");
+  assert.ok(calls <= 1, `${calls} saves were asked for while the notes went up`);
+
+  release();
+  await d.timers.run(0, () => d.store.writes.some((write) => recorded(write).size === count));
+  for (let i = 0; i < count; i++) assert.notEqual(d.state.fileByPath(rootOf(i)), undefined, rootOf(i));
+  await stopped(d, server);
+});
+
+test("a crash between the server's answer and the save loses no note and mints no id: the next start adopts its own versions (#274, #181)", async () => {
+  const count = 40;
+  const store = memoryStore();
+  const { server, k, d: first } = await uploader(count, store);
+  // The crash: from here on, nothing the first run writes reaches its data file.
+  const save = store.saveData;
+  store.saveData = async () => undefined;
+  await first.engine.start();
+  await first.timers.run(0, () => server.journal.length >= count);
+  const posted = new Map([...Array(count).keys()].map((i) => [rootOf(i), first.state.fileByPath(rootOf(i))?.fileId]));
+  assert.equal([...posted.values()].filter((id) => id !== undefined).length, count, "the server answered every post");
+  assert.equal(recorded(await store.loadData()).size, 0, "and the data file holds none of them");
+  first.engine.stop();
+
+  store.saveData = save;
+  const second = await device(server, { host: first.host, store });
+  const from = first.host.logs.length;
+  await second.engine.start();
+  await second.timers.run(STEP_MS, () => [...posted.keys()].every((path) => second.state.fileByPath(path) !== undefined));
+  await second.timers.run(STEP_MS);
+
+  assert.equal(server.journal.length, count, "a note was published again");
+  assert.equal((await server.noteFiles(k.manifestKey)).length, count, "a second id was minted");
+  for (const [path, fileId] of posted) {
+    assert.equal(second.state.fileByPath(path).fileId, fileId, `${path} kept its id`);
+    assert.equal(first.host.text(path), textOf(Number(path.slice(1, 6))), `${path} is intact`);
+  }
+  const logs = first.host.logs.slice(from);
+  assert.equal(logs.filter((line) => /^reconcile path_class=file decision=adopted reason=own_version /.test(line)).length, count,
+    logs.join(" | "));
+  await stopped(second, server);
 });

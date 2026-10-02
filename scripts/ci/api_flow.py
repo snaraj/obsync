@@ -47,6 +47,11 @@ PHASES, because a restart happens between them:
           fresh deployment, with the server's CPU, memory, write bytes and --
           optionally -- fsync calls read from its /proc entry. It proves
           nothing and refuses only a broken run; the numbers are the output.
+  full    image-smoke's property 9, on a blob volume the filesystem itself
+          has filled: first boot lands on the journal volume, and one chunk
+          must be refused `507 storage_full` (issue #291). The one phase that
+          speaks plain HTTP, because the smoke runs the image with no
+          terminator in front, and so only to a loopback address.
 
 Requirement 12: one START line with the budgets, one line per proven property
 with its duration, one SUMMARY with the decision.
@@ -59,6 +64,7 @@ import base64
 import hashlib
 import hmac
 import http.client
+import ipaddress
 import json
 import os
 import resource
@@ -173,10 +179,12 @@ class Server:
         # The signature of the last signed request, which the replay probe
         # re-sends verbatim. Never printed.
         self.last: Signature | None = None
-        # A CA file is REQUIRED: a run that fell back to the system store
-        # would prove nothing about the certificate the deployment serves, and
-        # a run with verification off would prove nothing at all.
-        self.context = ssl.create_default_context(cafile=cacert)
+        # A CA file is REQUIRED across a terminator: a run that fell back to
+        # the system store would prove nothing about the certificate the
+        # deployment serves, and a run with verification off would prove
+        # nothing at all. None is plain HTTP, which `main` admits for the
+        # `full` phase on a loopback address and nowhere else.
+        self.context = ssl.create_default_context(cafile=cacert) if cacert else None
         # The bench reuses one connection per thread, as a device's HTTP stack
         # does; a TLS handshake per request would measure this client. The
         # proving phases keep a fresh connection per request, which is the
@@ -186,6 +194,8 @@ class Server:
 
     def _connection(self, timeout: int) -> tuple[http.client.HTTPSConnection, bool]:
         """A connection for this request, and whether to close it after."""
+        if self.context is None:
+            return http.client.HTTPConnection(*self.address, timeout=timeout), True
         if not self.keepalive:
             return _Pinned(self.host, self.port, self.address, self.context, timeout), True
         held = getattr(self._local, "held", None)
@@ -365,12 +375,8 @@ def version_id_of(file_id: str, parents: list[str], manifest_ct: str, sids: list
     return digest.hexdigest()
 
 
-def pair_two(flow: Flow, token: str) -> tuple[Credential, Credential]:
-    """First boot and one pairing: the two devices every later phase uses."""
-    server = flow.server
-
-    # (1) First boot. The setup token is the credential, and it creates the
-    # account and the first device in one call.
+def first_boot(flow: Flow, token: str) -> tuple[Credential, bytes]:
+    """The setup token creates the account and the first device in one call."""
     body = json.dumps(
         {
             "setup_token": token,
@@ -378,10 +384,18 @@ def pair_two(flow: Flow, token: str) -> tuple[Credential, Credential]:
             "device": {"name": "first device", "platform": PLATFORM, "app_version": APP_VERSION},
         }
     ).encode("utf-8")
-    status, _, answer = server.call("POST", "/v1/setup", body=body)
+    status, _, answer = flow.server.call("POST", "/v1/setup", body=body)
     flow.expect(status, 201, "POST /v1/setup", answer)
     created = flow.parse(answer, "POST /v1/setup")
-    first = Credential(created["device_id"], created["device_secret"])
+    return Credential(created["device_id"], created["device_secret"]), body
+
+
+def pair_two(flow: Flow, token: str) -> tuple[Credential, Credential]:
+    """First boot and one pairing: the two devices every later phase uses."""
+    server = flow.server
+
+    # (1) First boot.
+    first, body = first_boot(flow, token)
     status, _, answer = server.call("POST", "/v1/setup", body=body)
     flow.expect_code(status, 409, "already_set_up", "a second POST /v1/setup", answer)
     flow.prove("first boot: the setup token created the account and device one; a second setup is 409 already_set_up")
@@ -564,6 +578,23 @@ def verify(flow: Flow) -> None:
     if account.get("device_count") != 2:
         raise Denied(f"the account reports {account.get('device_count')} devices after the restart, not the 2 that paired")
     flow.prove("both devices survived: a freshly signed request reads an account of 2 devices")
+
+
+def full(flow: Flow, token: str) -> None:
+    """A blob volume the filesystem has filled refuses a chunk as a full server.
+
+    The watermark cannot see this coming when the declared capacity is larger
+    than the disk, so the refusal is the filesystem's own ENOSPC, and it must
+    reach a device as `507 storage_full` -- a full server -- never as a 500 it
+    retries as absence (issue #291).
+    """
+    cred, _ = first_boot(flow, token)
+    flow.prove("first boot on a full blob volume: the account lands on the journal volume")
+    chunk = secrets.token_bytes(64 * 1024)
+    sid = hashlib.sha256(chunk).hexdigest()
+    status, _, answer = flow.server.call("PUT", f"/v1/chunks/{sid}", body=chunk, cred=cred, sid=sid)
+    flow.expect_code(status, 507, "storage_full", "PUT /v1/chunks/{sid} on the full volume", answer)
+    flow.prove("a chunk the full blob volume cannot hold is 507 storage_full")
 
 
 def put_chunk(flow: Flow, cred: Credential, chunk: bytes, route: str = "PUT /v1/chunks/{sid}") -> str:
@@ -908,34 +939,34 @@ class Bench:
         self.flow.prove(f"bench {name}: " + " ".join(f"{k}={v}" for k, v in result.items() if k != "latencies_ms"))
         return result
 
+    # What the plugin sends for a new note of at most 1 MiB (`DIRECT_PUT_MAX`,
+    # plugin/src/sync/push.ts, #195): the `PUT` and the version post, no
+    # `exists` first. B1 and B2 sent one until 1.1.5 (#275).
+    NOTE_REQUESTS = 2
+
     def push_notes(self, cred: Credential, count: int, size: int, concurrency: int) -> dict:
-        """B1's shape: per note, `exists`, `PUT`, version post -- as the plugin does."""
+        """B1's shape: per note, `PUT`, version post -- as the plugin sends a small note."""
         flow = self.flow
 
         def one(_: int) -> None:
             note = secrets.token_bytes(size)
-            sid = hashlib.sha256(note).hexdigest()
-            status, _, answer = flow.server.call(
-                "POST", "/v1/chunks/exists", body=json.dumps({"sids": [sid]}).encode("utf-8"), cred=cred
-            )
-            flow.expect(status, 200, "POST /v1/chunks/exists", answer)
-            put_chunk(flow, cred, note)
+            sid = put_chunk(flow, cred, note)
             post_version(flow, cred, secrets.token_hex(16), [], [sid], size)
 
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             list(pool.map(one, range(count)))
-        return {"files": count, "file_bytes": size, "concurrency": concurrency, "requests": 3 * count}
+        return {"files": count, "file_bytes": size, "concurrency": concurrency, "requests": self.NOTE_REQUESTS * count}
 
     def b1(self, cred: Credential, count: int, size: int, concurrency: int) -> None:
         result = self.measure("b1", lambda: self.push_notes(cred, count, size, concurrency))
         result["files_per_s"] = round(count / result["wall_s"], 1)
-        result["requests_per_s"] = round(3 * count / result["wall_s"], 1)
+        result["requests_per_s"] = round(self.NOTE_REQUESTS * count / result["wall_s"], 1)
 
     def b1_fsyncs(self, cred: Credential, count: int, size: int, concurrency: int) -> None:
         result = self.measure("b1-fsyncs", lambda: self.push_notes(cred, count, size, concurrency), fsyncs=True)
         total = sum(result["fsyncs"].values())
         result["fsyncs_per_file"] = round(total / count, 2)
-        result["fsyncs_per_request"] = round(total / (3 * count), 2)
+        result["fsyncs_per_request"] = round(total / (self.NOTE_REQUESTS * count), 2)
 
     def idle(self, name: str, seconds: int) -> None:
         self.measure(name, lambda: (time.sleep(seconds), {"idle_s": seconds})[1], fsyncs=self.strace)
@@ -969,10 +1000,6 @@ class Bench:
                 watcher.start()
                 time.sleep(0.2)
                 started = time.monotonic()
-                status, _, answer = flow.server.call(
-                    "POST", "/v1/chunks/exists", body=json.dumps({"sids": [sid]}).encode("utf-8"), cred=pusher
-                )
-                flow.expect(status, 200, "POST /v1/chunks/exists", answer)
                 put_chunk(flow, pusher, edit)
                 parents = [post_version(flow, pusher, file_id, parents, [sid], len(edit))["version_id"]]
                 watcher.join(LONG_POLL_CLIENT_TIMEOUT + 5)
@@ -1082,12 +1109,12 @@ def bench(flow: Flow, token: str, arguments: argparse.Namespace) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("phase", choices=("enroll", "verify", "proxy", "bench"))
+    parser.add_argument("phase", choices=("enroll", "verify", "proxy", "bench", "full"))
     parser.add_argument("--host", required=True, help="the name the certificate carries")
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--address", required=True, help="the address that name is reached on")
-    parser.add_argument("--cacert", required=True, help="the authority that signed the deployment's certificate")
-    parser.add_argument("--state", required=True, help="where the two credentials rest between phases")
+    parser.add_argument("--cacert", help="the authority that signed the deployment's certificate")
+    parser.add_argument("--state", help="where the two credentials rest between phases")
     proxied = parser.add_argument_group("proxy phase")
     proxied.add_argument("--expect-address", help="the client address the proxy must hand the server")
     proxied.add_argument("--bypass", help="host:port of the server's own listener, which must be unreachable")
@@ -1107,18 +1134,30 @@ def main(argv: list[str]) -> int:
     arguments = parser.parse_args(argv)
     if arguments.phase == "proxy" and not (arguments.expect_address and arguments.bypass):
         parser.error("the proxy phase needs --expect-address and --bypass")
+    if arguments.phase == "full":
+        # Plain HTTP, so never off this host and never with a CA that would
+        # suggest a certificate was checked.
+        try:
+            loopback = ipaddress.ip_address(arguments.address).is_loopback
+        except ValueError:
+            loopback = False
+        if arguments.cacert or not loopback:
+            parser.error("the full phase speaks plain HTTP to a loopback --address, with no --cacert")
+    elif not (arguments.cacert and arguments.state):
+        parser.error(f"the {arguments.phase} phase needs --cacert and --state")
 
     server = Server(
         arguments.host, arguments.port, arguments.address, arguments.cacert, keepalive=arguments.phase == "bench"
     )
     flow = Flow(server, arguments.state)
+    scheme = "http" if arguments.phase == "full" else "https"
     print(
-        f"api-flow: START phase={arguments.phase} url=https://{arguments.host}:{arguments.port} "
+        f"api-flow: START phase={arguments.phase} url={scheme}://{arguments.host}:{arguments.port} "
         f"address={arguments.address} chunk_bytes={CHUNK_BYTES} nonce_window={NONCE_WINDOW_SECS}s",
         flush=True,
     )
     try:
-        if arguments.phase in ("enroll", "bench"):
+        if arguments.phase in ("enroll", "bench", "full"):
             # The token is the one credential this client is GIVEN, and stdin
             # is how it arrives: an argument would put it in the process table
             # of every process on the runner.
@@ -1127,6 +1166,8 @@ def main(argv: list[str]) -> int:
                 raise Denied("no setup token on stdin")
             if arguments.phase == "enroll":
                 enroll(flow, token)
+            elif arguments.phase == "full":
+                full(flow, token)
             else:
                 bench(flow, token, arguments)
         elif arguments.phase == "proxy":

@@ -1,12 +1,16 @@
 # M3218: an offer to fetch a file is taken for the held-deletions question, and closed by the next one
---- a/plugin/src/main.ts
-+++ b/plugin/src/main.ts
-@@ -2757,7 +2757,7 @@
-     // and new burst asked again, so the same question stacked down the screen
-     // (owner's rig, 2026-09-27: eight at once). A new one replaces the last;
-     // `closeQuestion` takes it away once nothing is held any more.
--    const asks = actions.some((action) => action.kind === "delete_everywhere" || action.kind === "restore_here");
-+    const asks = actions.length > 0;
-     if (asks) this.closeQuestion();
-     const notice = new Notice(message, actions.length === 0 ? 10000 : 0);
-     if (asks) this.question = notice;
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -265,10 +265,10 @@
+       this.screen.log(`notice decision=quiet kind=${kind} ${quiet}`);
+       return;
+     }
+-    const key = notice.key ?? `${kind}\u0000${notice.text}\u0000${notice.device ?? ""}`;
++    const key = notice.actions?.length ? HELD : notice.key ?? `${kind}\u0000${notice.text}\u0000${notice.device ?? ""}`;
+     const text = toastText(notice);
+     const ms = stays(kind, text);
+-    if (NON_MUTABLE.has(kind)) {
++    if (NON_MUTABLE.has(kind) || notice.actions?.length) {
+       this.slot(key, text, ms, notice);
+       this.screen.log(`notice decision=shown kind=${kind} stays_ms=${ms}`);
+       return;

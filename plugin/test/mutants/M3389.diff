@@ -1,0 +1,11 @@
+# M3389: an unfinished download's empty file is held this pass but not marked (#248)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4523,7 +4523,6 @@
+       const ahead = note !== undefined && note.version_id !== record?.versionId;
+       const mark = ahead ? note.file_id : blind ? UNVERIFIED_LANDING : undefined;
+       if (mark === undefined) continue;
+-      context.state.data.dropped[file.path] = mark;
+       settled.add(file.path);
+       unfinished++;
+     }

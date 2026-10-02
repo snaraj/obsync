@@ -607,7 +607,11 @@ for (const [destination, what] of [["Journal", "renamed"], ["Archive/Notes", "mo
       settled(b, `${destination}/${name}`))));
     await timers.run(STEP_MS);
 
-    assert.deepEqual(tombstones(server), [], `moving a selected folder published a tombstone: ${story(server, a, b)}`);
+    assert.deepEqual(tombstonesFor(server, Object.values(ids)), [], `moving a selected folder tombstoned a note: ${story(server, a, b)}`);
+    // The selected folder's OWN record is retired under its old name, exactly
+    // once, so the phone keeps no empty folder behind (issue #240).
+    assert.deepEqual(tombstones(server).map((frame) => frame.file_id), [await c.folderFileId(keys.manifestKey, "Notes")], story(server, a, b));
+    assert.equal(b.host.hasFolder("Notes"), false, `the phone kept the renamed selected folder: ${story(server, a, b)}`);
     for (const [name, body] of Object.entries(NOTES)) {
       assert.equal(a.host.text(`${destination}/${name}`), body, `the desktop lost ${name}`);
       assert.equal(b.host.text(`${destination}/${name}`), body, `the phone lost ${name}: ${story(server, a, b)}`);
@@ -700,7 +704,7 @@ test("a selected folder renamed where no device may sync publishes nothing and s
   assert.equal(a.state.data.folders["Notes"], undefined, "a record for a folder this device cannot see was kept");
   // Once, not once per note: three refusals are one decision to the user.
   assert.equal(a.host.notices.length, 1, a.host.notices.join(" | "));
-  assert.match(a.host.notices[0], /moved out of the folders this device syncs.*Nothing was deleted/s);
+  assert.match(a.host.notices[0], /moved out of the folders this device syncs.*nothing was deleted/s);
 });
 
 /**

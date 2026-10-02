@@ -1,11 +1,11 @@
 # M2801: a standing refusal no longer leads the status: the next idle hides it
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2171,7 +2171,6 @@
-    * than left reading `syncing` for good.
+@@ -3292,7 +3292,6 @@
+    * finds nothing left to send and drops it (`survey`).
     */
    private resting(): EngineStatus {
 -    if (this.refused !== null) return this.refused;
-     const forked = this.contextValue?.forked;
-     for (const fileId of forked ?? []) {
-       const path = this.options.state.pathByFileId(fileId);
+     // A FULL SERVER STANDS FOR THE CHANGES IT REFUSED (#300), as a standing
+     // refusal does, until a push of each is taken or a pass drops it.
+     if ([...this.unsent.values()].some((entry) => entry.full)) return { kind: "error", code: "storage", message: SERVER_FULL };

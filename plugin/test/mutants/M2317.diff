@@ -1,12 +1,12 @@
 # M2317: a revoked row is not marked beside its name (Devices list, desktop rig)
 --- a/plugin/src/ui/settings.ts
 +++ b/plugin/src/ui/settings.ts
-@@ -975,7 +975,7 @@
-     // Enrolled by a pairing code, without the vault key yet (issue #152).
-     const pending = device.state === "pending";
-     const row: Row = {
--      name: `${device.name}${self ? " (this device)" : device.revoked ? " (revoked)" : pending ? " (not paired yet)" : ""}`,
-+      name: `${device.name}${self ? " (this device)" : pending ? " (not paired yet)" : ""}`,
-       desc: `${device.platform}, plugin ${device.app_version}${seen}${pending ? `. ${STILL_PAIRING}` : ""}`,
-     };
-     if (!device.revoked) {
+@@ -1057,7 +1057,7 @@
+   /** What a row says beside a device's name. Enrolled without the vault key yet: issue #152. */
+   private marked(device: DeviceRecord): string {
+     if (device.device_id === this.plugin.state.data.deviceId) return " (this device)";
+-    return device.revoked ? " (revoked)" : device.state === "pending" ? " (not paired yet)" : "";
++    return device.state === "pending" ? " (not paired yet)" : "";
+   }
+ 
+   /** One device's row. `named` is its name, plus the start of its id when another shares it. */

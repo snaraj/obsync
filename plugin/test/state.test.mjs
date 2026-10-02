@@ -102,6 +102,61 @@ test("held deletions survive a load, and only as vault paths", () => {
   assert.deepEqual(parseData({}, false).heldDeletions, []);
 });
 
+/**
+ * Where a note that left the selection went (issue #239): a data file from
+ * 1.1.4 has none, and loads as none; each entry is input, and one that names
+ * no vault path, no file id or no version is dropped rather than published
+ * to. A 1.1.4 build reading a 1.1.5 file keeps only the fields it knows, so
+ * its next save drops this one: nothing there reads it.
+ */
+test("where a note that left the selection went loads back, and only when well formed (#239)", async () => {
+  const id = (n) => n.toString(16).padStart(32, "0");
+  const version = "cd".repeat(32);
+  const data = parseData({
+    departed: {
+      [id(1)]: { path: "Out/n.md", versionId: version, size: 7 },
+      [id(2)]: { path: "../outside.md", versionId: version, size: 7 },
+      [id(3)]: { path: ".obsidian/n.md", versionId: version, size: 7 },
+      [id(4)]: { path: "Out/v.md", versionId: "v1", size: 7 },
+      "not-a-file-id": { path: "Out/f.md", versionId: version, size: 7 },
+      [id(5)]: "Out/s.md",
+      [id(6)]: { path: "Out/z.md", versionId: version },
+    },
+  }, false);
+  assert.deepEqual(data.departed, {
+    [id(1)]: { path: "Out/n.md", versionId: version, size: 7 },
+    [id(6)]: { path: "Out/z.md", versionId: version, size: 0 },
+  });
+  assert.deepEqual(parseData({}, false).departed, {}, "a 1.1.4 data file");
+  assert.deepEqual(parseData({ departed: ["Out/n.md"] }, false).departed, {});
+  const saved = store();
+  const state = await State.open(saved, false, saved.secrets);
+  state.data.departed[id(1)] = { path: "Out/n.md", versionId: version, size: 7 };
+  await state.save();
+  assert.deepEqual((await State.open(saved, false, saved.secrets)).data.departed, state.data.departed);
+});
+
+/**
+ * A replay not caught up yet (issue #281): what it has noted so far loads
+ * back, each id judged as input; a 1.1.4 data file has none. A 1.1.4 build
+ * keeps only the fields it knows, so its next save drops it.
+ */
+test("a replay not caught up yet loads back, and only when well formed (#281)", async () => {
+  const id = (n) => n.toString(16).padStart(32, "0");
+  const version = "cd".repeat(32);
+  const notes = { [id(1)]: version, [id(2)]: "v2", "not-a-file-id": version, [id(3)]: 7 };
+  assert.deepEqual(parseData({ replaying: { through: 12, notes } }, false).replaying, { through: 12, notes: { [id(1)]: version } });
+  assert.equal(parseData({}, false).replaying, null, "a 1.1.4 data file");
+  for (const replaying of [{ through: -1, notes: {} }, { through: 1.5, notes: {} }, { through: 3 }, { notes: {} }, [3, {}]]) {
+    assert.equal(parseData({ replaying }, false).replaying, null, JSON.stringify(replaying));
+  }
+  const saved = store();
+  const state = await State.open(saved, false, saved.secrets);
+  state.data.replaying = { through: 12, notes: { [id(1)]: version } };
+  await state.save();
+  assert.deepEqual((await State.open(saved, false, saved.secrets)).data.replaying, state.data.replaying);
+});
+
 test("saves serialise and never lose the newest state", async () => {
   const backing = store();
   const state = await State.open(backing, false, backing.secrets);
@@ -219,6 +274,8 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     // capitalisation off a selected folder, and a barrier is a record still
     // owed (`sync/pull.ts`, `sync/engine.ts`; review round 4).
     retiredRoots: { Notes: "f3" }, folderBarriers: ["Notes"],
+    // And a folder removal still owed (#265), a record on that server too.
+    folderRemovals: { "Notes sel": ["Notes sel"] },
     // And a parked record, which names a version on the server being left
     // (`sync/engine.ts`, `park`; issue #144).
     parked: { f5: { path: "Notes/locked.md", reason: "EPERM" } },
@@ -227,6 +284,11 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     dropped: { "Notes/empty.md": "f7" },
     // And a paused note (#179), which names a file id on that server too.
     paused: { f6: { path: "Notes/stamped.md" } },
+    // And where a note that left the selection went (#239): the version it
+    // names is on that server too.
+    departed: { f8: { path: "Out/moved.md", versionId: "v8", size: 2 } },
+    // And a replay not caught up yet (#281): its versions are on that server too.
+    replaying: { through: 9, notes: { f9: "v9" } },
     // And a held deletion (#162), a question about records being dropped.
     heldDeletions: ["Notes/a.md"],
     // And the feed mark and the graves (#145), which name entries and
@@ -237,6 +299,8 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 },
     // The key is kept, so the words confirmed for it stay confirmed (#170).
     recoveryPhrase: "confirmed",
+    // What this person chose to be told is theirs, not the server's (1.1.5).
+    notices: { level: "needs-me", merges: "off" },
   });
 
   state.forgetPairing();
@@ -246,8 +310,10 @@ test("forgetting a pairing drops the identity and everything derived from it, an
     {
       vrk: "aa".repeat(32), deviceId: null, deviceSecret: null, deviceName: "Study laptop", deviceTag: "7KQ4",
       serverUrl: "", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-      retiredRoots: {}, folderBarriers: [], parked: {}, dropped: { "Notes/empty.md": "f7" }, paused: {}, heldDeletions: [],
+      retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: { "Notes/empty.md": "f7" }, paused: {},
+      departed: {}, replaying: null, heldDeletions: [],
       feedMark: null, graves: {}, syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed",
+      notices: { level: "needs-me", merges: "off" },
     },
   );
   assert.equal(state.paired, false);
@@ -292,4 +358,32 @@ test("byte sizes read and write the way the settings field shows them", () => {
   for (const bytes of [0, 1023, 1024, 512 * 1024 * 1024, 50 * 1024 * 1024 * 1024]) {
     assert.equal(policy.parseBytes(policy.formatBytes(bytes)), bytes, `${bytes} round-trips`);
   }
+});
+
+/**
+ * A FOLDER REMOVAL OWED IS WRITTEN DOWN WITH ITS JUDGEMENT (issue #265), and
+ * loaded as input: the data file is editable by anything that reaches the
+ * vault. A state written by 1.1.4 owes nothing; an entry whose path or judged
+ * selection does not parse is dropped, never widened to the whole vault.
+ */
+test("owed folder removals load with their judgement, 1.1.4 state owes none, and a malformed one is dropped (#265)", () => {
+  assert.deepEqual(parseData({ lastSeq: 3, folderBarriers: ["Notes"] }, false).folderRemovals, {}, "a 1.1.4 state owes nothing");
+  assert.deepEqual(defaultData(false).folderRemovals, {});
+  const loaded = parseData({
+    folderRemovals: {
+      "W201 sel": ["W201", "W201 sel"],
+      "Whole vault": null,
+      "/absolute": ["W201"],
+      ".obsidian/plugins": null,
+      "Up and out": ["../outside"],
+      "Not a list": "W201",
+      "Nested sel": ["W201", "W201/inner"],
+    },
+  }, false);
+  assert.deepEqual(loaded.folderRemovals, {
+    "W201 sel": ["W201", "W201 sel"],
+    "Whole vault": null,
+    // Canonicalised as any selection is: a parent covers its descendants.
+    "Nested sel": ["W201"],
+  });
 });

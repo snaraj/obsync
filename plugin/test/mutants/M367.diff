@@ -1,11 +1,11 @@
 # M367: a long poll answered after a stop saves the state, over what a reloaded plugin already holds
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2499,7 +2499,6 @@
-           context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal }));
+@@ -2967,7 +2967,6 @@
+         const page = quick ? await reading : await this.besidePoll(context, reading, drop);
          this.poll = null;
          this.reading = false;
 -        if (!live()) return;
          this.feedAnswered = true;
          this.absent = false;
-         this.accepted(false);
+         // A kept poll's page can name an older cursor than a read beside it left (#288).

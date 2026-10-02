@@ -54,7 +54,7 @@ async function started({ ownName } = {}) {
     fileId: String(++file).padStart(32, "0"), path: `Notes/Foreign ${file}.md`, bytes: enc("sealed elsewhere"),
     mtime: 1757200000000, domainKey, manifestKey, deviceId,
   });
-  const told = (name) => r.host.notices.some((notice) => notice.includes(`cannot read changes from "${name}"`));
+  const told = (name) => r.host.notices.some((notice) => notice.includes(`cannot read changes from ${name}:`));
   t_after.push(() => engine.stop());
   return { ...r, timers, engine, reads, foreign, told };
 }

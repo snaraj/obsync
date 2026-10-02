@@ -1,0 +1,12 @@
+# M4055: a change past its budget is let go as a read is, so its caller acts on a guess (review of a0dc7fc2)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -367,7 +367,7 @@
+     diskCalls.set(id, {
+       started,
+       budget,
+-      fail: changes
++      fail: false
+         ? () => log(diskLine("overrun", name, started, budget, " outcome=awaited"))
+         : () => {
+             log(diskLine("stalled", name, started, budget));

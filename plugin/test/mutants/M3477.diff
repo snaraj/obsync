@@ -1,0 +1,12 @@
+# M3477: two devices under one name ask the same question
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -924,7 +924,7 @@
+     const names = devices.map((device) => `${device.name}${this.marked(device)}`);
+     const named = (at: number): string => {
+       const name = names[at] as string;
+-      return names.indexOf(name) === names.lastIndexOf(name) ? (devices[at] as DeviceRecord).name : `${(devices[at] as DeviceRecord).name} · ${(devices[at] as DeviceRecord).device_id.slice(0, 8)}`;
++      return (devices[at] as DeviceRecord).name;
+     };
+     const rows = devices.map((device, at) => this.deviceRow(device, named(at)));
+     // The revoked rows are the last ones: the fold goes in front of them.

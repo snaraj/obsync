@@ -1,0 +1,12 @@
+# M3473: the fold never says whether it is open
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -1059,7 +1059,7 @@
+             this.revokedShown = !this.revokedShown;
+             this.update();
+           });
+-          button.buttonEl.setAttribute("aria-expanded", String(this.revokedShown));
++          button.buttonEl.setAttribute("aria-expanded", "false");
+         });
+       },
+     };

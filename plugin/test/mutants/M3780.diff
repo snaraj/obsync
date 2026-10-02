@@ -1,0 +1,11 @@
+# M3780: a long poll past its deadline leaves the count, though the platform still holds it (#297)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -854,6 +854,7 @@
+           : `network=${errorText(error)}`,
+         answered: false,
+       };
++      if (error === TIMED_OUT && LONG_POLL.test(target)) this.polls--;
+       if (behind) return outcome;
+     }
+     if (outcome.kind === "settled" || outcome.answered) {

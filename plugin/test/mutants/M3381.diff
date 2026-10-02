@@ -1,0 +1,12 @@
+# M3381: a deletion burst is decided beside a pull, not after it (#244)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1513,7 +1513,7 @@
+     // Under the pull lock, as a pass is (`inPass`, issue #244): a debounce
+     // left pending for a name the pull has just moved finds it gone before
+     // the records follow, and deciding then publishes the pull's own move.
+-    this.vanishHandle = this.timers.set(() => { void this.track(this.exclusive("vanished", () => this.settleVanished())); }, DEBOUNCE_MS);
++    this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
+   }
+ 
+   /**

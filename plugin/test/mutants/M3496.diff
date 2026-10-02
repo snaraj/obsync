@@ -1,0 +1,11 @@
+# M3496: a folder the pull makes is never listed (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2731,7 +2731,6 @@
+       if (found.final === "directory") return;
+       await desktop.fs.promises.mkdir(found.target, { recursive: true });
+       await this.confine(desktop, path, ["directory"]);
+-      await this.reconcile(path, "folder", true);
+       return;
+     }
+     const adapter = this.plugin.app.vault.adapter;

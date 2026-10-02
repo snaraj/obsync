@@ -1,0 +1,12 @@
+# M3607: the settings tab does not carry the warning
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -298,7 +298,7 @@
+       { heading: "Get started", rows: [this.setupGuide()] },
+       // A group of its own, so a hidden warning leaves no trace in another
+       // group's layout; second, because the guide stays the first row.
+-      { heading: "Security", visible: () => this.plugin.recoveryMismatch, rows: [this.recoveryMismatch()] },
++      { heading: "Security", visible: () => false, rows: [this.recoveryMismatch()] },
+       { heading: "Server", rows: [this.serverUrl(), this.edgeHeaders(), this.connection(), this.updateAvailable()] },
+       { heading: "Sync folders on this device", rows: [this.folderSelection(), this.selectedFolders(), this.saveScope(), this.heldDeletions()] },
+       { heading: "This device", rows: [this.pairing(), this.setup(), this.deviceName(enrolled), this.perFile(enrolled), this.total(enrolled), this.saveDevice(enrolled), this.leaving(enrolled)] },

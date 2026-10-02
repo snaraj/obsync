@@ -1,0 +1,12 @@
+# M3515: the server version check ignores the patch number
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -159,7 +159,7 @@
+   if (typeof version !== "string") return false;
+   const parts = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:[-+][0-9A-Za-z.-]*)?$/.exec(version);
+   if (parts === null) return false;
+-  for (let i = 0; i < PAIRING_V2_SERVER.length; i++) {
++  for (let i = 0; i < 2; i++) {
+     const have = Number(parts[i + 1]);
+     const need = PAIRING_V2_SERVER[i] as number;
+     if (have !== need) return have > need;

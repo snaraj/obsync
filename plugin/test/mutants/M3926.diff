@@ -1,0 +1,12 @@
+# M3926: the engine's held-deletions questions stack instead of replacing one another
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -714,7 +714,7 @@
+ /** The two answers a held deletion waits for, on every notice that asks. */
+ const HELD_ACTIONS: NoticeAction[] = [{ kind: "delete_everywhere" }, { kind: "restore_here" }];
+ /** The held-deletions question: one on screen, whichever asked last (`HELD`). */
+-const HELD_QUESTION = { kind: "question", key: HELD, actions: HELD_ACTIONS } as const;
++const HELD_QUESTION = { kind: "question", actions: HELD_ACTIONS } as const;
+ 
+ /** ` (in Folder)` when every path shares one folder, and nothing when they share none. */
+ function within(paths: string[]): string {

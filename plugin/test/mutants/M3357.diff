@@ -1,0 +1,11 @@
+# M3357: a note's destination is published as its move even when the file id is held here already (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1754,7 +1754,6 @@
+     const away = context.state.data.departed[fileId] as { versionId: string };
+     delete context.state.data.departed[fileId];
+     this.saveMoved(context);
+-    if (context.state.pathByFileId(fileId) !== undefined) return "held_elsewhere";
+     context.state.setFile(path, { fileId, versionId: away.versionId, mtime: -1, size, sha256: "" });
+     this.renames.add(path);
+     this.enqueue(path);

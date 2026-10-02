@@ -14,7 +14,7 @@ The phone had already completed the [final 1.1.3 pairing, two-way edit and
 rewrite checks](2026-09-24-phone-1.1.3.md). The isolated desktop was closed,
 its plugin assets replaced with the exact 1.1.2 bundle above, and its same
 profile reopened. Its existing enrollment, files and empty folder remained
-available, with idle status. No owner vault was opened.
+available, with idle status. No vault of the user's was opened.
 
 ## Offline startup and identical notes
 

@@ -19,7 +19,7 @@ The typing desktop's displayed content stopped updating while native
 accessibility and saved files changed. Reopening that isolated app with
 the temporary `--disable-gpu` launch option restored visible editor updates.
 This is a QA environment qualification, not proof of a product cause or a
-recommended user configuration. The owner's Obsidian app was untouched.
+recommended user configuration. The user's Obsidian app was untouched.
 An earlier attempt placed the desktop caret on the wrong line; it is retained
 locally and excluded from the intended adjacent-line acceptance schedule.
 
@@ -257,7 +257,7 @@ receipts and screenshots remain available. The active desktop profiles,
 phone artifacts and QA containers are still needed for final acceptance and
 remain pending cleanup. A further eighteen inactive rig instances and their
 old QA symlinks were removed after process and mount checks, reclaiming about
-12.7 GiB. Their reports, screenshots and logs were retained. Owner vaults
+12.7 GiB. Their reports, screenshots and logs were retained. The user's vaults
 were not involved.
 
 ## Earlier current-bundle desktop rewrite control
@@ -283,7 +283,7 @@ final removal of synthetic QA artifacts remain outstanding.
 
 ## Handoff cleanup checkpoint
 
-The owner ended this QA session for a clean handoff. Both isolated desktop
+The user ended this QA session for a clean handoff. Both isolated desktop
 apps were stopped; their two synthetic vaults, profiles, old bundle backup
 and download-serving directory were removed. All four active QA containers
 and their four disposable volumes were removed and verified absent. The
@@ -292,10 +292,10 @@ remain the acceptance evidence; the deleted fixtures are not prerequisites
 for reproducing them on another machine.
 
 The final synthetic phone vault and ZIP were subsequently deleted through
-Files. Downloads showed only the owner's preserved document, and the Obsidian
-folder showed only the two owner vaults. QA certificate/secret references and
+Files. Downloads showed only the user's preserved document, and the Obsidian
+folder showed only the user's two vaults. QA certificate/secret references and
 Safari QA entries remain pending; complete phone cleanup is not claimed.
-Recently Deleted was not purged. Owner vaults were not touched. A new phone run must create fresh disposable fixtures, verify the
+Recently Deleted was not purged. The user's vaults were not touched. A new phone run must create fresh disposable fixtures, verify the
 saved endpoint and port before pairing, and repeat the affected typing and
 rewrite/Resume journeys on the final bundle.
 

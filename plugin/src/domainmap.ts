@@ -185,7 +185,8 @@ export async function loadDomainMap(
 ): Promise<DomainMap | null> {
   let file;
   try {
-    file = await transport.getFile(keys.fileId, patience);
+    // A vault whose map was never written answers `unknown_file`: the answer, not a failure.
+    file = await transport.getFile(keys.fileId, { ...patience, expected: "unknown_file" });
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) return null;
     throw error;

@@ -1,0 +1,12 @@
+# M4052: a read takes the size the walk saw, not the opened file's, and reads a note that grew short (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1495,7 +1495,7 @@
+       await handle.close();
+       throw new VaultPathError(refusal ?? "target_identity");
+     }
+-    return { handle, size: opened.size };
++    return { handle, size: (found.stat as PathStat).size };
+   }
+ 
+   async read(path: string): Promise<Bytes> {

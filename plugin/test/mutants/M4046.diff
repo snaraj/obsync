@@ -1,0 +1,11 @@
+# M4046: a disk watchdog that stopped is never armed again (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -325,7 +325,6 @@
+   }
+   if (diskCalls.size === 0 && diskWatch !== null) {
+     window.clearInterval(diskWatch);
+-    diskWatch = null;
+   }
+ }
+ 

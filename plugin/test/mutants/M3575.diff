@@ -1,0 +1,11 @@
+# M3575: Recent's Open says nothing when the note is gone
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3268,7 +3268,6 @@
+     const file = this.app.vault.getFileByPath(path);
+     if (file === null) {
+       this.log("recent decision=refused reason=not_at_that_name");
+-      this.notices.show({ kind: "confirm", text: "{notes} is no longer at that name: it was renamed, moved or deleted since.", paths: [path] });
+       return;
+     }
+     void this.app.workspace.getLeaf(false).openFile(file);

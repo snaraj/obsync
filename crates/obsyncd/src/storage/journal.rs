@@ -57,25 +57,35 @@ pub(crate) const NONCE_TMP: &str = "nonces.tmp";
 /// One journalled fact. Everything the server remembers is a sequence of these.
 #[derive(Clone, Debug)]
 pub(crate) enum Frame {
-    /// Setup ran.
+    /// Setup ran, or the account's recovery changed: the whole account again.
     Account {
         account_id: AccountId,
         name: String,
         created: UnixMs,
         quota_bytes: Option<u64>,
         recovery_verifier: Option<String>,
+        /// When the verifier was registered: `recovery_at`, which a server
+        /// before 1.1.5 does not read and so ignores (docs/storage.md).
+        recovery_registered: Option<UnixMs>,
+        /// When the operator's reset armed one re-enrolment:
+        /// `recovery_cleared_at`, read only beside no verifier.
+        recovery_cleared: Option<UnixMs>,
     },
     /// A device was paired. `wrapped` is the secret under the server key.
     Device {
         record: DeviceRecord,
         wrapped: [u8; 32],
     },
-    /// A device's mutable fields changed.
+    /// A device's mutable fields changed. `archived` rides this frame rather
+    /// than one of its own so that a server that predates the flag replays it
+    /// as the no-op update it reads, instead of refusing the whole journal
+    /// with `unknown frame type` (issue #247).
     DeviceUpdate {
         device_id: DeviceId,
         name: Option<String>,
         policy: Option<DevicePolicy>,
         app_version: Option<String>,
+        archived: Option<bool>,
     },
     /// A pairing's creator approved the claimant: it becomes active.
     DeviceActivate { device_id: DeviceId },
@@ -1575,11 +1585,13 @@ fn device_value(record: &DeviceRecord, wrapped: &[u8; 32]) -> Value {
         ("seen", opt_num(record.last_seen.map(|t| t.0))),
         ("sign_in", opt_num(record.last_sign_in.map(|t| t.0))),
         ("edit", opt_num(record.last_edit.map(|t| t.0))),
+        ("beat", opt_num(record.last_heartbeat.map(|t| t.0))),
         ("addr", opt_text(&record.address)),
         ("country", opt_text(&record.country)),
         ("pfm", num(record.policy.per_file_max_bytes)),
         ("budget", num(record.policy.total_budget_bytes)),
         ("state", text(record.state.as_word())),
+        ("archived", Value::Bool(record.archived)),
         ("wrapped", text(hex::encode(wrapped))),
     ])
 }
@@ -1595,6 +1607,8 @@ fn device_from(value: &Value) -> Result<(DeviceRecord, [u8; 32]), StoreError> {
         last_seen: field_opt_num(value, "seen").map(UnixMs),
         last_sign_in: field_opt_num(value, "sign_in").map(UnixMs),
         last_edit: field_opt_num(value, "edit").map(UnixMs),
+        // Absent from a record an earlier 1.1.5 build wrote: no heartbeat known.
+        last_heartbeat: field_opt_num(value, "beat").map(UnixMs),
         address: field_opt_text(value, "addr"),
         country: field_opt_text(value, "country"),
         policy: DevicePolicy {
@@ -1603,6 +1617,12 @@ fn device_from(value: &Value) -> Result<(DeviceRecord, [u8; 32]), StoreError> {
         },
         state: DeviceState::parse(field_str(value, "state")?)
             .ok_or_else(|| StoreError::Corrupt("field state is not a device state".to_string()))?,
+        // A snapshot written before the flag existed carries devices that
+        // were never archived.
+        archived: value
+            .get("archived")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     };
     Ok((record, field_bytes::<32>(value, "wrapped")?))
 }
@@ -1685,12 +1705,19 @@ impl Record {
                 created,
                 quota_bytes,
                 recovery_verifier,
+                recovery_registered,
+                recovery_cleared,
             } => {
                 pairs.push(("id", text(*account_id)));
                 pairs.push(("name", text(name)));
                 pairs.push(("created", num(created.0)));
                 pairs.push(("quota", opt_num(*quota_bytes)));
                 pairs.push(("recovery", opt_text(recovery_verifier)));
+                pairs.push(("recovery_at", opt_num(recovery_registered.map(|t| t.0))));
+                pairs.push((
+                    "recovery_cleared_at",
+                    opt_num(recovery_cleared.map(|t| t.0)),
+                ));
             }
             Frame::Device { record, wrapped } => {
                 pairs.push(("device", device_value(record, wrapped)));
@@ -1700,10 +1727,18 @@ impl Record {
                 name,
                 policy,
                 app_version,
+                archived,
             } => {
                 pairs.push(("device", text(*device_id)));
                 pairs.push(("name", opt_text(name)));
                 pairs.push(("app", opt_text(app_version)));
+                pairs.push((
+                    "archived",
+                    match archived {
+                        Some(v) => Value::Bool(*v),
+                        None => Value::Null,
+                    },
+                ));
                 pairs.push((
                     "policy",
                     match policy {
@@ -1759,13 +1794,18 @@ impl Record {
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse().ok());
         let frame = match field_str(&value, "t")? {
-            "account" => Frame::Account {
-                account_id: field_id(&value, "id")?,
-                name: field_str(&value, "name")?.to_string(),
-                created: UnixMs(field_num(&value, "created")?),
-                quota_bytes: field_opt_num(&value, "quota"),
-                recovery_verifier: recovery_verifier(&value)?,
-            },
+            "account" => {
+                let (recovery_verifier, recovery_registered, recovery_cleared) = recovery(&value)?;
+                Frame::Account {
+                    account_id: field_id(&value, "id")?,
+                    name: field_str(&value, "name")?.to_string(),
+                    created: UnixMs(field_num(&value, "created")?),
+                    quota_bytes: field_opt_num(&value, "quota"),
+                    recovery_verifier,
+                    recovery_registered,
+                    recovery_cleared,
+                }
+            }
             "device" => {
                 let (record, wrapped) = device_from(field(&value, "device")?)?;
                 Frame::Device { record, wrapped }
@@ -1774,6 +1814,9 @@ impl Record {
                 device_id: field_id(&value, "device")?,
                 name: field_opt_text(&value, "name"),
                 app_version: field_opt_text(&value, "app"),
+                // Absent in every frame written before the flag existed, and
+                // absent means "no change", so those frames replay as they did.
+                archived: value.get("archived").and_then(Value::as_bool),
                 policy: match value.get("policy") {
                     Some(policy) if !policy.is_null() => Some(DevicePolicy {
                         per_file_max_bytes: field_num(policy, "pfm")?,
@@ -1890,6 +1933,14 @@ fn snapshot_head(index: &Index) -> Value {
             ("created", num(account.created.0)),
             ("quota", opt_num(account.quota_bytes)),
             ("recovery", opt_text(&account.recovery_verifier)),
+            (
+                "recovery_at",
+                opt_num(account.recovery_registered.map(|t| t.0)),
+            ),
+            (
+                "recovery_cleared_at",
+                opt_num(account.recovery_cleared.map(|t| t.0)),
+            ),
         ]),
         None => Value::Null,
     };
@@ -1917,9 +1968,31 @@ fn snapshot_head(index: &Index) -> Value {
     ])
 }
 
-fn recovery_verifier(value: &Value) -> Result<Option<String>, StoreError> {
-    match value.get("recovery") {
-        None | Some(Value::Null) => Ok(None),
+/// An account's stored recovery: the verifier, when it was registered, and
+/// when the operator's reset armed a re-enrolment.
+type Recovery = (Option<String>, Option<UnixMs>, Option<UnixMs>);
+
+/// An account's recovery verifier, the time it was registered, and the
+/// reset's arm, which reads only beside no verifier.
+///
+/// A verifier with no `recovery_at` was written before 1.1.5 and reads as
+/// `None`. A time is refused when it is not a number, never read as absent:
+/// absent means "registered long ago", which is the permissive reading of the
+/// last-device rule, and a malformed field must not buy it. A time without a
+/// verifier describes nothing and is dropped.
+fn recovery(value: &Value) -> Result<Recovery, StoreError> {
+    let verifier = match value.get("recovery") {
+        // The reset's arm stands only while no verifier does; beside one it
+        // describes nothing, as a time without a verifier does.
+        None | Some(Value::Null) => {
+            let cleared = match value.get("recovery_cleared_at") {
+                None | Some(Value::Null) => None,
+                Some(at) => Some(UnixMs(at.as_u64().ok_or_else(|| {
+                    StoreError::Corrupt("invalid recovery reset time".into())
+                })?)),
+            };
+            return Ok((None, None, cleared));
+        }
         Some(value) => {
             let text = value
                 .as_str()
@@ -1927,9 +2000,16 @@ fn recovery_verifier(value: &Value) -> Result<Option<String>, StoreError> {
             if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err(StoreError::Corrupt("invalid recovery verifier".into()));
             }
-            Ok(Some(text.to_ascii_lowercase()))
+            text.to_ascii_lowercase()
         }
-    }
+    };
+    let registered = match value.get("recovery_at") {
+        None | Some(Value::Null) => None,
+        Some(at) => Some(UnixMs(at.as_u64().ok_or_else(|| {
+            StoreError::Corrupt("invalid recovery registration time".into())
+        })?)),
+    };
+    Ok((Some(verifier), registered, None))
 }
 
 /// One file of a snapshot: its id, and its entry in the index.
@@ -1954,12 +2034,15 @@ fn index_from(value: &Value, files: BTreeMap<FileId, FileEntry>) -> Result<Index
         ..Index::default()
     };
     if let Some(account) = value.get("account").filter(|v| !v.is_null()) {
+        let (recovery_verifier, recovery_registered, recovery_cleared) = recovery(account)?;
         index.account = Some(crate::storage::types::AccountRecord {
             account_id: field_id(account, "id")?,
             name: field_str(account, "name")?.to_string(),
             created: UnixMs(field_num(account, "created")?),
             quota_bytes: field_opt_num(account, "quota"),
-            recovery_verifier: recovery_verifier(account)?,
+            recovery_verifier,
+            recovery_registered,
+            recovery_cleared,
             used_bytes: 0,
         });
     }
@@ -2032,6 +2115,8 @@ mod tests {
             created: UnixMs(1_757_000_000_000),
             quota_bytes: Some(1024),
             recovery_verifier: None,
+            recovery_registered: None,
+            recovery_cleared: None,
         }
     }
 
@@ -2053,12 +2138,18 @@ mod tests {
 
     #[test]
     fn account_recovery_frames_refuse_malformed_verifiers_and_read_legacy_frames() {
+        let good = format!("\"{}\"", "a5".repeat(32));
         for bad in [
             "\"short\"".to_string(),
             format!("\"{}\"", "z".repeat(64)),
             "false".into(),
             "23".into(),
             "{}".into(),
+            // A registration time that is not a number is refused, never read
+            // as absent: absent is the permissive reading (1.1.5).
+            format!(r#"{good},"recovery_at":"soon""#),
+            format!(r#"{good},"recovery_at":-1"#),
+            format!(r#"{good},"recovery_at":{{}}"#),
         ] {
             let account = format!(
                 r#"{{"id":"{}","name":"vault","created":1,"quota":null,"recovery":{bad}}}"#,
@@ -2079,20 +2170,69 @@ mod tests {
                 "invalid snapshot: {bad}"
             );
         }
-        for suffix in ["".to_string(), ",\"recovery\":null".into()] {
+        for (suffix, verifier, registered) in [
+            ("".to_string(), None, None),
+            (",\"recovery\":null".into(), None, None),
+            // A time with no verifier describes nothing.
+            (",\"recovery\":null,\"recovery_at\":5".into(), None, None),
+            // A verifier a server before 1.1.5 registered carries no time.
+            (format!(",\"recovery\":{good}"), Some("a5".repeat(32)), None),
+            (
+                format!(",\"recovery\":{good},\"recovery_at\":null"),
+                Some("a5".repeat(32)),
+                None,
+            ),
+            (
+                format!(",\"recovery\":{good},\"recovery_at\":7"),
+                Some("a5".repeat(32)),
+                Some(UnixMs(7)),
+            ),
+        ] {
             let frame = format!(
                 r#"{{"t":"account","s":1,"id":"{}","name":"legacy","created":1,"quota":null{suffix}}}"#,
                 "11".repeat(16)
             );
-            let parsed = Record::decode(frame.as_bytes()).unwrap();
-            assert!(matches!(
-                parsed.frame,
-                Frame::Account {
-                    recovery_verifier: None,
-                    ..
-                }
-            ));
+            let Frame::Account {
+                recovery_verifier,
+                recovery_registered,
+                ..
+            } = Record::decode(frame.as_bytes()).unwrap().frame
+            else {
+                panic!("an account frame: {suffix}");
+            };
+            assert_eq!(recovery_verifier, verifier, "{suffix}");
+            assert_eq!(recovery_registered, registered, "{suffix}");
         }
+        // The reset's arm reads only beside no verifier (1.1.5); a time that
+        // is not a number is corrupt, not absent.
+        for (suffix, cleared) in [
+            (",\"recovery_cleared_at\":9".to_string(), Some(UnixMs(9))),
+            (
+                ",\"recovery\":null,\"recovery_cleared_at\":null".into(),
+                None,
+            ),
+            (
+                format!(",\"recovery\":{good},\"recovery_cleared_at\":9"),
+                None,
+            ),
+        ] {
+            let frame = format!(
+                r#"{{"t":"account","s":1,"id":"{}","name":"reset","created":1,"quota":null{suffix}}}"#,
+                "11".repeat(16)
+            );
+            let Frame::Account {
+                recovery_cleared, ..
+            } = Record::decode(frame.as_bytes()).unwrap().frame
+            else {
+                panic!("an account frame: {suffix}");
+            };
+            assert_eq!(recovery_cleared, cleared, "{suffix}");
+        }
+        let frame = format!(
+            r#"{{"t":"account","s":1,"id":"{}","name":"reset","created":1,"quota":null,"recovery_cleared_at":"soon"}}"#,
+            "11".repeat(16)
+        );
+        assert!(Record::decode(frame.as_bytes()).is_err(), "{frame}");
     }
 
     #[test]
@@ -2102,6 +2242,26 @@ mod tests {
         let device = device_record();
         let frames = vec![
             account_frame(),
+            // A registered recovery key, and when (1.1.5).
+            Frame::Account {
+                account_id: AccountId::new([1u8; 16]),
+                name: "sentinel".to_string(),
+                created: UnixMs(1_757_000_000_000),
+                quota_bytes: None,
+                recovery_verifier: Some("c3".repeat(32)),
+                recovery_registered: Some(UnixMs(1_757_000_000_500)),
+                recovery_cleared: None,
+            },
+            // The operator's reset: no key, one re-enrolment armed (1.1.5).
+            Frame::Account {
+                account_id: AccountId::new([1u8; 16]),
+                name: "sentinel".to_string(),
+                created: UnixMs(1_757_000_000_000),
+                quota_bytes: None,
+                recovery_verifier: None,
+                recovery_registered: None,
+                recovery_cleared: Some(UnixMs(1_757_000_000_900)),
+            },
             Frame::Device {
                 record: device.clone(),
                 wrapped: [9u8; 32],
@@ -2114,6 +2274,16 @@ mod tests {
                     total_budget_bytes: 7,
                 }),
                 app_version: Some("0.1.1".to_string()),
+                archived: None,
+            },
+            // The same frame carrying the archive flag, which is what an
+            // archive writes: it round trips like any other (issue #247).
+            Frame::DeviceUpdate {
+                device_id: device.device_id,
+                name: None,
+                policy: None,
+                app_version: None,
+                archived: Some(true),
             },
             Frame::Device {
                 record: DeviceRecord {

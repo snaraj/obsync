@@ -49,6 +49,8 @@
 const enc = (text) => new TextEncoder().encode(text);
 const parentOf = (path) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 const hidden = (path) => path.split("/").some((part) => part.startsWith("."));
+/** Where the emulator's Capacitor filesystem keeps the vault (`adapter.getFullPath`). */
+const FULL = "/storage/emulated/0/Documents/phone";
 
 export class PhoneVault {
   constructor(obsidian, { folds = true, delivery = "immediate", watcher = true, indexApi = true } = {}) {
@@ -69,6 +71,26 @@ export class PhoneVault {
     this.renames = [];
     /** `(from, to, n) => boolean`: refuse a rename, the adapter's or the vault's (`n` vault renames so far), before it changes anything. */
     this.fault = null;
+    /**
+     * `(call, path) => Promise | undefined`: what an adapter `list` or `stat`
+     * waits on before it answers, as a slow bridge makes it wait (#244). The
+     * wait comes before the queue, so the calls made meanwhile still run.
+     */
+    this.lag = null;
+    /**
+     * What the index keeps for a file whose bytes landed after Obsidian looked
+     * at it (#245): `{ mtime, size }` by path, whatever the storage holds, until
+     * a `restart` -- Obsidian mobile watches no filesystem.
+     */
+    this.cached = new Map();
+    /** `(path) => boolean`: this `writeBinary` lands EMPTY, as Android's did (#242). */
+    this.dropping = null;
+    /** `(path) => void`, the moment an empty write has landed: where a test stops the process (#248). */
+    this.onEmpty = null;
+    /** Every folder `adapter.fs.readdir` was asked about (#246). */
+    this.readdirs = [];
+    /** `(folder) => "unreadable" | "shape" | undefined`: that folder's `readdir` throws, or answers entries short of a date (#246). */
+    this.readdirFault = null;
     /** The adapter's one queue (`queue`). */
     this.chain = Promise.resolve();
     this.clock = 1757200000000;
@@ -77,16 +99,17 @@ export class PhoneVault {
       // The flag is not an answer on Android; a phone that keeps the
       // spellings apart answers for the exact name whatever it is passed.
       exists: (path) => vault.queue(async () => vault.real(path) !== null),
-      stat: (path) => vault.queue(async () => {
+      stat: (path) => vault.lagged("stat", path, () => vault.queue(async () => {
         const at = vault.real(path);
         if (at === null) return null;
         const file = vault.disk.get(at);
         return file === null ? { type: "folder", ctime: 0, mtime: 0, size: 0 }
           : { type: "file", ctime: file.mtime, mtime: file.mtime, size: file.bytes.length };
-      }),
+      })),
       // Real I/O: the listing answers a turn later.
       list: async (path) => {
         await new Promise((resolve) => setTimeout(resolve, 0));
+        await vault.lag?.("list", path);
         const at = vault.real(path === "/" ? "" : path);
         if (at === null || vault.disk.get(at) !== null && at !== "") throw new Error(`ENOENT: ${path}`);
         const out = { files: [], folders: [] };
@@ -96,6 +119,27 @@ export class PhoneVault {
         }
         return out;
       },
+      // PRIVATE in Obsidian (#246): the full path Capacitor's filesystem takes,
+      // "…/" for the vault root as on the emulator, and that filesystem's
+      // `readdir`: a folder's entries as the STORAGE has them, each with a
+      // name, a type, a size and a date, whatever the index cached.
+      getFullPath: (path) => `${FULL}/${path}`,
+      fs: {
+        readdir: (full) => vault.queue(async () => {
+          const folder = full.slice(FULL.length + 1).replace(/\/$/, "");
+          vault.readdirs.push(folder);
+          const at = vault.real(folder);
+          const fault = vault.readdirFault?.(folder);
+          if (fault === "unreadable" || at === null || (at !== "" && vault.disk.get(at) !== null)) throw new Error(`ENOENT: ${full}`);
+          return vault.names(at).map((name) => {
+            const file = vault.disk.get(at === "" ? name : `${at}/${name}`);
+            const entry = file === null ? { name, type: "directory", size: 0, mtime: 0, ctime: 0 }
+              : { name, type: "file", size: file.bytes.length, mtime: file.mtime, ctime: file.mtime };
+            if (fault === "shape") delete entry.mtime;
+            return { ...entry, uri: `file://${full}/${name}` };
+          });
+        }),
+      },
       rename: (from, to) => vault.queue(async () => vault.adapterRename(from, to)),
       mkdir: (path) => vault.queue(async () => vault.mkdirs(path, true)),
       readBinary: async (path) => {
@@ -103,7 +147,11 @@ export class PhoneVault {
         if (!file) throw new Error(`ENOENT: ${path}`);
         return file.bytes.slice().buffer;
       },
-      writeBinary: (path, data, options) => vault.queue(async () => vault.write(path, new Uint8Array(data), options?.mtime ?? vault.clock, true)),
+      writeBinary: (path, data, options) => vault.queue(async () => {
+        const empty = vault.dropping?.(path) === true;
+        vault.write(path, empty ? new Uint8Array() : new Uint8Array(data), options?.mtime ?? vault.clock, true);
+        if (empty) vault.onEmpty?.(path);
+      }),
       remove: (path) => vault.queue(async () => vault.drop(path)),
       // A name the storage does not answer for, as the emulator did (#234):
       // the system bin declines it and the vault's own `.trash` throws.
@@ -128,6 +176,12 @@ export class PhoneVault {
     const next = this.chain.then(fn, fn);
     this.chain = next.catch(() => undefined);
     return next;
+  }
+
+  /** `answer()`, once whatever `lag` holds this call for is over. */
+  lagged(call, path, answer) {
+    const wait = this.lag?.(call, path);
+    return wait === undefined ? answer() : wait.then(answer);
   }
 
   /** Let a turn pass and everything queued in it run: what a test waits on before asserting on the index. */
@@ -313,6 +367,8 @@ export class PhoneVault {
       // A stale entry reads the one it folds to, as a ghost does.
       Object.defineProperty(entry, "stat", {
         get: () => {
+          const kept = vault.cached.get(entry.path);
+          if (kept !== undefined) return { ctime: kept.mtime, ...kept };
           const file = vault.disk.get(vault.real(entry.path) ?? "");
           return file ? { ctime: file.mtime, mtime: file.mtime, size: file.bytes.length } : { ctime: 0, mtime: 0, size: 0 };
         },
@@ -324,6 +380,7 @@ export class PhoneVault {
   /** Obsidian starting over this storage: every entry indexed under its real name, no hidden name. */
   restart() {
     this.index.clear();
+    this.cached.clear();
     for (const [path, value] of this.disk) if (!hidden(path)) this.index.set(path, this.entry(path, value === null));
   }
 

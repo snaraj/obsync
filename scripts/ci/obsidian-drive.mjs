@@ -98,6 +98,8 @@ class Page {
     this.next = 1;
     this.pending = new Map();
     this.console = [];
+    /** Every plugin line this window has logged, including those the bounded `console` has let go. */
+    this.logged = 0;
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       if (message.id && this.pending.has(message.id)) {
@@ -107,7 +109,10 @@ class Page {
         else resolve(message.result);
       } else if (message.method === "Runtime.consoleAPICalled") {
         const text = message.params.args.map((arg) => arg.value ?? arg.description ?? "").join(" ");
-        if (text.startsWith("obsync ")) this.console.push(text);
+        if (text.startsWith("obsync ")) {
+          this.console.push(text);
+          this.logged += 1;
+        }
         if (this.console.length > 200) this.console.shift();
       }
     });
@@ -284,6 +289,26 @@ function pluginState(pluginId) {
   return { paired: plugin.state.paired, server: plugin.state.data.serverUrl };
 }
 
+/** What this instance knows about each note, stage by stage (#313): run in the page. */
+function noteStages(pluginId, paths) {
+  const plugin = app.plugins.plugins[pluginId];
+  const engine = plugin?.engine;
+  const has = (holder, file) => holder instanceof Map || holder instanceof Set ? holder.has(file)
+    : Array.isArray(holder) ? holder.includes(file) : null;
+  return {
+    events: window.obsyncE2eEvents ?? null,
+    engine: engine ? { running: engine.running, draining: engine.draining, hurried: engine.hurried } : null,
+    notes: paths.map((file) => ({
+      file,
+      indexed: app.vault.getAbstractFileByPath(file) !== null,
+      debounce: has(engine?.pending, file),
+      queued: has(engine?.queue, file),
+      pushing: has(engine?.pushing, file),
+      record: plugin?.state?.fileByPath(file) !== undefined,
+    })),
+  };
+}
+
 function openSettings(pluginId) {
   app.setting.open();
   app.setting.openTabById(pluginId);
@@ -433,8 +458,18 @@ async function openVault(instance) {
 
 async function setServer(instance, url) {
   const main = await instance.main();
-  await main.run(openSettings, PLUGIN_ID);
-  await until(`${instance.name}: this plugin's settings`, () => instance.anywhere(settingsShow, LABELS.serverUrl));
+  // Asked again while it does not show, as a person clicks the tab again: once,
+  // on a macOS runner, the Settings window stayed on the Community plugins page
+  // the trust step had opened and never took the plugin's tab.
+  let asked = 0;
+  await until(`${instance.name}: this plugin's settings`, async () => {
+    if (await instance.anywhere(settingsShow, LABELS.serverUrl)) return true;
+    if (Date.now() - asked >= 5_000) {
+      asked = Date.now();
+      await main.run(openSettings, PLUGIN_ID);
+    }
+    return false;
+  });
   await until(`${instance.name}: the ${LABELS.serverUrl} field`, () =>
     instance.anywhere(fillSetting, "settings", LABELS.serverUrl, url));
   // The plugin stores the normalised address (a default port dropped), so the
@@ -473,6 +508,65 @@ async function leaves(instance, relative, what) {
 
 function listing(instance, relative) {
   return fs.readdirSync(path.join(instance.vault, relative)).sort();
+}
+
+/**
+ * TWO PEOPLE TYPING IN ONE OPEN NOTE (issue #227). Each instance types its own
+ * line -- the first at the note's end, the second at the end of its first
+ * line -- one keystroke every 200 ms for 20 s, through DevTools
+ * `Input.insertText`: a trusted beforeinput, the input the plugin counts as
+ * typing. When both stop, both disks and both editors must come to hold every
+ * keystroke in order with the fixed lines intact, and no conflict copy may
+ * exist. The note is new, so any copy is this journey's.
+ */
+async function cotyping(a, b) {
+  const note = `e2e/cotype-${randomBytes(4).toString("hex")}.md`;
+  const start = "# Both\nthe line nobody edits\nthe last fixed line\n";
+  await inVault(a, async (file, text) => { await app.vault.create(file, text); return true; }, note, start);
+  await arrives(b, note, Buffer.from(start), "the co-typing note");
+  for (const instance of [a, b]) {
+    await until(`${instance.name}: the co-typing note open in an editor`, () => inVault(instance, async (file) => {
+      await app.workspace.getLeaf(false).openFile(app.vault.getAbstractFileByPath(file), { state: { mode: "source" } });
+      return Boolean(app.workspace.activeLeaf?.view?.editor);
+    }, note));
+  }
+  const words = (letter) => Array.from({ length: 30 }, (_, i) => `${letter}${String(i + 1).padStart(3, "0")}`);
+  const streams = { a: words("A").join(" "), b: ` ${words("B").join(" ")}` };
+  const typed = { a: 0, b: 0 };
+  const started = Date.now();
+  const typist = async (instance, key, place) => {
+    const main = await instance.main();
+    while (Date.now() - started < 20_000 && typed[key] < streams[key].length) {
+      const tick = Date.now();
+      await main.run((where) => {
+        const editor = app.workspace.activeLeaf.view.editor;
+        editor.focus();
+        const line = where === "end" ? editor.lastLine() : 0;
+        editor.setCursor({ line, ch: editor.getLine(line).length });
+        return true;
+      }, place);
+      await main.send("Input.insertText", { text: streams[key][typed[key]] });
+      typed[key] += 1;
+      await sleep(Math.max(0, 200 - (Date.now() - tick)));
+    }
+  };
+  await Promise.all([typist(a, "a", "end"), typist(b, "b", "first")]);
+  const stopped = Date.now();
+  const expected = `# Both${streams.b.slice(0, typed.b)}\nthe line nobody edits\nthe last fixed line\n${streams.a.slice(0, typed.a)}`;
+  const shows = (instance) => inVault(instance, (file) => app.workspace.getLeavesOfType("markdown")
+    .map((leaf) => leaf.view).find((view) => view.file?.path === file)?.editor?.getValue() ?? null, note);
+  await until(`both disks and both editors hold every keystroke of ${typed.a} and ${typed.b}`, async () => {
+    for (const instance of [a, b]) {
+      const file = path.join(instance.vault, note);
+      if (!fs.existsSync(file) || fs.readFileSync(file, "utf8") !== expected || (await shows(instance)) !== expected) return false;
+    }
+    return true;
+  }, SYNC_BUDGET_MS);
+  const stem = path.basename(note, ".md");
+  const copies = [a, b].flatMap((instance) => listing(instance, "e2e").filter((name) => name.startsWith(`${stem} (conflict`)));
+  if (copies.length !== 0) throw new Denied(`co-typing left conflict copies: ${copies.join(", ")}`);
+  prove(`co-typing: ${typed.a} and ${typed.b} keystrokes typed into one open note on both instances over ${stopped - started} ms; ` +
+    `both disks and editors hold all of them ${Date.now() - stopped} ms after the typing stopped, no conflict copy`);
 }
 
 async function main() {
@@ -566,6 +660,8 @@ async function main() {
     const pick = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
     prove(`B2 end to end: ${rounds} edits written on the first device reached the second's disk, p50 ${pick(0.5)} ms, p95 ${pick(0.95)} ms, max ${sorted.at(-1)} ms`);
 
+    await cotyping(a, b);
+    await starvedWatcher(a, b);
     if (ntfs) await windowsJourneys(a, b);
     if (store) await restarted(a, b, { binary, extra, homes, store });
     if (homes) await untrusted(work, pluginDir, binary, extra, url);
@@ -680,6 +776,108 @@ async function untrusted(work, pluginDir, binary, extra, url) {
   } finally {
     c.stop();
   }
+}
+
+/**
+ * What obsync changes on a disk is LISTED though the file events never come
+ * (#253). A Mac whose `fseventsd` is overloaded delivers them late or not at
+ * all, and Obsidian then did not show a note obsync had written -- not in the
+ * file explorer, search or the quick switcher -- until a restart. Here the
+ * second instance's own file watchers are closed from its window (a test-only
+ * stand-in for that starvation, on every operating system), and what the
+ * first one does must still be listed there: a note in a new folder, a
+ * rename and a deletion of notes it listed before; and an edit to one must
+ * reach the text its search reads (#267). It publishes nothing back.
+ */
+async function starvedWatcher(a, b) {
+  const listedAll = (paths) => inVault(b, (want) => want.every(([file, shown]) =>
+    (app.vault.getAbstractFileByPath(file) !== null) === shown), paths);
+  const before = { kept: `kept ${randomBytes(6).toString("hex")}\n`, gone: `gone ${randomBytes(6).toString("hex")}, longer\n` };
+  const watched = ["e2e/watched/kept.md", "e2e/watched/gone.md"];
+  await inVault(a, () => {
+    window.obsyncE2eEvents = [];
+    const heard = (kind) => (file) => {
+      if (file.path.startsWith("e2e/watched")) window.obsyncE2eEvents.push(`${kind} ${file.path}`);
+    };
+    window.obsyncE2eRefs = [app.vault.on("create", heard("create")), app.vault.on("modify", heard("modify"))];
+  });
+  await inVault(a, async (texts) => {
+    await app.vault.createFolder("e2e/watched");
+    await app.vault.create("e2e/watched/kept.md", texts.kept);
+    await app.vault.create("e2e/watched/gone.md", texts.gone);
+  }, before);
+  try {
+    await until("b lists the notes it is sent while its watcher works", () =>
+      listedAll(watched.map((file) => [file, true])), SYNC_BUDGET_MS);
+  } catch (error) {
+    // #313: a note made on a that never left it. What a knew about each one
+    // names the stage that lost it: Obsidian's event, the engine's debounce,
+    // its queue or push, or the record a push leaves.
+    if (!(error instanceof Denied)) throw error;
+    const knew = await inVault(a, noteStages, PLUGIN_ID, watched);
+    const disk = watched.map((file) => `${file}=${fs.existsSync(path.join(a.vault, file)) ? "on_disk" : "absent"}`);
+    throw new Denied(`${error.message}; a: ${disk.join(" ")} ${JSON.stringify(knew)}`);
+  } finally {
+    await inVault(a, () => {
+      for (const ref of window.obsyncE2eRefs ?? []) app.vault.offref(ref);
+      delete window.obsyncE2eRefs;
+    });
+  }
+  const closed = await inVault(b, () => {
+    const keys = Object.keys(app.vault.adapter.watchers ?? {});
+    for (const key of keys) app.vault.adapter.stopWatchPath(key);
+    return keys;
+  });
+  if (closed.length === 0) throw new Denied("b: Obsidian's adapter held no file watcher to close");
+  const vaultWindow = await b.main();
+  const mark = vaultWindow.logged;
+  const text = `starved ${randomBytes(6).toString("hex")}\n`;
+  await inVault(a, async (body) => {
+    await app.vault.createFolder("e2e/starved");
+    await app.vault.create("e2e/starved/listed.md", body);
+    await app.fileManager.renameFile(app.vault.getAbstractFileByPath("e2e/watched/kept.md"), "e2e/watched/renamed.md");
+    await app.vault.delete(app.vault.getAbstractFileByPath("e2e/watched/gone.md"));
+  }, text);
+  const disk = await arrives(b, "e2e/starved/listed.md", Buffer.from(text), "a note while b's watcher is closed");
+  await arrives(b, "e2e/watched/renamed.md", Buffer.from(before.kept), "a rename while b's watcher is closed");
+  await leaves(b, "e2e/watched/kept.md", "a rename while b's watcher is closed");
+  await leaves(b, "e2e/watched/gone.md", "a deletion while b's watcher is closed");
+  const at = Date.now();
+  await until("b lists what obsync changed on its disk, with its watcher closed", () => listedAll([
+    ["e2e/starved", true], ["e2e/starved/listed.md", true], ["e2e/watched/renamed.md", true],
+    ["e2e/watched/kept.md", false], ["e2e/watched/gone.md", false],
+  ]), 30_000);
+  const listedIn = Date.now() - at;
+  const tree = await inVault(b, () => app.vault.getFolderByPath("e2e/starved")?.children.map((child) => child.path) ?? []);
+  if (!tree.includes("e2e/starved/listed.md")) throw new Denied(`b's file tree does not hold the note under its folder: ${JSON.stringify(tree)}`);
+  // #267: an edit to a note it lists, in no view there, reaches the text its search reads.
+  const edit = `edited ${randomBytes(6).toString("hex")}, longer\n`;
+  await inVault(a, async (body) => {
+    await app.vault.modify(app.vault.getAbstractFileByPath("e2e/watched/renamed.md"), body);
+  }, edit);
+  const edited = await arrives(b, "e2e/watched/renamed.md", Buffer.from(edit), "an edit while b's watcher is closed");
+  const editAt = Date.now();
+  await until("b's index reads the edit to a note it lists, with its watcher closed", () => inVault(b, async (body) => {
+    const file = app.vault.getFileByPath("e2e/watched/renamed.md");
+    return file !== null && file.stat.size === body.length && (await app.vault.cachedRead(file)) === body;
+  }, edit), 30_000);
+  const indexedIn = Date.now() - editAt;
+  const fresh = vaultWindow.logged - mark;
+  if (fresh > vaultWindow.console.length) throw new Denied(`b logged ${fresh} lines during the journey, more than the ${vaultWindow.console.length} kept to read`);
+  const lines = vaultWindow.console.slice(vaultWindow.console.length - fresh);
+  const published = lines.filter((line) => / decision=(pushed|published) |path_class=tombstone decision=deleted version=/.test(line));
+  if (published.length) throw new Denied(`b published what it received: ${published.join(" | ")}`);
+  // The watchers back for what follows; one whose folder has gone cannot be, and is counted.
+  const restored = await inVault(b, async (keys) => {
+    let count = 0;
+    for (const key of keys) await app.vault.adapter.startWatchPath(key).then(() => { count += 1; }, () => undefined);
+    return count;
+  }, closed);
+  prove(`#253: with the second device's ${closed.length} file watcher(s) closed, a note made in a new folder on the first `
+    + `reached its disk in ${disk} ms and was listed ${listedIn} ms later, its folder with it; a rename and a deletion `
+    + `of notes it listed left its listing true, an edit to one reached its disk in ${edited} ms and its index ${indexedIn} ms `
+    + `later (#267; ${lines.filter((line) => line.startsWith("obsync vault ")).length} index lines), `
+    + `and it published nothing back; ${restored} of ${closed.length} watcher(s) restored`);
 }
 
 /** The NTFS journeys the review names: a case-only rename, the trash, a locked file. */

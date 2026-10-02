@@ -1,12 +1,12 @@
 # M2327: setup reads an untrusted certificate as a refusal (certificate wording)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3322,7 +3322,7 @@
-               ? `This server already holds a vault, and one server holds one vault. Recovery was not registered before its credentials were lost, so these words cannot re-enrol this device: ${pairHere}, then update that device and the server so recovery is registered; a different vault needs a server of its own.`
+@@ -5035,7 +5035,7 @@
+               ? `This server holds a vault with no recovery key registered, so these words cannot re-enrol this device on their own: ${pairHere}, or ask whoever runs the server to reset its recovery key and send you the new setup token (server 1.1.5 or later); a different vault needs a server of its own.`
                : code === "bad_recovery_proof"
                  ? `These recovery words do not open this server’s vault, and no device was enrolled. Restore its correct 24-word phrase, or ${pairHere}; a different vault needs a server of its own.`
 -                : refusalText(error);
 +                : refusalFor(code);
-       new Notice(`obsync: ${text}`, 12000);
+       this.notices.show({ kind: "confirm", text });
      } finally {
        this.enrolling = false;

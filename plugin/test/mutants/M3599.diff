@@ -1,0 +1,11 @@
+# M3599: Pair a new device sits open after the approval lands
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -417,7 +417,6 @@
+       this.collecting = true;
+       this.plugin.register?.(() => { this.collecting = false; });
+       answer.settingEl.remove();
+-      this.close();
+       tell(this.plugin, `approved "${claimant.name}": it finishes pairing by itself, and obsync tells you here when it has.`);
+       await this.watch(pairingId, claimant);
+     } catch (error) {

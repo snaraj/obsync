@@ -1,0 +1,12 @@
+# M3471: the revoked devices are listed with no fold in front of them
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -929,7 +929,7 @@
+     const rows = devices.map((device, at) => this.deviceRow(device, named(at)));
+     // The revoked rows are the last ones: the fold goes in front of them.
+     const revoked = devices.filter((device) => device.revoked).length;
+-    if (revoked > 0) rows.splice(rows.length - revoked, 0, this.revokedFold(revoked));
++    if (revoked > 99) rows.splice(rows.length - revoked, 0, this.revokedFold(revoked));
+     rows.push({
+       name: "Device list",
+       desc: () => {

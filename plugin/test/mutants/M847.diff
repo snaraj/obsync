@@ -1,7 +1,7 @@
 # M847: append fetched ancestors after their known parents
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2415,7 +2415,7 @@
+@@ -2515,7 +2515,7 @@
      // Searched for only when a parent is here: a remembered chain is one pass.
      const before = version.parents.some(parent => known.has(parent))
        ? file.versions.findIndex(candidate => version.parents.includes(candidate.version_id)) : -1;
@@ -9,4 +9,4 @@
 +    file.versions.push(version); void before;
      known.add(version.version_id);
    };
-   for (const version of file.versions) hold(context, file.file_id, version);
+   let recalled = 0;

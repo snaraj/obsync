@@ -96,6 +96,17 @@ pub fn put(
         slow: false,
     };
     let outcome = app.store.put_chunk(&account, &sid, declared, &mut upload);
+    // A REFUSED CHUNK IS READ TO ITS END BEFORE THE REFUSAL (#304). The
+    // watermark and the quota refuse before the store reads a byte, and an
+    // answer sent over the unread upload was followed by a close that reset a
+    // sender past the HTTP layer's own drain: a proxy still writing the upload
+    // answered the device with a bare 502, which reads "offline", never the
+    // full server it is. What is left is at most the declared length the 413
+    // above bounds, of a request that proved a device's credential, and the
+    // rate floor still ends a slow sender (`slow` below).
+    if outcome.is_err() {
+        let _ = io::copy(&mut upload, &mut io::sink());
+    }
     if upload.slow {
         return Err(render::slow_body(app, &req.body));
     }

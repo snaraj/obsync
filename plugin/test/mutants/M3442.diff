@@ -1,0 +1,12 @@
+# M3442: an incoming version that already holds the unsent save is deferred instead of taken
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2864,7 +2864,7 @@
+         // the fork is merged from what is published, as a fast-forward over an
+         // unpushed edit is (below). A result that is the incoming version
+         // itself makes no merge at all.
+-        if (!ahead && !sameBytes(text, theirs)) {
++        if (!ahead) {
+           // A head this device cannot open proves nothing about the note.
+           const own = await manifestOf(context, file, change, localVersionId).catch(() => null);
+           if (own !== null && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {

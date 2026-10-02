@@ -1,8 +1,8 @@
 # M696: the typing-side hold still falls through to conflict copying
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2223,7 +2223,6 @@
-       context.host.notify(`obsync paused syncing ${localPath}: another device rewrote lines while you were typing. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);
+@@ -3125,7 +3125,6 @@
+       context.host.notify(pausedNotice(localPath));
      }
      await publishPause(context, change.file_id, localPath, true);
 -    return "skipped";

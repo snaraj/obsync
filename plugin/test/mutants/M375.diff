@@ -1,11 +1,11 @@
 # M375: a device that reconnects after the restore never asks again
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2050,7 +2050,6 @@
+@@ -3049,7 +3049,6 @@
            this.restoreDue = { verdict: "restored", reason: "seq_ahead" };
            continue;
          }
 -        verify = true;
-         const message = error instanceof Error ? error.message : String(error);
-         context.host.log(`feed decision=retry reason=${message} status=${refused.kind === "error" ? refused.code : refused.kind} retry_ms=${FEED_ERROR_BACKOFF_MS}`);
+         const message = disk ? DISK_STALLED : errorText(error);
+         context.host.log(`feed decision=retry reason=${message} status=${disk ? "unchanged" : refused.kind === "error" ? refused.code : refused.kind} retry_ms=${FEED_ERROR_BACKOFF_MS}`);
          // Absence is the feed's to say until its next read is answered, and

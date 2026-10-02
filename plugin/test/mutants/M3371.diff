@@ -1,0 +1,12 @@
+# M3371: a move made before 1.1.5 is never found, only brought back beside the copy (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4467,7 +4467,7 @@
+         context.host.log(`${label} decision=failed reason=state_not_saved`);
+       });
+     }
+-    if (own !== null && context.state.data.replaying !== null) {
++    if (Date.now() < 0 && own !== null) {
+       const open = untracked.filter((file) => !settled.has(file.path));
+       await this.rejoinUnseen(context, own.notes, open, seen, settled, label);
+     }

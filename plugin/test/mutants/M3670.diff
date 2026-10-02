@@ -1,0 +1,12 @@
+# M3670: a metadata save in flight is not said (#276)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -790,7 +790,7 @@
+   settled(): Promise<void> { return this.flushing ?? Promise.resolve(); }
+ 
+   /** Whether a metadata write is in flight: a wait that sends no request, named by a stalled feed (#276). */
+-  get saving(): boolean { return this.flushing !== null; }
++  get saving(): boolean { return false; }
+ 
+   /** Refuse every write once a newer session has claimed the data file (`Lease`). */
+   private assertHolder(): void {

@@ -31,8 +31,9 @@
  * BACKOFF. A repeatable route retries on a network error or a 5xx with
  * exponential backoff and jitter, 1 s doubling to a 60 s ceiling, half fixed
  * and half random so a fleet of devices does not resynchronise on the same
- * second. 4xx never retries: a refusal is a decision, and so is `507`, the
- * one 5xx the server answers on purpose (requirement 8). A pause is not a
+ * second. 4xx never retries: a refusal is a decision, and so are the 5xx
+ * the server answers on purpose, `507` (requirement 8) and a faulted server's
+ * refusals (`RESTART_CODES`). A pause is not a
  * promise to wait it out: `wake` ends every pause at once when the device's
  * network is back, the app returns to the foreground, or the address changes,
  * and every attempt reads the server address afresh (issues #134, #186).
@@ -57,6 +58,7 @@ import { Bytes, bodyHash, hex, hmacKey, randomBytes, sealedSid, signRequest, unh
 import { CHUNK_CIPHERTEXT_MAX } from "./chunker";
 import { EdgeHeader } from "./state";
 import { Policy } from "./policy";
+import { errorText } from "./vaultPath";
 
 /** Device-local policy uses camelCase; the existing v1 API uses snake_case. */
 function policyBody(policy: Policy): { per_file_max_bytes: number; total_budget_bytes: number } {
@@ -119,6 +121,13 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     readonly detail: string,
+    /**
+     * An `unreachable` the server itself answered: a 5xx in obsync's own
+     * coded error (#298). Retried as absence is, and said as a refusal.
+     */
+    readonly answered = false,
+    /** The refusal's other body fields, such as the `creator_pub` a pairing wait carries. */
+    readonly fields: Readonly<Record<string, unknown>> = {},
   ) {
     super(`${status} ${code}: ${detail}`);
     this.name = "ApiError";
@@ -135,6 +144,8 @@ export interface Lost {
   outcome: "lost";
   attempts: number;
   reason: string;
+  /** The server answered, in its own coded 5xx (`ApiError.answered`, #298): it may not have happened (#299). */
+  answered?: boolean;
 }
 
 /** What a route that must not be repeated resolves to. */
@@ -157,6 +168,14 @@ export function lostMessage(what: string, lost: Lost): string {
       `${what}: nothing answers at this address and port (${lost.reason}), so nothing was sent. ` +
       "Check the Server URL, port included: it is the port your server publishes HTTPS on. If this address has worked " +
       "before, your server may be switched off."
+    );
+  }
+  // THE SERVER ANSWERED, WITH AN ERROR OF ITS OWN (#299): "never answered"
+  // was false, and it reached no conclusion it could say, so the person checks.
+  if (lost.answered === true) {
+    return (
+      `${what}: your server answered with an error, so it may not have happened. ` +
+      "See whether it did, and try again if not; if this stays, check your server's log."
     );
   }
   return (
@@ -211,6 +230,7 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", path: new RegExp(`^/v1/chunks/${SID}$`), idempotent: true },
   { method: "POST", path: /^\/v1\/chunks\/exists$/, idempotent: true },
   { method: "POST", path: /^\/v1\/chunks\/get$/, idempotent: true },
+  { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/reveal$`), idempotent: true },
   { method: "GET", path: new RegExp(`^/v1/pairing/${ID}/envelope$`), idempotent: false },
   { method: "POST", path: /^\/v1\/setup$/, idempotent: false },
   { method: "POST", path: /^\/v1\/account\/recovery$/, idempotent: false },
@@ -220,6 +240,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", path: new RegExp(`^/v1/pairing/${ID}/reject$`), idempotent: false },
   { method: "PATCH", path: new RegExp(`^/v1/devices/${ID}$`), idempotent: false },
   { method: "POST", path: new RegExp(`^/v1/devices/${ID}/revoke$`), idempotent: false },
+  { method: "POST", path: new RegExp(`^/v1/devices/${ID}/archive$`), idempotent: false },
   { method: "POST", path: /^\/v1\/devices\/heartbeat$/, idempotent: false },
   { method: "POST", path: new RegExp(`^/v1/files/${ID}/versions$`), idempotent: false },
   { method: "POST", path: /^\/v1\/dashboard\/login-link$/, idempotent: false },
@@ -244,11 +265,12 @@ export interface TransportOptions {
   maxAttempts?: number;
   /**
    * Told after every attempt whether the server answered it (any status it
-   * settles on: below 500, or 507). It reports and decides nothing: the
-   * retries, and what a request finally returns or throws, are the same with
-   * or without it.
+   * settles on: below 500, or 507), and, for one it did not, which request
+   * and why (`GET /v1/changes?... timeout budget_ms=70000`, #288). It reports
+   * and decides nothing: the retries, and what a request finally returns or
+   * throws, are the same with or without it.
    */
-  reachable?: (answered: boolean) => void;
+  reachable?: (answered: boolean, unanswered?: string) => void;
   /**
    * The clock an attempt is abandoned by (`attemptMs`, #195). The plugin gives
    * the renderer's; without it an attempt waits as long as the platform lets
@@ -274,6 +296,23 @@ export const SLOWEST_BYTES_PER_MS = 16;
 const TIMED_OUT = new Error("no answer within the attempt's deadline");
 
 /**
+ * THE PLUGIN SESSION THIS TRANSPORT BELONGS TO HAS ENDED (issue #272): the
+ * plugin was disabled, reloaded or replaced while a request of that session
+ * was still in flight or asleep in its backoff. The request function refuses
+ * before anything is sent. It is not a network failure: retried, it ran out
+ * its whole backoff, up to two minutes, refusing every attempt and logging
+ * into the session that replaced it. It ends the call at that attempt, like a
+ * caller's signal, with one line; nothing was sent and nothing was learnt
+ * about the server.
+ */
+export class SessionEnded extends Error {
+  constructor() {
+    super("The previous plugin session is inactive.");
+    this.name = "SessionEnded";
+  }
+}
+
+/**
  * How long a repeatable call may keep its caller waiting, and whether the
  * caller may end it (issue #182).
  *
@@ -294,6 +333,13 @@ const TIMED_OUT = new Error("no answer within the attempt's deadline");
 export interface Patience {
   interactive?: boolean;
   signal?: AbortSignal;
+  /**
+   * The one refusal code this caller reads as an ANSWER, not a failure: the
+   * domain map a first setup has not written yet, a pairing not approved yet.
+   * Logged as `decision=expected` rather than at warning level; still thrown,
+   * and every other refusal of the call is logged as the refusal it is.
+   */
+  expected?: string;
 }
 
 export const INTERACTIVE_MS = 10000;
@@ -402,7 +448,13 @@ export interface DeviceRecord {
   platform: string;
   app_version: string;
   last_seen: number;
+  /** Its first authenticated request as an active device, throttled to one per 15 min; `null` before any. */
+  last_sign_in?: number | null;
+  /** Its latest heartbeat, which only a started sync sends (#290); `null` before any, absent from a server that predates it. */
+  last_heartbeat?: number | null;
   revoked: boolean;
+  /** Taken off the device lists (#247). A server before 1.1.5 states nothing. */
+  archived?: boolean;
   /** `pending` until a paired device's claim collects the vault key; absent from a server that predates it. */
   state?: string;
 }
@@ -434,6 +486,8 @@ export interface PairingCreated {
 
 export interface PairingClaimant {
   vault?: { envelope: string; nonce: string };
+  /** The claimant's ephemeral P-256 public key (v2 pairing), raw base64url. */
+  claimant_pub?: string;
   device_id: string;
   name: string;
   platform: string;
@@ -453,6 +507,8 @@ export interface PairingCredential {
 export interface PairingEnvelope {
   envelope: string;
   nonce: string;
+  /** The creator's ephemeral P-256 public key (v2 pairing), raw base64url. */
+  creator_pub?: string;
 }
 
 /** Only the field the plugin reads; the served hashes are the Install page's. */
@@ -575,6 +631,9 @@ interface Pipe {
   readonly waiting: { bytes: number; resume: () => void }[];
 }
 
+/** A read of the feed that waits on the server (`wait` above 0): a long poll. */
+const LONG_POLL = /^\/v1\/changes\?.*\bwait=[1-9]/;
+
 /** One attempt's deadline: a long poll's wait plus grace, or the floor plus the bytes it moves. */
 function attemptMs(target: string, bytes: number): number {
   const wait = /^\/v1\/changes\?.*\bwait=(\d+)/.exec(target)?.[1];
@@ -585,11 +644,15 @@ function attemptMs(target: string, bytes: number): number {
 /**
  * What one attempt produced. `settled` means the server decided, whatever it
  * decided; `unsettled` means nothing did — no answer, or a 5xx that says the
- * server reached no conclusion either.
+ * server reached no conclusion either. `answered`: that 5xx came in obsync's
+ * own coded error, so the server was there to say it (#298).
  */
 type Attempt =
   | { kind: "settled"; response: HttpResponse }
-  | { kind: "unsettled"; status: number; reason: string };
+  | { kind: "unsettled"; status: number; reason: string; answered: boolean };
+
+/** An obsync refusal code (`StoreError::code`): what makes a 5xx the server's own answer. */
+const OBSYNC_CODE = /^[a-z][a-z0-9_]{0,63}$/;
 
 /** The attempts and the wall clock one call may spend (`Patience`). */
 interface Budget {
@@ -654,6 +717,10 @@ export class Transport {
   private readonly random: () => number;
   private readonly log: (line: string) => void;
   private readonly maxAttempts: number;
+  /** When the server last answered an attempt, on this transport's clock (`attempt`, #288). */
+  private answeredAt = Number.NEGATIVE_INFINITY;
+  /** Long polls the platform still holds (`pollsInFlight`, #297). */
+  private polls = 0;
 
   constructor(private readonly options: TransportOptions) {
     this.now = options.now ?? (() => Date.now());
@@ -739,9 +806,14 @@ export class Transport {
       headers["X-Obsync-Sig"] = await signRequest(await signing.key, method, target, ts, nonce, sending.digest);
     }
     check();
+    const sent = this.now();
     let outcome: Attempt;
+    // A long poll counts until this attempt has said what came of it -- or,
+    // past its deadline, until the platform lets go of it (#297).
+    let asked: Promise<HttpResponse> | undefined;
+    let letGo: (() => void) | null = null;
     try {
-      const response = await this.timed(this.options.request({
+      asked = this.options.request({
         url,
         method,
         headers,
@@ -751,32 +823,69 @@ export class Transport {
             ? { body: toArrayBuffer(sending.body) }
             : {}),
         throw: false,
-      }), sending.deadlineMs);
+      });
+      if (LONG_POLL.test(target)) {
+        this.polls++;
+        letGo = () => { this.polls--; };
+      }
+      const response = await this.timed(asked, sending.deadlineMs);
       // A 507 is the server's decision that it is full, not its absence:
       // retried eight times, a full server read `offline — retrying` for
-      // minutes and never said why (S29, issue #155).
-      outcome = response.status < 500 || response.status === 507
+      // minutes and never said why (S29, issue #155). So is a server that
+      // needs a restart (`RESTART_CODES`, #295). Any other 5xx in obsync's
+      // own coded error is its server answering that it failed (#298):
+      // retried all the same, and never word that it is gone. A bare 5xx --
+      // a proxy or a tunnel whose obsync is not there -- is.
+      const code = response.status < 500 || response.status === 507 ? null : parseError(response.text).code;
+      outcome = code === null || RESTART_CODES.has(code)
         ? { kind: "settled", response }
-        : { kind: "unsettled", status: response.status, reason: `status=${response.status}` };
+        : code !== NOT_OBSYNC && OBSYNC_CODE.test(code)
+          ? { kind: "unsettled", status: response.status, reason: `status=${response.status} code=${code}`, answered: true }
+          : { kind: "unsettled", status: response.status, reason: `status=${response.status}`, answered: false };
     } catch (error) {
+      if (error === TIMED_OUT && letGo !== null) {
+        void asked?.then(letGo, letGo);
+        letGo = null;
+      }
+      // A session that ended sends nothing more, and says so once (#272).
+      if (error instanceof SessionEnded) {
+        letGo?.();
+        this.log(`http ${method} ${target} decision=ended reason=session_inactive`);
+        throw error;
+      }
+      // AN ANSWER THAT CAME WHILE THIS ONE WAITED (issue #288): the server
+      // was there, and the wait was on this device -- a request queued behind
+      // one `requestUrl` could not abort reached the server 20 s late and ran
+      // out of its budget five seconds before its answer. It is retried like
+      // any timeout, and it is not word that the server is unreachable.
+      const behind = error === TIMED_OUT && this.answeredAt > sent;
       outcome = {
         kind: "unsettled",
         status: 0,
         reason: error === TIMED_OUT
-          ? `timeout budget_ms=${sending.deadlineMs}`
-          : `network=${error instanceof Error ? error.message : String(error)}`,
+          ? `timeout budget_ms=${sending.deadlineMs}${behind ? " answered_meanwhile=1" : ""}`
+          : `network=${errorText(error)}`,
+        answered: false,
       };
+      if (behind) return outcome;
     }
-    this.options.reachable?.(outcome.kind === "settled");
+    if (outcome.kind === "settled" || outcome.answered) {
+      this.answeredAt = this.now();
+      this.options.reachable?.(true);
+    } else {
+      this.options.reachable?.(false, `${method} ${target} ${outcome.reason}`);
+    }
+    letGo?.();
     return outcome;
   }
 
   /** A settled response: 2xx is returned, 4xx is thrown as the decision it is. */
-  private settle(method: string, target: string, response: HttpResponse, attempts: number, started: number): HttpResponse {
+  private settle(method: string, target: string, response: HttpResponse, attempts: number, started: number, expected?: string): HttpResponse {
     if (response.status >= 400) {
-      const { code, detail } = parseError(response.text);
-      this.log(`http ${method} ${target} status=${response.status} decision=refused code=${code} duration_ms=${this.now() - started}`);
-      throw new ApiError(response.status, code, detail);
+      const { code, detail, fields } = parseError(response.text);
+      const decision = code === expected ? "expected" : "refused";
+      this.log(`http ${method} ${target} status=${response.status} decision=${decision} code=${code} duration_ms=${this.now() - started}`);
+      throw new ApiError(response.status, code, detail, false, fields);
     }
     this.log(`http ${method} ${target} status=${response.status} decision=ok attempts=${attempts} duration_ms=${this.now() - started}`);
     return response;
@@ -791,7 +900,7 @@ export class Transport {
       if (options.signal?.aborted) throw this.ended(method, target, "cancelled", "waiting", attempt - 1, started);
       const outcome = await this.until(this.attempt(method, target, sending), options.signal, budget.deadline);
       if (outcome === "cancelled" || outcome === "deadline") throw this.ended(method, target, outcome, "in_flight", attempt, started);
-      if (outcome.kind === "settled") return this.settle(method, target, outcome.response, attempt, started);
+      if (outcome.kind === "settled") return this.settle(method, target, outcome.response, attempt, started, options.expected);
       await this.pause(method, target, outcome, attempt, budget, started, options.signal);
     }
   }
@@ -838,7 +947,7 @@ export class Transport {
   private async pause(
     method: string,
     target: string,
-    outcome: { status: number; reason: string },
+    outcome: { status: number; reason: string; answered: boolean },
     attempt: number,
     budget: Budget,
     started: number,
@@ -850,7 +959,7 @@ export class Transport {
         `http ${method} ${target} ${outcome.reason} decision=gave_up attempts=${attempt}` +
           `${budget.interactive ? ` budget_ms=${INTERACTIVE_MS}` : ""} duration_ms=${this.now() - started}`,
       );
-      throw new ApiError(outcome.status, "unreachable", outcome.reason);
+      throw new ApiError(outcome.status, "unreachable", outcome.reason, outcome.answered);
     }
     const delay = Math.min(this.backoffMs(attempt), left);
     this.log(`http ${method} ${target} ${outcome.reason} decision=retry attempt=${attempt} backoff_ms=${delay}`);
@@ -911,6 +1020,19 @@ export class Transport {
     if (asleep.length > 0) this.log(`http decision=woken reason=${reason} requests=${asleep.length}`);
   }
 
+  /**
+   * Long polls sent and not yet over (#297): the one the feed waits on, every
+   * one a caller stopped waiting for, and every one past its deadline until
+   * the platform lets go of it. `requestUrl` cannot withdraw a request, so
+   * each keeps its connection to the end of the server's wait, and one sent
+   * again for the same url waits behind it on a desktop (#288). An answered
+   * poll counts until its attempt has reported it (`reachable`), so a wake
+   * that answer raises still finds it.
+   */
+  pollsInFlight(): number {
+    return this.polls;
+  }
+
   /** When the soonest request asleep in its backoff tries again by itself, or `null`. */
   retryAt(): number | null {
     let soonest: number | null = null;
@@ -929,10 +1051,10 @@ export class Transport {
     const started = this.now();
     const outcome = await this.attempt(method, target, sending);
     if (outcome.kind === "settled") {
-      return { outcome: "ok", value: this.settle(method, target, outcome.response, 1, started) };
+      return { outcome: "ok", value: this.settle(method, target, outcome.response, 1, started, options.expected) };
     }
     this.log(`http ${method} ${target} ${outcome.reason} decision=lost attempts=1 duration_ms=${this.now() - started}`);
-    return { outcome: "lost", attempts: 1, reason: outcome.reason };
+    return { outcome: "lost", attempts: 1, reason: outcome.reason, answered: outcome.answered };
   }
 
   private async json<T>(method: string, target: string, options: CallOptions): Promise<T> {
@@ -988,7 +1110,7 @@ export class Transport {
       }).catch(() => undefined);
       const outcome = await control.wait(pending);
       control.check();
-      if (outcome.kind !== "settled") throw new ApiError(outcome.status, "unreachable", "History read did not settle; retry explicitly.");
+      if (outcome.kind !== "settled") throw new ApiError(outcome.status, "unreachable", "History read did not settle; retry explicitly.", outcome.answered);
       const response = outcome.response;
       if (response.arrayBuffer.byteLength > maxBytes ||
           (metadata && (response.text.length > maxBytes || utf8(response.text).length > maxBytes))) {
@@ -996,6 +1118,7 @@ export class Transport {
       }
       return this.settle(method, target, response, 1, started);
     } catch (error) {
+      if (error instanceof SessionEnded) throw error;
       // `budget_bytes` belongs to the size refusal alone. A read that never
       // left the device was never measured against a byte budget, and naming
       // one made a scheduling collision read like an oversize response.
@@ -1050,12 +1173,19 @@ export class Transport {
     setupToken: string,
     accountName: string,
     device: { name: string; platform: string; app_version: string },
-    recovery?: { verifier: string; proof: string },
+    recovery?: { verifier: string; proof?: string },
   ): Promise<Sent<PairingCredential & { account_id: string; recovered?: boolean }>> {
+    // The verifier registers this key at first setup; the PROOF is what
+    // recovers an existing account, so a freshly made key sends none and an
+    // occupied server answers `already_set_up` rather than re-enrolling a new
+    // vault key over the one it holds (`main.ts`, setUpAccount).
     return this.once("POST", "/v1/setup", {
       auth: "none",
       json: { setup_token: setupToken, account_name: accountName, device,
-        ...(recovery === undefined ? {} : { recovery_verifier: recovery.verifier, recovery_proof: recovery.proof }) },
+        ...(recovery === undefined ? {} : {
+          recovery_verifier: recovery.verifier,
+          ...(recovery.proof === undefined ? {} : { recovery_proof: recovery.proof }),
+        }) },
     });
   }
 
@@ -1076,7 +1206,7 @@ export class Transport {
   pairingClaim(
     pairingId: string,
     enrollToken: string,
-    info: { name: string; platform: string; app_version: string; vault?: { envelope: string; nonce: string } },
+    info: { name: string; platform: string; app_version: string; vault?: { envelope: string; nonce: string }; claimant_pub?: string },
   ): Promise<Sent<PairingCredential>> {
     return this.once("POST", `/v1/pairing/${pairingId}/claim`, {
       auth: "none",
@@ -1088,11 +1218,13 @@ export class Transport {
     return this.json("GET", `/v1/pairing/${pairingId}`, { auth: "device", ...patience });
   }
 
+  /** Pairing v2: this creator's key, once it holds the claim it answers. The same key again is a retry. */
+  async pairingReveal(pairingId: string, creatorKey: string): Promise<void> {
+    await this.json("POST", `/v1/pairing/${pairingId}/reveal`, { auth: "device", json: { creator_pub: creatorKey } });
+  }
+
   pairingApprove(pairingId: string, envelope: string, nonce: string): Promise<Sent<void>> {
-    return this.once("POST", `/v1/pairing/${pairingId}/approve`, {
-      auth: "device",
-      json: { envelope, nonce },
-    });
+    return this.once("POST", `/v1/pairing/${pairingId}/approve`, { auth: "device", json: { envelope, nonce } });
   }
 
   pairingReject(pairingId: string): Promise<Sent<void>> {
@@ -1101,7 +1233,8 @@ export class Transport {
 
   /** Single use by the protocol: a retry would destroy the sealed vault key. */
   pairingEnvelope(pairingId: string): Promise<Sent<PairingEnvelope>> {
-    return this.once("GET", `/v1/pairing/${pairingId}/envelope`, { auth: "device" });
+    // Polled until the other device approves: until then `not_approved` is the answer.
+    return this.once("GET", `/v1/pairing/${pairingId}/envelope`, { auth: "device", expected: "not_approved" });
   }
 
   // --- devices -----------------------------------------------------------
@@ -1119,6 +1252,11 @@ export class Transport {
 
   revokeDevice(deviceId: string): Promise<Sent<void>> {
     return this.once("POST", `/v1/devices/${deviceId}/revoke`, { auth: "device", json: {} });
+  }
+
+  /** A REVOKED device off the device lists (server 1.1.5, #247). */
+  archiveDevice(deviceId: string): Promise<Sent<void>> {
+    return this.once("POST", `/v1/devices/${deviceId}/archive`, { auth: "device", json: {} });
   }
 
   heartbeat(appVersion: string, policy: Policy): Promise<Sent<void>> {
@@ -1252,8 +1390,10 @@ export class Transport {
       const probe = await this.attempt("POST", target, sending);
       if (probe.kind !== "settled" || probe.response.status >= 400) return false;
       return decode<{ missing: string[] }>(probe.response).missing.length === 0;
-    } catch {
-      // The probe saves bytes; it can never cost a chunk.
+    } catch (error) {
+      // The probe saves bytes; it can never cost a chunk. An ended session
+      // ends the upload here, its one line already said (#272).
+      if (error instanceof SessionEnded) throw error;
       return false;
     }
   }
@@ -1384,6 +1524,17 @@ export class Transport {
 export const NOT_OBSYNC = "not_obsync";
 
 /**
+ * The codes of a server whose journal or nonce log is FAULTED: a write it
+ * could not take back, so it takes nothing more until it is restarted
+ * (`docs/storage.md`). Like a `507`, each is the server's decision, not its
+ * absence: retried as absence, a faulted server read `offline — retrying`
+ * and "resumes by itself" when only a restart brings it back (#295). Settled
+ * on the first answer whatever status carries them, and said as the restart
+ * they need (`refusalStatus`).
+ */
+export const RESTART_CODES: ReadonlySet<string> = new Set(["journal_faulted", "nonce_log_faulted"]);
+
+/**
  * A request the server refused because it did not come through the edge the
  * server is set up behind (`421 edge_required`, issue #228). Pairing says
  * exactly this, and the status says it too, adding that sync retries.
@@ -1406,8 +1557,8 @@ const UNTRUSTED_AUTHORITY = /ERR_CERT_AUTHORITY_INVALID|unknown certifying autho
 
 /** What an untrusted certificate says, with the one thing to do (troubleshooting, same heading). */
 export const CERT_UNTRUSTED =
-  "This device does not trust your server's certificate, so it refused the connection. Trust that certificate on this device " +
-  "-- see Troubleshooting, \"The certificate is not trusted on this device\".";
+  "This device does not trust your server's certificate, so it refused the connection. Trust that certificate on this device. " +
+  "See Troubleshooting, \"The certificate is not trusted on this device\".";
 
 /**
  * THE OTHER TWO CERTIFICATE REFUSALS, named the same way (issue #229): a
@@ -1421,7 +1572,7 @@ const OUT_OF_DATE = /ERR_CERT_DATE_INVALID|certificate for this server (?:has ex
 
 export const CERT_WRONG_NAME =
   "This device refused your server's certificate because it was made for another name than the one in the Server URL. " +
-  "Use the name it was made for in the Server URL, or make the certificate again for this name -- see Troubleshooting, " +
+  "Use the name it was made for in the Server URL, or make the certificate again for this name. See Troubleshooting, " +
   "\"The certificate is for another name\".";
 export const CERT_OUT_OF_DATE =
   "This device refused your server's certificate because it has expired or is not valid yet. Renew the certificate on " +
@@ -1455,17 +1606,17 @@ function decode<T>(response: HttpResponse): T {
 }
 
 /** obsync refuses with `{"error": code, "detail": text}`; anything else is the edge's. */
-function parseError(text: string): { code: string; detail: string } {
+function parseError(text: string): { code: string; detail: string; fields: Record<string, unknown> } {
   try {
     const parsed: unknown = JSON.parse(text);
     if (typeof parsed === "object" && parsed !== null && typeof (parsed as Record<string, unknown>)["error"] === "string") {
-      const record = parsed as Record<string, unknown>;
-      return { code: record["error"] as string, detail: typeof record["detail"] === "string" ? record["detail"] : "" };
+      const { error, detail, ...fields } = parsed as Record<string, unknown>;
+      return { code: error as string, detail: typeof detail === "string" ? detail : "", fields };
     }
   } catch {
     // Not JSON at all: certainly not obsync's.
   }
-  return { code: NOT_OBSYNC, detail: text.slice(0, 200) };
+  return { code: NOT_OBSYNC, detail: text.slice(0, 200), fields: {} };
 }
 
 export interface MultipartPart {

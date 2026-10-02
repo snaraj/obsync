@@ -34,8 +34,6 @@ const DOMAIN_ID = "0123456789abcdef0123456789abcdef";
 const SECOND_DOMAIN_ID = "9876543210abcdef9876543210abcdef";
 const FILE_ID = "00112233445566778899aabbccddeeff";
 const DEVICE_SECRET = Uint8Array.from({ length: 32 }, (_, i) => 0xa0 ^ i);
-const PAIRING_SECRET = Uint8Array.from({ length: 16 }, (_, i) => 0x10 + i);
-const PAIRING_ID = "fedcba9876543210fedcba9876543210";
 
 /**
  * A deterministic byte stream: xorshift32 (13, 17, 5) seeded with 0x0b5ec1,
@@ -184,11 +182,6 @@ export async function build() {
         "8d2f0a1b4c6e7f90a1b2c3d4e5f60718",
         crypto_.hex(await crypto_.sha256(crypto_.utf8("{}"))),
       ),
-    },
-    pairing: {
-      pairing_secret: crypto_.hex(PAIRING_SECRET),
-      pairing_id: PAIRING_ID,
-      key: crypto_.hex(await crypto_.pairingKey(PAIRING_SECRET, PAIRING_ID)),
     },
     chunker: {
       seed: "obsync/v1/gear",

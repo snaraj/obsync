@@ -5,7 +5,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { hkdfSync, createHash } from "node:crypto";
-import { FakeHost, FakeServer, FakeTimers, KEYS, SETUP_TOKEN, memorySecrets, sandbox, rig, keys, statusItem } from "./fake.mjs";
+import { FakeHost, FakeServer, FakeTimers, KEYS, RECOVERY_HOLD_MS, SETUP_TOKEN, memorySecrets, sandbox, rig, keys, statusItem } from "./fake.mjs";
 const require = createRequire(import.meta.url);
 const { accountRecovery, forgottenCredential, FORGOTTEN_DEVICE } = require("../build/accountRecovery.js");
 const { ApiError, Transport } = require("../build/transport.js");
@@ -81,6 +81,13 @@ test("an updated paired device registers recovery before its last credential lea
   const wire = registration.json;
   assert.equal(wire.includes(derived.proof), false);
   assert.equal(wire.includes(KEYS.vrk), false);
+  // The key is new, so the server keeps its only device for the hold (1.1.5):
+  // the leave is refused by name and this device keeps its credential.
+  const held = await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
+  assert.deepEqual([held.decision, held.reason], ["refused", "recovery_too_new"]);
+  assert.equal(r.instance.state.data.deviceId, KEYS.deviceId);
+  assert.equal(r.server.devices[0].revoked, false);
+  r.server.clock += RECOVERY_HOLD_MS;
   await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
   assert.equal(r.server.devices[0].revoked, true);
   assert.equal(r.instance.state.data.deviceId, null);
@@ -88,14 +95,14 @@ test("an updated paired device registers recovery before its last credential lea
   await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
   assert.notEqual(r.instance.state.data.deviceId, KEYS.deviceId);
   assert.equal(r.instance.state.data.vrk, KEYS.vrk);
-  assert.ok(r.notices.some((text) => text.includes("Account recovered")));
+  assert.ok(r.notices.some((text) => text.includes("recovered your vault on this server")));
 });
 
 test("forgotten credentials show recovery and reset metadata without touching notes, key or address", async (t) => {
   const r = await plugin(t, { metadata: { lastSeq: 42, edgeHeaders: [{ name: "X-Edge", value: "TEST" }] } });
   r.host.seed("kept.md", "local unsent content", 1);
   r.instance.state.data.files["kept.md"] = { fileId: "12".repeat(16), versionId: "34".repeat(32), mtime: 1, size: 20, sha256: "" };
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   r.instance.setStatus({ kind: "idle" });
   assert.match(r.instance.statusText(), /no longer recognises/);
   const { ObsyncSettingTab } = r.box.require(join(r.box.home, "build/ui/settings.js"));
@@ -122,24 +129,58 @@ test("setup recovers a forgotten enrollment with its retained key, without unins
   const r = await plugin(t);
   await r.instance.registerAccountRecovery();
   r.server.devices[0].revoked = true;
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
   assert.notEqual(r.instance.state.data.deviceId, KEYS.deviceId);
   assert.equal(r.instance.forgottenDevice, false);
   assert.equal(r.instance.state.data.vrk, KEYS.vrk);
-  assert.ok(r.notices.some((text) => text.includes("Account recovered")));
+  assert.ok(r.notices.some((text) => text.includes("recovered your vault on this server")));
 });
 
-test("wrong token, wrong vault key and an unregistered legacy account never enrol a recovery device", async (t) => {
-  for (const reason of ["token", "key", "legacy"]) {
+test("a wrong token and a wrong vault key never enrol a recovery device", async (t) => {
+  for (const reason of ["token", "key"]) {
     const server = new FakeServer();
-    if (reason !== "legacy") server.recoveryVerifier = (await accountRecovery(KEYS.vrk)).verifier;
+    server.recoveryVerifier = (await accountRecovery(KEYS.vrk)).verifier;
     const r = await plugin(t, { server, metadata: { ...unpaired, vrk: reason === "key" ? "ab".repeat(32) : KEYS.vrk } });
     await r.instance.setUpAccount(reason === "token" ? "wrong-token" : SETUP_TOKEN, "obsync");
     assert.equal(server.devices.length, 1, reason);
     assert.equal(r.instance.state.data.deviceId, null, reason);
     assert.equal(server.requests.length, 1, "no automatic retry");
   }
+});
+
+test("an operator-cleared account re-enrols the restored key, which then carries the hold and can be warned about (1.1.5)", async (t) => {
+  // The state `obsyncd recovery reset apply` leaves: no verifier, one re-enrolment armed.
+  const server = new FakeServer();
+  server.resetRecovery();
+  const r = await plugin(t, { server, metadata: { ...unpaired, vrk: KEYS.vrk } });
+  await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
+  // The restored key re-enrols and registers the verifier it derives, timed,
+  // which spends the arm.
+  assert.notEqual(r.instance.state.data.deviceId, null);
+  assert.equal(server.recoveryVerifier, (await accountRecovery(KEYS.vrk)).verifier);
+  assert.notEqual(server.recoveryAt, null);
+  assert.equal(server.recoveryArmed, false);
+  assert.ok(r.notices.some((text) => text.includes("recovered your vault on this server")));
+  // The request carried the proof, because the key was restored, not freshly made.
+  const setup = server.requests.find((request) => request.target.endsWith("/v1/setup"));
+  assert.ok(JSON.parse(setup.json).recovery_proof, "a restored key proves the vault");
+});
+
+test("an account with no key that no one has reset refuses the restored key, and says how to get in (1.1.5)", async (t) => {
+  // An account set up before any key was registered, and never reset: the
+  // server answers recovery_unavailable, as 1.1.4 did.
+  const server = new FakeServer();
+  const r = await plugin(t, { server, metadata: { ...unpaired, vrk: KEYS.vrk } });
+  await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
+  assert.equal(r.instance.state.data.deviceId, null);
+  assert.equal(server.devices.length, 1, "no device was enrolled");
+  assert.equal(server.recoveryVerifier, null, "no key was chosen");
+  assert.ok(r.logs.includes("setup decision=failed reason=recovery_unavailable"), r.logs.join(" | "));
+  const told = r.notices.join(" | ");
+  assert.match(told, /Pair a new device.*Pair this device/, told);
+  assert.match(told, /reset its recovery key/, told);
+  assert.ok(!/\b(401|403|409)\b|recovery_unavailable/.test(told), told);
 });
 
 test("setup against a certificate this device does not trust says so, never 'the server refused this step'", async (t) => {
@@ -202,7 +243,7 @@ test("the feed stops on a forgotten credential and never reports a reachable ser
   });
   const engine = new SyncEngine({ state: r.state, host: r.host, timers, transport, onStatus: (status) => {
     statuses.push(status);
-    if (status.code === "forgotten_device" || status.kind === "offline") observed();
+    if (status.code === "credential_rejected" || status.kind === "offline") observed();
   } });
   t.after(() => engine.stop());
   await engine.start();
@@ -212,7 +253,7 @@ test("the feed stops on a forgotten credential and never reports a reachable ser
   // assertions below instead of leaving this witness waiting indefinitely.
   await forgotten;
   assert.equal(refusals, 1);
-  assert.ok(statuses.some((s) => s.code === "forgotten_device"));
+  assert.ok(statuses.some((s) => s.code === "credential_rejected"));
   assert.equal(statuses.some((s) => s.kind === "offline"), false);
   assert.equal(engine.started, false);
   await timers.run(6000);
@@ -244,6 +285,7 @@ test("a key changed while setup waits cannot adopt the old key's credential", as
 test("revoking this device directly exposes recovery without restarting the plugin", async (t) => {
   const r = await plugin(t);
   await r.instance.registerAccountRecovery();
+  r.server.clock += RECOVERY_HOLD_MS;
   await r.instance.revokeDevice(KEYS.deviceId);
   assert.equal(r.instance.forgottenDevice, true);
   assert.match(r.instance.statusText(), /no longer recognises/);
@@ -257,6 +299,9 @@ test("both devices can switch in order and leave no active credential on the old
   server.addDevice(otherId, otherSecret, "second");
   const a = await plugin(t, { server });
   const b = await plugin(t, { server, metadata: { deviceId: otherId, deviceSecret: otherSecret } });
+  // Registered a week ago: the hold has passed (1.1.5).
+  server.recoveryVerifier = (await accountRecovery(KEYS.vrk)).verifier;
+  server.recoveryAt = server.clock - RECOVERY_HOLD_MS;
   for (const r of [a, b]) {
     await r.instance.registerAccountRecovery();
     assert.deepEqual(await r.instance.leaveServer({ discardUnpushed: false, localOnly: false }), { decision: "left", revoked: true });
@@ -299,7 +344,7 @@ test("an old server without recovery registration can still sync while its last-
 test("a forgotten credential permits restoring the phrase before re-enrollment", async (t) => {
   const r = await plugin(t);
   r.server.secrets.clear();
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   await r.instance.restoreVaultKey("ab".repeat(32));
   assert.equal(r.instance.state.data.vrk, "ab".repeat(32));
   assert.equal(r.server.requests.length, 0, "an unusable old credential cannot gate phrase restoration");
@@ -309,7 +354,7 @@ test("recovery reset refuses an active enrollment and an in-progress restore", a
   const r = await plugin(t);
   await r.instance.resetForgottenEnrollment();
   assert.equal(r.instance.state.data.deviceId, KEYS.deviceId);
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   r.instance.restoring = {};
   await assert.rejects(r.instance.resetForgottenEnrollment(), /Finish the current restore/);
   assert.equal(r.instance.state.data.deviceId, KEYS.deviceId);
@@ -320,7 +365,7 @@ test("recovery reset waits for the old engine writer even after the engine refer
   let release;
   const held = new Promise((resolve) => { release = resolve; });
   r.instance.engine = { stop() {}, stopAndWait: () => held };
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   let reset = false;
   const done = r.instance.resetForgottenEnrollment().then(() => { reset = true; });
   for (let i = 0; i < 20; i++) await tick();
@@ -355,10 +400,10 @@ test("a rejected recovery registration also exposes the forgotten-device action"
 
 test("a forgotten device can claim pairing only after its stale enrollment is cleared", async (t) => {
   const r = await plugin(t, { metadata: { lastSeq: 42 } });
-  r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+  r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
   const { PairClaimModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
   const { encodePairingCode } = r.box.require(join(r.box.home, "build/pairing.js"));
-  const modal = new PairClaimModal(r.instance.app, r.instance, encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16)));
+  const modal = new PairClaimModal(r.instance.app, r.instance, encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16), new Uint8Array(16)));
   modal.contentEl = { empty() {}, createEl: () => ({ setText() {} }) };
   modal.close = () => modal.onClose();
   let claims = 0;
@@ -397,12 +442,12 @@ test("registration does not bind a proof after its vault key was replaced", asyn
 test("closing pairing while its forgotten identity resets prevents a claim", async (t) => {
   for (const incomplete of [false, true]) {
     const r = await plugin(t);
-    r.instance.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+    r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
     const { PairClaimModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
     const { encodePairingCode } = r.box.require(join(r.box.home, "build/pairing.js"));
-    const code = incomplete ? "incomplete code" : encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16));
+    const code = incomplete ? "incomplete code" : encodePairingCode("11".repeat(16), "22".repeat(32), new Uint8Array(16), new Uint8Array(16));
     const modal = new PairClaimModal(r.instance.app, r.instance, code);
-    modal.contentEl = { empty() {} };
+    modal.contentEl = { empty() {}, createEl: () => ({ setText() {} }) };
     modal.close = () => modal.onClose();
     const reset = r.instance.resetForgottenEnrollment.bind(r.instance);
     r.instance.resetForgottenEnrollment = async () => { await reset(); modal.close(); };
@@ -442,7 +487,11 @@ test("a second computer's setup is told to pair instead, naming both commands, n
     assert.match(told, /already holds a vault.*Pair a new device.*Pair this device/, told);
     assert.ok(!RAW_CODE.test(told), told);
     assert.ok(!/recovery words|recovery phrase/.test(told), "a key made for this setup restored nothing");
-    assert.ok(r.logs.some((line) => /^setup decision=failed reason=(bad_recovery_proof|recovery_unavailable)$/.test(line)));
+    // A freshly made key sends no proof, so an occupied server says pair or
+    // restore, whether or not it holds a verifier — never a new vault key.
+    assert.ok(r.logs.some((line) => /^setup decision=failed reason=already_set_up$/.test(line)));
+    const setup = r.server.requests.find((request) => request.target.endsWith("/v1/setup"));
+    assert.equal(JSON.parse(setup.json).recovery_proof, undefined, "a freshly made key proves nothing");
   }
 });
 
@@ -452,4 +501,128 @@ test("a setup token from elsewhere is refused in words (#154)", async (t) => {
   const told = r.notices.join(" | ");
   assert.match(told, /did not accept that setup token.*obsyncd setup-token/, told);
   assert.ok(!RAW_CODE.test(told), told);
+});
+
+/** Settings and Show sync status, recorded: every name and description drawn, and every button. */
+function recordDrawing(obsidian) {
+  const drawn = [], buttons = [];
+  Object.assign(obsidian.Setting.prototype, {
+    setName(value) { drawn.push(value); return this; },
+    setDesc(value) { drawn.push(value); return this; },
+    addButton(make) {
+      const button = { setButtonText(value) { button.text = value; return button; }, setCta() { return button; },
+        setDisabled() { return button; }, onClick(handler) { button.click = handler; return button; } };
+      buttons.push(button); make(button); return this;
+    },
+  });
+  return { drawn, buttons };
+}
+
+for (const mobile of [false, true]) test(`a recovery key this device did not register is a security warning, said once and standing until its own registration succeeds (${mobile ? "mobile" : "desktop"}, 1.1.5)`, async (t) => {
+  const r = await plugin(t);
+  const obsidian = r.box.require("obsidian");
+  const platform = obsidian.Platform.isMobile;
+  obsidian.Platform.isMobile = mobile;
+  t.after(() => { obsidian.Platform.isMobile = platform; });
+  const { RECOVERY_MISMATCH } = r.box.require(join(r.box.home, "build/accountRecovery.js"));
+  // Another credential registered first; the server cannot tell which key is the vault's.
+  r.server.recoveryVerifier = "b6".repeat(32);
+  r.server.recoveryAt = r.server.clock;
+
+  // The quietest notices a person can choose keep nothing of it off the screen (requirement 4).
+  r.instance.state.data.notices = { level: "needs-me", merges: "off" };
+  const item = r.instance.statusEl;
+  assert.equal(item.getAttribute("data-state"), "synced");
+  await r.instance.registerAccountRecovery();
+  assert.equal(r.instance.recoveryMismatch, true);
+  assert.deepEqual(r.notices, [`obsync security warning: ${RECOVERY_MISMATCH}`]);
+  const toast = obsidian.raised.at(-1);
+  assert.equal(toast.duration, 0, "it stays until the person dismisses it");
+  assert.equal(toast.hidden, false);
+  assert.deepEqual(r.logs, ["notice decision=shown kind=security stays_ms=0", "recovery decision=refused reason=recovery_mismatch warning=shown"]);
+  // WHILE IT STANDS, THE STATUS ITEM IS THE ALERT, never the check (lab J,
+  // finding A), and its words say where the warning is.
+  assert.equal(item.getAttribute("data-state"), "attention");
+  assert.equal(item.label, "obsync: idle — security warning: see Show sync status");
+  assert.match(RECOVERY_MISMATCH, /Another device set a different recovery key/);
+  assert.match(RECOVERY_MISMATCH, /a device may be compromised/);
+  assert.match(RECOVERY_MISMATCH, /revoke any device you do not recognise/);
+  assert.match(RECOVERY_MISMATCH, /ask whoever runs your server to clear the recovery key/);
+  assert.match(RECOVERY_MISMATCH, /Troubleshooting page, "Another device set a different recovery key"/);
+
+  // Every start asks again, and the warning stands without a second toast.
+  await r.instance.registerAccountRecovery();
+  assert.equal(r.notices.length, 1);
+  assert.equal(r.logs.at(-1), "recovery decision=refused reason=recovery_mismatch warning=standing");
+
+  // Settings and Show sync status carry it, first, with the guide one press away.
+  const { drawn, buttons } = recordDrawing(obsidian);
+  const { ObsyncSettingTab } = r.box.require(join(r.box.home, "build/ui/settings.js"));
+  const tab = new ObsyncSettingTab(r.instance.app, r.instance);
+  // A group of its own under the guide, so a hidden one leaves no trace in another group.
+  const group = () => tab.getSettingDefinitions()[1];
+  const row = () => group().items.find((item) => item.name === "Security warning");
+  assert.equal(group().heading, "Security");
+  assert.equal(group().visible(), true);
+  assert.equal(group().items.length, 1);
+  assert.equal(row().desc, RECOVERY_MISMATCH);
+  const opened = [];
+  r.instance.openSetupGuide = () => { opened.push("guide"); };
+  row().render(new obsidian.Setting({}));
+  assert.equal(buttons.at(-1).text, "Open the guide");
+  buttons.at(-1).click();
+  const { StatusModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
+  const element = () => ({ createEl: () => element(), empty: () => { drawn.length = 0; } });
+  const modal = new StatusModal({}, r.instance);
+  Object.assign(modal, { contentEl: element(), setTitle: () => {}, close: () => modal.onClose() });
+  const before = buttons.length;
+  modal.onOpen();
+  assert.deepEqual(drawn.slice(0, 2), ["Security warning", RECOVERY_MISMATCH], "above everything else");
+  assert.equal(buttons[before].text, "Open the guide", "the modal's first button is the warning's");
+  buttons[before].click();
+  assert.deepEqual(opened, ["guide", "guide"]);
+
+  // The operator's reset: the server forgets the key, this device's next
+  // registration stands, and the warning ends everywhere it was said.
+  r.server.resetRecovery();
+  await r.instance.registerAccountRecovery();
+  assert.equal(r.instance.recoveryMismatch, false);
+  assert.equal(r.server.recoveryVerifier, (await accountRecovery(KEYS.vrk)).verifier);
+  assert.equal(r.server.recoveryArmed, false, "this device's registration spent the arm");
+  assert.deepEqual(r.logs.slice(-2), ["recovery decision=registered", "recovery decision=cleared reason=registered warning=cleared"]);
+  assert.equal(group().visible(), false);
+  // Its words stay in Recent, which is what was said; the warning itself is gone.
+  assert.equal(drawn.includes("Security warning"), false, "Show sync status redrew without it");
+  assert.equal(toast.hidden, true, "and its toast goes with it");
+  assert.equal(item.getAttribute("data-state"), "synced", "and the alert with it");
+  assert.equal(item.label, "obsync: idle");
+  modal.onClose();
+  assert.equal(r.notices.length, 1, "nothing more is said");
+});
+
+test("leaving ends the recovery-key warning with the pairing it was about (1.1.5)", async (t) => {
+  const server = new FakeServer();
+  server.addDevice("ab".repeat(16), "bc".repeat(32), "second");
+  const r = await plugin(t, { server });
+  server.recoveryVerifier = "b6".repeat(32);
+  await r.instance.registerAccountRecovery();
+  assert.equal(r.instance.recoveryMismatch, true);
+  const toast = r.box.require("obsidian").raised.at(-1);
+  assert.equal(toast.hidden, false);
+  assert.deepEqual(await r.instance.leaveServer({ discardUnpushed: false, localOnly: false }), { decision: "left", revoked: true });
+  assert.equal(r.instance.recoveryMismatch, false);
+  assert.equal(toast.hidden, true, "its toast goes with the pairing");
+});
+
+test("a mismatch answered after this device's credential ended says nothing (1.1.5, #233)", async (t) => {
+  const r = await plugin(t);
+  const { ApiError: BoxError } = r.box.require(join(r.box.home, "build/transport.js"));
+  r.instance.transport.registerRecovery = async () => {
+    r.instance.state.data.deviceId = null;
+    throw new BoxError(409, "recovery_mismatch", "this account already has recovery for a different vault key");
+  };
+  await r.instance.registerAccountRecovery();
+  assert.equal(r.instance.recoveryMismatch, false);
+  assert.deepEqual(r.notices, []);
+  assert.deepEqual(r.logs, ["recovery decision=unavailable reason=recovery_mismatch session=ended"]);
 });

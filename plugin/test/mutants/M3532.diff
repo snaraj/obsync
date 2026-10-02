@@ -1,0 +1,12 @@
+# M3532: a page that wrote nothing here is saved at once again (#274)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3190,7 +3190,7 @@
+     // older, and those echoes -- or a replay's skipped entries -- are read
+     // again and dropped again. An empty page that leaves the cursor where it
+     // is has nothing to save at all.
+-    if (!wrote && this.running) {
++    if (false && !wrote && this.running) {
+       if (page.changes.length > 0 || page.seq !== context.state.data.lastSeq) {
+         context.state.data.lastSeq = page.seq;
+         this.defer();

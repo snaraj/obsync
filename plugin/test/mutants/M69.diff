@@ -1,9 +1,9 @@
 # M69: the periodic scan may clear a hold the startup pass took
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2724,7 +2724,7 @@
-           HELD_ACTIONS,
-         );
+@@ -4361,7 +4361,7 @@
+               "this: put it back, or select its new name in Sync folders. If you did delete them, choose Delete everywhere.",
+         });
        }
 -    } else if (tombstones) {
 +    } else {

@@ -1,0 +1,12 @@
+# M3974: the oldest refusal is named, not the newest (#299)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -555,7 +555,7 @@
+  */
+ export function refusedChange(paths: readonly string[]): string {
+   const more = paths.length > 1 ? ` and ${paths.length - 1} more` : "";
+-  return `Your server refused the change to ${quoted(paths[paths.length - 1] as string)}${more}. obsync sends it again within five minutes, ` +
++  return `Your server refused the change to ${quoted(paths[0] as string)}${more}. obsync sends it again within five minutes, ` +
+     "or at once when you select Sync now; if this stays, check your server's log.";
+ }
+ /** Said for a press, a Check or Sync now, that met a server not answering (#182). */

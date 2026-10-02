@@ -1,0 +1,12 @@
+# M3555: Once per note shows every combine
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -310,7 +310,7 @@
+       }
+     }
+     if (!toasts(notice.kind, settings)) return `reason=setting level=${settings().level} merges=${settings().merges}`;
+-    if (notice.kind === "combined" && settings().merges === "once" && now - last < ONCE_IDLE_MS) {
++    if (notice.kind === "combined" && settings().merges === "once" && false) {
+       return `reason=once_per_note since_ms=${now - last} budget_ms=${ONCE_IDLE_MS}`;
+     }
+     return null;

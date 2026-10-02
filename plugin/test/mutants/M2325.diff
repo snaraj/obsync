@@ -1,12 +1,12 @@
 # M2325: the status reads an untrusted certificate as offline (certificate wording)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -503,8 +503,6 @@
-   const said = (message: string): string => (then === "" ? message : `${message} ${then}`);
-   // First: a full server is never absence, whatever carried its answer.
-   if (error.status === 507) return { kind: "error", code: "storage", message: said(SERVER_FULL) };
+@@ -568,8 +568,6 @@
+   // every context: a change it refused goes again at the next walk, up to
+   // `WALK_MS` later, or at once on Sync now (the desktop run, #295).
+   if (RESTART_CODES.has(error.code)) return { kind: "error", code: "restart", message: RESTART_NEEDED };
 -  const certificate = certificateRefusal(error);
 -  if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
-   if (error.code === "unreachable") return { kind: "offline" };
+   if (error.code === "unreachable") return error.answered ? null : { kind: "offline" };
    // Not narrowed by the predicate: every branch below is an `ApiError` too.
    if (forgottenCredential(error as unknown)) {

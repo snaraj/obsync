@@ -1,0 +1,11 @@
+# M3497: a note the pull removed stays listed (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2381,7 +2381,6 @@
+     const verdict = await this.removeHeld(desktop, found, hold, expect, path);
+     // The note left by a hidden name, which Obsidian never listed, so the
+     // name it had is the one to take out of the listing (`reconcile`).
+-    if (verdict === "removed") await this.reconcile(path, "file", false);
+     return verdict;
+   }
+ 

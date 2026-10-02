@@ -169,7 +169,11 @@ for (const [code, at] of [["EPERM", "sync"], ["EISDIR", "open"]]) test(`a host w
   assert.equal(stat.path, "Notes/copy.md");
   assert.deepEqual(readFileSync(join(r.root, "Notes/copy.md")), Buffer.from(bytes));
   assert.deepEqual(readdirSync(join(r.root, "Notes")), ["copy.md"], "one copy, and no temp beside it");
-  assert.deepEqual(r.logs, [`host path_class=folder decision=skipped reason=directory_fsync code=${code}`]);
+  // This adapter has no reconcile, as an Obsidian without it would not (#253): said once, the copy stands.
+  assert.deepEqual(r.logs, [
+    `host path_class=folder decision=skipped reason=directory_fsync code=${code}`,
+    "vault path_class=file decision=skipped reason=no_reconcile",
+  ]);
 });
 
 /**
@@ -353,21 +357,23 @@ test("the fallback never replaces a file that took the name, and leaves no parti
 
 test("a notice that asks something carries one button per answer, stays up, and a press answers it", (t) => {
   // Issues #161 and #162: the sync layer names the answers, the host draws
-  // them. A statement still goes after ten seconds.
+  // them. A statement goes by itself, after long enough to read it.
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true }));
   const obsidian = box.require("obsidian");
-  const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
+  const { ObsidianHost, noticeChannel } = box.require(join(box.home, "build/main.js"));
   const pressed = [];
-  const h = new ObsidianHost({ state: { data: {} }, app: { vault: {} }, log: () => undefined, act: (action) => pressed.push(action) }, null);
+  const plugin = { state: { data: {} }, app: { vault: {} }, log: () => undefined, act: (action) => pressed.push(action) };
+  plugin.notices = noticeChannel(plugin);
+  const h = new ObsidianHost(plugin, null);
   const raised = obsidian.raised.length;
 
-  h.notify("STATEMENT SENTINEL");
-  h.notify("QUESTION SENTINEL", [{ kind: "delete_everywhere" }, { kind: "restore_here" }, { kind: "fetch", fileId: "ab".repeat(16) }]);
+  h.notify({ kind: "info", text: "STATEMENT SENTINEL." });
+  h.notify({ kind: "question", text: "QUESTION SENTINEL?", actions: [{ kind: "delete_everywhere" }, { kind: "restore_here" }, { kind: "fetch", fileId: "ab".repeat(16) }] });
 
   const [statement, question] = obsidian.raised.slice(raised);
   assert.equal(statement.messageEl.children, undefined, "a statement grew buttons");
-  assert.equal(statement.duration, 10000);
+  assert.equal(statement.duration, 8000);
   assert.equal(question.duration, 0, "a question went away before it was answered");
   const buttons = question.messageEl.children;
   assert.deepEqual(buttons.map((button) => `${button.tag}:${button.text}`), ["button:Delete everywhere", "button:Restore here", "button:Fetch"]);

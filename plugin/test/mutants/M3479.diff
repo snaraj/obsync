@@ -1,0 +1,11 @@
+# M3479: a forget refused because the device still syncs says nothing useful
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3971,7 +3971,6 @@
+       if (code === "not_found") {
+         throw new Error("your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.");
+       }
+-      if (code === "device_not_revoked") throw new Error("it can still sync. Revoke it first.");
+       throw error;
+     }
+     if (sent.outcome === "lost") {

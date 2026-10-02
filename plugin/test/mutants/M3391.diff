@@ -1,0 +1,12 @@
+# M3391: a version the record already holds counts as a download not finished (#248)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4520,7 +4520,7 @@
+     for (const file of emptied) {
+       const record = context.state.fileByPath(file.path);
+       const note = own?.notes.get(file.path);
+-      const ahead = note !== undefined && note.version_id !== record?.versionId;
++      const ahead = note !== undefined;
+       const mark = ahead ? note.file_id : blind ? UNVERIFIED_LANDING : undefined;
+       if (mark === undefined) continue;
+       context.state.data.dropped[file.path] = mark;

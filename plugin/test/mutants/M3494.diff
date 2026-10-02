@@ -1,0 +1,11 @@
+# M3494: a re-cased folder's old name stays listed (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1881,7 +1881,6 @@
+     const refusal = await chainRefusal(source.chain.slice(0, -1), walker(desktop.fs)) ??
+       await chainRefusal(found.final === "directory" ? found.chain.slice(0, -1) : found.chain, walker(desktop.fs));
+     if (refusal !== null) throw new VaultPathError(refusal);
+-    await this.reconcile(from, "folder", false);
+     await this.reconcile(to, "folder", true);
+     return "moved";
+   }

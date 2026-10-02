@@ -1,0 +1,17 @@
+# M3308: a saved replay's mark and ids are trusted unchecked (#281)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -587,11 +587,11 @@
+   // File ids and version ids the replay will ask the server for: input,
+   // judged as every id here is.
+   const replaying = loaded["replaying"];
+-  if (isRecord(replaying) && Number.isSafeInteger(replaying["through"]) && (replaying["through"] as number) >= 0 &&
++  if (isRecord(replaying) && typeof replaying["through"] === "number" &&
+     isRecord(replaying["notes"])) {
+     const notes: Record<string, string> = {};
+     for (const [fileId, versionId] of Object.entries(replaying["notes"])) {
+-      if (isHex(fileId, 16) && typeof versionId === "string" && isHex(versionId, 32)) notes[fileId] = versionId;
++      if (typeof versionId === "string") notes[fileId] = versionId;
+     }
+     data.replaying = { through: replaying["through"] as number, notes };
+   }

@@ -1,0 +1,11 @@
+# M4097: a claim whose dialog closed raises no code
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -677,7 +677,6 @@
+     creatorKey = key;
+     waiting.code = await matchCodeV2(secret, claim.pairingId, v2.kex.publicKey, key);
+     waiting.show(asked(waiting.code));
+-    if (waiting.background) showCode(plugin, waiting.code);
+     plugin.log("pairing role=claimant decision=compare");
+     return key;
+   };

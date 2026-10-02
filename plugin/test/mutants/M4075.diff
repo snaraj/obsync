@@ -1,0 +1,11 @@
+# M4075: a push leaves its one chunk to the echo, and an uploading device reads its notes back (#310)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -619,7 +619,6 @@
+       // the version back before this acknowledgement: a third of an
+       // uploading device's notes, each read back from the server once a
+       // second for an hour after setup (#310).
+-      ...(sids.length === 1 ? { sid: sids[0] as string } : {}),
+     });
+     // A NEW NOTE OF ONE CHUNK WAITS FOR THE NEXT SAVE (issue #274), as a note
+     // the pull creates does (#194). The data file is rewritten whole, and a

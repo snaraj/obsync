@@ -1,0 +1,12 @@
+# M3461: a lock or a full disk marks the file as a dropped write (M3242's mutation, its context moved at this head)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -926,7 +926,7 @@
+   } catch (error) {
+     context.arrivals.delete(path);
+     if (answerable !== undefined) context.arrivals.set(path, answerable);
+-    if (unwritable(error) === "write_dropped") dropped[path] = fileId;
++    if (unwritable(error) !== null) dropped[path] = fileId;
+     else if (marked && dropped[path] === fileId) delete dropped[path];
+     throw error;
+   }

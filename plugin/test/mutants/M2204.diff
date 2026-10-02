@@ -1,15 +1,15 @@
 # M2204: Sync now retries parked records after the pass instead of before it
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4039,10 +4039,10 @@
+@@ -4756,10 +4756,10 @@
      const pending = held() > 0;
      let followUp = await this.flush();
      await this.readFeed();
--    await this.retryParked(trigger);
+-    await this.inTurn(trigger, this.retryParked(trigger));
      // A paused note before the pass, so what it holds is in it (issue #179).
-     await this.resume(undefined, trigger);
-     await this.reconcile(verifyUpTo);
-+    await this.retryParked(trigger);
+     await this.inTurn(trigger, this.resume(undefined, trigger));
+     const tally = await this.reconcile(verifyUpTo, trigger === "sync_now" ? trigger : undefined);
++    await this.inTurn(trigger, this.retryParked(trigger));
      // The command that "syncs everything" did not send the deletions the user
      // is still being asked about, and says so rather than nothing (#172).
      if (pending && held() > 0) {

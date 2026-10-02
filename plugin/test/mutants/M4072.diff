@@ -1,0 +1,11 @@
+# M4072: the skip is not logged (#311)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2007,7 +2007,6 @@
+   // (`sameNameTiebreak`, issue #163). A frame naming no heads proves nothing.
+   if (localPath === undefined && change.heads.length > 0 && !change.heads.includes(change.version_id) &&
+     (await competing(context, manifest.path, change.file_id)) === null) {
+-    context.host.log(`pull decision=skipped reason=superseded_in_feed file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }
+ 

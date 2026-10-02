@@ -1,0 +1,12 @@
+# M3611: the fake server does not model the seven-day hold (fidelity)
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -803,7 +803,7 @@
+       if (!device.revoked && live.length <= 1 && this.recoveryVerifier === null) {
+         return this.error(409, "last_device", "the only active device cannot be revoked; pair another first");
+       }
+-      if (!device.revoked && live.length <= 1 && this.recoveryAt !== null && this.clock - this.recoveryAt < RECOVERY_HOLD_MS) {
++      if (false) {
+         return this.error(409, "recovery_too_new", "this account's recovery key was set less than 7 days ago, and until it is 7 days old the only active device stays; pair another device first");
+       }
+       device.revoked = true;

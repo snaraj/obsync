@@ -32,8 +32,8 @@
  * mobile reads whole files through the vault adapter.
  */
 
-import { FORGOTTEN_DEVICE } from "../accountRecovery";
-import { Notice, PluginSettingTab, Setting, normalizePath } from "obsidian";
+import { FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "../accountRecovery";
+import { PluginSettingTab, Setting, normalizePath } from "obsidian";
 import type { App, ButtonComponent, SettingDefinitionItem, SettingGroupItem } from "obsidian";
 import type ObsyncPlugin from "../main";
 import { formatBytes, parseBytes, type Policy } from "../policy";
@@ -41,6 +41,7 @@ import { platformLabel } from "../pairing";
 import { parseSyncFolders } from "../syncScope";
 import { refusalStatus, refusalText } from "../sync/engine";
 import { KEYS_LOST, type EdgeHeader } from "../state";
+import { LEVELS, MERGES, count } from "../notices";
 import { HEADER_NAME, ownHeader, type DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
 import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVERY_UNCONFIRMED, RecoveryPhraseModal, VaultKeyModal, confirmFirst, literal, secretText } from "./modals";
@@ -237,6 +238,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private draftName: string | null = null;
   private deviceList: DeviceRecord[] | null = null;
   private deviceListError: string | null = null;
+  /** Whether the revoked devices are shown under their fold (#247); closed on every showing. */
+  private revokedShown = false;
   private readingDevices = false;
   /**
    * WHICH SHOWING OF THE TAB A DEVICE LIST READ IS FOR (iPhone pass,
@@ -249,6 +252,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
   /** Takes an outage's device list error back once the server answers again. */
   private unwatchDevices: (() => void) | null = null;
   private draftUrl: string | null = null;
+  /** Why the address the field shows was not saved, until one is or the tab closes; Check says it (#303). */
+  private refusedUrl: string | null = null;
   /** Stops the Connection row following the status, when the tab closes. */
   private unwatch: (() => void) | null = null;
   private draftHeaders: string | null = null;
@@ -281,11 +286,13 @@ export class ObsyncSettingTab extends PluginSettingTab {
     super.hide();
     this.unwatch?.();
     this.unwatch = null;
+    this.refusedUrl = null;
     this.draftScope = null;
     this.draftToken = "";
     this.draftName = null;
     this.deviceList = null;
     this.deviceListError = null;
+    this.revokedShown = false;
     this.devicesShown++;
     this.readingDevices = false;
     this.unwatchDevices?.();
@@ -296,12 +303,63 @@ export class ObsyncSettingTab extends PluginSettingTab {
     const enrolled = (): boolean => this.plugin.state.data.deviceId !== null;
     return [
       { heading: "Get started", rows: [this.setupGuide()] },
+      // A group of its own, so a hidden warning leaves no trace in another
+      // group's layout; second, because the guide stays the first row.
+      { heading: "Security", visible: () => this.plugin.recoveryMismatch, rows: [this.recoveryMismatch()] },
       { heading: "Server", rows: [this.serverUrl(), this.edgeHeaders(), this.connection(), this.updateAvailable()] },
       { heading: "Sync folders on this device", rows: [this.folderSelection(), this.selectedFolders(), this.saveScope(), this.heldDeletions()] },
       { heading: "This device", rows: [this.pairing(), this.setup(), this.deviceName(enrolled), this.perFile(enrolled), this.total(enrolled), this.saveDevice(enrolled), this.leaving(enrolled)] },
       { heading: "Devices", visible: () => this.plugin.state.paired, rows: this.deviceRows() },
       { heading: "Vault key", rows: [this.recoveryPhrase()] },
+      { heading: "Notifications", rows: [this.noticeLevel(), this.combinedEdits(), this.recentActivity()] },
     ];
+  }
+
+  // ---- Notifications -------------------------------------------------------
+  // The same two settings are commands in the palette and flags of the CLI's
+  // `obsync-private-sync:notices` (`main.ts`). Neither can quiet a question or
+  // a security warning (`notices.ts`, requirement 4).
+
+  private noticeLevel(): Row {
+    return {
+      name: "Notification level",
+      desc: "Everything useful: obsync also tells you when it combined edits for you. Only what needs me: questions, security warnings, errors and conflict copies. Either way every notice is listed under Recent in Show sync status.",
+      render: (setting) => {
+        setting.addDropdown((dropdown) => {
+          for (const [value, words] of LEVELS) dropdown.addOption(value, words);
+          dropdown.setValue(this.plugin.state.data.notices.level).onChange((value) => {
+            const level = LEVELS.find(([option]) => option === value)?.[0];
+            if (level !== undefined) void this.plugin.setNotices({ level }, "settings").catch(() => {});
+          });
+        });
+      },
+    };
+  }
+
+  private combinedEdits(): Row {
+    return {
+      name: "Combined edits",
+      desc: "When obsync combines your edits to a note with another device's. Once per note: the first time, then quiet for that note until it has gone five minutes without one. Every time: each one. Recent only: never a notice. Only what needs me keeps these to Recent.",
+      render: (setting) => {
+        setting.addDropdown((dropdown) => {
+          for (const [value, words] of MERGES) dropdown.addOption(value, words);
+          dropdown.setValue(this.plugin.state.data.notices.merges).onChange((value) => {
+            const merges = MERGES.find(([option]) => option === value)?.[0];
+            if (merges !== undefined) void this.plugin.setNotices({ merges }, "settings").catch(() => {});
+          });
+        });
+      },
+    };
+  }
+
+  private recentActivity(): Row {
+    return {
+      name: "Recent sync activity",
+      desc: "Every notice since obsync started, newest first, including the ones these settings kept off the screen.",
+      render: (setting) => {
+        setting.addButton((button) => button.setButtonText("Show").onClick(() => { this.plugin.showRecent(); }));
+      },
+    };
   }
 
   // ---- Get started ---------------------------------------------------------
@@ -342,14 +400,20 @@ export class ObsyncSettingTab extends PluginSettingTab {
     };
   }
 
+  /** The answer to the person's own click, through the notice channel (`notices.ts`, kind `confirm`). */
+  private say(text: string): void {
+    this.plugin.notices.show({ kind: "confirm", text });
+  }
+
   /** What was typed into Server URL, normalised, refused or adopted once; nothing when nothing was typed. */
   private adoptServerUrl(): void {
     if (this.draftUrl === null) return;
     const url = normalizeServerUrl(this.draftUrl);
     this.draftUrl = null;
     const refusal = serverUrlRefusal(url, this.plugin.isMobile);
+    this.refusedUrl = refusal;
     if (refusal !== null) {
-      new Notice(refusal);
+      this.say(refusal);
       return;
     }
     this.plugin.state.data.serverUrl = url;
@@ -387,12 +451,12 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.draftHeaders = null;
     if ("refusal" in parsed) {
       this.plugin.log(`edge decision=refused reason=${parsed.reason}`);
-      new Notice(`Custom request headers were not saved: ${parsed.refusal}`, 12000);
+      this.say(`custom request headers were not saved: ${parsed.refusal}`);
       return false;
     }
     this.plugin.state.data.edgeHeaders = parsed.headers;
     this.plugin.log(`edge decision=kept headers=${parsed.headers.length} trimmed=${parsed.trimmed.length}`);
-    if (parsed.trimmed.length !== 0) new Notice(["Custom request headers saved.", ...parsed.trimmed].join(" "), 8000);
+    if (parsed.trimmed.length !== 0) this.say(["custom request headers saved.", ...parsed.trimmed].join(" "));
     // State reports persistence failure and stops sync through its host hook.
     void this.plugin.state.save().catch(() => {});
     return true;
@@ -422,8 +486,14 @@ export class ObsyncSettingTab extends PluginSettingTab {
         this.unwatch = this.plugin.onStatusChange(describe);
         setting
           .addButton((button) => button.setButtonText("Check").onClick(() => {
+            // The field shows an address that was refused: Check neither says
+            // none was typed nor asks the address saved before it (#303).
+            if (this.refusedUrl !== null) {
+              this.say(`Server URL was not saved: ${this.refusedUrl}`);
+              return;
+            }
             if (this.plugin.state.data.serverUrl === "") {
-              new Notice("Type your server's address in Server URL first.");
+              this.say("type your server's address in Server URL first.");
               return;
             }
             checking = true;
@@ -435,8 +505,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
             // works (2026-09-24 battery, S08; #137). The plugin manifest is the
             // route that needs no credential.
             const check = this.plugin.state.paired
-              ? this.plugin.transport.account({ interactive: true }).then((account) => `Reached "${account.name}", ${account.device_count} device(s).`)
-              : this.plugin.transport.pluginManifest({ interactive: true }).then(() => "Reached your obsync server. Next: Setup or recover on your first device, or Pair this device.");
+              ? this.plugin.transport.account({ interactive: true }).then((account) => `reached "${account.name}", ${count(account.device_count, "device")}.`)
+              : this.plugin.transport.pluginManifest({ interactive: true }).then(() => "reached your obsync server. Next: Setup or recover on your first device, or Pair this device.");
             // Nothing answering is said with the address and what to try: a
             // Check is how a wrong address or a switched-off server is found.
             const url = this.plugin.state.data.serverUrl;
@@ -445,7 +515,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
                 ? `Nothing answered at ${url}. Check the Server URL, port included; if it has worked before, your server may be switched off or out of this network's reach.`
                 : refusalText(error);
             void check
-              .then((text) => { new Notice(text); }, (error: unknown) => { new Notice(unanswered(error), 8000); })
+              .then((text) => { this.say(text); }, (error: unknown) => { this.say(unanswered(error)); })
               .finally(() => {
                 checking = false;
                 button.setDisabled(false);
@@ -474,12 +544,27 @@ export class ObsyncSettingTab extends PluginSettingTab {
         setting.addButton((button) =>
           button.setButtonText("Delete everywhere").setDestructive().onClick(() => {
             this.plugin.confirmHeldDeletions();
-            new Notice("obsync: the deletions were published. Your other devices will remove those notes.", 8000);
+            this.say("the deletions were sent; your other devices remove those notes.");
           }));
         setting.addButton((button) =>
           button.setButtonText("Restore here").onClick(() => {
             void this.plugin.restoreHeldDeletions();
           }));
+      },
+    };
+  }
+
+  /**
+   * A recovery key this device did not register (1.1.5): under the guide, at
+   * the top of the tab, until a registration succeeds. The guide is the one address the plugin
+   * names (bundle.test.mjs); its Troubleshooting page has the entry.
+   */
+  private recoveryMismatch(): Row {
+    return {
+      name: "Security warning",
+      desc: RECOVERY_MISMATCH,
+      render: (setting) => {
+        setting.addButton((button) => button.setButtonText("Open the guide").setCta().onClick(() => { this.plugin.openSetupGuide(); }));
       },
     };
   }
@@ -659,12 +744,12 @@ export class ObsyncSettingTab extends PluginSettingTab {
           });
           void this.saveScopeDraft().then((told) => {
             if (told === null) return;
-            new Notice(told === "withdrawn"
-              ? "Folder selection unchanged: sync goes on with the folders it had."
-              : ["Folder selection saved on this device.", ...told].join(" "));
+            this.say(told === "withdrawn"
+              ? "folder selection unchanged: sync goes on with the folders it had."
+              : ["folder selection saved on this device.", ...told].join(" "));
             this.update();
           }).catch((error: unknown) => {
-            new Notice(message(error), 10000);
+            this.say(message(error));
           }).finally(() => {
             // Obsidian components are thenable. Never return one to a Promise.
             button.setDisabled(false).setButtonText("Save");
@@ -719,7 +804,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.plugin.log("state decision=started_fresh reason=copied_vault");
     // State reports persistence failure and stops sync through its host hook.
     void this.plugin.state.save().then(() => {
-      new Notice("obsync: this vault starts fresh. It is not paired with any server, and your notes are unchanged. Set it up or pair it here when you are ready.");
+      this.say("this vault starts fresh: it is not paired with any server, and your notes are unchanged. Set it up or pair it here when you are ready.");
       this.left();
     }, () => {});
   }
@@ -727,7 +812,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private setup(): Row {
     return {
       name: "Setup or recover",
-      desc: "Paste the setup token your server wrote at first boot. For an empty server, it creates the account. For an existing account with no syncing device, restore this vault’s 24-word recovery phrase first, then use the token to re-enrol. A retained vault key works too. Recovery must have been registered by an updated device before its last credential was lost. Keep both the token and phrase private.",
+      desc: "Paste the setup token your server wrote at first boot. For an empty server, it creates the account. For an existing account with no syncing device, restore this vault’s 24-word recovery phrase first, then use the token to re-enrol. A retained vault key works too. If the server has no recovery key for this vault, whoever runs it resets its recovery first and gives you the new token. Keep both the token and phrase private.",
       visible: () => this.plugin.state.data.deviceId === null || this.plugin.forgottenDevice,
       render: (setting) => {
         secretText(setting, "Setup token", this.draftToken, (value) => { this.draftToken = value.trim(); });
@@ -742,10 +827,10 @@ export class ObsyncSettingTab extends PluginSettingTab {
     try {
       const told = await this.saveScopeDraft();
       if (told === null || told === "withdrawn") return false;
-      if (told.length !== 0) new Notice(told.join(" "));
+      if (told.length !== 0) this.say(told.join(" "));
       return true;
     } catch (error) {
-      new Notice(message(error), 10000);
+      this.say(message(error));
       return false;
     }
   }
@@ -829,7 +914,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
         const bytes = parseBytes(typed);
         if (bytes === null) {
           this.plugin.log(`policy decision=refused reason=unreadable_size field=${key}`);
-          new Notice(`${row}: "${typed.trim()}" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`);
+          this.say(`${row}: "${typed.trim()}" is not a size. Type a number with B, KB, MB, GB, KiB, MiB or GiB, or 0 for unlimited.`);
           typed = formatBytes(policy[key]);
           field.setValue(typed);
           return;
@@ -838,7 +923,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
         policy[key] = bytes;
         this.plugin.log(`policy decision=kept field=${key} bytes=${bytes}`);
         setting.setDesc(describe());
-        void this.plugin.state.save().catch((error: unknown) => { new Notice(message(error), 8000); });
+        void this.plugin.state.save().catch((error: unknown) => { this.say(message(error)); });
       });
     });
   }
@@ -851,11 +936,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
       render: (setting) => {
         setting.addButton((button) => button.setButtonText("Save").setCta().onClick(() => {
           void this.plugin.saveDeviceSettings(this.draftName ?? this.plugin.deviceName()).then(() => {
-            new Notice("This device's settings are saved.");
+            this.say("this device's settings are saved.");
             this.draftName = null;
             this.update();
           }).catch((error: unknown) => {
-            new Notice(message(error), 8000);
+            this.say(message(error));
           });
         }));
       },
@@ -913,14 +998,20 @@ export class ObsyncSettingTab extends PluginSettingTab {
     const rank = (device: DeviceRecord): number =>
       device.device_id === self ? 0 : device.revoked ? 3 : device.state === "pending" ? 2 : 1;
     const devices = [...(this.deviceList ?? [])].sort((a, b) => rank(a) - rank(b));
-    const rows = devices.map((device) => this.deviceRow(device));
     // A phone paired twice under one name left two rows nobody could tell
     // apart, and Obsidian keys each row by its name: a console error at every
-    // draw (rig, 2026-09-27). Such a row carries the start of its device id.
-    const names = rows.map((row) => row.name);
-    rows.forEach((row, at) => {
-      if (names.indexOf(row.name) !== names.lastIndexOf(row.name)) row.name += ` · ${devices[at]?.device_id.slice(0, 8)}`;
-    });
+    // draw (rig, 2026-09-27). Such a device carries the start of its id, in
+    // its row AND in what Revoke and Forget say about it (#247): three rows
+    // reading "Android RFV2" asked the same question three times over.
+    const names = devices.map((device) => `${device.name}${this.marked(device)}`);
+    const named = (at: number): string => {
+      const name = names[at] as string;
+      return names.indexOf(name) === names.lastIndexOf(name) ? (devices[at] as DeviceRecord).name : `${(devices[at] as DeviceRecord).name} · ${(devices[at] as DeviceRecord).device_id.slice(0, 8)}`;
+    };
+    const rows = devices.map((device, at) => this.deviceRow(device, named(at)));
+    // The revoked rows are the last ones: the fold goes in front of them.
+    const revoked = devices.filter((device) => device.revoked).length;
+    if (revoked > 0) rows.splice(rows.length - revoked, 0, this.revokedFold(revoked));
     rows.push({
       name: "Device list",
       desc: () => {
@@ -978,25 +1069,44 @@ export class ObsyncSettingTab extends PluginSettingTab {
     this.unwatchDevices = unwatch;
   }
 
-  private deviceRow(device: DeviceRecord): Row {
+  /** What a row says beside a device's name. Enrolled without the vault key yet: issue #152. */
+  private marked(device: DeviceRecord): string {
+    if (device.device_id === this.plugin.state.data.deviceId) return " (this device)";
+    return device.revoked ? " (revoked)" : device.state === "pending" ? " (not paired yet)" : "";
+  }
+
+  /** One device's row. `named` is its name, plus the start of its id when another shares it. */
+  private deviceRow(device: DeviceRecord, named: string): Row {
     const self = device.device_id === this.plugin.state.data.deviceId;
     const seen = device.last_seen ? `, last seen ${new Date(device.last_seen).toLocaleString()}` : "";
-    // Enrolled by a pairing code, without the vault key yet (issue #152).
     const pending = device.state === "pending";
     const row: Row = {
-      name: `${device.name}${self ? " (this device)" : device.revoked ? " (revoked)" : pending ? " (not paired yet)" : ""}`,
+      name: `${device.name}${this.marked(device)}${named.slice(device.name.length)}`,
       desc: `${device.platform}, plugin ${device.app_version}${seen}${pending ? `. ${STILL_PAIRING}` : ""}`,
     };
-    if (!device.revoked) {
+    if (device.revoked) {
+      row.visible = () => this.revokedShown;
+      row.render = (setting) => {
+        setting.addButton((button) => button.setButtonText("Forget").onClick(() => {
+          new ConfirmModal(
+            this.app,
+            `Forget ${named}?`,
+            `${named} leaves this list for good. It already cannot sync, and it goes on saying so if somebody opens it; pair it again to bring it back. Nothing else changes: your notes stay, and so does its name on what it wrote.`,
+            () => { void this.forget(device, named); },
+            "Forget",
+          ).open();
+        }));
+      };
+    } else {
       row.render = (setting) => {
         setting.addButton((button) => button.setButtonText("Revoke").setDestructive().onClick(() => {
           new ConfirmModal(
             this.app,
-            `Revoke ${device.name}?`,
+            `Revoke ${named}?`,
             self
               ? "This device will stop syncing immediately. To return, pair from another syncing device, or recover with the setup token and this vault’s key after recovery has been registered. Keep the setup token and 24-word phrase before revoking the last device. The vault key stays in this vault's secret storage."
-              : `${device.name} will stop syncing immediately. Files already on it stay readable there; it cannot write, delete or read anything new.`,
-            () => { void this.revoke(device); },
+              : `${named} will stop syncing immediately. Files already on it stay readable there; it cannot write, delete or read anything new.`,
+            () => { void this.revoke(device, named); },
           ).open();
         }));
       };
@@ -1004,14 +1114,47 @@ export class ObsyncSettingTab extends PluginSettingTab {
     return row;
   }
 
-  private async revoke(device: DeviceRecord): Promise<void> {
+  private async revoke(device: DeviceRecord, named: string): Promise<void> {
     try {
       await this.plugin.revokeDevice(device.device_id);
-      new Notice(`${device.name} is revoked.`);
+      this.say(`${named} is revoked.`);
       this.deviceList = null;
       this.update();
     } catch (error) {
-      new Notice(`${device.name} was not revoked: ${message(error)}`, 10000);
+      this.say(`${named} was not revoked: ${message(error)}`);
+    }
+  }
+
+  /**
+   * THE FOLD (#247). Revoked devices are counted on one row and listed under
+   * it only when asked: a vault left and paired again a few times listed more
+   * revoked devices than working ones, and the working ones had to be found
+   * among them. The button is a disclosure, and says whether it is open.
+   */
+  private revokedFold(count: number): Row {
+    return {
+      name: `${count} revoked device${count === 1 ? "" : "s"}`,
+      desc: "These can no longer sync. Forget one to take it off this list for good.",
+      render: (setting) => {
+        setting.addButton((button) => {
+          button.setButtonText(this.revokedShown ? "Hide" : "Show").onClick(() => {
+            this.revokedShown = !this.revokedShown;
+            this.update();
+          });
+          button.buttonEl.setAttribute("aria-expanded", String(this.revokedShown));
+        });
+      },
+    };
+  }
+
+  private async forget(device: DeviceRecord, named: string): Promise<void> {
+    try {
+      await this.plugin.forgetRevoked(device.device_id);
+      this.say(`${named} is forgotten.`);
+      this.deviceList = null;
+      this.update();
+    } catch (error) {
+      this.say(`${named} was not forgotten: ${refusalText(error)}`);
     }
   }
 

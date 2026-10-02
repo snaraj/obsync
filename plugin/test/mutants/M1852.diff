@@ -1,7 +1,7 @@
 # M1852: the approval prompt drops the match code (#152)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -303,7 +303,7 @@
+@@ -399,7 +399,7 @@
      if (this.closed) return;
      statusEl.setText(
        `Approve "${claimant.name}" (${platformLabel(claimant.platform)}, obsync ${claimant.app_version}), asking since ${clock(asked)}? ` +

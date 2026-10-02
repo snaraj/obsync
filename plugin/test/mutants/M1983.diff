@@ -1,12 +1,12 @@
 # M1983: a push the stop cut short is reported as a failure, with an error status
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2057,10 +2057,6 @@
+@@ -2709,10 +2709,6 @@
        }
        // A push the stop cut at a chunk boundary is not a failure: the file is
        // still unsent, and the next start's pass queues it again.
 -      if (!this.running && stopped(error)) {
--        context.host.log("push path_class=file decision=cancelled reason=engine_stopped");
+-        context.host.log(`push path_class=${pathClass} decision=cancelled reason=engine_stopped`);
 -        return;
 -      }
        // Nor is a path that went away while it waited its turn (issue #164):

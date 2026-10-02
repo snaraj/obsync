@@ -1,0 +1,12 @@
+# M3684: the walk is not handed the stop's signal (#287)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3885,7 +3885,7 @@
+         this.walkFor = null;
+         this.unwalked = 0;
+       }
+-      await this.inPass(context.host, "scan", async () => this.survey((await context.host.scan?.(context.signal)) ?? await context.host.list(), false, "scan"));
++      await this.inPass(context.host, "scan", async () => this.survey((await context.host.scan?.()) ?? await context.host.list(), false, "scan"));
+     } catch (error) {
+       // A walk the stop ended (`stopAndWait`) is no failure of the scan.
+       context.host.log(this.running

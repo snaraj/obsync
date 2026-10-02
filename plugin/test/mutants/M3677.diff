@@ -1,0 +1,12 @@
+# M3677: a stalled scan does not name the pull holding the chain (#285)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3836,7 +3836,7 @@
+       const now = this.nowFn();
+       this.options.host.log(
+         `scan decision=stalled waited_ms=${now - started} budget_ms=${SCAN_STALL_MS} ` +
+-          `chain=${this.holder === null ? "idle" : `${this.holder.label}:${now - this.holder.since}`}`,
++          `chain=idle`,
+       );
+     }, SCAN_STALL_MS);
+     void this.track(this.scanLocal().finally(() => {

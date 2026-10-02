@@ -1,0 +1,12 @@
+# M3540: the host never puts its window's throttling back (#283)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -767,7 +767,7 @@
+         .electronWindow?.webContents;
+       const set = contents?.setBackgroundThrottling;
+       if (typeof set !== "function") return this.unthrottled("absent", reason, started);
+-      set.call(contents, !busy);
++      set.call(contents, false);
+     } catch {
+       return this.unthrottled("failed", reason, started);
+     }

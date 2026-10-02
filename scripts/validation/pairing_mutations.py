@@ -6,7 +6,8 @@ from their exact starting bytes in finally, including on failure or interrupt.
 Never run beside another build or source editor in this worktree.
 """
 from pathlib import Path
-import subprocess
+
+from kills import Judge
 
 TABLE = "crates/obsyncd/src/api/pairing.rs"
 APP = "crates/obsyncd/src/api/mod.rs"
@@ -16,15 +17,15 @@ CASES = [
      "if matches!(p.state, State::Claimed | State::Approved)",
      "if matches!(p.state, State::Claimed)", UNCOLLECTED),
     ("collection-activates", TABLE,
-     "        activate()?;\n        let envelope",
-     "        let envelope", "an_unapproved_claimant_holds_a_secret_and_no_authority"),
+     "        activate()?;\n        let (envelope, nonce)",
+     "        let (envelope, nonce)", "an_unapproved_claimant_holds_a_secret_and_no_authority"),
     ("approval-does-not-activate", TABLE,
      "    // Approval grants nothing yet:",
      "    app.store.activate_device(&claimant)?;\n    // Approval grants nothing yet:",
      "the_pairing_flow_runs_end_to_end"),
     ("refused-activation-consumes-nothing", TABLE,
-     "        activate()?;\n        let envelope = p.envelope.take().ok_or_else(consumed)?;\n        p.state = State::Consumed;\n",
-     "        let envelope = p.envelope.take().ok_or_else(consumed)?;\n        p.state = State::Consumed;\n        activate()?;\n",
+     "        activate()?;\n        let (envelope, nonce) = p.envelope.take().ok_or_else(consumed)?;\n        let creator_pub = p.creator_pub.take();\n        p.state = State::Consumed;\n",
+     "        let (envelope, nonce) = p.envelope.take().ok_or_else(consumed)?;\n        let creator_pub = p.creator_pub.take();\n        p.state = State::Consumed;\n        activate()?;\n",
      "collecting_activates_after_every_check_and_a_refusal_consumes_nothing"),
     ("collection-inside-the-window", TABLE,
      "        if p.expires <= now {\n            return Err(expired());\n        }\n        if p.state != State::Approved {",
@@ -55,12 +56,53 @@ CASES = [
     ("sweep-logs-the-ended-state", APP,
      '                ("state", Val::word(ended.as_str())),\n',
      "", UNCOLLECTED),
+    # Pairing v2 (the key-exchange fields): the server holds them verbatim and
+    # validates their shape without any EC math.
+    ("pubkey-rejects-a-non-04-prefix", TABLE,
+     "if raw.len() != PAIRING_PUBLIC_KEY_LEN || raw[0] != 0x04 {",
+     "if raw.len() != PAIRING_PUBLIC_KEY_LEN {",
+     "public_key_field_is_optional_and_holds_a_p256_point_verbatim"),
+    # The reveal (review of PR #306): the creator's key reaches the waiting
+    # claimant before approval, from the creator alone, once a claim exists.
+    ("reveal-stores-the-creator-key", TABLE,
+     "        p.creator_pub = Some(creator_pub.to_string());",
+     "        let _ = creator_pub;",
+     "a_revealed_creator_pub_rides_the_wait_and_the_envelope"),
+    ("reveal-holds-one-key", TABLE,
+     "        if p.creator_pub\n            .as_deref()\n            .is_some_and(|held| held != creator_pub)\n        {",
+     "        if false {",
+     "a_revealed_creator_pub_rides_the_wait_and_the_envelope"),
+    ("reveal-is-the-creators", TABLE,
+     "        if &p.creator != actor {\n            return Err(not_creator());\n        }\n        if p.expires <= now {\n            return Err(expired());\n        }\n        match p.state {\n            State::Claimed => {}\n            State::Open => return Err(not_claimed()),\n            _ => return Err(already_approved()),\n        }\n        if p.creator_pub",
+     "        if p.expires <= now {\n            return Err(expired());\n        }\n        match p.state {\n            State::Claimed => {}\n            State::Open => return Err(not_claimed()),\n            _ => return Err(already_approved()),\n        }\n        if p.creator_pub",
+     "a_revealed_creator_pub_rides_the_wait_and_the_envelope"),
+    ("reveal-inside-the-window", TABLE,
+     "        if p.expires <= now {\n            return Err(expired());\n        }\n        match p.state {\n            State::Claimed => {}\n            State::Open => return Err(not_claimed()),\n            _ => return Err(already_approved()),\n        }\n        if p.creator_pub",
+     "        match p.state {\n            State::Claimed => {}\n            State::Open => return Err(not_claimed()),\n            _ => return Err(already_approved()),\n        }\n        if p.creator_pub",
+     "a_reveal_needs_a_live_claim_not_yet_approved"),
+    ("reveal-needs-a-claim-not-yet-approved", TABLE,
+     "        match p.state {\n            State::Claimed => {}\n            State::Open => return Err(not_claimed()),\n            _ => return Err(already_approved()),\n        }\n        if p.creator_pub",
+     "        if p.creator_pub",
+     "a_reveal_needs_a_live_claim_not_yet_approved"),
+    ("the-wait-carries-the-key", TABLE,
+     "                Some(key) => waiting.with_field(\"creator_pub\", s(key)),",
+     "                Some(_) => waiting,",
+     "a_revealed_creator_pub_rides_the_wait_and_the_envelope"),
+    ("collection-returns-the-creator-key", TABLE,
+     "        let creator_pub = p.creator_pub.take();",
+     "        let creator_pub: Option<String> = None;",
+     "a_revealed_creator_pub_rides_the_wait_and_the_envelope"),
+    ("the-reveal-route-is-served", APP,
+     "            Route::PairingReveal(id) => pairing::reveal(self, req, client, &id),\n",
+     "            Route::PairingReveal(id) => pairing::approve(self, req, client, &id),\n",
+     "the_creator_key_reaches_the_waiting_claimant_only_once_revealed"),
 ]
 
 
 def main():
     originals = {Path(path): Path(path).read_bytes() for _, path, *_ in CASES}
     failures = []
+    judge = Judge({("obsyncd", case[-1]) for case in CASES})
     try:
         for name, path, old, new, selector in CASES:
             source = originals[Path(path)].decode()
@@ -68,25 +110,16 @@ def main():
                 raise RuntimeError(f"{name}: mutation context moved")
             Path(path).write_text(source.replace(old, new, 1))
             try:
-                result = subprocess.run(
-                    ["cargo", "test", "-p", "obsyncd", "--lib", selector],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, timeout=300, check=False,
-                )
-                compiled = "could not compile" not in result.stdout
-                killed = compiled and result.returncode != 0 and "FAILED" in result.stdout
-                print(f"{name}: {'KILLED' if killed else 'NOT A KILL'}", flush=True)
-                if not killed:
-                    failures.append(name)
-                    print(result.stdout, flush=True)
-                else:
-                    print("\n".join(line for line in result.stdout.splitlines()
-                                    if "FAILED" in line or "test result:" in line), flush=True)
+                verdict, evidence = judge.test(selector)
+                print(f"{name}: {verdict}\n{evidence}", flush=True)
+                if verdict != "KILLED":
+                    failures.append(f"{name} ({verdict})")
             finally:
                 Path(path).write_bytes(originals[Path(path)])
     finally:
         for path, original in originals.items():
             path.write_bytes(original)
+        judge.close()
     if failures:
         raise SystemExit("Unkilled probes: " + ", ".join(failures))
     print(f"All {len(CASES)} server probes compiled and were killed.")

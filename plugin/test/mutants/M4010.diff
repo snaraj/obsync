@@ -1,0 +1,11 @@
+# M4010: the walk reads a stalled folder as an unreadable one (#302, #307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1383,7 +1383,6 @@
+     try {
+       names = await desktop.fs.promises.readdir(at);
+     } catch (error) {
+-      if (error instanceof DiskStalled) throw error;
+       // Unreadable is not empty, and this listing never deletes anything.
+       this.log("scan decision=skipped reason=unreadable_directory");
+       return;

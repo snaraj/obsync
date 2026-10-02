@@ -1,0 +1,12 @@
+# M3518: a revoked new device is not read as having dropped the key
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -197,7 +197,7 @@
+  * only wait longer, never say "paired" sooner.
+  */
+ export function keptOutcome(row: KeptRow | undefined): "kept" | "dropped" | "open" {
+-  if (row === undefined || row.revoked || row.state === "revoked") return "dropped";
++  if (row === undefined) return "dropped";
+   if (row.state !== "active") return "open";
+   if (typeof row.last_heartbeat === "number") return "kept";
+   if (typeof row.last_sign_in !== "number" || typeof row.last_seen !== "number") return "open";

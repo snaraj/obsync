@@ -51,7 +51,7 @@
  *
  * WHAT IS SYNCED. Only canonical relative vault paths, in both directions:
  * the watcher, startup reconciliation and the pull path all refuse anything
- * else, which is what takes `.obsidian/**` and `.git/**` out of sync in v0.1
+ * else, which is what takes the config folder and `.git/**` out of sync in v0.1
  * (`vaultPath.ts` states the rule and why hidden folders wait for an opt-in).
  *
  * PLATFORM. Concurrency is 4 on desktop and 2 on mobile; the desktop host
@@ -62,6 +62,7 @@
 import { forgottenCredential, FORGOTTEN_DEVICE } from "../accountRecovery";
 import { ByteSource, CHUNK_MAX } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
+import { count, HELD, quoted, type SyncNotice } from "../notices";
 import {
   DomainMap,
   DomainMapError,
@@ -72,11 +73,11 @@ import {
   saveDomainMap,
   soleDomain,
 } from "../domainmap";
-import { State, isPushed } from "../state";
-import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, NOT_OBSYNC, Transport, certificateRefusal } from "../transport";
-import { VaultPathError, caseOnly, vaultPathRefusal } from "../vaultPath";
+import { State, UNVERIFIED_LANDING, isPushed } from "../state";
+import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, MAX_WAIT_SECONDS, NOT_OBSYNC, RESTART_CODES, SessionEnded, Transport, certificateRefusal } from "../transport";
+import { VaultPathError, errorText, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
-import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, settleBeside, stage, unwritableText, yieldName } from "./pull";
+import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, sameChunks, settleBeside, stage, unwritableText, yieldName } from "./pull";
 import { publishPause } from "./pause";
 import { PathGone, carryPost, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS, REPAIR_WALK_MS } from "./repair";
@@ -86,6 +87,28 @@ export interface VaultStat {
   path: string;
   mtime: number;
   size: number;
+}
+
+/**
+ * Sync now's listing on a host that asks the disk for every listed file's
+ * size and date at once (`VaultHost.pressListing`, issue #246): `readdir`
+ * when the host could, the index with a `stat` per suspect when it could not.
+ */
+export interface PressListing {
+  files: VaultStat[];
+  /** Folders the disk answered for. */
+  folders: number;
+  source: "readdir" | "fallback";
+}
+
+/** What a reconcile pass saw, for the press that asked for it (#246). */
+export interface PassTally {
+  /** Files Sync now reads again although nothing says they changed, queued after the lock. */
+  verify: VaultStat[];
+  files: number;
+  /** Listed files whose size or date differs from their record, or that have none. */
+  differing: number;
+  listing: PressListing | null;
 }
 
 /**
@@ -180,16 +203,17 @@ export interface VaultHost {
    * the watcher did not already have. On desktop the host can read the
    * directory itself, and that is the only view that converges a change
    * Obsidian has not seen (issue #101). Mobile reaches the vault only through
-   * the adapter and answers `null`.
+   * the adapter and answers `null`. A walk the engine's stop aborts ends at
+   * its next step and rejects: part of a vault is no listing (#287).
    */
-  scan?(): Promise<VaultStat[] | null>;
+  scan?(signal?: AbortSignal): Promise<VaultStat[] | null>;
   /**
    * Remove the temp files this host's writes left when the device stopped in
    * the middle of them (issue #159). Called once per start, by its first
    * periodic scan under the pull lock (issue #195); a host whose writes leave
-   * nothing behind has none.
+   * nothing behind has none. A stop ends it at its next step (#287).
    */
-  sweep?(): Promise<void>;
+  sweep?(signal?: AbortSignal): Promise<void>;
   /**
    * Finish, or put back, what this host left half-done that the start pass
    * must see as it was: a re-case stopped between its two renames (issue
@@ -223,6 +247,16 @@ export interface VaultHost {
    * published or applied here. Only the host can see the folder that says so.
    */
   inNestedVault(path: string): Promise<boolean>;
+  /**
+   * SYNC NOW'S LISTING WHERE THE DISK CAN BE ASKED CHEAPLY (issue #246), or
+   * `null` where a press reads again what it verifies, as a desktop does.
+   * Every listed file carries the size and date the DISK holds, so a file
+   * another app changed differs from its record and is read, and an
+   * unchanged one is not read at all.
+   */
+  pressListing?(label: string): Promise<PressListing | null>;
+  /** Files and bytes this host has read since it started, for Sync now's line (#246). */
+  readTotals?(): { files: number; bytes: number };
   stat(path: string): Promise<VaultStat | null>;
   read(path: string): Promise<Bytes>;
   source(path: string, size: number): ByteSource;
@@ -319,7 +353,8 @@ export interface VaultHost {
   editing(path: string): Promise<"unsaved" | "saved" | null>;
   /** Recent trusted editor input, including a composition still in progress. */
   typing(path: string): boolean;
-  notify(message: string, actions?: NoticeAction[]): void;
+  /** Tell the person, through the one notice channel (`notices.ts`). */
+  notify(notice: SyncNotice): void;
   /** Take the held-deletions question off the screen once nothing is held (`hold`). */
   closeQuestion?(): void;
   log(line: string): void;
@@ -329,6 +364,8 @@ export interface VaultHost {
    * (`main.ts`, `inNestedVault`, issue #198); outside a pass it asks afresh.
    */
   pass?(open: boolean): void;
+  /** The engine has sync work in hand, or none left: said once at each change (`SyncEngine.pace`, issue #283). */
+  hurry?(busy: boolean): void;
 }
 
 export interface SyncContext {
@@ -380,7 +417,7 @@ export interface SyncContext {
    * path asks before it settles a collision on that note.
    */
   readonly answering: Map<string, { mtime: number; arrived: number | null }>;
-  /** When another device's version of each path last arrived here (`receive`). */
+  /** When this device last began writing another device's version into each path (`pull.ts`, `commitMarked`). */
   readonly arrivals: Map<string, number>;
   /**
    * Publish a local file NOW, out of the queue's turn, and wait for it.
@@ -428,10 +465,20 @@ export interface SyncContext {
   ahead?: Prefetch | null;
   /**
    * File ids the feed is expected to find already here, byte for byte: the
-   * notes of other devices whose names a held local note occupies (`holding`).
-   * Their chunks are not fetched ahead, because adopting them fetches none.
+   * notes of other devices whose names a held local note occupies (`holding`),
+   * with that name and the versions the note there descends from. Their
+   * chunks are not fetched ahead, because adopting them fetches none, and a
+   * version behind them is never written at another name (`pull.ts`, issue
+   * #241).
    */
-  readonly expected?: Set<string>;
+  readonly expected?: ReadonlyMap<string, { readonly path: string; readonly behind: ReadonlySet<string> }>;
+  /**
+   * Versions this device authored, of notes it no longer holds anywhere, that
+   * are to be applied like another device's instead of dropped as echoes:
+   * each is its file's head, proved by the server just before (`returnLost`,
+   * issue #239).
+   */
+  readonly returning?: ReadonlySet<string>;
   readonly deviceNames: Map<string, string>;
   now(): number;
   deviceNameFor(deviceId: string): string;
@@ -460,7 +507,7 @@ async function untilStopped<T>(stop: AbortSignal | undefined, drop: AbortControl
 
 export type EngineStatus =
   | { kind: "idle" }
-  | { kind: "syncing"; pending: number; held?: string }
+  | { kind: "syncing"; pending: number; held?: string; checking?: number; waiting?: string }
   | { kind: "offline" }
   | { kind: "error"; message: string; code?: string }
   | { kind: "paused"; message: string };
@@ -474,22 +521,46 @@ export const REVOKED_DEVICE =
 export const CLOCK_OFF =
   "This device's clock is more than five minutes off, so your server refuses it. Set the date and time to update automatically.";
 export const SERVER_FULL =
-  "Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota.";
+  "Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota, then select Sync now.";
+export const RESTART_NEEDED =
+  "Your server hit a storage error and refuses changes until it is restarted. Restart your obsync server, then select Sync now.";
 export const NOT_OBSYNC_ANSWER =
   "Something between this device and your server, such as a proxy or an access policy, answered instead of obsync. Check the Server URL and the Custom request headers in obsync settings.";
 /**
- * HOW A REFUSAL THAT CLEARS ELSEWHERE ENDS -- a full server, a wrong clock,
- * something in front of the server, the edge (#155, #228). A running engine
- * keeps asking, so its sync resumes by itself. A refused START is never asked
- * again by a timer (#129), so it says what to press. A press -- a Check, the
- * device list -- answers for itself and promises neither.
+ * HOW A REFUSAL THAT CLEARS ELSEWHERE ENDS -- a wrong clock, something in
+ * front of the server, the edge (#155, #228). A running engine keeps asking,
+ * so its sync resumes by itself. A refused START is never asked again by a
+ * timer (#129), so it says what to press. A press -- a Check, the device
+ * list -- answers for itself and promises neither. A server that refuses
+ * CHANGES -- full (`SERVER_FULL`) or faulted (`RESTART_NEEDED`) -- is none of
+ * these: its words say what to press in every context (`refusalStatus`).
  */
 export const RESUMES = "Sync resumes by itself.";
 export const AFTER_START = "Once that is fixed, select Sync now.";
 export const FEED_FAILED =
   "Changes from your server could not be read. obsync tries again every few seconds; if this stays, check your server's log.";
+/** The code of a disk call on this device that never answered (the host's `onTime`, #307). */
+export const DISK_STALLED = "disk_stalled";
+/**
+ * A folder record the server refused past `FOLDER_POST_TRIES` (a note's own
+ * refusal is `refusedChange`). Folders are the reconcile pass's business, not
+ * the walk's, so it goes again at the next start's pass or at once on Sync
+ * now's (`case-rename.test.mjs`, the folder record that expires).
+ */
 export const PUSH_REFUSED =
-  "Your server refused a change from this device. It is sent again when the note next changes, or within a minute; if this stays, check your server's log.";
+  "Your server refused a folder change from this device. obsync sends it again when Obsidian next starts, or at once when you select Sync now; if this stays, check your server's log.";
+/**
+ * A change the server refused, said while it is unsent (#299): by name the
+ * last of them to become unsent -- the set keeps the order paths entered it,
+ * and one refused again keeps its place (#300) -- and one line for several.
+ * It goes again at the next pass, at most `WALK_MS` away on a desktop, or at
+ * once on Sync now.
+ */
+export function refusedChange(paths: readonly string[]): string {
+  const more = paths.length > 1 ? ` and ${paths.length - 1} more` : "";
+  return `Your server refused the change to ${quoted(paths[paths.length - 1] as string)}${more}. obsync sends it again within five minutes, ` +
+    "or at once when you select Sync now; if this stays, check your server's log.";
+}
 /** Said for a press, a Check or Sync now, that met a server not answering (#182). */
 export const NOT_ANSWERING = "Your server is not answering. Sync resumes by itself when it is back.";
 export const VERIFY_FAILED =
@@ -505,19 +576,30 @@ export const VERIFY_FAILED =
  *
  * A REFUSAL IS NOT ABSENCE. Every one of these used to read `offline —
  * retrying`, which sends a person to their Wi-Fi about a revoked device, a
- * wrong clock or a full disk; only absence says offline here.
+ * wrong clock or a full disk; only absence says offline here. Nor is a 5xx
+ * the server answered in its own coded error (`ApiError.answered`, #298):
+ * retried as absence is, and worded by each caller for what it was doing.
  */
 export function refusalStatus(error: unknown, then = RESUMES): EngineStatus | null {
   if (!(error instanceof ApiError)) return null;
   const said = (message: string): string => (then === "" ? message : `${message} ${then}`);
-  // First: a full server is never absence, whatever carried its answer.
-  if (error.status === 507) return { kind: "error", code: "storage", message: said(SERVER_FULL) };
+  // First: a full server is never absence, whatever carried its answer. Its
+  // refusal ends only when a change is taken (`accepted`), and a change it
+  // refused goes again at the next walk, up to `WALK_MS` later, unless Sync
+  // now sends it at once (the desktop run, #295): so, like the restart words
+  // below, its words end with that press in every context, never "resumes".
+  if (error.status === 507) return { kind: "error", code: "storage", message: SERVER_FULL };
+  // Nor is a faulted one, and it never resumes by itself: only a restart
+  // brings it back (#295). Its words say what to press after the restart, in
+  // every context: a change it refused goes again at the next walk, up to
+  // `WALK_MS` later, or at once on Sync now (the desktop run, #295).
+  if (RESTART_CODES.has(error.code)) return { kind: "error", code: "restart", message: RESTART_NEEDED };
   const certificate = certificateRefusal(error);
   if (certificate !== null) return { kind: "error", code: "certificate", message: certificate };
-  if (error.code === "unreachable") return { kind: "offline" };
+  if (error.code === "unreachable") return error.answered ? null : { kind: "offline" };
   // Not narrowed by the predicate: every branch below is an `ApiError` too.
   if (forgottenCredential(error as unknown)) {
-    return { kind: "error", code: "forgotten_device", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };
+    return { kind: "error", code: "credential_rejected", message: error.code === "device_revoked" ? REVOKED_DEVICE : FORGOTTEN_DEVICE };
   }
   if (error.code === "stale_timestamp") return { kind: "error", code: "clock", message: said(CLOCK_OFF) };
   if (error.code === NOT_OBSYNC || error.code === "part_mismatch" || error.code === "response_too_large") {
@@ -618,6 +700,13 @@ export const WALK_MS = 5 * 60 * 1000;
  * `recordAt`).
  */
 export const SAVE_COALESCE_MS = 1500;
+/**
+ * How long the engine is idle before its host is told no work is left
+ * (`pace`, issue #283): notes read back one page at a time while another
+ * device uploads, or saved one after another while someone types, are one
+ * span of work, not one per note.
+ */
+export const CALM_MS = 5000;
 
 /**
  * How long a start holds back the local notes whose names the feed already
@@ -659,6 +748,8 @@ export const BULK_WINDOW_MS = 5000;
 
 /** The two answers a held deletion waits for, on every notice that asks. */
 const HELD_ACTIONS: NoticeAction[] = [{ kind: "delete_everywhere" }, { kind: "restore_here" }];
+/** The held-deletions question: one on screen, whichever asked last (`HELD`). */
+const HELD_QUESTION = { kind: "question", key: HELD, actions: HELD_ACTIONS } as const;
 
 /** ` (in Folder)` when every path shares one folder, and nothing when they share none. */
 function within(paths: string[]): string {
@@ -669,6 +760,14 @@ function within(paths: string[]): string {
 
 /** What one pass is measured against; an overrun is logged, never truncated. */
 export const SCAN_BUDGET_MS = 5000;
+/**
+ * A scan still running at 24 times that, two minutes, is not slow: it is
+ * stuck, or queued behind a pull that is, and it says which (`scanTick`,
+ * issue #285). The next scan is armed only when this one ends.
+ */
+export const SCAN_STALL_MS = 24 * SCAN_BUDGET_MS;
+/** A stop not done in the time a person waits on a click says what it waits on (`stopAndWait`, issue #287). */
+export const STOP_WAIT_MS = INTERACTIVE_MS;
 
 /**
  * How many times one folder record's post is attempted before the barrier it
@@ -686,12 +785,35 @@ export const SCAN_BUDGET_MS = 5000;
 export const FOLDER_POST_TRIES = 3;
 export const FEED_ERROR_BACKOFF_MS = 5000;
 /**
- * How long a long poll must have waited before a wake drops it (#195). One
- * sent seconds ago rides a connection that is plainly alive; one that waited
- * longer may ride a socket a network change or a sleeping lid left dead, and
- * the quick read that replaces it costs one round trip.
+ * How long a long poll must have waited before a wake reads the feed at once,
+ * beside it or in its place (#195, `wake`). One sent seconds ago rides a
+ * connection that is plainly alive; one that waited longer may ride a socket
+ * a network change or a sleeping lid left dead, and the quick read costs one
+ * round trip.
  */
 export const POLL_STALE_MS = 5000;
+
+/**
+ * Twice the feed's long-poll budget (`MAX_WAIT_SECONDS`): a feed that has
+ * sent no read for this long is waiting on nothing the server holds, and it
+ * says what it is waiting on in one line (`watchFeed`, issue #276).
+ */
+export const FEED_STALL_MS = 2 * MAX_WAIT_SECONDS * 1000;
+
+/** Each pull of the chain (`exclusive`) in a person's words, for a status that waits on one (`inTurn`, #276). */
+export const PULL_WORDS: Record<string, string> = {
+  page: "changes from your other devices",
+  park_retry: "files that could not be written",
+  editor_retry: "a note open in an editor",
+  resume: "paused notes",
+  lane: "a large download",
+  recover: "the check of a restored server",
+  sweep: "the cleanup of interrupted writes",
+  restore_held: "notes being put back",
+  vanished: "files removed from this device",
+  bring_back: "notes coming back to this device",
+  pass: "a check of this vault's files",
+};
 
 /**
  * The largest file whose contents Sync now reads again (issue #197): one
@@ -710,6 +832,13 @@ export const SYNC_NOW_VERIFY_MAX = CHUNK_MAX;
  * goes on, and what it brings is applied when it comes.
  */
 export const SYNC_NOW_FEED_MS = INTERACTIVE_MS;
+
+/**
+ * What a press with nothing to send is measured against (issue #246): the
+ * patience the transport gives any request a person is waiting on. Its line
+ * states it beside the duration, over it or not.
+ */
+export const SYNC_NOW_BUDGET_MS = INTERACTIVE_MS;
 
 /**
  * How soon a PARKED record is tried again (issue #144): one minute, doubling
@@ -772,10 +901,12 @@ export class SyncEngine {
    * Queued folder paths to publish a record for, each with whether it is a
    * CREATION -- a folder made or renamed here, which is published again over a
    * tombstone the server still holds for that path (`push.ts`, `pushFolder`,
-   * issue #165) -- and queued paths to tombstone.
+   * issue #165) -- and queued paths to tombstone, each with the selection its
+   * removal was JUDGED against: a renamed selected folder's old name is in no
+   * selection by the time its tombstone is posted (issue #240).
    */
   private readonly folderPublishes = new Map<string, boolean>();
-  private readonly folderRemovals = new Set<string>();
+  private readonly folderRemovals = new Map<string, SyncFolders>();
   /**
    * Queued paths that must reach the server BEFORE anything queued behind
    * them: the wire order, which pushes in flight side by side are not
@@ -810,8 +941,23 @@ export class SyncEngine {
   /** Ends the drain's wait for a push to land, when a path is queued (`drain`). */
   private wakeDrain: (() => void) | null = null;
   private readonly pushing = new Map<string, Promise<void>>();
+  /** Queued or in flight only for Sync now's content check (`enqueue`, #246). */
+  private readonly checking = new Set<string>();
   /** Paths asked for while their push was in flight: one follow-up each. */
   private readonly again = new Set<string>();
+  /**
+   * Paths whose push failed and whose change is still on this device only
+   * (#293), each with the failure's number (`failures`): work, for the
+   * status, until a push of the path is taken -- the next scan's, most
+   * often (`sent`) -- or a pass that began after that failure did not send it
+   * again (`survey`), and through the push that sends it again (#300).
+   * `refused`: the server answered that push with a refusal of its own
+   * (#299); `full`: it refused it for want of room, a 507 (#300). Either is
+   * what the status says while the change is here, and a write of another
+   * path takes neither away.
+   */
+  private readonly unsent = new Map<string, { failure: number; refused: boolean; full: boolean }>();
+  private failures = 0;
   private running = false;
   private cancelled = false;
   /** One per start: `stop` aborts it, which ends every request that start is waiting on. */
@@ -861,7 +1007,9 @@ export class SyncEngine {
    * from a note of its own.
    */
   private holding: { paths: Set<string>; since: number; handle: unknown; all: boolean } | null = null;
-  private readonly expected = new Set<string>();
+  private readonly expected = new Map<string, { path: string; behind: ReadonlySet<string> }>();
+  /** The versions `returnLost` is bringing back (`SyncContext.returning`). */
+  private readonly returning = new Set<string>();
   /** No record and no cursor at this start: a vault the server has not seen from here. */
   private emptyStart = false;
   /** Passes since the last walk of the tree (`WALK_MS`), and why the next pass walks, when it must. */
@@ -887,10 +1035,26 @@ export class SyncEngine {
   private editorHandle: unknown = null;
   /** The feed and a retry pass apply one at a time, never side by side. */
   private pulling: Promise<void> = Promise.resolve();
+  /** The pull running under `exclusive` now, and how many wait behind it: what a stalled feed names (#276). */
+  private holder: { label: string; since: number } | null = null;
+  private behind = 0;
+  /** The page's record in hand, the step it is at and since when (`receive`), and whether the lane waits its turn (`laneOne`): the same line's. */
+  private step: { seq: number; name: string; since: number } | null = null;
+  private laneTurn = false;
+  /** The one watch on the feed's latest read (`watchFeed`, #276). */
+  private feedWatch: unknown = null;
+  /** When the scan in flight began: a scan that never ends stops every later one (`scanTick`, #276). */
+  private scanSince: number | null = null;
+  /** That scan's watch (`scanTick`, #285). */
+  private scanWatch: unknown = null;
+  /** The pull a Sync now press has waited on past its budget (`inTurn`): what the status names. */
+  private pressWaits: string | null = null;
   /** Whether the background lane is running: one large download at a time (`lane`). */
   private laning = false;
   /** The feed's long poll in flight, and how to drop it (`wake`, #195). */
   private poll: { sent: number; drop: AbortController } | null = null;
+  /** Asks the feed, while its long poll waits, for a quick read beside it (`besidePoll`, #288). */
+  private catchUp: (() => void) | null = null;
   /** Ends the feed's pause after a failed read at once (`wake`). */
   private feedPause: (() => void) | null = null;
   /**
@@ -906,10 +1070,22 @@ export class SyncEngine {
    * It is what the status says first, and it clears itself.
    */
   private refused: EngineStatus | null = null;
+  /**
+   * Whether the standing refusal was the feed's own READ. A journal volume
+   * with no room refuses reads too, because every signed request records its
+   * nonce there (#292); then a read answered is the proof there is room
+   * again, and a full server a WRITE met still waits for a write.
+   */
+  private refusedRead = false;
   /** Whether the feed's latest read went unanswered: the status is `offline` until one is (#158). */
   private absent = false;
   /** Records of the page being applied that are not yet written: work the status counts (#158). */
   private pulls = 0;
+  /** Whether the server held more of the feed than the latest page: the next read is answered at once (#283). */
+  private feedBehind = false;
+  /** What the host was last told of the work in hand, and the wait before it is told none is left (`pace`, #283). */
+  private hurried = false;
+  private calmHandle: unknown = null;
   /** Versions the server has taken from this device since it started: what a Sync now press reports (#182). */
   private written = 0;
   /** Files a press's pass queued to have their contents read, since this engine started: what Verify all files reports (#197). */
@@ -959,6 +1135,12 @@ export class SyncEngine {
   /** Derive the keys and open the loops. Requires a paired, keyed device. */
   start(): Promise<void> {
     this.cancelled = false;
+    // AN UNVERIFIED MARK IS ONE RUN'S (issue #248; review of 6a4da232): a
+    // restart in place keeps the State a load would have dropped it from, so
+    // the start drops it here, and this run's first pass, a new engine's,
+    // walks the feed again and judges each such file afresh.
+    const dropped = this.options.state.data.dropped;
+    for (const [path, mark] of Object.entries(dropped)) if (mark === UNVERIFIED_LANDING) delete dropped[path];
     const halt = this.halt = new AbortController();
     // A start its stop cut short -- the map read of a restart against a server
     // that is gone -- ends quietly, as one stopped between two steps does.
@@ -986,10 +1168,10 @@ export class SyncEngine {
       // v0.1 derives one domain key per engine, so a vault split across
       // domains is one this version cannot write correctly. Refusing is the
       // fail-closed answer; syncing the part it understands is not.
-      host.notify(
-        "obsync: this vault's domain map declares more than one sharing domain, " +
-          "which this version cannot sync. Nothing was read or written.",
-      );
+      host.notify({
+        kind: "error",
+        text: "this vault is shared in a way this version of obsync cannot sync. Update obsync on this device; nothing was read or written.",
+      });
       throw new DomainMapError("more_than_one_domain");
     }
     const domainKey = await deriveDomainKey(key, domainId);
@@ -1024,6 +1206,7 @@ export class SyncEngine {
       defer: () => this.defer(),
       ahead: null,
       expected: this.expected,
+      returning: this.returning,
       deviceNames,
       now: () => this.nowFn(),
       deviceNameFor: (id) => deviceNames.get(id) ?? "another device",
@@ -1035,6 +1218,16 @@ export class SyncEngine {
     this.expected.clear();
     this.holding = { paths: new Set(), since: this.nowFn(), handle: null, all: false };
     this.emptyStart = state.data.lastSeq === 0 && Object.keys(state.data.files).length === 0;
+    // A cursor at zero: a replay from zero -- a widening's, over the feed this
+    // device has read to its mark, or a first read, which has no mark and
+    // notes nothing (`ObsyncData.replaying`). One stopped before its catch-up
+    // goes on from where it was saved (issue #281), and one started again
+    // keeps the mark it began at.
+    const unfinished = state.data.replaying;
+    if (state.data.lastSeq === 0) state.data.replaying = { through: unfinished?.through ?? state.data.feedMark?.seq ?? 0, notes: {} };
+    else if (unfinished !== null) {
+      host.log(`feed decision=resumed reason=replay_unfinished noted=${Object.keys(unfinished.notes).length} through=${unfinished.through}`);
+    }
     // A start's first pass walks: what moved while the app was closed shows there first.
     this.unwalked = 0;
     this.walkFor = "start";
@@ -1091,6 +1284,7 @@ export class SyncEngine {
     if (this.contextValue !== null) announceCopies(this.contextValue, true);
     this.cancelled = true;
     this.running = false;
+    this.pace();
     this.halt.abort();
     this.answerFeed(Number.POSITIVE_INFINITY);
     for (const entry of this.pending.values()) this.timers.clear(entry.handle);
@@ -1101,6 +1295,10 @@ export class SyncEngine {
     this.repairHandle = null;
     if (this.scanHandle !== null) this.timers.clear(this.scanHandle);
     this.scanHandle = null;
+    if (this.feedWatch !== null) this.timers.clear(this.feedWatch);
+    this.feedWatch = null;
+    if (this.scanWatch !== null) this.timers.clear(this.scanWatch);
+    this.scanWatch = null;
     // What a stop leaves held, the next start's pass finds again.
     if (this.holding !== null && this.holding.handle !== null) this.timers.clear(this.holding.handle);
     this.holding = null;
@@ -1117,11 +1315,28 @@ export class SyncEngine {
     this.options.host.log("engine stop");
   }
 
-  /** Quiesce before changing local scope; retain enough state to retry queued work. */
+  /**
+   * Quiesce before changing local scope; retain enough state to retry queued work.
+   *
+   * A STOP THAT WAITS SAYS ON WHAT (issue #287). Every restart waits here --
+   * a reconnect, a change of Sync folders, a server switch, Leave -- and a
+   * pull that never ends kept all of them waiting in silence. The stop's
+   * signal reaches the host's walks (`sweep`, `scan`), which end at their
+   * next step; what does not end is named once past `STOP_WAIT_MS`, and still
+   * waited for: whether a stop may abandon it is the owner's to decide.
+   */
   async stopAndWait(): Promise<void> {
     const started = this.nowFn();
     this.stop();
+    const watch = this.timers.set(() => {
+      const holder = this.holder;
+      this.options.host.log(
+        `engine decision=waiting on=${holder?.label ?? "work"} held_ms=${holder === null ? 0 : this.nowFn() - holder.since} ` +
+          `in_flight=${this.inFlight.size} budget_ms=${STOP_WAIT_MS}`,
+      );
+    }, STOP_WAIT_MS);
     while (this.inFlight.size !== 0) await Promise.allSettled([...this.inFlight]);
+    this.timers.clear(watch);
     await this.options.state.save();
     this.options.host.log(`engine decision=quiesced duration_ms=${this.nowFn() - started}`);
     this.status({ kind: "idle" });
@@ -1146,14 +1361,41 @@ export class SyncEngine {
   }
 
   /**
+   * WORK IN HAND, SAID AT ITS EDGES (issue #283): pushes queued or in
+   * flight, a feed page being applied or more pages the server already
+   * holds, a large download in the lane. A long poll waiting on the server is
+   * none. A desktop window minimized or covered runs as a background page:
+   * each of its timers waits for a one-second wake-up, and on a busy machine
+   * its every step comes last -- a first sync ran 27 times slower minimized
+   * than shown at load 27, and a download half as fast at load 6. The
+   * host is told once when work begins and once when none has been left for
+   * `CALM_MS`, or at a stop, never per note, and does what its platform
+   * allows (`main.ts`, `hurry`).
+   */
+  private pace(): void {
+    const busy = this.running && (this.draining || this.pulls > 0 || this.laning || this.feedBehind);
+    if (busy || !this.running) {
+      if (this.calmHandle !== null) this.timers.clear(this.calmHandle);
+      this.calmHandle = null;
+      if (busy !== this.hurried) this.options.host.hurry?.(this.hurried = busy);
+    } else if (this.hurried && this.calmHandle === null) {
+      this.calmHandle = this.timers.set(() => {
+        this.calmHandle = null;
+        this.options.host.hurry?.(this.hurried = false);
+      }, CALM_MS);
+    }
+  }
+
+  /**
    * Say what a failure means (`refusalStatus`, or the caller's own words for
-   * one about its piece of work). Absence and a forgotten device are said as
+   * one about its piece of work). Absence and a rejected credential are said as
    * they are; a refusal with a code STANDS -- it is what `resting` says until
    * the server accepts again -- and a failure with none is said once.
    */
-  private report(status: EngineStatus): void {
-    if (status.kind === "error" && status.code !== undefined && status.code !== "forgotten_device") {
+  private report(status: EngineStatus, read = false): void {
+    if (status.kind === "error" && status.code !== undefined && status.code !== "credential_rejected") {
       this.refused = status;
+      this.refusedRead = read;
       this.status(this.resting());
       return;
     }
@@ -1163,15 +1405,28 @@ export class SyncEngine {
   /**
    * The server answered a read (`write` false) or took a change (`write`
    * true): a refusal it no longer makes clears (#155). A full server still
-   * answers reads, so only a change it takes clears that one.
+   * answers reads, and so does one whose journal faulted, so only a change it
+   * takes clears either -- unless a read was what it refused (`refusedRead`,
+   * #292, #295).
    */
   private accepted(write: boolean): void {
     if (write) this.written++;
     const refused = this.refused;
-    if (refused === null || refused.kind !== "error" || (!write && refused.code === "storage")) return;
+    if (refused === null || refused.kind !== "error" || (!write && (refused.code === "storage" || refused.code === "restart") && !this.refusedRead)) return;
     this.refused = null;
     this.options.host.log(`engine decision=cleared reason=${refused.code ?? "error"}`);
     this.status(this.resting());
+  }
+
+  /**
+   * Nothing of `path`'s change is unsent any more: taken, or a pass found
+   * nothing to send (#293). The last change a full server refused takes its
+   * words with it, and says so as a cleared refusal does (#300).
+   */
+  private sent(path: string): void {
+    const entry = this.unsent.get(path);
+    if (entry === undefined || !this.unsent.delete(path) || !entry.full) return;
+    if (![...this.unsent.values()].some((other) => other.full)) this.options.host.log("engine decision=cleared reason=storage");
   }
 
   private need(): SyncContext {
@@ -1184,9 +1439,9 @@ export class SyncEngine {
   /**
    * The gate every watcher event and every reconciliation entry passes: a
    * path that is not a canonical relative vault path is not synced, in either
-   * direction, and the refusal is visible. This is what keeps `.obsidian/**`
-   * — this plugin's own bundle and its bookkeeping `data.json`
-   * — and `.git/**` out of the vault's history (`vaultPath.ts`).
+   * direction, and the refusal is visible. This is what keeps the config
+   * folder — this plugin's own bundle and its bookkeeping `data.json` —
+   * and `.git/**` out of the vault's history (`vaultPath.ts`).
    */
   private tracked(path: string, event: string, folders: SyncFolders = this.options.state.data.syncFolders): boolean {
     const refusal = vaultPathRefusal(path) ??
@@ -1292,7 +1547,10 @@ export class SyncEngine {
       if (now - this.burstStarted >= BULK_WINDOW_MS) return;
       this.timers.clear(this.vanishHandle);
     }
-    this.vanishHandle = this.timers.set(() => { void this.track(this.settleVanished()); }, DEBOUNCE_MS);
+    // Under the pull lock, as a pass is (`inPass`, issue #244): a debounce
+    // left pending for a name the pull has just moved finds it gone before
+    // the records follow, and deciding then publishes the pull's own move.
+    this.vanishHandle = this.timers.set(() => { void this.track(this.exclusive("vanished", () => this.settleVanished())); }, DEBOUNCE_MS);
   }
 
   /**
@@ -1319,7 +1577,7 @@ export class SyncEngine {
     if (!this.running) return;
     const context = this.need();
     const started = context.now();
-    const left: string[] = [];
+    const left: [string, string | null][] = [];
     // What goes now -- confirmed, or back at its name and so the change it
     // is -- and what may be asked about first (issue #162).
     const gone: string[] = [];
@@ -1332,7 +1590,7 @@ export class SyncEngine {
         if (!this.running) return;
         const outcome = await this.follow(context, path, index, new Set());
         if (outcome === "moved") moved++;
-        else if (outcome === "left") left.push(path);
+        else if (outcome !== null) left.push([path, outcome.to]);
         else if (!confirmed.has(path) && (await context.host.stat(path)) === null) asked.push(path);
         else gone.push(path);
       }
@@ -1341,7 +1599,7 @@ export class SyncEngine {
       // records stay, and the next reconcile pass asks it again.
       context.host.log(
         `watch decision=failed reason=vanished_unsettled files=${paths.length} budget_ms=${DEBOUNCE_MS} ` +
-          `duration_ms=${context.now() - started} error=${error instanceof Error ? error.message : String(error)}`,
+          `duration_ms=${context.now() - started} error=${errorText(error)}`,
       );
       return;
     }
@@ -1362,7 +1620,7 @@ export class SyncEngine {
       this.enqueue(path);
       removed++;
     }
-    for (const path of left) this.leftScope(path);
+    for (const [path, to] of left) this.leftScope(path, to);
     for (const folder of folders) {
       if (left.length > 0) this.folderLeftScope(folder, context.state.data.syncFolders);
       else if (holding) this.heldFolders.push(folder);
@@ -1394,11 +1652,10 @@ export class SyncEngine {
     context.host.log(
       `watch decision=held reason=bulk_deletion files=${paths.length} held=${held.length} floor=${BULK_DELETION_MIN}`,
     );
-    context.host.notify(
-      `obsync: you deleted ${paths.length} notes${within(paths)}. Delete them on your other devices too? ` +
-        "They stay there until you choose.",
-      HELD_ACTIONS,
-    );
+    context.host.notify({
+      ...HELD_QUESTION,
+      text: `you deleted ${count(paths.length, "note")}${within(paths)}. Delete them on your other devices too? They stay there until you choose.`,
+    });
   }
 
   /** Persist what is held; a hold that cannot be saved stops the engine rather than be forgotten. */
@@ -1422,7 +1679,8 @@ export class SyncEngine {
    * in the selection, is the MOVE, and keeps the file id. Any outside it --
    * one or several, because there is nothing to guess about a note this
    * device will not publish -- means the note LEFT the selection: alive here,
-   * so never a deletion (`leftScope`). An ambiguous pair inside the selection
+   * so never a deletion (`leftScope`), and where it went when exactly one
+   * file carries it (issue #239). An ambiguous pair inside the selection
    * stays unpaired, exactly as the scan leaves it.
    */
   private async follow(
@@ -1430,7 +1688,7 @@ export class SyncEngine {
     from: string,
     index: Map<string, VaultStat[]>,
     taken: Set<string>,
-  ): Promise<"moved" | "left" | null> {
+  ): Promise<"moved" | { to: string | null } | null> {
     const record = context.state.fileByPath(from);
     const found = record === undefined ? [] : this.carriers(record, index, taken);
     // A file that is still there is not gone, whatever else carries its bytes.
@@ -1441,7 +1699,7 @@ export class SyncEngine {
       this.renamed(from, only.path);
       return "moved";
     }
-    return found.some((file) => !inSyncScope(file.path, folders)) ? "left" : null;
+    return found.some((file) => !inSyncScope(file.path, folders)) ? { to: only?.path ?? null } : null;
   }
 
   /** The unrecorded files, among `files`, that carry this record's `(mtime, size)`. */
@@ -1498,8 +1756,22 @@ export class SyncEngine {
     // by every other device (issue #91).
     const context = this.need();
     if (!source || !target) {
-      if (target) this.changed(to);
-      else if (source) this.leftScope(from);
+      // A NOTE THAT LEFT THE SELECTION IS FOLLOWED OUT THERE (issue #239):
+      // back into it, it is published as the move it is; moved again outside
+      // it, it is remembered at its new name, or forgotten at one no selection
+      // can cover, and nothing of it is published.
+      const away = Object.keys(context.state.data.departed).find((id) => context.state.data.departed[id]?.path === from);
+      if (target && away !== undefined) {
+        const refused = this.rejoin(context, away, to, context.state.data.departed[away]?.size ?? 0);
+        context.host.log(`rename path_class=file decision=${refused === null ? "published_move reason=moved_back" : `forgotten reason=${refused}`} file=${away}`);
+        if (refused !== null) this.changed(to);
+      } else if (target) this.changed(to);
+      else if (source) this.leftScope(from, to);
+      else if (away !== undefined) {
+        if (vaultPathRefusal(to) === null) (context.state.data.departed[away] as { path: string }).path = to;
+        else delete context.state.data.departed[away];
+        this.saveMoved(context);
+      }
       if (this.carryMark(context, from, to)) this.saveMoved(context);
       return;
     }
@@ -1512,6 +1784,11 @@ export class SyncEngine {
     }
     if (this.carryMark(context, from, to) || record) this.saveMoved(context);
     this.unschedule(from);
+    // And its queued push (issue #264): on a host that folds case the old name
+    // resolves to the record just moved, and that push -- the move itself --
+    // went out ahead of the folder record a re-case must follow.
+    const queued = this.queue.indexOf(from);
+    if (queued !== -1) this.queue.splice(queued, 1);
     // Straight into the queue: the debounce and the unchanged-content check
     // would both drop a rename, whose only change is the path in the manifest.
     this.renames.add(to);
@@ -1561,10 +1838,12 @@ export class SyncEngine {
     // reconciliation. Pending work moves with the folder like everything
     // else under it, and so does a first post in flight (issue #213).
     // A dropped write's empty file may have no record and no work at all, only
-    // its mark (#242; review of 2e4cdca).
-    const { files, dropped } = this.options.state.data;
+    // its mark (#242; review of 2e4cdca), and a note that left the selection
+    // only the name it went to (#239).
+    const { files, dropped, departed } = this.options.state.data;
     const pending = [...this.pending.keys(), ...this.queue, ...this.pushing.keys()];
-    for (const path of new Set([...Object.keys(files), ...Object.keys(dropped), ...pending])) {
+    const away = Object.values(departed).map((entry) => entry.path);
+    for (const path of new Set([...Object.keys(files), ...Object.keys(dropped), ...away, ...pending])) {
       if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
     }
   }
@@ -1639,7 +1918,7 @@ export class SyncEngine {
     if (!this.trackedFolder(path, "folder_rename_from", folders)) return;
     const context = this.need();
     this.folderPublished(path);
-    this.folderRemovals.delete(path);
+    this.settleRemoval(path);
     const queued = this.queue.indexOf(path);
     if (queued !== -1) this.queue.splice(queued, 1);
     if (context.state.folderByPath(path) !== undefined) {
@@ -1661,14 +1940,23 @@ export class SyncEngine {
    * queued push it may still be owed are cancelled, and the user is told once
    * per move, with the count: every caller makes its exits in one synchronous
    * run, so the notice waits for the end of it (issue #139).
+   *
+   * AND WHERE IT WENT IS REMEMBERED (issue #239), when a caller knows and it
+   * is a name some selection can cover: once a selection covers it again, the
+   * note is published as a move of the same file id (`rejoin`), and every
+   * device ends with one copy of it instead of two.
    */
-  private leftScope(from: string): void {
+  private leftScope(from: string, to: string | null = null): void {
     const context = this.need();
     this.unschedule(from);
     this.deletions.delete(from);
     const queued = this.queue.indexOf(from);
     if (queued !== -1) this.queue.splice(queued, 1);
-    if (context.state.fileByPath(from) !== undefined) {
+    const record = context.state.fileByPath(from);
+    if (record !== undefined) {
+      if (to !== null && vaultPathRefusal(to) === null) {
+        context.state.data.departed[record.fileId] = { path: to, versionId: record.versionId, size: record.size };
+      }
       context.state.forgetPath(from);
       void this.track(context.state.save()).catch(() => {
         this.stop();
@@ -1678,16 +1966,38 @@ export class SyncEngine {
     context.host.log("rename path_class=file decision=not_published reason=moved_out_of_scope");
     if (this.exited++ > 0) return;
     void Promise.resolve().then(() => {
-      const count = this.exited;
+      const moved = this.exited;
       this.exited = 0;
-      context.host.log(`scope decision=left_selection files=${count}`);
-      context.host.notify(
-        `obsync: ${count} note(s) moved out of the folders this device syncs; they stay on your other devices. ` +
-          "Nothing was deleted: they are still in this vault and the server keeps their history. This device " +
-          "no longer syncs them -- move them back into a selected folder, or add their new folder under " +
-          "Sync folders on this device.",
-      );
+      context.host.log(`scope decision=left_selection files=${moved}`);
+      const [it, stays] = moved === 1 ? ["it", "it stays"] : ["them", "they stay"];
+      context.host.notify({
+        kind: "info",
+        text: `${count(moved, "note")} moved out of the folders this device syncs, so this device stops syncing ${it}; ` +
+          `${stays} on your other devices, and nothing was deleted. Move ${it} back, or add the new folder under Sync folders.`,
+      });
     });
+  }
+
+  /**
+   * A NOTE THAT LEFT THE SELECTION, BACK IN IT (issue #239; owner ruling
+   * 2026-09-29): published as a MOVE of its file id to where it stands now,
+   * exactly as a rename made here is (`renamed`) -- its record at the new
+   * name, owing the post, on the version this device held when it left.
+   * Edits made while it was out go in that same version, and what another
+   * device did to it meanwhile meets this one by the rules for a rename
+   * meeting an edit or a deletion (issue #151). `null` once it is queued; or
+   * the reason it cannot be, with the entry forgotten either way: the file id
+   * is held here under another name already.
+   */
+  private rejoin(context: SyncContext, fileId: string, path: string, size: number): "held_elsewhere" | null {
+    const away = context.state.data.departed[fileId] as { versionId: string };
+    delete context.state.data.departed[fileId];
+    this.saveMoved(context);
+    if (context.state.pathByFileId(fileId) !== undefined) return "held_elsewhere";
+    context.state.setFile(path, { fileId, versionId: away.versionId, mtime: -1, size, sha256: "" });
+    this.renames.add(path);
+    this.enqueue(path);
+    return null;
   }
 
   /**
@@ -1720,6 +2030,9 @@ export class SyncEngine {
     this.heldFolders = [];
     this.vanish(held, true);
     this.options.host.log(`reconcile decision=confirmed reason=bulk_deletion queued=${held.length}`);
+    // THE ANSWER IS SAID, as Restore here's is (#309): Recent kept the
+    // question with nothing after it, and read as still waiting on the user.
+    this.options.host.notify({ kind: "confirm", text: `deleting ${count(held.length, "note")} on your other devices too.` });
   }
 
   /**
@@ -1733,7 +2046,7 @@ export class SyncEngine {
    * pull at a time, because this writes as the feed does.
    */
   restoreHeldDeletions(): Promise<void> {
-    return this.track(this.exclusive(async () => {
+    return this.track(this.exclusive("restore_held", async () => {
       const asked = [...this.options.state.data.heldDeletions];
       if (!this.running || asked.length === 0) return;
       const context = this.need();
@@ -1759,11 +2072,11 @@ export class SyncEngine {
         `watch decision=restored reason=bulk_deletion restored=${restored} held=${left} asked=${asked.length} ` +
           `duration_ms=${context.now() - started}`,
       );
-      context.host.notify(
-        `obsync put ${restored} note(s) back on this device, and deleted nothing anywhere.` + (left === 0 ? ""
-          : ` ${left} could not be put back yet and are still held back: try Restore here again once the server can be reached.`),
-        left === 0 ? [] : HELD_ACTIONS,
-      );
+      const put = `put ${count(restored, "note")} back on this device and deleted nothing`;
+      context.host.notify(left === 0 ? { kind: "confirm", text: `${put}.` } : {
+        ...HELD_QUESTION,
+        text: `${put}; ${left} more could not be put back yet. Try Restore here again once your server answers.`,
+      });
     }));
   }
 
@@ -1795,7 +2108,7 @@ export class SyncEngine {
     // A folder stands here again, so a delete event still owed for the one
     // the pull path removed will never arrive (`deleted`, issue #96).
     context.trashed.delete(path);
-    this.folderRemovals.delete(path);
+    this.settleRemoval(path);
     if (context.createdFolders.delete(path)) {
       this.options.host.log("watch path_class=folder decision=echo_suppressed event=create");
       return;
@@ -1821,8 +2134,7 @@ export class SyncEngine {
       this.options.host.log("watch path_class=folder decision=echo_suppressed event=delete");
       return;
     }
-    this.folderRemovals.add(path);
-    this.enqueue(path);
+    this.oweRemoval(path, folders);
   }
 
   /**
@@ -1925,6 +2237,31 @@ export class SyncEngine {
     this.saveFolderBarriers();
   }
 
+  /**
+   * THIS DEVICE OWES THE SERVER A FOLDER'S REMOVAL, judged against `folders`
+   * -- and the debt outlives this engine (issue #265). A renamed selected
+   * folder's old name is in no selection once the rename is followed, so no
+   * later pass can judge its removal again: a post that failed, or a stop
+   * before it, left the empty folder on every other device for good. Written
+   * down with its judgement, it is settled by the post, and otherwise judged
+   * again by the next start's pass (`survey`).
+   */
+  private oweRemoval(path: string, folders: SyncFolders): void {
+    this.folderRemovals.set(path, folders);
+    this.options.state.data.folderRemovals[path] = folders === undefined ? null : [...folders];
+    this.saveFolderBarriers();
+    this.enqueue(path);
+  }
+
+  /** Owed no longer: posted, refused, nothing left to retire, or a folder there again. */
+  private settleRemoval(path: string): void {
+    this.folderRemovals.delete(path);
+    const owed = this.options.state.data.folderRemovals;
+    if (!Object.hasOwn(owed, path)) return;
+    delete owed[path];
+    this.saveFolderBarriers();
+  }
+
   private saveFolderBarriers(): void {
     void this.track(this.options.state.save()).catch(() => {
       this.stop();
@@ -1953,14 +2290,19 @@ export class SyncEngine {
     for (const path of [...held].reverse()) {
       this.folderPublishes.set(path, true);
       this.barriers.add(path);
-      const queued = this.queue.indexOf(path);
-      if (queued !== -1) this.queue.splice(queued, 1);
-      this.queue.unshift(path);
+      this.toFront(path);
     }
     this.options.host.log(
       `engine decision=restored reason=folder_barrier folders=${held.length}`,
     );
     void this.track(this.drain());
+  }
+
+  /** At the head of the queue, taken out of wherever it already stands. */
+  private toFront(path: string): void {
+    const queued = this.queue.indexOf(path);
+    if (queued !== -1) this.queue.splice(queued, 1);
+    this.queue.unshift(path);
   }
 
   /** The live context, for views that read remote-only accounting. */
@@ -1996,7 +2338,7 @@ export class SyncEngine {
       await this.settleTracked(context, path, tries, seen);
     } catch (error) {
       context.host.log(
-        `watch path_class=file decision=failed reason=${error instanceof Error ? error.message : String(error)}`,
+        `watch path_class=file decision=failed reason=${errorText(error)}`,
       );
     } finally {
       // A note waiting on its push was counted while this debounce was in
@@ -2020,7 +2362,12 @@ export class SyncEngine {
   ): Promise<void> {
     const stat = await context.host.stat(path);
     if (!stat) {
-      if (context.state.fileByPath(path) === undefined) return;
+      // Gone before it settled, and never sent: nothing to publish, and the
+      // one way a note made here leaves the queue unsaid (#313).
+      if (context.state.fileByPath(path) === undefined) {
+        context.host.log("watch path_class=file decision=dropped reason=absent_at_settle");
+        return;
+      }
       // A pending change can settle between a filesystem rename and its
       // watcher event. Ask where the note went through the same bounded
       // move check as a delete event before publishing any tombstone.
@@ -2084,7 +2431,7 @@ export class SyncEngine {
 
   /**
    * Does this change ANSWER another device's version (issue #179)? It does
-   * when it lands within `ANSWER_MS` of that version's arrival, without recent trusted input here: a passive open editor is no evidence of typing, and two people typing in one note -- who answer each other's
+   * when it lands within `ANSWER_MS` of this device writing that version into the note, without recent trusted input here: a passive open editor is no evidence of typing, and two people typing in one note -- who answer each other's
    * versions too -- are #135's to settle. The answer is published like any
    * other edit; what it decides is what the pull path does when it next finds
    * this note COLLIDING with another device's change on the same lines
@@ -2104,10 +2451,14 @@ export class SyncEngine {
     }
   }
 
-  private enqueue(path: string): void {
+  private enqueue(path: string, check = false): void {
     if (!this.running) return;
     // A held note waits for the feed, whichever pass or event asks (`holdBack`).
     if (this.holding?.paths.has(path) === true && this.options.state.fileByPath(path) === undefined) return;
+    // A READ THAT ONLY VERIFIES IS NO CHANGE (#246): the status counts it
+    // apart, and anything else that queues the path makes it a change again.
+    if (!check) this.checking.delete(path);
+    else if (!this.queue.includes(path)) this.checking.add(path);
     if (!this.queue.includes(path)) this.queue.push(path);
     void this.track(this.drain());
   }
@@ -2130,6 +2481,7 @@ export class SyncEngine {
       return this.drainWork;
     }
     this.drainWork = this.drainQueue();
+    this.pace();
     return this.drainWork;
   }
 
@@ -2156,13 +2508,26 @@ export class SyncEngine {
           if (this.barrierPath === path) barrier = path;
           const work: Promise<void> = this.pushOne(path)
             .catch((error: unknown) => { failed.push(error); })
-            .finally(() => running.delete(path));
+            .finally(() => {
+              running.delete(path);
+              if (!this.queue.includes(path)) this.checking.delete(path);
+            });
           running.set(path, work);
           took = true;
         }
         this.active = running.size;
         if (took) this.status(this.resting());
-        if (running.size === 0) break;
+        if (running.size === 0) {
+          // The records the pushes held in memory (`pushFile`, issue #274) are
+          // written once the queue is empty: a note pushed alone is saved as
+          // soon as it would have been, only no longer inside its slot.
+          await this.saveDeferred("drained");
+          // A NOTE QUEUED WHILE THAT SAVE RAN found this drain still running
+          // and could only wake it, with nothing listening (#313): it is taken
+          // here, or it waits unsent for the next change anywhere.
+          if (this.running && failed.length === 0 && this.queue.length > 0) continue;
+          break;
+        }
         await Promise.race([new Promise<void>((wake) => { this.wakeDrain = wake; }), ...running.values()]);
         this.wakeDrain = null;
       }
@@ -2177,6 +2542,7 @@ export class SyncEngine {
       if (this.running) this.status(this.resting());
     } finally {
       this.draining = false;
+      this.pace();
     }
   }
 
@@ -2254,15 +2620,30 @@ export class SyncEngine {
 
   private async pushNow(path: string): Promise<void> {
     const context = this.need();
+    // What the lines below name: a folder's removal is no file (issue #240).
+    let pathClass = "file";
     try {
       // Folder work first: a path is a folder or a file, never both, and the
       // folder sets are the only ones that can name a path with no stat.
+      const judged = this.folderRemovals.get(path);
       if (this.folderRemovals.delete(path)) {
-        const versionId = await pushFolderDelete(context, path);
-        if (versionId !== null) {
-          context.authored.add(versionId);
-          this.accepted(true);
+        pathClass = "folder";
+        try {
+          const versionId = await pushFolderDelete(context, path, judged);
+          if (versionId !== null) {
+            context.authored.add(versionId);
+            this.accepted(true);
+          }
+        } catch (error) {
+          // A refusal of the path is final, and said below; a stop keeps the
+          // debt for the next start; anything else is retried (issue #265).
+          if (error instanceof VaultPathError) this.settleRemoval(path);
+          if (error instanceof VaultPathError || !this.running) throw error;
+          this.retryRemoval(context, path, judged, error);
+          return;
         }
+        this.folderRetries.delete(path);
+        this.settleRemoval(path);
         return;
       }
       const recreate = this.folderPublishes.get(path);
@@ -2305,14 +2686,20 @@ export class SyncEngine {
         const outcome = await pushDelete(context, path);
         if (outcome !== null) {
           context.authored.add(outcome.versionId);
+          this.sent(path);
           this.accepted(true);
           return;
         }
         // No tombstone was posted: either nothing was recorded to delete, or
         // the file is there after all and `pushDelete` refused to say it was
         // gone. A file that is there is a change, which is the rest of this
-        // function; a path with nothing at it and nothing recorded is done.
-        if ((await context.host.stat(path)) === null) return;
+        // function; a path with nothing at it and nothing recorded is done,
+        // and nothing of it is unsent: a change a full server refused leaves
+        // with the file, not at the next pass (#305).
+        if ((await context.host.stat(path)) === null) {
+          this.sent(path);
+          return;
+        }
       }
       // A DOWNLOAD THIS DEVICE COULD NOT WRITE IS NOT AN EDIT (#242). A phone
       // whose write stayed empty however often it was made parks the record
@@ -2333,6 +2720,8 @@ export class SyncEngine {
       if (await yieldName(context, path)) return;
       const asked = context.now();
       const outcome = await pushFile(context, path, forced);
+      // Taken, or on the server already: nothing of it is unsent (#300).
+      if (outcome.status !== "growing") this.sent(path);
       if (outcome.status !== "growing") this.recheck(context, path, asked);
       if (outcome.status === "unchanged") return;
       if (outcome.status === "growing") {
@@ -2357,6 +2746,10 @@ export class SyncEngine {
       }
       if (outcome.ack?.conflicted) await this.reconcileFile(outcome.fileId);
     } catch (error) {
+      // A REQUEST OF A PLUGIN SESSION THAT ENDED (#272): the transport said so,
+      // once, and this engine was stopped with that session. What it owed is
+      // written down for the session that replaced it; nothing more is said.
+      if (error instanceof SessionEnded) return;
       // A push can immediately reconcile a competing head. A native editor
       // refusal in that pull uses the same durable retry as the feed.
       const held = error instanceof Unwritable ? context.state.fileByPath(error.path) : undefined;
@@ -2368,13 +2761,13 @@ export class SyncEngine {
       // logged and dropped, and the status bar stays quiet. Every other
       // failure is the user's business.
       if (error instanceof VaultPathError) {
-        context.host.log(`push path_class=file decision=not_synced reason=${error.refusal}`);
+        context.host.log(`push path_class=${pathClass} decision=not_synced reason=${error.refusal}`);
         return;
       }
       // A push the stop cut at a chunk boundary is not a failure: the file is
       // still unsent, and the next start's pass queues it again.
       if (!this.running && stopped(error)) {
-        context.host.log("push path_class=file decision=cancelled reason=engine_stopped");
+        context.host.log(`push path_class=${pathClass} decision=cancelled reason=engine_stopped`);
         return;
       }
       // Nor is a path that went away while it waited its turn (issue #164):
@@ -2383,15 +2776,29 @@ export class SyncEngine {
         context.host.log("push path_class=file decision=stood_down reason=path_gone");
         return;
       }
-      const message = error instanceof Error ? error.message : String(error);
-      context.host.log(`push path_class=file decision=failed reason=${message}`);
+      const message = errorText(error);
+      context.host.log(`push path_class=${pathClass} decision=failed reason=${message}`);
+      // STILL WORK (#293): the change is on this device only, and a 5xx's
+      // `offline` is taken back by the next answered read, which read idle
+      // over it. Counted until a push takes it (`resting`).
+      const refusal = refusalStatus(error);
+      // REFUSED, AND SAID FOR AS LONG AS IT IS (#299): a refusal no standing
+      // code names was said once and replaced in the same tick by the work it
+      // left, so nobody saw that the server refuses this note. `resting` names
+      // it while it is here. A new vault key has its own notice (`rekeyed`).
+      const refused = refusal === null && error instanceof ApiError && error.code !== "domain_mismatch";
+      // A FULL SERVER IS SAID FOR THIS CHANGE (#300), not as a refusal any
+      // accepted write clears: a smaller note it took since said nothing of
+      // room for this one, and the words went with the file still here.
+      const full = refusal?.kind === "error" && refusal.code === "storage";
+      this.unsent.set(path, { failure: ++this.failures, refused, full });
       if (error instanceof ApiError && error.code === "domain_mismatch") {
         await this.rekeyed(context, path);
         return;
       }
-      // A local fault is worded where it was raised; a refusal the server gave
-      // is said in plain words, its code left in the line above.
-      this.report(refusalStatus(error) ?? { kind: "error", message: error instanceof ApiError ? PUSH_REFUSED : message });
+      // A local fault is worded where it was raised, and said once.
+      if (refused || full) this.status(this.resting());
+      else this.report(refusal ?? { kind: "error", message });
     }
   }
 
@@ -2414,10 +2821,10 @@ export class SyncEngine {
     context.host.log(`push path_class=file decision=${again ? "republish" : "dropped"} reason=domain_mismatch file=${record?.fileId ?? "untracked"}`);
     if (!this.rekeyNoticeShown) {
       this.rekeyNoticeShown = true;
-      context.host.notify(
-        "obsync: edits made on this device before its vault key changed could not be sent to the old vault. " +
-          "They are still here, and obsync sends them under the new key.",
-      );
+      context.host.notify({
+        kind: "info",
+        text: "edits made here before this vault's key changed are sent again under the new key; nothing here changed.",
+      });
     }
     await context.state.save();
     if (again) this.enqueue(path);
@@ -2466,8 +2873,11 @@ export class SyncEngine {
    * reconcile pass republishes the record.
    */
   private retryFolder(context: SyncContext, path: string, barrier: boolean, recreate: boolean, error: unknown): void {
+    // An ended session's request said so itself (#272), and what survives the
+    // stop below is already written down.
+    if (error instanceof SessionEnded) return;
     const attempt = (this.folderRetries.get(path) ?? 0) + 1;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorText(error);
     // A POST THAT FAILS AFTER THIS ENGINE STOPPED HAS NO QUEUE TO GO BACK
     // INTO, and what survives a stop is written down rather than re-armed
     // (`publishFolder`; review round 4, finding 3). It matters beyond the
@@ -2494,23 +2904,49 @@ export class SyncEngine {
       this.report(refusalStatus(error) ?? { kind: "error", message: error instanceof ApiError ? PUSH_REFUSED : message });
       if (!this.folderPostNoticeShown) {
         this.folderPostNoticeShown = true;
-        context.host.notify(
-          "obsync could not tell your other devices about a folder this device published or renamed: the server " +
-            `refused the folder record ${FOLDER_POST_TRIES} times. Nothing was lost here and nothing was deleted ` +
-            "anywhere. Until this device syncs again, another device may still show that folder under its old " +
-            "capitalisation and refuse the notes moved inside it; this device republishes the folder the next time " +
-            "it starts.",
-        );
+        context.host.notify({
+          kind: "info",
+          text: "your server refused a folder this device created or renamed, so your other devices may show its old " +
+            "name until this device sends it again: when Obsidian next starts, or at once when you select Sync now. Nothing was lost.",
+        });
       }
       return;
     }
     this.folderRetries.set(path, attempt);
     this.publishFolder(path, barrier, recreate);
-    // In FRONT: what this record orders is already queued behind it.
-    if (!this.queue.includes(path)) this.queue.unshift(path);
+    // In FRONT: what this record orders is already queued behind it. EVEN
+    // WHEN IT IS QUEUED ALREADY (issue #238): a duplicate report of the rename
+    // queued it again while the post was in flight, behind those very moves.
+    this.toFront(path);
     context.host.log(
       `push path_class=folder decision=retry reason=folder_post attempt=${attempt} budget=${FOLDER_POST_TRIES}`,
     );
+  }
+
+  /**
+   * A folder removal's post FAILED (issue #265). The debt is written down
+   * (`oweRemoval`), so within this engine the removal is posted again against
+   * the selection it was judged in, `FOLDER_POST_TRIES` attempts in all; past
+   * that it waits for the next start's pass, or Sync now's.
+   */
+  private retryRemoval(context: SyncContext, path: string, judged: SyncFolders, error: unknown): void {
+    const attempt = (this.folderRetries.get(path) ?? 0) + 1;
+    const message = errorText(error);
+    if (attempt >= FOLDER_POST_TRIES) {
+      this.folderRetries.delete(path);
+      context.host.log(
+        `push path_class=folder decision=expired reason=folder_removal attempt=${attempt} budget=${FOLDER_POST_TRIES} ` +
+          `held=next_pass error=${message}`,
+      );
+      this.report(refusalStatus(error) ?? { kind: "error", message: error instanceof ApiError ? PUSH_REFUSED : message });
+      return;
+    }
+    this.folderRetries.set(path, attempt);
+    context.host.log(
+      `push path_class=folder decision=retry reason=folder_removal attempt=${attempt} budget=${FOLDER_POST_TRIES} error=${message}`,
+    );
+    this.folderRemovals.set(path, judged);
+    this.enqueue(path);
   }
 
   /**
@@ -2581,16 +3017,20 @@ export class SyncEngine {
         this.poll = quick ? null : { sent: this.nowFn(), drop };
         this.reading = quick;
         const sent = ++this.feedReads;
+        this.watchFeed();
         // Ended by the stop, not waited out: a stopped engine's poll is one more
         // request against a credential that may be about to be given up (#157).
         // A wake drops it too (`wake`), so either ends this one request.
-        const page = await untilStopped(context.signal, drop, () =>
-          context.transport.changes(context.state.data.lastSeq, quick ? 0 : 55, 1000, { signal: drop.signal }));
+        const reading = untilStopped(context.signal, drop, () =>
+          context.transport.changes(context.state.data.lastSeq, quick ? 0 : MAX_WAIT_SECONDS, 1000, { signal: drop.signal }));
+        const page = quick ? await reading : await this.besidePoll(context, reading, drop);
         this.poll = null;
         this.reading = false;
         if (!live()) return;
         this.feedAnswered = true;
         this.absent = false;
+        // A kept poll's page can name an older cursor than a read beside it left (#288).
+        this.feedBehind = Math.max(page.seq, context.state.data.lastSeq) < page.head_seq;
         this.accepted(false);
         // A restore the repair pass noticed while this read waited is answered
         // before anything the read brought is applied.
@@ -2601,6 +3041,8 @@ export class SyncEngine {
         this.poll = null;
         this.reading = false;
         if (!live()) return;
+        this.feedBehind = false;
+        this.pace();
         // A wake dropped the poll (`wake`): the next read asks at once, and
         // whatever the dropped one brings later is discarded unread.
         if (error instanceof ApiError && error.code === "cancelled") continue;
@@ -2608,12 +3050,16 @@ export class SyncEngine {
         // the status says, and the retry goes on without it.
         this.answerFeed(Number.POSITIVE_INFINITY);
         this.feedAnswered = false;
+        // A DISK CALL THAT NEVER ANSWERED (#307) is this device's, not the
+        // server's: the status goes on saying the work that waits, and after
+        // the pause the page is read again from the change it stopped at.
+        const disk = (error as { code?: unknown }).code === DISK_STALLED;
         // What the failure means, said on the FIRST one (#155): a refusal names
         // itself and stands until the server answers again; only absence reads
         // offline; anything else is a read that failed, said as that.
         const refused = refusalStatus(error) ?? { kind: "error", code: "feed", message: FEED_FAILED };
-        if (refused.kind === "error" && refused.code === "forgotten_device") {
-          context.host.log("feed decision=stopped reason=forgotten_device");
+        if (refused.kind === "error" && refused.code === "credential_rejected") {
+          context.host.log("feed decision=stopped reason=credential_rejected");
           this.status(refused);
           this.stop();
           return;
@@ -2624,13 +3070,13 @@ export class SyncEngine {
           continue;
         }
         verify = true;
-        const message = error instanceof Error ? error.message : String(error);
-        context.host.log(`feed decision=retry reason=${message} status=${refused.kind === "error" ? refused.code : refused.kind} retry_ms=${FEED_ERROR_BACKOFF_MS}`);
+        const message = disk ? DISK_STALLED : errorText(error);
+        context.host.log(`feed decision=retry reason=${message} status=${disk ? "unchanged" : refused.kind === "error" ? refused.code : refused.kind} retry_ms=${FEED_ERROR_BACKOFF_MS}`);
         // Absence is the feed's to say until its next read is answered, and
         // no longer than that (`resting`).
         this.absent = refused.kind === "offline";
         if (this.absent) this.status(this.resting());
-        else this.report(refused);
+        else if (!disk) this.report(refused, true);
         await new Promise<void>((resolve) => {
           this.feedPause = resolve;
           this.timers.set(resolve, FEED_ERROR_BACKOFF_MS);
@@ -2643,12 +3089,26 @@ export class SyncEngine {
   /**
    * The device's word that something changed (#134, #195): its network is
    * back, the app is in front of the person again, the address changed, or
-   * Retry now was pressed. The feed's pause after a failed read ends now, and
-   * a long poll that has waited `POLL_STALE_MS` -- or any poll, when the
-   * address it went to is no longer the address, or Sync now waits for a
-   * read (`readFeed`) -- is dropped for a read that asks at once. Requests
-   * asleep inside the transport are the transport's to wake
-   * (`Transport.wake`). One line, and only when something was ended.
+   * Retry now was pressed. The feed's pause after a failed read ends now,
+   * and the feed reads at once when its long poll has waited
+   * `POLL_STALE_MS`, or at any age for Sync now and a new address.
+   *
+   * THE POLL IN FLIGHT STAYS, and a quick read beside it catches up
+   * (`besidePoll`; #288, #297). `requestUrl` cannot abort a request: a dropped
+   * poll kept its connection for the rest of the server's wait, and the one
+   * sent in its place, for the same url, waited behind it on the device --
+   * 20 s after a laptop woke, and a minute of `offline` when that ran it out
+   * of its budget; and as every answer after a 5xx dropped another, eight
+   * in five minutes. A poll asleep in its backoff, with nothing on the wire,
+   * is dropped: that frees it.
+   *
+   * EXCEPT AFTER A NEW ADDRESS OR THE NETWORK COMING BACK (#195): the poll
+   * went to the old server, or rides a connection the change may have left
+   * dead, which would hold the feed's next page until its deadline. It is
+   * dropped at once, and the line says how many polls the device still holds
+   * (`polls_in_flight`), so a pile-up shows in the log. Requests asleep
+   * inside the transport are the transport's to wake (`Transport.wake`). One
+   * line, and only when something was done.
    */
   wake(reason: string): void {
     if (!this.running) return;
@@ -2657,14 +3117,23 @@ export class SyncEngine {
     pause?.();
     const poll = this.poll;
     const waited = poll === null ? 0 : this.nowFn() - poll.sent;
-    const dropped = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);
+    const held = this.options.transport.pollsInFlight();
+    const wanted = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);
+    const kept = wanted && reason !== "address" && reason !== "online" && held > 0;
+    // Asked for while the feed waits on the poll (`besidePoll`); a read beside it already under way is the one.
+    const beside = kept ? this.catchUp : null;
+    const dropped = wanted && !kept;
     if (dropped) {
       this.poll = null;
       this.feedAnswered = false;
       poll.drop.abort();
     }
-    if (pause !== null || dropped) {
-      this.options.host.log(`feed decision=woken reason=${reason} ended_pause=${pause === null ? 0 : 1} dropped_poll=${dropped ? 1 : 0} waited_ms=${waited}`);
+    beside?.();
+    if (pause !== null || dropped || beside !== null) {
+      this.options.host.log(
+        `feed decision=woken reason=${reason} ended_pause=${pause === null ? 0 : 1} dropped_poll=${dropped ? 1 : 0} ` +
+          `read_beside=${beside === null ? 0 : 1} polls_in_flight=${held} waited_ms=${waited}`,
+      );
     }
     // THE WINDOW IS BACK IN FRONT (issue #198): a note moved in a file manager
     // behind it is found now, by a walk that starts at once -- or by the next
@@ -2679,12 +3148,92 @@ export class SyncEngine {
   }
 
   /**
+   * The long poll's answer, and while it waits, a quick read beside it each
+   * time a wake asks (`wake`, issue #288): read and applied here, in the
+   * feed's own turn, so nothing is applied twice and nothing out of order,
+   * while the poll stays the one in flight. It is the read a Sync now press
+   * waits for (`readFeed`). A read beside it that fails ends the poll too,
+   * and the feed's own failure path says what happened.
+   */
+  private async besidePoll(context: SyncContext, reading: Promise<ChangesPage>, drop: AbortController): Promise<ChangesPage> {
+    try {
+      for (;;) {
+        const asked = new Promise<null>((resolve) => { this.catchUp = () => resolve(null); });
+        const answer = await Promise.race([reading, asked]).finally(() => { this.catchUp = null; });
+        if (answer !== null) return answer;
+        const started = this.nowFn();
+        let changes = 0;
+        for (let behind = true; behind && this.running;) {
+          // A read like any other: the stall watch starts again from it (#276),
+          // and a press asked before it is answered by it.
+          this.watchFeed();
+          const sent = ++this.feedReads;
+          this.reading = true;
+          const page = await context.transport.changes(context.state.data.lastSeq, 0, 1000, { signal: context.signal })
+            .finally(() => { this.reading = false; });
+          this.absent = false;
+          this.accepted(false);
+          await this.track(this.applyPage(context, page));
+          this.answerFeed(sent);
+          changes += page.changes.length;
+          behind = page.seq < page.head_seq;
+        }
+        context.host.log(`feed decision=read_beside changes=${changes} seq=${context.state.data.lastSeq} duration_ms=${this.nowFn() - started}`);
+      }
+    } catch (error) {
+      drop.abort();
+      throw error;
+    }
+  }
+
+  /**
    * One pull at a time: a retry pass never applies beside the feed. A failed
    * turn hands the next one on all the same (`then(work, work)`), so one
    * error cannot stop every later pull.
    */
-  private exclusive(work: () => Promise<void>): Promise<void> {
-    return (this.pulling = this.pulling.then(work, work));
+  private exclusive(label: string, work: () => Promise<void>): Promise<void> {
+    this.behind++;
+    const turn = async (): Promise<void> => {
+      this.behind--;
+      this.holder = { label, since: this.nowFn() };
+      try {
+        await work();
+      } finally {
+        this.holder = null;
+      }
+    };
+    return (this.pulling = this.pulling.then(turn, turn));
+  }
+
+  /**
+   * THE FEED SAYS WHEN IT HAS STOPPED (issue #276). Every read arms one
+   * watch for `FEED_STALL_MS`, twice the long-poll budget, and the next read
+   * disarms it. A watch that fires means no read followed: the feed is
+   * applying a page, waiting behind another pull, or waiting on a poll the
+   * server should have answered long ago. It writes one line naming which --
+   * with the page's record in hand and its step, the download lane's step
+   * and a metadata save in flight, the waits that send no request -- and
+   * changes nothing; a stop disarms it.
+   */
+  private watchFeed(): void {
+    const sent = this.nowFn();
+    if (this.feedWatch !== null) this.timers.clear(this.feedWatch);
+    this.feedWatch = this.timers.set(() => {
+      this.feedWatch = null;
+      const now = this.nowFn();
+      const { holder, step } = this;
+      this.options.host.log(
+        `feed decision=stalled waited_ms=${now - sent} budget_ms=${FEED_STALL_MS} ` +
+          `poll_ms=${this.poll === null ? "none" : now - this.poll.sent} reading=${this.reading ? 1 : 0} ` +
+          `answered=${this.feedAnswered ? 1 : 0} last_seq=${this.contextValue?.state.data.lastSeq ?? 0} ` +
+          `in_flight=${this.inFlight.size} pushing=${this.pushing.size} ` +
+          `chain=${holder === null ? "idle" : `${holder.label}:${now - holder.since}`} behind=${this.behind} ` +
+          `pulls=${this.pulls} step=${step === null ? "none" : `${step.name}:${step.seq}:${now - step.since}`} ` +
+          `lane=${!this.laning ? "idle" : this.laneTurn ? "turn" : "busy"} staged=${this.contextValue?.staged?.size ?? 0} ` +
+          `saving=${this.options.state.saving ? 1 : 0} ` +
+          `scan_ms=${this.scanSince === null ? "none" : now - this.scanSince}`,
+      );
+    }, FEED_STALL_MS);
   }
 
   /**
@@ -2712,39 +3261,18 @@ export class SyncEngine {
    */
   private async receive(context: SyncContext, change: ChangeRecord): Promise<ApplyResult | null> {
     if (await this.background(context, change)) return null;
-    // Another device's authenticated version arrives before its write can
-    // trigger a host plugin. Waiting until applyChange returns can miss a
-    // rewrite made by that plugin during the filesystem event itself.
-    const arrived = context.now();
-    const remember = async (): Promise<void> => {
-      const path = context.state.pathByFileId(change.file_id);
-      if (path === undefined || !inSyncScope(path, context.state.data.syncFolders)) return;
-      // Preserve a waiting save's verdict against the previous arrival before
-      // replacing that clock with a time later than the save being judged.
-      const stat = await context.host.stat(path);
-      const local = context.state.fileByPath(path);
-      if (stat !== null && local?.fileId === change.file_id &&
-        (local.mtime !== stat.mtime || local.size !== stat.size)) {
-        await this.answered(context, stat);
-        context.host.log(`watch decision=edit_verdict_preserved reason=arrival_advanced file=${change.file_id} seq=${change.seq}`);
-      }
-      context.arrivals.delete(path);
-      context.arrivals.set(path, arrived);
-    };
-    let incoming = false;
+    // An arrival no longer moves the clock an answer is measured from: only a
+    // write does (`pull.ts`, `commitMarked`, issue #278), and none lands over
+    // a save not yet judged, so no save needs judging here first.
     let result: ApplyResult;
+    // What a stalled feed names (`watchFeed`): past the lane's decision, writing.
+    if (this.step !== null) this.step = { ...this.step, name: "apply", since: this.nowFn() };
     try {
-      result = await applyChange(context, change, async () => {
-        incoming = true;
-        await remember();
-      });
+      result = await applyChange(context, change);
     } catch (error) {
       this.park(context, change.file_id, error);
       return null;
     }
-    // First materialisation and renames can establish a different tracked
-    // path. Only an authenticated ordinary version supplies this evidence.
-    if (incoming) await remember();
     if (context.state.data.parked[change.file_id] !== undefined) await this.retryOne(context, change.file_id);
     return result;
   }
@@ -2772,10 +3300,12 @@ export class SyncEngine {
         `retry_ms=${error.reason === "active_editor" ? 1000 : this.parkDelay}`,
     );
     if (!known && error.reason !== "active_editor") {
-      context.host.notify(
-        `obsync: ${unwritableText(error.path, error.reason)}. Every other change keeps arriving. This file is ` +
-          "tried again by itself, and at once when you run Sync now after fixing it.",
-      );
+      context.host.notify({
+        kind: "error",
+        text: `${unwritableText("{notes}", error.reason)}. Everything else keeps syncing; obsync tries {it} again by itself, ` +
+          "and at once when you run Sync now after fixing it.",
+        paths: [error.path],
+      });
     }
     this.status(this.resting());
   }
@@ -2789,18 +3319,27 @@ export class SyncEngine {
    * A note counts only while something is in flight for it -- its debounce,
    * the queue, a push. Nothing in flight means nothing here will change it:
    * a pair no rule settles, a push that never came. Those are dropped rather
-   * than left reading `syncing` for good.
+   * than left reading `syncing` for good. A change a push gave up on is
+   * counted with nothing in flight (#293): the next pass sends it again, or
+   * finds nothing left to send and drops it (`survey`).
    */
   private resting(): EngineStatus {
     if (this.refused !== null) return this.refused;
+    // A FULL SERVER STANDS FOR THE CHANGES IT REFUSED (#300), as a standing
+    // refusal does, until a push of each is taken or a pass drops it.
+    if ([...this.unsent.values()].some((entry) => entry.full)) return { kind: "error", code: "storage", message: SERVER_FULL };
+    // Notes waiting on their own push to settle a fork, or on an editor or a
+    // download here: work, by path (#296).
+    const waiting: string[] = [];
     const forked = this.contextValue?.forked;
     for (const fileId of forked ?? []) {
       const path = this.options.state.pathByFileId(fileId);
       if (path === undefined || !this.acting(path)) forked?.delete(fileId);
+      else waiting.push(path);
     }
     const records = Object.values(this.options.state.data.parked);
     const working = (entry: { reason: string }): boolean => entry.reason === "active_editor" || entry.reason === DOWNLOADING;
-    const waiting = (forked?.size ?? 0) + records.filter(working).length;
+    for (const entry of records) if (working(entry)) waiting.push(entry.path);
     const parked = records.filter((entry) => !working(entry));
     const newest = parked[parked.length - 1];
     if (newest !== undefined) {
@@ -2820,11 +3359,30 @@ export class SyncEngine {
     // AND the feed's latest read was answered. Before that first answer the
     // device is checking, which is not idle either.
     if (this.absent) return { kind: "offline" };
-    const work = this.queue.length + this.active + this.pulls + waiting;
+    // A CHANGE THE SERVER REFUSED IS SAID BY NAME for as long as it is here
+    // (#299): gone when a push of it is taken, or a pass finds nothing to send.
+    const refused = [...this.unsent].filter(([, entry]) => entry.refused).map(([path]) => path);
+    if (refused.length > 0) return { kind: "error", code: "push_refused", message: refusedChange(refused) };
+    // PATHS, NOT ENTRIES (#296): a note queued again while its push is in
+    // flight is one file of work, and so is one a push gave up on (#293) or
+    // one waiting on an editor, queued or pushed again. The queued push still
+    // goes: it is the one that sends a change made during the first.
+    const paths = new Set([...this.queue, ...this.pushing.keys(), ...this.unsent.keys(), ...waiting]);
+    const work = paths.size + this.pulls;
     // A NOTE WAITING ON AN EDITOR HERE IS NAMED (issue #252): a count
     // alone read "syncing 1" for minutes and said nothing of what to do.
     const held = records.find((entry) => entry.reason === "active_editor")?.path;
-    if (work > 0 || (this.running && !this.feedAnswered)) return { kind: "syncing", pending: work, ...(held === undefined ? {} : { held }) };
+    const checking = Math.min(work, this.checking.size);
+    const on = this.pressWaits;
+    if (work > 0 || (this.running && !this.feedAnswered) || on !== null) {
+      return {
+        kind: "syncing",
+        pending: work,
+        ...(held === undefined ? {} : { held }),
+        ...(checking === 0 ? {} : { checking }),
+        ...(on === null ? {} : { waiting: on }),
+      };
+    }
     return { kind: "idle" };
   }
 
@@ -2841,7 +3399,7 @@ export class SyncEngine {
     // Nothing paused waits for nothing: Sync now joins the pull queue only
     // when it has a note to bring back.
     if (Object.keys(this.options.state.data.paused).length === 0) return Promise.resolve();
-    return this.exclusive(async () => {
+    return this.exclusive("resume", async () => {
       if (!this.running) return;
       const context = this.need();
       const paused = context.state.data.paused;
@@ -2894,7 +3452,7 @@ export class SyncEngine {
   }
 
   private retryEditors(): Promise<void> {
-    return this.exclusive(async () => {
+    return this.exclusive("editor_retry", async () => {
       if (!this.running) return;
       const context = this.need();
       try {
@@ -2931,7 +3489,7 @@ export class SyncEngine {
 
   /** Try every parked record again: the timer's turn, the start, or Sync now. */
   private retryParked(trigger: string): Promise<void> {
-    return this.exclusive(async () => {
+    return this.exclusive("park_retry", async () => {
       if (!this.running || Object.keys(this.options.state.data.parked).length === 0) return;
       const context = this.need();
       const started = context.now();
@@ -3005,7 +3563,8 @@ export class SyncEngine {
    */
   private async background(context: SyncContext, change: ChangeRecord): Promise<boolean> {
     if (change.deleted || change.bytes <= LARGE_APPLY_BYTES || change.device_id === context.deviceId ||
-      context.authored.has(change.version_id) || context.state.data.paused[change.file_id] !== undefined) return false;
+      context.authored.has(change.version_id) || context.state.data.paused[change.file_id] !== undefined ||
+      context.state.data.departed[change.file_id] !== undefined) return false;
     // A rename, or bytes this device already holds: nothing to fetch.
     const kept = context.state.pathByFileId(change.file_id);
     if (kept !== undefined && context.state.fileByPath(kept)?.sha256 === (await sidDigest(change.sids))) return false;
@@ -3038,6 +3597,7 @@ export class SyncEngine {
     if (this.laning || !this.running) return;
     this.laning = true;
     void this.track(this.laneRun(this.need()));
+    this.pace();
   }
 
   private async laneRun(context: SyncContext): Promise<void> {
@@ -3065,6 +3625,7 @@ export class SyncEngine {
       }
     } finally {
       this.laning = false;
+      this.pace();
     }
   }
 
@@ -3081,8 +3642,10 @@ export class SyncEngine {
       const ahead = this.ahead(context, fileId, before);
       if (ahead !== null) await stage(context, ahead);
       let outcome = "applied";
+      this.laneTurn = true;
       try {
-        await this.exclusive(async () => {
+        await this.exclusive("lane", async () => {
+          this.laneTurn = false;
           if (!this.running || this.contextValue !== context) {
             outcome = "stopped";
             return;
@@ -3138,31 +3701,52 @@ export class SyncEngine {
    * Its records are applied one pull at a time beside a retry pass
    * (`exclusive`), and a record this device cannot write is parked (`receive`).
    */
-  private async applyPage(context: SyncContext, page: ChangesPage): Promise<void> {
+  private async applyPage(context: SyncContext, asked: ChangesPage): Promise<void> {
+    // A POLL'S PAGE AFTER A READ BESIDE IT (issue #288) was asked from an
+    // older cursor: what that read applied is not applied again, and the
+    // cursor never goes back.
+    const cursor = context.state.data.lastSeq;
+    const page = asked.seq < cursor || asked.changes.some((change) => change.seq <= cursor)
+      ? { ...asked, seq: Math.max(asked.seq, cursor), changes: asked.changes.filter((change) => change.seq > cursor) }
+      : asked;
     await this.learnNames(context, page.changes);
     let replayed = 0;
-    await this.exclusive(async () => {
-      // What arrived and is not yet written is work, and the status counts it
-      // down as it lands: a receiving device read `idle` through a thousand
-      // notes and a gigabyte (issue #158, S46, S26).
-      this.pulls = page.changes.length;
+    // Whether any change of the page was more than this device's own version
+    // coming back (`pull.ts`, ECHOES) or an entry a replay skips.
+    let wrote = false;
+    // What arrived and is not yet written is work, and the status counts it
+    // down as it lands: a receiving device read `idle` through a thousand
+    // notes and a gigabyte (issue #158, S46, S26). Counted BEFORE the turn,
+    // so a page waiting behind another pull is not idle either (#286), and
+    // said then when it will wait; the turn always comes (`exclusive`), says
+    // the count itself, and its end sets it back.
+    this.pulls = page.changes.length;
+    this.pace();
+    if (this.pulls > 0 && (this.holder !== null || this.behind > 0)) this.status(this.resting());
+    await this.exclusive("page", async () => {
       context.ahead = new Prefetch(context, page.changes);
       context.host.pass?.(true);
       try {
         for (const change of page.changes) {
           if (!this.running) break;
           if (this.pulls > 0) this.status(this.resting());
+          this.step = { seq: change.seq, name: "receive", since: this.nowFn() };
           // Re-reading a rebuilt journal from zero (issue #145): what this
           // device already processed is not news, and applied again it is
           // yesterday's note over today's, a deletion undone, a rename reverted.
           const mark = context.state.data.feedMark;
           if (mark?.replay === true && seenBefore(change, mark)) replayed++;
-          else this.processed(context, change, await this.receive(context, change));
+          else {
+            const result = await this.receive(context, change);
+            if (result !== "echo") wrote = true;
+            this.processed(context, change, result);
+          }
           context.state.data.lastSeq = change.seq;
           this.pulls--;
         }
       } finally {
         this.pulls = 0;
+        this.step = null;
         context.ahead = null;
         context.host.pass?.(false);
       }
@@ -3170,22 +3754,38 @@ export class SyncEngine {
     if (replayed > 0) context.host.log(`feed decision=skipped reason=seen_before_restore entries=${replayed}`);
     if (!this.caughtUp && page.seq >= page.head_seq) {
       await this.releaseRetired(context);
+      await this.returnLost(context);
       this.release("caught_up");
     }
-    // The save below writes what `defer` held (issue #194).
-    this.takeDeferred();
-    if (!this.running) {
+    // A PAGE THAT WROTE NOTHING HERE WAITS FOR THE NEXT SAVE (issue #274).
+    // An uploading device reads its own versions back all the way through its
+    // upload, a page every few notes, and each page's save rewrote the whole
+    // data file to move nothing but the cursor. Lost in a crash, the cursor is
+    // older, and those echoes -- or a replay's skipped entries -- are read
+    // again and dropped again. An empty page that leaves the cursor where it
+    // is has nothing to save at all.
+    if (!wrote && this.running) {
+      if (page.changes.length > 0 || page.seq !== context.state.data.lastSeq) {
+        context.state.data.lastSeq = page.seq;
+        this.defer();
+      }
+    } else {
+      // The save below writes what `defer` held (issue #194).
+      this.takeDeferred();
+      if (!this.running) {
+        await context.state.save();
+        return;
+      }
+      context.state.data.lastSeq = page.seq;
       await context.state.save();
-      return;
     }
-    context.state.data.lastSeq = page.seq;
-    await context.state.save();
     announceCopies(context);
     // EVERY ANSWERED PAGE, EMPTY OR NOT (issue #158): an `offline` the feed
     // said is taken back by the next answer, not by the next page that
     // happens to carry a change -- which kept every device reading `offline —
     // retrying` for minutes after its server was back.
     this.status(this.resting());
+    this.pace();
   }
 
   /**
@@ -3304,7 +3904,73 @@ export class SyncEngine {
       const grave = state.data.graves[change.file_id];
       if (grave?.versionId === change.version_id) grave.ts = change.ts;
     }
+    // What a replay passes as this device's own version of a file -- a live
+    // one carries a chunk; a deletion, a folder or a pause none -- of what it
+    // had read before, is its newest so far; anything later of that file
+    // settles it, this start's own posts among them (`returnLost`, #239).
+    const replay = state.data.replaying;
+    if (replay !== null) {
+      if (result === "echo" && change.sids.length > 0 && change.seq <= replay.through) replay.notes[change.file_id] = change.version_id;
+      else delete replay.notes[change.file_id];
+    }
     state.data.feedMark = { seq: change.seq, fileId: change.file_id, versionId: change.version_id, ts: change.ts, replay: false };
+  }
+
+  /**
+   * NOTES THIS DEVICE WROTE AND HOLDS NOWHERE, brought back once a replay over
+   * the vault it holds has caught up (issue #239; owner ruling 2026-09-29: a
+   * record whose file is missing is never treated as held). A widening reads
+   * the whole feed again, and this device's own versions come back to it as
+   * echoes -- right for a note it holds, and a silent divergence for one it
+   * does not: a note that left the selection before 1.1.5 remembered where
+   * to, or whose new name was deleted, hidden or taken into a linked folder
+   * while it was out -- and so for one the replay has just given back at an
+   * older version of another device's, before passing over this device's own
+   * newer one. Such a note's heads, read from the server now, are applied as
+   * another device's version would be (`returning`), at the name every other
+   * device keeps. One read per note, one line each, and none at all for a
+   * note held at that version, one that left and is still out of the
+   * selection, or one whose last version was a deletion.
+   */
+  private returnLost(context: SyncContext): Promise<void> {
+    const lost = context.state.data.replaying;
+    if (lost === null) return Promise.resolve();
+    if (Object.keys(lost.notes).length === 0) {
+      context.state.data.replaying = null;
+      return Promise.resolve();
+    }
+    const held = (fileId: string): string | undefined => {
+      const path = context.state.pathByFileId(fileId);
+      return path === undefined ? undefined : context.state.fileByPath(path)?.versionId;
+    };
+    return this.exclusive("bring_back", async () => {
+      for (const [fileId, versionId] of Object.entries(lost.notes)) {
+        // Stopped part way, what is left waits for the next start's catch-up (#281).
+        if (!this.running) return;
+        const before = held(fileId);
+        if (before !== versionId && context.state.data.departed[fileId] === undefined) {
+          const started = context.now();
+          let outcome: string;
+          this.returning.add(versionId);
+          try {
+            await this.reconcileFile(fileId);
+            outcome = held(fileId) === before ? "not_applied" : "applied";
+          } catch (error) {
+            outcome = `failed_${error instanceof ApiError ? error.code : error instanceof Unwritable ? error.reason : "error"}`;
+          } finally {
+            this.returning.delete(versionId);
+          }
+          context.host.log(
+            `feed path_class=file decision=downloaded_again reason=not_held outcome=${outcome} file=${fileId} ` +
+              `budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+          );
+        }
+        // And one whose read the stop cut short is asked for again then too.
+        if (this.running) delete lost.notes[fileId];
+      }
+      context.state.data.replaying = null;
+      await context.state.save();
+    });
   }
 
   /**
@@ -3317,7 +3983,7 @@ export class SyncEngine {
   private recover(context: SyncContext, due: Suspicion): Promise<void> {
     // ONE PULL AT A TIME: the check re-sends and the rewind moves the cursor,
     // and neither may run beside a page or a parked record's retry.
-    return this.exclusive(async () => {
+    return this.exclusive("recover", async () => {
       const live = (): boolean => this.running && this.contextValue === context;
       if (!live()) return;
       const resent = await recoverLost(context, due, this.judged, live);
@@ -3331,9 +3997,10 @@ export class SyncEngine {
       }
       await context.state.save();
       if (resent > 0) {
-        context.host.notify(
-          `obsync: The server was restored to an earlier state; this device re-sent ${resent} change${resent === 1 ? "" : "s"}.`,
-        );
+        context.host.notify({
+          kind: "info",
+          text: `your server went back to an earlier state, so this device sent ${count(resent, "change")} of its own again.`,
+        });
       }
     });
   }
@@ -3346,23 +4013,63 @@ export class SyncEngine {
    * recorded path the vault no longer has. This is what makes an edit made
    * while Obsidian was closed, or a file deleted in Finder, reach the server.
    */
-  reconcile(verifyUpTo = 0): Promise<void> {
-    return this.track(this.reconcileLocal(verifyUpTo));
+  reconcile(verifyUpTo = 0, press?: string): Promise<PassTally> {
+    return this.track(this.reconcileLocal(verifyUpTo, press));
   }
 
-  private async reconcileLocal(verifyUpTo: number): Promise<void> {
+  private async reconcileLocal(verifyUpTo: number, press?: string): Promise<PassTally> {
     const host = this.need().host;
-    await this.inPass(host, async () => this.survey(await host.list(), true, "reconcile", verifyUpTo));
-  }
-
-  /** `work` as one pass of the host's (`VaultHost.pass`), closed however it ends. */
-  private async inPass<T>(host: VaultHost, work: () => Promise<T>): Promise<T> {
+    const tally: PassTally = { verify: [], files: 0, differing: 0, listing: null };
+    await this.inPass(host, "reconcile", async () => {
+      // A PRESS ON A HOST THAT ASKS THE DISK (#246) compares every file by
+      // what the disk holds, and reads again nothing it finds unchanged.
+      tally.listing = press === undefined ? null : (await host.pressListing?.(press)) ?? null;
+      await this.survey(tally.listing?.files ?? await host.list(), true, "reconcile", tally.listing === null ? verifyUpTo : 0, tally);
+    });
+    // SYNC NOW'S CONTENT CHECK AFTER THE LOCK: it only queues files the pass
+    // found unchanged, and on a phone of 7,700 notes it held a page from
+    // another device for minutes when it ran inside (#244, #246).
+    if (tally.verify.length === 0) return tally;
     host.pass?.(true);
     try {
-      return await work();
+      for (const file of tally.verify) {
+        if (!this.running) return tally;
+        if (!(await host.syncable(file.path))) continue;
+        this.enqueue(file.path, true);
+        this.examined++;
+      }
     } finally {
       host.pass?.(false);
     }
+    return tally;
+  }
+
+  /**
+   * `work` as one pass of the host's (`VaultHost.pass`), closed however it
+   * ends -- AND UNDER THE PULL LOCK, ITS LISTING INCLUDED (issue #244). A pull
+   * applying a rename leaves the vault and the records apart for a moment: a
+   * phone reports the rename while the host's call still runs, which spends
+   * its echo mark, and the records follow the entry only after the host's next
+   * answers. A pass that compared inside that moment found the entry moved and
+   * nothing recorded there, and published the move as this device's own (5 of
+   * 20 folder re-cases on a loaded Android fake); a listing taken before a pull
+   * and compared after it pairs the same move backwards. One at a time, a pass
+   * never sees half of a pull, and a page waits for the comparison, which is
+   * quick. A pass's wait is said.
+   */
+  private inPass(host: VaultHost, label: string, work: () => Promise<void>): Promise<void> {
+    const asked = this.nowFn();
+    return this.exclusive("pass", async () => {
+      if (!this.running) return;
+      const waited = this.nowFn() - asked;
+      if (waited > 0) host.log(`${label} decision=waited reason=pull_lock duration_ms=${waited} budget_ms=${SCAN_BUDGET_MS}`);
+      host.pass?.(true);
+      try {
+        await work();
+      } finally {
+        host.pass?.(false);
+      }
+    });
   }
 
   /**
@@ -3378,7 +4085,23 @@ export class SyncEngine {
   private scanTick(): void {
     if (!this.running) return;
     this.scanHandle = null;
+    const started = this.scanSince = this.nowFn();
+    // A SCAN THAT DOES NOT END SAYS SO (issue #285): the next one is armed
+    // when this one ends, so one that never does stops every later scan. One
+    // line past `SCAN_STALL_MS` naming the pull that holds the chain -- its
+    // own `pass` while it walks and compares, another pull while it waits for
+    // that lock; nothing changes, and its end or a stop disarms it.
+    const watch = this.scanWatch = this.timers.set(() => {
+      const now = this.nowFn();
+      this.options.host.log(
+        `scan decision=stalled waited_ms=${now - started} budget_ms=${SCAN_STALL_MS} ` +
+          `chain=${this.holder === null ? "idle" : `${this.holder.label}:${now - this.holder.since}`}`,
+      );
+    }, SCAN_STALL_MS);
     void this.track(this.scanLocal().finally(() => {
+      if (this.scanSince === started) this.scanSince = null;
+      this.timers.clear(watch);
+      if (this.scanWatch === watch) this.scanWatch = null;
       if (this.running && this.scanHandle === null) {
         this.scanHandle = this.timers.set(() => this.scanTick(), SCAN_MS);
       }
@@ -3393,8 +4116,8 @@ export class SyncEngine {
     // in front of it; cleaning up is never a reason not to sync.
     if (!this.swept) {
       this.swept = true;
-      void this.track(this.exclusive(async () => {
-        await context.host.sweep?.().catch((error: unknown) =>
+      void this.track(this.exclusive("sweep", async () => {
+        await context.host.sweep?.(context.signal).catch((error: unknown) =>
           context.host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
       }));
     }
@@ -3421,12 +4144,12 @@ export class SyncEngine {
         this.walkFor = null;
         this.unwalked = 0;
       }
-      const own = context.host.scan === undefined ? null : await context.host.scan();
-      await this.inPass(context.host, async () => this.survey(own ?? await context.host.list(), false, "scan"));
+      await this.inPass(context.host, "scan", async () => this.survey((await context.host.scan?.(context.signal)) ?? await context.host.list(), false, "scan"));
     } catch (error) {
-      context.host.log(
-        `scan decision=failed reason=${error instanceof Error ? error.message : String(error)} budget_ms=${SCAN_BUDGET_MS}`,
-      );
+      // A walk the stop ended (`stopAndWait`) is no failure of the scan.
+      context.host.log(this.running
+        ? `scan decision=failed reason=${errorText(error)} budget_ms=${SCAN_BUDGET_MS}`
+        : "scan decision=deferred reason=stopped");
     }
   }
 
@@ -3449,12 +4172,13 @@ export class SyncEngine {
    * decides nothing differently, because an unchanged file is not queued
    * either way.
    */
-  private async survey(files: VaultStat[], tombstones: boolean, label: string, verifyUpTo = 0): Promise<void> {
+  private async survey(files: VaultStat[], tombstones: boolean, label: string, verifyUpTo = 0, tally?: PassTally): Promise<void> {
     const context = this.need();
     const started = context.now();
     const seen = new Set<string>();
     const fresh: VaultStat[] = [];
-    const verify: VaultStat[] = [];
+    // The pushes that had given up when this pass began (#293).
+    const gaveUp = this.failures;
     let skipped = 0;
     // FOLDERS ARE THE RECONCILE PASS'S BUSINESS, not the periodic scan's.
     // The scan is additive and never publishes a tombstone, and a folder
@@ -3520,7 +4244,9 @@ export class SyncEngine {
       }
     }
     // Sync now reads a recorded file's contents again only up to its ceiling
-    // (`SYNC_NOW_VERIFY_MAX`, issue #197); what lies above is counted.
+    // (`SYNC_NOW_VERIFY_MAX`, issue #197); what lies above is counted. The
+    // caller queues `tally.verify`, after the lock (`reconcileLocal`).
+    const verify = tally?.verify ?? [];
     let unread = 0;
     for (const file of files) {
       if (!this.running) return;
@@ -3580,6 +4306,37 @@ export class SyncEngine {
     // content and never reaches a log (requirement 6).
     if (unnormalised > 0) context.host.log(`${label} decision=skipped reason=normalisation_only files=${unnormalised}`);
 
+    // NOTES THAT LEFT THE SELECTION, WHERE IT COVERS THEM AGAIN (issue #239):
+    // after a widening, or a start that finds one moved back while the app
+    // was closed. Each is published as the move it is (`rejoin`), and one
+    // whose name holds nothing this device may sync -- deleted, or taken into
+    // a linked folder or a vault of its own while it was out -- is forgotten,
+    // so the replay brings it back at the name the other devices keep
+    // (`returnLost`). Before the pairing below, which must not take its file
+    // for another note's move. One line each, with what it was measured
+    // against.
+    if (tombstones) {
+      const listed = new Map(fresh.map((file) => [file.path, file]));
+      for (const [fileId, away] of Object.entries(context.state.data.departed)) {
+        if (!this.running) return;
+        if (!inSyncScope(away.path, context.state.data.syncFolders)) continue;
+        const started = context.now();
+        const file = listed.get(away.path);
+        const refused = file === undefined ? "destination_gone"
+          : !(await context.host.syncable(file.path)) ? "destination_unsyncable"
+          : this.rejoin(context, fileId, file.path, file.size);
+        if (refused === null) settled.add(away.path);
+        else if (context.state.data.departed[fileId] !== undefined) {
+          delete context.state.data.departed[fileId];
+          this.saveMoved(context);
+        }
+        context.host.log(
+          `${label} path_class=file decision=${refused === null ? "published_move reason=left_selection" : `forgotten reason=${refused}`} ` +
+            `file=${fileId} budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+        );
+      }
+    }
+
     // Moves first: a paired destination must not also be queued as a new
     // file, and a paired source must not also be tombstoned. A path the
     // normalisation check settled is handled in exactly the same way.
@@ -3637,7 +4394,7 @@ export class SyncEngine {
     // found there LEFT the selection -- never a deletion, never a hold.
     // Asked only when something is gone, which is almost never.
     const missing: string[] = [];
-    const left: string[] = [];
+    const left: [string, string | null][] = [];
     if (candidates.length > 0) {
       const index = byStat(await context.host.inventory());
       for (const from of candidates) {
@@ -3645,10 +4402,10 @@ export class SyncEngine {
         // The moves are the pairing above's, which saw every file of the
         // selection; what is left to find here is outside it.
         const outcome = await this.follow(context, from, index, settled);
-        if (outcome === "left") left.push(from);
-        else if (outcome === null) missing.push(from);
+        if (outcome === null) missing.push(from);
+        else if (outcome !== "moved") left.push([from, outcome.to]);
       }
-      for (const from of left) this.leftScope(from);
+      for (const [from, to] of left) this.leftScope(from, to);
     }
 
     // A BULK DELETION IS A QUESTION, NOT AN INSTRUCTION (issue #123). What
@@ -3707,17 +4464,14 @@ export class SyncEngine {
       );
       if (!this.bulkNoticeShown) {
         this.bulkNoticeShown = true;
-        context.host.notify(
-          kept.length > 0
-            ? `obsync is still holding back ${missing.length} deletions${within(missing)} from your other devices. ` +
-                "Delete them there too?"
-            : `obsync stopped ${missing.length} deletions it was about to send to your other devices: ` +
-              `it can no longer see ${missing.length} of the ${tracked} notes it syncs here, and nothing ` +
-              "asked for them to be deleted. A folder renamed or moved outside Obsidian looks exactly like " +
-              "this. Put it back, or select it under its new name in Sync folders -- or, if you really did " +
-              "delete them, confirm it under Settings, obsync, \"Deletions held back\".",
-          HELD_ACTIONS,
-        );
+        context.host.notify({
+          ...HELD_QUESTION,
+          text: kept.length > 0
+            ? `${count(missing.length, "deletion")}${within(missing)} ${missing.length === 1 ? "is" : "are"} still held back from your other devices. Delete them there too?`
+            : `held back ${count(missing.length, "deletion")}: ${missing.length} of the ${tracked} notes this device syncs ` +
+              "are missing, and nothing in Obsidian deleted them. A folder renamed or moved outside Obsidian looks like " +
+              "this: put it back, or select its new name in Sync folders. If you did delete them, choose Delete everywhere.",
+        });
       }
     } else if (tombstones) {
       if (held.length > 0) this.hold([]);
@@ -3740,13 +4494,54 @@ export class SyncEngine {
     // for every tracked file, against the stat this device's own manifest
     // carries.
     const untracked = fresh.filter((file) => !settled.has(file.path) && context.state.fileByPath(file.path) === undefined);
-    const own = tombstones ? await this.ownNotes(context, untracked.length) : null;
-    let queued = 0;
-    for (const file of verify) {
-      if (!(await context.host.syncable(file.path))) { skipped++; continue; }
-      this.enqueue(file.path);
-      queued++;
+    // THE EMPTY FILE OF A DOWNLOAD THIS DEVICE NEVER FINISHED (issue #248).
+    // Android can land a download's write empty (#242), and the mark that
+    // keeps that file unsent reaches the data file with the next save: a phone
+    // stopped between the two starts with the empty file and no mark, and sent
+    // it -- an existing note emptied on every device, or a new empty one.
+    // What tells it from a note a person emptied here is the feed: that
+    // download is still ahead of this device's cursor, a live version at the
+    // very path that the record does not hold. Such a file is marked again, as
+    // it was, and the feed writes the version over it (`droppedWrite`,
+    // pull.ts). A note emptied here has no such version ahead -- the person
+    // emptied what this device held -- and is sent as ever; where both
+    // happened before this device could send, the other version's text wins
+    // and nothing is lost. A walk that fails holds every empty file the same
+    // way, never sent empty on no evidence, but for this run only
+    // (`UNVERIFIED_LANDING`; a new file has no record to hold it by, review of
+    // 5f183db1): the feed's version is written over a download's landing, and
+    // the next start that reads the feed judges any file still empty, so a
+    // note the person emptied is sent then.
+    const emptied = tombstones ? fresh.filter((file) => file.size === 0 && !settled.has(file.path)) : [];
+    const walked = !this.ownRead;
+    const own = tombstones ? await this.ownNotes(context, untracked.length + emptied.length) : null;
+    const blind = walked && this.ownRead && own === null;
+    let unfinished = 0;
+    for (const file of emptied) {
+      const record = context.state.fileByPath(file.path);
+      const note = own?.notes.get(file.path);
+      const ahead = note !== undefined && note.version_id !== record?.versionId;
+      const mark = ahead ? note.file_id : blind ? UNVERIFIED_LANDING : undefined;
+      if (mark === undefined) continue;
+      context.state.data.dropped[file.path] = mark;
+      settled.add(file.path);
+      unfinished++;
     }
+    if (unfinished > 0) {
+      context.host.log(
+        `${label} decision=held reason=unfinished_download files=${unfinished} unverified=${blind ? unfinished : 0} ` +
+          `budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+      );
+      void this.track(context.state.save()).catch(() => {
+        this.stop();
+        context.host.log(`${label} decision=failed reason=state_not_saved`);
+      });
+    }
+    if (own !== null && context.state.data.replaying !== null) {
+      const open = untracked.filter((file) => !settled.has(file.path));
+      await this.rejoinUnseen(context, own.notes, open, seen, settled, label);
+    }
+    let queued = 0;
     let adopted = 0;
     let heldBack = 0;
     for (const file of fresh) {
@@ -3771,13 +4566,21 @@ export class SyncEngine {
       // rule; a note no other device named goes out at once.
       if (this.holding !== null && context.state.fileByPath(file.path) === undefined &&
         (this.holding.all || (note !== undefined && note.device_id !== context.deviceId))) {
-        if (note !== undefined) this.expected.add(note.file_id);
+        if (note !== undefined) this.expected.set(note.file_id, { path: file.path, behind: note.behind });
         if (!this.holding.paths.has(file.path)) heldBack++;
         this.holdBack(file.path);
         continue;
       }
       this.enqueue(file.path);
       queued++;
+    }
+    // AN UNSENT CHANGE THIS PASS DID NOT SEND AGAIN IS NO LONGER WORK (#293):
+    // the server took it after all, the file went, or it left the selection.
+    // One queued or pushed again is that push's to settle (#300: a full
+    // server's refusal stands through it), and one whose push gave up during
+    // this pass is the next pass's to judge.
+    for (const [path, { failure }] of this.unsent) {
+      if (failure <= gaveUp && !this.queue.includes(path) && !this.pushing.has(path)) this.sent(path);
     }
     if (verifyUpTo > 0) this.examined += queued;
     if (own !== null) {
@@ -3796,6 +4599,13 @@ export class SyncEngine {
     // a pass where notes LEFT the selection, the folders that went left with
     // them (`settleVanished`).
     if (tombstones) {
+      // A REMOVAL THIS DEVICE STILL OWES (issue #265) is judged here again,
+      // against the selection it was judged in. A folder that stands again,
+      // or a record already retired, owes nothing.
+      const owed = context.state.data.folderRemovals;
+      for (const path of Object.keys(owed)) {
+        if (present.has(path) || context.state.folderByPath(path) === undefined) this.settleRemoval(path);
+      }
       for (const folder of Object.keys(context.state.data.folders)) {
         // A folder whose notes' deletions are held waits with them, as it
         // does in the watcher's burst (`heldFolders`): the person may yet put
@@ -3803,14 +4613,22 @@ export class SyncEngine {
         if (context.state.data.heldDeletions.some((path) => path.startsWith(`${folder}/`))) continue;
         if (!this.running) return;
         if (present.has(folder) || casedFolders.has(folder)) continue;
-        if (!this.trackedFolder(folder, "reconcile_folder_state")) { folderSkipped++; continue; }
+        const judged = owed[folder] ?? undefined;
+        if (!this.trackedFolder(folder, "reconcile_folder_state", judged)) {
+          folderSkipped++;
+          this.settleRemoval(folder);
+          continue;
+        }
         if (left.length > 0) { this.folderLeftScope(folder, context.state.data.syncFolders); continue; }
-        this.folderRemovals.add(folder);
-        this.enqueue(folder);
+        this.oweRemoval(folder, judged);
         folderQueued++;
       }
     }
 
+    if (tally !== undefined) {
+      tally.files = seen.size;
+      tally.differing = fresh.length;
+    }
     const duration = context.now() - started;
     // The periodic pass is silent when it had nothing to say: one line every
     // 30 s about an unchanged vault buries the lines that matter. It speaks
@@ -3826,6 +4644,59 @@ export class SyncEngine {
     }
     // LAST, because this pass's own pairings consume marks (`renamed`).
     this.sweepEchoes(context, label);
+  }
+
+  /**
+   * A NOTE THAT LEFT THE SELECTION UNSEEN (issue #239): moved out of it before
+   * this device remembered where to (1.1.4 and older), or by a move nothing
+   * here saw. A replay over the vault this device holds finds its own newest
+   * version of such a note at a name in the selection that holds nothing
+   * here; when exactly one file of the selection, recorded nowhere and at no
+   * note's name, IS that version, chunk for chunk (`sameChunks`), and is that
+   * version for no other note, that file is the note, moved -- published as
+   * the move (`rejoin`). Anything short of that proof leaves the note to be
+   * brought back where it was (`returnLost`): two copies, nothing lost.
+   * Cost: one read of a file only where its size is such a note's.
+   */
+  private async rejoinUnseen(
+    context: SyncContext,
+    notes: Map<string, HeldNote>,
+    files: VaultStat[],
+    seen: Set<string>,
+    settled: Set<string>,
+    label: string,
+  ): Promise<void> {
+    const started = context.now();
+    const bySize = new Map<number, HeldNote[]>();
+    for (const note of notes.values()) {
+      // Missing is what the listing of the selection says, so only a name in it can be.
+      if (note.device_id !== context.deviceId || !inSyncScope(note.path, context.state.data.syncFolders) || seen.has(note.path) ||
+        context.state.pathByFileId(note.file_id) !== undefined || context.state.data.departed[note.file_id] !== undefined) continue;
+      bySize.set(note.size, [...(bySize.get(note.size) ?? []), note]);
+    }
+    const found = new Map<HeldNote, VaultStat[]>();
+    const claimed = new Map<string, number>();
+    for (const file of files) {
+      if (!this.running) return;
+      // Asked of the host only where a size matches: a linked folder or a
+      // vault of its own is never published from (`syncable`).
+      if (notes.has(file.path) || !bySize.has(file.size) || !(await context.host.syncable(file.path))) continue;
+      for (const note of bySize.get(file.size) ?? []) {
+        if ((await sameChunks(context, note.sids, file.path, file, file.size)) === null) continue;
+        found.set(note, [...(found.get(note) ?? []), file]);
+        claimed.set(file.path, (claimed.get(file.path) ?? 0) + 1);
+      }
+    }
+    for (const [note, [file, ...more]] of found) {
+      if (file === undefined || more.length > 0 || claimed.get(file.path) !== 1) continue;
+      context.state.data.departed[note.file_id] = { path: file.path, versionId: note.version_id, size: file.size };
+      const refused = this.rejoin(context, note.file_id, file.path, file.size);
+      if (refused === null) settled.add(file.path);
+      context.host.log(
+        `${label} path_class=file decision=${refused === null ? "published_move reason=identical" : `forgotten reason=${refused}`} ` +
+          `file=${note.file_id} budget_ms=${SCAN_BUDGET_MS} duration_ms=${context.now() - started}`,
+      );
+    }
   }
 
   /**
@@ -3918,9 +4789,8 @@ export class SyncEngine {
       // handlers drop it: a path is a removal or a publication, never both,
       // and `pushNow` would otherwise answer the removal for both.
       this.folderPublished(from);
-      this.folderRemovals.add(from);
-      this.enqueue(from);
-      this.folderRemovals.delete(to);
+      this.oweRemoval(from, context.state.data.syncFolders);
+      this.settleRemoval(to);
       // ARMED BEFORE THE ENQUEUE, because `enqueue` drains synchronously as
       // far as its first await (`folderCreated`).
       this.publishFolder(to, true);
@@ -4099,13 +4969,13 @@ export class SyncEngine {
     // whole of the repair and which the user cannot act on.
     if (!this.caseGhostNoticeShown && folderOf(path) !== folderOf(to)) {
       this.caseGhostNoticeShown = true;
-      context.host.notify(
-        "obsync: this device holds records for one folder under two capitalisations, and the notes under the " +
-          "spelling it no longer shows are already tracked under the one it does. It has stopped tracking the " +
-          "old spelling and deleted nothing. If another device shows TWO folders whose names differ only in " +
-          "capitalisation, delete the stale one there only once every device runs obsync 1.1.0 or later and " +
-          "has synced once since updating -- see Troubleshooting, \"Two folders that differ only in capitalisation\".",
-      );
+      context.host.notify({
+        kind: "info",
+        text: "found one folder recorded under two spellings and kept the one this device shows; nothing was deleted. " +
+          "If another device shows two folders whose names differ only in capitals, delete the stale one there only once " +
+          "every device runs obsync 1.1.0 or later and has synced since; see Troubleshooting, \"Two folders that differ only " +
+          "in capitalisation\".",
+      });
     }
     return true;
   }
@@ -4114,10 +4984,13 @@ export class SyncEngine {
    * Everything the user's "Sync now" command does (issue #197), in order:
    * what is queued here goes; one read of the feed, asked at once, brings
    * what waits on the server (`readFeed`); parked records and paused notes
-   * are tried again; and the reconcile pass finds what the watcher missed,
-   * reading again the contents of every file of at most
+   * are tried again; and the reconcile pass finds what the watcher missed.
+   * A desktop reads again the contents of every file of at most
    * `SYNC_NOW_VERIFY_MAX` bytes -- a plugin's rewrite that kept both a note's
-   * size and its date (#179). What that pass queues goes too.
+   * size and its date (#179). A phone asks the disk instead for every listed
+   * file's size and date (`VaultHost.pressListing`, #246), and reads only
+   * what differs: reading every file took minutes there. What the pass
+   * queues goes too.
    *
    * It resolves only once the queue it was asked to flush is empty. Joining
    * the running drain is not enough on its own: a path queued after that
@@ -4141,34 +5014,68 @@ export class SyncEngine {
     const inFlight = this.active;
     const written = this.written;
     const examined = this.examined;
+    const readBefore = this.options.host.readTotals?.() ?? { files: 0, bytes: 0 };
     const held = (): number => this.options.state.data.heldDeletions.length;
     const pending = held() > 0;
     let followUp = await this.flush();
     await this.readFeed();
-    await this.retryParked(trigger);
+    await this.inTurn(trigger, this.retryParked(trigger));
     // A paused note before the pass, so what it holds is in it (issue #179).
-    await this.resume(undefined, trigger);
-    await this.reconcile(verifyUpTo);
+    await this.inTurn(trigger, this.resume(undefined, trigger));
+    const tally = await this.reconcile(verifyUpTo, trigger === "sync_now" ? trigger : undefined);
     // The command that "syncs everything" did not send the deletions the user
     // is still being asked about, and says so rather than nothing (#172).
     if (pending && held() > 0) {
-      this.options.host.notify(
-        `obsync is still holding back ${held()} deletions: Sync now does not send them. Put ` +
-          "the notes back, or, if you really deleted them, confirm it under Settings, obsync, \"Deletions held back\".",
-        HELD_ACTIONS,
-      );
+      this.options.host.notify({
+        ...HELD_QUESTION,
+        text: `${count(held(), "deletion")} ${held() === 1 ? "is" : "are"} still held back, so Sync now does not send them. ` +
+          "Choose Delete everywhere if you meant them, or Restore here to put the notes back.",
+      });
     }
     followUp = (await this.flush()) || followUp;
+    const read = this.options.host.readTotals?.() ?? { files: 0, bytes: 0 };
     this.options.host.log(
       `${trigger} decision=${joined ? "joined_running_drain" : "drained"} queued=${queued} ` +
         `in_flight=${inFlight} follow_up=${followUp ? 1 : 0} examined=${this.examined - examined} ` +
-        `duration_ms=${this.nowFn() - started}`,
+        `listing=${tally.listing?.source ?? "index"} folders=${tally.listing?.folders ?? 0} files=${tally.files} ` +
+        `differing=${tally.differing} read=${read.files - readBefore.files} bytes=${read.bytes - readBefore.bytes} ` +
+        `duration_ms=${this.nowFn() - started} budget_ms=${SYNC_NOW_BUDGET_MS}`,
     );
     await this.repairTick();
     // What this press sent, for the one notice it answers with (`main.ts`,
     // #182): versions the server took, not paths looked at -- the press
     // re-reads many notes, and most are unchanged.
     return { checked: this.examined - examined, sent: this.written - written };
+  }
+
+  /**
+   * A PRESS NEVER WAITS IN SILENCE (issue #276). Its retry and its resume
+   * take a turn of the pull chain (`exclusive`), behind whatever pull holds it.
+   * A turn that has not come within `SYNC_NOW_FEED_MS` is said -- in the status,
+   * which names that pull (`pressWaits`), and in one line -- and the press
+   * goes on waiting for it: the wait is reported, never cut short.
+   */
+  private async inTurn(trigger: string, turn: Promise<void>): Promise<void> {
+    let said = false;
+    const handle = this.timers.set(() => {
+      said = true;
+      const holder = this.holder;
+      this.pressWaits = holder?.label ?? "pull";
+      this.options.host.log(
+        `${trigger} decision=waiting on=${this.pressWaits} held_ms=${holder === null ? 0 : this.nowFn() - holder.since} ` +
+          `behind=${this.behind} budget_ms=${SYNC_NOW_FEED_MS}`,
+      );
+      this.status(this.resting());
+    }, SYNC_NOW_FEED_MS);
+    try {
+      await turn;
+    } finally {
+      this.timers.clear(handle);
+      if (said) {
+        this.pressWaits = null;
+        this.status(this.resting());
+      }
+    }
   }
 
   /** Drain, and once more when a path was queued after the joined drain took its last batch. */
@@ -4182,9 +5089,9 @@ export class SyncEngine {
   /**
    * One read of the feed, sent at once and applied, for Sync now (issue #197).
    * The feed has ONE reader, its loop, so this asks the loop for its next read
-   * instead of reading beside it -- two readers from one cursor would apply
-   * the same records twice. The long poll in flight is dropped (`wake`), and
-   * whatever it brings later is discarded unread, as every dropped poll's is.
+   * instead of reading on its own -- two readers from one cursor would apply
+   * the same records twice. The loop reads beside the long poll in flight,
+   * which stays in flight (`besidePoll`, #288).
    * Answered once a read sent after the ask is applied, or fails, or a stop
    * (`answerFeed`) -- or after `SYNC_NOW_FEED_MS`, when the press goes on and
    * the read goes on without it. A read already in flight that asks without
@@ -4285,7 +5192,7 @@ export class SyncEngine {
           ? "Server repair needs a device with safe file-range reads for a file larger than 8 MiB. Keep a synced desktop online; this device cannot automatically supply that file."
           : "Server repair could not restore a missing chunk from this device's current files. Keep another synced device online and check the server scrub report.";
         this.status({ kind: "error", message });
-        if (!this.repairNoticeShown) { host.notify(`obsync: ${message}`); this.repairNoticeShown = true; }
+        if (!this.repairNoticeShown) { host.notify({ kind: "error", text: message }); this.repairNoticeShown = true; }
       }
     } catch (error) {
       // Do not expose a source path or untrusted transport/manifest error.
@@ -4328,7 +5235,7 @@ export class SyncEngine {
       if (beat.outcome === "lost") context.host.log(`heartbeat decision=lost reason=${beat.reason}`);
       else context.host.log("heartbeat decision=reported policy_schema=v1");
     } catch (error) {
-      context.host.log(`heartbeat decision=${stopped(error) ? "cancelled" : "failed"} reason=${error instanceof Error ? error.message : String(error)}`);
+      context.host.log(`heartbeat decision=${stopped(error) ? "cancelled" : "failed"} reason=${errorText(error)}`);
     }
     this.unnamed.clear();
     await this.readNames(context, "heartbeat");

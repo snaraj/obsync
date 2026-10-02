@@ -1,0 +1,12 @@
+# M3568: a saved setting of any word is taken as a value
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -95,7 +95,7 @@
+ /** Read a saved value onto the defaults: anything unreadable is the default, never an error. */
+ export function noticeSettings(value: unknown): NoticeSettings {
+   const saved = typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
+-  const level = LEVELS.find(([option]) => option === saved["level"]);
++  const level = typeof saved["level"] === "string" ? [saved["level"] as NoticeLevel] as const : undefined;
+   const merges = MERGES.find(([option]) => option === saved["merges"]);
+   return { level: level?.[0] ?? NOTICE_DEFAULTS.level, merges: merges?.[0] ?? NOTICE_DEFAULTS.merges };
+ }

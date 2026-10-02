@@ -1,11 +1,14 @@
 # M3203: a hidden entry the system will not stat ends the search for a vault above
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -715,7 +715,7 @@
+@@ -975,10 +975,7 @@
        for (const step of ["plugins", PAIRING_ACTION, null]) {
          // A hidden entry the system will not stat (macOS answers `/.resolve`
          // with EINVAL) is no config folder; the question moves on.
--        const stat = await walker(desktop.fs).lstat(at).catch(() => null);
+-        const stat = await walker(desktop.fs).lstat(at).catch((error: unknown) => {
+-          if (error instanceof DiskStalled) throw error;
+-          return null;
+-        });
 +        const stat = await walker(desktop.fs).lstat(at);
          if (stat?.isDirectory() !== true) continue next;
          if (step !== null) at = desktop.path.resolve(at, step);

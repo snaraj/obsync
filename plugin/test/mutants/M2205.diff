@@ -1,13 +1,13 @@
 # M2205: Sync now reads the feed before sending what is queued
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4037,8 +4037,8 @@
-     const examined = this.examined;
+@@ -4754,8 +4754,8 @@
+     const readBefore = this.options.host.readTotals?.() ?? { files: 0, bytes: 0 };
      const held = (): number => this.options.state.data.heldDeletions.length;
      const pending = held() > 0;
 +    await this.readFeed();
      let followUp = await this.flush();
 -    await this.readFeed();
-     await this.retryParked(trigger);
+     await this.inTurn(trigger, this.retryParked(trigger));
      // A paused note before the pass, so what it holds is in it (issue #179).
-     await this.resume(undefined, trigger);
+     await this.inTurn(trigger, this.resume(undefined, trigger));

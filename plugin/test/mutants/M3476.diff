@@ -1,0 +1,11 @@
+# M3476: Forget acts on the press, without asking first
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -1006,6 +1006,7 @@
+       row.visible = () => this.revokedShown;
+       row.render = (setting) => {
+         setting.addButton((button) => button.setButtonText("Forget").onClick(() => {
++          void this.forget(device, named);
+           new ConfirmModal(
+             this.app,
+             `Forget ${named}?`,

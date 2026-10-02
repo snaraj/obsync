@@ -1,0 +1,11 @@
+# M3549: a timeout while the server answered another request is reported as unreachable (#288)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -854,7 +854,6 @@
+           : `network=${errorText(error)}`,
+         answered: false,
+       };
+-      if (behind) return outcome;
+     }
+     if (outcome.kind === "settled" || outcome.answered) {
+       this.answeredAt = this.now();

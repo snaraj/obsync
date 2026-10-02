@@ -1,0 +1,12 @@
+# M4003: the filesystem the host finds on a desktop is not bounded (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -752,7 +752,7 @@
+     const path = nodeModule<PathResolver>("path");
+     const adapter = plugin.app.vault.adapter as { getBasePath?: () => string };
+     const base = typeof adapter.getBasePath === "function" ? adapter.getBasePath() : null;
+-    this.desktop = fs !== null && path !== null && base !== null ? { fs: boundedFs(fs, log), path, base } : null;
++    this.desktop = fs !== null && path !== null && base !== null ? { fs, path, base } : null;
+   }
+ 
+   /**

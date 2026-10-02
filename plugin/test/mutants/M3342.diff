@@ -1,0 +1,12 @@
+# M3342: a version a held note descends from is written at its old name on a replay (#241)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1949,7 +1949,7 @@
+   // adopted when the note kept is that older version, which the newer one
+   // then updates -- and a version the start's walk did not reach is applied.
+   const heldNote = context.expected?.get(change.file_id);
+-  if (heldNote !== undefined && heldNote.path !== manifest.path && heldNote.behind.has(change.version_id)) {
++  if (false) {
+     context.host.log(`pull decision=skipped reason=behind_held file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }

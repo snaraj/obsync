@@ -1,0 +1,12 @@
+# M3595: a very long toast stays on screen past twenty seconds
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -180,7 +180,7 @@
+ export function stays(kind: NoticeKind, text: string): number {
+   if (STAYS_MS[kind] === 0) return 0;
+   const words = text.split(/\s+/).filter(Boolean).length;
+-  return Math.max(STAYS_MS[kind], Math.min(READ_MAX_MS, 1000 + words * READ_MS_PER_WORD));
++  return Math.max(STAYS_MS[kind], 1000 + words * READ_MS_PER_WORD);
+ }
+ 
+ /**

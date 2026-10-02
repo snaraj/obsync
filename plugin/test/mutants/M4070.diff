@@ -1,0 +1,12 @@
+# M4070: a version is skipped at an occupied name, so a note kept at an older version is copied (#311, #163)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2006,7 +2006,7 @@
+   // first, so one kept at an older version is adopted, never copied
+   // (`sameNameTiebreak`, issue #163). A frame naming no heads proves nothing.
+   if (localPath === undefined && change.heads.length > 0 && !change.heads.includes(change.version_id) &&
+-    (await competing(context, manifest.path, change.file_id)) === null) {
++    true) {
+     context.host.log(`pull decision=skipped reason=superseded_in_feed file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }

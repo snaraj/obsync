@@ -5,8 +5,8 @@
        this.engine = null;
        // Not this device's own leave, which forgets the pairing next and says
        // what happened itself: a phone put this up after every Leave (#233).
--      if (!this.leaving) this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
-+      this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+-      if (!this.leaving) this.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
++      this.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
      }
    }
  

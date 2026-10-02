@@ -218,7 +218,7 @@ test("a device that has left can enrol on another server, and it is still the sa
   assert.equal(r.instance.state.paired, true);
   assert.equal(r.other.devices.length, 1);
   assert.equal(r.other.devices[0].name, "Study laptop");
-  assert.ok(r.obsidian.notices.some((message) => message.includes("Account created")));
+  assert.ok(r.obsidian.notices.some((message) => message.includes("set up your server's vault")));
   assert.equal(r.envelope().includes(KEYS.deviceSecret), false, "the old server's credential is still gone");
   assert.deepEqual(r.host.trashed, [], "pairing again moved no note");
 });

@@ -5,7 +5,7 @@
  * `path` decides where bytes land, so a compromised or hostile paired device
  * that can post a valid encrypted manifest could otherwise name
  * `../../outside-the-vault.md`, an absolute path, or this plugin's own
- * `.obsidian/plugins/obsync/main.js` and have the writer put its bytes there.
+ * bundle in the vault's config folder and have the writer put its bytes there.
  * Every vault operation — read, write, rename, trash, conflict copy,
  * remote-only listing, watcher ingestion, manifest decode — goes through
  * `vaultPathRefusal` first (`docs/architecture.md` 6.2 item 3).
@@ -16,8 +16,9 @@
  * and not starting with `.`.
  *
  * HIDDEN SEGMENTS ARE EXCLUDED IN BOTH DIRECTIONS IN v0.1. That rule takes
- * `.obsidian/**` — including this plugin's own bundle, its `data.json` and
- * therefore the vault key — and `.git/**` out of sync entirely: they are
+ * the vault's config folder (a hidden folder, whatever its name) —
+ * including this plugin's own bundle, its `data.json` and therefore the
+ * vault key — and `.git/**` out of sync entirely: they are
  * neither pushed nor accepted. Syncing hidden folders is a later opt-in with
  * its own design (a plugin that can rewrite its own code from the feed is a
  * remote-code-execution channel between devices), not a setting to add here.
@@ -118,6 +119,27 @@ export class VaultPathError extends Error {
     super(`refused: not a vault path (${refusal})`);
     this.name = "VaultPathError";
   }
+}
+
+/** A path as the operating system gives one: `/…`, `C:\…` or `C:/…`, `\\server\…`. */
+const ABSOLUTE = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/;
+/** Such a path quoted in a message, as Node words a failed call. */
+const QUOTED_ABSOLUTE = /'(?:\/|[A-Za-z]:[\\/]|\\\\)[^']*'/g;
+
+/**
+ * An error's own words for a LOG LINE, with the paths it names cut out (issue
+ * #266). A filesystem error names the ABSOLUTE path it failed on -- in its
+ * `path` and `dest` and in its message -- so a line carrying its message named
+ * the person's home and vault folders in every log they share, where every
+ * other line keeps paths out. The code, the call and the reason stay.
+ */
+export function errorText(error: unknown): string {
+  let text = error instanceof Error ? error.message : String(error);
+  const named = error as { path?: unknown; dest?: unknown } | null | undefined;
+  for (const path of [named?.path, named?.dest]) {
+    if (typeof path === "string" && ABSOLUTE.test(path)) text = text.split(path).join("<path>");
+  }
+  return text.replace(QUOTED_ABSOLUTE, "'<path>'");
 }
 
 /** The reason `value` is not a canonical relative vault path, or `null`. */

@@ -15,7 +15,7 @@ unavailable for the final candidate; no phone acceptance is claimed here.
 - Server: a native `obsyncd` build from the same source, isolated storage and
   disposable credentials. HTTPS terminates at a temporary free tunnel; a
   loopback proxy forwards only health and protocol paths plus the QA archive.
-  No production server or owner vault was used.
+  No production server or vault of the user's was used.
 - Both desktop and peer used the HTTPS route. Desktop operations used the
   Obsidian CLI and vault APIs, rather than native typing.
 - Plugin bundle SHA-256:
@@ -73,7 +73,7 @@ The [mutation provenance](https://github.com/snaraj/obsync/blob/main/plugin/test
 the three separate full-suite replacement measurements.
 
 Native phone acceptance, independent approval at the final committed head,
-owner merge, exact-main CI, and immutable release publication remain required.
+the user's merge, exact-main CI, and immutable release publication remain required.
 
 ## Desktop vault rename and relocation follow-up
 
@@ -94,7 +94,7 @@ initial notes, and the disabled rewrite fixture. Two revoked emulator
 registrations remain in this disposable server's history. The temporary
 relocation directory and obsolete unpaired desktop vault registration were
 removed, and the latter's exact known empty secret reference was cleared.
-Owner vaults were not changed.
+The user's vaults were not changed.
 
 Receipts: `vault-after-rename.json`, `vault-after-move.json`, and
 `vault-restored-ready.json`. This proves the desktop identity and upload

@@ -1,0 +1,12 @@
+# M3672: a stalled scan writes no line (#285)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3834,7 +3834,7 @@
+     // that lock; nothing changes, and its end or a stop disarms it.
+     const watch = this.scanWatch = this.timers.set(() => {
+       const now = this.nowFn();
+-      this.options.host.log(
++      ((line: string) => line)(
+         `scan decision=stalled waited_ms=${now - started} budget_ms=${SCAN_STALL_MS} ` +
+           `chain=${this.holder === null ? "idle" : `${this.holder.label}:${now - this.holder.since}`}`,
+       );

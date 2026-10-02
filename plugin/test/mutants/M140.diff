@@ -1,12 +1,12 @@
 # M140: the transport calls every attempt answered
 --- a/plugin/src/transport.ts
 +++ b/plugin/src/transport.ts
-@@ -672,7 +672,7 @@
-           : `network=${error instanceof Error ? error.message : String(error)}`,
-       };
+@@ -870,7 +870,7 @@
+       this.answeredAt = this.now();
+       this.options.reachable?.(true);
+     } else {
+-      this.options.reachable?.(false, `${method} ${target} ${outcome.reason}`);
++      this.options.reachable?.(true);
      }
--    this.options.reachable?.(outcome.kind === "settled");
-+    this.options.reachable?.(true);
+     letGo?.();
      return outcome;
-   }
- 

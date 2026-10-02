@@ -1,0 +1,11 @@
+# M3582: the CLI's JSON refusal is thrown as words
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3338,7 +3338,6 @@
+         } catch (error) {
+           const refusal = error instanceof CliRefusal ? error : new CliRefusal("failed", "obsync could not do that; its log in Obsidian's developer console says why.");
+           this.log(`cli decision=refused reason=${refusal.code} command=${command} duration_ms=${Date.now() - started}`);
+-          if (json) return JSON.stringify({ error: { code: refusal.code, message: refusal.message } });
+           throw new Error(refusal.message);
+         }
+       };

@@ -193,6 +193,8 @@ input:invalid:not(:placeholder-shown) { border-color: var(--danger); }
 .actions { display: flex; gap: 0.35rem; flex-wrap: wrap; align-items: center; }
 .confirm { display: flex; gap: 0.35rem; flex-wrap: wrap; align-items: center; color: var(--danger); font-size: 0.82rem; }
 .history td { background: var(--rule-2); }
+.fold td { padding: 0.55rem; }
+.fold .sub { margin: 0 0.5rem; }
 .events { margin: 0; padding-left: 1.1rem; font-size: 0.84rem; }
 .events li { margin-bottom: 0.15rem; }
 .skelrow td { padding: 0.4rem 0.55rem; }
@@ -241,6 +243,7 @@ input:invalid:not(:placeholder-shown) { border-color: var(--danger); }
   .grid, .grid tbody, .grid tr, .grid tbody th, .grid td { display: block; width: 100%; }
   .grid thead { display: none; }
   .grid tr[hidden] { display: none; }
+  .grid tbody[hidden] { display: none; }
   .grid tr { border: 1px solid var(--rule); border-radius: 3px; margin-bottom: 0.6rem; padding: 0.2rem 0.1rem; }
   .grid tbody th, .grid td { border-bottom: 1px solid var(--rule-2); }
   .grid tr > :last-child { border-bottom: 0; }

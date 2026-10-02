@@ -1,0 +1,12 @@
+# M3321: an error's words keep an absolute path quoted in a message with no path property (issue #266)
+--- a/plugin/src/vaultPath.ts
++++ b/plugin/src/vaultPath.ts
+@@ -138,7 +138,7 @@
+   for (const path of [named?.path, named?.dest]) {
+     if (typeof path === "string" && ABSOLUTE.test(path)) text = text.split(path).join("<path>");
+   }
+-  return text.replace(QUOTED_ABSOLUTE, "'<path>'");
++  return text;
+ }
+ 
+ /** The reason `value` is not a canonical relative vault path, or `null`. */

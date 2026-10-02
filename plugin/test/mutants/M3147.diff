@@ -5,8 +5,8 @@
        // logged and never said: it read "removed" over a device that left (#233).
        const ended = this.state.data.deviceId !== deviceId;
        const refused = refusalStatus(error);
--      if (!ended && refused?.kind === "error" && refused.code === "forgotten_device") this.setStatus(refused);
-+      if (refused?.kind === "error" && refused.code === "forgotten_device") this.setStatus(refused);
+-      if (!ended && refused?.kind === "error" && refused.code === "credential_rejected") this.setStatus(refused);
++      if (refused?.kind === "error" && refused.code === "credential_rejected") this.setStatus(refused);
        // Old servers do not implement this route. Sync can continue, and their
        // last-device refusal remains in force until server and client upgrade.
        this.log(`recovery decision=unavailable reason=${error instanceof ApiError ? error.code : "local_or_lost"}${ended ? " session=ended" : ""}`);

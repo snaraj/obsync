@@ -1,0 +1,12 @@
+# M3384: a listed file that disagrees with its record is never asked of the disk (#245)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -869,7 +869,7 @@
+       const record = this.plugin.state.data.files[file.path];
+       const suspect = record !== undefined && !isPushed(record, file.mtime, file.size);
+       if (suspect) suspects++;
+-      const disk = suspect ? await this.stat(file.path).catch(() => null) : null;
++      const disk = suspect && false ? await this.stat(file.path).catch(() => null) : null;
+       if (disk === null || (disk.size === file.size && disk.mtime === file.mtime)) {
+         out.push(file);
+         continue;

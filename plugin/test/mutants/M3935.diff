@@ -1,0 +1,12 @@
+# M3935: a stopped state's words say obsync twice
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3389,7 +3389,7 @@
+       this.log(`state decision=stopped reason=${error.reason}`);
+       if (this.statusEl) this.setStatus({ kind: "error", message: error.message });
+       // Its words begin "obsync could not...": said once, after the toast's own "obsync:".
+-      this.notices.show({ kind: "error", text: error.message.replace(/^obsync /, "") });
++      this.notices.show({ kind: "error", text: error.message });
+     }, () => this.isCurrent(generation), dataLease(this.app, this.manifest.id), this.heldReference()).catch((error: unknown) => {
+       if (!this.isCurrent(generation)) return null;
+       throw error;

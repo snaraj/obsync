@@ -1,0 +1,11 @@
+# M3688: a stopped sweep goes on removing (#287)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1210,7 +1210,6 @@
+       if (!signal?.aborted) throw error;
+     }
+     for (const temp of found) {
+-      if (signal?.aborted) break;
+       if (this.temps.has(temp)) continue;
+       await desktop.fs.promises.unlink(temp).then(() => removed++, () => kept++);
+     }

@@ -12,39 +12,58 @@
  * typing 103 characters on a phone is not a plan.
  */
 
-import { App, Modal, Notice, Setting, type TextComponent } from "obsidian";
+import { App, Modal, Setting, type TextComponent } from "obsidian";
 import type ObsyncPlugin from "../main";
 import type { LeaveChoice, LeaveRefusal } from "../main";
+import { RECOVERY_MISMATCH } from "../accountRecovery";
 import { formatBytes } from "../policy";
 import { KEYS_LOST } from "../state";
+import { RECENT_MAX, titles, type NoticeKind } from "../notices";
 import { RemoteOnlyKind, remoteOnlyList, unwritableText } from "../sync/pull";
 import {
   PAIRING_WINDOW_MS,
   PHRASE_WORDS,
+  PairingKeyExchange,
   PairingVault,
   PendingClaim,
   VaultEnvelope,
   decodePairingCode,
   encodePairingCode,
   entropyFromPhrase,
-  matchCode,
+  keptCommitment,
+  keptOutcome,
+  matchCodeV2,
+  newPairingKeyExchange,
   newPairingSecret,
   newVaultKey,
   normalisePhrase,
-  openEnvelope,
+  openEnvelopeV2,
   openPairingVault,
   sealPairingVault,
+  pairingCommitment,
   pairingLink,
   platformLabel,
   recoveryPhrase,
   refusalText,
-  sealEnvelope,
+  sealEnvelopeV2,
+  serverPairsV2,
 } from "../pairing";
-import { hex, unhex } from "../crypto";
+import { Bytes, hex, unhex } from "../crypto";
 import { ApiError, PairingClaimant, PairingEnvelope, PairingStatus, Sent, Transport, lostMessage } from "../transport";
 
-function fail(error: unknown): void {
-  new Notice(error instanceof Error ? error.message : String(error), 8000);
+/** A failure in its own words, as the answer to the person's click (`notices.ts`, kind `confirm`). */
+function fail(plugin: ObsyncPlugin, error: unknown): void {
+  plugin.notices.show({ kind: "confirm", text: error instanceof Error ? error.message : String(error) });
+}
+
+/** What a server lets a device name itself: 1 to `max` printable ASCII characters (`render::text_field`). */
+function printable(text: unknown, max: number): boolean {
+  if (typeof text !== "string" || text.length < 1 || text.length > max) return false;
+  for (let at = 0; at < text.length; at++) {
+    const code = text.charCodeAt(at);
+    if (code < 0x20 || code > 0x7e) return false;
+  }
+  return true;
 }
 
 /** "1 note", "7 notes": the approval prompt and the claimant's question count the same way. */
@@ -52,9 +71,13 @@ function notes(count: number): string {
   return `${count} note${count === 1 ? "" : "s"}`;
 }
 
-/** A pairing refusal or outcome, in words (issue #154); the log line keeps the code. */
-function tell(text: string): void {
-  new Notice(`obsync: ${text}`, 12000);
+/**
+ * A pairing refusal or outcome, in words (issue #154); the log line keeps the
+ * code. The answer to a click by default; an `error` when it lands behind a
+ * closed dialog, where nobody is watching for it.
+ */
+function tell(plugin: ObsyncPlugin, text: string, kind: NoticeKind = "confirm"): void {
+  plugin.notices.show({ kind, text });
 }
 
 function reasonOf(error: unknown): string {
@@ -181,16 +204,42 @@ const CLAIM_ENDED: Record<string, string> = {
   expired: `The pairing code expired before this device received the vault key, so nothing was shared. ${PAIR_AGAIN}`,
   unopened: "This device could not open the vault key it was sent: the code it used does not match the other device's, most likely one mistyped character, or the key was changed on the way. Nothing was shared. Make a new code there with Pair a new device, and paste it whole.",
   consumed: `This device collected the vault key but stopped before keeping it, so it holds none. ${PAIR_AGAIN}`,
+  unverified: "The other device's key does not match the code this device was given, so pairing stopped and nothing was shared. Someone may have changed it on the way: choose Reject on the other device, then make a new code there with Pair a new device and type it here.",
   declined: "Pairing cancelled: nothing was uploaded, and this device was removed from the server again.",
 };
 const STILL_LISTED = " obsync could not remove this device from the server again: revoke it from the other device's Devices list.";
+const V2_WAITING =
+  "Waiting for your other device. When it asks you to approve this device, a code appears here: approve there only if both screens show the same code.";
+const CLAIMING = "Claiming the pairing…";
+const OLDER_CLAIMANT =
+  "That device runs obsync older than 1.1.5, which pairs in a way that no longer protects your vault key, so it was refused and nothing was shared. Update obsync on it, then make a new code here.";
+const UNREADABLE_CLAIM =
+  "Your server sent a request to pair that no obsync server sends, so it was refused and nothing was shared. Make a new code to pair again; if it repeats, check what runs between this device and your server.";
+
+const PAIR_INTRO =
+  "On the new device, choose Pair this device in obsync and TYPE this code. It expires in ten minutes and carries the secret that unlocks your vault key on the new device. Don't email or message it to yourself, or send its link through a work chat: anyone who can read that channel could unlock your vault.";
+const SERVER_TOO_OLD =
+  "Your obsync server runs a version older than 1.1.5, or does not say which, so no code was made. Update your obsync server to 1.1.5 or later, then pair again. See Troubleshooting, \"Pairing says to update your obsync server\".";
+const KEY_DROPPED =
+  "did not keep the vault key and removed itself from the server: the code it used did not match this one, or pairing was cancelled on it. It does not sync; to pair it, make a new code and paste it whole there.";
+const KEY_UNCONFIRMED =
+  "collected the vault key but has not started syncing within ten minutes. Look at it: if it asks whether to add its notes, answer there; if it says it could not open the vault key, remove it under Devices.";
+/** Two-second reads for ten minutes: while the new device collects the key, and again while it opens it. */
+const CONFIRM_POLLS = 300;
+
+/** A server-reported version as one safe log word. */
+function versionWord(version: unknown): string {
+  if (version === null || version === undefined) return "unreported";
+  return typeof version === "string" && /^[0-9A-Za-z.+-]{1,32}$/.test(version) ? version : "unreadable";
+}
 
 /**
  * Creator side of pairing. Mints the pairing, keeps `PS` on this device,
  * polls for a claimant, and seals the vault key only after the user has
  * approved it by name, platform, time and match code. It says "paired" only
- * once the SERVER reports the key collected, which is also what activates
- * the new device (issue #153).
+ * once the new device KEPT the key it collected (`keptOutcome`): collection,
+ * which activates it (issue #153), is not yet a pairing. Before any code, it
+ * refuses a server older than 1.1.5 (`serverPairsV2`).
  *
  * `PS` lives in this dialog and nowhere else, so once it closes nobody can
  * approve this pairing: a claimant still waiting is refused then, rather than
@@ -214,9 +263,6 @@ export class PairCreateModal extends Modal {
   override onOpen(): void {
     this.closed = false;
     this.setTitle("Pair a new device");
-    this.contentEl.createEl("p", {
-      text: "On the new device, choose Pair this device in obsync and paste this code or its link. It expires in ten minutes and carries the only copy of your vault key that will ever cross the network — sealed so the server cannot read it.",
-    });
     void this.run();
   }
 
@@ -227,30 +273,46 @@ export class PairCreateModal extends Modal {
     const asking = this.asking;
     this.asking = null;
     if (asking !== null) {
-      void this.refuse(asking, "closed", "Pairing ended: closing that dialog refused the device that was waiting, and nothing was shared with it. To pair it, make a new code.");
-    } else if (this.collecting) {
-      this.collecting = false;
-      tell("Approved. The new device finishes pairing by itself as soon as it collects the vault key.");
+      void this.refuse(asking, "closed", "pairing ended: closing that dialog refused the device that was waiting, and nothing was shared with it. To pair it, make a new code.");
     }
   }
 
   private async run(): Promise<void> {
+    const introEl = this.contentEl.createEl("p", { text: "Checking your obsync server…" });
     try {
+      // SAID EARLY (owner ruling, 2026-09-29). A server older than 1.1.5
+      // drops the key exchange, so a code made through it could never pair a
+      // 1.1.5 device: the two screens would only show different numbers. The
+      // server's version is read before anything is minted, and it can only
+      // REFUSE: a forged or stripped answer ends here, never in a weaker
+      // pairing, and the exchange's own strip detection is unchanged.
+      const server = await this.serverVersion();
+      if (this.closed) return;
+      if (!serverPairsV2(server)) {
+        this.plugin.log(`pairing role=creator decision=refused reason=server_too_old server=${versionWord(server)}`);
+        introEl.setText(SERVER_TOO_OLD);
+        return;
+      }
+      introEl.setText(PAIR_INTRO);
       const pairing = value(await this.plugin.transport.pairingCreate(), "creating a pairing");
       const secret = newPairingSecret();
-      const code = encodePairingCode(pairing.pairing_id, pairing.enroll_token, secret);
+      // THE KEY BEFORE THE CODE (review of PR #306): the code commits to this
+      // device's key, which goes out only once a claim is fixed (`approve`).
+      const kex = await newPairingKeyExchange();
+      const commitment = await pairingCommitment(pairing.pairing_id, kex.publicKey);
+      const code = encodePairingCode(pairing.pairing_id, pairing.enroll_token, secret, commitment);
       const codeEl = this.contentEl.createEl("pre", { cls: "obsync-code", text: code });
       new Setting(this.contentEl)
         .addButton((button) =>
           button.setButtonText("Copy code").onClick(() => {
             void navigator.clipboard.writeText(code);
-            new Notice("Pairing code copied.");
+            tell(this.plugin, "pairing code copied. Type it into your other device; don't send it through work email or chat.");
           }),
         )
         .addButton((button) =>
           button.setButtonText("Copy link").onClick(() => {
             void navigator.clipboard.writeText(pairingLink(code));
-            new Notice("Pairing link copied.");
+            tell(this.plugin, "pairing link copied. Open it on your other device; don't send it through work email or chat.");
           }),
         );
       const statusEl = this.contentEl.createEl("p", { text: "Waiting for the new device…" });
@@ -266,14 +328,14 @@ export class PairCreateModal extends Modal {
         if (status.state === "claimed" && status.claimant) {
           codeEl.remove();
           this.polling = false;
-          await this.approve(pairing.pairing_id, secret, status.claimant, statusEl);
+          await this.approve(pairing.pairing_id, secret, status.claimant, statusEl, kex);
           return;
         }
         await new Promise((resolve) => window.setTimeout(resolve, 2000));
       }
     } catch (error) {
       this.plugin.log(`pairing role=creator decision=failed reason=${reasonOf(error)}`);
-      tell(refusalText(error));
+      tell(this.plugin, refusalText(error));
       this.close();
     }
   }
@@ -285,7 +347,13 @@ export class PairCreateModal extends Modal {
    * it -- one mistyped character does that -- and could never open the key,
    * so it is refused before anyone is asked (issue #153).
    */
-  private async approve(pairingId: string, secret: Uint8Array<ArrayBuffer>, claimant: PairingClaimant, statusEl: HTMLElement): Promise<void> {
+  private async approve(
+    pairingId: string,
+    secret: Uint8Array<ArrayBuffer>,
+    claimant: PairingClaimant,
+    statusEl: HTMLElement,
+    kex: PairingKeyExchange,
+  ): Promise<void> {
     const asked = new Date();
     this.asking = pairingId;
     let vault: PairingVault | null = null;
@@ -300,7 +368,34 @@ export class PairCreateModal extends Modal {
         return;
       }
     }
-    const code = await matchCode(secret, pairingId, claimant.device_id);
+    // ONE WAY ONLY (review of PR #306). A claim without a key is a device
+    // before 1.1.5, or a key stripped on the way, and the two look the same:
+    // answering either the old way would show a code whoever chose its device
+    // id can make equal to any number, and seal the key under the code alone.
+    const claimantKey = claimant.claimant_pub;
+    if (claimantKey === undefined || !printable(claimant.name, 64) || !printable(claimant.app_version, 32)) {
+      if (this.asking !== pairingId) return;
+      this.asking = null;
+      const older = claimantKey === undefined;
+      statusEl.setText(older ? OLDER_CLAIMANT : UNREADABLE_CLAIM);
+      await this.refuse(pairingId, older ? "older_claimant" : "unreadable_claim", null);
+      return;
+    }
+    // THIS CLAIM IS FIXED: it was read once and is never read again, and only
+    // now does this device's key go out, for this claimant's key alone.
+    // Whoever put a key in the claim chose it without knowing ours.
+    const code = await matchCodeV2(secret, pairingId, claimantKey, kex.publicKey);
+    if (this.asking !== pairingId) return;
+    try {
+      await this.plugin.transport.pairingReveal(pairingId, kex.publicKey);
+    } catch (error) {
+      // Nothing to compare, so nothing to ask: the claim is refused here,
+      // and the close that follows has nothing left to refuse.
+      this.asking = null;
+      await this.refuse(pairingId, "unrevealed", null);
+      throw error;
+    }
+    this.plugin.log("pairing role=creator decision=revealed");
     if (this.closed) return;
     statusEl.setText(
       `Approve "${claimant.name}" (${platformLabel(claimant.platform)}, obsync ${claimant.app_version}), asking since ${clock(asked)}? ` +
@@ -314,14 +409,14 @@ export class PairCreateModal extends Modal {
           .setButtonText("Approve")
           .setCta()
           .onClick(() => {
-            void this.approved(pairingId, secret, claimant, statusEl, answer);
+            void this.approved(pairingId, secret, claimant, statusEl, answer, kex);
           }),
       )
       .addButton((button) =>
         button.setButtonText("Reject").onClick(() => {
           if (this.asking !== pairingId) return;
           this.asking = null;
-          void this.refuse(pairingId, "rejected", "Rejected: that device was refused, and nothing was shared with it.");
+          void this.refuse(pairingId, "rejected", "rejected: that device was refused, and nothing was shared with it.");
           this.close();
         }),
       );
@@ -333,32 +428,46 @@ export class PairCreateModal extends Modal {
     claimant: PairingClaimant,
     statusEl: HTMLElement,
     answer: Setting,
+    kex: PairingKeyExchange,
   ): Promise<void> {
     if (this.asking !== pairingId) return;
     this.asking = null;
     try {
       const vrk = this.plugin.state.data.vrk;
       if (!vrk) throw new Error("This device holds no vault key, so it cannot pair another. Restore its recovery phrase first.");
-      const sealed = await sealEnvelope(secret, pairingId, { vrk });
+      // Under the ephemeral P-256 agreement with the key this device fixed and
+      // compared (`approve` asks only about a claim that carries one), so a
+      // captured code alone opens nothing.
+      const sealed = await sealEnvelopeV2(kex, claimant.claimant_pub as string, secret, pairingId, { vrk });
       value(await this.plugin.transport.pairingApprove(pairingId, sealed.envelope, sealed.nonce), "approving the new device");
       this.plugin.log("pairing role=creator decision=approved");
+      // DONE HERE ONCE THE APPROVAL LANDS (1.1.5): what is left is the new
+      // device's to do, so this dialog closes, and the rest is watched
+      // behind it and said in a notice. `PS` is not needed past the seal.
       this.collecting = true;
+      this.plugin.register?.(() => { this.collecting = false; });
       answer.settingEl.remove();
-      statusEl.setText("Approved. Waiting for the new device to collect the vault key…");
-      await this.watch(pairingId, claimant, statusEl);
+      this.close();
+      tell(this.plugin, `approved "${claimant.name}": it finishes pairing by itself, and obsync tells you here when it has.`);
+      await this.watch(pairingId, claimant);
     } catch (error) {
       this.collecting = false;
       this.plugin.log(`pairing role=creator decision=failed reason=${reasonOf(error)}`);
-      tell(refusalText(error));
+      tell(this.plugin, refusalText(error), "error");
     }
   }
 
-  /** After approval: done when the server reports the key collected, and not before. */
-  private async watch(pairingId: string, claimant: PairingClaimant, statusEl: HTMLElement): Promise<void> {
-    while (this.collecting) {
+  /**
+   * After approval, behind the closed dialog: done when the server reports
+   * the key collected, and not before. No dialog ends it now, so it ends by
+   * itself with the code's ten minutes (`CONFIRM_POLLS`), whatever the
+   * server keeps answering, or when the plugin unloads (`approved`).
+   */
+  private async watch(pairingId: string, claimant: PairingClaimant): Promise<void> {
+    let state: PairingStatus["state"] | "ended" = "expired";
+    for (let poll = 1; poll <= CONFIRM_POLLS; poll++) {
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
       if (!this.collecting) return;
-      let state: PairingStatus["state"] | "ended";
       try {
         state = (await this.plugin.transport.pairingStatus(pairingId)).state;
       } catch (error) {
@@ -367,21 +476,67 @@ export class PairCreateModal extends Modal {
       }
       if (!this.collecting) return;
       if (state === "consumed") {
+        await this.confirmKept(claimant);
+        return;
+      }
+      if (state === "expired" || state === "ended") break;
+    }
+    this.collecting = false;
+    this.plugin.log(`pairing role=creator decision=failed reason=${state === "ended" ? "ended_unseen" : "not_collected"}`);
+    tell(this.plugin, state === "ended"
+      ? `pairing "${claimant.name}" ended before this device saw it collect the vault key. If it is not under Devices, make a new code and pair it again.`
+      : `"${claimant.name}" did not collect the vault key before the code expired, so nothing was shared with it. To pair it, make a new code and paste it there.`, "error");
+  }
+
+  /**
+   * "PAIRED" ONLY ONCE THE NEW DEVICE KEPT THE KEY (owner ruling, lab leg B3):
+   * a device that collected it and could not open it was announced as paired
+   * here while its own screen said nothing was shared. Its row in the device
+   * list decides (`keptOutcome`); a failed read decides nothing and is logged
+   * once.
+   */
+  private async confirmKept(claimant: PairingClaimant): Promise<void> {
+    let unread = false;
+    for (let poll = 1; poll <= CONFIRM_POLLS; poll++) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      if (!this.collecting) return;
+      let outcome: ReturnType<typeof keptOutcome>;
+      try {
+        const { devices } = await this.plugin.transport.devices();
+        outcome = keptOutcome(devices.find((device) => device.device_id === claimant.device_id));
+      } catch (error) {
+        if (!unread) this.plugin.log(`pairing role=creator decision=waiting reason=devices_unread error=${reasonOf(error)}`);
+        unread = true;
+        continue;
+      }
+      if (!this.collecting) return;
+      if (outcome === "kept") {
         this.collecting = false;
-        this.plugin.log("pairing role=creator decision=paired");
-        new Notice(`The new device, "${claimant.name}", is paired: it holds the vault key now.`);
+        this.plugin.log(`pairing role=creator decision=paired polls=${poll}`);
+        tell(this.plugin, `"${claimant.name}" is paired: it holds the vault key now.`);
         void this.plugin.refreshDeviceNames();
-        this.close();
         return;
       }
-      if (state === "expired" || state === "ended") {
+      if (outcome === "dropped") {
         this.collecting = false;
-        this.plugin.log(`pairing role=creator decision=failed reason=${state === "ended" ? "ended_unseen" : "not_collected"}`);
-        statusEl.setText(state === "ended"
-          ? "This pairing ended before this device saw the new one collect the vault key. If the new device is not under Devices, make a new code and pair it again."
-          : "The new device did not collect the vault key before the code expired, so nothing was shared with it. To pair it, make a new code and paste it there.");
+        this.plugin.log(`pairing role=creator decision=failed reason=key_not_kept polls=${poll}`);
+        tell(this.plugin, `"${claimant.name}" ${KEY_DROPPED}`, "error");
         return;
       }
+    }
+    if (!this.collecting) return;
+    this.collecting = false;
+    this.plugin.log(`pairing role=creator decision=failed reason=key_unconfirmed polls=${CONFIRM_POLLS}`);
+    tell(this.plugin, `"${claimant.name}" ${KEY_UNCONFIRMED}`, "error");
+  }
+
+  /** The release the server reports (`GET /v1/plugin/manifest`), or `null` when it reports none. */
+  private async serverVersion(): Promise<unknown> {
+    try {
+      return (await this.plugin.transport.pluginManifest({ interactive: true })).version;
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "plugin_unavailable") return null;
+      throw error;
     }
   }
 
@@ -390,10 +545,10 @@ export class PairCreateModal extends Modal {
     try {
       value(await this.plugin.transport.pairingReject(pairingId), "refusing the new device");
       this.plugin.log(`pairing role=creator decision=refused reason=${reason}`);
-      if (told !== null) tell(told);
+      if (told !== null) tell(this.plugin, told);
     } catch (error) {
       this.plugin.log(`pairing role=creator decision=failed reason=${reasonOf(error)} refusing=${reason}`);
-      tell(refusalText(error));
+      tell(this.plugin, refusalText(error));
     }
   }
 }
@@ -413,23 +568,43 @@ export interface Waiting {
   stop: boolean;
   /** True once this device is paired by it. */
   done: Promise<boolean>;
+  /** Its dialog closed: the code to compare is raised as a notice instead. */
+  background: boolean;
+  /**
+   * The claim's memory-only half: its ephemeral key pair, whose private key is
+   * non-extractable and never written down, and the commitment to the
+   * creator's key its code carried. So a claim finishes only while this
+   * process lives; it survives closing the dialog (the wait continues in
+   * `plugin.waiting`) but not a restart.
+   */
+  keyExchange: { kex: PairingKeyExchange; commitment: Bytes };
 }
 
-/** Start waiting on a claim: hold it for a restart, then collect in the background. */
+/** Start waiting on a claim, collecting in the background. */
 export function awaitApproval(
   plugin: ObsyncPlugin,
   app: App,
   claim: PendingClaim,
   show: (text: string) => void,
-  resumed = false,
+  keyExchange: Waiting["keyExchange"],
 ): Waiting {
-  const waiting: Waiting = { claim, code: null, show, stop: false, done: Promise.resolve(false) };
+  const waiting: Waiting = { claim, code: null, show, stop: false, done: Promise.resolve(false), background: false, keyExchange };
   plugin.waiting = waiting;
-  if (!resumed && !plugin.state.holdClaim(JSON.stringify(claim))) {
-    plugin.log("pairing role=claimant decision=unkept reason=secret_storage");
-  }
-  waiting.done = collect(plugin, app, waiting, resumed);
+  waiting.done = collect(plugin, app, waiting);
   return waiting;
+}
+
+/**
+ * A claim's code, for a claim whose dialog closed: a question until it is
+ * answered, and "•••" anywhere that outlives the toast (`SyncNotice.code`).
+ */
+function showCode(plugin: ObsyncPlugin, code: string): void {
+  plugin.notices.show({
+    kind: "question",
+    key: "pairing",
+    text: "pairing this device: the other device's prompt shows the code {code}. Approve there only if it shows this one; if it shows another, choose Reject there.",
+    code,
+  });
 }
 
 /** Stop an earlier claim before a new one, and let it take back what it may hold. */
@@ -441,7 +616,7 @@ async function stopWaiting(plugin: ObsyncPlugin): Promise<void> {
 }
 
 class ClaimEnded extends Error {
-  constructor(readonly reason: "expired" | "unopened" | "declined" | "superseded") {
+  constructor(readonly reason: "expired" | "unopened" | "unverified" | "declined" | "superseded") {
     super(reason);
   }
 }
@@ -478,20 +653,37 @@ async function revokeSelf(plugin: ObsyncPlugin, transport: Transport, claim: Pen
  * collection, and a claim that ends without the key takes back whatever the
  * server may have activated and says why, in words, on this device.
  */
-async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed: boolean): Promise<boolean> {
+async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting): Promise<boolean> {
   const { claim } = waiting;
   const started = Date.now();
   const { state, transport, assertCurrent } = plugin.captureSession();
   const secret = unhex(claim.pairingSecret);
+  const v2 = waiting.keyExchange;
   // Whether the server may hold this device as ACTIVE: collection activates.
-  let active = resumed;
+  let active = false;
   // Once the key is kept this device is paired, and nothing takes it back.
   let kept = false;
+  // The creator key this claim holds to: revealed, checked against the
+  // code's commitment, and from then on the only one it accepts.
+  let creatorKey: string | null = null;
+  const asked = (code: string): string => `Waiting for approval on the other device. Its prompt shows the code ${code}: if it shows another, choose Reject there.`;
+  const holdCreator = async (key: unknown): Promise<string> => {
+    if (typeof key !== "string") throw new ClaimEnded("unverified");
+    if (creatorKey !== null) {
+      if (key !== creatorKey) throw new ClaimEnded("unverified");
+      return key;
+    }
+    if (!(await keptCommitment(v2.commitment, claim.pairingId, key).catch(() => false))) throw new ClaimEnded("unverified");
+    creatorKey = key;
+    waiting.code = await matchCodeV2(secret, claim.pairingId, v2.kex.publicKey, key);
+    waiting.show(asked(waiting.code));
+    if (waiting.background) showCode(plugin, waiting.code);
+    plugin.log("pairing role=claimant decision=compare");
+    return key;
+  };
   try {
-    waiting.code = await matchCode(secret, claim.pairingId, claim.deviceId);
-    const asked = `Waiting for approval on the other device. Its prompt shows the code ${waiting.code}: if it shows another, choose Reject there.`;
-    waiting.show(asked);
-    if (resumed) tell(`still pairing this device. ${asked}`);
+    // NO CODE UNTIL THE CREATOR'S KEY IS IN: it is an input of the code.
+    waiting.show(V2_WAITING);
     for (;;) {
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
       assertCurrent();
@@ -505,6 +697,7 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
       } catch (error) {
         active = error instanceof ApiError && error.code === "envelope_consumed";
         if (error instanceof ApiError && error.status === 409 && error.code === "not_approved") {
+          if (error.fields["creator_pub"] !== undefined) await holdCreator(error.fields["creator_pub"]);
           plugin.log("pairing role=claimant decision=waiting reason=not_approved");
           continue;
         }
@@ -516,9 +709,11 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
       const sealed = value(sent, "collecting the sealed vault key");
       let envelope: VaultEnvelope;
       try {
-        envelope = await openEnvelope(secret, claim.pairingId, sealed.envelope, sealed.nonce);
-      } catch {
-        throw new ClaimEnded("unopened");
+        // Only under the key the code committed to: an envelope without one
+        // is refused, never opened some weaker way.
+        envelope = await openEnvelopeV2(v2.kex, await holdCreator(sealed.creator_pub), secret, claim.pairingId, sealed.envelope, sealed.nonce);
+      } catch (error) {
+        throw error instanceof ClaimEnded ? error : new ClaimEnded("unopened");
       }
       assertCurrent();
       if (waiting.stop) throw new ClaimEnded("superseded");
@@ -554,14 +749,13 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
       assertCurrent();
       kept = true;
       plugin.waiting = null;
-      state.holdClaim(null);
       if (stranded !== null && stranded !== claim.deviceId) {
         const retired = await transport.revokeDevice(stranded).catch(() => null);
         plugin.log(`pairing role=claimant decision=${retired?.outcome === "ok" ? "revoked" : "kept"} reason=stranded_enrolment`);
       }
       await plugin.restartEngine();
       plugin.log(`pairing role=claimant decision=paired duration_ms=${Date.now() - started}`);
-      new Notice("This device is paired. The first sync is running.");
+      tell(plugin, "this device is paired, and its first sync is running.");
       return true;
     }
   } catch (error) {
@@ -569,22 +763,21 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting, resumed
     const reason = error instanceof ClaimEnded ? error.reason
       : Object.hasOwn(CLAIM_REFUSALS, code) ? CLAIM_REFUSALS[code] as string : code === "" ? "local_or_lost" : code;
     plugin.log(`pairing role=claimant decision=${kept ? "paired" : "failed"} reason=${reason} duration_ms=${Date.now() - started}`);
-    // A newer session of this plugin owns the state now, and resumes this
-    // claim from its entry; a state that stopped is the next session's too.
-    // Nothing is taken back or dropped from here, and a kept key is kept.
+    // A newer session of this plugin owns the state now, and a state that
+    // stopped is the next session's too: nothing is taken back from here,
+    // and a kept key is kept.
     let stale = false;
     try { assertCurrent(); } catch { stale = true; }
     if (stale || kept) {
-      tell(refusalText(error));
+      tell(plugin, refusalText(error), "error");
       return kept;
     }
     let text = Object.hasOwn(CLAIM_ENDED, reason) ? CLAIM_ENDED[reason] as string : `${refusalText(error)} ${PAIR_AGAIN}`;
     if (active && !(await revokeSelf(plugin, transport, claim))) text += STILL_LISTED;
     if (plugin.waiting === waiting) plugin.waiting = null;
-    state.holdClaim(null);
     if (reason !== "superseded") {
       waiting.show(text);
-      tell(text);
+      tell(plugin, text, "error");
     }
     return false;
   }
@@ -657,7 +850,11 @@ export class PairClaimModal extends Modal {
     this.waiting = null;
     if (waiting === null || this.plugin.waiting !== waiting) return;
     waiting.show = () => undefined;
-    tell("still waiting for approval in the background. Approve this device on the other device, and pairing finishes by itself; the code works for ten minutes from when it was made.");
+    waiting.background = true;
+    // The comparison is the point of the code: a code already derived is
+    // raised at once, and one still to come is raised when it comes.
+    if (waiting.code !== null) showCode(this.plugin, waiting.code);
+    else tell(this.plugin, "still waiting in the background. When the other device asks you to approve this one, obsync shows the code to compare here: approve there only if both show the same code.");
   }
 
   private show(text: string): void {
@@ -675,12 +872,15 @@ export class PairClaimModal extends Modal {
     const paired = alreadyPaired(this.plugin);
     if (paired !== null) {
       this.plugin.log("pairing role=claimant decision=refused reason=already_paired");
-      fail(new Error(paired));
+      fail(this.plugin, new Error(paired));
       this.close();
       return;
     }
     try {
       this.busy = true;
+      // Whatever an earlier claim showed goes first: its code belongs to a
+      // pairing this one ends, and must not sit beside the next prompt.
+      this.show(CLAIMING);
       if (this.plugin.forgottenDevice) await this.plugin.resetForgottenEnrollment();
       await stopWaiting(this.plugin);
       if (this.closed) return;
@@ -688,7 +888,7 @@ export class PairClaimModal extends Modal {
       // pairs with it copies that vault into itself, one level per sync.
       const nested = await this.plugin.nestedRefusal("pairing role=claimant");
       if (nested !== null) {
-        fail(new Error(nested));
+        fail(this.plugin, new Error(nested));
         this.close();
         return;
       }
@@ -698,6 +898,9 @@ export class PairClaimModal extends Modal {
       const vault = await sealPairingVault(parsed.pairingSecret, parsed.pairingId, {
         name: this.app.vault.getName(), notes: this.app.vault.getMarkdownFiles().length,
       });
+      // A fresh key for this claim; the code's commitment (read out of band,
+      // never from the network) names the creator key it will be paired with.
+      const keyExchange = { kex: await newPairingKeyExchange(), commitment: parsed.commitment };
       assertCurrent();
       if (this.closed) return;
       const credential = value(
@@ -706,6 +909,7 @@ export class PairClaimModal extends Modal {
           platform: this.plugin.platformName(),
           app_version: this.plugin.manifest.version,
           vault,
+          claimant_pub: keyExchange.kex.publicKey,
         }),
         "claiming the pairing",
       );
@@ -724,7 +928,7 @@ export class PairClaimModal extends Modal {
         deviceSecret: credential.device_secret,
         serverUrl: state.data.serverUrl,
         claimedAt: Date.now(),
-      }, (text) => this.show(text));
+      }, (text) => this.show(text), keyExchange);
       const done = this.waiting.done;
       if (this.closed) this.handOff();
       if (await done) this.close();
@@ -732,7 +936,7 @@ export class PairClaimModal extends Modal {
       this.plugin.log(`pairing role=claimant decision=failed reason=${reasonOf(error)}`);
       const text = refusalText(error);
       this.show(text);
-      tell(text);
+      tell(this.plugin, text);
     } finally {
       this.busy = false;
     }
@@ -757,10 +961,13 @@ const LEAVE_LAST_DEVICE =
   "This account has no registered vault recovery yet, or the server is too old to support it. Update both server and plugin while a device still syncs, then keep the setup token and 24-word recovery phrase before leaving. You can also pair another device first. Leaving on this device only keeps every note and leaves this credential active on the server; losing that final credential before recovery is registered can strand the account.";
 const LEAVE_ONLY_HERE =
   "You can leave on this device only: this device forgets the server and its credential and keeps every note, and the 24 words still open the same vault. The server still lists this device until you remove it from another device's Devices list or the dashboard.";
+/** `409 recovery_too_new` (1.1.5): the words the server's own hold stands for. */
+const LEAVE_RECOVERY_TOO_NEW =
+  "This is the only device syncing this vault, and its recovery key was set less than 7 days ago. For your safety the server keeps its last device until that key is 7 days old, so a stolen device credential cannot lock you out of your own server. Pair another device first, or leave on this device only: it forgets the server and keeps every note, and the server lists this device until you remove it.";
 const LEAVING =
   "Leaving: stopping sync on this device, then asking the server to remove it. This takes a few seconds. You can close this window; a notice says when it is done.";
 const LEFT_ONLY_HERE =
-  "This device has left. Your server still lists it until you remove it from another device's Devices list or the dashboard.";
+  "this device has left; your server still lists it until you remove it from another device's Devices list or the dashboard.";
 
 /**
  * Leaving a server, with the whole cost stated before the button (issue #79).
@@ -819,7 +1026,7 @@ export class LeaveServerModal extends Modal {
     try {
       unpushed = await this.plugin.unpushedEdits();
     } catch (error) {
-      fail(error);
+      fail(this.plugin, error);
       this.close();
       return;
     }
@@ -869,7 +1076,7 @@ export class LeaveServerModal extends Modal {
     try {
       result = await this.plugin.leaveServer(choice);
     } catch (error) {
-      fail(error);
+      fail(this.plugin, error);
       if (this.live) this.screen();
       return;
     } finally {
@@ -885,7 +1092,7 @@ export class LeaveServerModal extends Modal {
     // The count is taken with the queue stopped, so a set that grew since the
     // dialog drew it is the user's own editing: draw the new one and ask again.
     if (result.reason === "unpushed_edits") {
-      new Notice("This device has changes the server never received. Leaving was not done.", 8000);
+      tell(this.plugin, "this device has changes your server never received, so it did not leave.");
       this.draw(result.unpushed);
       return;
     }
@@ -899,6 +1106,8 @@ export class LeaveServerModal extends Modal {
     this.contentEl.empty();
     const texts = reason === "bad_signature"
       ? [LEAVE_UNKNOWN_DEVICE]
+      : reason === "recovery_too_new"
+      ? [LEAVE_RECOVERY_TOO_NEW]
       : [
         reason === "unreachable"
           ? "The server did not answer, so it could not remove this device."
@@ -917,15 +1126,14 @@ export class LeaveServerModal extends Modal {
   }
 
   private left(revoked: boolean): void {
-    new Notice(
+    tell(this.plugin,
       revoked
-        ? "This device left the server. Every note is still in this vault."
-        : this.refusal === "last_device"
-          ? "This device forgot the server, which still holds this device. Every note is still in this vault."
+        ? "this device left the server; every note is still in this vault."
+        : this.refusal === "last_device" || this.refusal === "recovery_too_new"
+          ? "this device forgot the server, which still lists it; every note is still in this vault."
           : this.refusal === "bad_signature"
-            ? "This device forgot the server, which did not recognise it. Every note is still in this vault."
+            ? "this device forgot the server, which did not recognise it; every note is still in this vault."
             : LEFT_ONLY_HERE,
-      10000,
     );
     this.onLeft();
     if (!this.live || this.mode !== "switch") {
@@ -955,13 +1163,13 @@ export class LeaveServerModal extends Modal {
 
   private async adopt(typed: string, mode: "pair" | "setup"): Promise<void> {
     if (typed.trim() === "") {
-      new Notice("Enter the new server's address first.");
+      tell(this.plugin, "enter the new server's address first.");
       return;
     }
     try {
       await this.plugin.setServerUrl(typed);
     } catch (error) {
-      fail(error);
+      fail(this.plugin, error);
       return;
     }
     if (!this.live) return;
@@ -1065,13 +1273,13 @@ export class RecoveryPhraseModal extends Modal {
         .onClick(() => {
           const wrong = asked.filter((position) => answers.get(position) !== words[position - 1]);
           if (wrong.length > 0) {
-            new Notice(`Word ${wrong.join(", ")} does not match. Check the list again.`);
+            tell(this.plugin, `word ${wrong.join(", ")} does not match; check the list again.`);
             return;
           }
           this.plugin.state.data.recoveryPhrase = "confirmed";
           this.plugin.log("phrase decision=confirmed");
           void this.plugin.state.save().catch(() => {});
-          new Notice("Recovery phrase confirmed.");
+          tell(this.plugin, "recovery phrase confirmed.");
           this.close();
         }),
     );
@@ -1094,7 +1302,7 @@ export class VaultKeyModal extends Modal {
     const opened = this.opened = {};
     let session: ReturnType<ObsyncPlugin["captureSession"]>;
     try { session = this.plugin.captureSession(); }
-    catch (error) { fail(error); return; }
+    catch (error) { fail(this.plugin, error); return; }
     const assertCurrent = (): void => {
       session.assertCurrent();
       if (this.opened !== opened) throw new Error("This vault-key dialog was closed. Open it again before restoring a key.");
@@ -1118,10 +1326,10 @@ export class VaultKeyModal extends Modal {
             assertCurrent();
             await this.plugin.restoreVaultKey(hex(entropy));
             assertCurrent();
-            new Notice("Vault key restored.");
+            tell(this.plugin, "vault key restored.");
             this.close();
           } catch (error) {
-            fail(error);
+            fail(this.plugin, error);
           }
         }),
       )
@@ -1149,7 +1357,7 @@ export class VaultKeyModal extends Modal {
             assertCurrent();
             this.close();
             new RecoveryPhraseModal(this.app, this.plugin, true).open();
-          } catch (error) { fail(error); }
+          } catch (error) { fail(this.plugin, error); }
         }),
       );
   }
@@ -1190,6 +1398,13 @@ export class StatusModal extends Modal {
 
   private render(): void {
     this.contentEl.empty();
+    // Above everything, until a registration of this device's own succeeds (1.1.5).
+    if (this.plugin.recoveryMismatch) {
+      new Setting(this.contentEl)
+        .setName("Security warning")
+        .setDesc(RECOVERY_MISMATCH)
+        .addButton((button) => button.setButtonText("Open the guide").setCta().onClick(() => { this.plugin.openSetupGuide(); }));
+    }
     this.nextStep();
     const data = this.plugin.state.data;
     const rows: [string, string, string?][] = [
@@ -1234,9 +1449,19 @@ export class StatusModal extends Modal {
         .setDesc("Paused: repeated rewrites after sync were detected on a paired device. Stop the plugin rewriting synced notes, then resume.")
         .addButton((button) =>
           button.setButtonText("Resume").onClick(() => {
-            void this.plugin.resumeNote(fileId).then(() => this.close(), fail);
+            void this.plugin.resumeNote(fileId).then(() => this.close(), (error: unknown) => fail(this.plugin, error));
           }),
         );
+    }
+    // What the notices said, including those a setting kept off the screen
+    // and those a flood folded into "N more" (`notices.ts`).
+    this.contentEl.createEl("h3", { text: "Recent" });
+    drawRecent(this.contentEl, this.plugin, () => this.close(), RECENT_SHOWN);
+    if (this.plugin.notices.recent().length > RECENT_SHOWN) {
+      new Setting(this.contentEl).addButton((button) => button.setButtonText("Show all").onClick(() => {
+        this.close();
+        this.plugin.showRecent();
+      }));
     }
   }
 
@@ -1265,7 +1490,7 @@ export class StatusModal extends Modal {
       return;
     }
     if (status.kind !== "error") return;
-    const pair = status.code === "forgotten_device";
+    const pair = status.code === "credential_rejected";
     const settings = pair || status.code === "edge";
     new Setting(this.contentEl)
       .setName("What to do")
@@ -1281,9 +1506,89 @@ export class StatusModal extends Modal {
         }));
   }
 
+  /** On screen now: between its open and its close. */
+  isShown(): boolean {
+    return this.unwatch !== null;
+  }
+
+  forward(): void {
+    forward(this, () => this.render());
+  }
+
   override onClose(): void {
     this.unwatch?.();
     this.unwatch = null;
+    this.contentEl.empty();
+  }
+}
+
+/**
+ * A DIALOG ASKED FOR AGAIN WHILE IT SHOWS (#269): the palette, a hotkey or a
+ * notice opened a second one over the first. The one showing comes in front
+ * of any other dialog instead -- its keys first, so Escape closes it first --
+ * and is drawn afresh.
+ */
+function forward(modal: Modal, draw: () => void): void {
+  modal.app.keymap.popScope(modal.scope);
+  modal.app.keymap.pushScope(modal.scope);
+  modal.containerEl.ownerDocument.body.appendChild(modal.containerEl);
+  draw();
+}
+
+/** How many of the newest notices Show sync status lists; Show all lists every one kept. */
+const RECENT_SHOWN = 10;
+
+/** Recent notices, newest first, with the time each came and a button for each note it names. */
+function drawRecent(el: HTMLElement, plugin: ObsyncPlugin, close: () => void, limit: number): void {
+  const entries = plugin.notices.recent();
+  if (entries.length === 0) {
+    new Setting(el).setDesc("Nothing since obsync started.");
+    return;
+  }
+  for (const entry of entries.slice(0, limit)) {
+    const setting = new Setting(el).setName(entry.text).setDesc(clock(new Date(entry.at)));
+    const names = titles(entry.paths);
+    entry.paths.slice(0, 3).forEach((path, index) => setting.addButton((button) => button
+      .setButtonText(entry.paths.length === 1 ? "Open" : `Open ${names[index] ?? ""}`)
+      .onClick(() => {
+        close();
+        plugin.openNote(path);
+      })));
+  }
+}
+
+/** Show recent sync activity: every notice Recent keeps, from the palette and Settings. */
+export class RecentModal extends Modal {
+  private shown = false;
+
+  constructor(
+    app: App,
+    private readonly plugin: ObsyncPlugin,
+  ) {
+    super(app);
+  }
+
+  override onOpen(): void {
+    this.shown = true;
+    this.setTitle("Recent sync activity");
+    this.draw();
+  }
+
+  isShown(): boolean {
+    return this.shown;
+  }
+
+  forward(): void {
+    forward(this, () => this.draw());
+  }
+
+  private draw(): void {
+    this.contentEl.empty();
+    drawRecent(this.contentEl, this.plugin, () => this.close(), RECENT_MAX);
+  }
+
+  override onClose(): void {
+    this.shown = false;
     this.contentEl.empty();
   }
 }
@@ -1339,10 +1644,10 @@ export class RemoteOnlyModal extends Modal {
               void (async () => {
                 try {
                   await this.plugin.fetchRemoteOnly(entry.fileId);
-                  new Notice(`Fetched ${entry.path}.`);
+                  this.plugin.notices.show({ kind: "confirm", text: "fetched {notes}.", paths: [entry.path] });
                   this.render();
                 } catch (error) {
-                  fail(error);
+                  fail(this.plugin, error);
                 }
               })();
             }),

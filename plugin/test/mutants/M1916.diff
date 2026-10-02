@@ -1,7 +1,7 @@
 # M1916: the note moved aside at push time takes the record's placeholder time
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -4046,7 +4046,7 @@
+@@ -4808,7 +4808,7 @@
    }
    if (ours.fileId < waiting.fileId) return false;
    // The copy keeps the note's own modification time, whatever the record says.
@@ -9,4 +9,4 @@
 +  const moved = await moveAside(context, path, ours, new Date(context.now()));
    if (moved === null) return false;
    context.host.log(`push decision=same_name_tiebreak winner=${waiting.fileId} role=rename file=${ours.fileId}`);
-   context.host.notify(
+   twoNamed(context, path, moved);

@@ -1,0 +1,12 @@
+# M3516: the creator makes a code through a server older than 1.1.5
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -268,7 +268,7 @@
+       // pairing, and the exchange's own strip detection is unchanged.
+       const server = await this.serverVersion();
+       if (this.closed) return;
+-      if (!serverPairsV2(server)) {
++      if (false) {
+         this.plugin.log(`pairing role=creator decision=refused reason=server_too_old server=${versionWord(server)}`);
+         introEl.setText(SERVER_TOO_OLD);
+         return;

@@ -1,7 +1,7 @@
 # M424: any Obsidian vault above, with any plugin at all, counts as a synced vault and refuses pairing
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -712,7 +712,7 @@
+@@ -972,7 +972,7 @@
      next: for (const name of names) {
        if (!name.startsWith(".")) continue;
        let at = desktop.path.resolve(dir, name);
@@ -9,4 +9,4 @@
 +      for (const step of ["plugins", null]) {
          // A hidden entry the system will not stat (macOS answers `/.resolve`
          // with EINVAL) is no config folder; the question moves on.
-         const stat = await walker(desktop.fs).lstat(at).catch(() => null);
+         const stat = await walker(desktop.fs).lstat(at).catch((error: unknown) => {

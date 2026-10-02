@@ -123,7 +123,10 @@ cleanup() {
 fetch() {
   local url="$1" pin="$2" out="$3" name sha
   read -r name sha <<<"${pin}"
-  curl --proto '=https' --tlsv1.2 -sSfL "${url}/${name}" -o "${out}" || deny "could not download ${name}"
+  # Retried: a release download that fails once is the host's, not obsync's
+  # (one Windows run at c1bf3c52). The pin below still judges what arrives.
+  curl --proto '=https' --tlsv1.2 -sSfL --retry 4 --retry-delay 5 --retry-all-errors "${url}/${name}" -o "${out}" \
+    || deny "could not download ${name} in 5 attempts; this is a download failure, not an obsync one"
   got="$( (sha256sum "${out}" 2>/dev/null || shasum -a 256 "${out}") | awk '{print $1}')"
   [ "${got}" = "${sha}" ] || deny "${name} does not match its pinned SHA-256 (${got:-nothing})"
 }

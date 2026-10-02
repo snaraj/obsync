@@ -1,0 +1,12 @@
+# M3315: pushFolderDelete drops the judged selection on its way to the post (issue #240)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -822,7 +822,7 @@
+   const record = context.state.folderByPath(path);
+   if (record === undefined) return null;
+   const parents = record.versionId !== "" ? [record.versionId] : [];
+-  const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false, undefined, judged);
++  const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false, undefined, undefined);
+   context.state.forgetFolder(path);
+   bury(context, record.fileId, ack.versionId, path, true);
+   await context.state.save();

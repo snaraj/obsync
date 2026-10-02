@@ -16,8 +16,10 @@ what any of them say.
 
 On any paired computer, run the command **Open dashboard** from Obsidian's
 command palette. The plugin asks the server for a single-use sign-in link
-(`POST /v1/dashboard/login-link`), the server answers with a URL valid for five
-minutes, and the plugin opens it in your browser. Following the link
+(`POST /v1/dashboard/login-link`), the server answers with a URL valid once,
+for five minutes, and the plugin opens it in your browser. Obsidian may write
+that URL to its own log; why that is bounded, and why five minutes, is in
+[the dashboard's threat model](security/dashboard.md#6-accepted-residuals). Following the link
 (`GET /login?token=…`) sets the session cookie and lands you on the overview.
 
 The plugin opens that answer only when the address it resolves to is the
@@ -72,7 +74,7 @@ authenticate WebAuthn credentials.
 
 | Page | What is on it |
 | --- | --- |
-| **Overview** | the account, version and file counts, storage per volume with its class name, sync activity as versions per hour over the last 24 hours, and the last scrub and garbage-collection summaries |
+| **Overview** | the account with how many devices can sync (revoked ones are on **Devices**, not in this figure), version and file counts, storage per volume with its class name, sync activity as versions per hour over the last 24 hours, and the last scrub and garbage-collection summaries |
 | **Devices** | every device by name, platform, app version, first paired, last sign-in, last seen, last edit, connecting address and country — and the revoke button |
 | **Pairing** | the pairing instructions; codes themselves are minted on a device, never here |
 | **Storage** | usage against the declared capacity, the free-space watermark, retention, scrub state and rate, and the quarantine list |
@@ -119,6 +121,28 @@ answer to a lost or stolen device.
 5. The device keeps whatever it already downloaded. Revoking ends its access
    to the server; it does not reach into the device and delete files, and it
    does not re-encrypt the vault under a new key.
+
+## How to forget a revoked device
+
+A device that has been revoked stays in the list, refused, until it is
+forgotten. The **Devices** page counts those on one row — **N revoked
+devices** — and **Show** opens them; each carries **Forget** in place of
+**Revoke**.
+
+1. Select **Show** beside the count, and find the device.
+2. Select **Forget**. As with revoking, nothing has happened yet: that button
+   only reveals the confirmation.
+3. Select **Confirm forget**. THIS is the click that sends
+   `POST /v1/admin/devices/{id}/archive`. **Cancel** sends nothing.
+4. The page says "<name> is forgotten." and the row is gone, and a line under
+   the table counts what is no longer listed. Only the LIST changed: the
+   server keeps that device's record, still refuses it with `403
+   device_revoked`, and still names the versions it wrote. The flag is on the
+   journal before the answer, so a restart shows the same list. Only a revoked
+   device can be forgotten; the server refuses anything else with `409
+   device_not_revoked`.
+5. If that device was yours, pair it again from a device that still syncs. Its
+   notes are still in its vault.
 
 You can also revoke from the **Devices** list in the plugin's own settings tab,
 on any paired device, without opening the dashboard at all. It confirms the

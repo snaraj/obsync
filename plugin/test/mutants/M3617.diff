@@ -1,0 +1,12 @@
+# M3617: a restored key sends no proof, so it cannot re-enrol a cleared account
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4317,7 +4317,7 @@
+         name,
+         platform: this.platformName(),
+         app_version: this.manifest.version,
+-      }, freshKey ? { verifier: recovery.verifier } : recovery);
++      }, { verifier: recovery.verifier });
+       assertCurrent();
+       if (state.data.vrk !== vrk) throw new Error("The vault key changed while the server answered; this response was not adopted. Restore the intended phrase and recover explicitly.");
+       // Setup is not repeatable and the credential it mints exists nowhere

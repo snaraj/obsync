@@ -14,7 +14,7 @@ use obsync_core::http::{Request, Response};
 use obsync_core::json::{Value, obj};
 
 use crate::log::Val;
-use crate::types::{DeviceId, Seq};
+use crate::types::{DeviceId, Seq, UnixMs};
 
 use super::edge::ClientInfo;
 use super::render::{self, n, s};
@@ -408,7 +408,7 @@ pub fn overview(app: &App, req: &mut Request) -> Result<Response, ApiError> {
             .is_some_and(|s| s.minted_by.is_none())
     };
     let account = match app.store.account() {
-        Some(a) => render::account(&a, app.store.devices().len() as u64),
+        Some(a) => render::account(&a, app.store.working_device_count()),
         None => Value::Null,
     };
     let volumes: Vec<Value> = app.store.volumes().iter().map(render::volume).collect();
@@ -466,13 +466,14 @@ pub fn devices(app: &App, req: &mut Request) -> Result<Response, ApiError> {
 ///
 /// # Errors
 /// `401 no_session`, `403 csrf_failed`, `404 unknown_device`,
-/// `409 last_device`.
+/// `409 last_device`, `409 recovery_too_new`.
 pub fn revoke(app: &App, req: &mut Request, id: &str) -> Result<Response, ApiError> {
     mutating_session(app, req)?;
     let target = render::device_id(id)?;
     // The same single-lock refusal the device route takes: see
     // `Store::revoke_device_unless_last`.
-    app.store.revoke_device_unless_last(&target)?;
+    app.store
+        .revoke_device_unless_last(&target, UnixMs(app.clock.unix_ms()))?;
     let (sessions, links) = app
         .sessions
         .lock()
@@ -487,6 +488,20 @@ pub fn revoke(app: &App, req: &mut Request, id: &str) -> Result<Response, ApiErr
             ("links_dropped", Val::count(links as u64)),
         ],
     );
+    Ok(Response::empty(204))
+}
+
+/// `POST /v1/admin/devices/{id}/archive`: the dashboard's archive, under the
+/// session and the double-submit CSRF check every dashboard mutation takes
+/// (`super::devices::archive_revoked`).
+///
+/// # Errors
+/// `401 no_session`, `403 csrf_failed`, `404 unknown_device`, `409
+/// device_not_revoked`.
+pub fn archive(app: &App, req: &mut Request, id: &str) -> Result<Response, ApiError> {
+    mutating_session(app, req)?;
+    let target = render::device_id(id)?;
+    super::devices::archive_revoked(app, &target, ("by", Val::word("dashboard")))?;
     Ok(Response::empty(204))
 }
 

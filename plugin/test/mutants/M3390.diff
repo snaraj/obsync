@@ -1,0 +1,12 @@
+# M3390: every emptied file is marked, whatever the feed holds for it (#248)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4521,7 +4521,7 @@
+       const record = context.state.fileByPath(file.path);
+       const note = own?.notes.get(file.path);
+       const ahead = note !== undefined && note.version_id !== record?.versionId;
+-      const mark = ahead ? note.file_id : blind ? UNVERIFIED_LANDING : undefined;
++      const mark = ahead ? note.file_id : note?.file_id ?? record?.fileId;
+       if (mark === undefined) continue;
+       context.state.data.dropped[file.path] = mark;
+       settled.add(file.path);

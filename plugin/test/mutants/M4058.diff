@@ -1,0 +1,12 @@
+# M4058: a handle's write past its budget is let go (review of a0dc7fc2)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -406,7 +406,7 @@
+       read: (buffer, offset, length, position) => onTime(open.read(buffer, offset, length, position), "read", length, log),
+       write: (buffer) => {
+         unsynced += buffer.length;
+-        return onTime(open.write(buffer), "write", buffer.length, log, true);
++        return onTime(open.write(buffer), "write", buffer.length, log);
+       },
+       stat: (options) => onTime(open.stat(options), "fstat", 0, log),
+       close: () => onTime(open.close(), "close", 0, log),

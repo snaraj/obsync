@@ -1,0 +1,11 @@
+# M3492: a moved note's old name stays listed (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1772,7 +1772,6 @@
+     const refusal = await chainRefusal(source.chain, walker(desktop.fs)) ??
+       await chainRefusal(found.chain, walker(desktop.fs));
+     if (refusal !== null) throw new VaultPathError(refusal);
+-    await this.reconcile(from, "file", false);
+     await this.reconcile(to, "file", true);
+     return "moved";
+   }

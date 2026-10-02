@@ -1,0 +1,11 @@
+# M4061: a handle a late read-only open brings is left open (review of a0dc7fc2)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -380,7 +380,6 @@
+         if (diskCalls.delete(id)) return resolve(value);
+         log(diskLine("late", name, started, budget, " outcome=answered"));
+         if (changes) resolve(value);
+-        else late?.(value);
+       },
+       (error: unknown) => {
+         if (diskCalls.delete(id)) return reject(error);

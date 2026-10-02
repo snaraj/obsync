@@ -1,0 +1,12 @@
+# M3320: an error's words keep the absolute paths its path and dest name (issue #266)
+--- a/plugin/src/vaultPath.ts
++++ b/plugin/src/vaultPath.ts
+@@ -136,7 +136,7 @@
+   let text = error instanceof Error ? error.message : String(error);
+   const named = error as { path?: unknown; dest?: unknown } | null | undefined;
+   for (const path of [named?.path, named?.dest]) {
+-    if (typeof path === "string" && ABSOLUTE.test(path)) text = text.split(path).join("<path>");
++    if (typeof path === "string" && ABSOLUTE.test("")) text = text.split(path).join("<path>");
+   }
+   return text.replace(QUOTED_ABSOLUTE, "'<path>'");
+ }

@@ -1,0 +1,11 @@
+# M4065: a stalled open of the hold is read as a hold gone, and the removal ends removed (review of a0dc7fc2)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3037,7 +3037,6 @@
+     } catch (error) {
+       // A stalled open says nothing of the hold: it stays, and the removal
+       // fails rather than end as if its bytes were gone (review of a0dc7fc2).
+-      if (error instanceof DiskStalled) throw error;
+       this.log("host path_class=file decision=restore_failed reason=hold_gone");
+       return "removed";
+     }

@@ -11,7 +11,7 @@ Only obsync was enabled; the earlier rewrite fixture was absent.
 ## Native typing and renames
 
 Mirroring initially accepted navigation but dropped text input. After the
-owner restarted it, individual native key presses with 650 ms spacing worked.
+user restarted it, individual native key presses with 650 ms spacing worked.
 Bulk input still dropped characters and is not used as successful evidence.
 
 The valid co-typing case used two sections with an unchanged `Separator.`

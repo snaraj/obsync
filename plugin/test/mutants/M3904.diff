@@ -1,0 +1,12 @@
+# M3904: a faulted nonce log's 503 is absence again: retried, then offline (#295)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1468,7 +1468,7 @@
+  * on the first answer whatever status carries them, and said as the restart
+  * they need (`refusalStatus`).
+  */
+-export const RESTART_CODES: ReadonlySet<string> = new Set(["journal_faulted", "nonce_log_faulted"]);
++export const RESTART_CODES: ReadonlySet<string> = new Set(["journal_faulted"]);
+ 
+ /**
+  * A request the server refused because it did not come through the edge the

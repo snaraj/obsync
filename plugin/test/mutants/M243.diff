@@ -1,17 +1,17 @@
 # M243: Sync now with deletions held back says nothing about them
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -4045,13 +4045,6 @@
-     await this.reconcile(verifyUpTo);
+@@ -4906,13 +4906,6 @@
+     const tally = await this.reconcile(verifyUpTo, trigger === "sync_now" ? trigger : undefined);
      // The command that "syncs everything" did not send the deletions the user
      // is still being asked about, and says so rather than nothing (#172).
 -    if (pending && held() > 0) {
--      this.options.host.notify(
--        `obsync is still holding back ${held()} deletions: Sync now does not send them. Put ` +
--          "the notes back, or, if you really deleted them, confirm it under Settings, obsync, \"Deletions held back\".",
--        HELD_ACTIONS,
--      );
+-      this.options.host.notify({
+-        ...HELD_QUESTION,
+-        text: `${count(held(), "deletion")} ${held() === 1 ? "is" : "are"} still held back, so Sync now does not send them. ` +
+-          "Choose Delete everywhere if you meant them, or Restore here to put the notes back.",
+-      });
 -    }
      followUp = (await this.flush()) || followUp;
+     const read = this.options.host.readTotals?.() ?? { files: 0, bytes: 0 };
      this.options.host.log(
-       `${trigger} decision=${joined ? "joined_running_drain" : "drained"} queued=${queued} ` +

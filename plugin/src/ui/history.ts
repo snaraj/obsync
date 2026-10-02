@@ -1,5 +1,5 @@
 /** Bounded native history browser; all labels are text, never remote HTML. */
-import { App, Modal, Notice, Setting } from "obsidian";
+import { App, Modal, Setting } from "obsidian";
 import type ObsyncPlugin from "../main";
 import { HISTORY_SCAN_RECORDS, HISTORY_SEARCH_MS, HistoryBrowser, HistoryCancelled, HistoryEntry } from "../sync/history";
 import { formatBytes } from "../policy";
@@ -98,10 +98,13 @@ export class HistoryModal extends Modal {
     this.render();
     try {
       const result = await this.plugin.restoreHistory(browser, entry);
-      new Notice(`Copy saved locally at "${result.path}". ${result.syncRequested ? "Ordinary sync requested; check sync status for upload errors." : "Sync is pending. Run Sync now when the plugin is available."}`, 10000);
+      this.plugin.notices.show({
+        kind: "confirm", paths: [result.path],
+        text: `restored a copy as {notes}. ${result.syncRequested ? "It syncs like any note; Show sync status says if it cannot." : "It syncs once obsync runs again: choose Sync now then."}`,
+      });
       this.close();
     } catch (error) {
-      if (!(error instanceof HistoryCancelled)) new Notice(error instanceof Error ? error.message : String(error), 10000);
+      if (!(error instanceof HistoryCancelled)) this.plugin.notices.show({ kind: "confirm", text: error instanceof Error ? error.message : String(error) });
       this.message = "Recovery stopped. Restart search to try again; check any reported copy path first.";
       this.browser = null;
     } finally {

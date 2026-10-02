@@ -122,12 +122,12 @@ quickstart; they establish the visible setup controls, not successful sync.
 ![The repaired candidate enabled in the phone's Community plugins settings](../assets/phone-candidate-113/final-train-installed.png)
 
 Mirroring subsequently stopped forwarding keyboard input while pointer
-navigation still worked. After a reconnect, it required owner authentication.
+navigation still worked. After a reconnect, it required the user's authentication.
 No successful pairing claim was observed in that attempt. Matched-build
 phone acceptance, the affected rewrite/Resume rerun, and final QA cleanup
 remain outstanding at this checkpoint.
 
-After the owner unlocked Mirroring, the same product bundle was reinstalled
+After the user unlocked Mirroring, the same product bundle was reinstalled
 with the scoped rewrite fixture present but disabled. The fresh vault held
 two synthetic seed notes. Pairing succeeded: the approving desktop named the
 expected vault and two-note count; the phone confirmed before uploading

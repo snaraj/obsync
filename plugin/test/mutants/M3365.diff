@@ -1,0 +1,12 @@
+# M3365: a note held at the version the replay passed is fetched again (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3509,7 +3509,7 @@
+         // Stopped part way, what is left waits for the next start's catch-up (#281).
+         if (!this.running) return;
+         const before = held(fileId);
+-        if (before !== versionId && context.state.data.departed[fileId] === undefined) {
++        if (context.state.data.departed[fileId] === undefined) {
+           const started = context.now();
+           let outcome: string;
+           this.returning.add(versionId);

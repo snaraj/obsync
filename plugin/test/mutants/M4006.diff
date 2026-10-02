@@ -1,0 +1,11 @@
+# M4006: a stalled disk call says nothing (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -370,7 +370,6 @@
+       fail: changes
+         ? () => log(diskLine("overrun", name, started, budget, " outcome=awaited"))
+         : () => {
+-            log(diskLine("stalled", name, started, budget));
+             reject(new DiskStalled());
+           },
+     });

@@ -43,7 +43,9 @@ test("an authenticated automatic answer holds a competing typed branch before re
   assert.deepEqual(r.state.data.paused, held);
   assert.deepEqual((await r.reload()).data.paused, held, "persist the editor's Resume role before returning");
   assert.equal(r.host.notices.length, 1);
-  assert.match(r.host.notices[0], /while you were typing.*Sync now.*Resume/);
+  assert.match(r.host.notices[0], /^obsync: paused syncing "overlap": a plugin .* keeps rewriting it right after sync.*press Resume in Show sync status/);
+  // A paused note needs the person: on screen until dismissed, whatever the settings.
+  assert.deepEqual(r.host.toasts.map((toast) => [toast.text, toast.ms]), [[r.host.notices[0], 0]]);
   assert.match(r.host.logs.find((line) => line.includes("reason=peer_rewrite_overlap")), /duration_ms=0 budget_ms=5000$/);
   const id = await pauseId(r.context, r.base.fileId);
   assert.equal(r.server.files.get(id).heads.length, 1);
@@ -68,7 +70,7 @@ for (const [name, facts] of [
   r.host.editors.set(NOTE, r.host.text(NOTE));
   await applyChange(r.context, r.frame);
   assert.deepEqual(r.state.data.paused, {});
-  assert.ok(!r.host.notices.some((line) => line.startsWith("obsync paused")));
+  assert.ok(!r.host.notices.some((line) => line.startsWith("obsync: paused")));
   if (facts.clean) {
     assert.equal(r.host.text(NOTE), OURS.replace("end", "remote end"));
     assert.equal(r.host.files.size, 1);
@@ -119,6 +121,7 @@ for (const settled of [true, false]) for (const delivery of ["control", "overlap
   const answer = await pushFile(r.context, NOTE);
   assert.equal((await decryptRecordManifest(r.context, r.server.journal.find(v => v.version_id === answer.versionId))).answer, true);
   r.host.clock += 100;
+  const stamped = r.host.clock;
   if (!settled) {
     r.context.arrivals.set(NOTE, r.host.clock - 1000);
     background = BASE.replace("stamp: base", "stamp: background again");
@@ -128,6 +131,15 @@ for (const settled of [true, false]) for (const delivery of ["control", "overlap
     r.host.clock += 100;
   }
   const clean = await peer(r, BASE.replace("end", "remote end"), [r.base.versionId], false);
+  if (!settled) {
+    // A merge takes no text the note has not sent (#227): the stamp goes out
+    // first, as the watcher sends it once judged, and carries its verdict.
+    assert.equal(await applyChange(r.context, clean), "skipped");
+    assert.ok(r.host.logs.some(line => line.includes("decision=deferred reason=unpublished_edit")));
+    r.context.answering.set(r.base.fileId, { mtime: stamped, arrived: stamped - 1000 });
+    const sent = await pushFile(r.context, NOTE);
+    assert.equal((await decryptRecordManifest(r.context, r.server.journal.find(v => v.version_id === sent.versionId))).answer, true);
+  }
   assert.equal(await applyChange(r.context, clean), "merged");
   assert.equal(r.host.text(NOTE), background.replace("end", "remote end"));
   assert.deepEqual(r.state.data.paused, {}, "a clean merge alone must not pause syncing");
@@ -146,7 +158,9 @@ for (const settled of [true, false]) for (const delivery of ["control", "overlap
   assert.deepEqual(r.state.data.paused, { [r.base.fileId]: { path: NOTE } }, "Resume must keep background bytes beside the editor's note");
   assert.deepEqual((await r.reload()).data.paused, r.state.data.paused);
   assert.equal(r.host.files.size, 1, "hold before making a conflict copy");
-  assert.equal(r.host.notices.filter(n => n.startsWith(`${NOTE} was rewritten on this device`)).length, 1);
+  // One sentence wherever the storm is seen (`pausedNotice`); the log says where.
+  assert.equal(r.host.notices.filter(n => n.startsWith("obsync: paused syncing")).length, 1);
+  assert.equal(r.host.logs.filter((line) => line.startsWith("pull decision=paused reason=rewrite_storm")).length, 1);
 });
 
 const HELD = "stamp: held later\n\nABCDEFGH plus independent held text\n\nend\n";
@@ -189,7 +203,7 @@ for (const verdict of ["absent", "user", "stale", "typing", "typing_during", "ty
     manifestKey: r.keys.manifestKey, bytes: 0 });
   await applyChange(r.context, control);
   assert.deepEqual(r.state.data.paused, { [r.base.fileId]: { path: NOTE, remote: true } });
-  assert.equal(r.host.notices.filter(n => n.startsWith(`${NOTE} was rewritten on this device`)).length, 0);
+  assert.equal(r.host.logs.filter((line) => line.startsWith("pull decision=paused reason=rewrite_storm")).length, 0);
 });
 
 async function heldFork() {

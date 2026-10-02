@@ -1,0 +1,12 @@
+# M4034: closing a key takes down a question or security toast only, never a refusal's (#308)
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -264,8 +264,6 @@
+   close(key: string): void {
+     this.slots.get(key)?.drawn.hide();
+     this.slots.delete(key);
+-    this.groups.get(key)?.drawn.hide();
+-    this.groups.delete(key);
+   }
+ 
+   show(notice: SyncNotice): void {

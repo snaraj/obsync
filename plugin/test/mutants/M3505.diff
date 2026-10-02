@@ -1,0 +1,12 @@
+# M3505: the log says listed when the reconcile changed nothing (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1538,7 +1538,7 @@
+       const now = vault.getAbstractFileByPath(path);
+       const done = changed ? now instanceof TFile && now.stat !== stat : (now !== null) === present;
+       this.log(
+-        `vault path_class=${kind} decision=${done ? (changed ? "reindexed" : present ? "listed" : "unlisted") : "unchanged"} ` +
++        `vault path_class=${kind} decision=${changed ? "reindexed" : present ? "listed" : "unlisted"} ` +
+           `reason=${changed ? "bytes_changed" : present ? "not_listed" : "still_listed"} budget_ms=${ADAPTER_QUEUE_MS} ` +
+           `duration_ms=${Date.now() - started}`,
+       );

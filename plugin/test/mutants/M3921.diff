@@ -1,0 +1,11 @@
+# M3921: a plugin that unloads keeps asking the server about a pairing
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -415,7 +415,6 @@
+       // device's to do, so this dialog closes, and the rest is watched
+       // behind it and said in a notice. `PS` is not needed past the seal.
+       this.collecting = true;
+-      this.plugin.register?.(() => { this.collecting = false; });
+       answer.settingEl.remove();
+       this.close();
+       tell(this.plugin, `approved "${claimant.name}": it finishes pairing by itself, and obsync tells you here when it has.`);

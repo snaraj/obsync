@@ -1,0 +1,11 @@
+# M3537: the case index is not derived at load: only writes fill it (P10)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -713,6 +713,7 @@
+     indexes.order.set(path, indexes.next++);
+     indexed(indexes, path, record, 1);
+   }
++  indexes.folded.clear();
+   return indexes;
+ }
+ 

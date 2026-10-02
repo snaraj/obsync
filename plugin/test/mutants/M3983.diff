@@ -1,0 +1,12 @@
+# M3983: a pass drops a refused change it just sent again: a full server's words go while it is pushed (#300)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -4545,7 +4545,7 @@
+     // server's refusal stands through it), and one whose push gave up during
+     // this pass is the next pass's to judge.
+     for (const [path, { failure }] of this.unsent) {
+-      if (failure <= gaveUp && !this.queue.includes(path) && !this.pushing.has(path)) this.sent(path);
++      if (failure <= gaveUp) this.sent(path);
+     }
+     if (verifyUpTo > 0) this.examined += queued;
+     if (own !== null) {

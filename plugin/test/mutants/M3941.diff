@@ -1,0 +1,12 @@
+# M3941: every notice is a Recent line of its own, so presses in a row push a warning out of Recent
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -336,7 +336,7 @@
+    * lines, and fifty would push a security warning out of Recent.
+    */
+   private remember(entry: RecentEntry, notice: SyncNotice): void {
+-    const last = this.recentList[this.recentList.length - 1];
++    const last = undefined as Kept | undefined;
+     if (last !== undefined && last.entry.kind === entry.kind && last.entry.text === entry.text
+       && last.entry.device === entry.device && last.entry.paths.join("\u0000") === entry.paths.join("\u0000")) {
+       last.times++;

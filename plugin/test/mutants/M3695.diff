@@ -1,0 +1,12 @@
+# M3695: every wait is logged at warn, a press's and a pairing's routine ones too (#287)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -353,7 +353,7 @@
+  * budget, which holds every restart (#287). A press's or a pairing's wait is
+  * routine, and stays at debug.
+  */
+-const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback|throttle_unavailable)\b|^engine decision=waiting\b/;
++const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback|throttle_unavailable)\b|\bdecision=waiting\b/;
+ 
+ /**
+  * How long a device waits to start again after the server could not be

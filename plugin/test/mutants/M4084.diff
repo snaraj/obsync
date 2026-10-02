@@ -1,0 +1,11 @@
+# M4084: the creator reveals its key before any claim
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -315,6 +315,7 @@
+             tell(this.plugin, "pairing link copied. Open it on your other device; don't send it through work email or chat.");
+           }),
+         );
++      await this.plugin.transport.pairingReveal(pairing.pairing_id, kex.publicKey);
+       const statusEl = this.contentEl.createEl("p", { text: "Waiting for the new device…" });
+       this.polling = true;
+       while (this.polling) {

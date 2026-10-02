@@ -193,6 +193,10 @@ addresses. `TestProviderNeutrality` pins zero provider names under
   by the Rust core so the two implementations agree on every byte.
 - Tests are stdlib-only with hand-written fakes; no assertion libraries,
   no mock frameworks. Fixture text is sentinel-only.
+- Every test removes what it creates, on failure too: a plugin test's temp
+  folders come from `scratch()` in `plugin/test/fake.mjs` or its own
+  `t.after`. `npm test` runs the suite in a temp folder of its own and fails
+  if anything is left in it.
 - Repo-doctrine pins live in `crates/obsyncd/src/doctrine_test.rs`
   (blind server, provider neutrality, no-unsafe, dependency-free manifest).
 
@@ -204,7 +208,7 @@ addresses. `TestProviderNeutrality` pins zero provider names under
 - `crates/obsyncd`: `config`, `signal` (the only unsafe), `log`,
   `storage/{blobs,journal,index,gc,scrub}`, `api/{auth,pairing,sync,
   chunks,changes,admin,plugin}`, `dashboard` (serves `OBSYNC_DASHBOARD_DIR`), `cli`
-  (`serve`, `check`, `setup-token`, `export`). Type declarations live in
+  (`serve`, `check`, `setup-token`, `recovery`, `export`). Type declarations live in
   `types.rs` per module group; methods stay beside the logic they serve.
 - `plugin/src`: `main.ts` (plugin entry), `crypto.ts`, `chunker.ts`,
   `state.ts`, `transport.ts`, `sync/{push,pull,conflict}.ts`,
@@ -362,6 +366,14 @@ Several agents work this repository at once. Git worktrees under
   pushes only its own branch, and removes the worktree when its PR closes.
 - Reviewers work disposably in a scratch worktree they remove afterwards
   and report the removal in the receipt.
+- **Clean up after yourself: a hard rule.** The machine's disk is yours to
+  use for fixtures on that condition. Every run removes what it created when
+  it ends, on failure too: tree copies, temp folders, vault copies, server
+  data, images and build caches it pulled, VMs, emulator images. A lane's
+  lab goes when the record that cites it is committed. Check free space
+  before a long batch, and stop below about 20 GB. Leftover test sandboxes
+  once filled the owner's machine (573 GiB in one temp folder) and stopped
+  every agent on it.
 
 ## Working a change end to end
 

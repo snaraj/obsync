@@ -1,10 +1,10 @@
 # M607: claim pairing with stale sync records
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -619,7 +619,7 @@
-     }
-     try {
-       this.busy = true;
+@@ -881,7 +881,7 @@
+       // Whatever an earlier claim showed goes first: its code belongs to a
+       // pairing this one ends, and must not sit beside the next prompt.
+       this.show(CLAIMING);
 -      if (this.plugin.forgottenDevice) await this.plugin.resetForgottenEnrollment();
 +      if (false) await this.plugin.resetForgottenEnrollment();
        await stopWaiting(this.plugin);

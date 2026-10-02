@@ -99,6 +99,10 @@ pub struct Claimant {
     pub app_version: String,
     /// Optional sealed claimant vault details; the server cannot decrypt them.
     pub vault: Option<Value>,
+    /// The claimant's ephemeral P-256 public key for pairing v2, as the
+    /// base64url text the client sent. The server stores and returns it
+    /// verbatim and does no EC math on it (`docs/protocol.md`, "Pairing").
+    pub claimant_pub: Option<String>,
 }
 
 /// One pairing.
@@ -117,6 +121,11 @@ pub struct Pairing {
     pub claimant: Option<Claimant>,
     /// The key envelope and its nonce, held for exactly one fetch.
     pub envelope: Option<(String, String)>,
+    /// The creator's ephemeral P-256 public key for pairing v2, revealed after
+    /// the claim and before approval ([`PairingTable::reveal`]), and returned
+    /// verbatim to the claimant while it waits and with the envelope. `None`
+    /// for a legacy pairing.
+    pub creator_pub: Option<String>,
 }
 
 /// The in-memory pairing table.
@@ -152,6 +161,7 @@ impl PairingTable {
                 state: State::Open,
                 claimant: None,
                 envelope: None,
+                creator_pub: None,
             },
         );
         expires
@@ -304,6 +314,50 @@ impl PairingTable {
         }
     }
 
+    /// The creator reveals its pairing v2 public key for a claimed pairing.
+    ///
+    /// The claimant reads it while it waits ([`PairingTable::take_envelope`])
+    /// and checks it against the commitment its code carried, so the server
+    /// only holds it. The same key again answers as the first did, so a
+    /// retry is safe; a different one is refused, because a creator holds
+    /// one key per pairing (`docs/protocol.md`, "Pairing v2").
+    ///
+    /// # Errors
+    /// `404 unknown_pairing`, `403 not_creator`, `410 pairing_expired`,
+    /// `409 not_claimed`, `409 already_approved`, `409 already_revealed`.
+    pub fn reveal(
+        &mut self,
+        id: &str,
+        actor: &DeviceId,
+        creator_pub: &str,
+        now: u64,
+    ) -> Result<(), ApiError> {
+        let p = self.entries.get_mut(id).ok_or_else(unknown)?;
+        if &p.creator != actor {
+            return Err(not_creator());
+        }
+        if p.expires <= now {
+            return Err(expired());
+        }
+        match p.state {
+            State::Claimed => {}
+            State::Open => return Err(not_claimed()),
+            _ => return Err(already_approved()),
+        }
+        if p.creator_pub
+            .as_deref()
+            .is_some_and(|held| held != creator_pub)
+        {
+            return Err(ApiError::new(
+                409,
+                "already_revealed",
+                "the pairing's creator key is already revealed",
+            ));
+        }
+        p.creator_pub = Some(creator_pub.to_string());
+        Ok(())
+    }
+
     /// The creator posts the key envelope for a claimed pairing.
     ///
     /// # Errors
@@ -393,7 +447,7 @@ impl PairingTable {
         actor: &DeviceId,
         now: u64,
         activate: impl FnOnce() -> Result<(), ApiError>,
-    ) -> Result<(String, String), ApiError> {
+    ) -> Result<(String, String, Option<String>), ApiError> {
         let p = self.entries.get_mut(id).ok_or_else(unknown)?;
         let is_claimant = p.claimant.as_ref().is_some_and(|c| &c.device_id == actor);
         if !is_claimant {
@@ -413,16 +467,19 @@ impl PairingTable {
             return Err(expired());
         }
         if p.state != State::Approved {
-            return Err(ApiError::new(
-                409,
-                "not_approved",
-                "the pairing is not approved yet",
-            ));
+            let waiting = ApiError::new(409, "not_approved", "the pairing is not approved yet");
+            // A revealed creator key rides the wait: the claimant shows its
+            // match code from it before anyone approves.
+            return Err(match &p.creator_pub {
+                Some(key) => waiting.with_field("creator_pub", s(key)),
+                None => waiting,
+            });
         }
         activate()?;
-        let envelope = p.envelope.take().ok_or_else(consumed)?;
+        let (envelope, nonce) = p.envelope.take().ok_or_else(consumed)?;
+        let creator_pub = p.creator_pub.take();
         p.state = State::Consumed;
-        Ok(envelope)
+        Ok((envelope, nonce, creator_pub))
     }
 }
 
@@ -489,15 +546,16 @@ pub fn claim(
     // pre-authentication budget (`Unverified`). The table lock is held on
     // across device creation so two racing claims cannot both pass
     // `begin_claim`.
-    let (_, (enrolment, vault, mut pairings)) =
-        unverified::token_body(app, req)?.accept(|held| {
+    let (_, (enrolment, vault, claimant_pub, mut pairings)) = unverified::token_body(app, req)?
+        .accept(|held| {
             let parsed = held.json()?;
             let enroll = parsed.credential("enroll_token")?;
             let enrolment = devices::enrolment_fields(parsed.value())?;
             let vault = vault_details(parsed.value())?;
+            let claimant_pub = public_key_field(parsed.value(), "claimant_pub")?;
             let pairings = app.pairings.lock().expect("pairings");
             pairings.begin_claim(id, &enroll, now)?;
-            Ok((enrolment, vault, pairings))
+            Ok((enrolment, vault, claimant_pub, pairings))
         })?;
     let (name, platform, app_version) = (
         enrolment.name.clone(),
@@ -515,6 +573,7 @@ pub fn claim(
             platform,
             app_version,
             vault,
+            claimant_pub,
         },
     );
     drop(pairings);
@@ -547,6 +606,49 @@ fn vault_details(body: &Value) -> Result<Option<Value>, ApiError> {
     ])))
 }
 
+/// Validate an optional ephemeral public-key field (pairing v2) without doing
+/// any elliptic-curve mathematics: the server holds and returns it verbatim
+/// and never computes on it (requirement 5, std-only). A raw-uncompressed
+/// P-256 point is 65 bytes beginning `0x04`; its base64url is 87 characters.
+/// Anything else is a `400`, and the field is bounded so an unverified claim
+/// body cannot smuggle a large value past the pre-authentication budget.
+fn public_key_field(body: &Value, name: &str) -> Result<Option<String>, ApiError> {
+    let Some(v) = body.get(name) else {
+        return Ok(None);
+    };
+    let text = v
+        .as_str()
+        .ok_or_else(|| ApiError::bad_request("public key must be a string"))?;
+    let bad =
+        || ApiError::bad_request("public key must be a raw-uncompressed P-256 point, base64url");
+    if text.len() != 87
+        || !text
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err(bad());
+    }
+    // base64url -> standard base64 with padding, then the standard decoder.
+    let mut std: String = text
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            other => other,
+        })
+        .collect();
+    std.push('=');
+    let raw = obsync_core::base64::decode(&std).map_err(|_| bad())?;
+    if raw.len() != PAIRING_PUBLIC_KEY_LEN || raw[0] != 0x04 {
+        return Err(bad());
+    }
+    Ok(Some(text.to_string()))
+}
+
+/// A raw-uncompressed P-256 public key is 65 bytes: `0x04` then two 32-byte
+/// coordinates.
+const PAIRING_PUBLIC_KEY_LEN: usize = 65;
+
 /// `GET /v1/pairing/{id}`: the creator polls for a claimant.
 ///
 /// # Errors
@@ -575,6 +677,9 @@ pub fn state(
             if let Some(vault) = c.vault {
                 fields.push(("vault", vault));
             }
+            if let Some(key) = c.claimant_pub {
+                fields.push(("claimant_pub", s(&key)));
+            }
             obj(fields)
         }
         None => Value::Null,
@@ -583,6 +688,36 @@ pub fn state(
         200,
         &obj(vec![("state", s(state.as_str())), ("claimant", claimant)]),
     ))
+}
+
+/// `POST /v1/pairing/{id}/reveal`: the creator reveals its pairing v2 key
+/// ([`PairingTable::reveal`]). Its code committed to the key before any
+/// claim existed; the claimant checks the two agree.
+///
+/// # Errors
+/// `400 bad_request`, `404 unknown_pairing`, `403 not_creator`,
+/// `409 not_claimed`, `409 already_approved`, `409 already_revealed`,
+/// `410 pairing_expired`.
+pub fn reveal(
+    app: &App,
+    req: &mut Request,
+    client: &ClientInfo,
+    id: &str,
+) -> Result<Response, ApiError> {
+    let authed = auth::device(app, req, client)?;
+    let body = render::parse_json(&authed.body)?;
+    let creator_pub = public_key_field(&body, "creator_pub")?
+        .ok_or_else(|| ApiError::bad_request("creator_pub is required"))?;
+    let now = app.clock.unix_secs();
+    app.pairings
+        .lock()
+        .expect("pairings")
+        .reveal(id, &authed.id, &creator_pub, now)?;
+    app.log.info(
+        "pairing_revealed",
+        &[("by_device", Val::device(&authed.id))],
+    );
+    Ok(Response::empty(204))
 }
 
 /// `POST /v1/pairing/{id}/approve`: the creator posts the key envelope.
@@ -696,7 +831,7 @@ pub fn envelope(
 ) -> Result<Response, ApiError> {
     let authed = auth::device_claimant(app, req, client)?;
     let now = app.clock.unix_secs();
-    let (envelope, nonce) =
+    let (envelope, nonce, creator_pub) =
         app.pairings
             .lock()
             .expect("pairings")
@@ -710,10 +845,11 @@ pub fn envelope(
             ("decision", Val::word("activated")),
         ],
     );
-    Ok(Response::json(
-        200,
-        &obj(vec![("envelope", s(&envelope)), ("nonce", s(&nonce))]),
-    ))
+    let mut fields = vec![("envelope", s(&envelope)), ("nonce", s(&nonce))];
+    if let Some(key) = creator_pub {
+        fields.push(("creator_pub", s(&key)));
+    }
+    Ok(Response::json(200, &obj(fields)))
 }
 
 fn token(bytes: usize) -> Result<String, ApiError> {
@@ -788,9 +924,145 @@ mod tests {
         );
     }
 
+    /// A raw-uncompressed P-256 point (65 bytes, `0x04` prefix) as base64url.
+    const PUBKEY: &str =
+        "BO8WCdd27pWdRyoUup6EiGUawF_1YKg8KISaBuGImQsp-zQ_bUKC0Ks1RRbDGmCLqT2V7eHp2NzNejuASM-kyJ4";
+
+    #[test]
+    fn public_key_field_is_optional_and_holds_a_p256_point_verbatim() {
+        // Absent is fine (a legacy pairing carries no key).
+        assert_eq!(public_key_field(&obj(vec![]), "k").unwrap(), None);
+        // A valid point is returned verbatim, never decoded on the server.
+        assert_eq!(
+            public_key_field(&obj(vec![("k", s(PUBKEY))]), "k").unwrap(),
+            Some(PUBKEY.to_string())
+        );
+        // Wrong prefix (a compressed point), wrong length, a bad alphabet, the
+        // wrong type: each is a 400 the server never computes on.
+        let compressed = {
+            let mut raw = [0u8; 65];
+            raw[0] = 0x02;
+            obsync_core::base64::encode(&raw)
+                .replace('+', "-")
+                .replace('/', "_")
+                .trim_end_matches('=')
+                .to_string()
+        };
+        let short = {
+            let raw = [4u8; 64];
+            obsync_core::base64::encode(&raw)
+                .replace('+', "-")
+                .replace('/', "_")
+                .trim_end_matches('=')
+                .to_string()
+        };
+        for bad in [
+            compressed,
+            short,
+            "!".repeat(87),
+            "AAAA".to_string(),
+            format!("{PUBKEY}A"),
+        ] {
+            assert!(
+                public_key_field(&obj(vec![("k", s(&bad))]), "k").is_err(),
+                "{bad}"
+            );
+        }
+        assert!(public_key_field(&obj(vec![("k", Value::Null)]), "k").is_err());
+        assert!(public_key_field(&obj(vec![("k", n(1))]), "k").is_err());
+    }
+
+    #[test]
+    fn the_pairing_carries_the_claimant_pub_to_the_creator() {
+        let (mut t, creator) = table();
+        t.begin_claim("p1", &tok("tok"), NOW).expect("claimable");
+        t.finish_claim(
+            "p1",
+            Claimant {
+                device_id: dev(2),
+                name: "n".into(),
+                platform: "ios".into(),
+                app_version: "0".into(),
+                vault: None,
+                claimant_pub: Some("CLAIMANTKEY".into()),
+            },
+        );
+        let (_, claimant) = t.state_for("p1", &creator, NOW).expect("state");
+        assert_eq!(
+            claimant.unwrap().claimant_pub.as_deref(),
+            Some("CLAIMANTKEY")
+        );
+    }
+
+    /// The `creator_pub` a `not_approved` refusal carries, if any.
+    fn waiting_key(t: &mut PairingTable, claimant: &DeviceId) -> Option<String> {
+        let e = take(t, claimant).expect_err("still waiting");
+        assert_eq!(e.code, "not_approved");
+        e.fields
+            .iter()
+            .find(|(name, _)| name == "creator_pub")
+            .map(|(_, v)| v.as_str().expect("text").to_string())
+    }
+
+    #[test]
+    fn a_revealed_creator_pub_rides_the_wait_and_the_envelope() {
+        let (mut t, creator, claimant) = claimed();
+        assert_eq!(waiting_key(&mut t, &claimant), None, "nothing revealed yet");
+        assert_eq!(
+            t.reveal("p1", &claimant, "CREATORKEY", NOW)
+                .expect_err("the creator's alone")
+                .code,
+            "not_creator"
+        );
+        t.reveal("p1", &creator, "CREATORKEY", NOW)
+            .expect("revealed");
+        t.reveal("p1", &creator, "CREATORKEY", NOW)
+            .expect("the same key again is a retry");
+        assert_eq!(
+            t.reveal("p1", &creator, "OTHERKEY", NOW)
+                .expect_err("one key per pairing")
+                .code,
+            "already_revealed"
+        );
+        assert_eq!(
+            waiting_key(&mut t, &claimant).as_deref(),
+            Some("CREATORKEY")
+        );
+        t.approve("p1", &creator, "ct", "aa", NOW)
+            .expect("approved");
+        let (env, nonce, key) = t
+            .take_envelope("p1", &claimant, NOW, || Ok(()))
+            .expect("collected");
+        assert_eq!(
+            (env.as_str(), nonce.as_str(), key.as_deref()),
+            ("ct", "aa", Some("CREATORKEY"))
+        );
+    }
+
+    #[test]
+    fn a_reveal_needs_a_live_claim_not_yet_approved() {
+        let (mut t, creator) = table();
+        let refused = |t: &mut PairingTable, id: &str, now: u64| {
+            t.reveal(id, &creator, "CREATORKEY", now)
+                .expect_err("refused")
+                .code
+        };
+        assert_eq!(refused(&mut t, "p1", NOW), "not_claimed");
+        assert_eq!(refused(&mut t, "nope", NOW), "unknown_pairing");
+        let (mut t, creator, _) = claimed();
+        assert_eq!(
+            refused(&mut t, "p1", NOW + PAIRING_TTL_SECS),
+            "pairing_expired"
+        );
+        t.approve("p1", &creator, "ct", "aa", NOW)
+            .expect("approved");
+        assert_eq!(refused(&mut t, "p1", NOW), "already_approved");
+    }
+
     /// A fetch whose activation always succeeds, inside the ten minutes.
     fn take(t: &mut PairingTable, actor: &DeviceId) -> Result<(String, String), ApiError> {
         t.take_envelope("p1", actor, NOW, || Ok(()))
+            .map(|(e, nonce, _)| (e, nonce))
     }
 
     fn table() -> (PairingTable, DeviceId) {
@@ -812,6 +1084,7 @@ mod tests {
                 platform: "ios".to_string(),
                 app_version: "0.1.0".to_string(),
                 vault: None,
+                claimant_pub: None,
             },
         );
         (t, creator, claimant)

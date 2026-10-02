@@ -1,10 +1,10 @@
 # M434: a file that merely wears the plugin folder's name makes a vault count as synced
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -716,7 +716,7 @@
-         // A hidden entry the system will not stat (macOS answers `/.resolve`
-         // with EINVAL) is no config folder; the question moves on.
-         const stat = await walker(desktop.fs).lstat(at).catch(() => null);
+@@ -979,7 +979,7 @@
+           if (error instanceof DiskStalled) throw error;
+           return null;
+         });
 -        if (stat?.isDirectory() !== true) continue next;
 +        if (stat === null) continue next;
          if (step !== null) at = desktop.path.resolve(at, step);

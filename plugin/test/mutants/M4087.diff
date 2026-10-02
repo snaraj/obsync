@@ -1,0 +1,12 @@
+# M4087: any version is shown in the prompt
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -373,7 +373,7 @@
+     // answering either the old way would show a code whoever chose its device
+     // id can make equal to any number, and seal the key under the code alone.
+     const claimantKey = claimant.claimant_pub;
+-    if (claimantKey === undefined || !printable(claimant.name, 64) || !printable(claimant.app_version, 32)) {
++    if (claimantKey === undefined || !printable(claimant.name, 64)) {
+       if (this.asking !== pairingId) return;
+       this.asking = null;
+       const older = claimantKey === undefined;

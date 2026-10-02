@@ -1,0 +1,12 @@
+# M3798: a note in flight is not queued again: a change made during its push waits for the next pass, read idle (#296)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2392,7 +2392,7 @@
+     // apart, and anything else that queues the path makes it a change again.
+     if (!check) this.checking.delete(path);
+     else if (!this.queue.includes(path)) this.checking.add(path);
+-    if (!this.queue.includes(path)) this.queue.push(path);
++    if (!this.queue.includes(path) && !this.pushing.has(path)) this.queue.push(path);
+     void this.track(this.drain());
+   }
+ 

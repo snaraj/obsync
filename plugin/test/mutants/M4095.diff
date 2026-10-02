@@ -1,0 +1,11 @@
+# M4095: the code waits for the envelope, never shown while approval is pending
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -697,7 +697,6 @@
+       } catch (error) {
+         active = error instanceof ApiError && error.code === "envelope_consumed";
+         if (error instanceof ApiError && error.status === 409 && error.code === "not_approved") {
+-          if (error.fields["creator_pub"] !== undefined) await holdCreator(error.fields["creator_pub"]);
+           plugin.log("pairing role=claimant decision=waiting reason=not_approved");
+           continue;
+         }

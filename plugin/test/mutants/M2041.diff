@@ -1,13 +1,13 @@
 # M2041: the temp-file sweep runs beside a pull's write, outside the pull lock
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3047,10 +3047,10 @@
+@@ -3858,10 +3858,10 @@
      // in front of it; cleaning up is never a reason not to sync.
      if (!this.swept) {
        this.swept = true;
--      void this.track(this.exclusive(async () => {
+-      void this.track(this.exclusive("sweep", async () => {
 +      void this.track((async () => {
-         await context.host.sweep?.().catch((error: unknown) =>
+         await context.host.sweep?.(context.signal).catch((error: unknown) =>
            context.host.log(`host path_class=temp decision=failed reason=sweep code=${(error as { code?: string }).code ?? "none"}`));
 -      }));
 +      })());

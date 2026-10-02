@@ -298,7 +298,8 @@ start loads back what the window still covers. Without that, a request
 captured 299 s before a restart is replayable 1 s after it. The file is
 compacted once it passes twice the cache's own ceiling, a torn final line
 costs only itself, and a volume that will not take the record refuses the
-request (`503 nonce_log_unavailable`): a request answered without its nonce
+request, a read included (`507 storage_full` when the volume has no room,
+`503 nonce_log_unavailable` otherwise): a request answered without its nonce
 written down is one a crash makes replayable.
 
 This gives integrity and authentication even on a hop without TLS (the
@@ -357,13 +358,15 @@ that phrase the vault is unrecoverable by design.
 
 1. On a paired device the user opens "Pair a new device". The plugin calls
    `POST /v1/pairing`, receives `{pairing_id, enroll_token}` (10-minute
-   expiry), generates a 16-byte pairing secret `PS` locally, and shows one
-   code: `base32(pairing_id || enroll_token || PS)`, as text, as a copy
-   button, and as an `obsidian://obsync-private-sync/pair?code=…` link. `PS` never
-   reaches the server.
+   expiry), generates a 16-byte pairing secret `PS` and an ephemeral P-256
+   key pair locally, and shows one code: `base32(pairing_id || enroll_token
+   || PS || C)`, where `C` commits to its public key, as text, as a copy
+   button, and as an `obsidian://obsync-private-sync/pair?code=…` link. `PS`
+   never reaches the server.
 2. On the new device the user pastes or opens the code. The plugin claims
-   the pairing (`POST /v1/pairing/{id}/claim` with the enroll token and
-   `{name, platform, app_version}`), receiving `{device_id,
+   the pairing (`POST /v1/pairing/{id}/claim` with the enroll token,
+   `{name, platform, app_version}` and its own ephemeral public key),
+   receiving `{device_id,
    device_secret}`. The device is PENDING: it can sign requests, but every
    device-authenticated route refuses it (`403 device_pending`) except
    polling this pairing's envelope (`409 not_approved`). A claimant has no
@@ -372,17 +375,22 @@ that phrase the vault is unrecoverable by design.
    for the claimant's vault. A separate `obsync/v1/pair-vault` HKDF label and
    AES-GCM binding to the pairing ID keep these details blind to the server;
    the creator decrypts them before showing approval (protocol: Pairing).
-3. The paired device polls the pairing and asks about the claim by the
-   claimant's name ("Mac 7KQ4": what it is and a tag it made itself), what it
-   is, when it asked, and a match code both screens derive from `PS` and the
-   claimant's device id (protocol: Pairing). Sealed vault details that do not
-   open under `PS` mean the claimant holds another code, and it is refused
-   before anyone is asked. On approval it encrypts `{VRK}` with `K_pair =
-   HKDF(PS, "obsync/v1/pair", pairing_id)` under AES-GCM and posts the
-   envelope. The server stores it for one fetch, and the paired device says
-   "paired" only once the server reports it fetched.
-4. The new device fetches the envelope (a signed request), decrypts it with
-   `PS`, and persists `VRK` and its credential together, in one write to the
+3. The paired device polls the pairing, fixes the claim it reads, and only
+   then reveals its public key (`POST /v1/pairing/{id}/reveal`); the new
+   device reads it on its wait and checks it against `C`. Both screens then
+   show a six-digit match code derived from `PS`, the pairing and both keys,
+   and the paired device asks about the claim by the claimant's name ("Mac
+   7KQ4": what it is and a tag it made itself), what it is, when it asked,
+   and that code (protocol: "Pairing v2"). Because the claim was fixed before
+   the key went out, whoever substituted a key chose it blind, and the codes
+   differ. Sealed vault details that do not open under `PS` mean the
+   claimant holds another code, and it is refused before anyone is asked; so
+   is a claim with no key, a device before 1.1.5. On approval it seals
+   `{VRK}` under the two devices' ECDH agreement, salted with `PS`, and posts
+   the envelope. The server stores it for one fetch, and the paired device
+   says "paired" only once the server reports it fetched.
+4. The new device fetches the envelope (a signed request), opens it with its
+   own private key and `PS`, and persists `VRK` and its credential together, in one write to the
    native secret store, before sync starts. Collecting the envelope is what
    activates the device; rejection, or expiry before collection, approved or
    not, destroys the pending credential. A claimant that cannot open or keep
@@ -391,7 +399,8 @@ that phrase the vault is unrecoverable by design.
    approval is refused (`409 already_approved`) and the store refuses to
    delete anything but a pending device. Removing a paired device is
    revocation, which keeps the record, destroys the secret, and refuses the
-   last active device only while account recovery is unregistered.
+   last active device while account recovery is unregistered, or registered
+   less than seven days ago.
 
 A pairing lives in memory and the device a claim creates is journaled, so a
 restart between step 2 and step 4 leaves a pending device behind a pairing
@@ -481,16 +490,59 @@ device compromise is a phase-2 operation (re-encrypt manifests and
 re-derive domain keys; chunks under a domain whose key is rotated are
 re-uploaded lazily).
 
+A REVOKED device can also be taken off the device lists, from the same two
+places (`POST /v1/devices/{id}/archive`, plugin and server 1.1.5; the person
+reads **Forget**, because what they are tidying is a list). NOTHING IS
+DESTROYED, and there is no second device-state model: `archived` is a flag on
+a revoked device, journaled inside the ordinary `device_update` frame and
+fsynced before the answer. The record is what answers that device `403
+device_revoked` rather than the answer an unknown id would get, and what
+names the versions it wrote wherever history is read, so both survive
+archiving; only a revoked device may be archived, never the asking one, and
+the guard sits in the store and in the index, so no replay can hide a device
+that syncs. `GET /v1/devices` still lists archived devices, with the flag, so
+a client that predates it is still correct; a 1.1.5 client leaves them out.
+Both lists show the remaining revoked devices behind one collapsed row that
+counts them, rather than among the devices that sync (issue #247).
+
 Account recovery uses a domain-separated 32-byte HKDF output from VRK,
 `obsync/v1/account-recovery` as salt and empty info, solely as an authentication
 proof. The server stores only its SHA-256 verifier in the account journal frame
 and snapshot. An authenticated client registers it after a successful engine
 start; initial setup writes it atomically with the account. Registration is
-immutable: a different verifier is refused. Re-enrollment requires both the
-standing setup token and the proof, creates a new credential, and retains the
-same account and ciphertext. Accounts upgraded after losing every credential
-have no verifier and cannot use this route. The server still refuses their
-last active device's revocation while a credential remains.
+immutable while it stands: a different verifier is refused, and only the
+operator's offline `obsyncd recovery reset` clears it. Re-enrollment requires
+both a valid setup token and the proof, creates a new credential, and retains
+the same account and ciphertext. An account that carries no verifier refuses
+recovery with `recovery_unavailable`, because the setup token alone proves
+nothing about the vault, until the operator's offline reset arms it. That reset
+rotates the setup token and journals one armed re-enrolment: the setup token it
+minted and a proof then register the verifier the proof derives (timed, so the
+last-device hold applies from then) and enrol. The server cannot check that
+proof, so the offline reset and the rotated token are the authority and the
+proof only chooses the verifier; a wrong phrase locks out only whoever used it,
+and the operator can reset again. The first verifier registered after the
+reset spends the arm, whoever registers it, and no device-authenticated request
+can arm it. A client sends the proof only when its key was restored, never when
+freshly made, so a new key cannot re-enrol over the vault the server holds.
+
+The server cannot tell a verifier the vault key produced from one it did not,
+and any device credential can register the first one. Since 1.1.5 two things
+follow from that. A device whose own registration meets a different verifier
+(`409 recovery_mismatch`) says so: a security notice no notice setting mutes,
+and a line at the top of Show sync status and of the settings tab, in a
+Security group shown only then, until a registration of its own succeeds. And a verifier younger than seven
+days (`RECOVERY_HOLD_MS`, a constant) does not lift the last-device refusal:
+revoking the only active device answers `409 recovery_too_new`, so the warning
+has time to be read before a verifier can end the last credential. The
+account frame records when its verifier was registered (`docs/storage.md`,
+"Journal frames"); one registered before 1.1.5 carries no time and keeps the
+older rule, which is safe because the hold protects accounts that had no
+verifier, and every verifier such an account gets from 1.1.5 on is timed. The
+cost is a person who sets up one device and leaves it within the week: Leave
+offers leaving on that device only. Only the operator clears a verifier, with
+`obsyncd recovery reset plan|apply` against the stopped server's volumes; the
+next device that opens the vault then registers its own.
 
 A forgotten or revoked device stops its feed rather than retrying authentication.
 The recovery action drains old work and clears its rejected identity, cursor
@@ -733,16 +785,32 @@ long poll and needs its timeout raised.
    decides, and unchanged bytes post nothing (issue #175). For the same
    reason a change of a note of at most one chunk is read even when the record
    already describes its `(mtime, size)`, while another device's version of
-   that note has just arrived -- remembered until the first pass after it is
-   five seconds old: a plugin answering a sync can keep both numbers, a
+   that note has just been written here -- remembered until the first pass
+   after it is five seconds old: a plugin answering a sync can keep both numbers, a
    fixed-width stamp the size and a kept modified time the other (issue #179).
    Startup and periodic scans retain their metadata shortcut. Explicit
    **Sync now** sends what is queued, reads the feed once without waiting,
    retries parked and paused files, then runs the startup pass re-chunking
    every admitted local file of at most one chunk (8 MiB): unchanged digests
    publish nothing, and a silent same-metadata rewrite is uploaded even long
-   after the arrival window expired. **Verify all files** re-chunks every
-   admitted file, however large. Both use the ordinary bounded streaming push
+   after the arrival window expired. A PHONE ASKS ITS STORAGE INSTEAD
+   (plugin 1.1.5, #246): reading every note again took minutes on a phone of
+   7,700 notes. Its press asks Obsidian mobile's adapter for one `readdir` per
+   folder that holds a listed file -- sizes and dates as the storage keeps
+   them, which is how it sees an edit another app made that Obsidian's index
+   never saw -- and reads only the files that differ from their records. That
+   `readdir` is not a documented API, so its shape is checked on every press:
+   any entry without a name, a kind, a size and a date sends the whole press
+   to the documented check, the index with a `stat` per suspect, logged once
+   a session (`decision=fallback reason=no_readdir|entry_shape`), and a
+   folder it cannot read gets that check alone. Its names are only matched
+   against the listed file's own name in the same folder: none becomes a
+   path, no folder below a listed one is read, and nothing it says is
+   written. What that misses is a rewrite by another app that kept both the
+   size and the date. While a press only re-reads files to verify them, the
+   status says `checking N files for changes`, not `syncing`: `syncing`
+   counts changes. **Verify all files** re-chunks every
+   admitted file, however large, on every device. Both use the ordinary bounded streaming push
    and device budget policy rather than buffering the whole vault, and
    neither keeps a plaintext hash to go faster: one in `data.json` would
    confirm a guessed note to anyone who can read it (issue #197).
@@ -751,7 +819,24 @@ long poll and needs its timeout raised.
    filesystem, read directly, every five minutes, at each start and whenever
    the window comes forward (plugin 1.1.4), because Obsidian's index is never
    fresher than the events it emits: a note moved in from a file manager is
-   in neither until the app notices.
+   in neither until the app notices. A listed file whose size or mtime
+   differs from its record is asked of the disk once before it counts as a
+   change or an unsent edit, and only such a file (plugin 1.1.5, #245):
+   Obsidian mobile watches no filesystem, so a download whose bytes Android
+   landed after Obsidian looked stays in the index at the size it saw,
+   often 0, until the app restarts.
+   Every pass -- the start's, the periodic one, Sync now's -- and the
+   watcher's decision on a burst of deletions take the pull lock, listing
+   included (plugin 1.1.5, #244). A pull applying a rename leaves the vault
+   and the records apart for a moment: a phone reports the rename while the
+   host's call still runs, which spends its echo mark, and the records
+   follow the entry only after the host's next answers. A comparison inside
+   that moment published the move as this device's own. The cost is
+   waiting: a pass waits for the page in flight, which it logs
+   (`decision=waited reason=pull_lock`), and a page waits for a pass's
+   comparison, under a second on a 7,700-note phone. Sync now's content
+   check queues its files after the lock: inside it, it held pages for
+   minutes on that phone.
    The periodic pass is ADDITIVE -- it queues work and it pairs a vanished
    recorded path with a new unrecorded one carrying the same `(mtime, size)`
    as a MOVE, keeping the file id -- and it never publishes a tombstone,
@@ -904,6 +989,19 @@ long poll and needs its timeout raised.
    Text typed into that empty note meanwhile is an edit, and is sent. A note
    renamed on another device before its retry lands leaves the empty file
    under the old name, on this phone only.
+   The mark reaches the data file with the next save, and Android may end
+   the app before that save (plugin 1.1.5, #248). A start's first pass
+   therefore asks the feed about every empty file whose record says it held
+   text, or that has no record: one whose path a live version ahead of this
+   device's cursor names, a version the record does not hold, is that
+   download's leftover, and is marked again rather than sent; the feed then
+   writes the version over it. A note a person emptied here has no such
+   version ahead -- they emptied what this device held -- and is sent as
+   ever; one emptied here while another device edited it, before this device
+   could send, gives way to that edit's text. The feed is read once per start,
+   and only when such a file exists (`decision=held reason=unfinished_download`
+   counts them); a read that fails holds an emptied note this device records,
+   marked, rather than send it empty unverified.
 
    A REMOVAL NEVER TARGETS THE LIVE NAME. A caller that removes a file names
    the content it is removing, and the desktop host first gives that file a
@@ -974,9 +1072,13 @@ long poll and needs its timeout raised.
    folder is the other vault's config folder, `.obsidian` unless its owner
    named it otherwise (`Vault#configDir`). A computer asks every hidden
    folder, by name only; a phone asks each folder once for this plugin's
-   own folder at the path Obsidian loaded it from (`manifest.dir`), because
-   listing folders there answers a turn later and opened a race (#244)
-   (plugin 1.1.4; 1.1.3 asked for `.obsidian` alone, #243). A desktop vault
+   own folder at the path Obsidian loaded it from (`manifest.dir`), one
+   question rather than a listing, which answers a turn later there
+   (plugin 1.1.4; 1.1.3 asked for `.obsidian` alone, #243). Sorting its own
+   listing, a phone does not ask a note about itself, which cost a bridge
+   call per note (plugin 1.1.5, #282); what the feed applies and what the
+   phone publishes still ask every name, since a record can call a file what
+   the phone now keeps as a folder. A desktop vault
    that sits inside such a vault refuses to be set up, paired or started.
    Synced from both sides, each pass copied the outer vault into the inner
    one a level deeper, on every device (issue #180).
@@ -1064,6 +1166,37 @@ long poll and needs its timeout raised.
    I/O error -- is no fact about one record and keeps the feed's own retry.
    The filesystem causes are recognised on desktop only: the mobile adapter's
    errors carry no errno.
+
+   A PULL THAT HOLDS THE OTHERS IS NAMED (plugin 1.1.5, issue #276). Every
+   step that writes what the server sent -- a feed page, a parked retry, a
+   note waiting on its editor, a resume, the download lane's apply, the
+   restore check, the start's temp sweep, the notes a held deletion puts
+   back -- takes its turn on one chain (`exclusive`), which records the step
+   holding it, since when, and how many wait behind it. A step that never
+   ends holds every later one, and a feed waiting behind it looks like a
+   device with nothing new. So each feed read arms a watch: no next read
+   within twice the long-poll budget (110 s) logs one warning,
+   `feed decision=stalled`, with the poll's age, whether a quick read or an
+   answer is in hand, the cursor, the uploads in flight, the holding step
+   and its age, the count behind it, and the waits that send no request: the
+   page's records left, its record in hand with its step (`receive` or
+   `apply`) and that step's age, whether the download lane waits its turn,
+   the downloads it has staged, a metadata save in flight, and the age of the
+   walk in progress. It changes nothing, and a stop disarms it. **Sync now** takes two turns on
+   the chain (its retry and its resume); a turn not come within 10 s is said
+   in the status (`waiting for` that step) and in one `decision=waiting`
+   line, and the press keeps waiting: a wait is reported, never cut short.
+   The periodic scan is watched the same way (#285), because the next scan
+   is armed only when one ends: a scan still running after two minutes
+   (`SCAN_STALL_MS`) logs one `scan decision=stalled` line naming the pull
+   that holds the chain: its own `pass` while it walks and compares, another
+   pull while it waits for that lock. A page counts as
+   work from the moment it is read (#286), so the status is not `idle` while
+   the page waits its turn. A stop hands the host's walks -- the temp sweep
+   and the desktop scan -- its signal, and they end at their next read of the
+   disk (#287). What a stop still waits on past 10 s (`STOP_WAIT_MS`) is
+   named in one `engine decision=waiting` line and still waited for: a stop
+   never abandons a pull.
 4. **Conflicts.** Two heads on a text file with a reachable common ancestor
    → a homegrown three-way line merge. Each side's changed base intervals
    are compared independently, so adjacent line edits need no unchanged
@@ -1150,13 +1283,26 @@ long poll and needs its timeout raised.
    this device's recorded version also starts a new run: it is independent
    progress, not an answer to this device's output. Repeated heads, unrelated
    forks and descendants of this device's output still consume the limit.
+   Waits for this device's own publication are not counted (issue #278): a
+   resolution that waited for its upload and started over is counted once,
+   as the fresh one, and one left for the push over a version that holds
+   nothing of this device's own is refunded. A starved machine that sent a
+   save forty seconds late had tripped the limit on such waits alone. A wait
+   over a version that does hold this device's output still counts.
    A tripped pair is settled by the rule above, which only ever keeps a
    version that already exists. Merge writes reserve the same per-path
    publication queue as uploads before making their bytes visible to an
    editor; the reservation lasts through the receipt and record update. A
    completed upload that advanced the record during merge preparation causes
-   a fresh graph read before writing or publishing. When two devices merged one pair differently (each holding
-   keystrokes the other had not seen), the two heads share two newest
+   a fresh graph read before writing or publishing. A merge holds its two
+   parents and nothing typed since (issue #227): a note holding text its
+   recorded version does not is published first, on that version, and the
+   fork is merged from what is published. Two devices resolving one fork then
+   post the same bytes, and the server keeps one version; each carrying its
+   own unsent save had posted two, a criss-cross one level deeper each round
+   while both typed. When two devices merged one pair differently (a device
+   older than this rule, each holding keystrokes the other had not seen), or
+   two pairs sharing a side at once, the two heads share two newest
    ancestors, and their merge is the base; when those two were themselves
    merged differently, their base is found the same way one level down, to
    at most three levels, each one single-chunk text. A base found once is
@@ -1165,8 +1311,12 @@ long poll and needs its timeout raised.
    round walks only the levels not found before. The remembered bases are
    together no longer than one merge input. A base below the versions the
    server lists is read a version at a time, at most 64 a resolution and
-   never below the two branches' shared frontier; a version read or listed
-   once is remembered too (issue #227). Nothing is written under an editor
+   never below the two branches' shared frontier; every version a resolution
+   reads or is shown is remembered too (issue #227). A third device, open and
+   idle while two type, merges every arrival against a base the listing
+   holds; remembering only what a walk read, it met its first criss-cross
+   across the whole typing history with nothing remembered, read past the
+   budget and settled one typist's last words into a copy. Nothing is written under an editor
    someone is typing in, so two people typing keep a note forked for as long
    as both type and its base sinks a version a save: a resolution reads only
    what none before it did, and the remembered versions are together no
@@ -1201,9 +1351,60 @@ long poll and needs its timeout raised.
    the note (live, 2026-09-28). The status names a held note
    (`waiting for unsaved changes in <note>`).
 
+   WHAT OBSYNC CHANGES ON A DESKTOP'S DISK IS LISTED AT ONCE (issue #253).
+   The same starved watcher left a note obsync had written on the disk,
+   recorded and synced, and missing from Obsidian's file list, search and
+   quick switcher until a restart; a note it had moved or deleted stayed
+   listed under the old name. Obsidian's own writes never wait for an event:
+   its desktop adapter reconciles the name it wrote (`reconcileInternalFile`),
+   which lists it, the unlisted folders above it first, or drops it, and
+   raises the event its watcher would have. So after each desktop operation
+   that changes a name -- a written note or copy, a moved note or folder, a
+   removed note, a made folder -- the host asks the adapter for the same, in
+   the adapter's own queue, for each name whose listing disagrees with what
+   the operation did; a name Obsidian already shows right costs one lookup
+   (`main.ts`, `reconcile`). What it raises is what a prompt watcher raises,
+   and what the phone's adapter raises inside every write: a `create` the
+   engine settles against the echo marks the pull arms before each call, so
+   nothing received is sent back. A removed name's events are the host's own
+   and never reach the engine, as a re-case ghost's are (`unindexed`). The
+   event that arrives late finds the index right and raises nothing: Obsidian
+   compares with what its index holds, and first asks the folder's listing for
+   the exact name, so a volume that spells a name another way never gets it
+   listed twice. The reconcile is not Obsidian's published API: it is asked
+   for by name, and where absent the listing waits for the event as before,
+   said once (`decision=skipped reason=no_reconcile`); a failure is logged and
+   never fails the write, which has landed. A hidden name, and so the config
+   folder, is never asked about.
+
+   NEW BYTES UNDER A LISTED NOTE REACH ITS INDEX (issue #267). A write to a
+   note Obsidian already lists left its cached stat and read cache on the old
+   bytes, so search, backlinks and other plugins read the old text until the
+   event came. The writer reconciles that note too; the adapter compares
+   mtime and size, updates the stat and raises the `modify` a watcher would,
+   which the engine settles against the pull's echo mark: nothing is sent
+   back. Not while any leaf shows the note (`inView`, every split and popout
+   window; a host that cannot say is taken to show it): Obsidian reloads a
+   view on that event, and merges into one with unsaved typing behind its
+   own notice, and typing can begin while the reconcile waits in the
+   adapter's queue. #252's refresh shows such a view the new text, and its
+   index follows the editor's next save, the late event or a restart. A
+   view that opens after the check has read the new bytes, and Obsidian
+   ignores a `modify` whose bytes its view last loaded. A note embedded in
+   another, a canvas card or a hover preview is no leaf of its own and gets
+   what a prompt watcher would give it. Cost: one reconcile per pulled edit,
+   1 ms p50 and 2 ms p95 over 200 live edits (2026-09-29 record).
+
    A NOTE TWO PLUGINS KEEP REWRITING IS PAUSED (issue #179). A change within
-   five seconds of a received version, without recent trusted Markdown editor
-   input, is marked inside its encrypted manifest as a background answer.
+   five seconds of this device writing a received version into the note,
+   without recent trusted Markdown editor input, is marked inside its
+   encrypted manifest as a background answer. The clock starts with the write,
+   not the arrival: a version whose write an open editor refused, tried again
+   as a typist's editing window closed, gave a plugin nothing to answer, and
+   the typist's own save, which a starved machine wrote late, was paused as a
+   rewrite storm (issue #278). A pair is called unmerged only from a note read
+   whole: Obsidian saves a note in place, so the note is looked at again after
+   the merge fails, and one that moved meanwhile is left to its own push.
    Merely showing a note is not input: a passive view can lag a file rewrite
    and appear unsaved. Captured keyboard and before-input events protect the
    note for ten seconds (including Obsidian's save debounce); an active IME
@@ -1311,7 +1512,7 @@ long poll and needs its timeout raised.
    with a warning until it can be published.
 5. **Policy.** Per device: `perFileMaxBytes` (desktop 0 = unlimited; mobile
    512 MiB, the practical whole-file read ceiling in a WebView) and
-   `totalBudgetBytes` (mobile 50 GiB by owner ruling). Files above a
+   `totalBudgetBytes` (mobile 50 GiB by default). Files above a
    ceiling are not downloaded; they appear in the plugin's "Remote only"
    view with an on-demand fetch. Excluding never deletes: a copy already on
    the device when a newer version arrives above a ceiling stays, is listed
@@ -1493,6 +1694,26 @@ A destination this version syncs
 in neither direction (hidden, malformed) cannot be followed: the selection
 stays where it is and the files leave the scope unpublished.
 
+The folder's own record is retired against the selection BEFORE the move as
+well (issue #240): a queued folder removal carries the selection it was judged
+against to the post, where the folder rule checks it (`postManifest`). Checked
+against the selection after the move, the old name of a renamed selected
+folder was refused, so every other device kept an empty folder under it and a
+device paired later received one. Nothing wider is admitted: only removals the
+engine judged carry a selection; one judged against the whole vault is checked
+against the selection in force at the post; a narrower selection re-judges
+every removal still owed (below); and a file is always checked against the
+selection in force. The judgement is written down with the
+removal (`folderRemovals` in the plugin state, issue #265), because no later
+pass can judge the old name again: a post that fails is retried
+`FOLDER_POST_TRIES` times, and a removal still owed after that, or across a
+stop, a quit or a reload, is judged again by the next start's pass, or **Sync
+now**'s, against the selection it was judged in. A folder standing there
+again, or a record already retired, owes nothing. Saving a narrower selection
+re-judges every removal owed against it, so one outside it is refused, with a
+line, rather than published; a wider one leaves them as judged. A state
+written by 1.1.4 has no such field and owes nothing, and 1.1.4 drops it.
+
 Unloading the plugin invalidates pending startup and scope-change
 continuations. A cancelled folder change cannot restart sync or replace a
 newer load's engine or state. A local data write already issued may still
@@ -1510,7 +1731,8 @@ it exists. Narrowing keeps its cursor, because nothing new is covered.
 The replay is safe because the pull path answers each record against what
 this device holds NOW rather than against the order it arrives in: a version
 this device authored is its own echo -- except its own deletion of a file the
-replay has just written back, which is applied again (issue #237) -- a version
+replay has just written back, which is applied again (issue #237), and its own
+version of a note it holds nowhere (issue #239, below) -- a version
 its head already reaches is `already_incorporated`, a tombstone for a file it
 no longer tracks is skipped, and local content the server never received is
 kept beside the incoming version instead of replaced (6.2 item 3). It is not
@@ -1521,6 +1743,33 @@ device deleted after another device wrote it is downloaded and removed again
 records the cursor it rewound from. No
 re-pairing, state reset or fresh vault is involved, and another device's
 selection is untouched.
+
+**A replay settles each note against where its file stands (issues #239,
+#241).** A device holds a note when its file stands where the feed's newest
+version of it is. Pairing again over a vault it kept, the start's one walk of
+the feed (`heldNotes`) gives each unrecorded local note at such a name the
+versions the newest descends from; any of them at another name is history and
+is never written there (`pull decision=skipped reason=behind_held`), so a note
+renamed before the device left is adopted where it stands, and nothing is
+posted again. A widening never skips a note this device holds nowhere. A note
+that leaves the selection by a move this device sees is remembered with where
+it went (`departed`, persisted; a version before 1.1.5 ignores and drops it),
+nothing of it is applied while it is out (`reason=left_selection`), and once a
+selection covers that name it is published as a move of the same file id on
+the version it held -- what other devices did meanwhile meets that move by the
+rename-meets-edit and delete-versus-edit rules. A move nothing remembered is
+taken as one only when exactly one file of the selection IS this device's own
+newest version of the note, chunk for chunk, and the note's name holds nothing
+here (`published_move reason=identical`). Any other note of this device's that
+the replay passes as an echo and this device does not hold at that version --
+its new name deleted, hidden, or in a linked folder -- is fetched again from
+the file's heads once the replay catches up (`decision=downloaded_again`): two
+copies at most, nothing lost, nothing hidden. What the replay has noted rides
+the saves it already makes (`replaying`, issue #281), so one stopped before it
+catches up -- Obsidian closed, the device offline, another folder change --
+carries on at the next start (`feed decision=resumed`). The cost is one
+`GET /v1/files/{id}` per note fetched again, one read of a local file whose
+size is that of such a note, and nothing where there is none.
 
 This limits obsync's file operations, not the Obsidian application, another
 plugin, an OS process or a paired device's access to previously uploaded
@@ -1580,6 +1829,15 @@ or a pre-buffer byte ceiling; the size check runs before JSON parsing, after
 Obsidian has buffered the response. A local publication already dispatched
 must settle. It is never undone after cancellation: success is a local-copy
 receipt, and an uncertain outcome names the path to check.
+
+A request of a load generation that is no longer current is refused by the
+plugin's request function before anything is sent (`SessionEnded`, issue
+#272). The transport ends that call at that attempt with one line, `http …
+decision=ended reason=session_inactive`, and reports nothing about the
+server; read as an absent network, it was retried through its whole
+backoff, up to two minutes after a reload, each retry logged beside the
+new session's lines. The stopped engine it belonged to says nothing more:
+what it owed is already written down for the session that replaced it.
 
 The copy is untracked and receives no pull echo marker. Ordinary watcher
 ingestion/reconciliation gives it a fresh file id and posts its own history;
@@ -1711,8 +1969,8 @@ yesterday is not re-applied over today, and the first entry after it replaces
 the mark and ends the replay. A version this device still records but the
 server no longer holds as a head is never kept over an identical head the
 server does hold (`pull.ts`, identical bytes). One notice per run that
-re-sent: "The server was restored to an earlier state; this device re-sent N
-changes."
+re-sent: "your server went back to an earlier state, so this device sent N
+changes of its own again."
 
 The same code runs on desktop and mobile: reads through the ordinary
 transport and re-sends through `pushFile`, so a file above the mobile ceiling
@@ -1734,6 +1992,96 @@ installer does not document verification of this project's Cosign evidence;
 see `docs/community-plugin.md` for the actual client trust model. A separate
 pinned-key verifier is not part of this installation path.
 
+### 6.4 Notices
+
+Every notice the plugin shows goes through one channel, `plugin/src/notices.ts`
+(`VaultHost.notify` and `ObsidianHost.notify` are its adapters; the settings
+tab and the dialogs call it directly). A notice is a kind, one sentence, the
+notes it is about and the device, by name; nothing is raised without a kind,
+and nothing but the channel draws a toast. The channel decides whether it
+becomes a toast and records every notice, shown or not, in Recent: the newest
+50 since obsync started, listed in Show sync status and printed by
+`obsync-private-sync:recent`.
+
+| Kind | For, for example | Stays | Under "Only what needs me" |
+| --- | --- | --- | --- |
+| `question` | a decision only the person can make: held deletions, the match code of a pairing whose dialog closed, an unconfirmed recovery phrase | until answered or dismissed; one per key | shown |
+| `security` | something that protects the vault: another device's recovery key | until dismissed | shown |
+| `error` | something stopped and needs the person: a paused or unwritable note, a device on another vault key, sync stopped, a pairing that ended behind its closed dialog | until dismissed | shown |
+| `conflict` | a copy was kept: both versions, two notes with one name, a note left in place | 8 s or more | shown |
+| `combined` | edits made here and another device's combined into one note | 8 s or more | Recent only |
+| `info` | anything else worth knowing: a folder kept, a newer version not downloaded, an update | 8 s or more | Recent only |
+| `confirm` | the answer to the person's own click, press or command, a refusal included | 4 s or more | shown |
+
+"Or more" is long enough to read: a toast that goes by itself stays a second
+plus a quarter second a word, when that is longer, up to twenty seconds
+(`stays`). A `security` toast begins "obsync security warning:" where every
+other begins "obsync:", and while one stands the status bar shows the alert
+sign, check or not, its words ending "— security warning: see Show sync
+status"; no setting changes either. A toast whose notice names what to open
+opens it on a click: "N more" opens Show sync status, the update notice
+Community plugins, and the recovery-phrase reminder obsync's settings.
+
+No setting keeps a `question` or `security` notice off the screen, on any
+platform (requirement 4); nothing in the channel branches on the platform, and
+the plugin's test fake runs every test under the quietest settings and refuses
+any control the channel did not show. **Combined edits** decides `combined`
+under "Everything useful": `Once per note` shows the first combine in a note and
+then nothing for that note until it has gone five minutes without one
+(`ONCE_IDLE_MS`), `Every time`, or `Recent only`.
+
+A second notice of the same event while its toast is up joins that toast --
+`2 notes ("Plan" and "Log")`, `(3 times)` -- instead of stacking; a notice with
+buttons never joins. That is how twenty presses of Sync now with nothing to
+send are one toast counting them, and how a phone's refusal said again while
+it stands is not a second one. Recent counts the same way: a notice said again
+with nothing between is one line, `(20 times)`, so a run of presses never
+pushes a security warning out of its fifty lines. Beyond three obsync toasts on screen the rest are counted
+on one "N more — see Recent in Show sync status" toast, which opens Show sync
+status and stays until dismissed once it counts an error. Each decision logs
+one line, `notice decision=shown|joined|folded|quiet kind=...`, with the budget
+it was measured against (`since_ms`/`budget_ms`, `visible`/`budget`).
+
+**Wording.** One plain sentence per event, after "obsync: ", in lower case; a
+status line or a refusal the plugin also shows elsewhere keeps its own capital.
+A note is its title in quotes (`{notes}`): its name without `.md`; any other
+file keeps its extension; its folder only when two notes in one sentence share
+a title. A folder is its own name in quotes. `{it}` reads "it" for one note and
+"them" for several, so a sentence joined by a burst stays grammatical. A device
+is its name (`{device}`; "another device" while unknown), never its id. No
+internal term reaches a person -- concurrent, manifest, tombstone, version
+record, sid, seq, chunk, domain, envelope, status codes, file ids -- and when
+the person must act, the sentence says what to do. One event is one sentence
+wherever the code meets it: a note paused by a plugin's rewrites says the same
+thing whichever device saw it, and a copy kept beside a note says the same
+thing on every path that makes one. Paths and ids stay in log lines.
+
+**A code is never kept.** A pairing's match code is on its toast (`{code}`,
+`SyncNotice.code`) and in the pairing dialog, and nowhere that outlives them:
+Recent, the command line and every log line read `•••` in its place.
+
+**Settings, palette and command line.** Both settings are in Settings under
+Notifications, are palette commands a hotkey can take (`Notifications: ...`,
+`Combined edits: ...`, and Show recent sync activity), and are flags of
+Obsidian's command line (1.12.2 and later), which `obsidian` runs:
+
+| Command | Flags | `format=json` prints |
+| --- | --- | --- |
+| `obsync-private-sync:notices` | `level=everything\|needs-me`, `merges=once\|every\|off` | `{"level": "everything", "merges": "once"}` |
+| `obsync-private-sync:recent` | none | `[{"time", "kind", "note_title", "device", "text"}]`, newest first |
+| `obsync-private-sync:status` | none | `{"state", "text", "server", "device", "has_vault_key", "files_tracked", "remote_only", "waiting_to_be_written", "paused"}` |
+
+Every command also takes `format=text|json`, text by default. In JSON, `time`
+is UTC RFC 3339, `note_title` and `device` are `null` when the notice names no
+single note or no device, and `state` is the status bar's state (`idle`,
+`syncing`, `offline`, `error`, `paused`). A refusal is one sentence in text and
+`{"error": {"code": "unknown_flag" | "unknown_value" | "failed", "message": "..."}}`
+in JSON; a setting that could not be saved is refused and not in effect.
+Nothing printed carries a secret, key, code or id: any run of 16 or more hex
+digits is printed as "…". The settings live in `data.json` as `notices` with
+`storageVersion` still 1, so 1.1.4 loads a 1.1.5 data file and ignores them;
+its next save drops them, and the defaults return after a downgrade.
+
 ## 7. Storage, durability, replication
 
 `docs/storage.md` is the contract. In brief: one blob volume, one journal
@@ -1746,6 +2094,19 @@ automatically after a retention window; a free-space watermark refuses new
 data before the disk fills. Replication is application-level: optional
 mirror volumes today (write-all, read-primary, scrub cross-checks), a
 replica server following the journal when a second node exists.
+
+Where the time goes (1.1.5 measurement, `docs/benchmarks.md`): on the data
+path the server's own code is a small share; a request's time is its
+fsyncs. A version post waits for the nonce log's fsync and then the
+journal's; a new chunk for the nonce log's, its own file's and its
+directory's. Both logs therefore commit in groups: requests that arrive
+while an fsync is in flight share the next one (the nonce log since 1.1.4,
+version posts since 1.1.5, `docs/storage.md` durability rule 2). A post is
+still answered only once its own frames are durable and applied, so a
+group changes how many fsyncs a burst costs, never what any one answer
+promises. The CPU that remains is hashing: every uploaded byte is hashed
+once (the sid check) and again by each scrub pass, so SHA-256 is written
+for the scalar pipeline this dependency-free, `unsafe`-free crate can use.
 
 ## 8. Dashboard
 
@@ -1780,7 +2141,7 @@ Environment only, so containers and charts need no config file:
 | `OBSYNC_BLOBS_DIR` | `/data/blobs` | Chunk volume |
 | `OBSYNC_JOURNAL_DIR` | `/data/journal` | Journal, index snapshots, server key |
 | `OBSYNC_BLOBS_MIRRORS` | empty | Comma-separated extra blob volumes |
-| `OBSYNC_BLOBS_CAPACITY` / `OBSYNC_JOURNAL_CAPACITY` | required | Declared volume capacity (the claim size); free space = capacity − tracked usage, since std has no statvfs |
+| `OBSYNC_BLOBS_CAPACITY` / `OBSYNC_JOURNAL_CAPACITY` | required | Declared volume capacity (the claim size); free space = capacity − tracked usage, since std has no statvfs. Must exceed the free-space watermark, or the server refuses to start |
 | `OBSYNC_BLOBS_CLASS` / `OBSYNC_JOURNAL_CLASS` | `host` | Display label for the volume's StorageClass in the dashboard |
 | `OBSYNC_DASHBOARD_DIR` | `/opt/obsync/dashboard` | Dashboard static files |
 | `OBSYNC_PLUGIN_DIR` | `/opt/obsync/plugin` | Plugin bundle (`main.js`, `manifest.json`, `styles.css`) |

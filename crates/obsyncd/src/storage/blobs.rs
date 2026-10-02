@@ -2,17 +2,20 @@
 //!
 //! The durability rules are docs/storage.md, "Durability rules" 1: stream to
 //! a temp file while hashing, verify the sid and the length, `fsync` the
-//! file, `rename` it into place, `fsync` the directory. Only then may the
-//! caller acknowledge. A crash therefore leaves either a complete chunk or a
+//! file, `rename` it into place, `fsync` the directory -- and, for a fan-out
+//! directory the rename needed first, that directory's parent. Only then may
+//! the caller acknowledge. A crash therefore leaves either a complete chunk or a
 //! temp file that startup removes. None of this is configurable
 //! (AGENTS.md requirement 4).
 #![forbid(unsafe_code)]
 
+use std::collections::HashSet;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use obsync_core::sha256::Sha256;
@@ -24,8 +27,6 @@ use crate::types::{Sid, UnixMs};
 use crate::storage::{BlobPhase, Fault};
 #[cfg(test)]
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::Mutex;
 
 /// Copy buffer. Large enough to keep the disk busy, small enough that a
 /// mobile-sized chunk never needs a second allocation strategy.
@@ -38,10 +39,26 @@ const DIR_MODE: u32 = 0o700;
 /// One chunk as the volume holds it: its id, its length, and when it landed.
 pub(crate) type Chunk = (Sid, u64, UnixMs);
 
+/// Which of a start's fsyncs `Blobs::start_sync` makes.
+#[derive(Clone, Copy)]
+enum StartStep {
+    /// The volume and `v1/`, on every start.
+    Layout,
+    /// A first-level directory, when the last stop cut an upload short.
+    Repair,
+}
+
 /// The blob volume and its mirrors.
 pub(crate) struct Blobs {
     root: PathBuf,
     mirrors: Vec<PathBuf>,
+    /// Fan-out directories created whose name is not yet known durable in
+    /// their parent: the parent's fsync failed, so the next chunk published
+    /// under one tries it again (`Blobs::make_dirs`).
+    unsynced: Mutex<HashSet<PathBuf>>,
+    /// Fan-out directories whose names a start made durable, because the
+    /// last stop left an upload behind (`Blobs::open`).
+    synced_at_open: u64,
     #[cfg(test)]
     fault: Mutex<Fault>,
     /// Called from inside the quarantine move. Tests only, and the point of
@@ -53,34 +70,148 @@ pub(crate) struct Blobs {
 }
 
 impl Blobs {
-    /// Create the layout on every volume and remove temp leftovers.
+    /// Create the layout on every volume, make its names durable, and
+    /// remove temp leftovers once the repair they call for has succeeded.
     ///
     /// Returns how many leftovers were removed, which the caller logs: a
     /// non-zero count is the visible trace of a crash mid-upload
     /// (requirement 12).
     pub(crate) fn open(root: &Path, mirrors: &[PathBuf]) -> Result<(Blobs, u64), StoreError> {
-        let blobs = Blobs {
+        Blobs::unopened(root, mirrors).start()
+    }
+
+    /// `open` with a filesystem errno armed for the start. Tests only.
+    #[cfg(test)]
+    pub(crate) fn open_faulted(root: &Path, fault: Fault) -> Result<(Blobs, u64), StoreError> {
+        let blobs = Blobs::unopened(root, &[]);
+        blobs.set_fault(fault);
+        blobs.start()
+    }
+
+    fn unopened(root: &Path, mirrors: &[PathBuf]) -> Blobs {
+        Blobs {
             root: root.to_path_buf(),
             mirrors: mirrors.to_vec(),
+            unsynced: Mutex::new(HashSet::new()),
+            synced_at_open: 0,
             #[cfg(test)]
             fault: Mutex::new(Fault::None),
             #[cfg(test)]
             mid_move: Mutex::new(None),
-        };
+        }
+    }
+
+    fn start(mut self) -> Result<(Blobs, u64), StoreError> {
         let mut removed = 0;
-        for volume in blobs.volumes() {
-            make_dir(&volume.join("v1"))?;
-            let tmp = volume.join("v1/tmp");
-            make_dir(&tmp)?;
-            for entry in fs::read_dir(&tmp)? {
-                let path = entry?.path();
-                if path.is_file() {
-                    fs::remove_file(&path)?;
-                    removed += 1;
+        for volume in self.volumes() {
+            make_dir(&volume)?;
+            let v1 = volume.join("v1");
+            let tmp = v1.join("tmp");
+            for dir in [&v1, &tmp] {
+                if !dir.is_dir() {
+                    DirBuilder::new().mode(DIR_MODE).create(dir)?;
                 }
             }
+            // Every start, not only the one that creates them: a start that
+            // stopped between creating `v1/` or `tmp/` and this fsync left
+            // a name that exists without being durable.
+            self.start_sync(StartStep::Layout, &volume)?;
+            self.start_sync(StartStep::Layout, &v1)?;
+            let left: Vec<PathBuf> = read_dir_sorted(&tmp)?
+                .into_iter()
+                .filter(|path| path.is_file())
+                .collect();
+            // A temp left behind means the last stop cut an upload short,
+            // possibly between creating a fan-out directory and the fsync
+            // of its parent: the directory is on this start's disk but not
+            // necessarily on the platter. Make every fan-out name durable
+            // once, so no later chunk is acknowledged under one that is not.
+            // `v1/`, synced above, names the first levels. The temps are the
+            // only trace of the cut, so they go after the repair: a start
+            // that fails or stops before it finishes leaves them for the
+            // next start to repair again.
+            if !left.is_empty() {
+                self.synced_at_open += 1;
+                for outer in read_dir_sorted(&v1)? {
+                    if outer.is_dir() && outer != tmp {
+                        self.start_sync(StartStep::Repair, &outer)?;
+                        self.synced_at_open += 1;
+                    }
+                }
+            }
+            for path in &left {
+                fs::remove_file(path)?;
+                #[cfg(test)]
+                disk_trace(format!("removed {}", path.display()));
+            }
+            removed += left.len() as u64;
         }
-        Ok((blobs, removed))
+        Ok((self, removed))
+    }
+
+    /// A start's directory fsync, which a test can refuse by step. What a
+    /// test sees done is recorded by `fsync_dir` itself, once the directory's
+    /// own flush returned (`take_disk_trace`): a start that skips the call, or
+    /// opens the directory without flushing it, records nothing (reviews of
+    /// 39400b59 and ca4bcc7b).
+    fn start_sync(&self, step: StartStep, dir: &Path) -> Result<(), StoreError> {
+        #[cfg(test)]
+        self.errno_at(match step {
+            StartStep::Layout => BlobPhase::StartLayoutSync,
+            StartStep::Repair => BlobPhase::StartRepairSync,
+        })?;
+        #[cfg(not(test))]
+        let _ = step;
+        fsync_dir(dir)
+    }
+
+    /// Directories whose names the last start made durable (`open`).
+    pub(crate) fn synced_at_open(&self) -> u64 {
+        self.synced_at_open
+    }
+
+    fn unsynced(&self) -> MutexGuard<'_, HashSet<PathBuf>> {
+        self.unsynced.lock().expect("unsynced directories")
+    }
+
+    /// `rename` a synced temp file into place on `volume` and `fsync` the
+    /// directory that now names it. The fan-out directories the target
+    /// needs are created first, each made durable in its parent before the
+    /// next step (`make_dirs`), so no directory on the path an acknowledged
+    /// chunk is reached by can vanish in a power cut.
+    fn publish(&self, volume: &Path, tmp: &Path, target: &Path) -> Result<(), StoreError> {
+        if let Some(parent) = target.parent() {
+            self.make_dirs(volume, parent)?;
+        }
+        fs::rename(tmp, target)?;
+        fsync_parent(target)
+    }
+
+    /// Create what is missing of `dir` below `<volume>/v1`, top down, and
+    /// `fsync` each new directory's parent before going deeper (#273).
+    ///
+    /// A directory whose parent's fsync failed stays in `unsynced`, and the
+    /// next chunk published under it fsyncs that parent again: existing is
+    /// not the same as durable. Two publishers never race here: the
+    /// caller's SID stripe is the sid's first byte, which is the first
+    /// fan-out level, so one branch has one publisher at a time.
+    fn make_dirs(&self, volume: &Path, dir: &Path) -> Result<(), StoreError> {
+        let v1 = volume.join("v1");
+        let mut chain: Vec<&Path> = dir.ancestors().take_while(|p| *p != v1).collect();
+        chain.reverse();
+        for step in chain {
+            if !step.is_dir() {
+                DirBuilder::new().mode(DIR_MODE).create(step)?;
+                self.unsynced().insert(step.to_path_buf());
+            }
+            if self.unsynced().contains(step) {
+                #[cfg(test)]
+                self.errno_at(BlobPhase::DirParentSync)?;
+                fsync_parent(step)?;
+                self.unsynced().remove(step);
+            }
+        }
+        Ok(())
     }
 
     fn volumes(&self) -> Vec<PathBuf> {
@@ -145,7 +276,9 @@ impl Blobs {
         self.tripped(Fault::ChunkBeforeRename)?;
         #[cfg(test)]
         self.errno_at(BlobPhase::Rename)?;
-        publish(&tmp, &Blobs::chunk_path(&self.root, sid))?;
+        // A refused publish keeps the temp too: it is what tells the next
+        // start a fan-out name may not be durable (`Blobs::start`).
+        self.publish(&self.root, &tmp, &Blobs::chunk_path(&self.root, sid))?;
         for mirror in &self.mirrors {
             self.mirror_copy(mirror, sid)?;
         }
@@ -177,7 +310,7 @@ impl Blobs {
         io::copy(&mut input, &mut output)?;
         output.sync_all()?;
         drop(output);
-        publish(&tmp, &Blobs::chunk_path(mirror, sid))
+        self.publish(mirror, &tmp, &Blobs::chunk_path(mirror, sid))
     }
 
     /// Open a chunk for reading, with its length.
@@ -269,7 +402,7 @@ impl Blobs {
             io::copy(&mut input, &mut output)?;
             output.sync_all()?;
             drop(output);
-            publish(&tmp, &Blobs::chunk_path(&self.root, sid))?;
+            self.publish(&self.root, &tmp, &Blobs::chunk_path(&self.root, sid))?;
             return Ok(true);
         }
         Ok(false)
@@ -491,15 +624,6 @@ fn make_dir(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// `rename` into place and `fsync` the directory that now names the file.
-fn publish(tmp: &Path, target: &Path) -> Result<(), StoreError> {
-    if let Some(parent) = target.parent() {
-        make_dir(parent)?;
-    }
-    fs::rename(tmp, target)?;
-    fsync_parent(target)
-}
-
 fn fsync_parent(path: &Path) -> Result<(), StoreError> {
     match path.parent() {
         Some(parent) => fsync_dir(parent),
@@ -511,12 +635,37 @@ fn fsync_parent(path: &Path) -> Result<(), StoreError> {
 fn fsync_dir(dir: &Path) -> Result<(), StoreError> {
     match File::open(dir) {
         Ok(handle) => {
-            handle.sync_all()?;
+            let flushed = handle.sync_all();
+            #[cfg(test)]
+            if flushed.is_ok() {
+                disk_trace(format!("synced {}", dir.display()));
+            }
+            flushed?;
             Ok(())
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(StoreError::Io(e)),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What this thread's filesystem calls did, in order: each directory
+    /// whose own flush returned (`fsync_dir`) and each temp a start removed.
+    /// Tests only, and made by the operations themselves, so nothing beside a
+    /// call can pass for it.
+    static DISK_TRACE: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn disk_trace(event: String) {
+    DISK_TRACE.with(|trace| trace.borrow_mut().push(event));
+}
+
+/// This thread's filesystem record since it was last taken. Tests only.
+#[cfg(test)]
+pub(crate) fn take_disk_trace() -> Vec<String> {
+    DISK_TRACE.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
 }
 
 fn read_dir_sorted(dir: &Path) -> Result<Vec<PathBuf>, StoreError> {
@@ -648,6 +797,95 @@ mod tests {
             assert!(chunks.is_empty(), "{label}: no chunk survived");
             assert_eq!(strays, 0);
         }
+    }
+
+    /// A start refused with `EIO`, and the refusal it carries.
+    fn refused_start(root: &Path, phase: BlobPhase, start: &str) {
+        const EIO: i32 = 5;
+        let refuse = Fault::BlobErrno { phase, code: EIO };
+        match Blobs::open_faulted(root, refuse)
+            .map(|_| ())
+            .expect_err(start)
+        {
+            StoreError::Io(e) => assert_eq!(e.raw_os_error(), Some(EIO), "{start}"),
+            other => panic!("{start}: expected the volume's error, got {other}"),
+        }
+    }
+
+    #[test]
+    fn a_start_whose_layout_fsync_fails_tries_it_again_at_the_next() {
+        // The layout's names exist after a start that could not make them
+        // durable. Existing is not durable: the next start fsyncs them
+        // again, so a volume still refusing refuses it too.
+        let dir = TempDir::new("blobs-start-layout");
+        let root = dir.path().join("blobs");
+        for start in ["the start that creates the layout", "the start after it"] {
+            refused_start(&root, BlobPhase::StartLayoutSync, start);
+            assert!(root.join("v1/tmp").is_dir(), "{start}: the layout exists");
+        }
+        take_disk_trace();
+        Blobs::open(&root, &[]).expect("a start the volume lets fsync");
+        assert_eq!(
+            take_disk_trace(),
+            [
+                format!("synced {}", root.display()),
+                format!("synced {}", root.join("v1").display()),
+            ],
+            "a start whose layout already exists still fsyncs the volume and v1/"
+        );
+    }
+
+    #[test]
+    fn a_cut_upload_keeps_its_temp_until_a_start_repairs_its_fan_out() {
+        // The temp is the only trace that a fan-out name may not be
+        // durable, so a start that cannot finish the repair leaves it, and
+        // the next start repairs again.
+        let dir = TempDir::new("blobs-start-repair");
+        let root = dir.path().join("blobs");
+        let store = blobs(&dir, &[]);
+        let body = b"ciphertext-sentinel".to_vec();
+        let sid = sid_of(&body);
+        // The cut: the new first level's parent refuses its fsync, so the
+        // upload stops before its rename with its temp in place.
+        store.set_fault(Fault::BlobErrno {
+            phase: BlobPhase::DirParentSync,
+            code: 5,
+        });
+        store
+            .write(&sid, body.len() as u64, &mut body.as_slice())
+            .expect_err("the cut");
+        drop(store);
+        let temps = || fs::read_dir(root.join("v1/tmp")).expect("tmp").count();
+        assert_eq!(temps(), 1, "the cut leaves its temp");
+        let temp = read_dir_sorted(&root.join("v1/tmp"))
+            .expect("tmp")
+            .remove(0);
+        let first_level = root.join("v1").join(&sid.to_string()[0..2]);
+        assert!(first_level.is_dir(), "the cut made its first level");
+        for start in ["the first start after the cut", "the start after that"] {
+            refused_start(&root, BlobPhase::StartRepairSync, start);
+            assert_eq!(temps(), 1, "{start}: the temp outlives a failed repair");
+        }
+        take_disk_trace();
+        let (reopened, removed) = Blobs::open(&root, &[]).expect("a start the volume lets fsync");
+        assert_eq!(
+            (removed, reopened.synced_at_open()),
+            (1, 2),
+            "the temp goes once v1/ and its one first level are durable"
+        );
+        // The repair itself, as the filesystem calls recorded it, in order:
+        // the layout, the first level whose name the cut left unsynced, and
+        // only then the temp that called for it.
+        assert_eq!(
+            take_disk_trace(),
+            [
+                format!("synced {}", root.display()),
+                format!("synced {}", root.join("v1").display()),
+                format!("synced {}", first_level.display()),
+                format!("removed {}", temp.display()),
+            ]
+        );
+        assert_eq!(temps(), 0);
     }
 
     #[test]

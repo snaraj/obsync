@@ -1,0 +1,12 @@
+# M3338: any refusal of a call that expects one is logged as expected, whatever its code
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -883,7 +883,7 @@
+   private settle(method: string, target: string, response: HttpResponse, attempts: number, started: number, expected?: string): HttpResponse {
+     if (response.status >= 400) {
+       const { code, detail, fields } = parseError(response.text);
+-      const decision = code === expected ? "expected" : "refused";
++      const decision = expected !== undefined ? "expected" : "refused";
+       this.log(`http ${method} ${target} status=${response.status} decision=${decision} code=${code} duration_ms=${this.now() - started}`);
+       throw new ApiError(response.status, code, detail, false, fields);
+     }

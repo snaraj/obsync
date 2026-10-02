@@ -1,0 +1,11 @@
+# M3349: leaving the server keeps where the old pairing's notes went (#239)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -971,7 +971,6 @@
+     // restored one.
+     this.data.parked = {};
+     this.data.paused = {};
+-    this.data.departed = {};
+     this.data.replaying = null;
+     this.data.heldDeletions = [];
+     this.data.feedMark = null;

@@ -1,0 +1,12 @@
+# M4029: the seam's futimes reaches the disk with no budget (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -415,7 +415,7 @@
+         unsynced = 0;
+         return onTime(open.sync(), "sync", bytes, log, true);
+       },
+-      utimes: (atime, mtime) => onTime(open.utimes(atime, mtime), "futimes", 0, log, true),
++      utimes: (atime, mtime) => open.utimes(atime, mtime),
+     };
+   };
+   const closeLate = (handle: NodeFileHandle): void => void handle.close().catch(() => undefined);

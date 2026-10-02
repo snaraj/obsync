@@ -1,0 +1,12 @@
+# M3995: a read that was refused leaves its budget armed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -383,7 +383,7 @@
+         else late?.(value);
+       },
+       (error: unknown) => {
+-        if (diskCalls.delete(id)) return reject(error);
++        if (diskCalls.has(id)) return reject(error);
+         log(diskLine("late", name, started, budget, " outcome=refused"));
+         if (changes) reject(error);
+       },

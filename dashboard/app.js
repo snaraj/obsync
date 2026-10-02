@@ -244,14 +244,29 @@ function renderScrub(root, run) {
 
 /* ---- devices ------------------------------------------------------------ */
 
+// The revoked devices are the table's second body, under one row that counts
+// them and opens it (#247). Whether it is open is the person's, and a reload
+// of the list after a forget keeps it.
 async function loadDevices() {
   const body = el('devices-body');
   skeleton(body, 11, 3);
   const data = await get(`${ADMIN}/devices`);
-  const rows = L.buildDeviceRows(data.devices);
+  const { working, revoked, label, archived, archivedNote } = L.foldDeviceRows(L.buildDeviceRows(data.devices));
   body.replaceChildren();
-  el('devices-empty').hidden = rows.length > 0;
-  rows.forEach((row, i) => body.append(deviceRow(row, i)));
+  el('devices-empty').hidden = working.length + revoked.length > 0;
+  working.forEach((row, i) => body.append(deviceRow(row, i)));
+  el('revoked-body').replaceChildren(...revoked.map((row, i) => deviceRow(row, working.length + i)));
+  el('revoked-fold').hidden = revoked.length === 0;
+  el('revoked-count').textContent = label;
+  el('devices-archived').hidden = archived === 0;
+  el('devices-archived').textContent = archivedNote;
+}
+
+function toggleRevoked() {
+  const opening = el('revoked-body').hidden;
+  el('revoked-body').hidden = !opening;
+  el('revoked-toggle').setAttribute('aria-expanded', String(opening));
+  el('revoked-toggle').textContent = opening ? 'Hide' : 'Show';
 }
 
 function deviceRow(row, index) {
@@ -297,35 +312,48 @@ function deviceRow(row, index) {
     toggle.setAttribute('aria-expanded', String(opening));
   });
 
+  // One confirmation, asked before anything is sent: Revoke for a working
+  // device, Forget for a revoked one (#247).
   const open = field(node, 'revoke-open');
   const confirm = field(node, 'confirm');
+  const act = field(node, 'revoke-do');
   if (row.revoked) {
+    open.textContent = 'Forget';
+    open.classList.remove('danger');
+    act.textContent = 'Confirm forget';
+  }
+  setText(
+    field(node, 'confirm-text'),
+    row.revoked
+      ? `Forget ${row.name}? It leaves this list for good. It already cannot sync, and the server goes on `
+        + 'refusing it for that reason: its record stays, so the versions it wrote keep its name. '
+        + 'Pair it again to bring it back.'
+      : `Revoke ${row.name}? It stops syncing at once, its dashboard links and sessions end with it, `
+        + 'and pairing it again from another device is the only way back. '
+        + 'The last active device cannot be revoked.',
+  );
+  open.addEventListener('click', () => {
     open.hidden = true;
-  } else {
-    setText(
-      field(node, 'confirm-text'),
-      `Revoke ${row.name}? It stops syncing at once, its dashboard links and sessions end with it, `
-      + 'and pairing it again from another device is the only way back. '
-      + 'The last active device cannot be revoked.',
-    );
-    open.addEventListener('click', () => {
-      open.hidden = true;
-      confirm.hidden = false;
-      field(node, 'revoke-do').focus();
-    });
-    field(node, 'revoke-cancel').addEventListener('click', () => {
-      confirm.hidden = true;
-      open.hidden = false;
-      open.focus();
-    });
-    field(node, 'revoke-do').addEventListener('click', () => {
-      guard(async () => {
+    confirm.hidden = false;
+    act.focus();
+  });
+  field(node, 'revoke-cancel').addEventListener('click', () => {
+    confirm.hidden = true;
+    open.hidden = false;
+    open.focus();
+  });
+  act.addEventListener('click', () => {
+    guard(async () => {
+      if (row.revoked) {
+        await request('POST', `${ADMIN}/devices/${encodeURIComponent(row.id)}/archive`);
+        say(`${row.name} is forgotten.`);
+      } else {
         await request('POST', `${ADMIN}/devices/${encodeURIComponent(row.id)}/revoke`);
         say(`${row.name} is revoked. Its next request fails, and its dashboard sessions are closed.`);
-        await loadDevices();
-      });
+      }
+      await loadDevices();
     });
-  }
+  });
 
   const out = env.document.createDocumentFragment();
   out.append(node, history);
@@ -542,6 +570,7 @@ export function start(overrides = {}) {
     runJob(el('run-scrub'), `${ADMIN}/scrub/run`, 'Scrub started. It runs at the configured rate and logs a summary.'));
 
   el('log-filter').addEventListener('input', renderLogs);
+  el('revoked-toggle').addEventListener('click', toggleRevoked);
   env.window.addEventListener('hashchange', route);
 
   route();

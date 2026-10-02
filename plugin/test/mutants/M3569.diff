@@ -1,0 +1,11 @@
+# M3569: the CLI takes a flag it does not know
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3330,7 +3330,6 @@
+         const started = Date.now();
+         const json = params["format"] === "json";
+         try {
+-          if (Object.keys(params).some((flag) => !Object.hasOwn(flags, flag))) throw new CliRefusal("unknown_flag", `That is not an option here: ${usage}`);
+           if (!json && params["format"] !== undefined && params["format"] !== "text") throw new CliRefusal("unknown_value", usage);
+           const result = await answer(params);
+           this.log(`cli decision=answered command=${command} format=${json ? "json" : "text"} duration_ms=${Date.now() - started}`);

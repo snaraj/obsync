@@ -1,0 +1,12 @@
+# M3510: a claimant public key of the wrong point prefix is accepted (pairing v2)
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -216,7 +216,7 @@
+   } catch {
+     throw new Error("pairing: a public key is not base64url");
+   }
+-  if (raw.length !== PAIRING_PUBLIC_KEY_BYTES || raw[0] !== 0x04) {
++  if (raw.length !== PAIRING_PUBLIC_KEY_BYTES) {
+     throw new Error("pairing: a public key is not a raw-uncompressed P-256 point");
+   }
+   return raw;

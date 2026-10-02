@@ -1,12 +1,12 @@
 # M44: 92: every scope change replays from zero, narrowing included
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2479,7 +2479,7 @@
-     const folders = pending.folders;
+@@ -4367,7 +4367,7 @@
      const previous = state.data.syncFolders;
      const cursor = state.data.lastSeq;
+     const owed = state.data.folderRemovals;
 -    const widened = expandsSyncScope(previous, folders);
 +    const widened = true;
      state.data.syncFolders = folders;
      if (widened) state.data.lastSeq = 0;
-     delete state.data.pendingScope;
+     // A NARROWER SELECTION RE-JUDGES EVERY FOLDER REMOVAL STILL OWED (issue

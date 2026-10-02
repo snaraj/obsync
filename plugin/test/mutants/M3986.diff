@@ -1,0 +1,11 @@
+# M3986: a deletion a full server refused, once taken, keeps its words until a pass (#300)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2664,7 +2664,6 @@
+         const outcome = await pushDelete(context, path);
+         if (outcome !== null) {
+           context.authored.add(outcome.versionId);
+-          this.sent(path);
+           this.accepted(true);
+           return;
+         }

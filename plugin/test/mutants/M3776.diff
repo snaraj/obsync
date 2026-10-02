@@ -1,0 +1,12 @@
+# M3776: the network back keeps a poll whose connection it may have left dead (#195, #297)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3028,7 +3028,7 @@
+     const waited = poll === null ? 0 : this.nowFn() - poll.sent;
+     const held = this.options.transport.pollsInFlight();
+     const wanted = poll !== null && (reason === "address" || reason === "sync_now" || waited >= POLL_STALE_MS);
+-    const kept = wanted && reason !== "address" && reason !== "online" && held > 0;
++    const kept = wanted && reason !== "address" && held > 0;
+     // Asked for while the feed waits on the poll (`besidePoll`); a read beside it already under way is the one.
+     const beside = kept ? this.catchUp : null;
+     const dropped = wanted && !kept;

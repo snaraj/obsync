@@ -1,0 +1,11 @@
+# M3632: a stopped engine logs an ended session's push as failed (issue #272)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2411,7 +2411,6 @@
+       // A REQUEST OF A PLUGIN SESSION THAT ENDED (#272): the transport said so,
+       // once, and this engine was stopped with that session. What it owed is
+       // written down for the session that replaced it; nothing more is said.
+-      if (error instanceof SessionEnded) return;
+       // A push can immediately reconcile a competing head. A native editor
+       // refusal in that pull uses the same durable retry as the feed.
+       const held = error instanceof Unwritable ? context.state.fileByPath(error.path) : undefined;

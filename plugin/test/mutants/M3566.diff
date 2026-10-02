@@ -1,0 +1,12 @@
+# M3566: Recent grows without bound
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -344,7 +344,7 @@
+       return;
+     }
+     this.recentList.push({ entry, notice, times: 1 });
+-    if (this.recentList.length > RECENT_MAX) this.recentList.shift();
++    if (this.recentList.length > Infinity) this.recentList.shift();
+   }
+ 
+   /** obsync toasts on screen now; the ones gone are forgotten. */

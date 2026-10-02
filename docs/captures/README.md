@@ -146,7 +146,7 @@ notification banners, and anything reflected in a status bar:
   address bar, and the Devices list's address column are redacted in the
   image.
 - **No device identifier, serial, account name, or e-mail.** Devices appear
-  by role. The Devices list shows device names the owner chose, so those are
+  by role. The Devices list shows device names the user chose, so those are
   redacted too unless they are already role names.
 - **No personal note content, file name, or folder name** beyond the
   disposable ones made for the run.

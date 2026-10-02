@@ -1,11 +1,13 @@
 # M139: the transport never says whether the server answered
 --- a/plugin/src/transport.ts
 +++ b/plugin/src/transport.ts
-@@ -672,7 +672,6 @@
-           : `network=${error instanceof Error ? error.message : String(error)}`,
-       };
+@@ -868,9 +868,7 @@
      }
--    this.options.reachable?.(outcome.kind === "settled");
+     if (outcome.kind === "settled" || outcome.answered) {
+       this.answeredAt = this.now();
+-      this.options.reachable?.(true);
+     } else {
+-      this.options.reachable?.(false, `${method} ${target} ${outcome.reason}`);
+     }
+     letGo?.();
      return outcome;
-   }
- 

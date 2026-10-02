@@ -1,17 +1,17 @@
 # M273: Pair this device, or a pairing link, silently replaces the identity of a device that syncs
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -661,13 +661,6 @@
+@@ -869,13 +869,6 @@
      // sync against another server's records doubled the vault. Leaving first
      // clears all three; a pairing link opened here, even one this device
      // made, claims nothing.
 -    const paired = alreadyPaired(this.plugin);
 -    if (paired !== null) {
 -      this.plugin.log("pairing role=claimant decision=refused reason=already_paired");
--      fail(new Error(paired));
+-      fail(this.plugin, new Error(paired));
 -      this.close();
 -      return;
 -    }
      try {
        this.busy = true;
-       if (this.plugin.forgottenDevice) await this.plugin.resetForgottenEnrollment();
+       // Whatever an earlier claim showed goes first: its code belongs to a

@@ -1,0 +1,12 @@
+# M3788: a 5xx whose error no obsync server writes is taken for the server answering (#298)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -826,7 +826,7 @@
+       const code = response.status < 500 || response.status === 507 ? null : parseError(response.text).code;
+       outcome = code === null || RESTART_CODES.has(code)
+         ? { kind: "settled", response }
+-        : code !== NOT_OBSYNC && OBSYNC_CODE.test(code)
++        : code !== NOT_OBSYNC
+           ? { kind: "unsettled", status: response.status, reason: `status=${response.status} code=${code}`, answered: true }
+           : { kind: "unsettled", status: response.status, reason: `status=${response.status}`, answered: false };
+     } catch (error) {

@@ -1,0 +1,11 @@
+# M3573: a setting that could not be saved stays in effect
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3288,7 +3288,6 @@
+       await this.state.save();
+     } catch (error) {
+       // Not kept is not set: the notices go on as the person last saved them.
+-      this.state.data.notices = previous;
+       this.log(`notices decision=failed reason=save source=${source} duration_ms=${Date.now() - started}`);
+       throw error;
+     }

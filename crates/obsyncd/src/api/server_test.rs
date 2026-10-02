@@ -50,6 +50,8 @@ struct Harness {
     shutdown: Arc<AtomicBool>,
     addr: SocketAddr,
     server: Option<JoinHandle<()>>,
+    /// The setup token this start serves.
+    token: String,
 }
 
 /// How a harness is set up.
@@ -58,6 +60,9 @@ struct Setup {
     edge_mode: bool,
     dashboard: bool,
     plugin: bool,
+    /// `OBSYNC_BLOBS_CAPACITY`, when a test needs a volume the watermark
+    /// refuses; `64MiB` when `None`.
+    blobs_capacity: Option<&'static str>,
     /// Accumulate the structured log in memory instead of writing it to
     /// stderr, so a test can read the decision line a refusal owes
     /// (requirement 12). Off by default: every other test measures behavior
@@ -65,6 +70,10 @@ struct Setup {
     capture_log: bool,
     /// `OBSYNC_TRUSTED_PROXY_CIDRS`; unset when `None`.
     trusted: Option<&'static str>,
+    /// Serve the token a start reads off the journal volume, minting one when
+    /// none stands (`cli::serve::setup_token`), instead of the fixed test
+    /// token: what the operator's reset rotates.
+    token_from_volume: bool,
 }
 
 impl Harness {
@@ -73,7 +82,65 @@ impl Harness {
     }
 
     fn start_with(tag: &str, setup: Setup) -> Self {
-        let dir = temp_dir(tag);
+        Self::start_in(temp_dir(tag), setup)
+    }
+
+    /// The configuration a start on `dir` reads, which an offline verb on
+    /// the same volumes reads too.
+    fn config(dir: &Path, setup: &Setup) -> Config {
+        let edge = if setup.edge_mode {
+            Edge::requiring_headers()
+        } else {
+            Edge::None
+        };
+        let mut pairs: Vec<(String, String)> = [
+            ("OBSYNC_BLOBS_DIR", dir.join("blobs").display().to_string()),
+            (
+                "OBSYNC_JOURNAL_DIR",
+                dir.join("journal").display().to_string(),
+            ),
+            (
+                "OBSYNC_BLOBS_CAPACITY",
+                setup.blobs_capacity.unwrap_or("64MiB").to_string(),
+            ),
+            ("OBSYNC_JOURNAL_CAPACITY", "16MiB".to_string()),
+            // A test volume is tiny, so the shipped 2 GiB watermark would
+            // refuse the first byte. The threshold itself is exercised by the
+            // storage lane's own tests.
+            ("OBSYNC_FREE_WATERMARK", "1%,64KiB".to_string()),
+            (
+                "OBSYNC_DASHBOARD_DIR",
+                dir.join("dashboard").display().to_string(),
+            ),
+            (
+                "OBSYNC_PLUGIN_DIR",
+                dir.join("plugin").display().to_string(),
+            ),
+            ("OBSYNC_EDGE", edge.as_word().to_string()),
+            ("OBSYNC_SERVER_KEY", "aa".repeat(32)),
+            ("OBSYNC_PUBLIC_URL", "http://127.0.0.1".to_string()),
+            ("OBSYNC_LOG", "error".to_string()),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        if let Some(trusted) = setup.trusted {
+            pairs.push(("OBSYNC_TRUSTED_PROXY_CIDRS".into(), trusted.into()));
+        }
+        Config::from_pairs(&pairs).expect("configuration")
+    }
+
+    /// Stop serving and release the volumes, keeping them for the next start.
+    fn stop(mut self) -> PathBuf {
+        self.shutdown.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(self.addr);
+        if let Some(server) = self.server.take() {
+            server.join().expect("the server stops");
+        }
+        std::mem::take(&mut self.dir)
+    }
+
+    fn start_in(dir: PathBuf, setup: Setup) -> Self {
         let blobs = dir.join("blobs");
         let journal = dir.join("journal");
         let dashboard_dir = dir.join("dashboard");
@@ -103,34 +170,7 @@ impl Harness {
             std::fs::write(plugin_dir.join("styles.css"), b".obsync{}").expect("styles");
         }
 
-        let edge = if setup.edge_mode {
-            Edge::requiring_headers()
-        } else {
-            Edge::None
-        };
-        let mut pairs: Vec<(String, String)> = [
-            ("OBSYNC_BLOBS_DIR", blobs.display().to_string()),
-            ("OBSYNC_JOURNAL_DIR", journal.display().to_string()),
-            ("OBSYNC_BLOBS_CAPACITY", "64MiB".to_string()),
-            ("OBSYNC_JOURNAL_CAPACITY", "16MiB".to_string()),
-            // A test volume is tiny, so the shipped 2 GiB watermark would
-            // refuse the first byte. The threshold itself is exercised by the
-            // storage lane's own tests.
-            ("OBSYNC_FREE_WATERMARK", "1%,64KiB".to_string()),
-            ("OBSYNC_DASHBOARD_DIR", dashboard_dir.display().to_string()),
-            ("OBSYNC_PLUGIN_DIR", plugin_dir.display().to_string()),
-            ("OBSYNC_EDGE", edge.as_word().to_string()),
-            ("OBSYNC_SERVER_KEY", "aa".repeat(32)),
-            ("OBSYNC_PUBLIC_URL", "http://127.0.0.1".to_string()),
-            ("OBSYNC_LOG", "error".to_string()),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect();
-        if let Some(trusted) = setup.trusted {
-            pairs.push(("OBSYNC_TRUSTED_PROXY_CIDRS".into(), trusted.into()));
-        }
-        let cfg = Config::from_pairs(&pairs).expect("configuration");
+        let cfg = Self::config(&dir, &setup);
         let log = if setup.capture_log {
             Log::buffered(LogLevel::Debug)
         } else {
@@ -142,6 +182,17 @@ impl Harness {
             load_or_create_server_key(&storage.journal_dir, cfg.server_key, &posture, &log)
                 .expect("server key");
         let store = Store::open(&storage, server_key, &posture, log.clone()).expect("store");
+        let token = if setup.token_from_volume {
+            let token = crate::cli::serve::setup_token(&cfg, &store, &posture, &log)
+                .expect("the start reads or mints its token")
+                .expect("a start always has a token");
+            store
+                .resurvey_journal()
+                .expect("the journal volume surveys");
+            token
+        } else {
+            "5e".repeat(32)
+        };
 
         let dashboard = if setup.dashboard {
             Dashboard::load(&dashboard_dir, &log)
@@ -163,7 +214,7 @@ impl Harness {
                 dashboard,
                 plugin,
                 Arc::clone(&shutdown),
-                Some("5e".repeat(32)),
+                Some(token.clone()),
                 Arc::clone(&clock) as Arc<dyn Clock>,
             )
             .expect("the application state opens"),
@@ -194,6 +245,7 @@ impl Harness {
             shutdown,
             addr,
             server: Some(handle),
+            token,
         }
     }
 
@@ -207,7 +259,7 @@ impl Harness {
     fn setup_account(&self) -> Cred {
         let body = format!(
             r#"{{"setup_token":"{}","account_name":"vault","device":{{"name":"laptop","platform":"macos","app_version":"0.1.0"}}}}"#,
-            "5e".repeat(32)
+            self.token
         );
         let res = Req::post("/v1/setup").body(&body).send(self.addr);
         assert_eq!(res.status, 201, "setup: {}", res.text());
@@ -347,7 +399,15 @@ impl Req {
         stream.flush().expect("flush");
 
         let mut raw = Vec::new();
-        stream.read_to_end(&mut raw).expect("read response");
+        match stream.read_to_end(&mut raw) {
+            // A server that answers before it has read the whole body closes
+            // with bytes unread, so a reset can follow its answer: the answer
+            // that arrived is what the test judges.
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset && !raw.is_empty() => {}
+            read => {
+                read.expect("read response");
+            }
+        }
         Res::parse(&raw)
     }
 }
@@ -1132,6 +1192,289 @@ fn a_faulted_journal_answers_readyz_with_the_reason_to_restart() {
     assert_eq!(after.code(), "journal_faulted");
 }
 
+/// `ENOSPC`, the same number on Linux and on macOS.
+const ENOSPC: i32 = 28;
+
+#[test]
+fn a_chunk_the_disk_cannot_hold_is_507_storage_full_and_leaves_nothing_behind() {
+    // A capacity declared larger than the disk: the watermark still sees
+    // room and the filesystem does not. That refusal is a full server, which
+    // a device says as "out of storage", never a fault it retries as absence
+    // (issue #291).
+    let h = Harness::start_with(
+        "chunk-enospc",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let (body, sid) = chunk(b"ciphertext-with-no-room");
+    h.app.store.set_fault(crate::storage::Fault::BlobErrno {
+        phase: crate::storage::BlobPhase::Stream,
+        code: ENOSPC,
+    });
+    let refused = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+    h.app.store.set_fault(crate::storage::Fault::None);
+
+    assert_eq!(refused.status, 507, "{}", refused.text());
+    assert_eq!(refused.code(), "storage_full");
+    assert_eq!(
+        refused.json().get("detail").and_then(Value::as_str),
+        Some("the volume is out of space")
+    );
+    assert_eq!(
+        std::fs::read_dir(h.dir.join("blobs/v1/tmp"))
+            .expect("tmp")
+            .count(),
+        0,
+        "the refused stream left no temporary behind"
+    );
+    let log = h.captured();
+    assert!(
+        log.contains("event=chunk_put")
+            && log.contains("decision=storage_full io=StorageFull")
+            && log.contains("status=507"),
+        "the server's own account names the code and the kind: {log}"
+    );
+
+    // Room again: the same chunk is taken, and nothing needed undoing.
+    let put = Req::new("PUT", &format!("/v1/chunks/{sid}"))
+        .raw_body(&body)
+        .sign_with(&cred, NOW, &nonce(), &sid)
+        .send(h.addr);
+    assert_eq!(put.status, 201, "{}", put.text());
+}
+
+/// Issue #304 over the wire. The watermark refuses a chunk before the store
+/// reads a byte of it. Answered over the unread upload, the close that
+/// followed reset a sender still writing it -- past the HTTP layer's own
+/// 1 MiB drain -- and a proxy in front answered the device with a bare 502,
+/// read as "offline", never the full server it is. The refused upload is now
+/// read to its end first: the whole body is taken, the 507 names the volume,
+/// and the connection stays good for the next request, as a proxy's would.
+#[test]
+fn a_chunk_the_watermark_refuses_is_read_to_its_end_before_the_507() {
+    let h = Harness::start_with(
+        "refused-read",
+        Setup {
+            blobs_capacity: Some("3MiB"),
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    // Three times the HTTP layer's drain: an independent wire number.
+    let body = vec![0x61; 3 * 1024 * 1024];
+    let (_, sid) = chunk(&body);
+    let req = Req::new("PUT", &format!("/v1/chunks/{sid}")).sign_with(&cred, NOW, &nonce(), &sid);
+    let mut head = format!("PUT {} HTTP/1.1\r\nHost: 127.0.0.1\r\n", req.target);
+    for (name, value) in req.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+    let mut wire = head.into_bytes();
+    wire.extend_from_slice(&body);
+    wire.extend_from_slice(b"GET /livez HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+
+    let mut stream = TcpStream::connect(h.addr).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .expect("timeout");
+    let mut writer = stream.try_clone().expect("writer");
+    let send = std::thread::spawn(move || writer.write_all(&wire));
+    let mut raw = Vec::new();
+    let read = stream.read_to_end(&mut raw);
+    let sent = send.join().expect("writer joined");
+    let text = String::from_utf8_lossy(&raw);
+    assert!(
+        sent.is_ok(),
+        "the upload was cut off ({sent:?}); the server said: {text}"
+    );
+    assert!(
+        read.is_ok(),
+        "the connection was reset ({read:?}); the server said: {text}"
+    );
+    let answers: Vec<&str> = text
+        .match_indices("HTTP/1.1 ")
+        .map(|(at, _)| &text[at..at + 12])
+        .collect();
+    assert_eq!(
+        answers,
+        ["HTTP/1.1 507", "HTTP/1.1 200"],
+        "the refusal, then the next request on the same connection: {text}"
+    );
+    assert!(text.contains("volume_full"), "{text}");
+    let absent = Req::get(&format!("/v1/chunks/{sid}"))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(absent.status, 404, "the refused chunk was not stored");
+}
+
+#[test]
+fn a_journal_append_the_disk_cannot_hold_is_507_storage_full_and_the_journal_takes_the_next() {
+    // The journal's half of issue #291. The rollback succeeds, so the
+    // journal is NOT faulted: the refused frame is cut away, the refusal is a
+    // full disk like any other, and the next write lands once there is room.
+    let h = Harness::start("journal-enospc");
+    let cred = h.setup_account();
+    h.app
+        .store
+        .set_fault(crate::storage::Fault::JournalAppendErrno {
+            code: ENOSPC,
+            at: crate::storage::AppendPhase::Write,
+        });
+    let refused = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio laptop"}"#)
+        .sign(&cred, NOW)
+        .send(h.addr);
+    h.app.store.set_fault(crate::storage::Fault::None);
+
+    assert_eq!(refused.status, 507, "{}", refused.text());
+    assert_eq!(refused.code(), "storage_full");
+    assert_eq!(
+        h.app.store.journal_faulted(),
+        None,
+        "a refusal the rollback undid leaves the journal taking frames"
+    );
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(ready.status, 200, "{}", ready.text());
+    let renamed = Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(r#"{"name":"studio laptop"}"#)
+        .sign(&cred, NOW + crate::api::READY_CACHE_SECS + 1)
+        .send(h.addr);
+    assert_eq!(renamed.status, 200, "{}", renamed.text());
+}
+
+/// One signed rename, built the same way every time: the same nonce, so the
+/// second send is the same request byte for byte.
+fn rename_request(cred: &Cred, nonce: &str, name: &str) -> Req {
+    let body = format!(r#"{{"name":"{name}"}}"#);
+    let hash = hex::encode(&sha256::sha256(body.as_bytes()));
+    Req::new("PATCH", &format!("/v1/devices/{}", cred.id))
+        .body(&body)
+        .sign_with(cred, NOW, nonce, &hash)
+}
+
+#[test]
+fn a_journal_volume_with_no_room_refuses_signed_requests_507_storage_full_and_applies_nothing() {
+    // Issue #292. Every signed request records its nonce on the journal
+    // volume before anything is answered, a read included: a read answered
+    // with its nonce unrecorded is one a crash makes replayable. So a journal
+    // volume with no room refuses them all -- as a full server, which a
+    // device says as "out of storage", not as a 503 it retries as absence.
+    let h = Harness::start("nonce-no-room");
+    let cred = h.setup_account();
+    let spent_once = nonce();
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::SyncFails { code: ENOSPC });
+    let refused = rename_request(&cred, &spent_once, "renamed while full").send(h.addr);
+    let read = Req::get("/v1/account").sign(&cred, NOW).send(h.addr);
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::None);
+
+    for (what, res) in [("the write", &refused), ("the read", &read)] {
+        assert_eq!(res.status, 507, "{what}: {}", res.text());
+        assert_eq!(res.code(), "storage_full", "{what}");
+    }
+    // Still a refusal: nothing was applied...
+    let devices = Req::get("/v1/devices").sign(&cred, NOW).send(h.addr);
+    assert_eq!(devices.status, 200, "{}", devices.text());
+    assert!(
+        !devices.text().contains("renamed while full"),
+        "{}",
+        devices.text()
+    );
+    // ...and the nonce was never spent: the same request, byte for byte, is
+    // taken once there is room.
+    let again = rename_request(&cred, &spent_once, "renamed while full").send(h.addr);
+    assert_eq!(again.status, 200, "{}", again.text());
+}
+
+#[test]
+fn a_faulted_nonce_log_says_so_until_a_restart_and_never_that_it_is_full() {
+    // The cut-back failed too, so the log takes nothing more until a restart
+    // truncates the torn tail. A device that read that as a full server would
+    // wait for room that changes nothing (issue #292).
+    let h = Harness::start("nonce-faulted");
+    let cred = h.setup_account();
+    let refused_nonce = nonce();
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::ShortWriteStuck { code: ENOSPC });
+    let faulting = rename_request(&cred, &refused_nonce, "renamed while faulted").send(h.addr);
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::None);
+    let after = Req::get("/v1/account").sign(&cred, NOW).send(h.addr);
+    for (what, res) in [
+        ("the request that faulted it", &faulting),
+        ("the next", &after),
+    ] {
+        assert_eq!(res.status, 503, "{what}: {}", res.text());
+        assert_eq!(res.code(), "nonce_log_faulted", "{what}");
+    }
+
+    // A restart truncates the tail; the refused nonce was never recorded.
+    let dir = h.stop();
+    let h = Harness::start_in(dir, Setup::default());
+    let again = rename_request(&cred, &refused_nonce, "renamed while faulted").send(h.addr);
+    assert_eq!(again.status, 200, "{}", again.text());
+}
+
+#[test]
+fn a_faulted_nonce_log_is_not_ready_until_a_restart() {
+    // Issue #294. A faulted log refuses every signed request, while the
+    // journal volume under it still takes the probe write: readiness asks
+    // the log, as it asks the journal, or it says ready over a server that
+    // can answer nothing signed (AGENTS.md requirement 7).
+    let h = Harness::start_with(
+        "nonce-faulted-ready",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    assert_eq!(Req::get("/readyz").send(h.addr).status, 200);
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::ShortWriteStuck { code: ENOSPC });
+    let faulting = rename_request(&cred, &nonce(), "renamed while faulted").send(h.addr);
+    h.app
+        .nonces
+        .set_fault(crate::api::nonce_log::NonceFault::None);
+    assert_eq!(faulting.code(), "nonce_log_faulted", "{}", faulting.text());
+
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let not_ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(not_ready.status, 503, "{}", not_ready.text());
+    assert_eq!(not_ready.code(), "not_ready");
+    assert_eq!(
+        not_ready.json().get("detail").and_then(Value::as_str),
+        Some("nonce log faulted; restart to recover"),
+        "the refusal names the state and the way back"
+    );
+    let said = h.captured();
+    for line in [
+        "event=nonce_log decision=faulted rollback_io=StorageFull",
+        "event=readiness decision=not_ready volume=journal io=StorageFull",
+    ] {
+        assert_eq!(said.matches(line).count(), 1, "{line}: {said}");
+    }
+
+    // A restart truncates the torn tail and the log takes records again.
+    let dir = h.stop();
+    let h = Harness::start_in(dir, Setup::default());
+    let ready = Req::get("/readyz").send(h.addr);
+    assert_eq!(ready.status, 200, "{}", ready.text());
+}
+
 /// Every byte the journal ROOT holds, walked independently of the server.
 fn journal_root_bytes(dir: &Path) -> u64 {
     fn walk(path: &Path) -> u64 {
@@ -1550,6 +1893,95 @@ fn repeated_forwarding_fields_from_a_trusted_proxy_are_said_once_a_minute() {
         lines[1].contains(" requests=3 "),
         "the line counts the requests it did not write: {}",
         lines[1]
+    );
+}
+
+/// Pairing v2's two keys as the wire carries them: the public halves of the
+/// sentinel scalars 01..01 and 02..02 (`plugin/test/fixtures/pairing-v2.json`).
+const CLAIMANT_PUB: &str =
+    "BG_wO5SSQc4drdQ1GeaWDgqFtBppoFwygQOqK84VlMoWPE91OlW_AdxT9sCwx-7ni0DG_30lqW4igrmJzvccFEo";
+const CREATOR_PUB: &str =
+    "BFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY";
+
+#[test]
+fn the_creator_key_reaches_the_waiting_claimant_only_once_revealed() {
+    // Review of PR #306: the creator reveals its key after the claim, and
+    // the claimant's wait carries it, so both screens show a code before
+    // anyone approves. Only the creator reveals, once a claim exists, and
+    // one key per pairing.
+    let h = Harness::start("pairing-reveal");
+    let creator = h.setup_account();
+    let v = Req::post("/v1/pairing")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let text = |name: &str| {
+        v.get(name)
+            .and_then(Value::as_str)
+            .expect("pairing field")
+            .to_string()
+    };
+    let (id, token) = (text("pairing_id"), text("enroll_token"));
+    let reveal = |by: &Cred, key: &str| {
+        Req::post(&format!("/v1/pairing/{id}/reveal"))
+            .body(&format!(r#"{{"creator_pub":"{key}"}}"#))
+            .sign(by, NOW)
+            .send(h.addr)
+    };
+    let wait = |claimant: &Cred| {
+        Req::get(&format!("/v1/pairing/{id}/envelope"))
+            .sign(claimant, NOW)
+            .send(h.addr)
+    };
+
+    let early = reveal(&creator, CREATOR_PUB);
+    assert_eq!((early.status, early.code()), (409, "not_claimed".into()));
+
+    let claimed = Req::post(&format!("/v1/pairing/{id}/claim"))
+        .body(&format!(
+            r#"{{"enroll_token":"{token}","name":"phone","platform":"ios","app_version":"1.1.5","claimant_pub":"{CLAIMANT_PUB}"}}"#
+        ))
+        .send(h.addr);
+    assert_eq!(claimed.status, 201, "{}", claimed.text());
+    let claimant = Cred::from_json(&claimed.json());
+
+    let before = wait(&claimant);
+    assert_eq!((before.status, before.code()), (409, "not_approved".into()));
+    assert_eq!(
+        before.json().get("creator_pub"),
+        None,
+        "nothing revealed yet"
+    );
+
+    let pending = reveal(&claimant, CREATOR_PUB);
+    assert_eq!(pending.status, 403, "a pending claimant reveals nothing");
+    let malformed = reveal(&creator, "not-a-key");
+    assert_eq!(malformed.status, 400);
+    assert_eq!(reveal(&creator, CREATOR_PUB).status, 204);
+    assert_eq!(reveal(&creator, CREATOR_PUB).status, 204, "a retry");
+    let other = reveal(&creator, CLAIMANT_PUB);
+    assert_eq!(
+        (other.status, other.code()),
+        (409, "already_revealed".into())
+    );
+
+    let revealed = wait(&claimant);
+    assert_eq!(revealed.code(), "not_approved");
+    assert_eq!(
+        revealed.json().get("creator_pub").and_then(Value::as_str),
+        Some(CREATOR_PUB)
+    );
+
+    let approve = Req::post(&format!("/v1/pairing/{id}/approve"))
+        .body(r#"{"envelope":"Y2lwaGVy","nonce":"0123456789abcdef01234567"}"#)
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(approve.status, 204, "{}", approve.text());
+    let fetched = wait(&claimant);
+    assert_eq!(fetched.status, 200, "{}", fetched.text());
+    assert_eq!(
+        fetched.json().get("creator_pub").and_then(Value::as_str),
+        Some(CREATOR_PUB)
     );
 }
 
@@ -3573,6 +4005,62 @@ fn a_device_reports_its_ceilings_by_heartbeat() {
     );
 }
 
+#[test]
+fn a_new_device_s_heartbeat_is_listed_even_in_the_second_of_its_sign_in() {
+    // Issue #290. The clock here is frozen, so every seen event shares one
+    // second: the new device's survey signs it in, its sync's heartbeat
+    // follows, and `last_seen` equals `last_sign_in`. A creator comparing the
+    // two never read "paired"; `last_heartbeat` says the sync started.
+    let h = Harness::start("heartbeat-same-second");
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    let row = || {
+        let v = Req::get("/v1/devices")
+            .sign(&creator, NOW)
+            .send(h.addr)
+            .json();
+        v.get("devices")
+            .and_then(Value::as_array)
+            .expect("rows")
+            .iter()
+            .find(|d| d.get("device_id").and_then(Value::as_str) == Some(claimant.id.as_str()))
+            .cloned()
+            .expect("the claimant is listed")
+    };
+    let field = |row: &Value, name: &str| row.get(name).cloned().expect(name);
+    let beat = || {
+        Req::post("/v1/devices/heartbeat")
+            .body(r#"{"app_version":"1.1.5"}"#)
+            .sign(&claimant, NOW)
+            .send(h.addr)
+    };
+    // A pending device's heartbeat is refused and records nothing.
+    assert_eq!(beat().status, 403);
+    assert_eq!(field(&row(), "last_heartbeat"), Value::Null);
+    approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
+    // The survey: an active device's first request signs it in, no heartbeat.
+    let survey = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(survey.status, 200, "{}", survey.text());
+    let surveyed = row();
+    assert_eq!(field(&surveyed, "last_sign_in"), Value::from(NOW * 1000));
+    assert_eq!(
+        field(&surveyed, "last_heartbeat"),
+        Value::Null,
+        "a sign-in is no heartbeat"
+    );
+    // The kept key's sync: its heartbeat, in the same second.
+    let started = beat();
+    assert_eq!(started.status, 204, "{}", started.text());
+    let synced = row();
+    assert_eq!(
+        field(&synced, "last_seen"),
+        field(&synced, "last_sign_in"),
+        "the second hides the order"
+    );
+    assert_eq!(field(&synced, "last_heartbeat"), Value::from(NOW * 1000));
+}
+
 /// Every member name of a JSON object, sorted: what a response says about a
 /// record, exhaustively, so a field ADDED to it is a failure and not a
 /// silently accepted extra.
@@ -4248,6 +4736,78 @@ fn the_dashboard_refuses_to_revoke_the_only_active_device() {
     assert_eq!(last_again.code(), "last_device");
 }
 
+/// A recovery key any device credential can register -- the server cannot
+/// tell one the vault key produced from one it did not -- keeps the only
+/// active device for a week, on both revoke routes, while every other revoke
+/// goes as it did (1.1.5).
+#[test]
+fn a_new_recovery_key_holds_the_only_device_on_both_revoke_routes() {
+    let h = Harness::start_with(
+        "revoke-hold",
+        Setup {
+            dashboard: true,
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &cred);
+    approve_pairing(&h, &cred, &id);
+    let register = |verifier: &str, at: u64| {
+        Req::post("/v1/account/recovery")
+            .body(&format!(r#"{{"recovery_verifier":"{verifier}"}}"#))
+            .sign(&cred, at)
+            .send(h.addr)
+    };
+    assert_eq!(register(&"b6".repeat(32), NOW).status, 204);
+    let other = register(&"a5".repeat(32), NOW);
+    assert_eq!(other.status, 409, "the first key stands");
+    assert_eq!(other.code(), "recovery_mismatch");
+
+    let not_last = Req::post(&format!("/v1/devices/{}/revoke", claimant.id))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(not_last.status, 204, "{}", not_last.text());
+    let own = Req::post(&format!("/v1/devices/{}/revoke", cred.id))
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(own.status, 409, "{}", own.text());
+    assert_eq!(own.code(), "recovery_too_new");
+    let detail = own.text();
+    let days = crate::storage::RECOVERY_HOLD_MS / (24 * 60 * 60 * 1000);
+    assert!(
+        detail.contains(&format!("{days} days")),
+        "the words name the hold the constant holds: {detail}"
+    );
+    let cookie = admin_cookie(&h, &cred);
+    let dashboard = Req::post(&format!("/v1/admin/devices/{}/revoke", cred.id))
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &csrf_value(&cookie))
+        .send(h.addr);
+    assert_eq!(dashboard.status, 409, "{}", dashboard.text());
+    assert_eq!(dashboard.code(), "recovery_too_new");
+    assert!(
+        h.captured().contains("reason=recovery_too_new"),
+        "each refusal states its decision"
+    );
+
+    let almost = NOW + crate::storage::RECOVERY_HOLD_MS / 1000 - 1;
+    h.clock.set(almost);
+    let held = Req::post(&format!("/v1/devices/{}/revoke", cred.id))
+        .sign(&cred, almost)
+        .send(h.addr);
+    assert_eq!(
+        held.code(),
+        "recovery_too_new",
+        "one second short of the hold"
+    );
+    h.clock.set(almost + 1);
+    let gone = Req::post(&format!("/v1/devices/{}/revoke", cred.id))
+        .sign(&cred, almost + 1)
+        .send(h.addr);
+    assert_eq!(gone.status, 204, "{}", gone.text());
+}
+
 /// The decision log is what the dashboard shows an operator after an
 /// incident. A single ring shared with unauthenticated traffic meant anyone
 /// who could reach the port could empty it with free probes.
@@ -4816,6 +5376,307 @@ fn a_revoked_or_pending_device_id_is_not_a_credential() {
     );
 }
 
+/// Archiving takes a revoked device off the routine lists and changes
+/// nothing else (issue #247): it is refused as revoked before AND after, it
+/// is still listed with `archived` true so a client that predates the flag
+/// sees what it always saw, and only a revoked device -- never the asking
+/// one -- can be archived.
+#[test]
+fn an_archived_device_is_still_refused_as_revoked_and_still_named() {
+    let h = Harness::start_with(
+        "archive",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
+    let archive = |target: &Cred, by: &Cred| {
+        Req::post(&format!("/v1/devices/{}/archive", target.id))
+            .sign(by, NOW)
+            .send(h.addr)
+    };
+
+    let active = archive(&claimant, &creator);
+    assert_eq!(active.status, 409, "{}", active.text());
+    assert_eq!(
+        active.code(),
+        "device_not_revoked",
+        "a working device is revoked first"
+    );
+    let own = archive(&creator, &creator);
+    assert_eq!(own.status, 409, "{}", own.text());
+    assert_eq!(own.code(), "own_device");
+    let anonymous = Req::post(&format!("/v1/devices/{}/archive", claimant.id)).send(h.addr);
+    assert_eq!(anonymous.status, 401, "{}", anonymous.text());
+
+    let revoke = Req::post(&format!("/v1/devices/{}/revoke", claimant.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(revoke.status, 204, "{}", revoke.text());
+    let refusal = |c: &Cred| {
+        let res = Req::get("/v1/account").sign(c, NOW).send(h.addr);
+        (res.status, res.code())
+    };
+    assert_eq!(
+        refusal(&claimant),
+        (403, "device_revoked".to_string()),
+        "BEFORE: refused as revoked"
+    );
+
+    let archived = archive(&claimant, &creator);
+    assert_eq!(archived.status, 204, "{}", archived.text());
+    assert_eq!(ring_of(&h, "/v1/devices/{id}/archive", 204), "credentialed");
+    let short = |c: &Cred| c.id[..8].to_string();
+    assert!(
+        h.captured().contains(&format!(
+            "event=device_archived device={} by_device={} decision=archived reason=revoked duration_ms=",
+            short(&claimant),
+            short(&creator)
+        )),
+        "{}",
+        h.captured()
+    );
+
+    assert_eq!(
+        refusal(&claimant),
+        (403, "device_revoked".to_string()),
+        "AFTER: the record is what answers this, and it is still there"
+    );
+    // Still listed, and stated as archived: a client that predates the flag
+    // reads the same revoked device it read before (`docs/protocol.md`).
+    let listed = Req::get("/v1/devices")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json();
+    let devices = listed
+        .get("devices")
+        .and_then(Value::as_array)
+        .expect("devices");
+    let row = devices
+        .iter()
+        .find(|d| d.get("device_id").and_then(Value::as_str) == Some(claimant.id.as_str()))
+        .expect("the archived device is still listed");
+    assert_eq!(row.get("archived").and_then(Value::as_bool), Some(true));
+    assert_eq!(row.get("revoked").and_then(Value::as_bool), Some(true));
+    assert_eq!(row.get("state").and_then(Value::as_str), Some("revoked"));
+    assert_eq!(
+        row.get("name").and_then(Value::as_str),
+        Some("phone"),
+        "its name still answers for the versions it wrote"
+    );
+    assert_eq!(
+        devices
+            .iter()
+            .filter(|d| d.get("archived").and_then(Value::as_bool) == Some(false))
+            .count(),
+        1,
+        "and the device that asked is not archived"
+    );
+    // Archiving again is the same state, not a second decision to reconcile.
+    assert_eq!(archive(&claimant, &creator).status, 204);
+    let unknown = Req::post(&format!("/v1/devices/{}/archive", "ab".repeat(16)))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(unknown.status, 404, "{}", unknown.text());
+    assert_eq!(unknown.code(), "unknown_device");
+}
+
+/// The dashboard archives under its session and its CSRF check, like every
+/// dashboard mutation, and states the flag in its own device list.
+#[test]
+fn the_dashboard_archives_a_revoked_device_under_its_csrf_check() {
+    let h = Harness::start_with(
+        "archive-dashboard",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
+    let cookie = admin_cookie(&h, &creator);
+    let csrf = csrf_value(&cookie);
+    let path = format!("/v1/admin/devices/{}/archive", claimant.id);
+
+    let active = Req::post(&path)
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &csrf)
+        .send(h.addr);
+    assert_eq!(active.status, 409, "{}", active.text());
+    assert_eq!(active.code(), "device_not_revoked");
+
+    let revoke = Req::post(&format!("/v1/admin/devices/{}/revoke", claimant.id))
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &csrf)
+        .send(h.addr);
+    assert_eq!(revoke.status, 204, "{}", revoke.text());
+
+    let no_csrf = Req::post(&path).header("Cookie", &cookie).send(h.addr);
+    assert_eq!(no_csrf.status, 403, "{}", no_csrf.text());
+    assert_eq!(no_csrf.code(), "csrf_failed");
+    let no_session = Req::post(&path).header("X-Obsync-Csrf", &csrf).send(h.addr);
+    assert_eq!(no_session.status, 401, "{}", no_session.text());
+    let archived_flag = || {
+        Req::get("/v1/admin/devices")
+            .header("Cookie", &cookie)
+            .send(h.addr)
+            .json()
+            .get("devices")
+            .and_then(Value::as_array)
+            .expect("devices")
+            .iter()
+            .find(|d| d.get("device_id").and_then(Value::as_str) == Some(claimant.id.as_str()))
+            .map(|d| d.get("archived").and_then(Value::as_bool))
+    };
+    assert_eq!(
+        archived_flag(),
+        Some(Some(false)),
+        "refused, so not archived"
+    );
+
+    let archived = Req::post(&path)
+        .header("Cookie", &cookie)
+        .header("X-Obsync-Csrf", &csrf)
+        .send(h.addr);
+    assert_eq!(archived.status, 204, "{}", archived.text());
+    assert_eq!(archived_flag(), Some(Some(true)), "listed, and archived");
+    assert_eq!(
+        ring_of(&h, "/v1/admin/devices/{id}/archive", 204),
+        "credentialed"
+    );
+    let after = Req::get("/v1/account").sign(&claimant, NOW).send(h.addr);
+    assert_eq!(after.code(), "device_revoked", "still refused as revoked");
+}
+
+/// Issue #268: the account's `device_count` is how many devices can sync --
+/// active, or still pairing -- on the sync API and on the dashboard's
+/// overview alike. A revoked device, archived or not, stays a record and
+/// stays listed, and is not counted: "Devices 16" over a list of 4 that sync
+/// was the defect.
+#[test]
+fn the_device_count_is_the_devices_that_can_sync() {
+    let h = Harness::start_with(
+        "device-count",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let cookie = admin_cookie(&h, &creator);
+    let counts = || {
+        let api = Req::get("/v1/account")
+            .sign(&creator, NOW)
+            .send(h.addr)
+            .json()
+            .get("device_count")
+            .and_then(Value::as_u64);
+        let overview = Req::get("/v1/admin/overview")
+            .header("Cookie", &cookie)
+            .send(h.addr)
+            .json()
+            .get("account")
+            .and_then(|a| a.get("device_count"))
+            .and_then(Value::as_u64);
+        (api, overview)
+    };
+    assert_eq!(counts(), (Some(1), Some(1)));
+
+    let (id, claimant) = claim_pairing(&h, &creator);
+    assert_eq!(
+        counts(),
+        (Some(2), Some(2)),
+        "a device still pairing is counted"
+    );
+    approve_pairing(&h, &creator, &id);
+    collect_envelope(&h, &claimant, &id);
+    assert_eq!(counts(), (Some(2), Some(2)), "and so is one that paired");
+
+    let revoke = Req::post(&format!("/v1/devices/{}/revoke", claimant.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(revoke.status, 204, "{}", revoke.text());
+    assert_eq!(counts(), (Some(1), Some(1)), "a revoked device is not");
+    let archive = Req::post(&format!("/v1/devices/{}/archive", claimant.id))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(archive.status, 204, "{}", archive.text());
+    assert_eq!(counts(), (Some(1), Some(1)), "nor an archived one");
+
+    let listed = Req::get("/v1/devices")
+        .sign(&creator, NOW)
+        .send(h.addr)
+        .json()
+        .get("devices")
+        .and_then(Value::as_array)
+        .map(<[Value]>::len);
+    assert_eq!(listed, Some(2), "both records stay listed");
+}
+
+/// Issue #270: a dashboard sign-in link is spent once and lives five
+/// minutes, to the second. Opening it takes a browser seconds, but an edge
+/// may put its own sign-in in front of `GET /login` -- an identity policy's
+/// one-time PIN by e-mail, or a reverse proxy's login, on the published-
+/// hostname path (`docs/platform-onboarding.md`) -- and the link must survive
+/// that. It must not live longer
+/// either: the host that opens it may log the whole URL
+/// (`docs/security/dashboard.md`), and a copy that outlives five minutes, or
+/// its first use, opens nothing.
+#[test]
+fn a_sign_in_link_lives_five_minutes_and_opens_once() {
+    let h = Harness::start_with(
+        "link-life",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let mint = || {
+        let res = Req::post("/v1/dashboard/login-link")
+            .sign(&cred, NOW)
+            .send(h.addr);
+        assert_eq!(res.status, 200, "{}", res.text());
+        let v = res.json();
+        let url = v.get("url").and_then(Value::as_str).expect("url");
+        let token = url.split("token=").nth(1).expect("token").to_string();
+        (token, v.get("expires").and_then(Value::as_u64))
+    };
+    let (spent_once, expires) = mint();
+    assert_eq!(expires, Some(NOW + 300), "five minutes from the mint");
+    let (late, _) = mint();
+    let open = |token: &str| {
+        let res = Req::get(&format!("/login?token={token}")).send(h.addr);
+        // A sign-in is a redirect with no body; only a refusal names a code.
+        let code = if res.status == 302 {
+            String::new()
+        } else {
+            res.code()
+        };
+        (res.status, code)
+    };
+
+    h.clock.set(NOW + 299);
+    assert_eq!(open(&spent_once).0, 302, "a second before it expires");
+    assert_eq!(
+        open(&spent_once),
+        (401, "bad_login_token".to_string()),
+        "spent: a logged copy opens nothing"
+    );
+    h.clock.set(NOW + 300);
+    assert_eq!(
+        open(&late),
+        (401, "bad_login_token".to_string()),
+        "expired on the fifth minute"
+    );
+}
+
 #[test]
 fn pairing_claim_vault_is_bounded_before_enrolment_and_only_creator_can_read_it() {
     let h = Harness::start("pairing-vault");
@@ -4931,8 +5792,17 @@ fn setup_token_and_vault_proof_reenrol_after_the_last_device_leaves() {
             .status,
         201
     );
-    let revoked = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
+    // The key is new, so the only device stays for the hold (1.1.5), and
+    // goes once it has passed.
+    let held = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
         .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(held.status, 409, "{}", held.text());
+    assert_eq!(held.code(), "recovery_too_new");
+    let later = NOW + crate::storage::RECOVERY_HOLD_MS / 1000;
+    h.clock.set(later);
+    let revoked = Req::post(&format!("/v1/devices/{}/revoke", creator.id))
+        .sign(&creator, later)
         .send(h.addr);
     assert_eq!(revoked.status, 204, "{}", revoked.text());
     let recover = |token: &str, evidence: &str| {
@@ -4960,7 +5830,7 @@ fn setup_token_and_vault_proof_reenrol_after_the_last_device_leaves() {
     assert_eq!(result.status, 201, "{}", result.text());
     assert_eq!(result.json().get("recovered"), Some(&Value::Bool(true)));
     let returned = Cred::from_json(&result.json());
-    let current = Req::get("/v1/account").sign(&returned, NOW).send(h.addr);
+    let current = Req::get("/v1/account").sign(&returned, later).send(h.addr);
     assert_eq!(current.status, 200);
     assert_eq!(
         current.json().get("account_id"),
@@ -4969,14 +5839,14 @@ fn setup_token_and_vault_proof_reenrol_after_the_last_device_leaves() {
     assert_eq!(current.json().get("name"), account.json().get("name"));
     assert_eq!(
         Req::get(&format!("/v1/chunks/{sid}"))
-            .sign(&returned, NOW)
+            .sign(&returned, later)
             .send(h.addr)
             .body,
         retained
     );
     assert_eq!(
         Req::get("/v1/account")
-            .sign(&creator, NOW)
+            .sign(&creator, later)
             .send(h.addr)
             .status,
         403
@@ -4984,30 +5854,217 @@ fn setup_token_and_vault_proof_reenrol_after_the_last_device_leaves() {
     assert!(!h.captured().contains(&proof));
 }
 
-#[test]
-fn a_legacy_account_needs_an_authenticated_recovery_registration() {
-    let h = Harness::start("legacy-account-recovery");
-    let creator = h.setup_account();
-    let body = format!(
-        r#"{{"setup_token":"{}","account_name":"vault","recovery_proof":"{}","device":{{"name":"return","platform":"macos","app_version":"1.1.3"}}}}"#,
-        "5e".repeat(32),
-        "11".repeat(32)
+/// A setup-and-recover body for an existing account.
+fn reenrol_body(token: &str, evidence: &str) -> String {
+    format!(
+        r#"{{"setup_token":"{token}","account_name":"must not rename","recovery_proof":"{evidence}","device":{{"name":"returned","platform":"macos","app_version":"1.1.5"}}}}"#
+    )
+}
+
+/// How many times the structured log states this event.
+fn events(h: &Harness, event: &str) -> usize {
+    let needle = format!("event={event} ");
+    h.captured()
+        .lines()
+        .filter(|line| line.contains(&needle))
+        .count()
+}
+
+/// The operator's reset, as it runs: the server stopped, the verb itself on
+/// its volumes, and the next start on them.
+fn reset_offline(h: Harness, setup: fn() -> Setup) -> Harness {
+    use crate::cli::recovery::{Args, Mode, Output, run};
+    let dir = h.stop();
+    let log = Log::buffered(LogLevel::Error);
+    let apply = Args {
+        mode: Mode::Apply,
+        output: Output::Json,
+    };
+    assert_eq!(
+        run(&Harness::config(&dir, &setup()), &log, apply),
+        0,
+        "{}",
+        log.captured()
     );
-    let refused = Req::post("/v1/setup").body(&body).send(h.addr);
-    assert_eq!(refused.status, 409);
-    assert_eq!(refused.code(), "recovery_unavailable");
+    Harness::start_in(dir, setup())
+}
+
+fn rotating() -> Setup {
+    Setup {
+        capture_log: true,
+        token_from_volume: true,
+        ..Setup::default()
+    }
+}
+
+/// An account with no verifier that the operator has not reset -- one set up
+/// before a key was registered -- answers 1.1.4's `409 recovery_unavailable`
+/// to the setup token whatever proof comes with it: the token alone never
+/// enrols a device or chooses a key.
+#[test]
+fn an_account_never_reset_refuses_a_recovery_without_a_key_whatever_the_proof() {
+    let h = Harness::start_with(
+        "recovery-unarmed",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    for evidence in ["11".repeat(32), "not-a-64-character-proof".to_string()] {
+        let refused = Req::post("/v1/setup")
+            .body(&reenrol_body(&h.token, &evidence))
+            .send(h.addr);
+        assert_eq!(refused.status, 409, "{}", refused.text());
+        assert_eq!(refused.code(), "recovery_unavailable");
+    }
+    let account = h.app.store.account().expect("account");
+    assert_eq!(account.recovery_verifier, None, "no key was chosen");
+    assert_eq!(h.app.store.devices().len(), 1, "no device was enrolled");
+    assert_eq!(events(&h, "recovery_reestablished"), 0);
+
+    // A malformed verifier is refused before storage on the device route, so a
+    // device cannot register a shapeless value.
     let invalid = Req::post("/v1/account/recovery")
         .body(r#"{"recovery_verifier":"not-a-hash"}"#)
         .sign(&creator, NOW)
         .send(h.addr);
     assert_eq!(invalid.status, 400);
+}
+
+/// `obsyncd recovery reset apply` rotates the setup token and arms exactly one
+/// re-enrolment: a token captured before it stops working, and the new token
+/// with a proof registers the verifier that proof derives, timed, and enrols
+/// the device. The server has nothing to check that proof against, so a
+/// second attempt meets the ordinary check against what the first
+/// registered, and no device credential can arm or reach any of it.
+#[test]
+fn a_reset_arms_one_re_enrolment_by_the_rotated_token_and_nothing_a_device_holds() {
+    let h = Harness::start_with("recovery-rearm", rotating());
+    let old = h.token.clone();
+    let creator = h.setup_account();
+    let first = Req::post("/v1/account/recovery")
+        .body(&format!(r#"{{"recovery_verifier":"{}"}}"#, "b6".repeat(32)))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(first.status, 204, "{}", first.text());
+
+    let h = reset_offline(h, rotating);
+    assert_ne!(h.token, old, "the start after the reset minted a new token");
+    let armed = h.app.store.account().expect("account");
+    assert_eq!(armed.recovery_verifier, None);
+    assert!(
+        armed.recovery_cleared.is_some(),
+        "the reset armed a re-enrolment"
+    );
+
+    let proof = "11".repeat(32);
+    let verifier = hex::encode(&sha256::sha256(&[0x11; 32]));
+    // A token captured before the reset enrols nothing.
+    let stale = Req::post("/v1/setup")
+        .body(&reenrol_body(&old, &proof))
+        .send(h.addr);
+    assert_eq!(stale.status, 401);
+    assert_eq!(stale.code(), "bad_setup_token");
+    // A malformed proof enrols nothing and leaves the arm standing.
+    let bad = Req::post("/v1/setup")
+        .body(&reenrol_body(&h.token, "not-a-64-character-proof"))
+        .send(h.addr);
+    assert_eq!(bad.status, 403);
+    assert_eq!(bad.code(), "bad_recovery_proof");
+    assert!(h.app.store.account().unwrap().recovery_cleared.is_some());
+
+    // The new token and a proof re-enrol, without renaming the account.
+    let recovered = Req::post("/v1/setup")
+        .body(&reenrol_body(&h.token, &proof))
+        .send(h.addr);
+    assert_eq!(recovered.status, 201, "{}", recovered.text());
+    assert_eq!(recovered.json().get("recovered"), Some(&Value::Bool(true)));
+    let returned = Cred::from_json(&recovered.json());
+    let account = Req::get("/v1/account").sign(&returned, NOW).send(h.addr);
+    assert_eq!(account.status, 200);
+    assert_eq!(
+        account.json().get("name"),
+        Some(&Value::Str("vault".into()))
+    );
+    let stored = h.app.store.account().expect("account");
+    assert_eq!(stored.recovery_verifier, Some(verifier.clone()));
+    assert_eq!(
+        stored.recovery_registered,
+        Some(crate::types::UnixMs(NOW * 1000))
+    );
+    assert_eq!(
+        stored.recovery_cleared, None,
+        "the re-enrolment spent the arm"
+    );
+    // Registered, never disclosed; one decision line names it.
+    assert!(!account.text().contains(&verifier));
+    assert!(!h.captured().contains(&verifier));
+    assert!(!h.captured().contains(&proof));
+    assert_eq!(events(&h, "recovery_reestablished"), 1, "{}", h.captured());
+
+    // Spent: another proof now meets the ordinary check and is refused.
+    let second = Req::post("/v1/setup")
+        .body(&reenrol_body(&h.token, &"22".repeat(32)))
+        .send(h.addr);
+    assert_eq!(second.status, 403);
+    assert_eq!(second.code(), "bad_recovery_proof");
+    assert_eq!(events(&h, "recovery_reestablished"), 1);
+
+    // A device cannot replace the key, the only device route that touches one.
+    let other = Req::post("/v1/account/recovery")
+        .body(&format!(r#"{{"recovery_verifier":"{}"}}"#, "22".repeat(32)))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(other.status, 409);
+    assert_eq!(other.code(), "recovery_mismatch");
+
+    // Timed, so the seven-day hold runs from the re-enrolment.
     assert_eq!(
         Req::post(&format!("/v1/devices/{}/revoke", creator.id))
-            .sign(&creator, NOW)
+            .sign(&returned, NOW)
             .send(h.addr)
             .status,
-        409
+        204,
+        "a device that is not the last goes at once"
     );
+    let held = Req::post(&format!("/v1/devices/{}/revoke", returned.id))
+        .sign(&returned, NOW)
+        .send(h.addr);
+    assert_eq!(held.status, 409);
+    assert_eq!(held.code(), "recovery_too_new");
+}
+
+/// The first key registered after a reset spends its arm, whoever registers:
+/// a device that still syncs registers its own, and a recovery then is the
+/// ordinary one, proved against that key. A reset of an account that never
+/// had a key arms the same way.
+#[test]
+fn a_device_that_registers_after_the_reset_spends_the_arm() {
+    let h = Harness::start_with("recovery-arm-spent", rotating());
+    let creator = h.setup_account();
+    let h = reset_offline(h, rotating);
+    assert!(h.app.store.account().unwrap().recovery_cleared.is_some());
+
+    let own = hex::encode(&sha256::sha256(&[0x33; 32]));
+    let registered = Req::post("/v1/account/recovery")
+        .body(&format!(r#"{{"recovery_verifier":"{own}"}}"#))
+        .sign(&creator, NOW)
+        .send(h.addr);
+    assert_eq!(registered.status, 204, "{}", registered.text());
+    assert_eq!(h.app.store.account().unwrap().recovery_cleared, None);
+
+    let refused = Req::post("/v1/setup")
+        .body(&reenrol_body(&h.token, &"11".repeat(32)))
+        .send(h.addr);
+    assert_eq!(refused.status, 403);
+    assert_eq!(refused.code(), "bad_recovery_proof");
+    let ordinary = Req::post("/v1/setup")
+        .body(&reenrol_body(&h.token, &"33".repeat(32)))
+        .send(h.addr);
+    assert_eq!(ordinary.status, 201, "{}", ordinary.text());
+    assert_eq!(events(&h, "recovery_reestablished"), 0);
+    assert_eq!(events(&h, "account_recovered"), 1);
 }
 
 #[test]

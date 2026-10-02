@@ -1,7 +1,7 @@
 {
   "name": "obsync-plugin",
   "private": true,
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "obsync Obsidian plugin. Zero runtime dependencies; the only build input is the pinned TypeScript compiler.",
   "engines": {
     "node": "26.10.0",
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node build.mjs",
-    "test": "node --test test/*.test.mjs"
+    "test": "node test/run.mjs"
   },
   "devDependencies": {
     "typescript": "5.9.3"

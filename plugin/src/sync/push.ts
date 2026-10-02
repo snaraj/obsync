@@ -62,8 +62,9 @@ import {
   versionId,
 } from "../crypto";
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
-import { assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
-import { VaultPathError, assertVaultPath, caseOnly } from "../vaultPath";
+import { SyncFolders, assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
+import { VaultPathError, assertVaultPath } from "../vaultPath";
+import { quoted } from "../notices";
 
 /**
  * The ciphertext one push holds between encrypting a chunk and the server
@@ -393,12 +394,13 @@ export function pushFile(context: SyncContext, path: string, force = false, over
  * is published as THAT record, never as a new file. A host that keeps the two
  * spellings apart answers with the name itself, which is a different file.
  *
- * Asked only when some record differs from `path` by case alone, so a new
- * note costs one pass over the records and no vault walk.
+ * Asked only when some record differs from `path` by case alone, which the
+ * state answers from an index (`caseTwins`), so a new note costs no walk of
+ * the records and no vault walk.
  */
 async function recordedSpelling(context: SyncContext, path: string): Promise<string> {
   if (context.state.fileByPath(path) !== undefined) return path;
-  if (!Object.keys(context.state.data.files).some((recorded) => caseOnly(recorded, path))) return path;
+  if (context.state.caseTwins(path).length === 0) return path;
   const shown = await context.host.spelling(path);
   if (shown === null || shown === path || context.state.fileByPath(shown) === undefined) return path;
   context.host.log("push path_class=file decision=resolved reason=case_variant");
@@ -585,9 +587,17 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
         : { ...carried, versionId: ack.versionId });
       await context.state.save();
     }
+    // And a note that LEFT the selection while this posted is brought back on
+    // this version, not the one before it (`engine.ts`, `rejoin`; #239).
+    const away = context.state.data.departed[fileId];
+    const advanced = away !== undefined && away.versionId === record?.versionId;
+    if (advanced) {
+      away.versionId = ack.versionId;
+      await context.state.save();
+    }
     context.host.log(
       `push path_class=file decision=not_recorded reason=${renamed !== undefined ? "renamed" : inScope ? "path_gone" : "left_scope"} ` +
-        `parent=${follows ? "advanced" : "kept"} file=${fileId}`,
+        `parent=${follows || advanced ? "advanced" : "kept"} file=${fileId}`,
     );
     return { status: "pushed", fileId, versionId: ack.versionId };
   }
@@ -604,8 +614,26 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
       mtime: stat.mtime,
       size: stat.size,
       sha256: digest,
+      // Its one chunk, for the repair walk (#198), as the pull records one
+      // (`recordAt`). Left to the echo, it was lost whenever the feed brought
+      // the version back before this acknowledgement: a third of an
+      // uploading device's notes, each read back from the server once a
+      // second for an hour after setup (#310).
+      ...(sids.length === 1 ? { sid: sids[0] as string } : {}),
     });
-    await context.state.save();
+    // A NEW NOTE OF ONE CHUNK WAITS FOR THE NEXT SAVE (issue #274), as a note
+    // the pull creates does (#194). The data file is rewritten whole, and a
+    // first sync rewrote it after every note it uploaded -- 478 MB of writes
+    // for 1,501 notes, growing with the square of the vault -- while each
+    // upload held its slot until the write was done. The record is saved by the
+    // engine within `SAVE_COALESCE_MS`, when the queue drains, or at a stop.
+    // A crash first loses the record, not the note: the next start asks the
+    // feed for this device's own newest version at the name and records it
+    // again while the note is still exactly what was posted (`engine.ts`,
+    // `survey`, #181), so no second id is minted. An edit of a recorded note,
+    // or a file of many chunks, is saved here as before.
+    if (record === undefined && single !== null && context.defer !== undefined) context.defer();
+    else await context.state.save();
   }
   // The upload's own receipt: what crossed the wire while this run was in
   // flight and the budget it is measured against (requirement 12). The
@@ -753,10 +781,15 @@ async function stillGone(context: SyncContext, path: string, record: FileState, 
     `age_ms=${context.now() - decided}`);
   const now = same ? undefined : context.state.pathByFileId(record.fileId);
   if (now !== undefined && (await context.host.stat(now)) !== null) {
-    context.host.notify(
-      `obsync did not delete "${path}" from your other devices: it was changed on another device before this ` +
-        `deletion reached the server, so the note is back here${now === path ? "" : ` as "${now}"`}.`,
-    );
+    // The note by the name it was deleted under, and by the one it is back under when they differ.
+    context.host.notify({
+      kind: "info", paths: [now],
+      text: now === path
+        ? "did not delete {notes} from your other devices: another device changed {it} before the deletion reached " +
+          "your server, so this device has {it} back."
+        : `did not delete ${quoted(path)} from your other devices: another device changed it before the deletion reached ` +
+          "your server, so this device has it back as {notes}.",
+    });
   }
   return gone;
 }
@@ -813,13 +846,16 @@ export async function pushFolder(context: SyncContext, path: string, recreate = 
   return ack.versionId;
 }
 
-/** Tombstone a folder record. The files it held publish their own tombstones. */
-export async function pushFolderDelete(context: SyncContext, path: string): Promise<string | null> {
+/**
+ * Tombstone a folder record. The files it held publish their own tombstones.
+ * `judged` is the selection the removal was decided against (`postManifest`).
+ */
+export async function pushFolderDelete(context: SyncContext, path: string, judged?: SyncFolders): Promise<string | null> {
   assertVaultPath(path);
   const record = context.state.folderByPath(path);
   if (record === undefined) return null;
   const parents = record.versionId !== "" ? [record.versionId] : [];
-  const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false);
+  const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false, undefined, judged);
   context.state.forgetFolder(path);
   bury(context, record.fileId, ack.versionId, path, true);
   await context.state.save();
@@ -845,6 +881,7 @@ export async function postManifest(
   bytes: number,
   acceptExisting: boolean,
   stillWanted: () => Promise<boolean> = async () => true,
+  judged?: SyncFolders,
 ): Promise<{ versionId: string; ack: VersionAck }> {
   // The folder rule for a folder record, the file rule for a file: the
   // selected folder itself has a record and is never a file (`syncScope.ts`).
@@ -856,7 +893,16 @@ export async function postManifest(
   // device renaming its own selected folder published the record and never
   // the tombstone, so every other device kept a folder record for a spelling
   // that no longer exists (review round 3, finding 1).
-  if (manifest.v === 2) assertFolderCaseScope(manifest.path, context.state.data.syncFolders);
+  //
+  // AND A FOLDER'S REMOVAL AGAINST THE SELECTION IT WAS JUDGED IN (issue
+  // #240), for the rename that changes more than capitalisation: the
+  // selection followed the folder before the old name's tombstone was posted,
+  // so every other device kept an empty folder under that name. Only the
+  // removals the engine decided carry `judged`; left out, or judged against
+  // the whole vault, it is the selection in force now -- a selection set in
+  // between makes the check stricter, never wider. A FILE is checked against
+  // the selection in force, always.
+  if (manifest.v === 2) assertFolderCaseScope(manifest.path, judged ?? context.state.data.syncFolders);
   else assertSyncPath(manifest.path, context.state.data.syncFolders);
   // AND NEVER A PATH IN A VAULT OF ITS OWN (issue #180), whatever asked for
   // the post: a rename, a tombstone and a folder record reach here without

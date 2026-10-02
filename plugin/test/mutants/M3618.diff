@@ -1,0 +1,14 @@
+# M3618: the fake refuses the re-enrolment an operator's reset armed (fidelity)
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -815,9 +815,7 @@
+           // registers the verifier the proof derives, timed, and enrols, which
+           // spends the arm. obsyncd derives it from the proof, so a bogus
+           // verifier a caller sends beside the proof is never what stands.
+-          this.recoveryVerifier = derived;
+-          this.recoveryAt = this.clock;
+-          this.recoveryArmed = false;
++          return this.error(409, "recovery_unavailable", "no recovery key is registered for this account");
+         } else if (derived !== this.recoveryVerifier) {
+           return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
+         }

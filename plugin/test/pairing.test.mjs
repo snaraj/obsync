@@ -21,6 +21,10 @@ const c = require("../build/crypto.js");
 const bytes = (hex) => Uint8Array.from(Buffer.from(hex, "hex"));
 const PAIRING_ID = "fedcba9876543210fedcba9876543210";
 const ENROLL_TOKEN = "1122334455667788990011223344556677889900112233445566778899001122";
+/** A sentinel commitment: these tests read codes, they never check one against a key. */
+const COMMITMENT = bytes("c0c1c2c3c4c5c6c7c8c9cacbcccdcecf");
+/** The pairing v2 known-answer keys (`fixtures/pairing-v2.json`). */
+const KAT = JSON.parse(readFileSync(join(here, "fixtures", "pairing-v2.json"), "utf8"));
 
 test("the vendored wordlist is the canonical BIP-0039 English list", () => {
   const file = readFileSync(join(here, "..", "vendor", "bip39", "english.txt"));
@@ -35,21 +39,22 @@ test("the vendored wordlist is the canonical BIP-0039 English list", () => {
   assert.deepEqual(words, [...words].sort(), "the list is sorted");
 });
 
-test("a pairing code carries exactly the three parts", () => {
+test("a pairing code carries exactly its four parts", () => {
   const secret = pairing.newPairingSecret();
   assert.equal(secret.length, 16);
-  const code = pairing.encodePairingCode(PAIRING_ID, ENROLL_TOKEN, secret);
-  assert.equal(code.length, 103, "64 bytes of base32, unpadded");
+  const code = pairing.encodePairingCode(PAIRING_ID, ENROLL_TOKEN, secret, COMMITMENT);
+  assert.equal(code.length, 128, "80 bytes of base32, unpadded");
   assert.equal(/^[A-Z2-7]+$/.test(code), true, "RFC 4648 uppercase alphabet");
   const decoded = pairing.decodePairingCode(code);
   assert.equal(decoded.pairingId, PAIRING_ID);
   assert.equal(decoded.enrollToken, ENROLL_TOKEN);
   assert.deepEqual(decoded.pairingSecret, secret);
+  assert.deepEqual(decoded.commitment, COMMITMENT);
 });
 
 test("a code survives the way people retype it, and a short one is refused", () => {
   const secret = bytes("101112131415161718191a1b1c1d1e1f");
-  const code = pairing.encodePairingCode(PAIRING_ID, ENROLL_TOKEN, secret);
+  const code = pairing.encodePairingCode(PAIRING_ID, ENROLL_TOKEN, secret, COMMITMENT);
   const mangled = `${code.slice(0, 20).toLowerCase()} ${code.slice(20, 60)}-${code.slice(60)}`;
   assert.deepEqual(pairing.decodePairingCode(mangled), pairing.decodePairingCode(code));
   // Refusals say what to paste, never what failed to decode (issue #154).
@@ -62,7 +67,7 @@ test("a code survives the way people retype it, and a short one is refused", () 
 
 test("a pasted pairing link, or a code in quotes, decodes to the code it carries (#154)", () => {
   const secret = bytes("101112131415161718191a1b1c1d1e1f");
-  const code = pairing.encodePairingCode(PAIRING_ID, ENROLL_TOKEN, secret);
+  const code = pairing.encodePairingCode(PAIRING_ID, ENROLL_TOKEN, secret, COMMITMENT);
   const want = pairing.decodePairingCode(code);
   for (const pasted of [
     pairing.pairingLink(code),
@@ -75,20 +80,22 @@ test("a pasted pairing link, or a code in quotes, decodes to the code it carries
   }
 });
 
-test("the match code is six digits of HKDF over the secret, the pairing and the claimant (#152)", async () => {
+test("the match code is six digits of HKDF over the secret, the pairing and both keys (#152)", async () => {
   const secret = bytes("101112131415161718191a1b1c1d1e1f");
-  const device = "aabbccddeeff00112233445566778899";
-  const code = await pairing.matchCode(secret, PAIRING_ID, device);
+  const [claimant, creator] = [KAT.claimantRaw, KAT.creatorRaw];
+  const code = await pairing.matchCodeV2(secret, PAIRING_ID, claimant, creator);
   assert.match(code, /^\d{3} \d{3}$/);
-  const derived = await c.hkdf(secret, c.utf8("obsync/v1/pair-match"), c.utf8(`${PAIRING_ID}:${device}`), 4);
+  const info = new Uint8Array([...c.utf8(PAIRING_ID), ...c.unbase64url(claimant), ...c.unbase64url(creator)]);
+  const derived = await c.hkdf(secret, c.utf8("obsync/v2/pair-match"), info, 4);
   const expected = String(new DataView(derived.buffer).getUint32(0) % 1_000_000).padStart(6, "0");
   assert.equal(code.replace(" ", ""), expected, "both ends derive it the same way, with no wire field");
-  assert.equal(await pairing.matchCode(secret, PAIRING_ID, device), code, "deterministic");
-  // Each input moves it: another claimant, another pairing, another secret.
+  assert.equal(await pairing.matchCodeV2(secret, PAIRING_ID, claimant, creator), code, "deterministic");
+  // For these fixed inputs, each input moves it: another pairing, another
+  // secret, the two keys in each other's places.
   const others = [
-    await pairing.matchCode(secret, PAIRING_ID, "aabbccddeeff00112233445566778898"),
-    await pairing.matchCode(secret, "fe".repeat(16), device),
-    await pairing.matchCode(bytes("101112131415161718191a1b1c1d1e1e"), PAIRING_ID, device),
+    await pairing.matchCodeV2(secret, "fe".repeat(16), claimant, creator),
+    await pairing.matchCodeV2(bytes("101112131415161718191a1b1c1d1e1e"), PAIRING_ID, claimant, creator),
+    await pairing.matchCodeV2(secret, PAIRING_ID, creator, claimant),
   ];
   for (const other of others) assert.notEqual(other, code);
 });
@@ -156,7 +163,7 @@ test("a certificate from an authority this device does not trust is said as that
   const { ApiError, CERT_UNTRUSTED, certificateRefusal } = require("../build/transport.js");
   const { refusalStatus, refusalText } = require("../build/sync/engine.js");
   assert.equal(CERT_UNTRUSTED, "This device does not trust your server's certificate, so it refused the connection. " +
-    "Trust that certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".");
+    "Trust that certificate on this device. See Troubleshooting, \"The certificate is not trusted on this device\".");
   const untrusted = [
     "network=net::ERR_CERT_AUTHORITY_INVALID",
     "network=The certificate for this server was signed by an unknown certifying authority.",
@@ -191,7 +198,7 @@ test("a certificate for another name or out of date is said as that, on every pa
   const { refusalStatus, refusalText } = require("../build/sync/engine.js");
   assert.equal(CERT_WRONG_NAME, "This device refused your server's certificate because it was made for another name than " +
     "the one in the Server URL. Use the name it was made for in the Server URL, or make the certificate again for this " +
-    "name -- see Troubleshooting, \"The certificate is for another name\".");
+    "name. See Troubleshooting, \"The certificate is for another name\".");
   assert.equal(CERT_OUT_OF_DATE, "This device refused your server's certificate because it has expired or is not valid " +
     "yet. Renew the certificate on your server, or check that this device's date and time are right.");
   const refused = [
@@ -245,19 +252,8 @@ test("pairing, the status and Check say an edge refusal in the same words (#228)
   assert.equal(refusalText(error), EDGE_REQUIRED, "Check and the device list say pairing's words exactly");
 });
 
-test("a held claim is read back exactly, and anything else is no claim (#153)", () => {
-  const claim = { pairingId: PAIRING_ID, pairingSecret: "10".repeat(16), deviceId: "aa".repeat(16),
-    deviceSecret: "0f".repeat(32), serverUrl: "https://sync.example.invalid", claimedAt: 1757200000000 };
-  assert.deepEqual(pairing.readClaim(JSON.stringify({ ...claim, extra: "dropped" })), claim);
-  for (const bad of [null, "", "{", "null", "[]", JSON.stringify({ ...claim, pairingSecret: "10" }),
-    JSON.stringify({ ...claim, deviceId: "ZZ".repeat(16) }), JSON.stringify({ ...claim, claimedAt: "1" }),
-    JSON.stringify({ ...claim, serverUrl: 7 }), JSON.stringify({ ...claim, deviceSecret: undefined })]) {
-    assert.equal(pairing.readClaim(bad), null, String(bad));
-  }
-});
-
 test("the pairing link is an obsidian URI carrying the code", () => {
-  const code = pairing.encodePairingCode(PAIRING_ID, ENROLL_TOKEN, new Uint8Array(16));
+  const code = pairing.encodePairingCode(PAIRING_ID, ENROLL_TOKEN, new Uint8Array(16), COMMITMENT);
   const link = pairing.pairingLink(code);
   assert.equal(link.startsWith("obsidian://obsync-private-sync/pair?code="), true);
   assert.equal(new URL(link).searchParams.get("code"), code);
@@ -267,33 +263,24 @@ test("the pairing link is an obsidian URI carrying the code", () => {
 
 test("the envelope opens only with the right pairing secret and id", async () => {
   const secret = pairing.newPairingSecret();
+  const [creator, claimant] = [await pairing.newPairingKeyExchange(), await pairing.newPairingKeyExchange()];
   // The vault key is the whole envelope: which paths live in which domain
   // comes from the synced map, which this key is exactly what unlocks.
   const envelope = { vrk: "00".repeat(32) };
-  const sealed = await pairing.sealEnvelope(secret, PAIRING_ID, envelope);
+  const sealed = await pairing.sealEnvelopeV2(creator, claimant.publicKey, secret, PAIRING_ID, envelope);
   assert.equal(sealed.nonce.length, 24);
-  assert.deepEqual(await pairing.openEnvelope(secret, PAIRING_ID, sealed.envelope, sealed.nonce), envelope);
-
-  const other = pairing.newPairingSecret();
-  await assert.rejects(() => pairing.openEnvelope(other, PAIRING_ID, sealed.envelope, sealed.nonce));
-  await assert.rejects(() =>
-    pairing.openEnvelope(secret, "00000000000000000000000000000000", sealed.envelope, sealed.nonce),
-  );
-
-  // The key really is HKDF(PS, "obsync/v1/pair", pairing_id).
-  const derived = await c.pairingKey(secret, PAIRING_ID);
-  assert.equal(derived.length, 32);
-  assert.equal(
-    c.hex(derived),
-    c.hex(await c.hkdf(secret, c.utf8("obsync/v1/pair"), c.utf8(PAIRING_ID), 32)),
-  );
+  const open = (ps, id) => pairing.openEnvelopeV2(claimant, creator.publicKey, ps, id, sealed.envelope, sealed.nonce);
+  assert.deepEqual(await open(secret, PAIRING_ID), envelope);
+  await assert.rejects(() => open(pairing.newPairingSecret(), PAIRING_ID));
+  await assert.rejects(() => open(secret, "00000000000000000000000000000000"));
 });
 
 test("an envelope without a vault key is refused", async () => {
   const secret = pairing.newPairingSecret();
-  const sealed = await pairing.sealEnvelope(secret, PAIRING_ID, {});
+  const [creator, claimant] = [await pairing.newPairingKeyExchange(), await pairing.newPairingKeyExchange()];
+  const sealed = await pairing.sealEnvelopeV2(creator, claimant.publicKey, secret, PAIRING_ID, {});
   await assert.rejects(
-    () => pairing.openEnvelope(secret, PAIRING_ID, sealed.envelope, sealed.nonce),
+    () => pairing.openEnvelopeV2(claimant, creator.publicKey, secret, PAIRING_ID, sealed.envelope, sealed.nonce),
     /no vault key/,
   );
 });
@@ -381,7 +368,6 @@ test("sealed claimant vault details bind the pairing and use a separate key (#14
   assert.notEqual((await pairing.sealPairingVault(secret, PAIRING_ID, details)).nonce, sealed.nonce);
   await assert.rejects(() => pairing.openPairingVault(pairing.newPairingSecret(), PAIRING_ID, sealed));
   await assert.rejects(() => pairing.openPairingVault(secret, "00".repeat(16), sealed));
-  await assert.rejects(() => pairing.openEnvelope(secret, PAIRING_ID, sealed.envelope, sealed.nonce));
   const key = await crypto.subtle.importKey("raw", await c.hkdf(secret, c.utf8("obsync/v1/pair-vault"), c.utf8(PAIRING_ID), 32), "AES-GCM", false, ["decrypt"]);
   const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: c.unhex(sealed.nonce), additionalData: c.utf8(PAIRING_ID) }, key, c.unbase64(sealed.envelope));
   assert.deepEqual(JSON.parse(new TextDecoder().decode(plain)), details);

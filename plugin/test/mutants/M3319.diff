@@ -1,0 +1,11 @@
+# M3319: a folder that filled up since the listing is not kept: its removal fails (issue #266)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2706,7 +2706,6 @@
+         await desktop.fs.promises.rmdir(found.target);
+       } catch (error) {
+         const code = (error as { code?: unknown }).code;
+-        if (code === "ENOTEMPTY" || code === "EEXIST") return 1;
+         if (code !== "ENOENT") throw error;
+       }
+     } else {

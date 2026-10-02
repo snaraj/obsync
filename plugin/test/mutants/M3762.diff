@@ -1,0 +1,12 @@
+# M3762: a wait for the push over a version holding this device's own output is refunded, so a peer answering it never trips the breaker (#278)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2745,7 +2745,7 @@
+   // holds nothing of this device's own. One that does -- a peer answering
+   // this device's output -- still counts: that is the loop the breaker is for.
+   const over = startedOver.delete(change);
+-  if (tally.generation === generation && (over || (context.forked.has(change.file_id) && !reaches(file.versions, change.version_id, localVersionId)))) {
++  if (tally.generation === generation && (over || context.forked.has(change.file_id))) {
+     tally.count--;
+     context.host.log(`pull decision=merge_budget_refund reason=${over ? "started_over" : "own_push"} file=${change.file_id} seq=${change.seq} count=${tally.count}`);
+   }

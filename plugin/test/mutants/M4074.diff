@@ -1,0 +1,12 @@
+# M4074: a page whose frames name no heads is fetched one chunk at a time (#311)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -796,7 +796,7 @@
+     const path = state.pathByFileId(change.file_id);
+     const record = path === undefined ? undefined : state.fileByPath(path);
+     // A version a later one replaced, of a file held nowhere here, is skipped (`applyVersion`).
+-    if (record === undefined) return change.heads.length === 0 || change.heads.includes(change.version_id);
++    if (record === undefined) return change.heads.includes(change.version_id);
+     // A version this device holds, or a rename of the bytes it holds, fetches nothing.
+     return record.versionId !== change.version_id && record.sha256 !== (await sidDigest(change.sids));
+   }

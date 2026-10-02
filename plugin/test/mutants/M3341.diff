@@ -1,0 +1,12 @@
+# M3341: the feed writes a note that left the selection again at its old name (#239)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -1201,7 +1201,7 @@
+   // meanwhile meets this device's move when that move is published
+   // (`engine.ts`, `rejoin`), by the rules for a rename meeting an edit or a
+   // deletion (issue #151).
+-  if (context.state.data.departed[change.file_id] !== undefined) {
++  if (false) {
+     context.host.log(`pull path_class=file decision=skipped reason=left_selection file=${change.file_id} seq=${change.seq}`);
+     return "skipped";
+   }

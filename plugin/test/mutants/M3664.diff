@@ -1,0 +1,11 @@
+# M3664: a stalled page names no record in hand (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3234,7 +3234,6 @@
+         for (const change of page.changes) {
+           if (!this.running) break;
+           if (this.pulls > 0) this.status(this.resting());
+-          this.step = { seq: change.seq, name: "receive", since: this.nowFn() };
+           // Re-reading a rebuilt journal from zero (issue #145): what this
+           // device already processed is not news, and applied again it is
+           // yesterday's note over today's, a deletion undone, a rename reverted.

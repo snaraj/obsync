@@ -138,7 +138,7 @@ async function vault(t, { mobile = false, config = ".obsidian", dir = true } = {
     deviceName: () => "sentinel-device",
   };
   const host = new ObsidianHost(plugin, mobile ? null : { base: root, path: nodePath, fs: { promises: fsPromises } });
-  host.notify = (message) => notices.push(message);
+  host.notify = (notice) => notices.push(require("../build/notices.js").toastText(notice));
   r.context.host = host;
   const counts = { scans: 0 };
   if (!mobile) {
@@ -228,7 +228,7 @@ test("a folder that is a vault of its own is neither published nor written into,
 
   // NEVER SILENT, AND NEVER ONCE PER NOTE: one notice naming the folder, one log line that does not.
   assert.equal(r.notices.length, 1, r.notices.join(" | "));
-  assert.match(r.notices[0], /^obsync does not sync "Sub": that folder is a vault of its own with obsync installed/);
+  assert.match(r.notices[0], /^obsync: does not sync "Sub": that folder is a vault of its own with obsync installed/);
   assert.equal(excluded(r).length, 1, story(r));
 
   // The periodic scan does not list it at all, so it asks nothing about it again.
@@ -436,6 +436,9 @@ test("a vault paired before the check existed stops at every start inside a sync
   // One notice for the refusal, not one per start -- and the Sync now press
   // answers once, with the same reason, because a press always answers (#182).
   assert.deepEqual(p.notices, [`obsync: ${refusal("Outer")}`, `obsync: ${refusal("Outer")}`], "one per start, plus the press's answer");
+  // A second start's refusal would JOIN the first's toast, still on screen,
+  // rather than draw one ("(2 times)"): Recent is where it would show.
+  assert.deepEqual(p.instance.notices.recent().map((entry) => entry.kind), ["confirm", "error"], "the refusal once, then the press's answer");
   assert.equal(p.logs.filter((line) => /^engine decision=refused reason=nested_vault duration_ms=\d+$/.test(line)).length, 3, p.logs.join(" | "));
   assert.ok(!p.logs.some((line) => line.startsWith("engine decision=retry_scheduled")), "no timer knocks again");
 });

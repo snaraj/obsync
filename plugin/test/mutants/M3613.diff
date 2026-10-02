@@ -1,0 +1,12 @@
+# M3613: a local leave after the hold refusal says the server does not recognise this device
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -1082,7 +1082,7 @@
+     tell(this.plugin,
+       revoked
+         ? "this device left the server; every note is still in this vault."
+-        : this.refusal === "last_device" || this.refusal === "recovery_too_new"
++        : this.refusal === "last_device"
+           ? "this device forgot the server, which still lists it; every note is still in this vault."
+           : this.refusal === "bad_signature"
+             ? "this device forgot the server, which did not recognise it; every note is still in this vault."

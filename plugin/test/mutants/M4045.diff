@@ -1,0 +1,12 @@
+# M4045: every disk call arms a watchdog of its own, and all but the last run for ever (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -374,7 +374,7 @@
+             reject(new DiskStalled());
+           },
+     });
+-    diskWatch ??= window.setInterval(watchDisk, DISK_WATCH_MS);
++    diskWatch = window.setInterval(watchDisk, DISK_WATCH_MS);
+     call.then(
+       (value) => {
+         if (diskCalls.delete(id)) return resolve(value);

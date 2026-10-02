@@ -1,7 +1,7 @@
 # M2341: the approval prompt counts one note as notes (iPhone pass)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -304,7 +304,7 @@
+@@ -400,7 +400,7 @@
      statusEl.setText(
        `Approve "${claimant.name}" (${platformLabel(claimant.platform)}, obsync ${claimant.app_version}), asking since ${clock(asked)}? ` +
          `Approve only if the new device shows the code ${code}.` +

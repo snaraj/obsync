@@ -1,0 +1,11 @@
+# M4011: the nested-vault check reads a stalled folder as no vault (#302, #307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -966,7 +966,6 @@
+     try {
+       names = await desktop.fs.promises.readdir(dir);
+     } catch (error) {
+-      if (error instanceof DiskStalled) throw error;
+       return false;
+     }
+     next: for (const name of names) {

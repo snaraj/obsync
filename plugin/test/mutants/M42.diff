@@ -1,10 +1,10 @@
 # M42: 91: both sides of the move are judged by the selection after it
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1565,7 +1565,7 @@
-     const { files, dropped } = this.options.state.data;
+@@ -1808,7 +1808,7 @@
      const pending = [...this.pending.keys(), ...this.queue, ...this.pushing.keys()];
-     for (const path of new Set([...Object.keys(files), ...Object.keys(dropped), ...pending])) {
+     const away = Object.values(departed).map((entry) => entry.path);
+     for (const path of new Set([...Object.keys(files), ...Object.keys(dropped), ...away, ...pending])) {
 -      if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length), before);
 +      if (path.startsWith(prefix)) this.renamed(path, to + path.slice(from.length));
      }

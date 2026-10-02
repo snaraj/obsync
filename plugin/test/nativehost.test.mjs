@@ -53,7 +53,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
-import { rig, sandbox } from "./fake.mjs";
+import { diskWatchdog, rig, sandbox, scratch, until } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -123,6 +123,13 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = 
       if (hooks.beforeRename) await hooks.beforeRename(root, from, to);
       await fsPromises.rename(from, to);
       if (hooks.afterRename) await hooks.afterRename(root, from, to);
+    },
+    // A disk that answers an open late, or not at all; `opened` sees the real handle.
+    open: async (path, flags, mode) => {
+      if (hooks.open) await hooks.open(root, path, flags);
+      const handle = await fsPromises.open(path, flags, mode);
+      if (hooks.opened) hooks.opened(path, flags, handle);
+      return handle;
     },
   };
   /** Obsidian's mobile surface: no filesystem, one adapter, one create. */
@@ -1204,7 +1211,7 @@ test("a hidden folder something else wrote into is kept, and reported", async (t
  * the vault's deletion by a name that leads out of the vault.
  */
 test("a hidden folder swapped for a link refuses the removal", async (t) => {
-  const outside = mkdtempSync(join(tmpdir(), "obsync-outside-"));
+  const outside = scratch("obsync-outside-");
   t.after(() => rmSync(outside, { recursive: true, force: true }));
   let swapped = false;
   const r = await native(
@@ -1237,6 +1244,125 @@ test("a hidden folder swapped for a link refuses the removal", async (t) => {
   // And the hold still names the note inside the vault.
   const held = r.hidden().filter((name) => name.startsWith(".obsync-hold-"));
   assert.deepEqual(held.map((name) => readFileSync(join(r.root, "Notes", name), "utf8")), [MINE]);
+});
+
+/**
+ * A CHANGE PAST ITS BUDGET IS AWAITED, NEVER READ AS REFUSED (review of
+ * a0dc7fc2, finding 1). The move into the hidden folder LANDS here, and only
+ * its answer is held, as a disk that loses an acknowledgement holds it. Taken
+ * for a refusal, the removal said "nothing moved", released the hold and left
+ * the note under a hidden name with nothing keeping it. Awaited, the hold
+ * stays for as long as the answer is out, and the removal ends as it would
+ * have when the answer comes.
+ */
+test("a move into the hidden folder that landed but answered after its budget is awaited, and the hold stays until it answers", async (t) => {
+  let answer = null;
+  const r = await native(t, {
+    afterRename: (root, from, to) => (nodePath.basename(nodePath.dirname(to)).startsWith(".obsync-gone-")
+      ? new Promise((resolve) => { answer = resolve; })
+      : undefined),
+  });
+  const dog = diskWatchdog(t);
+  r.seed(NOTE, MINE, 2000);
+  const stat = statSync(join(r.root, NOTE));
+  const outcome = r.host.trash(NOTE, { path: NOTE, mtime: Math.round(stat.mtimeMs), size: stat.size }).then((v) => v, (e) => e);
+  await until(() => answer !== null);
+  assert.notEqual(answer, null, "the removal never moved the note");
+  assert.equal(existsSync(join(r.root, NOTE)), false, "the move had not landed");
+
+  dog.at(15_000);
+  dog.tick();
+  assert.ok(r.logs.includes("host decision=overrun call=rename duration_ms=15000 budget_ms=15000 outcome=awaited"), JSON.stringify(r.logs));
+  const early = await Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve("still waiting"), 50))]);
+  assert.equal(early, "still waiting", `the removal ended on a guess: ${early}`);
+  assert.equal(r.logs.includes("host path_class=file decision=kept reason=move_refused"), false, "the landed move was read as refused");
+  const held = r.hidden().filter((name) => name.startsWith(".obsync-hold-"));
+  assert.deepEqual(held.map((name) => readFileSync(join(r.root, "Notes", name), "utf8")), [MINE], "the hold was released while the move was out");
+
+  answer();
+  assert.equal(await Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve("still waiting after its answer"), 2000))]), "removed");
+  assert.ok(r.logs.includes("host decision=late call=rename duration_ms=15000 budget_ms=15000 outcome=answered"), JSON.stringify(r.logs));
+  assert.deepEqual(r.hidden(), [], "a hold or a moved file was left behind");
+  assert.deepEqual(r.trashed.map((entry) => entry.bytes), [MINE]);
+});
+
+/**
+ * A STALLED READ OF THE HOLD SAYS NOTHING OF IT (review of a0dc7fc2, finding
+ * 1). Its open is the last look before the hold is released; read as "the
+ * hold is gone", the removal ended `removed` with the hold still on the disk
+ * and nothing left to look at it. It fails instead, the hold stays, and the
+ * handle the open brings when it answers at last is closed, as nobody is
+ * left to close it.
+ */
+test("a stalled open of the hold fails the removal and leaves the hold, and the handle it brings late is closed", async (t) => {
+  let gate = null;
+  let late = null;
+  const r = await native(t, {
+    open: (root, path, flags) => (flags === "r" && nodePath.basename(path).startsWith(".obsync-hold-") && gate === null
+      ? new Promise((resolve) => { gate = resolve; })
+      : undefined),
+    opened: (path, flags, handle) => { if (nodePath.basename(path).startsWith(".obsync-hold-")) late = handle; },
+  });
+  const dog = diskWatchdog(t);
+  r.seed(NOTE, MINE, 2000);
+  const stat = statSync(join(r.root, NOTE));
+  const outcome = r.host.trash(NOTE, { path: NOTE, mtime: Math.round(stat.mtimeMs), size: stat.size }).then((v) => v, (e) => e);
+  await until(() => gate !== null);
+  assert.notEqual(gate, null, "the removal never opened the hold");
+
+  dog.at(15_000);
+  dog.tick();
+  const error = await Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve("still waiting after its budget"), 2000))]);
+  assert.equal(error?.code, "disk_stalled", `the removal ended as ${error}`);
+  assert.ok(r.logs.includes("host decision=stalled call=open duration_ms=15000 budget_ms=15000"), JSON.stringify(r.logs));
+  assert.equal(r.logs.includes("host path_class=file decision=restore_failed reason=hold_gone"), false, "a stalled open was read as a hold gone");
+  const held = r.hidden().filter((name) => name.startsWith(".obsync-hold-"));
+  assert.deepEqual(held.map((name) => readFileSync(join(r.root, "Notes", name), "utf8")), [MINE], "the hold went with the stall");
+
+  gate();
+  await until(() => late !== null && late.fd === -1);
+  assert.equal(late?.fd, -1, "the handle the late open brought was left open");
+  assert.ok(r.logs.includes("host decision=late call=open duration_ms=15000 budget_ms=15000 outcome=answered"), JSON.stringify(r.logs));
+});
+
+/**
+ * A STOP WAITS FOR A CHANGE STILL OUT (review of a0dc7fc2, finding 1). A
+ * download's deletion is stopped while its move is unanswered, past its
+ * budget: the apply does not end until the disk answers the move, so nothing
+ * that stops or starts after it acts on a move that may still land.
+ */
+test("a stop that comes while a deletion's move is unanswered past its budget waits for the move", async (t) => {
+  let answer = null;
+  const r = await native(t, {
+    afterRename: (root, from, to) => (nodePath.basename(nodePath.dirname(to)).startsWith(".obsync-gone-")
+      ? new Promise((resolve) => { answer = resolve; })
+      : undefined),
+  });
+  const dog = diskWatchdog(t);
+  r.seed("Notes/Keep.md", "SIBLING SENTINEL\n", 1000);
+  r.seed(NOTE, MINE, 2000);
+  await pushFile(r.context, NOTE);
+  const live = r.state.fileByPath(NOTE);
+  const tombstone = await r.server.publishTombstone({ fileId: live.fileId, path: NOTE, manifestKey: r.keys.manifestKey, parents: [live.versionId] });
+  const halt = new AbortController();
+  let ended = false;
+  const applied = applyChange({ ...r.context, signal: halt.signal }, tombstone).then((v) => v, (e) => e).finally(() => { ended = true; });
+  await until(() => answer !== null);
+  assert.notEqual(answer, null, "the deletion never moved the note");
+
+  halt.abort();
+  dog.at(15_000);
+  dog.tick();
+  assert.ok(r.logs.includes("host decision=overrun call=rename duration_ms=15000 budget_ms=15000 outcome=awaited"), JSON.stringify(r.logs));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(ended, false, "the stopped apply ended while its move was still out");
+
+  answer();
+  await Promise.race([applied, new Promise((resolve) => setTimeout(resolve, 2000))]);
+  assert.equal(ended, true, "the apply never ended after its move answered");
+  assert.equal(existsSync(join(r.root, NOTE)), false);
+  assert.deepEqual(r.hidden(), [], "a hold or a moved file was left behind");
+  assert.deepEqual(r.trashed.map((entry) => entry.bytes), [MINE], "the note's bytes went anywhere but the deletion it was meant for");
 });
 
 // --- the case-only rename on the real host (issue #124) -----------------

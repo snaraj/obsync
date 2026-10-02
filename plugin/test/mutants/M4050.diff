@@ -1,0 +1,12 @@
+# M4050: a read whose folder chain changed after the open goes on when the file is still the same (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1490,7 +1490,7 @@
+     const found = await this.confine(desktop, path, ["file"]);
+     const handle = await desktop.fs.promises.open(found.target, "r");
+     const refusal = await chainRefusal(found.chain, walker(desktop.fs));
+-    const opened = refusal === null ? await fstat(handle) : null;
++    const opened = await fstat(handle);
+     if (opened === null || !sameFile(found.stat, opened)) {
+       await handle.close();
+       throw new VaultPathError(refusal ?? "target_identity");

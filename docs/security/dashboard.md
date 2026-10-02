@@ -9,9 +9,9 @@ the wire contract is [`../protocol.md`](../protocol.md).
 
 ## 1. What it is
 
-A read-mostly operator view of one server, plus five mutations: revoke a
-device, run garbage collection, run a scrub, sign out, and sign out
-everywhere. It holds no vault key and never sees plaintext, so it cannot read
+A read-mostly operator view of one server, plus six mutations: revoke a
+device, forget a revoked one (which archives it, and destroys nothing), run
+garbage collection, run a scrub, sign out, and sign out everywhere. It holds no vault key and never sees plaintext, so it cannot read
 a note, approve a device, or recover a vault. Those all happen on a paired
 device.
 
@@ -136,6 +136,22 @@ device.
   with a refusal, renewably. The token is 256 bits compared in constant time,
   so a limit buys nothing against guessing; the noise it would bound is
   already bounded by the ring split below. Refusals are logged instead.
+- **The app that opens a sign-in link may log it** (issue #270). **Open
+  dashboard** hands the link to the system browser through Obsidian, and
+  Obsidian writes the whole address, token included, to its own console
+  output (`Opening URL: …/login?token=…`, seen in the 2026-09-29 validation
+  run, where that output was kept in a file). Wherever a host's output is
+  kept, the token is kept with it, and the browser's history keeps the
+  address too. What such a copy can open is bounded: the token opens one
+  session, once, and only within **five minutes** of being minted. Spent --
+  normally seconds after the click -- a copy opens nothing; never spent, it
+  dies at five minutes, on sign-out-everywhere, or when the device that
+  minted it is revoked. Five minutes and not seconds, because an edge may
+  put its own sign-in in front of `GET /login` -- Cloudflare Access's
+  one-time PIN by e-mail ([shape B](../cloudflare.md#shape-b-a-public-hostname-behind-access)),
+  or a reverse proxy's login -- and the link has to survive it. The server
+  test `a_sign_in_link_lives_five_minutes_and_opens_once` pins that lifetime
+  to the second.
 - **A revoked device's requests are NOT credentialed.** Revocation destroys
   the wrapped secret, so `403 device_revoked` has to be answered from the
   device record before any signature can be checked — there is nothing left
@@ -150,6 +166,14 @@ device.
   alone: `403 device_revoked` against `401 bad_signature`, for the reason
   above. A device id is not a secret the protocol protects, and the
   alternative is a refusal that does not say what happened.
+- **Forgetting a device changes the LIST, not the device.** It archives the
+  record (`POST /v1/admin/devices/{id}/archive`, issue #247): a revoked
+  device only, under the session and the double-submit check like every other
+  mutation, journaled before the answer. The record stays, so that device is
+  still answered `403 device_revoked` rather than becoming indistinguishable
+  from a stranger, and the versions it wrote keep an author. Deleting it
+  instead would have removed evidence an operator may need, so the page says
+  how many devices it is not listing.
 - The decision log is not an audit log. It is two bounded rings in memory —
   1000 lines from credentialed requests, 200 from everything else — so
   unauthenticated traffic can push out only other unauthenticated traffic,
@@ -183,6 +207,8 @@ device.
 - **The last-device refusal** protects accounts without registered recovery.
   Once an authenticated client registers the vault-key verifier, the last device
   may be revoked: the setup token plus vault-key proof can enroll a new one.
+  From 1.1.5, only once that verifier is seven days old (`409
+  recovery_too_new` before), from either route.
   A legacy account that lost every credential before registration cannot do so.
 - **Sign out everywhere** ends every session in the process at once and
   drops every unspent login link with them, for the browser left behind on a

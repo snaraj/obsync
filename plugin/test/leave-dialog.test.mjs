@@ -56,7 +56,8 @@ function dialog(t, { mode = "leave", deviceId = "11".repeat(16), unpushed = [], 
   const plugin = {
     isMobile: false,
     sendsNow,
-    state: { data: { deviceId } },
+    // The quietest notices a person can choose: every answer is still said.
+    state: { data: { deviceId, notices: { level: "needs-me", merges: "off" } } },
     unpushedEdits: async () => unpushed,
     leaveServer: async (choice) => {
       choices.push(choice);
@@ -66,6 +67,8 @@ function dialog(t, { mode = "leave", deviceId = "11".repeat(16), unpushed = [], 
     },
     setServerUrl: async (value) => { choices.push(`setServerUrl:${value}`); },
   };
+  // Every answer goes through the real notice channel onto the stub's toasts (`notices.ts`).
+  plugin.notices = box.require(join(box.home, "build/main.js")).noticeChannel({ ...plugin, log: () => undefined });
   let left = 0;
   const modal = new LeaveServerModal({}, plugin, mode, () => { left++; });
   modal.contentEl = element();
@@ -153,7 +156,36 @@ test("a last-device refusal offers leaving locally, and says what that leaves be
     { discardUnpushed: false, localOnly: false },
     { discardUnpushed: false, localOnly: true },
   ]);
-  assert.ok(d.notices.some((notice) => notice.includes("which still holds this device")));
+  assert.ok(d.notices.some((notice) => notice.includes("which still lists it")));
+});
+
+test("a last device held while its recovery key is new says why in plain words and still offers leaving locally (1.1.5)", async (t) => {
+  const d = dialog(t, {
+    answers: [
+      { decision: "refused", reason: "recovery_too_new", detail: "SERVER DETAIL SENTINEL" },
+      { decision: "left", revoked: false },
+    ],
+  });
+
+  d.modal.onOpen();
+  await tick();
+  d.button("Leave").click();
+  await tick();
+
+  const text = d.drawn.join("\n");
+  assert.match(text, /only device syncing this vault, and its recovery key was set less than 7 days ago/);
+  assert.match(text, /a stolen device credential cannot lock you out/);
+  assert.match(text, /Pair another device first, or leave on this device only/);
+  assert.equal(text.includes("SERVER DETAIL SENTINEL"), false, "the plugin's words, not the server's detail");
+  assert.equal(/no registered vault recovery yet/.test(text), false, "not the unregistered-recovery explanation");
+
+  d.button("Leave on this device only").click();
+  await tick();
+  assert.deepEqual(d.choices, [
+    { discardUnpushed: false, localOnly: false },
+    { discardUnpushed: false, localOnly: true },
+  ]);
+  assert.ok(d.notices.some((notice) => notice.includes("which still lists it")));
 });
 
 test("a count that grew while the dialog waited is redrawn, not overridden", async (t) => {
@@ -169,7 +201,7 @@ test("a count that grew while the dialog waited is redrawn, not overridden", asy
   await tick();
 
   assert.match(d.drawn.join("\n"), /li: Notes\/typed-since.md/);
-  assert.ok(d.notices.some((notice) => notice.includes("Leaving was not done")));
+  assert.ok(d.notices.some((notice) => notice.includes("so it did not leave")));
   d.button("Discard 1 and leave");
   assert.equal(d.closed(), 0, "the dialog stays open on a refusal");
 });
@@ -187,7 +219,7 @@ test("switch mode takes the new address and opens pairing against it", async (t)
   assert.equal(d.closed(), 0, "leaving is half of switching");
   d.button("Pair with existing vault").click();
   await tick();
-  assert.ok(d.notices.some((notice) => notice.includes("Enter the new server's address first")));
+  assert.ok(d.notices.some((notice) => notice.includes("enter the new server's address first")));
   assert.deepEqual(d.choices, [{ discardUnpushed: false, localOnly: false }], "an empty address saves nothing");
 
   d.made.find((component) => component.change !== undefined).change("other.example.invalid");
@@ -319,7 +351,7 @@ test("no answer from the server offers leaving on this device only, and says wha
   await tick();
 
   assert.deepEqual(d.choices.at(-1), { discardUnpushed: false, localOnly: true });
-  assert.ok(d.notices.includes("This device has left. Your server still lists it until you remove it from another device's Devices list or the dashboard."));
+  assert.ok(d.notices.includes("obsync: this device has left; your server still lists it until you remove it from another device's Devices list or the dashboard."));
 });
 
 test("Sync now is advised only where it can work: never offline, never to a device the server no longer accepts", async (t) => {
@@ -345,7 +377,7 @@ test("a leave that fails outright puts the dialog back as it was, buttons and al
   d.button("Leave").click();
   await tick();
 
-  assert.ok(d.notices.includes("LEAVE FAILURE SENTINEL"));
+  assert.ok(d.notices.includes("obsync: LEAVE FAILURE SENTINEL"));
   d.button("Leave").click();
   await tick();
   assert.equal(d.choices.length, 2, "and pressing again tries again");

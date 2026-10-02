@@ -158,10 +158,34 @@ test("a start the server could not be reached for is retried, and the next one t
   assert.equal(r.logs.filter((line) => line.startsWith("engine decision=resumed")).length, 1);
 });
 
+/**
+ * A START THAT MET A DISK CALL THAT NEVER ANSWERED IS MADE AGAIN (#307).
+ * Live, the start's lstat was lost as the Settings window closed: the bound
+ * failed it 15 s later, and the start was taken for a refusal, which nothing
+ * retries, under words saying obsync tries again by itself. It stopped for good.
+ */
+test("a start that met a disk call that never answered is made again after the pause, and says so until it gets through (#307)", async (t) => {
+  const r = await fixture(t);
+  const words = "This device's disk did not answer in time. obsync tries again by itself.";
+  r.plan((n) => { if (n === 1) throw Object.assign(new Error(words), { code: "disk_stalled" }); });
+  await r.instance.onload();
+  assert.equal(r.instance.engine, null, "the engine that could not start is torn down");
+  assert.deepEqual(r.win.armed(), [5000], "no start is armed again: the device stops for good");
+  assert.deepEqual(r.scheduled(), ["engine decision=retry_scheduled attempt=1 delay_ms=5000 status=0"]);
+  assert.ok(r.logs.includes("engine decision=stopped reason=start_stalled code=disk_stalled"), r.logs.join("\n"));
+  assert.equal(r.instance.statusText(), `error — ${words}`);
+
+  r.win.fire();
+  await settle();
+  assert.deepEqual(r.running(), [r.engines[1]]);
+  assert.ok(r.logs.includes("engine decision=resumed attempt=1"));
+  assert.equal(r.instance.statusText(), "idle", "the words went with the start that got through");
+});
+
 test("a start refused by a certificate this device does not trust says so, is retried, and a start that gets through clears it", async (t) => {
   const r = await fixture(t);
   const said = "error — This device does not trust your server's certificate, so it refused the connection. Trust that " +
-    "certificate on this device -- see Troubleshooting, \"The certificate is not trusted on this device\".";
+    "certificate on this device. See Troubleshooting, \"The certificate is not trusted on this device\".";
   r.plan((n) => { if (n === 1) throw new r.ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID"); });
   await r.instance.onload();
   assert.deepEqual(r.win.armed(), [5000], "retried like absence: trusting the certificate needs no press here");
@@ -207,6 +231,16 @@ test("a terminator answering 5xx for a server that is not there is an outage too
   await r.instance.onload();
   assert.deepEqual(r.scheduled(), ["engine decision=retry_scheduled attempt=1 delay_ms=5000 status=503"]);
   assert.deepEqual(r.win.armed(), [5000]);
+  assert.equal(r.instance.statusText(), "offline — retrying");
+});
+
+test("a server answering a 5xx in its own coded error at start is retried like an outage, and says the read failed, never offline (#298)", async (t) => {
+  const r = await fixture(t);
+  r.plan((n) => { if (n === 1) throw new r.ApiError(500, "unreachable", "status=500 code=io_error", true); });
+  await r.instance.onload();
+  assert.deepEqual(r.scheduled(), ["engine decision=retry_scheduled attempt=1 delay_ms=5000 status=500"]);
+  assert.deepEqual(r.win.armed(), [5000]);
+  assert.match(r.instance.statusText(), /^error — Changes from your server could not be read\. /);
 });
 
 test("the device reporting its network back runs the pending retry now, and is nothing otherwise", async (t) => {
@@ -475,6 +509,15 @@ test("a start still inside the transport's retries already reads offline, and th
   assert.deepEqual(r.win.armed(), [], "an outage the transport rode out arms no reconnect");
 });
 
+test("the offline line names the request that went unanswered, and why (#288)", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  r.instance.transport.options.reachable(false, "GET /v1/changes?since=4&wait=55&limit=1000 timeout budget_ms=70000");
+  assert.ok(r.logs.includes("engine decision=offline reason=unanswered request=GET /v1/changes?since=4&wait=55&limit=1000 timeout budget_ms=70000"), r.logs.join("\n"));
+  r.instance.transport.options.reachable(true);
+  assert.ok(r.logs.includes("engine decision=online reason=answered"));
+});
+
 test("an answer puts back the syncing it covered, and never a status raised since", async (t) => {
   const r = await fixture(t);
   await r.instance.onload();
@@ -495,6 +538,15 @@ test("a note waiting on unsaved changes here is named in the status (issue #252)
   await r.instance.onload();
   r.instance.setStatus({ kind: "syncing", pending: 1, held: "Notes/open.md" });
   assert.equal(r.instance.statusText(), "syncing 1 file, waiting for unsaved changes in Notes/open.md");
+});
+
+test("a Sync now waiting on another sync step names it in the status (issue #276)", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  r.instance.setStatus({ kind: "syncing", pending: 0, waiting: "sweep" });
+  assert.equal(r.instance.statusText(), "checking for changes, waiting for the cleanup of interrupted writes");
+  r.instance.setStatus({ kind: "syncing", pending: 2, waiting: "page" });
+  assert.equal(r.instance.statusText(), "syncing 2 files, waiting for changes from your other devices");
 });
 
 test("an unanswered attempt never hides an error, and an answer never clears the reconnect cycle's offline", async (t) => {

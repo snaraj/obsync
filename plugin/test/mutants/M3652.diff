@@ -1,0 +1,11 @@
+# M3652: a read does not disarm the watch its predecessor armed (#276)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2743,7 +2743,6 @@
+    */
+   private watchFeed(): void {
+     const sent = this.nowFn();
+-    if (this.feedWatch !== null) this.timers.clear(this.feedWatch);
+     this.feedWatch = this.timers.set(() => {
+       this.feedWatch = null;
+       const now = this.nowFn();

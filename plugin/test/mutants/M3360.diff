@@ -1,0 +1,12 @@
+# M3360: a destination that is gone, or cannot be synced, stays remembered (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3731,7 +3731,7 @@
+           : !(await context.host.syncable(file.path)) ? "destination_unsyncable"
+           : this.rejoin(context, fileId, file.path, file.size);
+         if (refused === null) settled.add(away.path);
+-        else if (context.state.data.departed[fileId] !== undefined) {
++        else if (Date.now() < 0) {
+           delete context.state.data.departed[fileId];
+           this.saveMoved(context);
+         }

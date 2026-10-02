@@ -21,7 +21,76 @@ const require = createRequire(import.meta.url);
 const c = require("../build/crypto.js");
 const dm = require("../build/domainmap.js");
 const vp = require("../build/vaultPath.js");
+const notes = require("../build/notices.js");
 const PLUGIN_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * The real notice channel (`main.ts`, `noticeChannel`) for a stub plugin in
+ * `box`: its notices land on the sandbox's recorded toasts, as a person would
+ * see them. The channel's own decision lines stay out of the stub's log; the
+ * notice-channel tests read those.
+ */
+export function channel(box, plugin) {
+  return box.require(join(box.home, "build/main.js")).noticeChannel({
+    get state() { return plugin.state; }, log: () => undefined, showStatus: () => plugin.showStatus?.(), act: (action) => plugin.act?.(action),
+  });
+}
+
+/**
+ * A TEMP DIRECTORY THIS TEST PROCESS REMOVES WHEN IT ENDS, whatever its tests
+ * did, a failed assertion included. The sandboxes and vaults below were left
+ * behind by every run: a million of them (573 GiB) filled the machine the
+ * suite ran on. A test that removes its own earlier changes nothing here.
+ * `npm test` (`test/run.mjs`) refuses a suite that leaves anything behind.
+ */
+const scratches = new Set();
+process.on("exit", () => {
+  for (const dir of scratches) rmSync(dir, { recursive: true, force: true });
+});
+/**
+ * The desktop host's disk watchdog (`watchDisk`, #307), run by hand: its
+ * clock stands still until `at` moves it, and its tick runs only when the
+ * test calls `tick`. `tick` is null while no watchdog is armed, so a tick that
+ * finds every call answered and stops the watchdog shows each one took its
+ * entry back. Waits use `performance.now` (`until`): `Date.now` is the frozen
+ * clock. An earlier test's host, loaded on its own, stops its own watchdog up
+ * to a tick after its last call: that stop goes to the real timer.
+ */
+export function diskWatchdog(t) {
+  const real = { window: globalThis.window, now: Date.now };
+  const start = real.now();
+  let now = start;
+  const dog = { tick: null, at: (ms) => { now = start + ms; } };
+  Date.now = () => now;
+  globalThis.window = { ...real.window,
+    setInterval: (fn, ms) => {
+      if (ms !== 1000) throw new Error(`the watchdog ticks every ${ms} ms, not once a second`);
+      if (dog.tick !== null) throw new Error("a second watchdog was armed while one runs");
+      dog.tick = fn;
+      return "watchdog";
+    },
+    clearInterval: (id) => {
+      if (id === "watchdog") dog.tick = null;
+      else real.window.clearInterval(id);
+    },
+  };
+  t.after(() => { globalThis.window = real.window; Date.now = real.now; });
+  return dog;
+}
+
+/**
+ * Waits by the wall clock, never by a count of turns (a disk under load takes
+ * more of them), until `done` holds or five seconds pass.
+ */
+export async function until(done) {
+  for (const end = performance.now() + 5000; !done() && performance.now() < end;) await new Promise((resolve) => setTimeout(resolve, 1));
+}
+
+export function scratch(prefix) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  scratches.add(dir);
+  return dir;
+}
 
 /**
  * A throwaway directory where `obsidian` resolves to a stub, the way
@@ -31,7 +100,7 @@ const PLUGIN_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
  * unconditionally would race the bundle test's rebuild.
  */
 export function sandbox({ dist = false } = {}) {
-  const home = mkdtempSync(join(tmpdir(), "obsync-sandbox-"));
+  const home = scratch("obsync-sandbox-");
   mkdirSync(join(home, "node_modules", "obsidian"), { recursive: true });
   writeFileSync(
     join(home, "node_modules", "obsidian", "package.json"),
@@ -44,7 +113,15 @@ export function sandbox({ dist = false } = {}) {
 // listener on unload as well; the stub attaches only, so a fake window a test
 // installs holds exactly what the plugin registered.
 class Component { registerDomEvent(el, type, handler) { el.addEventListener(type, handler); } }
-class Plugin extends Component {}
+// Obsidian's command line (1.12.2+) keeps one handler per id and refuses a
+// second, as \`app.cli.registerHandler\` does; a test runs a handler by its id.
+class Plugin extends Component {
+  registerCliHandler(command, description, flags, handler) {
+    this.cli ??= new Map();
+    if (this.cli.has(command)) throw new Error(\`Command "\${command}" is already registered as a handler.\`);
+    this.cli.set(command, { description, flags, handler });
+  }
+}
 class Modal { constructor(app) { this.app = app; } }
 // Like the real one, the constructor names the tab after the plugin. The API
 // declaration does not list \`id\` or \`name\`, so a subclass field with either
@@ -61,7 +138,9 @@ class Setting { constructor(el) { this.el = el; } }
 const notices = [];
 const raised = [];
 class NoticeEl {
-  constructor(parent = null) { this.handlers = {}; this.parent = parent; }
+  constructor(parent = null, notice = null) { this.handlers = {}; this.parent = parent; this.notice = notice; }
+  /** In the page until its notice is hidden, as Obsidian takes a hidden toast out of it. */
+  get isConnected() { return this.notice === null || !this.notice.hidden; }
   addEventListener(type, handler) { (this.handlers[type] ??= []).push(handler); }
   /** Obsidian's element helper, for the buttons a notice that asks something carries. */
   createEl(tag, options = {}) {
@@ -82,13 +161,15 @@ class Notice {
   constructor(message, duration) {
     this.message = message;
     this.duration = duration;
-    this.containerEl = new NoticeEl();
+    this.containerEl = new NoticeEl(null, this);
     this.noticeEl = this.messageEl = new NoticeEl(this.containerEl);
     this.hidden = false;
     this.containerEl.addEventListener("click", () => { this.hidden = true; });
     notices.push(message);
     raised.push(this);
   }
+  /** New words, as the real one: the text element is emptied, its buttons with it. */
+  setMessage(message) { this.message = message; this.messageEl.children = undefined; return this; }
   hide() { this.hidden = true; }
 }
 class TFile {}
@@ -125,6 +206,9 @@ module.exports = {
   globalThis.window ??= {
     setTimeout: (fn, ms) => setTimeout(fn, ms).unref(),
     clearTimeout: (handle) => clearTimeout(handle),
+    // The desktop disk calls' one watchdog (`watchDisk` in main.ts, #307).
+    setInterval: (fn, ms) => setInterval(fn, ms).unref(),
+    clearInterval: (handle) => clearInterval(handle),
     Blob, URL,
     // What the worker's script does, on the same timers: `clock.test.mjs` runs the script itself.
     Worker: class {
@@ -196,6 +280,27 @@ export class FakeHost {
     this.notices = [];
     /** The notices that asked something, with their buttons (`notify`). */
     this.asked = [];
+    /** The notices raised with a kind, as raised (`notify`). */
+    this.said = [];
+    /** The quietest a person can choose (`notify`); a test of what shows sets its own. */
+    this.noticeSettings = { level: "needs-me", merges: "off" };
+    /** Every toast the channel drew: its words as they are now, how long it stays, and whether it is up. */
+    this.toasts = [];
+    this.channel = new notes.NoticeChannel({
+      draw: (text, ms, actions, open) => {
+        const toast = { text, ms, actions, open, hidden: false, words: [text] };
+        this.toasts.push(toast);
+        return {
+          update: (words) => { toast.text = words; toast.words.push(words); },
+          hide: () => { toast.hidden = true; },
+          shown: () => !toast.hidden,
+        };
+      },
+      settings: () => this.noticeSettings,
+      now: () => this.clock,
+      log: (line) => this.logs.push(line),
+      showStatus: () => { this.statusShown = (this.statusShown ?? 0) + 1; },
+    });
     this.trashed = [];
     /** Every folder `trashFolder` was ASKED about, kept ones included. */
     this.folderChecks = [];
@@ -561,16 +666,33 @@ export class FakeHost {
   /**
    * What the user was told, and -- for a notice that asks something -- the
    * buttons it offered (`VaultHost.notify`), so a test can see the question
-   * and press an answer by what it names.
+   * and press an answer by what it names. Every notice is its words in
+   * `notices`, a kind's own in `said`, and goes through the real notice
+   * channel (`notices.ts`) under `noticeSettings`: `toasts` is what reached
+   * the screen, on this host's clock.
+   *
+   * REQUIREMENT 4, AT EVERY CALL SITE THE SUITE DRIVES. The settings start at
+   * the quietest a person can choose, and a question or a security notice
+   * the channel kept off the screen throws, on a phone as on a desktop: no
+   * setting may silence a control, and every test that raises one proves it.
    */
-  notify(message, actions = []) {
+  notify(notice) {
+    if (typeof notice !== "object" || notice === null || !(notice.kind in notes.STAYS_MS)) throw new Error(`a notice without a kind: ${JSON.stringify(notice)}`);
+    const message = notes.toastText(notice);
     this.notices.push(message);
-    if (actions.length > 0) this.asked.push({ message, actions });
+    this.said.push(notice);
+    if (notice.actions?.length) this.asked.push({ message, actions: notice.actions });
+    const before = this.toasts.length;
+    this.channel.show(notice);
+    if (notes.NON_MUTABLE.has(notice.kind) && this.toasts.length === before) {
+      throw new Error(`a ${notice.kind} was kept off the screen under ${JSON.stringify(this.noticeSettings)}`);
+    }
   }
 
   /** How many times the engine took the held-deletions question away (`hold`). */
   closeQuestion() {
     this.questionsClosed = (this.questionsClosed ?? 0) + 1;
+    this.channel.close(notes.HELD);
   }
 
   log(line) {
@@ -580,6 +702,8 @@ export class FakeHost {
 
 /** The setup token this fake answers to, and the credential its setup mints. */
 export const SETUP_TOKEN = "5e".repeat(32);
+/** `storage::RECOVERY_HOLD_MS`: a new recovery key keeps the only active device this long (1.1.5). */
+export const RECOVERY_HOLD_MS = 7 * 24 * 60 * 60 * 1000;
 export const SETUP_DEVICE = "cc".repeat(16);
 export const SETUP_SECRET = "7b".repeat(32);
 
@@ -618,6 +742,10 @@ export class FakeServer {
     ];
     this.claimed = claimed;
     this.recoveryVerifier = null;
+    /** When `recoveryVerifier` was registered, on `clock`; `null` for a key from before 1.1.5. */
+    this.recoveryAt = null;
+    /** One re-enrolment the operator's reset armed (1.1.5); any registration spends it. */
+    this.recoveryArmed = false;
     this.recoveries = 0;
     if (!claimed) {
       this.devices = [];
@@ -627,6 +755,8 @@ export class FakeServer {
     this.unsigned = [];
     /** Devices whose requests never arrive: a network gone, not a refusal. */
     this.unreachable = new Set();
+    /** False models a server before 1.1.5: it has no archive route (#247). */
+    this.archives = true;
     this.feedWaiters = [];
     this.heartbeats = 0;
     /** Set by `seedDomainMap`: the reserved file the map occupies. */
@@ -663,6 +793,13 @@ export class FakeServer {
   }
 
   /** Enrol a second device in the same vault, with its own secret. */
+  /** The operator's `obsyncd recovery reset apply`: no key, one re-enrolment armed. */
+  resetRecovery() {
+    this.recoveryVerifier = null;
+    this.recoveryAt = null;
+    this.recoveryArmed = true;
+  }
+
   addDevice(deviceId, deviceSecretHex, name, platform = "ios") {
     this.secrets.set(deviceId, Buffer.from(deviceSecretHex, "hex"));
     this.devices.push({
@@ -738,9 +875,27 @@ export class FakeServer {
       const recovered = this.claimed;
       if (recovered) {
         if (body.recovery_proof === undefined) return this.error(409, "already_set_up", "this server already holds an account");
-        if (this.recoveryVerifier === null) return this.error(409, "recovery_unavailable", "a paired device must register recovery first");
-        if (!/^[0-9a-f]{64}$/.test(body.recovery_proof) || createHash("sha256").update(Buffer.from(body.recovery_proof, "hex")).digest("hex") !== this.recoveryVerifier) return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
-      } else this.recoveryVerifier = body.recovery_verifier ?? null;
+        // No key and no reset since: the token alone recovers nothing (1.1.4's answer).
+        if (this.recoveryVerifier === null && !this.recoveryArmed) {
+          return this.error(409, "recovery_unavailable", "no recovery key is registered for this account");
+        }
+        if (!/^[0-9a-f]{64}$/.test(body.recovery_proof)) return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
+        const derived = createHash("sha256").update(Buffer.from(body.recovery_proof, "hex")).digest("hex");
+        if (this.recoveryVerifier === null) {
+          // The re-enrolment the operator's reset armed (1.1.5): the server
+          // registers the verifier the proof derives, timed, and enrols, which
+          // spends the arm. obsyncd derives it from the proof, so a bogus
+          // verifier a caller sends beside the proof is never what stands.
+          this.recoveryVerifier = derived;
+          this.recoveryAt = this.clock;
+          this.recoveryArmed = false;
+        } else if (derived !== this.recoveryVerifier) {
+          return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
+        }
+      } else {
+        this.recoveryVerifier = body.recovery_verifier ?? null;
+        this.recoveryAt = this.recoveryVerifier === null ? null : this.clock;
+      }
       this.claimed = true;
       const id = recovered ? (++this.recoveries).toString(16).padStart(32, "0") : SETUP_DEVICE;
       this.addDevice(id, SETUP_SECRET, body.device?.name ?? "device", body.device?.platform ?? "linux");
@@ -757,7 +912,9 @@ export class FakeServer {
       const verifier = json().recovery_verifier;
       if (!/^[0-9a-f]{64}$/.test(verifier)) return this.error(400, "bad_request");
       if (this.recoveryVerifier !== null && this.recoveryVerifier !== verifier) return this.error(409, "recovery_mismatch");
+      if (this.recoveryVerifier === null) this.recoveryAt = this.clock;
       this.recoveryVerifier = verifier;
+      this.recoveryArmed = false;
       return this.json(204, {});
     }
 
@@ -772,6 +929,11 @@ export class FakeServer {
       return this.json(204, {});
     }
     if (path === "/v1/devices") return this.json(200, { devices: this.devices });
+    // obsyncd counts the devices that can sync, not every record (#268).
+    if (path === "/v1/account" && request.method === "GET") {
+      const device_count = this.devices.filter((device) => !device.revoked).length;
+      return this.json(200, { account_id: "a".repeat(32), name: "obsync", used_bytes: 0, quota_bytes: null, device_count });
+    }
 
     const devicePatch = /^\/v1\/devices\/([0-9a-f]{32})$/.exec(path);
     if (devicePatch && request.method === "PATCH") {
@@ -795,7 +957,24 @@ export class FakeServer {
       if (!device.revoked && live.length <= 1 && this.recoveryVerifier === null) {
         return this.error(409, "last_device", "the only active device cannot be revoked; pair another first");
       }
+      if (!device.revoked && live.length <= 1 && this.recoveryAt !== null && this.clock - this.recoveryAt < RECOVERY_HOLD_MS) {
+        return this.error(409, "recovery_too_new", "this account's recovery key was set less than 7 days ago, and until it is 7 days old the only active device stays; pair another device first");
+      }
       device.revoked = true;
+      return this.json(204, {});
+    }
+
+    // `devices::archive` and `Store::archive_device`, with obsyncd's codes:
+    // never the asking device, a revoked device only, and NOTHING destroyed --
+    // the record stays, flagged, so the device is still refused as revoked and
+    // still names the versions it wrote (#247).
+    const deviceArchive = /^\/v1\/devices\/([0-9a-f]{32})\/archive$/.exec(path);
+    if (deviceArchive && request.method === "POST" && this.archives) {
+      if (deviceArchive[1] === request.headers["X-Obsync-Device"]) return this.error(409, "own_device", "a device cannot archive itself");
+      const device = this.devices.find((candidate) => candidate.device_id === deviceArchive[1]);
+      if (!device) return this.error(404, "unknown_device", "no such device");
+      if (!device.revoked) return this.error(409, "device_not_revoked", "only a revoked device is archived; revoke it first");
+      device.archived = true;
       return this.json(204, {});
     }
 
@@ -947,7 +1126,13 @@ export class FakeServer {
       if (since > this.seq) return this.error(416, "seq_ahead", `since ${since} is beyond head ${this.seq}`);
       const limit = Number(params.get("limit") ?? 1000);
       const remaining = this.journal.filter((frame) => frame.seq > since);
-      const changes = remaining.slice(0, limit);
+      // A frame names its file's heads as they are when the page is served,
+      // not as they were when it was journaled: obsyncd builds every page
+      // from its index (`storage/index.rs`, `changes`).
+      const changes = remaining.slice(0, limit).map((frame) => {
+        const file = this.files.get(frame.file_id);
+        return file === undefined ? frame : { ...frame, heads: file.heads, conflicted: file.heads.length > 1 };
+      });
       if (changes.length > 0) {
         return this.json(200, { seq: remaining.length > limit ? changes[changes.length - 1].seq : this.seq, head_seq: this.seq, changes });
       }

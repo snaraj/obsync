@@ -1,11 +1,12 @@
-# M1865: a key that does not open leaves the collected device active (#153)
+# M1865: a refused envelope poll counts the device as never collected
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -474,6 +474,7 @@
+@@ -695,7 +695,7 @@
        try {
-         envelope = await openEnvelope(secret, claim.pairingId, sealed.envelope, sealed.nonce);
-       } catch {
+         sent = await transport.pairingEnvelope(claim.pairingId);
+       } catch (error) {
+-        active = error instanceof ApiError && error.code === "envelope_consumed";
 +        active = false;
-         throw new ClaimEnded("unopened");
-       }
-       assertCurrent();
+         if (error instanceof ApiError && error.status === 409 && error.code === "not_approved") {
+           if (error.fields["creator_pub"] !== undefined) await holdCreator(error.fields["creator_pub"]);
+           plugin.log("pairing role=claimant decision=waiting reason=not_approved");

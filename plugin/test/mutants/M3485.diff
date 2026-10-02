@@ -1,0 +1,11 @@
+# M3485: the fake server lets a device that still syncs be archived
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -810,7 +810,6 @@
+       if (deviceArchive[1] === request.headers["X-Obsync-Device"]) return this.error(409, "own_device", "a device cannot archive itself");
+       const device = this.devices.find((candidate) => candidate.device_id === deviceArchive[1]);
+       if (!device) return this.error(404, "unknown_device", "no such device");
+-      if (!device.revoked) return this.error(409, "device_not_revoked", "only a revoked device is archived; revoke it first");
+       device.archived = true;
+       return this.json(204, {});
+     }

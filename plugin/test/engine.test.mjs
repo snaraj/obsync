@@ -207,7 +207,7 @@ test("an encrypted manifest for a path outside the vault is refused, and nothing
     host.logs.some((line) => line.includes(`decision=refused reason=path_dot_segment file=${fileId}`)),
     `the refusal names the file id and the rule: ${host.logs.join(" | ")}`,
   );
-  assert.match(host.notices.join(" "), /refused a change from another device/);
+  assert.match(host.notices.join(" "), /skipped a change from .+: it was damaged or named a file this device cannot write/);
 });
 
 test("every escaping, hidden or malformed manifest path is refused the same way", async () => {
@@ -424,7 +424,7 @@ test("a tombstone whose revive cannot publish keeps the file and says only that"
     host.logs.some((line) => line.includes("decision=local_edit_kept reason=local_edit published=growing")),
     host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
-  assert.match(host.notices.join(" "), /did not delete Notes\/Doomed\.md: it holds changes this device has not uploaded yet/);
+  assert.match(host.notices.join(" "), /kept "Doomed": .+ deleted it without having seen the changes made here, so they are sent again/);
   assert.doesNotMatch(
     host.notices.join(" "),
     /published again/,
@@ -601,7 +601,7 @@ test("concurrent edits with a common ancestor merge, keeping both", async () => 
   const result = await applyChange(context, { ...head, conflicted: true });
   assert.equal(result, "merged");
   assert.equal(host.text("Notes/Shared.md"), "ONE\ntwo\nTHREE\n");
-  assert.match(host.notices.join(" "), /merged concurrent edits/);
+  assert.match(host.notices.join(" "), /combined your edits to "Shared" with/);
 
   const merged = server.journal[server.journal.length - 1];
   assert.deepEqual([...merged.parents].sort(), [mine.versionId, theirs.version_id].sort());
@@ -868,9 +868,9 @@ test("a lost deletion is not sent again once another device's change brought the
   assert.ok(host.logs.includes(`push path_class=tombstone decision=withdrawn reason=record_changed file=${created.fileId} age_ms=45000`), host.logs.join(" | "));
   // Said on the device where it happened: the note it deleted is back.
   assert.equal(host.notices.length, 1, host.notices.join(" | "));
-  assert.match(host.notices[0], /Notes\/n13\.md/);
-  assert.match(host.notices[0], /Notes\/n13-final\.md/);
-  assert.match(host.notices[0], /changed on another device/);
+  assert.match(host.notices[0], /did not delete "n13" from your other devices/);
+  assert.match(host.notices[0], /back as "n13-final"\.$/);
+  assert.match(host.notices[0], /another device changed it/);
 });
 
 test("a lost deletion withdrawn for another device's edit at the same name says the note is back, not back under its own name", async () => {
@@ -890,7 +890,7 @@ test("a lost deletion withdrawn for another device's edit at the same name says 
   assert.equal(outcome, null);
   assert.equal(host.text("Notes/Same.md"), "one line\nedited elsewhere\n");
   assert.equal(host.notices.length, 1, host.notices.join(" | "));
-  assert.match(host.notices[0], /changed on another device before this deletion reached the server, so the note is back here\.$/);
+  assert.match(host.notices[0], /another device changed it before the deletion reached your server, so this device has it back\.$/);
 });
 
 test("a lost deletion is not sent again once the note has moved past the version it was decided from", async () => {
@@ -1070,6 +1070,57 @@ test("the growing-file guard waits for a file to stop changing", async () => {
   host.stat = realStat;
   await timers.run(1000, () => state.fileByPath("Copying.bin") !== undefined);
   assert.equal(state.fileByPath("Copying.bin") !== undefined, true, "it pushes once the file settles");
+  engine.stop();
+});
+
+test("a note queued while the drain saves its records is still sent (#313)", async () => {
+  const rigged = await rig();
+  const { host, state } = rigged;
+  const timers = new FakeTimers();
+  const engine = engineOf(rigged, timers);
+  await engine.start();
+  await timers.run(1000);
+
+  // Hold the save the drain makes once its queue is empty (#274), as a slow
+  // disk does, and make the second note while it is held.
+  const save = state.save.bind(state);
+  let release = null;
+  state.save = () => {
+    const exiting = engine.draining && engine.queue.length === 0 && engine.active === 0 && engine.pushing.size === 0;
+    if (release !== null || !exiting) return save();
+    return new Promise((resolve, reject) => { release = () => save().then(resolve, reject); });
+  };
+  host.seed("First.md", "the first note", 3000);
+  engine.changed("First.md");
+  await timers.run(1000, () => release !== null);
+  assert.notEqual(release, null, "the drain never saved its records");
+  host.seed("Second.md", "made while the save ran", 3100);
+  engine.changed("Second.md");
+  await timers.run(1000, () => engine.queue.includes("Second.md"));
+  assert.equal(engine.queue.includes("Second.md"), true, "the second note never reached the queue");
+
+  release();
+  // No time passes: what sends the second note is the drain that saved, not a
+  // later timer that happens to queue something else (on the Windows runner
+  // nothing did, for two minutes).
+  const sent = await timers.run(0, () => state.fileByPath("Second.md") !== undefined, 2000).catch(() => false);
+  assert.equal(sent, true, `a note queued during the save was left: queue=${engine.queue} draining=${engine.draining}`);
+  assert.notEqual(state.fileByPath("First.md"), undefined);
+  engine.stop();
+});
+
+test("a new note gone before it settled is dropped in one line, and nothing is sent (#313)", async () => {
+  const rigged = await rig();
+  const { host, state } = rigged;
+  const timers = new FakeTimers();
+  const engine = engineOf(rigged, timers);
+  await engine.start();
+  host.seed("Brief.md", "here a moment", 3000);
+  engine.changed("Brief.md");
+  host.files.delete("Brief.md");
+  await timers.run(1000);
+  assert.equal(state.fileByPath("Brief.md"), undefined, "a note that never settled was recorded");
+  assert.ok(host.logs.includes("watch path_class=file decision=dropped reason=absent_at_settle"), host.logs.join(" | "));
   engine.stop();
 });
 
@@ -1276,7 +1327,7 @@ test("a map declaring more than one domain stops this version instead of syncing
   assert.equal(engine.context, null, "no keys were derived");
   assert.equal(state.fileByPath("Untouched.md"), undefined, "and nothing was pushed");
   assert.equal(server.vaultFiles().length, 0);
-  assert.ok(host.notices.some((notice) => notice.includes("more than one sharing domain")));
+  assert.ok(host.notices.some((notice) => notice.includes("shared in a way this version of obsync cannot sync")));
 });
 
 test("the domain map on the feed is skipped, not written into the vault", async () => {

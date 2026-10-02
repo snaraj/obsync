@@ -56,8 +56,10 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "${here}/../.." && pwd)"
 readonly PORT=18280
 readonly READY_BUDGET_SECONDS=60
-readonly BLOBS_CAPACITY='1GiB'
-readonly JOURNAL_CAPACITY='256MiB'
+# Declared, not allocated, and above the default free-space watermark (the
+# larger of 5% and 2 GiB), or the server refuses to start (issue #289).
+readonly BLOBS_CAPACITY='8GiB'
+readonly JOURNAL_CAPACITY='4GiB'
 readonly PULL_ATTEMPTS=3
 readonly PULL_BACKOFF_SECONDS=5
 

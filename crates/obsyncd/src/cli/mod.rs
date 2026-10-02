@@ -1,5 +1,5 @@
 //! The `obsyncd` command line: `serve` (the default), `check`, `setup-token`,
-//! `export`, and `version`.
+//! `recovery reset`, `export`, and `version`.
 //!
 //! Configuration is environment only (`docs/architecture.md` 9), so the
 //! command line stays this small on purpose: one verb per operating task and
@@ -8,6 +8,7 @@
 
 pub mod check;
 pub mod export;
+pub mod recovery;
 pub mod serve;
 pub mod setup_token;
 
@@ -26,6 +27,8 @@ Usage:
   obsyncd [serve]        serve the sync API, dashboard, and plugin bundle
   obsyncd check          verify every stored chunk and journal frame
   obsyncd setup-token    print the standing setup token, and nothing else
+  obsyncd recovery reset plan|apply [--output human|json]
+                         show, then clear, the account's recovery key
   obsyncd export --domain <32hex> --key-file <file|-> --out <dir>
   obsyncd version
 
@@ -56,6 +59,18 @@ pub fn run(args: &[String]) -> i32 {
             let log = Log::new(cfg.log_level);
             setup_token::run(&cfg, &log)
         }),
+        // Not through `report`: plan and apply each print their own result,
+        // in the form asked for, refusals included.
+        Some("recovery") => match recovery::Args::parse(&args[1..]) {
+            Ok(a) => with_config(|cfg| {
+                let log = Log::new(cfg.log_level);
+                recovery::run(&cfg, &log, a)
+            }),
+            Err(e) => {
+                eprintln!("obsyncd recovery: {e}\n{USAGE}");
+                2
+            }
+        },
         Some("export") => match ExportArgs::parse(&args[1..], std::io::stdin().lock()) {
             Ok(a) => {
                 if a.key_on_argv {

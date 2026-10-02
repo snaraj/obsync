@@ -19,7 +19,7 @@ server again unless the entry says so.
 | The status bar icon is not the check mark | [Reading the status bar](#reading-the-status-bar) |
 | A second sync icon, red with a line through it, sits beside obsync's | [Reading the status bar](#reading-the-status-bar) |
 | The status bar shows a cloud with a line through it, and nothing syncs | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
-| "Use your server's https address", or on a phone "Mobile Obsidian only reaches HTTPS servers" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
+| "Use your server's https address", or on a phone "Mobile Obsidian only reaches HTTPS servers"; **Check** says "Server URL was not saved" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
 | **Check** takes about a minute, then says the server is unreachable | [Check says the server cannot be reached](#check-says-the-server-cannot-be-reached) |
 | One device connects and another does not, or a browser warns about the certificate | [The certificate is not trusted on this device](#the-certificate-is-not-trusted-on-this-device) |
 | obsync says the certificate was made for another name, or **Check** says nothing answered while a browser says the certificate is not valid for this name | [The certificate is for another name](#the-certificate-is-for-another-name) |
@@ -38,7 +38,14 @@ server again unless the entry says so.
 | Pairing says the code is not valid | [Pairing says the code is not valid](#pairing-says-the-code-is-not-valid) |
 | Pairing says the code expired, or was already used | [Pairing says the code expired or was already used](#pairing-says-the-code-expired-or-was-already-used) |
 | The new device keeps waiting for approval | [The new device waits for approval](#the-new-device-waits-for-approval) |
+| Pairing says to update your obsync server | [Pairing says to update your obsync server](#pairing-says-to-update-your-obsync-server) |
+| The two devices show different match codes, pairing says a device runs obsync older than 1.1.5, or the new device says the other device's key does not match the code | [The two devices show different match codes](#the-two-devices-show-different-match-codes) |
+| After approving, the device that made the code says the new device did not keep the key, or has not started syncing | [The device that made the code says the new device did not keep the key](#the-device-that-made-the-code-says-the-new-device-did-not-keep-the-key) |
+| **Pair a new device** closed as soon as you selected **Approve** | [Pair a new device closed after approving](#pair-a-new-device-closed-after-approving) |
 | You closed the recovery phrase without writing it down | [You closed the recovery phrase without checking it](#you-closed-the-recovery-phrase-without-checking-it) |
+| "obsync security warning: Another device set a different recovery key" | [Another device set a different recovery key](#another-device-set-a-different-recovery-key) |
+| Leave says the recovery key was set less than 7 days ago, or `409 recovery_too_new` | [The only device cannot leave in its first week](#the-only-device-cannot-leave-in-its-first-week) |
+| You set up or paired on a work laptop or an inspected network, or sent a pairing code through work email or chat | [Pairing on a network you don't control](#pairing-on-a-network-you-dont-control) |
 | On Linux, Obsidian says secrets are stored without encryption, or you use no keyring and want to know how obsync's keys are kept | [On Linux, the keys may not be in a keyring](#on-linux-the-keys-may-not-be-in-a-keyring) |
 
 **Your notes and folders**
@@ -49,17 +56,24 @@ server again unless the entry says so.
 | A note or file never arrives on another device | [A file is not syncing](#a-file-is-not-syncing) |
 | On a computer, a change made while Obsidian's window is minimized or behind other windows arrives minutes later | [Changes wait while Obsidian is in the background](#changes-wait-while-obsidian-is-in-the-background) |
 | The status stays at `syncing 1 file` and another device's change to a note does not appear | [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file) |
-| The status reads idle, but a note from another device is not in the file list | [A note that synced does not show in Obsidian](#a-note-that-synced-does-not-show-in-obsidian) |
+| This computer's changes reach your other devices, but theirs stop arriving here, or **Sync now** says `waiting for` a sync step | [Changes from your other devices stop arriving](#changes-from-your-other-devices-stop-arriving) |
+| The status reads idle, but a note from another device is not in the file list, or one it deleted is still listed | [A note that synced does not show in Obsidian](#a-note-that-synced-does-not-show-in-obsidian) |
+| Search does not find the words another device just added to a note | [A note that synced does not show in Obsidian](#a-note-that-synced-does-not-show-in-obsidian) |
 | A large file is missing on a phone | [A large file did not arrive on a phone](#a-large-file-did-not-arrive-on-a-phone) |
 | A photo or PDF from a phone on a weak connection never arrives on the other devices | [A photo or PDF from my phone never arrives on my other devices](#a-photo-or-pdf-from-my-phone-never-arrives-on-my-other-devices) |
 | Notes you deleted on one device disappeared everywhere | [Notes deleted on one device disappeared everywhere](#notes-deleted-on-one-device-disappeared-everywhere) |
 | A note you deleted is back on one device after you changed Sync folders | [A deleted note came back after changing Sync folders](#a-deleted-note-came-back-after-changing-sync-folders) |
+| A device you just paired has notes you deleted elsewhere in its trash | [A newly paired device's trash holds notes deleted elsewhere](#a-newly-paired-devices-trash-holds-notes-deleted-elsewhere) |
 | After you renamed one of your Sync folders, your other devices still show an empty folder with the old name | [A renamed Sync folder left an empty folder behind](#a-renamed-sync-folder-left-an-empty-folder-behind) |
 | A note you moved out of your Sync folders is missing on that device after it went back to the whole vault | [A note moved out of Sync folders is missing after syncing the whole vault again](#a-note-moved-out-of-sync-folders-is-missing-after-syncing-the-whole-vault-again) |
 | After pairing a device again, a note you once renamed shows up under its old name too | [A renamed note came back under its old name after pairing again](#a-renamed-note-came-back-under-its-old-name-after-pairing-again) |
+| A note you moved out of your Sync folders, then deleted or hid there, is back under its old name after syncing the whole vault | [A note came back under its old name after syncing the whole vault again](#a-note-came-back-under-its-old-name-after-syncing-the-whole-vault-again) |
 | A note another device had just written is empty everywhere | [A note became empty on every device](#a-note-became-empty-on-every-device) |
+| A note you emptied on a phone still has its text on your other devices | [A note you emptied on a phone keeps its text elsewhere](#a-note-you-emptied-on-a-phone-keeps-its-text-elsewhere) |
 | On a phone, Leave lists files your other devices already have | [Leave lists files your other devices already have](#leave-lists-files-your-other-devices-already-have) |
+| On a phone, a note another app changed keeps its old text on your other devices | [On a phone, a note another app rewrote stays old elsewhere](#on-a-phone-a-note-another-app-rewrote-stays-old-elsewhere) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
+| A computer you paired later shows an empty folder under a name another device renamed away | [An empty folder appeared on a computer paired later](#an-empty-folder-appeared-on-a-computer-paired-later) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
 | A note or folder you renamed has another device's name | [A note or folder took the other device's name](#a-note-or-folder-took-the-other-devices-name) |
@@ -73,20 +87,35 @@ server again unless the entry says so.
 | --- | --- |
 | `obsync: error` and a reason | [Sync stopped with an error](#sync-stopped-with-an-error) |
 | "Changes from your server could not be read", and it stays | [Changes from your server could not be read](#changes-from-your-server-could-not-be-read) |
+| "This device's disk did not answer in time" | [Changes from your other devices stop arriving](#changes-from-your-other-devices-stop-arriving) |
 | The reason mentions the clock or `stale_timestamp` | [The clock is wrong](#the-clock-is-wrong) |
 | "This server no longer recognises this device" | [The server no longer recognises this device](#the-server-no-longer-recognises-this-device) |
 | My server says its storage is full | [The server has run out of storage](#the-server-has-run-out-of-storage) |
 | Another code, such as `409 missing_chunks` | [Other refusals a device can show](#other-refusals-a-device-can-show) |
+
+**Notices**
+
+| What you see | Go to |
+| --- | --- |
+| A notice reads `obsync: 4 more — see Recent in Show sync status` | [A notice says there are more](#a-notice-says-there-are-more) |
+| A notice ends `(3 times)`, or **Sync now** pressed again changes no notice | [A notice says there are more](#a-notice-says-there-are-more) |
+| **Recent**, or `obsync-private-sync:recent`, shows `•••` where a pairing code was | [Recent hides the pairing code](#recent-hides-the-pairing-code) |
+| The status bar shows the alert sign while everything syncs | [Another device set a different recovery key](#another-device-set-a-different-recovery-key) |
+| Another device's edits appear in a note you are editing, and no notice says so | [obsync no longer says when it combines edits](#obsync-no-longer-says-when-it-combines-edits) |
+| `obsidian obsync-private-sync:notices` answers `Command ... not found`, or that the command line is not enabled | [The command line does not find obsync](#the-command-line-does-not-find-obsync) |
+| Two **Sync status** windows, one over the other | [Show sync status opened twice](#show-sync-status-opened-twice) |
 
 **Running the server and its dashboard**
 
 | What you see | Go to |
 | --- | --- |
 | The server stops as it starts, its last line `listen_failed` | [The server cannot listen on its address](#the-server-cannot-listen-on-its-address) |
+| The server stops as it starts: "expected a size above the free-space watermark" | [The server refuses a volume size](#the-server-refuses-a-volume-size) |
 | The dashboard signs you out on every page | [The dashboard signs itself out on every page load](#the-dashboard-signs-itself-out-on-every-page-load) |
 | Repeated `dashboard_login_refused` lines in the log | [Repeated `dashboard_login_refused` lines](#repeated-dashboard_login_refused-lines) |
 | An occasional `replayed_nonce` | [A request arrived twice](#a-request-arrived-twice) |
 | `409 last_device` when revoking | [The last device cannot be revoked](#the-last-device-cannot-be-revoked) |
+| A device could not be forgotten | [A device could not be forgotten](#a-device-could-not-be-forgotten) |
 
 ## Reading the status bar
 
@@ -98,7 +127,7 @@ desktop status bar in the dark theme; yours follow your theme's colours.
 | Icon | Its words | What it means | What to do |
 | --- | --- | --- | --- |
 | <img src="assets/status-synced.png" alt="check mark" width="36" height="31"> | `obsync: idle` | Everything is in sync | Nothing |
-| <img src="assets/status-syncing.png" alt="turning wheel" width="36" height="31"> | `obsync: syncing 3 files` | Files are uploading, downloading or being checked | Nothing. A large file can take a while; **Show sync status** names the file that is moving. If the words go on `waiting for unsaved changes in <note>`, see [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file) |
+| <img src="assets/status-syncing.png" alt="turning wheel" width="36" height="31"> | `obsync: syncing 3 files`, or `obsync: checking 40 files for changes` | Files are uploading or downloading; or **Sync now** or **Verify all files** is reading files that show no change, to be sure | Nothing. A large file can take a while; **Show sync status** names the file that is moving. If the words go on `waiting for unsaved changes in <note>`, see [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file); if they go on `waiting for` another sync step, see [Changes from your other devices stop arriving](#changes-from-your-other-devices-stop-arriving) |
 | <img src="assets/status-offline.png" alt="cloud with a line through it" width="36" height="31"> | `obsync: offline — retrying` | The device cannot reach the server; it keeps trying on its own | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
 | <img src="assets/status-error.png" alt="alert sign" width="36" height="31"> | `obsync: error — <reason>` | Sync stopped and needs you | [Sync stopped with an error](#sync-stopped-with-an-error) |
 | <img src="assets/status-paused.png" alt="pause sign" width="36" height="31"> | `obsync: paused — <note>` | One note is held because something on this device keeps rewriting it; every other note keeps syncing | [Stop repeated rewrites](daily-use.md#stop-repeated-rewrites) |
@@ -126,12 +155,14 @@ words read `obsync: offline — retrying` (up to 1.1.3 the bar shows those words
 themselves), and nothing syncs in either direction.
 
 **Why it happens.** The device cannot reach the server at the **Server URL** in
-settings, or reaches something that is not the server. The plugin keeps trying
-by itself: 5 seconds apart at first, then less often, up to every 5 minutes,
-and again the moment the device reports its network is back. A device that is
-simply away from a home-only or VPN-only server resumes on its own when it
-returns, with nothing to press. In a test on a desktop, sync resumed about ten
-seconds after the server came back.
+settings, or reaches something that is not the server: a proxy or a tunnel that
+answers `502`, `503` or `504` with no obsync server behind it reads the same
+way. An error your obsync server answers itself does not (1.1.5). The plugin
+keeps trying by itself: 5 seconds apart at first, then less often, up to every
+5 minutes, and again the moment the device reports its network is back. A
+device that is simply away from a home-only or VPN-only server resumes on its
+own when it returns, with nothing to press. In a test on a desktop, sync
+resumed about ten seconds after the server came back.
 
 **How to fix it,** when the device stays offline on a network the server IS on:
 
@@ -162,13 +193,22 @@ seconds after the server came back.
 
 > Use your server's https address. Plain HTTP would send the setup token and every request unencrypted; it is accepted only for this computer itself (localhost or 127.0.0.1).
 
+![The plugin's settings with Server URL holding http://lan.example.test, and the notice asking for the server's https address](assets/server-url-refused.png)
+
 On a phone or tablet:
 
 > Mobile Obsidian only reaches HTTPS servers.
 
+If you select **Check** before you correct the address, Check says the same
+thing, after "Server URL was not saved:", and asks no server. It does not
+ask the address saved before either.
+
+![Check selected with the refused address still in Server URL: the notice reads Server URL was not saved, then asks for the https address](assets/check-server-url-not-saved.png)
+
 **Why it happens.** The address starts with `http://`. Plain HTTP would send
 your credentials unencrypted, so the plugin accepts it only for a server on the
-same computer, and never on a phone.
+same computer, and never on a phone. An address the plugin refuses is not
+saved, even though the field still shows it.
 
 **How to fix it.**
 
@@ -234,7 +274,7 @@ Nothing in obsync or the server needs to change for this.
 **What you see.** One device connects and another does not. **Check**, the
 status and **Show sync status** on the failing device say:
 
-> This device does not trust your server's certificate, so it refused the connection. Trust that certificate on this device -- see Troubleshooting, "The certificate is not trusted on this device".
+> This device does not trust your server's certificate, so it refused the connection. Trust that certificate on this device. See Troubleshooting, "The certificate is not trusted on this device".
 
 Up to 1.1.3, **Check** ended with `net::ERR_CERT_AUTHORITY_INVALID` instead. A
 browser on that device warns about the certificate too.
@@ -273,7 +313,7 @@ proves an instance without it is refused.
 **What you see.** **Check** under **Connection**, the status bar's words and
 **Show sync status** say:
 
-> This device refused your server's certificate because it was made for another name than the one in the Server URL. Use the name it was made for in the Server URL, or make the certificate again for this name -- see Troubleshooting, "The certificate is for another name".
+> This device refused your server's certificate because it was made for another name than the one in the Server URL. Use the name it was made for in the Server URL, or make the certificate again for this name. See Troubleshooting, "The certificate is for another name".
 
 A browser on the same device, given the same address, says the certificate is
 not valid for this name (Chromium browsers show
@@ -395,7 +435,7 @@ to save a line it cannot send, naming the line and the character.
 3. If obsync says a line was not saved, correct what it names there, such as a
    curly quote, and leave the box again.
 4. Select **Check** again. On a device that is not paired yet, success reads
-   "Reached your obsync server."
+   "obsync: reached your obsync server."
 
 <a id="device_pending"></a>
 
@@ -420,6 +460,150 @@ no access of any kind.
    with a new code.
 
 ![Pair a new device on the device that made the code: Approve "Mac WKJN" (Mac, obsync 1.1.4)? Approve only if the new device shows the code 667 151. It will sync vault "rig-C" (0 notes). Approve and Reject below](assets/pair-approve-match-code.png)
+
+## Pairing says to update your obsync server
+
+**What you see.** **Pair a new device** shows no code, only:
+
+> Your obsync server runs a version older than 1.1.5, or does not say which, so no code was made. Update your obsync server to 1.1.5 or later, then pair again. See Troubleshooting, "Pairing says to update your obsync server".
+
+![Pair a new device on a computer, showing no code, only the words asking to update the obsync server to 1.1.5 or later](assets/pair-older-server.png)
+
+**Why it happens.** From 1.1.5, pairing adds a key exchange between the two
+devices, which the server has to pass on; an older server drops it, and the
+new device could never finish pairing through it. So before it makes a code,
+the device reads the version your server reports (the plugin release it
+ships, which is also what **Check** reaches) and stops there if it is older
+than 1.1.5 or missing. A server started without its plugin bundle
+(`OBSYNC_PLUGIN_DIR`) reports no version at all.
+
+**How to fix it.**
+
+1. Update obsyncd on your server to 1.1.5 or later
+   ([Upgrade by digest](server.md#upgrade-by-digest)).
+2. If it already runs 1.1.5 or later, make sure it serves its plugin bundle:
+   the container image and the systemd unit do by default; a server you
+   started yourself needs `OBSYNC_PLUGIN_DIR` pointing at the bundle
+   ([Server](server.md)).
+3. Choose **Pair a new device** again.
+
+## The two devices show different match codes
+
+**What you see.** One of these:
+
+- the approval question on the device that made the code shows one six-digit
+  match code, and the new device shows another;
+- the device that made the code says "That device runs obsync older than
+  1.1.5, which pairs in a way that no longer protects your vault key, so it
+  was refused and nothing was shared.";
+- the new device, given the code, says "That code comes from a device running
+  obsync older than 1.1.5…";
+- the new device says "The other device's key does not match the code this
+  device was given, so pairing stopped and nothing was shared.".
+
+**Why it happens.** From 1.1.5 the pairing code also carries a fingerprint of
+the key the device that made it will use, and the match code is made from both
+devices' keys. If something between the two devices changed a key on the way,
+the new device finds that the key does not match the code, or the two codes
+differ. A device before 1.1.5 pairs the older way, where the code alone opens
+your vault key, so a 1.1.5 device refuses to pair with it, whichever device
+made the code.
+
+**How to fix it.**
+
+1. If the device that made the code is asking, select **Reject** there. If it
+   was approved anyway, the new device refuses the vault key it was sent and
+   removes itself from the server, and the device that made the code says "The
+   new device did not keep the vault key and removed itself from the server…".
+   Nothing syncs to it.
+2. If a message names a device running obsync older than 1.1.5, update obsync
+   on that device (Settings, Community plugins, Check for updates), then make a
+   new code and pair again.
+3. If both devices run 1.1.5 or later and the codes still differ, or the key
+   does not match, pair on a network you trust
+   ([Pairing on a network you don't control](#pairing-on-a-network-you-dont-control)).
+
+## The device that made the code says the new device did not keep the key
+
+**What you see.** After you approved, **Pair a new device** closed and said
+`obsync: approved "<device>": it finishes pairing by itself, and obsync tells
+you here when it has.` Instead of `obsync: "<device>" is paired: it holds the
+vault key now.`, a notice then said one of:
+
+> obsync: "&lt;device&gt;" did not keep the vault key and removed itself from the server: the code it used did not match this one, or pairing was cancelled on it. It does not sync; to pair it, make a new code and paste it whole there.
+
+> obsync: "&lt;device&gt;" collected the vault key but has not started syncing within ten minutes. Look at it: if it asks whether to add its notes, answer there; if it says it could not open the vault key, remove it under Devices.
+
+**Why it happens.** From 1.1.5 this device says a new device is paired only
+once it has kept the vault key and started syncing, not merely collected it.
+The new device may still be asking whether to add its own notes, it may have
+been cancelled there, or its code did not match.
+
+**How to fix it.**
+
+1. Look at the new device's screen: it says what happened there.
+2. If it asks whether to add its notes, answer there; this device then needs
+   nothing more.
+3. Otherwise make a new code here and pair again. A device that says it could
+   not open the vault key and is still listed under **Devices** can be
+   removed there.
+
+## Pair a new device closed after approving
+
+**What you see.** You selected **Approve**, and **Pair a new device** closed at
+once with the notice `obsync: approved "<device>": it finishes pairing by
+itself, and obsync tells you here when it has.`
+
+**Why it happens.** From 1.1.5, once your approval reaches the server there is
+nothing left to do on this device: the new device collects the vault key, opens
+it and starts syncing by itself. This device keeps watching behind the closed
+dialog, for up to ten minutes, and says the outcome in one notice:
+`obsync: "<device>" is paired: it holds the vault key now.`, or why it is not
+([The device that made the code says the new device did not keep the
+key](#the-device-that-made-the-code-says-the-new-device-did-not-keep-the-key)).
+Quitting Obsidian meanwhile ends the watch, not the pairing.
+
+**How to fix it.** Nothing to fix. Look at the new device if no notice comes;
+**Devices** in obsync's settings lists it once it is paired.
+
+## Pairing on a network you don't control
+
+**What you see.** You are setting up or pairing obsync on a work laptop, behind
+an employer VPN, or on any network that decrypts and inspects your traffic; or
+you are about to send a pairing code to yourself through work email or a work
+chat so you can paste it on your other device.
+
+**Why it matters.** Your notes stay encrypted the whole way, and an inspected
+network cannot read them — that is proven ([Threat model](threat-model.md), "On
+a work laptop, or a network you don't control"). But two things matter at
+setup and pairing:
+
+- **The device secret**, handed to a device when it is set up or paired. It
+  crosses the network at that moment. It is not your vault key and cannot read
+  a note, but it is that device's authority over the server account; someone
+  who captured it could disrupt your sync.
+- **The pairing code.** It never crosses the network on its own, but it
+  carries a secret that helps open the sealed envelope your vault key travels
+  in, and that envelope does cross the network when you approve the new device.
+  From 1.1.5 the envelope also needs a key exchange that only the two devices
+  hold, so a copy of the code alone no longer opens it, and someone who saw
+  the code cannot make the two screens' match codes agree; a 1.1.5 device
+  pairs with neither a server nor a device older than 1.1.5. Still, keep the
+  code out of work channels.
+
+**How to fix it.**
+
+1. Set up your first device and pair new ones on a network you trust — your
+   home Wi‑Fi, or any connection that is not inspected. Once a device is paired
+   it never sends its secret again, so the exposure is only at that moment.
+2. **Type the pairing code into the new device by hand.** Do not email it to
+   yourself or paste it into a work chat. If both devices are with you, reading
+   the code across is safest.
+3. If a code or a device secret may already have leaked, open obsync's settings
+   on a device that still works, and under **This device** or the device list
+   revoke the device in question ([Recovery](recovery.md)); then, if you had not
+   already, write down your 24‑word recovery phrase. A revoked device can make
+   no further requests.
 
 ## The plugin says this device is not paired
 
@@ -663,6 +847,67 @@ running with one device's credential.
 2. Do not copy one device's plugin data onto another. Pair each device on its
    own.
 
+<a id="device_not_revoked"></a>
+
+## A device could not be forgotten
+
+**What you see.** In obsync's settings, under **N revoked devices**, or on the
+dashboard's **Devices** page, **Forget** answers with one of:
+
+> &lt;name&gt; was not forgotten: your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.
+
+> &lt;name&gt; was not forgotten: it can still sync. Revoke it first.
+
+![The notice after Forget on a device named Old laptop: it was not forgotten, because the server is too old to forget devices](assets/forget-too-old.png)
+
+**Why it happens.** Forgetting takes a device off the lists, and it is offered
+for a device that can no longer sync. The first answer is a server still
+running 1.1.4 or older: it has no way to do this, and only the server can. The
+second is a device that is still allowed to sync — the dashboard shows it
+without the **revoked** tag — so there is something to stop before there is
+anything to tidy away.
+
+**How to fix it.**
+
+1. For the first answer, update the server to obsync 1.1.5 or later
+   ([Upgrade by digest](server.md#upgrade-by-digest)), then open the list again and press **Forget**.
+   Nothing changed meanwhile: the device stays revoked and still cannot sync.
+2. For the second, press **Revoke** on that device first, confirm, and then
+   **Forget** it. Revoking is what stops it syncing; forgetting only tidies the
+   list afterwards.
+3. A device you forgot by mistake is not lost. Open obsync on it and pair it
+   again from a device that still syncs: its notes are still in its vault.
+
+<a id="device_forgotten"></a>
+
+## This device was forgotten
+
+**What you see.** Nothing new on the device itself. It was revoked before it
+was forgotten, so it reads what a revoked device reads, and goes on reading it:
+
+> obsync: error — This device was removed from your server. Your notes and vault key are safe here. Pair it again from a device that still syncs: obsync settings, Pair this device.
+
+![Show sync status on a forgotten device: the words that it was removed from the server, with Pair again, and its notes and vault key still here](assets/device-forgotten.png)
+
+Its settings say so under **Pairing**:
+
+![The forgotten device's settings: Pairing says the server no longer recognises this device, with Pair this device; Setup or recover is empty](assets/device-forgotten-settings.png)
+
+What changed is the other devices: its row is gone from their **Devices** list
+and from the dashboard.
+
+**Why it happens.** Somebody revoked this device and then pressed **Forget**
+on it, from another device's **Devices** list or from the dashboard.
+Forgetting is about the list, not about the device: the server keeps its
+record, so it is still refused for what it is — a revoked device, not a
+stranger — and the notes it wrote still carry its name in history. Nothing
+about your notes changed anywhere.
+
+**How to fix it.** If it was your device, pair it again as a new device:
+obsync settings → **Pair this device**, with the code from a device that still
+syncs. Its notes stay in its vault, and a note identical to the server's stays
+one note ([`conflicts.md`](conflicts.md)).
+
 <a id="last_device"></a>
 
 ## The last device cannot be revoked
@@ -674,10 +919,72 @@ dashboard.
 recovery registered, so revoking it would leave an account nobody can reach.
 Since 1.1.3 an account registers recovery at setup, and there the last device
 can be revoked; the dialog asks you to keep the setup token and the recovery
-phrase first. Older accounts and servers still refuse.
+phrase first. Older accounts and servers still refuse. From 1.1.5 the first
+seven days after registration answer `409 recovery_too_new` instead
+([below](#the-only-device-cannot-leave-in-its-first-week)).
 
 **How to fix it.** Pair another device first, then revoke. Or update the
 server and every device, so the account can register recovery.
+
+<a id="recovery_too_new"></a>
+
+## The only device cannot leave in its first week
+
+**What you see.** **Leave this server** on your only syncing device says:
+
+> This is the only device syncing this vault, and its recovery key was set less than 7 days ago. For your safety the server keeps its last device until that key is 7 days old, so a stolen device credential cannot lock you out of your own server. Pair another device first, or leave on this device only: it forgets the server and keeps every note, and the server lists this device until you remove it.
+
+Revoking it from the dashboard, or with a 1.1.4 plugin, answers
+`409 recovery_too_new` with the same reason.
+
+**Why it happens.** Since 1.1.5 a recovery key keeps the account's last
+active device for seven days after it is registered, and setting up a new
+account registers one. [Recovery](recovery.md#another-device-set-a-different-recovery-key)
+explains why the hold exists.
+
+**How to fix it.**
+
+1. To move to another device, pair it first; then leave on this one.
+2. To stop syncing here anyway, choose **Leave on this device only**. Your
+   notes stay; the server keeps listing this device until you revoke it from
+   another device or the dashboard, or after the seven days.
+3. Otherwise wait: the same Leave works once the key is seven days old.
+
+<a id="recovery_mismatch"></a>
+
+## Another device set a different recovery key
+
+**What you see.** A notice that stays until you dismiss it, and the same text
+at the top of **Show sync status** and of obsync's settings, under **Security**.
+From 1.1.5 the status bar shows the alert sign for as long as the warning
+stands, even while everything syncs, and its words end `— security warning:
+see Show sync status`:
+
+> obsync security warning: Another device set a different recovery key for this vault on your server, so your 24-word phrase cannot restore access there. If that was not you, a device may be compromised: revoke any device you do not recognise, then ask whoever runs your server to clear the recovery key; this device then registers yours by itself. Steps: the guide's Troubleshooting page, "Another device set a different recovery key".
+
+The plugin's log reads
+`recovery decision=refused reason=recovery_mismatch warning=shown`.
+
+**Why it happens.** The server keeps the first recovery key any device
+registers and cannot tell whether it came from this vault's 24 words. This
+device's key is different: one of your devices holds another vault key, or
+someone holding a copy of one of your device credentials registered one.
+Your notes stay encrypted either way; the server cannot read them.
+
+**How to fix it.**
+
+1. Check every device shows this vault's notes; restore the right 24 words
+   on one that does not.
+2. In obsync's settings, **Devices**, revoke every device you do not
+   recognise. If you recognise them all, pair a replacement for any device
+   whose credential may have been copied, then revoke the old entry.
+3. Ask whoever runs the server to clear the recovery key with
+   `obsyncd recovery reset plan`, then `obsyncd recovery reset apply`, with the
+   server stopped ([Clearing the recovery key](recovery.md#clearing-the-recovery-key)).
+   The reset also rotates the setup token; `obsyncd setup-token` prints the new
+   one after the next start.
+4. Start the server and let this device sync: it registers its key and the
+   warning clears. Keep the new setup token and the 24-word phrase.
 
 ## The dashboard signs itself out on every page load
 
@@ -735,6 +1042,36 @@ names. The `io` word says why:
 `[::]:8080`), and point your proxy at it. Then start the server again. Your
 devices wait and resume on their own.
 
+## The server refuses a volume size
+
+**What you see.** The server stops as it starts, with one line:
+
+```text
+obsyncd: configuration: OBSYNC_JOURNAL_CAPACITY is invalid: expected a size above the free-space watermark (OBSYNC_FREE_WATERMARK, by default the larger of 5% and 2GiB); at this size every write is refused
+```
+
+or the same for `OBSYNC_BLOBS_CAPACITY`. On Kubernetes the pod restarts with
+this line in its log. Up to 1.1.4 such a server started and said it was ready,
+then refused every write to that volume; a small journal refused even the
+account's setup.
+
+**Why it happens.** The server refuses a write that would leave a volume with
+less free space than a reserve: by default 5% of the size you declared, or
+2 GiB if that is larger. A volume declared no larger than its reserve could
+never take a single write. A 1 GiB or 2 GiB journal is the usual case.
+
+**How to fix it,** on the server:
+
+1. Declare the volume larger than its reserve, which is above 2 GiB with the
+   default. The guides use 4 GiB for the journal (`OBSYNC_JOURNAL_CAPACITY=4GiB`,
+   or `storage.journal.size: 4Gi` in the chart), and the disk must really
+   hold what you declare.
+2. If the disk cannot, and you run the server with `docker run` or systemd,
+   lower the reserve instead, below the size you declared: for example
+   `OBSYNC_FREE_WATERMARK=5%,256MiB`.
+3. Start the server again. It wrote nothing before it stopped, so nothing
+   needs repair.
+
 <a id="missing_auth-and-bad_signature"></a>
 
 ## The server no longer recognises this device
@@ -756,38 +1093,79 @@ was restored from a backup older than this pairing.
 2. Pair from a device that still syncs. Or, with no syncing device left, use
    **Setup or recover** with the server's setup token, after restoring the
    24-word phrase if this is a new installation. Local notes are kept.
-3. An empty, rebuilt server can simply be set up again. An existing account
-   needs recovery to have been registered before the credentials were lost:
-   [Recovery](recovery.md) explains the limits, and
+3. An empty, rebuilt server can simply be set up again. If the phrase is
+   refused because no recovery key is registered, and no device is left, whoever
+   runs a server 1.1.5 or later can reset its recovery, which rotates the setup
+   token and lets you recover once with the new token and the phrase:
+   [Getting the owner back in after a
+   clear](recovery.md#getting-the-owner-back-in-after-a-clear). A server before
+   1.1.5 needs recovery to have been registered before the credentials were
+   lost; [Recovery](recovery.md) explains the limits, and
    [moving to a different server](recovery.md#moving-this-vault-to-a-different-server).
 
 ## The server has run out of storage
 
 **What you see.** The alert icon, and its words read:
 
-> obsync: error — Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota. Sync resumes by itself.
+> obsync: error — Your server is out of storage, so it refuses new changes. Free space on the server or raise its quota, then select Sync now.
 
-If Obsidian started while this was so, it ends "Once that is fixed, select
-Sync now." instead: nothing tries a refused start again by itself.
+![Show sync status on a computer: What to do says the server is out of storage, with Retry now, and State reads the same error](assets/server-out-of-storage.png)
 
 A phone also says it once in a notice. New and changed notes stay on the
-device, and the alert clears once the server accepts a change again. Up to
-1.1.3, a device that is already running shows it is offline and keeps
-retrying. The server's log and its dashboard show `volume_full` or
-`journal_full`.
+device. Once there is room, **Sync now** sends them and clears the alert at
+once; without it, a change the server refused goes again at the next check of
+the vault, within five minutes, or when the note next changes. Deleting in
+Obsidian the file the server refused also clears the alert at once, when no
+other refused file is waiting. Up to 1.1.4
+the words said sync resumes by itself, and up to 1.1.3 a device that is
+already running shows it is offline and keeps retrying. The server's log and its dashboard show `volume_full` or
+`journal_full`, or `storage_full` when the disk itself ran out. Up to 1.1.4 a
+disk that ran out answered `500 io_error` instead, and a journal volume that
+ran out `503 nonce_log_unavailable`, and devices showed they were offline.
 
 **Why it happens.** The server refuses to write below a reserve of free space
 on its volumes, rather than fill the disk. The limit is the size you declared
-for each volume, minus what is already stored.
+for each volume, minus what is already stored. `storage_full` means the disk
+filled before that reserve was reached: the declared size is larger than the
+disk really holds, or something else on the disk used the space.
 
 **How to fix it,** on the server:
 
-1. Free space on the volume the refusal names, or grow the volume.
+1. Free space on the volume the refusal names, or grow the volume. After
+   `storage_full`, also lower the declared size to what the disk really holds,
+   so the reserve warns you next time.
 2. If you grew it, raise the declared size to match (`OBSYNC_BLOBS_CAPACITY`
    or `OBSYNC_JOURNAL_CAPACITY`, or the chart's claim sizes), then restart the
    server.
-3. Nothing is lost on the devices: they send what they hold once the server
-   accepts writes again. [Storage](storage.md) explains the reserve.
+3. On a device, select **Sync now**. Nothing is lost on the devices: they
+   send what they hold once the server accepts writes again.
+   [Storage](storage.md) explains the reserve.
+
+## The server needs a restart
+
+**What you see.** The alert icon, and its words read:
+
+> obsync: error — Your server hit a storage error and refuses changes until it is restarted. Restart your obsync server, then select Sync now.
+
+A phone also says it once in a notice. New and changed notes stay on the
+device. After the restart, **Sync now** sends them and clears the alert at
+once; without it, a change the server refused goes again at the next check of
+the vault, within five minutes. The server's log and its dashboard show
+`journal_faulted` or `nonce_log_faulted`, and `/readyz` answers `not_ready`.
+Up to 1.1.4 devices showed they were offline and said sync resumes by itself.
+
+**Why it happens.** A write to the journal volume failed, and taking it back
+failed too, usually because the volume was full or went read-only. The server
+then takes nothing more rather than build on a torn record. Only a restart
+clears it: the restart cuts the torn record and replays the rest.
+
+**How to fix it,** on the server:
+
+1. Read the line that says why: `event=journal_append_failed decision=faulted`
+   or `event=nonce_log decision=faulted`, and its `rollback_io=<kind>`.
+2. Fix that on the journal volume: free space, or make it writable again.
+3. Restart the server, then select **Sync now** on each device. Nothing is
+   lost on the devices: they send what they hold.
 
 ## Other refusals a device can show
 
@@ -822,18 +1200,24 @@ it, and **Show sync status** repeats it.
 A running device names a refusal the first time the server makes it -- a
 full volume, a revoked device, a clock too far off, something in front of the
 server answering instead of it -- in words, and the words clear themselves
-once the server accepts again (issue #155). Only a server that does not answer
-reads `offline — retrying`. The code below is in the obsync log line.
+once the server accepts again (issue #155). An error the server answers in its
+own words, even a `5xx`, is retried and never reads offline (1.1.5): a change
+it keeps refusing reads `syncing` and is sent again at the next pass, and a
+read of changes that keeps failing reads "Changes from your server could not
+be read". Only a server that does not answer, or something in front of it
+answering for a server that is gone, reads `offline — retrying`. The code below
+is in the obsync log line.
 
 **How to fix it,** by what the reason says:
 
 | Reason | What it means | What to do |
 | --- | --- | --- |
-| `volume_full` or `journal_full` (HTTP 507) | the server's free-space watermark refused the write | free space on that volume, or grow it and the claim together |
-| `quota_exceeded` (HTTP 507) | the account quota is exhausted | raise the quota, or remove files and let retention expire |
+| `volume_full` or `journal_full` (HTTP 507) | the server's free-space watermark refused the write; the device reads "Your server is out of storage" | free space on that volume, or grow it and the claim together |
+| `storage_full` (HTTP 507) | the disk itself had no room, before the watermark was reached; the same words | free space on that disk, and declare no more than it holds |
+| `quota_exceeded` (HTTP 507) | the account quota is exhausted; the same words | raise the quota, or remove files and let retention expire |
 | `not_obsync` | a proxy, access policy or sign-in page answered instead of obsync | check the Server URL, and the custom request headers in obsync settings |
-| `not_ready` (HTTP 503) | the server is not serving: a volume is unwritable, or it is replaying its journal | read the server's own log line, which names the volume and the I/O error |
-| `journal_faulted` (HTTP 503) | a journal write failed and the server refuses to acknowledge anything it cannot durably record | the server log names the cause; the volume is the place to look |
+| `io_error` (HTTP 500) | a volume refused a read or a write; the device retries it, keeps a refused change to send again, and a read that keeps failing reads "Changes from your server could not be read" | the server's own log line names the volume and the I/O error |
+| `journal_faulted` or `nonce_log_faulted` (HTTP 503) | a write to the journal volume failed and could not be taken back, so the server takes nothing until it restarts | [The server needs a restart](#the-server-needs-a-restart) |
 | a credential-storage failure | Obsidian's secret storage is unavailable or unverified | reload Obsidian; if it keeps happening, reinstall obsync and pair this device again, with the recovery phrase or another syncing device at hand ([Where your keys are kept](community-plugin.md#where-your-keys-are-kept)); do not repeat server setup |
 
 ## Changes from your server could not be read
@@ -855,6 +1239,14 @@ side failed: find this device's `GET /v1/changes` lines.
   phone's Files app, or while Obsidian was closed. It tried to move the note
   to the trash, found nothing there, and stopped at that deletion on every
   attempt (issue #234).
+- **Answered `200`, and the alert went away by itself a few seconds later:**
+  up to 1.1.4 a computer did this once when it caught up on a folder another
+  device had made and then deleted, before Obsidian had listed it -- for
+  example when pairing again after a folder was renamed (issue #266). The
+  next attempt usually removed the folder; if it is still there, see [An
+  empty folder appeared on a computer paired
+  later](#an-empty-folder-appeared-on-a-computer-paired-later). 1.1.5
+  removes it the first time.
 
 **How to fix it.**
 
@@ -953,8 +1345,8 @@ Obsidian was closed, still has its old contents on your other devices, and
 **Sync now** says there is nothing to send.
 
 **Why it happens.** obsync notices a changed file by its size and modified
-date, and **Sync now** also reads the contents of files up to 8 MiB. A
-program that rewrites a larger file and keeps both its size and its date
+date, and on a computer **Sync now** also reads the contents of files up to
+8 MiB. A program that rewrites a larger file and keeps both its size and its date
 (some encryption tools, or a copy that preserves dates) leaves nothing for
 those checks to see. Reading every large file at every press would cost a
 phone far more than this rare case is worth.
@@ -965,6 +1357,26 @@ phone far more than this rare case is worth.
    however large, and sends the ones that changed.
 2. It answers with how many files it checked and how many had changed.
 
+## On a phone, a note another app rewrote stays old elsewhere
+
+**What you see.** You changed a note on a phone with another app (a file
+manager, a text editor, a script), and your other devices still show the
+old text. **Sync now** on the phone says there is nothing to send.
+
+**Why it happens.** From 1.1.5, **Sync now** on a phone asks the phone's
+storage for every note's size and modified date and reads only the notes
+where either changed, instead of reading them all, which took minutes on a
+large vault (issue #246). An app that rewrote a note and kept both its size
+and its date leaves nothing for that check to see. If the phone's log says
+`sync_now decision=fallback`, Obsidian did not offer that check, and a
+press sees only what Obsidian itself noticed until it restarts.
+
+**How to fix it.**
+
+1. On the phone, select **Verify all files** in the command palette. It
+   reads every note and sends the ones that changed.
+2. It answers with how many notes it checked and how many had changed.
+
 ## Changes wait while Obsidian is in the background
 
 **What you see.** On a computer, a note you change while Obsidian's window is
@@ -974,7 +1386,8 @@ devices minutes later, often only once you bring the window forward.
 **Why it happens.** A hidden Obsidian window slows its own timers to about one
 a minute, and obsync up to 1.1.3 waited on those timers before each upload.
 From 1.1.4 obsync keeps time in a small background worker that a hidden window
-does not slow.
+does not slow. From 1.1.5, while it has changes to send or receive, it also
+asks the window to run at full speed, and gives that back once it is done.
 
 **How to fix it.**
 
@@ -984,7 +1397,10 @@ does not slow.
    for a warning that starts with `obsync timers decision=fallback`. It means
    Obsidian on this computer did not let obsync start its worker, so a change
    made in the background can again take minutes, and uploads at once when the
-   window comes forward. Open an issue with that line.
+   window comes forward. A warning that starts with
+   `obsync host decision=throttle_unavailable` means this Obsidian did not let
+   obsync keep the window at full speed, so syncing runs slower while it is in
+   the background. Open an issue with the line you found.
 
 ## A note stays at syncing 1 file
 
@@ -1016,23 +1432,88 @@ typing, so it waits.
 3. If a keystroke already saved the old text, the newer version is still in
    **Restore from history**.
 
+## Changes from your other devices stop arriving
+
+**What you see.** On a computer, what you change here still reaches your
+other devices, but their changes stop arriving here; up to 1.1.4 the status
+could still read `obsync: idle` while they waited. Changing **Sync folders**,
+switching servers or **Leave** may not finish either. From 1.1.5, within
+about twenty seconds of **Sync now** the status's words say what it is
+waiting for, for example `obsync: checking for changes, waiting for the
+cleanup of interrupted writes`, and after about two minutes
+[the plugin's log](#how-to-collect-a-report) has a warning that starts with
+`obsync feed decision=stalled`, or `obsync scan decision=stalled` for a check
+of this vault's files that has not ended.
+
+**Why it happens.** obsync writes what arrives from your server one step at
+a time, so that two writes never land on one note together. A step that does
+not end holds back every step after it, and the changes from your other
+devices wait behind it. The warning names the step that holds the others
+(`chain=`, with how long it has run in milliseconds) and how many wait behind
+it (`behind=`). When it names `page`, the step is the changes from your other
+devices themselves being written: a first sync of many notes can take longer
+than two minutes on a slow device, and if notes keep arriving, nothing is
+wrong.
+
+One cause is known and handled in 1.1.5. In Obsidian 1.13, Settings opens as
+a window of its own. Closing it can lose the answer to a disk read or write
+obsync has just started, and the step waiting for it would then hold every
+later step. In testing that was a check of this vault's files (#302), and a
+first sync that stopped at "syncing 300 files" (#307). From 1.1.5 every disk
+read gives up after 15 seconds, and a second more for each MiB it reads. The
+log has a warning such as `obsync host decision=stalled call=readdir`, sync
+carries on, and the step runs again. A change this device was sending at
+that moment reads "This device's disk did not answer in time. obsync tries
+again by itself." until it goes. A write is never given up on, because it may
+have landed and only its answer been lost: one past that time is logged as
+`decision=overrun call=rename`, say, and waited for. If its answer never
+comes, it is the step this warning names, and the fix below applies. If
+either warning keeps coming back, a disk
+under your vault is not answering, for example an external or network drive
+that went to sleep or dropped. Any other cause is not known yet; the warning
+is there so that a report can say.
+
+**How to fix it.**
+
+1. Copy the `decision=stalled` warning from the plugin's log, or the status's
+   words after **Sync now**.
+2. Quit Obsidian completely (Cmd+Q on a Mac; on Windows and Linux, close
+   every Obsidian window) and open it again. The held step starts over.
+   Nothing you changed is lost: what had not been uploaded yet is found and
+   sent when obsync starts.
+3. [Collect a report](#how-to-collect-a-report) and open an issue with that
+   line, even if the restart fixed it.
+
 ## A note that synced does not show in Obsidian
 
 **What you see.** The status is idle, and another device's new note is not in
-Obsidian's file list, search or quick switcher on this computer.
+Obsidian's file list, search or quick switcher on this computer. Or a note
+another device renamed or deleted is still listed here under its old name.
+Or search does not find the words another device just added to a note.
 
 **Why it happens.** The note is on this computer's disk. Obsidian learns about
 a file that another program writes, obsync included, from the operating
 system's file events, and on a busy Mac the service that delivers them
 (`fseventsd`) can fall minutes behind. Until it catches up, Obsidian does not
-list the new note. It does not notice a note you copy into the vault folder
-yourself either.
+list the new note, and search keeps reading an edited note's old words. From
+1.1.5 obsync tells Obsidian itself about the notes and folders it writes, moves
+or deletes on a computer, and about the new words of a note it rewrites, so
+what it syncs is listed and searchable at once however late those events are
+(issues #253, #267). A note open in an editor shows the new words at once, and
+search finds them after your next edit there, once the events arrive, or at a
+restart: obsync leaves an open note's reload to Obsidian so it never interrupts
+your typing. Obsidian still waits for the events
+to notice a note you copy into the vault folder yourself, or one another
+program writes. If obsync's log says `decision=skipped reason=no_reconcile`,
+your Obsidian version no longer offers what obsync uses for this, and notes
+wait for the events as they did before 1.1.5.
 
 **How to fix it.** Restart Obsidian, or run **Reload app without saving** from
 the command palette. Obsidian reads the vault again and lists the note. To see
 whether the event service is behind, open Activity Monitor and look for
 `fseventsd` using a large share of the CPU; it usually settles once whatever
-is changing many files at once (an indexing run or a large copy) finishes.
+is changing many files at once (an indexing run or a large copy) finishes. On
+1.1.4 or earlier, update obsync to 1.1.5.
 
 ## A large file did not arrive on a phone
 
@@ -1085,7 +1566,7 @@ every deleted note's content for 30 days by default.
 **What you see.** A folder you deleted on another device is still on a Mac,
 even after **Sync now** and a restart. From 1.1.4 obsync says so once:
 
-> obsync kept the folder "&lt;folder&gt;" here although &lt;device&gt; deleted it: it still holds 1 item that is not a synced note -- a hidden file, another app's data, or a note not sent yet -- and a folder is only removed when it is empty. Nothing in it was deleted. Delete the folder here if you no longer need what is in it.
+> obsync: kept the folder "&lt;folder&gt;" although &lt;device&gt; deleted it: it still holds 1 item that is not a synced note (a hidden file, another app's data, or a note not sent yet). Delete the folder here if you no longer need what is in it.
 
 Up to 1.1.3 the folder stays, empty, with no word.
 
@@ -1099,6 +1580,22 @@ kept only for something else.
 **How to fix it.** Look inside the folder on that device. If you no longer need
 what is in it, delete the folder there, in Obsidian or in Finder.
 
+## An empty folder appeared on a computer paired later
+
+**What you see.** On a Mac, Windows or Linux computer you paired after a
+folder was renamed and then renamed back on another device, an empty folder
+stands under the name the folder had in between. Your other devices do not
+show it.
+
+**Why it happens.** Up to 1.1.4 a computer catching up on the vault's history
+could not remove a folder Obsidian had not listed yet: the removal failed with
+`EISDIR` and was tried again, and the folder stayed (issue #266). From 1.1.5
+the computer removes it while catching up. Nothing is lost: the folder is
+empty, and your notes are where the other devices show them.
+
+**How to fix it.** Delete the empty folder on that computer, in Obsidian or in
+the file manager. Your other devices do not have it, so nothing changes there.
+
 ## A linked folder shows up empty on other devices
 
 **What you see.** Up to 1.1.3, on other devices, an empty folder appears with
@@ -1106,7 +1603,7 @@ the name of a folder that is a link (a symlink) on one device, and nothing in
 it ever arrives. Tested with a linked folder inside another folder. From
 1.1.4, the device with the link says once:
 
-> obsync doesn't sync linked folders: "&lt;folder&gt;" is a link, so it stays on this device only. Nothing in it is sent to your other devices, and nothing from them is written into it. To sync it, move the folder itself into the vault instead of linking to it.
+> obsync: does not sync linked folders: "&lt;folder&gt;" is a link, so it stays on this device only and nothing from your other devices is written into it. To sync it, move the folder itself into the vault instead of linking to it.
 
 and the empty folders an earlier version made on the other devices go at its
 next start.
@@ -1177,12 +1674,77 @@ restart; smaller deletions go at once.
 
 **Fix.** Choose **Delete everywhere** to delete them on every device, or
 **Restore here** to put them back on this device. Both answers are also under
-Settings, obsync, **Deletions held back**.
+Settings, obsync, **Deletions held back**. From 1.1.5, either answer is said
+in a short notice, and in Recent: "deleting 20 notes on your other devices
+too", or "put 20 notes back on this device and deleted nothing".
 
 ## A conflict copy appeared
 
 That is obsync refusing to throw away an edit, not a failure. See
 [Conflicts](conflicts.md).
+
+## Words typed on two devices at once went into a conflict copy
+
+**What you see.** Two people typed in one note at the same time, on different
+lines. Afterwards the last words one of them typed are missing from the note,
+and a note named `<note> (conflict from <device>, <date> UTC, <id>)` holds
+them. A notice said `obsync: kept both versions of "<note>": <device>'s is in
+"<copy>".`, or `obsync: stopped combining edits to "<note>"` (up to 1.1.4:
+`obsync kept both versions of <note>` or `obsync stopped merging <note>`). It
+happens most on a busy computer, and when a third device has the note open.
+
+**Why it happens.** Up to 1.1.4, a device could merge the two typists' versions
+together with words saved on it but not sent yet, so two devices sent two
+different merges of the same versions. When a third device, open and idle,
+merged every change as it arrived, it could then need more history than it
+reads at once to combine those merges, and settled them by a fixed rule
+instead: one side is the note, the other goes into the copy. From 1.1.5 a
+device sends what was typed before it merges, remembers the history it has
+been shown, and both typists' words stay in the note. A computer that stalls
+sends its last save late, and every change that arrives meanwhile waits for
+it; up to 1.1.4 each wait counted toward stopping the merges, and enough of
+them stopped them. From 1.1.5 such a wait does not count. A device still on
+1.1.4 or earlier can still make such a copy. Nothing is lost: the words are in the
+copy.
+
+**How to fix it.**
+
+1. Open the copy, select the words missing from the note, and paste them into
+   the note where they belong.
+2. Delete the copy once the note holds everything.
+3. Update obsync on every device that syncs this vault (Settings, Community
+   plugins, Check for updates), so no device on 1.1.4 or earlier is left.
+
+## A note paused while people typed in it on a very busy computer
+
+**What you see.** The status bar reads `obsync: paused — <note>`, and a notice
+says a plugin keeps rewriting the note right after sync (up to 1.1.4: that it
+was rewritten on this device right after a sync, maybe by another plugin). No plugin rewrites your notes. You, or someone on another
+device, were typing in that note on a computer so busy that Obsidian stalled
+for a while. The note is paused on every device.
+
+**Why it happens.** obsync treats an edit that lands within seconds of another
+device's version, with no keystroke just before it, as another plugin
+answering the sync, and pauses the note so the two devices do not rewrite it
+back and forth (see
+[Stop repeated rewrites](daily-use.md#stop-repeated-rewrites)). Up to 1.1.4 it
+timed that from the version's arrival, even when the open editor had refused
+it, and it could read a note Obsidian was still saving. When Obsidian got
+almost no processor time, your own save reached the disk long after you typed
+it and looked like such an answer. From 1.1.5 the time counts only from a
+version obsync actually wrote into the note, and a note read while it is being
+saved is read again. Nothing is lost while the note is paused: each device
+keeps its own text.
+
+**How to fix it.**
+
+1. On each device, open Show sync status and press Resume on the note. The
+   note becomes what the other devices have, and this device's text goes into
+   `<note> (conflict from <device>, <date> UTC, <id>)` beside it.
+2. Copy any words missing from the note out of those copies, then delete the
+   copies.
+3. Update obsync on every device that syncs this vault (Settings, Community
+   plugins, Check for updates).
 
 ## A note or folder took the other device's name
 
@@ -1215,15 +1777,40 @@ you deleted it (issue #237).
 
 **How to fix it.**
 
-1. Update obsync on this device to 1.1.4 or later. From then on the device
-   deletes such a note again as the history reaches your deletion, and sends
-   nothing.
+1. Update obsync on this device to 1.1.5 or later. It skips the versions
+   your deletion came after and never writes the note back (#311). 1.1.4
+   wrote it back and then deleted it again, sending nothing.
 2. For a note that came back before you updated, delete it again, or add a
    folder under **Sync folders on this device** and save: the next read of
    the history removes it. If you edited it meanwhile, your edit is kept and
    reaches your other devices, like any edit to a note deleted elsewhere.
-3. Reading the history again downloads such a note once more and moves it to
-   the trash again, so this device's trash may hold one more copy.
+3. On 1.1.4, reading the history again also downloaded such a note once
+   more and moved it to the trash, so this device's trash may hold a copy.
+
+## A newly paired device's trash holds notes deleted elsewhere
+
+**What you see.** You paired a device, paired one again, or added a folder
+under **Sync folders on this device**. Afterwards its trash holds notes you
+had deleted on your other devices: the system trash on a computer, or the
+vault's `.trash` folder, depending on Settings, **Files and links**,
+**Deleted files**. The first sync may also have taken longer than the number
+of notes suggests.
+
+**Why it happens.** A device in that state reads your vault's history from
+the start. Your server keeps every version from the last 30 days and at
+least ten of each note, deleted notes included. Up to 1.1.4, the device
+wrote each of those versions in turn. A note deleted elsewhere was
+downloaded, written, then moved to this device's trash, so every note you
+deleted in that window landed there (#311).
+
+**How to fix it.**
+
+1. Update obsync on every device to 1.1.5 or later before you pair the next
+   one. A version a later one replaced is then skipped without being
+   downloaded, so the trash stays empty and each note is written once.
+2. The notes already in that trash are copies of notes you deleted. Your
+   other devices and your server's history have what they had. Empty that
+   trash, or restore a note from it, as you would any deleted note.
 
 ## A renamed Sync folder left an empty folder behind
 
@@ -1233,9 +1820,14 @@ moved on every device, and this device's selection names the folder's new
 name. But your other devices still show an empty folder with the old name.
 
 **Why it happens.** Renaming one of the selected folders updates the selection
-first. The removal of the old folder is then checked against the new
-selection, where the old name no longer belongs, so it is never sent (issue
-#240, fixed in 1.1.5). Nothing is lost: only the empty folder is left over.
+first. Up to 1.1.4 the removal of the old folder was then checked against the
+new selection, where the old name no longer belongs, so it was never sent
+(issue #240). From 1.1.5 it is checked against the selection you renamed the
+folder in, and sent; if the server could not be reached, or Obsidian closed
+first, this device keeps it owed and sends it once the server answers, at the
+latest when Obsidian starts next or you press **Sync now** (issue #265). It
+is left over only when you narrowed **Sync folders on this device** before it
+was sent. Nothing is lost: only the empty folder is left over.
 
 **How to fix it.** On a device that syncs the whole vault, delete the empty
 folder with the old name. That device sends the folder's removal, and your
@@ -1251,16 +1843,20 @@ Your other devices now hold the note twice, under its old name and where you
 moved it, but this device has only the copy you moved, and its status shows
 the check mark.
 
-**Why it happens.** The device still counts the note's old name as synced, so
-reading your vault's history again skips it and never fetches the file (issue
-#239, fixed in 1.1.5). Nothing is lost: the note is on your other devices
-under its old name.
+**Why it happens.** Up to 1.1.4 the device forgot the note when it left the
+selection. Going back to the whole vault sent the moved copy as a new note,
+and reading your vault's history again skipped the note under its old name as
+this device's own, so it was never fetched (issue #239). From 1.1.5 the device
+remembers where the note went and sends it as a move instead: one copy, under
+its new name, on every device. Nothing is lost either way.
 
-**How to fix it.** Copy what you need from the note on another device. If you
-want this device to hold exactly what your other devices hold, leave the
-server on it (Settings, obsync, **Leave**) and pair it again: pairing again
-downloads the note under its old name. Then delete whichever of the two copies
-you do not want, on any device.
+**How to fix it.**
+
+1. Update obsync on this device to 1.1.5 or later.
+2. To fetch the copy under the old name, choose one folder under **Sync
+   folders on this device** and save, then choose the whole vault again and
+   save. This device then holds both copies, like your other devices.
+3. Delete whichever copy you do not want, on any device.
 
 ## A renamed note came back under its old name after pairing again
 
@@ -1277,11 +1873,34 @@ arrives, and the rename then meets the copy this device already kept under
 the new name (issue #241, fixed in 1.1.5). Nothing is lost: both copies hold
 the note's text.
 
-**How to fix it.** Delete the copy under the old name on the device that shows
-it; the copy under the current name is the one your other devices hold. If a
-pairing asks whether to add notes the server's vault does not hold, choose
-**Cancel**, delete the old-name copy, and pair again: cancelling uploads
-nothing.
+**How to fix it.**
+
+1. Update obsync to 1.1.5 or later before you pair again: it keeps such notes
+   where they are and sends nothing.
+2. Delete the copy under the old name on the device that shows it; the copy
+   under the current name is the one your other devices hold.
+3. If a pairing asks whether to add notes the server's vault does not hold,
+   choose **Cancel**, delete the old-name copy, and pair again: cancelling
+   uploads nothing.
+
+## A note came back under its old name after syncing the whole vault again
+
+**What you see.** On a device that syncs only some folders, you moved a note
+out of them and later deleted it there, or moved it into a hidden folder (one
+whose name starts with a dot) or a linked folder. After you set the device
+back to the whole vault, the note is here again under the name it had before
+you moved it.
+
+**Why it happens.** obsync never syncs a hidden or linked folder, and your
+other devices still hold the note under its old name. Going back to the whole
+vault gives this device every note they hold, so the note is downloaded again
+(from 1.1.5). Nothing was sent from this device.
+
+**How to fix it.**
+
+1. If you want the note on every device, keep it; nothing else is needed.
+2. If you meant to remove it everywhere, delete it under its old name on any
+   one device, and let it sync.
 
 ## A note became empty on every device
 
@@ -1299,10 +1918,12 @@ again. If the file stays empty, the status names it:
 > Cannot write Notes/Plan.md here: it stayed empty when it was written
 
 The phone tries that file again later and never sends the empty file; until
-then the note shows empty on the phone. If the note was renamed on another
-device meanwhile, an empty note under its old name stays on the phone: delete
-it there. Moving or renaming that empty note on the phone does not send it
-either, and deleting it on the phone deletes nothing on your other devices.
+then the note shows empty on the phone. From 1.1.5 that holds even when
+Android ends Obsidian between those writes (issue #248). If the note was
+renamed on another device meanwhile, an empty note under its old name stays
+on the phone: delete it there. Moving or renaming that empty note on the
+phone does not send it either, and deleting it on the phone deletes nothing
+on your other devices.
 
 **How to fix it.**
 
@@ -1313,6 +1934,26 @@ either, and deleting it on the phone deletes nothing on your other devices.
    into the note, or delete the empty note and rename the copy
    ([Restore a retained version](daily-use.md#restore-a-retained-version)).
 
+## A note you emptied on a phone keeps its text elsewhere
+
+**What you see.** You emptied a note on a phone, and your other devices still
+show its text. The phone's obsync log has a line
+`reconcile decision=held reason=unfinished_download` ending in
+`unverified=1` or more.
+
+**Why it happens.** When Obsidian starts on a phone, obsync looks for empty
+files a download left when Android ended the app half-way, and never sends
+those (issue #248). It tells them from a note you emptied by asking your
+server what is still on its way to the phone. When the server could not
+answer at that moment, a note obsync last knew with text is kept back rather
+than sent empty on a guess.
+
+**How to fix it.**
+
+1. On the phone, open the note and type one character.
+2. Wait for the status to read idle, then delete that character. The note
+   is sent empty as usual.
+
 ## Leave lists files your other devices already have
 
 **What you see.** On a phone, **Leave this server** says some files "hold
@@ -1321,15 +1962,20 @@ files with the same text.
 
 **Why it happens.** Android sometimes writes a downloaded file's bytes a
 moment after Obsidian has looked at it. Obsidian's list of the vault's files
-keeps the size it saw first, often empty, until it restarts, and obsync reads
-that list (issue #245). The file's text is already on the server.
+keeps the size it saw first, often empty, until it restarts. Up to 1.1.4
+obsync counted from that list (issue #245). From 1.1.5 it asks the phone's
+storage about every file whose listed size or date differs from what it
+synced, and counts only what really changed there; its log says
+`list decision=stale_index` for each file the storage corrected. A file the
+storage does not answer for is still counted, to be safe.
 
 **How to fix it.**
 
 1. Select **Cancel**. Leaving then changes nothing.
-2. Close Obsidian on the phone completely and open it again.
-3. Select **Leave this server** again. The list now names only files that
-   really changed here; for those, run **Sync now** first.
+2. Select **Sync now**, then **Leave this server** again.
+3. If the list still names a file you did not change here, close Obsidian on
+   the phone completely, open it again, and select **Leave this server**
+   again.
 
 ## Two folders that differ only in capitalisation
 
@@ -1349,7 +1995,7 @@ note or folder by capitals alone: it answers "Destination file already
 exists". Rename it on another device, or rename it here to a different name
 first and then to the one you want; obsync carries the rename everywhere. From
 1.1.4 an Android device RECEIVES such a rename from your other devices. If it
-ever cannot, it says "obsync could not change the capitals of ..." and keeps
+ever cannot, it says "obsync: could not change the capitals of ..." and keeps
 the old name; the same two renames on that device fix it.
 
 **If the other device is still on 1.0.x,** this device refuses the moves it
@@ -1400,6 +2046,97 @@ The plugin does not do step 3 for you: it cannot know that every other device
 has already been updated, and deleting one sync too early is exactly the loss
 this order avoids.
 
+## A notice says there are more
+
+**What you see.** A notice reads `obsync: 4 more — see Recent in Show sync
+status`, with fewer obsync notices above it than that.
+
+**Why it happens.** obsync keeps at most three of its notices on screen at
+once. When more arrive together -- a device catching up after a day offline,
+say -- the rest are counted on that one notice instead of covering the screen.
+Nothing is lost: every notice, including the counted ones, is listed under
+**Recent** in **Show sync status**. A question, such as whether to delete notes
+everywhere, is never counted away: it always gets a notice of its own.
+
+The same notice again while its toast is up -- **Sync now** pressed twice
+with nothing to send, say -- is counted on that toast, `(2 times)`, instead of
+stacking a second one, and on one line of **Recent** the same way.
+
+**How to fix it.**
+
+1. Click or tap that notice, or the status bar icon, to open **Show sync
+   status**.
+2. Read **Recent**; **Show all** lists every one kept since obsync started.
+
+## Recent hides the pairing code
+
+**What you see.** **Recent**, in **Show sync status**, or
+`obsidian obsync-private-sync:recent`, reads `Its prompt shows the code •••`
+where the notice itself showed six digits.
+
+**Why it happens.** A pairing's match code is for comparing on the two screens
+while you pair, and for nothing afterwards. From 1.1.5 obsync shows it on the
+notice and in the pairing dialog only; everything that outlives them -- Recent,
+the command line, the plugin's log -- has `•••` in its place.
+
+**How to fix it.** Nothing to fix. To compare codes, read the pairing dialog on
+each device, or the notice while it is up.
+
+## obsync no longer says when it combines edits
+
+**What you see.** Text another device wrote appears in a note you are editing,
+and no notice says so.
+
+**Why it happens.** That is obsync combining your edits with the other
+device's, and how often it says so is a setting. **Combined edits** set to
+**Once per note** (the default) says it the first time, then stays quiet for
+that note until it has gone five minutes without another; **Recent only** never
+says it; and a **Notification level** of **Only what needs me** keeps it quiet
+whatever **Combined edits** says. Every combine is still listed under **Recent**
+in **Show sync status**.
+
+**How to fix it.**
+
+1. Open **Settings**, obsync, **Notifications**.
+2. Set **Notification level** to **Everything useful**, and **Combined edits**
+   to **Every time** or **Once per note**.
+3. Or, from the command palette, run `Combined edits: Every time (obsync)`; or
+   in a terminal, `obsidian obsync-private-sync:notices level=everything merges=every`.
+
+## The command line does not find obsync
+
+**What you see.** `obsidian obsync-private-sync:notices` answers
+`Command "obsync-private-sync:notices" not found`, or says the command line
+interface is not enabled.
+
+**Why it happens.** Obsidian's command line reaches a running Obsidian, and
+then the vault the terminal is in, or the one you name. obsync's commands exist
+only in a vault where obsync is enabled, and only in Obsidian 1.12.2 or later.
+
+**How to fix it.**
+
+1. In Obsidian, open **Settings**, **General**, and turn on **Command line
+   interface** under **Advanced**; register it when Obsidian offers to.
+2. Run the command from inside the vault's folder, or name the vault first:
+   `obsidian vault="My vault" obsync-private-sync:status`.
+3. Check that obsync is enabled in that vault under **Settings**, **Community
+   plugins**, and that Obsidian is 1.12.2 or later.
+
+## Show sync status opened twice
+
+**What you see.** Two **Sync status** windows, one over the other, and Escape
+closes only the top one.
+
+**Why it happens.** Up to 1.1.4, asking for **Show sync status** while it was
+already open -- from the command palette, a hotkey, or a notice -- opened
+another one. From 1.1.5 the one already open comes to the front instead, and
+**Show recent sync activity** does the same.
+
+**How to fix it.**
+
+1. Press Escape once for each extra window; nothing is lost by closing them.
+2. Update obsync to 1.1.5 or later under **Settings**, **Community plugins**.
+
 ## How to collect a report
 
 1. **The plugin's own log.** On a computer, open Obsidian's developer console
@@ -1407,6 +2144,13 @@ this order avoids.
    filter for `obsync`. Problems are at the warning level; routine decisions
    are at the verbose level, which the console hides until you turn it on.
    Every refusal names the request, the status and the code, never the content.
+   Two answers a step waits for are routine, `decision=expected`: a first
+   setup finding no domain map yet (`404 unknown_file`), and a new device
+   asking for its approval before it is given (`409 not_approved`).
+   After obsync is disabled and enabled again, or reloaded, a line ending
+   `decision=ended reason=session_inactive` is the old session dropping a
+   request it still had waiting; nothing was sent, and the new session does
+   the work.
 2. **Show sync status**, from the command palette: what sync is doing and why
    it is not doing more. Its first row is this device's **Server** address;
    leave that row out, for the reason the list below gives.

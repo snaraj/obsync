@@ -1,0 +1,12 @@
+# M3964: a history read that gives up on the server's own 5xx forgets it was answered (#298)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1097,7 +1097,7 @@
+       }).catch(() => undefined);
+       const outcome = await control.wait(pending);
+       control.check();
+-      if (outcome.kind !== "settled") throw new ApiError(outcome.status, "unreachable", "History read did not settle; retry explicitly.", outcome.answered);
++      if (outcome.kind !== "settled") throw new ApiError(outcome.status, "unreachable", "History read did not settle; retry explicitly.");
+       const response = outcome.response;
+       if (response.arrayBuffer.byteLength > maxBytes ||
+           (metadata && (response.text.length > maxBytes || utf8(response.text).length > maxBytes))) {

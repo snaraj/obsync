@@ -1,0 +1,11 @@
+# M3331: a folder removal at the end of its retry budget is dropped, not kept owed (issue #265)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2581,6 +2581,7 @@
+         `push path_class=folder decision=expired reason=folder_removal attempt=${attempt} budget=${FOLDER_POST_TRIES} ` +
+           `held=next_pass error=${message}`,
+       );
++      this.settleRemoval(path);
+       this.report(refusalStatus(error) ?? { kind: "error", message: error instanceof ApiError ? PUSH_REFUSED : message });
+       return;
+     }

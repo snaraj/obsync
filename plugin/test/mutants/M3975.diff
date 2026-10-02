@@ -1,0 +1,12 @@
+# M3975: a never-repeated action the server answered with its own error says it never answered (#299)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -170,7 +170,7 @@
+   }
+   // THE SERVER ANSWERED, WITH AN ERROR OF ITS OWN (#299): "never answered"
+   // was false, and it reached no conclusion it could say, so the person checks.
+-  if (lost.answered === true) {
++  if (false) {
+     return (
+       `${what}: your server answered with an error, so it may not have happened. ` +
+       "See whether it did, and try again if not; if this stays, check your server's log."

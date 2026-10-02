@@ -232,13 +232,20 @@ before it entered the window, so either file answers the window.
 
 The rewrite holds what was durable before the batch that triggered it, and
 that batch is appended after it. Any failure inside the sequence, or in the
-append, refuses every request in the batch with `503
-nonce_log_unavailable` and one `event=nonce_log decision=refused batch=<n>`
-line. Nothing already durable changes: `v1/nonces` holds what it held, a
-refused append is cut back off the file before anything else is written,
-and the nonces the refused requests carried were never recorded, so each is
-unspent and the device may send it again. A cut that itself fails leaves the
-log refusing every request until a restart truncates the torn tail. The
+append, refuses every request in the batch and logs one `event=nonce_log
+decision=refused batch=<n>` line. A volume with no room is `507
+storage_full`, the code the store gives the same disk. Anything else is `503
+nonce_log_unavailable`. Nothing already durable changes: `v1/nonces` holds
+what it held, a refused append is cut back off the file before anything else
+is written, and the nonces the refused requests carried were never recorded,
+so each is unspent and the device may send it again. A signed READ is refused
+too, and must be: its nonce is recorded like any other, and a read answered
+with its nonce unrecorded is one a crash makes replayable. A cut that itself
+fails leaves the log refusing every request, `503 nonce_log_faulted`, until
+a restart truncates the torn tail. The flush that finds it logs one
+`event=nonce_log decision=faulted rollback_io=<kind>` line, and `/readyz`
+answers `503 not_ready` with `nonce log faulted; restart to recover` until
+then. The
 compaction threshold is still outstanding, so the next batch attempts the
 rewrite again. A flush that panics, which only a bug does, settles the same
 way: its whole batch is answered `503 nonce_log_unavailable`, cut back and
@@ -303,11 +310,31 @@ requires the refusal.
    `fsync` leaves an unsynced temp; a refusal at the `rename` leaves a synced
    one. Both leftovers are removed at the next start, which counts them on
    its `store_open` SUMMARY, and in every case the chunk is simply absent and
-   the client re-uploads.
+   the client re-uploads. A fan-out directory the `rename` needs (`v1/<ab>/`,
+   `v1/<ab>/<cd>/`) is created first, top down, and each new one's parent is
+   fsynced before going deeper, so every directory on an acknowledged
+   chunk's path is durable (1.1.5, #273). A directory whose parent's
+   `fsync` failed is remembered, and the next chunk under it fsyncs that
+   parent again. A start that finds a leftover temp fsyncs `v1/` and each
+   first-level directory once (`fanout_synced=` on the same SUMMARY): the
+   cut may have fallen between a directory's creation and its parent's
+   `fsync`. The temp goes only after that repair succeeds, so a start that
+   fails or stops part way leaves it, and the next start repairs again.
+   Every start fsyncs the volume and `v1/`, which name `v1/` and `v1/tmp/`,
+   whether or not it created them. On a fresh store most early chunks open a new leaf, so they cost
+   one more flush (two for the first of each 256 first levels).
 2. Journal append: frame = `u32 len | u32 crc32 | payload`; `write`,
    `fsync(segment)`; only then respond. Startup replay stops at the first
    torn or CRC-failing frame, truncates the segment there, and logs the
-   count of frames recovered.
+   count of frames recovered. Version posts that arrive while an `fsync` is
+   in flight are appended together and share the next one (group commit,
+   1.1.5): at most 64 posts or 4 MiB of manifests a turn, one post per file,
+   each checked against the index as it stands and answered only after that
+   `fsync` returns and its frames are applied. A turn the watermark or the
+   volume refuses is rolled back whole under rule 3, and each of its posts is
+   then tried alone, as it would have been without the turn: refused only
+   when its own frames do not fit or its own write fails. Each
+   `version_append` line says how many posts its `fsync` carried (`batch=`).
 3. Failed journal append: the journal records the length it has made durable
    before it writes, and any failure of the write or of its `fsync` cuts the
    segment back to that length and fsyncs the cut before the error returns.
@@ -343,17 +370,45 @@ requires the refusal.
 
 ## Journal frames
 
-`account`, `device` (create, update, activate, revoke, delete, wrap),
+`account` (setup, and every change to the account's recovery verifier:
+its registration, and the operator's `obsyncd recovery reset apply`, which
+writes the account again without one and with `recovery_cleared_at`, the
+reset's time, arming one re-enrolment until a verifier is registered),
+`device` (create, update, activate,
+revoke, delete, wrap),
 `version` (which carries its file's `domain_id`, so replay reaches the same
 domain the post named), `gc` (a list of sids collected), `scrub` (a step
 that found a mismatch, or completed a pass), `seen` (device sign-in and edit
 events, retention-bounded; an accepted version post appends its `version`
-frame and its `seen` edit frame together, with one fsync). There
+frame and its `seen` edit frame together, with one fsync, which posts queued
+behind the previous fsync share; durability rule 2). There
 is no `domain` frame: a domain exists because a file record names it
 (`docs/architecture.md` 5.1 item 4). Pairings live in memory only, so a
 start destroys every pending device no pairing is holding any more, through
 the `device` delete frame expiry uses (`docs/architecture.md` 4.2). Frames
 carry `account_id`.
+
+**The registration time (1.1.5).** Since 1.1.5 the `account` frame and the
+snapshot's account carry `recovery_at`, the Unix milliseconds at which the
+verifier in `recovery` was registered, which the last-device rule reads
+(`docs/protocol.md`, "Devices"). Both directions of a version change load:
+
+- **Older state on 1.1.5.** A frame or snapshot without `recovery_at` reads as
+  a verifier registered before times were kept, which keeps the older rule. A
+  time that is not a number is refused as corrupt rather than read as absent,
+  because absent is the permissive reading.
+- **1.1.5 state on an older server.** A server before 1.1.5 reads an account's
+  members by name, so it ignores `recovery_at`, loads every 1.1.5 frame, and
+  applies no hold. A reset is an ordinary `account` frame without a verifier,
+  which it reads the same way. A snapshot it writes drops `recovery_at`, so a
+  verifier that passes through one reads as registered before 1.1.5 when a
+  1.1.5 server starts on that journal again.
+- **The reset's arm.** `recovery_cleared_at` is read only beside no verifier;
+  beside one it describes nothing, and a value that is not a number is refused
+  as corrupt. A server before 1.1.5 ignores it and refuses recovery on an
+  account with no verifier, and a snapshot it writes drops it, so the arm
+  fails closed: the account answers `recovery_unavailable` until the next
+  reset.
 
 ## Memory
 
@@ -477,7 +532,33 @@ exposes no filesystem statistics, so `OBSYNC_BLOBS_CAPACITY` and
 claim sizes. Writes are refused with `507` when free space on the blob
 volume is below the larger of `OBSYNC_FREE_WATERMARK`'s two terms, or when
 the account's quota is exceeded. The dashboard shows both thresholds and the current
-values.
+values. Each declared capacity must exceed its own watermark: at or below it
+every write would be refused from the first, so the server refuses to start
+and names the variable.
+
+A chunk upload reserves what its check admits (server 1.1.5, issue #301). Its
+declared length is measured against the tracked usage PLUS every upload that
+has passed its own check and is not yet counted, under the one lock that
+checks. The admitted upload then holds its bytes until they are counted. A
+refused upload holds nothing. An upload that does not land (a body that does
+not verify, a write the volume refuses, a panic) gives its bytes back on the
+way out. Before, uploads of different chunks that arrived together were each
+measured against the same total and all passed: an 8 MiB volume with a 1 MiB
+reserve stored a 12.6 MB note and ran down to nothing free. The refusal's `free`
+and `used` count those reserved bytes, so a `volume_full` line can name less
+free space than the dashboard shows while uploads are in flight.
+
+A refused chunk is read to its end before the `507` is sent (server 1.1.5,
+issue #304). The watermark and the quota refuse before a byte of the chunk is
+read, and the HTTP layer drains at most 1 MiB of a body a handler left
+unread. Up to 1.1.4 a larger refused chunk was answered over the rest of its
+upload and the connection closed on it. A proxy or tunnel still writing that
+upload was reset, and it answered the device with a bare `502`, which the
+device reads as the server being unreachable, not full. The rest of the body
+is read only for a request that proved a device's credential, and only up to
+its declared length, which the chunk limit (8 MiB plus the 16-byte tag)
+already bounds. A sender below the rate floor is still ended as `503
+slow_body`.
 
 The journal volume has the same watermark applied to its own capacity, and
 refuses a frame that would take it below with `507 journal_full` before the
@@ -493,6 +574,17 @@ they are provisioned and filled independently and a refusal that did not say
 which one it measured would send an operator to the wrong disk. A journal
 volume that fills anyway, below the declared capacity, is rule 3 above: the
 append is refused, rolled back, and never acknowledged.
+
+A volume the FILESYSTEM fills first -- a declared capacity larger than the
+disk, or a disk something else filled -- answers `507 storage_full` on
+whichever volume ran out (`ENOSPC`, or `EDQUOT` from a filesystem quota), so a
+device reads a full server rather than a fault it retries as absence. A
+refused chunk leaves nothing a start would not remove (rule 1). A refused
+journal append whose rollback succeeds leaves the journal unfaulted: the
+refused frame is cut away, and the next append lands once there is room. Only
+a rollback that fails as well faults the journal; that append still answers
+with the volume's own refusal, and every write after it is `503
+journal_faulted` until a restart.
 
 ### Where the measure runs
 

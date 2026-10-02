@@ -91,6 +91,10 @@ pub(crate) struct Index {
     pub(crate) feed: Vec<(Seq, FileId, VersionId)>,
     pub(crate) seq: Seq,
     pub(crate) used_bytes: u64,
+    /// Bytes chunk puts hold from the watermark and quota check that admitted
+    /// them until the count that lands them (`storage::Reservation`, #301). In
+    /// flight, never stored: a snapshot and a start both begin at zero.
+    pub(crate) reserved_bytes: u64,
     pub(crate) last_gc: Option<GcSummary>,
     pub(crate) last_scrub: Option<ScrubSummary>,
 }
@@ -108,6 +112,8 @@ impl Index {
                 created,
                 quota_bytes,
                 recovery_verifier,
+                recovery_registered,
+                recovery_cleared,
             } => {
                 self.account = Some(AccountRecord {
                     account_id: *account_id,
@@ -115,6 +121,8 @@ impl Index {
                     created: *created,
                     quota_bytes: *quota_bytes,
                     recovery_verifier: recovery_verifier.clone(),
+                    recovery_registered: *recovery_registered,
+                    recovery_cleared: *recovery_cleared,
                     used_bytes: 0,
                 });
             }
@@ -136,6 +144,7 @@ impl Index {
                 name,
                 policy,
                 app_version,
+                archived,
             } => {
                 if let Some(entry) = self.devices.get_mut(device_id) {
                     if let Some(name) = name {
@@ -146,6 +155,14 @@ impl Index {
                     }
                     if let Some(version) = app_version {
                         entry.record.app_version = version.clone();
+                    }
+                    // Only a revoked device is ever archived, and the guard
+                    // is here as well as in the store: a replay must not be
+                    // able to hide a device that syncs (issue #247).
+                    if let Some(flag) = archived
+                        && entry.record.state == DeviceState::Revoked
+                    {
+                        entry.record.archived = *flag;
                     }
                 }
             }
@@ -181,7 +198,9 @@ impl Index {
                         crate::storage::types::SeenKind::Edit => {
                             entry.record.last_edit = Some(event.ts);
                         }
-                        crate::storage::types::SeenKind::Heartbeat => {}
+                        crate::storage::types::SeenKind::Heartbeat => {
+                            entry.record.last_heartbeat = Some(event.ts);
+                        }
                     }
                     entry.record.last_seen = Some(event.ts);
                     if event.address.is_some() {
@@ -907,6 +926,59 @@ mod tests {
             "activation must never bring a revoked device back"
         );
         assert_eq!(index.devices[&id].wrapped, [0u8; 32]);
+    }
+
+    /// Archiving is a property of a REVOKED device (issue #247), and the
+    /// guard is here as well as in the store: no frame, however it was
+    /// written or replayed, may take a device that syncs off the lists.
+    #[test]
+    fn a_replayed_archive_frame_never_hides_a_device_that_syncs() {
+        let mut index = Index::default();
+        let device = device_record();
+        let id = device.device_id;
+        index.apply(&record(
+            1,
+            Frame::Device {
+                record: device,
+                wrapped: [7u8; 32],
+            },
+        ));
+        let archive = |flag: bool| Frame::DeviceUpdate {
+            device_id: id,
+            name: None,
+            policy: None,
+            app_version: None,
+            archived: Some(flag),
+        };
+        index.apply(&record(2, archive(true)));
+        assert!(
+            !index.devices[&id].record.archived,
+            "an ACTIVE device is never archived"
+        );
+
+        index.apply(&record(3, Frame::DeviceRevoke { device_id: id }));
+        index.apply(&record(4, archive(true)));
+        assert!(index.devices[&id].record.archived, "a revoked one is");
+        assert!(index.devices[&id].record.revoked(), "and stays revoked");
+        assert_eq!(
+            index.devices[&id].record.name, "sentinel device",
+            "with its name, so its versions still have an author"
+        );
+
+        // An ordinary rename leaves the flag where it was, both ways.
+        index.apply(&record(
+            5,
+            Frame::DeviceUpdate {
+                device_id: id,
+                name: Some("renamed".to_string()),
+                policy: None,
+                app_version: None,
+                archived: None,
+            },
+        ));
+        assert!(index.devices[&id].record.archived);
+        index.apply(&record(6, archive(false)));
+        assert!(!index.devices[&id].record.archived, "and it can come back");
     }
 
     #[test]

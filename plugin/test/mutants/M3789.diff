@@ -1,0 +1,12 @@
+# M3789: a call that gives up on the server's own 5xx forgets it was answered (#298)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -946,7 +946,7 @@
+         `http ${method} ${target} ${outcome.reason} decision=gave_up attempts=${attempt}` +
+           `${budget.interactive ? ` budget_ms=${INTERACTIVE_MS}` : ""} duration_ms=${this.now() - started}`,
+       );
+-      throw new ApiError(outcome.status, "unreachable", outcome.reason, outcome.answered);
++      throw new ApiError(outcome.status, "unreachable", outcome.reason);
+     }
+     const delay = Math.min(this.backoffMs(attempt), left);
+     this.log(`http ${method} ${target} ${outcome.reason} decision=retry attempt=${attempt} backoff_ms=${delay}`);

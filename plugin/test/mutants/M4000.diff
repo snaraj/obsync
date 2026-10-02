@@ -1,0 +1,11 @@
+# M4000: a refusal outlives closing Settings, whose field shows the saved address again
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -286,7 +286,6 @@
+     super.hide();
+     this.unwatch?.();
+     this.unwatch = null;
+-    this.refusedUrl = null;
+     this.draftScope = null;
+     this.draftToken = "";
+     this.draftName = null;

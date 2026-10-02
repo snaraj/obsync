@@ -115,10 +115,6 @@ test("key derivation reproduces the fixtures", async () => {
       d.domain_id,
     );
   }
-  assert.equal(
-    c.hex(await c.pairingKey(bytes(fixtures.pairing.pairing_secret), fixtures.pairing.pairing_id)),
-    fixtures.pairing.key,
-  );
 });
 
 test("the manifest key is scoped to one domain, and is no longer vault-wide", async () => {

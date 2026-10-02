@@ -1,0 +1,11 @@
+# M3335: a folder removal refused as outside its scope stays owed (issue #265)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2307,7 +2307,6 @@
+         } catch (error) {
+           // A refusal of the path is final, and said below; a stop keeps the
+           // debt for the next start; anything else is retried (issue #265).
+-          if (error instanceof VaultPathError) this.settleRemoval(path);
+           if (error instanceof VaultPathError || !this.running) throw error;
+           this.retryRemoval(context, path, judged, error);
+           return;

@@ -1,0 +1,11 @@
+# M3572: a notice setting is not saved
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3285,7 +3285,6 @@
+     const next: NoticeSettings = { ...previous, ...change };
+     this.state.data.notices = next;
+     try {
+-      await this.state.save();
+     } catch (error) {
+       // Not kept is not set: the notices go on as the person last saved them.
+       this.state.data.notices = previous;

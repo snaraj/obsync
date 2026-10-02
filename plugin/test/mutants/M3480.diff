@@ -1,0 +1,13 @@
+# M3480: a forget whose answer was lost is reported as done without reading the list
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3975,8 +3975,7 @@
+       throw error;
+     }
+     if (sent.outcome === "lost") {
+-      const listed = (await this.transport.devices({ interactive: true })).devices
+-        .some((device) => device.device_id === deviceId && device.archived !== true);
++      const listed = false;
+       logged(listed ? "unconfirmed" : "forgotten", "lost_answer");
+       if (listed) throw new Error(lostMessage("forgetting that device", sent));
+       return;

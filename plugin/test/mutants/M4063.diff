@@ -1,0 +1,12 @@
+# M4063: a change past its budget says nothing (review of a0dc7fc2)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -368,7 +368,7 @@
+       started,
+       budget,
+       fail: changes
+-        ? () => log(diskLine("overrun", name, started, budget, " outcome=awaited"))
++        ? () => undefined
+         : () => {
+             log(diskLine("stalled", name, started, budget));
+             reject(new DiskStalled());

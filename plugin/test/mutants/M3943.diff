@@ -1,0 +1,12 @@
+# M3943: a repeat about another note is counted on the first note's Recent line
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -338,7 +338,7 @@
+   private remember(entry: RecentEntry, notice: SyncNotice): void {
+     const last = this.recentList[this.recentList.length - 1];
+     if (last !== undefined && last.entry.kind === entry.kind && last.entry.text === entry.text
+-      && last.entry.device === entry.device && last.entry.paths.join("\u0000") === entry.paths.join("\u0000")) {
++      && last.entry.device === entry.device) {
+       last.times++;
+       last.entry = { ...last.entry, at: entry.at };
+       return;

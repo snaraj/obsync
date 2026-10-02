@@ -1,7 +1,7 @@
 # M708: the peer answer pauses even a clean nonoverlapping merge
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2214,6 +2214,17 @@
+@@ -2834,6 +2834,17 @@
    const baseId = ahead ? localVersionId : commonAncestor(file.versions, localVersionId, change.version_id);
    const before = await context.host.stat(localPath);
    const mine = await context.host.read(localPath);
@@ -11,7 +11,7 @@
 +      context.state.data.paused[change.file_id] = { path: localPath, remote: true };
 +      await context.state.save();
 +      context.host.log(`pull decision=paused reason=peer_rewrite_overlap file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);
-+      context.host.notify(`obsync paused syncing ${localPath}: another device rewrote lines while you were typing. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);
++      context.host.notify(pausedNotice(localPath));
 +    }
 +    await publishPause(context, change.file_id, localPath, true);
 +    return "skipped";
@@ -19,7 +19,7 @@
    // The name this device gives the note: where it is, or where it waits to be
    // once that name is free (`settleBeside`).
    const here = context.state.fileByPath(localPath)?.name ?? localPath;
-@@ -2459,17 +2470,6 @@
+@@ -3116,17 +3127,6 @@
    // answer: the next keystrokes would then extend the wrong text, splitting
    // one typed line between the note and a copy (native S89). Clean merges
    // above still work, and two people typing carry no background-answer flag.
@@ -29,7 +29,7 @@
 -      context.state.data.paused[change.file_id] = { path: localPath, remote: true };
 -      await context.state.save();
 -      context.host.log(`pull decision=paused reason=peer_rewrite_overlap file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started} budget_ms=${ANSWER_MS}`);
--      context.host.notify(`obsync paused syncing ${localPath}: another device rewrote lines while you were typing. Nothing was deleted. Stop the plugin rewriting synced notes, then run Sync now, or press Resume in Show sync status.`);
+-      context.host.notify(pausedNotice(localPath));
 -    }
 -    await publishPause(context, change.file_id, localPath, true);
 -    return "skipped";

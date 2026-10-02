@@ -1,0 +1,12 @@
+# M3380: a pass runs beside a pull, not after it (#244)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3990,7 +3990,7 @@
+    */
+   private inPass(host: VaultHost, label: string, work: () => Promise<void>): Promise<void> {
+     const asked = this.nowFn();
+-    return this.exclusive("pass", async () => {
++    return ((work: () => Promise<void>) => work())(async () => {
+       if (!this.running) return;
+       const waited = this.nowFn() - asked;
+       if (waited > 0) host.log(`${label} decision=waited reason=pull_lock duration_ms=${waited} budget_ms=${SCAN_BUDGET_MS}`);

@@ -1,0 +1,12 @@
+# M4080: any revealed key keeps the commitment
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -155,7 +155,7 @@
+ 
+ /** Whether a revealed creator key is the one the code committed to. */
+ export async function keptCommitment(commitment: Bytes, pairingId: string, creatorKey: string): Promise<boolean> {
+-  return bytesEqual(await pairingCommitment(pairingId, creatorKey), commitment);
++  return true;
+ }
+ 
+ /** The first server release that carries the two key-exchange fields. */

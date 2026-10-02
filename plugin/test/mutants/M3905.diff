@@ -1,0 +1,12 @@
+# M3905: the transport retries a faulted server's 503 as absence, so its code never reaches the engine (#295)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -824,7 +824,7 @@
+       // retried all the same, and never word that it is gone. A bare 5xx --
+       // a proxy or a tunnel whose obsync is not there -- is.
+       const code = response.status < 500 || response.status === 507 ? null : parseError(response.text).code;
+-      outcome = code === null || RESTART_CODES.has(code)
++      outcome = code === null
+         ? { kind: "settled", response }
+         : code !== NOT_OBSYNC && OBSYNC_CODE.test(code)
+           ? { kind: "unsettled", status: response.status, reason: `status=${response.status} code=${code}`, answered: true }

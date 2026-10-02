@@ -1,0 +1,12 @@
+# M3507: a pulled edit to a listed note is never reindexed (#267)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1739,7 +1739,7 @@
+         // (`reconcile`). One it reconciles is in no view, so nothing below
+         // awaits after the event this may raise, which the caller's echo
+         // mark settles.
+-        await this.reconcile(path, "file", true, true);
++        await this.reconcile(path, "file", true);
+         // The rename kept the inode, and the inode is what `sameFile` proves
+         // -- but an ordinary in-place save keeps the inode too, so identity
+         // alone does not say these are still our bytes. The answer is bound

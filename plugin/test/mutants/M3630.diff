@@ -1,0 +1,15 @@
+# M3630: an ended session's refusal is a network failure again, retried through the whole backoff (issue #272)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -818,11 +818,6 @@
+         letGo = null;
+       }
+       // A session that ended sends nothing more, and says so once (#272).
+-      if (error instanceof SessionEnded) {
+-        letGo?.();
+-        this.log(`http ${method} ${target} decision=ended reason=session_inactive`);
+-        throw error;
+-      }
+       // AN ANSWER THAT CAME WHILE THIS ONE WAITED (issue #288): the server
+       // was there, and the wait was on this device -- a request queued behind
+       // one `requestUrl` could not abort reached the server 20 s late and ran

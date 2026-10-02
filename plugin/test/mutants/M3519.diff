@@ -1,0 +1,12 @@
+# M3519: the creator says paired while the new device is still deciding
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -480,7 +480,7 @@
+         continue;
+       }
+       if (!this.collecting) return;
+-      if (outcome === "kept") {
++      if (outcome !== "dropped") {
+         this.collecting = false;
+         this.plugin.log(`pairing role=creator decision=paired polls=${poll}`);
+         tell(this.plugin, `"${claimant.name}" is paired: it holds the vault key now.`);

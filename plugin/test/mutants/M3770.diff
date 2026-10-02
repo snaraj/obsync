@@ -1,0 +1,11 @@
+# M3770: a window back in front keeps the poll but reads nothing beside it (#288)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2976,7 +2976,6 @@
+       this.feedAnswered = false;
+       poll.drop.abort();
+     }
+-    beside?.();
+     if (pause !== null || dropped || beside !== null) {
+       this.options.host.log(
+         `feed decision=woken reason=${reason} ended_pause=${pause === null ? 0 : 1} dropped_poll=${dropped ? 1 : 0} ` +

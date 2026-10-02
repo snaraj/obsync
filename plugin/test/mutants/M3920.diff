@@ -1,0 +1,12 @@
+# M3920: the wait behind a closed Pair a new device never ends
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -435,7 +435,7 @@
+    */
+   private async watch(pairingId: string, claimant: PairingClaimant): Promise<void> {
+     let state: PairingStatus["state"] | "ended" = "expired";
+-    for (let poll = 1; poll <= CONFIRM_POLLS; poll++) {
++    for (let poll = 1; ; poll++) {
+       await new Promise((resolve) => window.setTimeout(resolve, 2000));
+       if (!this.collecting) return;
+       try {

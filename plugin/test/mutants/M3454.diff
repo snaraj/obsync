@@ -1,0 +1,18 @@
+# M3454: the answer clock starts once the write has landed, after a plugin answering inside its event
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -919,10 +919,11 @@
+   // window closed, and refused again, restarted it, and that typist's own
+   // save, which a starved machine wrote late, was paused as a rewrite storm.
+   const answerable = context.arrivals.get(path);
+-  context.arrivals.delete(path);
+-  context.arrivals.set(path, context.now());
+   try {
+-    return await commit();
++    const landed = await commit();
++    context.arrivals.delete(path);
++    context.arrivals.set(path, context.now());
++    return landed;
+   } catch (error) {
+     context.arrivals.delete(path);
+     if (answerable !== undefined) context.arrivals.set(path, answerable);

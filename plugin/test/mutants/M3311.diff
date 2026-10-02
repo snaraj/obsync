@@ -1,0 +1,12 @@
+# M3311: a folder removal is posted against the selection in force, not the one it was judged in (issue #240)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2580,7 +2580,7 @@
+       if (this.folderRemovals.delete(path)) {
+         pathClass = "folder";
+         try {
+-          const versionId = await pushFolderDelete(context, path, judged);
++          const versionId = await pushFolderDelete(context, path, context.state.data.syncFolders);
+           if (versionId !== null) {
+             context.authored.add(versionId);
+             this.accepted(true);

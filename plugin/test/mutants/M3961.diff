@@ -1,0 +1,12 @@
+# M3961: a start the server answered with its own 5xx reads offline (#298)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4055,7 +4055,7 @@
+       this.scheduleReconnect(attempt, error.status);
+       // Retried like absence, and said as what it is (`refusalStatus`): a 5xx
+       // the server answered in its own coded error as the read that failed (#298).
+-      this.setStatus(refusalStatus(error) ?? (error.answered ? { kind: "error", message: FEED_FAILED } : { kind: "offline" }));
++      this.setStatus(refusalStatus(error) ?? { kind: "offline" });
+     }
+   }
+ 

@@ -1,0 +1,11 @@
+# M4012: the nested-vault check reads a stalled entry as no config folder (#302, #307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -976,7 +976,6 @@
+         // A hidden entry the system will not stat (macOS answers `/.resolve`
+         // with EINVAL) is no config folder; the question moves on.
+         const stat = await walker(desktop.fs).lstat(at).catch((error: unknown) => {
+-          if (error instanceof DiskStalled) throw error;
+           return null;
+         });
+         if (stat?.isDirectory() !== true) continue next;

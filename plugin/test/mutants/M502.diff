@@ -1,11 +1,11 @@
 # M502: keeper metadata is not persisted before retirement
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -419,7 +419,6 @@
-       size: stat.size,
-       sha256: digest,
-     });
--    await context.state.save();
+@@ -617,7 +617,6 @@
+     // `survey`, #181), so no second id is minted. An edit of a recorded note,
+     // or a file of many chunks, is saved here as before.
+     if (record === undefined && single !== null && context.defer !== undefined) context.defer();
+-    else await context.state.save();
    }
    // The upload's own receipt: what crossed the wire while this run was in
    // flight and the budget it is measured against (requirement 12). The

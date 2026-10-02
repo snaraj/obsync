@@ -1,0 +1,12 @@
+# M3310: a retried folder record already queued stays where the duplicate report put it, behind the moves (issue #238)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2520,7 +2520,7 @@
+     // In FRONT: what this record orders is already queued behind it. EVEN
+     // WHEN IT IS QUEUED ALREADY (issue #238): a duplicate report of the rename
+     // queued it again while the post was in flight, behind those very moves.
+-    this.toFront(path);
++    if (!this.queue.includes(path)) this.queue.unshift(path);
+     context.host.log(
+       `push path_class=folder decision=retry reason=folder_post attempt=${attempt} budget=${FOLDER_POST_TRIES}`,
+     );

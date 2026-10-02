@@ -1,0 +1,12 @@
+# M4048: the disk watchdog stops at its first tick while a call is still in flight (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -323,7 +323,7 @@
+     diskCalls.delete(id);
+     call.fail();
+   }
+-  if (diskCalls.size === 0 && diskWatch !== null) {
++  if (diskWatch !== null) {
+     window.clearInterval(diskWatch);
+     diskWatch = null;
+   }

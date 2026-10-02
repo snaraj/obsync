@@ -1,0 +1,12 @@
+# M3538: the case index answers its whole bucket, not the spellings apart by capitals alone (P10)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -1098,7 +1098,7 @@
+ 
+   /** Recorded paths that differ from `path` by capitals alone (`caseOnly`), without a walk of every record. */
+   caseTwins(path: string): string[] {
+-    return [...this.index.folded.get(path.toLowerCase()) ?? []].filter((recorded) => caseOnly(recorded, path));
++    return [...this.index.folded.get(path.toLowerCase()) ?? []];
+   }
+ 
+   setFile(path: string, record: FileRecord): void {

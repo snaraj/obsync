@@ -48,18 +48,19 @@
  *
  * UPDATES ARE NEVER INSTALLED FROM THE SERVER (`docs/architecture.md` 6.3).
  * The plugin compares versions and tells the user; the trusted source of
- * plugin code is the GitHub Release. Nothing here writes into
- * `.obsidian/plugins/`.
+ * plugin code is the GitHub Release. Nothing here writes plugin code into
+ * the vault's config folder.
  */
 
 import { ItemView, MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
-import type { App } from "obsidian";
+import type { App, CliData, CliFlag, CliFlags, CliHandler } from "obsidian";
 import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
-import { accountRecovery, FORGOTTEN_DEVICE } from "./accountRecovery";
+import { accountRecovery, FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "./accountRecovery";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
 import { KEYS_LOST, State, StateStorageError, dataLease, isPushed, type Held, type ObsyncData } from "./state";
+import { HELD, LEVELS, MERGES, NOTICE_DEFAULTS, NoticeChannel, count, quoted, scrub, titles, type Drawn, type NoticeSettings, type SyncNotice } from "./notices";
 import {
   assertFolderCaseScope,
   assertFolderScope,
@@ -70,14 +71,14 @@ import {
   inSyncTree,
   parseSyncFolders,
 } from "./syncScope";
-import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, Transport, isNewer, lostMessage } from "./transport";
-import { AFTER_START, EngineStatus, MoveResult, NOT_ANSWERING, NoticeAction, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
+import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
+import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
 import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
-import { newDeviceTag, newVaultKey, PAIRING_ACTION, PAIRING_WINDOW_MS, pastedToken, platformLabel, readClaim, refusalFor, refusalText } from "./pairing";
+import { newDeviceTag, newVaultKey, PAIRING_ACTION, pastedToken, platformLabel, refusalFor, refusalText } from "./pairing";
 import { COPIED_VAULT, ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
 import {
-  LeaveServerModal, PairClaimModal, PairCreateModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, alreadyPaired, awaitApproval,
+  LeaveServerModal, PairClaimModal, PairCreateModal, RecentModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, alreadyPaired,
 } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
 import { Indicator, indicated } from "./ui/indicator";
@@ -92,6 +93,7 @@ import {
   assertVaultPath,
   caseOnly,
   chainRefusal,
+  errorText,
   isVaultPath,
   osJunk,
   sameFile,
@@ -126,12 +128,85 @@ const WRITE_TEMP = /^\.obsync-(?:write|restore)-[0-9a-f]+\.tmp$/;
  */
 const LINK_UNSUPPORTED = new Set(["ENOTSUP", "EOPNOTSUPP", "EPERM", "EISDIR", "ENOSYS", "EXDEV"]);
 
+/** The key of the recovery-key security warning's toast, which ends with the warning. */
+const RECOVERY_WARNING = "recovery_mismatch";
+/** The key of a phone's refusal toast, which ends with the refusal (#308). */
+const REFUSAL_NOTICE = "refusal";
+
 /** The words on a notice's buttons (`VaultHost.notify`). */
 const NOTICE_BUTTONS: Record<NoticeAction["kind"], string> = {
   delete_everywhere: "Delete everywhere",
   restore_here: "Restore here",
   fetch: "Fetch",
 };
+
+/**
+ * One of Obsidian's toasts, for the notice channel (`notices.ts`): its words,
+ * one button per action (issues #161, #162) that answers and takes the toast
+ * away, and what a click anywhere on it opens. The same decision stays
+ * reachable after a toast is dismissed -- Settings, "Deletions held back",
+ * Show remote-only files, and Recent in Show sync status -- so a dismissed
+ * toast loses nothing. Only a toast without buttons changes its words
+ * (`NoticeChannel.show`): `setMessage` empties the element they live in.
+ */
+function toast(plugin: ObsyncPlugin, text: string, ms: number, actions: readonly NoticeAction[], open?: () => void): Drawn {
+  const notice = new Notice(text, ms);
+  let hidden = false;
+  for (const action of actions) {
+    const button = notice.messageEl.createEl("button", { text: NOTICE_BUTTONS[action.kind] });
+    button.addEventListener("click", () => {
+      notice.hide();
+      plugin.act(action);
+    });
+  }
+  if (open !== undefined) notice.containerEl.addEventListener("click", open);
+  return {
+    update: (words) => {
+      notice.setMessage(words);
+    },
+    hide: () => {
+      hidden = true;
+      notice.hide();
+    },
+    // Obsidian takes a toast out of the page when its time is up or it is clicked.
+    shown: () => !hidden && notice.containerEl.isConnected,
+  };
+}
+
+/** The notice channel on Obsidian's screen, for one plugin instance. */
+export function noticeChannel(plugin: ObsyncPlugin): NoticeChannel {
+  return new NoticeChannel({
+    draw: (text, ms, actions, open) => toast(plugin, text, ms, actions, open),
+    settings: () => plugin.state?.data.notices ?? NOTICE_DEFAULTS,
+    now: () => Date.now(),
+    log: (line) => plugin.log(line),
+    showStatus: () => plugin.showStatus(),
+  });
+}
+
+/**
+ * A command-line request obsync refuses: one sentence for a person, and the
+ * stable code `format=json` prints beside it (`docs/architecture.md` 6.4).
+ */
+class CliRefusal extends Error {
+  constructor(readonly code: "unknown_flag" | "unknown_value" | "failed", message: string) {
+    super(message);
+  }
+}
+
+/** One command-line answer: words for a person, and the documented object for a program. */
+interface CliAnswer {
+  text: string;
+  json: unknown;
+}
+
+/** Local date and time to the second, "2026-09-29 14:05:12", for the CLI's Recent. */
+function stamp(at: number): string {
+  const date = new Date(at);
+  const two = (value: number): string => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} ` +
+    `${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`;
+}
 
 /**
  * What a folder sync answers on a host that has none. Node opens a directory
@@ -141,6 +216,13 @@ const NOTICE_BUTTONS: Record<NoticeAction["kind"], string> = {
  * directory for reading, and no `fsync(2)`, answers either.
  */
 const NO_FOLDER_SYNC = new Set(["EPERM", "EISDIR"]);
+
+/**
+ * How long Obsidian's desktop adapter lets its queue go without progress
+ * before it abandons the action in front ("File system operation timed out.",
+ * 1.13.4): the budget a reconcile this host queues is held to (`reconcile`).
+ */
+const ADAPTER_QUEUE_MS = 60_000;
 
 /**
  * How many folders above the vault root the nested-vault check looks at. A
@@ -198,6 +280,161 @@ export interface DesktopVault {
   fs: NodeFs;
   path: PathResolver;
   base: string;
+}
+
+/**
+ * How long one disk call may go unanswered, plus a millisecond for each KiB
+ * it moves (#302, #307). A directory, an entry or an 8 MiB window answers in
+ * milliseconds; what this leaves a disk is 1 MiB/s.
+ */
+const DISK_CALL_MS = 15_000;
+
+/**
+ * A disk call that never answered (#302, #307). The operation fails and runs
+ * again: the walk at the next scan, a download when the feed reads its page
+ * again, a push at the next pass. Its words are what a push that met it says.
+ */
+class DiskStalled extends Error {
+  readonly code = DISK_STALLED;
+  constructor() {
+    super("This device's disk did not answer in time. obsync tries again by itself.");
+  }
+}
+
+/** How often the one watchdog looks at the disk calls in flight: a stall fails within its budget and this (#307). */
+const DISK_WATCH_MS = 1000;
+
+/**
+ * THE DISK CALLS IN FLIGHT, AND ONE WATCHDOG FOR ALL OF THEM (#307). A timer
+ * armed and cleared for every call cost a desktop Sync now press half a
+ * second in ten, on 9,815 files (measured live: 4.6 s, then 5.1 s), because
+ * a press makes some ten calls a file. A call now costs an entry here. The
+ * watchdog runs while any call is in flight and stops at the first tick that
+ * finds none, so calls made one after another arm it once.
+ */
+const diskCalls = new Map<number, { started: number; budget: number; fail: () => void }>();
+let diskCallCount = 0;
+let diskWatch: number | null = null;
+
+function watchDisk(): void {
+  const now = Date.now();
+  for (const [id, call] of diskCalls) {
+    if (now - call.started < call.budget) continue;
+    diskCalls.delete(id);
+    call.fail();
+  }
+  if (diskCalls.size === 0 && diskWatch !== null) {
+    window.clearInterval(diskWatch);
+    diskWatch = null;
+  }
+}
+
+/** One line for a disk call past its budget, or answering after it (`onTime`). */
+function diskLine(decision: string, name: string, started: number, budget: number, outcome = ""): string {
+  return `host decision=${decision} call=${name} duration_ms=${Date.now() - started} budget_ms=${budget}${outcome}`;
+}
+
+/**
+ * One disk call on the watchdog (#302, #307). A READ fails with `DiskStalled`
+ * once its budget passes. Closing a separate Settings window (Obsidian 1.13)
+ * focuses the main one, and the disk calls in flight at that instant never
+ * answered, while every new one answered in milliseconds. A walk, and then a
+ * first sync applying a page, held the pull chain on one of them, and the
+ * device received nothing until Obsidian restarted. A stall is the operation's
+ * failure, never an unreadable, empty or absent entry: callers that read those
+ * as such rethrow it. A read that answers after its budget changes nothing:
+ * the answer is logged, and a handle it brings is closed (`late`).
+ *
+ * A CHANGE TO THE DISK IS NEVER LET GO (`changes`; review of a0dc7fc2,
+ * finding 1). A rename, link, unlink, create or write past its budget may
+ * still land, or may have landed and lost only its answer, and what its caller
+ * does next -- release a hold, try the next name, remove a temp -- rests on
+ * knowing which. So it is logged once at its budget and awaited still, as it
+ * was before the bound: its caller owns it until the disk says.
+ */
+function onTime<T>(
+  call: Promise<T>,
+  name: string,
+  bytes: number,
+  log: (line: string) => void,
+  changes = false,
+  late?: (value: T) => void,
+): Promise<T> {
+  const started = Date.now();
+  const budget = DISK_CALL_MS + Math.ceil(bytes / 1024);
+  return new Promise((resolve, reject) => {
+    const id = diskCallCount++;
+    diskCalls.set(id, {
+      started,
+      budget,
+      fail: changes
+        ? () => log(diskLine("overrun", name, started, budget, " outcome=awaited"))
+        : () => {
+            log(diskLine("stalled", name, started, budget));
+            reject(new DiskStalled());
+          },
+    });
+    diskWatch ??= window.setInterval(watchDisk, DISK_WATCH_MS);
+    call.then(
+      (value) => {
+        if (diskCalls.delete(id)) return resolve(value);
+        log(diskLine("late", name, started, budget, " outcome=answered"));
+        if (changes) resolve(value);
+        else late?.(value);
+      },
+      (error: unknown) => {
+        if (diskCalls.delete(id)) return reject(error);
+        log(diskLine("late", name, started, budget, " outcome=refused"));
+        if (changes) reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * The desktop filesystem on the watchdog (`onTime`), the handles it opens too:
+ * the one place a disk call is made, so no read can hold the pull chain for
+ * ever (#307), and no change is let go before the disk answers it. A sync is
+ * measured by what was written since the last. A handle a late read-only
+ * open brings has no caller left, so it is closed.
+ */
+function boundedFs(fs: NodeFs, log: (line: string) => void): NodeFs {
+  const calls = fs.promises;
+  const bound = (open: NodeFileHandle): NodeFileHandle => {
+    let unsynced = 0;
+    return {
+      read: (buffer, offset, length, position) => onTime(open.read(buffer, offset, length, position), "read", length, log),
+      write: (buffer) => {
+        unsynced += buffer.length;
+        return onTime(open.write(buffer), "write", buffer.length, log, true);
+      },
+      stat: (options) => onTime(open.stat(options), "fstat", 0, log),
+      close: () => onTime(open.close(), "close", 0, log),
+      sync: () => {
+        const bytes = unsynced;
+        unsynced = 0;
+        return onTime(open.sync(), "sync", bytes, log, true);
+      },
+      utimes: (atime, mtime) => onTime(open.utimes(atime, mtime), "futimes", 0, log, true),
+    };
+  };
+  const closeLate = (handle: NodeFileHandle): void => void handle.close().catch(() => undefined);
+  return {
+    promises: {
+      open: async (path, flags, mode) =>
+        bound(await onTime(calls.open(path, flags, mode), "open", 0, log, flags !== "r", closeLate)),
+      mkdir: (path, options) => onTime(calls.mkdir(path, options), "mkdir", 0, log, true),
+      rename: (from, to) => onTime(calls.rename(from, to), "rename", 0, log, true),
+      link: (from, to) => onTime(calls.link(from, to), "link", 0, log, true),
+      unlink: (path) => onTime(calls.unlink(path), "unlink", 0, log, true),
+      readdir: (path) => onTime(calls.readdir(path), "readdir", 0, log),
+      rmdir: (path) => onTime(calls.rmdir(path), "rmdir", 0, log, true),
+      utimes: (path, atime, mtime) => onTime(calls.utimes(path, atime, mtime), "utimes", 0, log, true),
+      readFile: (path, encoding) => onTime(calls.readFile(path, encoding), "readFile", 0, log),
+      stat: (path) => onTime(calls.stat(path), "stat", 0, log),
+      lstat: (path, options) => onTime(calls.lstat(path, options), "lstat", 0, log),
+    },
+  };
 }
 
 /**
@@ -270,8 +507,13 @@ function soleSpelling(names: string[], segment: string): string | null {
   return folded.length === 1 ? (folded[0] as string) : null;
 }
 
-/** The decisions that mean the plugin did NOT do what was asked, or fell back to a slower way of doing it (#221). */
-const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback)\b/;
+/**
+ * The decisions that mean the plugin did NOT do what was asked, or fell back
+ * to a slower way of doing it (#221, #283) -- and a stop still waiting past its
+ * budget, which holds every restart (#287). A press's or a pairing's wait is
+ * routine, and stays at debug.
+ */
+const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback|throttle_unavailable)\b|^engine decision=waiting\b/;
 
 /**
  * How long a device waits to start again after the server could not be
@@ -381,10 +623,11 @@ export interface LeaveChoice {
 
 /**
  * Why the server did not remove this device, as the Leave dialog words it:
- * the last device, a server that does not know it, no answer from the server
- * (or an answer that was not obsync's), or any other refusal of its own.
+ * the last device, the last device while its recovery key is new (1.1.5), a
+ * server that does not know it, no answer from the server (or an answer that
+ * was not obsync's), or any other refusal of its own.
  */
-export type LeaveRefusal = "last_device" | "bad_signature" | "unreachable" | "refused";
+export type LeaveRefusal = "last_device" | "recovery_too_new" | "bad_signature" | "unreachable" | "refused";
 
 export type LeaveResult =
   | { decision: "left"; revoked: boolean }
@@ -399,6 +642,7 @@ export type LeaveResult =
  * that could not leave (S40, S70).
  */
 function leaveRefusal(error: unknown): { reason: LeaveRefusal; detail: string } {
+  if (error instanceof ApiError && error.code === "recovery_too_new") return { reason: error.code, detail: error.detail };
   if (error instanceof ApiError && (error.code === "last_device" || error.code === "bad_signature")) {
     return { reason: error.code, detail: error.detail };
   }
@@ -488,10 +732,34 @@ const TWIN_WATCH_MS = 10_000;
  */
 const WRITE_AGAIN = 2;
 
+/**
+ * What Obsidian mobile's adapter keeps beside its documented surface (issue
+ * #246): Capacitor's filesystem, whose `readdir` answers a folder's entries
+ * with their sizes and dates, and the full path it takes. Undocumented, so
+ * nothing here assumes it: `pressListing` checks it on every press.
+ */
+interface ReaddirAdapter {
+  fs?: { readdir?: (path: string) => Promise<unknown> };
+  getFullPath?: (path: string) => string;
+}
+
+/** One `readdir` entry as Sync now uses it: a name, a kind, a size and a date, or the press falls back. */
+interface DiskEntry {
+  name: string;
+  type: "file" | "directory";
+  size: number;
+  mtime: number;
+}
+
+function isDiskEntry(entry: unknown): entry is DiskEntry {
+  if (typeof entry !== "object" || entry === null) return false;
+  const { name, type, size, mtime } = entry as Record<string, unknown>;
+  return typeof name === "string" && (type === "file" || type === "directory") &&
+    typeof size === "number" && Number.isFinite(size) && typeof mtime === "number" && Number.isFinite(mtime);
+}
+
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
-  /** The held-deletions question on screen now, if any: at most one (`notify`). */
-  private question: Notice | null = null;
   /** The temps this host's writers hold open now, which `sweep` never takes. */
   private readonly temps = new Set<string>();
   /** The nested vaults this host has already told the user about, once each. */
@@ -499,6 +767,10 @@ export class ObsidianHost implements VaultHost {
   /** The engine passes running now, and their nested-vault answer per folder (`pass`). */
   private passes = 0;
   private nestedAnswers: Map<string, boolean> | null = null;
+  /** Sync now's `readdir` fell back this session, by reason: said once each (#246). */
+  private readonly fellBack = new Set<string>();
+  /** Files and bytes read since this host started (`VaultHost.readTotals`). */
+  private readonly totals = { files: 0, bytes: 0 };
   /** A directory this host could not fsync has been logged, once (`syncFolder`). */
   private folderSyncRefused = false;
   /** The linked folders this host has already told the user about, once each (issue #167). */
@@ -513,8 +785,16 @@ export class ObsidianHost implements VaultHost {
   private readonly recasing = new Map<string, { from: string; to: string }>();
   /** A re-case that could not be put back has been told about, once (`settleRecase`). */
   private recaseTold = false;
-  /** Old spellings being taken out of Obsidian's index now: their `delete` events are that removal's own (`unghost`). */
+  /**
+   * Names being taken out of Obsidian's index now -- a ghost's old spelling
+   * (`unghost`), or one this host moved or removed on the disk (`reconcile`):
+   * their `delete` events are that removal's own.
+   */
   private readonly unghosting = new Set<string>();
+  /** Obsidian's adapter offers no reconcile here, said once (`reconcile`). */
+  private reconcileTold = false;
+  /** The window's throttling could not be lifted, said once (`hurry`). */
+  private throttleTold = false;
   /** Entries being put back under their own names now: their `create` events are that put-back's own (`settleRecase`). */
   private readonly returning = new Set<string>();
   /** Obsidian's index could not be corrected here, said once (`unghost`). */
@@ -535,15 +815,16 @@ export class ObsidianHost implements VaultHost {
     private readonly plugin: ObsyncPlugin,
     desktop?: DesktopVault | null,
   ) {
+    const log = (line: string): void => this.log(line);
     if (desktop !== undefined) {
-      this.desktop = desktop;
+      this.desktop = desktop === null ? null : { ...desktop, fs: boundedFs(desktop.fs, log) };
       return;
     }
     const fs = nodeModule<NodeFs>("fs");
     const path = nodeModule<PathResolver>("path");
     const adapter = plugin.app.vault.adapter as { getBasePath?: () => string };
     const base = typeof adapter.getBasePath === "function" ? adapter.getBasePath() : null;
-    this.desktop = fs !== null && path !== null && base !== null ? { fs, path, base } : null;
+    this.desktop = fs !== null && path !== null && base !== null ? { fs: boundedFs(fs, log), path, base } : null;
   }
 
   /**
@@ -587,7 +868,7 @@ export class ObsidianHost implements VaultHost {
     const desktop = this.desktop;
     try {
       if (desktop !== null) await this.confine(desktop, path, ["absent", "file", "directory", "other"]);
-      if (await this.inNestedVault(path)) throw new VaultPathError("nested_vault");
+      if (await this.inNestedVault(path, kind)) throw new VaultPathError("nested_vault");
       return true;
     } catch (error) {
       if (!(error instanceof VaultPathError)) throw error;
@@ -610,11 +891,11 @@ export class ObsidianHost implements VaultHost {
     if (error.refusal !== "symlink_component" || error.at === undefined || this.linked.has(error.at)) return;
     this.linked.add(error.at);
     this.log("host path_class=folder decision=excluded reason=symlink_component");
-    this.notify(
-      `obsync doesn't sync linked folders: "${error.at}" is a link, so it stays on this device only. Nothing in it ` +
-        "is sent to your other devices, and nothing from them is written into it. To sync it, move the folder " +
-        "itself into the vault instead of linking to it.",
-    );
+    this.notify({
+      kind: "info",
+      text: `does not sync linked folders: ${quoted(error.at)} is a link, so it stays on this device only and nothing ` +
+        "from your other devices is written into it. To sync it, move the folder itself into the vault instead of linking to it.",
+    });
   }
 
   /**
@@ -630,6 +911,39 @@ export class ObsidianHost implements VaultHost {
   pass(open: boolean): void {
     this.passes = Math.max(0, this.passes + (open ? 1 : -1));
     this.nestedAnswers = this.passes === 0 ? null : this.nestedAnswers ?? new Map();
+  }
+
+  /**
+   * A MINIMIZED OR COVERED WINDOW SYNCS AT FULL SPEED WHILE THERE IS WORK
+   * (issue #283). Such a window's page is a background page: Chromium and the
+   * OS run its every step last, and a first sync that made 37 notes a second
+   * shown made 1.35 minimized. So while the engine has work in hand
+   * (`VaultHost.hurry`) the window's background throttling is lifted, through
+   * the Electron window Obsidian gives the page (`electronWindow`), and put
+   * back the moment none is left. It is looked up at every change; where it is
+   * absent or refuses, the window keeps the pace it always had, and one line
+   * says so. Desktop only: a phone has no such window.
+   */
+  hurry(busy: boolean): void {
+    if (!Platform.isDesktopApp) return;
+    const started = Date.now();
+    const reason = busy ? "work" : "idle";
+    try {
+      const contents = (window as unknown as { electronWindow?: { webContents?: { setBackgroundThrottling?: unknown } } })
+        .electronWindow?.webContents;
+      const set = contents?.setBackgroundThrottling;
+      if (typeof set !== "function") return this.unthrottled("absent", reason, started);
+      set.call(contents, !busy);
+    } catch {
+      return this.unthrottled("failed", reason, started);
+    }
+    this.log(`host decision=${busy ? "throttle_lifted" : "throttle_restored"} reason=${reason} duration_ms=${Date.now() - started}`);
+  }
+
+  private unthrottled(why: "absent" | "failed", at: string, started: number): void {
+    if (this.throttleTold) return;
+    this.throttleTold = true;
+    this.log(`host decision=throttle_unavailable reason=${why} at=${at} duration_ms=${Date.now() - started}`);
   }
 
   /**
@@ -655,9 +969,16 @@ export class ObsidianHost implements VaultHost {
    * asks the adapter, which the host app confines to the vault. Names only,
    * never content, on both.
    */
-  async inNestedVault(path: string): Promise<boolean> {
+  async inNestedVault(path: string, kind: "file" | "folder" = "folder"): Promise<boolean> {
     const segments = path.split("/");
     const desktop = this.desktop;
+    // A FILE HOLDS NO FOLDER (issue #282): on a phone `syncable` asked a
+    // listed note's own name too, one bridge call per note that no pass could
+    // cache -- 11 to 23 s over 7,700 notes in every Sync now on the emulator.
+    // Only `syncable` says "file". The feed and the post ask every name: a
+    // record can call a file what this phone now keeps as a folder of a vault
+    // of its own, and a deletion applied there would trash that whole folder.
+    if (desktop === null && kind === "file") segments.pop();
     // One answer per folder per engine pass (`pass`); outside one, every
     // question is asked. A folder that holds the plugin is named every time.
     const answers = this.nestedAnswers;
@@ -693,11 +1014,12 @@ export class ObsidianHost implements VaultHost {
     if (this.nested.has(folder)) return true;
     this.nested.add(folder);
     this.log("host path_class=folder decision=excluded reason=nested_vault");
-    this.notify(
-      `obsync does not sync "${folder}": that folder is a vault of its own with obsync installed, and syncing it ` +
-        "from this vault too would copy this vault into itself. Nothing in it was changed. To sync it from this " +
-        "vault again, uninstall obsync in that folder's own vault.",
-    );
+    this.notify({
+      kind: "info",
+      text: `does not sync ${quoted(folder)}: that folder is a vault of its own with obsync installed, and syncing it ` +
+        "from here too would copy this vault into itself. Nothing in it changed; to sync it from this vault, " +
+        "uninstall obsync in that folder's own vault.",
+    });
     return true;
   }
 
@@ -706,8 +1028,8 @@ export class ObsidianHost implements VaultHost {
    * HIDDEN folder in it holding `plugins/` and this plugin's own folder, which
    * the community installer names after the directory identity. That hidden
    * folder is the other vault's config folder, and its name is that vault's
-   * to choose (`.obsidian` unless its owner picked another in Obsidian's
-   * settings), so no one name is assumed: every hidden folder is asked. Only
+   * to choose in Obsidian's settings (the vault API names only this
+   * vault's), so no one name is assumed: every hidden folder is asked. Only
    * names are looked at, never what is in them; a folder that cannot be
    * listed is not known to be a vault, and the walk skips it as unreadable.
    */
@@ -715,7 +1037,8 @@ export class ObsidianHost implements VaultHost {
     let names: string[];
     try {
       names = await desktop.fs.promises.readdir(dir);
-    } catch {
+    } catch (error) {
+      if (error instanceof DiskStalled) throw error;
       return false;
     }
     next: for (const name of names) {
@@ -724,7 +1047,10 @@ export class ObsidianHost implements VaultHost {
       for (const step of ["plugins", PAIRING_ACTION, null]) {
         // A hidden entry the system will not stat (macOS answers `/.resolve`
         // with EINVAL) is no config folder; the question moves on.
-        const stat = await walker(desktop.fs).lstat(at).catch(() => null);
+        const stat = await walker(desktop.fs).lstat(at).catch((error: unknown) => {
+          if (error instanceof DiskStalled) throw error;
+          return null;
+        });
         if (stat?.isDirectory() !== true) continue next;
         if (step !== null) at = desktop.path.resolve(at, step);
       }
@@ -738,11 +1064,10 @@ export class ObsidianHost implements VaultHost {
    * question to the vault. ONE QUESTION PER FOLDER, AS BEFORE: does the folder
    * hold this plugin's own folder at the path this vault holds it
    * (`manifest.dir`, the config folder's name included)? Listing each folder
-   * to ask every hidden one instead answers a turn later on Android, and that
-   * extra turn let a capitals-only folder rename received from another device
-   * be published back (android-recase.test.mjs, 5 of 20 runs under load).
-   * Only a manifest without `dir`, which Obsidian always sets, is asked by
-   * listing.
+   * to ask every hidden one instead answers a turn later on Android, a bridge
+   * call and a turn per folder for nothing; the race that turn exposed is the
+   * engine's to close, and it does (`inPass`, #244). Only a manifest without
+   * `dir`, which Obsidian always sets, is asked by listing.
    */
   private async holdsPluginHere(folder: string): Promise<boolean> {
     const adapter = this.plugin.app.vault.adapter;
@@ -816,6 +1141,11 @@ export class ObsidianHost implements VaultHost {
 
   /** Every vault file whose path this device may sync, and no other. */
   async list(): Promise<VaultStat[]> {
+    return await this.confirmed(await this.indexed());
+  }
+
+  /** `list` as Obsidian's index has it, before the disk is asked about any file. */
+  private async indexed(): Promise<VaultStat[]> {
     const folders = this.plugin.state.data.syncFolders;
     if (folders !== undefined) {
       const files: VaultStat[] = [];
@@ -848,6 +1178,106 @@ export class ObsidianHost implements VaultHost {
     const skipped = this.plugin.app.vault.getFiles().length - synced.length;
     if (skipped !== 0) this.plugin.log(`list decision=skipped_unsyncable files=${skipped}`);
     return await this.unghosted(synced);
+  }
+
+  /**
+   * SYNC NOW ON A PHONE ASKS THE DISK, ONE FOLDER AT A TIME (issue #246, the
+   * owner's ruling of 2026-09-29). Reading every note again made a press
+   * minutes long on a phone of 7,700 notes; Obsidian's index alone never sees
+   * another app's edit. Obsidian mobile's adapter carries a `readdir` that
+   * answers a folder's names WITH their sizes and dates -- not documented, so
+   * its shape is checked on every press, and anything short of it sends the
+   * whole press to the documented check: the index, with one `stat` per file
+   * whose index disagrees with its record (`confirmed`, #245).
+   *
+   * THE INDEX STILL SAYS WHAT IS LISTED. `readdir` runs only on the folders
+   * that hold a listed file, never on one below them, so it reaches no folder
+   * -- a link, a hidden one -- that the listing does not; and its names are
+   * only matched against the listed file's own name in that folder: none of
+   * them becomes a path, and nothing it says is written anywhere. A listed
+   * file it does not name, and every file of a folder it cannot read, gets the
+   * documented check instead, never "unchanged". A new or vanished file is
+   * the index's to report, as on every other pass.
+   */
+  async pressListing(label: string): Promise<PressListing | null> {
+    if (this.desktop !== null) return null;
+    const files = await this.indexed();
+    const adapter = this.plugin.app.vault.adapter as unknown as ReaddirAdapter;
+    const fs = adapter.fs;
+    if (typeof fs?.readdir !== "function" || typeof adapter.getFullPath !== "function") return this.pressFallback(label, "no_readdir", files);
+    const byFolder = new Map<string, VaultStat[]>();
+    for (const file of files) {
+      const folder = file.path.slice(0, Math.max(0, file.path.lastIndexOf("/")));
+      const listed = byFolder.get(folder);
+      if (listed === undefined) byFolder.set(folder, [file]);
+      else listed.push(file);
+    }
+    const out: VaultStat[] = [];
+    const unanswered: VaultStat[] = [];
+    let unread = 0;
+    for (const [folder, listed] of byFolder) {
+      let entries: unknown;
+      try {
+        entries = await fs.readdir(adapter.getFullPath(folder));
+      } catch {
+        unread++;
+        unanswered.push(...listed);
+        continue;
+      }
+      if (!Array.isArray(entries) || !entries.every(isDiskEntry)) return this.pressFallback(label, "entry_shape", files);
+      const disk = new Map(entries.filter((entry) => entry.type === "file").map((entry) => [entry.name, entry]));
+      for (const file of listed) {
+        const entry = disk.get(file.path.slice(file.path.lastIndexOf("/") + 1));
+        if (entry === undefined) unanswered.push(file);
+        else out.push({ path: file.path, mtime: entry.mtime, size: entry.size });
+      }
+    }
+    if (unread > 0) this.log(`${label} decision=fallback reason=folder_unreadable folders=${unread}`);
+    return { files: [...out, ...(await this.confirmed(unanswered))], folders: byFolder.size - unread, source: "readdir" };
+  }
+
+  /** The documented check for the whole press, said once a session for each reason. */
+  private async pressFallback(label: string, reason: "no_readdir" | "entry_shape", files: VaultStat[]): Promise<PressListing> {
+    if (!this.fellBack.has(reason)) this.log(`${label} decision=fallback reason=${reason}`);
+    this.fellBack.add(reason);
+    return { files: await this.confirmed(files), folders: 0, source: "fallback" };
+  }
+
+  readTotals(): { files: number; bytes: number } {
+    return { ...this.totals };
+  }
+
+  /**
+   * THE INDEX, ASKED OF THE DISK WHERE IT DISAGREES WITH A RECORD (issue
+   * #245). Obsidian mobile watches no filesystem: a download whose bytes
+   * Android lands after Obsidian looked at the file stays in the index at the
+   * size it saw, often 0, until Obsidian restarts. Leave then counted a synced
+   * note as unsent (four on the emulator), and every pass queued and read it
+   * for nothing. A listed file whose size or mtime differs from its record is
+   * asked ONE `stat` -- a suspect, never every file -- and the disk's answer
+   * stands for it. A file with no record, or one the disk cannot answer for,
+   * keeps the index's word.
+   */
+  private async confirmed(files: VaultStat[]): Promise<VaultStat[]> {
+    const started = Date.now();
+    let suspects = 0;
+    let stale = 0;
+    const out: VaultStat[] = [];
+    for (const file of files) {
+      const record = this.plugin.state.data.files[file.path];
+      const suspect = record !== undefined && !isPushed(record, file.mtime, file.size);
+      if (suspect) suspects++;
+      const disk = suspect ? await this.stat(file.path).catch(() => null) : null;
+      if (disk === null || (disk.size === file.size && disk.mtime === file.mtime)) {
+        out.push(file);
+        continue;
+      }
+      stale++;
+      this.log(`list decision=stale_index size_index=${file.size} size_disk=${disk.size} mtime_index=${file.mtime} mtime_disk=${disk.mtime}`);
+      out.push(disk);
+    }
+    if (stale > 0) this.log(`list decision=confirmed suspects=${suspects} stale=${stale} files=${files.length} duration_ms=${Date.now() - started}`);
+    return out;
   }
 
   /**
@@ -941,7 +1371,7 @@ export class ObsidianHost implements VaultHost {
    * is then read under its composed name and reported unreadable, which
    * skips that subtree rather than proposing paths the index can never hold.
    */
-  async scan(): Promise<VaultStat[] | null> {
+  async scan(signal?: AbortSignal): Promise<VaultStat[] | null> {
     const desktop = this.desktop;
     if (desktop === null) return null;
     const files: VaultStat[] = [];
@@ -956,7 +1386,7 @@ export class ObsidianHost implements VaultHost {
         this.log("scan decision=skipped reason=not_a_vault_folder");
         continue;
       }
-      await this.walk(desktop, root, files, 0);
+      await this.walk(desktop, root, files, 0, undefined, signal);
     }
     return files;
   }
@@ -970,18 +1400,29 @@ export class ObsidianHost implements VaultHost {
    * leaves it. What they held came from the server and is fetched again. A
    * temp a writer of this host holds open is not a leftover. The walk is the
    * scan's, over the selected folders, which is where every write lands.
+   * A stop ends it at its next step (#287): what it has not removed, the
+   * next start's sweep finds.
    */
-  async sweep(): Promise<void> {
+  async sweep(signal?: AbortSignal): Promise<void> {
     const desktop = this.desktop;
     if (desktop === null) return;
     const started = Date.now();
     const found: string[] = [];
-    for (const root of this.plugin.state.data.syncFolders ?? [""]) await this.walk(desktop, root, [], 0, found);
     let removed = 0;
     let kept = 0;
+    try {
+      for (const root of this.plugin.state.data.syncFolders ?? [""]) await this.walk(desktop, root, [], 0, found, signal);
+    } catch (error) {
+      if (!signal?.aborted) throw error;
+    }
     for (const temp of found) {
+      if (signal?.aborted) break;
       if (this.temps.has(temp)) continue;
       await desktop.fs.promises.unlink(temp).then(() => removed++, () => kept++);
+    }
+    if (signal?.aborted) {
+      this.log(`host path_class=temp decision=deferred reason=stopped files=${removed} duration_ms=${Date.now() - started}`);
+      return;
     }
     if (removed + kept === 0) return;
     this.log(
@@ -999,8 +1440,12 @@ export class ObsidianHost implements VaultHost {
     await this.settleRecase(false);
   }
 
-  /** One directory, then its subdirectories, to a bounded depth; `temps` collects `WRITE_TEMP` files. */
-  private async walk(desktop: DesktopVault, folder: string, out: VaultStat[], depth: number, temps?: string[]): Promise<void> {
+  /**
+   * One directory, then its subdirectories, to a bounded depth; `temps` collects `WRITE_TEMP` files.
+   * `signal` is the engine's stop, checked before every read of the disk (#287).
+   */
+  private async walk(desktop: DesktopVault, folder: string, out: VaultStat[], depth: number, temps?: string[], signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (depth > SCAN_MAX_DEPTH) {
       this.log(`scan decision=skipped reason=depth budget_depth=${SCAN_MAX_DEPTH}`);
       return;
@@ -1009,7 +1454,8 @@ export class ObsidianHost implements VaultHost {
     let names: string[];
     try {
       names = await desktop.fs.promises.readdir(at);
-    } catch {
+    } catch (error) {
+      if (error instanceof DiskStalled) throw error;
       // Unreadable is not empty, and this listing never deletes anything.
       this.log("scan decision=skipped reason=unreadable_directory");
       return;
@@ -1034,6 +1480,7 @@ export class ObsidianHost implements VaultHost {
       // neither walked nor listed. None of this is the AUTHORITY on what may
       // be synced: this listing only proposes paths, and `syncable()` walks
       // every component of each one before the engine acts on it.
+      signal?.throwIfAborted();
       const stat = await walker(desktop.fs).lstat(desktop.path.resolve(at, name));
       if (stat === null) continue;
       if (temps !== undefined && stat.isFile() && WRITE_TEMP.test(name)) temps.push(desktop.path.resolve(at, name));
@@ -1041,7 +1488,7 @@ export class ObsidianHost implements VaultHost {
         // A vault of its own is neither listed nor swept (`inNestedVault`);
         // the start's reconcile pass names it, asking of every folder.
         if (inSyncTree(path, folders) && !(await this.holdsPlugin(desktop, desktop.path.resolve(at, name)))) {
-          await this.walk(desktop, path, out, depth + 1, temps);
+          await this.walk(desktop, path, out, depth + 1, temps, signal);
         }
         continue;
       }
@@ -1072,27 +1519,36 @@ export class ObsidianHost implements VaultHost {
    * Open a vault file for reading and prove, AFTER the open, that the name
    * still means the file the walk approved and that every directory on the
    * way to it is still the same directory. The caller closes the handle.
+   * The size is the open file's, from the stat that proved it: a whole-file
+   * read asks the disk nothing more before it reads.
    */
-  private async openBound(desktop: DesktopVault, path: string): Promise<NodeFileHandle> {
+  private async openBound(desktop: DesktopVault, path: string): Promise<{ handle: NodeFileHandle; size: number }> {
     const found = await this.confine(desktop, path, ["file"]);
     const handle = await desktop.fs.promises.open(found.target, "r");
     const refusal = await chainRefusal(found.chain, walker(desktop.fs));
-    if (refusal !== null || !sameFile(found.stat, await fstat(handle))) {
+    const opened = refusal === null ? await fstat(handle) : null;
+    if (opened === null || !sameFile(found.stat, opened)) {
       await handle.close();
       throw new VaultPathError(refusal ?? "target_identity");
     }
-    return handle;
+    return { handle, size: opened.size };
   }
 
   async read(path: string): Promise<Bytes> {
+    const bytes = await this.readOnce(path);
+    this.totals.files++;
+    this.totals.bytes += bytes.length;
+    return bytes;
+  }
+
+  private async readOnce(path: string): Promise<Bytes> {
     assertSyncPath(path, this.plugin.state.data.syncFolders);
     const desktop = this.desktop;
     if (desktop === null) {
       return new Uint8Array(await this.plugin.app.vault.adapter.readBinary(path));
     }
-    const handle = await this.openBound(desktop, path);
+    const { handle, size } = await this.openBound(desktop, path);
     try {
-      const size = (await fstat(handle)).size;
       const buffer = new Uint8Array(size);
       let filled = 0;
       while (filled < size) {
@@ -1129,7 +1585,7 @@ export class ObsidianHost implements VaultHost {
       // a folder that changes between two windows is refused at the next
       // one, and a few `lstat` calls beside an 8 MiB read cost nothing.
       read: async (offset, length) => {
-        const handle = await this.openBound(desktop, path);
+        const { handle } = await this.openBound(desktop, path);
         try {
           const buffer = new Uint8Array(length);
           let filled = 0;
@@ -1138,6 +1594,8 @@ export class ObsidianHost implements VaultHost {
             if (bytesRead === 0) break;
             filled += bytesRead;
           }
+          if (offset === 0) this.totals.files++;
+          this.totals.bytes += filled;
           return buffer.subarray(0, filled);
         } finally {
           await handle.close();
@@ -1395,6 +1853,7 @@ export class ObsidianHost implements VaultHost {
           const landed = await walker(fs).lstat(found.target);
           if (refusal !== null || !sameFile(published, landed)) throw new Error("Restore publication identity changed.");
           const stat = landed as PathStat;
+          await this.reconcile(path, "file", true);
           if (stat.size !== made.size || Math.round(stat.mtimeMs) !== Math.round(made.mtimeMs)) {
             this.log("host path_class=file decision=write_superseded");
           }
@@ -1446,6 +1905,111 @@ export class ObsidianHost implements VaultHost {
       this.folderSyncRefused = true;
       this.log(`host path_class=folder decision=skipped reason=directory_fsync code=${code}`);
     }
+  }
+
+  /**
+   * TELL OBSIDIAN WHAT THIS HOST JUST DID ON THE DISK (issue #253). Desktop
+   * writes, moves and removes with the filesystem, and Obsidian hears of a
+   * change made outside it only from the operating system's file events. A
+   * Mac whose `fseventsd` is overloaded delivers them late or not at all, and
+   * then a note obsync wrote is on the disk, recorded and synced, while
+   * Obsidian does not list it -- not in the file explorer, search or the quick
+   * switcher -- until a restart; a note obsync removed stays listed. Obsidian's
+   * own writes never wait for an event: its adapter reconciles the name it
+   * wrote (`reconcileInternalFile`), which lists it, the folders above it
+   * first, or drops it, and raises the event its watcher would have. This asks
+   * the adapter for the same, in the adapter's own queue, for a name whose
+   * listing disagrees with what this host just did (`present`); a name
+   * Obsidian already shows right costs one lookup.
+   *
+   * THE SAME EVENTS, SOONER, AND ONCE. What it raises is what a prompt watcher
+   * raises, and what the phone's adapter raises inside every write: a `create`
+   * the engine settles against the echo marks the pull arms before each call
+   * (`engine.ts`, ECHOES). A REMOVED name's events are this host's own, as a
+   * ghost's are, and never reach the engine (`unindexed`): the removal is the
+   * pull applying another device's change, already recorded. The event that
+   * arrives late finds the index right and raises nothing, because Obsidian
+   * compares with what its index holds -- and asks the folder's listing for
+   * the exact name first, so a name the volume spells another way is never
+   * listed twice.
+   *
+   * NOT OBSIDIAN'S PUBLISHED API, so both members are asked for by name, and
+   * without them the listing waits for the event as before, said once. A
+   * failure is logged and never fails what it follows: that has landed. A
+   * hidden name is never asked about, and that is the config folder too:
+   * Obsidian accepts only a hidden name for it (1.13.4, `validateConfigDir`).
+   * The budget is the adapter queue's own: Obsidian abandons a queued action
+   * after `ADAPTER_QUEUE_MS` without progress, and this call with it.
+   *
+   * NEW BYTES UNDER A NOTE OBSIDIAN LISTS (`written`, issue #267) leave its
+   * cached stat and read cache -- search, backlinks -- describing the old ones,
+   * so the note is reconciled too, which raises the `modify` a watcher would:
+   * the engine settles it against the echo mark like the `create` above. Not
+   * while a leaf shows the note (`inView`): Obsidian reloads a view on that
+   * event, and merges into one with unsaved typing behind a notice -- typing
+   * that can begin while the reconcile waits in the queue. #252's refresh
+   * shows such a view the new text; its index follows the editor's next
+   * save, the late event, or a restart.
+   */
+  private async reconcile(path: string, kind: "file" | "folder", present: boolean, written = false): Promise<void> {
+    const started = Date.now();
+    try {
+      if (!isVaultPath(path)) return;
+      const vault = this.plugin.app.vault;
+      const adapter = vault.adapter as typeof vault.adapter & {
+        queue?: (action: () => Promise<void>) => Promise<void>;
+        reconcileInternalFile?: (path: string) => Promise<void>;
+      };
+      const { queue, reconcileInternalFile } = adapter;
+      if (typeof queue !== "function" || typeof reconcileInternalFile !== "function") {
+        if (!this.reconcileTold) this.log(`vault path_class=${kind} decision=skipped reason=no_reconcile`);
+        this.reconcileTold = true;
+        return;
+      }
+      const entry = vault.getAbstractFileByPath(path);
+      const changed = written && present && entry instanceof TFile;
+      if ((entry !== null) === present && !changed) return;
+      if (changed && this.inView(path)) {
+        this.log(`vault path_class=${kind} decision=skipped reason=open_view`);
+        return;
+      }
+      const stat = changed ? entry.stat : null;
+      if (!present) this.unghosting.add(path);
+      try {
+        await queue.call(adapter, () => reconcileInternalFile.call(adapter, path));
+      } finally {
+        this.unghosting.delete(path);
+      }
+      const now = vault.getAbstractFileByPath(path);
+      const done = changed ? now instanceof TFile && now.stat !== stat : (now !== null) === present;
+      this.log(
+        `vault path_class=${kind} decision=${done ? (changed ? "reindexed" : present ? "listed" : "unlisted") : "unchanged"} ` +
+          `reason=${changed ? "bytes_changed" : present ? "not_listed" : "still_listed"} budget_ms=${ADAPTER_QUEUE_MS} ` +
+          `duration_ms=${Date.now() - started}`,
+      );
+    } catch (error) {
+      const name = error instanceof Error ? error.name : "unknown";
+      this.log(
+        `vault path_class=${kind} decision=failed reason=reconcile error=${name} budget_ms=${ADAPTER_QUEUE_MS} ` +
+          `duration_ms=${Date.now() - started}`,
+      );
+    }
+  }
+
+  /**
+   * Does any leaf show `path` -- an editor, a canvas, a preview -- or can this
+   * host not tell (`reconcile`)? Asked right before the reconcile is queued: a
+   * view that opens after that read the new bytes, and Obsidian ignores a
+   * `modify` whose bytes its view last loaded (`TextFileView`, 1.13.4).
+   */
+  private inView(path: string): boolean {
+    const workspace = this.plugin.app.workspace as Partial<App["workspace"]>;
+    if (typeof workspace.iterateAllLeaves !== "function") return true;
+    let found = false;
+    workspace.iterateAllLeaves((leaf) => {
+      if ((leaf.view as { file?: TAbstractFile | null }).file?.path === path) found = true;
+    });
+    return found;
   }
 
   /**
@@ -1616,6 +2180,11 @@ export class ObsidianHost implements VaultHost {
           }
           throw new VaultPathError(refusal ?? "target_identity");
         }
+        // Proven at its name: Obsidian lists it now, with these bytes
+        // (`reconcile`). One it reconciles is in no view, so nothing below
+        // awaits after the event this may raise, which the caller's echo
+        // mark settles.
+        await this.reconcile(path, "file", true, true);
         // The rename kept the inode, and the inode is what `sameFile` proves
         // -- but an ordinary in-place save keeps the inode too, so identity
         // alone does not say these are still our bytes. The answer is bound
@@ -1684,6 +2253,8 @@ export class ObsidianHost implements VaultHost {
     const refusal = await chainRefusal(source.chain, walker(desktop.fs)) ??
       await chainRefusal(found.chain, walker(desktop.fs));
     if (refusal !== null) throw new VaultPathError(refusal);
+    await this.reconcile(from, "file", false);
+    await this.reconcile(to, "file", true);
     return "moved";
   }
 
@@ -1791,6 +2362,8 @@ export class ObsidianHost implements VaultHost {
     const refusal = await chainRefusal(source.chain.slice(0, -1), walker(desktop.fs)) ??
       await chainRefusal(found.final === "directory" ? found.chain.slice(0, -1) : found.chain, walker(desktop.fs));
     if (refusal !== null) throw new VaultPathError(refusal);
+    await this.reconcile(from, "folder", false);
+    await this.reconcile(to, "folder", true);
     return "moved";
   }
 
@@ -2080,12 +2653,11 @@ export class ObsidianHost implements VaultHost {
     const folder = state.data.files[twin] === undefined;
     this.log(`watch path_class=${folder ? "folder" : "file"} decision=held reason=case_twin_deleted files=${fresh.length} held=${state.data.heldDeletions.length}`);
     this.plugin.engine?.heldAsked();
-    this.notify(
-      `obsync did not delete "${twin}" from your other devices: it was deleted on this device through "${via}", a ` +
-        `second name Obsidian showed for the same ${folder ? "folder" : "note"}. Put it back here with Restore here, or ` +
-        "delete it everywhere.",
-      [{ kind: "delete_everywhere" }, { kind: "restore_here" }],
-    );
+    this.notify({
+      kind: "question", key: HELD, actions: [{ kind: "delete_everywhere" }, { kind: "restore_here" }],
+      text: `did not delete ${quoted(twin)} from your other devices: it was deleted here through ${quoted(via)}, a ` +
+        `second name Obsidian showed for the same ${folder ? "folder" : "note"}. Choose Restore here to put it back, or Delete everywhere.`,
+    });
   }
 
   /**
@@ -2176,14 +2748,14 @@ export class ObsidianHost implements VaultHost {
       this.log(`vault path_class=${kind} decision=failed reason=${failed} via=temp duration_ms=${took}`);
       if (this.recaseTold) return;
       this.recaseTold = true;
-      this.notify(
-        `obsync could not finish renaming "${from}" to "${to}" on this device. Nothing was deleted` +
+      this.notify({
+        kind: "error",
+        text: `could not finish renaming ${quoted(from)} to ${quoted(to)} here; nothing was deleted. ` +
           (failed === "occupied"
-            ? `: something else there took that name first, so the ${kind === "folder" ? "folder" : "note"} is kept in the ` +
-              `same folder as "${temp.slice(temp.lastIndexOf("/") + 1)}", which Obsidian does not show. Rename the other ` +
-              "one, then restart Obsidian to finish."
-            : ". Restart Obsidian to finish."),
-      );
+            ? `Something else took that name first, so the ${kind === "folder" ? "folder" : "note"} is kept beside it as ` +
+              `"${temp.slice(temp.lastIndexOf("/") + 1)}", which Obsidian does not show: rename the other one, then restart Obsidian to finish.`
+            : "Restart Obsidian to finish."),
+      });
       return;
     }
     if (returned) this.log(`vault path_class=${kind} decision=returned via=temp duration_ms=${took}`);
@@ -2263,14 +2835,22 @@ export class ObsidianHost implements VaultHost {
       found = await this.confine(desktop, path, ["absent", "file"]);
       // Nothing here to remove, and so nothing here to preserve either.
       if (found.final === "absent") return "removed";
-    } else if (!(await this.plugin.app.vault.adapter.exists(path))) {
-      // The same on a phone (issue #234). A note gone from its storage with
-      // nobody watching -- the Files app, or Obsidian closed -- still has a
-      // record, and a deletion from another device reached the vault's own
-      // `.trash`, which throws for a name it cannot find: the page failed,
-      // and every read after it failed at the same deletion, for good.
-      this.log("host path_class=file decision=absent");
-      return "removed";
+    } else {
+      const entry = await this.plugin.app.vault.adapter.stat(path);
+      if (entry === null) {
+        // The same on a phone (issue #234). A note gone from its storage with
+        // nobody watching -- the Files app, or Obsidian closed -- still has a
+        // record, and a deletion from another device reached the vault's own
+        // `.trash`, which throws for a name it cannot find: the page failed,
+        // and every read after it failed at the same deletion, for good.
+        this.log("host path_class=file decision=absent");
+        return "removed";
+      }
+      // AND ONLY A FILE (issue #284). A folder answers for its name too: a
+      // deletion of a note whose name a folder has taken since trashed that
+      // folder and everything in it, on a phone alone. Refused in the words
+      // a computer's walk uses (`confine`).
+      if (entry.type !== "file") throw new VaultPathError("not_a_file");
     }
     if (expect === undefined) {
       await this.remove(path);
@@ -2286,7 +2866,11 @@ export class ObsidianHost implements VaultHost {
       this.log("host path_class=file decision=kept reason=unheld");
       return "unheld";
     }
-    return await this.removeHeld(desktop, found, hold, expect, path);
+    const verdict = await this.removeHeld(desktop, found, hold, expect, path);
+    // The note left by a hidden name, which Obsidian never listed, so the
+    // name it had is the one to take out of the listing (`reconcile`).
+    if (verdict === "removed") await this.reconcile(path, "file", false);
+    return verdict;
   }
 
   /**
@@ -2405,6 +2989,8 @@ export class ObsidianHost implements VaultHost {
     } catch {
       // Nothing moved, so nothing is removed and the name is still the
       // user's. A host that cannot make this move cannot make the promise.
+      // The move is a change the watchdog never lets go (`onTime`), so this is
+      // the disk's own refusal, or a stalled look BEFORE the move was asked.
       this.log("host path_class=file decision=kept reason=move_refused");
       await fs.promises.rmdir(folder).catch(() => undefined);
       await drop();
@@ -2448,7 +3034,10 @@ export class ObsidianHost implements VaultHost {
     let handle: NodeFileHandle;
     try {
       handle = await fs.promises.open(hold, "r");
-    } catch {
+    } catch (error) {
+      // A stalled open says nothing of the hold: it stays, and the removal
+      // fails rather than end as if its bytes were gone (review of a0dc7fc2).
+      if (error instanceof DiskStalled) throw error;
       this.log("host path_class=file decision=restore_failed reason=hold_gone");
       return "removed";
     }
@@ -2635,6 +3224,7 @@ export class ObsidianHost implements VaultHost {
       if (found.final === "directory") return;
       await desktop.fs.promises.mkdir(found.target, { recursive: true });
       await this.confine(desktop, path, ["directory"]);
+      await this.reconcile(path, "folder", true);
       return;
     }
     const adapter = this.plugin.app.vault.adapter;
@@ -2691,9 +3281,27 @@ export class ObsidianHost implements VaultHost {
     }
     if (kept > 0) return kept;
     const folder = this.plugin.app.vault.getFolderByPath(path);
+    let unlisted = false;
     if (folder) await this.plugin.app.fileManager.trashFile(folder);
-    else {
-      for (const file of junk) await (desktop !== null ? desktop.fs.promises.unlink(file) : adapter.remove(file));
+    else if (desktop !== null && found !== null) {
+      unlisted = true;
+      // NOT THE ADAPTER'S `rmdir(path, false)` ON DESKTOP (issue #266): that is
+      // `fs.rm` without `recursive`, which refuses EVERY directory, empty or
+      // not, with `EISDIR`. A folder Obsidian has not indexed yet -- one a
+      // device paired later made moments ago, replaying the history -- stayed
+      // for good, and the page failed. `rmdir(2)` takes the walked directory
+      // only while it is empty: an entry that arrived since the listing keeps
+      // it, and one already gone is gone.
+      for (const file of junk) await desktop.fs.promises.unlink(file);
+      try {
+        await desktop.fs.promises.rmdir(found.target);
+      } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        if (code === "ENOTEMPTY" || code === "EEXIST") return 1;
+        if (code !== "ENOENT") throw error;
+      }
+    } else {
+      for (const file of junk) await adapter.remove(file);
       await adapter.rmdir(path, false);
     }
     if (junk.length > 0) this.log(`host path_class=folder decision=cleared reason=os_junk files=${junk.length}`);
@@ -2707,6 +3315,11 @@ export class ObsidianHost implements VaultHost {
     if (after !== null && after.isDirectory() && after.dev === found.stat?.dev && after.ino === found.stat?.ino) {
       throw new VaultPathError("target_identity");
     }
+    // A folder Obsidian did not list when it was removed (#266) may still be
+    // reported by a late or starved file event: tell Obsidian it is gone, as
+    // every other removal on disk does (#253). Usually the listing already
+    // agrees, and this costs one lookup.
+    if (unlisted) await this.reconcile(path, "folder", false);
     return 0;
   }
 
@@ -2828,35 +3441,20 @@ export class ObsidianHost implements VaultHost {
   }
 
   /**
-   * A statement goes after ten seconds; a notice that asks something stays
-   * until it is answered or dismissed, with one button per action (issues
-   * #161, #162). The same decision stays reachable afterwards -- Settings,
-   * "Deletions held back", and Show remote-only files -- so a dismissed
-   * notice loses nothing.
+   * Through the plugin's one notice channel (`notices.ts`), which decides how
+   * long a notice stays, whether a setting keeps it to Recent, and keeps ONE
+   * held-deletions question on screen at a time: every engine start, Sync now
+   * and new burst asks again, and the same question stacked down the screen
+   * (owner's rig, 2026-09-27: eight at once). `closeQuestion` takes it away
+   * once nothing is held any more.
    */
-  notify(message: string, actions: NoticeAction[] = []): void {
-    // ONE QUESTION ABOUT HELD DELETIONS IS ON SCREEN AT A TIME. Obsidian keeps
-    // an asking notice until it is clicked, and every engine start, Sync now
-    // and new burst asked again, so the same question stacked down the screen
-    // (owner's rig, 2026-09-27: eight at once). A new one replaces the last;
-    // `closeQuestion` takes it away once nothing is held any more.
-    const asks = actions.some((action) => action.kind === "delete_everywhere" || action.kind === "restore_here");
-    if (asks) this.closeQuestion();
-    const notice = new Notice(message, actions.length === 0 ? 10000 : 0);
-    if (asks) this.question = notice;
-    for (const action of actions) {
-      const button = notice.messageEl.createEl("button", { text: NOTICE_BUTTONS[action.kind] });
-      button.addEventListener("click", () => {
-        notice.hide();
-        this.plugin.act(action);
-      });
-    }
+  notify(notice: SyncNotice): void {
+    this.plugin.notices.show(notice);
   }
 
   /** Take the held-deletions question off the screen: answered, released, or this plugin unloading. */
   closeQuestion(): void {
-    this.question?.hide();
-    this.question = null;
+    this.plugin.notices.close(HELD);
   }
 
   log(line: string): void {
@@ -2868,11 +3466,21 @@ export default class ObsyncPlugin extends Plugin {
   state!: State;
   transport!: Transport;
   host!: ObsidianHost;
+  /** Every notice this plugin shows, and the Recent list (`notices.ts`); it outlives a reload of this instance. */
+  readonly notices: NoticeChannel = noticeChannel(this);
   engine: SyncEngine | null = null;
   /** The start and update probe `onload` began and deliberately did not wait for. */
   firstStart: Promise<void> = Promise.resolve();
   /** The newer version the server reports, for the settings tab to name. */
   updateAvailable: string | null = null;
+  /**
+   * This device's recovery registration met a key it did not register (`409
+   * recovery_mismatch`, `registerAccountRecovery`): Show sync status, the
+   * settings tab and the status item say so until a registration succeeds or
+   * the device leaves. Its toast (`RECOVERY_WARNING`) is taken down with it:
+   * a warning that ended must not stand on screen.
+   */
+  recoveryMismatch = false;
   /** Whether this session has already raised the update notice. */
   private updateNotified = false;
   private statusEl: HTMLElement | null = null;
@@ -2884,6 +3492,9 @@ export default class ObsyncPlugin extends Plugin {
   private noticed: string | null = null;
   /** Show sync status and the settings tab, re-drawn on every status change while open (#156). */
   private readonly watchers = new Set<() => void>();
+  /** The Show sync status and Recent dialogs last opened; asked for again while one shows, it comes forward (#269). */
+  private statusDialog: StatusModal | null = null;
+  private recentDialog: RecentModal | null = null;
   private statusValue: EngineStatus = { kind: "idle" };
   forgottenDevice = false;
   /** A pairing claim waiting for its vault key (issue #153); it signs its own collection. */
@@ -2947,7 +3558,8 @@ export default class ObsyncPlugin extends Plugin {
       if (superseded) return;
       this.log(`state decision=stopped reason=${error.reason}`);
       if (this.statusEl) this.setStatus({ kind: "error", message: error.message });
-      new Notice(error.message, 15000);
+      // Its words begin "obsync could not...": said once, after the toast's own "obsync:".
+      this.notices.show({ kind: "error", text: error.message.replace(/^obsync /, "") });
     }, () => this.isCurrent(generation), dataLease(this.app, this.manifest.id), this.heldReference()).catch((error: unknown) => {
       if (!this.isCurrent(generation)) return null;
       throw error;
@@ -2965,7 +3577,8 @@ export default class ObsyncPlugin extends Plugin {
     const transport: Transport = new Transport({
       request: (request) => {
         state.assertAvailable();
-        if (!this.isCurrent(generation) || this.state !== state) throw new Error("The previous plugin session is inactive.");
+        // Ends the call, never retried (`SessionEnded`, issue #272).
+        if (!this.isCurrent(generation) || this.state !== state) throw new SessionEnded();
         return requestUrl(request);
       },
       serverUrl: () => state.data.serverUrl,
@@ -2973,8 +3586,8 @@ export default class ObsyncPlugin extends Plugin {
       edgeHeaders: () => state.data.edgeHeaders,
       log: (line) => this.log(line),
       // Only this session's transport speaks for the status bar.
-      reachable: (answered) => {
-        if (this.transport === transport) this.reachability(answered);
+      reachable: (answered, unanswered) => {
+        if (this.transport === transport) this.reachability(answered, unanswered);
       },
       // An attempt nothing answers is abandoned (#195), and a backoff ends, on time in a hidden window (#221).
       timers,
@@ -2992,13 +3605,13 @@ export default class ObsyncPlugin extends Plugin {
     // are here; the tab offers Pair this device and Start fresh.
     if (state.copied) {
       this.log("state decision=not_paired reason=copied_vault");
-      new Notice(`obsync: ${COPIED_VAULT} Both are in obsync's settings, under This device.`, 15000);
+      this.notices.show({ kind: "error", text: `${COPIED_VAULT} Both are in obsync's settings, under This device.` });
     }
     // AND A DEVICE A CRASH LEFT WITH NO KEYS the same way in (issue #230).
     if (state.keysLost) {
       const { dataRevision, secretRevision } = state.keysLost;
       this.log(`state decision=recovered reason=credential_behind data_revision=${dataRevision} secret_revision=${secretRevision}`);
-      new Notice(`obsync: ${KEYS_LOST} Pair this device is in obsync's settings, under This device.`, 15000);
+      this.notices.show({ kind: "error", text: `${KEYS_LOST} Pair this device is in obsync's settings, under This device.` });
     }
     // ONE reminder, at the start after a confirmation was skipped, and never
     // a recurring popup: Settings and Show sync status keep saying it
@@ -3006,7 +3619,13 @@ export default class ObsyncPlugin extends Plugin {
     if (state.data.recoveryPhrase === "skipped" && state.data.vrk !== null) {
       state.data.recoveryPhrase = "unconfirmed";
       this.log("phrase decision=reminded");
-      new Notice("obsync: your 24-word recovery phrase is not confirmed. Without it and without a paired device this vault cannot be recovered. Open obsync's settings, Vault key, and choose Show and confirm.", 15000);
+      // A question only the person can answer, never kept quiet (requirement
+      // 4); a click opens the settings that answer it.
+      this.notices.show({
+        kind: "question", open: () => this.openSettings(),
+        text: "your 24-word recovery phrase is not confirmed: without it and without a paired device this vault cannot " +
+          "be recovered. In obsync's settings, under Vault key, choose Show and confirm.",
+      });
       void state.save().catch(() => {});
     }
 
@@ -3029,7 +3648,7 @@ export default class ObsyncPlugin extends Plugin {
           return;
         }
         this.log("pairing role=claimant decision=refused reason=already_paired source=palette");
-        new Notice(`obsync: ${paired}`, 12000);
+        this.notices.show({ kind: "confirm", text: paired });
       },
     });
     this.addCommand({
@@ -3059,6 +3678,17 @@ export default class ObsyncPlugin extends Plugin {
       name: "Switch server (obsync)",
       callback: () => new LeaveServerModal(this.app, this, "switch").open(),
     });
+    // A CHOICE WITH FIXED ANSWERS IS A SETTING (owner, 2026-09-29): each answer
+    // is a command, so a hotkey can be bound to it, as well as a Settings row
+    // and a CLI flag.
+    for (const [level, words] of LEVELS) {
+      this.addCommand({ id: `notices-${level}`, name: `Notifications: ${words} (obsync)`, callback: () => void this.setNotices({ level }, "palette").catch(() => {}) });
+    }
+    for (const [merges, words] of MERGES) {
+      this.addCommand({ id: `merges-${merges}`, name: `Combined edits: ${words} (obsync)`, callback: () => void this.setNotices({ merges }, "palette").catch(() => {}) });
+    }
+    this.addCommand({ id: "recent", name: "Show recent sync activity (obsync)", callback: () => this.showRecent() });
+    this.registerCli();
 
     // Use the installation identity for both URI spellings without also
     // claiming the old generic action used by pre-directory installations.
@@ -3175,7 +3805,174 @@ export default class ObsyncPlugin extends Plugin {
 
   /** Show sync status: from the indicator, the palette, and a phone's view header (#156). */
   showStatus(): void {
-    new StatusModal(this.app, this).open();
+    this.statusDialog = this.oneDialog(this.statusDialog, () => new StatusModal(this.app, this), "status");
+  }
+
+  /** Every notice this session, newest first, shown or kept quiet (`notices.ts`). */
+  showRecent(): void {
+    this.recentDialog = this.oneDialog(this.recentDialog, () => new RecentModal(this.app, this), "recent");
+  }
+
+  /** One dialog, however often it is asked for (#269): the one showing comes forward, or a new one opens. */
+  private oneDialog<D extends StatusModal | RecentModal>(showing: D | null, make: () => D, name: string): D {
+    if (showing?.isShown() === true) {
+      this.log(`${name} decision=forward reason=already_open`);
+      showing.forward();
+      return showing;
+    }
+    const dialog = make();
+    dialog.open();
+    return dialog;
+  }
+
+  /** Open a note Recent names; one no longer at that name is said to be so. */
+  openNote(path: string): void {
+    const file = this.app.vault.getFileByPath(path);
+    if (file === null) {
+      this.log("recent decision=refused reason=not_at_that_name");
+      this.notices.show({ kind: "confirm", text: "{notes} is no longer at that name: it was renamed, moved or deleted since.", paths: [path] });
+      return;
+    }
+    void this.app.workspace.getLeaf(false).openFile(file);
+  }
+
+  /**
+   * Set what this device shows as a notice, from Settings, the palette or the
+   * CLI, and keep it (`ObsyncData.notices`). The palette's answer is said in a
+   * notice; Settings shows it in its field and the CLI prints it.
+   */
+  async setNotices(change: Partial<NoticeSettings>, source: "settings" | "palette" | "cli"): Promise<NoticeSettings> {
+    const started = Date.now();
+    const previous = this.state.data.notices;
+    const next: NoticeSettings = { ...previous, ...change };
+    this.state.data.notices = next;
+    try {
+      await this.state.save();
+    } catch (error) {
+      // Not kept is not set: the notices go on as the person last saved them.
+      this.state.data.notices = previous;
+      this.log(`notices decision=failed reason=save source=${source} duration_ms=${Date.now() - started}`);
+      throw error;
+    }
+    this.log(`notices decision=changed level=${next.level} merges=${next.merges} source=${source} duration_ms=${Date.now() - started}`);
+    if (source === "palette") this.notices.show({ kind: "confirm", text: this.noticeWords(next) });
+    return next;
+  }
+
+  /** "notifications: Everything useful; combined edits: Once per note." */
+  private noticeWords(settings: NoticeSettings): string {
+    const words = (options: readonly [string, string][], value: string): string => options.find(([option]) => option === value)?.[1] ?? value;
+    return `notifications: ${words(LEVELS, settings.level)}; combined edits: ${words(MERGES, settings.merges)}.`;
+  }
+
+  /**
+   * OBSIDIAN'S COMMAND LINE (1.12.2 and later): `<id>:notices` shows the
+   * notice settings or sets them, `<id>:recent` shows Recent, `<id>:status`
+   * what Show sync status says. Words for a person by default; `format=json`
+   * prints the documented object instead, and a refusal as
+   * `{"error":{"code","message"}}` (`docs/architecture.md` 6.4). Nothing
+   * printed carries an id, key or code (`scrub`). A host that refuses a
+   * registration -- one without a command line -- is logged, and the plugin
+   * runs on without it.
+   */
+  private registerCli(): void {
+    const format: CliFlag = { value: "text|json", description: "Output format (default: text)" };
+    const commands: [string, string, CliFlags, (params: CliData) => CliAnswer | Promise<CliAnswer>][] = [
+      ["notices", "Show or set obsync notifications", {
+        level: { value: LEVELS.map(([value]) => value).join("|"), description: "What obsync notifies about" },
+        merges: { value: MERGES.map(([value]) => value).join("|"), description: "When it notifies about combined edits" },
+        format,
+      }, (params) => this.noticesCli(params)],
+      ["recent", "Show recent obsync notices, newest first", { format }, () => this.recentCli()],
+      ["status", "Show obsync sync status", { format }, () => this.statusCli()],
+    ];
+    for (const [command, description, flags, answer] of commands) {
+      const usage = `${command} takes ${Object.entries(flags).map(([name, flag]) => `${name}=${flag.value ?? ""}`).join(", ")}.`;
+      const handler: CliHandler = async (params) => {
+        const started = Date.now();
+        const json = params["format"] === "json";
+        try {
+          if (Object.keys(params).some((flag) => !Object.hasOwn(flags, flag))) throw new CliRefusal("unknown_flag", `That is not an option here: ${usage}`);
+          if (!json && params["format"] !== undefined && params["format"] !== "text") throw new CliRefusal("unknown_value", usage);
+          const result = await answer(params);
+          this.log(`cli decision=answered command=${command} format=${json ? "json" : "text"} duration_ms=${Date.now() - started}`);
+          return scrub(json ? JSON.stringify(result.json) : result.text);
+        } catch (error) {
+          const refusal = error instanceof CliRefusal ? error : new CliRefusal("failed", "obsync could not do that; its log in Obsidian's developer console says why.");
+          this.log(`cli decision=refused reason=${refusal.code} command=${command} duration_ms=${Date.now() - started}`);
+          if (json) return JSON.stringify({ error: { code: refusal.code, message: refusal.message } });
+          throw new Error(refusal.message);
+        }
+      };
+      try {
+        this.registerCliHandler(`${this.manifest.id}:${command}`, description, flags, handler);
+      } catch (error) {
+        this.log(`cli decision=refused reason=${error instanceof Error ? error.name : "unknown"} command=${command}`);
+      }
+    }
+  }
+
+  /** `{"level","merges"}`, set first from `level=` and `merges=` when given. */
+  private async noticesCli(params: CliData): Promise<CliAnswer> {
+    const pick = <T extends string>(options: readonly [T, string][], name: string): T | undefined => {
+      const value = params[name];
+      if (value === undefined) return undefined;
+      const found = options.find(([option]) => option === value);
+      const values = options.map(([option]) => option);
+      if (found === undefined) throw new CliRefusal("unknown_value", `${name} takes ${values.slice(0, -1).join(", ")} or ${values.at(-1) ?? ""}.`);
+      return found[0];
+    };
+    const level = pick(LEVELS, "level"), merges = pick(MERGES, "merges");
+    let now = this.state.data.notices;
+    if (level !== undefined || merges !== undefined) {
+      now = await this.setNotices({ ...level === undefined ? {} : { level }, ...merges === undefined ? {} : { merges } }, "cli");
+    }
+    const words = (options: readonly [string, string][], value: string): string => options.find(([option]) => option === value)?.[1] ?? value;
+    return {
+      text: `Notifications: ${words(LEVELS, now.level)} (level=${now.level})\nCombined edits: ${words(MERGES, now.merges)} (merges=${now.merges})`,
+      json: { level: now.level, merges: now.merges },
+    };
+  }
+
+  /** Recent, newest first: `[{"time","kind","note_title","device","text"}]`. */
+  private recentCli(): CliAnswer {
+    const entries = this.notices.recent();
+    return {
+      text: entries.length === 0 ? "Nothing since obsync started." : entries.map((entry) => `${stamp(entry.at)}  ${entry.text}`).join("\n"),
+      json: entries.map((entry) => ({
+        time: new Date(entry.at).toISOString(),
+        kind: entry.kind,
+        note_title: entry.paths.length === 1 ? titles(entry.paths)[0] ?? null : null,
+        device: entry.device ?? null,
+        text: entry.text,
+      })),
+    };
+  }
+
+  /** What Show sync status says, without the device id. */
+  private statusCli(): CliAnswer {
+    const data = this.state.data;
+    const server = data.serverUrl === "" ? null : data.serverUrl;
+    const device = data.deviceId === null ? null : this.deviceName();
+    const counts = {
+      files_tracked: Object.keys(data.files).length,
+      remote_only: Object.keys(data.remoteOnly).length,
+      waiting_to_be_written: Object.keys(data.parked).length,
+      paused: Object.keys(data.paused).length,
+    };
+    return {
+      text: [
+        `State: ${this.statusText()}`,
+        `Server: ${server ?? "not configured"}`,
+        `This device: ${device ?? "not paired"}`,
+        `Vault key: ${data.vrk === null ? "absent" : "present"}`,
+        `Files tracked: ${counts.files_tracked}`,
+        `Remote only: ${counts.remote_only}`,
+        `Waiting to be written: ${counts.waiting_to_be_written}`,
+        `Paused: ${counts.paused}`,
+      ].join("\n"),
+      json: { state: this.shown().kind, text: this.statusText(), server, device, has_vault_key: data.vrk !== null, ...counts },
+    };
   }
 
   private registerVaultEvents(): void {
@@ -3398,7 +4195,7 @@ export default class ObsyncPlugin extends Plugin {
       const nested = await this.nestedRefusal("engine");
       if (!wanted(engine)) return superseded();
       if (nested !== null) {
-        if (this.statusValue.kind !== "error" || this.statusValue.message !== nested) new Notice(`obsync: ${nested}`, 15000);
+        if (this.statusValue.kind !== "error" || this.statusValue.message !== nested) this.notices.show({ kind: "error", text: nested });
         throw new Error(nested);
       }
       await engine.start();
@@ -3419,6 +4216,16 @@ export default class ObsyncPlugin extends Plugin {
       if (this.engine !== engine) { engine.stop(); return; }
       const attempt = (this.reconnect?.attempt ?? 0) + 1;
       this.teardownEngine();
+      // A DISK CALL THAT NEVER ANSWERED (#307) is no refusal. The start is
+      // made again after the reconnect's pause, as an outage's is, and the
+      // status says the disk's words, which promise exactly that. Read live:
+      // a start that met one stopped for good under words saying it retries.
+      if ((error as { code?: unknown }).code === DISK_STALLED) {
+        this.log("engine decision=stopped reason=start_stalled code=disk_stalled");
+        this.scheduleReconnect(attempt, 0);
+        this.setStatus({ kind: "error", message: (error as Error).message });
+        return;
+      }
       if (!unreachable(error)) {
         // A refusal, or a local fault: visible until the person acts, and
         // never knocked on again by a timer (issue #129).
@@ -3436,8 +4243,9 @@ export default class ObsyncPlugin extends Plugin {
         return;
       }
       this.scheduleReconnect(attempt, error.status);
-      // Retried like absence, and said as what it is (`refusalStatus`).
-      this.setStatus(refusalStatus(error) ?? { kind: "offline" });
+      // Retried like absence, and said as what it is (`refusalStatus`): a 5xx
+      // the server answered in its own coded error as the read that failed (#298).
+      this.setStatus(refusalStatus(error) ?? (error.answered ? { kind: "error", message: FEED_FAILED } : { kind: "offline" }));
     }
   }
 
@@ -3512,7 +4320,7 @@ export default class ObsyncPlugin extends Plugin {
     const away = this.shown().kind === "offline";
     if (away) {
       this.wake("sync_now");
-      new Notice(`obsync: ${NOT_ANSWERING}`);
+      this.notices.show({ kind: "confirm", text: NOT_ANSWERING });
     }
     let sent = 0;
     let checked = 0;
@@ -3522,16 +4330,17 @@ export default class ObsyncPlugin extends Plugin {
     else if (running) sent = (await running.syncNow()) ?? 0;
     if (away) return;
     const status = this.shown();
-    const files = `${checked} file${checked === 1 ? "" : "s"}`;
     // Deletions still held: the question the press raised about them is its
     // answer, and "up to date" beside it would be false (the rig, 2026-09-27).
     // Asked of the engine, which an unload has taken away, never of the state.
-    const answer = status.kind === "offline" ? `obsync: ${NOT_ANSWERING}`
-      : status.kind === "error" ? `obsync: ${status.message}`
-      : everything ? `obsync: checked ${files}; ${sent > 0 ? `${sent} had changed and ${sent === 1 ? "was" : "were"} sent` : "none had changed"}.`
-      : sent > 0 ? `obsync: sent ${sent} change${sent === 1 ? "" : "s"}.`
-      : (this.engine?.context?.state.data.heldDeletions.length ?? 0) > 0 ? null : "obsync: nothing to send; this device is up to date.";
-    if (answer !== null) new Notice(answer);
+    // The same answer to presses in a row is ONE toast that counts them
+    // (the channel's join): twenty-nine presses stacked twenty-nine (lab L).
+    const answer = status.kind === "offline" ? NOT_ANSWERING
+      : status.kind === "error" ? status.message
+      : everything ? `checked ${count(checked, "file")}; ${sent > 0 ? `${sent} had changed and ${sent === 1 ? "was" : "were"} sent` : "none had changed"}.`
+      : sent > 0 ? `sent ${count(sent, "change")}.`
+      : (this.engine?.context?.state.data.heldDeletions.length ?? 0) > 0 ? null : "nothing to send; this device is up to date.";
+    if (answer !== null) this.notices.show({ kind: "confirm", text: answer });
   }
 
   /** Resume in Show sync status: sync one paused note again (issue #179). */
@@ -3748,15 +4557,24 @@ export default class ObsyncPlugin extends Plugin {
     const folders = pending.folders;
     const previous = state.data.syncFolders;
     const cursor = state.data.lastSeq;
+    const owed = state.data.folderRemovals;
     const widened = expandsSyncScope(previous, folders);
     state.data.syncFolders = folders;
     if (widened) state.data.lastSeq = 0;
+    // A NARROWER SELECTION RE-JUDGES EVERY FOLDER REMOVAL STILL OWED (issue
+    // #265): judged against it, one outside it is refused, and said, by the
+    // next start's pass rather than published beyond what the person now
+    // syncs. A wider one leaves each as it was judged.
+    if (folders !== undefined && expandsSyncScope(folders, previous)) {
+      state.data.folderRemovals = Object.fromEntries(Object.keys(owed).map((path) => [path, [...folders]]));
+    }
     delete state.data.pendingScope;
     try {
       await state.save();
     } catch (error) {
       state.data.syncFolders = previous;
       state.data.lastSeq = cursor;
+      state.data.folderRemovals = owed;
       state.data.pendingScope = pending;
       throw error;
     }
@@ -3777,7 +4595,7 @@ export default class ObsyncPlugin extends Plugin {
     if (!this.isCurrent(generation) || this.changingScope) return;
     try {
       await this.applyScope(this.state, "start", Date.now(), () => undefined);
-      new Notice("obsync: the folder selection you saved before Obsidian closed is now in effect.", 8000);
+      this.notices.show({ kind: "info", text: "the folder selection you saved before Obsidian closed is now in effect." });
     } catch {
       this.log("scope decision=failed reason=not_saved trigger=start");
     }
@@ -3849,22 +4667,19 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   /**
-   * Finish a pairing a restart interrupted, inside its window, or say to pair
-   * again (issue #153). Never the recovery phrase: a claim holds no key yet.
+   * A claim an obsync before 1.1.5 held across a restart (issue #153) is
+   * dropped, never finished: it would open its key the way 1.1.5 no longer
+   * pairs. The server destroys its pending device at the window's end, and a
+   * device not yet paired is told to pair again.
    */
   resumePairing(): void {
     const state = this.state;
-    const held = readClaim(state.heldClaim());
-    if (held === null) return;
-    // A claim an older session was collecting is this session's now: that
-    // session stops at its next step and leaves the entry alone.
-    if (state.paired || held.serverUrl !== state.data.serverUrl) {
-      this.log("pairing role=claimant decision=dropped reason=stale_claim");
-      state.holdClaim(null);
-      return;
+    if (state.heldClaim() === null) return;
+    this.log("pairing role=claimant decision=dropped reason=held_before_update");
+    state.holdClaim(null);
+    if (!state.paired) {
+      this.notices.show({ kind: "error", text: "pairing this device stopped when obsync updated, and nothing was shared. Make a new code on your other device with Pair a new device, and pair again." });
     }
-    this.log(`pairing role=claimant decision=resumed age_ms=${Date.now() - held.claimedAt} window_ms=${PAIRING_WINDOW_MS}`);
-    awaitApproval(this, this.app, held, () => undefined, true);
   }
 
   /** Name another device's copies right after a pairing or a rename (issue #164). */
@@ -3901,9 +4716,14 @@ export default class ObsyncPlugin extends Plugin {
     await this.refreshDeviceNames();
   }
 
-  /** Every device paired to this vault, for the settings tab's device list. */
+  /**
+   * Every device paired to this vault, for the settings tab's device list.
+   * A device somebody has forgotten is not one of them (#247): the server
+   * keeps its record to refuse it by and to name its versions, and states
+   * that with `archived`, which a server before 1.1.5 never sets.
+   */
   async listDevices(patience: Patience = {}): Promise<DeviceRecord[]> {
-    return (await this.transport.devices(patience)).devices;
+    return (await this.transport.devices(patience)).devices.filter((device) => device.archived !== true);
   }
 
   /**
@@ -3933,8 +4753,50 @@ export default class ObsyncPlugin extends Plugin {
       this.engine = null;
       // Not this device's own leave, which forgets the pairing next and says
       // what happened itself: a phone put this up after every Leave (#233).
-      if (!this.leaving) this.setStatus({ kind: "error", code: "forgotten_device", message: FORGOTTEN_DEVICE });
+      if (!this.leaving) this.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
     }
+  }
+
+  /**
+   * Forget a REVOKED device (issue #247): the server takes it off the device
+   * lists. NOTHING IS DESTROYED -- the record is what answers that device
+   * "This device was removed from your server" rather than the answer a
+   * stranger's id gets, and what names the versions it wrote -- so the wire
+   * calls it archiving and the person, who is tidying a list, reads Forget.
+   *
+   * Always a person's press, so always their patience. It is not repeatable,
+   * and a lost answer is settled by reading the list: a device no longer
+   * listed is the outcome that was asked for.
+   *
+   * A SERVER BEFORE 1.1.5 HAS NO SUCH ROUTE and answers `404 not_found`; the
+   * person is told what to update, and the device stays revoked and listed.
+   * Each outcome logs one line with its duration against the interactive budget.
+   */
+  async forgetRevoked(deviceId: string): Promise<void> {
+    const started = Date.now();
+    const logged = (decision: string, reason: string): void =>
+      this.log(`device decision=${decision} action=forget reason=${reason} duration_ms=${Date.now() - started} budget_ms=${INTERACTIVE_MS}`);
+    let sent: Sent<void>;
+    try {
+      sent = await patiently(this.transport.archiveDevice(deviceId), { interactive: true });
+    } catch (error) {
+      const code = error instanceof ApiError ? error.code : "local";
+      if (code === "unknown_device") return logged("forgotten", "already_gone");
+      logged("refused", code);
+      if (code === "not_found") {
+        throw new Error("your server is too old to forget devices. Update it to obsync 1.1.5 or later, then try again.");
+      }
+      if (code === "device_not_revoked") throw new Error("it can still sync. Revoke it first.");
+      throw error;
+    }
+    if (sent.outcome === "lost") {
+      const listed = (await this.transport.devices({ interactive: true })).devices
+        .some((device) => device.device_id === deviceId && device.archived !== true);
+      logged(listed ? "unconfirmed" : "forgotten", "lost_answer");
+      if (listed) throw new Error(lostMessage("forgetting that device", sent));
+      return;
+    }
+    logged("forgotten", "revoked");
   }
 
   // --- leaving a server --------------------------------------------------
@@ -4167,12 +5029,14 @@ export default class ObsyncPlugin extends Plugin {
         await state.forgetPreviousCredential();
         previous = "dropped";
       } catch {
-        new Notice(
-          "obsync: this device left the server. Obsidian's secret storage refused to drop the older credential record; the next pairing on this device replaces it.",
-          10000,
-        );
+        this.notices.show({
+          kind: "info",
+          text: "this device left the server; Obsidian's secret storage kept an old sign-in record, which the next pairing here replaces.",
+        });
       }
       this.updateAvailable = null;
+      this.recoveryMismatch = false;
+      this.notices.close(RECOVERY_WARNING);
       this.forgottenDevice = false;
       this.setStatus({ kind: "idle" });
       if (reason === "unfinished") reason = "ok";
@@ -4278,7 +5142,7 @@ export default class ObsyncPlugin extends Plugin {
       }
       const nested = await this.nestedRefusal("setup");
       if (nested !== null) {
-        new Notice(`obsync: ${nested}`, 12000);
+        this.notices.show({ kind: "confirm", text: nested });
         return;
       }
       // Persist the key BEFORE a one-time request can create its account. A
@@ -4296,11 +5160,16 @@ export default class ObsyncPlugin extends Plugin {
       const recovery = await accountRecovery(vrk);
       assertCurrent();
       if (state.data.vrk !== vrk) throw new Error("The vault key changed during setup; try again with the current key.");
+      // A key made for THIS setup recovers nothing, so it sends no proof: an
+      // occupied server then says to pair or restore, rather than establishing
+      // a second vault key over the one it holds (#141, #154). A key restored
+      // from the phrase sends its proof, which re-enrols an existing account,
+      // including one an operator has cleared (`docs/recovery.md`).
       const enrolled = await transport.setup(pastedToken(setupToken), accountName, {
         name,
         platform: this.platformName(),
         app_version: this.manifest.version,
-      }, recovery);
+      }, freshKey ? { verifier: recovery.verifier } : recovery);
       assertCurrent();
       if (state.data.vrk !== vrk) throw new Error("The vault key changed while the server answered; this response was not adopted. Restore the intended phrase and recover explicitly.");
       // Setup is not repeatable and the credential it mints exists nowhere
@@ -4314,7 +5183,10 @@ export default class ObsyncPlugin extends Plugin {
       state.data.deviceSecret = result.device_secret;
       await state.save();
       assertCurrent();
-      new Notice(result.recovered ? "Account recovered and this device re-enrolled." : "Account created and this device enrolled.");
+      this.notices.show({
+        kind: "confirm",
+        text: result.recovered ? "recovered your vault on this server; this device syncs with it again." : "set up your server's vault; this device syncs with it.",
+      });
       if (freshKey) {
         await this.startEngine();
         assertCurrent();
@@ -4337,11 +5209,11 @@ export default class ObsyncPlugin extends Plugin {
           : code === "already_set_up"
             ? `This server already holds a vault, and one server holds one vault. If this is that vault, ${pairHere}, or restore its recovery phrase and use Setup or recover with the setup token; a different vault needs a server of its own.`
             : code === "recovery_unavailable"
-              ? `This server already holds a vault, and one server holds one vault. Recovery was not registered before its credentials were lost, so these words cannot re-enrol this device: ${pairHere}, then update that device and the server so recovery is registered; a different vault needs a server of its own.`
+              ? `This server holds a vault with no recovery key registered, so these words cannot re-enrol this device on their own: ${pairHere}, or ask whoever runs the server to reset its recovery key and send you the new setup token (server 1.1.5 or later); a different vault needs a server of its own.`
               : code === "bad_recovery_proof"
                 ? `These recovery words do not open this server’s vault, and no device was enrolled. Restore its correct 24-word phrase, or ${pairHere}; a different vault needs a server of its own.`
                 : refusalText(error);
-      new Notice(`obsync: ${text}`, 12000);
+      this.notices.show({ kind: "confirm", text });
     } finally {
       this.enrolling = false;
     }
@@ -4360,13 +5232,37 @@ export default class ObsyncPlugin extends Plugin {
       const registered = await transport.registerRecovery(verifier);
       assertCurrent();
       this.log(`recovery decision=${registered.outcome === "ok" ? "registered" : "unconfirmed"}`);
+      // Its own key registered: the warning below has nothing left to say.
+      if (registered.outcome === "ok" && this.recoveryMismatch) {
+        this.recoveryMismatch = false;
+        this.notices.close(RECOVERY_WARNING);
+        this.render();
+        this.log("recovery decision=cleared reason=registered warning=cleared");
+      }
     } catch (error) {
+      // A KEY THIS DEVICE DID NOT REGISTER (1.1.5). The server cannot tell
+      // which key this vault produced, and any device credential can register
+      // the first one, so this device says so, once a session, until a
+      // registration of its own succeeds: the operator's reset clears the
+      // other key and the next start registers this one. Only while this
+      // device still holds the credential that asked (#233, below).
+      if (this.state.data.deviceId === deviceId && error instanceof ApiError && error.code === "recovery_mismatch") {
+        const first = !this.recoveryMismatch;
+        this.recoveryMismatch = true;
+        // A `security` notice: no setting keeps it off the screen (requirement
+        // 4), and it stays until dismissed.
+        if (first) this.notices.show({ kind: "security", key: RECOVERY_WARNING, text: RECOVERY_MISMATCH });
+        this.render();
+        // A refusal, so the console carries it at warn (`FAILURE_DECISION`).
+        this.log(`recovery decision=refused reason=recovery_mismatch warning=${first ? "shown" : "standing"}`);
+        return;
+      }
       // A refusal of a credential this device has since given up -- a leave
       // revoked it while the registration was out -- is that credential's,
       // logged and never said: it read "removed" over a device that left (#233).
       const ended = this.state.data.deviceId !== deviceId;
       const refused = refusalStatus(error);
-      if (!ended && refused?.kind === "error" && refused.code === "forgotten_device") this.setStatus(refused);
+      if (!ended && refused?.kind === "error" && refused.code === "credential_rejected") this.setStatus(refused);
       // Old servers do not implement this route. Sync can continue, and their
       // last-device refusal remains in force until server and client upgrade.
       this.log(`recovery decision=unavailable reason=${error instanceof ApiError ? error.code : "local_or_lost"}${ended ? " session=ended" : ""}`);
@@ -4422,7 +5318,7 @@ export default class ObsyncPlugin extends Plugin {
       this.log("dashboard decision=opened");
       window.open(target.url, "_blank");
     } catch (error) {
-      new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 8000);
+      this.notices.show({ kind: "confirm", text: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -4461,12 +5357,9 @@ export default class ObsyncPlugin extends Plugin {
       // is an alias of `messageEl`, the text element INSIDE it, so a tap that
       // landed on the box's padding would only dismiss. A click on the text
       // bubbles up to the box, so one listener covers both.
-      const notice = new Notice(updateMessage(remote.version, this.manifest.version), 15000);
-      notice.containerEl.addEventListener("click", () => {
-        this.openPluginManager();
-      });
+      this.notices.show({ kind: "info", text: updateMessage(remote.version, this.manifest.version), open: () => this.openPluginManager() });
     } catch (error) {
-      if (this.isCurrent(generation)) this.log(`update decision=skipped reason=${error instanceof Error ? error.message : String(error)}`);
+      if (this.isCurrent(generation)) this.log(`update decision=skipped reason=${errorText(error)}`);
     }
   }
 
@@ -4498,8 +5391,8 @@ export default class ObsyncPlugin extends Plugin {
     else if (action.kind === "restore_here") void this.restoreHeldDeletions();
     else {
       void this.fetchRemoteOnly(action.fileId).then(
-        (path) => new Notice(`Fetched ${path}.`),
-        (error: unknown) => new Notice(`obsync: ${error instanceof Error ? error.message : String(error)}`, 10000),
+        (path) => this.notices.show({ kind: "confirm", text: "fetched {notes}.", paths: [path] }),
+        (error: unknown) => this.notices.show({ kind: "confirm", text: error instanceof Error ? error.message : String(error) }),
       );
     }
   }
@@ -4532,7 +5425,7 @@ export default class ObsyncPlugin extends Plugin {
   // --- status ------------------------------------------------------------
 
   setStatus(status: EngineStatus): void {
-    if (status.kind === "error" && status.code === "forgotten_device") {
+    if (status.kind === "error" && status.code === "credential_rejected") {
       this.forgottenDevice = true;
       this.teardownEngine();
     } else if (this.forgottenDevice) return;
@@ -4562,10 +5455,13 @@ export default class ObsyncPlugin extends Plugin {
    * feed had said it read `offline — retrying` for minutes after its server
    * was back. Said once per change, not per attempt.
    */
-  private reachability(answered: boolean): void {
+  private reachability(answered: boolean, request?: string): void {
     if (this.unanswered !== answered) return;
     this.unanswered = !answered;
-    this.log(answered ? "engine decision=online reason=answered" : "engine decision=offline reason=unanswered");
+    // The request it gave up on is named (#288): an `offline` of a second
+    // beside a dropped poll said nothing of which request, or why.
+    this.log(answered ? "engine decision=online reason=answered"
+      : `engine decision=offline reason=unanswered${request === undefined ? "" : ` request=${request}`}`);
     this.render();
     if (answered) {
       this.engine?.wake("answered");
@@ -4583,11 +5479,22 @@ export default class ObsyncPlugin extends Plugin {
   private render(): void {
     const status = this.shown();
     const quiet = !this.state.paired || this.state.data.syncFolders?.length === 0;
-    this.indicator.update(indicated(status, quiet), `obsync: ${this.statusText()}`);
+    // WHILE THE SECURITY WARNING STANDS, a calm status item is the alert
+    // (1.1.5): a check beside "a device may be compromised" read as all well.
+    // No setting changes this; the warning and the icon end together.
+    const shown = indicated(status, quiet);
+    const warned = this.recoveryMismatch && (shown === "synced" || shown === "quiet");
+    this.indicator.update(warned ? "attention" : shown,
+      `obsync: ${this.statusText()}${this.recoveryMismatch ? " — security warning: see Show sync status" : ""}`);
     // A PHONE HAS NOTHING ELSE THAT CATCHES THE EYE (#209): a refusal that
-    // needs the person is said once in a notice there, as it turns to it.
+    // needs the person is said once in a notice there, as it turns to it, and
+    // its toast goes when it ends (#308). "Your server is out of storage"
+    // stood for hours beside a synced check, after the server had room again.
     const refusal = status.kind === "error" && status.code !== undefined ? status.message : null;
-    if (Platform.isMobile && refusal !== null && refusal !== this.noticed) new Notice(`obsync: ${refusal}`, 15000);
+    if (Platform.isMobile && refusal !== this.noticed) {
+      this.notices.close(REFUSAL_NOTICE);
+      if (refusal !== null) this.notices.show({ kind: "error", key: REFUSAL_NOTICE, text: refusal });
+    }
     this.noticed = refusal;
     for (const watcher of this.watchers) watcher();
   }
@@ -4640,12 +5547,20 @@ export default class ObsyncPlugin extends Plugin {
         // A bare `idle` over a selection of no folders read as all being well (issue #150, S30d).
         if (!this.state.paired) return "not paired";
         return this.state.data.syncFolders?.length === 0 ? "idle — syncing no folders" : "idle";
-      case "syncing":
+      case "syncing": {
+        // Sync now waiting on a pull says which (issue #276).
+        const waiting = status.waiting === undefined ? "" : `, waiting for ${PULL_WORDS[status.waiting] ?? "another sync step"}`;
         // Nothing counted, but the feed has not answered yet: not idle either.
         // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
-        if (status.pending === 0) return "checking for changes";
-        return `syncing ${status.pending} file${status.pending === 1 ? "" : "s"}` +
-          (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`);
+        if (status.pending === 0) return `checking for changes${waiting}`;
+        // A FILE READ ONLY TO VERIFY IT IS NO CHANGE (#246): Sync now's
+        // content check read "syncing 7,700 files" on a vault with none.
+        const changes = status.pending - (status.checking ?? 0);
+        const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
+        if (changes === 0) return `checking ${files(status.pending)} for changes${waiting}`;
+        return `syncing ${files(changes)}` +
+          (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`) + waiting;
+      }
       case "offline":
         // True of both places that set it: the running engine polls again
         // in seconds, and a stopped one is on the reconnect timer.

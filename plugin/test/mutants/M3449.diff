@@ -1,0 +1,13 @@
+# M3449: merge against one ancestor after the shared base was refused (M790's mutation, its context moved at this head)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2849,8 +2849,7 @@
+       const shared = mergeBase === baseManifest
+         ? await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base)) : null;
+       const crossed = typeof shared === "string";
+-      const merged = shared === false ? { ok: false as const, reason: "overlap" as const }
+-        : threeWayMerge(shared ?? decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
++      const merged = threeWayMerge(typeof shared === "string" ? shared : decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
+       if (merged.ok) {
+         const text = new TextEncoder().encode(merged.text);
+         // A MERGE HOLDS ITS TWO PARENTS AND NOTHING TYPED SINCE (issue #227).

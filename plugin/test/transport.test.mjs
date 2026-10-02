@@ -12,12 +12,15 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createHash, createHmac } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import { join } from "node:path";
+import { sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { ApiError, HISTORY_RESPONSE_BYTES, Transport, lostMessage, parseMultipart, routeFor } = require("../build/transport.js");
 const c = require("../build/crypto.js");
+const { loadDomainMap } = require("../build/domainmap.js");
 
 const DEVICE_ID = "aabbccddeeff00112233445566778899";
 const DEVICE_SECRET_HEX = "0f".repeat(32);
@@ -510,6 +513,75 @@ test("an attempt nothing answers within its deadline is unanswered: retried and 
   assert.equal(posting.sent.length, 1);
 });
 
+test("an attempt that runs out while the server answered another is retried, said so, and not word that the server is unreachable (#288)", async () => {
+  // A long poll left waiting on the device -- behind one `requestUrl` could
+  // not abort -- while a quick read beside it was answered at once.
+  const hangs = () => { let answer; const pending = new Promise((resolve) => { answer = resolve; }); return { pending, answer: (value) => answer(value) }; };
+  const EMPTY = { status: 200, text: JSON.stringify({ seq: 0, head_seq: 0, changes: [] }) };
+  const run = async (answeredMeanwhile) => {
+    let now = 1757200000000;
+    const stuck = hangs();
+    const timers = deadlines();
+    const heard = [];
+    const { transport, logged } = harness(answeredMeanwhile ? [() => stuck.pending, DEVICES, EMPTY] : [() => stuck.pending, EMPTY],
+      { timers, now: () => now, reachable: (answered, request) => heard.push(request === undefined ? answered : request) });
+    const poll = transport.changes(0, 55);
+    await turns(() => timers.pending().length === 1);
+    now += 1000;
+    if (answeredMeanwhile) assert.deepEqual(await transport.devices(), { devices: [] });
+    now += 69000;
+    const polled = watch(poll);
+    timers.expire();
+    await turns(() => polled.settled);
+    assert.deepEqual(await poll, { seq: 0, head_seq: 0, changes: [] }, "the retry is answered");
+    return { heard, logged };
+  };
+  const meanwhile = await run(true);
+  assert.deepEqual(meanwhile.heard, [true, true], "the timeout is not reported unanswered");
+  assert.ok(meanwhile.logged.some((line) => /^http GET \/v1\/changes\?since=0&wait=55&limit=1000 timeout budget_ms=\d+ answered_meanwhile=1 decision=retry attempt=1 /.test(line)), meanwhile.logged.join("|"));
+  // With nothing answered since it was sent, the same timeout is word of an
+  // unreachable server, and names the request it gave up on.
+  const alone = await run(false);
+  assert.equal(alone.heard.length, 2);
+  assert.match(alone.heard[0], /^GET \/v1\/changes\?since=0&wait=55&limit=1000 timeout budget_ms=\d+$/);
+  assert.equal(alone.heard[1], true);
+  assert.ok(alone.logged.some((line) => /timeout budget_ms=\d+ decision=retry attempt=1 /.test(line)), alone.logged.join("|"));
+});
+
+test("a long poll counts as in flight until the platform lets go of it, past its caller and its deadline; a quick read never does (#297)", async () => {
+  const hangs = () => { let answer; const pending = new Promise((resolve) => { answer = resolve; }); return { pending, answer: (value) => answer(value) }; };
+  const EMPTY = { status: 200, text: JSON.stringify({ seq: 0, head_seq: 0, changes: [] }) };
+  const stuck = hangs();
+  const quick = hangs();
+  const timers = deadlines();
+  // An answer is reported while its poll still counts: the wake that answer
+  // raises (`main.ts`, `reachability`) finds the poll, and does not drop it.
+  const counted = [];
+  let transport = null;
+  ({ transport } = harness([EMPTY, () => stuck.pending, () => quick.pending],
+    { timers, reachable: (answered) => counted.push(`${answered} ${transport.pollsInFlight()}`) }));
+  await transport.changes(0, 55);
+  assert.deepEqual(counted, ["true 1"]);
+  assert.equal(transport.pollsInFlight(), 0);
+  const drop = new AbortController();
+  const poll = watch(transport.changes(0, 55, 1000, { signal: drop.signal }));
+  await turns(() => timers.pending().length === 1);
+  assert.equal(transport.pollsInFlight(), 1);
+  const read = transport.changes(0, 0);
+  await turns(() => timers.pending().length === 2);
+  assert.equal(transport.pollsInFlight(), 1, "a read that does not wait is not a poll");
+  quick.answer(EMPTY);
+  await read;
+  // The caller stops waiting, and then the deadline passes: the platform still holds it.
+  drop.abort();
+  await turns(() => poll.settled);
+  timers.expire();
+  await turns();
+  assert.equal(transport.pollsInFlight(), 1);
+  stuck.answer(EMPTY);
+  await turns(() => transport.pollsInFlight() === 0);
+});
+
 test("each attempt's deadline fits its route: a long poll its wait, a transfer its bytes (#195)", async () => {
   const given = async (call, answer) => {
     const timers = deadlines();
@@ -565,7 +637,7 @@ const INTERNAL = [
   "manualBusy", "openManual", "closeManual",
   // And the retry machinery: the address read per attempt, the patience a
   // call is given, the pause `wake` ends early (issues #134, #182, #186).
-  "base", "budget", "until", "pause", "ended", "nap", "wake", "retryAt",
+  "base", "budget", "until", "pause", "ended", "nap", "wake", "retryAt", "pollsInFlight",
   // And the ceiling an answer is measured against (#202).
   "capped",
   // And the deadline each attempt is abandoned by (#195).
@@ -583,12 +655,14 @@ const CALLS = [
   ["pairingCreate", [], false],
   ["pairingClaim", [PAIRING_ID, "11".repeat(32), INFO], false],
   ["pairingStatus", [PAIRING_ID], true],
+  ["pairingReveal", [PAIRING_ID, "BB".repeat(43)], true],
   ["pairingApprove", [PAIRING_ID, "AAAA", "33".repeat(12)], false],
   ["pairingReject", [PAIRING_ID], false],
   ["pairingEnvelope", [PAIRING_ID], false],
   ["devices", [], true],
   ["patchDevice", [DEVICE_ID, { name: "n" }], false],
   ["revokeDevice", [DEVICE_ID], false],
+  ["archiveDevice", [DEVICE_ID], false],
   ["heartbeat", ["0.1.0", { perFileMaxBytes: 0, totalBudgetBytes: 0 }], false],
   ["missingChunks", [[SID]], true],
   ["putChunk", [SID, Uint8Array.from([1, 2, 3])], true],
@@ -830,6 +904,49 @@ test("every attempt says whether the server answered it, and decides nothing", a
   assert.deepEqual(refused, [true]);
 });
 
+test("a 5xx in obsync's own coded error is the server answering, retried all the same; a bare or foreign 5xx is not (#298)", async () => {
+  const hangs = () => { let answer; const pending = new Promise((resolve) => { answer = resolve; }); return { pending, answer: (value) => answer(value) }; };
+  const coded = { status: 500, text: JSON.stringify({ error: "io_error", detail: "SENTINEL" }) };
+  const heard = [];
+  const { transport, sent, logged } = harness([coded, coded, coded], { reachable: (answered, request) => heard.push(answered ? true : request) });
+  const failed = await transport.devices().catch((error) => error);
+  assert.equal(sent.length, 3, "retried as any 5xx is");
+  assert.deepEqual(heard, [true, true, true]);
+  assert.deepEqual([failed.code, failed.answered, failed.detail], ["unreachable", true, "status=500 code=io_error"]);
+  assert.ok(logged.some((line) => line.startsWith("http GET /v1/devices status=500 code=io_error decision=gave_up attempts=3 ")), logged.join("|"));
+  // A history read, which is never repeated, gives up the same way.
+  const once = harness([coded]);
+  const history = await once.transport.historyChanges(7, READ_CONTROL).catch((error) => error);
+  assert.deepEqual([history.code, history.answered], ["unreachable", true]);
+
+  // A proxy's own page, an empty 5xx, JSON that is not obsync's, or a code no obsync server writes.
+  for (const bare of [{ status: 502 }, { status: 503, text: "<html>SENTINEL</html>" }, { status: 500, text: JSON.stringify({ message: "SENTINEL" }) },
+    { status: 500, text: JSON.stringify({ error: "Bad Gateway SENTINEL" }) }]) {
+    const unheard = [];
+    const behind = harness([bare, bare, bare], { reachable: (answered, request) => unheard.push(answered ? true : request) });
+    const gone = await behind.transport.devices().catch((error) => error);
+    assert.deepEqual([gone.code, gone.answered, gone.detail], ["unreachable", false, `status=${bare.status}`], JSON.stringify(bare));
+    assert.deepEqual(unheard, Array(3).fill(`GET /v1/devices status=${bare.status}`), JSON.stringify(bare));
+  }
+
+  // An answer that came while a long poll waited (#288): that poll's timeout is not word of absence.
+  let now = 1757200000000;
+  const stuck = hangs();
+  const timers = deadlines();
+  const polled = [];
+  const EMPTY = { status: 200, text: JSON.stringify({ seq: 0, head_seq: 0, changes: [] }) };
+  const both = harness([() => stuck.pending, coded, coded, coded, EMPTY], { timers, now: () => now, reachable: (answered, request) => polled.push(answered ? true : request) });
+  const poll = watch(both.transport.changes(0, 55));
+  await turns(() => timers.pending().length === 1);
+  now += 1000;
+  await both.transport.devices().catch(() => undefined);
+  now += 69000;
+  timers.expire();
+  await turns(() => poll.settled);
+  assert.deepEqual(polled, [true, true, true, true], "the timed-out poll was reported unanswered");
+  assert.ok(both.logged.some((line) => / timeout budget_ms=\d+ answered_meanwhile=1 decision=retry /.test(line)), both.logged.join("|"));
+});
+
 test("a connection refused on the only attempt says nothing was sent and names the port; anything else stays unknown", () => {
   const refused = lostMessage("creating the account", { outcome: "lost", attempts: 1, reason: "network=net::ERR_CONNECTION_REFUSED" });
   assert.match(refused, /^creating the account: nothing answers at this address and port \(network=net::ERR_CONNECTION_REFUSED\), so nothing was sent\./);
@@ -840,6 +957,11 @@ test("a connection refused on the only attempt says nothing was sent and names t
     { outcome: "lost", attempts: 1, reason: "network=net::ERR_CONNECTION_TIMED_OUT" },
     { outcome: "lost", attempts: 2, reason: "network=net::ERR_CONNECTION_REFUSED" },
   ]) assert.match(lostMessage("x", lost), /cannot say whether it happened/, JSON.stringify(lost));
+  // A 5xx in the server's own coded error was an answer (#298, #299): never "never answered".
+  const answered = lostMessage("approving that device", { outcome: "lost", attempts: 1, reason: "status=500 code=io_error", answered: true });
+  assert.match(answered, /^approving that device: your server answered with an error, so it may not have happened\. /);
+  assert.ok(!/status=|code=/.test(answered), `a code is for the log, never the words: ${answered}`);
+  assert.doesNotMatch(answered, /never answered/);
 });
 
 // --- patience: wake, the address per attempt, budgets, refusals ------------
@@ -959,7 +1081,8 @@ test("a chunk upload asleep in its backoff goes on at the new address, asking fi
 });
 
 test("a full server's 507 is its refusal on the first answer; 500, 502, 503 and 504 are still absence (#155)", async () => {
-  for (const code of ["volume_full", "journal_full", "quota_exceeded"]) {
+  // `storage_full`: the disk itself had no room, whatever the watermark saw (#291).
+  for (const code of ["volume_full", "journal_full", "quota_exceeded", "storage_full"]) {
     const heard = [];
     const { transport, sent, slept } = harness(
       [{ status: 507, text: JSON.stringify({ error: code, detail: "free space is below the watermark" }) }],
@@ -974,6 +1097,28 @@ test("a full server's 507 is its refusal on the first answer; 500, 502, 503 and 
     const { transport, sent } = harness([{ status }, { status }, { status }]);
     await assert.rejects(transport.account(), (error) => error.code === "unreachable" && error.status === status);
     assert.equal(sent.length, 3, `${status} is retried`);
+  }
+});
+
+test("a faulted server's 503 is its refusal on the first answer, on a retried route and a one-shot one alike; any other 503 is still absence (#295)", async () => {
+  for (const code of ["journal_faulted", "nonce_log_faulted"]) {
+    const faulted = () => ({ status: 503, text: JSON.stringify({ error: code, detail: "SENTINEL" }) });
+    const heard = [];
+    const read = harness([faulted()], { reachable: (answered) => heard.push(answered) });
+    await assert.rejects(read.transport.account(), (error) => error.status === 503 && error.code === code);
+    assert.equal(read.sent.length, 1, `${code}: answered once, never retried as if the server were gone`);
+    assert.deepEqual(read.slept, []);
+    assert.deepEqual(heard, [true], `${code}: a faulted server is a server that answered`);
+    // A version post is never repeated: refused, it is refused, not lost.
+    const post = harness([faulted()]);
+    await assert.rejects(post.transport.postVersion(FILE_ID, VERSION_POST), (error) => error.status === 503 && error.code === code);
+    assert.equal(post.sent.length, 1, code);
+  }
+  // Those two only: a nonce log that is merely unavailable, a proxy's page and a bare 503 are absence as before.
+  for (const text of [JSON.stringify({ error: "nonce_log_unavailable", detail: "SENTINEL" }), "<html>SENTINEL</html>", ""]) {
+    const { transport, sent } = harness([{ status: 503, text }, { status: 503, text }, { status: 503, text }]);
+    await assert.rejects(transport.account(), (error) => error.code === "unreachable" && error.status === 503);
+    assert.equal(sent.length, 3, `${text || "a bare 503"} is retried`);
   }
 });
 
@@ -1118,4 +1263,67 @@ test("a chunk PUT signs the sid as its body digest only for the body encryptChun
   // really sent, so the server can refuse the pair for what it is.
   const three = await c.encryptChunk(domainKey, c.utf8("THIRD CHUNK SENTINEL\n"));
   await assert.rejects(transport.putChunk(one.sid, three.ciphertext), (error) => error.code === "sid_mismatch");
+});
+
+/**
+ * AN EXPECTED ANSWER IS NOT A WARNING (the #240 validation run's sweep). A
+ * first setup's read of a domain map that does not exist yet, and a new
+ * device's poll while approval is pending, were each logged as a refusal at
+ * warning level in every healthy setup and pairing. The caller names the one
+ * code it reads as an answer; that code, and only that code on that call, is
+ * logged as `decision=expected`, which the log sink sends at debug. The error
+ * is still thrown, and every other refusal of the same call is still a
+ * warning.
+ */
+/**
+ * A refusal's other fields reach the caller (review of PR #306): a pairing
+ * wait carries the creator's revealed key in its `409 not_approved`, and the
+ * claimant reads it there. The code and detail are not repeated as fields.
+ */
+test("a refusal's other body fields ride its ApiError, and its code and detail stay out of them", async () => {
+  const h = harness([
+    { status: 409, text: JSON.stringify({ error: "not_approved", detail: "approval pending", creator_pub: "KEY" }) },
+    { status: 409, text: JSON.stringify({ error: "not_approved", detail: "approval pending" }) },
+    { status: 404, text: "<html>an edge page</html>" },
+  ]);
+  await assert.rejects(h.transport.pairingEnvelope(PAIRING_ID), (error) =>
+    error.code === "not_approved" && error.detail === "approval pending" && JSON.stringify(error.fields) === '{"creator_pub":"KEY"}');
+  await assert.rejects(h.transport.pairingEnvelope(PAIRING_ID), (error) => JSON.stringify(error.fields) === "{}");
+  await assert.rejects(h.transport.pairingEnvelope(PAIRING_ID), (error) => JSON.stringify(error.fields) === "{}");
+});
+
+test("a refusal the caller expects is logged as expected, and nothing else is", async () => {
+  const refused = (status, code) => ({ status, text: JSON.stringify({ error: code, detail: "" }) });
+  const h = harness([
+    refused(404, "unknown_file"), refused(404, "unknown_file"), refused(404, "route_not_found"),
+    refused(409, "not_approved"), refused(410, "envelope_consumed"),
+  ]);
+  await assert.rejects(h.transport.getFile(FILE_ID, { expected: "unknown_file" }), (error) => error.code === "unknown_file");
+  await assert.rejects(h.transport.getFile(FILE_ID), (error) => error.code === "unknown_file");
+  await assert.rejects(h.transport.getFile(FILE_ID, { expected: "unknown_file" }), (error) => error.code === "route_not_found");
+  await assert.rejects(h.transport.pairingEnvelope(PAIRING_ID), (error) => error.code === "not_approved");
+  await assert.rejects(h.transport.pairingEnvelope(PAIRING_ID), (error) => error.code === "envelope_consumed");
+  assert.deepEqual(h.logged.map((line) => /decision=(\w+) code=(\w+)/.exec(line)?.slice(1).join(" ")), [
+    "expected unknown_file", "refused unknown_file", "refused route_not_found", "expected not_approved", "refused envelope_consumed",
+  ]);
+
+  // And the sink sends each at the level its decision names.
+  const box = sandbox();
+  const Plugin = box.require(join(box.home, "build/main.js")).default;
+  const said = [];
+  const { warn, debug } = console;
+  console.warn = (line) => said.push(["warn", line]);
+  console.debug = (line) => said.push(["debug", line]);
+  try {
+    for (const line of h.logged) Plugin.prototype.log.call({}, line);
+  } finally {
+    Object.assign(console, { warn, debug });
+    rmSync(box.home, { recursive: true, force: true });
+  }
+  assert.deepEqual(said.map(([level]) => level), ["debug", "warn", "warn", "debug", "warn"]);
+
+  // The domain map's own read is the caller that expects `unknown_file`.
+  const map = harness([refused(404, "unknown_file")]);
+  assert.equal(await loadDomainMap(map.transport, { fileId: FILE_ID, key: new Uint8Array(32) }), null);
+  assert.match(map.logged[0], / status=404 decision=expected code=unknown_file /);
 });

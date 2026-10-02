@@ -1,0 +1,12 @@
+# M3305: a replay started again before it caught up forgets the mark the first began at (#281)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1058,7 +1058,7 @@
+     // goes on from where it was saved (issue #281), and one started again
+     // keeps the mark it began at.
+     const unfinished = state.data.replaying;
+-    if (state.data.lastSeq === 0) state.data.replaying = { through: unfinished?.through ?? state.data.feedMark?.seq ?? 0, notes: {} };
++    if (state.data.lastSeq === 0) state.data.replaying = { through: state.data.feedMark?.seq ?? 0, notes: {} };
+     else if (unfinished !== null) {
+       host.log(`feed decision=resumed reason=replay_unfinished noted=${Object.keys(unfinished.notes).length} through=${unfinished.through}`);
+     }

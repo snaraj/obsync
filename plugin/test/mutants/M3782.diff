@@ -1,0 +1,12 @@
+# M3782: the woken line leaves out how many polls the device holds (#297, requirement 12)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3041,7 +3041,7 @@
+     if (pause !== null || dropped || beside !== null) {
+       this.options.host.log(
+         `feed decision=woken reason=${reason} ended_pause=${pause === null ? 0 : 1} dropped_poll=${dropped ? 1 : 0} ` +
+-          `read_beside=${beside === null ? 0 : 1} polls_in_flight=${held} waited_ms=${waited}`,
++          `read_beside=${beside === null ? 0 : 1} waited_ms=${waited}`,
+       );
+     }
+     // THE WINDOW IS BACK IN FRONT (issue #198): a note moved in a file manager

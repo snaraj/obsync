@@ -1,0 +1,12 @@
+# M3363: a post in flight moves a destination's parent even when it was not that parent (#239)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -588,7 +588,7 @@
+     // And a note that LEFT the selection while this posted is brought back on
+     // this version, not the one before it (`engine.ts`, `rejoin`; #239).
+     const away = context.state.data.departed[fileId];
+-    const advanced = away !== undefined && away.versionId === record?.versionId;
++    const advanced = away !== undefined;
+     if (advanced) {
+       away.versionId = ack.versionId;
+       await context.state.save();

@@ -1,0 +1,11 @@
+# M3503: a removed name stays the host's own after its reconcile (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1533,7 +1533,6 @@
+       try {
+         await queue.call(adapter, () => reconcileInternalFile.call(adapter, path));
+       } finally {
+-        this.unghosting.delete(path);
+       }
+       const now = vault.getAbstractFileByPath(path);
+       const done = changed ? now instanceof TFile && now.stat !== stat : (now !== null) === present;

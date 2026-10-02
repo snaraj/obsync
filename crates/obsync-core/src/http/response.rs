@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 use std::io::{self, Read, Write};
 
-use super::BUFFER_BYTES;
+use super::STREAM_BUFFER_BYTES;
 use crate::json::Value;
 
 /// A response, built by a handler and written by the server.
@@ -163,7 +163,9 @@ fn copy_exact(
     writer: &mut impl Write,
     len: u64,
 ) -> io::Result<()> {
-    let mut buffer = [0u8; BUFFER_BYTES];
+    // On the heap, and only for a streamed body: at the connection buffer's
+    // 8 KiB, an 8 MiB chunk took 1,024 reads and 1,024 writes.
+    let mut buffer = vec![0u8; len.clamp(1, STREAM_BUFFER_BYTES as u64) as usize];
     let mut remaining = len;
     while remaining > 0 {
         let want = remaining.min(buffer.len() as u64) as usize;

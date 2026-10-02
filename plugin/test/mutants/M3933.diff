@@ -1,0 +1,12 @@
+# M3933: a click on the recovery-phrase reminder opens nothing
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3452,7 +3452,7 @@
+       // A question only the person can answer, never kept quiet (requirement
+       // 4); a click opens the settings that answer it.
+       this.notices.show({
+-        kind: "question", open: () => this.openSettings(),
++        kind: "question",
+         text: "your 24-word recovery phrase is not confirmed: without it and without a paired device this vault cannot " +
+           "be recovered. In obsync's settings, under Vault key, choose Show and confirm.",
+       });

@@ -1,0 +1,14 @@
+# M4102: the error code is kept among a refusal's fields
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -1610,8 +1610,8 @@
+   try {
+     const parsed: unknown = JSON.parse(text);
+     if (typeof parsed === "object" && parsed !== null && typeof (parsed as Record<string, unknown>)["error"] === "string") {
+-      const { error, detail, ...fields } = parsed as Record<string, unknown>;
+-      return { code: error as string, detail: typeof detail === "string" ? detail : "", fields };
++      const { detail, ...fields } = parsed as Record<string, unknown>;
++      return { code: fields["error"] as string, detail: typeof detail === "string" ? detail : "", fields };
+     }
+   } catch {
+     // Not JSON at all: certainly not obsync's.

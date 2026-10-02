@@ -1,0 +1,13 @@
+# M3361: a note out of the selection is fetched in the background when another device changes it (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3076,8 +3076,7 @@
+    */
+   private async background(context: SyncContext, change: ChangeRecord): Promise<boolean> {
+     if (change.deleted || change.bytes <= LARGE_APPLY_BYTES || change.device_id === context.deviceId ||
+-      context.authored.has(change.version_id) || context.state.data.paused[change.file_id] !== undefined ||
+-      context.state.data.departed[change.file_id] !== undefined) return false;
++      context.authored.has(change.version_id) || context.state.data.paused[change.file_id] !== undefined) return false;
+     // A rename, or bytes this device already holds: nothing to fetch.
+     const kept = context.state.pathByFileId(change.file_id);
+     if (kept !== undefined && context.state.fileByPath(kept)?.sha256 === (await sidDigest(change.sids))) return false;

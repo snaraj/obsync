@@ -68,7 +68,8 @@ test("a copy the other device renames aside is announced once, under the name it
   assert.notEqual(first, renamed, "the fixture must rename the copy for this to prove anything");
   announceCopies(r.context);
 
-  assert.deepEqual(r.host.notices, [`obsync kept both versions of ${NOTE}. The other device's copy is "${renamed}".`]);
+  assert.deepEqual(r.host.notices, ['obsync: kept both versions of "Same": another device\'s is in "Same (conflict from laptop, 2026-01-02 0304)".']);
+  assert.deepEqual(r.host.toasts.map((toast) => toast.text), r.host.notices, "a conflict copy is shown under the quietest settings");
   assert.equal(r.host.text(renamed), THEIRS, "the named file is not the copy");
   announceCopies(r.context, true);
   assert.equal(r.host.notices.length, 1, "the copy was announced twice");
@@ -84,7 +85,7 @@ test("a copy nobody renames is announced where it is once the wait is over", asy
   assert.deepEqual(r.host.notices, [], "announced before the owner of the name had its chance to move it");
   r.host.clock += 1;
   announceCopies(r.context);
-  assert.deepEqual(r.host.notices, [`obsync kept both versions of ${NOTE}. The other device's copy is "${copy}".`]);
+  assert.deepEqual(r.host.notices, [`obsync: kept both versions of "Same": another device's is in "${copy.slice(copy.lastIndexOf("/") + 1, -3)}".`]);
 });
 
 /** One engine over the rig, one fake clock, and every status it reports. */
@@ -164,7 +165,7 @@ test("one deletion met twice while the edit here cannot be sent gives one notice
 
   assert.deepEqual(r.host.trashed, [], "the edit was deleted");
   assert.equal(r.host.notices.length, 1, r.host.notices.join(" | "));
-  assert.match(r.host.notices[0], /^obsync did not delete Notes\/n16\.md: it holds changes this device has not uploaded yet/);
+  assert.match(r.host.notices[0], /^obsync: kept "n16": .+ deleted it without having seen the changes made here, so they are sent again/);
 });
 
 test("a fresh device replaying a fork other devices made announces no merge of its own", async () => {
@@ -192,10 +193,34 @@ test("a fresh device replaying a fork other devices made announces no merge of i
   );
 });
 
+test("a merge of two other devices' versions over this device's own merge is not announced (#279)", async () => {
+  // A device showing a note two others type in merges each arrival over its
+  // own last merge, and that merge holds nothing typed here.
+  const r = await rig();
+  const FILE = "26".repeat(16);
+  const [LAPTOP, DESKTOP] = ["1a".repeat(16), "2b".repeat(16)];
+  const publish = (bytes, parents, mtime, deviceId) => r.server.publish({
+    fileId: FILE, path: "Notes/Shared.md", bytes: enc(bytes), mtime, parents,
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey, deviceId,
+  });
+  const base = await publish("one\ntwo\nthree\n", [], 1757200001000, LAPTOP);
+  const left = await publish("ONE\ntwo\nthree\n", [base.version_id], 1757200002000, LAPTOP);
+  const right = await publish("one\ntwo\nTHREE\n", [base.version_id], 1757200003000, DESKTOP);
+  for (const frame of [base, left]) await applyChange(r.context, frame);
+  assert.equal(await applyChange(r.context, { ...right, conflicted: true }), "merged");
+  const next = await publish("ONE\ntwo\nthree\nfour\n", [left.version_id], 1757200004000, LAPTOP);
+  assert.equal(await applyChange(r.context, { ...next, conflicted: true }), "merged");
+
+  assert.equal(r.host.text("Notes/Shared.md"), "ONE\ntwo\nTHREE\nfour\n");
+  assert.deepEqual(r.host.notices, [], "a merge of this device's own merge was announced");
+  assert.equal(r.host.logs.filter((line) => line.startsWith("pull decision=merged") && line.endsWith("announced=false")).length, 2);
+});
+
 test("a merge of an edit made here is still announced", async () => {
   // The other half of the rule: the same fork, with one side typed here and
   // not pushed yet, is this device's news.
   const r = await rig();
+  r.host.noticeSettings = { level: "everything", merges: "once" };
   const FILE = "25".repeat(16);
   const publish = (bytes, parents, mtime) => r.server.publish({
     fileId: FILE, path: "Notes/Shared.md", bytes: enc(bytes), mtime, parents,
@@ -207,8 +232,17 @@ test("a merge of an edit made here is still announced", async () => {
   r.host.seed("Notes/Shared.md", "ONE\ntwo\nthree\nfour\n", 1757200005000);
   const right = await publish("one\ntwo\nTHREE\n", [base.version_id], 1757200003000);
 
+  // The edit goes out first, and the fork it makes is merged (#227).
+  assert.equal(await applyChange(r.context, { ...right, conflicted: true }), "skipped");
+  assert.deepEqual(r.host.notices, []);
+  await pushFile(r.context, "Notes/Shared.md");
   assert.equal(await applyChange(r.context, { ...right, conflicted: true }), "merged");
-  assert.deepEqual(r.host.notices, ["obsync merged concurrent edits to Notes/Shared.md."]);
+  // By its title and the other device's name, never a path or an id (owner, 2026-09-29).
+  assert.deepEqual(r.host.notices, ["obsync: combined your edits to \"Shared\" with iPhone's."]);
+  assert.deepEqual(r.host.said, [{
+    kind: "combined", text: "combined your edits to {notes} with {device}'s.", paths: ["Notes/Shared.md"], device: "iPhone",
+  }]);
+  assert.deepEqual(r.host.toasts.map((toast) => [toast.text, toast.ms]), [["obsync: combined your edits to \"Shared\" with iPhone's.", 8000]]);
 });
 
 test("one question about held deletions is on screen at a time, and it goes when nothing is held or the plugin unloads", async (t) => {
@@ -219,20 +253,22 @@ test("one question about held deletions is on screen at a time, and it goes when
   const main = box.require(join(box.home, "build", "main.js"));
   const { raised } = box.require("obsidian");
   const plugin = { state: { data: {} }, log: () => undefined, act: () => undefined };
+  plugin.notices = main.noticeChannel(plugin);
   const host = new main.ObsidianHost(plugin, null);
-  const held = [{ kind: "delete_everywhere" }, { kind: "restore_here" }];
+  const { HELD } = box.require(join(box.home, "build", "notices.js"));
+  const ask = (text) => ({ kind: "question", key: HELD, text, actions: [{ kind: "delete_everywhere" }, { kind: "restore_here" }] });
   const from = raised.length;
-  host.notify("obsync: you deleted 119 notes. Delete them on your other devices too?", held);
-  host.notify("obsync is still holding back 119 deletions from your other devices. Delete them there too?", held);
-  host.notify("obsync put 2 note(s) back on this device, and deleted nothing anywhere.");
-  host.notify("obsync is still holding back 227 deletions from your other devices. Delete them there too?", held);
+  host.notify(ask("you deleted 119 notes. Delete them on your other devices too?"));
+  host.notify(ask("119 deletions are still held back from your other devices. Delete them there too?"));
+  host.notify({ kind: "confirm", text: "put 2 notes back on this device and deleted nothing." });
+  host.notify(ask("227 deletions are still held back from your other devices. Delete them there too?"));
   const shown = () => raised.slice(from).map((notice) => !notice.hidden);
   assert.deepEqual(shown(), [false, false, true, true], "only the newest question, and the statement, are on screen");
   host.closeQuestion();
   assert.deepEqual(shown(), [false, false, true, false], "nothing held, no question");
   // An offer to fetch a file asks something else, and a held-deletions question never takes it away.
-  host.notify("obsync: a file is waiting on the server.", [{ kind: "fetch", fileId: "ab".repeat(16) }]);
-  host.notify("obsync is still holding back 1 deletions from your other devices. Delete them there too?", held);
+  host.notify({ kind: "info", text: "a file is waiting on the server.", actions: [{ kind: "fetch", fileId: "ab".repeat(16) }] });
+  host.notify(ask("1 deletion is still held back from your other devices. Delete it there too?"));
   assert.deepEqual(shown().slice(-2), [true, true]);
   // A plugin that unloads takes its question with it; the next load asks afresh.
   const loaded = new main.default();

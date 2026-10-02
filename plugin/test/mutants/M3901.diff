@@ -1,0 +1,12 @@
+# M3901: the feed's refusal is reported as a write's, so the read that answers next cannot clear it (#292)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3056,7 +3056,7 @@
+         // no longer than that (`resting`).
+         this.absent = refused.kind === "offline";
+         if (this.absent) this.status(this.resting());
+-        else if (!disk) this.report(refused, true);
++        else if (!disk) this.report(refused);
+         await new Promise<void>((resolve) => {
+           this.feedPause = resolve;
+           this.timers.set(resolve, FEED_ERROR_BACKOFF_MS);

@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { sandbox, memorySecrets, statusItem } from "./fake.mjs";
+import { channel, sandbox, memorySecrets, statusItem } from "./fake.mjs";
 
 class Element {
   constructor() { this.text = []; this.settings = []; }
@@ -42,7 +42,7 @@ function ui(t) {
 const button = (modal, text) => modal.contentEl.settings.flatMap((s) => s.buttons ?? []).find((b) => b.text === text);
 
 test("native history modal renders retained/deleted content, respects busy controls, and reports local creation only", async (t) => {
-  const { obsidian, HistoryModal } = ui(t);
+  const { box, obsidian, HistoryModal } = ui(t);
   const rows = [
     { path: "Notes/<local text>.md", ts: 1000, size: 0, deleted: false },
     { path: "Notes/deleted.md", ts: 1000, size: 0, deleted: true },
@@ -53,6 +53,7 @@ test("native history modal renders retained/deleted content, respects busy contr
   const browser = { done: false, newestFirst: true, next: async () => { loadCalls++; return pending; } };
   const plugin = { openHistory: () => browser, closeHistory: () => { closed++; },
     restoreHistory: async (_browser, entry) => { restored = entry; return { path: "Notes/copy.md", syncRequested: false }; } };
+  plugin.notices = channel(box, plugin);
   const modal = new HistoryModal({}, plugin);
   modal.contentEl = new Element();
   modal.onOpen();
@@ -80,7 +81,7 @@ test("native history modal renders retained/deleted content, respects busy contr
   assert.equal(modal.contentEl.settings.find((s) => s.name === "Oldest first").toggle.value, false);
   await modal.restore(rows[0]);
   assert.equal(restored, rows[0]);
-  assert.ok(obsidian.notices.some((text) => /Copy saved locally.*Sync is pending/.test(text)));
+  assert.ok(obsidian.notices.includes('obsync: restored a copy as "copy". It syncs once obsync runs again: choose Sync now then.'), obsidian.notices.join(" | "));
   assert.equal(obsidian.notices.some((text) => /successfully synced|remote sync complete/i.test(text)), false);
   assert.equal(closed, 1);
   assert.deepEqual(modal.contentEl.text, []);

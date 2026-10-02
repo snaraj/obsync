@@ -1,11 +1,11 @@
 # M3109: the one notice at start is dropped
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2499,7 +2499,7 @@
+@@ -3441,7 +3441,7 @@
      if (state.keysLost) {
        const { dataRevision, secretRevision } = state.keysLost;
        this.log(`state decision=recovered reason=credential_behind data_revision=${dataRevision} secret_revision=${secretRevision}`);
--      new Notice(`obsync: ${KEYS_LOST} Pair this device is in obsync's settings, under This device.`, 15000);
+-      this.notices.show({ kind: "error", text: `${KEYS_LOST} Pair this device is in obsync's settings, under This device.` });
 +      void KEYS_LOST;
      }
      // ONE reminder, at the start after a confirmation was skipped, and never

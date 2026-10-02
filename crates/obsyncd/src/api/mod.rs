@@ -252,6 +252,13 @@ impl From<StoreError> for ApiError {
                 code,
                 "the only active device cannot be revoked; pair another first",
             ),
+            // Read by a person on an older plugin too, which prints it after
+            // "The server refused to revoke this device:".
+            StoreError::RecoveryTooNew => ApiError::new(
+                409,
+                code,
+                "this account's recovery key was set less than 7 days ago, and until it is 7 days old the only active device stays; pair another device first",
+            ),
             StoreError::DeviceRevoked => ApiError::new(403, code, "device is revoked"),
             StoreError::DevicePending => {
                 ApiError::new(403, code, "device is waiting for pairing approval")
@@ -260,6 +267,11 @@ impl From<StoreError> for ApiError {
                 409,
                 code,
                 "only a device waiting for pairing approval is deleted; revoke a paired one",
+            ),
+            StoreError::DeviceNotRevoked => ApiError::new(
+                409,
+                code,
+                "only a revoked device is archived; revoke it first",
             ),
             // The heads are already in the client's hands: every response
             // that named this file carried them, so the way out is a merge
@@ -279,6 +291,11 @@ impl From<StoreError> for ApiError {
             StoreError::UnknownVersion => ApiError::new(404, code, "no such version"),
             StoreError::NotSetUp => ApiError::new(409, code, "no account exists yet"),
             StoreError::AlreadySetUp => ApiError::new(409, code, "the account already exists"),
+            // The same decision `code` took, so the status and the code agree:
+            // a disk with no room is full, whatever the watermark believed.
+            ref full if full.out_of_space() => {
+                ApiError::new(507, code, "the volume is out of space")
+            }
             StoreError::Io(_) => ApiError::new(500, code, "the volume refused"),
             // Start-time only: a refused posture never opens a listener.
             StoreError::Locked => {
@@ -673,6 +690,16 @@ impl App {
                 io: None,
             });
         }
+        // The nonce log beside it, for the same reason: faulted, it refuses
+        // every signed request until a restart, reads included, while the
+        // volume under it still takes the probe write (#294).
+        if let Some(kind) = self.nonces.faulted() {
+            self.not_ready("journal", &std::io::Error::from(kind));
+            return Err(NotReady {
+                reason: "nonce log faulted; restart to recover",
+                io: None,
+            });
+        }
         // Second, and the reason this probe does more than look: a journal
         // whose usage could not be surveyed refuses every write, and until
         // the survey is retried nothing can tell whether it still would. The
@@ -841,12 +868,14 @@ impl App {
             Route::PairingCreate => pairing::create(self, req, client),
             Route::PairingClaim(id) => pairing::claim(self, req, client, &id),
             Route::PairingState(id) => pairing::state(self, req, client, &id),
+            Route::PairingReveal(id) => pairing::reveal(self, req, client, &id),
             Route::PairingApprove(id) => pairing::approve(self, req, client, &id),
             Route::PairingReject(id) => pairing::reject(self, req, client, &id),
             Route::PairingEnvelope(id) => pairing::envelope(self, req, client, &id),
             Route::Devices => devices::list(self, req, client),
             Route::DevicePatch(id) => devices::patch(self, req, client, &id),
             Route::DeviceRevoke(id) => devices::revoke(self, req, client, &id),
+            Route::DeviceArchive(id) => devices::archive(self, req, client, &id),
             Route::Heartbeat => devices::heartbeat(self, req, client),
             Route::ChunksExists => chunks::exists(self, req, client),
             Route::ChunksGet => chunks::batch_get(self, req, client),
@@ -866,6 +895,7 @@ impl App {
             Route::AdminOverview => admin::overview(self, req),
             Route::AdminDevices => admin::devices(self, req),
             Route::AdminRevoke(id) => admin::revoke(self, req, &id),
+            Route::AdminArchive(id) => admin::archive(self, req, &id),
             Route::AdminStorage => admin::storage(self, req),
             Route::AdminGcRun => admin::gc_run(self, req),
             Route::AdminScrubRun => admin::scrub_run(self, req),
@@ -1050,12 +1080,14 @@ fn demands_credential(route: &Route) -> bool {
         | Route::RecoveryRegister
         | Route::PairingCreate
         | Route::PairingState(_)
+        | Route::PairingReveal(_)
         | Route::PairingApprove(_)
         | Route::PairingReject(_)
         | Route::PairingEnvelope(_)
         | Route::Devices
         | Route::DevicePatch(_)
         | Route::DeviceRevoke(_)
+        | Route::DeviceArchive(_)
         | Route::Heartbeat
         | Route::ChunksExists
         | Route::ChunksGet
@@ -1072,6 +1104,7 @@ fn demands_credential(route: &Route) -> bool {
         | Route::AdminOverview
         | Route::AdminDevices
         | Route::AdminRevoke(_)
+        | Route::AdminArchive(_)
         | Route::AdminStorage
         | Route::AdminGcRun
         | Route::AdminScrubRun
@@ -1160,6 +1193,8 @@ pub enum Route {
     PairingClaim(String),
     /// `GET /v1/pairing/{id}`
     PairingState(String),
+    /// `POST /v1/pairing/{id}/reveal`
+    PairingReveal(String),
     /// `POST /v1/pairing/{id}/approve`
     PairingApprove(String),
     /// `POST /v1/pairing/{id}/reject`
@@ -1172,6 +1207,8 @@ pub enum Route {
     DevicePatch(String),
     /// `POST /v1/devices/{id}/revoke`
     DeviceRevoke(String),
+    /// `POST /v1/devices/{id}/archive`
+    DeviceArchive(String),
     /// `POST /v1/devices/heartbeat`
     Heartbeat,
     /// `POST /v1/chunks/exists`
@@ -1206,6 +1243,8 @@ pub enum Route {
     AdminDevices,
     /// `POST /v1/admin/devices/{id}/revoke`
     AdminRevoke(String),
+    /// `POST /v1/admin/devices/{id}/archive`
+    AdminArchive(String),
     /// `GET /v1/admin/storage`
     AdminStorage,
     /// `POST /v1/admin/gc/run`
@@ -1242,6 +1281,10 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
         ("GET", ["v1", "pairing", id]) => {
             (Route::PairingState((*id).to_string()), "/v1/pairing/{id}")
         }
+        ("POST", ["v1", "pairing", id, "reveal"]) => (
+            Route::PairingReveal((*id).to_string()),
+            "/v1/pairing/{id}/reveal",
+        ),
         ("POST", ["v1", "pairing", id, "approve"]) => (
             Route::PairingApprove((*id).to_string()),
             "/v1/pairing/{id}/approve",
@@ -1263,6 +1306,10 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
         ("POST", ["v1", "devices", id, "revoke"]) => (
             Route::DeviceRevoke((*id).to_string()),
             "/v1/devices/{id}/revoke",
+        ),
+        ("POST", ["v1", "devices", id, "archive"]) => (
+            Route::DeviceArchive((*id).to_string()),
+            "/v1/devices/{id}/archive",
         ),
 
         ("POST", ["v1", "chunks", "exists"]) => (Route::ChunksExists, "/v1/chunks/exists"),
@@ -1294,6 +1341,10 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
         ("POST", ["v1", "admin", "devices", id, "revoke"]) => (
             Route::AdminRevoke((*id).to_string()),
             "/v1/admin/devices/{id}/revoke",
+        ),
+        ("POST", ["v1", "admin", "devices", id, "archive"]) => (
+            Route::AdminArchive((*id).to_string()),
+            "/v1/admin/devices/{id}/archive",
         ),
         ("GET", ["v1", "admin", "storage"]) => (Route::AdminStorage, "/v1/admin/storage"),
         ("POST", ["v1", "admin", "gc", "run"]) => (Route::AdminGcRun, "/v1/admin/gc/run"),

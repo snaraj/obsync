@@ -1,0 +1,12 @@
+# M3512: the match code leaves out the creator's key
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -402,7 +402,7 @@
+   claimantKey: string,
+   creatorKey: string,
+ ): Promise<string> {
+-  const info = concat(utf8(pairingId), checkedPublicKey(claimantKey), checkedPublicKey(creatorKey));
++  const info = concat(utf8(pairingId), checkedPublicKey(claimantKey));
+   return sixDigits(await hkdf(secret, utf8(MATCH_LABEL_V2), info, 4));
+ }
+ 

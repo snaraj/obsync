@@ -1,0 +1,12 @@
+# M3768: a merge whose parent advanced midway starts over uncounted as such, and is counted twice (#278)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3008,7 +3008,7 @@
+         if (context.state.fileByPath(localPath)?.versionId !== localVersionId) {
+           await writer.abort();
+           context.host.log(`pull decision=retry reason=merge_parent_advanced file=${change.file_id} seq=${change.seq}`);
+-          return await startOver(context, change, theirManifest);
++          return await applyVersion(context, change, theirManifest);
+         }
+         // Reserve before the merged bytes reach the editor. Its watcher can
+         // enqueue a push during commit, and that push must inherit this merge's

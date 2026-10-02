@@ -1,0 +1,12 @@
+# M3606: Show sync status does not carry the warning
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -1197,7 +1197,7 @@
+   private render(): void {
+     this.contentEl.empty();
+     // Above everything, until a registration of this device's own succeeds (1.1.5).
+-    if (this.plugin.recoveryMismatch) {
++    if (false) {
+       new Setting(this.contentEl)
+         .setName("Security warning")
+         .setDesc(RECOVERY_MISMATCH)

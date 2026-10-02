@@ -1,0 +1,12 @@
+# M3535: the case index is not updated on a delete (P10)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -700,8 +700,6 @@
+     paths.delete(path);
+     if (paths.size === 0) indexes.ids.delete(record.fileId);
+     indexes.names.delete(path);
+-    spellings.delete(path);
+-    if (spellings.size === 0) indexes.folded.delete(fold);
+   }
+   indexes.bytes += sign * record.size;
+ }

@@ -1,0 +1,11 @@
+# M3369: a later version of a note does not settle what the replay noted of it (#239)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3472,7 +3472,6 @@
+     const replay = state.data.replaying;
+     if (replay !== null) {
+       if (result === "echo" && change.sids.length > 0 && change.seq <= replay.through) replay.notes[change.file_id] = change.version_id;
+-      else delete replay.notes[change.file_id];
+     }
+     state.data.feedMark = { seq: change.seq, fileId: change.file_id, versionId: change.version_id, ts: change.ts, replay: false };
+   }

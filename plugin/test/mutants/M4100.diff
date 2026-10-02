@@ -1,0 +1,11 @@
+# M4100: a claim an older obsync held is finished, never dropped
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4676,7 +4676,6 @@
+     const state = this.state;
+     if (state.heldClaim() === null) return;
+     this.log("pairing role=claimant decision=dropped reason=held_before_update");
+-    state.holdClaim(null);
+     if (!state.paired) {
+       this.notices.show({ kind: "error", text: "pairing this device stopped when obsync updated, and nothing was shared. Make a new code on your other device with Pair a new device, and pair again." });
+     }

@@ -430,30 +430,35 @@ fn the_watermark_and_the_quota_refuse_with_their_numbers() {
     assert!(captured.contains("duration_ms="), "{captured}");
 }
 
+/// The account record carries the quota; set it through the journal the same
+/// way setup does.
+fn set_quota(setup: &Setup, bytes: u64) {
+    let mut journal = setup.store.journal();
+    let index = setup.store.index();
+    let account = index.account.clone().expect("account");
+    setup
+        .store
+        .commit(&mut journal, index, |_| {
+            vec![Frame::Account {
+                account_id: account.account_id,
+                name: account.name.clone(),
+                created: account.created,
+                quota_bytes: Some(bytes),
+                recovery_verifier: account.recovery_verifier.clone(),
+                recovery_registered: account.recovery_registered,
+                recovery_cleared: account.recovery_cleared,
+            }]
+        })
+        .expect("quota is journalled");
+}
+
 #[test]
 fn a_quota_refuses_before_the_body_is_stored() {
     let dir = TempDir::new("store-quota");
     let cfg = config(&dir);
     let setup = ready(&cfg);
-    // The account record carries the quota; set it through the journal the
-    // same way setup does, then check the refusal names both numbers.
-    {
-        let mut journal = setup.store.journal();
-        let index = setup.store.index();
-        let account = index.account.clone().expect("account");
-        setup
-            .store
-            .commit(&mut journal, index, |_| {
-                vec![Frame::Account {
-                    account_id: account.account_id,
-                    name: account.name.clone(),
-                    created: account.created,
-                    quota_bytes: Some(8),
-                    recovery_verifier: account.recovery_verifier.clone(),
-                }]
-            })
-            .expect("quota is journalled");
-    }
+    // Then check the refusal names both numbers.
+    set_quota(&setup, 8);
     let body = vec![b'x'; 16];
     let sid = Sid::new(sha256(&body));
     let err = setup
@@ -468,6 +473,172 @@ fn a_quota_refuses_before_the_body_is_stored() {
         other => panic!("expected quota_exceeded, got {other}"),
     }
     assert!(!setup.store.chunk_exists(&sid));
+}
+
+/// A body that stops at its first read until the test lets it go: a put held
+/// after the check that admitted it, before its bytes are counted. It says
+/// when it is held on `held`, and goes on when `go` is sent or dropped, so a
+/// test that fails while it is held ends rather than waits.
+struct Held {
+    body: Vec<u8>,
+    at: usize,
+    held: std::sync::mpsc::Sender<()>,
+    go: Option<std::sync::mpsc::Receiver<()>>,
+}
+
+impl Read for Held {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(go) = self.go.take() {
+            let _ = self.held.send(());
+            let _ = go.recv();
+        }
+        let n = buf.len().min(self.body.len() - self.at);
+        buf[..n].copy_from_slice(&self.body[self.at..self.at + n]);
+        self.at += n;
+        Ok(n)
+    }
+}
+
+/// Two chunk bodies of `len` bytes whose sids fall in different lock stripes,
+/// so neither put waits on the other's chunk lock.
+fn two_chunks(len: usize) -> ((Vec<u8>, Sid), (Vec<u8>, Sid)) {
+    let (a, b) = (vec![b'a'; len], vec![b'b'; len]);
+    let (sid_a, sid_b) = (Sid::new(sha256(&a)), Sid::new(sha256(&b)));
+    assert_ne!(sid_a.as_bytes()[0], sid_b.as_bytes()[0], "two stripes");
+    ((a, sid_a), (b, sid_b))
+}
+
+#[test]
+fn puts_that_arrive_together_are_measured_against_each_other_and_exactly_one_is_refused() {
+    // Issue #301. The chunk lock serialises one sid, not the volume: two puts
+    // of different chunks each passed a check against the same `used_bytes`,
+    // and both landed. Each alone fits, both do not; the first is held after
+    // its check, and the second must be measured against the first's bytes.
+    // Once by the watermark (64 KiB declared, 32 KiB reserve, 32 KiB of room),
+    // once by a quota the watermark is nowhere near.
+    const LEN: usize = 20 * 1024;
+    let len = LEN as u64;
+    for by_quota in [false, true] {
+        let dir = TempDir::new("store-reserve");
+        let mut cfg = config(&dir);
+        if by_quota {
+            cfg.blobs_capacity = 1 << 30;
+        }
+        let setup = ready(&cfg);
+        if by_quota {
+            set_quota(&setup, 30 * 1024);
+        }
+        let ((a, sid_a), (b, sid_b)) = two_chunks(LEN);
+        thread::scope(|s| {
+            // Made here, so a failing assertion below drops `go` as it
+            // unwinds and the held put ends before the scope joins it.
+            let (held_tx, held) = std::sync::mpsc::channel();
+            let (go, go_rx) = std::sync::mpsc::channel::<()>();
+            let first = s.spawn(|| {
+                let mut body = Held {
+                    body: a,
+                    at: 0,
+                    held: held_tx,
+                    go: Some(go_rx),
+                };
+                setup
+                    .store
+                    .put_chunk(&setup.account, &sid_a, len, &mut body)
+            });
+            held.recv()
+                .expect("the first put passed its check and is writing");
+            let refused = setup
+                .store
+                .put_chunk(&setup.account, &sid_b, len, &mut &b[..])
+                .expect_err("measured against the bytes the first holds");
+            match (by_quota, refused) {
+                (false, StoreError::VolumeFull { free, watermark }) => {
+                    assert_eq!(
+                        free,
+                        CAPACITY - len,
+                        "free counts the first put's reservation"
+                    );
+                    assert_eq!(watermark, WATERMARK);
+                }
+                (true, StoreError::QuotaExceeded { used, quota }) => {
+                    assert_eq!(used, 2 * len, "used counts the first put's reservation");
+                    assert_eq!(quota, 30 * 1024);
+                }
+                (_, other) => {
+                    panic!("by_quota={by_quota}: expected the reserve's refusal, got {other}")
+                }
+            }
+            go.send(()).expect("the first put is waiting");
+            let landed = first.join().expect("the first put does not panic");
+            assert_eq!(landed.expect("the first put lands"), PutOutcome::Created);
+        });
+        assert!(setup.store.chunk_exists(&sid_a), "by_quota={by_quota}");
+        assert!(!setup.store.chunk_exists(&sid_b), "by_quota={by_quota}");
+        let index = setup.store.index();
+        assert_eq!(index.used_bytes, len, "by_quota={by_quota}: counted once");
+        assert_eq!(
+            index.reserved_bytes, 0,
+            "by_quota={by_quota}: and no longer held"
+        );
+    }
+}
+
+#[test]
+fn a_reservation_is_given_back_when_its_write_fails_and_when_it_panics() {
+    // Issue #301. 32 KiB of room above the reserve holds ONE 20 KiB chunk, so
+    // a reservation any of these failures leaked would refuse the good put
+    // that follows them.
+    const LEN: usize = 20 * 1024;
+    let len = LEN as u64;
+    let dir = TempDir::new("store-reserve-release");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let ((doomed, sid_doomed), (good, sid_good)) = two_chunks(LEN);
+    let held = || setup.store.index().reserved_bytes;
+
+    // A body shorter than it was declared.
+    let err = setup
+        .store
+        .put_chunk(&setup.account, &sid_doomed, len, &mut &doomed[..LEN / 2])
+        .expect_err("a short body is refused");
+    assert!(matches!(err, StoreError::LengthMismatch { .. }), "{err}");
+    assert_eq!(held(), 0, "a body that did not verify gives its bytes back");
+
+    // A volume that refuses the fsync.
+    setup.store.set_fault(Fault::BlobErrno {
+        phase: BlobPhase::Sync,
+        code: 5,
+    });
+    let err = setup
+        .store
+        .put_chunk(&setup.account, &sid_doomed, len, &mut &doomed[..])
+        .expect_err("the volume refused");
+    setup.store.set_fault(Fault::None);
+    assert!(matches!(err, StoreError::Io(_)), "{err}");
+    assert_eq!(held(), 0, "a failed write gives its bytes back");
+
+    // A panic part way through the body.
+    struct Panics;
+    impl Read for Panics {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            panic!("injected panic part way through a chunk body");
+        }
+    }
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        setup
+            .store
+            .put_chunk(&setup.account, &sid_doomed, len, &mut Panics)
+    }));
+    assert!(unwound.is_err(), "the put unwound");
+    assert_eq!(held(), 0, "a put that panicked gives its bytes back");
+
+    // And the one chunk there is room for is taken.
+    let landed = setup
+        .store
+        .put_chunk(&setup.account, &sid_good, len, &mut &good[..])
+        .expect("nothing leaked the room it needs");
+    assert_eq!(landed, PutOutcome::Created);
+    assert_eq!(held(), 0);
 }
 
 #[test]
@@ -541,7 +712,7 @@ fn a_version_needs_its_chunks_its_id_and_a_live_device() {
     spare_device(&setup.store, setup.account);
     setup
         .store
-        .revoke_device_unless_last(&setup.device)
+        .revoke_device_unless_last(&setup.device, UnixMs::now())
         .expect("revoke");
     let err = setup
         .store
@@ -1069,7 +1240,9 @@ fn a_pending_device_activates_once_and_never_after_revocation() {
         .expect("approving twice is a no-op");
 
     spare_device(&store, account);
-    store.revoke_device_unless_last(&id).expect("revoke");
+    store
+        .revoke_device_unless_last(&id, UnixMs::now())
+        .expect("revoke");
     let err = store
         .activate_device(&id)
         .expect_err("a revoked device never comes back");
@@ -1157,7 +1330,9 @@ fn device_secrets_rest_wrapped_and_revocation_destroys_them() {
     );
 
     spare_device(&store, account);
-    store.revoke_device_unless_last(&id).expect("revoke");
+    store
+        .revoke_device_unless_last(&id, UnixMs::now())
+        .expect("revoke");
     assert_eq!(
         store.device_secret(&id),
         None,
@@ -1363,6 +1538,9 @@ fn a_full_blob_volume_refuses_per_phase_and_leaves_that_phase_s_residue() {
             StoreError::Io(ref e) => assert_eq!(e.kind(), kind, "{phase:?}: {err}"),
             other => panic!("{phase:?}: expected the volume's own error, got {other}"),
         }
+        // A disk with no room is full, not faulty: the code a device reads
+        // as "out of storage" (issue #291).
+        assert_eq!(err.code(), "storage_full", "{phase:?}");
         assert!(
             !store.chunk_exists(&sid),
             "{phase:?}: nothing was acknowledged"
@@ -1372,7 +1550,7 @@ fn a_full_blob_volume_refuses_per_phase_and_leaves_that_phase_s_residue() {
         // (AGENTS.md requirements 6 and 12).
         let captured = log.captured();
         assert!(
-            captured.contains("decision=io_error"),
+            captured.contains("decision=storage_full"),
             "{phase:?}: {captured}"
         );
         assert!(
@@ -1412,6 +1590,119 @@ fn a_full_blob_volume_refuses_per_phase_and_leaves_that_phase_s_residue() {
             "{phase:?}: the chunk never appears"
         );
     }
+}
+
+/// A body whose sid starts with `prefix` (hex), and is not `other`.
+fn body_under(prefix: &str, other: &[u8]) -> Vec<u8> {
+    (0u64..)
+        .map(|n| format!("ciphertext-sentinel-{n}").into_bytes())
+        .find(|b| b != other && Sid::new(sha256(b)).to_string().starts_with(prefix))
+        .expect("a body under the prefix")
+}
+
+#[test]
+fn a_new_fan_out_directory_is_durable_in_its_parent_before_its_chunk_is_acknowledged() {
+    // #273. The rename's own directory fsync makes the chunk's name durable
+    // in `v1/<ab>/<cd>`; when the rename needed that directory first, its
+    // name lives in `v1/<ab>`, and a power cut could take it, and the
+    // acknowledged chunk with it, unless that parent is fsynced too.
+    const EIO: i32 = 5;
+    let dir = TempDir::new("store-fanout");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let (store, account) = (&setup.store, &setup.account);
+    let body = b"ciphertext-sentinel".to_vec();
+    let sid = Sid::new(sha256(&body));
+    let name = sid.to_string();
+    let leaf = cfg.blobs_dir.join("v1").join(&name[0..2]).join(&name[2..4]);
+    let post = |body: &[u8]| {
+        let sid = Sid::new(sha256(body));
+        store.put_chunk(account, &sid, body.len() as u64, &mut &body[..])
+    };
+    let refuse = || {
+        store.set_fault(Fault::BlobErrno {
+            phase: BlobPhase::DirParentSync,
+            code: EIO,
+        });
+    };
+    // Its first level already exists and is durable: a sibling leaf made it.
+    let sibling = (0u64..)
+        .map(|n| format!("ciphertext-sibling-{n}").into_bytes())
+        .find(|b| {
+            let s = Sid::new(sha256(b)).to_string();
+            s.starts_with(&name[0..2]) && !s.starts_with(&name[0..4])
+        })
+        .expect("a sibling");
+    post(&sibling).expect("the sibling lands");
+
+    // The new leaf's name cannot be made durable: nothing is acknowledged,
+    // though the leaf now exists.
+    refuse();
+    match post(&body).expect_err("refused before the rename") {
+        StoreError::Io(e) => assert_eq!(e.raw_os_error(), Some(EIO)),
+        other => panic!("expected the volume's error, got {other}"),
+    }
+    assert!(leaf.is_dir(), "the leaf was created");
+    assert!(!store.chunk_exists(&sid));
+    // Existing is not durable: the next upload into that leaf fsyncs its
+    // parent again, and is refused again.
+    post(&body).expect_err("the leaf's name is still not durable");
+    assert!(!store.chunk_exists(&sid));
+    // Once the volume takes the fsync, the chunk lands.
+    store.set_fault(Fault::None);
+    post(&body).expect("lands once its path is durable");
+    assert!(store.chunk_exists(&sid));
+    // A leaf already durable costs no further fsync: with the fault armed,
+    // a second chunk in it lands.
+    refuse();
+    post(&body_under(&name[0..4], &body)).expect("no parent fsync for a durable leaf");
+    // A new first level needs one, in `v1/`.
+    let elsewhere = (0u64..)
+        .map(|n| format!("ciphertext-elsewhere-{n}").into_bytes())
+        .find(|b| {
+            let first = &Sid::new(sha256(b)).to_string()[0..2];
+            !cfg.blobs_dir.join("v1").join(first).exists()
+        })
+        .expect("an unused first level");
+    post(&elsewhere).expect_err("a new first level's name is fsynced in v1/");
+}
+
+#[test]
+fn a_start_after_a_cut_upload_makes_every_fan_out_name_durable() {
+    // A cut between creating a fan-out directory and the fsync of its
+    // parent leaves the directory on the next start's disk, not necessarily
+    // on the platter, and always leaves the upload's temp file. That temp
+    // is the trace: the start that removes one fsyncs `v1/` and every
+    // first-level directory once. A clean start fsyncs none.
+    let dir = TempDir::new("store-fanout-start");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    for n in 0..3u8 {
+        put(&setup, &[b's', b'e', b'n', n]);
+    }
+    let first_levels = fs::read_dir(cfg.blobs_dir.join("v1"))
+        .expect("v1")
+        .filter(|e| e.as_ref().is_ok_and(|e| e.file_name() != "tmp"))
+        .count() as u64;
+    drop(setup);
+
+    let clean = Log::buffered(LogLevel::Debug);
+    drop(open_with(&cfg, [7u8; 32], clean.clone()));
+    assert!(
+        clean.captured().contains("fanout_synced=0"),
+        "{}",
+        clean.captured()
+    );
+
+    fs::write(cfg.blobs_dir.join("v1/tmp/cut-upload"), b"partial").expect("a leftover");
+    let cut = Log::buffered(LogLevel::Debug);
+    drop(open_with(&cfg, [7u8; 32], cut.clone()));
+    let captured = cut.captured();
+    assert!(captured.contains("tmp_removed=1"), "{captured}");
+    assert!(
+        captured.contains(&format!("fanout_synced={}", first_levels + 1)),
+        "v1/ and each of its {first_levels} first levels: {captured}"
+    );
 }
 
 #[test]
@@ -2749,10 +3040,10 @@ fn revoking_a_device_that_is_not_active_is_never_the_last_one() {
         .device_id;
 
     store
-        .revoke_device_unless_last(&pending)
+        .revoke_device_unless_last(&pending, UnixMs::now())
         .expect("a device that cannot sync is not the last one that can");
     let err = store
-        .revoke_device_unless_last(&active)
+        .revoke_device_unless_last(&active, UnixMs::now())
         .expect_err("and the one that can is still refused");
     assert!(matches!(err, StoreError::LastActiveDevice), "{err}");
 }
@@ -2774,7 +3065,7 @@ fn only_a_pending_device_is_deleted() {
     let active = spare_device(&store, account);
     let revoked = spare_device(&store, account);
     store
-        .revoke_device_unless_last(&revoked)
+        .revoke_device_unless_last(&revoked, UnixMs::now())
         .expect("two active devices, so one may go");
 
     for (id, state) in [(active, "active"), (revoked, "revoked")] {
@@ -2806,6 +3097,94 @@ fn only_a_pending_device_is_deleted() {
         .device_id;
     store.delete_device(&pending).expect("a claim is deletable");
     assert!(store.device(&pending).is_none());
+}
+
+/// Archiving is for a device that can no longer sync (issue #247): an active
+/// or pending one is refused without a frame, and an archived one keeps
+/// everything but its place in the routine lists -- its record, its state,
+/// its name -- from the frames alone after a restart and through a snapshot.
+#[test]
+fn only_a_revoked_device_is_archived_and_the_record_survives() {
+    let dir = TempDir::new("store-archive");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let store = &setup.store;
+    let revoked = spare_device(store, setup.account);
+    store
+        .revoke_device_unless_last(&revoked, UnixMs::now())
+        .expect("two active devices, so one may go");
+    let pending = store
+        .create_device(NewDevice {
+            account_id: setup.account,
+            name: "half-paired phone".to_string(),
+            platform: "ios".to_string(),
+            app_version: "0.1.0".to_string(),
+            secret: [6u8; 32],
+            state: DeviceState::Pending,
+        })
+        .expect("the claimant")
+        .device_id;
+
+    for (id, state) in [(setup.device, "active"), (pending, "pending")] {
+        let seq = store.head_seq();
+        let refused = store
+            .archive_device(&id)
+            .expect_err("only a revoked device is archived");
+        assert!(
+            matches!(refused, StoreError::DeviceNotRevoked),
+            "{state}: {refused}"
+        );
+        assert!(
+            !store.device(&id).expect("still listed").archived,
+            "{state}: the refusal archived nothing"
+        );
+        assert_eq!(store.head_seq(), seq, "{state}: a refusal appends no frame");
+    }
+    assert!(matches!(
+        store.archive_device(&DeviceId::new([0xeeu8; 16])),
+        Err(StoreError::UnknownDevice)
+    ));
+
+    store
+        .archive_device(&revoked)
+        .expect("a revoked device is archived");
+    let after = store.device(&revoked).expect("the record stays");
+    assert!(after.archived);
+    assert!(after.revoked(), "and it is still revoked");
+    assert_eq!(
+        after.name, "spare device",
+        "so its versions still have an author"
+    );
+    assert!(
+        store.device_secret(&revoked).is_none(),
+        "revocation destroyed it, and archiving gives nothing back"
+    );
+    store
+        .archive_device(&revoked)
+        .expect("archiving twice is the same state");
+    let kept = fingerprint_devices(store);
+    assert_eq!(kept.len(), 3, "every device is still there: {kept:?}");
+    drop(setup);
+
+    // From the frames alone: the flag was on the journal before the call
+    // returned, so a restart finds it.
+    let replayed = open(&cfg);
+    assert_eq!(fingerprint_devices(&replayed), kept, "replay");
+    // And through a snapshot, which carries the flag per device.
+    replayed.snapshot().expect("snapshot");
+    drop(replayed);
+    let loaded = open(&cfg);
+    assert_eq!(fingerprint_devices(&loaded), kept, "snapshot");
+    assert!(loaded.device(&revoked).expect("listed").archived);
+}
+
+/// Every device's id, state, name and archived flag, in id order.
+fn fingerprint_devices(store: &Store) -> Vec<(DeviceId, DeviceState, String, bool)> {
+    store
+        .devices()
+        .into_iter()
+        .map(|d| (d.device_id, d.state, d.name, d.archived))
+        .collect()
 }
 
 /// Two devices revoking each other at the same instant cannot leave an
@@ -2840,11 +3219,11 @@ fn two_devices_revoking_each_other_at_once_cannot_empty_the_account() {
         let (ra, rb) = thread::scope(|scope| {
             let one = scope.spawn(|| {
                 gate.wait();
-                store.revoke_device_unless_last(&b)
+                store.revoke_device_unless_last(&b, UnixMs::now())
             });
             let two = scope.spawn(|| {
                 gate.wait();
-                store.revoke_device_unless_last(&a)
+                store.revoke_device_unless_last(&a, UnixMs::now())
             });
             (one.join().expect("one"), two.join().expect("two"))
         });
@@ -2981,33 +3360,143 @@ fn account_recovery_is_immutable_and_survives_journal_and_snapshot_replay() {
         let cfg = config(&dir);
         let setup = ready(&cfg);
         let verifier = "a5".repeat(32);
+        let registered = UnixMs(1_757_200_000_000);
         put(&setup, b"retained ciphertext");
         let before = setup.store.account().unwrap();
-        assert!(setup.store.register_recovery(&verifier).unwrap());
-        assert!(setup.store.register_recovery(&verifier).unwrap());
-        assert!(!setup.store.register_recovery(&"b6".repeat(32)).unwrap());
+        assert!(
+            setup
+                .store
+                .register_recovery(&verifier, registered)
+                .unwrap()
+        );
+        // Neither a repeat nor a refused replacement moves the time.
+        let later = UnixMs(registered.0 + RECOVERY_HOLD_MS);
+        assert!(setup.store.register_recovery(&verifier, later).unwrap());
+        assert!(
+            !setup
+                .store
+                .register_recovery(&"b6".repeat(32), later)
+                .unwrap()
+        );
         let after = setup.store.account().unwrap();
         assert_eq!(after.account_id, before.account_id);
         assert_eq!(after.created, before.created);
         assert_eq!(after.name, before.name);
         assert_eq!(after.used_bytes, before.used_bytes);
         assert_eq!(after.recovery_verifier, Some(verifier.clone()));
+        assert_eq!(after.recovery_registered, Some(registered));
+        let err = setup
+            .store
+            .revoke_device_unless_last(&setup.device, UnixMs(later.0 - 1))
+            .expect_err("a key one millisecond short of the hold keeps the last device");
+        assert!(matches!(err, StoreError::RecoveryTooNew), "{err}");
+        assert!(setup.store.device_secret(&setup.device).is_some());
         setup
             .store
-            .revoke_device_unless_last(&setup.device)
-            .expect("recovery permits the last device to leave");
+            .revoke_device_unless_last(&setup.device, later)
+            .expect("recovery permits the last device to leave once the hold has passed");
         assert!(setup.store.device_secret(&setup.device).is_none());
         if snapshot {
             setup.store.snapshot().unwrap();
         }
         drop(setup);
         let reopened = open(&cfg);
-        assert_eq!(
-            reopened.account().unwrap().recovery_verifier,
-            Some(verifier)
-        );
-        assert_eq!(reopened.account().unwrap().used_bytes, before.used_bytes);
+        let account = reopened.account().unwrap();
+        assert_eq!(account.recovery_verifier, Some(verifier));
+        assert_eq!(account.recovery_registered, Some(registered));
+        assert_eq!(account.used_bytes, before.used_bytes);
     }
+}
+
+/// A recovery key any device credential registered cannot, in its first
+/// week, end the account's last active device: the key's own devices meet it
+/// as `409 recovery_mismatch` and warn their person, and the hold is that
+/// warning's time. Every other revoke is what it was, a key registered before
+/// registration times were kept keeps the older rule, and the operator's
+/// reset puts the account back where it was before any key.
+#[test]
+fn a_young_recovery_key_holds_only_the_last_device_and_the_reset_restores_the_guard() {
+    let dir = TempDir::new("recovery-hold");
+    let cfg = config(&dir);
+    let log = Log::buffered(LogLevel::Debug);
+    let store = open_with(&cfg, [7u8; 32], log.clone());
+    let account = store.setup("sentinel").expect("setup runs once");
+    let first = spare_device(&store, account);
+    let second = spare_device(&store, account);
+    let registered = UnixMs(1_757_200_000_000);
+    assert!(
+        store
+            .register_recovery(&"b6".repeat(32), registered)
+            .unwrap()
+    );
+
+    store
+        .revoke_device_unless_last(&second, registered)
+        .expect("a device that is not the last goes at once, key or no key");
+    // A clock behind the registration reads as age zero: held, never freed.
+    for now in [UnixMs(registered.0 - 60_000), registered] {
+        let err = store
+            .revoke_device_unless_last(&first, now)
+            .expect_err("the last device stays while the key is young");
+        assert!(matches!(err, StoreError::RecoveryTooNew), "{err}");
+        assert_eq!(err.code(), "recovery_too_new");
+    }
+    let refusals: Vec<String> = log
+        .captured()
+        .lines()
+        .filter(|line| line.contains("event=device_revoke_refused "))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(refusals.len(), 2, "one line per refusal: {refusals:?}");
+    for field in [
+        "decision=refused",
+        "reason=recovery_too_new",
+        "recovery_age_ms=0",
+        "budget_ms=604800000",
+    ] {
+        assert!(refusals[1].contains(field), "{field}: {}", refusals[1]);
+    }
+    assert!(
+        !log.captured().contains(&"b6".repeat(16)),
+        "the key reached the log"
+    );
+
+    // The operator's reset: no key, so the last device is refused as it was
+    // before any key, and the next registration starts its own hold.
+    assert!(store.reset_recovery(registered).expect("reset"));
+    assert!(
+        !store
+            .reset_recovery(registered)
+            .expect("a second reset has no key to clear")
+    );
+    let far = UnixMs(registered.0 + 10 * RECOVERY_HOLD_MS);
+    let err = store
+        .revoke_device_unless_last(&first, far)
+        .expect_err("with no key the last device is refused");
+    assert!(matches!(err, StoreError::LastActiveDevice), "{err}");
+    assert!(store.register_recovery(&"a5".repeat(32), far).unwrap());
+    let err = store
+        .revoke_device_unless_last(&first, far)
+        .expect_err("the key registered after the reset is young");
+    assert!(matches!(err, StoreError::RecoveryTooNew), "{err}");
+
+    // A key from before 1.1.5, written with no time: today's rule.
+    {
+        let mut journal = store.journal();
+        let index = store.index();
+        let account = index.account.clone().expect("account");
+        store
+            .commit(&mut journal, index, |_| {
+                vec![account_frame(account, Some("c7".repeat(32)), None, None)]
+            })
+            .expect("a 1.1.4 registration");
+    }
+    drop(store);
+    let store = open(&cfg);
+    assert_eq!(store.account().unwrap().recovery_registered, None);
+    store
+        .revoke_device_unless_last(&first, registered)
+        .expect("a key with no registration time does not hold the last device");
 }
 
 #[test]
@@ -3017,12 +3506,67 @@ fn initial_account_recovery_is_one_durable_setup_fact() {
     let store = open(&cfg);
     let verifier = "ab".repeat(32);
     let account = store
-        .setup_with_recovery("recoverable", Some(verifier.clone()))
+        .setup_with_recovery("recoverable", Some(verifier.clone()), UnixMs(7))
         .unwrap();
     drop(store);
     let recovered = open(&cfg).account().unwrap();
     assert_eq!(recovered.account_id, account);
     assert_eq!(recovered.recovery_verifier, Some(verifier));
+    assert_eq!(recovered.recovery_registered, Some(UnixMs(7)));
+}
+
+/// The operator's reset arms one re-enrolment (`api::setup::create`), which
+/// the journal and a snapshot both keep, and the first registration of any key
+/// spends; an account never reset carries none.
+#[test]
+fn the_reset_arms_one_re_enrolment_that_replay_keeps_and_any_registration_spends() {
+    for snapshot in [false, true] {
+        let dir = TempDir::new("recovery-arm");
+        let cfg = config(&dir);
+        let store = open(&cfg);
+        store.setup_with_recovery("vault", None, UnixMs(1)).unwrap();
+        assert_eq!(
+            store.account().unwrap().recovery_cleared,
+            None,
+            "an account never reset is not armed"
+        );
+        let armed = UnixMs(1_757_200_000_000);
+        assert!(
+            !store.reset_recovery(armed).unwrap(),
+            "no key to clear, and armed all the same"
+        );
+        if snapshot {
+            store.snapshot().unwrap();
+        }
+        drop(store);
+        let store = open(&cfg);
+        assert_eq!(
+            store.account().unwrap().recovery_cleared,
+            Some(armed),
+            "replay keeps the arm (snapshot: {snapshot})"
+        );
+        let registered = UnixMs(armed.0 + 1);
+        assert!(
+            store
+                .register_recovery(&"a5".repeat(32), registered)
+                .unwrap()
+        );
+        let spent = store.account().unwrap();
+        assert_eq!(
+            spent.recovery_cleared, None,
+            "a registration spends the arm"
+        );
+        assert_eq!(spent.recovery_registered, Some(registered));
+        if snapshot {
+            store.snapshot().unwrap();
+        }
+        drop(store);
+        assert_eq!(
+            open(&cfg).account().unwrap().recovery_cleared,
+            None,
+            "and it stays spent (snapshot: {snapshot})"
+        );
+    }
 }
 
 // --- The durable fast path and the background I/O diet ----------------------
@@ -3035,6 +3579,57 @@ fn edit_event() -> SeenEvent {
         address: Some("192.0.2.7".to_string()),
         country: None,
     }
+}
+
+#[test]
+fn a_heartbeat_is_listed_apart_from_a_sign_in_it_shares_a_second_with() {
+    // Issue #290: seen events are stamped in whole seconds, so a new device's
+    // start heartbeat and its sign-in can share one. `last_seen` then equals
+    // `last_sign_in`, and only the heartbeat's own field says a sync started.
+    // It lives through a replay and a snapshot like the fields beside it.
+    let dir = TempDir::new("store-heartbeat");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let device = setup.device;
+    let at = UnixMs(1_757_200_000_000);
+    let seen = |store: &Store| {
+        let d = store.device(&device).expect("device");
+        (d.last_sign_in, d.last_seen, d.last_heartbeat)
+    };
+    let event = |kind| SeenEvent {
+        ts: at,
+        kind,
+        address: None,
+        country: None,
+    };
+    setup
+        .store
+        .record_seen(&device, event(SeenKind::SignIn))
+        .expect("sign-in");
+    assert_eq!(
+        seen(&setup.store),
+        (Some(at), Some(at), None),
+        "a sign-in is no heartbeat"
+    );
+    setup
+        .store
+        .record_seen(&device, event(SeenKind::Heartbeat))
+        .expect("heartbeat");
+    assert_eq!(seen(&setup.store), (Some(at), Some(at), Some(at)));
+    drop(setup);
+    let replayed = open(&cfg);
+    assert_eq!(
+        seen(&replayed),
+        (Some(at), Some(at), Some(at)),
+        "from frames"
+    );
+    replayed.snapshot().expect("snapshot");
+    drop(replayed);
+    assert_eq!(
+        seen(&open(&cfg)),
+        (Some(at), Some(at), Some(at)),
+        "from a snapshot"
+    );
 }
 
 /// Every record the journal holds, in the order it holds them.
@@ -3205,6 +3800,362 @@ fn concurrent_posts_are_journalled_applied_and_numbered_in_one_order() {
             .expect("an answered seq is in the feed");
         assert_eq!(applied, id);
     }
+}
+
+// --- Group commit: posts queued behind an fsync share the next one ---------
+
+/// Hold the journal's FIRST fsync until `queued` posts wait behind it, then
+/// let every fsync through. Returns the count of fsyncs begun, and how many
+/// of `watched` the index showed at the moment the SECOND fsync began.
+fn hold_first_fsync(
+    store: &Arc<Store>,
+    queued: usize,
+    watched: Vec<(FileId, VersionId)>,
+) -> (Arc<AtomicU64>, Arc<AtomicU64>) {
+    let weak = Arc::downgrade(store);
+    let syncs = Arc::new(AtomicU64::new(0));
+    let at_second = Arc::new(AtomicU64::new(u64::MAX));
+    let (begun, seen) = (Arc::clone(&syncs), Arc::clone(&at_second));
+    store.journal().set_mid_sync(Arc::new(move || {
+        let store = weak.upgrade().expect("store");
+        match begun.fetch_add(1, Ordering::SeqCst) {
+            0 => {
+                let started = std::time::Instant::now();
+                while store.queued_versions() < queued {
+                    assert!(
+                        started.elapsed() < Duration::from_secs(20),
+                        "the posts never queued"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+            1 => {
+                let visible = watched
+                    .iter()
+                    .filter(|(file, version)| store.version(file, version).is_some())
+                    .count();
+                seen.store(visible as u64, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+    }));
+    (syncs, at_second)
+}
+
+/// `posts[0]` first, alone, held in its fsync until every other post is
+/// queued behind it; then the rest. Answers in `posts` order.
+fn post_behind_a_held_fsync(
+    store: &Arc<Store>,
+    posts: Vec<NewVersion>,
+    syncs: &Arc<AtomicU64>,
+) -> Vec<Result<AppendOutcome, StoreError>> {
+    thread::scope(|s| {
+        let mut posts = posts.into_iter();
+        let post = |v: NewVersion| {
+            let store = Arc::clone(store);
+            move || store.post_version(v, false, edit_event())
+        };
+        let lead = s.spawn(post(posts.next().expect("a leader")));
+        while syncs.load(Ordering::SeqCst) == 0 {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let rest: Vec<_> = posts.map(|v| s.spawn(post(v))).collect();
+        std::iter::once(lead)
+            .chain(rest)
+            .map(|h| h.join().expect("a post thread"))
+            .collect()
+    })
+}
+
+#[test]
+fn posts_queued_behind_an_fsync_share_the_next_one_and_none_is_visible_before_it() {
+    // One more than a batch holds, so the cap shows as a third fsync.
+    let queued = GROUP_MAX_POSTS + 1;
+    let dir = TempDir::new("store-group-commit");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let before = setup.store.head_seq();
+    let posts: Vec<NewVersion> = (0..=queued)
+        .map(|n| {
+            let mut id = [0xc0u8; 16];
+            id[..2].copy_from_slice(&u16::try_from(n).expect("small").to_be_bytes());
+            version(&setup, FileId::new(id), "grouped", &[], &[sid], false)
+        })
+        .collect();
+    let ids: Vec<VersionId> = posts.iter().map(|v| v.version_id).collect();
+    let watched: Vec<(FileId, VersionId)> = posts[1..]
+        .iter()
+        .map(|v| (v.file_id, v.version_id))
+        .collect();
+    let store = Arc::new(setup.store);
+    let (syncs, at_second) = hold_first_fsync(&store, queued, watched);
+    let answers = post_behind_a_held_fsync(&store, posts, &syncs);
+
+    assert_eq!(
+        syncs.load(Ordering::SeqCst),
+        3,
+        "the leader's fsync, one for a full batch of {GROUP_MAX_POSTS}, one for the post past the cap"
+    );
+    // While the batch's fsync ran, none of the queued posts was readable:
+    // not the 64 it carried, and not the one waiting past the cap.
+    assert_eq!(
+        at_second.load(Ordering::SeqCst),
+        0,
+        "a post was applied before the fsync that carries it"
+    );
+    // Every post landed with its edit event, each at its own pair of seqs.
+    let total = queued as u64 + 1;
+    assert_eq!(store.head_seq(), Seq(before.0 + 2 * total));
+    let index = store.index();
+    let mut seqs = Vec::new();
+    for (answer, id) in answers.iter().zip(&ids) {
+        let outcome = answer.as_ref().expect("every post lands");
+        assert_eq!(outcome.decision, AppendDecision::Appended);
+        assert_eq!(outcome.version_id, *id);
+        assert!(!outcome.conflicted);
+        let (_, _, applied) = index
+            .feed
+            .iter()
+            .find(|(at, _, _)| *at == outcome.seq)
+            .expect("an answered seq is in the feed");
+        assert_eq!(
+            applied, id,
+            "the seq a post was answered with holds its version"
+        );
+        seqs.push(outcome.seq);
+    }
+    drop(index);
+    seqs.sort_unstable();
+    seqs.dedup();
+    assert_eq!(seqs.len() as u64, total, "no two posts share a seq");
+    // The journal holds what a one-post-per-fsync server would have written:
+    // each version followed by its own edit event, at consecutive seqs.
+    let records: Vec<Record> = journal_records(&store)
+        .into_iter()
+        .filter(|r| r.seq > before)
+        .collect();
+    assert!(records.windows(2).all(|w| w[1].seq == w[0].seq.next()));
+    for pair in records.chunks(2) {
+        assert_eq!(
+            (pair[0].frame.kind(), pair[1].frame.kind()),
+            ("version", "seen")
+        );
+    }
+    // Each line names the fsync that carried it.
+    let captured = store.log().captured();
+    assert!(
+        captured.contains(&format!("batch={GROUP_MAX_POSTS}")),
+        "{captured}"
+    );
+    assert!(captured.contains("batch=1"), "{captured}");
+}
+
+#[test]
+fn two_posts_for_one_file_never_share_a_batch_so_a_repost_is_recognised() {
+    // A retry of a post whose answer was lost, queued beside the post
+    // itself: checked in one batch, both would pass and the version would be
+    // journalled twice. The second waits a turn and is recognised.
+    let dir = TempDir::new("store-group-one-file");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let root = version(&setup, file(1), "root", &[], &[sid], false);
+    let child = version(&setup, file(1), "child", &[root.version_id], &[sid], false);
+    let other = version(&setup, file(2), "other", &[], &[sid], false);
+    let before = setup.store.head_seq();
+    let store = Arc::new(setup.store);
+    let (syncs, _) = hold_first_fsync(&store, 3, Vec::new());
+    let answers = post_behind_a_held_fsync(
+        &store,
+        vec![other, root.clone(), root.clone(), child.clone()],
+        &syncs,
+    );
+    let decisions: Vec<AppendDecision> = answers
+        .iter()
+        .map(|a| a.as_ref().expect("lands").decision)
+        .collect();
+    // Which of the two reposts of `root` arrived first is the scheduler's;
+    // that exactly one appends is not.
+    assert_eq!(decisions[0], AppendDecision::Appended);
+    let root_answers = [decisions[1], decisions[2]];
+    assert!(
+        root_answers.contains(&AppendDecision::Appended)
+            && root_answers.contains(&AppendDecision::Existed),
+        "{root_answers:?}"
+    );
+    assert_eq!(decisions[3], AppendDecision::Appended);
+    let versions: Vec<Record> = journal_records(&store)
+        .into_iter()
+        .filter(|r| r.seq > before && r.frame.kind() == "version")
+        .collect();
+    assert_eq!(versions.len(), 3, "other, root once, child");
+    let child_outcome = answers[3].as_ref().expect("child");
+    assert_eq!(
+        child_outcome.heads,
+        vec![child.version_id],
+        "the child replaced its parent"
+    );
+    assert!(!child_outcome.conflicted);
+}
+
+#[test]
+fn a_batch_stops_taking_posts_at_its_byte_ceiling() {
+    // Two posts whose manifests together pass the ceiling: one batch each,
+    // so the frame buffer of a turn stays near one large post however many
+    // queue. A small one behind them still rides with the first.
+    let dir = TempDir::new("store-group-bytes");
+    let mut cfg = config(&dir);
+    cfg.journal_capacity = 64 * 1024 * 1024;
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let heavy = |n: u8| {
+        let manifest = vec![n; GROUP_MAX_BYTES / 2 + 1];
+        let version_id = version_id_of(&file(n), &[], &manifest, &[sid]);
+        NewVersion {
+            manifest_ct: manifest,
+            version_id,
+            ..version(&setup, file(n), "heavy", &[], &[sid], false)
+        }
+    };
+    let posts = vec![
+        version(&setup, file(50), "lead", &[], &[sid], false),
+        heavy(51),
+        heavy(52),
+        version(&setup, file(53), "light", &[], &[sid], false),
+    ];
+    let store = Arc::new(setup.store);
+    let (syncs, _) = hold_first_fsync(&store, 3, Vec::new());
+    let answers = post_behind_a_held_fsync(&store, posts, &syncs);
+    assert!(answers.iter().all(Result::is_ok), "{answers:?}");
+    assert_eq!(
+        syncs.load(Ordering::SeqCst),
+        3,
+        "the leader, then one heavy post with the light one, then the other heavy post"
+    );
+}
+
+#[test]
+fn a_batch_the_volume_refuses_answers_every_member_and_keeps_none() {
+    let dir = TempDir::new("store-group-refused");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let sid = put(&setup, b"ciphertext-sentinel");
+    let posts: Vec<NewVersion> = (0..4)
+        .map(|n| version(&setup, file(30 + n), "refused", &[], &[sid], false))
+        .collect();
+    let refused: Vec<(FileId, VersionId)> = posts[1..]
+        .iter()
+        .map(|v| (v.file_id, v.version_id))
+        .collect();
+    let store = Arc::new(setup.store);
+    let fault = store.journal().fault_handle();
+    // Held as the other harness holds it, and the fault armed for the
+    // batch's fsync only once the leader's own fsync is past its check.
+    let weak = Arc::downgrade(&store);
+    let syncs = Arc::new(AtomicU64::new(0));
+    let begun = Arc::clone(&syncs);
+    store.journal().set_mid_sync(Arc::new(move || {
+        if begun.fetch_add(1, Ordering::SeqCst) == 0 {
+            let store = weak.upgrade().expect("store");
+            while store.queued_versions() < 3 {
+                thread::sleep(Duration::from_millis(1));
+            }
+            *fault.lock().expect("fault") = Fault::JournalAppendErrno {
+                code: 5,
+                at: AppendPhase::Sync,
+            };
+        }
+    }));
+    let head = store.head_seq();
+    let answers = post_behind_a_held_fsync(&store, posts.clone(), &syncs);
+    assert_eq!(
+        answers[0].as_ref().expect("the leader lands").decision,
+        AppendDecision::Appended
+    );
+    for answer in &answers[1..] {
+        match answer {
+            Err(StoreError::Io(e)) => assert_eq!(e.raw_os_error(), Some(5)),
+            other => panic!("every member of the refused batch is told: {other:?}"),
+        }
+    }
+    assert_eq!(
+        store.head_seq(),
+        Seq(head.0 + 2),
+        "only the leader's two frames"
+    );
+    for (file_id, version_id) in &refused {
+        assert!(
+            store.version(file_id, version_id).is_none(),
+            "nothing of the batch applied"
+        );
+    }
+    // The rollback left a clean journal: the same posts land once the volume
+    // takes them, and a restart replays exactly what was answered.
+    store.set_fault(Fault::None);
+    for v in posts[1..].iter().cloned() {
+        store
+            .post_version(v, false, edit_event())
+            .expect("lands after the fault");
+    }
+    let live = fingerprint(&store);
+    drop(store);
+    assert_eq!(fingerprint(&open(&cfg)), live);
+}
+
+#[test]
+fn a_batch_past_the_watermark_is_tried_post_by_post() {
+    // Room for two more posts and not three: the batch of two queued behind
+    // the leader does not fit whole, and each alone does, until the second.
+    let dir = TempDir::new("store-group-watermark");
+    let cfg = config(&dir);
+    let (account, device, sid, one_post) = {
+        let setup = ready(&cfg);
+        let sid = put(&setup, b"ciphertext-sentinel");
+        let used = journal_used(&setup.store);
+        setup
+            .store
+            .post_version(
+                version(&setup, file(40), "measure", &[], &[sid], false),
+                false,
+                edit_event(),
+            )
+            .expect("measure one post");
+        (
+            setup.account,
+            setup.device,
+            sid,
+            journal_used(&setup.store) - used,
+        )
+    };
+    let used = journal_used(&open(&cfg));
+    let mut tight = cfg.clone();
+    tight.journal_capacity = used + WATERMARK + one_post * 2 + one_post / 2;
+    let setup = Setup {
+        store: open_with(&tight, [7u8; 32], Log::buffered(LogLevel::Debug)),
+        account,
+        device,
+    };
+    let posts: Vec<NewVersion> = (0..3)
+        .map(|n| version(&setup, file(41 + n), "tight", &[], &[sid], false))
+        .collect();
+    let store = Arc::new(setup.store);
+    let (syncs, _) = hold_first_fsync(&store, 2, Vec::new());
+    let answers = post_behind_a_held_fsync(&store, posts, &syncs);
+    assert_eq!(
+        answers[0].as_ref().expect("the leader fits").decision,
+        AppendDecision::Appended
+    );
+    let landed = answers[1..].iter().filter(|a| a.is_ok()).count();
+    let full = answers[1..]
+        .iter()
+        .filter(|a| matches!(a, Err(StoreError::JournalFull { .. })))
+        .count();
+    assert_eq!(
+        (landed, full),
+        (1, 1),
+        "the one that fits lands: {answers:?}"
+    );
 }
 
 #[test]

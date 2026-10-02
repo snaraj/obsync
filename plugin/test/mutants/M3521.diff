@@ -1,0 +1,12 @@
+# M3521: a server with no plugin bundle counts as 1.1.5
+--- a/plugin/src/ui/modals.ts
++++ b/plugin/src/ui/modals.ts
+@@ -495,7 +495,7 @@
+     try {
+       return (await this.plugin.transport.pluginManifest({ interactive: true })).version;
+     } catch (error) {
+-      if (error instanceof ApiError && error.code === "plugin_unavailable") return null;
++      if (error instanceof ApiError && error.code === "plugin_unavailable") return "1.1.5";
+       throw error;
+     }
+   }

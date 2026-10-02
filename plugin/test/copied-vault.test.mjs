@@ -31,7 +31,8 @@ const ORIGINAL = () => ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: 
   files: { "Notes/a.md": { fileId: "12".repeat(16), versionId: "34".repeat(32), size: 4, mtime: 1, sha256: "" } },
   folders: { Notes: { fileId: "56".repeat(16), versionId: "78".repeat(32) } },
   feedMark: { seq: 7, fileId: "12".repeat(16), versionId: "34".repeat(32), ts: 5, replay: false },
-  syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed" });
+  syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "confirmed",
+  notices: { level: "needs-me", merges: "every" } });
 
 /** One vault as Obsidian keeps it: a data file, a secret store and a local-storage record, each per vault id. */
 function vault(metadata = null) {
@@ -74,8 +75,10 @@ test("a reference this vault never held, with no secret behind it, loads as an u
   assert.deepEqual({ ...state.data }, {
     vrk: null, deviceId: null, deviceSecret: null, deviceName: null, deviceTag: null,
     serverUrl: "https://sync.example.invalid", edgeHeaders: [], lastSeq: 0, files: {}, folders: {}, remoteOnly: {},
-    retiredRoots: {}, folderBarriers: [], parked: {}, dropped: {}, paused: {}, heldDeletions: [], feedMark: null, graves: {},
+    retiredRoots: {}, folderBarriers: [], folderRemovals: {}, parked: {}, dropped: {}, paused: {}, departed: {}, replaying: null,
+    heldDeletions: [], feedMark: null, graves: {},
     syncFolders: ["Notes"], policy: { perFileMaxBytes: 11, totalBudgetBytes: 22 }, recoveryPhrase: "unconfirmed",
+    notices: { level: "needs-me", merges: "every" },
   });
   assert.deepEqual(copy.writes, [], "nothing is written until the person acts");
   assert.deepEqual(copy.data(), original.data());
@@ -235,7 +238,7 @@ test("Settings offers a copy Pair this device and Start fresh, and Start fresh l
   assert.equal(saved.serverUrl, "", "the copied server address goes too");
   assert.equal(saved.deviceId, null);
   assert.equal(copy.instance.state.copied, false);
-  assert.ok(copy.obsidian.notices.includes("obsync: this vault starts fresh. It is not paired with any server, and your notes are unchanged. Set it up or pair it here when you are ready."));
+  assert.ok(copy.obsidian.notices.includes("obsync: this vault starts fresh: it is not paired with any server, and your notes are unchanged. Set it up or pair it here when you are ready."));
   assert.ok(copy.logs.includes("state decision=started_fresh reason=copied_vault"));
   assert.equal(updates, 1);
   assert.match(pairing().desc, /^Not paired yet\./);
@@ -257,7 +260,7 @@ test("a storage fault keeps the protective stop: no tab, no status bar, and word
   assert.deepEqual(faulted.bars, []);
   assert.equal(faulted.obsidian.notices.length, 1);
   const [notice] = faulted.obsidian.notices;
-  assert.match(notice, /^obsync could not read or save this vault's sync credentials in Obsidian's secret storage\. Sync is stopped/);
+  assert.match(notice, /^obsync: could not read or save this vault's sync credentials in Obsidian's secret storage\. Sync is stopped/);
   assert.equal(/missing_secret|Do not/.test(notice), false, notice);
   assert.ok(faulted.logs.includes("state decision=stopped reason=missing_secret"));
   assert.deepEqual(faulted.writes, []);

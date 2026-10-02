@@ -21,6 +21,7 @@
  */
 
 import { Policy, defaultPolicy } from "./policy";
+import { NOTICE_DEFAULTS, NoticeSettings, noticeSettings } from "./notices";
 import { caseOnly, isVaultPath } from "./vaultPath";
 import { parseSyncFolders } from "./syncScope";
 import { hex, isHex, randomBytes } from "./crypto";
@@ -166,6 +167,16 @@ export interface Grave {
  */
 export const GRAVES_MAX = 1000;
 
+/**
+ * The mark a start puts on an empty file when it could not read the feed to
+ * tell a download's landing from a note emptied here (issue #248; a new file
+ * has no file id to be held by). Like any mark it keeps the file unsent and
+ * lets the feed's version be written over it, for this run only: a load keeps
+ * file ids alone, and an engine's start drops it, so the next start judges the
+ * file again against the feed.
+ */
+export const UNVERIFIED_LANDING = "unverified";
+
 export interface RemoteOnlyRecord {
   path: string;
   size: number;
@@ -229,6 +240,16 @@ export interface ObsyncData {
    */
   folderBarriers: string[];
   /**
+   * Folder removals this device owes the server, each with the selection it
+   * was JUDGED against (`null`: the whole vault, checked against the selection
+   * in force). A renamed selected folder's old name is in no selection after
+   * the rename, so no later pass can judge its removal again: a post that
+   * failed, or a stop before it, left the empty folder on every other device
+   * for good (issue #265). Saving a narrower selection re-judges each against
+   * it (`main.ts`, `applyScope`).
+   */
+  folderRemovals: Record<string, string[] | null>;
+  /**
    * File id to a record the feed moved past because THIS device could not
    * write it -- a locked note, a read-only folder, a full disk, a chunk the
    * server does not hold -- with the path and the reason to show
@@ -255,6 +276,28 @@ export interface ObsyncData {
    * restart must not start the bounce again unasked.
    */
   paused: Record<string, { path: string; remote?: true }>;
+  /**
+   * File id to where a note went when it LEFT the selection by a move this
+   * device saw (`sync/engine.ts`, `leftScope`; issues #91, #239), with the
+   * version and size it had then. Nothing about it is applied while it is out
+   * of the selection, and once the selection covers that name again the note
+   * is published as a MOVE of that file id (`rejoin`), so every device ends
+   * with one copy. Persisted because the move and the widening that brings it
+   * back are far apart. A version before 1.1.5 ignores it, and its next save
+   * drops it: the widening then publishes the note as a new one, as before.
+   */
+  departed: Record<string, { path: string; versionId: string; size: number }>;
+  /**
+   * A replay from zero not caught up yet (issues #239, #281): the last feed
+   * entry this device had read before it, and by file id the last version of
+   * its own the replay has passed as an echo so far. At its first catch-up
+   * the ones this device holds nowhere are brought back (`sync/engine.ts`,
+   * `returnLost`) and it is `null` again. It rides the saves the replay
+   * already makes, so a quit, an offline stretch or a folder change before
+   * that catch-up picks it up at the next start. A version before 1.1.5
+   * ignores it, and its next save drops it: 1.1.4 brings nothing back.
+   */
+  replaying: { through: number; notes: Record<string, string> } | null;
   /**
    * Deletions held back from the other devices until the user answers: many
    * notes deleted at once here (issue #162), or a pass that could no longer
@@ -294,6 +337,12 @@ export interface ObsyncData {
    * that never recorded one is `unconfirmed`.
    */
   recoveryPhrase: "unconfirmed" | "skipped" | "confirmed";
+  /**
+   * What this device shows as a notice (`notices.ts`): set in Settings, the
+   * palette or Obsidian's CLI. Absent before 1.1.5, which loads as the
+   * defaults; a 1.1.4 build ignores the field and its next save drops it.
+   */
+  notices: NoticeSettings;
 }
 
 export function defaultData(isMobile: boolean): ObsyncData {
@@ -311,14 +360,18 @@ export function defaultData(isMobile: boolean): ObsyncData {
     remoteOnly: {},
     retiredRoots: {},
     folderBarriers: [],
+    folderRemovals: {},
     parked: {},
     dropped: {},
     paused: {},
+    departed: {},
+    replaying: null,
     heldDeletions: [],
     feedMark: null,
     graves: {},
     policy: defaultPolicy(isMobile),
     recoveryPhrase: "unconfirmed",
+    notices: { ...NOTICE_DEFAULTS },
   };
 }
 
@@ -479,6 +532,19 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       data.folderBarriers.push(path);
     }
   }
+  // A removal whose path or judged selection does not parse is dropped, never
+  // widened: the next pass judges the record against the selection in force.
+  const removals = loaded["folderRemovals"];
+  if (isRecord(removals)) {
+    for (const [path, judged] of Object.entries(removals)) {
+      if (!isVaultPath(path)) continue;
+      try {
+        data.folderRemovals[path] = judged === null ? null : parseSyncFolders(judged);
+      } catch {
+        continue;
+      }
+    }
+  }
   // A held path is only ever a question: dropped here, the note's deletion is
   // asked again by the next pass that finds it gone, never published unasked.
   const held = loaded["heldDeletions"];
@@ -519,6 +585,26 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       if (isHex(fileId, 16) && isRecord(record) && isVaultPath(record["path"])) data.paused[fileId] = { path: record["path"], ...(record["remote"] === true ? { remote: true } : {}) };
     }
   }
+  // A version id is the parent the move is published on, and the path is
+  // where it is published to: both input, judged as every path here is.
+  const departed = loaded["departed"];
+  if (isRecord(departed)) {
+    for (const [fileId, away] of Object.entries(departed)) {
+      if (isHex(fileId, 16) && isRecord(away) && isVaultPath(away["path"]) && typeof away["versionId"] === "string" &&
+        isHex(away["versionId"], 32)) data.departed[fileId] = { path: away["path"], versionId: away["versionId"], size: num(away["size"], 0) };
+    }
+  }
+  // File ids and version ids the replay will ask the server for: input,
+  // judged as every id here is.
+  const replaying = loaded["replaying"];
+  if (isRecord(replaying) && Number.isSafeInteger(replaying["through"]) && (replaying["through"] as number) >= 0 &&
+    isRecord(replaying["notes"])) {
+    const notes: Record<string, string> = {};
+    for (const [fileId, versionId] of Object.entries(replaying["notes"])) {
+      if (isHex(fileId, 16) && typeof versionId === "string" && isHex(versionId, 32)) notes[fileId] = versionId;
+    }
+    data.replaying = { through: replaying["through"] as number, notes };
+  }
   // The mark names a request path and the graves a request path and a
   // publication, so a malformed field is dropped rather than trusted: no mark
   // is a device that has not read the feed yet, never a restored server.
@@ -555,6 +641,7 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   // Anything else is not a confirmation: an unreadable value reminds.
   const phrase = loaded["recoveryPhrase"];
   if (phrase === "skipped" || phrase === "confirmed") data.recoveryPhrase = phrase;
+  data.notices = noticeSettings(loaded["notices"]);
   return data;
 }
 
@@ -592,6 +679,12 @@ interface Indexes {
   names: Set<string>;
   bytes: number;
   /**
+   * The paths under each lower-cased spelling (`caseTwins`): the push of
+   * every new note asked for a case-only twin of its name by walking every
+   * record, 0.8 ms of the main thread per push at 7,700 (P10).
+   */
+  folded: Map<string, Set<string>>;
+  /**
    * Where each path stands in `files`' own key order, which is the order the
    * waiting notes were always settled in (`besideNames`): insertion order, a
    * key replaced in place keeping its place.
@@ -605,21 +698,27 @@ const ARRAY_INDEX = /^(0|[1-9][0-9]*)$/;
 
 function indexed(indexes: Indexes, path: string, record: FileRecord, sign: 1 | -1): void {
   const paths = indexes.ids.get(record.fileId) ?? new Set<string>();
+  const fold = path.toLowerCase();
+  const spellings = indexes.folded.get(fold) ?? new Set<string>();
   if (sign === 1) {
     paths.add(path);
     indexes.ids.set(record.fileId, paths);
     if (record.name !== undefined) indexes.names.add(path);
+    spellings.add(path);
+    indexes.folded.set(fold, spellings);
   } else {
     paths.delete(path);
     if (paths.size === 0) indexes.ids.delete(record.fileId);
     indexes.names.delete(path);
+    spellings.delete(path);
+    if (spellings.size === 0) indexes.folded.delete(fold);
   }
   indexes.bytes += sign * record.size;
 }
 
 /** The indexes of `files` built from nothing: what the maintained ones must always equal. */
 function indexFiles(files: Record<string, FileRecord>): Indexes {
-  const indexes: Indexes = { of: files, ids: new Map(), names: new Set(), bytes: 0, order: new Map(), next: 0 };
+  const indexes: Indexes = { of: files, ids: new Map(), names: new Set(), bytes: 0, order: new Map(), next: 0, folded: new Map() };
   for (const [path, record] of Object.entries(files)) {
     indexes.order.set(path, indexes.next++);
     indexed(indexes, path, record, 1);
@@ -789,6 +888,9 @@ export class State {
   /** Let a replacement plugin load wait for an already-dispatched metadata write. */
   settled(): Promise<void> { return this.flushing ?? Promise.resolve(); }
 
+  /** Whether a metadata write is in flight: a wait that sends no request, named by a stalled feed (#276). */
+  get saving(): boolean { return this.flushing !== null; }
+
   /** Refuse every write once a newer session has claimed the data file (`Lease`). */
   private assertHolder(): void {
     if (this.lease.holder !== this.claim) {
@@ -887,12 +989,15 @@ export class State {
     // about.
     this.data.retiredRoots = {};
     this.data.folderBarriers = [];
+    this.data.folderRemovals = {};
     // And a parked record, which names a version on the server being left,
     // and the feed mark and the graves, which name entries and versions there
     // too: a mark carried to the next server would read its journal as a
     // restored one.
     this.data.parked = {};
     this.data.paused = {};
+    this.data.departed = {};
+    this.data.replaying = null;
     this.data.heldDeletions = [];
     this.data.feedMark = null;
     this.data.graves = {};
@@ -937,7 +1042,7 @@ export class State {
     this.serializedSecret = serialized;
   }
 
-  /** The held pairing claim as stored, or `null` (`pairing.ts`, `readClaim`). */
+  /** A pairing claim an obsync before 1.1.5 held for a restart, or `null` (`ObsyncPlugin.resumePairing`). */
   heldClaim(): string | null {
     try {
       const raw = this.secrets.getSecret(claimRef(this.installationId));
@@ -949,9 +1054,10 @@ export class State {
 
   /**
    * Hold a pairing claim, or drop it with `null` (`SecretStorage` declares no
-   * delete, so dropping writes it empty). Best effort, and read back: a claim
-   * not kept costs a restart its resume and nothing else, so this answers
-   * whether it was kept instead of stopping the state.
+   * delete, so dropping writes it empty). 1.1.5 holds none: its claims carry
+   * a private key that is never written down, and the start drops one an
+   * older obsync left. Best effort, and read back: this answers whether it
+   * was written instead of stopping the state.
    */
   holdClaim(claim: string | null): boolean {
     if (this.failure !== null || this.lease.holder !== this.claim) return false;
@@ -1002,6 +1108,11 @@ export class State {
     const place = (path: string): number =>
       ARRAY_INDEX.test(path) && Number(path) < 2 ** 32 - 1 ? Number(path) - 2 ** 32 : order.get(path) ?? Infinity;
     return [...names].filter((path) => this.data.files[path]?.name !== undefined).sort((a, b) => place(a) - place(b));
+  }
+
+  /** Recorded paths that differ from `path` by capitals alone (`caseOnly`), without a walk of every record. */
+  caseTwins(path: string): string[] {
+    return [...this.index.folded.get(path.toLowerCase()) ?? []].filter((recorded) => caseOnly(recorded, path));
   }
 
   setFile(path: string, record: FileRecord): void {

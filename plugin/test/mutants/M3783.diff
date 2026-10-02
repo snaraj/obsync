@@ -1,0 +1,12 @@
+# M3783: a wake while a read beside is under way drops the poll (#297)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3031,7 +3031,7 @@
+     const kept = wanted && reason !== "address" && reason !== "online" && held > 0;
+     // Asked for while the feed waits on the poll (`besidePoll`); a read beside it already under way is the one.
+     const beside = kept ? this.catchUp : null;
+-    const dropped = wanted && !kept;
++    const dropped = wanted && beside === null;
+     if (dropped) {
+       this.poll = null;
+       this.feedAnswered = false;

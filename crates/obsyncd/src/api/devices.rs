@@ -1,6 +1,8 @@
-//! Device inventory, policy, revocation, and heartbeat
+//! Device inventory, policy, revocation, forgetting, and heartbeat
 //! (`docs/protocol.md`, "Devices").
 #![forbid(unsafe_code)]
+
+use std::time::Instant;
 
 use obsync_core::hex;
 use obsync_core::http::{Request, Response};
@@ -8,6 +10,7 @@ use obsync_core::json::{Value, obj};
 
 use crate::log::Val;
 use crate::storage::types::{DevicePolicy, DeviceRecord, DeviceState, NewDevice};
+use crate::types::{DeviceId, UnixMs};
 
 use super::edge::ClientInfo;
 use super::render::{self};
@@ -134,7 +137,8 @@ pub fn patch(
 ///
 /// # Errors
 /// `404 unknown_device`, `409 last_device` when the target is the only
-/// ACTIVE device, plus the authentication refusals.
+/// ACTIVE device, `409 recovery_too_new` when it is and the recovery key is
+/// younger than the hold, plus the authentication refusals.
 pub fn revoke(
     app: &App,
     req: &mut Request,
@@ -145,7 +149,8 @@ pub fn revoke(
     let target = render::device_id(id)?;
     // One call, one lock: the last-active refusal and the revocation cannot
     // be separated by another request (`Store::revoke_device_unless_last`).
-    app.store.revoke_device_unless_last(&target)?;
+    app.store
+        .revoke_device_unless_last(&target, UnixMs(app.clock.unix_ms()))?;
     // Revocation reaches the dashboard too: the sessions this device's links
     // opened, and the links it minted that nobody has spent.
     let (sessions, links) = app
@@ -163,6 +168,59 @@ pub fn revoke(
         ],
     );
     Ok(Response::empty(204))
+}
+
+/// `POST /v1/devices/{id}/archive`: take a REVOKED device off the routine
+/// device lists (issue #247). Any paired device may, as with revoke; never
+/// itself, which is refused before anything is read, so a device revoked
+/// while its own archive was in flight cannot archive itself either.
+///
+/// # Errors
+/// `409 own_device`, `404 unknown_device`, `409 device_not_revoked`, plus
+/// the authentication refusals.
+pub fn archive(
+    app: &App,
+    req: &mut Request,
+    client: &ClientInfo,
+    id: &str,
+) -> Result<Response, ApiError> {
+    let authed = auth::device(app, req, client)?;
+    let target = render::device_id(id)?;
+    if target == authed.id {
+        return Err(ApiError::new(
+            409,
+            "own_device",
+            "a device cannot archive itself",
+        ));
+    }
+    archive_revoked(app, &target, ("by_device", Val::device(&authed.id)))?;
+    Ok(Response::empty(204))
+}
+
+/// The archive both routes share: the store's revoked-only flag, then ONE
+/// line naming the device, who asked, and how long the durable write took. A
+/// refusal is the request line's, which carries its code and duration.
+///
+/// # Errors
+/// `404 unknown_device`, `409 device_not_revoked`, or the journal's refusal.
+pub fn archive_revoked(
+    app: &App,
+    target: &DeviceId,
+    by: (&'static str, Val),
+) -> Result<(), ApiError> {
+    let started = Instant::now();
+    app.store.archive_device(target)?;
+    app.log.info(
+        "device_archived",
+        &[
+            ("device", Val::device(target)),
+            by,
+            ("decision", Val::word("archived")),
+            ("reason", Val::word("revoked")),
+            ("duration_ms", Val::ms(started.elapsed().as_millis() as u64)),
+        ],
+    );
+    Ok(())
 }
 
 /// `POST /v1/devices/heartbeat`: the plugin reports liveness, its version, and

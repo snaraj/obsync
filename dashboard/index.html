@@ -191,9 +191,20 @@
           </tr>
         </thead>
         <tbody id="devices-body"></tbody>
+        <tbody id="revoked-fold" hidden>
+          <tr class="fold">
+            <td colspan="11">
+              <span id="revoked-count" class="strong"></span>
+              <span class="sub">These can no longer sync. Forget one to take it off this list for good.</span>
+              <button type="button" id="revoked-toggle" class="ghost" aria-expanded="false" aria-controls="revoked-body">Show</button>
+            </td>
+          </tr>
+        </tbody>
+        <tbody id="revoked-body" hidden></tbody>
       </table>
     </div>
     <p id="devices-empty" class="empty" hidden>No device is paired yet. The Pairing page has the steps.</p>
+    <p id="devices-archived" class="note" hidden></p>
   </section>
 
   <section id="page-pairing" class="page" hidden aria-labelledby="pairing-h">
@@ -377,7 +388,7 @@
     <td data-label="Country" data-f="country"></td>
     <td data-label="Per file" class="num" data-f="perfile"></td>
     <td data-label="Budget" class="num" data-f="budget"></td>
-    <td data-label="Actions" class="actions">
+    <td data-label="Actions"><span class="actions">
       <button type="button" class="ghost" data-f="history-toggle" aria-expanded="false">History</button>
       <button type="button" class="danger" data-f="revoke-open">Revoke</button>
       <span class="confirm" data-f="confirm" hidden>
@@ -385,7 +396,7 @@
         <button type="button" class="danger" data-f="revoke-do">Confirm revoke</button>
         <button type="button" class="ghost" data-f="revoke-cancel">Cancel</button>
       </span>
-    </td>
+    </span></td>
   </tr>
 </template>
 

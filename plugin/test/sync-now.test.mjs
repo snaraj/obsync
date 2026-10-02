@@ -69,8 +69,11 @@ test("Sync now reads a same-size, same-date rewrite of a file of exactly 8 MiB a
   r.host.seed("Files/at.bin", at, 1000);
   r.host.seed("Files/over.bin", over, 2000);
   const engine = await started(r, timers, () => r.state.fileByPath("Files/at.bin") !== undefined && r.state.fileByPath("Files/over.bin") !== undefined);
-  // Past the re-read a push arms for a coarse clock (#175), so only a press reads them again.
-  await timers.run(5000);
+  // NOTHING LEFT TO SEND, SO ONLY A PRESS READS THEM AGAIN (issue #277): the
+  // queue, its pushes and every debounce drained. A quiet spell of real time
+  // was the wait; on a loaded machine a pass's second push of these 16 MiB was
+  // still reading when the rewrite below landed, and sent it before the press.
+  await timers.run(1000, () => engine.queue.length === 0 && engine.pushing.size === 0 && !engine.draining && engine.pending.size === 0);
   rewriteInPlace(r.host, "Files/at.bin");
   rewriteInPlace(r.host, "Files/over.bin");
   const before = { at: versionsOf(r, "Files/at.bin"), over: versionsOf(r, "Files/over.bin") };
@@ -151,6 +154,10 @@ test("Sync now sends what is queued, then reads the feed at once, then retries, 
   assert.deepEqual(events, ["post", "feed", "read", "retry", "pass"], r.host.logs.slice(-12).join(" | "));
   assert.equal(r.host.text("Notes/remote.md"), "REMOTE SENTINEL\n", "what waited on the server landed before the press returned");
   assert.equal(reads.slice(asked).filter((url) => url.includes("wait=0")).length, 1, "ONE read of the feed for the press");
+  // Beside the long poll, which stays the one in flight (#288): a poll sent
+  // again asks the same url and waits behind it on a desktop.
+  assert.equal(reads.slice(asked).filter((url) => url.includes("wait=55")).length, 0, "the press sent no second long poll");
+  assert.ok(!r.host.logs.some((line) => line.includes("decision=cancelled")), r.host.logs.slice(-12).join(" | "));
   engine.stop();
 });
 
@@ -308,7 +315,10 @@ test("a press made while a page is being written asks at once for the next read"
   let done = false;
   const press = engine.syncNow().then(() => { done = true; });
   open();
-  await timers.run(1000, () => done);
+  // THE CLOCK STANDS STILL WHILE THE PRESS RUNS (issue #277): nothing it
+  // waits on is a timer, and walking virtual time while a loaded machine
+  // wrote the page ran its read's budget out before the read came.
+  await timers.run(0, () => done);
   await press;
   assert.match(reads[before] ?? "", /wait=0/, `the read after the page: ${reads.slice(before).join(" ")}`);
   assert.equal(r.host.logs.some((line) => line.startsWith("sync_now decision=feed_unanswered")), false, "and it came in time");

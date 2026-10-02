@@ -1,8 +1,8 @@
 # M609: claim after pairing dialog closes during reset
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -621,7 +621,7 @@
-       this.busy = true;
+@@ -883,7 +883,7 @@
+       this.show(CLAIMING);
        if (this.plugin.forgottenDevice) await this.plugin.resetForgottenEnrollment();
        await stopWaiting(this.plugin);
 -      if (this.closed) return;

@@ -12,6 +12,8 @@ from pathlib import Path
 import os
 import subprocess
 
+from kills import Judge
+
 EDGE = "crates/obsyncd/src/api/edge.rs"
 CONFIG = "crates/obsyncd/src/config.rs"
 SERVE = "crates/obsyncd/src/cli/serve.rs"
@@ -56,23 +58,24 @@ CASES = [
 ]
 
 
-def run(selector):
-    command = selector if isinstance(selector, list) else ["cargo", "test", "-p", "obsyncd", "--lib", selector]
+def run(selector, judge):
+    """A cargo selector is judged by `kills.Judge`; a command's kill is a
+    refusal or a failed assertion, never an error."""
+    if not isinstance(selector, list):
+        return judge.test(selector)
     plain = {**os.environ, "NO_COLOR": "1", "PYTHON_COLORS": "0"}
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    result = subprocess.run(selector, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, timeout=600, check=False, env=plain)
-    if isinstance(selector, list):
-        # A kill is a refusal or a failed assertion, never an error.
-        failed = [line for line in result.stdout.splitlines() if "DENY" in line or line.startswith("FAIL:")]
-        return result.returncode != 0 and bool(failed), failed, result.stdout
-    compiled = "could not compile" not in result.stdout
-    failed = [line for line in result.stdout.splitlines() if "FAILED" in line or "test result:" in line]
-    return compiled and result.returncode != 0 and "FAILED" in result.stdout, failed, result.stdout
+    failed = [line for line in result.stdout.splitlines() if "DENY" in line or line.startswith("FAIL:")]
+    if result.returncode != 0 and failed:
+        return "KILLED", "\n".join(failed)
+    return "NOT A KILL", result.stdout
 
 
 def main():
     originals = {Path(path): Path(path).read_bytes() for _, path, *_ in CASES}
     failures = []
+    judge = Judge({("obsyncd", case[-1]) for case in CASES if not isinstance(case[-1], list)})
     try:
         for name, path, old, new, selector in CASES:
             source = originals[Path(path)].decode()
@@ -80,18 +83,16 @@ def main():
                 raise RuntimeError(f"{name}: mutation context moved")
             Path(path).write_text(source.replace(old, new, 1))
             try:
-                killed, evidence, output = run(selector)
-                print(f"{name}: {'KILLED' if killed else 'NOT A KILL'}", flush=True)
-                if not killed:
-                    failures.append(name)
-                    print(output, flush=True)
-                else:
-                    print("\n".join(evidence), flush=True)
+                verdict, evidence = run(selector, judge)
+                print(f"{name}: {verdict}\n{evidence}", flush=True)
+                if verdict != "KILLED":
+                    failures.append(f"{name} ({verdict})")
             finally:
                 Path(path).write_bytes(originals[Path(path)])
     finally:
         for path, original in originals.items():
             path.write_bytes(original)
+        judge.close()
     if failures:
         raise SystemExit("Unkilled probes: " + ", ".join(failures))
     print(f"All {len(CASES)} probes were killed.")

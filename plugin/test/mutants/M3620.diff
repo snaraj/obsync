@@ -1,0 +1,11 @@
+# M3620: the fake's re-enrolment leaves the arm standing (fidelity)
+--- a/plugin/test/fake.mjs
++++ b/plugin/test/fake.mjs
+@@ -817,7 +817,6 @@
+           // verifier a caller sends beside the proof is never what stands.
+           this.recoveryVerifier = derived;
+           this.recoveryAt = this.clock;
+-          this.recoveryArmed = false;
+         } else if (derived !== this.recoveryVerifier) {
+           return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
+         }

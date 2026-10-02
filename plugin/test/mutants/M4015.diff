@@ -1,0 +1,12 @@
+# M4015: the seam's rename reaches the disk with no budget (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -424,7 +424,7 @@
+       open: async (path, flags, mode) =>
+         bound(await onTime(calls.open(path, flags, mode), "open", 0, log, flags !== "r", closeLate)),
+       mkdir: (path, options) => onTime(calls.mkdir(path, options), "mkdir", 0, log, true),
+-      rename: (from, to) => onTime(calls.rename(from, to), "rename", 0, log, true),
++      rename: (from, to) => calls.rename(from, to),
+       link: (from, to) => onTime(calls.link(from, to), "link", 0, log, true),
+       unlink: (path) => onTime(calls.unlink(path), "unlink", 0, log, true),
+       readdir: (path) => onTime(calls.readdir(path), "readdir", 0, log),

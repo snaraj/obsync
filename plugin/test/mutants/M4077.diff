@@ -1,0 +1,12 @@
+# M4077: a code cut short of its commitment decodes
+--- a/plugin/src/pairing.ts
++++ b/plugin/src/pairing.ts
+@@ -117,7 +117,7 @@
+   // Exactly a code before 1.1.5 says so; anything else short of the
+   // commitment was cut short, and nothing short of it pairs at all.
+   if (raw.length === secretEnd) throw new Error(OLDER_CREATOR);
+-  if (raw.length < secretEnd + COMMITMENT_BYTES) {
++  if (raw.length < secretEnd) {
+     throw new Error("That pairing code is incomplete. Copy all of it again from your other device, or use its Copy link.");
+   }
+   return {

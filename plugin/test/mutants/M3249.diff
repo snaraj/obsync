@@ -1,12 +1,12 @@
 # M3249: a local rename leaves a dropped write's mark behind, and the empty file goes out under its new name (review of d62f201, finding 1)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1510,7 +1510,7 @@
+@@ -1746,7 +1746,7 @@
        context.state.setFile(to, { ...record, mtime: -1, sha256: "" });
        context.state.forgetPath(from);
      }
 -    if (this.carryMark(context, from, to) || record) this.saveMoved(context);
 +    if (record) this.saveMoved(context);
      this.unschedule(from);
-     // Straight into the queue: the debounce and the unchanged-content check
-     // would both drop a rename, whose only change is the path in the manifest.
+     // And its queued push (issue #264): on a host that folds case the old name
+     // resolves to the record just moved, and that push -- the move itself --

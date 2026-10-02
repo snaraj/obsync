@@ -1,10 +1,10 @@
 # M531: the local hold never reaches the other device, including on retry
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2251,7 +2251,6 @@
-       "would bounce between your devices. obsync paused syncing it here; nothing was deleted. Stop that plugin " +
-       "changing synced notes, then run Sync now, or press Resume in Show sync status.",
+@@ -3159,7 +3159,6 @@
+       `answer_ms=${stat.mtime - arrived} duration_ms=${context.now() - arrived} budget_ms=${ANSWER_MS}`,
    );
+   context.host.notify(pausedNotice(localPath));
 -  await publishPause(context, change.file_id, localPath, true);
    return true;
  }

@@ -1,0 +1,12 @@
+# M3344: only the held note's newest version counts as behind it, not its ancestors (#241)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -506,7 +506,7 @@
+   const held = new Map<string, HeldNote>();
+   for (const [fileId, manifest] of newest) {
+     if (manifest === null) continue;
+-    held.set(manifest.path, { ...manifest, versions: versions.get(fileId) ?? new Set(), behind: reachable(parents, manifest.version_id) });
++    held.set(manifest.path, { ...manifest, versions: versions.get(fileId) ?? new Set(), behind: new Set([manifest.version_id]) });
+   }
+   return held;
+ }

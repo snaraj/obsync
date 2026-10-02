@@ -1,9 +1,9 @@
 # M3267: a write that fails for another reason keeps its early mark, stranded on a file it never wrote
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -915,7 +915,6 @@
-     return await commit();
-   } catch (error) {
+@@ -934,7 +934,6 @@
+     context.arrivals.delete(path);
+     if (answerable !== undefined) context.arrivals.set(path, answerable);
      if (unwritable(error) === "write_dropped") dropped[path] = fileId;
 -    else if (marked && dropped[path] === fileId) delete dropped[path];
      throw error;

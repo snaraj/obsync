@@ -1,0 +1,12 @@
+# M3779: the transport counts no long poll, so every wake drops one (#297)
+--- a/plugin/src/transport.ts
++++ b/plugin/src/transport.ts
+@@ -801,7 +801,7 @@
+             : {}),
+         throw: false,
+       });
+-      if (LONG_POLL.test(target)) {
++      if (LONG_POLL.test(url)) {
+         this.polls++;
+         letGo = () => { this.polls--; };
+       }

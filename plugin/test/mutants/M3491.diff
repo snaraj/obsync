@@ -1,0 +1,11 @@
+# M3491: a copy this device publishes is never listed (#253)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1408,7 +1408,6 @@
+           const landed = await walker(fs).lstat(found.target);
+           if (refusal !== null || !sameFile(published, landed)) throw new Error("Restore publication identity changed.");
+           const stat = landed as PathStat;
+-          await this.reconcile(path, "file", true);
+           if (stat.size !== made.size || Math.round(stat.mtimeMs) !== Math.round(made.mtimeMs)) {
+             this.log("host path_class=file decision=write_superseded");
+           }

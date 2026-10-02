@@ -1,12 +1,12 @@
 # M605: send a proof from a replaced key
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2795,7 +2795,7 @@
+@@ -4971,7 +4971,7 @@
        const vrk = state.data.vrk as string;
        const recovery = await accountRecovery(vrk);
        assertCurrent();
 -      if (state.data.vrk !== vrk) throw new Error("The vault key changed during setup; try again with the current key.");
 +      if (false) throw new Error("The vault key changed during setup; try again with the current key.");
-       const enrolled = await transport.setup(pastedToken(setupToken), accountName, {
-         name,
-         platform: this.platformName(),
+       // A key made for THIS setup recovers nothing, so it sends no proof: an
+       // occupied server then says to pair or restore, rather than establishing
+       // a second vault key over the one it holds (#141, #154). A key restored

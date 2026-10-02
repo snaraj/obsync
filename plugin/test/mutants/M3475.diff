@@ -1,0 +1,12 @@
+# M3475: a device that can still sync is offered Forget instead of Revoke
+--- a/plugin/src/ui/settings.ts
++++ b/plugin/src/ui/settings.ts
+@@ -1002,7 +1002,7 @@
+       name: `${device.name}${this.marked(device)}${named.slice(device.name.length)}`,
+       desc: `${device.platform}, plugin ${device.app_version}${seen}${pending ? `. ${STILL_PAIRING}` : ""}`,
+     };
+-    if (device.revoked) {
++    if (!device.revoked) {
+       row.visible = () => this.revokedShown;
+       row.render = (setting) => {
+         setting.addButton((button) => button.setButtonText("Forget").onClick(() => {

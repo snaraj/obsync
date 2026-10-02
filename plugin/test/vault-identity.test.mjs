@@ -21,6 +21,7 @@ import {
   FakeServer,
   FakeTimers,
   KEYS,
+  channel,
   SECRET_B,
   SETUP_TOKEN,
   keys,
@@ -101,8 +102,9 @@ test("records sealed under another vault key are skipped by name, and the feed k
     );
   }
   assert.equal(host.notices.length, 1, "one notice for the device, not one per record");
-  assert.match(host.notices[0], /cannot read changes from "Study laptop": they are sealed with a different vault key/);
-  assert.match(host.notices[0], /On "Study laptop", restore this vault's recovery phrase/);
+  assert.deepEqual(host.toasts.map((toast) => [toast.text, toast.ms]), [[host.notices[0], 0]], "it needs the person: shown under the quietest settings, until dismissed");
+  assert.match(host.notices[0], /cannot read changes from Study laptop: they are locked with a different vault key/);
+  assert.match(host.notices[0], /On Study laptop, restore this vault's recovery phrase/);
   assert.equal(statuses.includes("offline"), false, "a reachable server is never reported offline");
   assert.equal(host.logs.some((line) => line.startsWith("feed decision=retry")), false, "nothing was retried");
   engine.stop();
@@ -265,6 +267,7 @@ function vaultKeyDialog(t, { strands, answer = null }) {
     restoreVaultKey: async (vrk) => { calls.push(`restore:${vrk}`); },
     log: (line) => logs.push(line),
   };
+  plugin.notices = channel(box, plugin);
   const modal = new VaultKeyModal({}, plugin);
   modal.contentEl = drawing();
   modal.setTitle = () => {};
@@ -320,7 +323,7 @@ test("Create on a server with no vault asks nothing, and Restore goes through th
   r.made.find((component) => component.change !== undefined).change(words.join(" "));
   await r.button("Restore").click();
   assert.deepEqual(r.calls, [`restore:${KEYS.vrk}`], "a restored phrase is never adopted unchecked");
-  assert.ok(r.notices.includes("Vault key restored."));
+  assert.ok(r.notices.includes("obsync: vault key restored."));
 });
 
 // ---- pairing a second vault -----------------------------------------------------
@@ -415,14 +418,16 @@ test("a note held at an earlier version of the server's is the vault's, and only
   assert.equal(p.logs.filter((line) => / unknown=1 older=0 /.test(line)).length, 2);
 });
 
-test("Setup on a server without registered recovery says one server holds one vault (#141)", async (t) => {
-  const p = await plugin(t, { metadata: { deviceId: null, deviceSecret: null } });
+test("a new vault key cannot take over a server that already holds a vault (#141)", async (t) => {
+  // A key made for this setup, not restored from a phrase: it sends no proof,
+  // so the occupied server says to pair or restore, never a second vault key.
+  const p = await plugin(t, { metadata: { vrk: null, deviceId: null, deviceSecret: null } });
   await p.instance.setUpAccount(SETUP_TOKEN, "obsync");
   assert.ok(p.notices.some((notice) =>
     notice.includes("This server already holds a vault, and one server holds one vault") &&
     notice.includes("Pair this device") && notice.includes("a different vault needs a server of its own")));
   assert.equal(p.notices.some((notice) => notice.includes("already_set_up")), false, "not the raw server code");
-  assert.ok(p.logs.includes("setup decision=failed reason=recovery_unavailable"));
+  assert.ok(p.logs.includes("setup decision=failed reason=already_set_up"));
   assert.equal(p.instance.state.data.deviceId, null);
 });
 
@@ -452,7 +457,7 @@ test("Setup on an older server explains already_set_up without exposing the raw 
   assert.match(p.notices[0], /restore its recovery phrase and use Setup or recover with the setup token/);
   assert.match(p.notices[0], /a different vault needs a server of its own/);
   assert.equal(p.notices[0].includes("already_set_up"), false);
-  assert.deepEqual(p.logs, ["setup decision=failed reason=already_set_up"]);
+  assert.deepEqual(p.logs.filter((line) => !line.startsWith("notice ")), ["setup decision=failed reason=already_set_up"]);
   assert.equal(p.instance.state.data.deviceId, null);
   assert.equal(p.instance.state.data.deviceSecret, null);
   assert.equal(p.starts(), 0, "refused setup cannot start syncing");

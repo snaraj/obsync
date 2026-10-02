@@ -213,6 +213,104 @@ test('a device still pairing says so beside its name, and a paired one does not'
   );
 });
 
+/* ---- the revoked fold and Forget (issue #247) ----------------------------- */
+
+const REVOKED = (n) => ({ ...DEVICE, device_id: `old-${n}`, name: `old ${n}`, revoked: true, state: 'revoked' });
+
+async function foldPage(devices) {
+  const opened = await open({
+    hash: '#devices',
+    routes: {
+      [`GET ${ADMIN}/devices`]: reply(200, { devices }),
+      [`POST ${ADMIN}/devices/old-1/archive`]: reply(204),
+    },
+  });
+  // Each body holds one fragment per device: its row, then its history row.
+  const names = (id) => opened.el(id).children.map((fragment) => fragment.children[0].field('name').textContent);
+  return { ...opened, names };
+}
+
+test('revoked devices fold under one row that counts them, closed until asked, and the toggle says so (#247)', async () => {
+  const { el, names } = await foldPage([REVOKED(1), DEVICE, REVOKED(2), { ...DEVICE, device_id: 'dev-2', name: 'phone' }, REVOKED(3)]);
+  assert.deepEqual(names('devices-body'), ['laptop', 'phone'], 'the working devices, in the main body');
+  assert.deepEqual(names('revoked-body'), ['old 1', 'old 2', 'old 3'], 'the revoked ones, in their own');
+  assert.equal(el('revoked-fold').hidden, false);
+  assert.equal(el('revoked-count').textContent, '3 revoked devices');
+  const toggle = el('revoked-toggle');
+  const state = () => [el('revoked-body').hidden, toggle.getAttribute('aria-expanded'), toggle.textContent];
+  // Closed, as index.html ships it (html.test.mjs pins that); loading the
+  // list never opens or closes it.
+  el('revoked-body').hidden = true;
+
+  toggle.click();
+  assert.deepEqual(state(), [false, 'true', 'Hide']);
+  toggle.click();
+  assert.deepEqual(state(), [true, 'false', 'Show']);
+});
+
+test('the overview says how many devices can sync, as the server counts them, not how many it lists (#268)', async () => {
+  const devices = [DEVICE, REVOKED(1), REVOKED(2), REVOKED(3)];
+  const { el, net } = await open({
+    routes: {
+      [`GET ${ADMIN}/overview`]: reply(200, overview({ account: { ...overview().account, device_count: 1 } })),
+      [`GET ${ADMIN}/devices`]: reply(200, { devices }),
+    },
+  });
+  assert.equal(el('acc-devices').textContent, '1', 'one device syncs; three revoked records are not devices');
+  assert.equal(net.of('GET', `${ADMIN}/devices`).length, 0, 'the figure is the server\'s, never a count of the list');
+});
+
+test('with no revoked device the fold is not there at all', async () => {
+  const { el, names } = await foldPage([DEVICE]);
+  assert.deepEqual(names('devices-body'), ['laptop']);
+  assert.deepEqual(names('revoked-body'), []);
+  assert.equal(el('revoked-fold').hidden, true);
+  assert.equal(el('revoked-count').textContent, '');
+  assert.equal(el('devices-archived').hidden, true, 'and nothing is said about forgotten devices');
+});
+
+test('a forgotten device is on neither body, and the page says how many are not listed (#247)', async () => {
+  const { el, names } = await foldPage([
+    DEVICE,
+    REVOKED(1),
+    { ...REVOKED(2), archived: true },
+    { ...REVOKED(3), archived: true },
+  ]);
+  assert.deepEqual(names('devices-body'), ['laptop']);
+  assert.deepEqual(names('revoked-body'), ['old 1'], 'a forgotten device is not under the fold');
+  assert.equal(el('revoked-count').textContent, '1 revoked device');
+  assert.equal(el('devices-archived').hidden, false);
+  assert.match(el('devices-archived').textContent, /^2 forgotten devices are not listed\./);
+});
+
+test('Forget on a revoked device asks first, then archives once with the CSRF header, and says so (#247)', async () => {
+  const { net, el, document } = await foldPage([DEVICE, REVOKED(1)]);
+  const [laptop, old] = document.clonesOf('tpl-device');
+  assert.equal(laptop.field('revoke-open').textContent, '', 'a working device keeps Revoke as index.html has it');
+  assert.equal(old.field('revoke-open').textContent, 'Forget');
+  assert.equal(old.field('revoke-do').textContent, 'Confirm forget');
+  assert.equal(old.field('confirm-text').textContent, 'Forget old 1? It leaves this list for good. It already cannot sync, '
+    + 'and the server goes on refusing it for that reason: its record stays, so the versions it wrote keep its name. '
+    + 'Pair it again to bring it back.');
+
+  old.field('revoke-open').click();
+  await settle();
+  assert.equal(old.field('confirm').hidden, false);
+  assert.deepEqual(net.of('POST', `${ADMIN}/devices/old-1/archive`), [], 'asking is not forgetting');
+  old.field('revoke-cancel').click();
+  assert.equal(old.field('confirm').hidden, true);
+
+  old.field('revoke-open').click();
+  old.field('revoke-do').click();
+  await settle();
+  const posts = net.of('POST', `${ADMIN}/devices/old-1/archive`);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].headers['X-Obsync-Csrf'], CSRF);
+  assert.deepEqual(net.of('POST', `${ADMIN}/devices/old-1/revoke`), [], 'a revoked device is never revoked again');
+  assert.equal(el('status').textContent, 'old 1 is forgotten.');
+  assert.equal(net.of('GET', `${ADMIN}/devices`).length, 2, 'and the list is read again');
+});
+
 /* ---- the page starts itself in a browser -------------------------------- */
 
 // Every test above hands `start()` its own stand-ins, which is what makes the

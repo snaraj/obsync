@@ -25,6 +25,15 @@ pub struct AccountRecord {
     pub quota_bytes: Option<u64>,
     /// SHA-256 verifier for a domain-separated vault recovery proof; no content key.
     pub recovery_verifier: Option<String>,
+    /// When that verifier was registered. `None` with a verifier means it was
+    /// registered before the server kept the time (1.1.4 and earlier), which
+    /// the last-device rule treats as long ago (`Store::revoke_device_unless_last`).
+    pub recovery_registered: Option<UnixMs>,
+    /// When the operator's reset cleared the verifier, which arms one
+    /// re-enrolment by setup token and recovery proof (`api::setup::create`).
+    /// Registering any verifier spends it, so it stands only while none does.
+    /// `None` for an account never reset, whose recovery stays unavailable.
+    pub recovery_cleared: Option<UnixMs>,
     /// Ciphertext bytes currently stored.
     pub used_bytes: u64,
 }
@@ -97,6 +106,10 @@ pub struct DeviceRecord {
     pub last_sign_in: Option<UnixMs>,
     /// Last version this device wrote.
     pub last_edit: Option<UnixMs>,
+    /// Last heartbeat: only a started sync sends one, so a pairing creator
+    /// reads it as the new device having kept the vault key (issue #290). Its
+    /// presence is the evidence, whatever second it shares with a sign-in.
+    pub last_heartbeat: Option<UnixMs>,
     /// Connecting address, as the edge or a trusted proxy reported it.
     pub address: Option<String>,
     /// Country, as the edge reported it.
@@ -105,6 +118,12 @@ pub struct DeviceRecord {
     pub policy: DevicePolicy,
     /// Where the device is in its life.
     pub state: DeviceState,
+    /// Taken off the routine device lists (issue #247). It is a property of
+    /// a REVOKED device, never a state of its own: the record stays, it is
+    /// still answered `403 device_revoked`, and it still names the versions
+    /// it wrote. A client that does not know the flag sees the device it
+    /// always saw.
+    pub archived: bool,
 }
 
 impl DeviceRecord {
@@ -507,6 +526,9 @@ pub enum StoreError {
     /// The device is the account's only ACTIVE one, and revoking it would
     /// leave an account nothing can ever sync again.
     LastActiveDevice,
+    /// The device is the account's only ACTIVE one and its recovery key is
+    /// younger than [`crate::storage::RECOVERY_HOLD_MS`].
+    RecoveryTooNew,
     /// The device is revoked.
     DeviceRevoked,
     /// The device claimed a pairing but nobody has approved it.
@@ -515,6 +537,10 @@ pub enum StoreError {
     /// Deletion destroys the record outright, so it is reserved for a claim
     /// nobody approved; an approved device is revoked instead (issue #88).
     DeviceNotPending,
+    /// An archive named a device that is not revoked. Archiving takes a
+    /// device off the routine lists, so it is reserved for one that can no
+    /// longer sync; a working device is revoked first (issue #247).
+    DeviceNotRevoked,
     /// No such file.
     UnknownFile,
     /// No such domain: no file the store holds is in it.
@@ -594,9 +620,13 @@ impl fmt::Display for StoreError {
             }
             StoreError::UnknownDevice => f.write_str("unknown device"),
             StoreError::LastActiveDevice => f.write_str("the only active device"),
+            StoreError::RecoveryTooNew => {
+                f.write_str("the only active device, and its recovery key is too new")
+            }
             StoreError::DeviceRevoked => f.write_str("device revoked"),
             StoreError::DevicePending => f.write_str("device pending approval"),
             StoreError::DeviceNotPending => f.write_str("device is not pending approval"),
+            StoreError::DeviceNotRevoked => f.write_str("device is not revoked"),
             StoreError::TooManyHeads { heads, max } => {
                 write!(f, "too many heads: {heads} heads, max {max}")
             }
@@ -630,10 +660,28 @@ impl From<io::Error> for StoreError {
 }
 
 impl StoreError {
+    /// Whether the FILESYSTEM refused for want of room: `ENOSPC`, or a
+    /// filesystem quota's `EDQUOT`. The watermark cannot see either coming
+    /// when a declared capacity is larger than the disk (the standard library
+    /// has no statvfs), so this is how a really full disk reaches a device,
+    /// and it must read as full, never as a server fault (issue #291).
+    pub fn out_of_space(&self) -> bool {
+        matches!(
+            self,
+            StoreError::Io(e) if matches!(
+                e.kind(),
+                io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded
+            )
+        )
+    }
+
     /// The snake_case refusal code for this error (`docs/protocol.md`).
     ///
     /// A `&'static str`, so it can be logged without carrying runtime data.
-    pub const fn code(&self) -> &'static str {
+    pub fn code(&self) -> &'static str {
+        if self.out_of_space() {
+            return "storage_full";
+        }
         match self {
             StoreError::SidMismatch { .. } => "sid_mismatch",
             StoreError::LengthMismatch { .. } => "length_mismatch",
@@ -647,9 +695,11 @@ impl StoreError {
             StoreError::SeqAhead { .. } => "seq_ahead",
             StoreError::UnknownDevice => "unknown_device",
             StoreError::LastActiveDevice => "last_device",
+            StoreError::RecoveryTooNew => "recovery_too_new",
             StoreError::DeviceRevoked => "device_revoked",
             StoreError::DevicePending => "device_pending",
             StoreError::DeviceNotPending => "device_not_pending",
+            StoreError::DeviceNotRevoked => "device_not_revoked",
             StoreError::TooManyHeads { .. } => "too_many_heads",
             StoreError::UnknownFile => "unknown_file",
             StoreError::UnknownDomain => "unknown_domain",
@@ -742,6 +792,39 @@ mod tests {
         };
         assert_eq!(err.to_string(), "unsafe posture on the server_key: symlink");
         assert_eq!(err.code(), "unsafe_posture");
+    }
+
+    #[test]
+    fn a_filesystem_with_no_room_is_storage_full_and_nothing_else_is() {
+        // ENOSPC is 28 on Linux and macOS alike; EDQUOT differs, so its KIND.
+        for full in [
+            io::Error::from_raw_os_error(28),
+            io::Error::from(io::ErrorKind::StorageFull),
+            io::Error::from(io::ErrorKind::QuotaExceeded),
+        ] {
+            let err = StoreError::from(full);
+            assert!(err.out_of_space(), "{err}");
+            assert_eq!(err.code(), "storage_full", "{err}");
+        }
+        // Every other refusal of the volume stays a fault of the server.
+        for other in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::ReadOnlyFilesystem,
+            io::ErrorKind::NotADirectory,
+            io::ErrorKind::FileTooLarge,
+        ] {
+            let err = StoreError::from(io::Error::from(other));
+            assert!(!err.out_of_space(), "{err}");
+            assert_eq!(err.code(), "io_error", "{err}");
+        }
+        // A journal a full volume FAULTED stays faulted: only a restart
+        // clears it, so it must never read as a full disk that frees itself.
+        let faulted = StoreError::JournalFaulted {
+            io: io::ErrorKind::StorageFull,
+            rollback_io: io::ErrorKind::StorageFull,
+        };
+        assert!(!faulted.out_of_space());
+        assert_eq!(faulted.code(), "journal_faulted");
     }
 
     #[test]

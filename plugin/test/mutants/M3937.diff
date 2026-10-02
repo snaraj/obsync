@@ -1,0 +1,12 @@
+# M3937: a question whose click opens something drops it
+--- a/plugin/src/notices.ts
++++ b/plugin/src/notices.ts
+@@ -327,7 +327,7 @@
+   /** A question or security notice: its own toast, replacing the one of its key. */
+   private slot(key: string, text: string, ms: number, notice: SyncNotice): void {
+     this.close(key);
+-    this.slots.set(key, { drawn: this.screen.draw(text, ms, notice.actions ?? [], notice.open), at: this.screen.now(), ms });
++    this.slots.set(key, { drawn: this.screen.draw(text, ms, notice.actions ?? []), at: this.screen.now(), ms });
+   }
+ 
+   /**

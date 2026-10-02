@@ -1,0 +1,12 @@
+# M4004: a disk call's budget ignores the bytes it moves (#307)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -361,7 +361,7 @@
+   late?: (value: T) => void,
+ ): Promise<T> {
+   const started = Date.now();
+-  const budget = DISK_CALL_MS + Math.ceil(bytes / 1024);
++  const budget = DISK_CALL_MS;
+   return new Promise((resolve, reject) => {
+     const id = diskCallCount++;
+     diskCalls.set(id, {

@@ -1,0 +1,12 @@
+# M3451: a version that arrives starts the answer clock, written into the note or not (the #278 misfire)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -2712,6 +2712,8 @@
+    */
+   private async receive(context: SyncContext, change: ChangeRecord): Promise<ApplyResult | null> {
+     if (await this.background(context, change)) return null;
++    const arrived = context.state.pathByFileId(change.file_id);
++    if (arrived !== undefined) context.arrivals.set(arrived, context.now());
+     // An arrival no longer moves the clock an answer is measured from: only a
+     // write does (`pull.ts`, `commitMarked`, issue #278), and none lands over
+     // a save not yet judged, so no save needs judging here first.

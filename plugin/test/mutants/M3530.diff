@@ -1,0 +1,13 @@
+# M3530: a new note's push waits for its own save again, inside its upload slot (#274)
+--- a/plugin/src/sync/push.ts
++++ b/plugin/src/sync/push.ts
+@@ -616,8 +616,7 @@
+     // again while the note is still exactly what was posted (`engine.ts`,
+     // `survey`, #181), so no second id is minted. An edit of a recorded note,
+     // or a file of many chunks, is saved here as before.
+-    if (record === undefined && single !== null && context.defer !== undefined) context.defer();
+-    else await context.state.save();
++    await context.state.save();
+   }
+   // The upload's own receipt: what crossed the wire while this run was in
+   // flight and the budget it is measured against (requirement 12). The

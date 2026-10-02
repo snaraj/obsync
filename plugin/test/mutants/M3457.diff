@@ -1,0 +1,12 @@
+# M3457: a merge this device made counts as an edit made here, and every merge over it is announced (#279)
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2892,7 +2892,7 @@
+         // others type in merged every arrival over its own last merge, and
+         // announced each one, 58 in a minute.
+         const recorded = context.state.fileByPath(localPath);
+-        const ours = (ownHead?.device_id === context.deviceId && ownHead.parents.length < 2) ||
++        const ours = (ownHead?.device_id === context.deviceId) ||
+           (before !== null && (recorded?.mtime !== before.mtime || recorded.size !== before.size));
+         // A FAST-FORWARD OVER AN UNPUSHED EDIT IS THE PUSH'S TO PUBLISH. 1.1.2
+         // kept a conflict copy of every version another device sent while

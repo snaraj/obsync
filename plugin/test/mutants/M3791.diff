@@ -1,0 +1,12 @@
+# M3791: the status does not count an unsent change (#293)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3259,7 +3259,7 @@
+     // flight is one file of work, and so is one a push gave up on (#293) or
+     // one waiting on an editor, queued or pushed again. The queued push still
+     // goes: it is the one that sends a change made during the first.
+-    const paths = new Set([...this.queue, ...this.pushing.keys(), ...this.unsent.keys(), ...waiting]);
++    const paths = new Set([...this.queue, ...this.pushing.keys(), ...waiting]);
+     const work = paths.size + this.pulls;
+     // A NOTE WAITING ON AN EDITOR HERE IS NAMED (issue #252): a count
+     // alone read "syncing 1" for minutes and said nothing of what to do.

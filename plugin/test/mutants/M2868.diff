@@ -1,12 +1,12 @@
 # M2868: a push the stop ended logs at warn level as stopped
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2074,7 +2074,7 @@
+@@ -2710,7 +2710,7 @@
        // A push the stop cut at a chunk boundary is not a failure: the file is
        // still unsent, and the next start's pass queues it again.
        if (!this.running && stopped(error)) {
--        context.host.log("push path_class=file decision=cancelled reason=engine_stopped");
-+        context.host.log("push path_class=file decision=stopped reason=engine_stopped");
+-        context.host.log(`push path_class=${pathClass} decision=cancelled reason=engine_stopped`);
++        context.host.log(`push path_class=${pathClass} decision=stopped reason=engine_stopped`);
          return;
        }
        // Nor is a path that went away while it waited its turn (issue #164):

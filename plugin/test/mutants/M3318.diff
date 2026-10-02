@@ -1,0 +1,12 @@
+# M3318: a folder already gone when the host removes it is a failure (issue #266)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2707,7 +2707,7 @@
+       } catch (error) {
+         const code = (error as { code?: unknown }).code;
+         if (code === "ENOTEMPTY" || code === "EEXIST") return 1;
+-        if (code !== "ENOENT") throw error;
++        throw error;
+       }
+     } else {
+       for (const file of junk) await adapter.remove(file);

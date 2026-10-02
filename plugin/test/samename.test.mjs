@@ -27,7 +27,6 @@ const require = createRequire(import.meta.url);
 const { applyChange, settleBeside, yieldName } = require("../build/sync/pull.js");
 const { pushFile, sidDigest } = require("../build/sync/push.js");
 const { conflictCopyPath } = require("../build/sync/conflict.js");
-const { QUIET_MS } = require("../build/sync/engine.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 const NOTE = "Notes/Same.md";
@@ -669,7 +668,7 @@ test("when no name is free this device keeps its own note and takes none", async
 
   assert.equal(r.host.text(NOTE), MINE, "the note was moved or replaced with nowhere to put it");
   assert.equal(r.state.fileByPath(NOTE).fileId, HIGHER, "and this device still holds it under its own id");
-  assert.match(r.host.notices.join(" "), /could not place/);
+  assert.match(r.host.notices.join(" "), /found no free name for .+'s copy beside it/);
   // A refusal is terminal. The name is free to write into only because the
   // move RENAMED the note out of it, so a device that moved nothing must
   // never reach the write at that name -- not even to find it occupied.
@@ -1092,14 +1091,15 @@ test("an edit made while a note is being pushed is not left behind", async (t) =
   await timers.run(STEP_MS, () => !waiting);
   await entered.promise;
 
-  // The user edits the note while that publish is still in flight, and the
-  // watcher's debounce and the queue both run to completion on it.
   // The user edits the note while that publish is still in flight. The
   // watcher's quiet period has to pass before the edit is queued at all
-  // (#99), so the clock is advanced through it with the push still held --
-  // which is what puts the second request INSIDE the first push.
+  // (#99), so the clock walks until the edit's request has joined the push
+  // still held -- which is what puts the second request INSIDE the first push
+  // -- and no further: a periodic scan coming due meanwhile waits for the pull
+  // holding that push (#244), runs after the release, and would be a second
+  // route for the edit.
   a.host.write(SAME, LATER, 4000);
-  await timers.run(QUIET_MS + STEP_MS);
+  await timers.run(STEP_MS, () => a.engine.again.has(SAME));
   await timers.run(STEP_MS);
 
   // AND NOT BY THE PERIODIC SCAN. From 1.1.0 a filesystem scan queues a dirty
@@ -2029,8 +2029,8 @@ test("at its push, a note with no id yet yields the name to the lower id waiting
   assert.equal(r.host.files.get(moved[0]).mtime, 2000, "the moved note took a time it never had");
   assert.ok(r.host.logs.includes(`push decision=same_name_tiebreak winner=${LOWEST} role=rename file=${record.fileId}`),
     r.host.logs.join(" | "));
-  assert.deepEqual(r.host.notices, [`obsync found two different notes named ${NOTE}. This device's is now "${moved[0]}", ` +
-    "and the other device's keeps the name."]);
+  assert.deepEqual(r.host.notices, [`obsync: found two different notes named "Same": this device's is now "${moved[0].slice(moved[0].lastIndexOf("/") + 1, -3)}", ` +
+    "and another device's keeps the name."]);
 });
 
 test("at its push, a note with no id yet that sorts below the waiting one keeps the name, and its id is kept for the push (#122)", async () => {
