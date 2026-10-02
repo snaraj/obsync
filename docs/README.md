@@ -50,6 +50,18 @@ version you run. There is no beta channel and no pre-release tag.
 
 ## Internals
 
+### Planned CLI and MCP capabilities
+
+These documents describe planned work, not commands available in the current release.
+
+| Page | What it answers |
+| --- | --- |
+| [CLI and MCP design](design/cli-mcp-v1.1.6.md) | Staged offline CLI, management auth, native existing-server setup/device lifecycle and MCP observe; deferred storage/recovery scope |
+| [CLI and MCP security contract](security/cli-mcp-v1.1.6.md) | Trust boundaries, credential custody and required security evidence |
+| [CLI and MCP live acceptance](validation-plans/cli-mcp-v1.1.6.md) | Per-slice gate unions, real application/device proof, measured speed and public installation |
+
+### Current implementation
+
 | Page | What it answers |
 | --- | --- |
 | [Architecture](architecture.md) | How the whole system is built, and every environment variable |
