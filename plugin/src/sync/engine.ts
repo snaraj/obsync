@@ -73,7 +73,7 @@ import {
   saveDomainMap,
   soleDomain,
 } from "../domainmap";
-import { State, isPushed } from "../state";
+import { State, UNVERIFIED_LANDING, isPushed } from "../state";
 import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, MAX_WAIT_SECONDS, NOT_OBSYNC, RESTART_CODES, SessionEnded, Transport, certificateRefusal } from "../transport";
 import { VaultPathError, errorText, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
@@ -4500,8 +4500,12 @@ export class SyncEngine {
     // pull.ts). A note emptied here has no such version ahead -- the person
     // emptied what this device held -- and is sent as ever; where both
     // happened before this device could send, the other version's text wins
-    // and nothing is lost. A walk that fails holds an emptied note this device
-    // records the same way: never sent empty on no evidence.
+    // and nothing is lost. A walk that fails holds every empty file the same
+    // way, never sent empty on no evidence, but for this run only
+    // (`UNVERIFIED_LANDING`; a new file has no record to hold it by, review of
+    // 5f183db1): the feed's version is written over a download's landing, and
+    // the next start that reads the feed judges any file still empty, so a
+    // note the person emptied is sent then.
     const emptied = tombstones ? fresh.filter((file) => file.size === 0 && !settled.has(file.path)) : [];
     const walked = !this.ownRead;
     const own = tombstones ? await this.ownNotes(context, untracked.length + emptied.length) : null;
@@ -4511,7 +4515,7 @@ export class SyncEngine {
       const record = context.state.fileByPath(file.path);
       const note = own?.notes.get(file.path);
       const ahead = note !== undefined && note.version_id !== record?.versionId;
-      const mark = ahead ? note.file_id : blind ? record?.fileId : undefined;
+      const mark = ahead ? note.file_id : blind ? UNVERIFIED_LANDING : undefined;
       if (mark === undefined) continue;
       context.state.data.dropped[file.path] = mark;
       settled.add(file.path);

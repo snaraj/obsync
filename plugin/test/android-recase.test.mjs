@@ -1204,23 +1204,64 @@ for (const existing of [false, true]) {
   });
 }
 
-test("an existing note's empty file is held, unverified, when the start cannot read the feed, and nothing is sent (#248)", async (t) => {
-  const { r, PATH } = await stoppedAfterEmptyWrite(t, true);
-  // The walk of the feed the start's pass makes, and its one retry, never arrive.
+for (const existing of [false, true]) {
+  test(`${existing ? "an existing" : "a new"} note's empty file is held, unverified, when the start cannot read the feed, and nothing is sent (#248)`, async (t) => {
+    const { r, PATH } = await stoppedAfterEmptyWrite(t, existing);
+    // The walk of the feed the start's pass makes, and its one retry, never arrive.
+    let lost = 0;
+    r.lost = (request) => request.method === "GET" && request.url.includes("wait=0&limit=1000") && lost++ < 2;
+    const again = await phone(t, r);
+    await again.engine.start();
+    await r.timers.run(STEP_MS, () => r.vault.text(PATH) === THEIRS && settled(again, PATH))
+      .catch((error) => { throw new Error(`${error.message}: ${story({ ...r, b: again })} ${again.logs.join(" | ")}`); });
+    await r.timers.run(STEP_MS);
+    await again.engine.syncNow();
+    await r.timers.run(STEP_MS);
+
+    assert.ok(again.logs.some((line) => line.startsWith("reconcile decision=held_failed ")), again.logs.join(" | "));
+    assert.deepEqual(again.logs.filter((line) => line.includes("reason=unfinished_download")),
+      [`reconcile decision=held reason=unfinished_download files=1 unverified=1 budget_ms=5000 duration_ms=0`]);
+    const sent = (await sentPaths(r.server, r.keys.manifestKey)).filter((frame) => frame.device === PHONE && !frame.folder);
+    assert.deepEqual(sent, [], `the restarted phone sent what its empty file said: ${again.logs.join(" | ")}`);
+    assert.equal(r.a.host.text(PATH), THEIRS);
+    assert.equal(again.state.data.dropped[PATH], undefined, "the mark outlived the download that landed");
+    assert.deepEqual(again.notices, []);
+  });
+}
+
+for (const existing of [false, true]) {
+test(`${existing ? "a note emptied" : "a new note made empty"} while the phone was stopped is held when the start cannot read the feed, and the next start that can sends it (#248)`, async (t) => {
+  const PATH = "Crash/Fresh.md";
+  const r = await seeded(t, { "Crash/Kept.md": BODY, ...(existing ? { [PATH]: OTHER } : {}) });
+  r.b.kill();
+  r.vault.seed(PATH, "", 7000);
   let lost = 0;
   r.lost = (request) => request.method === "GET" && request.url.includes("wait=0&limit=1000") && lost++ < 2;
-  const again = await phone(t, r);
-  await again.engine.start();
-  await r.timers.run(STEP_MS, () => r.vault.text(PATH) === THEIRS && settled(again, PATH));
+  const blind = await phone(t, r);
+  await blind.engine.start();
+  await r.timers.run(STEP_MS, () => blind.logs.some((line) => line.includes("reason=unfinished_download")));
   await r.timers.run(STEP_MS);
+  await blind.engine.syncNow();
+  await r.timers.run(STEP_MS);
+  const frames = r.server.journal.length;
+  assert.deepEqual((await sentPaths(r.server, r.keys.manifestKey)).filter((frame) => frame.device === PHONE && !frame.folder), [],
+    `a start that could not read the feed sent an empty new note: ${blind.logs.join(" | ")}`);
+  assert.equal(blind.state.data.dropped[PATH], "unverified");
+  blind.kill();
 
-  assert.ok(again.logs.some((line) => line.startsWith("reconcile decision=held_failed ")), again.logs.join(" | "));
-  assert.deepEqual(again.logs.filter((line) => line.includes("reason=unfinished_download")),
-    [`reconcile decision=held reason=unfinished_download files=1 unverified=1 budget_ms=5000 duration_ms=0`]);
-  const sent = (await sentPaths(r.server, r.keys.manifestKey)).filter((frame) => frame.device === PHONE && !frame.folder);
-  assert.deepEqual(sent, [], `the restarted phone sent what its empty file said: ${again.logs.join(" | ")}`);
-  assert.equal(again.state.data.dropped[PATH], undefined);
+  // The next start reads the feed: no version is ahead at that name, so the
+  // empty note is the person's own, and it is sent as it always was.
+  const next = await phone(t, r);
+  assert.equal(next.state.data.dropped[PATH], undefined, "an unverified mark outlived its run");
+  await next.engine.start();
+  await r.timers.run(STEP_MS, () => r.server.journal.length > frames && next.state.fileByPath(PATH)?.size === 0);
+  await r.timers.run(STEP_MS);
+  const sent = (await sentPaths(r.server, r.keys.manifestKey)).slice(frames);
+  assert.deepEqual(sent, [{ path: PATH, deleted: false, folder: false, device: PHONE, size: 0 }], next.logs.join(" | "));
+  assert.deepEqual(next.logs.filter((line) => line.includes("reason=unfinished_download")), []);
+  assert.equal(r.a.host.text(PATH), "");
 });
+}
 
 test("a note emptied on purpose while the phone was stopped is still sent empty at its next start (#248)", async (t) => {
   const PATH = "Crash/Note.md";

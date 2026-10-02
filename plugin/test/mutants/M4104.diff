@@ -1,0 +1,12 @@
+# M4104: a start's unverified mark is loaded again, so the next start never judges the file (review of 5f183db1)
+--- a/plugin/src/state.ts
++++ b/plugin/src/state.ts
+@@ -576,7 +576,7 @@
+   if (isRecord(dropped)) {
+     // `UNVERIFIED_LANDING` is no file id and is not loaded: by design.
+     for (const [path, fileId] of Object.entries(dropped)) {
+-      if (isVaultPath(path) && typeof fileId === "string" && isHex(fileId, 16)) data.dropped[path] = fileId;
++      if (isVaultPath(path) && typeof fileId === "string" && (isHex(fileId, 16) || fileId === "unverified")) data.dropped[path] = fileId;
+     }
+   }
+   const paused = loaded["paused"];

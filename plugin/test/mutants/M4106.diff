@@ -1,4 +1,4 @@
-# M3392: a walk of the feed that fails lets an emptied note go out empty (#248)
+# M4106: a walk that fails holds only a recorded note, so a new download's empty landing is sent (review of 5f183db1)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
 @@ -4515,7 +4515,7 @@
@@ -6,7 +6,7 @@
        const note = own?.notes.get(file.path);
        const ahead = note !== undefined && note.version_id !== record?.versionId;
 -      const mark = ahead ? note.file_id : blind ? UNVERIFIED_LANDING : undefined;
-+      const mark = ahead ? note.file_id : undefined;
++      const mark = ahead ? note.file_id : blind ? record?.fileId : undefined;
        if (mark === undefined) continue;
        context.state.data.dropped[file.path] = mark;
        settled.add(file.path);
