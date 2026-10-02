@@ -19,15 +19,28 @@ $Name = 'ob' + [Guid]::NewGuid().ToString('N').Substring(0, 14)
 $Created = $false
 try {
     $Trust = [IO.Path]::Combine($Root, 'trust')
+    $RequestText = [ordered]@{v=1;op='setup';path=$Trust;destination=''} | ConvertTo-Json -Compress
+    $RoundTrip = ConvertFrom-Json -InputObject $RequestText
+    if ($RoundTrip.path -cne $Trust -or $RoundTrip.op -cne 'setup') { throw 'Native JSON producer round trip failed.' }
+    $Request = [Text.UTF8Encoding]::new($false, $true).GetBytes($RequestText)
+    $Hash = [Security.Cryptography.SHA256]::Create()
+    try { Write-Output ('producer_json_sha256=' + [BitConverter]::ToString($Hash.ComputeHash($Request)).Replace('-', '').ToLowerInvariant()) } finally { $Hash.Dispose() }
+    # Temporary hosted-only diagnostic copy: print a digest, never input text.
+    # The embedded helper exercised by Node below remains byte-for-byte original.
+    $Diagnostic = [IO.Path]::Combine($Root, 'setup-diagnostic.ps1')
+    $Original = [IO.File]::ReadAllText([IO.Path]::GetFullPath('cli/windows-files.ps1'))
+    $At = '$Request = ConvertFrom-Json -InputObject $Raw'
+    $Trace = '$h=[Security.Cryptography.SHA256]::Create();try{[Console]::Out.WriteLine("consumer_json_sha256="+[BitConverter]::ToString($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($Raw))).Replace("-","").ToLowerInvariant())}finally{$h.Dispose()}'
+    if (!$Original.Contains($At)) { throw 'Diagnostic source marker differs.' }
+    [IO.File]::WriteAllText($Diagnostic, $Original.Replace($At, $Trace + "`n" + $At), [Text.UTF8Encoding]::new($false, $true))
     # Use an explicit UTF-8 byte pipe, as the Node adapter does. PowerShell's
     # object pipeline must not choose serialization for this JSON protocol.
     $Start = [Diagnostics.ProcessStartInfo]::new($Shell)
-    $Start.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + [IO.Path]::GetFullPath('cli/windows-files.ps1') + '"'
+    $Start.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + $Diagnostic + '"'
     $Start.UseShellExecute = $false
     $Start.RedirectStandardInput = $true
     $Setup = [Diagnostics.Process]::Start($Start)
     try {
-        $Request = [Text.UTF8Encoding]::new($false, $true).GetBytes(([ordered]@{v=1;op='setup';path=$Trust;destination=''} | ConvertTo-Json -Compress))
         $Setup.StandardInput.BaseStream.Write($Request, 0, $Request.Length)
         $Setup.StandardInput.Close()
         if (!$Setup.WaitForExit(15000)) { $Setup.Kill(); $Setup.WaitForExit(); throw 'Trusted OS setup timed out.' }
