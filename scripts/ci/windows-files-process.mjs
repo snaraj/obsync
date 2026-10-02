@@ -33,7 +33,7 @@ if (phase === 'prepare') {
     const started = performance.now();
     const result = spawnSync(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(code, 'utf16le').toString('base64')], {
       input, encoding: 'utf8', timeout: 5000, maxBuffer: 1024, windowsHide: true,
-      cwd: system, env: { SystemRoot: system.slice(0, -'\\System32'.length) },
+      cwd: system, env: { SystemRoot: system.slice(0, -'\\System32'.length), PSModulePath: `${system}\\WindowsPowerShell\\v1.0\\Modules` },
     });
     console.log(JSON.stringify({ event: 'native_launch_probe', name, status: result.status, signal: result.signal,
       error: result.error?.code, stdout_bytes: result.stdout?.length, stderr_bytes: result.stderr?.length,

@@ -122,7 +122,10 @@ export class WindowsFiles {
         // No PATH, preload, profile, CWD or arbitrary command selection.
         const child = this.spawn.spawn(this.powershell.path,
           ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", this.command],
-          { shell: false, windowsHide: true, cwd: system, env: { SystemRoot: system.slice(0, -"\\System32".length) }, stdio: ["pipe", "pipe", "pipe"] });
+          { shell: false, windowsHide: true, cwd: system, env: {
+            SystemRoot: system.slice(0, -"\\System32".length),
+            PSModulePath: `${system}\\WindowsPowerShell\\v1.0\\Modules`,
+          }, stdio: ["pipe", "pipe", "pipe"] });
         let output = "", diagnostics = "", size = 0, refused = false;
         const decoder = new TextDecoder("utf-8", { fatal: true });
         const fail = () => { refused = true; child.kill(); };
