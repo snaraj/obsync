@@ -41,7 +41,7 @@ on:
         type: choice
         required: true
         default: full
-        options: [full, windows-files]
+        options: [full, windows-files, windows-live]
   pull_request:
     paths:
       - '.github/workflows/desktop-matrix.yml'
@@ -61,7 +61,7 @@ concurrency:
 
 jobs:
   obsidian-linux:
-    if: github.event_name != 'workflow_dispatch' || inputs.journey != 'windows-files'
+    if: github.event_name != 'workflow_dispatch' || inputs.journey == 'full'
     name: obsidian-linux (${{ matrix.keyring }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -118,7 +118,7 @@ jobs:
           exit 0
 
   obsidian-macos:
-    if: github.event_name != 'workflow_dispatch' || inputs.journey != 'windows-files'
+    if: github.event_name != 'workflow_dispatch' || inputs.journey == 'full'
     runs-on: macos-15
     timeout-minutes: 45
     permissions:
@@ -240,7 +240,7 @@ jobs:
           exit 0
 
   plugin-tests:
-    if: github.event_name != 'workflow_dispatch' || inputs.journey != 'windows-files'
+    if: github.event_name != 'workflow_dispatch' || inputs.journey == 'full'
     strategy:
       fail-fast: false
       matrix:
