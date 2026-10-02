@@ -288,7 +288,8 @@ contain only the implemented metadata reads the user approves. Resource bounds
 are one server plus explicit device/grant IDs or an explicitly approved all-device
 read bound. Grant creation/revoke may instead bind the principal and its direct
 children, so an approved child can receive its server-generated ID; this supplies
-no authority over unrelated grants. Descendants can only narrow bounds. Future
+no authority over unrelated grants. A child's scopes and resource bounds cannot
+exceed its parent's. Future
 devices are not silently added to an exact-ID set. Management API handlers enforce
 the same operation map as CLI; owner-device middleware cannot serve as a broad
 fallback.
