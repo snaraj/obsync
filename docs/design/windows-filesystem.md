@@ -1,7 +1,10 @@
 # Shared Windows filesystem candidate
 
 The owner approved one client native import: `cli/windows-files.ps1` may call
-`kernel32.dll!MoveFileExW` with fixed `MOVEFILE_WRITE_THROUGH` (`0x8`). The
+`kernel32.dll!MoveFileExW` with fixed `MOVEFILE_WRITE_THROUGH` (`0x8`). On
+2026-10-02 the owner also approved publication of a flushed, verified private
+single-link regular file to an absent destination on the same NTFS volume.
+No native symbol or flag was added. The
 candidate remains unavailable through public export, context and installation
 commands until native acceptance succeeds. Adding this source does not close
 Windows support or authorize another interop surface.
@@ -10,12 +13,14 @@ Windows support or authorize another interop surface.
 
 The helper accepts one bounded, canonical JSON object on stdin with exactly
 `v`, `op`, `path`, and `destination`. Operations are private inspection,
-directory creation, empty-file creation, file flushing and directory publication.
+directory creation, empty-file creation, file flushing and directory/file publication.
 There are no credential bytes, command text, script path, DLL, symbol or flag
 arguments. All refusals omit paths and native exception text. Inputs use local
 fixed NTFS drives, canonical drive-absolute paths and no reparse points, device
 names, alternate streams or existing publication destination. Publication is
-restricted to sibling directories and checks the complete bounded tree.
+restricted to sibling paths and checks the complete bounded tree or regular
+file. The Node adapter proves single-link file custody before and after the
+native call; the helper reads each private DACL and flushes every file.
 
 Private DACLs are supplied to the managed directory/file creation calls and
 read back. Existing ACLs are checked, never repaired. Private leaves allow only
@@ -55,7 +60,8 @@ established by explicitly invoked trusted OS setup. `PATH`, CWD, `SystemRoot`
 and inherited preloads cannot choose that executable. The fixed source and
 executable bytes are checked before every invocation, and the helper checks its
 actual executable against `.NET Environment.SystemDirectory` and its OS ACLs.
-The child receives no ambient environment beyond its validated OS root.
+The child receives only its validated OS root and the fixed OS PowerShell
+module directory derived from it; module discovery cannot use an inherited path.
 The one-time trusted bootstrap UI/receipt is still an integration requirement;
 self-inspection after executing an ambiently chosen binary would not solve it.
 

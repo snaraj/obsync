@@ -23,17 +23,20 @@ if (phase === 'prepare') {
     assert.ok(traced.includes(at));
     traced = traced.replace(at, `[Console]::Out.WriteLine('${index + 1}');\n${at}`);
   }
-  for (const [name, code] of [
+  for (const [name, code, extra = {}] of [
     ['startup', "[Console]::Out.WriteLine('probe')"],
     ['stdin', "$r=[IO.StreamReader]::new([Console]::OpenStandardInput(),[Text.UTF8Encoding]::new($false,$true),$false,4096);[Console]::Out.WriteLine($r.ReadToEnd().Length)"],
     ['json', "[Console]::Out.WriteLine((ConvertFrom-Json '{\"v\":1}').v)"],
+    ['json-windir', "[Console]::Out.WriteLine((ConvertFrom-Json '{\"v\":1}').v)", { windir: system.slice(0, -'\\System32'.length) }],
+    ['json-explicit', "Import-Module ($PSHOME+'\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1');[Console]::Out.WriteLine((ConvertFrom-Json '{\"v\":1}').v)"],
+    ['json-framework', "$null=[Reflection.Assembly]::Load('System.Web.Extensions, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35');$j=[Web.Script.Serialization.JavaScriptSerializer]::new();[Console]::Out.WriteLine($j.DeserializeObject('{\"v\":1}').v)"],
     ['trace', traced],
     ['helper', source],
   ]) {
     const started = performance.now();
     const result = spawnSync(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(code, 'utf16le').toString('base64')], {
       input, encoding: 'utf8', timeout: 5000, maxBuffer: 1024, windowsHide: true,
-      cwd: system, env: { SystemRoot: system.slice(0, -'\\System32'.length), PSModulePath: `${system}\\WindowsPowerShell\\v1.0\\Modules` },
+      cwd: system, env: { SystemRoot: system.slice(0, -'\\System32'.length), PSModulePath: `${system}\\WindowsPowerShell\\v1.0\\Modules`, ...extra },
     });
     console.log(JSON.stringify({ event: 'native_launch_probe', name, status: result.status, signal: result.signal,
       error: result.error?.code, stdout_bytes: result.stdout?.length, stderr_bytes: result.stderr?.length,
@@ -87,5 +90,21 @@ if (phase === 'prepare') {
   assert.deepEqual({ dev: String(actual.dev), ino: String(actual.ino) }, expected);
   assert.equal(await readFile(join(destination, 'sentinel.txt'), 'utf8'), 'synthetic private custody sentinel\n');
   await files.inspect(join(destination, 'sentinel.txt'));
+  const archive = join(root, 'private-archive.pending'), archiveTarget = join(root, 'private-archive.obsync');
+  await files.create(archive);
+  await writeFile(archive, 'synthetic encrypted archive bytes');
+  await files.create(archiveTarget);
+  await assert.rejects(files.publish(archive, archiveTarget));
+  assert.equal(await readFile(archiveTarget, 'utf8'), '');
+  await rm(archiveTarget);
+  const alias = join(root, 'archive-hardlink');
+  await link(archive, alias);
+  await assert.rejects(files.publish(archive, archiveTarget));
+  await rm(alias);
+  const fileIdentity = await lstat(archive, { bigint: true });
+  await files.publish(archive, archiveTarget);
+  assert.equal((await lstat(archiveTarget, { bigint: true })).ino, fileIdentity.ino);
+  assert.equal(await readFile(archiveTarget, 'utf8'), 'synthetic encrypted archive bytes');
+  await files.inspect(archiveTarget);
 }
 console.log(JSON.stringify({ event: 'windows_files_process', phase, result: 'pass' }));

@@ -185,7 +185,7 @@ export class WindowsFiles {
     this.path(stage); this.path(destination);
     if (stage.slice(0, stage.lastIndexOf("\\")) !== destination.slice(0, destination.lastIndexOf("\\"))) throw Error("same_parent_required");
     const before = await this.custody(stage);
-    if (!before.isDirectory() || await this.stat(destination)) throw Error("destination_exists");
+    if (await this.stat(destination)) throw Error("destination_exists");
     let count = 0;
     const visit = async (path: string): Promise<void> => {
       check();
@@ -199,6 +199,6 @@ export class WindowsFiles {
     await visit(stage);
     if (!this.same(await this.stat(stage), before)) throw Error("windows_identity_changed");
     await this.call("publish", stage, destination, check);
-    if (await this.stat(stage) || !this.same(await this.stat(destination), before)) throw Error("windows_publication_readback");
+    if (await this.stat(stage) || !this.same(await this.custody(destination), before)) throw Error("windows_publication_readback");
   }
 }

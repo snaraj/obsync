@@ -94,7 +94,10 @@ Numbered for citation, repo-scoped, none negotiable in code:
    every other Rust file carries `#![forbid(unsafe_code)]`. The owner-approved
    client exception is exactly `cli/windows-files.ps1`: its only native import
    is `kernel32.dll!MoveFileExW`, called with fixed `MOVEFILE_WRITE_THROUGH`
-   (`0x8`) to publish an owned directory to an absent sibling on local NTFS.
+   (`0x8`) to publish an owned directory or a verified private single-link
+   regular file to an absent sibling on the same local NTFS volume. The file
+   extension was explicitly owner-approved on 2026-10-02; it does not add a
+   native symbol or allow replacement. Every source file is flushed first.
    No replacement, copy fallback, reboot scheduling, arbitrary DLL/symbol,
    native helper binary or runtime dependency is permitted. Private DACL
    creation and file flushing use OS PowerShell 5.1's built-in .NET Framework.

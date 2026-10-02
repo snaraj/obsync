@@ -168,8 +168,8 @@ try {
     'publish' {
       Exact-Path $Request.destination
       Inspect-Parents $Request.destination
-      if ([IO.Path]::GetDirectoryName($Request.path) -cne [IO.Path]::GetDirectoryName($Request.destination) -or
-        !(Inspect-One $Request.path $true)) { Refuse 'same_parent_directory_required' }
+      $Directory = Inspect-One $Request.path $true
+      if ([IO.Path]::GetDirectoryName($Request.path) -cne [IO.Path]::GetDirectoryName($Request.destination)) { Refuse 'same_parent_required' }
       if ([IO.File]::Exists($Request.destination) -or [IO.Directory]::Exists($Request.destination)) { Refuse 'destination_exists' }
       Flush-Tree $Request.path
       $Assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly(
@@ -187,7 +187,7 @@ try {
       $Method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
       $Module.CreateGlobalFunctions()
       if (!$Module.GetMethod('MoveFileExW').Invoke($null, [object[]]@($Request.path, $Request.destination, [uint32]0x8))) { Refuse 'publication_io' }
-      if (!(Inspect-One $Request.destination $true)) { Refuse 'publication_readback' }
+      if ((Inspect-One $Request.destination $true) -ne $Directory) { Refuse 'publication_readback' }
     }
   }
   [Console]::Out.WriteLine('{"v":1,"ok":true}')
