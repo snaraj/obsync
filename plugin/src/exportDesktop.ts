@@ -25,6 +25,7 @@ interface Fs {
 interface Paths { resolve(...parts: string[]): string; dirname(path: string): string; basename(path: string): string; isAbsolute(path: string): boolean; sep: string }
 export interface PlainFile { path: string; size: number; mtime: number; stat: Stat }
 interface Recovery { v: 1; pid: number; target: string; stage: string; identity: string | null; reserved: string | null }
+type Boundary = () => Promise<void>;
 export class DesktopExports {
   private readonly fs: Fs;
   private readonly path: Paths;
@@ -48,21 +49,52 @@ export class DesktopExports {
     const stat = await this.stat(path);
     if (!stat?.isDirectory() || stat.isSymbolicLink()) throw new ExportError("symlink_or_directory");
   }
+  /** POSIX namespace checks; macOS ACL assurance remains a separate capability. */
+  private async boundary(parent: string): Promise<Boundary> {
+    const vault = await this.stat(this.path.resolve(this.vaultRoot));
+    if (!vault?.isDirectory() || vault.isSymbolicLink()) throw new ExportError("vault_directory");
+    const names: string[] = [], held: { path: string; stat: Stat }[] = [];
+    for (let at = parent; ; at = this.path.dirname(at)) {
+      if (names.length === 128) throw new ExportError("destination_depth");
+      names.push(at);
+      if (this.path.dirname(at) === at) break;
+    }
+    const uid = BigInt(this.process.getuid());
+    const trusted = (stat: Stat | null): stat is Stat => stat !== null && stat.isDirectory() && !stat.isSymbolicLink() &&
+      (stat.uid === 0n || stat.uid === uid) && ((stat.mode & 0o022n) === 0n || (stat.mode & 0o1000n) !== 0n);
+    // Judge from the root: a sticky writable parent protects only children
+    // owned by a trusted user, which the next entry must prove in turn.
+    for (const path of names.reverse()) {
+      const stat = await this.stat(path);
+      if (!trusted(stat)) throw new ExportError("destination_ancestor_permissions");
+      if (this.same(stat, vault)) throw new ExportError("destination_inside_vault");
+      held.push({ path, stat });
+    }
+    return async () => {
+      for (const entry of held) {
+        const stat = await this.stat(entry.path);
+        if (!trusted(stat) || !this.same(stat, entry.stat) || stat.uid !== entry.stat.uid || stat.mode !== entry.stat.mode)
+          throw new ExportError("destination_ancestor_changed");
+      }
+    };
+  }
   /** Only a fresh sibling output, outside this vault and standard vault ancestors. */
-  private async destination(input: string, bytes: number): Promise<{ target: string; parent: string }> {
+  private async destination(input: string, bytes: number): Promise<{ target: string; parent: string; guard: Boundary }> {
     if (!this.path.isAbsolute(input)) throw new ExportError("absolute_destination_required");
     const target = this.path.resolve(input), parent = this.path.dirname(target), vault = this.path.resolve(this.vaultRoot);
     if (target === vault || target.startsWith(vault + this.path.sep) || target === parent) throw new ExportError("destination_exists_or_vault");
-    await this.directories(parent);
+    const guard = await this.boundary(parent);
     for (let at = parent; ; at = this.path.dirname(at)) {
       if (await this.stat(this.path.resolve(at, ".obsidian"))) throw new ExportError("destination_inside_vault");
       if (this.path.dirname(at) === at) break;
     }
-    await this.recover(target);
+    await guard();
+    await this.recover(target, guard);
     if (await this.stat(target)) throw new ExportError("destination_exists_or_vault");
     const free = await this.fs.statfs(parent);
     if (free.bavail * free.bsize < bytes + 64 * 1024 * 1024) throw new ExportError("disk_budget");
-    return { target, parent };
+    await guard();
+    return { target, parent, guard };
   }
   private async all(handle: Handle, bytes: Bytes): Promise<void> {
     for (let at = 0; at < bytes.length;) {
@@ -80,7 +112,8 @@ export class DesktopExports {
     return this.path.resolve(this.path.dirname(target), `.obsync-export-recovery-${hex(await sha256(utf8(target)))}.json`);
   }
   /** The exact target's journal, never a scan of similarly named folders. */
-  private async recover(target: string): Promise<void> {
+  private async recover(target: string, guard: Boundary): Promise<void> {
+    await guard();
     const path = await this.recoveryPath(target), stat = await this.stat(path);
     if (!stat) return;
     if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== BigInt(this.process.getuid()) || (stat.mode & 0o077n) !== 0n || stat.size > 8192n) throw new ExportError("recovery_record");
@@ -97,37 +130,43 @@ export class DesktopExports {
     const stage = await this.stat(record.stage);
     if (stage) {
       if (stage.uid !== BigInt(this.process.getuid()) || (stage.mode & 0o077n) !== 0n || stage.isSymbolicLink() || this.identity(stage) !== record.identity) throw new ExportError("recovery_identity");
+      await guard();
       if (stage.isDirectory()) await this.discard(record.stage);
       else if (stage.isFile()) await this.fs.unlink(record.stage);
       else throw new ExportError("recovery_identity");
     }
     const reserved = await this.stat(target);
+    await guard();
     if (reserved?.isDirectory() && this.identity(reserved) === record.reserved && (await this.fs.readdir(target)).length === 0) await this.fs.rmdir(target);
     if (!this.same(await this.stat(path), stat)) throw new ExportError("recovery_identity");
     await this.fs.unlink(path); await this.flush(parent);
   }
-  private async begin(target: string): Promise<Recovery> {
+  private async begin(target: string, guard: Boundary): Promise<Recovery> {
     const record: Recovery = { v: 1, pid: this.process.pid, target, stage: this.temporary(this.path.dirname(target)), identity: null, reserved: null };
     const path = await this.recoveryPath(target);
     let created = false;
     try {
+      await guard();
       await this.file(path, async (write) => { created = true; await write(utf8(JSON.stringify(record))); });
       await this.flush(this.path.dirname(target));
       return record;
-    } catch (error) { if (created) await this.fs.unlink(path); throw error; }
+    } catch (error) { if (created) { await guard(); await this.fs.unlink(path); } throw error; }
   }
-  private async track(record: Recovery, reserved?: Stat): Promise<void> {
+  private async track(record: Recovery, guard: Boundary, reserved?: Stat): Promise<void> {
+    await guard();
     record.identity = this.identity(await this.stat(record.stage));
     if (reserved) record.reserved = this.identity(reserved);
     const temporary = this.temporary(this.path.dirname(record.target));
     let created = false;
     try {
       await this.file(temporary, async (write) => { created = true; await write(utf8(JSON.stringify(record))); });
+      await guard();
       await this.fs.rename(temporary, await this.recoveryPath(record.target));
       await this.flush(this.path.dirname(record.target));
-    } finally { if (created && await this.stat(temporary)) await this.fs.unlink(temporary); }
+    } finally { if (created) { await guard(); if (await this.stat(temporary)) await this.fs.unlink(temporary); } }
   }
-  private async finish(record: Recovery): Promise<void> {
+  private async finish(record: Recovery, guard: Boundary): Promise<void> {
+    await guard();
     await this.fs.unlink(await this.recoveryPath(record.target));
     await this.flush(this.path.dirname(record.target));
   }
@@ -137,14 +176,16 @@ export class DesktopExports {
   }
   async encrypted(target: string, index: ExportIndex, vrk: Bytes, chunk: (sid: string) => Promise<Bytes>, check: ExportCheck): Promise<void> {
     const estimated = index.files.reduce((total, file) => total + file.versions.reduce((n, version) => n + version.bytes + version.sids.length * 20, 0), 64 * 1024 * 1024);
-    const output = await this.destination(target, estimated), record = await this.begin(output.target), temporary = record.stage;
+    const output = await this.destination(target, estimated), record = await this.begin(output.target, output.guard), temporary = record.stage;
     let created = false;
     try {
-      await this.file(temporary, async (write) => { created = true; await this.track(record); await writeExport(index, vrk, chunk, write, check); });
+      await output.guard();
+      await this.file(temporary, async (write) => { created = true; await this.track(record, output.guard); await writeExport(index, vrk, chunk, write, check); });
       check();
+      await output.guard();
       await this.fs.link(temporary, output.target);
       await this.flush(output.parent);
-    } finally { if (created) await this.fs.unlink(temporary); await this.finish(record); }
+    } finally { await output.guard(); if (created) await this.fs.unlink(temporary); await this.finish(record, output.guard); }
   }
   /** A descriptor pins the input. Ranges cannot follow a later replacement name. */
   async reader(input: string): Promise<ExportReader & { close(): Promise<void> }> {
@@ -190,30 +231,35 @@ export class DesktopExports {
     await this.flush(root);
   }
   private async stage(target: string, bytes: number, check: ExportCheck, fill: (root: string) => Promise<void>): Promise<void> {
-    const output = await this.destination(target, bytes), record = await this.begin(output.target), stage = record.stage;
+    const output = await this.destination(target, bytes), record = await this.begin(output.target, output.guard), stage = record.stage;
     let created = false;
-    try { await this.fs.mkdir(stage, { mode: 0o700 }); created = true; await this.track(record); }
-    catch (error) { if (created) await this.fs.rmdir(stage); await this.finish(record); throw error; }
+    try { await output.guard(); await this.fs.mkdir(stage, { mode: 0o700 }); created = true; await this.track(record, output.guard); }
+    catch (error) { await output.guard(); if (created) await this.fs.rmdir(stage); await this.finish(record, output.guard); throw error; }
     const owned = await this.stat(stage);
     let reserved: Stat | null = null, published = false;
     try {
+      await output.guard();
       await fill(stage);
       check();
+      await output.guard();
       await this.flushTree(stage);
+      await output.guard();
       await this.fs.mkdir(output.target, { mode: 0o700 });
       reserved = await this.stat(output.target);
       if (!reserved?.isDirectory() || (await this.fs.readdir(output.target)).length !== 0) throw new ExportError("destination_collision");
-      await this.track(record, reserved);
+      await this.track(record, output.guard, reserved);
       check();
+      await output.guard();
       if (!this.same(await this.stat(stage), owned as Stat) || !this.same(await this.stat(output.target), reserved)) throw new ExportError("stage_identity");
       await this.fs.rename(stage, output.target);
       published = true;
       try { await this.flush(output.parent); }
       catch { throw new Error("The verified export is in the destination, but its directory could not be flushed. Keep the source and check the output before relying on it."); }
     } finally {
+      await output.guard();
       if (!published && owned && this.same(await this.stat(stage), owned)) await this.discard(stage);
       if (!published && reserved && this.same(await this.stat(output.target), reserved) && (await this.fs.readdir(output.target)).length === 0) await this.fs.rmdir(output.target);
-      await this.finish(record);
+      await this.finish(record, output.guard);
     }
   }
   async open(input: string, target: string, vrk: Bytes, allowServer: boolean, check: ExportCheck): Promise<{ files: number; bytes: number }> {

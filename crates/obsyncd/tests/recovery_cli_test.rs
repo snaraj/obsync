@@ -118,14 +118,8 @@ mod tests {
                 }
                 if verb == "export" {
                     command
-                        .args([
-                            "--domain",
-                            &domain.to_string(),
-                            "--key",
-                            &"00".repeat(32),
-                            "--out",
-                        ])
-                        .arg(fixture.0.join(format!("export-{complete}")));
+                        .args(["--domain", &domain.to_string(), "--out"])
+                        .arg(fixture.0.join(format!("export-{complete}.obsync")));
                 }
                 let output = command.output().expect("CLI completes");
                 let stdout = String::from_utf8(output.stdout).expect("report");
@@ -142,19 +136,36 @@ mod tests {
                         .collect::<Vec<_>>(),
                     vec![if complete {
                         "result: ok"
+                    } else if verb == "export" {
+                        "result: FAILED; no archive published"
                     } else {
                         "result: FAILED"
                     }]
                 );
-                let counter = if verb == "check" {
-                    "chunks failed:   "
+                if verb == "check" {
+                    assert!(
+                        stdout.contains(&format!("chunks failed:   {}", usize::from(!complete))),
+                        "{stdout}"
+                    );
                 } else {
-                    "missing chunks: "
-                };
-                assert!(
-                    stdout.contains(&format!("{counter}{}", usize::from(!complete))),
-                    "{stdout}"
-                );
+                    assert_eq!(stdout.contains(&format!("missing chunk: {sid}")), !complete);
+                    let archive = fixture.0.join(format!("export-{complete}.obsync"));
+                    assert_eq!(archive.exists(), complete);
+                    if complete {
+                        assert!(
+                            fs::read(archive)
+                                .expect("archive")
+                                .starts_with(b"OBSYNC-EXPORT-1\n")
+                        );
+                    }
+                    assert!(fs::read_dir(&fixture.0).expect("fixture").all(|entry| {
+                        !entry
+                            .expect("entry")
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with(".obsync-export-")
+                    }));
+                }
                 assert_eq!(
                     stderr.contains("decision=integrity_failed"),
                     !complete,
@@ -168,6 +179,8 @@ mod tests {
                 assert!(
                     summaries[0].contains(if complete {
                         "decision=ok"
+                    } else if verb == "export" {
+                        "decision=refused"
                     } else {
                         "decision=failed"
                     }),

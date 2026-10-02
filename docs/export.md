@@ -24,10 +24,11 @@ command palette, or choose the export action in obsync settings.
   text and unknown server changes are not part of this local snapshot.
 
 Use an absolute destination outside every vault; it must not exist. The
-adapter refuses the open vault and ancestors containing a standard `.obsidian`
-directory. It cannot discover another vault using a custom configuration
+adapter refuses the open vault by directory identity (including case aliases)
+and ancestors containing a standard `.obsidian` directory. It cannot discover another vault using a custom configuration
 directory, so that destination exclusion remains an acceptance gap. Existing
-files are never overwritten. A normal failure removes that attempt's stage.
+files are never overwritten. A normal failure removes that attempt's stage
+only while its destination boundary remains unchanged.
 
 For an offline server copy, stop the server and use a dedicated restored
 copy of its volumes, preserving the pristine backup:
@@ -114,7 +115,7 @@ whole vault or whole file. These are device resource policies. The server
 streams chunks in 64 KiB buffers and bounds its inventory to 64 MiB; a
 server archive beyond the device policy is refused by the current opener.
 
-Before writing, the desktop adapter checks destination ancestors, available
+Before writing, the desktop adapter checks at most 128 destination ancestors, available
 space with a 64 MiB reserve, path collisions and archive metadata. A wrong
 phrase creates no stage. Plaintext goes to a random sibling stage, with
 0700 directories and 0600 files. Every chunk authenticates before its bytes
@@ -123,8 +124,31 @@ renamed over an exclusively reserved empty destination; the parent is then
 flushed. Encrypted archives use an exclusive hard-link publication after
 the file flush. Neither route replaces an existing destination.
 
+Every output ancestor must be owned by the current OS user or root. Group or
+other write access requires a sticky directory; each child must in turn have
+a trusted owner. Directory identity, ownership and mode are rechecked around
+staging, publication and cleanup. A changed boundary refuses further writes
+or cleanup and preserves the recorded stage for inspection. These checks
+depend on local POSIX ownership, sticky-directory and atomic-rename semantics.
+Remote, FUSE and other filesystems without those semantics are unsupported;
+the current adapter does not yet prove the backing filesystem's capability.
+On Linux, a POSIX access ACL's mask is represented by the group mode bits.
+Filesystems with other ACL semantics need a separate capability check.
+
+**macOS ACL assurance is blocked.** POSIX mode bits do not bound all macOS
+ACL grants. A successful `/bin/ls -e` cannot establish absence: Apple's
+[`ls` source](https://github.com/apple-oss-distributions/file_cmds/blob/main/ls/ls.c)
+does not report every ACL retrieval failure, and its
+[`ACL printer`](https://github.com/apple-oss-distributions/file_cmds/blob/main/ls/print.c)
+can skip entries whose fields fail to read. No output parser, permission
+repair or allow-ACL fallback is used. An error-reporting native reader and
+an explicit interoperability decision are still required before claiming
+private output on macOS. The existing functional journey does not resolve
+this blocker.
+
 A caught failure or cancellation before publication removes the owned
-stage. Each destination has a private, flushed recovery journal that binds
+stage if the destination boundary remains unchanged. Each destination has a
+mode-0600, flushed recovery journal that binds
 its process ID, stage identity and reserved destination identity. Retrying
 the same destination first verifies that the old process is absent, then
 removes only that recorded stage and an unchanged empty reservation. A live
@@ -148,7 +172,7 @@ absent. Quiescent native validation must check the copied bytes independently.
 
 | Platform | Current behavior | Native acceptance |
 | --- | --- | --- |
-| macOS desktop | Encrypted export, offline open and local plain copy implemented | Native three-file journey passed; [record](validation-runs/2026-10-02-export-desktop.md) lists limits |
+| macOS desktop | Functional export/open/copy implemented; ACL assurance blocked | Native three-file journey passed before the ancestor delta; [record](validation-runs/2026-10-02-export-desktop.md) lists limits |
 | Linux desktop | Same implementation and POSIX publication requirements | NOT_RUN |
 | Windows desktop | Refuses before filesystem access; private ACL and directory publication need a supported implementation | NOT_RUN |
 | Android / iOS | Refuses export before filesystem access; no internal-vault fallback | NOT_RUN on emulator or physical phone |

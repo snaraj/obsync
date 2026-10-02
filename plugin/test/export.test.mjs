@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createHash, createHmac, hkdfSync } from "node:crypto";
-import { mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -234,6 +234,74 @@ test("plain copy excludes the active vault's non-dot configuration directory", a
   const standard = new DesktopExports(vault);
   await assert.rejects(desktop.plain(join(root, "refused"), await standard.local(check), check), /configuration_path/);
   assert.equal(existsSync(join(root, "refused")), false);
+});
+
+test("case aliases cannot put an output in the active vault's custom configuration", async (t) => {
+  const { root, vault } = await disk(t), alias = join(root, "SENTINEL-VAULT");
+  const original = await stat(vault), aliased = await stat(alias).catch(error => {
+    if (error.code === "ENOENT") return null; throw error;
+  });
+  if (!aliased || original.dev !== aliased.dev || original.ino !== aliased.ino) return t.skip("case-sensitive filesystem");
+  const desktop = new DesktopExports(vault, "custom-config"), config = join(vault, "custom-config");
+  await mkdir(config); await writeFile(join(config, "sentinel.json"), "synthetic configuration");
+  await assert.rejects(desktop.plain(join(alias, "custom-config", "copy"), [], check), /destination_inside_vault/);
+  assert.deepEqual(await readdir(config), ["sentinel.json"]);
+  assert.equal(await readFile(join(config, "sentinel.json"), "utf8"), "synthetic configuration");
+});
+
+test("writable destination ancestors refuse; a sticky parent with an owned child works", async (t) => {
+  const { root, desktop } = await disk(t), parent = join(root, "parent"), child = join(parent, "owned");
+  await mkdir(parent); await mkdir(child, { mode: 0o700 });
+  try {
+    for (const mode of [0o770, 0o702, 0o777]) {
+      await chmod(parent, mode);
+      await assert.rejects(desktop.plain(join(child, "copy"), [], check), /destination_ancestor_permissions/);
+      assert.deepEqual(await readdir(child), []);
+    }
+    await chmod(parent, 0o1777);
+    await desktop.plain(join(child, "copy"), [], check);
+    assert.equal((await stat(join(child, "copy"))).mode & 0o777, 0o700);
+    assert.deepEqual(await readdir(child), ["copy"]);
+  } finally { await chmod(parent, 0o700); }
+});
+
+test("destination guard detects sequential inode and permission changes", async (t) => {
+  const { root, desktop } = await disk(t), parent = join(root, "parent");
+  await mkdir(parent, { mode: 0o700 });
+  const held = await desktop.boundary(parent);
+  await held();
+  await rename(parent, join(root, "original-parent"));
+  await mkdir(parent, { mode: 0o700 });
+  await assert.rejects(held(), /destination_ancestor_changed/);
+  await chmod(parent, 0o750);
+  const current = await desktop.boundary(parent);
+  await chmod(parent, 0o700);
+  await assert.rejects(current(), /destination_ancestor_changed/);
+  await (await desktop.boundary(parent))();
+});
+
+test("destination preflight requires a vault, a bounded path and a trusted owner", async (t) => {
+  const { root, desktop } = await disk(t);
+  await assert.rejects(new DesktopExports(join(root, "missing-vault")).boundary(root), /vault_directory/);
+  await assert.rejects(desktop.boundary(join(root, ...Array(128).fill("unopened"))), /destination_depth/);
+  // A foreign ownership verdict without chown, privilege or a second OS user.
+  desktop.process = { ...desktop.process, getuid: () => process.getuid() + 1 };
+  await assert.rejects(desktop.boundary(root), /destination_ancestor_permissions/);
+});
+
+test("a changed destination boundary stops publication and cleanup", async (t) => {
+  const { root, desktop } = await disk(t), parent = join(root, "parent"), target = join(parent, "copy");
+  await mkdir(parent); await chmod(parent, 0o750);
+  await assert.rejects(desktop.stage(target, 8, check, async stage => {
+    await writeFile(join(stage, "sentinel.md"), "retained", { mode: 0o600 });
+    await chmod(parent, 0o700);
+  }), /destination_ancestor_changed/);
+  assert.equal(existsSync(target), false);
+  const names = await readdir(parent), stage = names.find(name => /^\.obsync-export-[a-f0-9]{32}$/.test(name));
+  assert.ok(stage);
+  assert.equal(names.length, 2);
+  assert.equal(names.filter(name => name.startsWith(".obsync-export-recovery-")).length, 1);
+  assert.equal(await readFile(join(parent, stage, "sentinel.md"), "utf8"), "retained");
 });
 
 test("a crashed child leaves private staging that the next attempt removes before publishing", async (t) => {

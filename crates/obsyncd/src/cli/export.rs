@@ -86,6 +86,7 @@ pub fn run(
                     _ => "refused",
                 }),
             ),
+            ("payload", Val::word("ciphertext")),
             ("index_budget", Val::bytes(INDEX_MAX as u64)),
         ],
     );

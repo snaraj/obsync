@@ -19,8 +19,20 @@ $Name = 'ob' + [Guid]::NewGuid().ToString('N').Substring(0, 14)
 $Created = $false
 try {
     $Trust = [IO.Path]::Combine($Root, 'trust')
-    [ordered]@{v=1;op='setup';path=$Trust;destination=''} | ConvertTo-Json -Compress | & $Shell -NoLogo -NoProfile -NonInteractive -File cli/windows-files.ps1
-    if ($LASTEXITCODE -ne 0) { throw 'Trusted OS setup failed.' }
+    # Use an explicit UTF-8 byte pipe, as the Node adapter does. PowerShell's
+    # object pipeline must not choose serialization for this JSON protocol.
+    $Start = [Diagnostics.ProcessStartInfo]::new($Shell)
+    $Start.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + [IO.Path]::GetFullPath('cli/windows-files.ps1') + '"'
+    $Start.UseShellExecute = $false
+    $Start.RedirectStandardInput = $true
+    $Setup = [Diagnostics.Process]::Start($Start)
+    try {
+        $Request = [Text.UTF8Encoding]::new($false, $true).GetBytes(([ordered]@{v=1;op='setup';path=$Trust;destination=''} | ConvertTo-Json -Compress))
+        $Setup.StandardInput.BaseStream.Write($Request, 0, $Request.Length)
+        $Setup.StandardInput.Close()
+        if (!$Setup.WaitForExit(15000)) { $Setup.Kill(); $Setup.WaitForExit(); throw 'Trusted OS setup timed out.' }
+        if ($Setup.ExitCode -ne 0) { throw 'Trusted OS setup failed.' }
+    } finally { $Setup.Dispose() }
     $Receipt = [IO.Path]::Combine($Trust, 'powershell.json')
     $Digest = (Get-FileHash -LiteralPath $Receipt -Algorithm SHA256).Hash.ToLowerInvariant()
     & $Node scripts/ci/windows-files-process.mjs prepare $Root $Receipt $Digest
