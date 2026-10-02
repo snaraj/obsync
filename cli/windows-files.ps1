@@ -118,15 +118,14 @@ try {
   }
   if ($Count -gt 16384) { Refuse 'request_budget' }
   $Raw = [string]::new($Characters, 0, $Count).TrimEnd([char[]]@("`r", "`n"))
-  if (!$Raw.StartsWith('{')) { Refuse 'request_prefix' }
-  if (!$Raw.EndsWith('}')) { Refuse 'request_suffix' }
+  if ($Raw.Length -lt 2 -or [int]$Raw[0] -ne 123 -or [int]$Raw[-1] -ne 125) { Refuse 'request_framing' }
   $Request = ConvertFrom-Json -InputObject $Raw
   $Names = @($Request.PSObject.Properties.Name)
   if ($Names.Count -ne 4 -or @($Names | Where-Object { $_ -cnotin @('v', 'op', 'path', 'destination') }).Count -ne 0 -or
     $Request.v -isnot [int] -or $Request.v -ne 1 -or $Request.op -isnot [string] -or
     $Request.path -isnot [string] -or $Request.destination -isnot [string] -or
     $Request.op -cnotin @('setup', 'inspect', 'mkdir', 'create', 'flush', 'publish')) { Refuse 'request_shape' }
-  if (($Request | ConvertTo-Json -Compress -Depth 2) -cne $Raw) { Refuse 'request_spelling' }
+  if (![string]::Equals(($Request | ConvertTo-Json -Compress -Depth 2), $Raw, [StringComparison]::Ordinal)) { Refuse 'request_spelling' }
   Exact-Path $Request.path
   Inspect-Parents $Request.path
   if ($Request.op -ne 'publish' -and $Request.destination -cne '') { Refuse 'request_shape' }

@@ -41,7 +41,13 @@ try {
     $Start.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + $Diagnostic + '"'
     $Start.UseShellExecute = $false
     $Start.RedirectStandardInput = $true
-    $Setup = [Diagnostics.Process]::Start($Start)
+    # .NET Framework chooses this encoding when constructing the child's
+    # stdin writer. Its default UTF-8 preamble would precede the raw JSON.
+    $BeforeEncoding = [Console]::InputEncoding
+    try {
+        [Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
+        $Setup = [Diagnostics.Process]::Start($Start)
+    } finally { [Console]::InputEncoding = $BeforeEncoding }
     try {
         $Setup.StandardInput.BaseStream.Write($Request, 0, $Request.Length)
         $Setup.StandardInput.Close()
