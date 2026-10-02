@@ -7,8 +7,6 @@
 - Plugin: built from that source; no native install. `main.js` SHA-256
   `34797c29613f28104157e09de46dc713be862269bdebca11c587ebe8c2522b11`
   matches the published 1.1.5 release manifest.
-- Host: M1 Max, 10 cores, 64 GiB RAM, macOS 27.0. This is a container campaign,
-  not a physical Android or other device run. Obsidian was not involved.
 - Container: Linux ARM64, Node 26.10.0, 4-CPU quota, 8 GiB memory, 40 busy worker
   threads during each full suite; no extra workers for standalone cases.
 - Image: `node:26.10.0-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2`.

@@ -36,8 +36,62 @@ completed `saveData` calls without replacing those operations. Minimized
 samples stayed minimized for at least ten minutes, including the interval
 after first sync. A subsequent **Sync now** was timed until its drained log.
 
-Reproduction command, using the retained frozen harness and an already built
-baseline checkout:
+### Reconstructing the campaign harness
+
+The retained six-file snapshot is evidence, not a standalone executable
+bundle. `lab.py` requires a Git worktree with the harness installed at
+`scripts/validation/lab`; `journeys.mjs` also imports
+`../../ci/obsidian-drive.mjs`. Start with that support file from baseline commit
+`03d108505d3993bddff276d70c814a6547222339`, SHA-256
+`ad9d047b12186ea3814c0a25393aee765a6f11538cd367dc299c99b61ef3d399`.
+The baseline file needs the explicit import adapter below: export the seven
+UI helpers and run its own journey only when invoked directly. The resulting
+file has SHA-256
+`0624d49ede7c9e027e5816f510ca60c1b0f7cccc8c826b4df57f0702385e6acc`.
+That support file was not included in the campaign snapshot; this pins a
+reconstruction, not independently retained historical support-file bytes.
+
+Set `BASELINE_CHECKOUT` to the already built baseline checkout,
+`FROZEN_HARNESS` to the retained snapshot, and `HARNESS_CHECKOUT` to a new
+disposable worktree path. Reconstruct the layout without changing either
+retained input:
+
+```sh
+git -C "$BASELINE_CHECKOUT" worktree add --detach "$HARNESS_CHECKOUT" \
+  03d108505d3993bddff276d70c814a6547222339
+HARNESS="$HARNESS_CHECKOUT/scripts/validation/lab"
+python3 -B - "$FROZEN_HARNESS" "$HARNESS" <<'PY'
+import hashlib, json, shutil, sys
+from pathlib import Path
+source, destination = map(Path, sys.argv[1:])
+files = json.loads((source / "sha256.json").read_text())["files"]
+assert set(files) == {"lab.py", "cdp.mjs", "journeys.mjs", "performance.py",
+                      "performance.mjs", "fixture.py"}
+destination.mkdir(parents=True)
+for name, digest in files.items():
+    assert hashlib.sha256((source / name).read_bytes()).hexdigest() == digest
+    shutil.copyfile(source / name, destination / name)
+support = destination / "../../ci/obsidian-drive.mjs"
+assert hashlib.sha256(support.read_bytes()).hexdigest() == \
+    "ad9d047b12186ea3814c0a25393aee765a6f11538cd367dc299c99b61ef3d399"
+text = support.read_text()
+entry = "\nmain().catch((error) => {"
+assert text.count(entry) == 1
+exports = "export { click, fillSetting, fillPlaceholder, settingsShow, " \
+          "confirmPhrase, pairingCode, LABELS };"
+support.write_text(text.replace(entry, "\n" + exports +
+                               "\n\nif (import.meta.main) main().catch((error) => {"))
+assert hashlib.sha256(support.read_bytes()).hexdigest() == \
+    "0624d49ede7c9e027e5816f510ca60c1b0f7cccc8c826b4df57f0702385e6acc"
+PY
+python3 -B "$HARNESS/performance.py" --help
+```
+
+This reconstruction was checked with `--help`, the six snapshot hashes, both
+support-file hashes, and relative-import/export resolution on Node 26.10.0.
+Those checks did not start
+a lab or replay the measurements. A separately authorized campaign then uses
+new external output paths and the required native app/TLS route:
 
 ```sh
 python3 -B "$HARNESS/performance.py" \
@@ -46,14 +100,13 @@ python3 -B "$HARNESS/performance.py" \
   --tunnel "$APPROVED_TUNNEL_EXECUTABLE"
 ```
 
-The portable harness is prepared separately under `scripts/validation/lab`;
-this record does not assert that a later harness revision is identical.
+A later portable harness revision is not the frozen campaign harness.
 Frozen `performance.py` SHA-256:
 `e4ff07c6cfc15f7a164d9e3c6881b1541d365871ad300a65386f3ccb8e0807ce`.
 Frozen `performance.mjs` SHA-256:
 `01cb1bd0a720986f40bb973259be5d3a55a50d76d25958721d866b1db30987ad`.
-The six-file harness snapshot and its complete checksum manifest are retained
-outside the repository with the synthetic fixture and raw evidence.
+The six-file snapshot and its complete checksum manifest remain outside the
+repository with the synthetic fixture and raw evidence.
 
 ## Every scheduled sample
 
