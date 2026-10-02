@@ -4,7 +4,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $WarningPreference = 'Stop'
-[Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false, $true)
 
 function Refuse([string] $Reason) {
@@ -110,9 +109,10 @@ try {
   Inspect-Parents $Executable $true
   if (Inspect-One $Executable $false $true) { Refuse 'os_powershell_required' }
   $Characters = [char[]]::new(16385)
+  $Reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.UTF8Encoding]::new($false, $true), $false, 4096)
   $Count = 0
   while ($Count -lt $Characters.Length) {
-    $Read = [Console]::In.Read($Characters, $Count, $Characters.Length - $Count)
+    $Read = $Reader.Read($Characters, $Count, $Characters.Length - $Count)
     if ($Read -eq 0) { break }
     $Count += $Read
   }
