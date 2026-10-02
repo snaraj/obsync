@@ -302,22 +302,27 @@ scoped workload identities.
 
 ### Human and workload enrollment
 
-1. CLI creates a short-lived authorization request bound to its generated public
-   request identity, exact server, requested scopes and random client-held proof.
+1. CLI generates and protects its request ID and management secret before
+   submitting a short-lived authorization request bound to that identity, exact
+   server and requested scopes.
 2. Human opens the fixed server authorization page, authenticates using the
    supported dashboard path, verifies the matching request code and approves
    scopes. Neither the setup token nor a dashboard cookie is copied into CLI.
-3. CLI polls using its private request proof, then stores a management credential
-   in the protected local credential store. Agent output contains metadata only.
+3. CLI polls using proof of its saved secret and records approved metadata,
+   including the server-generated grant ID. Approval returns no new credential;
+   a lost response reconciles the same durable receipt. Agent output contains
+   metadata only.
 4. Credential proof uses a separately specified HMAC domain and principal ID,
-   preserving timestamp/nonce/durability guarantees. Enrollment must bind its
-   secret delivery to the request proof and expire/reject abandoned attempts.
-5. Headless bootstrap uses an owner-created scoped grant delivered through an
-   inherited descriptor or explicitly configured secret file/store. It must not
-   print credentials to MCP results, command arguments or generated config.
+   preserving timestamp/nonce/durability guarantees. Enrollment binds approval
+   to the saved candidate secret and expires/rejects abandoned attempts.
+5. A headless workload protects its own secret through an inherited descriptor
+   or explicitly configured secret file/store before requesting a scoped grant.
+   Independent owner or authorized parent approval activates it. Credentials
+   never reach MCP results, command arguments or generated config.
 
-Specify and independently review this wire exchange before implementation;
-it is not a claim to implement OAuth or a reason to add custom asymmetric crypto.
+The [management authentication design](auth-v1.1.6.md) specifies this wire
+exchange and requires independent review before implementation. It is not a claim
+to implement OAuth or a reason to add custom asymmetric crypto.
 Human URL/code may be shown; credential-bearing links/material remain out of
 transcripts and logs. No credential-store inventory or fallback search.
 
