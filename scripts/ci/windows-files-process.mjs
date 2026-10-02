@@ -18,9 +18,16 @@ if (phase === 'prepare') {
   const source = createRequire(import.meta.url)('../../plugin/build/windowsHelperData.js').source;
   const system = shell.slice(0, -'\\WindowsPowerShell\\v1.0\\powershell.exe'.length);
   const input = JSON.stringify({ v: 1, op: 'inspect', path: root, destination: '' });
+  let traced = source.replace(/^#.*\r?\n/gm, '');
+  for (const [index, at] of ['Set-StrictMode', '  Inspect-Parents $Executable', '  $Characters =', '  $Request = ConvertFrom-Json', '  $Names =', '  Exact-Path $Request.path'].entries()) {
+    assert.ok(traced.includes(at));
+    traced = traced.replace(at, `[Console]::Out.WriteLine('${index + 1}');\n${at}`);
+  }
   for (const [name, code] of [
     ['startup', "[Console]::Out.WriteLine('probe')"],
     ['stdin', "$r=[IO.StreamReader]::new([Console]::OpenStandardInput(),[Text.UTF8Encoding]::new($false,$true),$false,4096);[Console]::Out.WriteLine($r.ReadToEnd().Length)"],
+    ['json', "[Console]::Out.WriteLine((ConvertFrom-Json '{\"v\":1}').v)"],
+    ['trace', traced],
     ['helper', source],
   ]) {
     const started = performance.now();
@@ -30,6 +37,7 @@ if (phase === 'prepare') {
     });
     console.log(JSON.stringify({ event: 'native_launch_probe', name, status: result.status, signal: result.signal,
       error: result.error?.code, stdout_bytes: result.stdout?.length, stderr_bytes: result.stderr?.length,
+      checkpoints: name === 'trace' ? (result.stdout?.match(/^[1-6]\r?$/gm) ?? []).map(x => x.trim()) : undefined,
       duration_ms: Math.round(performance.now() - started) }));
   }
 }
