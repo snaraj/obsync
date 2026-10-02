@@ -26,6 +26,14 @@ if (!$SelectedUser) {
         $Start.Password = ConvertTo-SecureString $Passwords[0] -AsPlainText -Force
         $Start.LoadUserProfile = $true
         $Start.RedirectStandardInput = $true
+        # A credentialed process otherwise receives the selected account's
+        # default environment, not the hosted markers. Pass only fixed data;
+        # never copy runner credentials or executable-selection variables.
+        $Start.EnvironmentVariables.Clear()
+        $Start.EnvironmentVariables['GITHUB_ACTIONS'] = 'true'
+        $Start.EnvironmentVariables['RUNNER_OS'] = 'Windows'
+        $Start.EnvironmentVariables['SystemRoot'] = [IO.Directory]::GetParent([Environment]::SystemDirectory).FullName
+        $Start.EnvironmentVariables['PSModulePath'] = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\Modules')
         $BeforeEncoding = [Console]::InputEncoding
         try {
             [Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
