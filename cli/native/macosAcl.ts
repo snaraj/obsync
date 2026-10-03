@@ -115,10 +115,10 @@ export class MacosAcl {
       // Accept only that drift, then fully verify the current held snapshot.
       if (!this.same(before, expected) && (before.ctimeNs === expected.ctimeNs || !this.custody(before, expected)))
         throw Error("macos_acl_identity");
-      // Re-read the full ACL once if unrelated child activity changed only
-      // ctime. Both attempts share the original five-second reader budget.
+      // Re-read the full ACL when child activity changes only ctime. Require
+      // a stable checked snapshot within the original five-second budget.
       const deadline = performance.now() + 5000;
-      for (let attempt = 0; ; attempt++) {
+      for (;;) {
         const remaining = deadline - performance.now();
         if (remaining <= 0) throw Error("macos_acl_launch_timeout");
         try {
@@ -137,7 +137,7 @@ export class MacosAcl {
             throw Error("macos_acl_changed");
           return before;
         } catch (error) {
-          if (attempt !== 0 || macosAclReason(error) !== "macos_acl_changed") throw error;
+          if (macosAclReason(error) !== "macos_acl_changed") throw error;
           const now = await handle.stat({ bigint: true }), named = await this.fs.lstat(path, { bigint: true });
           if (![now, named].every(stat => this.custody(stat, before)) ||
               (now.ctimeNs === before.ctimeNs && named.ctimeNs === before.ctimeNs)) throw error;

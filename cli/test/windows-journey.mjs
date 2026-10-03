@@ -152,17 +152,22 @@ if (phase === 'interrupt-mkdir') {
   // Change only the owned synthetic installation, restoring its exact ACL in
   // finally. The public launcher must refuse before its Node start stage.
   const result = await child(trust.powershell.path, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
-    `$p=${quote(options.prefix)};$original=[IO.Directory]::GetAccessControl($p);$acl=[IO.Directory]::GetAccessControl($p);` +
+    `$p=${quote(options.prefix)};$section=[Security.AccessControl.AccessControlSections]::Access;` +
+    `$original=[IO.Directory]::GetAccessControl($p,$section).GetSecurityDescriptorSddlForm($section);$acl=[IO.Directory]::GetAccessControl($p);` +
     `try{$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(` +
     `[Security.Principal.SecurityIdentifier]::new('S-1-1-0'),[Security.AccessControl.FileSystemRights]::ReadAndExecute,` +
     `[Security.AccessControl.AccessControlType]::Allow));[IO.Directory]::SetAccessControl($p,$acl);` +
     `$start=[Diagnostics.ProcessStartInfo]::new();$start.UseShellExecute=$false;$start.FileName=${quote(trust.powershell.path)};` +
     `$start.Arguments=${quote(`-NoLogo -NoProfile -NonInteractive -File "${launcher}" --version`)};` +
     `$child=[Diagnostics.Process]::Start($start);$child.WaitForExit();exit $child.ExitCode` +
-    `}finally{[IO.Directory]::SetAccessControl($p,$original)}`]).done;
+    // SetAccessControl persists only modified sections. Reconstructing the
+    // original DACL marks it modified; passing an untouched snapshot is a no-op.
+    `}finally{$restore=[Security.AccessControl.DirectorySecurity]::new();$restore.SetSecurityDescriptorSddlForm($original,$section);` +
+    `[IO.Directory]::SetAccessControl($p,$restore);` +
+    `if([IO.Directory]::GetAccessControl($p,$section).GetSecurityDescriptorSddlForm($section) -cne $original){throw 'Fixture ACL restoration failed'}}`]).done;
   assert.equal(result.code, 4); assert.equal(result.stdout, '');
   assert.equal(JSON.parse(result.stderr).stage, 'custody');
-  const positive = await invoke(); assert.equal(positive.code, 0); JSON.parse(positive.stdout);
+  const positive = await invoke(); assert.equal(positive.code, 0, JSON.stringify(positive)); JSON.parse(positive.stdout);
 } else if (phase === 'public-context') {
   const trust = JSON.parse(await readFile(trustPath, 'utf8'));
   const config = join(root, 'public-config'), input = join(root, 'public-input.json');

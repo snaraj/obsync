@@ -40,6 +40,10 @@ jobs:
       - name: Exercise native process, durability, installation and deferred-capability behavior
         shell: bash
         run: node cli/test.mjs
+      - name: Measure actual installed POSIX startup
+        if: runner.os != 'Windows'
+        shell: bash
+        run: python3 scripts/ci/cli-posix-startup.py --runtime "$(command -v node)"
       - name: Verify Windows ordinary-user custody and public CLI behavior
         if: runner.os == 'Windows'
         shell: powershell

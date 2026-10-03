@@ -121,6 +121,33 @@ hash cover **only the Node executable**, not its libraries or the operating
 system. Native candidate installation exercises this prerequisite independently
 of public obsync release provenance; the latter still needs its own receipt.
 
+### Windows and Linux runtime prerequisites
+
+Use the same pinned Node release keyring and signed-checksum verification
+described above. Select exactly one signed checksum entry for the complete
+official archive matching the target:
+
+| Target | Node 26.10.0 archive |
+| --- | --- |
+| Windows x64 | `node-v26.10.0-win-x64.zip` |
+| Linux x64 | `node-v26.10.0-linux-x64.tar.gz` |
+| Linux arm64 | `node-v26.10.0-linux-arm64.tar.gz` |
+
+Use an independently trusted `gpgv`; a successful signature check must precede
+archive hash verification and extraction. On Linux, `sha256sum --check` can
+verify the selected entry. On Windows, compare `Get-FileHash -Algorithm SHA256`
+against the entry from the verified plaintext checksums, and stop on mismatch.
+Neither an unsigned checksum nor HTTPS alone proves the release signer.
+
+Extract the complete verified archive into a new private directory. Linux
+requires owned mode 0700 custody with protected ancestors. Windows requires
+local NTFS and a protected owner DACL allowing only the selected user, SYSTEM
+and administrators; protect the directory before extraction. The installer
+reads that custody and refuses an unsuitable runtime. Keep the distribution
+intact and trust its OS loader and linked libraries independently. The native
+CI checks executable bytes against the signed distribution and uses the runner's
+trusted OS libraries; it does not validate an arbitrary user's runtime provider.
+
 ### Install the verified CLI
 
 From the verified extracted package, on macOS/Linux:

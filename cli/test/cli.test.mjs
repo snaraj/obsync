@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 
 const source = join(dirname(dirname(fileURLToPath(import.meta.url))), 'dist/cli');
 const entry = join(source, 'obsync.mjs');
@@ -188,7 +189,9 @@ test('a killed CLI store process before commit recovers without an orphan lock o
   assert.equal((await f.apply(await f.plan('first'))).code, 0);
   const liveModule = pathToFileURL(join(source, 'contexts.mjs')).href;
   const seed = spawn(process.execPath, ['--input-type=module', '-e', `import { Contexts } from ${JSON.stringify(liveModule)}; const store = new Contexts(${JSON.stringify(f.config)}); for (let i=0;i<20;i++) { const plan = await store.plan('context.add', {name:'fixture'+i,origin:'https://example.invalid'}); await store.apply(plan,plan.digest); }`], { stdio: 'pipe' });
-  assert.equal(await new Promise(resolve => seed.on('close', resolve)), 0);
+  let seedError = '';
+  seed.stderr.on('data', chunk => { seedError += chunk; });
+  assert.equal(await new Promise(resolve => seed.on('close', resolve)), 0, seedError);
   const next = await f.plan('second');
   const committed = await readFile(join(f.config, 'contexts.db'));
   const copy = join(f.root, 'fault');
@@ -297,6 +300,19 @@ test('macOS ACL grants and unreadable ACL metadata refuse before local effects',
   await mkdir(parent, { mode: 0o700 });
   const sentinel = join(parent, 'sentinel');
   await writeFile(sentinel, 'retain', { mode: 0o600 });
+  const { MacosAcl } = createRequire(import.meta.url)(join(source, 'shared/macosAcl.js'));
+  const reader = new MacosAcl(), call = reader.call;
+  let reads = 0;
+  reader.call = async function (...args) {
+    const result = await call.apply(this, args);
+    // Actual child creation after two native reads reproduces ctime changes
+    // from concurrent writers, without depending on scheduler luck.
+    if (args[0] === '/usr/bin/osascript' && ++reads <= 2) await mkdir(join(parent, `child-${reads}`), { mode: 0o700 });
+    return result;
+  };
+  const stable = await reader.inspect(parent, await lstat(parent, { bigint: true }));
+  assert.equal(reads, 3, 'Each changed snapshot must receive a complete native ACL read.');
+  assert.equal(stable.ino, (await lstat(parent, { bigint: true })).ino);
   const changeAcl = (...args) => {
     const result = spawnSync('/bin/chmod', [...args, parent], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
