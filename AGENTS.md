@@ -92,7 +92,7 @@ Numbered for citation, repo-scoped, none negotiable in code:
    `crates/obsync-core` against published test vectors. The only Rust FFI
    surface is `crates/obsyncd/src/signal.rs` (SIGTERM/SIGINT delivery);
    every other Rust file carries `#![forbid(unsafe_code)]`. The owner-approved
-   client exception is exactly `cli/windows-files.ps1`: its only native import
+   Windows client exception is exactly `cli/windows-files.ps1`: its only native import
    is `kernel32.dll!MoveFileExW`, called with fixed `MOVEFILE_WRITE_THROUGH`
    (`0x8`) to publish an owned directory or a verified private single-link
    regular file to an absent sibling on the same local NTFS volume. The file
@@ -106,6 +106,21 @@ Numbered for citation, repo-scoped, none negotiable in code:
    Windows operations remain unavailable at product boundaries until hosted
    native custody, recovery and durability evidence passes. This exception
    does not authorize another FFI surface.
+   The separate owner-approved macOS client exception is exactly
+   `plugin/macos-acl.js`, a fixed read-only directory-descriptor reader through
+   Apple's signed `/usr/bin/osascript` JXA bridge. Its C function inventory is
+   `fstat`, `fstatfs`, `fstatx_np` (including their public Darwin64 Intel symbol
+   variants), `filesec_init`, `filesec_free`, `filesec_get_property`,
+   `filesec_query_property` and `fgetattrlist`; Foundation supplies bounded
+   buffers and stdin decoding. The bundled source accepts only inherited fd3
+   and a bounded device/inode record. No path, function, library, interpreter
+   option or script source comes from a request. Execution uses fixed argv,
+   a closed environment, bounded I/O and a five-second reader deadline.
+   Complete ACL metadata and stable identity are mandatory; grants, unknown
+   fields and every read/launch failure refuse. Unavailable errno stays unknown.
+   This exception permits no AppleEvents, UI automation, runtime compilation,
+   downloaded executable, arbitrary FFI, permission repair, quarantine removal
+   or security-policy bypass. It does not relax the Rust FFI boundary.
    CI tooling (cosign,
    helm, gitleaks, Python for the contract suites, a throwaway competitor
    container for benchmarks) is tooling, ships nothing, and is pinned by

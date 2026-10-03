@@ -41,7 +41,7 @@ on:
         type: choice
         required: true
         default: full
-        options: [full, windows-files, windows-live]
+        options: [full, windows-files, windows-live, macos-acl]
   pull_request:
     paths:
       - '.github/workflows/desktop-matrix.yml'
@@ -49,6 +49,7 @@ on:
       - 'cli/windows-files.ps1'
       - 'scripts/ci/windows-files-*'
       - 'scripts/ci/windows-export-process.mjs'
+      - 'scripts/ci/macos-acl-native.mjs'
       - 'scripts/ci/obsidian-drive.mjs'
       - 'scripts/ci/obsidian-e2e.sh'
       - 'scripts/ci/obsidian-host.sh'
@@ -164,7 +165,7 @@ jobs:
           exit 0
 
   static-binary:
-    if: github.event_name != 'workflow_dispatch' || inputs.journey != 'windows-files'
+    if: github.event_name != 'workflow_dispatch' || inputs.journey == 'full' || inputs.journey == 'windows-live'
     # The server's static linux/amd64 build from this commit, for the WSL leg.
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -198,7 +199,7 @@ jobs:
           retention-days: 1
 
   obsidian-windows:
-    if: github.event_name != 'workflow_dispatch' || inputs.journey != 'windows-files'
+    if: github.event_name != 'workflow_dispatch' || inputs.journey == 'full' || inputs.journey == 'windows-live'
     needs: static-binary
     runs-on: windows-2025
     timeout-minutes: 45
@@ -307,3 +308,26 @@ jobs:
       - name: Exercise native custody, context recovery and installation
         shell: powershell
         run: ./scripts/ci/windows-files-native.ps1
+
+  macos-acl:
+    if: github.event_name != 'workflow_dispatch' || inputs.journey == 'full' || inputs.journey == 'macos-acl'
+    runs-on: macos-15-intel
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '26.10.0'
+          check-latest: false
+      - name: Build exact plugin and check native ACL semantics
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v26.10.0
+          test "$(npm --version)" = 11.19.1
+          npm ci --prefix plugin --ignore-scripts --no-audit --no-fund
+          npm run build --prefix plugin
+          node scripts/ci/macos-acl-native.mjs x64

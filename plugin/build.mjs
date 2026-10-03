@@ -21,6 +21,7 @@ import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { windowsHelperModule } from "./windows-helper.mjs";
+import { macosHelperModule } from "./macos-helper.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const buildDir = join(root, "build");
@@ -70,11 +71,13 @@ function __load(id) {
 
 async function main() {
   const helperFile = join(buildDir, "windowsHelperData.js");
-  const files = (await jsFiles(buildDir)).filter(file => file !== helperFile);
+  const macFile = join(buildDir, "macosHelperData.js");
+  const files = (await jsFiles(buildDir)).filter(file => file !== helperFile && file !== macFile);
   if (files.length === 0) throw new Error("build.mjs: build/ is empty — run tsc first");
   await writeFile(helperFile, await windowsHelperModule());
-  files.push(helperFile);
-  files.sort();
+  await writeFile(macFile, await macosHelperModule());
+  files.push(helperFile, macFile);
+  files.sort((a, b) => moduleId(a) < moduleId(b) ? -1 : moduleId(a) > moduleId(b) ? 1 : 0);
 
   const parts = ["var __modules = {};\n"];
   for (const file of files) {
