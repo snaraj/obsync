@@ -18,7 +18,8 @@ const missing = async path => { try { return await lstat(path); } catch (e) { if
 function launcher(record) {
   const receipt = Buffer.from(`${JSON.stringify(record)}\n`);
   return Buffer.from(`$ErrorActionPreference='Stop'\n` +
-    `function H([string]$p,[string]$h){if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -cne $h){throw 'integrity'}}\n` +
+    `$PSModuleAutoLoadingPreference='None'\n` +
+    `function H([string]$p,[string]$h){$f=[IO.File]::OpenRead($p);$s=[Security.Cryptography.SHA256]::Create();try{$v=[BitConverter]::ToString($s.ComputeHash($f)).Replace('-','').ToLowerInvariant()}finally{$f.Dispose();$s.Dispose()};if($v -cne $h){throw 'integrity'}}\n` +
     `function Q([string]$s){'"'+[regex]::Replace([regex]::Replace($s,'(\\*)"','$1$1\\"'),'(\\+)$','$1$1')+'"'}\n` +
     `try {\n` +
     `if([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName -ine ${ps(record.powershell_path)}){throw 'trusted OS PowerShell required'}\n` +

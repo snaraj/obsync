@@ -33,6 +33,8 @@ if (!$SelectedUser) {
         $Start.EnvironmentVariables.Clear()
         $Start.EnvironmentVariables['GITHUB_ACTIONS'] = 'true'
         $Start.EnvironmentVariables['RUNNER_OS'] = 'Windows'
+        # PowerShell classifies even explicit .exe paths using PATHEXT.
+        $Start.EnvironmentVariables['PATHEXT'] = '.EXE'
         $Start.EnvironmentVariables['SystemRoot'] = [IO.Directory]::GetParent([Environment]::SystemDirectory).FullName
         $Start.EnvironmentVariables['PSModulePath'] = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\Modules')
         $BeforeEncoding = [Console]::InputEncoding
