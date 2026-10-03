@@ -48,6 +48,7 @@ on:
       - 'plugin/**'
       - 'cli/windows-files.ps1'
       - 'scripts/ci/windows-files-*'
+      - 'scripts/ci/windows-export-process.mjs'
       - 'scripts/ci/obsidian-drive.mjs'
       - 'scripts/ci/obsidian-e2e.sh'
       - 'scripts/ci/obsidian-host.sh'

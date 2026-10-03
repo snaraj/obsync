@@ -83,7 +83,8 @@ if (!$SelectedUser) {
         $null = Invoke-Owned $Accounts[1] $Passwords[1] ('-NoLogo -NoProfile -NonInteractive -File "' + $PSCommandPath + '" -Peer -Root "' + $Root + '"')
         Write-Output '{"event":"windows_peer_custody","result":"pass"}'
         $Completed = Invoke-Owned $Accounts[0] $Passwords[0] ($Arguments + ' -Phase complete -Root "' + $Root + '"')
-        foreach ($Line in ($Prepared + "`n" + $Completed) -split '\r?\n') {
+        $Exports = Invoke-Owned $Accounts[0] $Passwords[0] ($Arguments + ' -Phase exports -Root "' + $Root + '"')
+        foreach ($Line in ($Prepared + "`n" + $Completed + "`n" + $Exports) -split '\r?\n') {
             if ($Line.StartsWith('{') -and !$Line.StartsWith('{"event":"fixture_ready",')) { Write-Output $Line }
         }
     } finally {
@@ -116,7 +117,7 @@ foreach ($Sid in @($User.Value, 'S-1-5-18', 'S-1-5-32-544')) {
 if ($Phase -ceq 'prepare' -and !$Root) {
     $Root = [IO.Path]::Combine($Profile, 'obsync native ' + [Guid]::NewGuid().ToString('N'))
     $null = [IO.Directory]::CreateDirectory($Root, $Acl)
-} elseif ($Phase -cne 'complete' -or !$Root -or [IO.Path]::GetDirectoryName($Root) -cne $Profile -or
+} elseif ($Phase -cnotin @('complete', 'exports') -or !$Root -or [IO.Path]::GetDirectoryName($Root) -cne $Profile -or
     [IO.Path]::GetFileName($Root) -cnotmatch '^obsync native [a-f0-9]{32}$') { throw 'Invalid owned fixture phase.' }
 $Keep = $false
 try {
@@ -146,6 +147,10 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Prepare process failed.' }
         $Keep = $true
         Write-Output ([ordered]@{event='fixture_ready';root=$Root} | ConvertTo-Json -Compress)
+    } elseif ($Phase -ceq 'exports') {
+        $Digest = (Get-FileHash -LiteralPath $Receipt -Algorithm SHA256).Hash.ToLowerInvariant()
+        & $Node scripts/ci/windows-export-process.mjs all $Root $Receipt $Digest
+        if ($LASTEXITCODE -ne 0) { throw 'Native shared export journey failed.' }
     } else {
         $Digest = (Get-FileHash -LiteralPath $Receipt -Algorithm SHA256).Hash.ToLowerInvariant()
         & $Node scripts/ci/windows-files-process.mjs publish $Root $Receipt $Digest
@@ -172,6 +177,7 @@ try {
             $Scope = 'private custody, publication, context recovery and installation'
         }
         Write-Output ([ordered]@{event='windows_files_native';result='pass';scope=$Scope} | ConvertTo-Json -Compress)
+        $Keep = $true
     }
 } finally {
     if (!$Keep -and [IO.Directory]::Exists($Root)) { Remove-Item -LiteralPath $Root -Recurse -Force }

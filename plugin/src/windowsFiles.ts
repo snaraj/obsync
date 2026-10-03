@@ -45,6 +45,19 @@ interface Spawn {
 /** Supplied only by explicit trusted OS setup, never a CLI/request option. */
 export interface WindowsPowerShell { path: string; sha256: string }
 
+function helperCommand(source: string): string {
+  const buffer = require("node:buffer") as { Buffer: { from(value: string, encoding: string): { toString(encoding: string): string } } };
+  const gzip = require("node:zlib") as { gzipSync(bytes: Uint8Array): { toString(encoding: string): string } };
+  const packed = gzip.gzipSync(utf8(source)).toString("base64");
+  const script = `$m=[IO.MemoryStream]::new([Convert]::FromBase64String('${packed}'));` +
+    `$g=[IO.Compression.GZipStream]::new($m,[IO.Compression.CompressionMode]::Decompress);` +
+    `$r=[IO.StreamReader]::new($g,[Text.Encoding]::ASCII);` +
+    `try{$s=$r.ReadToEnd()}finally{$r.Dispose();$m.Dispose()}; & ([ScriptBlock]::Create($s))`;
+  const command = buffer.Buffer.from(script, "utf16le").toString("base64");
+  if (command.length > 30000) throw Error("windows_helper_budget");
+  return command;
+}
+
 export class WindowsFiles {
   private readonly fs: Fs;
   private readonly spawn: Spawn;
@@ -59,17 +72,32 @@ export class WindowsFiles {
     this.helper = require("./windowsHelperData") as typeof this.helper;
     if (typeof this.helper.source !== "string" || this.helper.source.length > 16384 || /[^\x00-\x7f]/.test(this.helper.source) ||
         !/^[a-f0-9]{64}$/.test(this.helper.sha256)) throw Error("windows_helper_integrity");
-    const buffer = require("node:buffer") as { Buffer: { from(value: string, encoding: string): { toString(encoding: string): string } } };
     // Only our fixed, hash-checked source is code. Compression keeps the sole
     // helper inside Windows' command-line limit without a mutable script file.
-    const gzip = require("node:zlib") as { gzipSync(bytes: Uint8Array): { toString(encoding: string): string } };
-    const packed = gzip.gzipSync(utf8(this.helper.source)).toString("base64");
-    const script = `$m=[IO.MemoryStream]::new([Convert]::FromBase64String('${packed}'));` +
-      `$g=[IO.Compression.GZipStream]::new($m,[IO.Compression.CompressionMode]::Decompress);` +
-      `$r=[IO.StreamReader]::new($g,[Text.Encoding]::ASCII);` +
-      `try{$s=$r.ReadToEnd()}finally{$r.Dispose();$m.Dispose()}; & ([ScriptBlock]::Create($s))`;
-    this.command = buffer.Buffer.from(script, "utf16le").toString("base64");
-    if (this.command.length > 30000) throw Error("windows_helper_budget");
+    this.command = helperCommand(this.helper.source);
+  }
+  /** Executed only by the person in an independently opened OS PowerShell.
+   * No executable is selected or run by the app before importing its receipt.
+   */
+  static async setupCommand(nonce: string): Promise<string> {
+    if (!/^[a-f0-9]{32}$/.test(nonce)) throw Error("windows_setup_nonce");
+    const helper = require("./windowsHelperData") as { source: string; sha256: string };
+    if (hex(await sha256(utf8(helper.source))) !== helper.sha256) throw Error("windows_helper_integrity");
+    return `$ErrorActionPreference='Stop'; ` +
+      `$e=[IO.Path]::Combine([Environment]::SystemDirectory,'WindowsPowerShell\\v1.0\\powershell.exe'); ` +
+      `$d=[IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'),'obsync-export-${nonce}'); ` +
+      `$p=[Diagnostics.ProcessStartInfo]::new($e); $p.Arguments='-NoLogo -NoProfile -NonInteractive -EncodedCommand ${helperCommand(helper.source)}'; ` +
+      `$p.UseShellExecute=$false; $p.RedirectStandardInput=$true; $p.RedirectStandardOutput=$true; $p.RedirectStandardError=$true; ` +
+      `$p.EnvironmentVariables.Clear(); $p.EnvironmentVariables['SystemRoot']=[IO.Directory]::GetParent([Environment]::SystemDirectory).FullName; ` +
+      `$p.EnvironmentVariables['PSModulePath']=[IO.Path]::Combine([Environment]::SystemDirectory,'WindowsPowerShell\\v1.0\\Modules'); ` +
+      `$old=[Console]::InputEncoding; try{[Console]::InputEncoding=[Text.UTF8Encoding]::new($false,$true); $c=[Diagnostics.Process]::Start($p)}finally{[Console]::InputEncoding=$old}; ` +
+      `try{$o=$c.StandardOutput.ReadToEndAsync(); $x=$c.StandardError.ReadToEndAsync(); ` +
+      String.raw`$c.StandardInput.Write('{"v":1,"op":"setup","path":"'+$d.Replace('\','\\')+'","destination":""}'); ` +
+      `$c.StandardInput.Close(); if(!$c.WaitForExit(15000)){$c.Kill();$c.WaitForExit();throw 'Setup deadline'}; ` +
+      `if($c.ExitCode -ne 0 -or $x.Result -or $o.Result.Trim() -cne '{"v":1,"ok":true}'){throw 'Setup refused'} ` +
+      `}finally{$c.Dispose()}; $f=[IO.Path]::Combine($d,'powershell.json'); $h=[Security.Cryptography.SHA256]::Create(); ` +
+      `try{$s=[BitConverter]::ToString($h.ComputeHash([IO.File]::ReadAllBytes($f))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose()}; ` +
+      String.raw`[Console]::WriteLine('{"v":1,"path":"'+$f.Replace('\','\\')+'","digest":"'+$s+'"}')`;
   }
   /** Import the exact digest displayed by explicit trusted OS setup. An ambient
    * receipt is insufficient: verify its bytes before using its executable path.

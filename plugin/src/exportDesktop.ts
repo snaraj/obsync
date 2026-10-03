@@ -1,5 +1,7 @@
 /** Desktop filesystem adapter for exports. Never writes into the open vault. */
 import { Bytes, hex, randomBytes, sha256, utf8 } from "./crypto";
+import { WindowsFiles } from "./windowsFiles";
+import { WindowsExport } from "./windowsExport";
 import {
   decryptExportFile, ExportCheck, ExportError, ExportIndex, ExportPaths, ExportReader,
   EXPORT_BYTES_MAX, EXPORT_CHUNK_MAX, exportPath, inspectExport, writeExport,
@@ -11,7 +13,7 @@ interface Handle {
   stat(options: { bigint: true }): Promise<Stat>;
   read(bytes: Bytes, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
   write(bytes: Bytes): Promise<{ bytesWritten: number }>;
-  close(): Promise<void>; sync(): Promise<void>;
+  close(): Promise<void>; sync(): Promise<void>; truncate(length: number): Promise<void>;
 }
 interface Fs {
   open(path: string, flags: string, mode?: number): Promise<Handle>;
@@ -30,10 +32,10 @@ export class DesktopExports {
   private readonly fs: Fs;
   private readonly path: Paths;
   private readonly process: { platform: string; pid: number; getuid(): number; kill(pid: number, signal: 0): void };
-  constructor(readonly vaultRoot: string, private readonly configDir = ".obsidian") {
+  constructor(readonly vaultRoot: string, private readonly configDir = ".obsidian", private readonly windows?: WindowsFiles) {
     this.process = require("node:process") as typeof this.process;
     const platform = this.process.platform;
-    if (platform !== "darwin" && platform !== "linux") throw new ExportError("private_export_unavailable");
+    if (platform !== "darwin" && platform !== "linux" && !(platform === "win32" && windows)) throw new ExportError("private_export_unavailable");
     this.fs = (require("node:fs") as { promises: Fs }).promises;
     this.path = require("node:path") as Paths;
   }
@@ -58,6 +60,19 @@ export class DesktopExports {
       if (names.length === 128) throw new ExportError("destination_depth");
       names.push(at);
       if (this.path.dirname(at) === at) break;
+    }
+    if (this.windows) {
+      await this.windows.inspect(parent);
+      for (const path of names) {
+        const stat = await this.stat(path);
+        if (!stat?.isDirectory() || stat.isSymbolicLink()) throw new ExportError("destination_ancestor_permissions");
+        if (this.same(stat, vault)) throw new ExportError("destination_inside_vault");
+        held.push({ path, stat });
+      }
+      return async () => {
+        await this.windows!.inspect(parent);
+        for (const entry of held) if (!this.same(await this.stat(entry.path), entry.stat)) throw new ExportError("destination_ancestor_changed");
+      };
     }
     const uid = BigInt(this.process.getuid());
     const trusted = (stat: Stat | null): stat is Stat => stat !== null && stat.isDirectory() && !stat.isSymbolicLink() &&
@@ -89,8 +104,10 @@ export class DesktopExports {
       if (this.path.dirname(at) === at) break;
     }
     await guard();
-    await this.recover(target, guard);
-    if (await this.stat(target)) throw new ExportError("destination_exists_or_vault");
+    if (!this.windows) {
+      await this.recover(target, guard);
+      if (await this.stat(target)) throw new ExportError("destination_exists_or_vault");
+    }
     const free = await this.fs.statfs(parent);
     if (free.bavail * free.bsize < bytes + 64 * 1024 * 1024) throw new ExportError("disk_budget");
     await guard();
@@ -104,6 +121,7 @@ export class DesktopExports {
     }
   }
   private async flush(path: string): Promise<void> {
+    if (this.windows) return; // The native tree publication flushes each file.
     const handle = await this.fs.open(path, "r");
     try { await handle.sync(); } finally { await handle.close(); }
   }
@@ -170,12 +188,25 @@ export class DesktopExports {
     await this.fs.unlink(await this.recoveryPath(record.target));
     await this.flush(this.path.dirname(record.target));
   }
-  private async file(path: string, write: (put: (bytes: Bytes) => Promise<void>) => Promise<void>): Promise<void> {
-    const handle = await this.fs.open(path, "wx", 0o600);
-    try { await write((bytes) => this.all(handle, bytes)); await handle.sync(); } finally { await handle.close(); }
+  private async file(path: string, write: (put: (bytes: Bytes) => Promise<void>) => Promise<void>, existing = false): Promise<void> {
+    const before = existing ? await this.stat(path) : null;
+    const handle = await this.fs.open(path, existing ? "r+" : "wx", 0o600);
+    try {
+      if (existing) {
+        if (!before?.isFile() || before.isSymbolicLink() || !this.same(await handle.stat({ bigint: true }), before)) throw new ExportError("stage_identity");
+        await handle.truncate(0);
+      }
+      await write((bytes) => this.all(handle, bytes)); await handle.sync();
+    } finally { await handle.close(); }
   }
   async encrypted(target: string, index: ExportIndex, vrk: Bytes, chunk: (sid: string) => Promise<Bytes>, check: ExportCheck): Promise<void> {
     const estimated = index.files.reduce((total, file) => total + file.versions.reduce((n, version) => n + version.bytes + version.sids.length * 20, 0), 64 * 1024 * 1024);
+    if (this.windows) {
+      const output = await this.destination(target, estimated);
+      await new WindowsExport(this.windows).run(output.target, "file", hex(await sha256(utf8(JSON.stringify(index)))), output.guard, check,
+        (stage, alive) => this.file(stage, write => writeExport(index, vrk, chunk, write, alive), true));
+      return;
+    }
     const output = await this.destination(target, estimated), record = await this.begin(output.target, output.guard), temporary = record.stage;
     let created = false;
     try {
@@ -188,7 +219,7 @@ export class DesktopExports {
     } finally { await output.guard(); if (created) await this.fs.unlink(temporary); await this.finish(record, output.guard); }
   }
   /** A descriptor pins the input. Ranges cannot follow a later replacement name. */
-  async reader(input: string): Promise<ExportReader & { close(): Promise<void> }> {
+  async reader(input: string): Promise<ExportReader & { close(): Promise<void>; fingerprint: string }> {
     const path = this.path.resolve(input);
     await this.directories(this.path.dirname(path));
     const before = await this.stat(path);
@@ -198,6 +229,7 @@ export class DesktopExports {
       const held = await handle.stat({ bigint: true });
       if (!held.isFile() || !this.same(held, before)) throw new ExportError("archive_identity");
       return {
+        fingerprint: `${held.dev}:${held.ino}:${held.size}:${held.mtimeNs}`,
         size: Number(held.size), close: () => handle.close(),
         read: async (offset, length) => {
           if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || offset + length > Number(held.size)) throw new ExportError("read_range");
@@ -230,7 +262,12 @@ export class DesktopExports {
     }
     await this.flush(root);
   }
-  private async stage(target: string, bytes: number, check: ExportCheck, fill: (root: string) => Promise<void>): Promise<void> {
+  private async stage(target: string, bytes: number, check: ExportCheck, fill: (root: string, check: ExportCheck) => Promise<void>, request: string): Promise<void> {
+    if (this.windows) {
+      const output = await this.destination(target, bytes);
+      await new WindowsExport(this.windows).run(output.target, "directory", request, output.guard, check, fill);
+      return;
+    }
     const output = await this.destination(target, bytes), record = await this.begin(output.target, output.guard), stage = record.stage;
     let created = false;
     try { await output.guard(); await this.fs.mkdir(stage, { mode: 0o700 }); created = true; await this.track(record, output.guard); }
@@ -239,7 +276,7 @@ export class DesktopExports {
     let reserved: Stat | null = null, published = false;
     try {
       await output.guard();
-      await fill(stage);
+      await fill(stage, check);
       check();
       await output.guard();
       await this.flushTree(stage);
@@ -266,7 +303,7 @@ export class DesktopExports {
     const reader = await this.reader(input);
     try {
       const opened = await inspectExport(reader, vrk, allowServer, check);
-      await this.stage(target, opened.bytes, check, async (root) => {
+      await this.stage(target, opened.bytes, check, async (root, check) => {
         for (const directory of opened.directories) { check(); await this.fs.mkdir(this.path.resolve(root, directory), { mode: 0o700, recursive: true }); }
         for (const file of opened.files) {
           check();
@@ -275,7 +312,7 @@ export class DesktopExports {
           await this.file(at, (write) => decryptExportFile(reader, opened, file, write, check));
           await this.flush(this.path.dirname(at));
         }
-      });
+      }, this.windows ? hex(await sha256(utf8(`open:${reader.fingerprint}:${allowServer}`))) : "");
       return { files: opened.files.length, bytes: opened.bytes };
     } finally { await reader.close(); }
   }
@@ -311,7 +348,7 @@ export class DesktopExports {
   }
   async plain(target: string, files: PlainFile[], check: ExportCheck): Promise<void> {
     if (files.some(file => file.path === this.configDir || file.path.startsWith(this.configDir + "/"))) throw new ExportError("configuration_path");
-    await this.stage(target, files.reduce((n, file) => n + file.size, 0), check, async (root) => {
+    await this.stage(target, files.reduce((n, file) => n + file.size, 0), check, async (root, check) => {
       for (const file of files) {
         check();
         const source = await this.reader(this.path.resolve(this.vaultRoot, file.path)), at = this.path.resolve(root, file.path);
@@ -328,6 +365,6 @@ export class DesktopExports {
       }
       const current = await this.local(check);
       if (current.length !== files.length || current.some((file, n) => file.path !== files[n]?.path || !this.same(file.stat, files[n]!.stat) || file.stat.mtimeNs !== files[n]!.stat.mtimeNs || file.size !== files[n]!.size)) throw new ExportError("local_changed");
-    });
+    }, this.windows ? hex(await sha256(utf8(JSON.stringify(files.map(file => [file.path, file.size, `${file.stat.dev}:${file.stat.ino}:${file.stat.mtimeNs}`]))))) : "");
   }
 }

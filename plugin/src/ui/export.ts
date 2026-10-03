@@ -7,6 +7,7 @@ import { ExportError, EXPORT_WORK_MS, exportBudget, selectExport } from "../expo
 import { entropyFromPhrase, normalisePhrase } from "../pairing";
 import { isPushed } from "../state";
 import { forward, literal } from "./modals";
+import { WindowsExportTrust, windowsExportBinding, windowsExportFiles } from "./windowsExportTrust";
 
 const running = new WeakSet<ObsyncPlugin>();
 export class ExportModal extends Modal {
@@ -28,10 +29,20 @@ export class ExportModal extends Modal {
   private render(): void {
     if (this.closed) return;
     const el = this.contentEl; el.empty();
-    if (!Platform.isDesktopApp || Platform.isWin) {
+    if (!Platform.isDesktopApp) {
       el.createEl("p", { text: "Export is currently available on macOS and Linux. This device does not yet have a verified way to publish a private export outside the vault. Nothing is written into this vault." });
       new Setting(el).addButton((button) => button.setButtonText("Close").onClick(() => this.close()));
       return;
+    }
+    if (Platform.isWin) {
+      let ready = false;
+      try { ready = windowsExportBinding(this.app.secretStorage) !== null; } catch { /* Explicit setup repairs the binding. */ }
+      if (!ready) {
+        el.createEl("p", { text: "Set up private Windows exports once for this vault. This verifies the Windows component used to protect and publish your copies." });
+        new Setting(el).addButton(button => button.setButtonText("Set up Windows exports").onClick(() => new WindowsExportTrust(this.app, () => this.render()).open()))
+          .addButton(button => button.setButtonText("Close").onClick(() => this.close()));
+        return;
+      }
     }
     new Setting(el).setName("Action").addDropdown((dropdown) => dropdown.addOption("encrypted", "Export encrypted copy")
       .addOption("open", "Open an export offline").addOption("plain", "Export local plain notes").setValue(this.mode).setDisabled(this.busy)
@@ -73,7 +84,8 @@ export class ExportModal extends Modal {
       if (this.mode !== "encrypted" && !this.plainConfirmed) throw new ExportError("confirm_plaintext");
       const session = this.plugin.captureSession(), adapter = this.app.vault.adapter as unknown as { getBasePath?: () => string };
       if (!Platform.isDesktopApp || typeof adapter.getBasePath !== "function") throw new ExportError("external_folder_unavailable");
-      const desktop = new DesktopExports(adapter.getBasePath(), this.app.vault.configDir);
+      const desktop = new DesktopExports(adapter.getBasePath(), this.app.vault.configDir,
+        Platform.isWin ? await windowsExportFiles(this.app.secretStorage) : undefined);
       const check = exportBudget(() => { session.assertCurrent(); if (this.closed) throw new ExportError("cancelled"); });
       if (this.mode === "encrypted") {
         if (!session.state.paired || !session.state.data.vrk) throw new ExportError("paired_device_required");

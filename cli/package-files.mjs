@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { closed, refuse } from './errors.mjs';
 
 export const RUNTIME = '26.10.0';
-export const SHARED = ['chunker', 'crypto', 'domainmap', 'export', 'exportDesktop', 'manifest', 'pairing', 'transport', 'vaultPath', 'windowsFiles', 'windowsHelperData', 'wordlist'];
+export const SHARED = ['chunker', 'crypto', 'domainmap', 'export', 'exportDesktop', 'manifest', 'pairing', 'transport', 'vaultPath', 'windowsExport', 'windowsFiles', 'windowsHelperData', 'wordlist'];
 export const FILES = ['LICENSE', 'VERSION', 'cli/README.md', 'cli/catalog.mjs', 'cli/contexts.mjs',
   'cli/errors.mjs', 'cli/export-open.mjs', 'cli/install.mjs', 'cli/install-windows.mjs', 'cli/launch.mjs', 'cli/obsync.mjs', 'cli/windows-files.ps1',
   'cli/package-files.mjs', 'cli/package.json', 'cli/reference.mjs', 'cli/shared/package.json',
