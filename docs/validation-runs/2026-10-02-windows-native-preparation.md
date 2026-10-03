@@ -87,6 +87,41 @@ unchanged from the preceding native pass. The built CLI package manifest was
 These are bounded hosted functional measurements. They establish these process
 interruption boundaries, not power-loss recovery or the app export journey.
 
+### Shared export and operation lease
+
+[Hosted run 37088276032](https://github.com/snaraj/obsync/actions/runs/37088276032)
+passed at signed, GitHub-verified source
+`730dc3bbdcc0c839a795e21821945777d958816e`. The job took 4 minutes 20 seconds.
+Its plugin `main.js` SHA-256 was
+`70a7d5269859dee5e156c45de64732f42fea4b8a5a71a491641f70740b80c32b`;
+the 29-member CLI candidate manifest SHA-256 was
+`23fdd61ddae1fe13df193de526bbbe0dd27860f03735ce77c8dbc39ae4b975c7`.
+
+Actual ordinary-user processes passed the generated trusted setup command,
+receipt import and wrong-digest refusal. The shared plugin adapter exported
+an encrypted archive, opened more than 8 MiB of multi-chunk content offline,
+and copied local notes with exact byte checks and configuration exclusion.
+Completed-output replay kept its inode. Vault and occupied-destination refusals
+left the unrelated sentinel unchanged. A child was killed after partial
+plaintext staging; a fresh process recovered that exact journal and produced
+the original bytes. A second process refused the held exclusive lease; killing
+its parent released the kernel handle and allowed a fresh process to acquire it.
+The 7,703-file publication completed in 11,167 ms, and context/installer
+interruption controls passed again.
+
+These are native shared-module processes. The actual Obsidian dialog journey
+has separate evidence and must not be inferred from this result.
+
+The affected native process rerun
+[37089367850](https://github.com/snaraj/obsync/actions/runs/37089367850) passed
+at signed source `b544d0e1e11b2c8942df96f633929fad1bb795ea`, including refusal
+of an encrypted-export completion receipt under a different vault key. Its job
+took 4 minutes 31 seconds and the 7,703-file publication took 11,726 ms. The
+plugin SHA-256 was
+`794d877eb0078c515a3bc162d2f3925f133f7c6d6ea84fe0648cd3500e3f5da0`;
+CLI manifest SHA-256 was
+`32b87c47972771eec55addfc8a1e81f897d1f64d81837e76d0860abc88d98027`.
+
 ### Failures retained
 
 These failures led to changes in the actual process path; a local unit-test
@@ -102,12 +137,16 @@ pass did not establish Windows operation:
 | [37081564717](https://github.com/snaraj/obsync/actions/runs/37081564717) | SQLite still held the database open when the helper requested exclusive access after commit. The committed handle now closes before the independent flush. |
 | [37082076460](https://github.com/snaraj/obsync/actions/runs/37082076460) | The generated launcher function `H` collided with PowerShell's built-in history alias. Descriptive function names and corrected argument escaping passed the fresh launcher journey. |
 
+| [37088623934](https://github.com/snaraj/obsync/actions/runs/37088623934) | The actual app reached trusted setup and receipt import, then the harness waited for a first-run trust prompt after restart. It now uses the existing reopened-vault flow. This failed run is retained; the correction requires a new live result. |
+
+| [37089366774](https://github.com/snaraj/obsync/actions/runs/37089366774) | The app process completed, but its cleanup removed screenshots before the controller copied them. The controller now retains the exact fixture until the three captures are copied, then removes it in its existing `finally`. No screenshot or complete live-result claim comes from this failed run. |
+
 ### Remaining gates
 
 Public Windows export, context mutation and installation remain unavailable.
-The passing internal journey does not establish the plugin's trusted bootstrap
-UI, shared export journal and crash reconciliation, or custody denial for every
-credential-bearing entry. Those need their own complete native proof.
+The passing process journey does not establish the actual plugin dialogs or
+custody denial for every credential-bearing CLI entry. Public pinned-runtime
+acquisition and release provenance also remain separate gates.
 The publication primitive uses Microsoft's documented same-volume write-through
 move and explicit file flushing. Physical power-loss behavior is untested; a
 new VM experiment is not an additional prerequisite to the API-level contract.

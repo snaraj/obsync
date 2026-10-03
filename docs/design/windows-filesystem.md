@@ -75,10 +75,13 @@ executable bytes are checked before every invocation, and the helper checks its
 actual executable against `.NET Environment.SystemDirectory` and its OS ACLs.
 The child receives only its validated OS root and the fixed OS PowerShell
 module directory derived from it; module discovery cannot use an inherited path.
-The one-time trusted bootstrap UI/receipt is still an integration requirement;
-self-inspection after executing an ambiently chosen binary would not solve it.
+The export dialog provides the fixed setup command for a person to run in an
+independently opened OS PowerShell. It imports the resulting path/digest receipt
+into the existing per-vault native secret store and verifies readback. Receipt
+bytes must match before their executable path is used. The app does not choose
+or execute an ambient binary to establish trust.
 
-## Evidence still required
+## Export recovery and native evidence
 
 The `windows-files` job in `.github/workflows/desktop-matrix.yml` builds the actual plugin and runs
 `scripts/ci/windows-files-native.ps1` on a disposable hosted Windows runner.
@@ -92,17 +95,25 @@ records passing ordinary-user custody, 7,703-file publication, killed-writer
 recovery, and actual installer interruption at stage, receipt and publication
 boundaries followed by fresh recovery, launch and uninstall.
 
-Before enabling Windows, the implementation still needs these complete flows
-and receipts:
+The shared export transaction publishes an exact-target private journal before
+writing source content. It binds the request, parent, stage and destination
+identities. A managed exclusive lease serializes recovery. A surviving private
+stage is rebuilt from the bound input; a completion record is published before
+the output move. A retry recognizes only that completed destination identity,
+never an unrelated existing destination. Pre-journal interruption can leave an
+empty private allocation, which contains no source content. Completed journals
+remain private receipts; they are not assertions that a user has never edited
+the output later.
 
-- A trusted PowerShell bootstrap and protected receipt usable by the plugin
-  without a CLI installation, plus CLI custody of that same trust information.
-- Independent custody denial for every credential-bearing entry, extending
-  the already passing second-account sentinel control.
-- Shared export operation journals bound to exact stage/target identities,
-  crash reconciliation, vault exclusions and plaintext ACL readback.
-- Native operation-lease exclusion and recovery through the shared export
-  transaction, including parent-process interruption and fresh reconciliation.
+The native process journey runs the same export adapter and crypto as the app.
+It executes the generated setup command, opens a multi-chunk encrypted archive,
+checks exact plaintext bytes, excludes the active vault and its configuration,
+and kills a real child during plaintext staging before fresh recovery. The
+separate `windows-live` journey exercises the actual dialogs, native secret
+store across restart, and concurrent typing in two actual Obsidian instances.
+Each source head needs its own result; source preparation does not advertise a
+released Windows capability.
 
-Until these pass, the product's Windows refusals remain in place. This is a
-reviewable source layer and native proof preparation, not a Windows release.
+CLI credential custody, public pinned-runtime acquisition and release provenance
+remain separate acceptance gates. No power-loss experiment or production
+installation is claimed.

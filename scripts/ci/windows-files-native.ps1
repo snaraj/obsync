@@ -94,15 +94,15 @@ if (!$SelectedUser) {
             if (![IO.File]::Exists($env:OBSIDIAN_BIN) -or [IO.Path]::GetFileName($env:OBSIDIAN_BIN) -ine 'Obsidian.exe') { throw 'Pinned fixture app required.' }
             Copy-Item -LiteralPath ([IO.Path]::GetDirectoryName($env:OBSIDIAN_BIN)) -Destination ([IO.Path]::Combine($Root, 'app')) -Recurse
             $AppOutput = Invoke-Owned $Accounts[0] $Passwords[0] ($Arguments + ' -Phase app -Root "' + $Root + '"')
+            foreach ($Line in $AppOutput -split '\r?\n') {
+                if ($Line.StartsWith('obsidian-drive: (') -or $Line.StartsWith('obsidian-drive: SUMMARY')) { Write-Output $Line }
+            }
             $Images = [IO.Path]::Combine($env:RUNNER_TEMP, 'windows-export-visuals')
             $null = [IO.Directory]::CreateDirectory($Images)
             foreach ($Mode in @('encrypted', 'open', 'plain')) {
                 $Image = [IO.Path]::Combine($Root, 'live', ('windows-export-' + $Mode + '.png'))
                 if (([IO.File]::GetAttributes($Image) -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or ([IO.FileInfo]::new($Image)).Length -gt 8388608) { throw 'Synthetic screenshot boundary.' }
                 Copy-Item -LiteralPath $Image -Destination $Images
-            }
-            foreach ($Line in $AppOutput -split '\r?\n') {
-                if ($Line.StartsWith('obsidian-drive: (') -or $Line.StartsWith('obsidian-drive: SUMMARY')) { Write-Output $Line }
             }
             exit 0
         }
@@ -200,6 +200,7 @@ try {
         $env:OBSYNC_E2E_ARGS = '["--host-resolver-rules=MAP obsync-host.invalid 127.0.0.1"]'
         & $Node scripts/ci/obsidian-drive.mjs $Root
         if ($LASTEXITCODE -ne 0) { throw 'Native app journey failed.' }
+        $Keep = $true # The controller copies the three screenshots, then removes this exact fixture.
     } elseif ($Phase -ceq 'exports') {
         $Digest = (Get-FileHash -LiteralPath $Receipt -Algorithm SHA256).Hash.ToLowerInvariant()
         & $Node scripts/ci/windows-export-process.mjs all $Root $Receipt $Digest

@@ -30,7 +30,7 @@ export class ExportModal extends Modal {
     if (this.closed) return;
     const el = this.contentEl; el.empty();
     if (!Platform.isDesktopApp) {
-      el.createEl("p", { text: "Export is currently available on macOS and Linux. This device does not yet have a verified way to publish a private export outside the vault. Nothing is written into this vault." });
+      el.createEl("p", { text: "Export requires a desktop device with a verified way to publish a private copy outside the vault. Nothing is written into this vault." });
       new Setting(el).addButton((button) => button.setButtonText("Close").onClick(() => this.close()));
       return;
     }
@@ -43,6 +43,8 @@ export class ExportModal extends Modal {
           .addButton(button => button.setButtonText("Close").onClick(() => this.close()));
         return;
       }
+      new Setting(el).addButton(button => button.setButtonText("Update Windows setup").setDisabled(this.busy)
+        .onClick(() => new WindowsExportTrust(this.app, () => this.render()).open()));
     }
     new Setting(el).setName("Action").addDropdown((dropdown) => dropdown.addOption("encrypted", "Export encrypted copy")
       .addOption("open", "Open an export offline").addOption("plain", "Export local plain notes").setValue(this.mode).setDisabled(this.busy)

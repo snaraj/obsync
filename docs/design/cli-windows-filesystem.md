@@ -29,9 +29,9 @@ until the complete native journeys and durability contract pass review.
   the receipt until the package members have been removed.
 
 These are internal candidate paths, not advertised Windows capabilities.
-The trusted setup UI and shared export recovery journal remain integration
-requirements. The plugin embeds the same helper source in `main.js` and must
-not acquire an installed-CLI prerequisite.
+The plugin implements its own explicit trusted setup UI and shares the export
+recovery journal and helper source. Its `main.js` embeds that exact source;
+there is no installed-CLI prerequisite.
 
 ## Native acceptance
 
@@ -52,11 +52,11 @@ executable tests custody only. It does not establish public runtime acquisition
 or release provenance. Native failures and remaining gaps are recorded in the
 [preparation evidence](../validation-runs/2026-10-02-windows-native-preparation.md).
 
-Before enabling Windows, also prove denial of access to all credential-bearing
-entries and the full
-shared export journey with exact journal recovery and vault exclusions. The
-app's bootstrap must be usable without a CLI installation. Receipt validation
-must precede using its executable path.
+Before advertising Windows CLI support, prove denial of access to every
+credential-bearing entry, public pinned-runtime acquisition, and release
+provenance. Shared export evidence includes exact journal recovery and vault
+exclusions; the app bootstrap is tested separately without a CLI installation.
+Receipt validation must precede using its executable path.
 
 SQLite documents its [atomic commit contract](https://www.sqlite.org/atomiccommit.html).
 Managed [`Flush(true)`](https://learn.microsoft.com/en-us/dotnet/api/system.io.filestream.flush?view=netframework-4.8.1)
