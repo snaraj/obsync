@@ -120,8 +120,21 @@ try { [IO.File]::WriteAllText('$Sentinel', 'changed') } catch [UnauthorizedAcces
 if (`$Denied -ne 3) { exit 7 }; exit 0
 "@
     $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Probe))
-    $Process = Start-Process -FilePath $Shell -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $Encoded) -Credential $Credential -WorkingDirectory ([Environment]::SystemDirectory) -Wait -PassThru
-    if ($Process.ExitCode -ne 0) { throw 'Independent account custody failed.' }
+    $Peer = [Diagnostics.ProcessStartInfo]::new($Shell)
+    $Peer.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $Encoded
+    $Peer.UseShellExecute = $false
+    $Peer.WorkingDirectory = [Environment]::SystemDirectory
+    $Peer.UserName = $Name
+    $Peer.Domain = '.'
+    $Peer.Password = $Credential.Password
+    $Peer.LoadUserProfile = $true
+    $Peer.EnvironmentVariables.Clear()
+    $Peer.EnvironmentVariables['SystemRoot'] = [IO.Directory]::GetParent([Environment]::SystemDirectory).FullName
+    $Process = [Diagnostics.Process]::Start($Peer)
+    try {
+        if (!$Process.WaitForExit(15000)) { $Process.Kill(); $Process.WaitForExit(); throw 'Independent account probe timed out.' }
+        if ($Process.ExitCode -ne 0) { throw 'Independent account custody failed.' }
+    } finally { $Process.Dispose() }
     & $Node scripts/ci/windows-files-process.mjs publish $Root $Receipt $Digest
     if ($LASTEXITCODE -ne 0) { throw 'Fresh publication process failed.' }
     $Scope = 'private custody and publication'
