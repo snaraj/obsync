@@ -171,6 +171,10 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npm run build
           npm test
+      - name: Build and test the offline CLI
+        run: |
+          node cli/build.mjs
+          node cli/test.mjs
       - name: Test the dashboard
         # The explicit glob names the dashboard test files without relying on
         # Node's directory-discovery behavior. Verified with pinned Node 26.10.0.

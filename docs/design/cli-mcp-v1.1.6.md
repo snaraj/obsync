@@ -1,6 +1,6 @@
 # CLI and MCP design: staged delivery for people and agents
 
-Status: planned capabilities, reconciled 2026-10-02. Tracked in
+Status: planned capabilities, reconciled 2026-10-03. Tracked in
 [#254](https://github.com/snaraj/obsync/issues/254). These commands, management
 APIs and MCP tools are not implemented by this document. The
 [live acceptance plan](../validation-plans/cli-mcp-v1.1.6.md) defines the evidence
@@ -36,15 +36,15 @@ future slice does not reserve a stale version. Documentation-only changes advanc
 no locks. The usual three-PR budget may rise to four only when it blocks the
 management-auth design or co-editing design PR; the one-artifact limit still holds.
 
-Current scope: offline discovery/schema/context/doctor and local encrypted-export
-opening; scoped management login/status; native desktop existing-server setup,
+Current scope: offline discovery/schema/context/doctor and verified installation; scoped management login/status; native desktop existing-server setup,
 mobile handoff and device lifecycle; local stdio MCP **observe**; resulting-state
 proof for each shipped capability. Profiles may target several servers; each
 server keeps the existing single-account model.
 
 Deferred to the next milestone: [#259](https://github.com/snaraj/obsync/issues/259)
 storage administration/deployment adapters, [#260](https://github.com/snaraj/obsync/issues/260)
-full backup/isolated restore, and setup's new-server and storage stages. MCP write
+full backup/isolated restore, [#317](https://github.com/snaraj/obsync/issues/317)
+native export and offline opening, and setup's new-server and storage stages. MCP write
 profiles are also outside this observe-only slice. The six wholly deferred live
 gates are V11–V15 and V18; V06 retains its existing-server bootstrap/interruption
 portion. Their security requirements remain binding when those features ship.
@@ -186,7 +186,7 @@ not a vault key. It must not silently retarget after a redirect or config edit.
 | `obsync operations get/list/watch/cancel` | Durable progress and bounded waits; cancel only where supported |
 | `obsync sync status/verify` | Local plugin status and explicit sentinel-based round trip; observe device evidence |
 | `obsync doctor` | Offline slice: read-only local prerequisites/configuration diagnosis; authenticated server/plugin checks arrive with their slices; repairs remain separate plans |
-| `obsync export open` | Explicit local #317 archive opening, offline; native export contains current notes by default, history only by choice; no MCP content access |
+| `obsync export open` (deferred) | Explicit local #317 archive opening, offline; native export contains current notes by default, history only by choice; no MCP content access |
 | `obsync logs list/watch`, `obsync audit list` | Bounded operational and administration events, filters and cursor |
 | `obsync agent instructions` | Small installed guide, version/capability-aware, also available offline |
 | `obsync mcp serve/config/doctor` | stdio adapter, explicit client-config preview/apply, actual integration checks |
@@ -703,7 +703,7 @@ states the denominator and measurement age; no invented percentage or ETA.
 
 | Package | Delivery slice | Depends on | Live proof |
 | --- | --- | --- | --- |
-| [WP1 #255](https://github.com/snaraj/obsync/issues/255), PR-3a | Offline CLI/catalog/output/context/doctor, trusted install and #317 local export opening | PR-0 design; #317 native export format | V01, V02, V10 (local writes/interruption); #317 offline app-to-CLI round trip |
+| [WP1 #255](https://github.com/snaraj/obsync/issues/255), PR-3a | Offline CLI/catalog/output/context/doctor and trusted install; export is unsupported | PR-0 design | V01, V02, V10 (local writes/interruption) |
 | [WP2 #256](https://github.com/snaraj/obsync/issues/256), PR-3b | Management enrollment, scoped grants, login/status/logout, custody and durable audit | Independently reviewed auth state model (PR-A); WP1 | V03, V04, V09 (management logout), V10 |
 | [WP3 #257](https://github.com/snaraj/obsync/issues/257), PR-4a | Native bridge; existing-server first setup, pairing, folder selection and local disconnect | WP1–2 | V05–V10, V16 (local MCP config writes only) |
 | [WP4 #258](https://github.com/snaraj/obsync/issues/258), PR-4b | Shared status, rename, policy acknowledgement, revoke/archive | WP1–3; shipped 1.1.5 device model | V08–V10 |

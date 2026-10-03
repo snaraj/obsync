@@ -3,7 +3,7 @@
 # canonical command below must also appear in .github/workflows/pr-gate.yml, so
 # "it passed locally" and "it passed in CI" cannot come to mean different
 # things.
-.PHONY: help check fmt lint test coverage plugin dashboard chart contracts secrets build image image-isolated release-check
+.PHONY: help check fmt lint test coverage plugin cli dashboard chart contracts secrets build image image-isolated release-check
 
 # Requirement 9's ratchet-only floor, set at the first measured value on the
 # composed bootstrap wave (89.80 %, 2026-09-07). The same number lives in
@@ -17,7 +17,7 @@ BASE ?= origin/main
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
 
-check: fmt lint test coverage plugin dashboard chart contracts secrets ## The full local gate
+check: fmt lint test coverage plugin cli dashboard chart contracts secrets ## The full local gate
 
 fmt: ## rustfmt check
 	cargo fmt --all --check
@@ -33,6 +33,10 @@ coverage: ## Rust line coverage against RUST_COVERAGE_FLOOR (llvm-tools componen
 
 plugin: ## Build and test the plugin
 	cd plugin && npm ci --ignore-scripts --no-audit --no-fund && npm run build && npm test
+
+cli: plugin ## Build and test the offline management CLI
+	node cli/build.mjs
+	node cli/test.mjs
 
 dashboard: ## Test the dashboard's pure functions
 	# The explicit glob names the dashboard test files without relying on

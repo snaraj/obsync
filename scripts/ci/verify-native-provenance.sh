@@ -16,6 +16,7 @@ fi
 # The server archives, from 1.1.4 on, are named by the caller: the publisher's
 # own export, or the audit's download of each archive the evidence records.
 read -r -a archives <<< "${SERVER_ARCHIVES:-}"
+if [ -n "${CLI_BUNDLE:-}" ]; then archives+=("${CLI_BUNDLE}"); fi
 for member in "${directory}/main.js" "${directory}/manifest.json" "${directory}/styles.css" \
   "${archives[@]}"; do
   gh attestation verify "${member}" \

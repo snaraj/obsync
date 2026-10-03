@@ -259,6 +259,45 @@ rulesets, a condition it does not model, a bypass list it cannot read, and a
 ruleset that changes while it reads. `scripts/ci/test_release_contract.py`
 pins each case.
 
+## CLI bundle from 1.2.0
+
+The first CLI artifact takes version 1.2.0 from released 1.1.5. Export and
+offline opening are deferred with #317 and are not prerequisites. Releases from 1.2.0 require `artifacts.cli_bundle` in the existing v2
+evidence record; earlier versions reject it. The object has exactly:
+
+```json
+{
+  "name": "obsync-cli-1.2.0.zip",
+  "digest": "sha256:<64 lowercase nonzero hex characters>",
+  "size": 123,
+  "content_type": "application/zip",
+  "runtime": { "name": "node", "version": "26.10.0", "delivery": "prerequisite" },
+  "manifest_sha256": "<64 lowercase nonzero hex characters>"
+}
+```
+
+The size above illustrates the type; publication records the exact positive
+byte count, bounded to 4 MiB. The archive is platform-neutral, deterministic,
+has a closed file inventory and carries no runtime installer/download. Its
+inner manifest binds version, runtime, source commit and each file's bytes;
+candidate builds refuse publication. Docker's `cli-dist` target reuses the pinned TypeScript compiler for the
+CLI-owned filesystem adapters. No plugin or vault decryption code ships
+in the package. Node never enters the server image.
+
+The publisher verifies the archive contract before attestation, then includes
+the archive in the existing native SLSA provenance, immutable asset upload and
+byte readback. The read-only audit checks the same contract and exact source,
+signer, repository and protected workflow identity. The release has eight
+assets from 1.2.0; attestation bundles are not extra Release assets.
+
+Any external release-evidence consumer must accept and bind this exact
+version-gated field and asset inventory before the CLI artifact merge. That
+metadata check does not verify archive contents or install the CLI. Installation
+requires independent publisher verification before extraction/execution and an
+independently trusted pinned runtime; see [CLI installation](../cli/README.md).
+Hosted native receipts, public download/install verification and the security
+mutation matrix remain required evidence before advertising those capabilities.
+
 ## Deployment
 
 Publication is never deployment. A deployer's own platform selects the

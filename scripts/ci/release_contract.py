@@ -39,6 +39,10 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
+if __package__:
+    from .cli_package_contract import CLI_MAX_BYTES, CLI_RUNTIME, cli_archive_record
+else:
+    from cli_package_contract import CLI_MAX_BYTES, CLI_RUNTIME, cli_archive_record
 
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -52,6 +56,10 @@ EXPECTED_WORKFLOW = "PR gate"
 EXPECTED_WORKFLOW_PATH = ".github/workflows/pr-gate.yml"
 EXPECTED_CODEQL_WORKFLOW = "CodeQL"
 EXPECTED_CODEQL_WORKFLOW_PATH = ".github/workflows/codeql.yml"
+EXPECTED_CLI_WORKFLOW = "CLI native acceptance"
+EXPECTED_CLI_WORKFLOW_PATH = ".github/workflows/cli-native.yml"
+EXPECTED_CLI_JOBS = {f"native ({os})": "success" for os in
+                     ("ubuntu-24.04", "ubuntu-24.04-arm", "windows-2025", "macos-15")}
 EXPECTED_PUBLISHER_PATH = ".github/workflows/release-publisher.yml"
 
 GITHUB_ACTIONS_BOT_LOGIN = "github-actions[bot]"
@@ -172,6 +180,10 @@ class Version:
     @property
     def server_archives(self) -> bool:
         return (self.major, self.minor, self.patch) >= SERVER_ARCHIVES_FROM
+
+    @property
+    def cli_bundle(self) -> bool:
+        return (self.major, self.minor, self.patch) >= (1, 2, 0)
 
     @property
     def plugin_id(self) -> str:
@@ -977,44 +989,62 @@ def validate_codeql_jobs_record(
     )
 
 
-def classify_codeql_run_record(
-    record: Mapping[str, object], *, expected_repository: str, expected_source_sha: str
+def _classify_auxiliary_run_record(
+    record: Mapping[str, object], *, expected_repository: str, expected_source_sha: str,
+    workflow: str, path: str, label: str
 ) -> int | None:
-    """Resolve exactly one CodeQL push run for the authorized main SHA."""
-    source_sha = require_sha(expected_source_sha, "CodeQL source SHA")
-    runs = _array(record.get("workflow_runs"), "CodeQL workflow runs")
+    """Resolve exactly one required auxiliary push run for the authorized main SHA."""
+    source_sha = require_sha(expected_source_sha, f"{label} source SHA")
+    runs = _array(record.get("workflow_runs"), f"{label} workflow runs")
     total_count = record.get("total_count")
     if isinstance(total_count, bool) or total_count != len(runs):
-        raise ContractError("CodeQL run total_count does not equal the returned run count")
+        raise ContractError(f"{label} run total_count does not equal the returned run count")
     if not runs:
         return None
     if len(runs) != 1:
-        raise ContractError("CodeQL exact-SHA query returned duplicate or foreign runs")
-    run = _object(runs[0], "CodeQL workflow run")
+        raise ContractError(f"{label} exact-SHA query returned duplicate or foreign runs")
+    run = _object(runs[0], f"{label} workflow run")
     run_id = run.get("id")
     if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
-        raise ContractError("CodeQL run ID must be a positive integer")
+        raise ContractError(f"{label} run ID must be a positive integer")
     for field in ("repository", "head_repository"):
-        record_field = _object(run.get(field), f"CodeQL run {field}")
+        record_field = _object(run.get(field), f"{label} run {field}")
         if record_field.get("full_name") != expected_repository:
-            raise ContractError(f"CodeQL run {field} identity mismatch")
+            raise ContractError(f"{label} run {field} identity mismatch")
     for key, expected in {
-        "name": EXPECTED_CODEQL_WORKFLOW,
-        "path": EXPECTED_CODEQL_WORKFLOW_PATH,
+        "name": workflow,
+        "path": path,
         "event": "push",
         "head_branch": "main",
         "head_sha": source_sha,
     }.items():
         if run.get(key) != expected:
-            raise ContractError(f"CodeQL run {key} must equal {expected!r}")
+            raise ContractError(f"{label} run {key} must equal {expected!r}")
     status = run.get("status")
     if status in {"queued", "in_progress", "waiting", "requested", "pending"}:
         if run.get("conclusion") is not None:
-            raise ContractError("incomplete CodeQL run already has a conclusion")
+            raise ContractError(f"incomplete {label} run already has a conclusion")
         return None
     if status != "completed" or run.get("conclusion") != "success":
-        raise ContractError("exact-SHA CodeQL run is not completed successfully")
+        raise ContractError(f"exact-SHA {label} run is not completed successfully")
     return run_id
+
+
+def classify_codeql_run_record(record: Mapping[str, object], *, expected_repository: str, expected_source_sha: str) -> int | None:
+    return _classify_auxiliary_run_record(record, expected_repository=expected_repository,
+        expected_source_sha=expected_source_sha, workflow=EXPECTED_CODEQL_WORKFLOW,
+        path=EXPECTED_CODEQL_WORKFLOW_PATH, label="CodeQL")
+
+
+def classify_cli_run_record(record: Mapping[str, object], *, expected_repository: str, expected_source_sha: str) -> int | None:
+    return _classify_auxiliary_run_record(record, expected_repository=expected_repository,
+        expected_source_sha=expected_source_sha, workflow=EXPECTED_CLI_WORKFLOW,
+        path=EXPECTED_CLI_WORKFLOW_PATH, label="CLI native")
+
+
+def validate_cli_jobs_record(record: Mapping[str, object], *, expected_run_id: int, expected_source_sha: str) -> str:
+    return _validate_job_inventory(record, expected=EXPECTED_CLI_JOBS,
+        expected_run_id=expected_run_id, expected_source_sha=expected_source_sha, label="CLI native")
 
 
 def validate_release_destinations(repository: str, image: str, chart: str) -> None:
@@ -1337,6 +1367,7 @@ def build_release_manifest(
     plugin_digest: str,
     plugin_bundle: bytes | None = None,
     server_archives: Mapping[str, bytes] | None = None,
+    cli_bundle: bytes | None = None,
 ) -> dict[str, object]:
     """The one canonical, deterministic publication evidence asset."""
     validate_release_destinations(repository, image, chart)
@@ -1397,6 +1428,13 @@ def build_release_manifest(
             server_archives, parsed, files)
     elif server_archives is not None:
         raise ContractError(f"release {parsed} predates the server archives")
+    if parsed.cli_bundle:
+        try:
+            manifest["artifacts"]["cli_bundle"] = cli_archive_record(cli_bundle, str(parsed), source_sha)
+        except (ValueError, TypeError, KeyError, zipfile.BadZipFile) as error:
+            raise ContractError(f"CLI package refused: {error}") from error
+    elif cli_bundle is not None:
+        raise ContractError(f"release {parsed} predates the CLI bundle")
     return manifest
 
 
@@ -1414,6 +1452,7 @@ def validate_release_manifest_record(
     plugin_digest: str,
     plugin_bundle: bytes | None = None,
     server_archives: Mapping[str, bytes] | None = None,
+    cli_bundle: bytes | None = None,
 ) -> None:
     expected = build_release_manifest(
         repository=repository,
@@ -1427,6 +1466,7 @@ def validate_release_manifest_record(
         plugin_digest=plugin_digest,
         plugin_bundle=plugin_bundle,
         server_archives=server_archives,
+        cli_bundle=cli_bundle,
     )
     if manifest != expected:
         raise ContractError("release manifest is not the exact canonical evidence record")
@@ -1465,6 +1505,7 @@ def build_release_notes(manifest: Mapping[str, object], changelog: str | None = 
     asset_name = release_manifest_asset_name(tag)
     asset_digest = "sha256:" + hashlib.sha256(_canonical_json(manifest)).hexdigest()
     servers = ""
+    cli = ""
     provenance = ""
     if version.server_archives:
         archives = _object(artifacts.get("server_archives"), "release manifest server archives")
@@ -1473,12 +1514,17 @@ def build_release_notes(manifest: Mapping[str, object], changelog: str | None = 
             servers += f"| Server ({platform}) | `{archive.get('name')}` (`{archive.get('digest')}`) |\n"
         provenance = ("The plugin files and server archives carry this workflow's build "
                       "provenance (`gh attestation verify`).\n")
+    if version.cli_bundle:
+        client = _object(artifacts.get("cli_bundle"), "release manifest CLI bundle")
+        cli = f"| CLI (Node {CLI_RUNTIME['version']} prerequisite) | `{client.get('name')}` (`{client.get('digest')}`) |\n"
+        provenance = "The plugin files, server archives and CLI bundle carry this workflow's build provenance (`gh attestation verify`).\n"
     evidence = (
         "| Artifact | Reference |\n| --- | --- |\n"
         f"| Image | `{image.get('repository')}:{image.get('tag')}@{image.get('digest')}` |\n"
         f"| Chart | `{chart.get('repository')}:{chart.get('tag')}@{chart.get('digest')}` |\n"
         f"| Plugin | `{plugin.get('name')}` (`{plugin.get('digest')}`) |\n"
         f"{servers}"
+        f"{cli}"
         "\nImage and chart are signed with keyless Cosign by this workflow identity.\n"
         f"{provenance}"
         f"\nPublication evidence: `{asset_name}` (`{asset_digest}`).\n"
@@ -1576,6 +1622,20 @@ def _validate_release_assets(
                 "digest": _require_digest(record.get("digest"), "server archive asset digest"),
                 "size": size, "content_type": "application/gzip", "state": "uploaded",
             }
+    if version.cli_bundle:
+        record = _object(artifacts.get("cli_bundle"), "CLI bundle asset")
+        name, size = f"obsync-cli-{version}.zip", record.get("size")
+        digest = record.get("manifest_sha256")
+        if (set(record) != {"name", "digest", "size", "content_type", "runtime", "manifest_sha256"} or
+                record.get("name") != name or record.get("content_type") != "application/zip" or
+                record.get("runtime") != CLI_RUNTIME or isinstance(size, bool) or
+                not isinstance(size, int) or not 0 < size <= CLI_MAX_BYTES or
+                not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) or digest == "0" * 64):
+            raise ContractError("CLI asset declaration is invalid")
+        expected[name] = {"digest": require_publishable_digest(record.get("digest"), "CLI asset digest"),
+                          "size": size, "content_type": "application/zip", "state": "uploaded"}
+    elif not version.legacy and "cli_bundle" in artifacts:
+        raise ContractError("release predates the CLI bundle")
     if len(records) != len(expected):
         raise ContractError("GitHub Release must carry the exact versioned asset inventory")
     seen: set[str] = set()
@@ -1977,6 +2037,16 @@ def _parser() -> argparse.ArgumentParser:
     codeql_jobs.add_argument("--run-id", type=int, required=True)
     codeql_jobs.add_argument("--source-sha", required=True)
 
+    cli_run = commands.add_parser("cli-run-record")
+    cli_run.add_argument("--runs-json", type=Path, required=True)
+    cli_run.add_argument("--repository", required=True)
+    cli_run.add_argument("--source-sha", required=True)
+
+    cli_jobs = commands.add_parser("cli-jobs-record")
+    cli_jobs.add_argument("--jobs-json", type=Path, required=True)
+    cli_jobs.add_argument("--run-id", type=int, required=True)
+    cli_jobs.add_argument("--source-sha", required=True)
+
     publisher = commands.add_parser("publisher")
     publisher.add_argument("--root", type=Path, required=True)
     publisher.add_argument("--source-sha", required=True)
@@ -2048,6 +2118,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--chart-digest", required=True)
         command.add_argument("--plugin-digest", required=True)
         command.add_argument("--plugin-bundle", type=Path)
+        command.add_argument("--cli-bundle", type=Path)
         # PLATFORM=PATH, once per production platform, from 1.1.4 on.
         command.add_argument("--server-archive", action="append", default=[])
 
@@ -2074,6 +2145,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _manifest_arguments(args: argparse.Namespace) -> dict:
+    cli_bundle = None
+    if getattr(args, "cli_bundle", None):
+        with args.cli_bundle.open("rb") as stream:
+            cli_bundle = stream.read(CLI_MAX_BYTES + 1)
     plugin_bundle = None
     if args.plugin_bundle:
         with args.plugin_bundle.open("rb") as stream:
@@ -2100,6 +2175,7 @@ def _manifest_arguments(args: argparse.Namespace) -> dict:
         "plugin_digest": args.plugin_digest,
         "plugin_bundle": plugin_bundle,
         "server_archives": server_archives,
+        "cli_bundle": cli_bundle,
     }
 
 
@@ -2166,6 +2242,13 @@ def main(argv: list[str] | None = None) -> int:
                     expected_source_sha=args.source_sha,
                 )
             )
+        elif args.command == "cli-run-record":
+            run_id = classify_cli_run_record(_read_object(args.runs_json),
+                expected_repository=args.repository, expected_source_sha=args.source_sha)
+            print("pending" if run_id is None else run_id)
+        elif args.command == "cli-jobs-record":
+            print(validate_cli_jobs_record(_read_object(args.jobs_json),
+                expected_run_id=args.run_id, expected_source_sha=args.source_sha))
         elif args.command == "publisher":
             _emit(
                 validate_publisher(

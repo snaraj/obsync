@@ -2,6 +2,7 @@
 /target/
 plugin/dist/
 plugin/node_modules/
+cli/dist/
 .DS_Store
 __pycache__/
 
@@ -11,3 +12,6 @@ __pycache__/
 
 # Documentation site build output (mkdocs.yml, `site_dir`)
 /site/
+
+# Local reusable validation fixtures and private run instructions.
+.local-validation/
