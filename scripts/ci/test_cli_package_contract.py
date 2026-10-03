@@ -52,7 +52,7 @@ class NativePackagePreparation(unittest.TestCase):
             os.link(binary, binary.with_name('cargo-deps-copy'))
             self.assertEqual(binary.stat().st_nlink, 2)
             for event, sha, success in [('pull_request', source, True), ('push', source, True),
-                                         ('push', '0' * 40, False)]:
+                                         ('push', '0' * 40, False), ('push', '', False)]:
                 runner = directory / f'runner-{event}-{sha}'
                 runner.mkdir()
                 result = subprocess.run(['/bin/bash', '-euc', script], cwd=directory,

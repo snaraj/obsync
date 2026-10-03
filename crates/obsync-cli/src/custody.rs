@@ -109,7 +109,7 @@ pub fn exact(path: &str, root_allowed: bool) -> Result<PathBuf> {
             || path.len() < 3
             || !path.as_bytes()[0].is_ascii_uppercase()
             || !path[1..].starts_with(":\\")
-            || path[3..].chars().any(|c| r#"/:<>\"|?*"#.contains(c))
+            || path[3..].chars().any(|c| r#"/:<>"|?*"#.contains(c))
         {
             return Err(unsafe_path());
         }
@@ -135,6 +135,39 @@ pub fn exact(path: &str, root_allowed: bool) -> Result<PathBuf> {
         }
     }
     Ok(PathBuf::from(path))
+}
+
+#[cfg(all(test, windows))]
+mod windows_paths {
+    use super::exact;
+
+    #[test]
+    fn nested_paths_keep_their_separators_and_refuse_aliases() {
+        for path in [r"C:\Users\lab\state", r"D:\private package\obsync.exe"] {
+            assert_eq!(exact(path, false).unwrap().to_str(), Some(path));
+        }
+        assert!(exact(r"C:\", true).is_ok());
+        for path in [
+            r"C:\",
+            r"c:\Users\lab",
+            r"\\server\share",
+            r"\\?\C:\lab",
+            r"C:\lab\\state",
+            r"C:\lab\.\state",
+            r"C:\lab\..\state",
+            r"C:\lab\state\",
+            r"C:\lab\state.",
+            r"C:\lab\state ",
+            r"C:\lab\file:stream",
+            r"C:\lab/state",
+            r"C:\lab\CON.txt",
+            r"C:\lab\LPT1",
+            r"C:\lab\state?",
+            r#"C:\lab\state""#,
+        ] {
+            assert!(exact(path, false).is_err(), "accepted {path:?}");
+        }
+    }
 }
 pub fn present(path: &Path) -> Result<Option<Metadata>> {
     match fs::symlink_metadata(path) {

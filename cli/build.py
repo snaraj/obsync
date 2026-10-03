@@ -16,7 +16,7 @@ from cli_package_contract import CLI_MAX_BYTES, CLI_PLATFORMS, cli_files, member
 
 def build(binary, platform, output, release_source=None):
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    if release_source:
+    if release_source is not None:
         dirty = subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT)
         if head != release_source or dirty:
             raise ValueError('Release packaging requires the exact clean source commit.')
