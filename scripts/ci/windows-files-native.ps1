@@ -1,15 +1,27 @@
 # Hosted disposable Windows runner only. No production paths or credentials.
-param([switch]$SelectedUser, [string]$Node, [string]$Phase, [string]$Root)
+param([switch]$SelectedUser, [switch]$Peer, [string]$Node, [string]$Phase, [string]$Root)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows') { throw 'Hosted Windows runner required.' }
 $Shell = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\powershell.exe')
+if ($Peer) {
+    if ($SelectedUser -or $Root -cnotmatch '^[A-Z]:\\Users\\ob[a-f0-9]{14}\\obsync native [a-f0-9]{32}$') { throw 'Exact synthetic peer fixture required.' }
+    $Stage = [IO.Path]::Combine($Root, 'stage')
+    $Sentinel = [IO.Path]::Combine($Stage, 'sentinel.txt')
+    $Denied = 0
+    try { [IO.Directory]::GetFileSystemEntries($Stage) | Out-Null } catch [UnauthorizedAccessException] { $Denied++ }
+    try { [IO.File]::ReadAllText($Sentinel) | Out-Null } catch [UnauthorizedAccessException] { $Denied++ }
+    try { [IO.File]::WriteAllText($Sentinel, 'changed') } catch [UnauthorizedAccessException] { $Denied++ }
+    if ($Denied -ne 3) { exit 7 }; exit 0
+}
 if (!$SelectedUser) {
     if ($Root -or $Phase) { throw 'Controller paths cannot be supplied.' }
     $Node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
     if ((& $Node --version) -cne 'v26.10.0' -or $LASTEXITCODE -ne 0) { throw 'Controller runtime differs.' }
     $Accounts = @()
     function Invoke-Owned($Account, [Security.SecureString]$Password, [string]$Arguments) {
+        # CreateProcessWithLogonW has a 1024-character command-line maximum.
+        if ($Shell.Length + $Arguments.Length + 4 -gt 1024) { throw 'Credentialed command-line budget.' }
         $Start = [Diagnostics.ProcessStartInfo]::new($Shell)
         $Start.Arguments = $Arguments
         $Start.WorkingDirectory = (Get-Location).Path
@@ -68,19 +80,7 @@ if (!$SelectedUser) {
         $Root = $Candidate
         $Owner = [IO.Directory]::GetAccessControl($Root).GetOwner([Security.Principal.SecurityIdentifier]).Value
         if ($Owner -cne $Accounts[0].SID.Value) { throw 'Prepared fixture owner differs.' }
-        $Sentinel = [IO.Path]::Combine($Root, 'stage\sentinel.txt').Replace("'", "''")
-        $Stage = [IO.Path]::Combine($Root, 'stage').Replace("'", "''")
-        # The controller launches both users independently. No nested credential
-        # launch and no synthetic password is passed to the product process.
-        $Probe = @"
-`$ErrorActionPreference = 'Stop'; `$Denied = 0
-try { [IO.Directory]::GetFileSystemEntries('$Stage') | Out-Null } catch [UnauthorizedAccessException] { `$Denied++ }
-try { [IO.File]::ReadAllText('$Sentinel') | Out-Null } catch [UnauthorizedAccessException] { `$Denied++ }
-try { [IO.File]::WriteAllText('$Sentinel', 'changed') } catch [UnauthorizedAccessException] { `$Denied++ }
-if (`$Denied -ne 3) { exit 7 }; exit 0
-"@
-        $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Probe))
-        $null = Invoke-Owned $Accounts[1] $Passwords[1] ('-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $Encoded)
+        $null = Invoke-Owned $Accounts[1] $Passwords[1] ('-NoLogo -NoProfile -NonInteractive -File "' + $PSCommandPath + '" -Peer -Root "' + $Root + '"')
         Write-Output '{"event":"windows_peer_custody","result":"pass"}'
         $Completed = Invoke-Owned $Accounts[0] $Passwords[0] ($Arguments + ' -Phase complete -Root "' + $Root + '"')
         foreach ($Line in ($Prepared + "`n" + $Completed) -split '\r?\n') {
