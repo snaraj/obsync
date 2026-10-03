@@ -2,6 +2,8 @@
 
 *Internals, for contributors and reviewers.*
 
+Delivery records call this page's scenarios **VAL V1–V28** and its journeys **J1–J11**, distinct from the CLI design's live gates V01–V19, security gates S01–S12 and budgets P01–P10.
+
 Dated 2026-09-27. The MVP is validated when every step below passes on each
 client platform of the set -- macOS, Windows, Linux, iPhone or iPad, and
 Android -- against a server on either reference route under "Routes" below:
