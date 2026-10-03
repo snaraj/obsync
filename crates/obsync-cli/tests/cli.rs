@@ -111,6 +111,8 @@ fn version_aliases_and_global_flag_positions_match() {
 
 #[test]
 fn search_explain_and_capabilities_describe_the_same_catalog() {
+    document(&["cli", "search", &"a".repeat(256), "-o", "json"], 0);
+    document(&["cli", "search", &"a".repeat(257), "-o", "json"], 2);
     let result = document(&["cli", "search", "context", "-o", "json"], 0);
     let items = result
         .get("data")
@@ -180,6 +182,8 @@ fn unsupported_flags_and_missing_values_refuse() {
         vec!["version", "--filename", "fixture"],
         vec!["cli", "search"],
         vec!["version", "--output"],
+        vec!["version", "--config-dir", ""],
+        vec!["version", "--config-dir", "-synthetic"],
     ] {
         assert_eq!(invoke(&args).status.code(), Some(2));
     }
@@ -194,6 +198,14 @@ fn positional_flag_text_cannot_change_output_or_choose_an_ambiguous_schema() {
         String::from_utf8(output.stdout)
             .unwrap()
             .contains("No matching operations.")
+    );
+    let malformed = invoke(&["version", "--unknown", "--", "-o=json"]);
+    assert_eq!(malformed.status.code(), Some(2));
+    assert!(malformed.stdout.is_empty());
+    assert!(
+        String::from_utf8(malformed.stderr)
+            .unwrap()
+            .starts_with("error:")
     );
     document(&["schema", "config", "-o", "json"], 2);
     let output = invoke(&["config", "use-context", "lab", "--help"]);

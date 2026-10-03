@@ -13,7 +13,7 @@ mod context;
 mod custody;
 mod output;
 mod package;
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", windows, test))]
 mod process;
 mod store;
 #[cfg(windows)]

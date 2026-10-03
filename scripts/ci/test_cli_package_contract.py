@@ -182,7 +182,8 @@ class CliReleaseContract(unittest.TestCase):
         for mutation in [lambda m: m.update(source_sha='c' * 40), lambda m: m.update(platform='windows-amd64'),
                          lambda m: m.update(candidate=True), lambda m: m.update(extra=True),
                          lambda m: m.update(source_sha='0' * 40),
-                         lambda m: m['files'][0].update(size=1), lambda m: m['files'][0].update(sha256='0' * 64)]:
+                         lambda m: m['files'][0].update(size=1), lambda m: m['files'][0].update(sha256='0' * 64),
+                         lambda m: m['files'][0].update(unexpected=True)]:
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 cli.cli_archive_record(cli_bundle(mutate=mutation), '1.1.6', SHA, 'linux-amd64')
         for extra in [{'../outside': b'x'}, {'cli/unknown.mjs': b'x'}, {'VERSION': b'1.3.0\n'}]:
@@ -194,6 +195,11 @@ class CliReleaseContract(unittest.TestCase):
         self.assertLess(len(expanded), cli.CLI_MAX_BYTES)
         with self.assertRaises(ValueError):
             cli.cli_archive_record(expanded, '1.1.6', SHA, 'linux-amd64')
+        with self.assertRaises(ValueError):
+            cli.cli_archive_record(cli_bundle(file_payloads={'VERSION': b'1.3.0\n'}), '1.1.6', SHA, 'linux-amd64')
+        oversized_manifest = cli_bundle(encode_manifest=lambda m: ' ' * 16385 + json.dumps(m))
+        with self.assertRaises(ValueError):
+            cli.cli_archive_record(oversized_manifest, '1.1.6', SHA, 'linux-amd64')
         duplicate = cli_bundle(encode_manifest=lambda m: '{"candidate":false,' + json.dumps(m)[1:])
         with self.assertRaises(ValueError):
             cli.cli_archive_record(duplicate, '1.1.6', SHA, 'linux-amd64')
@@ -212,6 +218,11 @@ class CliReleaseContract(unittest.TestCase):
             cli.pack_cli(source, second, "linux-amd64")
             self.assertEqual(first.read_bytes(), second.read_bytes())
             cli.cli_archive_record(first.read_bytes(), '1.1.6', SHA, 'linux-amd64')
+            shared = root / 'shared-license'
+            os.link(source / 'LICENSE', shared)
+            with self.assertRaises(ValueError):
+                cli.pack_cli(source, second, "linux-amd64")
+            shared.unlink()
             (source / 'VERSION').unlink()
             (root / 'outside').write_bytes(b'1.1.6\n')
             (source / 'VERSION').symlink_to(root / 'outside')

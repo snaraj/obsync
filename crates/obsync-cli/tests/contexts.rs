@@ -303,6 +303,17 @@ fn changed_stale_expired_and_wrong_target_plans_leave_storage_unchanged() {
     }
     lab.apply(&extended, 2);
     assert!(!lab.config.exists());
+    let mut noncanonical = a.clone();
+    let mut parameters = noncanonical.get("parameters").unwrap().clone();
+    replace(
+        &mut parameters,
+        "origin",
+        Value::Str("https://EXAMPLE.invalid".into()),
+    );
+    replace(&mut noncanonical, "parameters", parameters);
+    rehash(&mut noncanonical);
+    lab.apply(&noncanonical, 2);
+    assert!(!lab.config.exists());
     let mut wrong_state = b.clone();
     replace(
         &mut wrong_state,
@@ -383,7 +394,7 @@ fn malformed_origins_and_names_are_refused_before_any_configuration_write() {
         ],
         2,
     );
-    for name in ["A", "../fixture", "-name", "with space"] {
+    for name in ["A", "../fixture", "-name", "with space", &"a".repeat(65)] {
         lab.run(
             &[
                 "config",
@@ -402,6 +413,13 @@ fn malformed_origins_and_names_are_refused_before_any_configuration_write() {
     ] {
         lab.plan(&["config", "set-context", "lab", "--server", origin]);
     }
+    lab.plan(&[
+        "config",
+        "set-context",
+        &"a".repeat(64),
+        "--server",
+        "https://example.invalid",
+    ]);
     assert!(!lab.config.exists());
 }
 
@@ -519,6 +537,13 @@ fn corrupt_sealed_record_is_never_discarded_by_doctor_or_recovery() {
         "receipt",
         "current",
         "receipt-revision",
+        "receipt-zero-revision",
+        "receipt-zero-expiry",
+        "revision-budget",
+        "context-capacity",
+        "receipt-capacity",
+        "missing-lock",
+        "nonempty-lock",
         "sequence",
         "parity",
         "canonical",
@@ -544,6 +569,50 @@ fn corrupt_sealed_record_is_never_discarded_by_doctor_or_recovery() {
                 let mut receipts = state.get("receipts").unwrap().as_array().unwrap().to_vec();
                 replace(&mut receipts[0], "revision", Value::Int(2));
                 replace(&mut state, "receipts", Value::Array(receipts));
+            }
+            "receipt-zero-revision" | "receipt-zero-expiry" => {
+                let mut receipts = state.get("receipts").unwrap().as_array().unwrap().to_vec();
+                replace(
+                    &mut receipts[0],
+                    if kind == "receipt-zero-revision" {
+                        "revision"
+                    } else {
+                        "expires_at"
+                    },
+                    Value::Int(0),
+                );
+                replace(&mut state, "receipts", Value::Array(receipts));
+            }
+            "revision-budget" => replace(&mut state, "revision", Value::Int(9007199254740993)),
+            "context-capacity" | "receipt-capacity" => {
+                let field = if kind == "context-capacity" {
+                    "contexts"
+                } else {
+                    "receipts"
+                };
+                let template = state.get(field).unwrap().as_array().unwrap()[0].clone();
+                let records = (0..65)
+                    .map(|i| {
+                        let mut record = template.clone();
+                        if field == "contexts" {
+                            replace(&mut record, "name", Value::Str(format!("n{i:02}")));
+                        } else {
+                            replace(&mut record, "id", Value::Str(format!("{i:032x}")));
+                        }
+                        record
+                    })
+                    .collect();
+                replace(&mut state, field, Value::Array(records));
+            }
+            "missing-lock" | "nonempty-lock" => {
+                let lock = lab.config.join("contexts.lock");
+                if kind == "missing-lock" {
+                    fs::remove_file(lock).unwrap();
+                } else {
+                    fs::write(lock, b"synthetic invalid lock").unwrap();
+                }
+                lab.assert_invalid_state();
+                continue;
             }
             "sequence" => {
                 let plan = lab.plan(&["config", "use-context", "lab"]);

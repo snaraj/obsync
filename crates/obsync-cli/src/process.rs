@@ -71,3 +71,53 @@ pub fn capture(mut command: Command, input: Option<Vec<u8>>, deadline: Instant) 
     }
     Ok(output.unwrap())
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn real_helpers_enforce_exit_stream_input_and_time_budgets() {
+        let command = |program: &str, args: &[&str]| {
+            let mut c = Command::new(program);
+            c.args(args).env_clear().stdin(Stdio::null());
+            c
+        };
+        let deadline = || Instant::now() + Duration::from_secs(2);
+        let bytes = vec![b'x'; 1024];
+        assert_eq!(
+            capture(command("/bin/cat", &[]), Some(bytes.clone()), deadline()).unwrap(),
+            bytes
+        );
+        for (name, child, input) in [
+            ("exit", command("/bin/sh", &["-c", "exit 4"]), None),
+            (
+                "stderr",
+                command("/bin/sh", &["-c", "printf fixture >&2"]),
+                None,
+            ),
+            (
+                "output limit",
+                command("/usr/bin/printf", &["%s", &"x".repeat(1025)]),
+                None,
+            ),
+            (
+                "closed input",
+                command("/usr/bin/true", &[]),
+                Some(vec![b'x'; 1024 * 1024]),
+            ),
+        ] {
+            let error = capture(child, input, deadline()).expect_err(name);
+            assert_eq!(error.code, "native_helper_refused", "{name}");
+            assert_eq!(error.exit, 4, "{name}");
+        }
+        let error = capture(
+            command("/bin/sleep", &["1"]),
+            None,
+            Instant::now() + Duration::from_millis(25),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "deadline_exceeded");
+        assert_eq!(error.exit, 7);
+    }
+}

@@ -16,6 +16,29 @@ pub struct Windows {
     identity: crate::windows_identity::Identity,
     command: String,
 }
+fn system_directory(executable: &Path) -> Result<&Path> {
+    let refused = || {
+        Error::new(
+            "windows_trust_path",
+            "The Windows trust receipt does not name the expected OS PowerShell path.",
+            4,
+        )
+    };
+    let mut at = executable;
+    for name in ["powershell.exe", "v1.0", "WindowsPowerShell", "System32"] {
+        if !at
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case(name))
+        {
+            return Err(refused());
+        }
+        if name != "System32" {
+            at = at.parent().ok_or_else(refused)?;
+        }
+    }
+    Ok(at)
+}
 pub fn setup() -> Result<Value> {
     // Quote only compiled, fixed helper code for CreateProcessW, then encode
     // that argument string as a PowerShell literal. No request input is code.
@@ -96,14 +119,7 @@ impl Windows {
         let code = context::field(&receipt, "powershell")?;
         context::closed(code, &["path", "sha256"])?;
         let executable = custody::exact(context::text(code, "path")?, false)?;
-        let spelling = executable.to_str().unwrap();
-        if !spelling.ends_with("\\System32\\WindowsPowerShell\\v1.0\\powershell.exe") {
-            return Err(Error::new(
-                "windows_trust_path",
-                "The Windows trust receipt does not name the expected OS PowerShell path.",
-                4,
-            ));
-        }
+        system_directory(&executable)?;
         // This explicitly trusted OS executable may have component-store links.
         // Hold it without write/delete sharing through every helper invocation.
         let mut held = OpenOptions::new()
@@ -152,13 +168,8 @@ impl Windows {
         deadline: Instant,
     ) -> Result<()> {
         custody::exact(path.to_str().ok_or_else(custody::unsafe_path)?, false)?;
-        let executable = self.executable.to_str().unwrap();
-        let system = executable
-            .strip_suffix("\\WindowsPowerShell\\v1.0\\powershell.exe")
-            .ok_or_else(custody::unsafe_path)?;
-        let root = system
-            .strip_suffix("\\System32")
-            .ok_or_else(custody::unsafe_path)?;
+        let system = system_directory(&self.executable)?;
+        let root = system.parent().ok_or_else(custody::unsafe_path)?;
         if crate::windows_identity::identity(&self.held).map_err(|_| custody::unsafe_path())?
             != self.identity
         {
@@ -187,7 +198,7 @@ impl Windows {
             .env("SystemRoot", root)
             .env(
                 "PSModulePath",
-                format!("{system}\\WindowsPowerShell\\v1.0\\Modules"),
+                system.join("WindowsPowerShell\\v1.0\\Modules"),
             )
             .current_dir(system)
             .stdin(Stdio::piped());
@@ -229,5 +240,29 @@ impl Windows {
         }
         drop(file);
         self.call("publish", &stage, Some(path), deadline)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trusted_os_path_accepts_case_without_accepting_other_locations() {
+        for system in [r"C:\Windows\System32", r"C:\Windows\system32"] {
+            let executable = Path::new(system).join(r"WindowsPowerShell\v1.0\powershell.exe");
+            assert_eq!(system_directory(&executable).unwrap(), Path::new(system));
+        }
+        for path in [
+            r"C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe.bak",
+            r"C:\Windows\System32\OtherShell\v1.0\powershell.exe",
+            r"C:\Windows\System32\WindowsPowerShell\v2.0\powershell.exe",
+        ] {
+            assert_eq!(
+                system_directory(Path::new(path)).unwrap_err().code,
+                "windows_trust_path"
+            );
+        }
     }
 }
