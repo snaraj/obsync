@@ -3,12 +3,19 @@
 version = 4
 
 [[package]]
+name = "obsync-cli"
+version = "1.1.6"
+dependencies = [
+ "obsync-core",
+]
+
+[[package]]
 name = "obsync-core"
-version = "1.2.0"
+version = "1.1.6"
 
 [[package]]
 name = "obsyncd"
-version = "1.2.0"
+version = "1.1.6"
 dependencies = [
  "obsync-core",
 ]

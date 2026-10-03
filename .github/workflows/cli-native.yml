@@ -22,29 +22,61 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '26.10.0'
-          check-latest: false
-      - name: Match runtime to the independently verified Node distribution
-        shell: bash
-        run: python3 scripts/ci/cli-runtime-bytes.py
-      - name: Build shared package with exact toolchain
+      - name: Build and test the pinned native Rust client
+        id: client
         shell: bash
         run: |
           set -euo pipefail
-          test "$(node --version)" = v26.10.0
-          test "$(npm --version)" = 11.19.1
-          npm ci --prefix plugin --ignore-scripts --no-audit --no-fund
-          node cli/build.mjs
-      - name: Exercise native process, durability, installation and deferred-capability behavior
-        shell: bash
-        run: node cli/test.mjs
-      - name: Measure actual installed POSIX startup
+          rustup toolchain install
+          test "$(rustc --version | awk '{print $2}')" = 1.98.0
+          cargo test -p obsync-cli --locked
+          case "${RUNNER_OS}/${RUNNER_ARCH}" in
+            Linux/X64) platform=linux-amd64; target=x86_64-unknown-linux-musl ;;
+            Linux/ARM64) platform=linux-arm64; target=aarch64-unknown-linux-musl ;;
+            macOS/ARM64) platform=darwin-arm64; target=aarch64-apple-darwin ;;
+            Windows/X64) platform=windows-amd64; target=x86_64-pc-windows-msvc ;;
+            *) exit 1 ;;
+          esac
+          rustup target add "${target}"
+          if [ "${RUNNER_OS}" = Linux ]; then
+            export PATH="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | awk '/^host: /{print $2}')/bin:${PATH}"
+            RUSTFLAGS='-C target-feature=+crt-static -C link-self-contained=yes -C linker=rust-lld' \
+              cargo build -p obsync-cli --release --locked --target "${target}"
+          else
+            cargo build -p obsync-cli --release --locked --target "${target}"
+          fi
+          binary="target/${target}/release/obsync"
+          if [ "${RUNNER_OS}" = Windows ]; then binary="${binary}.exe"; fi
+          release=()
+          if [ "${GITHUB_EVENT_NAME}" = push ] && [ "${GITHUB_REF}" = refs/heads/main ]; then
+            release=(--release-source "${GITHUB_SHA}")
+          fi
+          python3 cli/build.py --binary "${binary}" --platform "${platform}" \
+            --output "${RUNNER_TEMP}/cli-package" "${release[@]}"
+          printf 'platform=%s\n' "${platform}" >> "${GITHUB_OUTPUT}"
+      - name: Exercise the installed POSIX binary and measure actual startup
         if: runner.os != 'Windows'
         shell: bash
-        run: python3 scripts/ci/cli-posix-startup.py --runtime "$(command -v node)"
+        run: python3 scripts/ci/cli-native.py --package "${RUNNER_TEMP}/cli-package" --receipt "${RUNNER_TEMP}/cli-acceptance.json"
       - name: Verify Windows ordinary-user custody and public CLI behavior
         if: runner.os == 'Windows'
         shell: powershell
-        run: '& scripts/ci/cli-windows-native.ps1'
+        run: '& scripts/ci/cli-windows-native.ps1 -Package "$env:RUNNER_TEMP\cli-package"'
+      - name: Pack the exact accepted protected-main native artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          PLATFORM: ${{ steps.client.outputs.platform }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/cli_package_contract.py --source "${RUNNER_TEMP}/cli-package" \
+            --output "${RUNNER_TEMP}/obsync-cli-$(cat VERSION)-${PLATFORM}.zip" \
+            --version "$(cat VERSION)" --source-sha "${GITHUB_SHA}" --platform "${PLATFORM}"
+      - name: Preserve only the accepted native archive
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-${{ steps.client.outputs.platform }}
+          path: ${{ runner.temp }}/obsync-cli-*.zip
+          if-no-files-found: error
+          retention-days: 7

@@ -1,5 +1,5 @@
 # Hosted disposable Windows runner only. No production paths or credentials.
-param([switch]$SelectedUser, [switch]$Peer, [string]$Node, [string]$Phase, [string]$Root)
+param([switch]$SelectedUser, [switch]$Peer, [string]$Python, [string]$Package, [string]$Phase, [string]$Root)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows') { throw 'Hosted Windows runner required.' }
@@ -16,8 +16,9 @@ if ($Peer) {
 }
 if (!$SelectedUser) {
     if ($Root -or $Phase) { throw 'Controller paths cannot be supplied.' }
-    $Node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
-    if ((& $Node --version) -cne 'v26.10.0' -or $LASTEXITCODE -ne 0) { throw 'Controller runtime differs.' }
+    $Python = (Get-Command python -CommandType Application | Select-Object -First 1).Source
+    $Package = [IO.Path]::GetFullPath($Package)
+    if (![IO.File]::Exists([IO.Path]::Combine($Package, 'obsync.exe'))) { throw 'Native package required.' }
     $Accounts = @()
     function Invoke-Owned($Account, [Security.SecureString]$Password, [string]$Arguments) {
         # CreateProcessWithLogonW has a 1024-character command-line maximum.
@@ -69,7 +70,7 @@ if (!$SelectedUser) {
             $Accounts += $Account
             Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $Name
         }
-        $Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + $PSCommandPath + '" -SelectedUser -Node "' + $Node + '"'
+        $Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + $PSCommandPath + '" -SelectedUser -Python "' + $Python + '" -Package "' + $Package + '"'
         $Prepared = Invoke-Owned $Accounts[0] $Passwords[0] ($Arguments + ' -Phase prepare')
         $Ready = @($Prepared -split '\r?\n' | Where-Object { $_.StartsWith('{"event":"fixture_ready",') })
         if ($Ready.Count -ne 1) { throw 'Missing exact prepared fixture.' }
@@ -96,13 +97,8 @@ if (!$SelectedUser) {
     }
     exit 0
 }
-if (![IO.Path]::IsPathRooted($Node) -or ![IO.File]::Exists($Node)) { throw 'Pinned runtime path required.' }
-$RuntimeVersion = & $Node --version
-$RuntimeExit = $LASTEXITCODE
-if ($RuntimeVersion -cne 'v26.10.0' -or $RuntimeExit -ne 0) {
-    $VersionClass = if ($RuntimeVersion -is [string] -and $RuntimeVersion -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { $RuntimeVersion } else { 'no_version' }
-    throw ('Selected-user runtime refused: exit=' + $RuntimeExit + '; version=' + $VersionClass)
-}
+if (![IO.Path]::IsPathRooted($Python) -or ![IO.File]::Exists($Python)) { throw 'CI Python tool path required.' }
+if (![IO.Path]::IsPathRooted($Package) -or ![IO.Directory]::Exists($Package)) { throw 'Native package required.' }
 $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $User = $Identity.User
 if ($Identity.Owner.Value -cne $User.Value) { throw 'An ordinary selected-user token is required.' }
@@ -123,22 +119,26 @@ $Keep = $false
 try {
     $SetupRecord = [IO.Path]::Combine($Root, 'setup-receipt.json')
     if ($Phase -ceq 'prepare') {
-        # The same public ceremony printed in the shipped README. The verified
-        # package emits fixed helper code; the selected user runs it in OS PowerShell.
-        $PlanText = & $Node cli/dist/cli/install.mjs windows-setup
-        if ($LASTEXITCODE -ne 0) { throw 'Public setup plan failed.' }
+        $OwnedPackage = [IO.Path]::Combine($Root, 'package')
+        $null = [IO.Directory]::CreateDirectory($OwnedPackage, $Acl)
+        foreach ($Name in @('LICENSE', 'README.md', 'VERSION', 'obsync.exe', 'package-manifest.json')) {
+            [IO.File]::Copy([IO.Path]::Combine($Package, $Name), [IO.Path]::Combine($OwnedPackage, $Name), $false)
+            if ((Get-FileHash -LiteralPath ([IO.Path]::Combine($Package, $Name))).Hash -cne
+                (Get-FileHash -LiteralPath ([IO.Path]::Combine($OwnedPackage, $Name))).Hash) { throw 'Fixture package copy differs.' }
+        }
+        $PlanText = & ([IO.Path]::Combine($OwnedPackage, 'obsync.exe')) windows-setup -o json
+        if ($LASTEXITCODE -ne 0) { throw 'Public setup instructions failed.' }
         $Plan = $PlanText | ConvertFrom-Json
         if ($Plan.schema_version -ne 1 -or $Plan.operation -cne 'cli.windows_setup' -or
-            $Plan.state -cne 'needs_action' -or $Plan.command -isnot [string]) { throw 'Public setup plan differs.' }
-        $SetupText = & ([ScriptBlock]::Create($Plan.command))
-        if ($SetupText -isnot [string]) { throw 'Public setup must return one JSON receipt through the pipeline.' }
+            $Plan.state -cne 'completed' -or $Plan.data.script -isnot [string]) { throw 'Public setup instructions differ.' }
+        $SetupText = & ([ScriptBlock]::Create($Plan.data.script))
+        if ($SetupText -isnot [string]) { throw 'Public setup must return one JSON receipt.' }
         $Setup = $SetupText | ConvertFrom-Json
         if ($Setup.v -ne 1 -or $Setup.path -isnot [string] -or $Setup.digest -cnotmatch '^[a-f0-9]{64}$') { throw 'Public setup receipt differs.' }
-        $Receipt = $Setup.path
-        $Digest = $Setup.digest
         [IO.File]::WriteAllText($SetupRecord, ($Setup | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-        & $Node scripts/ci/cli-windows-files.mjs prepare $Root $Receipt $Digest
-        if ($LASTEXITCODE -ne 0) { throw 'Prepare process failed.' }
+        $Stage = [IO.Path]::Combine($Root, 'stage')
+        $null = [IO.Directory]::CreateDirectory($Stage, $Acl)
+        [IO.File]::WriteAllText([IO.Path]::Combine($Stage, 'sentinel.txt'), 'synthetic custody fixture')
         $Keep = $true
         Write-Output ([ordered]@{event='fixture_ready';root=$Root} | ConvertTo-Json -Compress)
     } else {
@@ -146,30 +146,14 @@ try {
         $Receipt = $Setup.path
         $Digest = $Setup.digest
         if ((Get-FileHash -LiteralPath $Receipt -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Digest) { throw 'Setup receipt changed.' }
-        & $Node scripts/ci/cli-windows-files.mjs publish $Root $Receipt $Digest
-        if ($LASTEXITCODE -ne 0) { throw 'Fresh publication process failed.' }
-        $Scope = 'private custody and publication'
-        if (Test-Path -LiteralPath cli/test/windows-journey.mjs) {
-            # A private setup-node executable copy is a synthetic custody fixture,
-            # not proof of public runtime acquisition or distribution provenance.
-            $RuntimeDirectory = [IO.Path]::Combine($Root, 'runtime')
-            $null = [IO.Directory]::CreateDirectory($RuntimeDirectory, $Acl)
-            $Runtime = [IO.Path]::Combine($RuntimeDirectory, 'node.exe')
-            [IO.File]::Copy($Node, $Runtime, $false)
-            if ((Get-FileHash -LiteralPath $Runtime).Hash -cne (Get-FileHash -LiteralPath $Node).Hash) { throw 'Runtime fixture copy differs.' }
-            foreach ($Step in @('interrupt-mkdir', 'lease', 'context', 'context-replay', 'kill-context', 'recover-context', 'interrupt-install', 'install', 'launch-guards', 'public-context', 'startup')) {
-                & $Runtime cli/test/windows-journey.mjs $Step $Root $Receipt $Digest
-                if ($Step -eq 'kill-context') {
-                    if ($LASTEXITCODE -eq 0) { throw 'Expected abrupt context process termination.' }
-                } elseif ($LASTEXITCODE -ne 0) { throw ('CLI native phase failed: ' + $Step) }
-            }
-            & $Shell -NoLogo -NoProfile -NonInteractive -File ([IO.Path]::Combine($Root, 'installed\obsync.ps1')) --version
-            if ($LASTEXITCODE -ne 0) { throw 'Installed native launcher failed.' }
-            & $Runtime cli/test/windows-journey.mjs uninstall $Root $Receipt $Digest
-            if ($LASTEXITCODE -ne 0 -or [IO.Directory]::Exists([IO.Path]::Combine($Root, 'installed'))) { throw 'Exact uninstall failed.' }
-            $Scope = 'private custody, publication, context recovery and installation'
-        }
-        Write-Output ([ordered]@{event='windows_files_native';result='pass';scope=$Scope} | ConvertTo-Json -Compress)
+        & $Python scripts/ci/cli-native.py --package ([IO.Path]::Combine($Root, 'package')) --root $Root `
+            --receipt ([IO.Path]::Combine($Root, 'acceptance.json')) --windows-trust $Receipt --windows-trust-sha256 $Digest
+        if ($LASTEXITCODE -ne 0) { throw 'Native packaged CLI journey failed.' }
+        Write-Output '{"event":"windows_files_native","result":"pass","scope":"ordinary-user native Rust installation, context receipts, replay and uninstall"}'
+        $TrustRoot = [IO.Path]::GetDirectoryName($Receipt)
+        if ([IO.Path]::GetFileName($TrustRoot) -cnotmatch '^obsync-cli-[a-f0-9]{32}$' -or
+            [IO.Path]::GetDirectoryName($TrustRoot) -cne [Environment]::GetFolderPath('LocalApplicationData')) { throw 'Trust cleanup binding differs.' }
+        Remove-Item -LiteralPath $TrustRoot -Recurse -Force
         $Keep = $true
     }
 } finally {

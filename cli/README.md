@@ -1,45 +1,55 @@
-# Offline management client
+# obsync CLI
 
-This source candidate implements local
-discovery, context management and a read-only doctor. Export/open,
-authentication, native setup, server operations and MCP return explicit
-unsupported results. Publication and native installation evidence remain gates.
+A native Rust client with human output by default, explicit contexts, and a
+versioned JSON interface. Its command groups follow
+[kubectl conventions](https://kubernetes.io/docs/reference/kubectl/conventions/).
+It needs no Node runtime, npm package or downloaded filesystem helper.
 
-## Run from an explicitly trusted checkout
+This development candidate implements local discovery, context plans, apply,
+recovery and native installation. Release acceptance is incomplete, including
+native Windows execution. Authentication, server administration, Obsidian setup,
+MCP and encrypted export/open return an explicit unsupported result.
 
-Use Node **26.10.0**, with no runtime packages. Install the pinned build compiler
-and build the package before invoking it:
+## Discover commands
 
 ```sh
-npm ci --prefix plugin --ignore-scripts --no-audit --no-fund
-node cli/build.mjs
-node cli/dist/cli/obsync.mjs --help
-node cli/dist/cli/obsync.mjs cli search context
-node cli/dist/cli/obsync.mjs schema context.add
-node cli/dist/cli/obsync.mjs capabilities
-node cli/dist/cli/obsync.mjs doctor
+obsync --help
+obsync config --help
+obsync cli search context
+obsync explain context.add
+obsync capabilities -o json
+obsync agent instructions -o json
 ```
 
-The source entry refuses runtime options/preloads it can observe. This check
-cannot undo code Node already loaded. A released launcher must select a verified
-runtime and clear unsupported runtime inputs before execution; source invocation
-does not establish that guarantee. The package includes that launcher and an
-immutable-directory installer. Its native installation claims remain gated below.
+Use `COMMAND --help` for examples and flags. `-o json` and `-o jsonl` each emit
+one bounded schema-version-1 envelope; errors retain that format and return a
+nonzero exit code. Human errors go to stderr. `--non-interactive` never prompts
+or opens a browser. Read aliases include `get contexts`, `get context NAME`,
+`describe context NAME` and `explain OPERATION`.
 
-## Build and install
+## Build from an explicitly trusted checkout
 
-`node cli/build.mjs` compiles the native filesystem adapters with the
-existing pinned TypeScript compiler and writes one closed package to `cli/dist`.
-The source checkout needs the plugin's build dependency installed first. No
-plugin or vault decryption module is included. No additional
-runtime package, compiler or downloader ships. Candidate builds are marked
-`candidate: true`; publication refuses them. Release builds bind the authorized
-protected-main SHA and exact member hashes in `package-manifest.json`.
+Use the Rust toolchain pinned in `rust-toolchain.toml`:
 
-For a published release, download its `obsync-cli-VERSION.zip` as data into an
-owned private directory. Before extraction or executing any file from it, verify
-with an independently trusted [GitHub CLI](https://cli.github.com/manual/gh_attestation_verify),
-using the full source commit from the selected release:
+```sh
+cargo build --locked --release -p obsync-cli
+./target/release/obsync --help
+```
+
+The binary uses only Rust's standard library and the internal `obsync-core`
+crate. macOS custody reads ACLs through Apple-signed OS JavaScript for Automation;
+Windows custody uses a fixed OS PowerShell 5.1 helper. These helpers are embedded
+in the binary. Neither platform downloads or discovers an interpreter from PATH.
+
+## Verify and install a release
+
+Supported package targets are Linux amd64/arm64, macOS arm64 and Windows amd64.
+Each archive contains `obsync` (Windows: `obsync.exe`), `LICENSE`, `VERSION`,
+`README.md`, and `package-manifest.json`. Linux release binaries are static.
+
+Download `obsync-cli-VERSION-PLATFORM.zip` as data. Before extracting or executing
+it, verify its publisher with an independently trusted GitHub CLI and the exact
+full source commit of the selected release:
 
 ```sh
 gh attestation verify "$archive" --repo snaraj/obsync \
@@ -50,281 +60,154 @@ gh attestation verify "$archive" --repo snaraj/obsync \
   --predicate-type https://slsa.dev/provenance/v1
 ```
 
-A checksum downloaded beside an unverified archive is insufficient. Extract only
-after publisher verification, into a new private directory. The release evidence
-binds `artifacts.cli_bundle.manifest_sha256`; supply that exact digest below.
-Use an independently verified **Node 26.10.0** installation, including its linked
-libraries. Its canonical executable and all ancestors must be owned by the OS or
-selected user and protected from group/other writes; symlink ancestors refuse.
-Package-manager installations with writable shared ancestors need a separately
-verified private runtime installation. Moving an executable alone does not verify
-its linked libraries. Runtime acquisition is an explicit prerequisite.
+The verified release evidence binds
+`artifacts.cli_archives[PLATFORM].manifest_sha256`. A checksum beside an
+unverified archive does not establish publisher identity. Keep OS execution
+protections enabled; a source build does not establish downloaded-binary acceptance.
 
-### Verified macOS runtime
+Extract only into a new private directory: owned mode 0700 on POSIX, or an
+owner-controlled protected DACL on local NTFS. POSIX files must be mode 0600,
+with only `obsync` mode 0700. Parents must be protected, without symbolic links.
+The selected user and OS administrator remain trusted.
 
-The official standalone archive avoids a package manager's shared writable
-ancestors. Use an independently trusted `gpgv` executable, assigned as the
-absolute `$trusted_gpgv` path, to verify Node's signed checksums. This recipe
-pins the [Node release keyring](https://github.com/nodejs/release-keys/tree/481637f813e912c4aa3622d7964ab426c97b8e8d)
-and its SHA-256; it does not read or modify a personal keyring. Review the
-authorized release fingerprints against [Node's verification instructions](https://github.com/nodejs/node#verifying-binaries)
-before trusting that keyring. No downloaded program executes before verification.
-
-Run in Bash on the selected Mac; the new private directory must not exist:
-
-```bash
-set -euo pipefail
-umask 077
-case "$(/usr/bin/uname -m)" in
-  arm64) node_arch=arm64 ;;
-  x86_64) node_arch=x64 ;;
-  *) exit 1 ;;
-esac
-node_name="node-v26.10.0-darwin-$node_arch"
-runtime_root="$HOME/.obsync-$node_name"
-/bin/mkdir -m 700 "$runtime_root"
-cd "$runtime_root"
-/bin/mkdir -m 700 verify
-/usr/bin/curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
-  'https://raw.githubusercontent.com/nodejs/release-keys/481637f813e912c4aa3622d7964ab426c97b8e8d/gpg-only-active-keys/pubring.kbx' \
-  --output verify/pubring.kbx
-printf '%s  %s\n' \
-  140f2ad5260fd62773b6243ce8e1d3009645d558f121b8262c55e383dc285932 \
-  verify/pubring.kbx | /usr/bin/shasum -a 256 --check
-/usr/bin/curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
-  https://nodejs.org/download/release/v26.10.0/SHASUMS256.txt.asc \
-  --output verify/release-checksums.asc
-/usr/bin/env -i PATH=/usr/bin:/bin "$trusted_gpgv" \
-  --homedir "$runtime_root/verify" --keyring "$runtime_root/verify/pubring.kbx" \
-  --output - verify/release-checksums.asc > verify/SHASUMS256.txt
-/usr/bin/curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
-  "https://nodejs.org/download/release/v26.10.0/$node_name.tar.gz" \
-  --output "$node_name.tar.gz"
-/usr/bin/awk -v name="$node_name.tar.gz" \
-  '$2 == name { print; count++ } END { exit(count != 1) }' \
-  verify/SHASUMS256.txt > verify/selected.sha256
-/usr/bin/shasum -a 256 --check verify/selected.sha256
-/usr/bin/tar -xzf "$node_name.tar.gz"
-trusted_node="$runtime_root/$node_name/bin/node"
-/usr/bin/otool -L "$trusted_node" > verify/linked-libraries.txt
-/usr/bin/awk 'NR > 1 && $1 !~ /^\/usr\/lib\// && $1 !~ /^\/System\/Library\// { bad=1 }
-  END { exit(NR < 2 || bad) }' verify/linked-libraries.txt
-test "$(/usr/bin/env -i PATH=/usr/bin:/bin "$trusted_node" --version)" = v26.10.0
-```
-
-Keep this complete directory and the verification files while its installations
-are in use. The library check refuses non-OS dependencies, including Homebrew
-paths and `@rpath`; do not bypass it by copying one executable or library. The
-OS libraries and loader remain trusted. The archive signature covers the
-distribution; the install receipt's `runtime_executable_sha256` and launcher
-hash cover **only the Node executable**, not its libraries or the operating
-system. Native candidate installation exercises this prerequisite independently
-of public obsync release provenance; the latter still needs its own receipt.
-
-### Windows and Linux runtime prerequisites
-
-Use the same pinned Node release keyring and signed-checksum verification
-described above. Select exactly one signed checksum entry for the complete
-official archive matching the target:
-
-| Target | Node 26.10.0 archive |
-| --- | --- |
-| Windows x64 | `node-v26.10.0-win-x64.zip` |
-| Linux x64 | `node-v26.10.0-linux-x64.tar.gz` |
-| Linux arm64 | `node-v26.10.0-linux-arm64.tar.gz` |
-
-Use an independently trusted `gpgv`; a successful signature check must precede
-archive hash verification and extraction. On Linux, `sha256sum --check` can
-verify the selected entry. On Windows, compare `Get-FileHash -Algorithm SHA256`
-against the entry from the verified plaintext checksums, and stop on mismatch.
-Neither an unsigned checksum nor HTTPS alone proves the release signer.
-
-Extract the complete verified archive into a new private directory. Linux
-requires owned mode 0700 custody with protected ancestors. Windows requires
-local NTFS and a protected owner DACL allowing only the selected user, SYSTEM
-and administrators; protect the directory before extraction. The installer
-reads that custody and refuses an unsuitable runtime. Keep the distribution
-intact and trust its OS loader and linked libraries independently. The native
-CI checks executable bytes against the signed distribution and uses the runner's
-trusted OS libraries; it does not validate an arbitrary user's runtime provider.
-
-### Install the verified CLI
-
-From the verified extracted package, on macOS/Linux:
+From that verified package, use an absolute installation path whose parent is
+already private. Variables below are explicit paths and the independently
+verified manifest digest:
 
 ```sh
-/usr/bin/env -i HOME="$HOME" PATH=/usr/bin:/bin "$trusted_node" \
-  cli/install.mjs install --prefix "$new_install_directory" \
+"$package/obsync" install --from "$package" --prefix "$installation" \
   --manifest-sha256 "$manifest_sha256"
-"$new_install_directory/obsync" --version
-"$new_install_directory/obsync" doctor
+"$installation/obsync" --version
+"$installation/obsync" --help
 ```
 
-The parent directory must already exist with protected ancestry. Installation
-creates a private immutable directory and `obsync` launcher. Every launch checks
-the runtime executable and bootstrap hash before Node executes, then validates
-all package hashes before loading CLI code. Invoke it from a trusted process:
-the Node environment is cleared, but the launcher cannot sanitize its parent
-or code already loaded by the operating system. The OS, its loader, the selected user
-and the independently trusted runtime/libraries remain trusted.
+Install copies the verified native binary and documentation, flushes the private
+stage, publishes the complete directory, then reads back its exact inventory.
+It changes no PATH, shell profile or context. Upgrade repeats this ceremony into
+a new directory; select that executable explicitly. Uninstall using the original
+verified package and exact binding:
 
-Upgrade uses the same ceremony and a **new directory**. Verify its version and
-doctor output, then explicitly select that executable in your invoking tool.
-No PATH, shell profile, old installation or context is rewritten. Uninstall from
-the corresponding verified extracted package with `cli/install.mjs uninstall`
-and the same `--prefix` and `--manifest-sha256`. Unknown or changed files refuse
-before removal. Contexts, vaults and server data are outside the inventory.
-After interruption, retry the exact action: `.pending` holds a bound partial
-copy, and `.removing` holds an already disabled installation. Recovery never
-deletes an unknown file or accepts a different package for the same directory.
+```sh
+"$package/obsync" uninstall --from "$package" --prefix "$installation" \
+  --manifest-sha256 "$manifest_sha256"
+```
 
-### Windows candidate installation
+Changed or unknown files refuse removal. Retry the exact action after interruption;
+`.pending` and `.removing` siblings are reserved for bounded recovery. The
+`.lock` sibling permanently retains the flushed target/manifest binding, so
+concurrent processes lock the same file and interrupted cleanup stays identifiable.
+On Windows, uninstall durably retires the installation path with the approved
+write-through move. Cleanup is observed absent, but its directory deletions are
+not proven durable across power loss (`cleanup_durable: false`); repeat the exact
+uninstall to remove any matching retired files that reappear. POSIX also flushes
+the cleanup directories. Never run uninstall from the installation being removed;
+use the original independently verified package as shown above.
+Contexts, server data and vaults are outside the installation inventory.
 
-Windows requires an ordinary user, local NTFS and an explicit trusted OS
-PowerShell 5.1 receipt. Native acceptance must pass before Windows support is
-advertised. Source invocation alone does not enable persistent commands.
-The fixed helper and adapter are included in the verified package; export and
-credential enrollment remain unsupported.
+### Windows trust setup
 
-After independently verifying the package and Node runtime, open OS PowerShell
-5.1 as your ordinary user. Its full executable path is derived below from the
-OS system directory. `windows-setup` returns the fixed setup command from the
-verified package; executing it creates one private directory and receipt.
-Keep the receipt path and digest for installation and removal:
+After independently verifying the Windows package, open the OS **PowerShell 5.1**
+through Windows itself. Inspect the fixed script printed by:
 
 ```powershell
-$ErrorActionPreference = 'Stop'
-$trusted_os_powershell = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\powershell.exe')
-if ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName -ine $trusted_os_powershell) { throw 'Open OS PowerShell 5.1 first.' }
-$setup = (& $trusted_node cli/install.mjs windows-setup) | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0 -or $setup.operation -cne 'cli.windows_setup') { throw 'Setup plan refused.' }
-$trust = (& ([ScriptBlock]::Create($setup.command))) | ConvertFrom-Json
-$trust_receipt = $trust.path
-$trust_digest = $trust.digest
-& $trusted_node cli/install.mjs install --prefix $new_install_directory `
-  --manifest-sha256 $manifest_sha256 --windows-trust $trust_receipt `
-  --windows-trust-sha256 $trust_digest
-& $trusted_os_powershell -NoLogo -NoProfile -NonInteractive `
-  -File "$new_install_directory\obsync.ps1" --version
+$setup = & "$package\obsync.exe" windows-setup -o json | ConvertFrom-Json
+$setup.data.script
 ```
 
-The native launcher clears inherited runtime inputs before starting Node.
-Its fixed read-only custody checks run in that same PowerShell process before
-Node starts; the bootstrap then verifies package bytes and file identities.
-Use this generated launcher as the installed entry point. Internal JavaScript
-invocation does not establish the launcher's runtime or custody guarantees.
-Keep the receipt and runtime while installations use them. Updates install to
-a new directory. Uninstall uses the same four binding options and never removes
-contexts or the independent runtime. The [Windows filesystem contract](../docs/design/cli-windows-filesystem.md)
-names the custody and durability checks and required native evidence.
+Run that inspected script in the trusted PowerShell session. It creates a new
+private `powershell.json` receipt under LocalApplicationData and prints its path
+and SHA-256 digest. Retain both independently. Supply them to every storage or
+installation operation:
 
-Creating a private Windows directory reserves that destination and its exact
-`.obsync-create` companion. An interrupted creation leaves at most this one
-empty companion. Retry verifies its ownership, ACLs and emptiness before
-publishing it. A nonempty or unsafe companion refuses unchanged; if both paths
-exist, both are preserved. Do not use the companion for unrelated files.
-
-## Deferred export
-
-App/server export and client export/open are deferred with #317. This package
-contains no vault decryption code. `obsync export open` returns unsupported;
-no recovery-phrase or plaintext-destination option is accepted.
-
-## One local context, end to end
-
-Create an explicit JSON input containing only nonsecret target metadata:
-
-```json
-{"name":"personal","origin":"https://example.invalid","expected_instance":null}
+```powershell
+& "$package\obsync.exe" install --from $package --prefix $installation `
+  --manifest-sha256 $manifest_sha256 `
+  --windows-trust $receipt_path --windows-trust-sha256 $receipt_digest
 ```
 
-Run `context add --input @/absolute/context.json`. This returns `data.plan` and
-does not create configuration. Save **that plan object** to a file, then run
-`context apply --input @/absolute/plan.json --expect-digest DIGEST`, using the
-returned digest. `context use personal` and `context remove personal` follow the
-same plan/apply sequence. `context get personal` reads back through a fresh
-process. Removal affects only the local association.
-The apply schema describes logical parameters `plan` and `expect_digest`; the
-CLI binds these to the file contents and the separate flag respectively. Do not
-wrap the plan object in another `plan` property inside the input file.
+No command chooses an ambient executable, weakens execution policy, grants
+administrator rights or enables a network filesystem. The receipt pins the OS
+PowerShell executable; OS libraries and the selected user's session remain trusted.
 
-Plans bind the exact configuration directory, complete prior state, revision and
-five-minute lifetime. Changed, expired and cross-target plans refuse. An
-identical unexpired apply returns the stored receipt without repeating the
-effect. A context origin or expected fingerprint is not verified server identity;
-every output keeps `verified_instance` null and `server_contacted` false.
-Origins accept ASCII DNS labels, canonical dotted IPv4 or canonical bracketed
-IPv6. Only host lettercase, explicit `:443` and one final `/` normalize when
-creating a plan. Stored origins are canonical; alternate numeric IP spellings,
-trailing DNS dots, escaped hosts, Unicode hosts and zero-padded ports refuse.
+## A local context, end to end
 
-The default directory is `~/.obsync`; `--config-dir ABSOLUTE_DIRECTORY` selects
-one exact alternative whose parent already exists. First use creates only
-that private leaf and confirms its publication before changing context state.
-No current-directory configuration, plugin state,
-credential-store inventory or environment credential discovery is loaded.
-Context inputs never accept credentials, recovery material or vault keys.
+Choose an explicit `--config-dir` on every context command. Its parent must
+already exist; first apply creates only the private leaf. Planning creates no
+configuration. For example:
 
-## Durability and platform boundary
+```sh
+obsync config set-context lab --server https://example.invalid \
+  --config-dir /absolute/private/config -o json
+```
 
-The [pinned Node SQLite built-in](https://nodejs.org/docs/v26.10.0/api/sqlite.html)
-holds one bounded JSON state row and its operation receipts in `contexts.db`.
-Each mutation uses an immediate transaction, full synchronization and the
-rollback journal. Extension loading is disabled; only the exact known schema is
-accepted. Context state and its receipt commit together. Kernel transaction locks
-replace application lock files, so killing a writer leaves no stale owner lock.
-Node classifies this built-in API as release-candidate; no npm package is added.
+Save the returned **`data.plan` object** as `/absolute/private/plan.json`, review
+it, and pass its digest separately:
 
-POSIX persistence requires owned 0700 directories, owned 0600 regular files,
-protected ancestors and no symbolic or hard links. On macOS, the approved
-read-only directory ACL reader also refuses grants and ambiguous metadata.
-The independently verified macOS runtime must sit below a protected 0700
-ancestor, so another account cannot reach its executable through a file ACL. Checks cover SQLite's exact
-sidecar paths too. The selected OS user and host administrator remain trusted;
-these checks do not isolate another process running as that same user.
+```sh
+obsync apply -f /absolute/private/plan.json --expect-digest DIGEST \
+  --config-dir /absolute/private/config
+obsync config get-contexts --config-dir /absolute/private/config
+obsync config use-context lab --config-dir /absolute/private/config -o json
+```
 
-After an interrupted transaction, reads may require recovery. Doctor reports
-`recovery_required` without changing the database or journal. The explicit
-`context recover` command restores the last committed state and applies no new
-context plan. Read back, then resume an unexpired original plan or create a fresh
-one. Do not delete database/journal files to clear a failure.
+Apply the selection plan the same way, then verify in a fresh process:
 
-Windows persistent writes and recovery require the installed launcher and its
-explicit trust receipt. Native receipts, distribution and independently trusted
-runtime acquisition remain required before advertising a platform capability.
+```sh
+obsync config current-context --config-dir /absolute/private/config
+obsync describe context lab --config-dir /absolute/private/config
+obsync doctor --config-dir /absolute/private/config
+```
 
-## Output and budgets
+`config delete-context NAME` also returns a plan. Removal changes only that local
+association. Each plan binds the exact configuration path, prior state, revision
+and a five-minute lifetime. Changed, expired, stale and cross-target plans refuse.
+Identical unexpired replays return the durable receipt without applying again.
 
-JSON is the default: compact through a pipe, indented on a terminal. `--output
-jsonl` emits one envelope per invocation; `--output human` renders inert text.
-`--non-interactive` never prompts or opens a browser. List/search commands accept
-`--limit 1..500` and an opaque `--cursor`; continuation is explicit.
+Contexts accept names, HTTPS origins and optional expected instance fingerprints.
+They never accept credentials, recovery material or vault keys. A configured
+origin or fingerprint is not verified server identity: outputs keep
+`verified_instance: null` and `server_contacted: false`.
 
-Input is at most 16 KiB, output at most 64 KiB, stored state at most 128 KiB,
-contexts at most 64 and unexpired operation receipts at most 64. Each database or
-sidecar is bounded to 512 KiB. The SQLite lock wait is one second. The five-second
-command deadline is checked before a new context effect and before output; an
-OS filesystem call cannot itself be interrupted. No idle process runs.
+## Storage and recovery
 
-Exit classes used here: 0 satisfied, 2 invalid input, 4 permission/confinement,
-5 revision/conflict/expiry, 6 unsupported capability or missing context, 7 unresolved/deadline,
-9 local service/I/O failure and 10 required explicit recovery. Errors have the
-same JSON envelope and never echo raw input or underlying filesystem errors.
+Two bounded snapshots alternate under a kernel-held lock. Each snapshot contains
+both context state and its receipts. The previous state remains complete while
+the next slot is truncated and flushed, its body written and flushed, then its
+checksum appended and flushed. Success requires independent readback.
 
-## Verification
+Reads and doctor perform no repairs. An incomplete inactive snapshot returns
+`recovery_required` (exit 10). Run:
 
-`node cli/test.mjs` runs real CLI subprocesses and cleans its
-temporary directories outside the repository. It exercises discovery, an entire
-context lifecycle, exact-plan refusals, output parsing/pagination, protected
-paths, concurrent writers and process death before/after commit. The crash test
-requires actual uncommitted page spill and proves read-only doctor preserves it
-before explicit recovery. Package checks cover launcher tampering, preloads,
-installation/removal interruption and explicit refusal of deferred export. These checks do not substitute for native installation with an
-independently acquired runtime, publisher provenance, cold-agent or performance
-receipts. The initial passing-test floor is 13 on POSIX and 2 for the Windows source
-smoke tests; skipped tests cannot satisfy the floor. Windows acceptance also
-requires the ordinary-user journey through the installed public command.
+```sh
+obsync config recover --config-dir /absolute/private/config
+```
 
-`node cli/reference.mjs` emits the command reference from the same catalog used
-by discovery. The future MCP adapter can import that catalog; no MCP transport
-is implemented here.
+Recovery retains the last complete state and discards only the incomplete slot.
+A sealed checksum, schema or sequence mismatch refuses recovery. Read back before
+retrying an unexpired original plan or creating a fresh one. Do not delete files
+to clear a refusal. Unknown configuration files are never converted or removed.
+
+The configuration holds at most 64 contexts and 64 unexpired receipts; each
+snapshot is bounded to 128 KiB plus framing. Plans and arguments are bounded to
+16 KiB; output to 64 KiB. Commands check a five-second deadline before effects
+and responses; a blocking OS filesystem call cannot be forcibly interrupted.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Requested local result completed or plan produced |
+| 2 | Invalid input |
+| 4 | Integrity or private-custody refusal |
+| 5 | State conflict or concurrent operation; read back and retry as appropriate |
+| 6 | Unsupported capability or missing context |
+| 7 | Deadline or write result unknown; inspect before retrying |
+| 9 | Local I/O failure |
+| 10 | Explicit recovery required |
+
+## Validation
+
+`cargo test -p obsync-cli` exercises real subprocesses and native filesystem
+checks. `scripts/ci/cli-native.py` consumes the actual package and independently
+checks snapshots, receipts, installation inventory, retained contexts and startup
+latency. Windows CI additionally runs under an ordinary synthetic account and
+checks another account cannot access the private fixture. These checks supplement
+visible manual terminal journeys; a cross-build is not native acceptance.

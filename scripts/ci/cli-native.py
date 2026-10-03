@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Public packaged CLI journey with independent state and inventory readback."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import statistics
+import subprocess
+import tempfile
+import time
+
+
+def startup_result(samples):
+    assert len(samples) == 35
+    assert max(samples[:5]) < 1000, ('cold launch', samples[:5])
+    warm = sorted(samples[5:])
+    assert warm[28] < 250, ('warm p95', warm[28])
+    return {'first_five_ms': samples[:5], 'warm_p95_ms': warm[28], 'warm_median_ms': statistics.median(warm)}
+
+
+def journey(package, root, trust=()):
+    binary = 'obsync.exe' if os.name == 'nt' else 'obsync'
+    package = package.resolve()
+    config, installed, second = root / 'config', root / 'installed', root / 'second'
+    digest = hashlib.sha256((package / 'package-manifest.json').read_bytes()).hexdigest()
+    result = {'commands': 0, 'platform': json.loads((package / 'package-manifest.json').read_text())['platform'],
+              'manifest_sha256': digest, 'binary_sha256': hashlib.sha256((package / binary).read_bytes()).hexdigest()}
+
+    def run(args, code=0, exe=None, human=False):
+        started = time.monotonic_ns()
+        proc = subprocess.run([str(exe or installed / binary), *args, *trust,
+                               *([] if human else ['-o', 'json'])], env={}, capture_output=True, timeout=8)
+        elapsed = (time.monotonic_ns() - started) / 1e6
+        assert proc.returncode == code, (args[0], proc.returncode, proc.stdout.decode(errors='replace'))
+        assert not proc.stderr and len(proc.stdout) <= 65536
+        result['commands'] += 1
+        return (proc.stdout.decode() if human else json.loads(proc.stdout)), elapsed
+
+    def context(args, code=0):
+        return run([*args, '--config-dir', str(config)], code)[0]
+
+    def plan(args):
+        p = context(args)['data']['plan']
+        path = root / 'plan.json'
+        path.write_text(json.dumps(p))
+        return p, ['apply', '-f', str(path), '--expect-digest', p['digest']]
+
+    def disk():
+        states = []
+        for slot in (0, 1):
+            p = config / f'contexts.{slot}'
+            if not p.exists():
+                continue
+            b = p.read_bytes()
+            start = len(b'OBSYNC-CONTEXT-1\n')
+            assert b.startswith(b'OBSYNC-CONTEXT-1\n')
+            n = int.from_bytes(b[start:start+4], 'big')
+            end = start + 4 + n
+            assert len(b) == end + 32 and hashlib.sha256(b[:end]).digest() == b[end:]
+            state = json.loads(b[start+4:end])
+            assert state['revision'] % 2 == slot
+            states.append(state)
+        return max(states, key=lambda s:s['revision'])
+
+    binding = ['--from', str(package), '--prefix', str(installed), '--manifest-sha256', digest]
+    message, _ = run(['install', *binding], exe=package / binary, human=True)
+    assert message.startswith('obsync ') and 'installed and verified.' in message and not message.startswith('{')
+    expected = set(p.name for p in package.iterdir())
+    assert {p.name for p in installed.iterdir()} == expected
+    for p in package.iterdir():
+        assert p.read_bytes() == (installed / p.name).read_bytes()
+    assert run(['version'])[0]['data']['platform'] == result['platform']
+    help_text, _ = run(['config', 'set-context', '--help'], human=True)
+    assert 'Usage:' in help_text and '--server' in help_text
+    context(['get', 'contexts'])
+    p, apply = plan(['config', 'set-context', 'lab', '--server', 'https://example.invalid'])
+    assert not config.exists()
+    context(apply)
+    before = {p.name:p.read_bytes() for p in config.iterdir()}
+    assert context(apply)['data']['replayed'] is True
+    assert before == {p.name:p.read_bytes() for p in config.iterdir()}
+    p, apply = plan(['config', 'use-context', 'lab'])
+    context(apply)
+    current, _ = run(['config', 'current-context', '--config-dir', str(config)], human=True)
+    assert current == 'lab\n' or current == 'lab\r\n'
+    state = disk()
+    assert state['revision'] == 2 and state['current'] == 'lab' and len(state['receipts']) == 2
+    before = {p.name:p.read_bytes() for p in config.iterdir()}
+    context([*apply[:-1], '0' * 64], 5)
+    assert before == {p.name:p.read_bytes() for p in config.iterdir()}
+    context(['doctor'])
+    # Two immutable installations. Changing the selected executable is explicit.
+    second_binding = ['--from', str(package), '--prefix', str(second), '--manifest-sha256', digest]
+    run(['install', *second_binding], exe=package / binary)
+    run(['get', 'contexts', '--config-dir', str(config)], exe=second / binary)
+    message, _ = run(['uninstall', *binding], exe=package / binary, human=True)
+    assert 'uninstalled.' in message and 'Configuration preserved.' in message
+    assert not installed.exists() and not Path(str(installed)+'.removing').exists()
+    run(['doctor', '--config-dir', str(config)], exe=second / binary)
+    assert before == {p.name:p.read_bytes() for p in config.iterdir()}
+    timings = {}
+    for name, args in [('help',['help']),('schema',['schema','context.add']),('search',['cli','search','context'])]:
+        samples = [run(args, exe=second / binary)[1] for _ in range(35)]
+        timings[name] = startup_result(samples)
+    run(['uninstall', *second_binding], exe=package / binary)
+    assert not second.exists() and before == {p.name:p.read_bytes() for p in config.iterdir()}
+    result.update(result='PASS', revision=state['revision'], receipts=len(state['receipts']),
+                  contexts_preserved=True, timings=timings)
+    return result
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--package', type=Path, required=True)
+    parser.add_argument('--root', type=Path)
+    parser.add_argument('--receipt', type=Path, required=True)
+    parser.add_argument('--windows-trust')
+    parser.add_argument('--windows-trust-sha256')
+    args = parser.parse_args()
+    if os.name != 'nt' and (os.getuid() == 0 or os.getuid() != os.geteuid()):
+        raise SystemExit('Ordinary user required.')
+    trust = []
+    if os.name == 'nt':
+        if not args.root or not args.windows_trust or not args.windows_trust_sha256:
+            raise SystemExit('Windows requires an independently prepared private root and OS trust receipt.')
+        trust = ['--windows-trust', args.windows_trust, '--windows-trust-sha256', args.windows_trust_sha256]
+    root = Path(tempfile.mkdtemp(prefix='obsync-native-', dir=args.root)).resolve()
+    try:
+        outcome = journey(args.package, root, trust)
+        args.receipt.write_text(json.dumps(outcome, indent=2)+'\n')
+        print(json.dumps({'event':'cli_native_journey','result':'PASS','commands':outcome['commands'],'platform':outcome['platform']}))
+    finally:
+        shutil.rmtree(root)

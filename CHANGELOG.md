@@ -5,16 +5,16 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
-## 1.2.0 - Unreleased
+## 1.1.6 - Unreleased
 
 ### Added
 
-- An offline management CLI with command discovery, schemas, bounded JSON,
-  explicit local contexts, recoverable plan/apply operations and read-only
-  diagnostics. It uses pinned Node built-ins with no npm runtime packages.
-- A verified, immutable installation path and platform-neutral release archive.
-  Each launch checks the selected runtime and package before loading commands;
-  upgrades use a new directory and uninstall preserves local configuration.
+- A native Rust management CLI with kubectl-style command groups, readable
+  human output, explicit JSON, schemas and offline capability discovery.
+  Local contexts use bounded snapshots, exact plans and durable apply receipts.
+- Verified native archives for Linux amd64/arm64, macOS arm64 and Windows amd64.
+  Installation verifies a private immutable directory; upgrades use a new
+  directory and uninstall preserves contexts. No Node runtime ships or is required.
 
 Server authentication, native setup, device administration and MCP follow in
 later slices. Export/open is deferred with #317 and returns unsupported.

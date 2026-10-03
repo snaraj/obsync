@@ -90,11 +90,15 @@ jobs:
           server=()
           server_archives=''
           cli=()
-          cli_bundle=''
-          if jq -e '.artifacts | has("cli_bundle")' "${manifest}" >/dev/null; then
-            cli_bundle="${RUNNER_TEMP}/obsync-cli-${version}.zip"
-            download_asset "obsync-cli-${version}.zip" "${cli_bundle}"
-            cli=(--cli-bundle "${cli_bundle}")
+          cli_archives=''
+          if jq -e '.artifacts | has("cli_archives")' "${manifest}" >/dev/null; then
+            cli_archives="${RUNNER_TEMP}/cli-archives"
+            mkdir -m 700 "${cli_archives}"
+            for platform in linux-amd64 linux-arm64 darwin-arm64 windows-amd64; do
+              name="obsync-cli-${version}-${platform}.zip"
+              download_asset "${name}" "${cli_archives}/${name}"
+            done
+            cli=(--cli-archives "${cli_archives}")
           fi
           if jq -e '.artifacts | has("server_archives")' "${manifest}" >/dev/null; then
             mkdir -p "${RUNNER_TEMP}/audit-server"
@@ -164,7 +168,7 @@ jobs:
           native_provenance="$(python3 -B -c 'from scripts.ci.release_contract import Version; import sys; print(str(Version.parse(sys.argv[1]) >= Version(0, 1, 15)).lower())' "${version}")"
           if [ "${native_provenance}" = true ]; then
             SERVER_ARCHIVES="${server_archives}" \
-            CLI_BUNDLE="${cli_bundle}" \
+            CLI_ARCHIVES="${cli_archives}" \
               ./scripts/ci/verify-native-provenance.sh "${native_directory}" "${source_sha}"
           fi
 

@@ -658,7 +658,7 @@ class NativePublicationSteps(unittest.TestCase):
     def test_native_provenance_is_mandatory_between_export_and_release(self):
         document = miniyaml.load_one(WORKFLOW.read_text())
         publish = document['jobs']['publish']
-        self.assertEqual(publish['permissions'], {'contents': 'write', 'packages': 'write',
+        self.assertEqual(publish['permissions'], {'actions': 'read', 'contents': 'write', 'packages': 'write',
                                                   'id-token': 'write', 'attestations': 'write'})
         steps = publish['steps']
         attest = self.steps['Attest the native plugin build and server archives']
@@ -666,7 +666,7 @@ class NativePublicationSteps(unittest.TestCase):
         self.assertEqual([line.strip() for line in attest['with']['subject-path'].splitlines()],
                          ['${{ steps.plugin.outputs.directory }}/' + name for name in contract.PLUGIN_FILES]
                          + ['${{ steps.server.outputs.amd64 }}', '${{ steps.server.outputs.arm64 }}',
-                            '${{ steps.cli.outputs.path }}'])
+                            '${{ steps.cli.outputs.path }}/*.zip'])
         self.assertEqual({key: value for key, value in attest['with'].items() if key != 'subject-path'},
                          {'create-storage-record': False, 'push-to-registry': False})
         verify = self.steps['Verify the native build provenance before release publication']
@@ -674,14 +674,15 @@ class NativePublicationSteps(unittest.TestCase):
             'GH_TOKEN': '${{ secrets.GITHUB_TOKEN }}',
             'PLUGIN_DIRECTORY': '${{ steps.plugin.outputs.directory }}',
             'SERVER_ARCHIVES': '${{ steps.server.outputs.amd64 }} ${{ steps.server.outputs.arm64 }}',
-            'CLI_BUNDLE': '${{ steps.cli.outputs.path }}',
+            'CLI_ARCHIVES': '${{ steps.cli.outputs.path }}',
             'ATTESTATION_BUNDLE': '${{ steps.native_attestation.outputs.bundle-path }}'})
         export = self.steps['Export the plugin bundle from the image build']
         server = self.steps['Export the static server archives from the image build']
-        cli = self.steps['Export the CLI archive from the pinned shared build']
-        self.assertIn('--target cli-dist', cli['run'])
-        self.assertIn('--build-arg "SOURCE_SHA=${SOURCE_SHA}"', cli['run'])
-        self.assertIn('--version "${VERSION}" --source-sha "${SOURCE_SHA}"', cli['run'])
+        cli = self.steps['Acquire the exact native archives accepted on protected main']
+        self.assertIn('gh run download "${CLI_RUN_ID}"', cli['run'])
+        self.assertEqual(cli['env']['CLI_RUN_ID'], '${{ needs.authorize.outputs.cli_run_id }}')
+        self.assertIn('cli_archive_record(stream.read(CLI_MAX_BYTES + 1), version, source, platform)', cli['run'])
+        self.assertIn('{p.name for p in root.iterdir()} != set(expected)', cli['run'])
         for step in [server, cli, attest, verify]:
             self.assertNotIn('if', step)
             self.assertNotIn('continue-on-error', step)
@@ -689,7 +690,7 @@ class NativePublicationSteps(unittest.TestCase):
         manifest = self.steps['Build the deterministic release evidence manifest']
         for step in [manifest, release]:
             self.assertEqual(step['env']['CLI_PATH'], '${{ steps.cli.outputs.path }}')
-            self.assertIn('--cli-bundle "${CLI_PATH}"', step['run'])
+            self.assertIn('--cli-archives "${CLI_PATH}"', step['run'])
             self.assertEqual({key: step['env'][key] for key in ('SERVER_AMD64', 'SERVER_ARM64')},
                              {'SERVER_AMD64': '${{ steps.server.outputs.amd64 }}',
                               'SERVER_ARM64': '${{ steps.server.outputs.arm64 }}'})

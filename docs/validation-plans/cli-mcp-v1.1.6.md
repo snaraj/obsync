@@ -17,9 +17,10 @@ This plan extends [existing native validation](../validation.md) and
 
 V01–V19, S01–S12 and P01–P10 retain their original identifiers. The separate
 scenarios in `docs/validation.md` are called **VAL V1–V28** here, and its journeys
-J1–J11 keep their names. The current milestone spans releases; the first CLI
-artifact release is 1.2.0, with every later artifact PR taking one allowed step
-from its current protected base. No table row is a version reservation.
+J1–J11 keep their names. The [approved release trains](../release-trains.md)
+start with CLI core in 1.1.6 and continue through 1.1.10. The work-package rows
+below define acceptance responsibilities; packages assigned to one release
+are composed and validated before its artifact merge.
 
 These unions derive from the [work-package live rows](../design/cli-mcp-v1.1.6.md#10-work-packages-and-documentation-delivery)
 and [security responsibilities](../security/cli-mcp-v1.1.6.md#8-ownership-and-release-gates).

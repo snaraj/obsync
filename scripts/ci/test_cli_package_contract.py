@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import io
+import importlib.util
 import json
 import stat
 import sys
@@ -20,13 +21,23 @@ from test_server_archives import server_tree
 SHA = 'a' * 40
 
 
-def cli_bundle(version='1.2.0', source_sha=SHA, mutate=None, extra=None,
-               entry_mutate=None, shared_mode=b'{"type":"commonjs"}\n'):
-    files = {name: b'fixture\n' for name in cli.CLI_FILES}
+class NativeStartupBudgets(unittest.TestCase):
+    def test_slow_cold_launch_cannot_hide_in_fast_warm_samples(self):
+        spec = importlib.util.spec_from_file_location('cli_native', Path(__file__).with_name('cli-native.py'))
+        native = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(native)
+        self.assertEqual(native.startup_result([5] * 35)['warm_p95_ms'], 5)
+        for samples in ([1001] + [5] * 34, [5] * 33 + [251, 251]):
+            with self.subTest(samples=samples), self.assertRaises(AssertionError):
+                native.startup_result(samples)
+
+
+def cli_bundle(version='1.1.6', source_sha=SHA, mutate=None, extra=None,
+               entry_mutate=None, platform='linux-amd64'):
+    files = {name: b'fixture\n' for name in cli.cli_files(platform)}
     files['VERSION'] = f'{version}\n'.encode()
-    files['cli/shared/package.json'] = shared_mode
-    manifest = dict(schema_version=1, version=version, runtime='26.10.0', source_sha=source_sha,
-                    source_digest='b' * 64, candidate=False,
+    manifest = dict(schema_version=2, version=version, platform=platform, source_sha=source_sha,
+                    candidate=False,
                     files=[dict(name=name, size=len(data), sha256=hashlib.sha256(data).hexdigest())
                            for name, data in sorted(files.items())])
     if mutate:
@@ -38,7 +49,7 @@ def cli_bundle(version='1.2.0', source_sha=SHA, mutate=None, extra=None,
     with zipfile.ZipFile(result, 'w') as archive:
         for name, data in sorted(files.items()):
             info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-            info.external_attr = (stat.S_IFREG | 0o600) << 16
+            info.external_attr = (stat.S_IFREG | cli.member_mode(name)) << 16
             if entry_mutate:
                 entry_mutate(info)
             archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED)
@@ -46,53 +57,54 @@ def cli_bundle(version='1.2.0', source_sha=SHA, mutate=None, extra=None,
 
 
 class CliReleaseContract(unittest.TestCase):
-    def test_archive_metadata_and_shared_module_mode(self):
+    def test_archive_metadata_and_platform_binding(self):
         for change in [lambda entry: setattr(entry, 'external_attr', (stat.S_IFREG | 0o644) << 16),
                        lambda entry: setattr(entry, 'date_time', (2000, 1, 1, 0, 0, 0)),
                        lambda entry: setattr(entry, 'comment', b'synthetic comment')]:
             with self.subTest(change=change), self.assertRaises(ValueError):
-                cli.cli_archive_record(cli_bundle(entry_mutate=change), '1.2.0', SHA)
+                cli.cli_archive_record(cli_bundle(entry_mutate=change), '1.1.6', SHA, 'linux-amd64')
         with self.assertRaises(ValueError):
-            cli.cli_archive_record(cli_bundle(shared_mode=b'{"type":"module"}\n'), '1.2.0', SHA)
+            cli.cli_archive_record(cli_bundle(platform='windows-amd64'), '1.1.6', SHA, 'linux-amd64')
 
     def test_exact_package_and_old_release_boundary(self):
         data = cli_bundle()
-        record = cli.cli_archive_record(data, '1.2.0', SHA)
-        self.assertEqual(record['name'], 'obsync-cli-1.2.0.zip')
+        record = cli.cli_archive_record(data, '1.1.6', SHA, 'linux-amd64')
+        self.assertEqual(record['name'], 'obsync-cli-1.1.6-linux-amd64.zip')
         self.assertEqual(record['runtime'], cli.CLI_RUNTIME)
         self.assertEqual(record['digest'], digest(data))
         with tempfile.TemporaryDirectory() as temporary:
-            plugin = bundle('1.2.0')
-            args = manifest_arguments(version='1.2.0', source_sha=SHA, plugin_bundle=plugin,
+            plugin = bundle('1.1.6')
+            args = manifest_arguments(version='1.1.6', source_sha=SHA, plugin_bundle=plugin,
                                       plugin_digest=digest(plugin), server_archives={
-                platform: release.build_server_archive(server_tree(Path(temporary), platform, plugin), '1.2.0', platform)
+                platform: release.build_server_archive(server_tree(Path(temporary), platform, plugin), '1.1.6', platform)
                 for platform in release.RELEASE_MANIFEST_PLATFORMS})
             with self.assertRaises(release.ContractError):
                 release.build_release_manifest(**args)
-            manifest = release.build_release_manifest(**args, cli_bundle=data)
-            self.assertEqual(manifest['artifacts']['cli_bundle'], record)
-            release.validate_release_manifest_record(manifest, **args, cli_bundle=data)
+            archives = {p: cli_bundle(platform=p) for p in cli.CLI_PLATFORMS}
+            manifest = release.build_release_manifest(**args, cli_archives=archives)
+            self.assertEqual(manifest['artifacts']['cli_archives']['linux-amd64'], record)
+            release.validate_release_manifest_record(manifest, **args, cli_archives=archives)
             changed = copy.deepcopy(manifest)
-            changed['artifacts']['cli_bundle']['runtime']['version'] = '26.9.0'
+            changed['artifacts']['cli_archives']['linux-amd64']['runtime']['version'] = '26.9.0'
             with self.assertRaises(release.ContractError):
-                release.validate_release_manifest_record(changed, **args, cli_bundle=data)
+                release.validate_release_manifest_record(changed, **args, cli_archives=archives)
         old = bundle('0.1.11')
         with self.assertRaises(release.ContractError):
             release.build_release_manifest(**manifest_arguments(version='0.1.11', plugin_bundle=old,
-                plugin_digest=digest(old)), cli_bundle=data)
+                plugin_digest=digest(old)), cli_archives={'linux-amd64': data})
 
     def test_source_runtime_candidate_fields_and_content_refuse(self):
-        for mutation in [lambda m: m.update(source_sha='c' * 40), lambda m: m.update(runtime='26.9.0'),
+        for mutation in [lambda m: m.update(source_sha='c' * 40), lambda m: m.update(platform='windows-amd64'),
                          lambda m: m.update(candidate=True), lambda m: m.update(extra=True),
-                         lambda m: m.update(source_digest='0' * 64),
+                         lambda m: m.update(source_sha='0' * 40),
                          lambda m: m['files'][0].update(size=1), lambda m: m['files'][0].update(sha256='0' * 64)]:
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
-                cli.cli_archive_record(cli_bundle(mutate=mutation), '1.2.0', SHA)
+                cli.cli_archive_record(cli_bundle(mutate=mutation), '1.1.6', SHA, 'linux-amd64')
         for extra in [{'../outside': b'x'}, {'cli/unknown.mjs': b'x'}, {'VERSION': b'1.3.0\n'}]:
             with self.subTest(extra=extra), self.assertRaises(ValueError):
-                cli.cli_archive_record(cli_bundle(extra=extra), '1.2.0', SHA)
+                cli.cli_archive_record(cli_bundle(extra=extra), '1.1.6', SHA, 'linux-amd64')
         with self.assertRaises(ValueError):
-            cli.cli_archive_record(b'x' * (cli.CLI_MAX_BYTES + 1), '1.2.0', SHA)
+            cli.cli_archive_record(b'x' * (cli.CLI_MAX_BYTES + 1), '1.1.6', SHA, 'linux-amd64')
 
     def test_real_packer_is_deterministic_and_matches_validator(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -104,15 +116,15 @@ class CliReleaseContract(unittest.TestCase):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(archive.read(name))
             first, second = root / 'first.zip', root / 'second.zip'
-            cli.pack_cli(source, first)
-            cli.pack_cli(source, second)
+            cli.pack_cli(source, first, "linux-amd64")
+            cli.pack_cli(source, second, "linux-amd64")
             self.assertEqual(first.read_bytes(), second.read_bytes())
-            cli.cli_archive_record(first.read_bytes(), '1.2.0', SHA)
+            cli.cli_archive_record(first.read_bytes(), '1.1.6', SHA, 'linux-amd64')
             (source / 'VERSION').unlink()
-            (root / 'outside').write_bytes(b'1.2.0\n')
+            (root / 'outside').write_bytes(b'1.1.6\n')
             (source / 'VERSION').symlink_to(root / 'outside')
             with self.assertRaises(ValueError):
-                cli.pack_cli(source, second)
+                cli.pack_cli(source, second, "linux-amd64")
 
 
 class NativePublicationAcceptance(unittest.TestCase):
@@ -165,8 +177,9 @@ class NativePublicationAcceptance(unittest.TestCase):
         job = native['jobs']['native']
         self.assertEqual({f'native ({os})' for os in job['strategy']['matrix']['os']}, set(release.EXPECTED_CLI_JOBS))
         steps = [step.get('run', '') for step in job['steps']]
-        self.assertIn('node cli/test.mjs', steps)
-        self.assertIn('& scripts/ci/cli-windows-native.ps1', steps)
+        self.assertTrue(any('cargo test -p obsync-cli --locked' in step for step in steps))
+        self.assertTrue(any('scripts/ci/cli-native.py --package' in step for step in steps))
+        self.assertTrue(any('& scripts/ci/cli-windows-native.ps1 -Package' in step for step in steps))
         publisher = workflow('release-publisher.yml')['jobs']
         authority = '\n'.join(step.get('run', '') for step in publisher['authorize']['steps'])
         for required in ('actions/workflows/cli-native.yml/runs', 'cli-run-record', 'cli-jobs-record'):

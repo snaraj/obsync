@@ -40,6 +40,7 @@ jobs:
       contents: read
     outputs:
       source_sha: ${{ steps.main_run.outputs.source_sha }}
+      cli_run_id: ${{ steps.main_run.outputs.cli_run_id }}
     steps:
       - name: Check out protected publisher authority
         # `github.sha` is the PROTECTED main tree this workflow definition was
@@ -138,7 +139,7 @@ jobs:
           test "$(python3 -B authority/scripts/ci/release_contract.py cli-jobs-record \
             --jobs-json "${cli_jobs}" --run-id "${cli_run_id}" \
             --source-sha "${SOURCE_SHA}")" = "${SOURCE_SHA}"
-          printf 'source_sha=%s\n' "${authorized_sha}" >> "${GITHUB_OUTPUT}"
+          printf 'source_sha=%s\ncli_run_id=%s\n' "${authorized_sha}" "${cli_run_id}" >> "${GITHUB_OUTPUT}"
 
   publish:
     needs: authorize
@@ -146,6 +147,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
+      actions: read
       contents: write
       packages: write
       id-token: write
@@ -663,19 +665,38 @@ jobs:
               --source "${tree}" --tag "${TAG}" --platform "linux/${arch}" --output "${archive}"
             printf '%s=%s\n' "${arch}" "${archive}" >> "${GITHUB_OUTPUT}"
           done
-      - name: Export the CLI archive from the pinned shared build
+      - name: Acquire the exact native archives accepted on protected main
         id: cli
         env:
           VERSION: ${{ steps.release.outputs.version }}
+          CLI_RUN_ID: ${{ needs.authorize.outputs.cli_run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tree="${RUNNER_TEMP}/cli-dist"
-          docker buildx build --target cli-dist --platform linux/amd64 \
-            --build-arg "SOURCE_SHA=${SOURCE_SHA}" --output "type=local,dest=${tree}" .
-          archive="${RUNNER_TEMP}/obsync-cli-${VERSION}.zip"
-          python3 -B scripts/ci/cli_package_contract.py --source "${tree}" --output "${archive}" \
-            --version "${VERSION}" --source-sha "${SOURCE_SHA}"
-          printf 'path=%s\n' "${archive}" >> "${GITHUB_OUTPUT}"
+          [[ "${CLI_RUN_ID}" =~ ^[1-9][0-9]*$ ]]
+          archives="${RUNNER_TEMP}/cli-archives"
+          mkdir -m 700 "${archives}"
+          for platform in linux-amd64 linux-arm64 darwin-arm64 windows-amd64; do
+            gh run download "${CLI_RUN_ID}" --repo "${GITHUB_REPOSITORY}" \
+              --name "cli-${platform}" --dir "${archives}"
+          done
+          python3 -B - "${archives}" "${VERSION}" "${SOURCE_SHA}" <<'PYCLI'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts/ci')
+          from cli_package_contract import CLI_PLATFORMS, CLI_MAX_BYTES, cli_archive_record
+          root, version, source = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+          expected = {f'obsync-cli-{version}-{p}.zip': p for p in CLI_PLATFORMS}
+          if {p.name for p in root.iterdir()} != set(expected):
+              raise SystemExit('Native archive inventory differs')
+          for name, platform in expected.items():
+              path = root / name
+              if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
+                  raise SystemExit('Native archive type differs')
+              with path.open('rb') as stream:
+                  cli_archive_record(stream.read(CLI_MAX_BYTES + 1), version, source, platform)
+          PYCLI
+          printf 'path=%s\n' "${archives}" >> "${GITHUB_OUTPUT}"
       - name: Attest the native plugin build and server archives
         # Native provenance derives its source from the OIDC workflow SHA,
         # already bound to SOURCE_SHA before the first publication write.
@@ -688,7 +709,7 @@ jobs:
             ${{ steps.plugin.outputs.directory }}/styles.css
             ${{ steps.server.outputs.amd64 }}
             ${{ steps.server.outputs.arm64 }}
-            ${{ steps.cli.outputs.path }}
+            ${{ steps.cli.outputs.path }}/*.zip
           create-storage-record: false
           push-to-registry: false
       - name: Verify the native build provenance before release publication
@@ -696,7 +717,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PLUGIN_DIRECTORY: ${{ steps.plugin.outputs.directory }}
           SERVER_ARCHIVES: ${{ steps.server.outputs.amd64 }} ${{ steps.server.outputs.arm64 }}
-          CLI_BUNDLE: ${{ steps.cli.outputs.path }}
+          CLI_ARCHIVES: ${{ steps.cli.outputs.path }}
           ATTESTATION_BUNDLE: ${{ steps.native_attestation.outputs.bundle-path }}
         run: ./scripts/ci/verify-native-provenance.sh "${PLUGIN_DIRECTORY}" "${SOURCE_SHA}" "${ATTESTATION_BUNDLE}"
       - name: Build the deterministic release evidence manifest
@@ -729,7 +750,7 @@ jobs:
                   --chart "${CHART}" --chart-digest "${CHART_DIGEST}"
                   --plugin-digest "${PLUGIN_DIGEST}" --plugin-bundle "${PLUGIN_PATH}"
                   "${server[@]}")
-            if [ -n "${CLI_PATH:-}" ]; then args+=(--cli-bundle "${CLI_PATH}"); fi
+            if [ -n "${CLI_PATH:-}" ]; then args+=(--cli-archives "${CLI_PATH}"); fi
             if [ "${command}" = release-manifest ]; then
               python3 -B scripts/ci/release_contract.py "${command}" --output "${path}" "${args[@]}"
             else
@@ -762,8 +783,8 @@ jobs:
           server=()
           cli=()
           if [ -n "${CLI_PATH:-}" ]; then
-            assets+=("${CLI_PATH}")
-            cli=(--cli-bundle "${CLI_PATH}")
+            assets+=("${CLI_PATH}"/*.zip)
+            cli=(--cli-archives "${CLI_PATH}")
           fi
           if [ -n "${SERVER_AMD64:-}${SERVER_ARM64:-}" ]; then
             assets+=("${SERVER_AMD64}" "${SERVER_ARM64}")

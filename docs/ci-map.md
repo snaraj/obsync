@@ -31,7 +31,7 @@ emptying the configuration cannot also drop the context that names the socket.
 | `application` | `cargo test --workspace` | The Rust battery, including the doctrine pins. |
 | `application` | `./scripts/ci/coverage.sh` against `RUST_COVERAGE_FLOOR` | Line coverage meets the ratchet-only floor (requirement 9), measured with the pinned `llvm-tools` component and no crate. The floor is ONE fact in three places -- AGENTS.md, the Makefile, and this workflow's env -- and `test_coverage_floor.py` fails the gate if they disagree, if any of the three stops declaring it, or if the step that consumes it is removed. |
 | `application` | `npm ci --ignore-scripts --no-audit --no-fund`, `npm run build`, `npm test` in `plugin/` | The plugin builds from its lockfile with no install hook executed, and its tests pass under `node --test`. |
-| `application` | `node cli/build.mjs`, `node cli/test.mjs` | The native filesystem adapters build into the CLI; real processes exercise local plans, crash recovery, confinement, installation and explicit export refusal. Passing-test floors exclude skips. |
+| `application` | `cargo build --locked --release -p obsync-cli`, `python3 cli/check.py` | The Rust CLI package runs real install, context, replay and uninstall processes with independent inventory/state checks. Native subprocess tests cover recovery and refusals. |
 | `application` | `node --test dashboard/test/` | The dashboard's pure functions hold. The dashboard has no `package.json` by design, so this needs no install step. |
 | `application` | `scripts/ci/makefile-invariants.sh` | `make check` and this workflow run one battery — plus the two `docker build` commands `make image` and the `container` job share, and the smoke that follows them. Both sides are read for what they RUN, never for what they mention: the Makefile's tab-indented recipe lines, and every step `run:` value resolved by `scripts/ci/workflow_runs.py` through the fail-closed YAML reader. A step or job carrying an `if:`, and a segment behind a `false &&` or a `||`, are not the battery and do not count. The check can still fail — it mutates a copy of each file thirteen ways (deleting a canonical command, naming it in a comment, neutralizing it as `true # …` or `echo '…'`, and putting it behind a `false &&`, a `||` or an `if:`) and requires the comparison to refuse every one. |
 | `chart` | `helm lint chart`, `helm template smoke chart --kube-version v1.36.0` | The chart renders against the platform's Kubernetes target and satisfies its own required, closed `values.schema.json`. |
@@ -312,7 +312,7 @@ wrong — the three peer labels, the upstream Service, and the body ceiling. An
 ## `cli-native.yml` — pull requests, main pushes and manual dispatch
 
 The CLI process suite runs on `ubuntu-24.04`, `ubuntu-24.04-arm`, `windows-2025`
-and `macos-15`, using pinned Node 26.10.0 / npm 11.19.1. Windows additionally runs the public installer and context
+and `macos-15`, using pinned Rust 1.98.0. Windows additionally runs the public installer and context
 journey under ordinary disposable accounts, including recovery after real
 process termination. Export remains unsupported; these metadata operations
 do not establish credential custody for the later authenticated slice. Publisher provenance and public

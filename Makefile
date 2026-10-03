@@ -34,9 +34,9 @@ coverage: ## Rust line coverage against RUST_COVERAGE_FLOOR (llvm-tools componen
 plugin: ## Build and test the plugin
 	cd plugin && npm ci --ignore-scripts --no-audit --no-fund && npm run build && npm test
 
-cli: plugin ## Build and test the offline management CLI
-	node cli/build.mjs
-	node cli/test.mjs
+cli: ## Build and exercise the installed native management CLI
+	cargo build --locked --release -p obsync-cli
+	python3 cli/check.py
 
 dashboard: ## Test the dashboard's pure functions
 	# The explicit glob names the dashboard test files without relying on

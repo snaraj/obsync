@@ -1,5 +1,6 @@
 # Build outputs and local artifacts
 /target/
+*.profraw
 plugin/dist/
 plugin/node_modules/
 cli/dist/
