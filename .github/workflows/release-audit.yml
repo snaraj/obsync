@@ -89,6 +89,17 @@ jobs:
           # select nothing; the names are derived from the tag, never read.
           server=()
           server_archives=''
+          cli=()
+          cli_archives=''
+          if jq -e '.artifacts | has("cli_archives")' "${manifest}" >/dev/null; then
+            cli_archives="${RUNNER_TEMP}/cli-archives"
+            mkdir -m 700 "${cli_archives}"
+            for platform in linux-amd64 linux-arm64 darwin-arm64 windows-amd64; do
+              name="obsync-cli-${version}-${platform}.zip"
+              download_asset "${name}" "${cli_archives}/${name}"
+            done
+            cli=(--cli-archives "${cli_archives}")
+          fi
           if jq -e '.artifacts | has("server_archives")' "${manifest}" >/dev/null; then
             mkdir -p "${RUNNER_TEMP}/audit-server"
             for arch in amd64 arm64; do
@@ -104,7 +115,7 @@ jobs:
                     --image "${IMAGE}" --image-digest "${image_digest}"
                     --chart "${CHART}" --chart-digest "${chart_digest}"
                     --plugin-digest "${plugin_digest}" --plugin-bundle "${bundle}"
-                    "${server[@]}")
+                    "${server[@]}" "${cli[@]}")
           python3 -B scripts/ci/release_contract.py manifest-record \
             --manifest "${manifest}" "${contract[@]}"
           # The notes lead with the changelog entry as the SOURCE COMMIT wrote
@@ -157,6 +168,7 @@ jobs:
           native_provenance="$(python3 -B -c 'from scripts.ci.release_contract import Version; import sys; print(str(Version.parse(sys.argv[1]) >= Version(0, 1, 15)).lower())' "${version}")"
           if [ "${native_provenance}" = true ]; then
             SERVER_ARCHIVES="${server_archives}" \
+            CLI_ARCHIVES="${cli_archives}" \
               ./scripts/ci/verify-native-provenance.sh "${native_directory}" "${source_sha}"
           fi
 

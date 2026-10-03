@@ -1,6 +1,6 @@
 # CLI and MCP: live acceptance for staged delivery
 
-Status: proposed delivery gates, reconciled 2026-10-02; **no scenario in this document has
+Status: proposed delivery gates, reconciled 2026-10-03; **no scenario in this document has
 been executed by the planning task**. Design and work packages:
 [CLI/MCP specification](../design/cli-mcp-v1.1.6.md),
 [security contract](../security/cli-mcp-v1.1.6.md),
@@ -17,9 +17,10 @@ This plan extends [existing native validation](../validation.md) and
 
 V01–V19, S01–S12 and P01–P10 retain their original identifiers. The separate
 scenarios in `docs/validation.md` are called **VAL V1–V28** here, and its journeys
-J1–J11 keep their names. The current milestone spans releases; the first CLI
-artifact release is 1.2.0, with every later artifact PR taking one allowed step
-from its current protected base. No table row is a version reservation.
+J1–J11 keep their names. The [approved release trains](../release-trains.md)
+start with CLI core in 1.1.6 and continue through 1.1.10. The work-package rows
+below define acceptance responsibilities; packages assigned to one release
+are composed and validated before its artifact merge.
 
 These unions derive from the [work-package live rows](../design/cli-mcp-v1.1.6.md#10-work-packages-and-documentation-delivery)
 and [security responsibilities](../security/cli-mcp-v1.1.6.md#8-ownership-and-release-gates).
@@ -31,7 +32,7 @@ change adds P10. Physical-device gates remain required for affected native work.
 
 | Slice | Live union and boundary | Security union | Budget union |
 | --- | --- | --- | --- |
-| PR-3a / WP1 offline | V01, V02 (offline implemented commands and truthful unsupported workflows), V10 (local writes/interruption); #317 offline app-to-CLI archive open | S01, S02 (local target binding; server handshake unrun), S08 (context/config and export destination writes), S09 | P01, P03, P08; P10 if plugin/server changes |
+| PR-3a / WP1 offline | V01, V02 (offline implemented commands and truthful unsupported workflows), V10 (local writes/interruption) | S01, S02 (local target binding; server handshake unrun), S08 (context/config writes), S09 | P01, P03, P08; P10 if plugin/server changes |
 | PR-3b / WP2 auth | V03–V04 (CLI/browser; real MCP host follows in PR-4c), V09 (management logout), V10 (grant mutators) | S02, S03, S05, S07, S08 | P03, P07, P08, P10 |
 | PR-4a / WP3 native setup | V05, V06 (existing-server bootstrap/interruption), V07, V08 (local folders), V09 (local disconnect), V10, V16 (local config writes) | S02, S04–S06, S08 | P01, P03–P05, P07–P08, P10 |
 | PR-4b / WP4 device lifecycle | V08 (inventory/rename/policy), V09 (revoke/archive), V10 | S03, S06–S08 | P03, P07, P08, P10 |
@@ -47,9 +48,9 @@ CI jobs continue to prove their own deployment layers. No production cluster is
 part of this campaign. Future MCP write-profile portions of V02/V04/V08–V10/V16
 are also deferred; observe must prove refusal and unchanged state today.
 
-PR-2's native encrypted/plain export and offline opening use #317's acceptance
-and proposed VAL V29–V31 plus affected native journeys. PR-3a adds the same
-archive's offline CLI opening. These are exports of current notes by default,
+Native encrypted/plain export and offline opening are deferred with #317,
+including the CLI operation. Their retained acceptance uses proposed VAL V29–V31
+and affected native journeys; no export result counts toward PR-3a. These are exports of current notes by default,
 with history opt-in; neither claims the full backup/restore covered by V14–V15.
 The evidence matrix must show each portion as PASS/FAIL/NOT_RUN/UNKNOWN and name
 its exact artifact. A deferred row is unrun, not waived or counted as a pass.
@@ -176,7 +177,7 @@ and supported staging provenance; repeat public-publisher verification in V19.
 
 Start three fresh agent sessions per advertised workflow with only the shipped
 instructions and installed executable. In PR-3a exercise offline discovery/schema,
-local contexts/doctor and explicitly authorized offline export opening. In later
+local contexts/doctor and verified installation. Export must report unsupported. In later
 slices exercise the implemented existing-server, status and device workflows.
 Capacity administration and MCP mutations must report unsupported in the current
 slice; observe proves that refusal independently. Use duplicate device names where
@@ -328,12 +329,13 @@ ordinary maintenance.
 
 ### V10 — Operation durability, interruption and concurrency
 
-For the offline slice, exercise context/config replacement and plaintext export
-opening into an explicitly selected disposable destination. Interrupt each local
+For the offline slice, exercise context/config replacement and installation
+in explicitly selected disposable directories. Interrupt each local
 write at its declared stages and restart the CLI. Verify atomic/recoverable
 results, exact destination confinement, unchanged unrelated files and truthful
 partial/unknown outcomes. No lost response or rerun may overwrite an unrelated
-file or treat a partial export as complete. P03 applies only to later remote
+file or treat a partial installation as complete. #317 retains the equivalent
+requirements for deferred export publication. P03 applies only to later remote
 reads; local progress and recovery use P08.
 
 Using benign campaign operations, drop the response after dispatch, close the

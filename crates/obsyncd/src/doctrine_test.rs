@@ -254,24 +254,65 @@ fn forbidden_tables(manifest: &str) -> Vec<String> {
 }
 
 #[test]
-fn signal_is_the_only_unsafe_file() {
+fn only_approved_native_surfaces_use_unsafe() {
     let root = repo_root();
-    let allowed = root.join("crates/obsyncd/src/signal.rs");
+    let allowed = [
+        "crates/obsyncd/src/signal.rs",
+        "crates/obsync-cli/src/posix_identity.rs",
+        "crates/obsync-cli/src/windows_identity.rs",
+    ];
     for file in rust_sources(&root.join("crates")) {
         let uses = unsafe_uses(&read(&file));
-        if file == allowed {
+        if allowed.iter().any(|path| file == root.join(path)) {
             assert!(
                 uses > 0,
-                "signal.rs is the declared FFI surface and must still hold it"
+                "each declared FFI surface must still hold its native call"
             );
             continue;
         }
         assert_eq!(
             uses,
             0,
-            "{} must not use the keyword: signal.rs is the single FFI surface",
+            "{} must not use the keyword outside the approved FFI surfaces",
             relative(&file, &root)
         );
+    }
+}
+
+#[test]
+fn cli_native_imports_are_exactly_the_approved_read_only_identity_calls() {
+    let root = repo_root();
+    for (path, names) in [
+        ("posix_identity.rs", vec!["getuid", "geteuid"]),
+        ("windows_identity.rs", vec!["GetFileInformationByHandle"]),
+    ] {
+        let source = read(&root.join("crates/obsync-cli/src").join(path));
+        assert_eq!(
+            unsafe_uses(&source),
+            2,
+            "one extern block and one scoped call block"
+        );
+        let declaration = format!("{} extern ", unsafe_token());
+        let body = source
+            .split(&declaration)
+            .nth(1)
+            .unwrap()
+            .split_once('{')
+            .unwrap()
+            .1
+            .split_once('}')
+            .unwrap()
+            .0;
+        let actual = body
+            .lines()
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix("fn ")
+                    .map(|rest| rest.split('(').next().unwrap())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, names);
+        assert_eq!(source.matches(&declaration).count(), 1);
     }
 }
 
@@ -307,7 +348,13 @@ fn manifests_declare_no_dependency_but_the_path_dependency() {
         vec!["obsync-core = { path = \"../obsync-core\" }".to_string()],
         "obsyncd depends on the workspace path dependency and nothing else"
     );
-    for manifest in [&core, &server] {
+    let client = read(&root.join("crates/obsync-cli/Cargo.toml"));
+    assert_eq!(
+        dependency_lines(&client),
+        vec!["obsync-core = { path = \"../obsync-core\" }".to_string()],
+        "obsync-cli depends on the workspace path dependency and nothing else"
+    );
+    for manifest in [&core, &server, &client] {
         assert_eq!(
             forbidden_tables(manifest),
             Vec::<String>::new(),
@@ -597,17 +644,21 @@ fn log_helper_check_flags_a_mutated_fixture() {
 #[test]
 fn every_source_file_but_the_ffi_surface_forbids_unsafe_code() {
     let root = repo_root();
-    let allowed = root.join("crates/obsyncd/src/signal.rs");
+    let allowed = [
+        "crates/obsyncd/src/signal.rs",
+        "crates/obsync-cli/src/posix_identity.rs",
+        "crates/obsync-cli/src/windows_identity.rs",
+    ];
     let lint = format!("#![forbid({}_code)]", unsafe_token());
-    for crate_dir in ["crates/obsync-core", "crates/obsyncd"] {
+    for crate_dir in ["crates/obsync-core", "crates/obsyncd", "crates/obsync-cli"] {
         let src = root.join(crate_dir).join("src");
         // A crate root that forbids the keyword covers every file under it,
         // and cannot be overridden from inside. Only a crate without that
         // blanket needs the attribute file by file, because it holds the one
         // permitted FFI surface.
-        let crate_wide = read(&src.join("lib.rs")).contains(&lint);
+        let crate_wide = src.join("lib.rs").exists() && read(&src.join("lib.rs")).contains(&lint);
         for file in rust_sources(&src) {
-            if crate_wide || file == allowed {
+            if crate_wide || allowed.iter().any(|path| file == root.join(path)) {
                 continue;
             }
             let content = read(&file);

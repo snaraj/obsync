@@ -1,0 +1,15 @@
+[package]
+name = "obsync-cli"
+description = "Offline-capable obsync management client. Standard library only."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+obsync-core = { path = "../obsync-core" }
+
+[[bin]]
+name = "obsync"
+path = "src/main.rs"

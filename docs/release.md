@@ -259,6 +259,44 @@ rulesets, a condition it does not model, a bypass list it cannot read, and a
 ruleset that changes while it reads. `scripts/ci/test_release_contract.py`
 pins each case.
 
+## Native CLI archives from 1.1.6
+
+The first CLI artifact takes version 1.1.6 from released 1.1.5. Export and
+offline opening remain deferred with #317. Releases from 1.1.6 require
+`artifacts.cli_archives` in the existing v2 evidence record; earlier versions
+reject it. Its exact keys are `linux-amd64`, `linux-arm64`, `darwin-arm64` and
+`windows-amd64`. Each record has this shape:
+
+```json
+{
+  "name": "obsync-cli-1.1.6-linux-amd64.zip",
+  "digest": "sha256:<64 lowercase nonzero hex characters>",
+  "size": 123,
+  "content_type": "application/zip",
+  "runtime": { "name": "native-rust", "version": "1.98.0", "delivery": "included" },
+  "manifest_sha256": "<64 lowercase nonzero hex characters>"
+}
+```
+
+Each deterministic archive is bounded to 8 MiB and contains one native binary,
+license, version, instructions and a closed manifest. The manifest binds the
+exact source, platform, version and every member hash. Candidate packages refuse
+publication. No Node runtime, package manager, downloader or vault decryption
+module ships in these archives. Linux binaries use the pinned Rust musl target.
+
+The read-only authorization job requires successful native acceptance jobs at
+exactly the protected-main source. The publisher downloads their exact named
+artifacts from that authorized run, validates all four archives, and attests the
+same accepted bytes. It then performs immutable upload and byte readback. The
+read-only audit checks the same inventory and publisher identity. There are
+eleven Release assets from 1.1.6; attestation bundles are not extra assets.
+
+External evidence consumers must bind this version-gated inventory before the
+artifact merge. Metadata validation alone does not establish installation.
+[CLI installation](https://github.com/snaraj/obsync/blob/main/cli/README.md) requires independent publisher verification
+before extraction or execution. Native Windows/macOS distribution acceptance,
+manual terminal journeys and the security mutation matrix remain release gates.
+
 ## Deployment
 
 Publication is never deployment. A deployer's own platform selects the
