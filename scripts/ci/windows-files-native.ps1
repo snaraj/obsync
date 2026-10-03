@@ -159,7 +159,7 @@ try {
             $Runtime = [IO.Path]::Combine($RuntimeDirectory, 'node.exe')
             [IO.File]::Copy($Node, $Runtime, $false)
             if ((Get-FileHash -LiteralPath $Runtime).Hash -cne (Get-FileHash -LiteralPath $Node).Hash) { throw 'Runtime fixture copy differs.' }
-            foreach ($Step in @('context', 'context-replay', 'kill-context', 'recover-context', 'interrupt-install', 'install')) {
+            foreach ($Step in @('lease', 'context', 'context-replay', 'kill-context', 'recover-context', 'interrupt-install', 'install')) {
                 & $Runtime cli/test/windows-journey.mjs $Step $Root $Receipt $Digest
                 if ($Step -eq 'kill-context') {
                     if ($LASTEXITCODE -eq 0) { throw 'Expected abrupt context process termination.' }

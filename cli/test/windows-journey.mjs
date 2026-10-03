@@ -45,7 +45,27 @@ async function runPhase(name) {
   assert.equal(result.code, 0, `Fresh native ${name} failed.`);
   assert.ok(result.bytes <= 16384);
 }
-if (phase === 'context') {
+if (phase === 'lease') {
+  await files.create(join(root, 'lease'));
+  const held = child(process.execPath, [fileURLToPath(import.meta.url), 'hold-lease', root, trustPath, trustDigest]);
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(Error('Native lease readiness deadline.')), 15000);
+      let output = '';
+      held.process.stdout.on('data', data => { output += data.toString('utf8'); if (output.includes('"lease":"held"')) { clearTimeout(timer); resolve(); } });
+      held.process.once('close', () => { clearTimeout(timer); reject(Error('Native lease holder closed before readiness.')); });
+    });
+    await assert.rejects(files.locked(join(root, 'lease'), () => {}, async () => assert.fail('Concurrent writer entered.')));
+  } finally { held.process.kill('SIGKILL'); await held.done; }
+  await runPhase('recover-lease');
+} else if (phase === 'hold-lease') {
+  await files.locked(join(root, 'lease'), () => {}, async alive => {
+    console.log(JSON.stringify({ event: 'windows_cli_journey', lease: 'held' }));
+    for (;;) { alive(); await delay(50); }
+  });
+} else if (phase === 'recover-lease') {
+  await files.locked(join(root, 'lease'), () => {}, async alive => { alive(); });
+} else if (phase === 'context') {
   const held = await store.database(true);
   try { await assert.rejects(files.flush(store.file), /^Error: windows_files_refused/); }
   finally { held.close(); }

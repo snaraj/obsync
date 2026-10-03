@@ -115,9 +115,9 @@ try {
   $Reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.UTF8Encoding]::new($false, $true), $false, 4096)
   $Count = 0
   while ($Count -lt $Characters.Length) {
-    $Read = $Reader.Read($Characters, $Count, $Characters.Length - $Count)
-    if ($Read -eq 0) { break }
-    $Count += $Read
+    $Read = $Reader.Read()
+    if ($Read -eq -1 -or $Read -eq 10) { break }
+    $Characters[$Count++] = [char]$Read
   }
   if ($Count -gt 16384) { Refuse 'request_budget' }
   $Raw = [string]::new($Characters, 0, $Count).TrimEnd([char[]]@("`r", "`n"))
@@ -127,12 +127,24 @@ try {
   if ($Names.Count -ne 4 -or @($Names | Where-Object { $_ -cnotin @('v', 'op', 'path', 'destination') }).Count -ne 0 -or
     $Request.v -isnot [int] -or $Request.v -ne 1 -or $Request.op -isnot [string] -or
     $Request.path -isnot [string] -or $Request.destination -isnot [string] -or
-    $Request.op -cnotin @('setup', 'inspect', 'mkdir', 'create', 'flush', 'publish')) { Refuse 'request_shape' }
+    $Request.op -cnotin @('setup', 'inspect', 'mkdir', 'create', 'flush', 'publish', 'lock')) { Refuse 'request_shape' }
   if (![string]::Equals(($Request | ConvertTo-Json -Compress -Depth 2), $Raw, [StringComparison]::Ordinal)) { Refuse 'request_spelling' }
   Exact-Path $Request.path
   Inspect-Parents $Request.path
   if ($Request.op -ne 'publish' -and $Request.destination -cne '') { Refuse 'request_shape' }
+  if ($Request.op -ne 'lock' -and $Reader.Read() -ne -1) { Refuse 'request_framing' }
   switch -CaseSensitive ($Request.op) {
+    'lock' {
+      if (Inspect-One $Request.path $true) { Refuse 'file_required' }
+      $Lease = [IO.FileStream]::new($Request.path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+      try {
+        if ($Lease.Length -ne 0) { Refuse 'lock_contents' }
+        [Console]::Out.WriteLine('{"v":1,"held":true}')
+        [Console]::Out.Flush()
+        $Closed = $Reader.ReadAsync([char[]]::new(1), 0, 1)
+        if (!$Closed.Wait(1800000) -or $Closed.Result -ne 0) { Refuse 'lock_lifetime' }
+      } finally { $Lease.Dispose() }
+    }
     'setup' {
       if ([IO.File]::Exists($Request.path) -or [IO.Directory]::Exists($Request.path)) { Refuse 'destination_exists' }
       $null = [IO.Directory]::CreateDirectory($Request.path, (Private-Acl $true))

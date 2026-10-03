@@ -44,22 +44,24 @@ No owner account, vault, address or local-machine configuration is involved.
 
 The journey covers path, reparse point, hard-link and collision refusals;
 fresh-process directory/file publication and identity readback; a real killed
-SQLite writer and fresh recovery; immutable installation, fresh native launch
-and exact uninstall. The fixture's private copy of the pinned setup-node
+SQLite writer and fresh recovery; actual installer process kills at private
+stage creation, completion-receipt creation and publication; fresh recovery,
+native launch and exact uninstall. Each installer recovery preserves the
+directory identity. The fixture's private copy of the pinned setup-node
 executable tests custody only. It does not establish public runtime acquisition
 or release provenance. Native failures and remaining gaps are recorded in the
 [preparation evidence](../validation-runs/2026-10-02-windows-native-preparation.md).
 
-Before enabling Windows, also prove interrupted installation at each completion
-boundary, denial of access to all credential-bearing entries, and the full
+Before enabling Windows, also prove denial of access to all credential-bearing
+entries and the full
 shared export journey with exact journal recovery and vault exclusions. The
 app's bootstrap must be usable without a CLI installation. Receipt validation
 must precede using its executable path.
 
 SQLite documents its [atomic commit contract](https://www.sqlite.org/atomiccommit.html).
 Managed [`Flush(true)`](https://learn.microsoft.com/en-us/dotnet/api/system.io.filestream.flush?view=netframework-4.8.1)
-is a file flush, not a general directory fsync. Process interruption is also
-not a power-loss experiment. Publication needs an applicable documented native
-durability guarantee and, if that remains uncertain, controlled native VM
-power-loss/restart evidence. A green refusal or ordinary process kill does not
-close that gate.
+is a file flush, not a general directory fsync. The helper then uses the
+documented same-volume `MoveFileExW` write-through operation, followed by exact
+identity readback. Native process interruption proves the exercised recovery
+boundaries. Physical power-loss behavior remains untested; it is not an added
+prerequisite to the documented API-level durability contract.

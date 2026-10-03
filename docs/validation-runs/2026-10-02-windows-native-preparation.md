@@ -63,6 +63,30 @@ The actual ordinary-user journey passed:
 The fixture's private copy of setup-node's executable proves runtime custody
 for that journey. It is not proof of a public trusted-runtime acquisition path.
 
+### Scale and actual installer interruption
+
+[Hosted run 37084249944](https://github.com/snaraj/obsync/actions/runs/37084249944)
+passed at GitHub-verified signed source
+`07717edaaf73270491c823384db8321dedaf8683`. The job took 3 minutes 47 seconds
+and finished at 01:02 UTC on 2026-10-03. The helper and adapter bytes were
+unchanged from the preceding native pass. The built CLI package manifest was
+`ea682de2de4f58e9253d5612903d23a4502ece251a6dcf944682054c6c976de6`.
+
+- One native publication moved 7,703 files in 12,930 ms, within the existing
+  120-second helper deadline. Independent readback verified every file's bytes,
+  the destination directory's identity and the absence of the staging name.
+- Actual installer child processes were killed after private stage creation,
+  after completion-receipt creation, and after publication. Each required a
+  fresh process to resume the same exact directory identity, verify the package,
+  launch the installed CLI through native PowerShell and uninstall it.
+- An unpublished pending launcher refused execution. No product fault switch,
+  mocked filesystem or relaxed guard was used.
+- The ordinary-user custody, second-account denial, context commit/replay,
+  killed-writer recovery and exact cleanup controls passed again.
+
+These are bounded hosted functional measurements. They establish these process
+interruption boundaries, not power-loss recovery or the app export journey.
+
 ### Failures retained
 
 These failures led to changes in the actual process path; a local unit-test
@@ -82,8 +106,11 @@ pass did not establish Windows operation:
 
 Public Windows export, context mutation and installation remain unavailable.
 The passing internal journey does not establish the plugin's trusted bootstrap
-UI, shared export journal and crash reconciliation, interrupted installer
-boundaries, the 7,703-file publication budget, or power-loss durability.
-Those need their own complete native proof. The live sync journey also remains
+UI, shared export journal and crash reconciliation, or custody denial for every
+credential-bearing entry. Those need their own complete native proof.
+The publication primitive uses Microsoft's documented same-volume write-through
+move and explicit file flushing. Physical power-loss behavior is untested; a
+new VM experiment is not an additional prerequisite to the API-level contract.
+The live sync journey also remains
 separate from private export and installation evidence. No release, production
 installation or acceptable-latency claim is made here.

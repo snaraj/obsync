@@ -13,7 +13,8 @@ Windows support or authorize another interop surface.
 
 The helper accepts one bounded, canonical JSON object on stdin with exactly
 `v`, `op`, `path`, and `destination`. Operations are private inspection,
-directory creation, empty-file creation, file flushing and directory/file publication.
+directory creation, empty-file creation, file flushing, an exclusive file lease,
+and directory/file publication.
 There are no credential bytes, command text, script path, DLL, symbol or flag
 arguments. All refusals omit paths and native exception text. Inputs use local
 fixed NTFS drives, canonical drive-absolute paths and no reparse points, device
@@ -44,14 +45,26 @@ Microsoft documents the same-volume directory operation in
 [Moving Directories](https://learn.microsoft.com/en-us/windows/win32/fileio/moving-directories)
 and the flag in
 [MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw).
-This source does not equate process interruption with a power-loss experiment
-or treat file flushing as a general directory fsync.
+The directory example uses the same flag for an absent destination on the same
+drive. Together with explicit file flushing, this supplies the documented
+API-level durable publication primitive. Native readback and actual process
+interruption exercise its use. No physical power-loss experiment has been run;
+that limits the evidence without adding a new prerequisite to this contract.
+
+An operation lease holds a private empty file with managed `FileShare.None`.
+The helper releases its kernel handle when the parent closes or loses its
+stdin pipe. Both sides enforce a 30-minute bound, and cancellation terminates
+only the exact owned helper. Recovery acquires this lease; it never deletes a
+lock based on a process ID. The lease adds no native symbol.
 
 ## Packaging and bootstrap
 
 `plugin/windows-helper.mjs` reads the one authoritative source, enforces its
 size/encoding budget and emits its exact text and SHA-256. The plugin bundler
 embeds that module inside `main.js`; the plugin release still has three assets.
+The adapter compresses only that fixed, hash-checked source using Node and .NET
+built-ins to fit Windows' command-line bound. Request values remain JSON data;
+no request, environment value or filesystem script supplies executable code.
 The CLI package must include the same source and generated shared module when
 its predecessor is composed. Neither application depends on an installed CLI.
 
@@ -75,21 +88,21 @@ for publication. When the CLI source is present, it builds and exercises that
 candidate in the same job. It verifies identity, sentinel bytes, and actual denial of
 listing, reading and replacement. The driver removes only its own account and
 exact fixture. The [preparation evidence](../validation-runs/2026-10-02-windows-native-preparation.md)
-records a passing ordinary-user primitive and internal CLI journey, including
-real access denial, killed-writer recovery, fresh launch and uninstall.
+records passing ordinary-user custody, 7,703-file publication, killed-writer
+recovery, and actual installer interruption at stage, receipt and publication
+boundaries followed by fresh recovery, launch and uninstall.
 
 Before enabling Windows, the implementation still needs these complete flows
 and receipts:
 
 - A trusted PowerShell bootstrap and protected receipt usable by the plugin
   without a CLI installation, plus CLI custody of that same trust information.
-- Interrupted installer recovery at each completion boundary; the ordinary
-  install/launch/uninstall journey has passed and existing versions stay untouched.
+- Independent custody denial for every credential-bearing entry, extending
+  the already passing second-account sentinel control.
 - Shared export operation journals bound to exact stage/target identities,
   crash reconciliation, vault exclusions and plaintext ACL readback.
-- A documented guarantee applicable to same-volume directory publication and
-  durable completion; if it remains uncertain, controlled native VM power-loss
-  evidence. An ordinary runner process kill does not supply that evidence.
+- Native operation-lease exclusion and recovery through the shared export
+  transaction, including parent-process interruption and fresh reconciliation.
 
 Until these pass, the product's Windows refusals remain in place. This is a
 reviewable source layer and native proof preparation, not a Windows release.

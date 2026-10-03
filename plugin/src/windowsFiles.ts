@@ -30,7 +30,7 @@ interface Fs {
   open(path: string, flags: string): Promise<Handle>; opendir(path: string): Promise<AsyncIterable<{ name: string }>>;
 }
 interface Child {
-  stdin: { end(value: string): void; on(event: "error", listener: () => void): void };
+  stdin: { write(value: string): void; end(value?: string): void; on(event: "error", listener: () => void): void };
   stdout: { on(event: "data", listener: (data: Uint8Array) => void): void };
   stderr: { on(event: "data", listener: (data: Uint8Array) => void): void };
   on(event: "error", listener: () => void): void;
@@ -57,10 +57,19 @@ export class WindowsFiles {
     this.fs = (require("node:fs") as { promises: Fs }).promises;
     this.spawn = require("node:child_process") as Spawn;
     this.helper = require("./windowsHelperData") as typeof this.helper;
-    if (typeof this.helper.source !== "string" || this.helper.source.length > 12080 || /[^\x00-\x7f]/.test(this.helper.source) ||
+    if (typeof this.helper.source !== "string" || this.helper.source.length > 16384 || /[^\x00-\x7f]/.test(this.helper.source) ||
         !/^[a-f0-9]{64}$/.test(this.helper.sha256)) throw Error("windows_helper_integrity");
     const buffer = require("node:buffer") as { Buffer: { from(value: string, encoding: string): { toString(encoding: string): string } } };
-    this.command = buffer.Buffer.from(this.helper.source, "utf16le").toString("base64");
+    // Only our fixed, hash-checked source is code. Compression keeps the sole
+    // helper inside Windows' command-line limit without a mutable script file.
+    const gzip = require("node:zlib") as { gzipSync(bytes: Uint8Array): { toString(encoding: string): string } };
+    const packed = gzip.gzipSync(utf8(this.helper.source)).toString("base64");
+    const script = `$m=[IO.MemoryStream]::new([Convert]::FromBase64String('${packed}'));` +
+      `$g=[IO.Compression.GZipStream]::new($m,[IO.Compression.CompressionMode]::Decompress);` +
+      `$r=[IO.StreamReader]::new($g,[Text.Encoding]::ASCII);` +
+      `try{$s=$r.ReadToEnd()}finally{$r.Dispose();$m.Dispose()}; & ([ScriptBlock]::Create($s))`;
+    this.command = buffer.Buffer.from(script, "utf16le").toString("base64");
+    if (this.command.length > 30000) throw Error("windows_helper_budget");
   }
   /** Import the exact digest displayed by explicit trusted OS setup. An ambient
    * receipt is insufficient: verify its bytes before using its executable path.
@@ -104,7 +113,8 @@ export class WindowsFiles {
     if (!stat || stat.isSymbolicLink() || (!stat.isDirectory() && (!stat.isFile() || stat.nlink !== 1n))) throw Error("windows_file_type");
     return stat;
   }
-  private async call(op: "inspect" | "mkdir" | "create" | "flush" | "publish", path: string, destination = "", check = (): void => {}): Promise<void> {
+  private async call(op: "inspect" | "mkdir" | "create" | "flush" | "publish" | "lock", path: string, destination = "", check = (): void => {},
+    locked?: (alive: () => void) => Promise<void>): Promise<void> {
     this.path(path); if (destination) this.path(destination);
     if (hex(await sha256(utf8(this.helper.source))) !== this.helper.sha256) throw Error("windows_helper_integrity");
     // Windows component-store hard links are legitimate for this already
@@ -126,26 +136,39 @@ export class WindowsFiles {
             SystemRoot: system.slice(0, -"\\System32".length),
             PSModulePath: `${system}\\WindowsPowerShell\\v1.0\\Modules`,
           }, stdio: ["pipe", "pipe", "pipe"] });
-        let output = "", diagnostics = "", size = 0, refused = "";
+        let output = "", diagnostics = "", size = 0, refused = "", live = true, acquired = false;
+        let working: Promise<void> = Promise.resolve(), workError: unknown;
         const decoder = new TextDecoder("utf-8", { fatal: true });
         const fail = (reason: string) => { refused ||= reason; child.kill(); };
-        const timer = setTimeout(() => fail("deadline"), op === "publish" ? 120000 : 15000);
+        let timer = setTimeout(() => fail("deadline"), op === "publish" ? 120000 : 15000);
         const cancellation = setInterval(() => { try { check(); } catch { fail("cancelled"); } }, 100);
         child.stdin.on("error", () => fail("stdin"));
         child.stdout.on("data", data => {
           if ((size += data.length) > 256) { fail("output_budget"); return; }
           try { output += decoder.decode(data, { stream: true }); } catch { fail("output_encoding"); }
+          if (op === "lock" && !acquired && output.replace(/\r?\n$/, "") === '{"v":1,"held":true}') {
+            acquired = true; output = ""; clearTimeout(timer);
+            timer = setTimeout(() => fail("deadline"), 1800000);
+            working = Promise.resolve().then(async () => {
+              if (!locked) throw Error("windows_lock_callback");
+              await locked(() => { check(); if (!live || refused) throw Error("windows_lock_lost"); });
+              child.stdin.end();
+            }).catch(error => { workError = error; fail("operation"); });
+          }
         });
         child.stderr.on("data", data => {
           if ((size += data.length) > 256) { fail("output_budget"); return; }
           try { diagnostics += new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { fail("output_encoding"); }
         });
         child.on("error", () => { clearTimeout(timer); clearInterval(cancellation); reject(Error("windows_files_refused")); });
-        child.on("close", code => {
+        child.on("close", async code => {
+          live = false;
           clearTimeout(timer);
           clearInterval(cancellation);
+          await working;
+          if (workError) { reject(workError); return; }
           try { output += decoder.decode(); } catch { refused ||= "output_encoding"; }
-          if (refused || code !== 0 || diagnostics || output.replace(/\r?\n$/, "") !== '{"v":1,"ok":true}') {
+          if (refused || code !== 0 || diagnostics || (op === "lock" && !acquired) || output.replace(/\r?\n$/, "") !== '{"v":1,"ok":true}') {
             let detail = refused ? `:${refused}` : "";
             try {
               const value = JSON.parse(diagnostics) as { v: number; ok: boolean; reason: string; exception: string; line: number };
@@ -156,7 +179,7 @@ export class WindowsFiles {
             reject(Error(`windows_files_refused${detail}`));
           } else resolve();
         });
-        child.stdin.end(request);
+        if (op === "lock") child.stdin.write(request + "\n"); else child.stdin.end(request);
       });
       if (!this.same(await this.stat(this.powershell.path), executable)) throw Error("trusted_powershell_changed");
     } finally { await held.close(); }
@@ -178,6 +201,13 @@ export class WindowsFiles {
     if (!before.isFile()) throw Error("windows_file_required");
     await this.call("flush", path);
     if (!this.same(await this.stat(path), before)) throw Error("windows_identity_changed");
+  }
+  /** Kernel-held exclusivity, released by normal close or parent pipe death. */
+  async locked<T>(path: string, check: () => void, work: (alive: () => void) => Promise<T>): Promise<T> {
+    await this.inspect(path);
+    let result!: T;
+    await this.call("lock", path, "", check, async alive => { result = await work(alive); });
+    return result;
   }
   /** Caller must bind stage identity and target in its durable operation record.
    * This primitive neither invents a recovery journal nor declares completion.
