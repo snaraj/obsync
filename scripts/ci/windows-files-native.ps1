@@ -1,56 +1,93 @@
 # Hosted disposable Windows runner only. No production paths or credentials.
-param([switch]$SelectedUser, [string]$Node)
+param([switch]$SelectedUser, [string]$Node, [string]$Phase, [string]$Root)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows') { throw 'Hosted Windows runner required.' }
 $Shell = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\powershell.exe')
 if (!$SelectedUser) {
+    if ($Root -or $Phase) { throw 'Controller paths cannot be supplied.' }
     $Node = (Get-Command node -CommandType Application | Select-Object -First 1).Source
     if ((& $Node --version) -cne 'v26.10.0' -or $LASTEXITCODE -ne 0) { throw 'Controller runtime differs.' }
     $Accounts = @()
-    try {
-        $Passwords = @(([Guid]::NewGuid().ToString('N') + 'aA1!'), ([Guid]::NewGuid().ToString('N') + 'aA1!'))
-        for ($Index = 0; $Index -lt 2; $Index++) {
-            $Name = 'ob' + [Guid]::NewGuid().ToString('N').Substring(0, 14)
-            $Account = New-LocalUser -Name $Name -Password (ConvertTo-SecureString $Passwords[$Index] -AsPlainText -Force) -AccountNeverExpires
-            $Accounts += $Account
-            Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $Name
-        }
-        # Only this controller is elevated. Product operations run with an
-        # ordinary user's token, whose default file owner is that user.
+    function Invoke-Owned($Account, [Security.SecureString]$Password, [string]$Arguments) {
         $Start = [Diagnostics.ProcessStartInfo]::new($Shell)
-        $Start.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + $PSCommandPath + '" -SelectedUser -Node "' + $Node + '"'
+        $Start.Arguments = $Arguments
         $Start.WorkingDirectory = (Get-Location).Path
         $Start.UseShellExecute = $false
-        $Start.UserName = $Accounts[0].Name
+        $Start.UserName = $Account.Name
         $Start.Domain = '.'
-        $Start.Password = ConvertTo-SecureString $Passwords[0] -AsPlainText -Force
+        $Start.Password = $Password
         $Start.LoadUserProfile = $true
         $Start.RedirectStandardInput = $true
-        # A credentialed process otherwise receives the selected account's
-        # default environment, not the hosted markers. Pass only fixed data;
-        # never copy runner credentials or executable-selection variables.
+        $Start.RedirectStandardOutput = $true
+        $Start.RedirectStandardError = $true
         $Start.EnvironmentVariables.Clear()
         $Start.EnvironmentVariables['GITHUB_ACTIONS'] = 'true'
         $Start.EnvironmentVariables['RUNNER_OS'] = 'Windows'
-        # PowerShell classifies even explicit .exe paths using PATHEXT.
         $Start.EnvironmentVariables['PATHEXT'] = '.EXE'
         $Start.EnvironmentVariables['SystemRoot'] = [IO.Directory]::GetParent([Environment]::SystemDirectory).FullName
         $Start.EnvironmentVariables['PSModulePath'] = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\Modules')
-        $BeforeEncoding = [Console]::InputEncoding
+        $Child = [Diagnostics.Process]::Start($Start)
         try {
-            [Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
-            $Child = [Diagnostics.Process]::Start($Start)
-        } finally { [Console]::InputEncoding = $BeforeEncoding }
-        try {
-            # Synthetic peer credentials travel only through this owned pipe.
-            $Child.StandardInput.WriteLine($Accounts[1].Name)
-            $Child.StandardInput.WriteLine($Passwords[1])
             $Child.StandardInput.Close()
-            if (!$Child.WaitForExit(180000)) { $Child.Kill(); $Child.WaitForExit(); throw 'Native selected-user journey timed out.' }
-            if ($Child.ExitCode -ne 0) { throw 'Native selected-user journey failed.' }
+            $Output = $Child.StandardOutput.ReadToEndAsync()
+            $Errors = $Child.StandardError.ReadToEndAsync()
+            if (!$Child.WaitForExit(180000)) { $Child.Kill(); $Child.WaitForExit(); throw 'Native owned process timed out.' }
+            $Text = $Output.Result
+            $ErrorText = $Errors.Result
+            if ($Text.Length + $ErrorText.Length -gt 65536) { throw 'Native process output budget.' }
+            if ($Child.ExitCode -ne 0) {
+                foreach ($Line in $Text -split '\r?\n') {
+                    if ($Line.StartsWith('{"event":"windows_')) { Write-Host $Line }
+                }
+                # Only synthetic CI output; replace the temporary account path.
+                [Console]::Error.WriteLine(($ErrorText -replace 'C:\\Users\\ob[a-f0-9]{14}', '<fixture-profile>'))
+                throw ('Native owned process failed: ' + $Child.ExitCode)
+            }
+            return $Text
         } finally { $Child.Dispose() }
+    }
+    try {
+        $Passwords = @((ConvertTo-SecureString ([Guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force),
+                       (ConvertTo-SecureString ([Guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force))
+        for ($Index = 0; $Index -lt 2; $Index++) {
+            $Name = 'ob' + [Guid]::NewGuid().ToString('N').Substring(0, 14)
+            $Account = New-LocalUser -Name $Name -Password $Passwords[$Index] -AccountNeverExpires
+            $Accounts += $Account
+            Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $Name
+        }
+        $Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + $PSCommandPath + '" -SelectedUser -Node "' + $Node + '"'
+        $Prepared = Invoke-Owned $Accounts[0] $Passwords[0] ($Arguments + ' -Phase prepare')
+        $Ready = @($Prepared -split '\r?\n' | Where-Object { $_.StartsWith('{"event":"fixture_ready",') })
+        if ($Ready.Count -ne 1) { throw 'Missing exact prepared fixture.' }
+        $Fixture = $Ready[0] | ConvertFrom-Json
+        $Profile = Get-CimInstance Win32_UserProfile -Filter ("SID='" + $Accounts[0].SID.Value + "'")
+        $Candidate = $Fixture.root
+        if ($Candidate -isnot [string] -or [IO.Path]::GetDirectoryName($Candidate) -cne $Profile.LocalPath -or
+            [IO.Path]::GetFileName($Candidate) -cnotmatch '^obsync native [a-f0-9]{32}$') { throw 'Invalid prepared fixture binding.' }
+        $Root = $Candidate
+        $Owner = [IO.Directory]::GetAccessControl($Root).GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($Owner -cne $Accounts[0].SID.Value) { throw 'Prepared fixture owner differs.' }
+        $Sentinel = [IO.Path]::Combine($Root, 'stage\sentinel.txt').Replace("'", "''")
+        $Stage = [IO.Path]::Combine($Root, 'stage').Replace("'", "''")
+        # The controller launches both users independently. No nested credential
+        # launch and no synthetic password is passed to the product process.
+        $Probe = @"
+`$ErrorActionPreference = 'Stop'; `$Denied = 0
+try { [IO.Directory]::GetFileSystemEntries('$Stage') | Out-Null } catch [UnauthorizedAccessException] { `$Denied++ }
+try { [IO.File]::ReadAllText('$Sentinel') | Out-Null } catch [UnauthorizedAccessException] { `$Denied++ }
+try { [IO.File]::WriteAllText('$Sentinel', 'changed') } catch [UnauthorizedAccessException] { `$Denied++ }
+if (`$Denied -ne 3) { exit 7 }; exit 0
+"@
+        $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Probe))
+        $null = Invoke-Owned $Accounts[1] $Passwords[1] ('-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $Encoded)
+        Write-Output '{"event":"windows_peer_custody","result":"pass"}'
+        $Completed = Invoke-Owned $Accounts[0] $Passwords[0] ($Arguments + ' -Phase complete -Root "' + $Root + '"')
+        foreach ($Line in ($Prepared + "`n" + $Completed) -split '\r?\n') {
+            if ($Line.StartsWith('{') -and !$Line.StartsWith('{"event":"fixture_ready",')) { Write-Output $Line }
+        }
     } finally {
+        if ($Root -and [IO.Directory]::Exists($Root)) { Remove-Item -LiteralPath $Root -Recurse -Force }
         foreach ($Account in $Accounts) {
             Get-CimInstance Win32_UserProfile -Filter ("SID='" + $Account.SID.Value + "'") | Remove-CimInstance
             Remove-LocalUser -SID $Account.SID
@@ -68,11 +105,7 @@ if ($RuntimeVersion -cne 'v26.10.0' -or $RuntimeExit -ne 0) {
 $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $User = $Identity.User
 if ($Identity.Owner.Value -cne $User.Value) { throw 'An ordinary selected-user token is required.' }
-$Name = [Console]::In.ReadLine()
-$PeerPassword = [Console]::In.ReadLine()
-if ($Name -cnotmatch '^ob[a-f0-9]{14}$' -or $PeerPassword -cnotmatch '^[a-f0-9]{32}aA1!$') { throw 'Invalid owned peer fixture.' }
-$Credential = [Management.Automation.PSCredential]::new('.\' + $Name, (ConvertTo-SecureString $PeerPassword -AsPlainText -Force))
-$Root = [IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), 'obsync native ' + [Guid]::NewGuid().ToString('N'))
+$Profile = [Environment]::GetFolderPath('UserProfile')
 $Acl = [Security.AccessControl.DirectorySecurity]::new()
 $Acl.SetOwner($User)
 $Acl.SetAccessRuleProtection($true, $false)
@@ -80,86 +113,66 @@ foreach ($Sid in @($User.Value, 'S-1-5-18', 'S-1-5-32-544')) {
     $Acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
         [Security.Principal.SecurityIdentifier]::new($Sid), 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
 }
-$null = [IO.Directory]::CreateDirectory($Root, $Acl)
+if ($Phase -ceq 'prepare' -and !$Root) {
+    $Root = [IO.Path]::Combine($Profile, 'obsync native ' + [Guid]::NewGuid().ToString('N'))
+    $null = [IO.Directory]::CreateDirectory($Root, $Acl)
+} elseif ($Phase -cne 'complete' -or !$Root -or [IO.Path]::GetDirectoryName($Root) -cne $Profile -or
+    [IO.Path]::GetFileName($Root) -cnotmatch '^obsync native [a-f0-9]{32}$') { throw 'Invalid owned fixture phase.' }
+$Keep = $false
 try {
     $Trust = [IO.Path]::Combine($Root, 'trust')
-    $RequestText = [ordered]@{v=1;op='setup';path=$Trust;destination=''} | ConvertTo-Json -Compress
-    $Request = [Text.UTF8Encoding]::new($false, $true).GetBytes($RequestText)
-    # Use an explicit UTF-8 byte pipe, as the Node adapter does. PowerShell's
-    # object pipeline must not choose serialization for this JSON protocol.
-    $Start = [Diagnostics.ProcessStartInfo]::new($Shell)
-    $Start.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + [IO.Path]::GetFullPath('cli/windows-files.ps1') + '"'
-    $Start.UseShellExecute = $false
-    $Start.RedirectStandardInput = $true
-    # .NET Framework chooses this encoding when constructing the child's
-    # stdin writer. Its default UTF-8 preamble would precede the raw JSON.
-    $BeforeEncoding = [Console]::InputEncoding
-    try {
-        [Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
-        $Setup = [Diagnostics.Process]::Start($Start)
-    } finally { [Console]::InputEncoding = $BeforeEncoding }
-    try {
-        $Setup.StandardInput.BaseStream.Write($Request, 0, $Request.Length)
-        $Setup.StandardInput.Close()
-        if (!$Setup.WaitForExit(15000)) { $Setup.Kill(); $Setup.WaitForExit(); throw 'Trusted OS setup timed out.' }
-        if ($Setup.ExitCode -ne 0) { throw 'Trusted OS setup failed.' }
-    } finally { $Setup.Dispose() }
     $Receipt = [IO.Path]::Combine($Trust, 'powershell.json')
-    $Digest = (Get-FileHash -LiteralPath $Receipt -Algorithm SHA256).Hash.ToLowerInvariant()
-    & $Node scripts/ci/windows-files-process.mjs prepare $Root $Receipt $Digest
-    if ($LASTEXITCODE -ne 0) { throw 'Prepare process failed.' }
-    $Sentinel = [IO.Path]::Combine($Root, 'stage\sentinel.txt').Replace("'", "''")
-    $Stage = [IO.Path]::Combine($Root, 'stage').Replace("'", "''")
-    # A second ordinary account independently attempts list, read and replace.
-    # The only possible success exit is three actual UnauthorizedAccess errors.
-    $Probe = @"
-`$ErrorActionPreference = 'Stop'; `$Denied = 0
-try { [IO.Directory]::GetFileSystemEntries('$Stage') | Out-Null } catch [UnauthorizedAccessException] { `$Denied++ }
-try { [IO.File]::ReadAllText('$Sentinel') | Out-Null } catch [UnauthorizedAccessException] { `$Denied++ }
-try { [IO.File]::WriteAllText('$Sentinel', 'changed') } catch [UnauthorizedAccessException] { `$Denied++ }
-if (`$Denied -ne 3) { exit 7 }; exit 0
-"@
-    $Encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Probe))
-    $Peer = [Diagnostics.ProcessStartInfo]::new($Shell)
-    $Peer.Arguments = '-NoLogo -NoProfile -NonInteractive -EncodedCommand ' + $Encoded
-    $Peer.UseShellExecute = $false
-    $Peer.WorkingDirectory = [Environment]::SystemDirectory
-    $Peer.UserName = $Name
-    $Peer.Domain = '.'
-    $Peer.Password = $Credential.Password
-    $Peer.LoadUserProfile = $true
-    $Peer.EnvironmentVariables.Clear()
-    $Peer.EnvironmentVariables['SystemRoot'] = [IO.Directory]::GetParent([Environment]::SystemDirectory).FullName
-    $Process = [Diagnostics.Process]::Start($Peer)
-    try {
-        if (!$Process.WaitForExit(15000)) { $Process.Kill(); $Process.WaitForExit(); throw 'Independent account probe timed out.' }
-        if ($Process.ExitCode -ne 0) { throw 'Independent account custody failed.' }
-    } finally { $Process.Dispose() }
-    & $Node scripts/ci/windows-files-process.mjs publish $Root $Receipt $Digest
-    if ($LASTEXITCODE -ne 0) { throw 'Fresh publication process failed.' }
-    $Scope = 'private custody and publication'
-    if (Test-Path -LiteralPath cli/test/windows-journey.mjs) {
-        # This private copy is a synthetic custody fixture of setup-node's
-        # pinned executable. It is not public runtime acquisition evidence.
-        $RuntimeDirectory = [IO.Path]::Combine($Root, 'runtime')
-        $null = [IO.Directory]::CreateDirectory($RuntimeDirectory, $Acl)
-        $Runtime = [IO.Path]::Combine($RuntimeDirectory, 'node.exe')
-        [IO.File]::Copy($Node, $Runtime, $false)
-        if ((Get-FileHash -LiteralPath $Runtime).Hash -cne (Get-FileHash -LiteralPath $Node).Hash) { throw 'Runtime fixture copy differs.' }
-        foreach ($Phase in @('context', 'context-replay', 'kill-context', 'recover-context', 'install')) {
-            & $Runtime cli/test/windows-journey.mjs $Phase $Root $Receipt $Digest
-            if ($Phase -eq 'kill-context') {
-                if ($LASTEXITCODE -eq 0) { throw 'Expected abrupt context process termination.' }
-            } elseif ($LASTEXITCODE -ne 0) { throw ('CLI native phase failed: ' + $Phase) }
+    if ($Phase -ceq 'prepare') {
+        $RequestText = [ordered]@{v=1;op='setup';path=$Trust;destination=''} | ConvertTo-Json -Compress
+        $Request = [Text.UTF8Encoding]::new($false, $true).GetBytes($RequestText)
+        $Start = [Diagnostics.ProcessStartInfo]::new($Shell)
+        $Start.Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + [IO.Path]::GetFullPath('cli/windows-files.ps1') + '"'
+        $Start.UseShellExecute = $false
+        $Start.RedirectStandardInput = $true
+        # The .NET Framework stdin writer must not prefix the raw JSON with BOM.
+        $BeforeEncoding = [Console]::InputEncoding
+        try {
+            [Console]::InputEncoding = [Text.UTF8Encoding]::new($false, $true)
+            $Setup = [Diagnostics.Process]::Start($Start)
+        } finally { [Console]::InputEncoding = $BeforeEncoding }
+        try {
+            $Setup.StandardInput.BaseStream.Write($Request, 0, $Request.Length)
+            $Setup.StandardInput.Close()
+            if (!$Setup.WaitForExit(15000)) { $Setup.Kill(); $Setup.WaitForExit(); throw 'Trusted OS setup timed out.' }
+            if ($Setup.ExitCode -ne 0) { throw 'Trusted OS setup failed.' }
+        } finally { $Setup.Dispose() }
+        $Digest = (Get-FileHash -LiteralPath $Receipt -Algorithm SHA256).Hash.ToLowerInvariant()
+        & $Node scripts/ci/windows-files-process.mjs prepare $Root $Receipt $Digest
+        if ($LASTEXITCODE -ne 0) { throw 'Prepare process failed.' }
+        $Keep = $true
+        Write-Output ([ordered]@{event='fixture_ready';root=$Root} | ConvertTo-Json -Compress)
+    } else {
+        $Digest = (Get-FileHash -LiteralPath $Receipt -Algorithm SHA256).Hash.ToLowerInvariant()
+        & $Node scripts/ci/windows-files-process.mjs publish $Root $Receipt $Digest
+        if ($LASTEXITCODE -ne 0) { throw 'Fresh publication process failed.' }
+        $Scope = 'private custody and publication'
+        if (Test-Path -LiteralPath cli/test/windows-journey.mjs) {
+            # A private setup-node executable copy is a synthetic custody fixture,
+            # not proof of public runtime acquisition or distribution provenance.
+            $RuntimeDirectory = [IO.Path]::Combine($Root, 'runtime')
+            $null = [IO.Directory]::CreateDirectory($RuntimeDirectory, $Acl)
+            $Runtime = [IO.Path]::Combine($RuntimeDirectory, 'node.exe')
+            [IO.File]::Copy($Node, $Runtime, $false)
+            if ((Get-FileHash -LiteralPath $Runtime).Hash -cne (Get-FileHash -LiteralPath $Node).Hash) { throw 'Runtime fixture copy differs.' }
+            foreach ($Step in @('context', 'context-replay', 'kill-context', 'recover-context', 'install')) {
+                & $Runtime cli/test/windows-journey.mjs $Step $Root $Receipt $Digest
+                if ($Step -eq 'kill-context') {
+                    if ($LASTEXITCODE -eq 0) { throw 'Expected abrupt context process termination.' }
+                } elseif ($LASTEXITCODE -ne 0) { throw ('CLI native phase failed: ' + $Step) }
+            }
+            & $Shell -NoLogo -NoProfile -NonInteractive -File ([IO.Path]::Combine($Root, 'installed\obsync.ps1')) --version
+            if ($LASTEXITCODE -ne 0) { throw 'Installed native launcher failed.' }
+            & $Runtime cli/test/windows-journey.mjs uninstall $Root $Receipt $Digest
+            if ($LASTEXITCODE -ne 0 -or [IO.Directory]::Exists([IO.Path]::Combine($Root, 'installed'))) { throw 'Exact uninstall failed.' }
+            $Scope = 'private custody, publication, context recovery and installation'
         }
-        & $Shell -NoLogo -NoProfile -NonInteractive -File ([IO.Path]::Combine($Root, 'installed\obsync.ps1')) --version
-        if ($LASTEXITCODE -ne 0) { throw 'Installed native launcher failed.' }
-        & $Runtime cli/test/windows-journey.mjs uninstall $Root $Receipt $Digest
-        if ($LASTEXITCODE -ne 0 -or [IO.Directory]::Exists([IO.Path]::Combine($Root, 'installed'))) { throw 'Exact uninstall failed.' }
-        $Scope = 'private custody, publication, context recovery and installation'
+        Write-Output ([ordered]@{event='windows_files_native';result='pass';scope=$Scope} | ConvertTo-Json -Compress)
     }
-    Write-Output ([ordered]@{event='windows_files_native';result='pass';scope=$Scope} | ConvertTo-Json -Compress)
 } finally {
-    # Root is the exact private path created above, never a caller input.
-    if ([IO.Directory]::Exists($Root)) { Remove-Item -LiteralPath $Root -Recurse -Force }
+    if (!$Keep -and [IO.Directory]::Exists($Root)) { Remove-Item -LiteralPath $Root -Recurse -Force }
 }
