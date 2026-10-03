@@ -20,9 +20,14 @@ const planPath = join(root, 'plan.json');
 const digest = createHash('sha256').update(await readFile(join(source, 'package-manifest.json'))).digest('hex');
 const options = { source, prefix: join(root, 'installed'), digest, trustPath, trustDigest };
 if (phase === 'context') {
-  const plan = await store.plan('context.add', { name: 'fixture', origin: 'https://example.invalid' });
+  const held = await store.database(true);
+  try { await assert.rejects(files.flush(store.file), /^Error: windows_files_refused/); }
+  finally { held.close(); }
+  await files.flush(store.file);
+  const mutation = new Contexts(store.directory, files);
+  const plan = await mutation.plan('context.add', { name: 'fixture', origin: 'https://example.invalid' });
   await writeFile(planPath, JSON.stringify(plan));
-  assert.equal((await store.apply(plan, plan.digest)).revision, 1);
+  assert.equal((await mutation.apply(plan, plan.digest)).revision, 1);
 } else if (phase === 'context-replay') {
   const plan = JSON.parse(await readFile(planPath, 'utf8'));
   assert.equal((await store.apply(plan, plan.digest)).replayed, true);

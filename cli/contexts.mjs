@@ -256,7 +256,7 @@ export class Contexts {
       if (receipt) {
         refuse(receipt.digest === plan.digest, 'digest_mismatch', 'The operation ID already binds a different plan.', 5);
         database.exec('COMMIT');
-        await this.syncDirectory();
+        await this.syncDirectory(database);
         return { ...receipt, replayed: true };
       }
       refuse(state.revision === plan.revision && hash(bytes(state)) === plan.config_digest,
@@ -277,22 +277,25 @@ export class Contexts {
       refuse(performance.now() < this.deadline, 'deadline_exceeded', 'The local operation deadline elapsed before commit; the transaction was not applied.', 7);
       committing = true;
       database.exec('COMMIT');
-      await this.syncDirectory();
+      await this.syncDirectory(database);
       return { ...result, replayed: false };
     } catch (error) {
-      if (database.isTransaction) database.exec('ROLLBACK');
+      if (database.isOpen && database.isTransaction) database.exec('ROLLBACK');
       if (committing) throw new CliError('write_unknown', 'Configuration commit was attempted but durable completion could not be confirmed.', 7,
         'Retry this same unexpired plan to read its receipt; do not create another mutation.');
       if (error.errcode === 5) throw new CliError('config_busy', 'Another configuration transaction is active; retry this same plan.', 5);
       throw error;
-    } finally { database.close(); }
+    } finally { if (database.isOpen) database.close(); }
   }
 
-  async syncDirectory() {
+  async syncDirectory(database) {
     if (this.windows) {
       // SQLite's Windows VFS owns transaction locking, journal recovery and
       // synchronous=FULL durability. This checks custody and flushes the exact
       // database; it is not a substitute Windows directory-fsync primitive.
+      // Release SQLite's handle after commit before the helper opens this
+      // exact file with FileShare.None. An open reader/writer must still refuse.
+      database.close();
       await this.windows.flush(this.file);
       return;
     }
@@ -312,8 +315,8 @@ export class Contexts {
       database.exec('BEGIN IMMEDIATE');
       const state = this.readDatabase(database);
       database.exec('COMMIT');
-      await this.syncDirectory();
+      await this.syncDirectory(database);
       return { revision: state.revision, contexts: state.contexts.length, current: state.current };
-    } finally { database.close(); }
+    } finally { if (database.isOpen) database.close(); }
   }
 }
