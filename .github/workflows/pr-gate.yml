@@ -171,6 +171,10 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npm run build
           npm test
+      - name: Build and test the offline CLI
+        run: |
+          cargo build --locked --release -p obsync-cli
+          python3 cli/check.py
       - name: Test the dashboard
         # The explicit glob names the dashboard test files without relying on
         # Node's directory-discovery behavior. Verified with pinned Node 26.10.0.

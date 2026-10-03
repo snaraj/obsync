@@ -239,6 +239,7 @@ class NativePublicationSteps(unittest.TestCase):
         source = self.root / 'source'
         (source / 'scripts/ci').mkdir(parents=True)
         shutil.copy2(ROOT / 'scripts/ci/release_contract.py', source / 'scripts/ci')
+        shutil.copy2(ROOT / 'scripts/ci/cli_package_contract.py', source / 'scripts/ci')
         (source / 'CHANGELOG.md').write_text(locks(SERVER_VERSION, ['1.1.3'])['CHANGELOG.md'])
         return source
 
@@ -463,6 +464,7 @@ class NativePublicationSteps(unittest.TestCase):
         scripts = source / 'scripts/ci'
         scripts.mkdir(parents=True)
         shutil.copy2(ROOT / 'scripts/ci/release_contract.py', scripts)
+        shutil.copy2(ROOT / 'scripts/ci/cli_package_contract.py', scripts)
         shutil.copy2(ROOT / 'scripts/ci/verify-native-provenance.sh', scripts)
         data = bundle(version)
         args = {**native_arguments(data), 'source_sha': source_sha, 'version': version}
@@ -656,14 +658,15 @@ class NativePublicationSteps(unittest.TestCase):
     def test_native_provenance_is_mandatory_between_export_and_release(self):
         document = miniyaml.load_one(WORKFLOW.read_text())
         publish = document['jobs']['publish']
-        self.assertEqual(publish['permissions'], {'contents': 'write', 'packages': 'write',
+        self.assertEqual(publish['permissions'], {'actions': 'read', 'contents': 'write', 'packages': 'write',
                                                   'id-token': 'write', 'attestations': 'write'})
         steps = publish['steps']
         attest = self.steps['Attest the native plugin build and server archives']
         self.assertEqual(attest['uses'], 'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6')
         self.assertEqual([line.strip() for line in attest['with']['subject-path'].splitlines()],
                          ['${{ steps.plugin.outputs.directory }}/' + name for name in contract.PLUGIN_FILES]
-                         + ['${{ steps.server.outputs.amd64 }}', '${{ steps.server.outputs.arm64 }}'])
+                         + ['${{ steps.server.outputs.amd64 }}', '${{ steps.server.outputs.arm64 }}',
+                            '${{ steps.cli.outputs.path }}/*.zip'])
         self.assertEqual({key: value for key, value in attest['with'].items() if key != 'subject-path'},
                          {'create-storage-record': False, 'push-to-registry': False})
         verify = self.steps['Verify the native build provenance before release publication']
@@ -671,20 +674,30 @@ class NativePublicationSteps(unittest.TestCase):
             'GH_TOKEN': '${{ secrets.GITHUB_TOKEN }}',
             'PLUGIN_DIRECTORY': '${{ steps.plugin.outputs.directory }}',
             'SERVER_ARCHIVES': '${{ steps.server.outputs.amd64 }} ${{ steps.server.outputs.arm64 }}',
+            'CLI_ARCHIVES': '${{ steps.cli.outputs.path }}',
             'ATTESTATION_BUNDLE': '${{ steps.native_attestation.outputs.bundle-path }}'})
         export = self.steps['Export the plugin bundle from the image build']
         server = self.steps['Export the static server archives from the image build']
-        for step in [server, attest, verify]:
+        cli = self.steps['Acquire the exact native archives accepted on protected main']
+        self.assertIn('gh run download "${CLI_RUN_ID}"', cli['run'])
+        self.assertEqual(cli['env']['CLI_RUN_ID'], '${{ needs.authorize.outputs.cli_run_id }}')
+        self.assertIn('cli_archive_record(stream.read(CLI_MAX_BYTES + 1), version, source, platform)', cli['run'])
+        self.assertIn('{p.name for p in root.iterdir()} != set(expected)', cli['run'])
+        for step in [server, cli, attest, verify]:
             self.assertNotIn('if', step)
             self.assertNotIn('continue-on-error', step)
         release = self.steps['Stage, verify, and publish the exact GitHub release']
         manifest = self.steps['Build the deterministic release evidence manifest']
         for step in [manifest, release]:
+            self.assertEqual(step['env']['CLI_PATH'], '${{ steps.cli.outputs.path }}')
+            self.assertIn('--cli-archives "${CLI_PATH}"', step['run'])
             self.assertEqual({key: step['env'][key] for key in ('SERVER_AMD64', 'SERVER_ARM64')},
                              {'SERVER_AMD64': '${{ steps.server.outputs.amd64 }}',
                               'SERVER_ARM64': '${{ steps.server.outputs.arm64 }}'})
         self.assertLess(steps.index(export), steps.index(server))
         self.assertLess(steps.index(server), steps.index(attest))
+        self.assertLess(steps.index(server), steps.index(cli))
+        self.assertLess(steps.index(cli), steps.index(attest))
         self.assertLess(steps.index(attest), steps.index(verify))
         self.assertLess(steps.index(verify), steps.index(release))
         self.assertEqual(steps[-1]['name'], 'Re-bind the immutable Release to the exact annotated tag')
