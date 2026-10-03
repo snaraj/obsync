@@ -20,10 +20,11 @@ from test_server_archives import server_tree
 SHA = 'a' * 40
 
 
-def cli_bundle(version='1.2.0', source_sha=SHA, mutate=None, extra=None):
+def cli_bundle(version='1.2.0', source_sha=SHA, mutate=None, extra=None,
+               entry_mutate=None, shared_mode=b'{"type":"commonjs"}\n'):
     files = {name: b'fixture\n' for name in cli.CLI_FILES}
     files['VERSION'] = f'{version}\n'.encode()
-    files['cli/shared/package.json'] = b'{"type":"commonjs"}\n'
+    files['cli/shared/package.json'] = shared_mode
     manifest = dict(schema_version=1, version=version, runtime='26.10.0', source_sha=source_sha,
                     source_digest='b' * 64, candidate=False,
                     files=[dict(name=name, size=len(data), sha256=hashlib.sha256(data).hexdigest())
@@ -38,11 +39,22 @@ def cli_bundle(version='1.2.0', source_sha=SHA, mutate=None, extra=None):
         for name, data in sorted(files.items()):
             info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
             info.external_attr = (stat.S_IFREG | 0o600) << 16
+            if entry_mutate:
+                entry_mutate(info)
             archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED)
     return result.getvalue()
 
 
 class CliReleaseContract(unittest.TestCase):
+    def test_archive_metadata_and_shared_module_mode(self):
+        for change in [lambda entry: setattr(entry, 'external_attr', (stat.S_IFREG | 0o644) << 16),
+                       lambda entry: setattr(entry, 'date_time', (2000, 1, 1, 0, 0, 0)),
+                       lambda entry: setattr(entry, 'comment', b'synthetic comment')]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                cli.cli_archive_record(cli_bundle(entry_mutate=change), '1.2.0', SHA)
+        with self.assertRaises(ValueError):
+            cli.cli_archive_record(cli_bundle(shared_mode=b'{"type":"module"}\n'), '1.2.0', SHA)
+
     def test_exact_package_and_old_release_boundary(self):
         data = cli_bundle()
         record = cli.cli_archive_record(data, '1.2.0', SHA)
@@ -97,6 +109,7 @@ class CliReleaseContract(unittest.TestCase):
             self.assertEqual(first.read_bytes(), second.read_bytes())
             cli.cli_archive_record(first.read_bytes(), '1.2.0', SHA)
             (source / 'VERSION').unlink()
+            (root / 'outside').write_bytes(b'1.2.0\n')
             (source / 'VERSION').symlink_to(root / 'outside')
             with self.assertRaises(ValueError):
                 cli.pack_cli(source, second)

@@ -26,6 +26,9 @@ jobs:
         with:
           node-version: '26.10.0'
           check-latest: false
+      - name: Match runtime to the independently verified Node distribution
+        shell: bash
+        run: python3 scripts/ci/cli-runtime-bytes.py
       - name: Build shared package with exact toolchain
         shell: bash
         run: |

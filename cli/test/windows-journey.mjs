@@ -169,6 +169,35 @@ if (phase === 'interrupt-mkdir') {
   for (const [name, args] of [['help', ['help']], ['schema', ['schema', 'context.add']], ['search', ['cli', 'search', 'context']]]) {
     const first = await invoke(args);
     console.log(JSON.stringify({ event: 'windows_startup_probe', command: name, duration_ms: first, budget_ms: 1000 }));
+    if (first > 1000) {
+      // Diagnose the measured failure without changing the acceptance budget.
+      // Public help remains the subject; these are read-only fixture probes.
+      const repeats = [];
+      for (let index = 0; index < 5; index++) repeats.push(await invoke(args));
+      const shell = [], node = [];
+      for (let index = 0; index < 5; index++) {
+        for (const [binary, argv, samples] of [
+          [trust.powershell.path, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "[Console]::WriteLine('{}')"], shell],
+          [process.execPath, ['--eval', "process.stdout.write('{}')"], node],
+        ]) {
+          const start = performance.now(), result = await child(binary, argv).done;
+          assert.equal(result.code, 0); JSON.parse(result.stdout);
+          samples.push(Math.round((performance.now() - start) * 1000) / 1000);
+        }
+      }
+      const hashing = await child(trust.powershell.path, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+        `$r=@();foreach($kind in @('default','cng')){for($i=0;$i -lt 3;$i++){` +
+        `$s=if($kind -eq 'cng'){[Security.Cryptography.SHA256Cng]::new()}else{[Security.Cryptography.SHA256]::Create()};` +
+        `$f=[IO.File]::OpenRead('${process.execPath.replaceAll("'", "''")}');$t=[Diagnostics.Stopwatch]::StartNew();` +
+        `try{$h=[BitConverter]::ToString($s.ComputeHash($f)).Replace('-','').ToLowerInvariant()}finally{$f.Dispose();$s.Dispose()};` +
+        `$r+=@{method=$kind;duration_ms=$t.Elapsed.TotalMilliseconds;sha256=$h}}};ConvertTo-Json -Compress -InputObject $r`]).done;
+      assert.equal(hashing.code, 0);
+      const hashes = JSON.parse(hashing.stdout), expected = createHash('sha256').update(await readFile(process.execPath)).digest('hex');
+      assert.ok(hashes.every(sample => sample.sha256 === expected));
+      console.log(JSON.stringify({ event: 'windows_startup_diagnostic', command: name,
+        installed_ms: repeats, bare_os_shell_ms: shell, bare_node_ms: node,
+        runtime_hashing: hashes.map(({ method, duration_ms }) => ({ method, duration_ms })) }));
+    }
     assert.ok(first <= 1000, 'Installed cold process exceeded P01.');
     const samples = [];
     for (let index = 0; index < 35; index++) samples.push(await invoke(args));
