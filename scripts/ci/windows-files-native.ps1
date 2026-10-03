@@ -52,7 +52,7 @@ if (!$SelectedUser) {
             if ($Text.Length + $ErrorText.Length -gt 65536) { throw 'Native process output budget.' }
             if ($Child.ExitCode -ne 0) {
                 foreach ($Line in $Text -split '\r?\n') {
-                    if ($Line.StartsWith('{"event":"windows_')) { Write-Host $Line }
+                    if ($Line.StartsWith('{"event":"windows_') -or $Line.StartsWith('obsidian-drive: (')) { Write-Host $Line }
                 }
                 # Only synthetic CI output; replace the temporary account path.
                 [Console]::Error.WriteLine(($ErrorText -replace 'C:\\Users\\ob[a-f0-9]{14}', '<fixture-profile>'))

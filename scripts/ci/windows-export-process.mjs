@@ -56,6 +56,9 @@ if (phase === 'open') {
   const version = { version_id: await c.versionId(fileId, [], sealed.ciphertext, sids), parents: [], sids, bytes: data.length, manifest_ct: c.base64(sealed.ciphertext), manifest_nonce: c.hex(sealed.nonce), deleted: false };
   const index = { v: 1, source: 'device', scope: 'current', snapshot: 1, files: [{ file_id: fileId, domain_id: domain, heads: [version.version_id], versions: [version] }] };
   await desktop.encrypted(archive, index, key, async sid => chunks.get(sid), () => {});
+  const archiveIdentity = await stat(archive);
+  await assert.rejects(desktop.encrypted(archive, index, new Uint8Array(32).fill(22), async sid => chunks.get(sid), () => {}));
+  assert.equal((await stat(archive)).ino, archiveIdentity.ino);
   assert.equal((await readFile(archive)).includes(Buffer.from(manifest.path)), false);
   const opened = join(root, 'opened-export');
   assert.deepEqual(await desktop.open(archive, opened, key, false, () => {}), { files: 1, bytes: data.length });

@@ -708,7 +708,7 @@ async function windowsExports(a, { binary, extra, homes, work }) {
   await until('paste Windows setup receipt', () => a.anywhere(fillSetting, 'dialog', 'Setup receipt', JSON.stringify(receipt)));
   await until('verify Windows setup receipt', () => a.anywhere(click, 'Verify and save'));
   await until('export action after verified setup', () => a.anywhere(() => [...document.querySelectorAll('.setting-item-name')].some(node => node.textContent === 'Action')));
-  await a.halt(); a.launch(binary, a.port, extra, homes); await openVault(a);
+  await a.halt(); a.launch(binary, a.port, extra, homes); await reopen(a);
   prove('Windows exports: the rendered trusted OS setup and receipt import survived a real app restart');
   const expected = new Map();
   const walk = (directory, prefix = '') => {

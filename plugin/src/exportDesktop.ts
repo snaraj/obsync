@@ -1,5 +1,5 @@
 /** Desktop filesystem adapter for exports. Never writes into the open vault. */
-import { Bytes, hex, randomBytes, sha256, utf8 } from "./crypto";
+import { Bytes, hex, hkdf, hmacSha256, randomBytes, sha256, utf8 } from "./crypto";
 import { WindowsFiles } from "./windowsFiles";
 import { WindowsExport } from "./windowsExport";
 import {
@@ -203,7 +203,9 @@ export class DesktopExports {
     const estimated = index.files.reduce((total, file) => total + file.versions.reduce((n, version) => n + version.bytes + version.sids.length * 20, 0), 64 * 1024 * 1024);
     if (this.windows) {
       const output = await this.destination(target, estimated);
-      await new WindowsExport(this.windows).run(output.target, "file", hex(await sha256(utf8(JSON.stringify(index)))), output.guard, check,
+      const operationKey = await hkdf(vrk, utf8("obsync/export/v1/operation"), new Uint8Array(), 32);
+      const request = hex(await hmacSha256(operationKey, await sha256(utf8(JSON.stringify(index)))));
+      await new WindowsExport(this.windows).run(output.target, "file", request, output.guard, check,
         (stage, alive) => this.file(stage, write => writeExport(index, vrk, chunk, write, alive), true));
       return;
     }
