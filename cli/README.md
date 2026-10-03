@@ -213,6 +213,9 @@ does not create configuration. Save **that plan object** to a file, then run
 returned digest. `context use personal` and `context remove personal` follow the
 same plan/apply sequence. `context get personal` reads back through a fresh
 process. Removal affects only the local association.
+The apply schema describes logical parameters `plan` and `expect_digest`; the
+CLI binds these to the file contents and the separate flag respectively. Do not
+wrap the plan object in another `plan` property inside the input file.
 
 Plans bind the exact configuration directory, complete prior state, revision and
 five-minute lifetime. Changed, expired and cross-target plans refuse. An
@@ -273,7 +276,7 @@ command deadline is checked before a new context effect and before output; an
 OS filesystem call cannot itself be interrupted. No idle process runs.
 
 Exit classes used here: 0 satisfied, 2 invalid input, 4 permission/confinement,
-5 revision/conflict/expiry, 6 unsupported capability, 7 unresolved/deadline,
+5 revision/conflict/expiry, 6 unsupported capability or missing context, 7 unresolved/deadline,
 9 local service/I/O failure and 10 required explicit recovery. Errors have the
 same JSON envelope and never echo raw input or underlying filesystem errors.
 

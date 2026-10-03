@@ -109,7 +109,7 @@ export class WindowsFiles {
       `if($c.ExitCode -ne 0 -or $x.Result -or $o.Result.Trim() -cne '{"v":1,"ok":true}'){throw 'Setup refused'} ` +
       `}finally{$c.Dispose()}; $f=[IO.Path]::Combine($d,'powershell.json'); $h=[Security.Cryptography.SHA256]::Create(); ` +
       `try{$s=[BitConverter]::ToString($h.ComputeHash([IO.File]::ReadAllBytes($f))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose()}; ` +
-      String.raw`[Console]::WriteLine('{"v":1,"path":"'+$f.Replace('\','\\')+'","digest":"'+$s+'"}')`;
+      String.raw`'{"v":1,"path":"'+$f.Replace('\','\\')+'","digest":"'+$s+'"}'`;
   }
   /** Import the exact digest displayed by explicit trusted OS setup. An ambient
    * receipt is insufficient: verify its bytes before using its executable path.

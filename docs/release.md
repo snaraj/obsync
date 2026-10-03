@@ -294,7 +294,7 @@ Any external release-evidence consumer must accept and bind this exact
 version-gated field and asset inventory before the CLI artifact merge. That
 metadata check does not verify archive contents or install the CLI. Installation
 requires independent publisher verification before extraction/execution and an
-independently trusted pinned runtime; see [CLI installation](../cli/README.md).
+independently trusted pinned runtime; see [CLI installation](https://github.com/snaraj/obsync/blob/main/cli/README.md).
 Hosted native receipts, public download/install verification and the security
 mutation matrix remain required evidence before advertising those capabilities.
 

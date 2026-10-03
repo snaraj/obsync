@@ -61,7 +61,10 @@ export const CATALOG = [
   operation('context.add', 'context add --input @ABSOLUTE_FILE', 'Plan adding a new named HTTPS target.', CONTEXT_INPUT, { effect: 'read', examples: ['obsync context add --input @/absolute/context.json'], completion: 'A five-minute plan was returned; configuration is unchanged.' }),
   operation('context.use', 'context use NAME', 'Plan selecting an existing local context.', object({ name }), { examples: ['obsync context use personal'], completion: 'A five-minute plan was returned; configuration is unchanged.' }),
   operation('context.remove', 'context remove NAME', 'Plan removing only a local association.', object({ name }), { examples: ['obsync context remove personal'], completion: 'A five-minute plan was returned; no credential, server or vault is removed.' }),
-  operation('context.apply', 'context apply --input @ABSOLUTE_PLAN --expect-digest DIGEST', 'Apply one exact, unexpired context plan against its original revision.', object({ plan: PLAN_INPUT, expect_digest: digest }), {
+  operation('context.apply', 'context apply --input @ABSOLUTE_PLAN --expect-digest DIGEST', 'Apply one exact, unexpired context plan against its original revision.', {
+    ...object({ plan: PLAN_INPUT, expect_digest: digest }),
+    description: 'CLI binding: --input @FILE contains the plan object alone; --expect-digest supplies expect_digest.',
+  }, {
     effect: 'configure', repeatability: 'An identical unexpired plan reads its durable receipt; changed or expired plans refuse.',
     completion: 'Configuration and operation receipt committed in one SQLite transaction with full synchronization.',
     verification: 'Read back in a new CLI process; no server identity is verified.',

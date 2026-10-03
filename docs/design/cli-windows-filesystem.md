@@ -14,7 +14,7 @@ The resulting private receipt binds that executable and its SHA-256. The
 public installer requires its exact path and digest; it never discovers an
 executable through PATH or imports an ambient receipt. Node 26.10.0 and its
 libraries are an independently trusted prerequisite. See the
-[installation instructions](../../cli/README.md).
+[installation instructions](https://github.com/snaraj/obsync/blob/main/cli/README.md).
 
 `install-windows.mjs` verifies the exact package, private runtime and receipt.
 It writes a fresh private sibling, verifies every member, writes its completion

@@ -131,6 +131,7 @@ try {
         if ($Plan.schema_version -ne 1 -or $Plan.operation -cne 'cli.windows_setup' -or
             $Plan.state -cne 'needs_action' -or $Plan.command -isnot [string]) { throw 'Public setup plan differs.' }
         $SetupText = & ([ScriptBlock]::Create($Plan.command))
+        if ($SetupText -isnot [string]) { throw 'Public setup must return one JSON receipt through the pipeline.' }
         $Setup = $SetupText | ConvertFrom-Json
         if ($Setup.v -ne 1 -or $Setup.path -isnot [string] -or $Setup.digest -cnotmatch '^[a-f0-9]{64}$') { throw 'Public setup receipt differs.' }
         $Receipt = $Setup.path
