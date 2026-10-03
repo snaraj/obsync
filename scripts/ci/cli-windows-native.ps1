@@ -20,6 +20,7 @@ if (!$SelectedUser) {
     $Package = [IO.Path]::GetFullPath($Package)
     if (![IO.File]::Exists([IO.Path]::Combine($Package, 'obsync.exe'))) { throw 'Native package required.' }
     $Accounts = @()
+    $Handoff = $null
     function Invoke-Owned($Account, [Security.SecureString]$Password, [string]$Arguments) {
         # CreateProcessWithLogonW has a 1024-character command-line maximum.
         if ($Shell.Length + $Arguments.Length + 4 -gt 1024) { throw 'Credentialed command-line budget.' }
@@ -70,8 +71,29 @@ if (!$SelectedUser) {
             $Accounts += $Account
             Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $Name
         }
+        # The builder's private files belong to the runner. Give only the
+        # selected recipient read access to a separate, byte-verified copy.
+        $Handoff = [IO.Path]::Combine($env:RUNNER_TEMP, 'obsync handoff ' + [Guid]::NewGuid().ToString('N'))
+        $HandoffAcl = [Security.AccessControl.DirectorySecurity]::new()
+        $HandoffAcl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
+        $HandoffAcl.SetAccessRuleProtection($true, $false)
+        foreach ($Sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+            $HandoffAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new($Sid), 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+        }
+        $HandoffAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            $Accounts[0].SID, 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+        $null = [IO.Directory]::CreateDirectory($Handoff, $HandoffAcl)
+        foreach ($Name in @('LICENSE', 'README.md', 'VERSION', 'obsync.exe', 'package-manifest.json')) {
+            $Source = [IO.Path]::Combine($Package, $Name)
+            $Destination = [IO.Path]::Combine($Handoff, $Name)
+            [IO.File]::Copy($Source, $Destination, $false)
+            if ((Get-FileHash -LiteralPath $Source).Hash -cne (Get-FileHash -LiteralPath $Destination).Hash) { throw 'Handoff package copy differs.' }
+        }
+        $Package = $Handoff
         $Arguments = '-NoLogo -NoProfile -NonInteractive -File "' + $PSCommandPath + '" -SelectedUser -Python "' + $Python + '" -Package "' + $Package + '"'
         $Prepared = Invoke-Owned $Accounts[0] $Passwords[0] ($Arguments + ' -Phase prepare')
+        Write-Output '{"event":"windows_package_handoff","result":"pass","scope":"verified private copy read by the selected ordinary user"}'
         $Ready = @($Prepared -split '\r?\n' | Where-Object { $_.StartsWith('{"event":"fixture_ready",') })
         if ($Ready.Count -ne 1) { throw 'Missing exact prepared fixture.' }
         $Fixture = $Ready[0] | ConvertFrom-Json
@@ -89,6 +111,7 @@ if (!$SelectedUser) {
             if ($Line.StartsWith('{') -and !$Line.StartsWith('{"event":"fixture_ready",')) { Write-Output $Line }
         }
     } finally {
+        if ($Handoff -and [IO.Directory]::Exists($Handoff)) { Remove-Item -LiteralPath $Handoff -Recurse -Force }
         if ($Root -and [IO.Directory]::Exists($Root)) { Remove-Item -LiteralPath $Root -Recurse -Force }
         foreach ($Account in $Accounts) {
             Get-CimInstance Win32_UserProfile -Filter ("SID='" + $Account.SID.Value + "'") | Remove-CimInstance
