@@ -19,20 +19,20 @@ function launcher(record) {
   const receipt = Buffer.from(`${JSON.stringify(record)}\n`);
   return Buffer.from(`$ErrorActionPreference='Stop'\n` +
     `$PSModuleAutoLoadingPreference='None'\n` +
-    `function H([string]$p,[string]$h){$f=[IO.File]::OpenRead($p);$s=[Security.Cryptography.SHA256]::Create();try{$v=[BitConverter]::ToString($s.ComputeHash($f)).Replace('-','').ToLowerInvariant()}finally{$f.Dispose();$s.Dispose()};if($v -cne $h){throw 'integrity'}}\n` +
-    `function Q([string]$s){'"'+[regex]::Replace([regex]::Replace($s,'(\\*)"','$1$1\\"'),'(\\+)$','$1$1')+'"'}\n` +
-    `try {\n` +
+    `function Assert-LaunchHash([string]$p,[string]$h){$f=[IO.File]::OpenRead($p);$s=[Security.Cryptography.SHA256]::Create();try{$v=[BitConverter]::ToString($s.ComputeHash($f)).Replace('-','').ToLowerInvariant()}finally{$f.Dispose();$s.Dispose()};if($v -cne $h){throw 'integrity'}}\n` +
+    String.raw`function Quote-LaunchArgument([string]$s){'"'+[regex]::Replace([regex]::Replace($s,'(\\*)"','$1$1\"'),'(\\+)$','$1$1')+'"'}` + '\n' +
+    `try {$step='shell'\n` +
     `if([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName -ine ${ps(record.powershell_path)}){throw 'trusted OS PowerShell required'}\n` +
-    `H ${ps(join(record.prefix, 'install-record.json'))} ${ps(sha256(receipt))}\n` +
-    `H ${ps(record.trust_path)} ${ps(record.trust_sha256)}\n` +
-    `H ${ps(record.runtime_path)} ${ps(record.runtime_executable_sha256)}\n` +
-    `H ${ps(join(record.prefix, 'cli/launch.mjs'))} ${ps(record.launch_sha256)}\n` +
+    `$step='receipt';Assert-LaunchHash ${ps(join(record.prefix, 'install-record.json'))} ${ps(sha256(receipt))}\n` +
+    `$step='trust';Assert-LaunchHash ${ps(record.trust_path)} ${ps(record.trust_sha256)}\n` +
+    `$step='runtime';Assert-LaunchHash ${ps(record.runtime_path)} ${ps(record.runtime_executable_sha256)}\n` +
+    `$step='bootstrap';Assert-LaunchHash ${ps(join(record.prefix, 'cli/launch.mjs'))} ${ps(record.launch_sha256)}\n` +
     `$p=[Diagnostics.ProcessStartInfo]::new();$p.FileName=${ps(record.runtime_path)};$p.UseShellExecute=$false\n` +
     `$p.EnvironmentVariables.Clear();$p.EnvironmentVariables['SystemRoot']=[IO.Directory]::GetParent([Environment]::SystemDirectory).FullName\n` +
     `$a=@(${ps(join(record.prefix, 'cli/launch.mjs'))},${ps(record.manifest_sha256)},${ps(sha256(receipt))})+$args\n` +
-    `$p.Arguments=($a|ForEach-Object{if($_.Length -gt 8192 -or $_ -match '[\x00\r\n]'){throw 'argument'};Q $_}) -join ' '\n` +
-    `$c=[Diagnostics.Process]::Start($p);$c.WaitForExit();exit $c.ExitCode\n` +
-    `} catch {[Console]::Error.WriteLine('{"schema_version":1,"event":"cli_launch_refused","reason":"runtime_or_bootstrap_integrity"}');exit 4}\n`);
+    `$step='arguments';$p.Arguments=($a|ForEach-Object{if($_.Length -gt 8192 -or $_ -match '[\x00\r\n]'){throw 'argument'};Quote-LaunchArgument $_}) -join ' '\n` +
+    `$step='start';$c=[Diagnostics.Process]::Start($p);$c.WaitForExit();exit $c.ExitCode\n` +
+    `} catch {[Console]::Error.WriteLine('{"schema_version":1,"event":"cli_launch_refused","reason":"runtime_or_bootstrap_integrity","stage":"'+$step+'","exception":"'+$_.Exception.GetType().Name+'"}');exit 4}\n`);
 }
 
 async function durable(path, bytes) {
