@@ -285,8 +285,10 @@ printf 'obsidian-host: (4) Obsidian 1.13.7 at %s\n' "${obsidian}"
 
 # (6) The journeys.
 mkdir -p "${scratch}/work"
+drive=(node "$(native "${here}/obsidian-drive.mjs")")
+if [ "${os}" = windows ]; then drive=(powershell.exe -NoLogo -NoProfile -NonInteractive -File "$(native "${here}/windows-files-native.ps1")" -App); fi
 OBSIDIAN_BIN="${obsidian}" OBSYNC_E2E_WORK="$(native "${scratch}/work")" OBSYNC_E2E_PLUGIN="$(native "${root}/plugin/dist")" \
   OBSYNC_E2E_URL="https://${HOST}:${PORT}" OBSYNC_E2E_TOKEN_FILE="$(native "${scratch}/token")" OBSYNC_E2E_NTFS="${ntfs}" \
   OBSYNC_E2E_ARGS="[\"--host-resolver-rules=MAP ${HOST} 127.0.0.1\"]" \
-  node "$(native "${here}/obsidian-drive.mjs")" || deny 'the Obsidian instances did not complete the journeys'
+  "${drive[@]}" || deny 'the Obsidian instances did not complete the journeys'
 printf 'obsidian-host: SUMMARY os=%s decision=pass\n' "${os}"

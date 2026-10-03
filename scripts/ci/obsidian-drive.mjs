@@ -663,6 +663,7 @@ async function main() {
     await cotyping(a, b);
     await starvedWatcher(a, b);
     if (ntfs) await windowsJourneys(a, b);
+    if (ntfs) await windowsExports(a, { binary, extra, homes, work });
     if (store) await restarted(a, b, { binary, extra, homes, store });
     if (homes) await untrusted(work, pluginDir, binary, extra, url);
     console.log(`obsidian-drive: SUMMARY steps=${proven} duration=${((Date.now() - started) / 1000).toFixed(1)}s decision=pass`);
@@ -685,6 +686,76 @@ async function main() {
   } finally {
     a.stop();
     b.stop();
+  }
+}
+
+/** Real export dialogs, explicit OS setup, restart and independent disk readback. */
+async function windowsExports(a, { binary, extra, homes, work }) {
+  const shell = env("OBSYNC_E2E_POWERSHELL");
+  if (!/^[A-Z]:\\[^<>"|?*]+\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i.test(shell)) throw new Denied("fixed OS PowerShell fixture required");
+  await inVault(a, id => { app.setting.close(); app.commands.executeCommandById(`${id}:export-copy`); }, PLUGIN_ID);
+  await until("Windows export setup dialog", () => a.anywhere(click, "Set up Windows exports"));
+  const command = await until("fixed setup command", () => a.anywhere(() => {
+    const row = [...document.querySelectorAll('.setting-item')].find(row => row.querySelector('.setting-item-name')?.textContent === 'Setup command');
+    return row?.querySelector('textarea')?.value;
+  }));
+  const script = path.join(work, 'app-export-setup.ps1');
+  fs.writeFileSync(script, command, { flag: 'wx' });
+  const setup = spawnSync(shell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', script], { encoding: 'utf8', timeout: 20000, maxBuffer: 16384 });
+  if (setup.status !== 0) throw new Denied('the rendered Windows setup command failed');
+  const receipt = JSON.parse(setup.stdout);
+  if (receipt.v !== 1 || typeof receipt.path !== 'string' || !/^[a-f0-9]{64}$/.test(receipt.digest)) throw new Denied('Windows setup receipt shape');
+  await until('paste Windows setup receipt', () => a.anywhere(fillSetting, 'dialog', 'Setup receipt', JSON.stringify(receipt)));
+  await until('verify Windows setup receipt', () => a.anywhere(click, 'Verify and save'));
+  await until('export action after verified setup', () => a.anywhere(() => [...document.querySelectorAll('.setting-item-name')].some(node => node.textContent === 'Action')));
+  await a.halt(); a.launch(binary, a.port, extra, homes); await openVault(a);
+  prove('Windows exports: the rendered trusted OS setup and receipt import survived a real app restart');
+  const expected = new Map();
+  const walk = (directory, prefix = '') => {
+    for (const name of fs.readdirSync(directory)) {
+      if (name.startsWith('.')) continue;
+      const at = path.join(directory, name), relative = prefix ? `${prefix}/${name}` : name;
+      if (fs.statSync(at).isDirectory()) walk(at, relative); else expected.set(relative, fs.readFileSync(at));
+    }
+  };
+  walk(a.vault);
+  const archive = path.join(work, 'app-copy.obsync');
+  for (const mode of ['encrypted', 'open', 'plain']) {
+    await inVault(a, id => app.commands.executeCommandById(`${id}:export-copy`), PLUGIN_ID);
+    await until(`select export ${mode}`, () => a.anywhere(value => {
+      const row = [...document.querySelectorAll('.setting-item')].find(row => row.querySelector('.setting-item-name')?.textContent === 'Action');
+      const select = row?.querySelector('select'); if (!select) return false;
+      select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); return true;
+    }, mode));
+    const output = mode === 'encrypted' ? archive : path.join(work, `app-${mode}`);
+    await until('export destination field', () => a.anywhere(fillSetting, 'dialog', mode === 'encrypted' ? 'New archive file' : 'New output folder', output));
+    if (mode === 'open') await until('archive input field', () => a.anywhere(fillSetting, 'dialog', 'Archive file', archive));
+    if (mode !== 'encrypted') await until('explicit plaintext consent', () => a.anywhere(() => {
+      const row = [...document.querySelectorAll('.setting-item')].find(row => row.querySelector('.setting-item-name')?.textContent === 'I understand these notes will be unencrypted');
+      const toggle = row?.querySelector('.checkbox-container'); if (!toggle) return false;
+      if (!toggle.classList.contains('is-enabled')) toggle.click(); return true;
+    }));
+    await until('create export through the dialog', () => a.anywhere(click, 'Create copy'));
+    const text = mode === 'encrypted' ? 'Encrypted copy created.' : mode === 'open' ? 'Opened ' : 'Copied ';
+    await until(`completed ${mode} export`, () => a.anywhere(prefix => [...document.querySelectorAll('.modal p')].some(node => node.textContent.startsWith(prefix)), text));
+    if (mode === 'encrypted') {
+      const bytes = fs.readFileSync(archive);
+      if (!bytes.subarray(0, 16).toString().startsWith('OBSYNC-EXPORT-1\n')) throw new Denied('encrypted archive framing');
+      for (const name of expected.keys()) if (bytes.includes(Buffer.from(name))) throw new Denied('clear filename in encrypted archive');
+    } else {
+      for (const [name, bytes] of expected) if (!fs.readFileSync(path.join(output, name)).equals(bytes)) throw new Denied(`${mode} export byte mismatch`);
+      if (fs.existsSync(path.join(output, '.obsidian'))) throw new Denied('vault configuration copied');
+    }
+    for (const target of await a.targets()) {
+      const page = await a.page(target);
+      if (await page.run(() => [...document.querySelectorAll('.modal-title')].some(node => node.textContent === 'Export and open a copy'))) {
+        const screenshot = await page.send('Page.captureScreenshot', { format: 'png' });
+        fs.writeFileSync(path.join(work, `windows-export-${mode}.png`), Buffer.from(screenshot.data, 'base64'));
+        break;
+      }
+    }
+    prove(`Windows ${mode} export: real dialog, fresh private destination and independent exact disk bytes`);
+    await until('close completed export dialog', () => a.anywhere(click, 'Close'));
   }
 }
 
