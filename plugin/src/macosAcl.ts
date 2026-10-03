@@ -34,10 +34,12 @@ interface Spawn {
     stdio: ["pipe", "pipe", "pipe"] | ["pipe", "pipe", "pipe", number];
   }): Child;
 }
+interface Timers { setTimeout: (fn: () => void, ms: number) => unknown; clearTimeout: (handle: unknown) => void }
 export class MacosAcl {
   private readonly fs: Fs;
   private readonly flags: number;
   private readonly spawn: Spawn;
+  private readonly timers: Timers;
   private readonly source: string;
   private readonly digest: string;
   private verified: Promise<AclStat> | null = null;
@@ -48,15 +50,18 @@ export class MacosAcl {
     this.fs = fs.promises;
     this.flags = fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
     this.spawn = require("node:child_process") as Spawn;
+    this.timers = (typeof window === "undefined" ? require("node:timers") : window) as Timers;
     const helper = require("./macosHelperData") as { source: string; sha256: string };
-    if (typeof helper.source !== "string" || helper.source.length > 8192 || /[^\x00-\x7f]/.test(helper.source) ||
+    if (typeof helper.source !== "string" || helper.source.length > 8192 ||
         !/^[a-f0-9]{64}$/.test(helper.sha256)) throw Error("macos_acl_integrity");
+    for (let at = 0; at < helper.source.length; at++) if (helper.source.charCodeAt(at) > 127) throw Error("macos_acl_integrity");
     this.source = `const ARM64=${process.arch === "arm64" ? "true" : "false"};\n${helper.source}`;
     this.digest = helper.sha256;
   }
   private same(a: AclStat, b: AclStat): boolean {
-    return a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode && a.ctimeNs === b.ctimeNs;
+    return this.custody(a, b) && a.ctimeNs === b.ctimeNs;
   }
+  private custody(a: AclStat, b: AclStat): boolean { return a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode; }
   private async system(): Promise<AclStat> {
     for (const path of ["/", "/usr", "/usr/bin", "/usr/bin/codesign", "/usr/bin/osascript"]) {
       const stat = await this.fs.lstat(path, { bigint: true });
@@ -77,16 +82,16 @@ export class MacosAcl {
       let output = "", size = 0, refused = "";
       const decoder = new TextDecoder("utf-8", { fatal: true });
       const fail = (reason: string) => { refused ||= reason; child.kill("SIGKILL"); };
-      const timer = setTimeout(() => fail("launch_timeout"), budget);
+      const timer = this.timers.setTimeout(() => fail("launch_timeout"), budget);
       child.stdin.on("error", () => fail("launch_stdin"));
       child.stdout.on("data", bytes => {
         if ((size += bytes.length) > 512) { fail("launch_output_budget"); return; }
         try { output += decoder.decode(bytes, { stream: true }); } catch { fail("launch_output_encoding"); }
       });
       child.stderr.on("data", () => fail("launch_stderr"));
-      child.on("error", () => { clearTimeout(timer); reject(Error(`macos_acl_${refused || "launch_error"}`)); });
+      child.on("error", () => { this.timers.clearTimeout(timer); reject(Error(`macos_acl_${refused || "launch_error"}`)); });
       child.on("close", code => {
-        clearTimeout(timer);
+        this.timers.clearTimeout(timer);
         try { output += decoder.decode(); } catch { refused ||= "launch_output_encoding"; }
         if (refused || code !== 0) reject(Error(`macos_acl_${refused || "launch_exit"}`)); else resolve(output);
       });
@@ -101,8 +106,12 @@ export class MacosAcl {
     const handle = await this.fs.open(path, this.flags);
     try {
       let before = await handle.stat({ bigint: true });
-      if (!before.isDirectory() || !this.same(before, expected) || before.dev < 0n || before.dev > 4294967295n ||
+      if (!before.isDirectory() || typeof expected.ctimeNs !== "bigint" || before.dev < 0n || before.dev > 4294967295n ||
           before.ino < 0n || before.ino > 18446744073709551615n) throw Error("macos_acl_identity");
+      // A caller's earlier ctime may be stale after unrelated child activity.
+      // Accept only that drift, then fully verify the current held snapshot.
+      if (!this.same(before, expected) && (before.ctimeNs === expected.ctimeNs || !this.custody(before, expected)))
+        throw Error("macos_acl_identity");
       // Re-read the full ACL once if unrelated child activity changed only
       // ctime. Both attempts share the original five-second reader budget.
       const deadline = performance.now() + 5000;
@@ -127,7 +136,7 @@ export class MacosAcl {
         } catch (error) {
           if (attempt !== 0 || macosAclReason(error) !== "macos_acl_changed") throw error;
           const now = await handle.stat({ bigint: true }), named = await this.fs.lstat(path, { bigint: true });
-          if (![now, named].every(stat => stat.dev === before.dev && stat.ino === before.ino && stat.uid === before.uid && stat.mode === before.mode) ||
+          if (![now, named].every(stat => this.custody(stat, before)) ||
               (now.ctimeNs === before.ctimeNs && named.ctimeNs === before.ctimeNs)) throw error;
           before = now;
         }

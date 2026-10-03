@@ -13,6 +13,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -173,4 +174,27 @@ test("version comparison only offers a genuine upgrade", () => {
   assert.equal(isNewer("0.0.9", "0.1.0"), false);
   assert.equal(isNewer("banana", "0.1.0"), false);
   assert.equal(isNewer("0.1.10", "0.1.9"), true);
+});
+
+test('shipped plugin embeds the exact single Windows helper source and digest', async () => {
+  build();
+  const original = readFileSync(new URL('../../cli/windows-files.ps1', import.meta.url));
+  const helper = createRequire(import.meta.url)('../build/windowsHelperData.js');
+  const bundle = readFileSync(new URL('../dist/main.js', import.meta.url), 'utf8');
+  assert.deepEqual(Buffer.from(helper.source, 'ascii'), original);
+  assert.equal(helper.sha256, createHash('sha256').update(original).digest('hex'));
+  assert.ok(bundle.includes(`exports.source=${JSON.stringify(helper.source)};`));
+  assert.ok(bundle.includes(`exports.sha256=${JSON.stringify(helper.sha256)};`));
+  // Measure the actual emitted launch command, including decompression.
+  const { WindowsFiles } = createRequire(import.meta.url)('../build/windowsFiles.js');
+  const setup = await WindowsFiles.setupCommand('1'.repeat(32));
+  const encoded = /-EncodedCommand ([A-Za-z0-9+/=]+)'/.exec(setup)?.[1];
+  assert.ok(encoded, 'the actual bootstrap uses a bounded encoded command');
+  assert.ok(encoded.length + 512 < 32767, 'fixed switches and executable fit too');
+  const script = Buffer.from(encoded, 'base64').toString('utf16le');
+  const packed = /FromBase64String\('([A-Za-z0-9+/=]+)'\)/.exec(script)?.[1];
+  assert.ok(packed, 'the launch command contains its fixed compressed source');
+  const shipped = gunzipSync(Buffer.from(packed, 'base64'));
+  assert.deepEqual(shipped, original);
+  assert.equal(createHash('sha256').update(shipped).digest('hex'), helper.sha256);
 });

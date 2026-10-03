@@ -36,6 +36,13 @@ interface Child {
   on(event: "error", listener: () => void): void;
   on(event: "close", listener: (code: number | null) => void): void; kill(): void;
 }
+interface Timers {
+  setTimeout: (callback: () => void, ms: number) => unknown;
+  clearTimeout: (handle: unknown) => void;
+  setInterval: (callback: () => void, ms: number) => unknown;
+  clearInterval: (handle: unknown) => void;
+}
+const controls = (value: string): boolean => [...value].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127);
 interface Spawn {
   spawn(file: string, args: string[], options: {
     shell: false; windowsHide: true; cwd: string; env: Record<string, string>;
@@ -61,16 +68,19 @@ function helperCommand(source: string): string {
 export class WindowsFiles {
   private readonly fs: Fs;
   private readonly spawn: Spawn;
+  private readonly timers: Timers;
   private readonly command: string;
   private readonly helper: { source: string; sha256: string };
   constructor(private readonly powershell: WindowsPowerShell) {
     if ((require("node:process") as { platform: string }).platform !== "win32") throw Error("windows_platform_required");
-    if (!/^[A-Z]:\\[^\x00-\x1f<>:"/|?*]+\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i.test(powershell.path) ||
+    if (controls(powershell.path) || !/^[A-Z]:\\[^<>:"/|?*]+\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i.test(powershell.path) ||
         !/^[a-f0-9]{64}$/.test(powershell.sha256)) throw Error("trusted_powershell_required");
     this.fs = (require("node:fs") as { promises: Fs }).promises;
     this.spawn = require("node:child_process") as Spawn;
+    // Shared with the CLI; these process-deadline handles never enter a UI API.
+    this.timers = require("node:timers") as Timers;
     this.helper = require("./windowsHelperData") as typeof this.helper;
-    if (typeof this.helper.source !== "string" || this.helper.source.length > 16384 || /[^\x00-\x7f]/.test(this.helper.source) ||
+    if (typeof this.helper.source !== "string" || this.helper.source.length > 16384 || [...this.helper.source].some(char => char.charCodeAt(0) > 127) ||
         !/^[a-f0-9]{64}$/.test(this.helper.sha256)) throw Error("windows_helper_integrity");
     // Only our fixed, hash-checked source is code. Compression keeps the sole
     // helper inside Windows' command-line limit without a mutable script file.
@@ -129,7 +139,7 @@ export class WindowsFiles {
   }
   private same(a: Stat | null, b: Stat): boolean { return a !== null && a.dev === b.dev && a.ino === b.ino; }
   private path(path: string): void {
-    if (typeof path !== "string" || path.length > 240 || !/^[A-Z]:\\/.test(path) || /[\x00-\x1f\x7f/<>"|?*]/.test(path) ||
+    if (typeof path !== "string" || path.length > 240 || !/^[A-Z]:\\/.test(path) || (controls(path) || /[/<>"|?*]/.test(path)) ||
         path.slice(2).includes(":")) throw Error("windows_path_spelling");
     for (const part of path.slice(3).split("\\")) {
       if (!part || part === "." || part === ".." || /[ .]$/.test(part) || /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part)) throw Error("windows_path_spelling");
@@ -168,15 +178,15 @@ export class WindowsFiles {
         let working: Promise<void> = Promise.resolve(), workError: unknown;
         const decoder = new TextDecoder("utf-8", { fatal: true });
         const fail = (reason: string) => { refused ||= reason; child.kill(); };
-        let timer = setTimeout(() => fail("deadline"), op === "publish" ? 120000 : 15000);
-        const cancellation = setInterval(() => { try { check(); } catch { fail("cancelled"); } }, 100);
+        let timer = this.timers.setTimeout(() => fail("deadline"), op === "publish" ? 120000 : 15000);
+        const cancellation = this.timers.setInterval(() => { try { check(); } catch { fail("cancelled"); } }, 100);
         child.stdin.on("error", () => fail("stdin"));
         child.stdout.on("data", data => {
           if ((size += data.length) > 256) { fail("output_budget"); return; }
           try { output += decoder.decode(data, { stream: true }); } catch { fail("output_encoding"); }
           if (op === "lock" && !acquired && output.replace(/\r?\n$/, "") === '{"v":1,"held":true}') {
-            acquired = true; output = ""; clearTimeout(timer);
-            timer = setTimeout(() => fail("deadline"), 1800000);
+            acquired = true; output = ""; this.timers.clearTimeout(timer);
+            timer = this.timers.setTimeout(() => fail("deadline"), 1800000);
             working = Promise.resolve().then(async () => {
               if (!locked) throw Error("windows_lock_callback");
               await locked(() => { check(); if (!live || refused) throw Error("windows_lock_lost"); });
@@ -188,11 +198,11 @@ export class WindowsFiles {
           if ((size += data.length) > 256) { fail("output_budget"); return; }
           try { diagnostics += new TextDecoder("utf-8", { fatal: true }).decode(data); } catch { fail("output_encoding"); }
         });
-        child.on("error", () => { clearTimeout(timer); clearInterval(cancellation); reject(Error("windows_files_refused")); });
+        child.on("error", () => { this.timers.clearTimeout(timer); this.timers.clearInterval(cancellation); reject(Error("windows_files_refused")); });
         child.on("close", async code => {
           live = false;
-          clearTimeout(timer);
-          clearInterval(cancellation);
+          this.timers.clearTimeout(timer);
+          this.timers.clearInterval(cancellation);
           await working;
           if (workError) { reject(workError); return; }
           try { output += decoder.decode(); } catch { refused ||= "output_encoding"; }

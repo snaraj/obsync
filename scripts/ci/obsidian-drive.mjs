@@ -749,6 +749,10 @@ async function windowsExports(a, { binary, extra, homes, work }) {
     for (const target of await a.targets()) {
       const page = await a.page(target);
       if (await page.run(() => [...document.querySelectorAll('.modal-title')].some(node => node.textContent === 'Export and open a copy'))) {
+        if (!await page.run(prefix => {
+          const result = [...document.querySelectorAll('.modal p')].find(node => node.textContent.startsWith(prefix));
+          result?.scrollIntoView({ block: 'center', behavior: 'instant' }); return !!result;
+        }, text)) throw new Denied('export completion is absent from its capture');
         const screenshot = await page.send('Page.captureScreenshot', { format: 'png' });
         fs.writeFileSync(path.join(work, `windows-export-${mode}.png`), Buffer.from(screenshot.data, 'base64'));
         break;

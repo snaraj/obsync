@@ -24,6 +24,31 @@ if (phase === 'prepare') {
   for (const bad of [sentinel + ':alternate', root + '\\trailing.', root + '\\CON', root + '\\..\\escape']) {
     await assert.rejects(files.create(bad));
   }
+  const valid = join(root, 'refused');
+  await files.create(valid); await files.inspect(valid); await rm(valid);
+  for (const control of ['\n', String.fromCharCode(127)]) {
+    await assert.rejects(files.create(join(root, `refused${control}`)), { message: 'windows_path_spelling' });
+  }
+  // Mutate only a private fixture copy. The same valid path still works, and
+  // both control inputs must lose this guard's exact refusal when it is gone.
+  const probe = join(root, 'control-guard-mutant');
+  await files.mkdir(probe);
+  try {
+    for (const name of ['crypto', 'windowsHelperData']) {
+      await writeFile(join(probe, `${name}.js`), await readFile(new URL(`../../plugin/build/${name}.js`, import.meta.url)), { flag: 'wx' });
+    }
+    const source = await readFile(new URL('../../plugin/build/windowsFiles.js', import.meta.url), 'utf8');
+    const changed = source.replace(/^const controls = .+;$/m, 'const controls = () => false;');
+    assert.notEqual(changed, source, 'the control guard mutation actually applied');
+    const module = join(probe, 'windowsFiles.cjs'); await writeFile(module, changed, { flag: 'wx' });
+    const mutant = await createRequire(import.meta.url)(module).WindowsFiles.fromReceipt(receipt, digest);
+    await mutant.create(valid); await mutant.inspect(valid); await rm(valid);
+    for (const control of ['\n', String.fromCharCode(127)]) {
+      await assert.rejects(() => assert.rejects(mutant.create(join(root, `refused${control}`)),
+        { message: 'windows_path_spelling' }), { code: 'ERR_ASSERTION' });
+    }
+  } finally { await rm(probe, { recursive: true }); }
+  console.log(JSON.stringify({ event: 'windows_control_mutation', killed: 2, positive: 'pass' }));
   const hard = join(stage, 'hard.txt');
   await link(sentinel, hard);
   await assert.rejects(files.inspect(hard));
