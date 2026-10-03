@@ -2,7 +2,7 @@
 // PowerShell driver owns the synthetic fixture and supplies its OS executable.
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { readFile, writeFile, mkdir, link, symlink, lstat, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, link, symlink, lstat, rm, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const [phase, root, receipt, digest] = process.argv.slice(2);
@@ -11,6 +11,8 @@ assert.match(phase, /^(prepare|publish)$/);
 const { WindowsFiles } = createRequire(import.meta.url)('../../plugin/build/windowsFiles.js');
 const files = await WindowsFiles.fromReceipt(receipt, digest);
 const stage = join(root, 'stage'), destination = join(root, 'complete');
+const FILES = 7703;
+let publicationMilliseconds;
 if (phase === 'prepare') {
   await files.mkdir(stage);
   const sentinel = join(stage, 'sentinel.txt');
@@ -47,14 +49,23 @@ if (phase === 'prepare') {
   await files.create(record);
   await writeFile(record, JSON.stringify({ dev: String(identity.dev), ino: String(identity.ino) }));
   await files.flush(record);
+  // Exercise the required real tree size through one bulk helper operation,
+  // with ordinary inherited private children rather than one process per file.
+  const bulk = join(stage, 'bulk');
+  await mkdir(bulk);
+  for (let n = 1; n < FILES; n++) await writeFile(join(bulk, `${n}.txt`), `synthetic export ${n}\n`, { flag: 'wx' });
 } else {
   const expected = JSON.parse(await readFile(join(root, 'identity.json'), 'utf8'));
+  const started = performance.now();
   await files.publish(stage, destination);
+  publicationMilliseconds = Math.round(performance.now() - started);
   await assert.rejects(lstat(stage), { code: 'ENOENT' });
   const actual = await lstat(destination, { bigint: true });
   assert.deepEqual({ dev: String(actual.dev), ino: String(actual.ino) }, expected);
   assert.equal(await readFile(join(destination, 'sentinel.txt'), 'utf8'), 'synthetic private custody sentinel\n');
   await files.inspect(join(destination, 'sentinel.txt'));
+  assert.equal((await readdir(join(destination, 'bulk'))).length, FILES - 1);
+  for (let n = 1; n < FILES; n++) assert.equal(await readFile(join(destination, 'bulk', `${n}.txt`), 'utf8'), `synthetic export ${n}\n`);
   const archive = join(root, 'private-archive.pending'), archiveTarget = join(root, 'private-archive.obsync');
   await files.create(archive);
   await writeFile(archive, 'synthetic encrypted archive bytes');
@@ -72,4 +83,4 @@ if (phase === 'prepare') {
   assert.equal(await readFile(archiveTarget, 'utf8'), 'synthetic encrypted archive bytes');
   await files.inspect(archiveTarget);
 }
-console.log(JSON.stringify({ event: 'windows_files_process', phase, result: 'pass' }));
+console.log(JSON.stringify({ event: 'windows_files_process', phase, result: 'pass', files: FILES, publication_ms: publicationMilliseconds }));

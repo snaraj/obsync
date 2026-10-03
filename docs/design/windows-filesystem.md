@@ -74,17 +74,17 @@ ordinary second account, hard links, junctions, collisions and a fresh process
 for publication. When the CLI source is present, it builds and exercises that
 candidate in the same job. It verifies identity, sentinel bytes, and actual denial of
 listing, reading and replacement. The driver removes only its own account and
-exact fixture. No hosted result has been claimed for this candidate.
+exact fixture. The [preparation evidence](../validation-runs/2026-10-02-windows-native-preparation.md)
+records a passing ordinary-user primitive and internal CLI journey, including
+real access denial, killed-writer recovery, fresh launch and uninstall.
 
-That job proves only the primitive. Before enabling Windows, the implementation
-still needs the following complete flows and receipts:
+Before enabling Windows, the implementation still needs these complete flows
+and receipts:
 
 - A trusted PowerShell bootstrap and protected receipt usable by the plugin
   without a CLI installation, plus CLI custody of that same trust information.
-- Context SQLite transactions with private database/sidecar custody and actual
-  killed-writer recovery; no stale-lock or PID-only deletion fallback.
-- Installer completion receipts, launcher verification and interrupted install
-  recovery; existing versions remain untouched.
+- Interrupted installer recovery at each completion boundary; the ordinary
+  install/launch/uninstall journey has passed and existing versions stay untouched.
 - Shared export operation journals bound to exact stage/target identities,
   crash reconciliation, vault exclusions and plaintext ACL readback.
 - A documented guarantee applicable to same-volume directory publication and

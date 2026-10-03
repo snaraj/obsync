@@ -77,9 +77,9 @@ if (!$SelectedUser) {
         $Candidate = $Fixture.root
         if ($Candidate -isnot [string] -or [IO.Path]::GetDirectoryName($Candidate) -cne $Profile.LocalPath -or
             [IO.Path]::GetFileName($Candidate) -cnotmatch '^obsync native [a-f0-9]{32}$') { throw 'Invalid prepared fixture binding.' }
-        $Root = $Candidate
-        $Owner = [IO.Directory]::GetAccessControl($Root).GetOwner([Security.Principal.SecurityIdentifier]).Value
+        $Owner = [IO.Directory]::GetAccessControl($Candidate).GetOwner([Security.Principal.SecurityIdentifier]).Value
         if ($Owner -cne $Accounts[0].SID.Value) { throw 'Prepared fixture owner differs.' }
+        $Root = $Candidate
         $null = Invoke-Owned $Accounts[1] $Passwords[1] ('-NoLogo -NoProfile -NonInteractive -File "' + $PSCommandPath + '" -Peer -Root "' + $Root + '"')
         Write-Output '{"event":"windows_peer_custody","result":"pass"}'
         $Completed = Invoke-Owned $Accounts[0] $Passwords[0] ($Arguments + ' -Phase complete -Root "' + $Root + '"')
@@ -159,7 +159,7 @@ try {
             $Runtime = [IO.Path]::Combine($RuntimeDirectory, 'node.exe')
             [IO.File]::Copy($Node, $Runtime, $false)
             if ((Get-FileHash -LiteralPath $Runtime).Hash -cne (Get-FileHash -LiteralPath $Node).Hash) { throw 'Runtime fixture copy differs.' }
-            foreach ($Step in @('context', 'context-replay', 'kill-context', 'recover-context', 'install')) {
+            foreach ($Step in @('context', 'context-replay', 'kill-context', 'recover-context', 'interrupt-install', 'install')) {
                 & $Runtime cli/test/windows-journey.mjs $Step $Root $Receipt $Digest
                 if ($Step -eq 'kill-context') {
                     if ($LASTEXITCODE -eq 0) { throw 'Expected abrupt context process termination.' }
