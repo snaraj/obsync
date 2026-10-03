@@ -7,6 +7,8 @@ import { createRequire } from 'node:module';
 
 try {
   const root = dirname(dirname(fileURLToPath(import.meta.url)));
+  const rootIdentity = await lstat(root, { bigint: true });
+  if (!rootIdentity.isDirectory() || rootIdentity.isSymbolicLink()) throw Error();
   const digest = bytes => createHash('sha256').update(bytes).digest('hex');
   const expected = process.argv[2];
   const raw = await readFile(join(root, 'package-manifest.json'));
@@ -38,8 +40,9 @@ try {
   let files = null;
   if (windows) {
     const { WindowsFiles } = createRequire(import.meta.url)('./shared/windowsFiles.js');
-    files = await WindowsFiles.fromReceipt(record.trust_path, record.trust_sha256);
-    await files.inspect(root);
+    // The fixed installed launcher performs native ACL and runtime checks before
+    // Node starts. Internal JS invocation is outside that trusted entry boundary.
+    files = await WindowsFiles.fromInstalledLauncher(root, rootIdentity, record.trust_path, record.trust_sha256);
   }
   const { main } = await import('./obsync.mjs');
   process.argv = [process.execPath, join(root, 'cli/obsync.mjs'), ...process.argv.slice(windows ? 4 : 3)];

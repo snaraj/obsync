@@ -23,9 +23,14 @@ where existing bytes match the same package. Existing installations cannot be
 overwritten or retargeted. Upgrade selects a separately verified directory.
 
 The launcher uses the bound OS PowerShell path with module autoload disabled.
-It verifies its receipt, trust record, runtime and bootstrap before starting
+It embeds the same fixed read-only custody functions as the filesystem helper,
+so installation and trust ancestry, ownership and ACLs are checked in that
+process. It verifies the OS shell hash, receipt, trust record, runtime and bootstrap before starting
 Node with a cleared environment. The bootstrap checks every package member
-before importing commands. Missing or changed bytes refuse execution.
+and retains its Node file identity/link checks before importing commands.
+Later context I/O still performs native custody checks. Missing or changed
+bytes refuse execution. The generated launcher is the supported entry point;
+internal JavaScript invocation does not establish its runtime or custody guarantees.
 Uninstall disables the exact installation by publishing its removal sibling,
 checks every remaining member, and deletes its receipt last. It preserves
 configuration and unrelated files.

@@ -24,16 +24,17 @@ const missing = async path => { try { return await lstat(path, { bigint: true })
 function child(executable, args) {
   const process = spawn(executable, args, { env: { GITHUB_ACTIONS: 'true', SystemRoot: globalThis.process.env.SystemRoot },
     windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  let bytes = 0, stdout = '';
+  let bytes = 0, stdout = '', stderr = '';
   const timer = setTimeout(() => process.kill('SIGKILL'), 60000);
   for (const stream of [process.stdout, process.stderr]) stream.on('data', data => {
     bytes += data.length;
     if (bytes > 16384) process.kill('SIGKILL');
     if (stream === process.stdout && bytes <= 16384) stdout += data.toString('utf8');
+    if (stream === process.stderr && bytes <= 16384) stderr += data.toString('utf8');
   });
   const done = new Promise((resolve, reject) => {
     process.once('error', error => { clearTimeout(timer); reject(error); });
-    process.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, bytes }); });
+    process.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr, bytes }); });
   });
   return { process, done };
 }
@@ -136,6 +137,32 @@ if (phase === 'interrupt-mkdir') {
   const state = await store.read();
   assert.equal(state.current, null);
   assert.equal(state.revision, 1);
+} else if (phase === 'launch-guards') {
+  const trust = JSON.parse(await readFile(trustPath, 'utf8'));
+  const launcher = join(options.prefix, 'obsync.ps1'), recordPath = join(options.prefix, 'install-record.json');
+  const invoke = () => child(trust.powershell.path, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', launcher, '--version']).done;
+  const original = await readFile(recordPath);
+  try {
+    await writeFile(recordPath, Buffer.concat([original, Buffer.from(' ')]));
+    const result = await invoke();
+    assert.equal(result.code, 4); assert.equal(result.stdout, '');
+    assert.equal(JSON.parse(result.stderr).stage, 'receipt');
+  } finally { await writeFile(recordPath, original); }
+  const quote = value => "'" + value.replaceAll("'", "''") + "'";
+  // Change only the owned synthetic installation, restoring its exact ACL in
+  // finally. The public launcher must refuse before its Node start stage.
+  const result = await child(trust.powershell.path, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+    `$p=${quote(options.prefix)};$original=[IO.Directory]::GetAccessControl($p);$acl=[IO.Directory]::GetAccessControl($p);` +
+    `try{$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(` +
+    `[Security.Principal.SecurityIdentifier]::new('S-1-1-0'),[Security.AccessControl.FileSystemRights]::ReadAndExecute,` +
+    `[Security.AccessControl.AccessControlType]::Allow));[IO.Directory]::SetAccessControl($p,$acl);` +
+    `$start=[Diagnostics.ProcessStartInfo]::new();$start.UseShellExecute=$false;$start.FileName=${quote(trust.powershell.path)};` +
+    `$start.Arguments=${quote(`-NoLogo -NoProfile -NonInteractive -File "${launcher}" --version`)};` +
+    `$child=[Diagnostics.Process]::Start($start);$child.WaitForExit();exit $child.ExitCode` +
+    `}finally{[IO.Directory]::SetAccessControl($p,$original)}`]).done;
+  assert.equal(result.code, 4); assert.equal(result.stdout, '');
+  assert.equal(JSON.parse(result.stderr).stage, 'custody');
+  const positive = await invoke(); assert.equal(positive.code, 0); JSON.parse(positive.stdout);
 } else if (phase === 'public-context') {
   const trust = JSON.parse(await readFile(trustPath, 'utf8'));
   const config = join(root, 'public-config'), input = join(root, 'public-input.json');

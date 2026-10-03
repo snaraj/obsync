@@ -182,6 +182,10 @@ $trust_digest = $trust.digest
 ```
 
 The native launcher clears inherited runtime inputs before starting Node.
+Its fixed read-only custody checks run in that same PowerShell process before
+Node starts; the bootstrap then verifies package bytes and file identities.
+Use this generated launcher as the installed entry point. Internal JavaScript
+invocation does not establish the launcher's runtime or custody guarantees.
 Keep the receipt and runtime while installations use them. Updates install to
 a new directory. Uninstall uses the same four binding options and never removes
 contexts or the independent runtime. The [Windows filesystem contract](../docs/design/cli-windows-filesystem.md)

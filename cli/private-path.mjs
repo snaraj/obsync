@@ -15,7 +15,8 @@ export async function macosDirectory(path) {
     reader ??= new MacosAcl();
     const checked = await reader.inspect(path, stat);
     verified.set(path, [checked.dev, checked.ino, checked.uid, checked.mode, checked.ctimeNs].join(':'));
-  } catch {
-    throw new CliError('unsafe_config', 'The directory ACL or native read could not establish protected custody.', 4);
+  } catch (error) {
+    const { macosAclReason } = createRequire(import.meta.url)('./shared/macosAcl.js');
+    throw new CliError('unsafe_config', `The directory ACL or native read could not establish protected custody: ${macosAclReason(error)}.`, 4);
   }
 }

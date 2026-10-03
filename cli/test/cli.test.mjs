@@ -232,12 +232,12 @@ test('concurrent actual processes commit one effect and reject a stale competing
   const f = await fixture(t);
   const one = await f.plan('one');
   const copies = await Promise.all([f.apply(one), f.apply(one)]);
-  assert.deepEqual(copies.map(result => result.code), [0, 0]);
+  assert.deepEqual(copies.map(result => result.code), [0, 0], JSON.stringify(copies));
   assert.deepEqual(copies.map(result => result.value.data.replayed).sort(), [false, true]);
   const two = await f.plan('two');
   const three = await f.plan('three');
   const rivals = await Promise.all([f.apply(two), f.apply(three)]);
-  assert.deepEqual(rivals.map(result => result.code).sort(), [0, 5]);
+  assert.deepEqual(rivals.map(result => result.code).sort(), [0, 5], JSON.stringify(rivals));
   assert.equal(rivals.find(result => result.code === 5).value.error.code, 'revision_conflict');
   assert.equal((await f.run(['context', 'list'])).value.data.items.length, 2);
 });

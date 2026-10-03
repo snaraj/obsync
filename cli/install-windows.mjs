@@ -11,17 +11,33 @@ const ps = value => `'${value.replaceAll("'", "''")}'`;
 const directories = ['cli', 'cli/shared'];
 const extras = ['obsync.ps1', 'install-record.json'];
 const receiptKeys = ['schema_version', 'prefix', 'manifest_sha256', 'runtime_path', 'runtime_executable_sha256',
-  'launch_sha256', 'trust_path', 'trust_sha256', 'powershell_path'];
+  'launch_sha256', 'trust_path', 'trust_sha256', 'powershell_path', 'powershell_sha256'];
 const missing = async path => { try { return await lstat(path); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 
 function launcher(record) {
   const receipt = Buffer.from(`${JSON.stringify(record)}\n`);
-  return Buffer.from(`$ErrorActionPreference='Stop'\n` +
-    `$PSModuleAutoLoadingPreference='None'\n` +
+  const helper = require('./shared/windowsHelperData.js');
+  const boundary = '\nfunction Private-Acl(';
+  const parts = helper.source.split(boundary);
+  refuse(parts.length === 2 && sha256(Buffer.from(helper.source)) === helper.sha256,
+    'package_integrity', 'The fixed custody library differs.', 4);
+  // Embed only the existing fixed read-only functions. No mutable script is loaded.
+  return Buffer.from(parts[0] + '\n' +
+    `function Assert-LaunchCustody([string]$p,[bool]$private,[bool]$directory,[bool]$osCode=$false){Exact-Path $p;Inspect-Parents $p $osCode;if((Inspect-One $p $private $osCode) -ne $directory){Refuse 'launch_file_type'}}\n` +
     `function Assert-LaunchHash([string]$p,[string]$h){$f=[IO.File]::OpenRead($p);$s=[Security.Cryptography.SHA256]::Create();try{$v=[BitConverter]::ToString($s.ComputeHash($f)).Replace('-','').ToLowerInvariant()}finally{$f.Dispose();$s.Dispose()};if($v -cne $h){throw 'integrity'}}\n` +
     String.raw`function Quote-LaunchArgument([string]$s){'"'+[regex]::Replace([regex]::Replace($s,'(\\*)"','$1$1\"'),'(\\+)$','$1$1')+'"'}` + '\n' +
     `try {$step='shell'\n` +
+    `if($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or ![Environment]::Is64BitProcess){throw 'OS PowerShell 5.1 required'}\n` +
     `if([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName -ine ${ps(record.powershell_path)}){throw 'trusted OS PowerShell required'}\n` +
+    `$step='custody'\n` +
+    `Assert-LaunchCustody ${ps(record.powershell_path)} $false $false $true\n` +
+    `Assert-LaunchCustody ${ps(record.prefix)} $true $true\n` +
+    `Assert-LaunchCustody ${ps(dirname(record.trust_path))} $true $true\n` +
+    `Assert-LaunchCustody ${ps(record.trust_path)} $true $false\n` +
+    `Assert-LaunchCustody ${ps(join(record.prefix, 'install-record.json'))} $true $false\n` +
+    `Assert-LaunchCustody ${ps(record.runtime_path)} $true $false\n` +
+    `Assert-LaunchCustody ${ps(join(record.prefix, 'cli/launch.mjs'))} $true $false\n` +
+    `$step='shell-hash';Assert-LaunchHash ${ps(record.powershell_path)} ${ps(record.powershell_sha256)}\n` +
     `$step='receipt';Assert-LaunchHash ${ps(join(record.prefix, 'install-record.json'))} ${ps(sha256(receipt))}\n` +
     `$step='trust';Assert-LaunchHash ${ps(record.trust_path)} ${ps(record.trust_sha256)}\n` +
     `$step='runtime';Assert-LaunchHash ${ps(record.runtime_path)} ${ps(record.runtime_executable_sha256)}\n` +
@@ -62,6 +78,7 @@ async function inspect(prefix, digest, files) {
   refuse(record.schema_version === 1 && record.prefix === prefix && record.manifest_sha256 === digest &&
     record.launch_sha256 === manifest.files.find(item => item.name === 'cli/launch.mjs').sha256 &&
     /^[a-f0-9]{64}$/.test(record.trust_sha256) && /^[a-f0-9]{64}$/.test(record.runtime_executable_sha256) &&
+    /^[a-f0-9]{64}$/.test(record.powershell_sha256) &&
     isAbsolute(record.runtime_path) && isAbsolute(record.trust_path) && isAbsolute(record.powershell_path),
   'install_conflict', 'The exact installation receipt is invalid.', 4);
   refuse((await regular(join(prefix, 'obsync.ps1'))).equals(launcher(record)), 'install_conflict', 'The native launcher differs.', 4);
@@ -81,7 +98,8 @@ export async function installWindows({ source, prefix, digest, trustPath, trustD
   const record = { schema_version: 1, prefix, manifest_sha256: digest, runtime_path: process.execPath,
     runtime_executable_sha256: sha256(await regular(process.execPath, 268435456)),
     launch_sha256: manifest.files.find(item => item.name === 'cli/launch.mjs').sha256,
-    trust_path: trustPath, trust_sha256: trustDigest, powershell_path: trust.powershell.path };
+    trust_path: trustPath, trust_sha256: trustDigest, powershell_path: trust.powershell.path,
+    powershell_sha256: trust.powershell.sha256 };
   if (await missing(prefix)) {
     const installed = await inspect(prefix, digest, files);
     refuse(JSON.stringify(installed.record) === JSON.stringify(record), 'install_conflict', 'Existing installation has a different binding.', 5);

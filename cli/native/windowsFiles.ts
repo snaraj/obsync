@@ -115,6 +115,21 @@ export class WindowsFiles {
    * receipt is insufficient: verify its bytes before using its executable path.
    */
   static async fromReceipt(path: string, expected: string): Promise<WindowsFiles> {
+    const files = await WindowsFiles.readReceipt(path, expected);
+    await files.inspect(path.slice(0, -"\\powershell.json".length)); await files.inspect(path);
+    return files;
+  }
+  /** Internal bootstrap only: the fixed installed launcher has already checked
+   * native ACLs and executable hashes before starting this trusted runtime.
+   * Keep file identity/link checks here; later data I/O still uses native custody.
+   */
+  static async fromInstalledLauncher(root: string, before: { dev: bigint; ino: bigint }, path: string, expected: string): Promise<WindowsFiles> {
+    const files = await WindowsFiles.readReceipt(path, expected);
+    const after = await files.custody(root);
+    if (!after.isDirectory() || after.dev !== before.dev || after.ino !== before.ino) throw Error("windows_identity_changed");
+    return files;
+  }
+  private static async readReceipt(path: string, expected: string): Promise<WindowsFiles> {
     if (!/^[a-f0-9]{64}$/.test(expected) || !path.endsWith("\\powershell.json")) throw Error("windows_trust_receipt");
     const fs = (require("node:fs") as { promises: Fs }).promises;
     const before = await fs.lstat(path, { bigint: true });
@@ -132,7 +147,8 @@ export class WindowsFiles {
         value.directory !== path.slice(0, -"\\powershell.json".length) || !value.powershell ||
         Object.keys(value.powershell).sort().join() !== "path,sha256") throw Error("windows_trust_receipt");
     const files = new WindowsFiles(value.powershell);
-    await files.inspect(value.directory); await files.inspect(path);
+    if (!(await files.custody(value.directory)).isDirectory()) throw Error("windows_file_type");
+    await files.custody(path);
     return files;
   }
   private async stat(path: string): Promise<Stat | null> {
