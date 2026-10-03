@@ -306,6 +306,11 @@ impl Custody {
             Ok(())
         }
     }
+    pub fn finish(&mut self) -> Result<()> {
+        #[cfg(windows)]
+        self.windows.finish(self.deadline)?;
+        self.check_time()
+    }
     pub fn file(&mut self, path: &Path, write: bool) -> Result<File> {
         self.private_file(path, write, false)
     }

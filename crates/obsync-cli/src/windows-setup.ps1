@@ -21,10 +21,10 @@ try {
 try {
     $out = $c.StandardOutput.ReadToEndAsync()
     $err = $c.StandardError.ReadToEndAsync()
-    $c.StandardInput.Write('{"v":1,"op":"setup","path":"' + $d.Replace('\', '\\') + '","destination":""}')
+    $c.StandardInput.Write('{"v":1,"id":1,"op":"setup","path":"' + $d.Replace('\', '\\') + '","destination":""}')
     $c.StandardInput.Close()
     if (!$c.WaitForExit(15000)) { $c.Kill(); $c.WaitForExit(); throw 'Setup deadline' }
-    if ($c.ExitCode -ne 0 -or $err.Result -or $out.Result.Trim() -cne '{"v":1,"ok":true}') { throw 'Setup refused' }
+    if ($c.ExitCode -ne 0 -or $err.Result -or $out.Result.Trim() -cne '{"v":1,"id":1,"ok":true}') { throw 'Setup refused' }
 } finally { $c.Dispose() }
 $f = [IO.Path]::Combine($d, 'powershell.json')
 $h = [Security.Cryptography.SHA256]::Create()

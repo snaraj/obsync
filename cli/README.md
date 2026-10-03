@@ -40,6 +40,10 @@ The binary uses only Rust's standard library and the internal `obsync-core`
 crate. macOS custody reads ACLs through Apple-signed OS JavaScript for Automation;
 Windows custody uses a fixed OS PowerShell 5.1 helper. These helpers are embedded
 in the binary. Neither platform downloads or discovers an interpreter from PATH.
+Windows starts one helper per local command and rechecks filesystem custody on
+every request. Requests and replies are bounded and numbered; successful commands
+also require a clean helper exit without extra output or errors. The helper stops
+when the command ends and shares its five-second deadline.
 
 ## Verify and install a release
 

@@ -361,7 +361,7 @@ pub fn run(args: &Args, uninstall: bool, deadline: Instant) -> Result<Value> {
             inspect(&mut c, &prefix, &files, false)?;
         }
     }
-    c.check_time()?;
+    c.finish()?;
     Ok(obj(vec![
         ("manifest_sha256", s(digest)),
         ("platform", s(platform())),

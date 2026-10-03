@@ -19,7 +19,8 @@ read -r -a archives <<< "${SERVER_ARCHIVES:-}"
 if [ -n "${CLI_ARCHIVES:-}" ]; then
   for platform in linux-amd64 linux-arm64 darwin-arm64 windows-amd64; do
     selected=("${CLI_ARCHIVES}"/obsync-cli-*-${platform}.zip)
-    test "${#selected[@]}" -eq 1 && test -f "${selected[0]}"
+    test "${#selected[@]}" -eq 1
+    test -f "${selected[0]}"
     archives+=("${selected[0]}")
   done
 fi

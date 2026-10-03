@@ -57,6 +57,9 @@ fn busy() -> Error {
     )
 }
 impl Store {
+    pub fn finish(&mut self) -> Result<()> {
+        self.custody.finish()
+    }
     pub fn new(args: &Args, deadline: Instant) -> Result<Self> {
         let path = args.get("config-dir").ok_or_else(|| {
             Error::input("Supply --config-dir with an explicit absolute private directory.")

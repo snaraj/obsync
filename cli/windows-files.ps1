@@ -120,106 +120,98 @@ function Flush-Tree([string] $Root) {
 }
 
 try {
-  if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or ![Environment]::Is64BitProcess) { Refuse 'os_powershell_required' }
-  $Executable = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\powershell.exe')
-  if ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName -ine $Executable) { Refuse 'os_powershell_required' }
-  Inspect-Parents $Executable $true
-  if (Inspect-One $Executable $false $true) { Refuse 'os_powershell_required' }
-  $Json = $PSHOME+'\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'
-  Inspect-Parents $Json $true
-  if (Inspect-One $Json $false $true) { Refuse 'os_module_required' }
-  Import-Module $Json
   $Characters = [char[]]::new(16385)
   $Reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.UTF8Encoding]::new($false, $true), $false, 4096)
-  $Count = 0
-  while ($Count -lt $Characters.Length) {
-    $Read = $Reader.Read()
-    if ($Read -eq -1 -or $Read -eq 10) { break }
-    $Characters[$Count++] = [char]$Read
-  }
-  if ($Count -gt 16384) { Refuse 'request_budget' }
-  $Raw = [string]::new($Characters, 0, $Count).TrimEnd([char[]]@("`r", "`n"))
-  if ($Raw.Length -lt 2 -or [int]$Raw[0] -ne 123 -or [int]$Raw[-1] -ne 125) { Refuse 'request_framing' }
-  $Request = ConvertFrom-Json -InputObject $Raw
-  $Names = @($Request.PSObject.Properties.Name)
-  if ($Names.Count -ne 4 -or @($Names | Where-Object { $_ -cnotin @('v', 'op', 'path', 'destination') }).Count -ne 0 -or
-    $Request.v -isnot [int] -or $Request.v -ne 1 -or $Request.op -isnot [string] -or
-    $Request.path -isnot [string] -or $Request.destination -isnot [string] -or
-    $Request.op -cnotin @('setup', 'inspect', 'mkdir', 'create', 'flush', 'publish', 'lock')) { Refuse 'request_shape' }
-  if (![string]::Equals(($Request | ConvertTo-Json -Compress -Depth 2), $Raw, [StringComparison]::Ordinal)) { Refuse 'request_spelling' }
-  Exact-Path $Request.path
-  Inspect-Parents $Request.path
-  if ($Request.op -ne 'publish' -and $Request.destination -cne '') { Refuse 'request_shape' }
-  if ($Request.op -ne 'lock' -and $Reader.Read() -ne -1) { Refuse 'request_framing' }
-  switch -CaseSensitive ($Request.op) {
-    'lock' {
-      if (Inspect-One $Request.path $true) { Refuse 'file_required' }
-      $Lease = [IO.FileStream]::new($Request.path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-      try {
-        if ($Lease.Length -ne 0) { Refuse 'lock_contents' }
-        [Console]::Out.WriteLine('{"v":1,"held":true}')
-        [Console]::Out.Flush()
-        $Closed = $Reader.ReadAsync([char[]]::new(1), 0, 1)
-        if (!$Closed.Wait(1800000) -or $Closed.Result -ne 0) { Refuse 'lock_lifetime' }
-      } finally { $Lease.Dispose() }
+  $RequestId = 0
+  while ($true) {
+    $Count = 0
+    while ($Count -lt $Characters.Length) {
+      $Read = $Reader.Read()
+      if ($Read -eq -1 -or $Read -eq 10) { break }
+      $Characters[$Count++] = [char]$Read
     }
-    'setup' {
-      if ([IO.File]::Exists($Request.path) -or [IO.Directory]::Exists($Request.path)) { Refuse 'destination_exists' }
-      $null = [IO.Directory]::CreateDirectory($Request.path, (Private-Acl $true))
-      $null = Inspect-One $Request.path $true
-      $Receipt = [IO.Path]::Combine($Request.path, 'powershell.json')
-      Exact-Path $Receipt
-      $Hash = [Security.Cryptography.SHA256]::Create()
-      $Code = [IO.File]::OpenRead($Executable)
-      try { $Digest = [BitConverter]::ToString($Hash.ComputeHash($Code)).Replace('-', '').ToLowerInvariant() }
-      finally { $Code.Dispose(); $Hash.Dispose() }
-      $Bytes = [Text.Encoding]::UTF8.GetBytes(([ordered]@{schema_version=1;directory=$Request.path;powershell=[ordered]@{path=$Executable;sha256=$Digest}} | ConvertTo-Json -Compress))
-      $File = [IO.FileStream]::new($Receipt, [IO.FileMode]::CreateNew,
-        [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Write,
-        [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough, (Private-Acl $false))
-      try { $File.Write($Bytes, 0, $Bytes.Length); $File.Flush($true) } finally { $File.Dispose() }
-      $null = Inspect-One $Receipt $true
-    }
-    'inspect' { $null = Inspect-One $Request.path $true }
-    'mkdir' {
-      if ([IO.File]::Exists($Request.path) -or [IO.Directory]::Exists($Request.path)) { Refuse 'destination_exists' }
-      # This exact empty companion is reserved with the requested destination.
-      # A killed helper leaves at most one stage, reused only after custody checks.
-      $Stage = $Request.path + '.obsync-create'
-      Exact-Path $Stage
-      if (![IO.File]::Exists($Stage) -and ![IO.Directory]::Exists($Stage)) {
-        $null = [IO.Directory]::CreateDirectory($Stage, (Private-Acl $true))
+    if ($Count -eq 0 -and $Read -eq -1) { break }
+    if (++$RequestId -gt 1024) { Refuse 'request_count' }
+    if ($Count -gt 16384) { Refuse 'request_budget' }
+    if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1 -or ![Environment]::Is64BitProcess) { Refuse 'os_powershell_required' }
+    $Executable = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\powershell.exe')
+    if ([Diagnostics.Process]::GetCurrentProcess().MainModule.FileName -ine $Executable) { Refuse 'os_powershell_required' }
+    Inspect-Parents $Executable $true
+    if (Inspect-One $Executable $false $true) { Refuse 'os_powershell_required' }
+    $Json = $PSHOME+'\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1'
+    Inspect-Parents $Json $true
+    if (Inspect-One $Json $false $true) { Refuse 'os_module_required' }
+    Import-Module $Json
+
+    $Raw = [string]::new($Characters, 0, $Count).TrimEnd([char[]]@("`r", "`n"))
+    if ($Raw.Length -lt 2 -or [int]$Raw[0] -ne 123 -or [int]$Raw[-1] -ne 125) { Refuse 'request_framing' }
+    $Request = ConvertFrom-Json -InputObject $Raw
+    $Names = @($Request.PSObject.Properties.Name)
+    if ($Names.Count -ne 5 -or @($Names | Where-Object { $_ -cnotin @('v', 'id', 'op', 'path', 'destination') }).Count -ne 0 -or
+      $Request.v -isnot [int] -or $Request.v -ne 1 -or
+      $Request.id -isnot [int] -or $Request.id -ne $RequestId -or $Request.op -isnot [string] -or
+      $Request.path -isnot [string] -or $Request.destination -isnot [string] -or
+      $Request.op -cnotin @('setup', 'inspect', 'mkdir', 'create', 'publish')) { Refuse 'request_shape' }
+    if (![string]::Equals(($Request | ConvertTo-Json -Compress -Depth 2), $Raw, [StringComparison]::Ordinal)) { Refuse 'request_spelling' }
+    Exact-Path $Request.path
+    Inspect-Parents $Request.path
+    if ($Request.op -ne 'publish' -and $Request.destination -cne '') { Refuse 'request_shape' }
+    switch -CaseSensitive ($Request.op) {
+      'setup' {
+        if ([IO.File]::Exists($Request.path) -or [IO.Directory]::Exists($Request.path)) { Refuse 'destination_exists' }
+        $null = [IO.Directory]::CreateDirectory($Request.path, (Private-Acl $true))
+        $null = Inspect-One $Request.path $true
+        $Receipt = [IO.Path]::Combine($Request.path, 'powershell.json')
+        Exact-Path $Receipt
+        $Hash = [Security.Cryptography.SHA256]::Create()
+        $Code = [IO.File]::OpenRead($Executable)
+        try { $Digest = [BitConverter]::ToString($Hash.ComputeHash($Code)).Replace('-', '').ToLowerInvariant() }
+        finally { $Code.Dispose(); $Hash.Dispose() }
+        $Bytes = [Text.Encoding]::UTF8.GetBytes(([ordered]@{schema_version=1;directory=$Request.path;powershell=[ordered]@{path=$Executable;sha256=$Digest}} | ConvertTo-Json -Compress))
+        $File = [IO.FileStream]::new($Receipt, [IO.FileMode]::CreateNew,
+          [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Write,
+          [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough, (Private-Acl $false))
+        try { $File.Write($Bytes, 0, $Bytes.Length); $File.Flush($true) } finally { $File.Dispose() }
+        $null = Inspect-One $Receipt $true
       }
-      if (!(Inspect-One $Stage $true)) { Refuse 'directory_required' }
-      $Entries = [IO.Directory]::EnumerateFileSystemEntries($Stage).GetEnumerator()
-      try { if ($Entries.MoveNext()) { Refuse 'stage_not_empty' } } finally { $Entries.Dispose() }
-      Move-Owned $Stage $Request.path
-      if (!(Inspect-One $Request.path $true)) { Refuse 'directory_required' }
+      'inspect' { $null = Inspect-One $Request.path $true }
+      'mkdir' {
+        if ([IO.File]::Exists($Request.path) -or [IO.Directory]::Exists($Request.path)) { Refuse 'destination_exists' }
+        # This exact empty companion is reserved with the requested destination.
+        # A killed helper leaves at most one stage, reused only after custody checks.
+        $Stage = $Request.path + '.obsync-create'
+        Exact-Path $Stage
+        if (![IO.File]::Exists($Stage) -and ![IO.Directory]::Exists($Stage)) {
+          $null = [IO.Directory]::CreateDirectory($Stage, (Private-Acl $true))
+        }
+        if (!(Inspect-One $Stage $true)) { Refuse 'directory_required' }
+        $Entries = [IO.Directory]::EnumerateFileSystemEntries($Stage).GetEnumerator()
+        try { if ($Entries.MoveNext()) { Refuse 'stage_not_empty' } } finally { $Entries.Dispose() }
+        Move-Owned $Stage $Request.path
+        if (!(Inspect-One $Request.path $true)) { Refuse 'directory_required' }
+      }
+      'create' {
+        if (!(Inspect-One ([IO.Path]::GetDirectoryName($Request.path)) $true)) { Refuse 'private_parent' }
+        $File = [IO.FileStream]::new($Request.path, [IO.FileMode]::CreateNew,
+          [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Write,
+          [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough, (Private-Acl $false))
+        try { $File.Flush($true) } finally { $File.Dispose() }
+        if (Inspect-One $Request.path $true) { Refuse 'file_required' }
+      }
+      'publish' {
+        Exact-Path $Request.destination
+        Inspect-Parents $Request.destination
+        $Directory = Inspect-One $Request.path $true
+        if ([IO.Path]::GetDirectoryName($Request.path) -cne [IO.Path]::GetDirectoryName($Request.destination)) { Refuse 'same_parent_required' }
+        if ([IO.File]::Exists($Request.destination) -or [IO.Directory]::Exists($Request.destination)) { Refuse 'destination_exists' }
+        Flush-Tree $Request.path
+        Move-Owned $Request.path $Request.destination
+        if ((Inspect-One $Request.destination $true) -ne $Directory) { Refuse 'publication_readback' }
+      }
     }
-    'create' {
-      if (!(Inspect-One ([IO.Path]::GetDirectoryName($Request.path)) $true)) { Refuse 'private_parent' }
-      $File = [IO.FileStream]::new($Request.path, [IO.FileMode]::CreateNew,
-        [Security.AccessControl.FileSystemRights]::Read -bor [Security.AccessControl.FileSystemRights]::Write,
-        [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough, (Private-Acl $false))
-      try { $File.Flush($true) } finally { $File.Dispose() }
-      if (Inspect-One $Request.path $true) { Refuse 'file_required' }
-    }
-    'flush' {
-      if (Inspect-One $Request.path $true) { Refuse 'file_required' }
-      Flush-File $Request.path
-    }
-    'publish' {
-      Exact-Path $Request.destination
-      Inspect-Parents $Request.destination
-      $Directory = Inspect-One $Request.path $true
-      if ([IO.Path]::GetDirectoryName($Request.path) -cne [IO.Path]::GetDirectoryName($Request.destination)) { Refuse 'same_parent_required' }
-      if ([IO.File]::Exists($Request.destination) -or [IO.Directory]::Exists($Request.destination)) { Refuse 'destination_exists' }
-      Flush-Tree $Request.path
-      Move-Owned $Request.path $Request.destination
-      if ((Inspect-One $Request.destination $true) -ne $Directory) { Refuse 'publication_readback' }
-    }
+    [Console]::Out.WriteLine('{"v":1,"id":'+$RequestId+',"ok":true}')
+    [Console]::Out.Flush()
   }
-  [Console]::Out.WriteLine('{"v":1,"ok":true}')
   exit 0
 } catch {
   $Reason = $_.Exception.Data['obsync_reason']

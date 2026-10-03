@@ -6,15 +6,16 @@ use std::{
     fs::{File, OpenOptions},
     os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
     time::Instant,
 };
 
 pub struct Windows {
-    executable: PathBuf,
+    // Stop the helper before releasing its executable's no-write/delete handle.
+    session: Option<crate::helper_session::Session>,
     held: File,
     identity: crate::windows_identity::Identity,
-    command: String,
+    sequence: i64,
 }
 fn system_directory(executable: &Path) -> Result<&Path> {
     let refused = || {
@@ -82,7 +83,7 @@ pub fn setup() -> Result<Value> {
     ]))
 }
 impl Windows {
-    pub fn new(args: &Args, _deadline: Instant) -> Result<Self> {
+    pub fn new(args: &Args, deadline: Instant) -> Result<Self> {
         let path = args.get("windows-trust").ok_or_else(|| {
             Error::new(
                 "trusted_powershell_required",
@@ -153,30 +154,49 @@ impl Windows {
                 4,
             ));
         }
+        let system = system_directory(&executable)?;
+        let root = system.parent().ok_or_else(custody::unsafe_path)?;
+        let mut command = Command::new(&executable);
+        command
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                source,
+            ])
+            .env_clear()
+            .env("SystemRoot", root)
+            .env(
+                "PSModulePath",
+                system.join("WindowsPowerShell\\v1.0\\Modules"),
+            )
+            .current_dir(system);
         Ok(Self {
-            executable,
             held,
             identity,
-            command: source.into(),
+            session: Some(crate::helper_session::Session::start(command, deadline)?),
+            sequence: 0,
         })
     }
     fn call(
-        &self,
+        &mut self,
         op: &str,
         path: &Path,
         destination: Option<&Path>,
         deadline: Instant,
     ) -> Result<()> {
         custody::exact(path.to_str().ok_or_else(custody::unsafe_path)?, false)?;
-        let system = system_directory(&self.executable)?;
-        let root = system.parent().ok_or_else(custody::unsafe_path)?;
         if crate::windows_identity::identity(&self.held).map_err(|_| custody::unsafe_path())?
             != self.identity
+            || self.sequence >= 1024
         {
             return Err(custody::unsafe_path());
         }
+        self.sequence += 1;
         let request = obj(vec![
             ("v", Value::Int(1)),
+            ("id", Value::Int(self.sequence)),
             ("op", crate::s(op)),
             ("path", crate::s(path.to_str().unwrap())),
             (
@@ -185,25 +205,15 @@ impl Windows {
             ),
         ])
         .to_json();
-        let mut command = Command::new(&self.executable);
-        command
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &self.command,
-            ])
-            .env_clear()
-            .env("SystemRoot", root)
-            .env(
-                "PSModulePath",
-                system.join("WindowsPowerShell\\v1.0\\Modules"),
-            )
-            .current_dir(system)
-            .stdin(Stdio::piped());
-        let output = crate::process::capture(command, Some(request.into_bytes()), deadline)?;
-        if output != b"{\"v\":1,\"ok\":true}\r\n" && output != b"{\"v\":1,\"ok\":true}\n" {
+        let output = self
+            .session
+            .as_mut()
+            .ok_or_else(custody::unsafe_path)?
+            .request(request.into_bytes(), deadline)?;
+        let expected = format!("{{\"v\":1,\"id\":{},\"ok\":true}}", self.sequence);
+        if output != format!("{expected}\r\n").as_bytes()
+            && output != format!("{expected}\n").as_bytes()
+        {
             return Err(Error::new(
                 "native_helper_response",
                 "The fixed OS helper returned an unexpected custody receipt.",
@@ -212,16 +222,22 @@ impl Windows {
         }
         Ok(())
     }
-    pub fn inspect(&self, path: &Path, deadline: Instant) -> Result<()> {
+    pub fn finish(&mut self, deadline: Instant) -> Result<()> {
+        self.session
+            .take()
+            .ok_or_else(custody::unsafe_path)?
+            .finish(deadline)
+    }
+    pub fn inspect(&mut self, path: &Path, deadline: Instant) -> Result<()> {
         self.call("inspect", path, None, deadline)
     }
-    pub fn publish(&self, from: &Path, to: &Path, deadline: Instant) -> Result<()> {
+    pub fn publish(&mut self, from: &Path, to: &Path, deadline: Instant) -> Result<()> {
         self.call("publish", from, Some(to), deadline)
     }
-    pub fn mkdir(&self, path: &Path, deadline: Instant) -> Result<()> {
+    pub fn mkdir(&mut self, path: &Path, deadline: Instant) -> Result<()> {
         self.call("mkdir", path, None, deadline)
     }
-    pub fn create(&self, path: &Path, deadline: Instant) -> Result<()> {
+    pub fn create(&mut self, path: &Path, deadline: Instant) -> Result<()> {
         if custody::present(path)?.is_some() {
             self.inspect(path, deadline)?;
             return Ok(());

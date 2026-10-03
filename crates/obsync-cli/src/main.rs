@@ -11,9 +11,11 @@ mod args;
 mod catalog;
 mod context;
 mod custody;
+#[cfg(any(windows, test))]
+mod helper_session;
 mod output;
 mod package;
-#[cfg(any(target_os = "macos", windows, test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 mod process;
 mod store;
 #[cfg(windows)]
@@ -164,7 +166,7 @@ fn run(args: &args::Args, operation: &str, catalog: &[Value], started: Instant) 
 fn run_context(args: &args::Args, op: &str, started: Instant) -> Result<Value> {
     use context::{Context, Plan};
     let mut store = store::Store::new(args, started + std::time::Duration::from_secs(5))?;
-    match op {
+    let result = match op {
         "context.list" => {
             args.check(2, 2, &[])?;
             let (state, _) = store.read()?;
@@ -284,7 +286,9 @@ fn run_context(args: &args::Args, op: &str, started: Instant) -> Result<Value> {
             ]))
         }
         _ => Err(Error::unsupported("This capability is not shipped.")),
-    }
+    }?;
+    store.finish()?;
+    Ok(result)
 }
 
 fn main() {
