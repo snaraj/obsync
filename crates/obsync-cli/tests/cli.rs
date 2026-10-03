@@ -240,6 +240,11 @@ fn aggregate_arguments_respect_the_advertised_input_budget() {
     // Help accepts these global flags without reading paths. Their individual
     // values fit; only the aggregate argument budget must reject the command.
     let value = "a".repeat(8192);
+    document(&["help", "--config-dir", &value, "-o", "json"], 0);
+    document(
+        &["help", "--config-dir", &"a".repeat(8193), "-o", "json"],
+        2,
+    );
     document(
         &[
             "help",

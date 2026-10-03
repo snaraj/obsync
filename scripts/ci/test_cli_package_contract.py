@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -107,6 +108,10 @@ class CliReleaseContract(unittest.TestCase):
                 cli.cli_archive_record(cli_bundle(entry_mutate=change), '1.1.6', SHA, 'linux-amd64')
         with self.assertRaises(ValueError):
             cli.cli_archive_record(cli_bundle(platform='windows-amd64'), '1.1.6', SHA, 'linux-amd64')
+        wrong_disk = bytearray(cli_bundle())
+        struct.pack_into('<H', wrong_disk, len(wrong_disk) - 18, 1)
+        with self.assertRaises(ValueError):
+            cli.cli_archive_record(bytes(wrong_disk), '1.1.6', SHA, 'linux-amd64')
 
     def test_exact_package_and_old_release_boundary(self):
         data = cli_bundle()
@@ -152,13 +157,17 @@ class CliReleaseContract(unittest.TestCase):
                                                 manifest=raw, plugin_digest=digest(plugin))
 
             uploaded(manifest)
-            for field in ('platform', 'runtime', 'size'):
+            for field in ('platform', 'runtime', 'size', 'record-fields', 'manifest-digest'):
                 changed = copy.deepcopy(manifest)
                 clients = changed['artifacts']['cli_archives']
                 if field == 'platform':
                     clients['foreign'] = copy.deepcopy(clients['linux-amd64'])
                 elif field == 'runtime':
                     clients['linux-amd64']['runtime']['version'] = '0.0.0'
+                elif field == 'record-fields':
+                    clients['linux-amd64']['unexpected'] = True
+                elif field == 'manifest-digest':
+                    clients['linux-amd64']['manifest_sha256'] = '0' * 64
                 else:
                     # Mirrored upload size must not bypass the fixed producer budget.
                     clients['linux-amd64']['size'] = cli.CLI_MAX_BYTES + 1

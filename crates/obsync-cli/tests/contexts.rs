@@ -297,6 +297,29 @@ fn changed_stale_expired_and_wrong_target_plans_leave_storage_unchanged() {
         Some("plan_expired")
     );
     assert!(!lab.config.exists());
+    let mut extended = a.clone();
+    if let Value::Object(fields) = &mut extended {
+        fields.push(("unexpected".into(), Value::Bool(true)));
+    }
+    lab.apply(&extended, 2);
+    assert!(!lab.config.exists());
+    let mut wrong_state = b.clone();
+    replace(
+        &mut wrong_state,
+        "config_digest",
+        Value::Str("f".repeat(64)),
+    );
+    rehash(&mut wrong_state);
+    let refusal = lab.apply(&wrong_state, 5);
+    assert_eq!(
+        refusal
+            .get("error")
+            .unwrap()
+            .get("code")
+            .and_then(Value::as_str),
+        Some("revision_conflict")
+    );
+    assert!(!lab.config.exists());
     lab.apply(&a, 0);
     let before = lab.bytes();
     lab.apply(&b, 5);
@@ -348,6 +371,18 @@ fn malformed_origins_and_names_are_refused_before_any_configuration_write() {
     ] {
         lab.run(&["config", "set-context", "lab", "--server", origin], 2);
     }
+    lab.run(
+        &[
+            "config",
+            "set-context",
+            "lab",
+            "--server",
+            "https://example.invalid",
+            "--expected-instance",
+            &"x".repeat(64),
+        ],
+        2,
+    );
     for name in ["A", "../fixture", "-name", "with space"] {
         lab.run(
             &[
@@ -372,13 +407,47 @@ fn malformed_origins_and_names_are_refused_before_any_configuration_write() {
 
 #[test]
 fn privacy_links_and_unknown_entries_refuse_with_unchanged_file_bytes() {
-    let lab = Lab::new();
+    let mut lab = Lab::new();
     lab.add("lab");
     let before = lab.bytes();
     fs::set_permissions(&lab.config, fs::Permissions::from_mode(0o750)).unwrap();
     lab.run(&["doctor"], 4);
     assert_eq!(before, lab.bytes());
     fs::set_permissions(&lab.config, fs::Permissions::from_mode(0o700)).unwrap();
+    let selected = lab.config.clone();
+    lab.config = PathBuf::from(format!("{}/./config", lab.root.display()));
+    lab.run(&["doctor"], 4);
+    lab.config = selected;
+    #[cfg(target_os = "macos")]
+    {
+        let ace = "everyone allow readattr";
+        assert!(
+            Command::new("/bin/chmod")
+                .args(["+a", ace])
+                .arg(&lab.config)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let refusal = lab.raw(&["doctor", "-o", "json"]);
+        // Restore the exact synthetic ACE even when the refusal assertion fails.
+        assert!(
+            Command::new("/bin/chmod")
+                .args(["-a", ace])
+                .arg(&lab.config)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            refusal.status.code(),
+            Some(4),
+            "{}",
+            String::from_utf8_lossy(&refusal.stdout)
+        );
+        assert_eq!(before, lab.bytes());
+        lab.run(&["doctor"], 0);
+    }
     let slot = lab.config.join("contexts.1");
     fs::set_permissions(&slot, fs::Permissions::from_mode(0o640)).unwrap();
     lab.run(&["doctor"], 4);
@@ -445,7 +514,15 @@ fn corrupt_sealed_record_is_never_discarded_by_doctor_or_recovery() {
     lab.run(&["config", "recover"], 4);
     assert_eq!(before, lab.bytes());
     // Valid seals isolate state-model and sequence checks from checksum checks.
-    for kind in ["order", "receipt", "sequence", "parity", "canonical"] {
+    for kind in [
+        "order",
+        "receipt",
+        "current",
+        "receipt-revision",
+        "sequence",
+        "parity",
+        "canonical",
+    ] {
         let lab = Lab::new();
         lab.add("lab");
         let mut state = lab.disk_state();
@@ -460,6 +537,12 @@ fn corrupt_sealed_record_is_never_discarded_by_doctor_or_recovery() {
             "receipt" => {
                 let mut receipts = state.get("receipts").unwrap().as_array().unwrap().to_vec();
                 receipts.push(receipts[0].clone());
+                replace(&mut state, "receipts", Value::Array(receipts));
+            }
+            "current" => replace(&mut state, "current", Value::Str("absent".into())),
+            "receipt-revision" => {
+                let mut receipts = state.get("receipts").unwrap().as_array().unwrap().to_vec();
+                replace(&mut receipts[0], "revision", Value::Int(2));
                 replace(&mut state, "receipts", Value::Array(receipts));
             }
             "sequence" => {
@@ -482,6 +565,81 @@ fn corrupt_sealed_record_is_never_discarded_by_doctor_or_recovery() {
         lab.write_state(1, raw.as_bytes());
         lab.assert_invalid_state();
     }
+}
+
+#[test]
+fn capacity_limits_and_missing_parent_refuse_without_storage_changes() {
+    let lab = Lab::new();
+    lab.add("lab");
+    let original = lab.disk_state();
+    let mut state = original.clone();
+    let template = state.get("contexts").unwrap().as_array().unwrap()[0].clone();
+    let contexts = (0..64)
+        .map(|i| {
+            let mut context = template.clone();
+            replace(&mut context, "name", Value::Str(format!("n{i:02}")));
+            context
+        })
+        .collect();
+    replace(&mut state, "contexts", Value::Array(contexts));
+    lab.write_state(1, state.to_json().as_bytes());
+    lab.run(&["doctor"], 0);
+    let before = lab.bytes();
+    let refusal = lab.run(
+        &[
+            "config",
+            "set-context",
+            "overflow",
+            "--server",
+            "https://example.invalid",
+        ],
+        9,
+    );
+    assert_eq!(
+        refusal
+            .get("error")
+            .unwrap()
+            .get("code")
+            .and_then(Value::as_str),
+        Some("context_capacity")
+    );
+    assert_eq!(before, lab.bytes());
+    let mut state = original;
+    let template = state.get("receipts").unwrap().as_array().unwrap()[0].clone();
+    let receipts = (0..64)
+        .map(|i| {
+            let mut receipt = template.clone();
+            replace(&mut receipt, "id", Value::Str(format!("{i:032x}")));
+            receipt
+        })
+        .collect();
+    replace(&mut state, "receipts", Value::Array(receipts));
+    lab.write_state(1, state.to_json().as_bytes());
+    lab.run(&["doctor"], 0);
+    let plan = lab.plan(&["config", "use-context", "lab"]);
+    let before = lab.bytes();
+    let refusal = lab.apply(&plan, 9);
+    assert_eq!(
+        refusal
+            .get("error")
+            .unwrap()
+            .get("code")
+            .and_then(Value::as_str),
+        Some("operation_capacity")
+    );
+    assert_eq!(before, lab.bytes());
+    let mut lab = Lab::new();
+    let parent = lab.root.join("missing-parent");
+    lab.config = parent.join("config");
+    let plan = lab.plan(&[
+        "config",
+        "set-context",
+        "lab",
+        "--server",
+        "https://example.invalid",
+    ]);
+    lab.apply(&plan, 4);
+    assert!(!parent.exists());
 }
 
 #[test]

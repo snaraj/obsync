@@ -74,7 +74,11 @@ impl Windows {
         let mut file = custody::open(&path, false, false)?;
         let raw = custody::bounded(&mut file, 16384)?;
         if context::digest(&raw) != expected {
-            return Err(custody::unsafe_path());
+            return Err(Error::new(
+                "windows_trust_digest",
+                "The Windows trust receipt differs from its supplied digest; repeat trusted setup.",
+                4,
+            ));
         }
         let receipt = json::parse(&raw).map_err(|_| custody::unsafe_path())?;
         context::closed(&receipt, &["schema_version", "directory", "powershell"])?;
@@ -83,14 +87,22 @@ impl Windows {
         }
         let directory = custody::exact(context::text(&receipt, "directory")?, false)?;
         if directory.join("powershell.json") != path {
-            return Err(custody::unsafe_path());
+            return Err(Error::new(
+                "windows_trust_directory",
+                "The Windows trust receipt is outside its recorded directory; repeat trusted setup.",
+                4,
+            ));
         }
         let code = context::field(&receipt, "powershell")?;
         context::closed(code, &["path", "sha256"])?;
         let executable = custody::exact(context::text(code, "path")?, false)?;
         let spelling = executable.to_str().unwrap();
         if !spelling.ends_with("\\System32\\WindowsPowerShell\\v1.0\\powershell.exe") {
-            return Err(custody::unsafe_path());
+            return Err(Error::new(
+                "windows_trust_path",
+                "The Windows trust receipt does not name the expected OS PowerShell path.",
+                4,
+            ));
         }
         // This explicitly trusted OS executable may have component-store links.
         // Hold it without write/delete sharing through every helper invocation.
@@ -107,7 +119,11 @@ impl Windows {
             || context::digest(&custody::bounded(&mut held, 32 * 1024 * 1024)?)
                 != context::text(code, "sha256")?
         {
-            return Err(custody::unsafe_path());
+            return Err(Error::new(
+                "windows_trust_executable",
+                "The trusted OS PowerShell executable failed its file type or digest check; repeat trusted setup.",
+                4,
+            ));
         }
         let source = include_str!("../../../cli/windows-files.ps1");
         // -EncodedCommand expands this fixed helper beyond CreateProcessW's
@@ -177,7 +193,11 @@ impl Windows {
             .stdin(Stdio::piped());
         let output = crate::process::capture(command, Some(request.into_bytes()), deadline)?;
         if output != b"{\"v\":1,\"ok\":true}\r\n" && output != b"{\"v\":1,\"ok\":true}\n" {
-            return Err(custody::unsafe_path());
+            return Err(Error::new(
+                "native_helper_response",
+                "The fixed OS helper returned an unexpected custody receipt.",
+                4,
+            ));
         }
         Ok(())
     }

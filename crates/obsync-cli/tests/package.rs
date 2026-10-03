@@ -193,6 +193,29 @@ fn native_install_repeat_upgrade_and_uninstall_preserve_external_contexts() {
 
 #[test]
 fn changed_package_or_installation_refuses_before_removing_anything() {
+    let mut lab = Lab::new();
+    lab.digest = "f".repeat(64);
+    lab.run("install", 4);
+    assert!(!lab.prefix.exists());
+    assert!(!lab.sibling("lock").exists());
+    for (field, value) in [
+        ("version", "0.0.0".into()),
+        ("platform", "unsupported".into()),
+        ("source_sha", "0".repeat(40)),
+    ] {
+        let mut lab = Lab::new();
+        let path = lab.source.join("package-manifest.json");
+        let mut manifest = json::parse(&fs::read(&path).unwrap()).unwrap();
+        if let Value::Object(fields) = &mut manifest {
+            fields.iter_mut().find(|(key, _)| key == field).unwrap().1 = Value::Str(value);
+        }
+        let raw = manifest.to_json();
+        fs::write(path, &raw).unwrap();
+        lab.digest = hex::encode(&sha256(raw.as_bytes()));
+        lab.run("install", 4);
+        assert!(!lab.prefix.exists());
+        assert!(!lab.sibling("lock").exists());
+    }
     for changed in [&b"changed"[..], &b"Synthetic license\n"[..]] {
         let lab = Lab::new();
         // The equal-length change isolates digest verification from size.
