@@ -147,6 +147,25 @@ fn search_explain_and_capabilities_describe_the_same_catalog() {
         .unwrap()
         .as_array()
         .unwrap();
+    for entry in entries {
+        for field in [
+            "operation",
+            "command",
+            "summary",
+            "input_schema",
+            "effect",
+            "availability",
+            "repeatability",
+            "completion",
+            "verification",
+            "errors",
+        ] {
+            assert!(
+                entry.get(field).is_some(),
+                "missing public command field {field}"
+            );
+        }
+    }
     for item in items {
         let id = item.get("operation").unwrap().as_str().unwrap();
         let schema = document(&["explain", id, "-o", "json"], 0);
@@ -235,7 +254,7 @@ fn positional_flag_text_cannot_change_output_or_choose_an_ambiguous_schema() {
     assert!(
         String::from_utf8(output.stdout)
             .unwrap()
-            .contains("Plan selecting a named context.")
+            .contains("Select a saved server.")
     );
 }
 

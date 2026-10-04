@@ -1,6 +1,6 @@
 # obsync CLI
 
-A native Rust client with human output by default, explicit contexts, and a
+A native Rust client with human output by default, saved contexts, and a
 versioned JSON interface. Its command groups follow
 [kubectl conventions](https://kubernetes.io/docs/reference/kubectl/conventions/).
 It needs no Node runtime, npm package or downloaded filesystem helper.
@@ -13,6 +13,7 @@ and encrypted export/open return an explicit unsupported result.
 
 ```sh
 obsync --help
+obsync help --all
 obsync config --help
 obsync cli search context
 obsync explain context.add
@@ -84,11 +85,14 @@ verified manifest digest:
 "$installation/obsync" --help
 ```
 
-Install copies the verified native binary and documentation, flushes the private
+Install prints the directory to add to PATH once. Keep that same `--prefix`
+for later versions. Install copies the verified native binary and documentation, flushes the private
 stage, publishes the complete directory, then reads back its exact inventory.
-It changes no PATH, shell profile or context. Upgrade repeats this ceremony into
-a new directory; select that executable explicitly. Uninstall using the original
-verified package and exact binding:
+It changes no PATH, shell profile or context. To upgrade at the same executable
+path, first uninstall the old verified package, then install the new verified
+package into the same `--prefix`. The executable is unavailable between these
+two steps; this is not a zero-downtime switch. Retain the original verified package
+until uninstall has completed. Uninstall with its exact binding:
 
 ```sh
 "$package/obsync" uninstall --from "$package" --prefix "$installation" \
@@ -97,15 +101,21 @@ verified package and exact binding:
 
 Changed or unknown files refuse removal. Retry the exact action after interruption;
 `.pending` and `.removing` siblings are reserved for bounded recovery. The
-`.lock` sibling permanently retains the flushed target/manifest binding, so
+`.lock` sibling retains the same inode and flushed target/manifest binding, so
 concurrent processes lock the same file and interrupted cleanup stays identifiable.
+Only after the installation, `.pending` and `.removing` directories are absent
+may a new verified package replace the binding. A damaged or foreign binding
+refuses with an explanation; deleting the lock is never an upgrade step.
 On Windows, uninstall durably retires the installation path with the approved
 write-through move. Cleanup is observed absent, but its directory deletions are
 not proven durable across power loss (`cleanup_durable: false`); repeat the exact
 uninstall to remove any matching retired files that reappear. POSIX also flushes
 the cleanup directories. Never run uninstall from the installation being removed;
 use the original independently verified package as shown above.
-Contexts, server data and vaults are outside the installation inventory.
+Contexts, server data and vaults are outside the installation inventory. On Windows,
+if old cleanup entries reappear after power loss, different package bytes refuse
+cleanup and remain untouched. This does not claim physical power-loss recovery
+across a version change.
 
 ### Windows trust setup
 
@@ -132,44 +142,65 @@ No command chooses an ambient executable, weakens execution policy, grants
 administrator rights or enables a network filesystem. The receipt pins the OS
 PowerShell executable; OS libraries and the selected user's session remain trusted.
 
-## A local context, end to end
+## Add and select a server
 
-Choose an explicit `--config-dir` on every context command. Its parent must
-already exist; first apply creates only the private leaf. Planning creates no
-configuration. For example:
+At a terminal, one command shows the change and asks `Apply? [y/N]`:
 
 ```sh
-obsync config set-context lab --server https://example.invalid \
-  --config-dir /absolute/private/config -o json
+obsync context add home --server https://sync.example.org
+obsync context list
+obsync doctor
 ```
 
-Save the returned **`data.plan` object** as `/absolute/private/plan.json`, review
-it, and pass its digest separately:
+The first server becomes selected automatically. Use `--use` when adding a later
+server to select it in the same change. `context use NAME` selects an existing
+server; `context remove NAME` removes only its local settings. The `config
+set-context`, `config use-context` and `config delete-context` spellings work too.
+Use `--yes` to explicitly apply without a prompt. A pipe, `--non-interactive`,
+`--plan`, or `-o json` returns a plan unless `--yes` explicitly requests a write.
+`--yes` and `--plan` cannot be combined. A declined confirmation changes nothing.
+
+Settings default to `$XDG_CONFIG_HOME/obsync` (or `$HOME/.config/obsync`) on Linux,
+`$HOME/Library/Application Support/obsync` on macOS, and `%APPDATA%\obsync` on
+Windows. `--config-dir` overrides this with an absolute private path. The same
+ownership, ACL, local-filesystem and link checks apply to defaults and overrides.
+Reads and planning create nothing; the first confirmed write creates missing
+default directories privately. Existing permissions are never broadened.
+Windows storage commands still require the independently verified OS trust receipt.
+
+## Plan and apply for automation
+
+Keep the exact plan workflow when a person or agent must review the change before
+execution. For example:
 
 ```sh
-obsync apply -f /absolute/private/plan.json --expect-digest DIGEST \
-  --config-dir /absolute/private/config
-obsync config get-contexts --config-dir /absolute/private/config
-obsync config use-context lab --config-dir /absolute/private/config -o json
+obsync config set-context lab --server https://example.invalid -o json
 ```
 
-Apply the selection plan the same way, then verify in a fresh process:
+Save the returned **`data.plan` object** in a private file, review it, then apply
+its independently retained digest. Use the same `--config-dir` override on every
+command when selecting a nondefault configuration:
 
 ```sh
-obsync config current-context --config-dir /absolute/private/config
-obsync describe context lab --config-dir /absolute/private/config
-obsync doctor --config-dir /absolute/private/config
+obsync apply -f /absolute/private/plan.json --expect-digest DIGEST -o json
+obsync config current-context
+obsync describe context lab
 ```
 
-`config delete-context NAME` also returns a plan. Removal changes only that local
-association. Each plan binds the exact configuration path, prior state, revision
-and a five-minute lifetime. Changed, expired, stale and cross-target plans refuse.
+Each plan binds the exact configuration path, prior state, revision and a
+five-minute lifetime. Changed, expired, stale and cross-target plans refuse.
 Identical unexpired replays return the durable receipt without applying again.
+At a terminal, confirmation releases helpers and holds no configuration lock;
+after confirmation, apply rechecks the exact planned revision. Time spent deciding
+is excluded from the five-second execution budget, but the plan still expires.
+A verified result that finishes late stays completed and reports the elapsed time
+and deadline warning. Unconfirmed completion remains `unknown`.
 
-Contexts accept names, HTTPS origins and optional expected instance fingerprints.
-They never accept credentials, recovery material or vault keys. A configured
-origin or fingerprint is not verified server identity: outputs keep
-`verified_instance: null` and `server_contacted: false`.
+Human results show the action and next step. `--verbose` adds revision and receipt
+details; `-o json` preserves the machine contract. Contexts accept names, HTTPS
+origins and optional expected instance fingerprints. They never accept credentials,
+recovery material or vault keys. Saving an origin does not contact or verify its
+server: outputs retain `verified_instance: null` and `server_contacted: false`.
 
 ## Storage and recovery
 

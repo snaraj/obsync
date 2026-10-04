@@ -23,7 +23,7 @@ mod windows;
 
 use obsync_core::json::{Value, obj};
 use std::{
-    io::{self, Write},
+    io::{self, BufRead, IsTerminal, Read, Write},
     time::Instant,
 };
 
@@ -31,28 +31,28 @@ type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
 struct Error {
     code: &'static str,
-    message: &'static str,
+    message: String,
     exit: u8,
 }
 impl Error {
-    fn new(code: &'static str, message: &'static str, exit: u8) -> Self {
+    fn new(code: &'static str, message: impl Into<String>, exit: u8) -> Self {
         Self {
             code,
-            message,
+            message: message.into(),
             exit,
         }
     }
-    fn input(message: &'static str) -> Self {
+    fn input(message: impl Into<String>) -> Self {
         Self {
             code: "invalid_input",
-            message,
+            message: message.into(),
             exit: 2,
         }
     }
     fn unsupported(message: &'static str) -> Self {
         Self {
             code: "unsupported_capability",
-            message,
+            message: message.into(),
             exit: 6,
         }
     }
@@ -61,7 +61,12 @@ fn s(value: impl Into<String>) -> Value {
     Value::Str(value.into())
 }
 
-fn run(args: &args::Args, operation: &str, catalog: &[Value], started: Instant) -> Result<Value> {
+fn run(
+    args: &args::Args,
+    operation: &str,
+    catalog: &[Value],
+    started: &mut Instant,
+) -> Result<Value> {
     match operation {
         "cli.windows_setup" => {
             args.check(1, 1, &[])?;
@@ -79,7 +84,7 @@ fn run(args: &args::Args, operation: &str, catalog: &[Value], started: Instant) 
         "cli.install" | "cli.uninstall" => package::run(
             args,
             operation == "cli.uninstall",
-            started + std::time::Duration::from_secs(5),
+            *started + std::time::Duration::from_secs(5),
         ),
         "cli.help" | "config.help" => {
             args.check(0, 4, &["help"])?;
@@ -154,7 +159,7 @@ fn run(args: &args::Args, operation: &str, catalog: &[Value], started: Instant) 
             Ok(obj(vec![("instructions", Value::Array([
                 "Discover commands with help, cli search, explain and capabilities.",
                 "Use -o json for one bounded, versioned machine-readable envelope.",
-                "Context writes require an exact five-minute plan and explicit --config-dir; read state back in a new process after apply.",
+                "Use -o json to plan context changes; apply the exact digest before five-minute expiry. Use --config-dir to override OS settings, and read state back in a new process.",
                 "Never put credentials, vault keys or recovery words in command arguments or contexts.",
                 "A configured HTTPS origin is not a verified server identity.",
             ].map(s).to_vec()))]))
@@ -163,9 +168,9 @@ fn run(args: &args::Args, operation: &str, catalog: &[Value], started: Instant) 
     }
 }
 
-fn run_context(args: &args::Args, op: &str, started: Instant) -> Result<Value> {
+fn run_context(args: &args::Args, op: &str, started: &mut Instant) -> Result<Value> {
     use context::{Context, Plan};
-    let mut store = store::Store::new(args, started + std::time::Duration::from_secs(5))?;
+    let mut store = store::Store::new(args, *started + std::time::Duration::from_secs(5))?;
     let result = match op {
         "context.list" => {
             args.check(2, 2, &[])?;
@@ -217,12 +222,15 @@ fn run_context(args: &args::Args, op: &str, started: Instant) -> Result<Value> {
                 3,
                 3,
                 if op == "context.add" {
-                    &["server", "expected-instance"]
+                    &["server", "expected-instance", "use", "yes", "plan"]
                 } else {
-                    &[]
+                    &["yes", "plan"]
                 },
             )?;
-            let parameters = if op == "context.add" {
+            if args.has("yes") && args.has("plan") {
+                return Err(Error::input("Choose --yes to apply or --plan to preview."));
+            }
+            let mut parameters = if op == "context.add" {
                 Context::new(
                     &args.words[2],
                     args.get("server")
@@ -233,8 +241,47 @@ fn run_context(args: &args::Args, op: &str, started: Instant) -> Result<Value> {
             } else {
                 obj(vec![("name", s(context::name(&args.words[2])?))])
             };
+            if args.has("use")
+                && let Value::Object(pairs) = &mut parameters
+            {
+                pairs.push(("select".into(), Value::Bool(true)));
+            }
             let (state, _) = store.read()?;
+            if op == "context.add"
+                && state.contexts.is_empty()
+                && let Value::Object(pairs) = &mut parameters
+                && !pairs.iter().any(|(key, _)| key == "select")
+            {
+                pairs.push(("select".into(), Value::Bool(true)));
+            }
             let plan = Plan::create(&state, op, parameters, &store.target)?;
+            if args.has("yes") {
+                let result = store.apply(&plan)?;
+                store.finish()?;
+                return Ok(result);
+            }
+            if !args.has("plan")
+                && !args.has("non-interactive")
+                && args.get("output").is_none_or(|format| format == "human")
+                && io::stdin().is_terminal()
+                && io::stdout().is_terminal()
+            {
+                // Never retain a helper or lock while a person considers a
+                // change. Reopen and validate the exact plan after confirmation.
+                store.finish()?;
+                drop(store);
+                let waiting = Instant::now();
+                let confirmed = confirm(&plan);
+                *started += waiting.elapsed();
+                if !confirmed? {
+                    return Ok(obj(vec![("cancelled", Value::Bool(true))]));
+                }
+                let mut store =
+                    store::Store::new(args, *started + std::time::Duration::from_secs(5))?;
+                let result = store.apply(&plan)?;
+                store.finish()?;
+                return Ok(result);
+            }
             Ok(obj(vec![("plan", plan.value)]))
         }
         "context.apply" => {
@@ -291,8 +338,25 @@ fn run_context(args: &args::Args, op: &str, started: Instant) -> Result<Value> {
     Ok(result)
 }
 
+fn confirm(plan: &context::Plan) -> Result<bool> {
+    let mut out = io::stderr().lock();
+    write!(out, "{}\nApply? [y/N] ", output::plan_summary(&plan.value))
+        .map_err(custody::io_error)?;
+    out.flush().map_err(custody::io_error)?;
+    let mut line = String::new();
+    io::stdin()
+        .lock()
+        .take(9)
+        .read_line(&mut line)
+        .map_err(custody::io_error)?;
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
 fn main() {
-    let started = Instant::now();
+    let mut started = Instant::now();
     let raw: Vec<_> = std::env::args_os().skip(1).collect();
     // Preserve an explicit machine stream even when argument parsing refuses.
     let machine = raw
@@ -327,10 +391,10 @@ fn main() {
         });
     let catalog = catalog::load();
     let operation = parsed.as_ref().ok().and_then(|args| args.operation().ok());
-    let mut result = (|| {
+    let result = (|| {
         let args = parsed.as_ref().map_err(|error| Error {
             code: error.code,
-            message: error.message,
+            message: error.message.clone(),
             exit: error.exit,
         })?;
         if !["human", "json", "jsonl"].contains(&format) {
@@ -340,23 +404,15 @@ fn main() {
         if args.has("help") || op == "cli.help" || op == "config.help" {
             return catalog::help_data(args, &catalog, op);
         }
-        run(args, op, &catalog, started)
+        run(args, op, &catalog, &mut started)
     })();
-    if result
-        .as_ref()
-        .is_ok_and(|data| data.to_json().len() > 60000)
-    {
-        result = Err(Error::input("The result exceeds its output budget."));
-    }
-    if started.elapsed().as_millis() > 5000 {
-        result = Err(Error {
-            code: "deadline_exceeded",
-            message: "The local command exceeded its five-second deadline.",
-            exit: 7,
-        });
-    }
-    let exit = result.as_ref().err().map_or(0, |error| error.exit);
-    let rendered = output::render(result, operation, format, started.elapsed().as_millis());
+    let (exit, rendered) = finish_command(
+        result,
+        operation,
+        format,
+        started.elapsed().as_millis(),
+        parsed.as_ref().is_ok_and(|args| args.has("verbose")),
+    );
     let stream: &mut dyn Write = if exit != 0 && format == "human" {
         &mut io::stderr()
     } else {
@@ -366,4 +422,87 @@ fn main() {
         std::process::exit(9);
     }
     std::process::exit(i32::from(exit));
+}
+
+fn finish_command(
+    mut result: Result<Value>,
+    operation: Option<&str>,
+    format: &str,
+    elapsed: u128,
+    verbose: bool,
+) -> (u8, String) {
+    if result
+        .as_ref()
+        .is_ok_and(|data| data.to_json().len() > 60000)
+    {
+        result = Err(Error::input("The result exceeds its output budget."));
+    }
+    // Operation guards enforce deadlines before effects. A verified result must
+    // not be turned into a refusal by scheduling or output work after completion.
+    let exit = result.as_ref().err().map_or(0, |error| error.exit);
+    (
+        exit,
+        output::render(result, operation, format, elapsed, verbose),
+    )
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn verified_completion_survives_late_delivery_without_hiding_refusals() {
+        let receipt = obj(vec![
+            ("id", s("synthetic-receipt")),
+            ("revision", Value::Int(1)),
+        ]);
+        for elapsed in [4999, 5001, 6000] {
+            let (exit, text) = finish_command(
+                Ok(receipt.clone()),
+                Some("context.apply"),
+                "json",
+                elapsed,
+                false,
+            );
+            let value = obsync_core::json::parse(text.as_bytes()).unwrap();
+            assert_eq!(exit, 0);
+            assert_eq!(
+                value.get("state").and_then(Value::as_str),
+                Some("completed")
+            );
+            assert_eq!(value.get("data"), Some(&receipt));
+            assert_eq!(value.get("duration_ms"), Some(&Value::Int(elapsed as i64)));
+            assert_eq!(
+                value.get("warnings").unwrap().as_array().unwrap().len(),
+                usize::from(elapsed > 5000)
+            );
+        }
+        for (code, exit) in [("unsafe_config", 4), ("write_unknown", 7)] {
+            let (actual, text) = finish_command(
+                Err(Error::new(code, "synthetic refusal", exit)),
+                Some("context.apply"),
+                "json",
+                6000,
+                false,
+            );
+            let value = obsync_core::json::parse(text.as_bytes()).unwrap();
+            assert_eq!(actual, exit);
+            assert_eq!(
+                value
+                    .get("error")
+                    .unwrap()
+                    .get("code")
+                    .and_then(Value::as_str),
+                Some(code)
+            );
+            assert!(
+                value
+                    .get("warnings")
+                    .unwrap()
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
 }

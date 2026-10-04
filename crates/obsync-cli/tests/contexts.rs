@@ -282,6 +282,21 @@ fn changed_stale_expired_and_wrong_target_plans_leave_storage_unchanged() {
     replace(&mut changed, "id", Value::Str("f".repeat(32)));
     lab.apply(&changed, 5);
     assert!(!lab.config.exists());
+    for extra_field in [false, true] {
+        let mut malformed = a.clone();
+        let mut parameters = malformed.get("parameters").unwrap().clone();
+        if extra_field {
+            if let Value::Object(fields) = &mut parameters {
+                fields.push(("unexpected".into(), Value::Bool(true)));
+            }
+        } else {
+            replace(&mut parameters, "select", Value::Str("yes".into()));
+        }
+        replace(&mut malformed, "parameters", parameters);
+        rehash(&mut malformed);
+        lab.apply(&malformed, 2);
+        assert!(!lab.config.exists());
+    }
     let mut foreign = a.clone();
     replace(&mut foreign, "config_target", Value::Str("f".repeat(64)));
     rehash(&mut foreign);
@@ -457,12 +472,12 @@ fn privacy_links_and_unknown_entries_refuse_with_unchanged_file_bytes() {
     lab.run(&["doctor"], 4);
     lab.config = selected;
     #[cfg(target_os = "macos")]
-    {
+    for directory in [&lab.config, &lab.root] {
         let ace = "everyone allow readattr";
         assert!(
             Command::new("/bin/chmod")
                 .args(["+a", ace])
-                .arg(&lab.config)
+                .arg(directory)
                 .status()
                 .unwrap()
                 .success()
@@ -472,7 +487,7 @@ fn privacy_links_and_unknown_entries_refuse_with_unchanged_file_bytes() {
         assert!(
             Command::new("/bin/chmod")
                 .args(["-a", ace])
-                .arg(&lab.config)
+                .arg(directory)
                 .status()
                 .unwrap()
                 .success()
@@ -671,6 +686,7 @@ fn capacity_limits_and_missing_parent_refuse_without_storage_changes() {
         })
         .collect();
     replace(&mut state, "contexts", Value::Array(contexts));
+    replace(&mut state, "current", Value::Str("n00".into()));
     lab.write_state(1, state.to_json().as_bytes());
     lab.run(&["doctor"], 0);
     let before = lab.bytes();

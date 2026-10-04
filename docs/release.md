@@ -288,7 +288,11 @@ The read-only authorization job requires successful native acceptance jobs at
 exactly the protected-main source. The publisher downloads their exact named
 artifacts from that authorized run, validates all four archives, and attests the
 same accepted bytes. It then performs immutable upload and byte readback. The
-read-only audit checks the same inventory and publisher identity. There are
+attestation identifies `release-publisher.yml`, which acquires and publishes
+the archives; it is not an attestation from the compilation workflow. The
+separately verified run ID, protected-main source and archive content bind the
+publisher to the successful `cli-native.yml` build and acceptance run.
+The read-only audit checks the same inventory and publisher identity. There are
 eleven Release assets from 1.1.6; attestation bundles are not extra assets.
 
 External evidence consumers must bind this version-gated inventory before the

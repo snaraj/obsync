@@ -87,7 +87,7 @@ impl Windows {
         let path = args.get("windows-trust").ok_or_else(|| {
             Error::new(
                 "trusted_powershell_required",
-                "Supply the independently trusted OS PowerShell receipt and its digest.",
+                "Run 'obsync windows-setup' and follow its trusted OS PowerShell instructions. Then supply --windows-trust FILE and --windows-trust-sha256 HASH.",
                 4,
             )
         })?;

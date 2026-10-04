@@ -34,6 +34,7 @@ pub struct Store {
     pub path: PathBuf,
     pub target: String,
     custody: Custody,
+    default_path: bool,
 }
 fn corrupt() -> Error {
     Error::new(
@@ -61,15 +62,17 @@ impl Store {
         self.custody.finish()
     }
     pub fn new(args: &Args, deadline: Instant) -> Result<Self> {
-        let path = args.get("config-dir").ok_or_else(|| {
-            Error::input("Supply --config-dir with an explicit absolute private directory.")
-        })?;
-        let path = custody::exact(path, false)?;
+        let path = if let Some(path) = args.get("config-dir") {
+            custody::exact(path, false)?
+        } else {
+            default_path()?
+        };
         let target = context::digest(path.to_str().unwrap().as_bytes());
         Ok(Self {
             path,
             target,
             custody: Custody::new(deadline, args)?,
+            default_path: !args.has("config-dir"),
         })
     }
     fn inventory(&mut self) -> Result<()> {
@@ -97,6 +100,25 @@ impl Store {
         Ok(())
     }
     fn lock(&mut self, write: bool, create: bool) -> Result<Option<File>> {
+        if create && self.default_path {
+            // Reads and planning never create storage. On the first confirmed
+            // write, create only missing default parents with private custody.
+            let mut missing = Vec::new();
+            for at in self
+                .path
+                .parent()
+                .ok_or_else(custody::unsafe_path)?
+                .ancestors()
+            {
+                if custody::present(at)?.is_some() {
+                    break;
+                }
+                missing.push(at.to_owned());
+            }
+            for at in missing.iter().rev() {
+                self.custody.directory(at, true)?;
+            }
+        }
         if !self.custody.directory(&self.path, create)? {
             return Ok(None);
         }
@@ -341,4 +363,27 @@ impl Store {
         }
         Ok(after.state)
     }
+}
+
+fn default_path() -> Result<PathBuf> {
+    let variable = |key| {
+        std::env::var(key).map_err(|_| Error::input(
+        "The default settings folder is unavailable. Supply --config-dir with an absolute private directory.",
+    ))
+    };
+    #[cfg(target_os = "macos")]
+    let base = custody::exact(&variable("HOME")?, false)?.join("Library/Application Support");
+    #[cfg(target_os = "linux")]
+    let base = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(value) => custody::exact(value.to_str().ok_or_else(custody::unsafe_path)?, false)?,
+        None => custody::exact(&variable("HOME")?, false)?.join(".config"),
+    };
+    #[cfg(windows)]
+    let base = custody::exact(&variable("APPDATA")?, false)?;
+    custody::exact(
+        base.join("obsync")
+            .to_str()
+            .ok_or_else(custody::unsafe_path)?,
+        false,
+    )
 }

@@ -88,7 +88,9 @@ pub fn origin(value: &str) -> Result<String> {
     if value.len() > 512 || !value.is_ascii() {
         return Err(invalid());
     }
-    let rest = value.strip_prefix("https://").ok_or_else(invalid)?;
+    let rest = value.strip_prefix("https://").ok_or_else(|| Error::input(
+        "Add https:// to the server address, for example https://sync.example.org. Use an origin without credentials or a path.",
+    ))?;
     let rest = rest.strip_suffix('/').unwrap_or(rest);
     let (host, port) = if rest.starts_with('[') {
         let end = rest.find(']').ok_or_else(invalid)?;
@@ -213,6 +215,26 @@ impl Context {
                 self.expected.as_ref().map_or(Value::Null, s),
             ),
         ])
+    }
+}
+
+fn addition(parameters: &Value) -> Result<(Context, bool)> {
+    if parameters.get("select").is_some() {
+        let select = field(parameters, "select")?
+            .as_bool()
+            .ok_or_else(|| Error::input("Context selection must be a boolean."))?;
+        let context = Value::Object(
+            parameters
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, _)| key != "select")
+                .cloned()
+                .collect(),
+        );
+        Ok((Context::parse(&context)?, select))
+    } else {
+        Ok((Context::parse(parameters)?, false))
     }
 }
 
@@ -359,7 +381,11 @@ impl State {
                     9,
                 ));
             }
-            result.contexts.push(Context::parse(parameters)?);
+            let (context, select) = addition(parameters)?;
+            if result.contexts.is_empty() || select {
+                result.current = Some(label.into());
+            }
+            result.contexts.push(context);
             result.contexts.sort_by(|a, b| a.name.cmp(&b.name));
         } else {
             let index = index.ok_or_else(|| {
@@ -434,7 +460,7 @@ impl Plan {
         operation(op)?;
         let parameters = field(&value, "parameters")?;
         if op == "context.add" {
-            Context::parse(parameters)?;
+            addition(parameters)?;
         } else {
             closed(parameters, &["name"])?;
             name(text(parameters, "name")?)?;

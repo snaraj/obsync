@@ -309,7 +309,7 @@ impl Custody {
     pub fn finish(&mut self) -> Result<()> {
         #[cfg(windows)]
         self.windows.finish(self.deadline)?;
-        self.check_time()
+        Ok(())
     }
     pub fn file(&mut self, path: &Path, write: bool) -> Result<File> {
         self.private_file(path, write, false)
@@ -337,6 +337,8 @@ impl Custody {
         self.check_time()?;
         let mut ancestors = path.ancestors().collect::<Vec<_>>();
         ancestors.reverse();
+        #[cfg(target_os = "macos")]
+        let mut unchecked = Vec::new();
         for at in ancestors {
             let leaf = at == path;
             if present(at)?.is_none() {
@@ -376,7 +378,11 @@ impl Custody {
             }
             #[cfg(target_os = "macos")]
             if self.cache.get(at) != Some(&current) {
-                self.macos(at, &held, &current)?;
+                unchecked.push((
+                    at.to_owned(),
+                    held.try_clone().map_err(io_error)?,
+                    current.clone(),
+                ));
             }
             #[cfg(windows)]
             if leaf {
@@ -385,7 +391,35 @@ impl Custody {
             if !current.same(&identity(&held)?) {
                 return Err(unsafe_path());
             }
+            #[cfg(not(target_os = "macos"))]
             self.cache.insert(at.into(), identity(&held)?);
+        }
+        #[cfg(target_os = "macos")]
+        if !unchecked.is_empty() {
+            self.macos_runtime()?;
+            let interpreter = self.interpreter.as_ref().ok_or_else(unsafe_path)?;
+            // Two bounded workers reduce process-start latency while every
+            // already-open ancestor still receives its full native ACL check.
+            let deadline = self.deadline;
+            for batch in unchecked.chunks(2) {
+                let checked = std::thread::scope(|scope| {
+                    let workers: Vec<_> = batch
+                        .iter()
+                        .map(|(path, held, stamp)| {
+                            scope.spawn(move || {
+                                Self::macos(path, held, stamp, interpreter, deadline)
+                            })
+                        })
+                        .collect();
+                    workers
+                        .into_iter()
+                        .map(|worker| worker.join().map_err(|_| unsafe_path())?)
+                        .collect::<Result<Vec<_>>>()
+                })?;
+                for ((path, _, _), stamp) in batch.iter().zip(checked) {
+                    self.cache.insert(path.clone(), stamp);
+                }
+            }
         }
         if create {
             self.sync_parent(path)?;
@@ -449,7 +483,7 @@ impl Custody {
         Ok(())
     }
     #[cfg(target_os = "macos")]
-    fn macos(&mut self, path: &Path, held: &File, first: &Stamp) -> Result<()> {
+    fn macos_runtime(&mut self) -> Result<()> {
         use std::process::{Command, Stdio};
         let command = |executable: &str| {
             let mut c = Command::new(executable);
@@ -501,6 +535,25 @@ impl Custody {
         {
             return Err(unsafe_path());
         }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    fn macos(
+        path: &Path,
+        held: &File,
+        first: &Stamp,
+        interpreter: &Stamp,
+        deadline: Instant,
+    ) -> Result<Stamp> {
+        use std::process::{Command, Stdio};
+        let command = |executable: &str| {
+            let mut c = Command::new(executable);
+            c.env_clear().env("LC_ALL", "C").current_dir("/");
+            c
+        };
+        if interpreter != &stamp(&fs::symlink_metadata("/usr/bin/osascript").map_err(io_error)?) {
+            return Err(unsafe_path());
+        }
         let source = format!(
             "const ARM64={};\n{}",
             cfg!(target_arch = "aarch64"),
@@ -508,7 +561,13 @@ impl Custody {
         );
         let mut before = first.clone();
         loop {
-            self.check_time()?;
+            if Instant::now() >= deadline {
+                return Err(Error::new(
+                    "deadline_exceeded",
+                    "The local operation exceeded its five-second deadline.",
+                    7,
+                ));
+            }
             let mut c = command("/usr/bin/osascript");
             c.args([
                 "-l",
@@ -519,7 +578,7 @@ impl Custody {
                 &before.ino.to_string(),
             ])
             .stdin(Stdio::from(held.try_clone().map_err(io_error)?));
-            let raw = crate::process::capture(c, None, self.deadline)?;
+            let raw = crate::process::capture(c, None, deadline)?;
             let result = obsync_core::json::parse(&raw).map_err(|_| unsafe_path())?;
             let after = identity(held)?;
             let named = stamp(&fs::symlink_metadata(path).map_err(io_error)?);
@@ -554,7 +613,7 @@ impl Custody {
             {
                 return Err(unsafe_path());
             }
-            return Ok(());
+            return Ok(after);
         }
     }
 }

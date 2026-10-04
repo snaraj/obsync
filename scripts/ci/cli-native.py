@@ -9,6 +9,7 @@ import shutil
 import statistics
 import subprocess
 import tempfile
+import sys
 import time
 
 
@@ -30,16 +31,17 @@ def journey(package, root, trust=()):
               'manifest_sha256': digest, 'binary_sha256': hashlib.sha256((package / binary).read_bytes()).hexdigest(),
               'clock': vars(time.get_clock_info('perf_counter'))}
 
-    def run(args, code=0, exe=None, human=False):
+    def run(args, code=0, exe=None, human=False, env=None):
         started = time.perf_counter_ns()
         proc = subprocess.run([str(exe or installed / binary), *args, *trust,
-                               *([] if human else ['-o', 'json'])], env={}, capture_output=True, timeout=8)
+                               *([] if human else ['-o', 'json'])], env=env or {}, capture_output=True, timeout=8)
         elapsed = (time.perf_counter_ns() - started) / 1e6
         assert proc.returncode == code, (args[0], proc.returncode, proc.stdout.decode(errors='replace'),
                                          proc.stderr.decode(errors='replace'))
-        assert not proc.stderr and len(proc.stdout) <= 65536
+        stream, other = (proc.stderr, proc.stdout) if human and code else (proc.stdout, proc.stderr)
+        assert not other and len(stream) <= 65536
         result['commands'] += 1
-        return (proc.stdout.decode() if human else json.loads(proc.stdout)), elapsed
+        return (stream.decode() if human else json.loads(stream)), elapsed
 
     def context(args, code=0):
         return run([*args, '--config-dir', str(config)], code)[0]
@@ -240,7 +242,116 @@ def journey(package, root, trust=()):
             (config / f'contexts.{number}').write_bytes(before[f'contexts.{number}'])
     assert stored() == before and disk() == state
     context(['doctor'])
-    # Two immutable installations. Changing the selected executable is explicit.
+    # Public human/default-path journey, still isolated under the owned fixture.
+    key = 'APPDATA' if os.name == 'nt' else ('HOME' if sys.platform == 'darwin' else 'XDG_CONFIG_HOME')
+    default_env = {key: str(root)}
+    defaults = root / ('Library/Application Support/obsync' if sys.platform == 'darwin' else 'obsync')
+    text, _ = run(['doctor'], human=True, env=default_env)
+    assert 'No server yet.' in text and 'obsync config set-context' in text and not defaults.exists()
+    planned, _ = run(['context', 'add', 'home', '--server', 'https://example.invalid'], env=default_env)
+    assert planned['state'] == 'planned' and not defaults.exists()
+    for extra in [[], ['--non-interactive'], ['--plan']]:
+        text, _ = run(['context', 'add', 'home', '--server', 'https://example.invalid', *extra],
+                      human=True, env=default_env)
+        assert 'in 5 minutes' in text and 'Unix milliseconds' not in text and not defaults.exists()
+    refused, _ = run(['doctor'], 4, env={key: 'relative-fixture'})
+    assert refused['error']['code'] == 'unsafe_config' and not defaults.exists()
+    text, _ = run(['context', 'add', 'home', '--server', 'https://example.invalid', '--yes'],
+                  human=True, env=default_env)
+    assert 'Added server "home".' in text and 'selected server' in text and 'Receipt:' not in text
+    assert run(['context', 'current'], env=default_env)[0]['data']['context']['name'] == 'home'
+    default_before = {p.name:p.read_bytes() for p in defaults.iterdir()}
+    refused, _ = run(['context', 'add', 'work', '--server', 'https://example.invalid', '--yes', '--plan'],
+                     2, env=default_env)
+    assert refused['error']['code'] == 'invalid_input'
+    assert default_before == {p.name:p.read_bytes() for p in defaults.iterdir()}
+    run(['context', 'add', 'other', '--server', 'https://example.invalid', '--yes'], env=default_env)
+    assert run(['context', 'current'], env=default_env)[0]['data']['context']['name'] == 'home'
+    run(['context', 'remove', 'other', '--yes'], env=default_env)
+    run(['context', 'add', 'work', '--server', 'https://example.invalid', '--use', '--yes'], env=default_env)
+    assert run(['context', 'current'], env=default_env)[0]['data']['context']['name'] == 'work'
+    run(['context', 'use', 'home', '--yes'], env=default_env)
+    run(['context', 'remove', 'work', '--yes'], env=default_env)
+    assert [v['name'] for v in run(['context', 'list'], env=default_env)[0]['data']['items']] == ['home']
+    text, _ = run(['context', 'lsit'], 2, human=True)
+    assert "Did you mean 'obsync context list'" in text
+    text, _ = run(['context', 'add', 'bad', '--server', 'example.invalid', '--yes'], 2,
+                  human=True, env=default_env)
+    assert 'Add https://' in text
+    text, _ = run(['help'], human=True)
+    assert len(text.splitlines()) <= 16 and 'windows-trust' not in text
+    assert 'install' in run(['help', '--all'], human=True)[0]
+    table, _ = run(['cli', 'search', 'context'], human=True)
+    entries = run(['cli', 'search', 'context'])[0]['data']['items']
+    column = table.splitlines()[0].index('DESCRIPTION')
+    for line, item in zip(table.splitlines()[1:], entries, strict=True):
+        assert line[:column].rstrip() == item['command'] and line[column:] == item['summary']
+    assert 'implemented_local' not in table
+    if os.name != 'nt':
+        # A real terminal exercises confirmation, cancellation and revalidation.
+        import pty
+        import select
+        def terminal(args, answer, expected=0, during=None, prompt=True, piped=None):
+            master, slave = pty.openpty()
+            child = subprocess.Popen([str(installed / binary), *args], env=default_env,
+                                     stdin=subprocess.PIPE if piped == 'input' else slave,
+                                     stdout=subprocess.PIPE if piped == 'output' else slave, stderr=slave)
+            os.close(slave)
+            if piped == 'input':
+                child.stdin.write(b'n\n')
+                child.stdin.close()
+            output, responded = bytearray(), False
+            deadline = time.monotonic()+12
+            try:
+                while child.poll() is None or select.select([master], [], [], 0)[0]:
+                    assert time.monotonic() < deadline and len(output) < 65536
+                    if not select.select([master], [], [], 0.1)[0]:
+                        continue
+                    try:
+                        part = os.read(master, 4096)
+                    except OSError:
+                        break
+                    if not part:
+                        break
+                    output.extend(part)
+                    if b'Apply? [y/N]' in output and not responded:
+                        if during:
+                            during()
+                        os.write(master, answer)
+                        responded = True
+                assert child.wait(timeout=2) == expected, bytes(output)
+                if piped == 'output':
+                    output.extend(child.stdout.read(65536))
+                    child.stdout.close()
+                assert responded == prompt, bytes(output)
+                result['commands'] += 1
+                return output.decode()
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=2)
+                os.close(master)
+        snapshot = {p.name:p.read_bytes() for p in defaults.iterdir()}
+        for flags in [['--plan'], ['--non-interactive'], ['-o', 'json'], ['-o', 'jsonl']]:
+            text = terminal(['context', 'remove', 'home', *flags], b'n\n', prompt=False)
+            assert 'plan' in text.lower() and snapshot == {p.name:p.read_bytes() for p in defaults.iterdir()}
+        for piped in ['input', 'output']:
+            text = terminal(['context', 'remove', 'home'], b'n\n', prompt=False, piped=piped)
+            assert 'plan' in text.lower() and snapshot == {p.name:p.read_bytes() for p in defaults.iterdir()}
+        assert 'Cancelled.' in terminal(['context', 'remove', 'home'], b'n\n')
+        assert snapshot == {p.name:p.read_bytes() for p in defaults.iterdir()}
+        # The person's thinking time does not consume execution time, but the
+        # exact plan lifetime/revision still decides whether apply is permitted.
+        assert 'Added server "terminal".' in terminal(
+            ['context', 'add', 'terminal', '--server', 'https://example.invalid'], b'y\n',
+            during=lambda:time.sleep(5.1))
+        def competing_change():
+            run(['context', 'use', 'terminal', '--yes'], env=default_env)
+        text = terminal(['context', 'remove', 'home'], b'y\n', 5, competing_change)
+        assert 'revision_conflict' in text
+        assert len(run(['context', 'list'], env=default_env)[0]['data']['items']) == 2
+    # Two independently verified installations preserve contexts.
+
     second_binding = ['--from', str(package), '--prefix', str(second), '--manifest-sha256', digest]
     run(['install', *second_binding], exe=package / binary)
     run(['get', 'contexts', '--config-dir', str(config)], exe=second / binary)
@@ -249,6 +360,56 @@ def journey(package, root, trust=()):
     assert not installed.exists() and not Path(str(installed)+'.removing').exists()
     run(['doctor', '--config-dir', str(config)], exe=second / binary)
     assert before == stored()
+    # Replace package content at the SAME executable path only after complete
+    # uninstall. This uses a distinct verified manifest, not a repeat of A.
+    alternate = root / 'replacement-package'
+    alternate_binding = ['--from', str(package), '--prefix', str(alternate), '--manifest-sha256', digest]
+    run(['install', *alternate_binding], exe=package / binary)
+    readme = alternate / 'README.md'
+    readme.write_bytes(readme.read_bytes()+b'\nSynthetic replacement package.\n')
+    manifest_path = alternate / 'package-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    for item in manifest['files']:
+        if item['name'] == 'README.md':
+            item.update(size=readme.stat().st_size, sha256=hashlib.sha256(readme.read_bytes()).hexdigest())
+    manifest_path.write_text(json.dumps(manifest, separators=(',', ':'))+'\n')
+    next_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    replacement = ['--from', str(alternate), '--prefix', str(installed), '--manifest-sha256', next_digest]
+    lockpath = Path(str(installed)+'.lock')
+    lock_inode = lockpath.stat().st_ino
+    original_binding = lockpath.read_bytes()
+    for field, value in [('schema_version', 2), ('target_digest', '0'*64),
+                         ('manifest_sha256', 'a'*63), ('manifest_sha256', 'z'*64),
+                         ('manifest_sha256', '0'*64), ('extra', True)]:
+        foreign = json.loads(original_binding)
+        foreign[field] = value
+        raw = json.dumps(foreign).encode()
+        lockpath.write_bytes(raw)
+        refused, _ = run(['install', *replacement], 4, exe=alternate / binary)
+        assert refused['error']['code'] == 'installation_binding' and not installed.exists()
+        assert lockpath.read_bytes() == raw
+    lockpath.write_bytes(original_binding)
+    for suffix in ('.pending', '.removing'):
+        unfinished = Path(str(installed)+suffix)
+        unfinished.mkdir()
+        sentinel = unfinished / 'sentinel'
+        sentinel.write_bytes(b'preserve unfinished installation')
+        try:
+            refused, _ = run(['install', *replacement], 4, exe=alternate / binary)
+            assert refused['error']['code'] == 'installation_binding' and not installed.exists()
+            assert lockpath.read_bytes() == original_binding and sentinel.read_bytes() == b'preserve unfinished installation'
+        finally:
+            sentinel.unlink()
+            unfinished.rmdir()
+    run(['install', *replacement], exe=alternate / binary)
+    assert lockpath.stat().st_ino == lock_inode
+    assert {p.name:p.read_bytes() for p in installed.iterdir()} == {p.name:p.read_bytes() for p in alternate.iterdir()}
+    current_binding = lockpath.read_bytes()
+    refused, _ = run(['install', *binding], 4, exe=package / binary)
+    assert refused['error']['code'] == 'installation_binding' and lockpath.read_bytes() == current_binding
+    run(['version'], exe=installed / binary)
+    run(['uninstall', *replacement], exe=alternate / binary)
+    assert not installed.exists() and before == stored()
     timings = {}
     for name, args in [('help',['help']),('schema',['schema','context.add']),('search',['cli','search','context'])]:
         samples = [run(args, exe=second / binary)[1] for _ in range(35)]
@@ -256,7 +417,7 @@ def journey(package, root, trust=()):
     run(['uninstall', *second_binding], exe=package / binary)
     assert not second.exists() and before == stored()
     result.update(result='PASS', revision=state['revision'], receipts=len(state['receipts']),
-                  contexts_preserved=True, concurrent_apply_exit_codes=sorted(codes),
+                  contexts_preserved=True, human_default_journey=True, stable_install_path=True, concurrent_apply_exit_codes=sorted(codes),
                   recovery_preserved_previous_state=True, hardlink_refused=True,
                   revision_limit_refused=True, expired_receipt_pruned=True,
                   invalid_stored_cases=6, timings=timings)

@@ -191,17 +191,18 @@ impl Session {
     pub fn finish(mut self, deadline: Instant) -> Result<()> {
         self.input.take();
         let status = loop {
-            check_time(deadline)?;
             if self.failed.load(Ordering::SeqCst) {
                 return Err(self.failure(deadline));
             }
             match self.child.try_wait().map_err(|_| refused())? {
                 Some(status) => break status,
-                None => thread::sleep(Duration::from_millis(2)),
+                None => {
+                    check_time(deadline)?;
+                    thread::sleep(Duration::from_millis(2));
+                }
             }
         };
         self.join();
-        check_time(deadline)?;
         if !status.success() || self.failed.load(Ordering::SeqCst) || self.output.try_recv().is_ok()
         {
             return Err(self.failure(deadline));
@@ -249,6 +250,13 @@ mod tests {
             assert_eq!(output, [input, vec![b'\n']].concat());
         }
         session.finish(deadline()).unwrap();
+        let mut session = Session::start(command("exit 0"), deadline()).unwrap();
+        assert!(session.child.wait().unwrap().success());
+        // A clean child that already exited has a verified result even if the
+        // caller was descheduled before final collection.
+        session
+            .finish(Instant::now() - Duration::from_millis(1))
+            .unwrap();
         for ending in ["exit 4", "printf trailing", "printf failure >&2"] {
             let script = format!(
                 "IFS= read -r line; printf '%s\\n' \"$line\"; while IFS= read -r line; do :; done; {ending}"

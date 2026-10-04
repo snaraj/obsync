@@ -137,10 +137,10 @@
     "execution_scope": "local",
     "server_capability": null,
     "server_scopes": [],
-    "target": "Explicit local configuration only; no verified server identity.",
+    "target": "OS default settings or --config-dir override; no verified server identity.",
     "secret_fields": [],
     "deadline_ms": 5000,
-    "cancellation": "Deadline checked before a new effect and response; an OS filesystem call cannot be interrupted.",
+    "cancellation": "Five-second execution budget checked before effects; user confirmation time is excluded, but plan expiry is absolute. Verified late completion remains completed with a warning.",
     "output_limit_bytes": 65536,
     "input_limit_bytes": 16384
   },
@@ -149,17 +149,7 @@
       "operation": "cli.help",
       "command": "help",
       "summary": "List implemented commands and global options.",
-      "input_schema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {},
-        "required": []
-      },
-      "effect": "read",
       "availability": "implemented",
-      "repeatability": "Read-only; safe to repeat.",
-      "completion": "The requested local result was read or calculated.",
-      "verification": "No network, native application or server claim.",
       "errors": [
         "invalid_input",
         "output_limit"
@@ -172,17 +162,7 @@
       "operation": "cli.version",
       "command": "version",
       "summary": "Read the installed product and schema versions.",
-      "input_schema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {},
-        "required": []
-      },
-      "effect": "read",
       "availability": "implemented",
-      "repeatability": "Read-only; safe to repeat.",
-      "completion": "The requested local result was read or calculated.",
-      "verification": "No network, native application or server claim.",
       "errors": [
         "invalid_input",
         "output_limit"
@@ -208,11 +188,7 @@
           "query"
         ]
       },
-      "effect": "read",
       "availability": "implemented",
-      "repeatability": "Read-only; safe to repeat.",
-      "completion": "The requested local result was read or calculated.",
-      "verification": "No network, native application or server claim.",
       "errors": [
         "invalid_input",
         "output_limit"
@@ -224,7 +200,7 @@
     {
       "operation": "schema",
       "command": "schema OPERATION",
-      "summary": "Read the exact operation contract.",
+      "summary": "Describe a command and its inputs.",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -238,11 +214,7 @@
           "operation"
         ]
       },
-      "effect": "read",
       "availability": "implemented",
-      "repeatability": "Read-only; safe to repeat.",
-      "completion": "The requested local result was read or calculated.",
-      "verification": "No network, native application or server claim.",
       "errors": [
         "invalid_input",
         "output_limit"
@@ -255,17 +227,7 @@
       "operation": "capabilities",
       "command": "capabilities",
       "summary": "List locally implemented operations; no server intersection is claimed.",
-      "input_schema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {},
-        "required": []
-      },
-      "effect": "read",
       "availability": "implemented",
-      "repeatability": "Read-only; safe to repeat.",
-      "completion": "The requested local result was read or calculated.",
-      "verification": "No network, native application or server claim.",
       "errors": [
         "invalid_input",
         "output_limit"
@@ -278,32 +240,12 @@
       "operation": "context.list",
       "command": "config get-contexts",
       "summary": "List named local contexts.",
-      "input_schema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {},
-        "required": []
-      },
-      "effect": "read",
-      "availability": "implemented_local",
-      "repeatability": "Read-only; safe to repeat.",
       "completion": "The selected local state was read under a shared lock.",
-      "verification": "No network, native application or server claim.",
-      "errors": [
-        "invalid_input",
-        "output_limit",
-        "unsafe_config",
-        "native_open_failed",
-        "invalid_config",
-        "config_busy",
-        "recovery_required",
-        "deadline_exceeded"
-      ],
       "examples": [
         "obsync config get-contexts --config-dir /absolute/private/config"
       ],
       "requirements": [
-        "Explicit --config-dir; owned private storage with protected ancestors.",
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
         "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
       ]
     },
@@ -322,33 +264,19 @@
         },
         "required": []
       },
-      "effect": "read",
-      "availability": "implemented_local",
-      "repeatability": "Read-only; safe to repeat.",
       "completion": "The selected local state was read under a shared lock.",
-      "verification": "No network, native application or server claim.",
-      "errors": [
-        "invalid_input",
-        "output_limit",
-        "unsafe_config",
-        "native_open_failed",
-        "invalid_config",
-        "config_busy",
-        "recovery_required",
-        "deadline_exceeded"
-      ],
       "examples": [
         "obsync config view [NAME] --config-dir /absolute/private/config"
       ],
       "requirements": [
-        "Explicit --config-dir; owned private storage with protected ancestors.",
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
         "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
       ]
     },
     {
       "operation": "context.add",
       "command": "config set-context NAME --server HTTPS_ORIGIN",
-      "summary": "Plan adding a named target without silently replacing one.",
+      "summary": "Add a named server without replacing an existing one.",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -369,6 +297,10 @@
               "null"
             ],
             "pattern": "^[a-f0-9]{64}$"
+          },
+          "select": {
+            "type": "boolean",
+            "description": "Select this server in the same change; the first server is selected automatically."
           }
         },
         "required": [
@@ -376,33 +308,21 @@
           "origin"
         ]
       },
-      "effect": "read",
-      "availability": "implemented_local",
-      "repeatability": "Read-only; safe to repeat.",
-      "completion": "A five-minute plan binds this configuration path and its current revision; no storage was changed.",
-      "verification": "No network, native application or server claim.",
-      "errors": [
-        "invalid_input",
-        "output_limit",
-        "unsafe_config",
-        "native_open_failed",
-        "invalid_config",
-        "config_busy",
-        "recovery_required",
-        "deadline_exceeded"
-      ],
+      "effect": "local_write",
+      "repeatability": "Plans and apply retain exact target, revision, expiry and replay checks. --yes is an explicit write; repeating add refuses an existing name.",
+      "completion": "At a terminal, confirm the displayed change. --yes applies directly; --plan, machine output without --yes, and non-interactive input return a five-minute plan without effects.",
       "examples": [
         "obsync config set-context NAME --server HTTPS_ORIGIN --config-dir /absolute/private/config"
       ],
       "requirements": [
-        "Explicit --config-dir; owned private storage with protected ancestors.",
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
         "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
       ]
     },
     {
       "operation": "context.use",
       "command": "config use-context NAME",
-      "summary": "Plan selecting a named context.",
+      "summary": "Select a saved server.",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -416,33 +336,21 @@
           "name"
         ]
       },
-      "effect": "read",
-      "availability": "implemented_local",
-      "repeatability": "Read-only; safe to repeat.",
-      "completion": "A five-minute plan binds this configuration path and its current revision; no storage was changed.",
-      "verification": "No network, native application or server claim.",
-      "errors": [
-        "invalid_input",
-        "output_limit",
-        "unsafe_config",
-        "native_open_failed",
-        "invalid_config",
-        "config_busy",
-        "recovery_required",
-        "deadline_exceeded"
-      ],
+      "effect": "local_write",
+      "repeatability": "Plans and apply retain exact target, revision, expiry and replay checks. --yes is an explicit write; repeating add refuses an existing name.",
+      "completion": "At a terminal, confirm the displayed change. --yes applies directly; --plan, machine output without --yes, and non-interactive input return a five-minute plan without effects.",
       "examples": [
         "obsync config use-context NAME --config-dir /absolute/private/config"
       ],
       "requirements": [
-        "Explicit --config-dir; owned private storage with protected ancestors.",
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
         "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
       ]
     },
     {
       "operation": "context.remove",
       "command": "config delete-context NAME",
-      "summary": "Plan removing one local association.",
+      "summary": "Remove a server from local settings.",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
@@ -456,26 +364,14 @@
           "name"
         ]
       },
-      "effect": "read",
-      "availability": "implemented_local",
-      "repeatability": "Read-only; safe to repeat.",
-      "completion": "A five-minute plan binds this configuration path and its current revision; no storage was changed.",
-      "verification": "No network, native application or server claim.",
-      "errors": [
-        "invalid_input",
-        "output_limit",
-        "unsafe_config",
-        "native_open_failed",
-        "invalid_config",
-        "config_busy",
-        "recovery_required",
-        "deadline_exceeded"
-      ],
+      "effect": "local_write",
+      "repeatability": "Plans and apply retain exact target, revision, expiry and replay checks. --yes is an explicit write; repeating add refuses an existing name.",
+      "completion": "At a terminal, confirm the displayed change. --yes applies directly; --plan, machine output without --yes, and non-interactive input return a five-minute plan without effects.",
       "examples": [
         "obsync config delete-context NAME --config-dir /absolute/private/config"
       ],
       "requirements": [
-        "Explicit --config-dir; owned private storage with protected ancestors.",
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
         "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
       ]
     },
@@ -601,7 +497,6 @@
         "description": "-f FILE contains the plan object; --expect-digest supplies expect_digest."
       },
       "effect": "configure",
-      "availability": "implemented_local",
       "repeatability": "An identical unexpired plan reads its durable receipt; changed or expired plans refuse.",
       "completion": "The exact unexpired plan has a flushed snapshot and receipt, independently reread before success.",
       "verification": "Read back in a new CLI process; no server identity is verified.",
@@ -624,7 +519,7 @@
         "obsync apply -f PLAN --expect-digest DIGEST --config-dir /absolute/private/config"
       ],
       "requirements": [
-        "Explicit --config-dir; owned private storage with protected ancestors.",
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
         "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
       ]
     },
@@ -632,65 +527,27 @@
       "operation": "context.recover",
       "command": "config recover",
       "summary": "Recover interrupted local configuration.",
-      "input_schema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {},
-        "required": []
-      },
       "effect": "maintenance",
-      "availability": "implemented_local",
       "repeatability": "Recovery never applies a new context plan.",
       "completion": "An incomplete inactive snapshot was discarded; the last complete state was flushed and reread.",
-      "verification": "No network, native application or server claim.",
-      "errors": [
-        "invalid_input",
-        "output_limit",
-        "unsafe_config",
-        "native_open_failed",
-        "invalid_config",
-        "config_busy",
-        "recovery_required",
-        "deadline_exceeded"
-      ],
       "examples": [
         "obsync config recover --config-dir /absolute/private/config"
       ],
       "requirements": [
-        "Explicit --config-dir; owned private storage with protected ancestors.",
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
         "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
       ]
     },
     {
       "operation": "doctor",
       "command": "doctor",
-      "summary": "Read the runtime and exact selected configuration; perform no repairs or network probes.",
-      "input_schema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {},
-        "required": []
-      },
-      "effect": "read",
-      "availability": "implemented_local",
-      "repeatability": "Read-only; safe to repeat.",
+      "summary": "Check local settings and show the next step.",
       "completion": "The selected local state was read under a shared lock.",
-      "verification": "No network, native application or server claim.",
-      "errors": [
-        "invalid_input",
-        "output_limit",
-        "unsafe_config",
-        "native_open_failed",
-        "invalid_config",
-        "config_busy",
-        "recovery_required",
-        "deadline_exceeded"
-      ],
       "examples": [
         "obsync doctor --config-dir /absolute/private/config"
       ],
       "requirements": [
-        "Explicit --config-dir; owned private storage with protected ancestors.",
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
         "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
       ]
     },
@@ -698,17 +555,7 @@
       "operation": "agent.instructions",
       "command": "agent instructions",
       "summary": "Read concise instructions for this installed slice.",
-      "input_schema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {},
-        "required": []
-      },
-      "effect": "read",
       "availability": "implemented",
-      "repeatability": "Read-only; safe to repeat.",
-      "completion": "The requested local result was read or calculated.",
-      "verification": "No network, native application or server claim.",
       "errors": [
         "invalid_input",
         "output_limit"
@@ -721,32 +568,12 @@
       "operation": "context.current",
       "command": "config current-context",
       "summary": "Read the selected context name.",
-      "input_schema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {},
-        "required": []
-      },
-      "effect": "read",
-      "availability": "implemented_local",
-      "repeatability": "Read-only; safe to repeat.",
       "completion": "The selected local state was read under a shared lock.",
-      "verification": "No network, native application or server claim.",
-      "errors": [
-        "invalid_input",
-        "output_limit",
-        "unsafe_config",
-        "native_open_failed",
-        "invalid_config",
-        "config_busy",
-        "recovery_required",
-        "deadline_exceeded"
-      ],
       "examples": [
         "obsync config current-context --config-dir /absolute/private/config"
       ],
       "requirements": [
-        "Explicit --config-dir; owned private storage with protected ancestors.",
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
         "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
       ]
     },
@@ -776,7 +603,6 @@
         ]
       },
       "effect": "configure",
-      "availability": "implemented_local",
       "repeatability": "Retry the exact action after interruption; changed or unknown files refuse.",
       "completion": "Exact package content was read back, or the exact removal inventory is absent.",
       "verification": "Publisher provenance must be independently verified before executing package code. No configuration, PATH or shell profile changes.",
@@ -785,7 +611,8 @@
         "unsafe_config",
         "install_busy",
         "deadline_exceeded",
-        "local_io"
+        "local_io",
+        "installation_binding"
       ],
       "examples": [
         "obsync install --from /absolute/private/package --prefix /absolute/private/installation --manifest-sha256 SHA256"
@@ -817,7 +644,6 @@
         ]
       },
       "effect": "configure",
-      "availability": "implemented_local",
       "repeatability": "Retry the exact action after interruption; changed or unknown files refuse.",
       "completion": "Exact package content was read back, or the exact removal inventory is absent.",
       "verification": "Publisher provenance must be independently verified before executing package code. No configuration, PATH or shell profile changes.",
@@ -826,7 +652,8 @@
         "unsafe_config",
         "install_busy",
         "deadline_exceeded",
-        "local_io"
+        "local_io",
+        "installation_binding"
       ],
       "examples": [
         "obsync uninstall --from /absolute/private/package --prefix /absolute/private/installation --manifest-sha256 SHA256"
@@ -836,13 +663,6 @@
       "operation": "cli.windows_setup",
       "command": "windows-setup",
       "summary": "Print the fixed script for trusted OS PowerShell setup.",
-      "input_schema": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {},
-        "required": []
-      },
-      "effect": "read",
       "availability": "windows_only",
       "repeatability": "Printing the script has no effect; explicitly running it creates a new private trust receipt.",
       "completion": "Fixed setup instructions were printed; no setup was performed.",
@@ -855,5 +675,28 @@
         "obsync windows-setup -o json"
       ]
     }
-  ]
+  ],
+  "operation_defaults": {
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "effect": "read",
+    "availability": "implemented_local",
+    "repeatability": "Read-only; safe to repeat.",
+    "completion": "The requested local result was read or calculated.",
+    "verification": "No network, native application or server claim.",
+    "errors": [
+      "invalid_input",
+      "output_limit",
+      "unsafe_config",
+      "native_open_failed",
+      "invalid_config",
+      "config_busy",
+      "recovery_required",
+      "deadline_exceeded"
+    ]
+  }
 }

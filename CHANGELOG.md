@@ -12,9 +12,12 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 - A native Rust management CLI with kubectl-style command groups, readable
   human output, explicit JSON, schemas and offline capability discovery.
   Local contexts use bounded snapshots, exact plans and durable apply receipts.
+  Default OS settings and `context add/list/use/remove` aliases shorten setup;
+  terminal changes ask for confirmation, while agents retain exact plans.
 - Verified native archives for Linux amd64/arm64, macOS arm64 and Windows amd64.
-  Installation verifies a private immutable directory; upgrades use a new
-  directory and uninstall preserves contexts. No Node runtime ships or is required.
+  Installation verifies a private immutable directory. After verified uninstall,
+  a newer package can reuse the same path; uninstall preserves contexts.
+  No Node runtime ships or is required.
 
 Server authentication, native setup, device administration and MCP follow in
 later slices. Export/open is deferred with #317 and returns unsupported.

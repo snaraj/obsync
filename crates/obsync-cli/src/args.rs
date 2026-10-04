@@ -3,7 +3,7 @@
 use crate::{Error, Result};
 use std::collections::BTreeMap;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Args {
     pub words: Vec<String>,
     pub flags: BTreeMap<String, String>,
@@ -38,6 +38,11 @@ impl Args {
                 "-h" | "--help" => "help",
                 "--version" => "version",
                 "--non-interactive" => "non-interactive",
+                "--all" => "all",
+                "--yes" => "yes",
+                "--use" => "use",
+                "--plan" => "plan",
+                "--verbose" => "verbose",
                 "-o" | "--output" => "output",
                 "-f" | "--filename" => "filename",
                 "--config-dir" => "config-dir",
@@ -54,7 +59,10 @@ impl Args {
                 "--manifest-sha256" => "manifest-sha256",
                 _ => return Err(Error::input("Unknown flag. Run 'obsync help' for usage.")),
             };
-            let boolean = matches!(key, "help" | "version" | "non-interactive");
+            let boolean = matches!(
+                key,
+                "help" | "version" | "non-interactive" | "all" | "yes" | "use" | "plan" | "verbose"
+            );
             let value = if boolean {
                 if inline.is_some() {
                     return Err(Error::input("This flag takes no value."));
@@ -105,6 +113,7 @@ impl Args {
                 "output",
                 "config-dir",
                 "non-interactive",
+                "verbose",
                 "windows-trust",
                 "windows-trust-sha256",
             ]
@@ -130,19 +139,21 @@ impl Args {
             ["cli", "search", ..] => "cli.search",
             ["schema" | "explain", ..] => "schema",
             ["capabilities", ..] => "capabilities",
-            ["config", "get-contexts", ..] => "context.list",
-            ["config", "current-context", ..] => "context.current",
-            ["config", "view", ..] | ["describe", "context" | "contexts", ..] => "context.get",
+            ["config", "get-contexts", ..] | ["context", "list", ..] => "context.list",
+            ["config", "current-context", ..] | ["context", "current", ..] => "context.current",
+            ["config", "view", ..]
+            | ["describe", "context" | "contexts", ..]
+            | ["context", "get", ..] => "context.get",
             ["get", "context" | "contexts"] => "context.list",
             ["get", "context" | "contexts", _] => "context.get",
-            ["config", "set-context", ..] => "context.add",
-            ["config", "use-context", ..] => "context.use",
-            ["config", "delete-context", ..] => "context.remove",
+            ["config", "set-context", ..] | ["context", "add", ..] => "context.add",
+            ["config", "use-context", ..] | ["context", "use", ..] => "context.use",
+            ["config", "delete-context", ..] | ["context", "remove", ..] => "context.remove",
             ["apply", ..] => "context.apply",
             ["config", "recover", ..] => "context.recover",
             ["doctor", ..] => "doctor",
             ["agent", "instructions", ..] => "agent.instructions",
-            ["config"] => "config.help",
+            ["config" | "context"] => "config.help",
             ["get", ..]
             | ["describe", ..]
             | [
@@ -155,9 +166,7 @@ impl Args {
                 ));
             }
             _ => {
-                return Err(Error::input(
-                    "Unknown command. Run 'obsync help' or 'obsync cli search QUERY'.",
-                ));
+                return Err(Error::input(self.suggestion()));
             }
         };
         Ok(if self.has("version") && self.words.is_empty() {
@@ -165,5 +174,66 @@ impl Args {
         } else {
             op
         })
+    }
+
+    fn suggestion(&self) -> String {
+        let query = self
+            .words
+            .iter()
+            .take(2)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let candidates = [
+            "context list",
+            "context add",
+            "context use",
+            "context remove",
+            "context current",
+            "config get-contexts",
+            "config set-context",
+            "config use-context",
+            "config delete-context",
+            "config current-context",
+            "config view",
+            "config recover",
+            "cli search",
+            "agent instructions",
+            "doctor",
+            "apply",
+            "help",
+            "version",
+            "capabilities",
+            "explain",
+            "schema",
+            "install",
+            "uninstall",
+            "windows-setup",
+        ];
+        if query.is_ascii() && query.len() <= 64 {
+            let distance = |candidate: &str| {
+                let mut row: Vec<_> = (0..=candidate.len()).collect();
+                for (i, a) in query.bytes().enumerate() {
+                    let mut previous = row[0];
+                    row[0] = i + 1;
+                    for (j, b) in candidate.bytes().enumerate() {
+                        let above = row[j + 1];
+                        row[j + 1] = (above + 1)
+                            .min(row[j] + 1)
+                            .min(previous + usize::from(a != b));
+                        previous = above;
+                    }
+                }
+                row[candidate.len()]
+            };
+            if let Some((score, candidate)) = candidates.iter().map(|c| (distance(c), c)).min()
+                && score <= 2
+            {
+                return format!(
+                    "Unknown command. Did you mean 'obsync {candidate}'? Use 'obsync help' for commands."
+                );
+            }
+        }
+        "Unknown command. Run 'obsync help' or 'obsync cli search QUERY'.".into()
     }
 }

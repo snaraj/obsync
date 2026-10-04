@@ -9,6 +9,24 @@ pub fn render(
     operation: Option<&str>,
     format: &str,
     elapsed: u128,
+    verbose: bool,
+) -> String {
+    let late = result.is_ok() && elapsed > 5000;
+    let mut text = render_result(result, operation, format, elapsed, verbose);
+    if late && format == "human" {
+        text.push_str(&format!(
+            "Completed after the five-second deadline ({elapsed} ms). The result was verified.\n"
+        ));
+    }
+    text
+}
+
+fn render_result(
+    result: Result<Value>,
+    operation: Option<&str>,
+    format: &str,
+    elapsed: u128,
+    verbose: bool,
 ) -> String {
     let (data, error, state) = match result {
         Ok(data) => {
@@ -35,6 +53,7 @@ pub fn render(
             },
         ),
     };
+    let late = error.is_null() && elapsed > 5000;
     if format == "human" {
         if !error.is_null() {
             return format!(
@@ -45,6 +64,9 @@ pub fn render(
         }
         if let Some(help) = data.get("help").and_then(Value::as_str) {
             return help.to_owned();
+        }
+        if data.get("cancelled").and_then(Value::as_bool) == Some(true) {
+            return "Cancelled. Settings are unchanged.\n".into();
         }
         if let Some(script) = data.get("script").and_then(Value::as_str) {
             return format!("{}\n\n{}\n", catalog::field(&data, "instruction"), script);
@@ -68,13 +90,19 @@ pub fn render(
             if data.get("cleanup_durable").and_then(Value::as_bool) == Some(false) {
                 text.push_str("Installation path retired. Cleanup may need the same uninstall after power loss.\n");
             }
+            if operation == Some("cli.install") {
+                text.push_str(&format!(
+                    "Add this directory to PATH once:\n  {}\n",
+                    catalog::field(&data, "installation")
+                ));
+            }
             return text;
         }
         if let Some(plan) = data.get("plan") {
             return format!(
-                "Plan ready; configuration is unchanged.\nOperation: {}\nExpires:   {} (Unix milliseconds)\n\nSave this plan as JSON:\n{}\n\nApply the saved file before expiry:\n  obsync apply -f ABSOLUTE_PLAN --expect-digest {} --config-dir CONFIG_DIR\n",
-                catalog::field(plan, "operation"),
-                plan.get("expires_at").unwrap().to_json(),
+                "{}\nSettings are unchanged. Expires {}.\n\nSave this plan as JSON:\n{}\n\nApply the saved file before expiry:\n  obsync apply -f ABSOLUTE_PLAN --expect-digest {}\nUse the same --config-dir override, if one was supplied.\n",
+                plan_summary(plan),
+                expiry(plan),
                 plan.to_json(),
                 catalog::field(plan, "digest")
             );
@@ -125,14 +153,17 @@ pub fn render(
                 }
                 return text;
             }
-            let mut text = String::from(
-                "COMMAND                         AVAILABILITY               DESCRIPTION\n",
-            );
+            let width = items
+                .iter()
+                .map(|item| catalog::field(item, "command").len())
+                .max()
+                .unwrap_or(7)
+                .max(7);
+            let mut text = format!("{:<width$}  DESCRIPTION\n", "COMMAND");
             for item in items {
                 text.push_str(&format!(
-                    "{:<31} {:<26} {}\n",
+                    "{:<width$}  {}\n",
                     catalog::field(item, "command"),
-                    catalog::field(item, "availability"),
                     catalog::field(item, "summary")
                 ));
             }
@@ -147,7 +178,7 @@ pub fn render(
                 text.push_str(&format!(
                     "{:<21} {}\n",
                     catalog::field(entry, "operation"),
-                    catalog::field(entry, "availability")
+                    availability(entry)
                 ));
             }
             text.push_str("\nServer capabilities: not checked (offline discovery).\n");
@@ -166,29 +197,42 @@ pub fn render(
                 catalog::field(&data, "operation"),
                 catalog::field(&data, "command"),
                 catalog::field(&data, "effect"),
-                catalog::field(&data, "availability"),
+                availability(&data),
                 catalog::field(&data, "summary"),
                 data.get("input_schema").unwrap_or(&Value::Null).to_json()
             );
         }
-        if operation == Some("context.apply") {
-            return format!(
-                "context/{}: {} at revision {}{}\nReceipt: {}\n",
-                catalog::field(&data, "name"),
-                catalog::field(&data, "operation"),
-                data.get("revision").unwrap().to_json(),
-                if data.get("replayed").and_then(Value::as_bool) == Some(true) {
-                    " (replayed; no new change)"
+        if data.get("id").is_some() {
+            let name = catalog::field(&data, "name");
+            let mut text = match catalog::field(&data, "operation") {
+                "context.add" => format!("Added server \"{name}\".\n"),
+                "context.use" => format!("Selected server \"{name}\".\n"),
+                _ => format!("Removed server \"{name}\" from local settings.\n"),
+            };
+            if catalog::field(&data, "operation") == "context.add" {
+                if data.get("current").and_then(Value::as_str) == Some(name) {
+                    text.push_str("This is the selected server.\n");
                 } else {
-                    ""
-                },
-                catalog::field(&data, "id")
-            );
+                    text.push_str(&format!(
+                        "Select it with: obsync config use-context {name}\n"
+                    ));
+                }
+            }
+            if data.get("replayed").and_then(Value::as_bool) == Some(true) {
+                text.push_str("Already applied; no new change.\n");
+            }
+            if verbose {
+                text.push_str(&format!(
+                    "Revision: {}\nReceipt: {}\n",
+                    data.get("revision").unwrap().to_json(),
+                    catalog::field(&data, "id")
+                ));
+            }
+            return text;
         }
         if operation == Some("context.recover") {
             return format!(
-                "Local configuration recovered at revision {}.\nCurrent context: {}\n",
-                data.get("revision").unwrap().to_json(),
+                "Local settings recovered.\nSelected server: {}\n",
                 data.get("current")
                     .and_then(Value::as_str)
                     .unwrap_or("none")
@@ -196,20 +240,26 @@ pub fn render(
         }
         if operation == Some("doctor") {
             let config = data.get("configuration").unwrap();
-            return format!(
-                "Runtime:         native Rust\nConfiguration:   {}\nRevision:        {}\nContexts:        {}\nCurrent context: {}\nNetwork:         not checked\nObsidian:        not checked\nRepairs:         none\n",
-                if config.get("present").and_then(Value::as_bool) == Some(true) {
-                    "present"
-                } else {
-                    "absent"
-                },
-                config.get("revision").unwrap().to_json(),
-                config.get("contexts").unwrap().to_json(),
-                config
-                    .get("current")
-                    .and_then(Value::as_str)
-                    .unwrap_or("none")
-            );
+            let count = config.get("contexts").and_then(Value::as_u64).unwrap_or(0);
+            let mut text = if count == 0 {
+                "No server yet. Add one:\n  obsync config set-context NAME --server https://sync.example.org\n".into()
+            } else {
+                format!(
+                    "Local settings are readable: {count} server(s).\nSelected server: {}\n",
+                    config
+                        .get("current")
+                        .and_then(Value::as_str)
+                        .unwrap_or("none; select one with 'obsync context use NAME'")
+                )
+            };
+            text.push_str("Server connectivity and Obsidian were not checked.\n");
+            if verbose {
+                text.push_str(&format!(
+                    "Revision: {}\n",
+                    config.get("revision").unwrap().to_json()
+                ));
+            }
+            return text;
         }
         return format!("{}\n", data.to_json());
     }
@@ -255,7 +305,16 @@ pub fn render(
         ("state", s(state)),
         ("data", data),
         ("error", error),
-        ("warnings", Value::Array(vec![])),
+        (
+            "warnings",
+            Value::Array(if late {
+                vec![s(
+                    "Completed after the five-second deadline; the result was verified.",
+                )]
+            } else {
+                vec![]
+            }),
+        ),
         (
             "next_actions",
             Value::Array(if state == "planned" {
@@ -282,6 +341,47 @@ pub fn render(
         ("pagination", Value::Null),
     ]);
     format!("{}\n", result.to_json())
+}
+
+fn availability(entry: &Value) -> &'static str {
+    match catalog::field(entry, "availability") {
+        "implemented" | "implemented_local" => "available locally",
+        _ => "not available yet",
+    }
+}
+
+pub fn plan_summary(plan: &Value) -> String {
+    let parameters = plan.get("parameters").unwrap();
+    let name = catalog::field(parameters, "name");
+    match catalog::field(plan, "operation") {
+        "context.add" => format!(
+            "Add server \"{name}\" ({}){}.",
+            catalog::field(parameters, "origin"),
+            if parameters.get("select").and_then(Value::as_bool) == Some(true) {
+                " and select it"
+            } else {
+                ""
+            }
+        ),
+        "context.use" => format!("Select server \"{name}\"."),
+        _ => format!("Remove server \"{name}\" from local settings. Server data is unchanged."),
+    }
+}
+
+fn expiry(plan: &Value) -> String {
+    let remaining = plan
+        .get("expires_at")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .saturating_sub(crate::context::now().unwrap_or(0))
+        .div_ceil(1000);
+    if remaining == 0 {
+        "now (expired)".into()
+    } else if remaining >= 60 {
+        format!("in {} minutes", remaining.div_ceil(60))
+    } else {
+        format!("in {remaining} seconds")
+    }
 }
 
 // Gregorian civil date from days since the Unix epoch. No local timezone reads.

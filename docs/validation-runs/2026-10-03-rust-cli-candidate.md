@@ -104,6 +104,53 @@ reusable fixtures and their README are ignored and retained outside the repo.
 
 ## Limits and retained failures
 
+### CLI usability and completion repairs (2026-10-04)
+
+PR #326 now includes default OS settings paths, terminal confirmation and
+`context` aliases. The shared native journey verifies these through the installed
+executable and independent file readback. Human pipes, explicit plans and machine
+output stay read-only unless `--yes` explicitly requests a write. POSIX tests use
+real pseudo-terminals, including mixed terminal/pipe streams, cancellation,
+confirmation after a 5.1-second pause, and a competing change while confirmation
+is open. The last case must refuse the stale revision and preserve both contexts.
+The user's thinking time is excluded from execution time; plan expiry is unchanged.
+
+A replacement package with a distinct verified manifest can reuse the same path
+after uninstall. Tests require exact installed bytes and the same retained lock
+inode. Malformed old bindings and unfinished installation/removal stages refuse
+without changing their bytes. This is a two-step upgrade with an availability
+gap, and the original verified package is still needed for uninstall. It does
+not establish physical power-loss recovery across versions.
+
+Twenty focused author mutations were caught: late-result replacement, helper
+output classification and termination, delayed clean helper exit, ancestor ACL
+validation, selection type, conflicting apply/plan flags, six confirmation
+boundaries, and seven retained-binding guards. Positive controls passed first;
+all mutated sources and build scratch were removed. These checks extend the
+existing test suites and native jobs; no additional CI job was added.
+
+A separate source-only fault fixture delayed output by 5.1 seconds after an
+actual durable context apply. The repaired CLI returned completed/exit 0 with a
+late warning at 5,472 ms. Restoring the old final timeout override returned
+unknown/exit 7 at 5,476 ms despite the same committed result. A fresh process and
+independent sealed-file parsing proved revision 1 and exactly one receipt for
+both. The delay exists only in the disposable fixture.
+
+On the same synthetic macOS context, seven samples per command measured median
+list/plan/doctor startup at 367.40/373.05/361.81 ms before the repair and
+232.31/232.91/231.56 ms afterward, using the final tested macOS binary
+`c7a6e370a94cb327bed32eeddb6b4d3aefbfa2611cbbabc9abf871746f511dd3`.
+At most two full ACL readers run concurrently;
+every already-open ancestor still receives the native check. This is a local
+comparison with ordinary OS caches, not a cross-platform performance guarantee.
+
+The final full repair gate passed 1,975 plugin tests, 872 Python contracts,
+94.70% Rust line coverage, both secret scans and 199 macOS package commands.
+Replacement four-platform native receipts are required on the PR; historical
+Windows/Linux acceptance above does not establish these newer cases.
+
+### Earlier stored-state review
+
 The independent review identified eight missing stored-state regression cases.
 The shared native journey now uses valid sealed synthetic snapshots to require
 maximum-revision refusal before any byte changes, and to prove that one expired

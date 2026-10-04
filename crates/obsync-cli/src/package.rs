@@ -39,6 +39,13 @@ fn conflict() -> Error {
         4,
     )
 }
+fn binding_conflict() -> Error {
+    Error::new(
+        "installation_binding",
+        "This installation path's .lock belongs to another package or interrupted action. Finish uninstalling that exact verified package before reusing the same --prefix; do not delete the lock.",
+        4,
+    )
+}
 fn inventory(path: &Path) -> Result<Vec<String>> {
     let mut names = Vec::new();
     for entry in fs::read_dir(path).map_err(custody::io_error)?.take(13) {
@@ -292,21 +299,47 @@ pub fn run(args: &Args, uninstall: bool, deadline: Instant) -> Result<Value> {
     let record = record.to_json().into_bytes();
     let previous = custody::bounded(&mut lock, 1024)?;
     if previous != record {
-        // No installation effect may precede the flushed binding. A torn
-        // initial record is resumable only while all three directories are absent.
-        if previous.len() > record.len()
-            || previous != record[..previous.len()]
-            || [&prefix, &pending, &removing]
-                .iter()
-                .map(|p| custody::present(p))
-                .collect::<Result<Vec<_>>>()?
-                .iter()
-                .any(Option::is_some)
+        // A stable path can be reused only after the prior installation and
+        // both interruption companions are absent. Keep the same lock inode:
+        // removing it could let two processes lock different files for one path.
+        if [&prefix, &pending, &removing]
+            .iter()
+            .map(|p| custody::present(p))
+            .collect::<Result<Vec<_>>>()?
+            .iter()
+            .any(Option::is_some)
         {
-            return Err(conflict());
+            return Err(binding_conflict());
         }
-        lock.write_all(&record[previous.len()..])
-            .map_err(custody::io_error)?;
+        if record.starts_with(&previous) {
+            // A torn initial/replacement record precedes all target effects.
+            lock.write_all(&record[previous.len()..])
+                .map_err(custody::io_error)?;
+        } else {
+            let old = json::parse(&previous).map_err(|_| binding_conflict())?;
+            context::closed(
+                &old,
+                &["schema_version", "target_digest", "manifest_sha256"],
+            )
+            .map_err(|_| binding_conflict())?;
+            let old_digest =
+                context::text(&old, "manifest_sha256").map_err(|_| binding_conflict())?;
+            if old.get("schema_version").and_then(Value::as_u64) != Some(1)
+                || old.get("target_digest") != json::parse(&record).unwrap().get("target_digest")
+                || old_digest.len() != 64
+                || !old_digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || old_digest.bytes().all(|b| b == b'0')
+            {
+                return Err(binding_conflict());
+            }
+            c.check_time()?;
+            lock.set_len(0).map_err(custody::io_error)?;
+            lock.sync_all().map_err(custody::io_error)?;
+            lock.seek(SeekFrom::Start(0)).map_err(custody::io_error)?;
+            lock.write_all(&record).map_err(custody::io_error)?;
+        }
     }
     // A previous process may have died after writing the complete record but
     // before flushing it; retry must establish durability before effects too.
@@ -366,6 +399,7 @@ pub fn run(args: &Args, uninstall: bool, deadline: Instant) -> Result<Value> {
         ("manifest_sha256", s(digest)),
         ("platform", s(platform())),
         ("configuration_changed", Value::Bool(false)),
+        ("installation", s(prefix.to_str().ok_or_else(conflict)?)),
         ("lock_retained", Value::Bool(true)),
         (
             "cleanup_durable",
