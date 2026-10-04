@@ -1,6 +1,6 @@
 # CLI and MCP design: staged delivery for people and agents
 
-Status: planned capabilities, reconciled 2026-10-02. Tracked in
+Status: planned capabilities, reconciled 2026-10-03. Tracked in
 [#254](https://github.com/snaraj/obsync/issues/254). These commands, management
 APIs and MCP tools are not implemented by this document. The
 [live acceptance plan](../validation-plans/cli-mcp-v1.1.6.md) defines the evidence
@@ -28,29 +28,32 @@ point into the same operations. Keep `obsyncd` as the server and offline recover
 program. An agent should need the installed help and schemas, not source code,
 private runbooks, guessed flags or a particular model vendor.
 
-Milestones describe scope and may span several releases. Every artifact PR takes
-exactly one permitted SemVer step from current protected main. The first CLI
-artifact release takes the minor step to **1.2.0**; later artifact PRs take their
-step from the then-current main. Only one artifact PR is open at a time, so a
-future slice does not reserve a stale version. Documentation-only changes advance
-no locks. The usual three-PR budget may rise to four only when it blocks the
-management-auth design or co-editing design PR; the one-artifact limit still holds.
+The [owner-agreed release trains](../release-trains.md) continue the v1.1.x
+sequence: CLI core in **1.1.6**, measured sync in **1.1.7**, pairing/phone proof
+in **1.1.8**, management and MCP in **1.1.9**, and deferred capabilities in
+**1.1.10**. Milestones are named for those versions. Every artifact PR takes
+exactly one permitted SemVer step from protected main, and all work promised
+for that version is composed before its merge. Internal work packages below
+are implementation boundaries; they do not authorize separate partial releases.
+Only one artifact PR is open at a time. Documentation-only changes advance no
+locks. The usual three-PR budget may rise to four only when it blocks the
+management-auth design or co-editing design PR.
 
-Current scope: offline discovery/schema/context/doctor and local encrypted-export
-opening; scoped management login/status; native desktop existing-server setup,
+Current scope: offline discovery/schema/context/doctor and verified installation; scoped management login/status; native desktop existing-server setup,
 mobile handoff and device lifecycle; local stdio MCP **observe**; resulting-state
 proof for each shipped capability. Profiles may target several servers; each
 server keeps the existing single-account model.
 
 Deferred to the next milestone: [#259](https://github.com/snaraj/obsync/issues/259)
 storage administration/deployment adapters, [#260](https://github.com/snaraj/obsync/issues/260)
-full backup/isolated restore, and setup's new-server and storage stages. MCP write
+full backup/isolated restore, [#317](https://github.com/snaraj/obsync/issues/317)
+native export and offline opening, and setup's new-server and storage stages. MCP write
 profiles are also outside this observe-only slice. The six wholly deferred live
 gates are V11–V15 and V18; V06 retains its existing-server bootstrap/interruption
 portion. Their security requirements remain binding when those features ship.
 
-Scope is frozen: unrelated findings discovered during this milestone are tracked
-in the deferred milestone. A regression introduced by the current milestone or
+Scope is frozen: newly discovered work needs owner agreement on a named
+release before assignment; it is not silently placed in the deferred train. A regression introduced by the current milestone or
 a review finding on a PR's own change stays with that PR; it cannot be deferred
 to clear its gate.
 
@@ -114,7 +117,7 @@ become instructions. Review these trust boundaries before implementation.
 
 | Decision | Recommended design | Gate |
 | --- | --- | --- |
-| Client HTTPS and MCP runtime | Approved direction: pinned Node built-ins and zero npm runtime packages; shared CLI/MCP operation layer | The first CLI artifact PR records the narrow exception in AGENTS requirement 5; server/plugin dependency constraints remain unchanged |
+| Client runtime | Native Rust, stdlib and internal core only; shared CLI/MCP operation layer | Offline commands require no TLS runtime. Online slices need a separately approved OS TLS integration; no handwritten TLS or new dependency is implied |
 | Distribution | Signed/checksummed release bundle and launchers, documented runtime prerequisite, pinned reproducible install; optional registry wrapper only after publisher verification | Clean-machine install on every advertised platform. A future self-contained executable needs a separately checked packaging decision |
 | Configuration authority | Deployment owns retention, watermarks, paths, mirrors and capacities; API owns management grants and their operations | Quota and maintenance APIs/adapters are deferred; no competing override over Helm/env |
 | MCP transport | Local stdio; remote workload runs CLI or stdio beside its agent and uses HTTPS to obsync | Remote HTTP MCP requires separate auth/hosting scope |
@@ -186,7 +189,7 @@ not a vault key. It must not silently retarget after a redirect or config edit.
 | `obsync operations get/list/watch/cancel` | Durable progress and bounded waits; cancel only where supported |
 | `obsync sync status/verify` | Local plugin status and explicit sentinel-based round trip; observe device evidence |
 | `obsync doctor` | Offline slice: read-only local prerequisites/configuration diagnosis; authenticated server/plugin checks arrive with their slices; repairs remain separate plans |
-| `obsync export open` | Explicit local #317 archive opening, offline; native export contains current notes by default, history only by choice; no MCP content access |
+| `obsync export open` (deferred) | Explicit local #317 archive opening, offline; native export contains current notes by default, history only by choice; no MCP content access |
 | `obsync logs list/watch`, `obsync audit list` | Bounded operational and administration events, filters and cursor |
 | `obsync agent instructions` | Small installed guide, version/capability-aware, also available offline |
 | `obsync mcp serve/config/doctor` | stdio adapter, explicit client-config preview/apply, actual integration checks |
@@ -703,7 +706,7 @@ states the denominator and measurement age; no invented percentage or ETA.
 
 | Package | Delivery slice | Depends on | Live proof |
 | --- | --- | --- | --- |
-| [WP1 #255](https://github.com/snaraj/obsync/issues/255), PR-3a | Offline CLI/catalog/output/context/doctor, trusted install and #317 local export opening | PR-0 design; #317 native export format | V01, V02, V10 (local writes/interruption); #317 offline app-to-CLI round trip |
+| [WP1 #255](https://github.com/snaraj/obsync/issues/255), PR-3a | Offline CLI/catalog/output/context/doctor and trusted install; export is unsupported | PR-0 design | V01, V02, V10 (local writes/interruption) |
 | [WP2 #256](https://github.com/snaraj/obsync/issues/256), PR-3b | Management enrollment, scoped grants, login/status/logout, custody and durable audit | Independently reviewed auth state model (PR-A); WP1 | V03, V04, V09 (management logout), V10 |
 | [WP3 #257](https://github.com/snaraj/obsync/issues/257), PR-4a | Native bridge; existing-server first setup, pairing, folder selection and local disconnect | WP1–2 | V05–V10, V16 (local MCP config writes only) |
 | [WP4 #258](https://github.com/snaraj/obsync/issues/258), PR-4b | Shared status, rename, policy acknowledgement, revoke/archive | WP1–3; shipped 1.1.5 device model | V08–V10 |

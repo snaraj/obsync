@@ -1,13 +1,13 @@
 # CLI and MCP: security contract for staged delivery
 
-Status: design requirement, reconciled 2026-10-02; not an implemented or verified security
+Status: design requirement, reconciled 2026-10-03; not an implemented or verified security
 claim. Applies to every work package in [#254](https://github.com/snaraj/obsync/issues/254)
 and the [CLI/MCP design](../design/cli-mcp-v1.1.6.md). Extends, and cannot weaken,
 the [product threat model](../threat-model.md) and repository requirements.
 The baseline is released 1.1.5 at `03d108505d3993bddff276d70c814a6547222339`.
 The current milestone delivers offline CLI, management auth, existing-server
 native setup/device lifecycle and MCP observe. Storage/deployment/full recovery
-requirements remain here for the deferred #259/#260 scope; they are neither
+and export requirements remain here for deferred #259/#260/#317; they are neither
 implemented nor waived.
 
 ## 1. Security takes precedence
@@ -258,7 +258,7 @@ whole gate for a later capability.
 
 | Package | Security responsibility | Live security gates |
 | --- | --- | --- |
-| WP1 #255, offline | Trusted runtime/install, closed local catalog/context/config and filesystem writes; network auth arrives in WP2 | S01, S02 (local target binding), S08 (context/config and offline export destination writes), S09 |
+| WP1 #255, offline | Trusted runtime/install, closed local catalog/context/config and filesystem writes; network auth arrives in WP2 | S01, S02 (local target binding), S08 (context/config writes), S09 |
 | WP2 #256 | Independently reviewed auth state model; least privilege, custody, grants, approvals, replay/expiry, logout and durable audit | S02, S03, S05, S07, S08 |
 | WP3 #257 | Existing-server identity, native vault binding, protected bootstrap/bridge, 1.1.5 content-owner pairing and local credentials | S02, S04–S06, S08 |
 | WP4 #258 | Effective revoke/expiry, grant cascades, existing archive/recovery guards and truthful policy state | S03, S06–S08 |

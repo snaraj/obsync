@@ -1,0 +1,702 @@
+{
+  "common": {
+    "schema_version": 1,
+    "output_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "operation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "context": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "origin": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "expected_instance": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "verified_instance": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "context",
+            "origin",
+            "expected_instance",
+            "verified_instance"
+          ]
+        },
+        "state": {
+          "enum": [
+            "completed",
+            "planned",
+            "refused",
+            "failed",
+            "partial",
+            "unknown"
+          ]
+        },
+        "data": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "next_actions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "operation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "level": {
+              "const": "local"
+            },
+            "server_contacted": {
+              "const": false
+            }
+          },
+          "required": [
+            "level",
+            "server_contacted"
+          ]
+        },
+        "pagination": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "operation",
+        "target",
+        "state",
+        "data",
+        "error",
+        "warnings",
+        "next_actions",
+        "operation_id",
+        "observed_at",
+        "duration_ms",
+        "verification",
+        "pagination"
+      ]
+    },
+    "execution_scope": "local",
+    "server_capability": null,
+    "server_scopes": [],
+    "target": "OS default settings or --config-dir override; no verified server identity.",
+    "secret_fields": [],
+    "deadline_ms": 5000,
+    "cancellation": "Five-second execution budget checked before effects; user confirmation time is excluded, but plan expiry is absolute. Verified late completion remains completed with a warning.",
+    "output_limit_bytes": 65536,
+    "input_limit_bytes": 16384
+  },
+  "operations": [
+    {
+      "operation": "cli.help",
+      "command": "help",
+      "summary": "List implemented commands and global options.",
+      "availability": "implemented",
+      "errors": [
+        "invalid_input",
+        "output_limit"
+      ],
+      "examples": [
+        "obsync help"
+      ]
+    },
+    {
+      "operation": "cli.version",
+      "command": "version",
+      "summary": "Read the installed product and schema versions.",
+      "availability": "implemented",
+      "errors": [
+        "invalid_input",
+        "output_limit"
+      ],
+      "examples": [
+        "obsync version"
+      ]
+    },
+    {
+      "operation": "cli.search",
+      "command": "cli search QUERY",
+      "summary": "Find operations in this offline catalog.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "availability": "implemented",
+      "errors": [
+        "invalid_input",
+        "output_limit"
+      ],
+      "examples": [
+        "obsync cli search QUERY"
+      ]
+    },
+    {
+      "operation": "schema",
+      "command": "schema OPERATION",
+      "summary": "Describe a command and its inputs.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "availability": "implemented",
+      "errors": [
+        "invalid_input",
+        "output_limit"
+      ],
+      "examples": [
+        "obsync schema OPERATION"
+      ]
+    },
+    {
+      "operation": "capabilities",
+      "command": "capabilities",
+      "summary": "List locally implemented operations; no server intersection is claimed.",
+      "availability": "implemented",
+      "errors": [
+        "invalid_input",
+        "output_limit"
+      ],
+      "examples": [
+        "obsync capabilities"
+      ]
+    },
+    {
+      "operation": "context.list",
+      "command": "config get-contexts",
+      "summary": "List named local contexts.",
+      "completion": "The selected local state was read under a shared lock.",
+      "examples": [
+        "obsync config get-contexts --config-dir /absolute/private/config"
+      ],
+      "requirements": [
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
+        "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
+      ]
+    },
+    {
+      "operation": "context.get",
+      "command": "config view [NAME]",
+      "summary": "Describe one named or current context.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          }
+        },
+        "required": []
+      },
+      "completion": "The selected local state was read under a shared lock.",
+      "examples": [
+        "obsync config view [NAME] --config-dir /absolute/private/config"
+      ],
+      "requirements": [
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
+        "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
+      ]
+    },
+    {
+      "operation": "context.add",
+      "command": "config set-context NAME --server HTTPS_ORIGIN",
+      "summary": "Add a named server without replacing an existing one.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          },
+          "origin": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 512,
+            "description": "HTTPS ASCII DNS, canonical IPv4 or bracketed IPv6 origin. Only host case, :443 and one final slash may normalize on input."
+          },
+          "expected_instance": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "select": {
+            "type": "boolean",
+            "description": "Select this server in the same change; the first server is selected automatically."
+          }
+        },
+        "required": [
+          "name",
+          "origin"
+        ]
+      },
+      "effect": "local_write",
+      "repeatability": "Plans and apply retain exact target, revision, expiry and replay checks. --yes is an explicit write; repeating add refuses an existing name.",
+      "completion": "At a terminal, confirm the displayed change. --yes applies directly; --plan, machine output without --yes, and non-interactive input return a five-minute plan without effects.",
+      "examples": [
+        "obsync config set-context NAME --server HTTPS_ORIGIN --config-dir /absolute/private/config"
+      ],
+      "requirements": [
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
+        "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
+      ]
+    },
+    {
+      "operation": "context.use",
+      "command": "config use-context NAME",
+      "summary": "Select a saved server.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "effect": "local_write",
+      "repeatability": "Plans and apply retain exact target, revision, expiry and replay checks. --yes is an explicit write; repeating add refuses an existing name.",
+      "completion": "At a terminal, confirm the displayed change. --yes applies directly; --plan, machine output without --yes, and non-interactive input return a five-minute plan without effects.",
+      "examples": [
+        "obsync config use-context NAME --config-dir /absolute/private/config"
+      ],
+      "requirements": [
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
+        "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
+      ]
+    },
+    {
+      "operation": "context.remove",
+      "command": "config delete-context NAME",
+      "summary": "Remove a server from local settings.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "effect": "local_write",
+      "repeatability": "Plans and apply retain exact target, revision, expiry and replay checks. --yes is an explicit write; repeating add refuses an existing name.",
+      "completion": "At a terminal, confirm the displayed change. --yes applies directly; --plan, machine output without --yes, and non-interactive input return a five-minute plan without effects.",
+      "examples": [
+        "obsync config delete-context NAME --config-dir /absolute/private/config"
+      ],
+      "requirements": [
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
+        "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
+      ]
+    },
+    {
+      "operation": "context.apply",
+      "command": "apply -f PLAN --expect-digest DIGEST",
+      "summary": "Apply one exact, unexpired plan.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "plan": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "schema_version": {
+                "const": 1
+              },
+              "id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{32}$"
+              },
+              "operation": {
+                "enum": [
+                  "context.add",
+                  "context.use",
+                  "context.remove"
+                ]
+              },
+              "parameters": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                      },
+                      "origin": {
+                        "type": "string",
+                        "format": "uri",
+                        "maxLength": 512,
+                        "description": "HTTPS ASCII DNS, canonical IPv4 or bracketed IPv6 origin. Only host case, :443 and one final slash may normalize on input."
+                      },
+                      "expected_instance": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "origin"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ]
+                  }
+                ]
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "config_digest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "config_target": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "created_at": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Unix milliseconds."
+              },
+              "expires_at": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Unix milliseconds; exactly five minutes after creation."
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "schema_version",
+              "id",
+              "operation",
+              "parameters",
+              "revision",
+              "config_digest",
+              "config_target",
+              "created_at",
+              "expires_at",
+              "digest"
+            ]
+          },
+          "expect_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "plan",
+          "expect_digest"
+        ],
+        "description": "-f FILE contains the plan object; --expect-digest supplies expect_digest."
+      },
+      "effect": "configure",
+      "repeatability": "An identical unexpired plan reads its durable receipt; changed or expired plans refuse.",
+      "completion": "The exact unexpired plan has a flushed snapshot and receipt, independently reread before success.",
+      "verification": "Read back in a new CLI process; no server identity is verified.",
+      "errors": [
+        "invalid_input",
+        "digest_mismatch",
+        "revision_conflict",
+        "plan_expired",
+        "unsafe_config",
+        "config_busy",
+        "operation_capacity",
+        "unsupported_platform",
+        "write_unknown",
+        "native_open_failed",
+        "invalid_config",
+        "recovery_required",
+        "deadline_exceeded"
+      ],
+      "examples": [
+        "obsync apply -f PLAN --expect-digest DIGEST --config-dir /absolute/private/config"
+      ],
+      "requirements": [
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
+        "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
+      ]
+    },
+    {
+      "operation": "context.recover",
+      "command": "config recover",
+      "summary": "Recover interrupted local configuration.",
+      "effect": "maintenance",
+      "repeatability": "Recovery never applies a new context plan.",
+      "completion": "An incomplete inactive snapshot was discarded; the last complete state was flushed and reread.",
+      "examples": [
+        "obsync config recover --config-dir /absolute/private/config"
+      ],
+      "requirements": [
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
+        "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
+      ]
+    },
+    {
+      "operation": "doctor",
+      "command": "doctor",
+      "summary": "Check local settings and show the next step.",
+      "completion": "The selected local state was read under a shared lock.",
+      "examples": [
+        "obsync doctor --config-dir /absolute/private/config"
+      ],
+      "requirements": [
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
+        "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
+      ]
+    },
+    {
+      "operation": "agent.instructions",
+      "command": "agent instructions",
+      "summary": "Read concise instructions for this installed slice.",
+      "availability": "implemented",
+      "errors": [
+        "invalid_input",
+        "output_limit"
+      ],
+      "examples": [
+        "obsync agent instructions"
+      ]
+    },
+    {
+      "operation": "context.current",
+      "command": "config current-context",
+      "summary": "Read the selected context name.",
+      "completion": "The selected local state was read under a shared lock.",
+      "examples": [
+        "obsync config current-context --config-dir /absolute/private/config"
+      ],
+      "requirements": [
+        "Default OS settings directory or --config-dir override; owned private storage with protected ancestors.",
+        "Windows additionally requires --windows-trust and --windows-trust-sha256 from trusted OS PowerShell setup."
+      ]
+    },
+    {
+      "operation": "cli.install",
+      "command": "install",
+      "summary": "Install a verified native binary in a new private directory.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "from",
+          "prefix",
+          "manifest_sha256"
+        ]
+      },
+      "effect": "configure",
+      "repeatability": "Retry the exact action after interruption; changed or unknown files refuse.",
+      "completion": "Exact package content was read back, or the exact removal inventory is absent.",
+      "verification": "Publisher provenance must be independently verified before executing package code. No configuration, PATH or shell profile changes.",
+      "errors": [
+        "package_integrity",
+        "unsafe_config",
+        "install_busy",
+        "deadline_exceeded",
+        "local_io",
+        "installation_binding"
+      ],
+      "examples": [
+        "obsync install --from /absolute/private/package --prefix /absolute/private/installation --manifest-sha256 SHA256"
+      ]
+    },
+    {
+      "operation": "cli.uninstall",
+      "command": "uninstall",
+      "summary": "Remove the exact verified installation; retain contexts and target lock.",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "from",
+          "prefix",
+          "manifest_sha256"
+        ]
+      },
+      "effect": "configure",
+      "repeatability": "Retry the exact action after interruption; changed or unknown files refuse.",
+      "completion": "Exact package content was read back, or the exact removal inventory is absent.",
+      "verification": "Publisher provenance must be independently verified before executing package code. No configuration, PATH or shell profile changes.",
+      "errors": [
+        "package_integrity",
+        "unsafe_config",
+        "install_busy",
+        "deadline_exceeded",
+        "local_io",
+        "installation_binding"
+      ],
+      "examples": [
+        "obsync uninstall --from /absolute/private/package --prefix /absolute/private/installation --manifest-sha256 SHA256"
+      ]
+    },
+    {
+      "operation": "cli.windows_setup",
+      "command": "windows-setup",
+      "summary": "Print the fixed script for trusted OS PowerShell setup.",
+      "availability": "windows_only",
+      "repeatability": "Printing the script has no effect; explicitly running it creates a new private trust receipt.",
+      "completion": "Fixed setup instructions were printed; no setup was performed.",
+      "verification": "The user runs the script in an independently opened trusted OS PowerShell 5.1 session.",
+      "errors": [
+        "unsupported_capability",
+        "invalid_input"
+      ],
+      "examples": [
+        "obsync windows-setup -o json"
+      ]
+    }
+  ],
+  "operation_defaults": {
+    "input_schema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "effect": "read",
+    "availability": "implemented_local",
+    "repeatability": "Read-only; safe to repeat.",
+    "completion": "The requested local result was read or calculated.",
+    "verification": "No network, native application or server claim.",
+    "errors": [
+      "invalid_input",
+      "output_limit",
+      "unsafe_config",
+      "native_open_failed",
+      "invalid_config",
+      "config_busy",
+      "recovery_required",
+      "deadline_exceeded"
+    ]
+  }
+}

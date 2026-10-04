@@ -74,7 +74,18 @@ RUN set -eux; \
 # the gate does. Emulating a second architecture to re-run identical
 # stdlib-only tests buys nothing and costs minutes per release.
 RUN cargo clippy --workspace --all-targets --locked -- -D warnings
-RUN cargo test --workspace --locked
+# Compile all tests once, then run the CLI process suites as an ordinary user.
+# Root must never become an accepted CLI storage identity just to satisfy a build.
+RUN set -eux; \
+    cargo test --workspace --locked --no-run; \
+    cargo test -p obsync-core -p obsyncd --locked; \
+    count=0; \
+    for suite in target/debug/deps/cli-* target/debug/deps/contexts-* target/debug/deps/package-*; do \
+      if [ -f "$suite" ] && [ -x "$suite" ]; then \
+        runuser -u nobody -- "$suite"; count=$((count + 1)); \
+      fi; \
+    done; \
+    test "$count" -eq 3
 # One fully static binary per target architecture. musl plus
 # `+crt-static` and self-contained linking means the result has no dynamic
 # loader and no libc to find at runtime, which is what lets the final image be

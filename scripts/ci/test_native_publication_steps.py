@@ -25,6 +25,7 @@ import release_contract as contract
 from test_community_release import VERSION, bundle, digest, native_arguments
 from test_release_contract import Repository, locks, main_run_record, manifest_arguments
 from test_server_archives import SERVER_VERSION, server_tree
+from test_cli_package_contract import cli_bundle
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/release-publisher.yml"
@@ -239,6 +240,7 @@ class NativePublicationSteps(unittest.TestCase):
         source = self.root / 'source'
         (source / 'scripts/ci').mkdir(parents=True)
         shutil.copy2(ROOT / 'scripts/ci/release_contract.py', source / 'scripts/ci')
+        shutil.copy2(ROOT / 'scripts/ci/cli_package_contract.py', source / 'scripts/ci')
         (source / 'CHANGELOG.md').write_text(locks(SERVER_VERSION, ['1.1.3'])['CHANGELOG.md'])
         return source
 
@@ -463,6 +465,7 @@ class NativePublicationSteps(unittest.TestCase):
         scripts = source / 'scripts/ci'
         scripts.mkdir(parents=True)
         shutil.copy2(ROOT / 'scripts/ci/release_contract.py', scripts)
+        shutil.copy2(ROOT / 'scripts/ci/cli_package_contract.py', scripts)
         shutil.copy2(ROOT / 'scripts/ci/verify-native-provenance.sh', scripts)
         data = bundle(version)
         args = {**native_arguments(data), 'source_sha': source_sha, 'version': version}
@@ -470,6 +473,9 @@ class NativePublicationSteps(unittest.TestCase):
             args['server_archives'] = {
                 platform: contract.build_server_archive(server_tree(self.root, platform, data), version, platform)
                 for platform in contract.RELEASE_MANIFEST_PLATFORMS}
+        if contract.Version.parse(version).cli_archives:
+            args['cli_archives'] = {platform: cli_bundle(version=version, source_sha=source_sha, platform=platform)
+                                    for platform in contract.CLI_PLATFORMS}
         evidence = contract.build_release_manifest(**args)
         tag = evidence['release']['tag']
         files = {f'obsync-{tag}-release-manifest.json': contract._canonical_json(evidence),
@@ -479,6 +485,8 @@ class NativePublicationSteps(unittest.TestCase):
                 files.update({name: archive.read(name) for name in contract.PLUGIN_FILES})
         for platform, packed in args.get('server_archives', {}).items():
             files[contract.server_archive_asset_name(tag, platform)] = packed
+        for platform, packed in args.get('cli_archives', {}).items():
+            files[evidence['artifacts']['cli_archives'][platform]['name']] = packed
         actor = {'login': 'github-actions[bot]', 'id': 41898282}
         assets = []
         for name, content in files.items():
@@ -511,10 +519,11 @@ class NativePublicationSteps(unittest.TestCase):
                                      args['chart'] + '@' + args['chart_digest']])
         state['provenance'] = dict(source_sha=source_sha, files={
             name: digest(content).split(':')[1] for name, content in files.items()
-            if name in contract.PLUGIN_FILES or name.endswith('.tar.gz')})
+            if name in contract.PLUGIN_FILES or name.endswith('.tar.gz') or name.startswith('obsync-cli-')})
         self.state.write_text(json.dumps(state))
         self.audit_root = source
-        self.audit_environment = {**self.env, 'TAG': tag, 'GHCR_PASSWORD': 'SENTINEL',
+        self.audit_environment = {**self.env, 'RUNNER_TEMP': tempfile.mkdtemp(dir=self.temp),
+                                  'TAG': tag, 'GHCR_PASSWORD': 'SENTINEL',
                                   'GITHUB_ACTOR': actor['login'], 'GITHUB_SERVER_URL': 'https://github.com',
                                   'GITHUB_STEP_SUMMARY': str(source / 'summary')}
 
@@ -539,23 +548,44 @@ class NativePublicationSteps(unittest.TestCase):
                 self.assertEqual([call for call in calls if call.startswith('attestation:')],
                                  ['attestation:' + name for name in contract.PLUGIN_FILES] if version == '0.1.15' else [])
 
-    def test_the_audit_of_a_server_release_rebinds_both_archives(self):
-        names = [contract.server_archive_asset_name(SERVER_VERSION, platform)
-                 for platform in contract.RELEASE_MANIFEST_PLATFORMS]
-        self.prepare_audit(SERVER_VERSION)
-        result = self.run_audit()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        calls = json.loads(self.state.read_text())['calls']
-        self.assertEqual(len([call for call in calls if call.startswith('download:')]), 7)
-        self.assertEqual([call for call in calls if call.startswith('attestation:')],
-                         ['attestation:' + name for name in [*contract.PLUGIN_FILES, *names]])
-        for name in names:
-            for scenario in ('changed:' + name, 'attestation:' + name):
-                with self.subTest(scenario=scenario):
-                    self.prepare_audit(SERVER_VERSION)
-                    self.assertNotEqual(self.run_audit(scenario).returncode, 0)
-                    calls = json.loads(self.state.read_text())['calls']
-                    self.assertFalse(any(call.startswith('cosign:') for call in calls))
+    def test_the_audit_rebinds_server_and_cli_archives(self):
+        for version in (SERVER_VERSION, '1.1.6'):
+            names = [contract.server_archive_asset_name(version, platform)
+                     for platform in contract.RELEASE_MANIFEST_PLATFORMS]
+            clients = ([f'obsync-cli-{version}-{platform}.zip' for platform in contract.CLI_PLATFORMS]
+                       if contract.Version.parse(version).cli_archives else [])
+            names += clients
+            self.prepare_audit(version)
+            result = self.run_audit()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = json.loads(self.state.read_text())['calls']
+            self.assertEqual(len([call for call in calls if call.startswith('download:')]), 5 + len(names))
+            self.assertEqual([call for call in calls if call.startswith('attestation:')],
+                             ['attestation:' + name for name in [*contract.PLUGIN_FILES, *names]])
+            for name in names:
+                for scenario in ('changed:' + name, 'attestation:' + name):
+                    with self.subTest(version=version, scenario=scenario):
+                        self.prepare_audit(version)
+                        result = self.run_audit(scenario)
+                        self.assertNotEqual(result.returncode, 0)
+                        calls = json.loads(self.state.read_text())['calls']
+                        self.assertIn(('download:' if scenario.startswith('changed:') else 'attestation:') + name, calls)
+                        self.assertFalse(any(call.startswith('cosign:') for call in calls))
+            for name in clients:
+                for change in ('missing', 'duplicate'):
+                    with self.subTest(version=version, member=name, change=change):
+                        self.prepare_audit(version)
+                        state = json.loads(self.state.read_text())
+                        release = state['api']['repos/snaraj/obsync/releases/latest']
+                        selected = next(asset for asset in release['assets'] if asset['name'] == name)
+                        if change == 'missing':
+                            release['assets'].remove(selected)
+                        else:
+                            release['assets'].append(dict(selected))
+                        self.state.write_text(json.dumps(state))
+                        self.assertNotEqual(self.run_audit().returncode, 0)
+                        calls = json.loads(self.state.read_text())['calls']
+                        self.assertFalse(any(call.startswith('cosign:') for call in calls))
 
     def test_the_audit_of_a_release_after_1_0_0_reads_the_source_commit_changelog(self):
         """The three wiring mutants this closes: the audit dropping
@@ -586,11 +616,21 @@ class NativePublicationSteps(unittest.TestCase):
                 self.assertFalse(any(call.startswith('cosign:') for call in calls))
 
     def test_native_verifier_binds_each_exported_file_and_propagates_refusals(self):
-        self.prepare_audit('0.1.15')
+        self.prepare_audit('1.1.6')
         state = json.loads(self.state.read_text())
         directory = Path(self.env['PLUGIN_DIRECTORY'])
         for member in contract.PLUGIN_FILES:
             (directory / member).write_bytes(base64.b64decode(state['files'][member]))
+        archives = self.root / 'verifier-archives'
+        archives.mkdir()
+        server = [contract.server_archive_asset_name('1.1.6', platform)
+                  for platform in contract.RELEASE_MANIFEST_PLATFORMS]
+        clients = [f'obsync-cli-1.1.6-{platform}.zip' for platform in contract.CLI_PLATFORMS]
+        for name in [*server, *clients]:
+            (archives / name).write_bytes(base64.b64decode(state['files'][name]))
+        self.env.update(SERVER_ARCHIVES=' '.join(str(archives / name) for name in server),
+                        CLI_ARCHIVES=str(archives))
+        members = [*contract.PLUGIN_FILES, *server, *clients]
         proof = self.root / 'build-bundle.json'
         proof.write_text('SENTINEL-BUILD-BUNDLE')
         verify = self.steps['Verify the native build provenance before release publication']
@@ -599,14 +639,32 @@ class NativePublicationSteps(unittest.TestCase):
                                      'ATTESTATION_BUNDLE': str(proof)}, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(self.state.read_text())['calls'],
-                         ['attestation:' + name for name in contract.PLUGIN_FILES])
+                         ['attestation:' + name for name in members])
         command = ['bash', str(ROOT / 'scripts/ci/verify-native-provenance.sh'),
                    str(directory), state['provenance']['source_sha'], str(proof)]
-        for scenario in ['', *['attestation:' + member for member in contract.PLUGIN_FILES]]:
+        for scenario in ['', *['attestation:' + member for member in members]]:
             with self.subTest(scenario=scenario):
                 result = subprocess.run(command, env={**self.env, 'MODEL_SCENARIO': scenario},
                                         capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode == 0, not scenario, result.stderr)
+        for name in clients:
+            path = archives / name
+            for change in ('missing', 'duplicate'):
+                with self.subTest(member=name, change=change):
+                    held = path.with_suffix('.held')
+                    duplicate = archives / name.replace('1.1.6', '0.0.0')
+                    if change == 'missing':
+                        path.rename(held)
+                    else:
+                        shutil.copyfile(path, duplicate)
+                    before = json.loads(self.state.read_text())['calls']
+                    result = subprocess.run(command, env=self.env, capture_output=True, text=True, timeout=10)
+                    if change == 'missing':
+                        held.rename(path)
+                    else:
+                        duplicate.unlink()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(json.loads(self.state.read_text())['calls'], before)
         for source, repository in [('invalid', 'snaraj/obsync'), (state['provenance']['source_sha'], 'other/repo')]:
             before = json.loads(self.state.read_text())['calls']
             command[3] = source
@@ -656,14 +714,15 @@ class NativePublicationSteps(unittest.TestCase):
     def test_native_provenance_is_mandatory_between_export_and_release(self):
         document = miniyaml.load_one(WORKFLOW.read_text())
         publish = document['jobs']['publish']
-        self.assertEqual(publish['permissions'], {'contents': 'write', 'packages': 'write',
+        self.assertEqual(publish['permissions'], {'actions': 'read', 'contents': 'write', 'packages': 'write',
                                                   'id-token': 'write', 'attestations': 'write'})
         steps = publish['steps']
         attest = self.steps['Attest the native plugin build and server archives']
         self.assertEqual(attest['uses'], 'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6')
         self.assertEqual([line.strip() for line in attest['with']['subject-path'].splitlines()],
                          ['${{ steps.plugin.outputs.directory }}/' + name for name in contract.PLUGIN_FILES]
-                         + ['${{ steps.server.outputs.amd64 }}', '${{ steps.server.outputs.arm64 }}'])
+                         + ['${{ steps.server.outputs.amd64 }}', '${{ steps.server.outputs.arm64 }}',
+                            '${{ steps.cli.outputs.path }}/*.zip'])
         self.assertEqual({key: value for key, value in attest['with'].items() if key != 'subject-path'},
                          {'create-storage-record': False, 'push-to-registry': False})
         verify = self.steps['Verify the native build provenance before release publication']
@@ -671,20 +730,30 @@ class NativePublicationSteps(unittest.TestCase):
             'GH_TOKEN': '${{ secrets.GITHUB_TOKEN }}',
             'PLUGIN_DIRECTORY': '${{ steps.plugin.outputs.directory }}',
             'SERVER_ARCHIVES': '${{ steps.server.outputs.amd64 }} ${{ steps.server.outputs.arm64 }}',
+            'CLI_ARCHIVES': '${{ steps.cli.outputs.path }}',
             'ATTESTATION_BUNDLE': '${{ steps.native_attestation.outputs.bundle-path }}'})
         export = self.steps['Export the plugin bundle from the image build']
         server = self.steps['Export the static server archives from the image build']
-        for step in [server, attest, verify]:
+        cli = self.steps['Acquire the exact native archives accepted on protected main']
+        self.assertIn('gh run download "${CLI_RUN_ID}"', cli['run'])
+        self.assertEqual(cli['env']['CLI_RUN_ID'], '${{ needs.authorize.outputs.cli_run_id }}')
+        self.assertIn('cli_archive_record(stream.read(CLI_MAX_BYTES + 1), version, source, platform)', cli['run'])
+        self.assertIn('{p.name for p in root.iterdir()} != set(expected)', cli['run'])
+        for step in [server, cli, attest, verify]:
             self.assertNotIn('if', step)
             self.assertNotIn('continue-on-error', step)
         release = self.steps['Stage, verify, and publish the exact GitHub release']
         manifest = self.steps['Build the deterministic release evidence manifest']
         for step in [manifest, release]:
+            self.assertEqual(step['env']['CLI_PATH'], '${{ steps.cli.outputs.path }}')
+            self.assertIn('--cli-archives "${CLI_PATH}"', step['run'])
             self.assertEqual({key: step['env'][key] for key in ('SERVER_AMD64', 'SERVER_ARM64')},
                              {'SERVER_AMD64': '${{ steps.server.outputs.amd64 }}',
                               'SERVER_ARM64': '${{ steps.server.outputs.arm64 }}'})
         self.assertLess(steps.index(export), steps.index(server))
         self.assertLess(steps.index(server), steps.index(attest))
+        self.assertLess(steps.index(server), steps.index(cli))
+        self.assertLess(steps.index(cli), steps.index(attest))
         self.assertLess(steps.index(attest), steps.index(verify))
         self.assertLess(steps.index(verify), steps.index(release))
         self.assertEqual(steps[-1]['name'], 'Re-bind the immutable Release to the exact annotated tag')
