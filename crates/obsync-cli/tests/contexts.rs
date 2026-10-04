@@ -48,6 +48,7 @@ impl Lab {
     fn raw(&self, args: &[&str]) -> Output {
         self.command(args).output().unwrap()
     }
+    #[track_caller]
     fn run(&self, args: &[&str], code: i32) -> Value {
         let mut command = self.command(args);
         command.args(["-o", "json"]);
@@ -72,6 +73,7 @@ impl Lab {
         fs::write(&path, plan.to_json()).unwrap();
         path
     }
+    #[track_caller]
     fn apply(&self, plan: &Value, code: i32) -> Value {
         let path = self.plan_file(plan);
         self.run(
@@ -744,6 +746,10 @@ fn actual_os_lock_and_competing_processes_preserve_single_application() {
     lab.run(&["doctor"], 5);
     lab.apply(&plan, 5);
     assert_eq!(before, lab.bytes());
+    // Another test's child can retain this open description until exec.
+    // Keep a real duplicate alive to require explicit release, not last-close.
+    let retained_lock = lock.try_clone().unwrap();
+    lock.unlock().unwrap();
     drop(lock);
     let path = lab.plan_file(&plan);
     let args = [
@@ -784,4 +790,5 @@ fn actual_os_lock_and_competing_processes_preserve_single_application() {
     let state = lab.disk_state();
     assert_eq!(state.get("revision"), Some(&Value::Int(2)));
     assert_eq!(state.get("receipts").unwrap().as_array().unwrap().len(), 2);
+    drop(retained_lock);
 }

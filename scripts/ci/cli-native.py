@@ -17,7 +17,8 @@ def startup_result(samples):
     assert max(samples[:5]) < 1000, ('cold launch', samples[:5])
     warm = sorted(samples[5:])
     assert warm[28] < 250, ('warm p95', warm[28])
-    return {'first_five_ms': samples[:5], 'warm_p95_ms': warm[28], 'warm_median_ms': statistics.median(warm)}
+    return {'samples_ms': samples, 'first_five_ms': samples[:5],
+            'warm_p95_ms': warm[28], 'warm_median_ms': statistics.median(warm)}
 
 
 def journey(package, root, trust=()):
@@ -26,13 +27,14 @@ def journey(package, root, trust=()):
     config, installed, second = root / 'config', root / 'installed', root / 'second'
     digest = hashlib.sha256((package / 'package-manifest.json').read_bytes()).hexdigest()
     result = {'commands': 0, 'platform': json.loads((package / 'package-manifest.json').read_text())['platform'],
-              'manifest_sha256': digest, 'binary_sha256': hashlib.sha256((package / binary).read_bytes()).hexdigest()}
+              'manifest_sha256': digest, 'binary_sha256': hashlib.sha256((package / binary).read_bytes()).hexdigest(),
+              'clock': vars(time.get_clock_info('perf_counter'))}
 
     def run(args, code=0, exe=None, human=False):
-        started = time.monotonic_ns()
+        started = time.perf_counter_ns()
         proc = subprocess.run([str(exe or installed / binary), *args, *trust,
                                *([] if human else ['-o', 'json'])], env={}, capture_output=True, timeout=8)
-        elapsed = (time.monotonic_ns() - started) / 1e6
+        elapsed = (time.perf_counter_ns() - started) / 1e6
         assert proc.returncode == code, (args[0], proc.returncode, proc.stdout.decode(errors='replace'),
                                          proc.stderr.decode(errors='replace'))
         assert not proc.stderr and len(proc.stdout) <= 65536

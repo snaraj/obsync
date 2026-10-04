@@ -15,6 +15,13 @@ installed-file/context readback. The Windows build uses the native MSVC target.
 This run did not retain its artifact hashes in the public event; the revised
 journey emits its existing hash/timing receipt before disposable cleanup.
 
+The strengthened [native run 37171478315](https://github.com/snaraj/obsync/actions/runs/37171478315)
+passed 132 ordinary-user Windows commands and 129 commands on each POSIX target.
+It tested head `190d80999de7db5a09f8c1d040749d7ce938e064` through PR merge checkout
+`fac479785873a61db921e1149a1019d1de6de5b8`. Windows peer custody, exact parent DACL
+restoration, recovery, concurrent apply, trust refusals and hard-link refusal
+all passed. This precedes the isolated context-test correction described below.
+
 Local Linux used an ordinary user in a virtualized Ubuntu 24.04.5 ARM64 guest.
 The Windows desktop check used an ordinary user in a software-emulated Windows
 Server 2025 x64 evaluation guest. Its GNU cross-build is supplemental evidence;
@@ -65,6 +72,11 @@ not purged. Warm p95 help/schema/search were **0.546501 / 0.805418 / 0.759334 ms
 the largest first-five value across them was **0.852585 ms**. These are candidate
 process measurements, not download, network or server timings.
 
+The Windows checkpoint above reported 0/15/16 ms samples from its coarse clock;
+zero does not mean instantaneous execution. Subsequent journey timing uses
+Python's highest-resolution performance counter and records the clock metadata
+and all 35 samples so the fixed warm/cold checks can be independently recomputed.
+
 `make check` at `a5aece076cc948ea852be0db29c609591a1f69ef` passed 872 Python
 contracts, 1,975 plugin tests, 95.26% Rust line coverage and the then-current
 122-command macOS journey. The subsequent journey extension adds native
@@ -101,7 +113,16 @@ reusable fixtures and their README are ignored and retained outside the repo.
   cycles in the same VM. The fixture now performs that initial ACL write while
   empty, before its baseline, and retains full DACL equality. Completed journey
   output precedes the peer check; a separate failure event preserves its outcome
-  if restoration also fails. The replacement native run remains required.
+  if restoration also fails. The replacement native run above passed.
+- [A later image-build failure](https://github.com/snaraj/obsync/actions/runs/37171478327/job/111345122284)
+  returned `config_busy` in the context concurrency test before IPv6 deployment.
+  A Linux control retained a duplicate of the fixture's locked file: initial
+  apply succeeded, both contenders refused, and final replay reproduced the
+  failure. Explicit fixture unlock passed 100 complete context-suite runs with
+  that duplicate alive. The existing test now keeps this condition and reports
+  its caller on failure. The original test also passed 100 unforced runs; the
+  original CI scheduling is not established by this controlled reproduction.
+  Product locking, refusal assertions and replay/state checks are unchanged.
 - [The retained proxy build failure](https://github.com/snaraj/obsync/actions/runs/37166485128/job/111330328498)
   occurred in an unchanged plugin test before the proxy scenario. Two controlled
   held-save runs proved its read-log predicate precedes the rename request;
