@@ -106,6 +106,9 @@ if (!$SelectedUser) {
         if ($Owner -cne $Accounts[0].SID.Value) { throw 'Prepared fixture owner differs.' }
         $Root = $Candidate
         $Completed = Invoke-Owned $Accounts[0] $Passwords[0] ($Arguments + ' -Phase complete -Root "' + $Root + '"')
+        foreach ($Line in ($Prepared + "`n" + $Completed) -split '\r?\n') {
+            if ($Line.StartsWith('{') -and !$Line.StartsWith('{"event":"fixture_ready",')) { Write-Output $Line }
+        }
         $Slot = [IO.Path]::Combine($Root, 'config\contexts.1')
         $BeforePeer = (Get-FileHash -LiteralPath $Slot -Algorithm SHA256).Hash
         $AccessSection = [Security.AccessControl.AccessControlSections]::Access
@@ -119,6 +122,9 @@ if (!$SelectedUser) {
             [IO.Directory]::SetAccessControl($Root, $RootAcl)
             $null = Invoke-Owned $Accounts[1] $Passwords[1] ('-NoLogo -NoProfile -NonInteractive -File "' + $PSCommandPath + '" -Peer -Root "' + $Root + '"')
             if ((Get-FileHash -LiteralPath $Slot -Algorithm SHA256).Hash -cne $BeforePeer) { throw 'Peer changed the synthetic context slot.' }
+        } catch {
+            Write-Output '{"event":"windows_peer_custody","result":"fail","scope":"peer access or unchanged slot"}'
+            throw
         } finally {
             $Restore = [Security.AccessControl.DirectorySecurity]::new()
             $Restore.SetSecurityDescriptorSddlForm($RootDacl, $AccessSection)
@@ -126,9 +132,6 @@ if (!$SelectedUser) {
             if ([IO.Directory]::GetAccessControl($Root).GetSecurityDescriptorSddlForm($AccessSection) -cne $RootDacl) { throw 'Fixture parent DACL restoration differs.' }
         }
         Write-Output '{"event":"windows_peer_custody","result":"pass","scope":"CLI-created subtree with readable peer parent"}'
-        foreach ($Line in ($Prepared + "`n" + $Completed) -split '\r?\n') {
-            if ($Line.StartsWith('{') -and !$Line.StartsWith('{"event":"fixture_ready",')) { Write-Output $Line }
-        }
     } finally {
         if ($Handoff -and [IO.Directory]::Exists($Handoff)) { Remove-Item -LiteralPath $Handoff -Recurse -Force }
         if ($Root -and [IO.Directory]::Exists($Root)) { Remove-Item -LiteralPath $Root -Recurse -Force }
@@ -161,6 +164,9 @@ $Keep = $false
 try {
     $SetupRecord = [IO.Path]::Combine($Root, 'setup-receipt.json')
     if ($Phase -ceq 'prepare') {
+        # First ACL persistence normalizes Windows' auto-inheritance bookkeeping.
+        # Do it while empty, before the CLI journey and exact restoration baseline.
+        [IO.Directory]::SetAccessControl($Root, $Acl)
         $OwnedPackage = [IO.Path]::Combine($Root, 'package')
         $null = [IO.Directory]::CreateDirectory($OwnedPackage, $Acl)
         foreach ($Name in @('LICENSE', 'README.md', 'VERSION', 'obsync.exe', 'package-manifest.json')) {

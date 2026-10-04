@@ -94,6 +94,14 @@ reusable fixtures and their README are ignored and retained outside the repo.
 - The earlier Windows first-install refusal was a fixture ACL mismatch. The
   repaired run proves Python OWNER RIGHTS refusal with unchanged ACL/content,
   then runs on an explicitly prepared account ACL. No production guard changed.
+- [The subsequent Windows fixture failure](https://github.com/snaraj/obsync/actions/runs/37170130672/job/111341230565)
+  occurred when restoring the peer check's parent DACL. A Windows VM reproduced
+  first-write normalization from `D:P` to `D:PAI`, followed by exact restoration
+  on the second cycle. Moving that first write before the baseline passed both
+  cycles in the same VM. The fixture now performs that initial ACL write while
+  empty, before its baseline, and retains full DACL equality. Completed journey
+  output precedes the peer check; a separate failure event preserves its outcome
+  if restoration also fails. The replacement native run remains required.
 - [The retained proxy build failure](https://github.com/snaraj/obsync/actions/runs/37166485128/job/111330328498)
   occurred in an unchanged plugin test before the proxy scenario. Two controlled
   held-save runs proved its read-log predicate precedes the rename request;
