@@ -336,3 +336,10 @@ class NativePublicationAcceptance(unittest.TestCase):
         for required in ('actions/workflows/cli-native.yml/runs', 'cli-run-record', 'cli-jobs-record'):
             self.assertIn(required, authority)
         self.assertEqual(publisher['publish']['needs'], 'authorize')
+        application = workflow('pr-gate.yml')['jobs']['application']['steps']
+        installed = [step for step in application if 'python3 cli/check.py' in step.get('run', '')]
+        self.assertEqual(len(installed), 1)
+        self.assertEqual([line.strip() for line in installed[0]['run'].strip().splitlines()],
+                         ['cargo build --locked --release -p obsync-cli', 'python3 cli/check.py'])
+        self.assertNotIn('if', installed[0])
+        self.assertNotIn('continue-on-error', installed[0])

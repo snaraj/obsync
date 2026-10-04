@@ -189,6 +189,8 @@ fn rehash(plan: &mut Value) {
 #[test]
 fn public_context_journey_has_durable_receipts_and_readable_human_output() {
     let lab = Lab::new();
+    lab.run(&["config", "recover"], 6);
+    assert!(!lab.config.exists());
     assert!(
         data(&lab.run(&["get", "contexts"], 0))
             .get("items")
@@ -237,6 +239,7 @@ fn public_context_journey_has_durable_receipts_and_readable_human_output() {
     );
     assert!(text.lines().all(|l| l.len() <= 80));
     let before = lab.bytes();
+    lab.run(&["describe", "context", "lab", "--context", "lab"], 2);
     lab.run(&["doctor"], 0);
     lab.run(&["config", "recover"], 0);
     assert_eq!(before, lab.bytes());
@@ -331,7 +334,22 @@ fn changed_stale_expired_and_wrong_target_plans_leave_storage_unchanged() {
         Some("revision_conflict")
     );
     assert!(!lab.config.exists());
-    lab.apply(&a, 0);
+    let path = lab.plan_file(&a);
+    let mut padded = a.to_json().into_bytes();
+    padded.resize(16385, b' ');
+    fs::write(&path, &padded).unwrap();
+    let args = [
+        "apply",
+        "-f",
+        path.to_str().unwrap(),
+        "--expect-digest",
+        a.get("digest").unwrap().as_str().unwrap(),
+    ];
+    lab.run(&args, 2);
+    assert!(!lab.config.exists());
+    // A valid document exactly at the byte limit remains accepted.
+    fs::write(&path, &padded[..16384]).unwrap();
+    lab.run(&args, 0);
     let before = lab.bytes();
     lab.apply(&b, 5);
     assert_eq!(before, lab.bytes());

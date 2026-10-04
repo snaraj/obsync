@@ -304,6 +304,33 @@ fn interrupted_copy_and_partial_removal_are_bound_to_exact_content() {
     let before = lab.bytes(&pending);
     lab.run("install", 4);
     assert_eq!(before, lab.bytes(&pending));
+    let license = fs::read(lab.source.join("LICENSE")).unwrap();
+    let readme = fs::read(lab.source.join("README.md")).unwrap();
+    for staged in [
+        vec![("LICENSE", &license[..3]), ("README.md", &readme[..3])],
+        vec![
+            ("package-manifest.json", &raw[..30]),
+            ("LICENSE", &license[..3]),
+        ],
+        vec![
+            ("package-manifest.json", raw.as_slice()),
+            ("LICENSE", &license[..3]),
+            ("README.md", b"wrong"),
+        ],
+    ] {
+        for name in lab.bytes(&pending).keys() {
+            fs::remove_file(pending.join(name)).unwrap();
+        }
+        for (name, bytes) in staged {
+            let path = pending.join(name);
+            fs::write(&path, bytes).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let before = lab.bytes(&pending);
+        lab.run("install", 4);
+        assert_eq!(before, lab.bytes(&pending));
+        assert!(!lab.prefix.exists());
+    }
 }
 
 #[test]

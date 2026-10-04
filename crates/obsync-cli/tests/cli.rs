@@ -87,6 +87,23 @@ fn human_errors_use_stderr_without_echoing_arguments() {
     let error = String::from_utf8(output.stderr).unwrap();
     assert!(error.starts_with("error:"));
     assert!(!error.contains("unrecognized-fixture-value"));
+    #[cfg(unix)]
+    for (args, error_stream) in [(&["version"][..], false), (&["unknown-fixture"][..], true)] {
+        use std::os::{fd::OwnedFd, unix::net::UnixStream};
+        let (writer, reader) = UnixStream::pair().unwrap();
+        drop(reader);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_obsync"));
+        command.args(args).env_clear();
+        let stream = std::process::Stdio::from(OwnedFd::from(writer));
+        if error_stream {
+            command.stderr(stream);
+        } else {
+            command.stdout(stream);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(9));
+        assert!(output.stdout.is_empty() && output.stderr.is_empty());
+    }
 }
 
 #[test]
@@ -184,6 +201,11 @@ fn unsupported_flags_and_missing_values_refuse() {
         vec!["version", "--output"],
         vec!["version", "--config-dir", ""],
         vec!["version", "--config-dir", "-synthetic"],
+        vec!["help", "--server", "https://example.invalid"],
+        vec!["config", "--server", "https://example.invalid"],
+        vec!["version", "--server", "https://example.invalid", "--help"],
+        vec!["help", "unknown-fixture-topic"],
+        vec!["get", "contexts"],
     ] {
         assert_eq!(invoke(&args).status.code(), Some(2));
     }
