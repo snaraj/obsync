@@ -22,6 +22,15 @@ It tested head `190d80999de7db5a09f8c1d040749d7ce938e064` through PR merge check
 restoration, recovery, concurrent apply, trust refusals and hard-link refusal
 all passed. This precedes the isolated context-test correction described below.
 
+[Native run 37172702425](https://github.com/snaraj/obsync/actions/runs/37172702425)
+passed the same 132 Windows/129 POSIX journeys after that correction, at head
+`a38c559911405f7bb415aa1d98d6380685eab5ad` through PR merge checkout
+`37082d3a0c446ea9f974b83252fdc3b491ab4b31`. All 44 checks passed; only the expected
+PR documentation deployment was skipped. Each native receipt matched its built
+binary and manifest hashes. Independent recalculation matched all 420 samples,
+first-five lists, warm p95 values and medians. Windows used QueryPerformanceCounter;
+warm p95 help/schema/search were **6.3805 / 6.077 / 6.3791 ms**.
+
 Local Linux used an ordinary user in a virtualized Ubuntu 24.04.5 ARM64 guest.
 The Windows desktop check used an ordinary user in a software-emulated Windows
 Server 2025 x64 evaluation guest. Its GNU cross-build is supplemental evidence;
@@ -94,6 +103,21 @@ artifact hashes, raw discovery samples and independent state checks. Local
 reusable fixtures and their README are ignored and retained outside the repo.
 
 ## Limits and retained failures
+
+The independent review identified eight missing stored-state regression cases.
+The shared native journey now uses valid sealed synthetic snapshots to require
+maximum-revision refusal before any byte changes, and to prove that one expired
+receipt releases capacity while all 63 live receipts survive unchanged. The new
+receipt and replay are independently read back. Invalid receipt IDs, digests,
+operations, names, current names and complete snapshot magic must each make both
+doctor and recovery refuse without changing storage. The fixture restores its
+original snapshots afterward and verifies them through the public CLI.
+
+The expanded macOS journey passed **152 commands**. Removing each of these eight
+guards made that same journey fail at its corresponding case, twice per guard;
+all mutations and disposable builds were removed. Production code is unchanged.
+The common fixture runs in the existing four-platform native jobs; acceptance of
+these added cases on Windows and Linux requires their replacement native run.
 
 - Public release provenance and installation, exact final native checks and
   independent adversarial approval are separate release gates.

@@ -72,6 +72,13 @@ def journey(package, root, trust=()):
             states.append(state)
         return max(states, key=lambda s:s['revision'])
 
+    def write_fixture_state(value, magic=b'OBSYNC-CONTEXT-1\n'):
+        raw = json.dumps(value, separators=(',', ':')).encode()
+        frame = magic + len(raw).to_bytes(4, 'big') + raw
+        frame += hashlib.sha256(frame).digest()
+        for number in (0, 1):
+            (config / f'contexts.{number}').write_bytes(frame if number == value['revision'] % 2 else b'')
+
     binding = ['--from', str(package), '--prefix', str(installed), '--manifest-sha256', digest]
     if os.name == 'nt':
         original_trust = trust
@@ -176,6 +183,63 @@ def journey(package, root, trust=()):
     finally:
         link.unlink()
     context(['doctor'])
+    # Seed valid sealed boundary states in this disposable fixture, then drive
+    # the installed binary and independently inspect every resulting snapshot.
+    try:
+        capped = json.loads(json.dumps(state))
+        capped['revision'] = 9007199254740991
+        write_fixture_state(capped)
+        context(['doctor'])
+        _, boundary_apply = plan(['config', 'use-context', 'lab'])
+        capped_bytes = stored()
+        refusal = context(boundary_apply, 5)
+        assert refusal['error']['code'] == 'revision_conflict' and stored() == capped_bytes
+
+        saturated = json.loads(json.dumps(state))
+        saturated['receipts'] = [dict(state['receipts'][-1], id=f'{n:032x}') for n in range(64)]
+        write_fixture_state(saturated)
+        context(['doctor'])
+        _, capacity_apply = plan(['config', 'use-context', 'lab'])
+        saturated_bytes = stored()
+        refusal = context(capacity_apply, 9)
+        assert refusal['error']['code'] == 'operation_capacity' and stored() == saturated_bytes
+
+        expired_id = saturated['receipts'][0]['id']
+        saturated['receipts'][0]['expires_at'] = 1
+        survivors = saturated['receipts'][1:]
+        write_fixture_state(saturated)
+        context(['doctor'])
+        replacement, replacement_apply = plan(['config', 'use-context', 'lab'])
+        assert context(replacement_apply)['data']['replayed'] is False
+        pruned = disk()
+        assert pruned['revision'] == 3 and pruned['current'] == 'lab'
+        assert pruned['contexts'] == state['contexts'] and len(pruned['receipts']) == 64
+        assert pruned['receipts'][:-1] == survivors
+        assert pruned['receipts'][-1]['id'] == replacement['id']
+        assert all(r['id'] != expired_id for r in pruned['receipts'])
+        pruned_bytes = stored()
+        assert context(replacement_apply)['data']['replayed'] is True and stored() == pruned_bytes
+        for field, value in [('id', 'g' * 32), ('digest', 'g' * 64),
+                             ('operation', 'unknown'), ('name', 'Invalid'),
+                             ('current', 'Invalid'), (None, None)]:
+            malformed = json.loads(json.dumps(state))
+            if field:
+                malformed['receipts'][0][field] = value
+            magic = b'OBSYNC-CONTEXT-1\n' if field else b'OBSYNC-CONTEXT-2\n'
+            write_fixture_state(malformed, magic)
+            malformed_bytes = stored()
+            for args in (['doctor'], ['config', 'recover']):
+                try:
+                    refusal = context(args, 4)
+                except AssertionError as error:
+                    raise AssertionError(('sealed snapshot', field or 'magic')) from error
+                assert refusal['error']['code'] == 'invalid_config'
+                assert stored() == malformed_bytes
+    finally:
+        for number in (0, 1):
+            (config / f'contexts.{number}').write_bytes(before[f'contexts.{number}'])
+    assert stored() == before and disk() == state
+    context(['doctor'])
     # Two immutable installations. Changing the selected executable is explicit.
     second_binding = ['--from', str(package), '--prefix', str(second), '--manifest-sha256', digest]
     run(['install', *second_binding], exe=package / binary)
@@ -193,7 +257,9 @@ def journey(package, root, trust=()):
     assert not second.exists() and before == stored()
     result.update(result='PASS', revision=state['revision'], receipts=len(state['receipts']),
                   contexts_preserved=True, concurrent_apply_exit_codes=sorted(codes),
-                  recovery_preserved_previous_state=True, hardlink_refused=True, timings=timings)
+                  recovery_preserved_previous_state=True, hardlink_refused=True,
+                  revision_limit_refused=True, expired_receipt_pruned=True,
+                  invalid_stored_cases=6, timings=timings)
     return result
 
 
