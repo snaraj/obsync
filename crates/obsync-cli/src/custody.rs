@@ -342,6 +342,8 @@ impl Custody {
         for at in ancestors {
             let leaf = at == path;
             if present(at)?.is_none() {
+                #[cfg(target_os = "macos")]
+                self.macos_directories(std::mem::take(&mut unchecked))?;
                 if !create {
                     return Ok(false);
                 }
@@ -395,6 +397,14 @@ impl Custody {
             self.cache.insert(at.into(), identity(&held)?);
         }
         #[cfg(target_os = "macos")]
+        self.macos_directories(unchecked)?;
+        if create {
+            self.sync_parent(path)?;
+        }
+        Ok(true)
+    }
+    #[cfg(target_os = "macos")]
+    fn macos_directories(&mut self, unchecked: Vec<(PathBuf, File, Stamp)>) -> Result<()> {
         if !unchecked.is_empty() {
             self.macos_runtime()?;
             let interpreter = self.interpreter.as_ref().ok_or_else(unsafe_path)?;
@@ -421,10 +431,7 @@ impl Custody {
                 }
             }
         }
-        if create {
-            self.sync_parent(path)?;
-        }
-        Ok(true)
+        Ok(())
     }
     pub fn create_file(&mut self, path: &Path) -> Result<()> {
         self.create_private_file(path, false)

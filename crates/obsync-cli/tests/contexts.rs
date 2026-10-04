@@ -525,6 +525,92 @@ fn privacy_links_and_unknown_entries_refuse_with_unchanged_file_bytes() {
     assert_eq!(before, lab.bytes());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn absent_configuration_checks_ancestor_acl_before_planning_or_creation() {
+    let lab = Lab::new();
+    let commands: [&[&str]; 3] = [
+        &["doctor", "-o", "json"],
+        &[
+            "context",
+            "add",
+            "lab",
+            "--server",
+            "https://example.invalid",
+            "-o",
+            "json",
+        ],
+        &[
+            "context",
+            "add",
+            "lab",
+            "--server",
+            "https://example.invalid",
+            "--yes",
+            "-o",
+            "json",
+        ],
+    ];
+    lab.run(&["doctor"], 0);
+    assert!(!lab.config.exists());
+    let ace = "everyone allow readattr";
+    assert!(
+        Command::new("/bin/chmod")
+            .args(["+a", ace])
+            .arg(&lab.root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let results: Vec<_> = commands
+        .iter()
+        .map(|args| {
+            let output = lab.raw(args);
+            (output, lab.config.exists())
+        })
+        .collect();
+    // Restore the one harmless synthetic ACE before checking any assertion.
+    assert!(
+        Command::new("/bin/chmod")
+            .args(["-a", ace])
+            .arg(&lab.root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    for (output, created) in results {
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!created, "refusal created the configuration directory");
+        let response = json::parse(&output.stdout).unwrap();
+        assert_eq!(
+            response
+                .get("error")
+                .unwrap()
+                .get("code")
+                .and_then(Value::as_str),
+            Some("unsafe_config")
+        );
+    }
+    lab.run(&["doctor"], 0);
+    lab.run(
+        &[
+            "context",
+            "add",
+            "lab",
+            "--server",
+            "https://example.invalid",
+            "--yes",
+        ],
+        0,
+    );
+    assert_eq!(lab.disk_state().get("revision"), Some(&Value::Int(1)));
+}
+
 #[test]
 fn constructed_interrupted_body_requires_recovery_and_retains_the_previous_receipt() {
     let lab = Lab::new();

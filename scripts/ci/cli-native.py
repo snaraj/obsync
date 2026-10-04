@@ -295,7 +295,8 @@ def journey(package, root, trust=()):
             master, slave = pty.openpty()
             child = subprocess.Popen([str(installed / binary), *args], env=default_env,
                                      stdin=subprocess.PIPE if piped == 'input' else slave,
-                                     stdout=subprocess.PIPE if piped == 'output' else slave, stderr=slave)
+                                     stdout=subprocess.PIPE if piped == 'output' else slave,
+                                     stderr=subprocess.PIPE if piped == 'error' else slave)
             os.close(slave)
             if piped == 'input':
                 child.stdin.write(b'n\n')
@@ -323,6 +324,9 @@ def journey(package, root, trust=()):
                 if piped == 'output':
                     output.extend(child.stdout.read(65536))
                     child.stdout.close()
+                if piped == 'error':
+                    assert child.stderr.read(65536) == b''
+                    child.stderr.close()
                 assert responded == prompt, bytes(output)
                 result['commands'] += 1
                 return output.decode()
@@ -338,7 +342,12 @@ def journey(package, root, trust=()):
         for piped in ['input', 'output']:
             text = terminal(['context', 'remove', 'home'], b'n\n', prompt=False, piped=piped)
             assert 'plan' in text.lower() and snapshot == {p.name:p.read_bytes() for p in defaults.iterdir()}
-        assert 'Cancelled.' in terminal(['context', 'remove', 'home'], b'n\n')
+        for answer in [b'n\n', b'\n', b'y        no\n', b'yes      no\n', b'y' + b'\x04\x04']:
+            assert 'Cancelled.' in terminal(['context', 'remove', 'home'], answer)
+            assert snapshot == {p.name:p.read_bytes() for p in defaults.iterdir()}
+        # Redirecting diagnostics must not hide the summary or confirmation.
+        text = terminal(['context', 'remove', 'home'], b'n\n', piped='error')
+        assert 'Remove server' in text and 'Cancelled.' in text
         assert snapshot == {p.name:p.read_bytes() for p in defaults.iterdir()}
         # The person's thinking time does not consume execution time, but the
         # exact plan lifetime/revision still decides whether apply is permitted.

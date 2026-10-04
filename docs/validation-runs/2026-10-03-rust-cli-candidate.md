@@ -137,17 +137,34 @@ independent sealed-file parsing proved revision 1 and exactly one receipt for
 both. The delay exists only in the disposable fixture.
 
 On the same synthetic macOS context, seven samples per command measured median
-list/plan/doctor startup at 367.40/373.05/361.81 ms before the repair and
-232.31/232.91/231.56 ms afterward, using the final tested macOS binary
-`c7a6e370a94cb327bed32eeddb6b4d3aefbfa2611cbbabc9abf871746f511dd3`.
+list/plan/doctor startup at 401.86/406.29/410.41 ms before the repair and
+247.56/250.68/249.32 ms afterward, using the corrected macOS binary
+`9ea44a4dbc02c8575b77f2bbbcd699d67858e10f1a6795c934b46736b24ab404`.
 At most two full ACL readers run concurrently;
 every already-open ancestor still receives the native check. This is a local
 comparison with ordinary OS caches, not a cross-platform performance guarantee.
 
 The final full repair gate passed 1,975 plugin tests, 872 Python contracts,
-94.70% Rust line coverage, both secret scans and 199 macOS package commands.
+94.72% Rust line coverage, both secret scans and 204 macOS package commands.
 Replacement four-platform native receipts are required on the PR; historical
 Windows/Linux acceptance above does not establish these newer cases.
+
+The independent delta review identified two ordering/confirmation defects.
+Queued macOS ancestor ACL reads now complete before an absent-path return or
+any directory creation. The real OS regression verifies that doctor, planning
+and explicit apply all refuse an unsafe ancestor while leaving the leaf absent;
+removing the synthetic ACE restores successful creation. Confirmation requires
+a complete bounded line and writes its summary/prompt to the required terminal
+output stream. Real pseudo-terminals verify empty, incomplete and overlong
+answers cancel without byte changes, and redirected diagnostics cannot hide
+the prompt. Removing each of these three repairs makes its regression fail.
+
+The corrected Linux ARM64 VM candidate passed the same 204-command journey and
+11 visibly operated commands: install, help, typo correction, add/select, list,
+doctor, search, two cancellations, remove and uninstall. Saved file hashes were
+independently read back afterward: revision 2, two receipts, no remaining context,
+and the installed executable absent. The VM shut down gracefully. These are
+source-built candidate checks; release acquisition remains separate.
 
 ### Earlier stored-state review
 

@@ -339,7 +339,7 @@ fn run_context(args: &args::Args, op: &str, started: &mut Instant) -> Result<Val
 }
 
 fn confirm(plan: &context::Plan) -> Result<bool> {
-    let mut out = io::stderr().lock();
+    let mut out = io::stdout().lock();
     write!(out, "{}\nApply? [y/N] ", output::plan_summary(&plan.value))
         .map_err(custody::io_error)?;
     out.flush().map_err(custody::io_error)?;
@@ -349,10 +349,7 @@ fn confirm(plan: &context::Plan) -> Result<bool> {
         .take(9)
         .read_line(&mut line)
         .map_err(custody::io_error)?;
-    Ok(matches!(
-        line.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    Ok(line.ends_with('\n') && matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
 }
 
 fn main() {
