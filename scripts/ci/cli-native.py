@@ -127,10 +127,11 @@ if __name__ == '__main__':
         if not args.root or not args.windows_trust or not args.windows_trust_sha256:
             raise SystemExit('Windows requires an independently prepared private root and OS trust receipt.')
         trust = ['--windows-trust', args.windows_trust, '--windows-trust-sha256', args.windows_trust_sha256]
-    root = Path(tempfile.mkdtemp(prefix='obsync-native-', dir=args.root)).resolve()
+    root = args.root.resolve() if os.name == 'nt' else Path(tempfile.mkdtemp(prefix='obsync-native-', dir=args.root)).resolve()
     try:
         outcome = journey(args.package, root, trust)
         args.receipt.write_text(json.dumps(outcome, indent=2)+'\n')
         print(json.dumps({'event':'cli_native_journey','result':'PASS','commands':outcome['commands'],'platform':outcome['platform']}))
     finally:
-        shutil.rmtree(root)
+        if os.name != 'nt':
+            shutil.rmtree(root)

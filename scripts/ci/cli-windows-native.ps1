@@ -169,6 +169,33 @@ try {
         $Receipt = $Setup.path
         $Digest = $Setup.digest
         if ((Get-FileHash -LiteralPath $Receipt -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Digest) { throw 'Setup receipt changed.' }
+        # Python's private mkdir uses OWNER RIGHTS, not the literal account ACE
+        # required by the CLI. Prove this refused fixture and its unchanged state;
+        # the real journey below uses the root prepared with explicit account ACLs.
+        $PythonRoot = & $Python -c "import sys,tempfile; print(tempfile.mkdtemp(prefix='obsync-native-',dir=sys.argv[1]))" $Root
+        if ($LASTEXITCODE -ne 0 -or $PythonRoot -isnot [string] -or
+            [IO.Path]::GetDirectoryName($PythonRoot) -cne $Root -or
+            [IO.Path]::GetFileName($PythonRoot) -cnotmatch '^obsync-native-[a-z0-9_]+$') { throw 'Python fixture binding differs.' }
+        try {
+            $BeforeAcl = [IO.Directory]::GetAccessControl($PythonRoot)
+            $Effective = @($BeforeAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object {
+                $_.AccessControlType -eq 'Allow' -and ($_.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -eq 0
+            })
+            $OwnerRights = @($Effective | Where-Object { $_.IdentityReference.Value -ceq 'S-1-3-4' }).Count
+            $LiteralUser = @($Effective | Where-Object { $_.IdentityReference.Value -ceq $User.Value }).Count
+            if ($BeforeAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $User.Value -or
+                $OwnerRights -ne 1 -or $LiteralUser -ne 0) { throw 'Python private-directory fixture premise changed.' }
+            $Denied = & ([IO.Path]::Combine($Root, 'package\obsync.exe')) get contexts --config-dir $PythonRoot `
+                --windows-trust $Receipt --windows-trust-sha256 $Digest -o json
+            if ($LASTEXITCODE -ne 4 -or ($Denied | ConvertFrom-Json).error.code -cne 'acl_access') { throw 'Owner-rights fixture must refuse.' }
+            $AfterAcl = [IO.Directory]::GetAccessControl($PythonRoot)
+            $Sections = [Security.AccessControl.AccessControlSections]::Owner -bor [Security.AccessControl.AccessControlSections]::Access
+            if ($BeforeAcl.GetSecurityDescriptorSddlForm($Sections) -cne $AfterAcl.GetSecurityDescriptorSddlForm($Sections) -or
+                [IO.Directory]::GetFileSystemEntries($PythonRoot).Count -ne 0) { throw 'Refused fixture changed.' }
+            Write-Output '{"event":"windows_python_private_fixture","owner_rights":1,"literal_user":0,"refusal":"acl_access","unchanged":true}'
+        } finally {
+            [IO.Directory]::Delete($PythonRoot, $false)
+        }
         & $Python scripts/ci/cli-native.py --package ([IO.Path]::Combine($Root, 'package')) --root $Root `
             --receipt ([IO.Path]::Combine($Root, 'acceptance.json')) --windows-trust $Receipt --windows-trust-sha256 $Digest
         if ($LASTEXITCODE -ne 0) { throw 'Native packaged CLI journey failed.' }

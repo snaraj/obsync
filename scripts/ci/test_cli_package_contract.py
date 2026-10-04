@@ -1,16 +1,21 @@
 """Wrong source, runtime, content, inventory and old-release inputs must refuse."""
+import ast
+import argparse
 import copy
 import hashlib
 import io
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 import zipfile
 from pathlib import Path
 
@@ -33,6 +38,49 @@ class NativeStartupBudgets(unittest.TestCase):
         for samples in ([1001] + [5] * 34, [5] * 33 + [251, 251]):
             with self.subTest(samples=samples), self.assertRaises(AssertionError):
                 native.startup_result(samples)
+
+
+    def test_native_journey_uses_prepared_windows_root_and_only_cleans_its_posix_child(self):
+        source = Path(__file__).with_name('cli-native.py')
+        entry = ast.Module(body=[ast.parse(source.read_text()).body[-1]], type_ignores=[])
+        for platform in ('nt', 'posix'):
+            for fails in (False, True):
+                with self.subTest(platform=platform, fails=fails), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / 'prepared'
+                    root.mkdir()
+                    sentinel = root / 'creator-owned-sentinel'
+                    sentinel.write_bytes(b'preserve')
+                    observed = []
+
+                    def journey(package, selected, trust):
+                        observed.append(selected)
+                        self.assertTrue(selected.is_dir())
+                        (selected / 'journey-marker').write_bytes(b'synthetic')
+                        if fails:
+                            raise RuntimeError('synthetic journey failure')
+                        return dict(commands=1, platform='synthetic')
+
+                    argv = ['cli-native.py', '--package', str(root / 'package'), '--root', str(root),
+                            '--receipt', str(Path(temporary) / 'receipt.json'),
+                            '--windows-trust', 'synthetic-receipt', '--windows-trust-sha256', 'a' * 64]
+                    namespace = dict(__name__='__main__', argparse=argparse, Path=Path,
+                                     os=SimpleNamespace(name=platform, getuid=lambda: 1000, geteuid=lambda: 1000),
+                                     tempfile=tempfile, journey=journey, json=json, shutil=shutil)
+                    with mock.patch.object(sys, 'argv', argv), mock.patch('sys.stdout', io.StringIO()):
+                        if fails:
+                            with self.assertRaisesRegex(RuntimeError, 'synthetic journey failure'):
+                                exec(compile(entry, str(source), 'exec'), namespace)
+                        else:
+                            exec(compile(entry, str(source), 'exec'), namespace)
+                    self.assertEqual(len(observed), 1)
+                    self.assertEqual(sentinel.read_bytes(), b'preserve')
+                    if platform == 'nt':
+                        self.assertEqual(observed[0], root.resolve())
+                        self.assertTrue((root / 'journey-marker').exists())
+                    else:
+                        self.assertEqual(observed[0].parent, root.resolve())
+                        self.assertNotEqual(observed[0], root.resolve())
+                        self.assertFalse(observed[0].exists())
 
 
 class NativePackagePreparation(unittest.TestCase):
