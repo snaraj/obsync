@@ -20,6 +20,29 @@ fn refused() -> Error {
         4,
     )
 }
+fn reason(raw: &[u8]) -> Option<&'static str> {
+    use obsync_core::json::{self, Value};
+    let value = json::parse(raw).ok()?;
+    crate::context::closed(&value, &["v", "ok", "reason", "exception", "line"]).ok()?;
+    if value.get("v").and_then(Value::as_u64) != Some(1)
+        || value.get("ok").and_then(Value::as_bool) != Some(false)
+        || value.get("exception").and_then(Value::as_str).is_none()
+        || value.get("line").and_then(Value::as_u64).is_none()
+    {
+        return None;
+    }
+    // Only compiled identifiers may leave the process boundary. Never return
+    // the helper's bytes, exception text, line, paths or an unknown reason.
+    concat!(
+        "acl_access ancestor_directory destination_exists directory_required file_required ",
+        "local_ntfs_required os_module_required os_powershell_required owner owner_access ",
+        "path_spelling private_parent publication_io publication_readback reparse_point ",
+        "request_budget request_count request_framing request_shape request_spelling ",
+        "same_parent_required stage_not_empty tree_budget windows_files_refused"
+    )
+    .split_ascii_whitespace()
+    .find(|known| value.get("reason").and_then(Value::as_str) == Some(*known))
+}
 fn check_time(deadline: Instant) -> Result<()> {
     if Instant::now() >= deadline {
         return Err(Error::new(
@@ -37,6 +60,7 @@ pub struct Session {
     child: Child,
     input: Option<SyncSender<Vec<u8>>>,
     output: Receiver<Vec<u8>>,
+    errors: Receiver<Option<&'static str>>,
     failed: Arc<AtomicBool>,
     workers: Vec<JoinHandle<()>>,
 }
@@ -51,9 +75,10 @@ impl Session {
             .map_err(|_| refused())?;
         let mut stdin = child.stdin.take().unwrap();
         let mut stdout = BufReader::new(child.stdout.take().unwrap());
-        let mut stderr = child.stderr.take().unwrap();
+        let mut stderr = BufReader::new(child.stderr.take().unwrap());
         let (send, requests) = mpsc::sync_channel::<Vec<u8>>(1);
         let (responses, receive) = mpsc::sync_channel(1);
+        let (diagnostic, errors) = mpsc::sync_channel(1);
         let failed = Arc::new(AtomicBool::new(false));
         let state = failed.clone();
         let exchange = thread::spawn(move || {
@@ -81,17 +106,37 @@ impl Session {
             }
         });
         let state = failed.clone();
-        let errors = thread::spawn(move || {
-            if !matches!(stderr.read(&mut [0]), Ok(0)) {
+        let error_worker = thread::spawn(move || {
+            let mut first = [0];
+            let received = stderr.read(&mut first);
+            let code = if matches!(received, Ok(0)) {
+                None
+            } else {
                 state.store(true, Ordering::SeqCst);
-            }
+                let mut raw = first.to_vec();
+                if matches!(received, Ok(1))
+                    && stderr
+                        .by_ref()
+                        .take(1024)
+                        .read_until(b'\n', &mut raw)
+                        .is_ok()
+                    && raw.len() <= 1024
+                    && raw.last() == Some(&b'\n')
+                {
+                    reason(&raw)
+                } else {
+                    None
+                }
+            };
+            let _ = diagnostic.send(code);
         });
         Ok(Self {
             child,
             input: Some(send),
             output: receive,
+            errors,
             failed,
-            workers: vec![exchange, errors],
+            workers: vec![exchange, error_worker],
         })
     }
     pub fn request(&mut self, mut bytes: Vec<u8>, deadline: Instant) -> Result<Vec<u8>> {
@@ -100,25 +145,46 @@ impl Session {
             || bytes.is_empty()
             || bytes.contains(&b'\n')
             || bytes.contains(&b'\r')
-            || self.failed.load(Ordering::SeqCst)
         {
             return Err(refused());
         }
+        if self.failed.load(Ordering::SeqCst) {
+            return Err(self.failure(deadline));
+        }
         bytes.push(b'\n');
-        self.input
+        if self
+            .input
             .as_ref()
             .ok_or_else(refused)?
             .try_send(bytes)
-            .map_err(|_| refused())?;
+            .is_err()
+        {
+            return Err(self.failure(deadline));
+        }
         loop {
             check_time(deadline)?;
             if self.failed.load(Ordering::SeqCst) {
-                return Err(refused());
+                return Err(self.failure(deadline));
             }
             match self.output.recv_timeout(Duration::from_millis(2)) {
                 Ok(line) => return Ok(line),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(_) => return Err(refused()),
+                Err(_) => return Err(self.failure(deadline)),
+            }
+        }
+    }
+    fn failure(&mut self, deadline: Instant) -> Error {
+        self.input.take();
+        loop {
+            if let Err(error) = check_time(deadline) {
+                return error;
+            }
+            match self.errors.recv_timeout(Duration::from_millis(2)) {
+                Ok(Some(code)) => {
+                    return Error::new(code, "The fixed OS helper refused custody.", 4);
+                }
+                Ok(None) | Err(mpsc::RecvTimeoutError::Disconnected) => return refused(),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
     }
@@ -127,7 +193,7 @@ impl Session {
         let status = loop {
             check_time(deadline)?;
             if self.failed.load(Ordering::SeqCst) {
-                return Err(refused());
+                return Err(self.failure(deadline));
             }
             match self.child.try_wait().map_err(|_| refused())? {
                 Some(status) => break status,
@@ -138,7 +204,7 @@ impl Session {
         check_time(deadline)?;
         if !status.success() || self.failed.load(Ordering::SeqCst) || self.output.try_recv().is_ok()
         {
-            return Err(refused());
+            return Err(self.failure(deadline));
         }
         Ok(())
     }
@@ -276,5 +342,96 @@ mod tests {
                 .exit,
             7
         );
+    }
+
+    #[test]
+    fn helper_diagnostics_are_bounded_static_and_race_independent() {
+        let complete = r#"{"v":1,"ok":false,"reason":"request_shape","exception":"InvalidOperationException","line":150}"#;
+        for (raw, expected) in [
+            (complete.to_owned(), "request_shape"),
+            (
+                complete.replace("request_shape", "synthetic_unknown"),
+                "native_helper_refused",
+            ),
+            (
+                complete.replace("\"v\":1", "\"v\":2"),
+                "native_helper_refused",
+            ),
+            (
+                complete.replace(
+                    "\"line\":150",
+                    "\"line\":150,\"extra\":\"synthetic-detail\"",
+                ),
+                "native_helper_refused",
+            ),
+            (
+                complete.replace(
+                    "InvalidOperationException",
+                    &"x".repeat(1024 - complete.len() + "InvalidOperationException".len()),
+                ),
+                "native_helper_refused",
+            ),
+            ("{\"v\":1".into(), "native_helper_refused"),
+            ("synthetic-detail".into(), "native_helper_refused"),
+        ] {
+            let script = format!("IFS= read -r line; printf '%s\\n' '{raw}' >&2; exit 4");
+            let mut session = Session::start(command(&script), deadline()).unwrap();
+            assert_eq!(
+                session
+                    .request(b"request".to_vec(), deadline())
+                    .unwrap_err()
+                    .code,
+                expected
+            );
+        }
+        let script = format!("IFS= read -r line; printf '%s' '{complete}' >&2; exit 4");
+        let mut session = Session::start(command(&script), deadline()).unwrap();
+        assert_eq!(
+            session
+                .request(b"request".to_vec(), deadline())
+                .unwrap_err()
+                .code,
+            "native_helper_refused"
+        );
+        // stdout EOF can precede the sanitized stderr receipt; both paths must
+        // preserve the known reason without exposing the helper's raw output.
+        let script = format!(
+            "IFS= read -r line; exec 1>&-; /bin/sleep 0.02; printf '%s\\n' '{complete}' >&2; exit 4"
+        );
+        let mut session = Session::start(command(&script), deadline()).unwrap();
+        assert_eq!(
+            session
+                .request(b"request".to_vec(), deadline())
+                .unwrap_err()
+                .code,
+            "request_shape"
+        );
+        let script = format!(
+            "IFS= read -r line; printf 'ok\\n'; while IFS= read -r line; do :; done; printf '%s\\n' '{complete}' >&2; exit 4"
+        );
+        let mut session = Session::start(command(&script), deadline()).unwrap();
+        session.request(b"request".to_vec(), deadline()).unwrap();
+        assert_eq!(
+            session.finish(deadline()).unwrap_err().code,
+            "request_shape"
+        );
+        let mut session = Session::start(
+            command("IFS= read -r line; printf '{' >&2; exec /bin/sleep 1"),
+            deadline(),
+        )
+        .unwrap();
+        assert_eq!(
+            session
+                .request(
+                    b"request".to_vec(),
+                    Instant::now() + Duration::from_millis(25)
+                )
+                .unwrap_err()
+                .exit,
+            7
+        );
+        let before = Instant::now();
+        drop(session);
+        assert!(before.elapsed() < Duration::from_millis(500));
     }
 }
