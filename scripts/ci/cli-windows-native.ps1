@@ -6,8 +6,9 @@ if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows') { throw '
 $Shell = [IO.Path]::Combine([Environment]::SystemDirectory, 'WindowsPowerShell\v1.0\powershell.exe')
 if ($Peer) {
     if ($SelectedUser -or $Root -cnotmatch '^[A-Z]:\\Users\\ob[a-f0-9]{14}\\obsync native [a-f0-9]{32}$') { throw 'Exact synthetic peer fixture required.' }
-    $Stage = [IO.Path]::Combine($Root, 'stage')
-    $Sentinel = [IO.Path]::Combine($Stage, 'sentinel.txt')
+    $Stage = [IO.Path]::Combine($Root, 'config')
+    $Sentinel = [IO.Path]::Combine($Stage, 'contexts.1')
+    if (@([IO.Directory]::GetFileSystemEntries($Root)) -cnotcontains $Stage) { exit 7 }
     $Denied = 0
     try { [IO.Directory]::GetFileSystemEntries($Stage) | Out-Null } catch [UnauthorizedAccessException] { $Denied++ }
     try { [IO.File]::ReadAllText($Sentinel) | Out-Null } catch [UnauthorizedAccessException] { $Denied++ }
@@ -104,9 +105,27 @@ if (!$SelectedUser) {
         $Owner = [IO.Directory]::GetAccessControl($Candidate).GetOwner([Security.Principal.SecurityIdentifier]).Value
         if ($Owner -cne $Accounts[0].SID.Value) { throw 'Prepared fixture owner differs.' }
         $Root = $Candidate
-        $null = Invoke-Owned $Accounts[1] $Passwords[1] ('-NoLogo -NoProfile -NonInteractive -File "' + $PSCommandPath + '" -Peer -Root "' + $Root + '"')
-        Write-Output '{"event":"windows_peer_custody","result":"pass"}'
         $Completed = Invoke-Owned $Accounts[0] $Passwords[0] ($Arguments + ' -Phase complete -Root "' + $Root + '"')
+        $Slot = [IO.Path]::Combine($Root, 'config\contexts.1')
+        $BeforePeer = (Get-FileHash -LiteralPath $Slot -Algorithm SHA256).Hash
+        $AccessSection = [Security.AccessControl.AccessControlSections]::Access
+        $RootAcl = [IO.Directory]::GetAccessControl($Root)
+        $RootDacl = $RootAcl.GetSecurityDescriptorSddlForm($AccessSection)
+        # Only after all CLI calls: let the peer reach this fixture parent,
+        # without inheritance or write access that could mask subtree custody.
+        $RootAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            $Accounts[1].SID, 'ReadAndExecute', 'None', 'None', 'Allow'))
+        try {
+            [IO.Directory]::SetAccessControl($Root, $RootAcl)
+            $null = Invoke-Owned $Accounts[1] $Passwords[1] ('-NoLogo -NoProfile -NonInteractive -File "' + $PSCommandPath + '" -Peer -Root "' + $Root + '"')
+            if ((Get-FileHash -LiteralPath $Slot -Algorithm SHA256).Hash -cne $BeforePeer) { throw 'Peer changed the synthetic context slot.' }
+        } finally {
+            $Restore = [Security.AccessControl.DirectorySecurity]::new()
+            $Restore.SetSecurityDescriptorSddlForm($RootDacl, $AccessSection)
+            [IO.Directory]::SetAccessControl($Root, $Restore)
+            if ([IO.Directory]::GetAccessControl($Root).GetSecurityDescriptorSddlForm($AccessSection) -cne $RootDacl) { throw 'Fixture parent DACL restoration differs.' }
+        }
+        Write-Output '{"event":"windows_peer_custody","result":"pass","scope":"CLI-created subtree with readable peer parent"}'
         foreach ($Line in ($Prepared + "`n" + $Completed) -split '\r?\n') {
             if ($Line.StartsWith('{') -and !$Line.StartsWith('{"event":"fixture_ready",')) { Write-Output $Line }
         }
@@ -159,9 +178,6 @@ try {
         $Setup = $SetupText | ConvertFrom-Json
         if ($Setup.v -ne 1 -or $Setup.path -isnot [string] -or $Setup.digest -cnotmatch '^[a-f0-9]{64}$') { throw 'Public setup receipt differs.' }
         [IO.File]::WriteAllText($SetupRecord, ($Setup | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-        $Stage = [IO.Path]::Combine($Root, 'stage')
-        $null = [IO.Directory]::CreateDirectory($Stage, $Acl)
-        [IO.File]::WriteAllText([IO.Path]::Combine($Stage, 'sentinel.txt'), 'synthetic custody fixture')
         $Keep = $true
         Write-Output ([ordered]@{event='fixture_ready';root=$Root} | ConvertTo-Json -Compress)
     } else {

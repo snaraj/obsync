@@ -34,6 +34,9 @@ or its harnesses; a red leg there is a finding to read.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-10-03 Rust CLI candidate](2026-10-03-rust-cli-candidate.md):
+  four native hosted targets, Linux visible/manual readback, and explicit Windows
+  software-emulation limits. Public installation remains a separate release gate.
 - [2026-10-02 desktop throughput baseline](2026-10-02-baseline-performance.md):
   released 1.1.5, five measured 7,700-note samples and one pre-measure failure.
   Two complete shown/minimized pairs; load and follow-up calibration failures

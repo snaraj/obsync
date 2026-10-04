@@ -5,10 +5,9 @@ versioned JSON interface. Its command groups follow
 [kubectl conventions](https://kubernetes.io/docs/reference/kubectl/conventions/).
 It needs no Node runtime, npm package or downloaded filesystem helper.
 
-This development candidate implements local discovery, context plans, apply,
-recovery and native installation. Release acceptance is incomplete, including
-native Windows execution. Authentication, server administration, Obsidian setup,
-MCP and encrypted export/open return an explicit unsupported result.
+This version implements local discovery, context plans, apply, recovery and
+native installation. Authentication, server administration, Obsidian setup, MCP
+and encrypted export/open return an explicit unsupported result.
 
 ## Discover commands
 
