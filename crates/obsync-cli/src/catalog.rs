@@ -161,7 +161,7 @@ pub fn help_data(args: &Args, catalog: &[Value], operation: &str) -> Result<Valu
 
 fn root_help(catalog: &[Value], all: bool) -> String {
     let mut text = String::from(
-        "Save and select obsync servers on this device.\n\nUsage:\n  obsync COMMAND [flags]\n\n  config get-contexts             List saved servers\n  context add NAME --server URL   Add a server; select the first one\n  context use NAME                Select a server\n  context remove NAME             Remove local settings for a server\n  doctor                          Check settings and show the next step\n\nSign-in, server setup, devices, sync and export are not available yet.\nUse 'obsync COMMAND --help' for examples, or 'obsync help --all' for every command.\n",
+        "Save and select obsync servers on this device.\n\nUsage:\n  obsync COMMAND [flags]\n\n  context list                    List saved servers\n  context add NAME --server URL   Add a server; select the first one\n  context use NAME                Select a server\n  context remove NAME             Remove local settings for a server\n  doctor                          Check settings and show the next step\n\nSign-in, server setup, devices, sync and export are not available yet.\nUse 'obsync COMMAND --help' for examples, or 'obsync help --all' for every command.\n",
     );
     if all {
         text.push_str("\nAll commands:\n");

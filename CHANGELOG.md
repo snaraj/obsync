@@ -5,6 +5,24 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.7 - Unreleased
+
+### Fixed
+
+- A minimized desktop restores background throttling after unanswered network
+  attempts, including while uploads remain queued for retry. An answer lifts
+  it again while work remains. Logs distinguish calm, unanswered and stopped
+  restoration (#283).
+- The left-selection regression sets up its settled large-file state directly,
+  avoiding an unrelated initial download under CI load while retaining byte and
+  request checks (#319).
+- CLI help and empty lists consistently describe saved servers. The unknown
+  `status` command points to `doctor`, which checks local settings without
+  contacting a server. Capability help states that same local-only boundary.
+- On Linux, an unset, empty or relative `XDG_CONFIG_HOME` uses
+  `$HOME/.config/obsync`. Unsafe absolute destinations and invalid explicit
+  `--config-dir` paths remain refused.
+
 ## 1.1.6 - Unreleased
 
 ### Added

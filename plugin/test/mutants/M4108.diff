@@ -1,4 +1,4 @@
-# M3539: never restores host throttling (#283)
+# M4108: calm restoration reported as stop (#283)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
 @@ -1394,7 +1394,7 @@
@@ -6,7 +6,7 @@
        this.calmHandle = this.timers.set(() => {
          this.calmHandle = null;
 -        this.options.host.hurry?.(this.hurried = false, this.networkAvailable ? "calm" : "unanswered");
-+        this.hurried = false;
++        this.options.host.hurry?.(this.hurried = false, "stop");
        }, CALM_MS);
      }
    }

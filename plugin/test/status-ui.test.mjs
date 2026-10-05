@@ -157,6 +157,7 @@ async function plugin(t, { mobile = false, view = null, data = null } = {}) {
   let sent = 0;
   let verified = { checked: 0, sent: 0 };
   b.require(join(b.home, "build/sync/engine.js")).SyncEngine = class {
+    reachability() {}
     constructor(options) { this.options = options; }
     get context() { return { state: this.options.state }; }
     async start() {}

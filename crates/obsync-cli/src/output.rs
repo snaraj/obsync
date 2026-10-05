@@ -149,7 +149,7 @@ fn render_result(
                     ));
                 }
                 if items.is_empty() {
-                    text.push_str("No contexts configured.\n");
+                    text.push_str("No servers saved.\n");
                 }
                 return text;
             }
@@ -242,7 +242,7 @@ fn render_result(
             let config = data.get("configuration").unwrap();
             let count = config.get("contexts").and_then(Value::as_u64).unwrap_or(0);
             let mut text = if count == 0 {
-                "No server yet. Add one:\n  obsync config set-context NAME --server https://sync.example.org\n".into()
+                "No server yet. Add one:\n  obsync context add NAME --server https://sync.example.org\n".into()
             } else {
                 format!(
                     "Local settings are readable: {count} server(s).\nSelected server: {}\n",
