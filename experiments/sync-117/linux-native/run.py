@@ -11,6 +11,16 @@ import sys
 HERE = Path(__file__).resolve().parent
 
 
+def profile_environment(home, password, inherited):
+    env = {key: value for key, value in inherited.items()
+           if not key.startswith(('DBUS_', 'GNOME_KEYRING_')) and
+           key not in ('OBSYNC_E2E_SESSION_BUS', 'XDG_RUNTIME_DIR')}
+    env.update(HOME=str(home), OBSYNC_E2E_KEYRING_PASSWORD=str(password),
+               XDG_DATA_HOME=str(home / '.local/share'), XDG_CONFIG_HOME=str(home / '.config'),
+               XDG_CACHE_HOME=str(home / '.cache'), XDG_STATE_HOME=str(home / '.local/state'))
+    return env
+
+
 def session():
     profiles = [a.split('=', 1)[1] for a in sys.argv[1:] if a.startswith('--user-data-dir=')]
     assert len(profiles) == 1
@@ -23,8 +33,7 @@ def session():
     password = home / '.task-keyring-password'
     if not password.exists():
         password.write_bytes(os.urandom(32).hex().encode())
-    env = os.environ.copy()
-    env.update(HOME=str(home), OBSYNC_E2E_KEYRING_PASSWORD=str(password))
+    env = profile_environment(home, password, os.environ)
     # Keep this owned parent stable while the repository session wrapper execs.
     return subprocess.call([str(Path(env['OBSYNC_LAB_SOURCE']) / 'scripts/ci/obsidian-session.sh'),
                             env['OBSYNC_LINUX_APP'], '--disable-gpu', *sys.argv[1:]], env=env)

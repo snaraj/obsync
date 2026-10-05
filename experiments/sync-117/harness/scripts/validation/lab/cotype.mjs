@@ -50,7 +50,8 @@ try {
         await sleep(Math.max(0, 300 - (Date.now() - start)));
       }
     }));
-    row.inputEndedAt = Date.now();
+    row.cadenceEndedAt = Date.now();
+    row.inputEndedAt = Math.max(...row.timeline.map(event => event.at));
     const expected = `A: ${sequences.A}\nB: ${sequences.B}\n`;
     await until(() => exact(path, expected), 'concurrent editor and disk convergence');
     row.convergenceAfterInputMs = Date.now() - row.inputEndedAt;
