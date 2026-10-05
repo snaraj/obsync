@@ -1,0 +1,15 @@
+{
+  "baseline": {
+    "main.js": "8f6b05d7dd8f589c4781f117d0ce37eabd9bd0f8cd4ffe2751200c53ee9028ed",
+    "manifest.json": "aae46364e30769a65b56cba53c65a89f104cd1cf5d5c5d6978bbedb3afb9eb42",
+    "styles.css": "43dd0db8ccce20e88a3c63ec2ea35e46ce4133912c0e797da036e37a6499287b"
+  },
+  "candidate": {
+    "main.js": "94bb51aedb4e17c74f54d34c2c743224c59164fc50f8cdbcc3b3a7a923208eee",
+    "manifest.json": "aae46364e30769a65b56cba53c65a89f104cd1cf5d5c5d6978bbedb3afb9eb42",
+    "styles.css": "43dd0db8ccce20e88a3c63ec2ea35e46ce4133912c0e797da036e37a6499287b"
+  },
+  "source": "061e9e5493197f806efa1e67b894bf66b6a542cc",
+  "candidatePatchSha256": "21dbfe1bf981e414acafc2e65aebdf649093d43d0f18d2d16d40e8e206210c3a",
+  "serverSha256": "9d42d9c240862340d39ce76d36f10d1564fa7dba1e9cab7bad047751c0282cdc"
+}

@@ -1,0 +1,19 @@
+{
+  "base": "061e9e5493197f806efa1e67b894bf66b6a542cc",
+  "productionSourceRestored": true,
+  "harnessCommit": "0f653717b291d556a3df19d2e35111157e41e542",
+  "installedObsidianBundleVersion": "1.13.4",
+  "focusedTests": {
+    "command": "node --test test/upload-pipeline.test.mjs test/transfers.test.mjs test/upload-budget.test.mjs",
+    "passingBeforeMutations": 32,
+    "passingAfterRestoration": 32,
+    "buildPassed": true
+  },
+  "mutantFailureOracles": {
+    "serial-existence": "held existence response prevents source advancement",
+    "lost-error": "missing expected rejection on both existence and upload failure",
+    "unbounded-window": "67109056 held bytes exceeds original 33554432-byte window",
+    "early-version": "409 missing_chunks from premature version publication; zero cancelled tests"
+  },
+  "scope": "Rejected experiment only. No full gate, phone, TLS/deployed route, or shipping approval is claimed."
+}

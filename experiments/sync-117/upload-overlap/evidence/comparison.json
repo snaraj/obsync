@@ -1,0 +1,552 @@
+{
+  "pairs": [
+    {
+      "baselineSample": 1,
+      "candidateSample": 2,
+      "ratios": {
+        "small-notes": {
+          "senderAckMs": 1.0129649309245483,
+          "peerCommitMs": 1.0063021316033365
+        },
+        "large-file": {
+          "senderAckMs": 0.9844587352625938,
+          "peerCommitMs": 0.9835061262959472
+        }
+      },
+      "sameRequestsAndBodyBytes": {
+        "small-notes": true,
+        "large-file": true
+      }
+    },
+    {
+      "baselineSample": 4,
+      "candidateSample": 3,
+      "ratios": {
+        "small-notes": {
+          "senderAckMs": 0.9984900776531492,
+          "peerCommitMs": 1.0013197586726998
+        },
+        "large-file": {
+          "senderAckMs": 1.0207282913165265,
+          "peerCommitMs": 1.0171821305841924
+        }
+      },
+      "sameRequestsAndBodyBytes": {
+        "small-notes": true,
+        "large-file": true
+      }
+    },
+    {
+      "baselineSample": 5,
+      "candidateSample": 6,
+      "ratios": {
+        "small-notes": {
+          "senderAckMs": 1.0354441322671277,
+          "peerCommitMs": 1.0315094339622641
+        },
+        "large-file": {
+          "senderAckMs": 1.0121951219512195,
+          "peerCommitMs": 1.010705596107056
+        }
+      },
+      "sameRequestsAndBodyBytes": {
+        "small-notes": true,
+        "large-file": true
+      }
+    }
+  ],
+  "criteria": {
+    "allLargeSenderRatiosBelowOne": false,
+    "medianLargeSenderRatioAtMostPoint95": false,
+    "medianSmallSenderRatioAtMost1Point05": true,
+    "medianLargePeerRatioAtMost1Point05": true,
+    "requestAndBodyByteCountsEqual": true
+  },
+  "decision": "REJECT",
+  "medianRatios": {
+    "small-notes": {
+      "senderAckMs": 1.0129649309245483,
+      "peerCommitMs": 1.0063021316033365
+    },
+    "large-file": {
+      "senderAckMs": 1.0121951219512195,
+      "peerCommitMs": 1.010705596107056
+    }
+  },
+  "rows": [
+    {
+      "sample": 1,
+      "arm": "baseline",
+      "phases": {
+        "small-notes": {
+          "scenario": "small-notes",
+          "senderAckMs": 4705,
+          "peerCommitMs": 5395,
+          "observedSettledMs": 5406,
+          "requests": {
+            "A": {
+              "chunkPut": {
+                "requests": 128,
+                "bytes": 1053714,
+                "ms": 10432,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 128,
+                "bytes": 107776,
+                "ms": 4254,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 7,
+                "bytes": 8569,
+                "ms": 126,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 128,
+          "exactBytesEach": 1051666,
+          "persistedIdentitiesAgree": true
+        },
+        "large-file": {
+          "scenario": "large-file",
+          "senderAckMs": 1866,
+          "peerCommitMs": 2122,
+          "observedSettledMs": 2139,
+          "requests": {
+            "A": {
+              "exists": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 55,
+                "errors": 0
+              },
+              "chunkPut": {
+                "requests": 15,
+                "bytes": 67109105,
+                "ms": 2091,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 1,
+                "bytes": 4736,
+                "ms": 10,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 129,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 129,
+          "exactBytesEach": 68160531,
+          "largeSha256": "320db72752a41a3f64c1638a729e1024518a6373c0f3609e5f3b50c9b1fa8053",
+          "persistedIdentitiesAgree": true
+        }
+      }
+    },
+    {
+      "sample": 2,
+      "arm": "candidate",
+      "phases": {
+        "small-notes": {
+          "scenario": "small-notes",
+          "senderAckMs": 4766,
+          "peerCommitMs": 5429,
+          "observedSettledMs": 5451,
+          "requests": {
+            "A": {
+              "chunkPut": {
+                "requests": 128,
+                "bytes": 1053714,
+                "ms": 10746,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 128,
+                "bytes": 107776,
+                "ms": 4271,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 7,
+                "bytes": 8569,
+                "ms": 140,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 128,
+          "exactBytesEach": 1051666,
+          "persistedIdentitiesAgree": true
+        },
+        "large-file": {
+          "scenario": "large-file",
+          "senderAckMs": 1837,
+          "peerCommitMs": 2087,
+          "observedSettledMs": 2101,
+          "requests": {
+            "A": {
+              "exists": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 210,
+                "errors": 0
+              },
+              "chunkPut": {
+                "requests": 15,
+                "bytes": 67109105,
+                "ms": 1747,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 1,
+                "bytes": 4736,
+                "ms": 12,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 125,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 129,
+          "exactBytesEach": 68160531,
+          "largeSha256": "320db72752a41a3f64c1638a729e1024518a6373c0f3609e5f3b50c9b1fa8053",
+          "persistedIdentitiesAgree": true
+        }
+      }
+    },
+    {
+      "sample": 3,
+      "arm": "candidate",
+      "phases": {
+        "small-notes": {
+          "scenario": "small-notes",
+          "senderAckMs": 4629,
+          "peerCommitMs": 5311,
+          "observedSettledMs": 5317,
+          "requests": {
+            "A": {
+              "chunkPut": {
+                "requests": 128,
+                "bytes": 1053714,
+                "ms": 10096,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 128,
+                "bytes": 107776,
+                "ms": 4319,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 7,
+                "bytes": 8569,
+                "ms": 126,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 128,
+          "exactBytesEach": 1051666,
+          "persistedIdentitiesAgree": true
+        },
+        "large-file": {
+          "scenario": "large-file",
+          "senderAckMs": 1822,
+          "peerCommitMs": 2072,
+          "observedSettledMs": 2088,
+          "requests": {
+            "A": {
+              "exists": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 213,
+                "errors": 0
+              },
+              "chunkPut": {
+                "requests": 15,
+                "bytes": 67109105,
+                "ms": 1677,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 1,
+                "bytes": 4736,
+                "ms": 10,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 125,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 129,
+          "exactBytesEach": 68160531,
+          "largeSha256": "320db72752a41a3f64c1638a729e1024518a6373c0f3609e5f3b50c9b1fa8053",
+          "persistedIdentitiesAgree": true
+        }
+      }
+    },
+    {
+      "sample": 4,
+      "arm": "baseline",
+      "phases": {
+        "small-notes": {
+          "scenario": "small-notes",
+          "senderAckMs": 4636,
+          "peerCommitMs": 5304,
+          "observedSettledMs": 5316,
+          "requests": {
+            "A": {
+              "chunkPut": {
+                "requests": 128,
+                "bytes": 1053714,
+                "ms": 10248,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 128,
+                "bytes": 107776,
+                "ms": 4137,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 7,
+                "bytes": 8569,
+                "ms": 114,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 128,
+          "exactBytesEach": 1051666,
+          "persistedIdentitiesAgree": true
+        },
+        "large-file": {
+          "scenario": "large-file",
+          "senderAckMs": 1785,
+          "peerCommitMs": 2037,
+          "observedSettledMs": 2051,
+          "requests": {
+            "A": {
+              "exists": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 57,
+                "errors": 0
+              },
+              "chunkPut": {
+                "requests": 15,
+                "bytes": 67109105,
+                "ms": 1803,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 1,
+                "bytes": 4736,
+                "ms": 12,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 126,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 129,
+          "exactBytesEach": 68160531,
+          "largeSha256": "320db72752a41a3f64c1638a729e1024518a6373c0f3609e5f3b50c9b1fa8053",
+          "persistedIdentitiesAgree": true
+        }
+      }
+    },
+    {
+      "sample": 5,
+      "arm": "baseline",
+      "phases": {
+        "small-notes": {
+          "scenario": "small-notes",
+          "senderAckMs": 4627,
+          "peerCommitMs": 5300,
+          "observedSettledMs": 5308,
+          "requests": {
+            "A": {
+              "chunkPut": {
+                "requests": 128,
+                "bytes": 1053714,
+                "ms": 10197,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 128,
+                "bytes": 107776,
+                "ms": 4218,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 7,
+                "bytes": 8569,
+                "ms": 146,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 128,
+          "exactBytesEach": 1051666,
+          "persistedIdentitiesAgree": true
+        },
+        "large-file": {
+          "scenario": "large-file",
+          "senderAckMs": 1804,
+          "peerCommitMs": 2055,
+          "observedSettledMs": 2068,
+          "requests": {
+            "A": {
+              "exists": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 70,
+                "errors": 0
+              },
+              "chunkPut": {
+                "requests": 15,
+                "bytes": 67109105,
+                "ms": 1880,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 1,
+                "bytes": 4736,
+                "ms": 13,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 125,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 129,
+          "exactBytesEach": 68160531,
+          "largeSha256": "320db72752a41a3f64c1638a729e1024518a6373c0f3609e5f3b50c9b1fa8053",
+          "persistedIdentitiesAgree": true
+        }
+      }
+    },
+    {
+      "sample": 6,
+      "arm": "candidate",
+      "phases": {
+        "small-notes": {
+          "scenario": "small-notes",
+          "senderAckMs": 4791,
+          "peerCommitMs": 5467,
+          "observedSettledMs": 5487,
+          "requests": {
+            "A": {
+              "chunkPut": {
+                "requests": 128,
+                "bytes": 1053714,
+                "ms": 10635,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 128,
+                "bytes": 107776,
+                "ms": 4477,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 7,
+                "bytes": 8569,
+                "ms": 114,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 128,
+          "exactBytesEach": 1051666,
+          "persistedIdentitiesAgree": true
+        },
+        "large-file": {
+          "scenario": "large-file",
+          "senderAckMs": 1826,
+          "peerCommitMs": 2077,
+          "observedSettledMs": 2092,
+          "requests": {
+            "A": {
+              "exists": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 245,
+                "errors": 0
+              },
+              "chunkPut": {
+                "requests": 15,
+                "bytes": 67109105,
+                "ms": 1651,
+                "errors": 0
+              },
+              "versionPost": {
+                "requests": 1,
+                "bytes": 4736,
+                "ms": 11,
+                "errors": 0
+              }
+            },
+            "B": {
+              "chunkRead": {
+                "requests": 5,
+                "bytes": 1055,
+                "ms": 127,
+                "errors": 0
+              }
+            }
+          },
+          "exactFilesEach": 129,
+          "exactBytesEach": 68160531,
+          "largeSha256": "320db72752a41a3f64c1638a729e1024518a6373c0f3609e5f3b50c9b1fa8053",
+          "persistedIdentitiesAgree": true
+        }
+      }
+    }
+  ]
+}

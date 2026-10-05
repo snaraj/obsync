@@ -1,0 +1,89 @@
+{
+  "captures": [
+    {
+      "path": "evidence/1-baseline/overlap-peer-A.png",
+      "sha256": "9039ff22efba9cd656fb12ca44f6f5357cc312a4f5b32c4ab91f604ab9000f35",
+      "displayedAndRead": true,
+      "observation": "1-baseline, Lab-A: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "gray circular arrows"
+    },
+    {
+      "path": "evidence/1-baseline/overlap-peer-B.png",
+      "sha256": "fdc5c04c28112f97c3997a2d85a29bb52100c4694b7cc97894e4764498e8023f",
+      "displayedAndRead": true,
+      "observation": "1-baseline, Lab-B: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "green check"
+    },
+    {
+      "path": "evidence/2-candidate/overlap-peer-A.png",
+      "sha256": "9039ff22efba9cd656fb12ca44f6f5357cc312a4f5b32c4ab91f604ab9000f35",
+      "displayedAndRead": true,
+      "observation": "2-candidate, Lab-A: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "gray circular arrows"
+    },
+    {
+      "path": "evidence/2-candidate/overlap-peer-B.png",
+      "sha256": "fdc5c04c28112f97c3997a2d85a29bb52100c4694b7cc97894e4764498e8023f",
+      "displayedAndRead": true,
+      "observation": "2-candidate, Lab-B: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "green check"
+    },
+    {
+      "path": "evidence/3-candidate/overlap-peer-A.png",
+      "sha256": "9039ff22efba9cd656fb12ca44f6f5357cc312a4f5b32c4ab91f604ab9000f35",
+      "displayedAndRead": true,
+      "observation": "3-candidate, Lab-A: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "gray circular arrows"
+    },
+    {
+      "path": "evidence/3-candidate/overlap-peer-B.png",
+      "sha256": "fdc5c04c28112f97c3997a2d85a29bb52100c4694b7cc97894e4764498e8023f",
+      "displayedAndRead": true,
+      "observation": "3-candidate, Lab-B: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "green check"
+    },
+    {
+      "path": "evidence/4-baseline/overlap-peer-A.png",
+      "sha256": "9039ff22efba9cd656fb12ca44f6f5357cc312a4f5b32c4ab91f604ab9000f35",
+      "displayedAndRead": true,
+      "observation": "4-baseline, Lab-A: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "gray circular arrows"
+    },
+    {
+      "path": "evidence/4-baseline/overlap-peer-B.png",
+      "sha256": "fdc5c04c28112f97c3997a2d85a29bb52100c4694b7cc97894e4764498e8023f",
+      "displayedAndRead": true,
+      "observation": "4-baseline, Lab-B: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "green check"
+    },
+    {
+      "path": "evidence/5-baseline/overlap-peer-A.png",
+      "sha256": "9039ff22efba9cd656fb12ca44f6f5357cc312a4f5b32c4ab91f604ab9000f35",
+      "displayedAndRead": true,
+      "observation": "5-baseline, Lab-A: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "gray circular arrows"
+    },
+    {
+      "path": "evidence/5-baseline/overlap-peer-B.png",
+      "sha256": "fdc5c04c28112f97c3997a2d85a29bb52100c4694b7cc97894e4764498e8023f",
+      "displayedAndRead": true,
+      "observation": "5-baseline, Lab-B: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "green check"
+    },
+    {
+      "path": "evidence/6-candidate/overlap-peer-A.png",
+      "sha256": "9039ff22efba9cd656fb12ca44f6f5357cc312a4f5b32c4ab91f604ab9000f35",
+      "displayedAndRead": true,
+      "observation": "6-candidate, Lab-A: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "gray circular arrows"
+    },
+    {
+      "path": "evidence/6-candidate/overlap-peer-B.png",
+      "sha256": "fdc5c04c28112f97c3997a2d85a29bb52100c4694b7cc97894e4764498e8023f",
+      "displayedAndRead": true,
+      "observation": "6-candidate, Lab-B: pipe-127 open; UPLOAD PIPE SENTINEL 127 and repeated a text visible; pipe-000 through pipe-024 appear in the file list; no content obstruction.",
+      "rightmostGlyph": "gray circular arrows"
+    }
+  ],
+  "limit": "Content snapshots after opening the file; rightmost glyph varies during that operation. Not a final stable-idle UI assertion or the full-byte oracle."
+}

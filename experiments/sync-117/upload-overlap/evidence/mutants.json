@@ -1,0 +1,26 @@
+{
+  "sourceSha256": "8074f28d7b029919700be1ee633f887286dfeeceda48647dd6337c65ea6c699c",
+  "restored": true,
+  "results": [
+    {
+      "name": "serial-existence",
+      "result": "KILLED",
+      "exit": 1
+    },
+    {
+      "name": "lost-error",
+      "result": "KILLED",
+      "exit": 1
+    },
+    {
+      "name": "unbounded-window",
+      "result": "KILLED",
+      "exit": 1
+    },
+    {
+      "name": "early-version",
+      "result": "KILLED",
+      "exit": 1
+    }
+  ]
+}

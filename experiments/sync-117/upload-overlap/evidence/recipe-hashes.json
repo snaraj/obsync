@@ -1,0 +1,46 @@
+[
+  {
+    "name": "recipes/README.md",
+    "sha256": "c882cca434d790c4bfc473d3b31bc83081a5f0fab764035a301ac22a434f9a0b"
+  },
+  {
+    "name": "recipes/candidate.diff",
+    "sha256": "21dbfe1bf981e414acafc2e65aebdf649093d43d0f18d2d16d40e8e206210c3a"
+  },
+  {
+    "name": "recipes/compare.py",
+    "sha256": "4dbdac490039766554d0fb6d2f45071540a30e168c218ae21ea45a847a46ee2a"
+  },
+  {
+    "name": "recipes/mutants.json",
+    "sha256": "3c7ecf09356e3153968a1a553c4809ee2f122ccf199b7d00cc367f6797207820"
+  },
+  {
+    "name": "recipes/native-overlap.mjs",
+    "sha256": "c1af8ef4058ed1534f15280b6eeb7b8cbc6256942ded39850156547e716f6b0d"
+  },
+  {
+    "name": "recipes/upload-pipeline.test.mjs",
+    "sha256": "76c3dbec948c416f702beb0d94a844529da8064e246fa025a729085c645a26b3"
+  },
+  {
+    "name": "local-harness/lab.py",
+    "sha256": "0e4fab65460a2f51880713dc4cbb91a1bae6aefc9ac06e6c504027f34066e030"
+  },
+  {
+    "name": "local-harness/cdp.mjs",
+    "sha256": "ed41d8fff8ad2fdca26fca88c11940042e48b77ad822568d887127243fbac3b2"
+  },
+  {
+    "name": "local-harness/journeys.mjs",
+    "sha256": "abb633dc73c9dc5212d5ce2eb31fde5469c30df20bfa59a8c9afb316c8a93288"
+  },
+  {
+    "name": "local-harness/performance.py",
+    "sha256": "c8eccd52eac70e07748f4fc8f1e007d2793d3cc358ecf5ead6a47fa7c8f0e8da"
+  },
+  {
+    "name": "local-harness/finalize.py",
+    "sha256": "cad44249bc8e200c4cf7d5d1670e862a21333bccb9ad650bab0aa4e0566cdfde"
+  }
+]

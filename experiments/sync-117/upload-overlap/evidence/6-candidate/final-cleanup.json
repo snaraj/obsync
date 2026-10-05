@@ -1,0 +1,11 @@
+{
+  "result": "PASS",
+  "privateAbsent": true,
+  "runtimeAbsent": true,
+  "manifestAbsent": true,
+  "privateBytesRemoved": 121253,
+  "retained": [
+    "sanitized evidence and screenshots"
+  ],
+  "observedAtEpoch": 1791198661
+}

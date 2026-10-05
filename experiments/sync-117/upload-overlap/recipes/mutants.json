@@ -1,0 +1,38 @@
+[
+  {
+    "name": "serial-existence",
+    "before": "    checking = observe(ask());",
+    "after": "    checking = observe(ask());\n    await checking;",
+    "testArgs": [
+      "--test-name-pattern=a bounded next window",
+      "test/upload-pipeline.test.mjs"
+    ]
+  },
+  {
+    "name": "lost-error",
+    "before": "  const check = (): void => { if (failed !== undefined) throw failed.error; };",
+    "after": "  const check = (): void => {};",
+    "testArgs": [
+      "--test-name-pattern=a rejected",
+      "test/upload-pipeline.test.mjs"
+    ]
+  },
+  {
+    "name": "unbounded-window",
+    "before": "while (held + ciphertext.length > limit && landing.size > 0)",
+    "after": "while (false && held + ciphertext.length > limit && landing.size > 0)",
+    "testArgs": [
+      "--test-name-pattern=a large push reads",
+      "test/transfers.test.mjs"
+    ]
+  },
+  {
+    "name": "early-version",
+    "before": "    while (landing.size > 0) await Promise.all(landing);",
+    "after": "    // MUTANT: leave outstanding uploads behind.",
+    "testArgs": [
+      "--test-name-pattern=a large push reads",
+      "test/transfers.test.mjs"
+    ]
+  }
+]

@@ -1,0 +1,96 @@
+{
+  "result": "SCENARIO_PASS",
+  "samples": [
+    {
+      "scenario": "small-notes",
+      "senderAckMs": 4766,
+      "peerCommitMs": 5429,
+      "observedSettledMs": 5451,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 128,
+            "bytes": 1053714,
+            "ms": 10746,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 128,
+            "bytes": 107776,
+            "ms": 4271,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 7,
+            "bytes": 8569,
+            "ms": 140,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 128,
+      "exactBytesEach": 1051666,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "large-file",
+      "senderAckMs": 1837,
+      "peerCommitMs": 2087,
+      "observedSettledMs": 2101,
+      "requests": {
+        "A": {
+          "exists": {
+            "requests": 5,
+            "bytes": 1055,
+            "ms": 210,
+            "errors": 0
+          },
+          "chunkPut": {
+            "requests": 15,
+            "bytes": 67109105,
+            "ms": 1747,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 1,
+            "bytes": 4736,
+            "ms": 12,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 5,
+            "bytes": 1055,
+            "ms": 125,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 129,
+      "exactBytesEach": 68160531,
+      "largeSha256": "320db72752a41a3f64c1638a729e1024518a6373c0f3609e5f3b50c9b1fa8053",
+      "persistedIdentitiesAgree": true
+    }
+  ],
+  "artifacts": {
+    "obsyncd": "9d42d9c240862340d39ce76d36f10d1564fa7dba1e9cab7bad047751c0282cdc",
+    "plugin/main.js": "94bb51aedb4e17c74f54d34c2c743224c59164fc50f8cdbcc3b3a7a923208eee",
+    "plugin/manifest.json": "aae46364e30769a65b56cba53c65a89f104cd1cf5d5c5d6978bbedb3afb9eb42",
+    "plugin/styles.css": "43dd0db8ccce20e88a3c63ec2ea35e46ce4133912c0e797da036e37a6499287b"
+  },
+  "limits": [
+    "Common-host native macOS windows over loopback HTTP and mock keychains; TLS/phone NOT_RUN.",
+    "Request wrappers count only categories, byte lengths and timestamps; all authentication, encryption and durable writes remain unchanged.",
+    "No synthetic network delay. Three alternating fresh-account pairs; no best-run filtering."
+  ],
+  "serverStorageSentinelScan": {
+    "passed": true,
+    "scannedFiles": 148,
+    "scannedBytes": 68389934,
+    "limit": "Known synthetic note/path sentinels only; not a general confidentiality proof."
+  },
+  "hooksRemoved": true
+}

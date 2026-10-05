@@ -1,0 +1,12 @@
+{
+  "contracts": {
+    "command": "python3 -B -m unittest discover -s scripts/ci",
+    "passed": 872
+  },
+  "workingTreeSecretScan": "PASS",
+  "patchDecodedHashAndApplyCheck": "PASS",
+  "recipeSyntax": "PASS",
+  "summaryMatchesRetainedComparison": true,
+  "stagedWhitespaceCheck": "PASS",
+  "fullGate": "NOT_RUN; rejected archive only, production source unchanged"
+}

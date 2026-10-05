@@ -1,0 +1,28 @@
+{
+  "result": "PASS",
+  "sampleCount": 6,
+  "allRuntimePrivateManifestAbsent": true,
+  "removed": [
+    {
+      "ownedPath": "comparison-inputs",
+      "bytes": 3937658,
+      "absent": true
+    },
+    {
+      "ownedPath": "plugin/node_modules",
+      "bytes": 23625636,
+      "absent": true
+    },
+    {
+      "ownedPath": "plugin/build",
+      "bytes": 1338413,
+      "absent": true
+    },
+    {
+      "ownedPath": "plugin/dist",
+      "bytes": 1345132,
+      "absent": true
+    }
+  ],
+  "retained": "recipes and reduced evidence including inspected synthetic captures"
+}
