@@ -8,10 +8,18 @@ are applied on GitHub; they describe planned delivery, not completed acceptance.
 | Release | Scope | Issues |
 | --- | --- | --- |
 | [v1.1.6](https://github.com/snaraj/obsync/milestone/31) | Native Rust CLI discovery, contexts and verified installation | #255 |
-| [v1.1.7](https://github.com/snaraj/obsync/milestone/33) | First-sync writes, background performance, load-test regressions and measured pipeline/design work | #274, #277, #283, #319, #325 |
+| [v1.1.7](https://github.com/snaraj/obsync/milestone/33) | First-sync writes, background performance, load-test regressions, measured pipeline/design work and CLI polish | #274, #277, #283, #319, #325, #329 |
 | [v1.1.8](https://github.com/snaraj/obsync/milestone/34) | Pairing confirmation and physical-phone blind-start/readback acceptance | #290, #314 |
 | [v1.1.9](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs and final integrated acceptance | #254, #256, #257, #258, #261, #262, #321 |
 | [v1.1.10](https://github.com/snaraj/obsync/milestone/32) | Deferred export, storage/deployment, backup/recovery and co-editing engine | #259, #260, #315, #317 |
+| [v1.1.11](https://github.com/snaraj/obsync/milestone/36) | Large files: protocol per-file ceiling lift, mobile streaming and the measured, documented size model | #330, #331, #332 |
+
+#329 joined 1.1.7 at the owner handoff on 2026-10-04, recorded in the
+milestone. The owner commissioned v1.1.11 on 2026-10-05: the largest practical
+per-file size rises toward the backing volume (#330 lifts the manifest-slot
+cap near 19 GiB with a visible client preflight, #331 streams mobile downloads
+and measures the real device ceilings, #332 documents and proves the whole
+size model).
 
 #325 separates the immediate measurements, pipeline improvements, reviewed
 state/migration design and bounded experiments from #315's later engine. Its
@@ -37,6 +45,9 @@ The release order follows the table; no date or completed capability is promised
   applicable security/performance gates and exact public artifact proof.
 - 1.1.10 depends on the reviewed designs and retains every deferred security,
   recovery, native-device, mixed-version and convergence requirement.
+- 1.1.11 requires measured reference-hardware round trips above the old
+  protocol cap, refusal-before-upload proof against a 1.1.x server, real-phone
+  streaming evidence and the single documented size model.
 
 Security, E2EE, durability and performance requirements remain unchanged.
 Each capability needs its applicable V01–V19, S01–S12 and P01–P10 evidence from
