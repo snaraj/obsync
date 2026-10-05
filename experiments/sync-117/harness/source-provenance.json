@@ -1,0 +1,17 @@
+{
+  "source": "retained local lab tooling, copied without modifying the original",
+  "original_sha256": {
+    "validation/lab/lab.py": "05160b7906ca57ac084b117d1b50ece6442b4e35d54c9caf85e596f88c9ca07f",
+    "validation/lab/cdp.mjs": "ed41d8fff8ad2fdca26fca88c11940042e48b77ad822568d887127243fbac3b2",
+    "validation/lab/journeys.mjs": "abb633dc73c9dc5212d5ce2eb31fde5469c30df20bfa59a8c9afb316c8a93288",
+    "validation/lab/performance.py": "e4ff07c6cfc15f7a164d9e3c6881b1541d365871ad300a65386f3ccb8e0807ce",
+    "validation/lab/performance.mjs": "99f5b06e2d8f629b5494a5613fa51e3a223fc7871dccbcdd52d4f53593f9cfac",
+    "validation/lab/fixture.py": "71a3e3ffdff9ba8c864e7a8e5f50cea136dd77ad393dd9b229a52e2193e7bc79",
+    "validation/lab/intermediary.mjs": "97c95a5bd8c5e619a610a8ce5374bbb3858e3aaa48cd97694c1d020e99513c49",
+    "validation/lab/mobile.mjs": "e5af9a5318cbaed173fd1f9197114af9f1a2099fb3b36954bd46884bc6e451fa",
+    "validation/lab/load277.py": "7ad1a4aa967a61e4073c22dd91766a91bfae4d9b413fb9f67840baadf1bdf766",
+    "validation/lab/load277.mjs": "c839089706d6c8d1455f970a66acad57e9873a56252349580e7abd1ec999602b",
+    "ci/obsidian-drive.mjs": "0624d49ede7c9e027e5816f510ca60c1b0f7cccc8c826b4df57f0702385e6acc"
+  },
+  "adaptation": "REPO explicitly supplied by the launcher through OBSYNC_LAB_SOURCE"
+}

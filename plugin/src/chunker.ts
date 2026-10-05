@@ -111,6 +111,10 @@ export function cutPoint(window: Bytes, gear: Uint32Array): number {
  * `CHUNK_MAX` bytes of the source plus one chunk are held at a time, so a
  * 20 GB file costs the same memory as an 8 MiB one on desktop.
  */
+function labStages(): { __obsyncStages?: { cutMs: number; cuts: number } } | undefined {
+  return typeof window === "undefined" ? undefined : window as unknown as { __obsyncStages?: { cutMs: number; cuts: number } };
+}
+
 export async function* chunkStream(source: ByteSource): AsyncGenerator<Bytes> {
   if (source.size <= CHUNK_MAX) {
     yield await readFully(source, 0, source.size);
@@ -125,7 +129,10 @@ export async function* chunkStream(source: ByteSource): AsyncGenerator<Bytes> {
       window = concat(window, await readFully(source, position + window.length, want - window.length));
     }
     if (window.length === 0) return;
+    const labAt = performance.now();
     const cut = cutPoint(window, gear);
+    const lab = labStages();
+    if (lab?.__obsyncStages) { lab.__obsyncStages.cutMs += performance.now() - labAt; lab.__obsyncStages.cuts++; }
     yield window.subarray(0, cut);
     window = window.slice(cut);
     position += cut;

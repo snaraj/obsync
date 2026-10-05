@@ -1,0 +1,22 @@
+{
+  "source": "897124b073baf51ef2cb3fff52a5badc1940a237",
+  "purpose": "measurement only; never distribute or merge",
+  "files": {
+    "plugin/src/chunker.ts": {
+      "before": "022e6b060aae84681ff935f9b0d1289933e007072ce7fa633628d574aaf1d65d",
+      "after": "bfc50ef2d7913f26f3dfa8b179b272b5d013c0baba1db8b4a2cb9aee3b22d9c6"
+    },
+    "crates/obsyncd/src/storage/blobs.rs": {
+      "before": "44e7543bc3c9df263275c8474e9a0bf30b90979358672e934c683283a5b75eeb",
+      "after": "b3c9c93f3e6c14a9c01f0b2a2fb2145fb81b5d8f805f9ca77857fff51bb08516"
+    },
+    "crates/obsyncd/src/api/nonce_log.rs": {
+      "before": "9108e25403b8d3986305d925157cd4608da2149fddf25f41d1c755719cbb9a12",
+      "after": "ab432f385277ea3c3ec0e62d10d49d336df5251f893da9f619800e9f4085889a"
+    },
+    "crates/obsyncd/src/storage/journal.rs": {
+      "before": "06763067e3a38f45588c43b69a128e78bde66045b949a425bcb202f4ed15258b",
+      "after": "1bf2f7216ec88355474935010c4dbcdba6231b8ab5ffbf714d069cc1b37ac70c"
+    }
+  }
+}

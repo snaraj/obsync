@@ -672,7 +672,10 @@ impl Journal {
             file.write_all(&bytes[..bytes.len() / 2])?;
             return Err(e);
         }
-        file.write_all(bytes)
+        let lab_at = std::time::Instant::now();
+        let outcome = file.write_all(bytes);
+        eprintln!("LAB_STAGE journal_write ns={}", lab_at.elapsed().as_nanos());
+        outcome
     }
 
     /// Make the frame durable, or the failure a test injected in its place.
@@ -689,7 +692,10 @@ impl Journal {
         if let Some(hook) = self.mid_sync.lock().expect("sync hook").clone() {
             hook();
         }
-        self.segment.as_ref().expect("a segment is open").sync_all()
+        let lab_at = std::time::Instant::now();
+        let outcome = self.segment.as_ref().expect("a segment is open").sync_all();
+        eprintln!("LAB_STAGE journal_fsync ns={}", lab_at.elapsed().as_nanos());
+        outcome
     }
 
     /// Undo a failed append, and say what happened exactly once.
@@ -768,7 +774,10 @@ impl Journal {
         if let Some(e) = self.rollback_fails_at(RollbackPhase::Sync) {
             return Err(e);
         }
-        self.segment.as_ref().expect("a segment is open").sync_all()
+        let lab_at = std::time::Instant::now();
+        let outcome = self.segment.as_ref().expect("a segment is open").sync_all();
+        eprintln!("LAB_STAGE journal_fsync ns={}", lab_at.elapsed().as_nanos());
+        outcome
     }
 
     /// Open the next segment, fsyncing the directory that names it.

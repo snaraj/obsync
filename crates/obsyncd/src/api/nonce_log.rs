@@ -339,7 +339,12 @@ impl NonceLog {
             _ => self.file.write_all(text.as_bytes()),
         };
         #[cfg(not(test))]
-        let wrote = self.file.write_all(text.as_bytes());
+        let wrote = {
+            let lab_at = std::time::Instant::now();
+            let outcome = self.file.write_all(text.as_bytes());
+            eprintln!("LAB_STAGE nonce_write ns={}", lab_at.elapsed().as_nanos());
+            outcome
+        };
         let outcome = wrote.and_then(|()| self.fsync());
         // A crash, not a refusal: nothing after the fsync runs in a process
         // that died there, so nothing is cut back either.
@@ -493,7 +498,9 @@ impl NonceLog {
             }
             _ => {}
         }
+        let lab_at = std::time::Instant::now();
         self.file.sync_all()?;
+        eprintln!("LAB_STAGE nonce_fsync ns={}", lab_at.elapsed().as_nanos());
         self.syncs += 1;
         Ok(())
     }

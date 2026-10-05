@@ -268,7 +268,9 @@ impl Blobs {
         self.tripped(Fault::ChunkBeforeFsync)?;
         #[cfg(test)]
         self.errno_at(BlobPhase::Sync)?;
+        let lab_at = std::time::Instant::now();
         file.sync_all()?;
+        eprintln!("LAB_STAGE file_fsync ns={}", lab_at.elapsed().as_nanos());
         drop(file);
         // A crash or a refusal here leaves a SYNCED temp file with no name in
         // the tree: startup removes it, same outcome.
@@ -560,20 +562,33 @@ fn hash_stream(
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; BUF];
     let mut total: u64 = 0;
+    let (mut read_ns, mut hash_ns, mut write_ns) = (0u128, 0u128, 0u128);
     loop {
+        let lab_at = std::time::Instant::now();
         let read = match body.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(StoreError::Io(e)),
         };
+        read_ns += lab_at.elapsed().as_nanos();
+        let lab_at = std::time::Instant::now();
         hasher.update(&buf[..read]);
+        hash_ns += lab_at.elapsed().as_nanos();
         if let Some(file) = out.as_deref_mut() {
+            let lab_at = std::time::Instant::now();
             file.write_all(&buf[..read])?;
+            write_ns += lab_at.elapsed().as_nanos();
         }
         total += read as u64;
     }
-    Ok((hasher.finalize(), total))
+    let lab_at = std::time::Instant::now();
+    let digest = hasher.finalize();
+    hash_ns += lab_at.elapsed().as_nanos();
+    eprintln!(
+        "LAB_STAGE blob bytes={total} read_ns={read_ns} hash_ns={hash_ns} write_ns={write_ns}"
+    );
+    Ok((digest, total))
 }
 
 /// The two refusals every body faces, in the order the protocol states them.
@@ -635,7 +650,9 @@ fn fsync_parent(path: &Path) -> Result<(), StoreError> {
 fn fsync_dir(dir: &Path) -> Result<(), StoreError> {
     match File::open(dir) {
         Ok(handle) => {
+            let lab_at = std::time::Instant::now();
             let flushed = handle.sync_all();
+            eprintln!("LAB_STAGE dir_fsync ns={}", lab_at.elapsed().as_nanos());
             #[cfg(test)]
             if flushed.is_ok() {
                 disk_trace(format!("synced {}", dir.display()));
