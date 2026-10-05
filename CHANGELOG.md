@@ -14,7 +14,7 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   it again while work remains. Logs distinguish calm, unanswered and stopped
   restoration (#283).
 - The left-selection regression sets up its settled large-file state directly,
-  avoiding an unrelated upload deadline under CI load while retaining byte and
+  avoiding an unrelated initial download under CI load while retaining byte and
   request checks (#319).
 - CLI help and empty lists consistently describe saved servers. The unknown
   `status` command points to `doctor`, which checks local settings without
