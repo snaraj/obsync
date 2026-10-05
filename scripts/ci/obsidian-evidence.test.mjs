@@ -167,3 +167,51 @@ test("the real driver cannot report success when its restart journey is omitted"
     assert.equal(localProcess.exitCode, 1, "an omitted restart must fail the real driver's success path");
   } finally { fs.rmSync(root, { recursive: true }); }
 });
+
+test("actual restart checks custody before and after, waits for native exit, and propagates refusal", async () => {
+  const fs = await import("node:fs"), vm = await import("node:vm");
+  const source = fs.readFileSync(new URL("./obsidian-drive.mjs", import.meta.url), "utf8");
+  const restart = source.slice(source.indexOf("async function restarted("), source.indexOf("\nasync function captureEditor("));
+  const holdsAt = source.indexOf("function holds(");
+  const holds = source.slice(holdsAt, source.indexOf("\n}\n", holdsAt) + 2);
+  const secretFactsMarker = () => {};
+  async function run({ bad = "", failedHalt = false, failedTransfer = false, warning = false } = {}) {
+    const calls = [], closed = new Set(), captured = [], transfers = [];
+    let facts = 0;
+    const instance = (name) => ({ name,
+      async halt() { calls.push("halt-" + name); await Promise.resolve(); if (failedHalt && name === "a") throw Error("native quit refused"); closed.add(name); },
+      launch() { assert.equal(closed.size, 2, "both native processes exited before any relaunch"); calls.push("launch-" + name); },
+      async all() { return warning ? ["Secrets are stored without encryption"] : []; },
+    });
+    const context = {
+      STORES: { windows: required }, Denied: Error, assertCustody, secretFacts: secretFactsMarker,
+      inVault: async (_, fn) => {
+        if (fn !== secretFactsMarker) return true;
+        facts++;
+        return { ...valid, revisionMatches: bad === (facts <= 2 ? "before" : "after") ? false : true };
+      },
+      reopen: async (instance) => calls.push("reopen-" + instance.name), paired: () => true,
+      until: async (_, probe) => probe(), Buffer,
+      arrives: async (receiver, file) => { if (failedTransfer) throw Error("transfer refused"); transfers.push(receiver.name + ":" + file); return 1; },
+      captureEditor: async (instance, phase) => captured.push(phase + "-" + instance.name),
+      notices() {}, UNENCRYPTED: "Secrets are stored without encryption", prove() {},
+    };
+    const program = vm.runInNewContext(`${holds}\n(${restart})`, context);
+    const promise = program(instance("a"), instance("b"), { binary: "test", extra: [], homes: false, store: "windows" });
+    if (bad || failedHalt || failedTransfer || warning) {
+      await assert.rejects(promise, /custody refused|native quit refused|transfer refused|still says/);
+      if (bad === "before") assert.deepEqual(calls, [], "bad saved custody prevents restart");
+      if (failedHalt) assert.equal(calls.some((line) => line.startsWith("launch-")), false);
+      return;
+    }
+    const receipt = await promise;
+    assert.equal(facts, 4, "both peers were checked before and after restart");
+    assert.deepEqual(calls, ["halt-a", "halt-b", "launch-a", "launch-b", "reopen-a", "reopen-b"]);
+    assert.deepEqual(transfers, ["b:e2e/after-restart-a.md", "a:e2e/after-restart-b.md"]);
+    assert.deepEqual(captured, ["restart-a-a", "restart-a-b", "restart-b-b", "restart-b-a"]);
+    assert.deepEqual(JSON.parse(JSON.stringify(receipt)), { before: true, quit: true, paired: true, transferred: true, after: true });
+  }
+  await run();
+  await run({ bad: "before" }); await run({ bad: "after" });
+  await run({ failedHalt: true }); await run({ failedTransfer: true }); await run({ warning: true });
+});
