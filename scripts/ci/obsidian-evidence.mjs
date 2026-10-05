@@ -14,9 +14,14 @@ export async function secretFacts() {
   let envelope = null;
   try { envelope = secret === null ? null : JSON.parse(secret); }
   catch { throw new Error("credential envelope is not valid JSON"); }
+  // Obsidian exposes this wrapper on Windows, but Electron implements it
+  // only on Linux. Required Linux backends still refuse an unavailable name.
+  let backend = "none reported";
+  try { backend = app.secretStorage.adapter?.getSelectedStorageBackend?.() ?? backend; }
+  catch { backend = "unavailable"; }
   return {
     encrypted: app.secretStorage.isEncryptionAvailable(),
-    backend: app.secretStorage.adapter?.getSelectedStorageBackend?.() ?? "none reported",
+    backend,
     stored: typeof raw === "string" && raw.length > 0,
     plain,
     revisionMatches: Number.isSafeInteger(metadata.credentialRevision)

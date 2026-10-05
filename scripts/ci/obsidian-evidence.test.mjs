@@ -29,6 +29,18 @@ test("custody returns facts only, checks the persisted revision, and sanitizes m
     assert.equal(facts.backend, "none reported");
     assert.equal(JSON.stringify(facts).includes(sentinel), false);
     assert.equal(facts.plain, false);
+    app.secretStorage.adapter = { getSelectedStorageBackend: () => { throw new TypeError("not a function"); } };
+    const windows = await secretFacts();
+    assert.equal(windows.backend, "unavailable");
+    assertCustody(windows, required);
+    assert.throws(() => assertCustody(windows, { ...required, backend: "gnome_libsecret" }), /custody/);
+    app.secretStorage.isEncryptionAvailable = () => false;
+    const unencrypted = await secretFacts();
+    assert.throws(() => assertCustody(unencrypted, required), /custody/);
+    assert.equal(unencrypted.encrypted, false);
+    app.secretStorage.isEncryptionAvailable = () => true;
+    app.secretStorage.adapter.getSelectedStorageBackend = () => "gnome_libsecret";
+    assertCustody(await secretFacts(), { ...required, backend: "gnome_libsecret" });
     for ([revision, saved] of [[7, 6], [0, 0], [-1, -1], [1.5, 1.5], ["7", "7"]]) {
       secret = JSON.stringify({ current: { revision: saved } });
       assert.equal((await secretFacts()).revisionMatches, false);
