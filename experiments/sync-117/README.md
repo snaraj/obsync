@@ -5,6 +5,11 @@ branch.** Hooks preserve encryption, authentication, replay protection, integrit
 and durable writes. They measure the baseline; they deliver no shipping speed
 improvement or character-editing engine.
 
+Physical-device setup, observation, failure records and removal are maintained
+in [the phone lifecycle guide](PHONE.md). Those launchers bind each new run to
+an explicit candidate version and artifact hashes; phone acceptance stays
+separate from a successful local control or teardown.
+
 Build with pinned repository tools. `SOURCE` explicitly selects the built
 checkout (`target/release/obsyncd`, `plugin/dist`); `RUN` must be a fresh private
 directory outside every checkout. An installed macOS Obsidian app and at least
@@ -78,7 +83,8 @@ the launcher has exited. No fixture key or account may be retained for reuse.
 uses an immutable Node 26.10.0 image, four CPUs, 8 GiB, forty bounded workers,
 original test deadlines and owned-container cleanup. Keep every failed result.
 
-No personal vault, public tunnel, production credential or disabled protection
-is a fixture. Physical-phone acceptance requires an authenticated mirror and
-trusted private HTTPS. Keep raw logs, credentials and screenshots outside Git;
+No personal vault, production credential or disabled protection is a fixture.
+Private-path acceptance requires an authenticated mirror and trusted private
+HTTPS. The separately authorized bounded relay rehearsal in `PHONE.md` does
+not satisfy that private-path result. Keep raw logs, credentials and screenshots outside Git;
 no runtime data or operational inventory belongs on this branch.
