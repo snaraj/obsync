@@ -12,6 +12,8 @@ plugin/dist
 # dead modules into the bundle and break the reproducible digest the release
 # evidence manifest records. It is generated inside the image; never shipped in.
 plugin/build
+cli/dist
+cli/test
 # The dashboard ships as-is, minus the two directories that are not the
 # dashboard: `dev/` is a mock server for local development and `test/` is its
 # suite. Neither belongs in an image whose whole argument is that it contains

@@ -5,6 +5,23 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.6 - Unreleased
+
+### Added
+
+- A native Rust management CLI with kubectl-style command groups, readable
+  human output, explicit JSON, schemas and offline capability discovery.
+  Local contexts use bounded snapshots, exact plans and durable apply receipts.
+  Default OS settings and `context add/list/use/remove` aliases shorten setup;
+  terminal changes ask for confirmation, while agents retain exact plans.
+- Verified native archives for Linux amd64/arm64, macOS arm64 and Windows amd64.
+  Installation verifies a private immutable directory. After verified uninstall,
+  a newer package can reuse the same path; uninstall preserves contexts.
+  No Node runtime ships or is required.
+
+Server authentication, native setup, device administration and MCP follow in
+later slices. Export/open is deferred with #317 and returns unsupported.
+
 ## 1.1.5 - Unreleased
 
 1.1.5 fixes the issues left open when 1.1.4 was released (#238 to #241, #244

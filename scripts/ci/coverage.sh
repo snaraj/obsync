@@ -52,7 +52,7 @@ done
 "$profdata" merge -sparse "${out}"/*.profraw -o "${out}/merged.profdata"
 
 # Test code is excluded: measuring the tests would measure nothing.
-ignore='(/\.cargo/registry/|/rustc/|/tests\.rs$|/testutil\.rs$|_test\.rs$)'
+ignore='(/\.cargo/registry/|/rustc/|/crates/[^/]+/tests/|/tests\.rs$|/testutil\.rs$|_test\.rs$)'
 
 # shellcheck disable=SC2086
 summary="$("$cov" export \

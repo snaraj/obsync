@@ -82,12 +82,34 @@ Numbered for citation, repo-scoped, none negotiable in code:
    runtime dependencies; its only build inputs are the pinned Node toolchain,
    one exact `typescript` compiler pin, and the vendored official Obsidian
    API type declarations under `plugin/vendor/` with their license. The
-   dashboard is hand-written HTML, CSS, and JavaScript with no framework and
+   standalone CLI is a native Rust binary with only the workspace `obsync-core`
+   path dependency. Export/open remains deferred. The owner-approved read-only
+   CLI identity calls are exactly POSIX `getuid`/`geteuid` in
+   `crates/obsync-cli/src/posix_identity.rs` (reject root or differing IDs), and
+   Windows `kernel32.dll!GetFileInformationByHandle` in
+   `crates/obsync-cli/src/windows_identity.rs` (accept only an already-open File).
+   No identity setter, arbitrary DLL/symbol or other native capability is included.
+   The owner-approved Windows CLI exception is exactly
+   `cli/windows-files.ps1`: its sole native import is `kernel32.dll!MoveFileExW`,
+   fixed to `MOVEFILE_WRITE_THROUGH` (0x8), to publish an owned private directory
+   or verified single-link file to an absent sibling on the same local NTFS
+   volume. Every source file is flushed first. No replacement, copy fallback,
+   reboot scheduling, arbitrary DLL/symbol or native helper binary is allowed.
+   Private DACL creation and flushing use OS PowerShell 5.1's built-in .NET
+   Framework. Explicit trusted setup binds the OS executable before use. This
+   helper exception adds no additional Rust FFI or runtime package. The owner-approved macOS
+   ACL reader accepts only an already-open directory descriptor and reads fixed
+   Darwin metadata calls through Apple-signed `/usr/bin/osascript`. Its fixed
+   source for the Rust CLI is `crates/obsync-cli/src/macos-acl.js`; it checks descriptor identity and every ACL
+   result, changes no file or permission, and loads no downloaded executable.
+   The CLI uses this same narrow reader for directory and runtime custody. The dashboard is hand-written HTML, CSS, and JavaScript with no framework and
    no remote asset. Cryptography on the device uses the platform's built-in
    WebCrypto; cryptography on the server is implemented in
-   `crates/obsync-core` against published test vectors. The single permitted
-   FFI surface is `crates/obsyncd/src/signal.rs` (SIGTERM/SIGINT delivery);
-   every other file carries `#![forbid(unsafe_code)]`. CI tooling (cosign,
+   `crates/obsync-core` against published test vectors. The server FFI surface
+   remains `crates/obsyncd/src/signal.rs` (SIGTERM/SIGINT delivery); the only
+   other surfaces are the two approved CLI identity modules above. Every other
+   implementation module carries `#![forbid(unsafe_code)]`; the CLI crate root
+   denies it and permits only those two named modules. CI tooling (cosign,
    helm, gitleaks, Python for the contract suites, a throwaway competitor
    container for benchmarks) is tooling, ships nothing, and is pinned by
    version and checksum. A dependency of any other kind is an owner
@@ -223,10 +245,19 @@ addresses. `TestProviderNeutrality` pins zero provider names under
 `make check` is the canonical gate and CI runs the same battery:
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test --workspace`, coverage against `RUST_COVERAGE_FLOOR`, the plugin
-build and `node --test`, chart lint plus the pin scripts under `scripts/ci`,
+build and `node --test`, the release Rust CLI build and `python3 cli/check.py`,
+chart lint plus the pin scripts under `scripts/ci`,
 the contract suites (`python3 -B -m unittest discover -s scripts/ci`), and
 both secret scans. Frontend and backend checks run once, natively; only the
 final image stage is per-target.
+
+The CLI's initial ratchet-only passing-test floor is 13 on POSIX and 2 on
+Windows subprocess tests; skipped tests never count. Cargo runs the actual
+process suites, and the native package journey checks independent resulting state. Native CLI jobs exercise actual subprocesses on
+macOS arm64, Windows amd64 and both Linux architectures. Hosted success is required before
+advertising the corresponding installation or filesystem capability. Windows
+acceptance additionally requires the ordinary-user public installer and context
+journey in `scripts/ci/cli-windows-native.ps1`.
 
 Releases follow requirement 10. The publisher's read-only authorization job
 verifies the exact run, repository, workflow path, push event, main branch,
@@ -337,8 +368,25 @@ is evidence, never authority.
   parallel on 2026-09-07; that override does not carry forward.
 - **Merge authority.** THE OWNER ALONE MERGES. Every agent PR opens as a
   draft. Never self-approve; never force-push a shared ref.
-- **Milestones and assignee.** Every PR and issue carries one milestone and
-  the owner as assignee.
+- **Milestones and assignee.** Every PR and issue has the owner as assignee.
+  Work with an agreed release carries that numbered milestone; proposed work
+  awaiting a release decision follows the explicit exception below.
+- **Numbered release trains and owner-agreed scope.** Release milestones are
+  named `vX.Y.Z`; their descriptions explain the theme. A descriptive umbrella
+  never substitutes for an actual target release. Before assigning or moving
+  issues, agree the exact issue-to-release list with the owner and record the
+  decision in the release plan. Newly discovered work is proposed for a named
+  future release; it does not silently expand the active train or silently move
+  out of it. Proposed, unapproved work stays explicitly unassigned until that
+  decision. Split an issue that spans releases into independently verifiable
+  issues; keep an umbrella's own acceptance and closing release explicit.
+  Each artifact PR names its approved release and issues, and its milestone,
+  version locks and changelog agree. Since every artifact merge publishes,
+  work promised for one release must be composed and validated before that
+  release's merge; an agent must not turn an agreed train into surprise partial
+  releases. Scope changes, deferrals and renumbering require owner agreement.
+  A milestone closes only after its scoped issues have acceptance evidence and
+  the release's immutable artifacts and required live delivery are verified.
 - **Linear history.** Squash or rebase merges only; branches auto-delete on
   merge; history is append-only.
 - **Commits.** Detailed bodies to the review evidence standard: problem,

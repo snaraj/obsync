@@ -81,6 +81,8 @@ CANONICAL=(
   'npm ci --ignore-scripts --no-audit --no-fund'
   'npm run build'
   'npm test'
+  'cargo build --locked --release -p obsync-cli'
+  'python3 cli/check.py'
   'node --test dashboard/test/*.test.mjs'
   'helm lint chart'
   'helm template smoke chart --kube-version v1.36.0'
@@ -97,7 +99,7 @@ CANONICAL=(
 # The prerequisite list `check` must carry. Stated here so a target silently
 # dropped from the chain -- which leaves `make check` green while running less
 # -- is a failure rather than a difference nobody notices.
-CHECK_PREREQUISITES='fmt lint test coverage plugin dashboard chart contracts secrets'
+CHECK_PREREQUISITES='fmt lint test coverage plugin cli dashboard chart contracts secrets'
 
 fail() {
   printf 'makefile-invariants: %s\n' "$1" >&2
