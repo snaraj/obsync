@@ -98,6 +98,11 @@ class Cleanup(unittest.TestCase):
         with patch.object(lab,'group_alive',side_effect=[True,False]),patch.object(lab,'owned_identity',return_value='expected'),patch.object(lab.os,'killpg',side_effect=ProcessLookupError),patch.object(lab.time,'sleep'):
             lab.stop({'pid':2001,'identity':'expected'})
 
+    def test_exit_before_final_signal_requires_absence(self):
+        with patch.object(lab,'group_alive',side_effect=[True]*151+[False]),patch.object(lab,'owned_identity',return_value='expected'),patch.object(lab.os,'killpg',side_effect=[None,ProcessLookupError]) as kill,patch.object(lab.time,'sleep'):
+            lab.stop({'pid':2001,'identity':'expected'})
+            self.assertEqual(kill.call_count,2)
+
     def test_transient_exit_identity_requires_absence(self):
         record={'pid':2001,'identity':'expected'}
         with patch.object(lab,'reap'),patch.object(lab,'identity',side_effect=['exiting','exiting',None]),patch.object(lab.time,'sleep'):

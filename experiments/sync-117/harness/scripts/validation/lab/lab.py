@@ -253,7 +253,12 @@ def stop(record):
         if not group_alive(pid):
             return
         time.sleep(.1)
-    os.killpg(pid, signal.SIGKILL)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        if not group_alive(pid):
+            return
+        raise
     for _ in range(50):
         if not group_alive(pid):
             return
