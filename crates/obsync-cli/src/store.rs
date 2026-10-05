@@ -375,8 +375,10 @@ fn default_path() -> Result<PathBuf> {
     let base = custody::exact(&variable("HOME")?, false)?.join("Library/Application Support");
     #[cfg(target_os = "linux")]
     let base = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(value) => custody::exact(value.to_str().ok_or_else(custody::unsafe_path)?, false)?,
-        None => custody::exact(&variable("HOME")?, false)?.join(".config"),
+        Some(value) if std::path::Path::new(&value).is_absolute() => {
+            custody::exact(value.to_str().ok_or_else(custody::unsafe_path)?, false)?
+        }
+        _ => custody::exact(&variable("HOME")?, false)?.join(".config"),
     };
     #[cfg(windows)]
     let base = custody::exact(&variable("APPDATA")?, false)?;

@@ -361,6 +361,7 @@ async function plugin(t, { data = null, cli, secrets = memorySecrets() } = {}) {
   const obsidian = box.require("obsidian");
   const Plugin = box.require(join(box.home, "build/main.js")).default;
   box.require(join(box.home, "build/sync/engine.js")).SyncEngine = class {
+    reachability() {}
     constructor(options) { this.options = options; }
     async start() {}
     stop() {}

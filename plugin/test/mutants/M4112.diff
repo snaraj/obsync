@@ -1,0 +1,12 @@
+# M4112: replacement engine ignores offline session (#283)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -4187,7 +4187,7 @@
+       },
+     });
+     this.engine = engine;
+-    engine.reachability(!this.unanswered);
++    engine.reachability(true);
+     try {
+       // Before anything is sent, and a refusal like any other below: the
+       // status says why until the person acts, and no timer retries it. The

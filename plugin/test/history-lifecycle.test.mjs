@@ -49,6 +49,7 @@ function reloadHarness(r) {
   // Use actual plugin onload/startEngine admission. The engine port keeps
   // this normal reload test local, without opening a real vault or network.
   r.box.require(join(r.box.home, "build/sync/engine.js")).SyncEngine = class {
+    reachability() {}
     started = false;
     constructor(options) { this.options = options; }
     async start() { starts++; this.started = true; }
@@ -115,6 +116,7 @@ test("a start still waiting on the old engine when a restore begins makes no eng
   const r = await plugin(t);
   const made = [];
   r.box.require(join(r.box.home, "build/sync/engine.js")).SyncEngine = class {
+    reachability() {}
     constructor() { made.push(this); }
     async start() {}
     stop() {}

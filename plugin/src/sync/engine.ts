@@ -365,7 +365,7 @@ export interface VaultHost {
    */
   pass?(open: boolean): void;
   /** The engine has sync work in hand, or none left: said once at each change (`SyncEngine.pace`, issue #283). */
-  hurry?(busy: boolean): void;
+  hurry?(busy: boolean, reason: "work" | "calm" | "stop" | "unanswered"): void;
 }
 
 export interface SyncContext {
@@ -936,6 +936,8 @@ export class SyncEngine {
   private contextValue: SyncContext | null = null;
   private active = 0;
   private draining = false;
+  /** Latest attempt answered; used only for the desktop power policy (#283). */
+  private networkAvailable = true;
   /** The drain in flight, so a second caller waits for it instead of for nothing. */
   private drainWork: Promise<void> | null = null;
   /** Ends the drain's wait for a push to land, when a path is queued (`drain`). */
@@ -1370,18 +1372,29 @@ export class SyncEngine {
    * than shown at load 27, and a download half as fast at load 6. The
    * host is told once when work begins and once when none has been left for
    * `CALM_MS`, or at a stop, never per note, and does what its platform
-   * allows (`main.ts`, `hurry`).
+   * allows (`main.ts`, `hurry`). An unanswered attempt also starts this
+   * grace: draining includes transport backoff, which can last minutes. An
+   * answer cancels it or lifts throttling again while work remains. This
+   * latest-attempt policy can throttle concurrent local work after a lost
+   * request; it changes no queue, retry, or persistence decision. Refusals
+   * that answer are reachable, not proof of progress.
    */
+  reachability(answered: boolean): void {
+    if (this.networkAvailable === answered) return;
+    this.networkAvailable = answered;
+    this.pace();
+  }
+
   private pace(): void {
-    const busy = this.running && (this.draining || this.pulls > 0 || this.laning || this.feedBehind);
+    const busy = this.running && this.networkAvailable && (this.draining || this.pulls > 0 || this.laning || this.feedBehind);
     if (busy || !this.running) {
       if (this.calmHandle !== null) this.timers.clear(this.calmHandle);
       this.calmHandle = null;
-      if (busy !== this.hurried) this.options.host.hurry?.(this.hurried = busy);
+      if (busy !== this.hurried) this.options.host.hurry?.(this.hurried = busy, busy ? "work" : "stop");
     } else if (this.hurried && this.calmHandle === null) {
       this.calmHandle = this.timers.set(() => {
         this.calmHandle = null;
-        this.options.host.hurry?.(this.hurried = false);
+        this.options.host.hurry?.(this.hurried = false, this.networkAvailable ? "calm" : "unanswered");
       }, CALM_MS);
     }
   }

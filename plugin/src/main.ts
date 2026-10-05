@@ -924,10 +924,9 @@ export class ObsidianHost implements VaultHost {
    * absent or refuses, the window keeps the pace it always had, and one line
    * says so. Desktop only: a phone has no such window.
    */
-  hurry(busy: boolean): void {
+  hurry(busy: boolean, reason: "work" | "calm" | "stop" | "unanswered" = busy ? "work" : "calm"): void {
     if (!Platform.isDesktopApp) return;
     const started = Date.now();
-    const reason = busy ? "work" : "idle";
     try {
       const contents = (window as unknown as { electronWindow?: { webContents?: { setBackgroundThrottling?: unknown } } })
         .electronWindow?.webContents;
@@ -4188,6 +4187,7 @@ export default class ObsyncPlugin extends Plugin {
       },
     });
     this.engine = engine;
+    engine.reachability(!this.unanswered);
     try {
       // Before anything is sent, and a refusal like any other below: the
       // status says why until the person acts, and no timer retries it. The
@@ -5456,6 +5456,7 @@ export default class ObsyncPlugin extends Plugin {
    * was back. Said once per change, not per attempt.
    */
   private reachability(answered: boolean, request?: string): void {
+    this.engine?.reachability(answered);
     if (this.unanswered !== answered) return;
     this.unanswered = !answered;
     // The request it gave up on is named (#288): an `offline` of a second

@@ -269,11 +269,22 @@ test("a folder moved out of the selection, and renamed out there, is published a
 test("a large note out of the selection is not downloaded when another device changes it (#239)", async (t) => {
   const r = await rig(t);
   const big = (fill) => new Uint8Array((32 << 20) + 1).fill(fill);
-  r.b.host.write("Sel/big.bin", big(1), 2000);
+  // Only the newer, out-of-selection version is under test. Seed A with
+  // B's acknowledged initial bytes/record instead of decrypting 32 MiB just
+  // to arrange the move; keep the normal STEP_MS deadline for the behavior.
+  const initial = big(1);
+  await r.a.engine.stopAndWait();
+  r.b.host.write("Sel/big.bin", initial, 2000);
+  await r.timers.run(STEP_MS, () => settled(r.b, "Sel/big.bin"));
+  const record = r.b.state.fileByPath("Sel/big.bin");
+  r.a.host.seed("Sel/big.bin", initial.slice(), 2000);
+  r.a.state.setFile("Sel/big.bin", { ...record });
+  await r.a.plugin.startEngine();
   await r.timers.run(STEP_MS, () => settled(r.a, "Sel/big.bin") && r.a.state.data.lastSeq === r.server.seq);
-  const id = r.a.state.fileByPath("Sel/big.bin").fileId;
+  const id = record.fileId;
   r.a.host.rename("Sel/big.bin", "Out/big.bin");
   const lines = r.a.host.logs.length;
+  const requests = r.server.requests.length;
   const was = r.b.state.fileByPath("Sel/big.bin").versionId;
   r.b.host.write("Sel/big.bin", big(2), 3000);
   await r.timers.run(STEP_MS, () => r.b.state.fileByPath("Sel/big.bin")?.versionId !== was && r.a.state.data.lastSeq === r.server.seq);
@@ -283,6 +294,10 @@ test("a large note out of the selection is not downloaded when another device ch
   assert.ok(said.some((line) => line.startsWith(`pull path_class=file decision=skipped reason=left_selection file=${id} `)), said.join(" | "));
   assert.deepEqual(notes(r.a), ["Out/big.bin", "Sel/n.md"].filter((path) => path.endsWith(".md")), story(r));
   assert.equal(r.a.host.text("Sel/big.bin"), null);
+  assert.deepEqual(r.a.host.files.get("Out/big.bin").bytes, initial);
+  assert.deepEqual(r.server.requests.slice(requests).filter((request) =>
+    request.target.startsWith("/v1/chunks/") && (request.method === "GET" || request.target === "/v1/chunks/get")), [],
+  "the out-of-selection version fetched chunks");
 });
 
 /*
