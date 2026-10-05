@@ -1,0 +1,12 @@
+{
+  "note": "Mutation recipes accept SOURCE and EVIDENCE positional arguments in the archive. No measurement, patch, threshold or native driver changed after sampling. Original hashes remain in provenance.json. The exact patch is JSON-encoded to preserve diff context whitespace; decode its diff field before applying.",
+  "sha256": {
+    "candidate.diff.json": "6073f99cf65c04fec150f194c2f020773df3398fbfd4a919e0dbd952b7cac8ef",
+    "mutate-client.py": "1ce23c23bab97c340576b9273454267c778b29ba329cdb19f711c99899ae13fb",
+    "mutate-server.py": "2011e0b7106370b97eb424efebfbcebfb3b9a93e6af62bd5c9a433c9c496ccf6",
+    "summarize.py": "c2808004dd1a8e4a249a5d25d8ee452296829fc09145f80f52885405110e0760",
+    "README.md": "d7bcf30dcec0b4821e73955cc5106c34085247ca234e98f73e94fd5e3ec1f78b",
+    "native-batch.mjs": "a74c85f220497776f0c544fa420a0959e54515ea650e56813e16f2b6c3df2796",
+    "compare.py": "cebbe4af2dacf816462343983b64f6992faf491be134e1db596dda737aca381b"
+  }
+}

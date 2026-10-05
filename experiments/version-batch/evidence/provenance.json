@@ -1,0 +1,66 @@
+{
+  "baseCandidate": "4c746e4efbe1bec4cb03af347c1f554e122249a9",
+  "experimentPredecessor": "767faaf2689f681c5e17032b1eac29d713fbc0af",
+  "candidatePatchSha256": "570b31af20e7a583df9172ba3b85e7a7397ce160308ad91139aff912c11c1c94",
+  "candidateFiles": {
+    "crates/obsyncd/src/api/files.rs": "866c552cd4699842c85616a9e5538302741fde6ada93442dfbcc9abfdc6dd982",
+    "crates/obsyncd/src/api/mod.rs": "ffda05ed3c17dd081cb4a1f8ffa2ac7ac1b498f4ab6a6bc5d3a3dc8c37eb2f0d",
+    "crates/obsyncd/src/api/server_test.rs": "2dfa6dd6ab4b12b4a9e3f789b410b2ce8ca6d790433b0f9dba15c2da9aab5df3",
+    "crates/obsyncd/src/storage/mod.rs": "51d69885042f5c1336e7f2080708f6b806a213d67ffa9378d14e57501d2d931e",
+    "crates/obsyncd/src/storage/tests.rs": "caeda2390c9759ef8ac4ea93c615fe125ac96ab36ee4b2f283c6dc2774ebe24b",
+    "plugin/src/sync/push.ts": "6f668ae96badf9ddf84dc11ed67805c25071fea46b42bef080d3495482ebf3b3",
+    "plugin/src/transport.ts": "29cb3b04fb640608cea7997695f7ec9b44373ec17dda8f9bf7ac31f482f47221",
+    "plugin/test/transport.test.mjs": "b4dba797ebc68015c038ba3f0f968c12e2af0787b1c984f6131d243bd8baba4e",
+    "plugin/test/version-batch.test.mjs": "5469ae28afcc992c04ea13acb0b69fa76911ee13393838d40d02cb7d3c5f05ba"
+  },
+  "inputs": {
+    "baseline-server": {
+      "bytes": 1248352,
+      "sha256": "7c05a4bb731d85fb50c81db7bd2c8888df85fb89e2a63c8710126a545d7d8534"
+    },
+    "candidate-server": {
+      "bytes": 1264912,
+      "sha256": "51c4166a0810cd5b93280b247dbe34d3aaf76e7607c2d3f3c785192a39a007c8"
+    },
+    "baseline-plugin/styles.css": {
+      "bytes": 3666,
+      "sha256": "43dd0db8ccce20e88a3c63ec2ea35e46ce4133912c0e797da036e37a6499287b"
+    },
+    "baseline-plugin/main.js": {
+      "bytes": 1340121,
+      "sha256": "8f6b05d7dd8f589c4781f117d0ce37eabd9bd0f8cd4ffe2751200c53ee9028ed"
+    },
+    "baseline-plugin/manifest.json": {
+      "bytes": 387,
+      "sha256": "aae46364e30769a65b56cba53c65a89f104cd1cf5d5c5d6978bbedb3afb9eb42"
+    },
+    "candidate-plugin/styles.css": {
+      "bytes": 3666,
+      "sha256": "43dd0db8ccce20e88a3c63ec2ea35e46ce4133912c0e797da036e37a6499287b"
+    },
+    "candidate-plugin/main.js": {
+      "bytes": 1348442,
+      "sha256": "e22a10cc97358b3da5cafda6155ade3b279e45c1e24dc3a813f6fe645f876319"
+    },
+    "candidate-plugin/manifest.json": {
+      "bytes": 387,
+      "sha256": "aae46364e30769a65b56cba53c65a89f104cd1cf5d5c5d6978bbedb3afb9eb42"
+    }
+  },
+  "recipes": {
+    "mutate-client.py": "b1566924e458f56d472602a93a01fdc013657b63daf4e20240172cededee0393",
+    "candidate.patch": "570b31af20e7a583df9172ba3b85e7a7397ce160308ad91139aff912c11c1c94",
+    "mutate-server.py": "a5d1c4000bd60652f3460584025f8c1962383a3ed5ccbe8de95e24a2bf3a8009",
+    "summarize.py": "c2808004dd1a8e4a249a5d25d8ee452296829fc09145f80f52885405110e0760",
+    "README.md": "d7bcf30dcec0b4821e73955cc5106c34085247ca234e98f73e94fd5e3ec1f78b",
+    "native-batch.mjs": "a74c85f220497776f0c544fa420a0959e54515ea650e56813e16f2b6c3df2796",
+    "compare.py": "cebbe4af2dacf816462343983b64f6992faf491be134e1db596dda737aca381b"
+  },
+  "thresholdsFrozenBeforeMeasurement": true,
+  "limits": [
+    "native common-host loopback HTTP and mock keychains",
+    "No TLS, phone, real credential custody or deployed performance acceptance",
+    "External host load and observer overhead uncalibrated",
+    "No task builds, tests, VM or emulator during timing"
+  ]
+}

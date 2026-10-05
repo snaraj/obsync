@@ -1,0 +1,86 @@
+[
+  {
+    "sample": "1-baseline",
+    "peer": "A",
+    "pngSha256": "5dff75be6101a3afeb5320bbf3691fd0bb1d1c6adcac8aa8724b12b15d0cf0d4",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  },
+  {
+    "sample": "1-baseline",
+    "peer": "B",
+    "pngSha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  },
+  {
+    "sample": "2-candidate",
+    "peer": "A",
+    "pngSha256": "3d553ac703b01db870ce7bd34b5c4d2155d992349b95c843f6f80e5511e0aaf1",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  },
+  {
+    "sample": "2-candidate",
+    "peer": "B",
+    "pngSha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  },
+  {
+    "sample": "3-candidate",
+    "peer": "A",
+    "pngSha256": "3d553ac703b01db870ce7bd34b5c4d2155d992349b95c843f6f80e5511e0aaf1",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  },
+  {
+    "sample": "3-candidate",
+    "peer": "B",
+    "pngSha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  },
+  {
+    "sample": "4-baseline",
+    "peer": "A",
+    "pngSha256": "3d553ac703b01db870ce7bd34b5c4d2155d992349b95c843f6f80e5511e0aaf1",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  },
+  {
+    "sample": "4-baseline",
+    "peer": "B",
+    "pngSha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  },
+  {
+    "sample": "5-baseline",
+    "peer": "A",
+    "pngSha256": "3d553ac703b01db870ce7bd34b5c4d2155d992349b95c843f6f80e5511e0aaf1",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  },
+  {
+    "sample": "5-baseline",
+    "peer": "B",
+    "pngSha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  },
+  {
+    "sample": "6-candidate",
+    "peer": "A",
+    "pngSha256": "3d553ac703b01db870ce7bd34b5c4d2155d992349b95c843f6f80e5511e0aaf1",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  },
+  {
+    "sample": "6-candidate",
+    "peer": "B",
+    "pngSha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+    "inspected": true,
+    "observation": "Visible pipe-141 title and UPLOAD PIPE SENTINEL 141 content match between peers. No dialog obscures the editor. Activity glyph varies; no stable-idle claim."
+  }
+]

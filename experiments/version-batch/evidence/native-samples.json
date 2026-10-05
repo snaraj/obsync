@@ -1,0 +1,44 @@
+[
+  {
+    "sample": 1,
+    "arm": "baseline",
+    "result": "PASS",
+    "scenarioPass": true,
+    "cleanupCompleted": true
+  },
+  {
+    "sample": 2,
+    "arm": "candidate",
+    "result": "PASS",
+    "scenarioPass": true,
+    "cleanupCompleted": true
+  },
+  {
+    "sample": 3,
+    "arm": "candidate",
+    "result": "PASS",
+    "scenarioPass": true,
+    "cleanupCompleted": true
+  },
+  {
+    "sample": 4,
+    "arm": "baseline",
+    "result": "PASS",
+    "scenarioPass": true,
+    "cleanupCompleted": true
+  },
+  {
+    "sample": 5,
+    "arm": "baseline",
+    "result": "PASS",
+    "scenarioPass": true,
+    "cleanupCompleted": true
+  },
+  {
+    "sample": 6,
+    "arm": "candidate",
+    "result": "PASS",
+    "scenarioPass": true,
+    "cleanupCompleted": true
+  }
+]

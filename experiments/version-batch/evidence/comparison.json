@@ -1,0 +1,459 @@
+{
+  "accepted": false,
+  "decision": "REJECT",
+  "requestCountsAndBytesMatched": false,
+  "requestDifferences": [
+    {
+      "baseline": "1-baseline",
+      "candidate": "2-candidate",
+      "scenario": "two-notes",
+      "peer": "A",
+      "before": {
+        "chunkPut": {
+          "requests": 2,
+          "bytes": 16462
+        },
+        "versionPost": {
+          "requests": 2,
+          "bytes": 1684
+        }
+      },
+      "after": {
+        "chunkPut": {
+          "requests": 2,
+          "bytes": 16462
+        },
+        "versionBatch": {
+          "requests": 1,
+          "bytes": 1814
+        }
+      }
+    },
+    {
+      "baseline": "1-baseline",
+      "candidate": "2-candidate",
+      "scenario": "two-notes",
+      "peer": "B",
+      "before": {
+        "chunkRead": {
+          "requests": 2,
+          "bytes": 0
+        }
+      },
+      "after": {
+        "chunkRead": {
+          "requests": 1,
+          "bytes": 144
+        }
+      }
+    },
+    {
+      "baseline": "1-baseline",
+      "candidate": "2-candidate",
+      "scenario": "four-notes",
+      "peer": "A",
+      "before": {
+        "chunkPut": {
+          "requests": 4,
+          "bytes": 32928
+        },
+        "versionPost": {
+          "requests": 4,
+          "bytes": 3368
+        }
+      },
+      "after": {
+        "chunkPut": {
+          "requests": 4,
+          "bytes": 32928
+        },
+        "versionPost": {
+          "requests": 1,
+          "bytes": 842
+        },
+        "versionBatch": {
+          "requests": 1,
+          "bytes": 2714
+        }
+      }
+    },
+    {
+      "baseline": "1-baseline",
+      "candidate": "2-candidate",
+      "scenario": "small-notes",
+      "peer": "A",
+      "before": {
+        "chunkPut": {
+          "requests": 128,
+          "bytes": 1053738
+        },
+        "versionPost": {
+          "requests": 128,
+          "bytes": 107776
+        }
+      },
+      "after": {
+        "chunkPut": {
+          "requests": 128,
+          "bytes": 1053738
+        },
+        "versionBatch": {
+          "requests": 18,
+          "bytes": 37152
+        },
+        "versionPost": {
+          "requests": 87,
+          "bytes": 73254
+        }
+      }
+    },
+    {
+      "baseline": "1-baseline",
+      "candidate": "2-candidate",
+      "scenario": "small-notes",
+      "peer": "B",
+      "before": {
+        "chunkRead": {
+          "requests": 8,
+          "bytes": 8579
+        }
+      },
+      "after": {
+        "chunkRead": {
+          "requests": 7,
+          "bytes": 8646
+        }
+      }
+    },
+    {
+      "baseline": "4-baseline",
+      "candidate": "3-candidate",
+      "scenario": "four-notes",
+      "peer": "A",
+      "before": {
+        "chunkPut": {
+          "requests": 4,
+          "bytes": 32928
+        },
+        "versionPost": {
+          "requests": 4,
+          "bytes": 3368
+        }
+      },
+      "after": {
+        "chunkPut": {
+          "requests": 4,
+          "bytes": 32928
+        },
+        "versionBatch": {
+          "requests": 1,
+          "bytes": 3614
+        }
+      }
+    },
+    {
+      "baseline": "4-baseline",
+      "candidate": "3-candidate",
+      "scenario": "four-notes",
+      "peer": "B",
+      "before": {
+        "chunkRead": {
+          "requests": 2,
+          "bytes": 211
+        }
+      },
+      "after": {
+        "chunkRead": {
+          "requests": 1,
+          "bytes": 278
+        }
+      }
+    },
+    {
+      "baseline": "4-baseline",
+      "candidate": "3-candidate",
+      "scenario": "small-notes",
+      "peer": "A",
+      "before": {
+        "chunkPut": {
+          "requests": 128,
+          "bytes": 1053738
+        },
+        "versionPost": {
+          "requests": 128,
+          "bytes": 107776
+        }
+      },
+      "after": {
+        "chunkPut": {
+          "requests": 128,
+          "bytes": 1053738
+        },
+        "versionBatch": {
+          "requests": 17,
+          "bytes": 34438
+        },
+        "versionPost": {
+          "requests": 90,
+          "bytes": 75780
+        }
+      }
+    },
+    {
+      "baseline": "4-baseline",
+      "candidate": "3-candidate",
+      "scenario": "small-notes",
+      "peer": "B",
+      "before": {
+        "chunkRead": {
+          "requests": 7,
+          "bytes": 8569
+        }
+      },
+      "after": {
+        "chunkRead": {
+          "requests": 7,
+          "bytes": 8646
+        }
+      }
+    },
+    {
+      "baseline": "5-baseline",
+      "candidate": "6-candidate",
+      "scenario": "two-notes",
+      "peer": "A",
+      "before": {
+        "chunkPut": {
+          "requests": 2,
+          "bytes": 16462
+        },
+        "versionPost": {
+          "requests": 2,
+          "bytes": 1684
+        }
+      },
+      "after": {
+        "chunkPut": {
+          "requests": 2,
+          "bytes": 16462
+        },
+        "versionBatch": {
+          "requests": 1,
+          "bytes": 1814
+        }
+      }
+    },
+    {
+      "baseline": "5-baseline",
+      "candidate": "6-candidate",
+      "scenario": "two-notes",
+      "peer": "B",
+      "before": {
+        "chunkRead": {
+          "requests": 2,
+          "bytes": 0
+        }
+      },
+      "after": {
+        "chunkRead": {
+          "requests": 1,
+          "bytes": 144
+        }
+      }
+    },
+    {
+      "baseline": "5-baseline",
+      "candidate": "6-candidate",
+      "scenario": "four-notes",
+      "peer": "A",
+      "before": {
+        "chunkPut": {
+          "requests": 4,
+          "bytes": 32928
+        },
+        "versionPost": {
+          "requests": 4,
+          "bytes": 3368
+        }
+      },
+      "after": {
+        "chunkPut": {
+          "requests": 4,
+          "bytes": 32928
+        },
+        "versionBatch": {
+          "requests": 1,
+          "bytes": 3614
+        }
+      }
+    },
+    {
+      "baseline": "5-baseline",
+      "candidate": "6-candidate",
+      "scenario": "four-notes",
+      "peer": "B",
+      "before": {
+        "chunkRead": {
+          "requests": 2,
+          "bytes": 211
+        }
+      },
+      "after": {
+        "chunkRead": {
+          "requests": 1,
+          "bytes": 278
+        }
+      }
+    },
+    {
+      "baseline": "5-baseline",
+      "candidate": "6-candidate",
+      "scenario": "small-notes",
+      "peer": "A",
+      "before": {
+        "chunkPut": {
+          "requests": 128,
+          "bytes": 1053738
+        },
+        "versionPost": {
+          "requests": 128,
+          "bytes": 107776
+        }
+      },
+      "after": {
+        "chunkPut": {
+          "requests": 128,
+          "bytes": 1053738
+        },
+        "versionBatch": {
+          "requests": 15,
+          "bytes": 29910
+        },
+        "versionPost": {
+          "requests": 95,
+          "bytes": 79990
+        }
+      }
+    },
+    {
+      "baseline": "5-baseline",
+      "candidate": "6-candidate",
+      "scenario": "small-notes",
+      "peer": "B",
+      "before": {
+        "chunkRead": {
+          "requests": 7,
+          "bytes": 8569
+        }
+      },
+      "after": {
+        "chunkRead": {
+          "requests": 7,
+          "bytes": 8646
+        }
+      }
+    }
+  ],
+  "medianRatios": {
+    "small-notes": {
+      "senderAckMs": 0.9877551020408163,
+      "peerCommitMs": 0.9827151602448686
+    },
+    "large-file": {
+      "senderAckMs": 0.993322203672788,
+      "peerCommitMs": 0.9873725109276348
+    }
+  },
+  "pairs": [
+    {
+      "baseline": "1-baseline",
+      "candidate": "2-candidate",
+      "ratios": {
+        "small-notes": {
+          "senderAckMs": 0.984728161270617,
+          "peerCommitMs": 0.9773950484391819
+        },
+        "large-file": {
+          "senderAckMs": 0.9737991266375546,
+          "peerCommitMs": 0.9776190476190476
+        }
+      },
+      "singles": {
+        "senderAckMs": {
+          "baselineP50": 964.5,
+          "candidateP50": 974.0,
+          "baselineP95": 982,
+          "candidateP95": 990,
+          "pass": true
+        },
+        "peerCommitMs": {
+          "baselineP50": 993.5,
+          "candidateP50": 1003.0,
+          "baselineP95": 1017,
+          "candidateP95": 1012,
+          "pass": true
+        }
+      }
+    },
+    {
+      "baseline": "4-baseline",
+      "candidate": "3-candidate",
+      "ratios": {
+        "small-notes": {
+          "senderAckMs": 0.9877551020408163,
+          "peerCommitMs": 0.9827151602448686
+        },
+        "large-file": {
+          "senderAckMs": 0.993322203672788,
+          "peerCommitMs": 0.9873725109276348
+        }
+      },
+      "singles": {
+        "senderAckMs": {
+          "baselineP50": 962.0,
+          "candidateP50": 974.0,
+          "baselineP95": 977,
+          "candidateP95": 986,
+          "pass": true
+        },
+        "peerCommitMs": {
+          "baselineP50": 989.5,
+          "candidateP50": 1003.5,
+          "baselineP95": 1001,
+          "candidateP95": 1019,
+          "pass": true
+        }
+      }
+    },
+    {
+      "baseline": "5-baseline",
+      "candidate": "6-candidate",
+      "ratios": {
+        "small-notes": {
+          "senderAckMs": 1.032258064516129,
+          "peerCommitMs": 1.0163517441860466
+        },
+        "large-file": {
+          "senderAckMs": 1.0011185682326622,
+          "peerCommitMs": 1.0043795620437956
+        }
+      },
+      "singles": {
+        "senderAckMs": {
+          "baselineP50": 961.0,
+          "candidateP50": 970.0,
+          "baselineP95": 983,
+          "candidateP95": 984,
+          "pass": true
+        },
+        "peerCommitMs": {
+          "baselineP50": 988.0,
+          "candidateP50": 998.5,
+          "baselineP95": 1011,
+          "candidateP95": 1012,
+          "pass": true
+        }
+      }
+    }
+  ]
+}

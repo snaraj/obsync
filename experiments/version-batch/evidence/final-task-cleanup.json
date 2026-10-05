@@ -1,0 +1,37 @@
+{
+  "result": "PASS",
+  "checkedAtEpoch": 1791225403,
+  "sourceRestored": true,
+  "patchArchivedAndVerified": true,
+  "allSixRunsFinalized": true,
+  "openHandleCheck": "lsof +D scoped to each listed directory returned 1 with empty stdout/stderr immediately before removal",
+  "removed": [
+    {
+      "scope": "copied experiment inputs",
+      "bytesRemoved": 5209933,
+      "absent": true
+    },
+    {
+      "scope": "target",
+      "bytesRemoved": 1250709980,
+      "absent": true
+    },
+    {
+      "scope": "plugin/node_modules",
+      "bytesRemoved": 23625731,
+      "absent": true
+    },
+    {
+      "scope": "plugin/build",
+      "bytesRemoved": 1345776,
+      "absent": true
+    },
+    {
+      "scope": "plugin/dist",
+      "bytesRemoved": 1352495,
+      "absent": true
+    }
+  ],
+  "bytesRemoved": 1282243915,
+  "retained": "Recipes, exact rejected patch, reduced receipts and twelve synthetic screenshots; no runtime accounts or private fixtures."
+}

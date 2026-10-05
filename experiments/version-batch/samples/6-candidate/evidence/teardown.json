@@ -1,0 +1,11 @@
+{
+  "process_groups_remaining": 0,
+  "runtime_exists": false,
+  "holder_remaining": 0,
+  "controller_finished_cleanup_after_absence_proof": false,
+  "retained": [
+    "private",
+    "evidence",
+    "lab.json"
+  ]
+}

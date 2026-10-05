@@ -1,0 +1,54 @@
+{
+  "results": [
+    {
+      "mutation": "duplicate-files",
+      "runs": [
+        101,
+        101
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "empty-batch",
+      "runs": [
+        101,
+        101
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "item-count",
+      "runs": [
+        101,
+        101
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "response-identities",
+      "runs": [
+        101,
+        101
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "version-integrity",
+      "runs": [
+        101,
+        101
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "batch-enqueue",
+      "runs": [
+        101,
+        101
+      ],
+      "decision": "killed"
+    }
+  ],
+  "sourceRestored": true,
+  "restoredTests": "PASS"
+}

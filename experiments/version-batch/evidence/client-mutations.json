@@ -1,0 +1,133 @@
+{
+  "results": [
+    {
+      "mutation": "no-scope-fence",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "wrong-inner-id",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "wrong-posted-id",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "wrong-file-id",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "partial-ack",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "all-errors-fallback",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "no-group-cap",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "large-body-grouped",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "same-file-grouped",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "no-immutable-snapshot",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "timer-strands-members",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "queued-abort-ignored",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "signal-fence-removed",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "forget-keeps-generation",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "same-shape-conflict",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    },
+    {
+      "mutation": "empty-heads",
+      "runs": [
+        1,
+        1
+      ],
+      "decision": "killed"
+    }
+  ],
+  "scratchRemoved": true
+}
