@@ -1,0 +1,11 @@
+{
+  "source_head": "4c746e4efbe1bec4cb03af347c1f554e122249a9",
+  "source_dirty": true,
+  "artifacts": {
+    "obsyncd": "6c2af514644f1ad2a791995f24da6b525b0b90b296e0b66a031425300949c421",
+    "plugin/main.js": "8f6b05d7dd8f589c4781f117d0ce37eabd9bd0f8cd4ffe2751200c53ee9028ed",
+    "plugin/manifest.json": "aae46364e30769a65b56cba53c65a89f104cd1cf5d5c5d6978bbedb3afb9eb42",
+    "plugin/styles.css": "43dd0db8ccce20e88a3c63ec2ea35e46ce4133912c0e797da036e37a6499287b"
+  },
+  "transport": "loopback HTTP functional rehearsal; TLS performance NOT_RUN"
+}

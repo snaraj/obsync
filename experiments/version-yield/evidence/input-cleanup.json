@@ -1,0 +1,8 @@
+{
+  "result": "PASS",
+  "samplesFinalized": 6,
+  "inputBytesRemoved": 2496768,
+  "inputsAbsent": true,
+  "serverSourceRestored": true,
+  "buildCache": "retained only until this experimental record is committed"
+}

@@ -1,0 +1,21 @@
+{
+  "base": "4c746e4efbe1bec4cb03af347c1f554e122249a9",
+  "patchSha256": "23d6dc0918893231bca25a2ab2d8bdb5244c32edef706b6387989bfc48a988cb",
+  "inputs": {
+    "candidate": {
+      "sha256": "b1665990a38cf4cc2ee91ac5cf29492931d765bc6634a6f3722673ad0c6a8e2f",
+      "bytes": 1248416
+    },
+    "baseline": {
+      "sha256": "6c2af514644f1ad2a791995f24da6b525b0b90b296e0b66a031425300949c421",
+      "bytes": 1248352
+    }
+  },
+  "pluginSha256": "8f6b05d7dd8f589c4781f117d0ce37eabd9bd0f8cd4ffe2751200c53ee9028ed",
+  "recipes": {
+    "candidate.diff.json": "927615d9c5dd49663aa42a6436ce5613454c6ca8368c15f667409ff6d9ba2238",
+    "README.md": "4a2348bc909520e708837f4b79e00133ccca195db175dc4a0066fdc9f1ec185d",
+    "native-yield.mjs": "64b27f3069ce1375d3a32635c2e111a6b08091ffae28ea89a4a712158abd4494",
+    "compare.py": "6157cd1c31fc705685e0a50823eef9a54898574fd08efd10c7fabead6e5e7456"
+  }
+}

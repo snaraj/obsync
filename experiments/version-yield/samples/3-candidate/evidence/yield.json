@@ -1,0 +1,465 @@
+{
+  "result": "SCENARIO_PASS",
+  "samples": [
+    {
+      "scenario": "single-0",
+      "versionBatches": {
+        "1": 1
+      },
+      "senderAckMs": 978,
+      "peerCommitMs": 1009,
+      "observedSettledMs": 1031,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 1,
+            "bytes": 8231,
+            "ms": 36,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 1,
+            "bytes": 842,
+            "ms": 16,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 1,
+            "bytes": 0,
+            "ms": 9,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 1,
+      "exactBytesEach": 8215,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "single-1",
+      "versionBatches": {
+        "1": 1
+      },
+      "senderAckMs": 958,
+      "peerCommitMs": 987,
+      "observedSettledMs": 1011,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 1,
+            "bytes": 8231,
+            "ms": 34,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 1,
+            "bytes": 842,
+            "ms": 13,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 1,
+            "bytes": 0,
+            "ms": 11,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 2,
+      "exactBytesEach": 16430,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "single-2",
+      "versionBatches": {
+        "1": 1
+      },
+      "senderAckMs": 964,
+      "peerCommitMs": 995,
+      "observedSettledMs": 1013,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 1,
+            "bytes": 8231,
+            "ms": 34,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 1,
+            "bytes": 842,
+            "ms": 15,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 1,
+            "bytes": 0,
+            "ms": 12,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 3,
+      "exactBytesEach": 24645,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "single-3",
+      "versionBatches": {
+        "1": 1
+      },
+      "senderAckMs": 968,
+      "peerCommitMs": 997,
+      "observedSettledMs": 1007,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 1,
+            "bytes": 8231,
+            "ms": 36,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 1,
+            "bytes": 842,
+            "ms": 16,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 1,
+            "bytes": 0,
+            "ms": 13,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 4,
+      "exactBytesEach": 32860,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "single-4",
+      "versionBatches": {
+        "1": 1
+      },
+      "senderAckMs": 977,
+      "peerCommitMs": 1005,
+      "observedSettledMs": 1020,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 1,
+            "bytes": 8231,
+            "ms": 46,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 1,
+            "bytes": 842,
+            "ms": 16,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 1,
+            "bytes": 0,
+            "ms": 12,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 5,
+      "exactBytesEach": 41075,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "single-5",
+      "versionBatches": {
+        "1": 1
+      },
+      "senderAckMs": 963,
+      "peerCommitMs": 991,
+      "observedSettledMs": 1003,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 1,
+            "bytes": 8231,
+            "ms": 32,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 1,
+            "bytes": 842,
+            "ms": 15,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 1,
+            "bytes": 0,
+            "ms": 13,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 6,
+      "exactBytesEach": 49290,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "single-6",
+      "versionBatches": {
+        "1": 1
+      },
+      "senderAckMs": 974,
+      "peerCommitMs": 1002,
+      "observedSettledMs": 1028,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 1,
+            "bytes": 8231,
+            "ms": 39,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 1,
+            "bytes": 842,
+            "ms": 15,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 1,
+            "bytes": 0,
+            "ms": 12,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 7,
+      "exactBytesEach": 57505,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "single-7",
+      "versionBatches": {
+        "1": 1
+      },
+      "senderAckMs": 954,
+      "peerCommitMs": 977,
+      "observedSettledMs": 994,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 1,
+            "bytes": 8231,
+            "ms": 28,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 1,
+            "bytes": 842,
+            "ms": 13,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 1,
+            "bytes": 0,
+            "ms": 10,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 8,
+      "exactBytesEach": 65720,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "two-notes",
+      "versionBatches": {
+        "1": 2
+      },
+      "senderAckMs": 980,
+      "peerCommitMs": 1031,
+      "observedSettledMs": 1041,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 2,
+            "bytes": 16462,
+            "ms": 99,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 2,
+            "bytes": 1684,
+            "ms": 38,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 2,
+            "bytes": 0,
+            "ms": 16,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 10,
+      "exactBytesEach": 82150,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "four-notes",
+      "versionBatches": {
+        "1": 2,
+        "2": 2
+      },
+      "senderAckMs": 1009,
+      "peerCommitMs": 1100,
+      "observedSettledMs": 1114,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 4,
+            "bytes": 32928,
+            "ms": 276,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 4,
+            "bytes": 3368,
+            "ms": 92,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 2,
+            "bytes": 211,
+            "ms": 26,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 14,
+      "exactBytesEach": 115014,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "small-notes",
+      "versionBatches": {
+        "1": 98,
+        "2": 18,
+        "3": 12
+      },
+      "senderAckMs": 4684,
+      "peerCommitMs": 5359,
+      "observedSettledMs": 5366,
+      "requests": {
+        "A": {
+          "chunkPut": {
+            "requests": 128,
+            "bytes": 1053738,
+            "ms": 10377,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 128,
+            "bytes": 107776,
+            "ms": 4299,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 7,
+            "bytes": 8569,
+            "ms": 133,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 142,
+      "exactBytesEach": 1166704,
+      "persistedIdentitiesAgree": true
+    },
+    {
+      "scenario": "large-file",
+      "versionBatches": {
+        "1": 1
+      },
+      "senderAckMs": 1801,
+      "peerCommitMs": 2077,
+      "observedSettledMs": 2091,
+      "requests": {
+        "A": {
+          "exists": {
+            "requests": 5,
+            "bytes": 1055,
+            "ms": 46,
+            "errors": 0
+          },
+          "chunkPut": {
+            "requests": 15,
+            "bytes": 67109105,
+            "ms": 1877,
+            "errors": 0
+          },
+          "versionPost": {
+            "requests": 1,
+            "bytes": 4736,
+            "ms": 12,
+            "errors": 0
+          }
+        },
+        "B": {
+          "chunkRead": {
+            "requests": 5,
+            "bytes": 1055,
+            "ms": 135,
+            "errors": 0
+          }
+        }
+      },
+      "exactFilesEach": 143,
+      "exactBytesEach": 68275569,
+      "largeSha256": "320db72752a41a3f64c1638a729e1024518a6373c0f3609e5f3b50c9b1fa8053",
+      "persistedIdentitiesAgree": true
+    }
+  ],
+  "artifacts": {
+    "obsyncd": "b1665990a38cf4cc2ee91ac5cf29492931d765bc6634a6f3722673ad0c6a8e2f",
+    "plugin/main.js": "8f6b05d7dd8f589c4781f117d0ce37eabd9bd0f8cd4ffe2751200c53ee9028ed",
+    "plugin/manifest.json": "aae46364e30769a65b56cba53c65a89f104cd1cf5d5c5d6978bbedb3afb9eb42",
+    "plugin/styles.css": "43dd0db8ccce20e88a3c63ec2ea35e46ce4133912c0e797da036e37a6499287b"
+  },
+  "limits": [
+    "Common-host native macOS windows over loopback HTTP and mock keychains; TLS/phone NOT_RUN.",
+    "Request wrappers count only categories, byte lengths and timestamps; all authentication, encryption and durable writes remain unchanged.",
+    "No synthetic network delay. Three alternating fresh-account pairs; no best-run filtering."
+  ],
+  "serverStorageSentinelScan": {
+    "passed": true,
+    "scannedFiles": 162,
+    "scannedBytes": 68529913,
+    "limit": "Known synthetic note/path sentinels only; not a general confidentiality proof."
+  },
+  "hooksRemoved": true
+}

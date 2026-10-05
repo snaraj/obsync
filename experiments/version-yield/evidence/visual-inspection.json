@@ -1,0 +1,65 @@
+{
+  "images": [
+    {
+      "file": "1-baseline/evidence/overlap-peer-A.png",
+      "sha256": "3d553ac703b01db870ce7bd34b5c4d2155d992349b95c843f6f80e5511e0aaf1",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    },
+    {
+      "file": "1-baseline/evidence/overlap-peer-B.png",
+      "sha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    },
+    {
+      "file": "2-candidate/evidence/overlap-peer-A.png",
+      "sha256": "5dff75be6101a3afeb5320bbf3691fd0bb1d1c6adcac8aa8724b12b15d0cf0d4",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    },
+    {
+      "file": "2-candidate/evidence/overlap-peer-B.png",
+      "sha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    },
+    {
+      "file": "3-candidate/evidence/overlap-peer-A.png",
+      "sha256": "3d553ac703b01db870ce7bd34b5c4d2155d992349b95c843f6f80e5511e0aaf1",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    },
+    {
+      "file": "3-candidate/evidence/overlap-peer-B.png",
+      "sha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    },
+    {
+      "file": "4-baseline/evidence/overlap-peer-A.png",
+      "sha256": "3d553ac703b01db870ce7bd34b5c4d2155d992349b95c843f6f80e5511e0aaf1",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    },
+    {
+      "file": "4-baseline/evidence/overlap-peer-B.png",
+      "sha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    },
+    {
+      "file": "5-baseline/evidence/overlap-peer-A.png",
+      "sha256": "3d553ac703b01db870ce7bd34b5c4d2155d992349b95c843f6f80e5511e0aaf1",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    },
+    {
+      "file": "5-baseline/evidence/overlap-peer-B.png",
+      "sha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    },
+    {
+      "file": "6-candidate/evidence/overlap-peer-A.png",
+      "sha256": "3d553ac703b01db870ce7bd34b5c4d2155d992349b95c843f6f80e5511e0aaf1",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    },
+    {
+      "file": "6-candidate/evidence/overlap-peer-B.png",
+      "sha256": "1664735dc2af719e7f4240a5f4f8ad03e8db379ec4839bac97ac15f56b7657a6",
+      "observations": "Native Lab A/B show pipe-141 and UPLOAD PIPE SENTINEL 141 with the expected repeated body; no modal or refusal is visible. Far-right activity glyph differs on some A captures. This is content evidence, not a stable-idle UI assertion."
+    }
+  ],
+  "method": "All twelve PNGs displayed and visually inspected by the primary agent"
+}

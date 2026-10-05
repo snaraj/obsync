@@ -1,0 +1,127 @@
+{
+  "accepted": false,
+  "decision": "REJECT",
+  "requestCountsAndBytesMatched": false,
+  "requestDifferences": [
+    {
+      "baseline": "1-baseline",
+      "candidate": "2-candidate",
+      "scenario": "small-notes",
+      "peer": "B",
+      "before": {
+        "chunkRead": {
+          "requests": 7,
+          "bytes": 8569
+        }
+      },
+      "after": {
+        "chunkRead": {
+          "requests": 8,
+          "bytes": 8579
+        }
+      }
+    }
+  ],
+  "medianRatios": {
+    "small-notes": {
+      "senderAckMs": 0.9890202702702703,
+      "peerCommitMs": 0.9912248628884827
+    },
+    "large-file": {
+      "senderAckMs": 0.9988907376594565,
+      "peerCommitMs": 0.9985576923076923
+    }
+  },
+  "pairs": [
+    {
+      "baseline": "1-baseline",
+      "candidate": "2-candidate",
+      "ratios": {
+        "small-notes": {
+          "senderAckMs": 0.9368811881188119,
+          "peerCommitMs": 0.9495554345853747
+        },
+        "large-file": {
+          "senderAckMs": 0.9847577572128471,
+          "peerCommitMs": 0.9876893939393939
+        }
+      },
+      "singles": {
+        "senderAckMs": {
+          "baselineP50": 949.5,
+          "candidateP50": 969.0,
+          "baselineP95": 978,
+          "candidateP95": 978,
+          "pass": true
+        },
+        "peerCommitMs": {
+          "baselineP50": 972.0,
+          "candidateP50": 996.5,
+          "baselineP95": 1009,
+          "candidateP95": 1015,
+          "pass": true
+        }
+      }
+    },
+    {
+      "baseline": "4-baseline",
+      "candidate": "3-candidate",
+      "ratios": {
+        "small-notes": {
+          "senderAckMs": 0.9890202702702703,
+          "peerCommitMs": 0.9925912205964067
+        },
+        "large-file": {
+          "senderAckMs": 0.9988907376594565,
+          "peerCommitMs": 0.9985576923076923
+        }
+      },
+      "singles": {
+        "senderAckMs": {
+          "baselineP50": 964.5,
+          "candidateP50": 966.0,
+          "baselineP95": 974,
+          "candidateP95": 978,
+          "pass": true
+        },
+        "peerCommitMs": {
+          "baselineP50": 991.5,
+          "candidateP50": 996.0,
+          "baselineP95": 1004,
+          "candidateP95": 1009,
+          "pass": true
+        }
+      }
+    },
+    {
+      "baseline": "5-baseline",
+      "candidate": "6-candidate",
+      "ratios": {
+        "small-notes": {
+          "senderAckMs": 0.9987421383647799,
+          "peerCommitMs": 0.9912248628884827
+        },
+        "large-file": {
+          "senderAckMs": 1.003338898163606,
+          "peerCommitMs": 1.0077444336882866
+        }
+      },
+      "singles": {
+        "senderAckMs": {
+          "baselineP50": 967.0,
+          "candidateP50": 959.0,
+          "baselineP95": 980,
+          "candidateP95": 975,
+          "pass": true
+        },
+        "peerCommitMs": {
+          "baselineP50": 995.5,
+          "candidateP50": 986.0,
+          "baselineP95": 1009,
+          "candidateP95": 1005,
+          "pass": true
+        }
+      }
+    }
+  ]
+}
