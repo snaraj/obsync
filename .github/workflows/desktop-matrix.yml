@@ -40,6 +40,8 @@ on:
       - '.github/workflows/desktop-matrix.yml'
       - 'plugin/**'
       - 'scripts/ci/obsidian-drive.mjs'
+      - 'scripts/ci/obsidian-evidence.mjs'
+      - 'scripts/ci/obsidian-evidence.test.mjs'
       - 'scripts/ci/obsidian-e2e.sh'
       - 'scripts/ci/obsidian-host.sh'
       - 'scripts/ci/proxy-e2e.sh'
@@ -192,6 +194,8 @@ jobs:
       contents: read
     env:
       OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-windows
+      OBSYNC_E2E_SECRET_STORE: windows
+      OBSYNC_E2E_CAPTURES: ${{ runner.temp }}/obsync-editor-captures
     defaults:
       run:
         shell: bash
@@ -218,6 +222,13 @@ jobs:
           path: ${{ runner.temp }}/binary
       - name: Two Obsidian instances, the server under WSL 1
         run: scripts/ci/obsidian-host.sh "${RUNNER_TEMP}/binary/obsyncd"
+      - name: Retain verified synthetic editor captures
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-editor-captures
+          path: ${{ runner.temp }}/obsync-editor-captures
+          if-no-files-found: error
+          retention-days: 3
       - name: Remove anything the run left behind
         if: always()
         run: |
