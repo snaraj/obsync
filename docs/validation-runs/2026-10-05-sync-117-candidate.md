@@ -120,7 +120,8 @@ These are reliability checks, not a quiet performance comparison.
 | macOS ARM64 CLI | 207 native commands pass | Temporary config/runtime journey; no server contact |
 | Linux ARM64 CLI | 223 native commands pass as ordinary uid; temporary roots absent | Actual disposable VM; XDG/default paths and independent frame readback |
 | Linux ARM64 plugin | Native pairing, concurrent typing, encrypted GNOME custody across graceful restart, post-restart bytes | Same-VM loopback; forced whole-session restart did not pass |
-| Windows AMD64 CLI | Native ordinary-user version/help/status guidance and capability display inspected | Full candidate hosted installer/storage journey NOT_RUN; missing trusted PowerShell setup correctly refused |
+| Windows AMD64 CLI | Native ordinary-user version/help/status guidance inspected; later hosted installer/context/replay/uninstall and peer-access refusals passed | See the [Windows follow-up](2026-10-05-windows-117.md) for tested source and limits |
+| Windows AMD64 plugin | Fourteen native journeys and six inspected editor captures, including encrypted credential restart | Same hosted Windows machine; concurrent convergence still takes 10.7 seconds after typing ends |
 | Android 15 ARM64 | Fresh official Obsidian 1.13.4 and candidate 1.1.7 loaded; settings and HTTPS refusal visually inspected | Unpaired UI only; HTTP not saved; no mobile sync/key-custody claim |
 | Physical iPhone | NOT_RUN | Mirror requires local authentication; no personal vault modified |
 
@@ -167,5 +168,22 @@ Reduced receipts and screenshots are retained in the external dated campaign.
 Current Android runtime, vault, private logs and ADB listener are removed; its
 emulator exit race was preserved and cleanup independently confirmed. Historical
 workers' fixture cleanup is outside this record and is not claimed here.
-Remaining #325 performance choices, physical-phone acceptance, current hosted
-platform checks and owner merge still gate release.
+The later [Windows record](2026-10-05-windows-117.md) supplies native and visual
+platform evidence. Remaining #325 performance/design acceptance, physical-phone
+acceptance, independent artifact review and owner merge still gate release.
+
+## Further bounded performance results
+
+Two more levers failed their improvement thresholds and were rejected. The
+[scheduling-yield archive](https://github.com/snaraj/obsync/blob/767faaf2689f681c5e17032b1eac29d713fbc0af/experiments/version-yield/REPORT.md)
+reports a median 128-note sender ratio of 0.989020. The
+[version-metadata batch archive](https://github.com/snaraj/obsync/blob/198033e4a63d6263e7d474e647dbec8278f746e9/experiments/version-batch/REPORT.md)
+reports 0.987755 and one pair regressing to 1.032258. Both required at least
+5% median improvement and improvement in every pair before promotion.
+
+Each experiment used six native Mac samples with independent byte/identity
+readback and twelve inspected screenshots. All runtime/private fixtures and
+owned experiment inputs/build caches are removed. Exact patches, recipes,
+failures and reduced receipts remain on never-merge branches. Neither lever
+changes this candidate; no performance gain is claimed from them. Phone and
+deployed-route behavior cannot be inferred from these loopback comparisons.

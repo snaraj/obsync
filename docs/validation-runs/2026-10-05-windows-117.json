@@ -1,0 +1,98 @@
+{
+  "candidate": "519c0e50616cff58fffb772f172c5aad6620bba3",
+  "run": 37351477069,
+  "job": 111903711941,
+  "visual_inspection": "All six original PNGs opened and read. Both peers show matching co-typing content and both after-restart notes. Source-mode markup differs with focus; no dialogs or notices obscure content. Editor bytes equal independently read disk per capture receipts; screenshot is content evidence, not standalone proof of secret custody.",
+  "receipts": [
+    {
+      "phase": "cotype",
+      "peer": "a",
+      "platform": "win32",
+      "source": "fd68c6248a0a4d5b80edd1e4799f5d1100ded139",
+      "editorSha256": "6ef502565b6f2a6733ec212de5ca9d0aff564e2a560d9f34d5e226807f9cd87d",
+      "diskSha256": "6ef502565b6f2a6733ec212de5ca9d0aff564e2a560d9f34d5e226807f9cd87d",
+      "pngSha256": "413231100a1835c1d8c5fed6899b654bef34f51922d870096a099a98bda61023",
+      "width": 680,
+      "height": 641.171875
+    },
+    {
+      "phase": "cotype",
+      "peer": "b",
+      "platform": "win32",
+      "source": "fd68c6248a0a4d5b80edd1e4799f5d1100ded139",
+      "editorSha256": "6ef502565b6f2a6733ec212de5ca9d0aff564e2a560d9f34d5e226807f9cd87d",
+      "diskSha256": "6ef502565b6f2a6733ec212de5ca9d0aff564e2a560d9f34d5e226807f9cd87d",
+      "pngSha256": "cd1534988740ee9b02d2884be20f9819888d88133a17ad7331af080dbf9af998",
+      "width": 680,
+      "height": 641.171875
+    },
+    {
+      "phase": "restart-a",
+      "peer": "a",
+      "platform": "win32",
+      "source": "fd68c6248a0a4d5b80edd1e4799f5d1100ded139",
+      "editorSha256": "8033931b15edd2c1b1eeda4f62b0b3cff554d89c4e213c139e59993279719028",
+      "diskSha256": "8033931b15edd2c1b1eeda4f62b0b3cff554d89c4e213c139e59993279719028",
+      "pngSha256": "a0739cdbb4ecebc0ee8cce2b0da376adc7d9f0d9bbb0d7df12e8e76494200cc6",
+      "width": 680,
+      "height": 641.171875
+    },
+    {
+      "phase": "restart-a",
+      "peer": "b",
+      "platform": "win32",
+      "source": "fd68c6248a0a4d5b80edd1e4799f5d1100ded139",
+      "editorSha256": "8033931b15edd2c1b1eeda4f62b0b3cff554d89c4e213c139e59993279719028",
+      "diskSha256": "8033931b15edd2c1b1eeda4f62b0b3cff554d89c4e213c139e59993279719028",
+      "pngSha256": "a0739cdbb4ecebc0ee8cce2b0da376adc7d9f0d9bbb0d7df12e8e76494200cc6",
+      "width": 680,
+      "height": 641.171875
+    },
+    {
+      "phase": "restart-b",
+      "peer": "a",
+      "platform": "win32",
+      "source": "fd68c6248a0a4d5b80edd1e4799f5d1100ded139",
+      "editorSha256": "1fbc25272ba467baea93d4e42a9b3101b6d2d424d1218e1d1d7501644a2a9ea3",
+      "diskSha256": "1fbc25272ba467baea93d4e42a9b3101b6d2d424d1218e1d1d7501644a2a9ea3",
+      "pngSha256": "4522547cccb8b93852a02e98ebc4be15d78c3974d231cf875c643b96780412fe",
+      "width": 680,
+      "height": 641.171875
+    },
+    {
+      "phase": "restart-b",
+      "peer": "b",
+      "platform": "win32",
+      "source": "fd68c6248a0a4d5b80edd1e4799f5d1100ded139",
+      "editorSha256": "1fbc25272ba467baea93d4e42a9b3101b6d2d424d1218e1d1d7501644a2a9ea3",
+      "diskSha256": "1fbc25272ba467baea93d4e42a9b3101b6d2d424d1218e1d1d7501644a2a9ea3",
+      "pngSha256": "4522547cccb8b93852a02e98ebc4be15d78c3974d231cf875c643b96780412fe",
+      "width": 680,
+      "height": 641.171875
+    }
+  ],
+  "checkoutMerge": "fd68c6248a0a4d5b80edd1e4799f5d1100ded139",
+  "verifiedMergeParents": [
+    "72bdcf94ed40fc8769c8baad5a6b2db56ae92cfe",
+    "519c0e50616cff58fffb772f172c5aad6620bba3"
+  ],
+  "pluginSha256": "8f6b05d7dd8f589c4781f117d0ce37eabd9bd0f8cd4ffe2751200c53ee9028ed",
+  "journeys": [
+    "(1) two instances: Obsidian 1.13.7 on Electron 43.3.0, own user-data directories, the vault trusted and the plugin loaded in each [4.5s]",
+    "(2) first device: Server URL, setup token and the recovery-phrase check, through the plugin's own settings and dialog [0.6s]",
+    "(3) second device: the code shown on the first, typed into the second, approved on the first [2.7s]",
+    "(4) a note made on the first device is on the second's disk, byte for byte, 1008 ms after it was written [1.0s]",
+    "(5) a note made on the second device is on the first's disk, 1010 ms after it was written [1.0s]",
+    "(6) a rename on the second device is a rename on the first: the new name with the same bytes, the old name gone [0.3s]",
+    "(7) folders: a nested folder with a note and an EMPTY folder both appear on the second device [1.0s]",
+    "(8) B2 end to end: 10 edits written on the first device reached the second's disk, p50 1014 ms, p95 1036 ms, max 1036 ms [10.2s]",
+    "(9) co-typing: 99 and 99 keystrokes typed into one open note on both instances over 20084 ms; both disks and editors hold all of them 10683 ms after the last completed insertion, no conflict copy [31.7s]",
+    "(10) #253: with the second device's 1 file watcher(s) closed, a note made in a new folder on the first reached its disk in 1014 ms and was listed 2 ms later, its folder with it; a rename and a deletion of notes it listed left its listing true, an edit to one reached its disk in 1027 ms and its index 3 ms later (#267; 6 index lines), and it published nothing back; 1 of 1 watcher(s) restored [11.5s]",
+    "(11) NTFS: a rename by capitalisation alone arrives as that rename, one file under the new spelling [1.3s]",
+    "(12) NTFS: a note moved to Obsidian's trash on one device is removed on the other [0.8s]",
+    "(13) NTFS: an edit to a note another process held open arrived 61077 ms after the edit, once the lock was let go, nothing lost [63.1s]",
+    "(14) the keys with windows: backend unavailable, encrypted=true, stored as plain JSON=false; both instances restarted, paired again from their secret storage, and notes crossed both ways in 1029/1011 ms; after the restart Obsidian shows no warning about it [4.5s]"
+  ],
+  "pluginSha256Provenance": "Locally built candidate bundle; hosted bundle digest not independently recorded by these receipts.",
+  "cleanup": "Best-effort step completed on a disposable hosted runner; individual resource absence not independently verified."
+}
