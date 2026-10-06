@@ -10,6 +10,10 @@ in [the phone lifecycle guide](PHONE.md). Those launchers bind each new run to
 an explicit candidate version and artifact hashes; phone acceptance stays
 separate from a successful local control or teardown.
 
+[The Android recipe](ANDROID.md) owns a fresh emulator, native pairing and
+editor journeys, independent file checks and complete fixture teardown. It
+keeps emulator results distinct from physical-phone acceptance.
+
 Build with pinned repository tools. `SOURCE` explicitly selects the built
 checkout (`target/release/obsyncd`, `plugin/dist`); `RUN` must be a fresh private
 directory outside every checkout. An installed macOS Obsidian app and at least
