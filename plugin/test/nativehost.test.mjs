@@ -289,7 +289,7 @@ async function queuedEditor(t, afterRename = () => {}) {
   const r = await native(t, {
     afterRename: async () => arrived(),
     opened: (path, flags, handle) => {
-      if (!path.endsWith(NOTE)) return;
+      if (!path.endsWith(nodePath.sep + nodePath.normalize(NOTE))) return;
       const sync = handle.sync.bind(handle);
       handle.sync = async () => {
         assert.equal(flags, "r+", "final durability needs a writable, nontruncating existing-file handle on Windows too");
