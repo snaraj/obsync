@@ -222,7 +222,7 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none", edi
         },
       },
       // No editor is open on anything here (issue #146).
-      workspace: { getLeavesOfType: () => [] },
+      workspace: { getLeavesOfType: () => [], trigger: () => {} },
     },
     manifest: { version: "1.0.7" },
     platformName: () => (mobile ? "ios" : "linux"),
@@ -362,11 +362,14 @@ for (const concurrent of [false, true]) test(`a queued durable editor write adva
       buffer.value = "A: local typed\nB: \n";
     }
   });
+  const previews = [];
+  r.host.plugin.app.workspace.trigger = (event, file, text) => previews.push({ event, file, text });
   await r.write();
   await r.adapter.promise; await Promise.all(r.reads);
   const expected = concurrent ? "A: local typed\nB: remote\n" : r.incoming;
   assert.equal(r.buffer.value, expected);
   assert.equal(readFileSync(join(r.root, NOTE), "utf8"), expected);
+  assert.deepEqual(previews, [{ event: "quick-preview", file: r.view.file, text: expected }], "live-preview consumers receive the complete current buffer");
   assert.ok(r.events.indexOf("baseline") < r.events.indexOf("watcher"));
   assert.ok(r.events.lastIndexOf("fsync") > r.events.indexOf("baseline"), "the public editor save is flushed too");
   assert.equal(r.events.includes("external_notice"), false);
@@ -429,6 +432,30 @@ test("a synchronous tab change during display update never saves the former note
   await r.write(); await r.adapter.promise;
   assert.equal(readFileSync(join(r.root, "Notes/Elsewhere.md"), "utf8"), "OTHER NOTE");
   assert.equal(r.events.includes("baseline"), false);
+});
+
+for (const effect of ["rebind", "input", "composition"]) test(`a synchronous preview consumer ${effect} never forces a stale public save`, async (t) => {
+  const r = await queuedEditor(t);
+  r.seed("Notes/Elsewhere.md", "OTHER NOTE", 1000);
+  let delivered = 0;
+  let savesAtDelivery = 0;
+  r.host.plugin.app.workspace.trigger = (event, file, text) => {
+    assert.equal(event, "quick-preview");
+    assert.equal(file.path, NOTE);
+    assert.equal(text, r.incoming);
+    delivered++;
+    savesAtDelivery = r.events.filter((event) => event === "baseline").length;
+    if (effect === "rebind") r.view.file = { path: "Notes/Elsewhere.md" };
+    if (effect === "input") r.buffer.value += "NEW INPUT";
+    if (effect === "composition") r.host.editorActivity.record(r.view, "compositionstart");
+  };
+  await r.write(); await r.adapter.promise; await Promise.all(r.reads);
+  assert.equal(delivered, 1);
+  assert.equal(savesAtDelivery, 1, "preview follows the completed saved-baseline transition");
+  assert.equal(r.events.filter((event) => event === "baseline").length, savesAtDelivery, "no later public save can overwrite reentrant edits or a rebound view");
+  assert.equal(readFileSync(join(r.root, "Notes/Elsewhere.md"), "utf8"), "OTHER NOTE");
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming);
+  if (effect === "input") assert.equal(r.buffer.value, r.incoming + "NEW INPUT");
 });
 
 test("a queued writer never bridges bytes replaced after rename with identical metadata", async (t) => {
@@ -521,6 +548,8 @@ async function openIdle(t, mobile, disk, during, readingTemp) {
   r.view = r.openEditor(NOTE, r.shown);
   Object.defineProperty(r.view, "data", { get: () => r.shown.value, set: () => {}, configurable: true });
   r.loaded = [];
+  r.previews = [];
+  r.host.plugin.app.workspace.trigger = (event, file, text) => r.previews.push({ event, file, text });
   r.view.setViewData = (data, clear) => { r.loaded.push([data, clear]); r.shown.value = data; };
   r.seed("Notes/Other.md", "OTHER NOTE SENTINEL\n", 1000);
   const other = r.openEditor("Notes/Other.md", { value: "OTHER NOTE SENTINEL\n" });
@@ -551,7 +580,9 @@ for (const mobile of [false, true]) {
         assert.equal(readFileSync(join(r.root, NOTE), "utf8"), next);
         // A starved watcher reloads nothing: the editor shows it because obsync loaded it.
         assert.deepEqual(r.loaded, [[next.replace(/\r\n/g, "\n"), false]], `the editor did not load version ${n + 1}`);
+        assert.deepEqual(r.previews, [{ event: "quick-preview", file: r.view.file, text: next.replace(/\r\n/g, "\n") }], "passive live-preview consumers receive each confirmed version");
         r.loaded.length = 0;
+        r.previews.length = 0;
       }
       assert.equal(r.logs.filter((line) => line === "host path_class=file decision=editor_refreshed views=1").length, 2, r.logs.join(" | "));
       assert.deepEqual(r.foreign, [], "an editor of another note was loaded");
@@ -597,6 +628,19 @@ for (const mobile of [false, true]) {
     assert.deepEqual(r.loaded, []);
   });
 }
+
+test("preview delivery rechecks a second view rebound by the first consumer", async (t) => {
+  const r = await openIdle(t, false, MINE);
+  const second = r.openEditor(NOTE, { value: MINE });
+  const previews = [];
+  r.host.plugin.app.workspace.trigger = (event, file, text) => {
+    previews.push({ event, path: file.path, text });
+    second.file = { path: "Notes/Other.md" };
+  };
+  await r.arrive(THEIRS, 3000);
+  assert.deepEqual(previews, [{ event: "quick-preview", path: NOTE, text: THEIRS }]);
+  assert.equal(readFileSync(join(r.root, "Notes/Other.md"), "utf8"), "OTHER NOTE SENTINEL\n");
+});
 
 test("an editor is not given a version another write replaced before its rename was checked (desktop)", async (t) => {
   const r = await openIdle(t, false, "lost one\nlost two\n",

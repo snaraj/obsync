@@ -3453,6 +3453,14 @@ export class ObsidianHost implements VaultHost {
       do {
         if (includesWrite()) {
           for (const view of views) this.editorActivity.expectRefresh(view, shown, written);
+          // Both a public display update and a native file reload can leave
+          // live-preview consumers stale. Notify them with the current buffer
+          // only after confirmation. Do not save after callbacks: they may type
+          // or switch tabs synchronously. Recheck each binding before delivery.
+          for (let index = 0; index < views.length; index++) {
+            const view = views[index];
+            if (view?.file && view.file === bound[index]) this.plugin.app.workspace.trigger("quick-preview", view.file, view.getViewData());
+          }
           this.log(`host path_class=file decision=${changed ? "editor_refreshed" : "editor_current"} views=${views.length}`);
           return true;
         }

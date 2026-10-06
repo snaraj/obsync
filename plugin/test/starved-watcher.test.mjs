@@ -282,7 +282,7 @@ async function receiver(t, { server, timers, a }, { iterate = true, ...options }
   const plugin = new main.default();
   // The workspace: its leaves, and `iterateAllLeaves` unless a test takes it away.
   const leaves = [];
-  const workspace = { getLeavesOfType: (type) => (type === "markdown" ? leaves : []) };
+  const workspace = { getLeavesOfType: (type) => (type === "markdown" ? leaves : []), trigger: () => {} };
   if (iterate) workspace.iterateAllLeaves = (visit) => leaves.forEach(visit);
   plugin.app = { vault: index.vault, fileManager: index.fileManager, workspace };
   plugin.manifest = { id: "obsync-private-sync", version: "1.1.4", dir: ".obsidian/plugins/obsync-private-sync" };
