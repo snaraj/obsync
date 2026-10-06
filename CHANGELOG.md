@@ -9,6 +9,18 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ### Fixed
 
+- Saved editor input can sync while typing continues. Incoming edits merge
+  with acknowledged versions while newer local input stays queued as a child
+  version. Save confirmation, unfinished composition and recent human input
+  now have separate checks instead of sharing a ten-second delay (#325).
+- Desktop editor refresh advances the native saved baseline before queued
+  watcher reloads, preserving keystrokes and avoiding repeated external-change
+  notices. Both the staged download and the editor's subsequent save are
+  flushed before the write completes. Unsafe or unsupported editor states
+  retain the native refresh fallback.
+- The container builder base advances to Rust 1.98.1 with its pinned image
+  digest; the repository compiler remains pinned to Rust 1.98.0 (#336).
+
 - Concurrent typing before the first character of a line now combines when
   both edits preserve the existing text. Different added word streams retain
   their own leading spaces instead of joining two words together.

@@ -165,7 +165,22 @@ async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB
     Object.defineProperty(device.host, "clock", { get: () => T0 + timers.now, set: () => undefined });
   }
   const refused = host ? [refusing(a.host), refusing(b.host)] : [];
-  if (host) for (const device of [a, b]) listing(device.transport);
+  for (const [index, device] of [a, b].entries()) {
+    if (host) {
+      listing(device.transport);
+      const ready = device.host.editorReady.bind(device.host);
+      device.host.editorReady = async (path) => {
+        const allowed = await ready(path);
+        if (!allowed) refused[index].count++;
+        return allowed;
+      };
+    } else {
+      // Deliberately permissive legacy host: this case exercises a native
+      // merge under unsaved input. The guarded host cases count refusals at
+      // both the preparation and final-commit boundaries.
+      device.host.editorReady = async () => true;
+    }
+  }
   const statuses = { a: [], b: [] };
   a.engine.onStatus = (status) => statuses.a.push(status.kind);
   b.engine.onStatus = (status) => statuses.b.push(status.kind);
@@ -185,6 +200,26 @@ async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB
   const fileId = a.state.fileByPath(NOTE).fileId;
 
   const editors = { a: new OpenEditor(a, timers, placeA), b: new OpenEditor(b, timers, placeB) };
+  if (!host) {
+    // Exercise the permissive legacy host's unsaved-input merge deliberately.
+    // A faster publication path can otherwise land every write in a saved
+    // gap and make this test's required branch depend on crypto scheduling.
+    const writer = a.host.writer.bind(a.host), type = editors.a.type.bind(editors.a);
+    let release, delayed = false;
+    editors.a.type = (text) => { type(text); if (text && release) { release(); release = null; } };
+    a.host.writer = async (...args) => {
+      const output = await writer(...args);
+      return { ...output, commit: async (...commitArgs) => {
+        if (args[0] === NOTE && !delayed) {
+          delayed = true;
+          await new Promise((resolve) => { release = resolve; });
+          assert.notEqual(editors.a.unsaved, "", "legacy incoming write meets real pending input");
+        }
+        return output.commit(...commitArgs);
+      } };
+    };
+    t.after(() => release?.());
+  }
   const typedA = [...textA];
   const typedB = [...textB];
   const every = host ? 1 : AUTOSAVE_MS / KEY_MS;
@@ -1161,7 +1196,9 @@ test("merges of merges of one pair merge again, three levels down and no further
       assert.notEqual(result, "merged", pulls(r.host));
       assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=3 ok=false")), pulls(r.host));
     }
-    assert.ok(!r.host.logs.some((line) => line.includes("level=4")), pulls(r.host));
+    assert.ok(!r.host.logs.some((line) => line.includes("reason=criss_cross level=4")), pulls(r.host));
+    assert.equal(r.host.logs.some((line) => line.includes("reason=history_budget level=4 budget_levels=3")), levels === 4,
+      "the refused fourth level is reported without traversing or merging it");
   }
 });
 
@@ -1218,6 +1255,18 @@ test("a level found in an earlier round is not walked again, even at the bound (
  * note whose base fills a chunk leaves no room for the one found before it,
  * which is then walked from the bottom again, as a device that never met it.
  */
+test("a saved editor reuses a verified parent merge across skipped criss-cross levels", async () => {
+  const r = await rig(), climb = await ladder(r);
+  r.host.typing = () => true;
+  r.host.editorReady = async () => true;
+  assert.equal(await applyChange(r.context, (await climb(3)).theirs), "merged", pulls(r.host));
+  const { theirs, one, five, lines } = await climb(4);
+  assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(one, five));
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.some((line) => line.includes("found=verified_merge")), pulls(r.host));
+});
+
 test("remembered bases hold one merge input's worth, the oldest forgotten first (#227)", async () => {
   const r = await rig();
   // A 4 KiB base, then one 2 KiB short of a chunk: together over it, while

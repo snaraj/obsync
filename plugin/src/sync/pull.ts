@@ -1009,7 +1009,7 @@ async function materialise(context: SyncContext, fileId: string, manifest: Manif
     // The commit's own stat, handed back rather than looked up again: it is
     // the metadata of the bytes THIS write put there, and a second stat would
     // describe whatever the user saved a moment later instead (finding 2).
-    return await landedAt(context, await commitMarked(context, fileId, manifest.path, () => writer.commit(manifest.mtime)));
+    return await landedAt(context, await commitMarked(context, fileId, manifest.path, () => writer.commit(manifest.mtime, over === undefined ? undefined : now)));
   } catch (error) {
     await writer.abort();
     throw error;
@@ -2739,7 +2739,7 @@ async function reconcile(
   // those reservations will be refunded when their commit checks finish.
   // Ordinary resolutions and rewrite detection retain their normal path.
   if (tally.count >= MERGE_STORM_LIMIT &&
-    (await context.host.editing(localPath) === "unsaved" || context.host.typing(localPath))) {
+    !await context.host.editorReady(localPath)) {
     context.host.log(`pull decision=waiting reason=active_editor phase=merge_limit file=${change.file_id} seq=${change.seq}`);
     throw new EditorBusy();
   }
@@ -2965,13 +2965,44 @@ async function resolve(
           context.host.log(`pull decision=merge_base reason=identical_heads file=${change.file_id} seq=${change.seq}`);
         }
       }
-      const base = await assembleBytes(context, mergeBase);
-      const theirs = await assembleBytes(context, theirManifest);
       const decoder = new TextDecoder();
-      // Even a clean-looking append can replay text from the other common
-      // ancestor. Resolve that shared base before comparing the new edits.
-      const shared = mergeBase === baseManifest
-        ? await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base)) : null;
+      const prepare = async () => {
+        const [base, theirs] = await Promise.all([
+          assembleBytes(context, mergeBase), assembleBytes(context, theirManifest),
+        ]);
+        // Resolve the shared base before comparing criss-cross edits.
+        const shared = mergeBase === baseManifest
+          ? await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base)) : null;
+        return { base, theirs, shared };
+      };
+      let prepared: Awaited<ReturnType<typeof prepare>> | undefined;
+      // Reserve the publication turn before downloading merge inputs. Local
+      // saving continues, but a new upload cannot repeatedly invalidate the
+      // parents while these authenticated snapshots are being prepared.
+      if (context.host.typing(localPath) && theirManifest.path === localPath && here === localPath) {
+        const own = recorded ?? await manifestOf(context, file, change, localVersionId);
+        if (own !== null && !own.deleted && own.path === localPath && own.chunks.length === 1 && own.size <= CHUNK_MAX) {
+          const applied = await serialPublication(context, localPath, async () => {
+            if (context.state.fileByPath(localPath)?.versionId !== localVersionId) throw new EditorBusy();
+            // Network preparation only needs a proven complete snapshot.
+            // The final writer still requires the CURRENT editor to be saved.
+            if (!await context.host.editorReady(localPath) && context.host.savedSnapshot?.(localPath, mine) !== true) return null;
+            const [inputs, published] = await Promise.all([prepare(), assembleBytes(context, own)]);
+            prepared = inputs;
+            if (inputs.shared === false) return null;
+            const joined = threeWayMerge(inputs.shared ?? decoder.decode(inputs.base), decoder.decode(published), decoder.decode(inputs.theirs));
+            if (!joined.ok) return null;
+            // This contains exactly the authenticated parents, before any
+            // newer local input is rebased. A later criss-cross can reuse the
+            // verified result without spending its depth budget on it again.
+            remember(context, `merged ${[localVersionId, change.version_id].sort().join(" ")}`, joined.text);
+            return mergeSavedEditor(context, change, localPath, localVersionId, published,
+              new TextEncoder().encode(joined.text), inputs.theirs, tally);
+          });
+          if (applied !== null) return applied;
+        }
+      }
+      const { base, theirs, shared } = prepared ?? await prepare();
       const crossed = typeof shared === "string";
       const merged = shared === false ? { ok: false as const, reason: "overlap" as const }
         : threeWayMerge(shared ?? decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
@@ -3064,7 +3095,7 @@ async function resolve(
         // receipt rather than publish the new bytes onto the old parent.
         context.host.log(`pull decision=publishing reason=merge_receipt file=${change.file_id} seq=${change.seq}`);
         const settled = await serialPublication(context, localPath, async (): Promise<ApplyResult> => {
-          const stat = await commitMarked(context, change.file_id, localPath, () => writer.commit(context.now()));
+          const stat = await commitMarked(context, change.file_id, localPath, () => writer.commit(context.now(), mine));
           tally.left = stamp(stat);
           context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
           // The result is the INCOMING version's own bytes: that version already
@@ -3206,6 +3237,60 @@ async function deferToPush(context: SyncContext, change: ChangeRecord, localPath
   if (held) context.state.setFile(localPath, { ...held, sha256: "" });
   await context.state.save();
   return deferred(context, change, reason);
+}
+
+/**
+ * Apply an acknowledged merge without making newer saved input part of its
+ * parents' content. Network preparation can take longer than a keystroke;
+ * only the final read/stage/commit window must find the editor saved. A changed
+ * disk or unsaved editor still refuses through the host's final commit guard.
+ */
+async function mergeSavedEditor(
+  context: SyncContext, change: ChangeRecord, path: string, localVersionId: string,
+  published: Bytes, merged: Bytes, theirs: Bytes, tally: { left: string },
+): Promise<ApplyResult | null> {
+  const started = context.now();
+  const current = context.state.fileByPath(path);
+  if (current?.fileId !== change.file_id || current.versionId !== localVersionId || context.signal?.aborted) {
+    context.host.log(`pull decision=waiting reason=merge_parent_advanced duration_ms=${context.now() - started} budget_ms=0`);
+    throw new EditorBusy();
+  }
+  const before = await context.host.stat(path);
+  if (before === null || before.size > CHUNK_MAX || !await context.host.editorReady(path)) throw new EditorBusy();
+  const latest = await context.host.read(path);
+  if (!isMergeableText(path, latest)) return null;
+  const decoder = new TextDecoder();
+  const rebased = threeWayMerge(decoder.decode(published), decoder.decode(latest), decoder.decode(merged));
+  if (!rebased.ok) return null;
+  const text = new TextEncoder().encode(rebased.text);
+  const pendingLocal = !sameBytes(text, merged);
+  const writer = await context.host.writer(path, text.length);
+  let stat: VaultStat;
+  try {
+    await writer.write(text);
+    if (context.signal?.aborted) throw new ApiError(0, "cancelled", "sync stopped on this device");
+    if (context.state.fileByPath(path)?.versionId !== localVersionId) throw new EditorBusy();
+    stat = await commitMarked(context, change.file_id, path, () => writer.commit(context.now(), latest));
+  } finally { await writer.abort(); }
+  tally.left = stamp(stat);
+  context.written.add(`${stat.path}:${stat.mtime}:${stat.size}`);
+  // A record may describe only the network merge, not the newer local delta.
+  // A sentinel mtime keeps that delta dirty across a restart too.
+  const recordedMtime = pendingLocal ? -1 : stat.mtime;
+  if (sameBytes(merged, theirs)) {
+    context.state.setFile(path, {
+      fileId: change.file_id, versionId: change.version_id, mtime: recordedMtime,
+      size: merged.length, sha256: await sidDigest(change.sids), ts: change.ts,
+    });
+    await context.state.save();
+  } else {
+    await postMerged(context, change, path, path, localVersionId, merged, stat.mtime, undefined, recordedMtime);
+    context.host.notify({ kind: "combined", text: "combined your edits to {notes} with {device}'s.", paths: [path],
+      device: context.deviceNameFor(change.device_id) });
+  }
+  if (pendingLocal) context.queueLocal?.(path);
+  context.host.log(`pull decision=merged reason=saved_editor_rebase pending_local=${pendingLocal} duration_ms=${context.now() - started} budget_bytes=${CHUNK_MAX}`);
+  return "merged";
 }
 
 /** Publish a peer-held editor without silently consuming another live head. */
@@ -3460,7 +3545,7 @@ async function converge(
       // so its record: claimed, the next save was published as a child of the
       // kept head, taking that head's text out of the note on every device.
       const started = context.now();
-      const landed = await landedAt(context, await commitMarked(context, change.file_id, localPath, () => writer.commit(theirManifest.mtime).catch(async (error: unknown) => {
+      const landed = await landedAt(context, await commitMarked(context, change.file_id, localPath, () => writer.commit(theirManifest.mtime, mine).catch(async (error: unknown) => {
         await release();
         context.host.log(`pull decision=released reason=not_written role=yield file=${change.file_id} seq=${change.seq} ` +
           `duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
@@ -3611,7 +3696,15 @@ async function crissCrossBase(
     ({ version_id: id }) => id !== left && id !== right && !below.has(id) && fromLeft.has(id) && fromRight.has(id),
   )?.version_id;
   if (other === undefined) return null;
-  if (levels === 0) return false;
+  const mergedBefore = bases.get(context)?.get(`merged ${[first, other].sort().join(" ")}`);
+  if (mergedBefore !== undefined) {
+    context.host.log(`pull decision=merge_base reason=criss_cross found=verified_merge level=${CRISS_CROSS_LEVELS - levels + 1} budget_levels=${CRISS_CROSS_LEVELS}`);
+    return mergedBefore;
+  }
+  if (levels === 0) {
+    context.host.log(`pull decision=merge_base reason=history_budget level=${CRISS_CROSS_LEVELS - levels + 1} budget_levels=${CRISS_CROSS_LEVELS}`);
+    return false;
+  }
   if (commonAncestor(file.versions, first, other) === null) {
     await completeMergeAncestry(context, file, first, other);
   }
@@ -5006,6 +5099,7 @@ async function postMerged(
   text: Bytes,
   mtime: number,
   over?: string[],
+  recordedMtime = mtime,
 ): Promise<void> {
   const expected = context.state.fileByPath(path);
   const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, text);
@@ -5040,7 +5134,7 @@ async function postMerged(
   context.state.setFile(path, {
     fileId: change.file_id,
     versionId: posted.versionId,
-    mtime,
+    mtime: recordedMtime,
     size: text.length,
     sha256: digest,
     ...(target === path ? {} : { name: target }),

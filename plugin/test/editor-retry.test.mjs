@@ -3,7 +3,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 import { FakeTimers, rig, STEP_MS } from "./fake.mjs";
 const require = createRequire(import.meta.url);
-const { SyncEngine } = require("../build/sync/engine.js");
+const { SyncEngine, EDITOR_PUBLISH_MS } = require("../build/sync/engine.js");
 const { EditorBusy, unwritableText } = require("../build/sync/pull.js");
 const { ApiError } = require("../build/transport.js");
 const { pushFile } = require("../build/sync/push.js");
@@ -84,6 +84,19 @@ test("stopping clears an active-editor retry before it can write", async (t) => 
   assert.equal(r.engine.editorHandle, null);
 });
 
+test("a confirmed save retries immediately, independently of recent-input attribution", async (t) => {
+  const r = await setup(t);
+  r.release();
+  r.host.typing = () => true;
+  r.host.editorReady = async () => true;
+  const previous = r.engine.editorHandle;
+  r.engine.editorSaved(NOTE);
+  assert.notEqual(r.engine.editorHandle, previous);
+  assert.ok(!r.timers.entries.some((entry) => entry.handle === previous));
+  await r.timers.run(0, () => r.host.text(NOTE) === "BASE remote");
+  assert.equal(r.host.text(NOTE), "BASE remote");
+});
+
 test("an active-editor wait resumes after restarting with an advanced feed cursor", async (t) => {
   const r = await setup(t);
   await r.timers.run(STEP_MS, () => r.state.data.lastSeq >= r.server.journal.at(-1).seq);
@@ -123,10 +136,16 @@ test("a failed editor retry keeps its durable wait and recovers automatically", 
 test("a push reconciliation retains an active-editor wait without an error notice", async (t) => {
   const r = await setup(t);
   r.host.seed(NOTE, "BASE local", 5000);
+  // A save receipt permits staging; the final writer still refuses if the
+  // editor becomes busy before commit.
+  r.host.editorReady = async () => true;
   const before = r.attempts();
   await r.engine.pushOne(NOTE);
   assert.ok(r.attempts() > before, "the push enters native merge publication and hits the editor refusal");
   assert.equal(r.state.data.parked[r.base.fileId].reason, "active_editor");
+  // The push receipt may wake the feed while reconciliation is still in
+  // flight. Count the held note after that page has finished too.
+  await r.timers.run(STEP_MS, () => r.state.data.lastSeq >= r.server.journal.at(-1).seq && r.engine.current().pending === 1);
   // The status names the note it waits on (issue #252: "syncing 1" alone said nothing).
   assert.deepEqual(r.statuses.at(-1), { kind: "syncing", pending: 1, held: NOTE });
   assert.ok(!r.statuses.some((status) => status.kind === "error"));
@@ -170,4 +189,37 @@ test("a fast editor retry leaves a locked file on its normal backoff and visible
   r.release();
   await r.timers.run(STEP_MS, () => r.host.text(NOTE) === "BASE remote");
   assert.equal(r.state.data.parked[locked].reason, "EPERM");
+});
+
+
+test("confirmed save publication has a first-save deadline that continued input cannot extend", async (t) => {
+  const r = await setup(t); r.release();
+  const path = "Notes/Batched.md";
+  r.host.seed(path, "BATCHED", 1000);
+  const settled = [], original = r.engine.settle.bind(r.engine);
+  r.engine.settle = async (...args) => { settled.push(args[0]); return original(...args); };
+  r.engine.editorSaved(path);
+  const first = r.engine.pending.get(path).handle;
+  for (let i = 0; i < 4; i++) {
+    // run(nonzero) also advances while draining asynchronous work. Step
+    // exactly here: crossing the deadline would correctly start a new batch.
+    r.timers.now += EDITOR_PUBLISH_MS / 5;
+    await r.timers.run(0);
+    r.engine.editorSaved(path); r.engine.changed(path);
+    assert.equal(r.engine.pending.get(path)?.handle, first, "new input must not debounce forever");
+  }
+  assert.deepEqual(settled.filter((name) => name === path), []);
+  r.timers.now += EDITOR_PUBLISH_MS / 5;
+  await r.timers.run(0);
+  assert.equal(settled.filter((name) => name === path).length, 1);
+});
+
+test("stopping cancels a pending editor publication batch", async (t) => {
+  const r = await setup(t);
+  r.engine.editorSaved(NOTE);
+  const handle = r.engine.pending.get(NOTE).handle;
+  await r.engine.stopAndWait();
+  assert.ok(!r.timers.entries.some((entry) => entry.handle === handle));
+  await r.timers.run(EDITOR_PUBLISH_MS);
+  assert.equal(r.engine.pending.size, 0);
 });

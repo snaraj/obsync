@@ -474,7 +474,14 @@ export class FakeHost {
         held += bytes.length;
         parts.push(bytes);
       },
-      async commit(mtime) {
+      async commit(mtime, expected) {
+        if (expected !== undefined) {
+          const found = host.files.get(host.resolve(path) ?? path);
+          const matches = expected === null ? found === undefined :
+            expected instanceof Uint8Array ? found !== undefined && found.bytes.length === expected.length && found.bytes.every((byte, i) => byte === expected[i]) :
+            found !== undefined && found.mtime === expected.mtime && found.bytes.length === expected.size;
+          if (!matches) throw new (require("../build/sync/pull.js").EditorBusy)();
+        }
         if (size !== undefined && held !== size) throw new Error("A download ended short of its declared size.");
         let total = 0;
         for (const part of parts) total += part.length;
@@ -656,6 +663,8 @@ export class FakeHost {
 
   inputAt = new Map();
   typing(path) { return this.clock - (this.inputAt.get(path) ?? -Infinity) < 10_000; }
+  async editorReady(path) { return !this.typing(path) && await this.editing(path) !== "unsaved"; }
+  stopEditorSaves() {}
 
   /** An open editor against its file, compared the way the real host compares them (`main.ts`). */
   async editing(path) {
@@ -1654,7 +1663,7 @@ export class EventVault extends FakeHost {
 
   async writer(path, size) {
     const writer = await super.writer(path, size);
-    return { ...writer, commit: async (mtime) => this.commit(writer, path, mtime) };
+    return { ...writer, commit: async (mtime, expected) => this.commit(writer, path, mtime, expected) };
   }
 
   async move(from, to) {
@@ -1702,13 +1711,13 @@ export class EventVault extends FakeHost {
 
   async createWriter(path, size, check) {
     const writer = await super.createWriter(path, size, check);
-    return { ...writer, commit: async (mtime) => this.commit(writer, path, mtime) };
+    return { ...writer, commit: async (mtime, expected) => this.commit(writer, path, mtime, expected) };
   }
 
-  async commit(writer, path, mtime) {
+  async commit(writer, path, mtime, expected) {
     const existed = this.resolve(path) !== undefined;
     const missing = FakeHost.parents(path).filter((parent) => !this.explicitFolders.has(parent)).reverse();
-    const stat = await writer.commit(mtime);
+    const stat = await writer.commit(mtime, expected);
     // Obsidian reports the folders a write had to make, before the file.
     for (const made of missing) this.emit("create", this.entry(made, true));
     this.emit(existed ? "modify" : "create", this.entry(path));

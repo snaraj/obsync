@@ -20,7 +20,7 @@ async function fixture(t) {
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const { ObsidianHost, default: Plugin } = box.require(join(box.home, "build/main.js"));
   const { MarkdownView } = box.require("obsidian");
-  const { EDITING_WINDOW_MS } = box.require(join(box.home, "build/sync/pull.js"));
+  const { RECENT_INPUT_MS } = box.require(join(box.home, "build/editorActivity.js"));
   const main = surface(), popout = surface(), leaves = [], registered = [], hooks = new Map();
   const instance = new Plugin();
   instance.loadData = async () => null;
@@ -47,7 +47,7 @@ async function fixture(t) {
     } });
     leaves.push({ view }); return { view, node };
   }
-  return { host, instance, main, popout, leaves, hooks, view, registered, window: EDITING_WINDOW_MS,
+  return { host, instance, main, popout, leaves, hooks, view, registered, window: RECENT_INPUT_MS,
     advance: (ms) => { now += ms; } };
 }
 

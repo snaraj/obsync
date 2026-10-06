@@ -1,0 +1,209 @@
+import type { MarkdownView, TFile } from "obsidian";
+import type { Timers } from "./sync/engine";
+import { pageTimers } from "./clock";
+
+/** Human attribution for rewrite detection; never an incoming-write deadline. */
+export const RECENT_INPUT_MS = 10_000;
+/** At most one requested save per view per interval, including continuous input. */
+export const EDITOR_SAVE_MS = 5;
+/** Bound extra whole-text reads on mobile. Larger notes retain native autosave. */
+export const EDITOR_SAVE_MAX_CHARS = 1 << 20;
+
+interface Input {
+  file: TFile;
+  generation: object;
+  at: number;
+  composing: boolean;
+  saved?: { text: string; generation: object };
+}
+
+interface EditorAccess {
+  views(path: string): MarkdownView[];
+  read(file: TFile): Promise<string>;
+  enabled(path: string): boolean;
+  saved(path: string): void;
+  log(line: string): void;
+}
+
+const normalized = (text: string): string => text.replace(/\r\n?/g, "\n");
+
+/**
+ * Three independent facts: recent human input, unfinished composition, and a
+ * confirmed save of that exact input. A clock cannot prove the last one.
+ * Only the public save/read API supplies a receipt; input or rebinding revokes
+ * it. The final writer still compares every editor with disk immediately
+ * before committing. No content or path is included in diagnostics.
+ */
+export class EditorActivity {
+  private readonly inputs = new WeakMap<MarkdownView, Input>();
+  private readonly snapshots = new WeakMap<MarkdownView, { file: TFile; text: string; generation: object }>();
+  private readonly timers = new Map<MarkdownView, unknown>();
+  private readonly saving = new Set<MarkdownView>();
+  private readonly reloading = new Set<string>();
+  private readonly nativeOnly = new WeakMap<MarkdownView, TFile>();
+  private generation = {};
+
+  constructor(private readonly access: EditorAccess, private readonly clock: Timers = pageTimers) {}
+
+  record(view: MarkdownView, kind: string): void {
+    const file = view.file;
+    if (!file) return;
+    const before = this.inputs.get(view);
+    const composing = before?.file === file && before.composing;
+    if (kind === "focusout" && !composing) return;
+    this.inputs.set(view, {
+      file, generation: this.generation, at: Date.now(),
+      composing: kind === "compositionstart" || (composing && kind !== "compositionend" && kind !== "focusout"),
+    });
+    this.schedule(view);
+  }
+
+  recent(view: MarkdownView): boolean {
+    const input = this.inputs.get(view);
+    return input?.file === view.file && (input.composing || Date.now() - input.at < RECENT_INPUT_MS);
+  }
+
+  /** The native refresh bridge must not save unfinished composition or a
+   * view whose save ownership has fallen back to the host. */
+  canRefresh(view: MarkdownView): boolean {
+    const input = this.inputs.get(view);
+    return input !== undefined && input.generation === this.generation && input.file === view.file && !input.composing &&
+      this.recent(view) && !this.saving.has(view) && this.nativeOnly.get(view) !== input.file &&
+      this.access.enabled(input.file.path);
+  }
+
+  /** A completed native save stays publishable while later input is unsaved.
+   * This proves only a historical complete snapshot, never write readiness. */
+  savedSnapshot(path: string, text: string): boolean {
+    return this.access.enabled(path) && this.access.views(path).some((view) => {
+      const saved = this.snapshots.get(view);
+      return saved?.file === view.file && saved?.generation === this.generation &&
+        this.nativeOnly.get(view) !== view.file && this.recent(view) && saved.text === normalized(text);
+    });
+  }
+
+  async ready(path: string, unchanged?: () => Promise<boolean>): Promise<boolean> {
+    return await this.prepareWrite(path, unchanged) !== null;
+  }
+
+  /** Return the checked disk baseline, never a separately sampled editor value.
+   * Every await is followed by identity, input-generation and text checks. */
+  async prepareWrite(path: string, unchanged?: () => Promise<boolean>, read = this.access.read): Promise<{ text: string | null } | null> {
+    if (this.reloading.has(path)) return null;
+    const views = this.access.views(path);
+    const file = views[0]?.file;
+    if (!file) {
+      if (unchanged !== undefined && !await unchanged()) return null;
+      return !this.reloading.has(path) && this.access.views(path).length === 0 ? { text: null } : null;
+    }
+    const inputs = views.map((view) => this.inputs.get(view));
+    const files = views.map((view) => view.file);
+    const disk = normalized(await read(file));
+    if (unchanged !== undefined && !await unchanged()) return null;
+    const current = this.access.views(path);
+    if (this.reloading.has(path) || views.length !== current.length || views.some((view, i) => view !== current[i])) return null;
+    const ready = views.every((view, i) => {
+      const input = this.inputs.get(view);
+      if (this.saving.has(view) || view.file !== files[i] || view.file?.path !== path || input !== inputs[i] || input?.composing) return false;
+      const current = normalized(view.getViewData());
+      if (current === disk && (!this.recent(view) || (input?.saved?.text === disk && input.saved.generation === this.generation))) return true;
+      return false;
+    });
+    return ready ? { text: disk } : null;
+  }
+
+  /** The native reload may advance this receipt only when its buffer matches disk.
+   * New input revokes it even while that reload is pending. Never creates a receipt. */
+  expectRefresh(view: MarkdownView, before: string, after: string): void {
+    const input = this.inputs.get(view);
+    if (input?.file === view.file && input.saved?.generation === this.generation &&
+      input.saved.text === before) input.saved.text = after;
+  }
+
+  /** Never save a pre-reload buffer onto the version being loaded into it. */
+  holdReload(path: string): ((confirmed: boolean) => void) | null {
+    if (this.reloading.has(path)) return null;
+    this.reloading.add(path);
+    const views = this.access.views(path).map((view) => ({ view, file: view.file })), generation = this.generation;
+    let released = false;
+    return (confirmed) => {
+      if (released) return;
+      released = true;
+      if (generation !== this.generation) return;
+      this.reloading.delete(path);
+      for (const { view, file } of views) {
+        if (!file || view.file !== file) continue;
+        if (!confirmed) {
+          this.nativeOnly.set(view, file);
+          const input = this.inputs.get(view);
+          if (input) delete input.saved;
+        } else if (!this.inputs.get(view)?.saved) this.schedule(view);
+      }
+    };
+  }
+
+  /** Cancel pending saves on pause, leave and unload; invalidate in-flight receipts. */
+  stop(): void {
+    this.generation = {};
+    for (const timer of this.timers.values()) this.clock.clear(timer);
+    this.timers.clear();
+    this.reloading.clear();
+  }
+
+  private schedule(view: MarkdownView): void {
+    const input = this.inputs.get(view);
+    if (!input || input.composing || this.reloading.has(input.file.path) || this.nativeOnly.get(view) === input.file || !this.access.enabled(input.file.path) ||
+      this.timers.has(view) || this.saving.has(view)) return;
+    const generation = this.generation;
+    this.timers.set(view, this.clock.set(() => {
+      this.timers.delete(view);
+      void this.save(view, generation);
+    }, EDITOR_SAVE_MS));
+  }
+
+  private async save(view: MarkdownView, generation: object): Promise<void> {
+    const input = this.inputs.get(view);
+    if (!input || input.composing || this.reloading.has(input.file.path) || this.nativeOnly.get(view) === input.file || view.file !== input.file || generation !== this.generation ||
+      !this.access.enabled(input.file.path) || !this.access.views(input.file.path).includes(view)) return;
+    const started = Date.now();
+    if (normalized(view.getViewData()).length > EDITOR_SAVE_MAX_CHARS) {
+      this.access.log(`editor decision=deferred reason=save_budget duration_ms=${Date.now() - started} budget_chars=${EDITOR_SAVE_MAX_CHARS}`);
+      return;
+    }
+    this.saving.add(view);
+    try {
+      // A native reload can already be queued when its buffer becomes visible.
+      // Finish the adapter's earlier reads while the editor is still dirty:
+      // save() clears that flag before waiting for disk, so starting it first
+      // lets a stale native read replace a keystroke without merging it.
+      await this.access.read(input.file);
+      if (generation !== this.generation || !this.access.enabled(input.file.path) ||
+        this.inputs.get(view) !== input || view.file !== input.file ||
+        !this.access.views(input.file.path).includes(view)) return;
+      const text = normalized(view.getViewData());
+      // Disagreeing panes keep native save ownership; this helper cannot pick
+      // which buffer wins. Bound the extra whole-text work on phones too.
+      if (text.length > EDITOR_SAVE_MAX_CHARS ||
+        this.access.views(input.file.path).some((other) => normalized(other.getViewData()) !== text)) return;
+      await view.save();
+      const disk = normalized(await this.access.read(input.file));
+      if (generation === this.generation && this.access.enabled(input.file.path) && view.file === input.file &&
+        this.access.views(input.file.path).includes(view) && disk === text) {
+        this.snapshots.set(view, { file: input.file, text, generation });
+      }
+      if (generation !== this.generation || !this.access.enabled(input.file.path) ||
+        this.inputs.get(view) !== input || view.file !== input.file ||
+        !this.access.views(input.file.path).includes(view) || normalized(view.getViewData()) !== text || disk !== text) return;
+      input.saved = { text, generation };
+      this.access.log(`editor decision=saved duration_ms=${Date.now() - started} budget_ms=${EDITOR_SAVE_MS}`);
+      this.access.saved(input.file.path);
+    } catch {
+      this.access.log(`editor decision=deferred reason=save_failed duration_ms=${Date.now() - started} budget_ms=${EDITOR_SAVE_MS}`);
+    } finally {
+      this.saving.delete(view);
+      // A new input during an in-flight save needs its own receipt. A failed
+      // save without new input does not create an unbounded retry loop.
+      if (generation === this.generation && this.inputs.get(view) !== input) this.schedule(view);
+    }
+  }
+}

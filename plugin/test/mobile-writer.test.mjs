@@ -134,7 +134,7 @@ async function dropping(t, drops, { existing = null, landing = null, late = null
       if (late !== null && writes.length === 3 && found?.size === 0) queueMicrotask(() => files.set(path, { size: late, mtime: 5 }));
       if (saved !== null && writes.length === 1 && found?.size === 0) queueMicrotask(() => files.set(path, { size: saved, mtime: 5 }));
       if (typing === "during-stat" && writes.length === 1 && found?.size === 0 && ++emptyLooks === 2) {
-        queueMicrotask(() => host.inputAt.set(view, { path, at: Date.now() }));
+        queueMicrotask(() => host.editorActivity.record(view, "beforeinput"));
       }
       return found;
     },
@@ -144,7 +144,7 @@ async function dropping(t, drops, { existing = null, landing = null, late = null
       writes.push(data.byteLength);
       const size = left > 0 ? (left--, 0) : landing ?? data.byteLength;
       files.set(path, { size, mtime: options.mtime });
-      if (typing === "keystroke") host.inputAt.set(view, { path, at: Date.now() });
+      if (typing === "keystroke") host.editorActivity.record(view, "beforeinput");
     },
     remove: async (path) => { removed.push(path); files.delete(path); },
   };
@@ -153,7 +153,7 @@ async function dropping(t, drops, { existing = null, landing = null, late = null
     log: (line) => logs.push(line),
     app: {
       vault: { adapter, read: async () => {
-        if (typing === "during-read" && writes.length === 1) queueMicrotask(() => host.inputAt.set(view, { path: "Notes/a.md", at: Date.now() }));
+        if (typing === "during-read" && writes.length === 1) queueMicrotask(() => host.editorActivity.record(view, "beforeinput"));
         return "";
       } },
       workspace: { getLeavesOfType: () => (typing === null ? [] : [{ view }]) },

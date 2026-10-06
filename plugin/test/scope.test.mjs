@@ -924,7 +924,7 @@ async function lifecyclePlugin(t) {
   const logs = [], statuses = [], mounts = [];
   instance.state = r.state;
   instance.log = (line) => logs.push(line);
-  instance.host = { log: (line) => logs.push(line), enclosingVault: async () => null, closeQuestion: () => undefined };
+  instance.host = { log: (line) => logs.push(line), enclosingVault: async () => null, closeQuestion: () => undefined, stopEditorSaves: () => undefined };
   instance.setStatus = (status) => statuses.push(status);
   instance.manifest = { version: "0.1.11" };
   instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
@@ -1496,4 +1496,3 @@ test("this device's own deletion removes the version it deleted, and stays an ec
   assert.equal(await applyChange(r.context, gone), "deleted", r.host.logs.join(" | "));
   assert.equal(r.host.text("Notes/raced.md"), null);
 });
-

@@ -145,7 +145,9 @@ interface Settled {
 /** An atomic vault write: nothing is visible at `path` until `commit`. */
 export interface VaultWriter {
   write(bytes: Bytes): Promise<void>;
-  commit(mtime: number): Promise<VaultStat>;
+  /** Recheck the input after staging/fsync: exact bytes for a bounded merge,
+   * metadata for a streaming replacement, null for an absent destination. */
+  commit(mtime: number, expected?: Bytes | Pick<VaultStat, "mtime" | "size"> | null): Promise<VaultStat>;
   abort(): Promise<void>;
   /**
    * After a `commit` that failed, take back the copy it published anyway
@@ -353,6 +355,11 @@ export interface VaultHost {
   editing(path: string): Promise<"unsaved" | "saved" | null>;
   /** Recent trusted editor input, including a composition still in progress. */
   typing(path: string): boolean;
+  /** All editor buffers are saved and no unconfirmed input/IME can be overwritten. */
+  editorReady(path: string): Promise<boolean>;
+  /** Complete bytes confirmed by an earlier native save; later input may be unsaved.
+   * This capability permits publishing that snapshot, never replacing the editor. */
+  savedSnapshot?(path: string, bytes: Bytes): boolean;
   /** Tell the person, through the one notice channel (`notices.ts`). */
   notify(notice: SyncNotice): void;
   /** Take the held-deletions question off the screen once nothing is held (`hold`). */
@@ -431,6 +438,8 @@ export interface SyncContext {
    * queue behind it, and then the pull keeps both and settles nothing.
    */
   publish?(path: string): Promise<void>;
+  /** Queue saved local input rebased onto an acknowledged merge, without waiting on this pull. */
+  queueLocal?(path: string): void;
   /**
    * Aborted the moment the engine that made this context stops (`stop`): the
    * long poll, a retry asleep in its backoff and a chunk upload end at once,
@@ -648,6 +657,8 @@ export const RECHECK_MS = 400;
  * `EDITOR_SETTLE_MAX_BYTES`, one chunk; any other writer keeps the full guard.
  */
 export const EDITOR_SETTLE_MS = 150;
+/** Bound publication batches from the first confirmed save, never the last key. */
+export const EDITOR_PUBLISH_MS = 100;
 export const EDITOR_SETTLE_MAX_BYTES = CHUNK_MAX;
 /**
  * How long a file that has been SEEN changing must then hold still before it
@@ -892,7 +903,7 @@ export class SyncEngine {
   private readonly timers: Timers;
   private readonly onStatus: (status: EngineStatus) => void;
   private readonly nowFn: () => number;
-  private readonly pending = new Map<string, { handle: unknown; tries: number }>();
+  private readonly pending = new Map<string, { handle: unknown; tries: number; editor?: true }>();
   private readonly queue: string[] = [];
   private readonly deletions = new Set<string>();
   /** Paths whose NAME changed: their bytes are identical, so the push must be forced. */
@@ -1202,6 +1213,7 @@ export class SyncEngine {
       arrivals: new Map<string, number>(),
       forked: new Set<string>(),
       publish: (path) => this.pushOne(path),
+      queueLocal: (path) => { if (this.running) this.enqueue(path); },
       signal,
       copies: new Map(),
       staged: new Map(),
@@ -2326,6 +2338,7 @@ export class SyncEngine {
   private debounce(path: string, tries: number, seen: Settled | null = null): void {
     if (!this.running) return;
     const existing = this.pending.get(path);
+    if (tries === 0 && existing?.editor === true) return;
     if (existing) this.timers.clear(existing.handle);
     const handle = this.timers.set(() => {
       void this.track(this.settle(path, tries, seen));
@@ -3455,13 +3468,33 @@ export class SyncEngine {
   }
 
   /** Active-editor waits use the durable parked record, but need no error notice or long backoff. */
-  private armEditorRetry(): void {
+  editorSaved(path: string): void {
+    if (!this.running || !this.tracked(path, "editor_save")) return;
+    // Coalesce completed native saves for one bounded publication interval.
+    // Later keys and filesystem echoes cannot postpone this deadline. Disk
+    // saving and incoming editor retries stay independent of upload batching.
+    this.changed(path);
+    if (this.pending.get(path)?.editor !== true) {
+      this.unschedule(path);
+      const handle = this.timers.set(() => { void this.track(this.settle(path, 0, null)); }, EDITOR_PUBLISH_MS);
+      this.pending.set(path, { handle, tries: 0, editor: true });
+    }
+    if (!Object.values(this.options.state.data.parked)
+      .some((entry) => entry.reason === "active_editor" && entry.path === path)) return;
+    if (this.editorHandle !== null) this.timers.clear(this.editorHandle);
+    this.editorHandle = null;
+    // This is a completed save, not a filesystem event waiting to settle.
+    // Reusing the watcher's delay can miss every gap in continuous typing.
+    this.armEditorRetry(0);
+  }
+
+  private armEditorRetry(delay = 1000): void {
     if (!this.running || this.editorHandle !== null ||
       !Object.values(this.options.state.data.parked).some((entry) => entry.reason === "active_editor")) return;
     this.editorHandle = this.timers.set(() => {
       this.editorHandle = null;
       void this.track(this.retryEditors());
-    }, 1000);
+    }, delay);
   }
 
   private retryEditors(): Promise<void> {
@@ -3543,7 +3576,7 @@ export class SyncEngine {
   private async retryOne(context: SyncContext, fileId: string): Promise<boolean> {
     const waiting = context.state.data.parked[fileId];
     if (waiting?.reason === "active_editor" &&
-      (context.host.typing(waiting.path) || await context.host.editing(waiting.path) === "unsaved")) {
+      !await context.host.editorReady(waiting.path)) {
       this.armEditorRetry();
       return false;
     }

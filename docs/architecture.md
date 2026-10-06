@@ -774,10 +774,20 @@ long poll and needs its timeout raised.
    per path, and the growing-file guard then compares each stat with the one
    the previous recheck took, 400 ms earlier. A note of at most one chunk
    that someone typed in within the last 10 s is the editor's own save: it
-   settles 150 ms after its event, with no recheck (issue #195). A file that has been seen
+   settles 150 ms after its event, with no recheck (issue #195). Confirmed
+   editor saves use a separate 100 ms publication batch whose deadline starts
+   at the first save; subsequent saves cannot postpone it. Incoming editor
+   retries run immediately after a confirmed save, independently of that
+   upload batch. A file that has been seen
    changing must hold still for 5 s before it is queued, and a push whose
    file moved between the start and the end of its read is abandoned before
    a version exists. A file still growing is retried, never uploaded torn.
+   A small recorded text note has one exception: a completed native save,
+   independently read back and then checked against the captured bytes and
+   stat, proves a complete historical snapshot even while newer input is
+   being saved. That snapshot may upload; the later edit stays dirty and
+   follows as a child. This proof never permits an incoming write over
+   unsaved input, nor applies to external copies or large-file streaming.
    A volume that keeps a modification time to the whole second (FAT32 keeps
    it to the even second) can give a second save of the same size the same
    `(mtime, size)` as the first, so a push made less than one 2 s step from
@@ -1297,9 +1307,15 @@ long poll and needs its timeout raised.
    editor; the reservation lasts through the receipt and record update. A
    completed upload that advanced the record during merge preparation causes
    a fresh graph read before writing or publishing. A merge holds its two
-   parents and nothing typed since (issue #227): a note holding text its
-   recorded version does not is published first, on that version, and the
-   fork is merged from what is published. Two devices resolving one fork then
+   parents and nothing typed since (issue #227). For a saved active editor,
+   reserve publication before preparing the authenticated parent snapshots,
+   merge only those parents, then rebase the newest saved local delta onto
+   that result. The final writer still requires the current editor and disk
+   to agree. Publish the pure parent merge first; its local delta stays dirty
+   and uploads as a child. A changed parent or stopped engine refuses the
+   staged write. Unsupported or overlapping states retain the ordinary path:
+   publish local bytes first, then resolve the fork from published versions.
+   Two devices resolving one fork then
    post the same bytes, and the server keeps one version; each carrying its
    own unsent save had posted two, a criss-cross one level deeper each round
    while both typed. When two devices merged one pair differently (a device
@@ -1310,7 +1326,11 @@ long poll and needs its timeout raised.
    at most three levels, each one single-chunk text. A base found once is
    remembered (issue #227), because two versions never change: two people
    typing make each round's criss-cross one level deeper than the last, and a
-   round walks only the levels not found before. The remembered bases are
+   round walks only the levels not found before. Pure parent merges this
+   client already computed are also reusable bases for that exact parent
+   pair; another device's unverified claimed merge is not. This reuse keeps
+   continuous typing within the existing three-level recursion bound without
+   relaxing it. The remembered bases are
    together no longer than one merge input. A base below the versions the
    server lists is read a version at a time, at most 64 a resolution and
    never below the two branches' shared frontier; every version a resolution
@@ -1318,40 +1338,47 @@ long poll and needs its timeout raised.
    idle while two type, merges every arrival against a base the listing
    holds; remembering only what a walk read, it met its first criss-cross
    across the whole typing history with nothing remembered, read past the
-   budget and settled one typist's last words into a copy. Nothing is written under an editor
-   someone is typing in, so two people typing keep a note forked for as long
-   as both type and its base sinks a version a save: a resolution reads only
+   budget and settled one typist's last words into a copy. Unsaved input and
+   unfinished composition hold an incoming write; recent typing alone does
+   not. A resolution reads only
    what none before it did, and the remembered versions are together no
    longer than one merge input. A device whose own head lost the rule keeps
    its record on that head until the kept head is written: while someone
    types there the write waits, and the next save is an edit of the head the
    note still holds.
 
-   AN EDITOR OBSYNC WROTE UNDER SHOWS WHAT IT WROTE (issue #252). Obsidian
-   loads an outside change into an open note when its file watcher reports
-   one. On a Mac whose file-event daemon was starved for minutes it reported
-   nothing, so the editor kept the old text. Every later version of the note
-   was then held as unsaved (`active_editor`) behind "syncing 1", and a
-   keystroke there would have saved the old text over the new. So a write
-   judged safe remembers what the note's editors showed at that moment, which
-   was its file's text. Nothing awaits between that judgment and the write:
-   on a desktop the bytes to show are read from the temp before the editor
-   is judged, not between the judgment and the rename. After the write lands,
-   the file is read back, and only if it holds exactly the written text (a
-   save of the same size, even the same mtime, can land after the write)
-   does each view still of this note and still showing that text load it
-   (`setViewData`), with no await after the read; each view is judged at its
-   own load, because a load can rebind another leaf. On a desktop that text
-   is the bytes renamed into place; on a phone it is the bytes handed to the
-   adapter. A view typed in since shows something else and is left alone. A
-   load that fails is logged (`decision=failed reason=editor_refresh`) and
-   never fails the write, which has landed. A view that
-   differs from its file still holds the note: nothing on the view says
-   whether the difference is typing. `TextFileView.data` follows every
-   keystroke (Obsidian 1.13.4), and a build that read it as "what the view
-   last loaded or saved" wrote merges under typing on an iPhone and garbled
-   the note (live, 2026-09-28). The status names a held note
-   (`waiting for unsaved changes in <note>`).
+   **Editor ownership and refresh (#252, #325).** Recent human input is an
+   attribution signal, not a ten-second write lock. `EditorActivity` requests
+   the public native save after 5 ms and independently reads the saved text.
+   New input, composition, rebinding, pause and stop invalidate write
+   readiness. Extra saves are bounded to 1 Mi characters and agreeing panes;
+   larger notes, composition and unsupported states retain native autosave.
+   A prior adapter read drains before save starts so a queued native reload
+   cannot overwrite input after save clears its dirty flag.
+
+   The desktop writer stages and fsyncs the incoming file before its final
+   editor and disk check. Where the native adapter exposes its queue, commit
+   runs inside it, with an independent filesystem read to avoid waiting on
+   the same queue. It retains path, inode, exact-byte, file and directory
+   durability checks. A refresh lease suspends extra saves through commit
+   and confirmation. After rename, re-read the exact bytes, merge any newer
+   non-overlapping editor input, and start public `setViewData`/`save` before
+   releasing the adapter queue. That advances the native saved baseline
+   before watcher reloads. Never await that save inside the queue. Recheck
+   every view's file and text before and after the synchronous transition;
+   another plugin can rebind a view during it. Await saves outside the queue,
+   independently verify the result, then fsync the final desktop file again
+   because public save can rewrite the durable inode. The existing Windows
+   directory-fsync compatibility behavior remains unchanged.
+
+   Mobile and unknown adapters keep their guarded adapter write and public
+   refresh path. Passive editors retain native reload ownership. A refresh
+   has a bounded confirmation window; failure is logged and returns that
+   view to native saving. No private dirty flag or saved baseline is changed,
+   and no notification is hidden. An editor differing from disk still holds
+   the note. The status names that wait (`waiting for unsaved changes in
+   <note>`); the independently verified saved snapshot grants only upload or
+   merge-preparation eligibility, never overwrite permission.
 
    WHAT OBSYNC CHANGES ON A DESKTOP'S DISK IS LISTED AT ONCE (issue #253).
    The same starved watcher left a note obsync had written on the disk,
