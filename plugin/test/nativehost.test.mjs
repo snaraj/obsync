@@ -53,7 +53,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
-import { diskWatchdog, rig, sandbox, scratch, until } from "./fake.mjs";
+import { diskWatchdog, FakeTimers, rig, sandbox, scratch, until } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -71,7 +71,7 @@ const LOWER = "11".repeat(16);
  * A real vault directory under the real host, wired into the rig's state,
  * server and keys. `hooks` fire INSIDE the host's own filesystem calls.
  */
-async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = {}) {
+async function native(t, hooks = {}, { mobile = false, trashOption = "none", editorTimers } = {}) {
   const r = await rig({ isMobile: mobile });
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-native-"));
@@ -228,7 +228,7 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = 
     platformName: () => (mobile ? "ios" : "linux"),
     deviceName: () => "sentinel-device",
   };
-  const host = new ObsidianHost(plugin, mobile ? null : { base: root, path: nodePath, fs: { promises } });
+  const host = new ObsidianHost(plugin, mobile ? null : { base: root, path: nodePath, fs: { promises } }, editorTimers);
   const notices = [];
   host.notify = (message) => notices.push(message);
   r.context.host = host;
@@ -282,14 +282,21 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = 
 async function queuedEditor(t, afterRename = () => {}) {
   let arrived = () => {};
   const events = [];
+  // Disk/queue operations can exceed the 5 ms save interval on any host.
+  // Advance saving explicitly so tests own which side of that boundary they
+  // exercise, rather than accidentally saving the injected pending input.
+  const timers = new FakeTimers();
   const r = await native(t, {
     afterRename: async () => arrived(),
     opened: (path, flags, handle) => {
-      if (flags !== "r" || !path.endsWith(NOTE)) return;
+      if (!path.endsWith(NOTE)) return;
       const sync = handle.sync.bind(handle);
-      handle.sync = async () => { events.push("fsync"); await sync(); };
+      handle.sync = async () => {
+        assert.equal(flags, "r+", "final durability needs a writable, nontruncating existing-file handle on Windows too");
+        events.push("fsync"); await sync();
+      };
     },
-  });
+  }, { editorTimers: timers });
   const original = "A: local\nB: \n", incoming = "A: local\nB: remote\n";
   r.seed(NOTE, original, 1000);
   const buffer = { value: original }, view = r.openEditor(NOTE, buffer), file = view.file;
@@ -330,7 +337,8 @@ async function queuedEditor(t, afterRename = () => {}) {
   r.host.plugin.engine = { editorSaved() {} };
   r.host.editorActivity.record(view, "beforeinput");
   let ready = false;
-  await until(() => ready || (void r.host.editorReady(NOTE).then((value) => { ready = value; }), false));
+  timers.now += 5;
+  await timers.run(0, () => ready || (void r.host.editorReady(NOTE).then((value) => { ready = value; }), false));
   assert.equal(await r.host.editorReady(NOTE), true, "fixture acquired an actual save/read receipt");
   t.after(() => r.host.stopEditorSaves());
   arrived = () => {
@@ -344,7 +352,7 @@ async function queuedEditor(t, afterRename = () => {}) {
     try { await writer.write(enc(incoming)); return await writer.commit(2000, enc(original)); }
     finally { await writer.abort(); }
   };
-  return { ...r, original, incoming, buffer, view, adapter, vault, events, reads, write };
+  return { ...r, original, incoming, buffer, view, adapter, vault, events, reads, write, timers };
 }
 
 for (const concurrent of [false, true]) test(`a queued durable editor write advances the saved baseline before native reload (typing=${concurrent})`, async (t) => {
@@ -383,6 +391,11 @@ for (const reason of ["input", "disk", "composition"]) test(`a queued writer rec
   assert.equal(readFileSync(join(r.root, NOTE), "utf8"), reason === "disk" ? "different saved bytes" : r.original);
   assert.equal(r.events.includes("baseline"), false);
   assert.deepEqual(r.hidden(), []);
+  if (reason === "input") {
+    r.timers.now += 5;
+    await r.timers.run(0, () => readFileSync(join(r.root, NOTE), "utf8") === r.original + "unsaved");
+    assert.equal(r.buffer.value, r.original + "unsaved", "the refused incoming write leaves the later local save intact");
+  }
 });
 
 test("a view rebound while a write queues never receives the old note's text or save", async (t) => {

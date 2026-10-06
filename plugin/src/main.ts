@@ -2207,7 +2207,9 @@ export class ObsidianHost implements VaultHost {
             // truncating the file while this durability receipt is taken.
             const flush = async (): Promise<void> => {
               const bound = await this.confine(desktop, path, ["file"]);
-              const saved = await fs.promises.open(bound.target, "r");
+              // Windows FlushFileBuffers requires write access. r+ grants it
+              // without creating or truncating the independently checked file.
+              const saved = await fs.promises.open(bound.target, "r+");
               try {
                 const identity = await fstat(saved);
                 const verify = async (): Promise<void> => {
