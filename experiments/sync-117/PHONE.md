@@ -47,6 +47,18 @@ paste was not proof of delivery, and reverse clipboard readback was unproven.
 Restore the held clipboard before teardown. Never infer the phone field's value
 from the value originally staged on the desktop clipboard.
 
+Missing native Home/App Switcher accessibility buttons alone do not prove that
+control is unavailable. Reacquire the Mirroring app, inspect its actual window,
+and test harmless text entry. If a native Window > Center action is available,
+it can expose a disconnect that stale phone pixels hide. Do not change Mac
+authentication settings or restart unrelated apps to recover control.
+
+Use the vault sidebar's gear for Obsidian settings; Command-comma opens the
+Mirroring app's settings. Search settings for `self` and open the plugin. Pace
+each typed character with a native observation. Recheck focus visually before
+starting a stream. iOS capitalization suggestions can commit on blur: record
+the resulting edit, or dismiss the visible suggestion before final readback.
+
 With explicit authorization for disposable credentials and metadata through
 the relay, use a fresh `RUN` and omit `--local-control-only`. Keep the foreground
 controller alive. It initializes the account locally, checks normal HTTPS trust,
@@ -68,6 +80,10 @@ Use `phone-pair.mjs TOOLING RUN generate|regenerate|match|approve|status`, where
 observed phone comparison in private `runtime/phone-observed-match.txt`; it
 must match the current desktop prompt. Never copy the desktop value into that
 file as if it came from the phone. Codes expire; regenerate instead of reusing.
+If pairing finds existing local notes, independently verify they all belong to
+the synthetic fixture before confirming Pair and upload. Approval at the
+creator is only an intermediate state; require the phone's paired settings and
+the creator's completed enrollment decision.
 
 Record each journey separately as `PASS`, `FAIL`, `BLOCKED` or `NOT_RUN`:
 
@@ -86,6 +102,32 @@ in source. Desktop observations remain incomplete until the phone screen is
 independently checked. Do not report smooth typing from final-byte equality
 alone. Preserve failures, time budgets and any manual intervention.
 
+For co-typing, arm `phone-cotype.mjs TOOLING RUN phone-live-cotype1 run`, then
+write the private `runtime/phone-live-cotype1-go.json` with the current
+millisecond `startedAt`. Start the phone's lowercase stream immediately. Record
+each native call's timestamps and pass the final phone timestamp to `observe`
+within its fixed 120-second budget. Do not begin the next journey before that
+observer exits. The desktop driver moves its caret for every character; this
+cannot prove undisturbed cursors. Preserve all conflict copies in the reduced
+evidence before teardown and distinguish text displaced into copies from text
+absent from every retained version.
+
+For background and relaunch, first show Home, type a new desktop marker, reopen
+the exact phone note, and read it before typing the return marker. A native
+Obsidian-card dismissal followed by its launch splash is observable restart
+evidence; it does not provide an independent iOS process identity. A bounded
+interruption may pause only the manifest-owned disposable server after its full
+process identity is rechecked, with automatic resume in `finally` and a fixed
+deadline. Verify pending phone text is absent at the desktop before resuming,
+then require automatic transfer without re-pairing. Never change the phone's
+personal network settings to simulate this fault.
+
+For Leave, Command-P and paced `leave` locate the native command. Record the
+phone's text and file count beforehand. After confirmation, independently check
+that the exact test enrollment is revoked and the creator stays active. Verify
+the phone's server field is blank, status says not paired, and local text/count
+remain. Screen and count checks are not independent hashes of every iOS file.
+
 ## End every attempt, including blocked attempts
 
 Write `{}` to `RUN/private/stop-phone.json`, then wait for the controller to
@@ -100,6 +142,10 @@ deletion. Close only task-created browser tabs when their identity is certain;
 record uncertain tabs instead of closing unrelated ones. Do not empty Trash or
 Recently Deleted. Phone cleanup is a separate observation, never inferred from
 desktop teardown. Record any remaining resources as an unresolved result.
+Manage vaults closes the fixture without opening a personal vault. In Files,
+Get Info verifies the exact folder and enclosing location before Delete. Check
+absence in the relevant location afterward; a Recents-only search is weaker.
+Recoverable deletion leaves the OS recovery copy intact and is not secure erase.
 
 After all attempts using a preflight are resolved, verify copied binary/ZIP
 hashes against `preflight.json`, ownership, and absence of open handles before
