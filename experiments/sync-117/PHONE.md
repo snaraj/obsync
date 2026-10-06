@@ -36,6 +36,17 @@ Resolve any required enrollment approval before starting a timed exposure.
 A working screenshot does not prove that keystrokes arrive intact. Read back
 input on screen; keep pairing/recovery values out of captures and logs.
 
+Treat an unchanged mirror frame as possibly stale: native controls can disappear
+after a device-in-use disconnect while the last phone frame remains visible.
+Inspect the current native window state before submitting Pair. A reconnect may
+require owner authentication; stop the timed session if it cannot proceed.
+On this tested control path, whole-string input reordered characters. A native
+observation between individual characters produced correct synthetic readback.
+The desktop harness's held clipboard reached the phone after a delay; immediate
+paste was not proof of delivery, and reverse clipboard readback was unproven.
+Restore the held clipboard before teardown. Never infer the phone field's value
+from the value originally staged on the desktop clipboard.
+
 With explicit authorization for disposable credentials and metadata through
 the relay, use a fresh `RUN` and omit `--local-control-only`. Keep the foreground
 controller alive. It initializes the account locally, checks normal HTTPS trust,
