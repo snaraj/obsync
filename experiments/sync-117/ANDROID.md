@@ -50,10 +50,12 @@ node experiments/sync-117/android-journeys.mjs \
 ```
 
 Run commands sequentially: `pair`, `both-directions`, `cotype`,
-`cotype-observe`, `background`, `restart`, `offline`, then `leave`.
-Wait for each process to exit before starting the next. `cotype-observe`
-preserves the stricter separator failure while checking marker survival and
-independent bytes. Do not turn that weaker observation into a co-editing PASS.
+`background`, `restart`, `offline`, then `leave`.
+Wait for each process to exit before starting the next. After a failed
+`cotype`, `cotype-observe` can preserve the separator failure while checking
+marker survival and independent bytes. It describes the original common-prefix
+rule and is not the oracle for a repaired candidate. Do not turn that weaker
+observation into a co-editing PASS.
 Pair compares both renderers independently; secrets stay in process memory.
 Editor input uses trusted native events. Restart checks enrollment retention;
 Leave checks server revocation, forgotten enrollment and exact local-note hashes.

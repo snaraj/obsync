@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent
 HARNESS = ROOT / 'harness/scripts/validation/lab'
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('scenario', choices=['desktop', 'stage', 'cotype', 'editor', 'throttle', 'performance', 'up', 'down', 'status'])
+parser.add_argument('scenario', choices=['desktop', 'stage', 'cotype', 'boundaries', 'editor', 'throttle', 'performance', 'up', 'down', 'status'])
 parser.add_argument('--source', type=Path, required=True, help='explicit obsync checkout; already built')
 parser.add_argument('--run', type=Path, required=True, help='new output directory; existing only for down/status')
 parser.add_argument('--notes', type=int, default=7700)

@@ -363,8 +363,8 @@ def desktop(run, scenario="desktop"):
             result = subprocess.run(["node", str(HERE / "journeys.mjs"), str(run), command], timeout=180)
             if result.returncode:
                 raise RuntimeError("desktop journey failed; prior evidence retained")
-        if scenario in ("stage", "cotype", "editor", "throttle"):
-            driver = {"stage": "stage-profile.mjs", "cotype": "cotype.mjs", "editor": "editor-save.mjs", "throttle": "throttle.mjs"}[scenario]
+        if scenario in ("stage", "cotype", "boundaries", "editor", "throttle"):
+            driver = {"stage": "stage-profile.mjs", "cotype": "cotype.mjs", "boundaries": "boundary-cotype.mjs", "editor": "editor-save.mjs", "throttle": "throttle.mjs"}[scenario]
             subprocess.run(["node", str(HERE / driver), str(run)], timeout=1500 if scenario == "editor" else 420, check=True)
     finally:
         try:
@@ -377,10 +377,12 @@ def desktop(run, scenario="desktop"):
             rest = holder.stdout.read()
             if rest and (run / "private").is_dir():
                 (run / "private/holder.log").write_text(rest)
-    # Reaching this point requires both the scenario and teardown to succeed.
-    # Discard every disposable account, history, profile and private log.
-    from finalize import finalize
-    finalize(run)
+        # A failed scenario needs the same cleanup as a passing one. Only
+        # reach finalization after down and holder.wait prove process absence;
+        # reduced evidence survives, disposable credentials and profiles do not.
+        if (run / "lab.json").exists():
+            from finalize import finalize
+            finalize(run)
     if scenario in ("editor", "throttle"):
         path = run / ("evidence/editor-save.json" if scenario == "editor" else "evidence/throttle.json")
         result = json.loads(path.read_text())
@@ -394,7 +396,7 @@ def desktop(run, scenario="desktop"):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["up", "desktop", "stage", "cotype", "editor", "throttle", "down", "status", "restart"])
+    parser.add_argument("command", choices=["up", "desktop", "stage", "cotype", "boundaries", "editor", "throttle", "down", "status", "restart"])
     parser.add_argument("--run", required=True, help="dedicated external run directory")
     parser.add_argument("--binary", default=str(REPO / "target/release/obsyncd"))
     parser.add_argument("--source-repo", default=str(REPO), help="checkout that supplied the built artifacts")
@@ -408,7 +410,7 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     run = external(args.run)
-    if args.command in ("desktop", "stage", "cotype", "editor", "throttle"):
+    if args.command in ("desktop", "stage", "cotype", "boundaries", "editor", "throttle"):
         if args.devices != 2:
             raise ValueError("the desktop rehearsal requires exactly two lab devices")
         desktop(run, args.command)

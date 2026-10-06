@@ -34,6 +34,14 @@ uses three alternating shown/minimized 7,700-note pairs, each minimized sample
 lasting ten minutes. Run comparisons without task builds, VMs or stress beside
 them. Unrelated host activity still needs separate observation.
 
+`boundaries` types at both ends of one line, before its first character, and
+with leading word separators. It keeps each cursor where native input leaves
+it, records both editor buffers and independent files, and refuses missing
+characters, collapsed separators or conflict copies. Use the same fresh-run
+command above with `boundaries` in place of `desktop`. Failed scenarios also
+remove their owned processes, accounts and profiles after absence proof;
+reduced failure evidence remains for the next session.
+
 Inspect PNGs and record visual observations. Automatic desktop scenarios remove
 resolved profiles, account keys, private logs and manifests after process absence
 proof. Require `teardown.json`, `final-cleanup.json`, and `workflow.json`.

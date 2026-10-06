@@ -41,6 +41,25 @@ class Cleanup(unittest.TestCase):
         self.assertFalse((self.run/'lab.json').exists())
         self.assertTrue((self.run/'evidence/teardown.json').is_file())
         self.assertEqual(json.loads((self.run/'evidence/final-cleanup.json').read_text())['result'],'PASS')
+    def test_failed_native_journey_finalizes_after_verified_shutdown(self):
+        holder=Mock();holder.stdout.readline.return_value='{"ready":true}\n';holder.stdout.read.return_value='synthetic failure\n'
+        with patch.object(lab.subprocess,'Popen',return_value=holder),patch.object(lab.select,'select',return_value=([holder.stdout],[],[])),patch.object(lab.subprocess,'run',return_value=Mock(returncode=1)),patch.object(lab,'down') as down:
+            with self.assertRaisesRegex(RuntimeError,'desktop journey failed'):lab.desktop(self.run,'boundaries')
+            down.assert_called_once_with(self.run);holder.wait.assert_called_once_with(timeout=10)
+        self.assertFalse((self.run/'private').exists());self.assertFalse((self.run/'lab.json').exists())
+        self.assertTrue((self.run/'evidence/final-cleanup.json').is_file())
+    def test_failed_shutdown_preserves_native_journey_credentials_for_owned_retry(self):
+        holder=Mock();holder.stdout.readline.return_value='{"ready":true}\n';holder.stdout.read.return_value=''
+        with patch.object(lab.subprocess,'Popen',return_value=holder),patch.object(lab.select,'select',return_value=([holder.stdout],[],[])),patch.object(lab.subprocess,'run',return_value=Mock(returncode=1)),patch.object(lab,'down',side_effect=RuntimeError('shutdown refused')),patch.object(finalize,'finalize') as finish:
+            with self.assertRaisesRegex(RuntimeError,'shutdown refused'):lab.desktop(self.run,'boundaries')
+            holder.wait.assert_called_once_with(timeout=10);finish.assert_not_called()
+        self.assert_preserved()
+    def test_launcher_failure_before_manifest_keeps_original_failure(self):
+        (self.run/'lab.json').unlink()
+        holder=Mock();holder.stdout.readline.return_value='{"ready":false}\n';holder.stdout.read.return_value=''
+        with patch.object(lab.subprocess,'Popen',return_value=holder),patch.object(lab.select,'select',return_value=([holder.stdout],[],[])),patch.object(finalize,'finalize') as finish:
+            with self.assertRaisesRegex(RuntimeError,'did not report readiness'):lab.desktop(self.run,'boundaries')
+            holder.terminate.assert_called_once();holder.wait.assert_called_once_with(timeout=10);finish.assert_not_called()
     def test_each_incomplete_receipt_refuses_cleanup(self):
         for field,value in [('process_groups_remaining',1),('runtime_exists',True)]:
             with self.subTest(field=field):
