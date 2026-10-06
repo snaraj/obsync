@@ -1,0 +1,393 @@
+{
+  "sourceHead": "a6cd169943938b37b81881b2015a226a0df5e603",
+  "sourceBase": "72bdcf94ed40fc8769c8baad5a6b2db56ae92cfe",
+  "driverSourceBeforePhaseLogging": "f1ccf248a69d981b6e543e46ff42cf8e0a0aa723",
+  "driverModifications": "Added pairing phase timestamps, then co-typing captures; per-command hashes retained below. Final guide/capture-receipt delta was not natively rerun.",
+  "images": [
+    {
+      "name": "desktop-cotype.png",
+      "sha256": "0646c9d5424adacba4a832e26ac4c70c126d58b3bb7539b5d95861314babe2b6",
+      "visuallyInspected": true
+    },
+    {
+      "name": "android-cotype.png",
+      "sha256": "9184c7fda1707e4a8e82d373c8a66872ad1bd672937597b042e847982e8a760c",
+      "visuallyInspected": true
+    },
+    {
+      "name": "android-leave.png",
+      "sha256": "e3e262282953b024bdbcd833bbd6f0a26c61874c3e0830ad195403862f3dff35",
+      "visuallyInspected": true
+    }
+  ],
+  "receipts": [
+    {
+      "name": "android-cotype-1791263618940.json",
+      "value": {
+        "result": "PASS",
+        "path": "Lab-CoTyping-1791263545451.md",
+        "typedTokens": {
+          "A": 150,
+          "M": 150
+        },
+        "trustedInput": [
+          {
+            "trusted": 150,
+            "untrusted": 0
+          },
+          {
+            "trusted": 150,
+            "untrusted": 0
+          }
+        ],
+        "typingMs": 60113,
+        "settledAfterTypingMs": 11607,
+        "oneFileOnEachPeer": true,
+        "everyTokenExactlyOnce": true,
+        "perDeviceTokenOrderPreserved": true,
+        "fixedLinesIntact": true,
+        "sha256": "2c9fef4e33e01702f148c63cf6d337276ece0d892f1ae6170a4f33282efd6dc7",
+        "peerDisk": true,
+        "peerEditor": true,
+        "sameNonemptyFileId": true,
+        "physicalKeyboard": "NOT_CLAIMED",
+        "input": "CDP Input.insertText trusted native beforeinput",
+        "driverSha256": "9f0ed315cf3122d6140f8add22a64f6d64b4841b32b1dee702534699ee725d1b",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "android-cotype-1791263904672.json",
+      "value": {
+        "result": "PASS",
+        "path": "Lab-CoTyping-1791263831462.md",
+        "typedTokens": {
+          "A": 150,
+          "M": 150
+        },
+        "trustedInput": [
+          {
+            "trusted": 150,
+            "untrusted": 0
+          },
+          {
+            "trusted": 150,
+            "untrusted": 0
+          }
+        ],
+        "typingMs": 60113,
+        "settledAfterTypingMs": 11251,
+        "oneFileOnEachPeer": true,
+        "everyTokenExactlyOnce": true,
+        "perDeviceTokenOrderPreserved": true,
+        "fixedLinesIntact": true,
+        "sha256": "2c9fef4e33e01702f148c63cf6d337276ece0d892f1ae6170a4f33282efd6dc7",
+        "peerDisk": true,
+        "peerEditor": true,
+        "sameNonemptyFileId": true,
+        "physicalKeyboard": "NOT_CLAIMED",
+        "input": "CDP Input.insertText trusted native beforeinput",
+        "driverSha256": "fe455ef866ee7c369265978940d660ace373c34c3c40c7ea76102219c2aa29c6",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "android-journey-failure-1791262295367.json",
+      "value": {
+        "result": "FAIL",
+        "stage": "pair",
+        "reason": "lab UI step refused or timed out; no secret-bearing exception printed",
+        "driverSha256": "e5f9e8ca40b742db8251bb88c64cada1069e60c497a9233a62189154f626a902",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "android-journey-failure-1791262735255.json",
+      "value": {
+        "result": "FAIL",
+        "stage": "pair",
+        "phase": "compare",
+        "phases": [
+          {
+            "phase": "claim-dialog",
+            "at": 1791262659164
+          },
+          {
+            "phase": "creator-code",
+            "at": 1791262685255
+          },
+          {
+            "phase": "submit-claim",
+            "at": 1791262694242
+          },
+          {
+            "phase": "compare",
+            "at": 1791262703175
+          }
+        ],
+        "reason": "lab UI step refused or timed out; no secret-bearing exception printed",
+        "driverSha256": "9f0ed315cf3122d6140f8add22a64f6d64b4841b32b1dee702534699ee725d1b",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "android-journey-failure-1791263180273.json",
+      "value": {
+        "result": "FAIL",
+        "stage": "cotype",
+        "phase": "connect",
+        "phases": [],
+        "reason": "one note retains every native token once in order deadline",
+        "driverSha256": "9f0ed315cf3122d6140f8add22a64f6d64b4841b32b1dee702534699ee725d1b",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "android-journey-failure-1791264030046.json",
+      "value": {
+        "result": "FAIL",
+        "stage": "cotype",
+        "phase": "connect",
+        "phases": [],
+        "reason": "CDP deadline",
+        "driverSha256": "fe455ef866ee7c369265978940d660ace373c34c3c40c7ea76102219c2aa29c6",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "android-leave-1791264180755.json",
+      "value": {
+        "result": "PASS",
+        "serverRevoked": true,
+        "localNotesUnchanged": 10,
+        "cleared": {
+          "deviceIdNull": true,
+          "serverForgotten": true,
+          "fileRecords": 0
+        },
+        "elapsedMs": 1396,
+        "visualInspection": "PENDING",
+        "driverSha256": "fe455ef866ee7c369265978940d660ace373c34c3c40c7ea76102219c2aa29c6",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "android-pair-completed.json",
+      "value": {
+        "at": "2026-10-06T05:01:22.615Z",
+        "result": "PASS_AFTER_MANUAL_RESUME",
+        "mobile": {
+          "paired": true,
+          "status": "idle"
+        },
+        "creator": {
+          "paired": true,
+          "decisions": [
+            {
+              "at": 1791262711553,
+              "decision": "revealed"
+            },
+            {
+              "at": 1791262778088,
+              "decision": "approved"
+            },
+            {
+              "at": 1791262818348,
+              "decision": "paired"
+            }
+          ]
+        },
+        "initialAutomaticDeadlineFailures": 2,
+        "comparisonsIndependentlyMatched": true
+      }
+    },
+    {
+      "name": "android-reconnection-1791263771368.json",
+      "value": {
+        "result": "PASS",
+        "offlineTransportProved": true,
+        "offlineEdit": {
+          "trusted": true,
+          "buffer": true,
+          "status": "offline"
+        },
+        "localBytesSaved": true,
+        "automaticResumeMs": 1493,
+        "peerDisk": true,
+        "peerEditor": true,
+        "sameNonemptyFileId": true,
+        "visualInspection": "PENDING",
+        "driverSha256": "9f0ed315cf3122d6140f8add22a64f6d64b4841b32b1dee702534699ee725d1b",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "android-server-plaintext-scan.json",
+      "value": {
+        "result": "PASS",
+        "recordedAtEpoch": 1791264206.2206059,
+        "noteCount": 10,
+        "sentinelCount": 19,
+        "serverFilesScanned": 120,
+        "serverBytesScanned": 439886,
+        "plaintextMatches": 0,
+        "scope": "Exact synthetic full note names and full note contents in owned server journal and blobs; not a traffic metadata privacy proof."
+      }
+    },
+    {
+      "name": "android-to-desktop-1791262927760.json",
+      "value": {
+        "result": "PASS",
+        "from": "M",
+        "path": "Android-android-to-desktop-1791262924038.md",
+        "elapsedMs": 3340,
+        "input": {
+          "trusted": true,
+          "buffer": true
+        },
+        "peerDisk": true,
+        "peerEditor": true,
+        "sameNonemptyFileId": true,
+        "visualInspection": "PENDING",
+        "driverSha256": "9f0ed315cf3122d6140f8add22a64f6d64b4841b32b1dee702534699ee725d1b",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "background-android-to-desktop-1791263681337.json",
+      "value": {
+        "result": "PASS",
+        "from": "M",
+        "path": "Android-background-android-to-desktop-1791263677871.md",
+        "elapsedMs": 3013,
+        "input": {
+          "trusted": true,
+          "buffer": true
+        },
+        "peerDisk": true,
+        "peerEditor": true,
+        "sameNonemptyFileId": true,
+        "visualInspection": "PENDING",
+        "driverSha256": "9f0ed315cf3122d6140f8add22a64f6d64b4841b32b1dee702534699ee725d1b",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "background-desktop-to-android-1791263677871.json",
+      "value": {
+        "result": "PASS",
+        "from": "A",
+        "path": "Android-background-desktop-to-android-1791263674668.md",
+        "elapsedMs": 2802,
+        "input": {
+          "trusted": true,
+          "buffer": true
+        },
+        "peerDisk": true,
+        "peerEditor": true,
+        "sameNonemptyFileId": true,
+        "visualInspection": "PENDING",
+        "driverSha256": "9f0ed315cf3122d6140f8add22a64f6d64b4841b32b1dee702534699ee725d1b",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "desktop-to-android-1791262924037.json",
+      "value": {
+        "result": "PASS",
+        "from": "A",
+        "path": "Android-desktop-to-android-1791262906902.md",
+        "elapsedMs": 16690,
+        "input": {
+          "trusted": true,
+          "buffer": true
+        },
+        "peerDisk": true,
+        "peerEditor": true,
+        "sameNonemptyFileId": true,
+        "visualInspection": "PENDING",
+        "driverSha256": "9f0ed315cf3122d6140f8add22a64f6d64b4841b32b1dee702534699ee725d1b",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "restart-android-to-desktop-1791263738568.json",
+      "value": {
+        "result": "PASS",
+        "from": "M",
+        "path": "Android-restart-android-to-desktop-1791263735233.md",
+        "elapsedMs": 2976,
+        "input": {
+          "trusted": true,
+          "buffer": true
+        },
+        "peerDisk": true,
+        "peerEditor": true,
+        "sameNonemptyFileId": true,
+        "visualInspection": "PENDING",
+        "driverSha256": "9f0ed315cf3122d6140f8add22a64f6d64b4841b32b1dee702534699ee725d1b",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    },
+    {
+      "name": "restart-desktop-to-android-1791263735232.json",
+      "value": {
+        "result": "PASS",
+        "from": "A",
+        "path": "Android-restart-desktop-to-android-1791263732050.md",
+        "elapsedMs": 2787,
+        "input": {
+          "trusted": true,
+          "buffer": true
+        },
+        "peerDisk": true,
+        "peerEditor": true,
+        "sameNonemptyFileId": true,
+        "visualInspection": "PENDING",
+        "driverSha256": "9f0ed315cf3122d6140f8add22a64f6d64b4841b32b1dee702534699ee725d1b",
+        "platform": "Android emulator",
+        "physicalPhone": "NOT_RUN"
+      }
+    }
+  ],
+  "physicalPhone": "NOT_INSTALLED: Mac authentication blocks retest and exact incomplete-download cleanup",
+  "nativeCaptureFailure": "Retained; later independent captures opened successfully",
+  "notClaimed": [
+    "baseline speedup",
+    "cursor stability",
+    "physical phone pass",
+    "fully automatic pairing",
+    "Cloudflare billing proof"
+  ],
+  "cleanup": {
+    "androidControllerExit": 0,
+    "peerControllerExit": 0,
+    "ownedGroupsRemaining": 0,
+    "runtimeAbsent": true,
+    "privateAbsent": true,
+    "manifestsAbsent": true,
+    "copiedInputsAbsent": true,
+    "phoneIncompleteDownloadAbsent": false
+  },
+  "successfulRepeatCpuProfile": {
+    "totalMicros": 90110298,
+    "sampleCount": 7870,
+    "idleMicros": 82220318,
+    "idlePercent": 91.24,
+    "sourceUrlsRemoved": true,
+    "originalStallReproduced": false
+  }
+}
