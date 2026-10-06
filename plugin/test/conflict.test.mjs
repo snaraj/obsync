@@ -124,9 +124,42 @@ test("typing continues before an addition already learned from the other device"
   assert.deepEqual(threeWayMerge("note: 😀😄", "note: 😀X😄", "note: 😀😄Y"), { ok: true, text: "note: 😀X😄Y" });
 });
 
-test("an insertion inside a line cannot absorb a competing new prefix", () => {
+test("insertions before the first character preserve every original anchor", () => {
   for (const [mine, theirs] of [["my line", "liXne"], ["liXne", "my line"]]) {
-    assert.deepEqual(threeWayMerge("line", mine, theirs), { ok: false, reason: "overlap" });
+    assert.deepEqual(threeWayMerge("line", mine, theirs), { ok: true, text: "my liXne" });
+  }
+  const base = "Desktop control 42\nphone7\nABCDEFGHIJKL";
+  const mine = "Desktop control 42\nphone7\nABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const theirs = "Desktop control 42\nphone7\nabcdefghijklmnopqrstuvwxyzABCDEFGHIJKL";
+  for (const [a, b] of [[mine, theirs], [theirs, mine]]) {
+    assert.deepEqual(threeWayMerge(base, a, b),
+      { ok: true, text: "Desktop control 42\nphone7\nabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ" });
+  }
+  for (const [a, b] of [["A😀", "B😀"], ["B😀", "A😀"]]) {
+    assert.deepEqual(threeWayMerge("😀", a, b), { ok: true, text: "AB😀" });
+  }
+  for (const [a, b] of [["my line", "their line"], ["their line", "my line"]]) {
+    assert.deepEqual(threeWayMerge("line", a, b), { ok: true, text: "my their line" });
+  }
+  for (const [a, b] of [["prefix line", "linX"], ["linX", "prefix line"]]) {
+    assert.deepEqual(threeWayMerge("line", a, b), { ok: false, reason: "overlap" });
+  }
+});
+
+test("different inserted words retain their own leading separators", () => {
+  for (const space of [" ", "\t", "\u2003", "  "]) {
+    const a = "# Both" + space + "A001 A002", b = "# Both" + space + "B001 B002";
+    for (const [mine, theirs] of [[a, b], [b, a]]) {
+      assert.deepEqual(threeWayMerge("# Both", mine, theirs),
+        { ok: true, text: "# Both" + space + "A001 A002" + space + "B001 B002" });
+    }
+    for (const [mine, theirs] of [[a, "# Both" + space], ["# Both" + space, a]]) {
+      assert.deepEqual(threeWayMerge("# Both", mine, theirs), { ok: true, text: a });
+    }
+    assert.deepEqual(threeWayMerge("# Both", a, a), { ok: true, text: a });
+  }
+  for (const [a, b] of [["left A right", "left B right"], ["left B right", "left A right"]]) {
+    assert.deepEqual(threeWayMerge("left right", a, b), { ok: true, text: "left A B right" });
   }
 });
 

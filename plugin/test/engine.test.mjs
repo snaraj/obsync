@@ -643,7 +643,7 @@ const closing = (server, fileId) => server.files.get(fileId).versions.find((vers
  * points, because a rule that holds from one side is not a rule.
  */
 test("overlapping edits: the lower id, this device's, keeps the note and the other is one copy", async () => {
-  const { r, fileId, ours, theirs, head } = await forkOf("Notes/Clash.md", "line\n", "my line\n", "their line\n", "ours");
+  const { r, fileId, ours, theirs, head } = await forkOf("Notes/Clash.md", "original line\n", "my line\n", "their line\n", "ours");
 
   assert.equal(await applyChange(r.context, head), "skipped");
   assert.equal(r.host.text("Notes/Clash.md"), "my line\n", "our edit is untouched");
@@ -660,7 +660,7 @@ test("overlapping edits: the lower id, this device's, keeps the note and the oth
 });
 
 test("overlapping edits: the lower id, the other device's, takes the note and this device's is one copy", async () => {
-  const { r, fileId, theirs, head } = await forkOf("Notes/Clash.md", "line\n", "my line\n", "their line\n", "theirs");
+  const { r, fileId, theirs, head } = await forkOf("Notes/Clash.md", "original line\n", "my line\n", "their line\n", "theirs");
 
   assert.equal(await applyChange(r.context, head), "applied");
   assert.equal(r.host.text("Notes/Clash.md"), "their line\n");

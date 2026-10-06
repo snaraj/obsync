@@ -3109,7 +3109,7 @@ async function resolve(
               device: context.deviceNameFor(change.device_id),
             });
           }
-          context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq} announced=${ours}`);
+          context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started} announced=${ours}`);
           return "merged";
         });
         await retireLostFolders(context, baseManifest.path, target, target === here ? theirManifest.path : here);
@@ -3123,7 +3123,7 @@ async function resolve(
       if (before !== null && !(await unmoved(context, localPath, before))) {
         return deferred(context, change, `saved_during_merge stage=unmerged duration_ms=${context.now() - started}`);
       }
-      context.host.log(`pull decision=unmerged reason=${merged.reason} file=${change.file_id}`);
+      context.host.log(`pull decision=unmerged reason=${merged.reason} file=${change.file_id} typing=${context.host.typing(localPath)} duration_ms=${context.now() - started}`);
     }
   }
 

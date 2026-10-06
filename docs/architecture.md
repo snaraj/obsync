@@ -1202,12 +1202,14 @@ long poll and needs its timeout raised.
    are compared independently, so adjacent line edits need no unchanged
    separator. When both replace exactly one line only by appending to its
    original text, keep their common appended prefix once (by Unicode code
-   point), then join their different additions in lexicographic order.
+   point), then join their different additions in lexicographic order. If
+   only leading whitespace is shared and both additions continue differently,
+   retain each addition's whitespace so their words do not run together.
    This gives both devices the same text without using a clock or device role.
    Continued typing before an already received suffix uses code-point
    alignment under the same 4,000,000-cell bound: all original characters
-   must remain in order, with the first in place. Each gap merges by the same
-   shared-prefix rule. Competing prefixes remain conflicts. If the graph
+   must remain in order. Each gap, including the one before the first
+   character, merges by the same rule. If the graph
    has two incomparable common ancestors, combine them before comparing the
    current edits, even when the first comparison would look clean. An
    unresolvable or over-depth shared base refuses the merge; it cannot fall

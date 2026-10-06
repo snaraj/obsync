@@ -324,6 +324,38 @@ const foreign = (r, fileId, text, parents, mtime) => r.server.publish({
 });
 const storms = (r) => r.host.logs.filter((line) => line.includes("reason=merge_storm"));
 
+for (const isMobile of [false, true]) test(`prefix and word-boundary edits reconcile into one encrypted history (${isMobile ? "mobile" : "desktop"})`, async () => {
+  for (const [original, left, right, expected] of [
+    ["ABCDEFGHIJKL", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"],
+    ["# Both", "# Both A001 A002", "# Both B001 B002", "# Both A001 A002 B001 B002"],
+  ]) {
+    const r = await rig({ isMobile });
+    r.host.seed(NOTE, original, 1000);
+    const base = await pushFile(r.context, NOTE);
+    r.host.seed(NOTE, left, 2000);
+    await pushFile(r.context, NOTE);
+    const incoming = await foreign(r, base.fileId, right, [base.versionId], 3000);
+    assert.equal(await applyChange(r.context, incoming), "merged", pulls(r.host));
+    assert.equal(r.host.text(NOTE), expected);
+    assert.ok(r.host.logs.some(line => /^pull decision=merged .* duration_ms=[0-9]+ announced=(true|false)$/.test(line)), pulls(r.host));
+    assert.deepEqual(copies(r.host), []);
+    const file = r.server.files.get(base.fileId);
+    assert.equal(file.heads.length, 1);
+    assert.equal(r.state.fileByPath(NOTE).versionId, file.heads[0]);
+    r.host.seed(NOTE, expected + "!", 4000);
+    await pushFile(r.context, NOTE);
+    assert.equal(r.server.files.get(base.fileId).heads.length, 1);
+    assert.deepEqual(copies(r.host), []);
+  }
+});
+
+test("a refused text merge reports typing state and elapsed time without note text", async () => {
+  const r = await rig();
+  const { head } = await overlap(r);
+  await applyChange(r.context, head);
+  assert.ok(r.host.logs.some(line => /^pull decision=unmerged reason=overlap file=[a-f0-9]+ typing=false duration_ms=[0-9]+$/.test(line)), pulls(r.host));
+});
+
 for (const isMobile of [false, true]) test(`continued adjacent appends reconcile without copies (${isMobile ? "mobile" : "desktop"})`, async () => {
   const r = await rig({ isMobile });
   r.host.seed(NOTE, "Desktop: START\nPhone: START", 1000);

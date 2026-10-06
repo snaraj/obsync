@@ -9,6 +9,10 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ### Fixed
 
+- Concurrent typing before the first character of a line now combines when
+  both edits preserve the existing text. Different added word streams retain
+  their own leading spaces instead of joining two words together.
+
 - A minimized desktop restores background throttling after unanswered network
   attempts, including while uploads remain queued for retry. An answer lifts
   it again while work remains. Logs distinguish calm, unanswered and stopped
