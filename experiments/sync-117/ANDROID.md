@@ -57,6 +57,11 @@ marker survival and independent bytes. It describes the original common-prefix
 rule and is not the oracle for a repaired candidate. Do not turn that weaker
 observation into a co-editing PASS.
 Pair compares both renderers independently; secrets stay in process memory.
+Phase timestamps distinguish a comparison deadline from later key persistence.
+Keep a failed automatic attempt even if native manual approval subsequently
+completes enrollment; record that intervention separately. Co-typing produces
+separate text and capture receipts. A text PASS does not override a later
+capture failure, and a CAPTURED receipt still requires opening the images.
 Editor input uses trusted native events. Restart checks enrollment retention;
 Leave checks server revocation, forgotten enrollment and exact local-note hashes.
 Offline calibration uses the app's authenticated transport, not browser fetch.

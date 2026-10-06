@@ -58,6 +58,11 @@ Mirroring app's settings. Search settings for `self` and open the plugin. Pace
 each typed character with a native observation. Recheck focus visually before
 starting a stream. iOS capitalization suggestions can commit on blur: record
 the resulting edit, or dismiss the visible suggestion before final readback.
+Do not use Command-W to close a phone browser tab: Mirroring can intercept it
+and close its Mac window, requiring owner authentication again. Use the visible
+phone tab controls and verify the exact test tab before closing it. An HTTP
+200 download receipt does not prove installation; a zero-byte `.download`
+placeholder is incomplete and needs exact-location recoverable cleanup.
 
 With explicit authorization for disposable credentials and metadata through
 the relay, use a fresh `RUN` and omit `--local-control-only`. Keep the foreground

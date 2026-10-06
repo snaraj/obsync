@@ -22,6 +22,9 @@ process.env.ADB_SERVER_SOCKET = `tcp:127.0.0.1:${adbPort}`;
 process.env.ANDROID_ADB_SERVER_PORT = String(adbPort);
 function shell(...args) { return execFileSync(adb, ['-P', String(adbPort), '-s', serial, ...args], { encoding: 'utf8', timeout: 15000 }).trim(); }
 let forward;
+let phase = "connect";
+const phases = [];
+function enterPhase(name) { phase = name; phases.push({ phase, at: Date.now() }); }
 const clients = [];
 function record(label, value) {
   const result = { ...value, driverSha256, platform: 'Android emulator', physicalPhone: 'NOT_RUN' };
@@ -78,25 +81,32 @@ try {
     record('android-preflight',await read('M',`const p=app.plugins.plugins['obsync-private-sync'];return {ownedVault:app.vault.adapter.basePath===P.vault,pluginLoaded:!!p,version:p?.manifest?.version??null,paired:p?.state?.paired??null,notes:app.vault.getMarkdownFiles().length};`));
     await (await client('M')).screenshot('android-preflight');
   } else if(command==='pair') {
+    enterPhase('claim-dialog');
     await read('M',`app.setting.open();app.setting.openTabById('obsync-private-sync'); await wait(()=>row('Server URL')?.querySelector('input'),'server setting');fill(row('Server URL').querySelector('input'),P.url);await wait(()=>app.plugins.plugins['obsync-private-sync'].state.data.serverUrl===P.url,'saved URL');button('Pair this device').click();await wait(()=>row('Pairing code')?.querySelector('input'),'pair dialog');return true;`);
+    enterPhase('creator-code');
     const a=await client('A'), m=await client('M');
     const code=await a.evaluate(`app.setting.close();window.labPairing=[];const p=app.plugins.plugins['obsync-private-sync'];if(window.labPairingTap!==p){window.labPairingTap=p;const old=p.log.bind(p);p.log=line=>{if(/^pairing role=creator decision=/.test(line))window.labPairing.push({at:Date.now(),decision:/decision=([^ ]+)/.exec(line)?.[1]});return old(line);};}app.commands.executeCommandById('obsync-private-sync:pair-device');return await wait(()=>document.querySelector('.modal pre.obsync-code')?.textContent.trim(),'pair code');`);
     if(!/^[A-Z2-7]{128}$/.test(code))throw Error('pairing code shape');
+    enterPhase('submit-claim');
     await m.evaluate(`const input=row('Pairing code').querySelector('input');input.focus();return true;`);
     await m.insertText(code);
     await m.evaluate(`if(row('Pairing code').querySelector('input').value!==P.code)throw Error('pairing input mismatch');button('Pair').click();return true;`,{code});
+    enterPhase('compare');
     const matchBody=`return await wait(()=>/the code ([0-9]{3} [0-9]{3})/.exec([...document.querySelectorAll('.modal:not(.mod-settings)')].map(m=>m.textContent).join(' '))?.[1],'independent visible match');`;
     const [ours,theirs]=await Promise.all([a.evaluate(matchBody),m.evaluate(matchBody)]);
     if(ours!==theirs)throw Error('native match codes differ');
+    enterPhase('approve');
     await a.evaluate(`const modal=[...document.querySelectorAll('.modal:not(.mod-settings)')].find(m=>m.textContent.includes(P.match));const b=[...modal?.querySelectorAll('button')??[]].find(b=>b.textContent.trim()==='Approve');if(!b||b.disabled)throw Error('comparison approval absent');b.click();return true;`,{match:theirs});
+    enterPhase('key-kept');
     await until(async()=>{
       const observed=await m.evaluate(`const p=app.plugins.plugins['obsync-private-sync'];const modal=[...document.querySelectorAll('.modal')].find(m=>m.querySelector('.modal-title')?.textContent==="Add this vault's notes to the server's vault?");return {paired:p.state.paired,importPending:!!modal};`);
       if(observed.importPending)await m.evaluate(`const modal=[...document.querySelectorAll('.modal')].find(m=>m.querySelector('.modal-title')?.textContent==="Add this vault's notes to the server's vault?");const b=[...modal.querySelectorAll('button')].find(b=>b.textContent.trim()==='Pair and upload');if(!b||b.disabled)throw Error('synthetic import control absent');b.click();return true;`);
       return observed.paired;
     },'Android key kept',60000);
+    enterPhase('creator-confirmation');
     await until(()=>a.evaluate(`return (window.labPairing??[]).some(e=>e.decision==='paired');`),'creator key-kept acknowledgement',60000);
     for(const c of [a,m])await c.evaluate(`app.setting.close();return true;`);
-    record('android-pair',{result:'PASS',independentRendererComparisonsMatched:true,creatorConfirmedKeyKept:true,A:await progress('A'),M:await progress('M'),desktopMockKeychain:true});
+    record('android-pair',{result:'PASS',independentRendererComparisonsMatched:true,creatorConfirmedKeyKept:true,phases,A:await progress('A'),M:await progress('M'),desktopMockKeychain:true});
   } else if(command==='both-directions') {
     await typedTransfer('A','desktop-to-android'); await typedTransfer('M','android-to-desktop');
   } else if (command === 'cotype-observe') {
@@ -164,6 +174,12 @@ try {
     const proof=await verify(path,convergedText);saveProgress('PASS');
     record('android-cotype',{result:'PASS',path,typedTokens:{A:expectedTokens.A.length,M:expectedTokens.M.length},trustedInput:inputProof,typingMs:stopped-started,settledAfterTypingMs:Date.now()-stopped,oneFileOnEachPeer:true,everyTokenExactlyOnce:true,perDeviceTokenOrderPreserved:true,fixedLinesIntact:true,sha256:createHash('sha256').update(convergedText).digest('hex'),...proof,physicalKeyboard:'NOT_CLAIMED',input:'CDP Input.insertText trusted native beforeinput'});
 
+    for(const name of ['A','M']) {
+      enterPhase('cotype-capture-'+name);
+      await (await client(name)).screenshot(stem+'-'+name);
+    }
+    record('android-cotype-captures',{result:'CAPTURED',path,visualInspection:'PENDING',phases});
+
   } else if(command==='background' || command==='restart') {
     for(const c of clients)c.close();
     shell('forward','--remove',`tcp:${forward}`); forward=undefined;
@@ -216,7 +232,7 @@ try {
     record('android-status',{A:await progress('A'),M:await progress('M')});
   } else throw Error('unknown Android journey');
 } catch(error) {
-  record('android-journey-failure',{result:'FAIL',stage:command,reason:error.message});process.exitCode=1;
+  record('android-journey-failure',{result:'FAIL',stage:command,phase,phases,reason:error.message});process.exitCode=1;
 } finally {
   for(const c of clients)c.close();
   if(forward)shell('forward','--remove',`tcp:${forward}`);
