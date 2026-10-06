@@ -1224,6 +1224,13 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
     context.host.log(`pull path_class=domainmap decision=skipped seq=${change.seq}`);
     return "skipped";
   }
+  // The feed already carries these immutable versions, including our echoes
+  // and superseded peer edits. Retain them before either fast path returns:
+  // a long typing burst can move both branches beyond the file listing while
+  // a merge waits on network I/O. Re-fetching that known history wastes the
+  // bounded ancestry-read budget and can turn compatible typing into copies.
+  // The existing byte-bounded cache and all manifest validation still apply.
+  hold(context, change.file_id, change);
   const authored = context.authored.delete(change.version_id);
   // An echo is a version this device HOLDS. One it authored and holds nowhere
   // now -- a note that left the selection before 1.1.5, or whose new name was

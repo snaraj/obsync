@@ -821,7 +821,17 @@ export class ObsidianHost implements VaultHost {
       views: (path) => this.views(path),
       read: (file) => this.plugin.app.vault.read(file),
       enabled: (path) => this.plugin.engine != null && inSyncScope(path, this.plugin.state.data.syncFolders),
-      saved: (path) => this.plugin.engine?.editorSaved(path),
+      saved: (path) => {
+        this.plugin.engine?.editorSaved(path);
+        // Early public saves can cancel the native preview notification.
+        // Notify after confirmed saving, with no later save after consumers
+        // can synchronously type, rebind another pane or stop the engine.
+        const views = this.views(path), files = views.map((view) => view.file);
+        for (let i = 0; i < views.length; i++) {
+          const view = views[i];
+          if (view?.file === files[i] && view?.file?.path === path) this.plugin.app.workspace.trigger("quick-preview", view.file, view.getViewData());
+        }
+      },
       log: (line) => this.log(line),
     }, this.editorTimers);
     const log = (line: string): void => this.log(line);

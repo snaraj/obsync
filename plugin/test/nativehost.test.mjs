@@ -277,6 +277,38 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none", edi
   return { ...r, root, systemBin, host, seed, contents, hidden, logs, trashed, notices, openEditor, applyIncoming, EditorBusy: box.require(join(box.home, "build/sync/pull.js")).EditorBusy };
 }
 
+for (const mobile of [false, true]) for (const effect of ["none", "input", "rebind"])
+  test(`a confirmed local save refreshes native consumers without another save (${mobile}, ${effect})`, async (t) => {
+    const timers = new FakeTimers(), r = await native(t, {}, { mobile, editorTimers: timers });
+    r.seed(NOTE, "old", 1000);
+    r.seed("Notes/Elsewhere.md", "OTHER", 1000);
+    const buffer = { value: "new local text" }, view = r.openEditor(NOTE, buffer);
+    const second = effect === "rebind" ? r.openEditor(NOTE, buffer) : null;
+    let saves = 0, queued = 0;
+    const previews = [];
+    view.save = async () => { saves++; writeFileSync(join(r.root, NOTE), buffer.value); };
+    r.host.plugin.engine = { editorSaved(path) { assert.equal(path, NOTE); queued++; } };
+    r.host.plugin.app.workspace.trigger = (event, file, text) => {
+      assert.equal(queued, 1, "publication is queued before reentrant consumers run");
+      previews.push({ event, path: file.path, text });
+      assert.equal(readFileSync(join(r.root, NOTE), "utf8"), "new local text");
+      if (effect === "input") {
+        r.host.editorActivity.record(view, "beforeinput");
+        buffer.value += " unsaved";
+      }
+      if (second) second.file = { path: "Notes/Elsewhere.md" };
+    };
+    t.after(() => r.host.stopEditorSaves());
+    r.host.editorActivity.record(view, "beforeinput");
+    await timers.run(5, () => queued === 1 && r.host.editorActivity.saving.size === 0);
+    r.host.stopEditorSaves();
+    assert.deepEqual(previews, [{ event: "quick-preview", path: NOTE, text: "new local text" }]);
+    assert.equal(saves, 1);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), "new local text");
+    assert.equal(readFileSync(join(r.root, "Notes/Elsewhere.md"), "utf8"), "OTHER");
+    assert.equal(buffer.value, "new local text" + (effect === "input" ? " unsaved" : ""));
+  });
+
 /** A public TextFileView save/load model with the adapter's actual ordering.
  * No private native editor fields are touched by the product under test. */
 async function queuedEditor(t, afterRename = () => {}) {

@@ -1369,6 +1369,9 @@ test("remembered versions hold one merge input's worth, the oldest forgotten fir
   await pushFile(r.context, BIG);
   const other = await r.server.publish({ fileId: root.fileId, path: BIG, bytes: enc("big there\n"), mtime: 3000,
     parents: [root.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  // The feed now reaches the same cache before getFile does. Apply identical
+  // hostile memory pressure at both entry points, not two bodies for one id.
+  other.pad = "x".repeat(CHUNK_MAX);
   const getFile = r.transport.getFile.bind(r.transport);
   r.transport.getFile = async (id) => {
     const file = await getFile(id);

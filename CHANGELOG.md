@@ -18,8 +18,11 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   notices. Both the staged download and the editor's subsequent save are
   flushed before the write completes. Unsafe or unsupported editor states
   retain the native refresh fallback.
-- Confirmed remote refreshes update live-preview consumers, including the
+- Confirmed local saves and remote refreshes update live-preview consumers, including the
   native word and character counts, without another save after callbacks.
+- Live version history, including own echoes and superseded peer edits, stays
+  in the existing bounded ancestry cache so long typing bursts do not spend
+  historical-read budgets fetching records the device already received.
 - The container builder base advances to Rust 1.98.1 with its pinned image
   digest; the repository compiler remains pinned to Rust 1.98.0 (#336).
 

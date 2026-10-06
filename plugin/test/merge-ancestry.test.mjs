@@ -106,6 +106,28 @@ test("ancestry reads stop at the fixed budget on a long private branch", async (
   assert.ok([...r.host.files.keys()].some(p => p.includes("(conflict")));
 });
 
+test("a long live feed retains own echoes and superseded peer edits for the final merge", async () => {
+  const r = await windowedFork(80);
+  const original = r.host.text(NOTE);
+  const frames = [...r.server.journal];
+  const own = frames.filter(frame => frame.device_id === r.context.deviceId);
+  const peers = frames.filter(frame => frame.device_id !== r.context.deviceId && frame.version_id !== r.incoming.version_id);
+  assert.equal(own.length, 81);
+  assert.equal(peers.length, 79);
+  for (const frame of own) assert.equal(await applyChange(r.context, frame), "echo");
+  for (const frame of peers) assert.equal(await applyChange(r.context, frame), "skipped");
+  assert.equal(r.host.text(NOTE), original, "caching feed history must not apply obsolete edits");
+  assert.equal(r.host.files.size, 1);
+  assert.equal(r.reads.length, 0);
+  assert.equal(await applyChange(r.context, r.incoming), "merged");
+  assert.equal(r.host.text(NOTE), "Shared: START|" + "A".repeat(80) + "a".repeat(80));
+  assert.equal(r.server.files.get(r.base.fileId).heads.length, 1);
+  assert.equal(r.host.files.size, 1, "ordinary live history must not displace typing into copies");
+  assert.equal(r.reads.length, 0, "already received ancestry needs no historical requests");
+  assert.match(r.host.logs.find(line => line.includes("reason=merge_ancestry ")) ?? "", /reads=0 recalled=[1-9]\d* held_chars=\d+ budget_reads=64 budget_chars=8388608 duration_ms=\d+$/);
+  assert.ok(!r.host.logs.some(line => line.includes("reason=merge_ancestry_limit")));
+});
+
 test("repeated ancestry edges are traversed once, including a hostile cycle", async () => {
   const r = await windowedFork();
   const getFile = r.transport.getFile.bind(r.transport);
