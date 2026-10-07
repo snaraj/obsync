@@ -701,3 +701,49 @@ captured listeners refusing connections, and both fixtures' runtime, private
 data and live manifests absent. Sanitized receipts and synthetic captures
 remain for review. The current plugin bundle is retained for physical-phone
 acceptance; that phone's OS authentication lock remains unresolved.
+
+## Desktop acceptance of the same product bytes
+
+Evidence head `ba706f10451f0bf05320750f914e8785383487d4` changes no product
+bytes from `221e6cd7`. Its [desktop matrix](https://github.com/snaraj/obsync/actions/runs/37701041950)
+passes native Obsidian 1.13.7 on Windows, macOS and Linux (both keyring modes).
+The Windows captures name checkout `10f5af8bc8d72224368d5a7aba7071b9c185740e`;
+the GitHub commit API verifies its parents are protected base `72bdcf94` and
+this evidence head. All six PNGs were opened and verified against their
+capture hashes. Co-typing ends with both ordered streams and unchanged fixed
+lines visible; restart captures show the same new note on both clients.
+Every capture receipt has matching independent editor/disk hashes. These are
+end-state crops, not measurements of visibility during input. The hosted
+Linux/macOS jobs retain functional logs, not inspected screenshot artifacts.
+
+Windows retains all 100 keystrokes from each writer, converging 198 ms after
+the last insertion. NTFS case-only rename, trash propagation, recovery after
+a held file lock, and paired restart pass. Windows builds main.js with hash
+`444c06d943db4350f9f8eb30b49d29017d119fc6d8b07ea28f5044a09bd3067e`;
+the macOS/Linux build matches `7ec6a7cf…e1551` above. Reassembling the same 27
+compiled modules using Windows path ordering reproduces that Windows hash
+exactly: the module order differs, not their contents. These builds are not
+claimed to be byte-identical. Canonical cross-platform module ordering and a
+retained bundle-equivalence check remain harness improvements for #262;
+the release bundle's exact hashes still bind each device installation.
+Linux without a secret store
+explicitly reports unencrypted local secret storage; that row proves its
+warning and recovery behavior, not encrypted local key custody.
+
+On macOS 27 arm64, a separate official Obsidian 1.14.4 application passes
+setup, pairing, both transfer directions, restart and settings inspection.
+One-way, two-writer and continuous-character cases retain exact editor/disk
+bytes and one head. The continuous case sends 60 individual characters per
+writer over 11.829 seconds: maximum event arrival 681.30 ms, final settling
+365 ms, one caret placement and no native overwrite warnings. It is a
+loopback-HTTP functional run with an isolated mock keychain, not a TLS speed
+comparison. Prefix/suffix, two-prefix and word-boundary cases also pass.
+All 32 captures were opened. All three controllers exit zero and remove their
+runtime profiles, private data and live manifests.
+
+Ownership, hash and open-handle checks precede removal of the temporary app,
+installer, Android image/download inputs and obsolete preflight artifact
+copies. Shared tooling and the installed desktop application are preserved.
+The final bundle and sanitized evidence remain. Physical-iPhone acceptance
+and its older on-device fixture cleanup still require the Mac authentication
+prompt in iPhone Mirroring to be unlocked; no current-byte phone pass is claimed.
