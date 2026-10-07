@@ -62,6 +62,17 @@ test("a save during download is rebased at commit instead of restarting network 
   assert.deepEqual(r.queued, [path]);
 });
 
+test("authenticated editor preparation probes native readiness once before staging", async () => {
+  const r = await fixture();
+  r.host.seed(path, latest, 4000);
+  let checks = 0;
+  r.host.editorReady = async () => { checks++; return true; };
+  assert.equal(await applyChange(r.context, r.incoming), "merged");
+  assert.equal(checks, 1, "one save-completion wait; the writer separately guards its final commit");
+  assert.equal(r.host.text(path), "A: one two\nB: remote\n");
+  assert.deepEqual(r.queued, [path]);
+});
+
 test("merge preparation owns its publication turn while a newer save waits to upload", async () => {
   const r = await fixture();
   let enter, release;
@@ -90,8 +101,8 @@ for (const reason of ["unsaved", "changed_during_stage", "parent_advanced"]) tes
   const r = await fixture();
   r.host.seed(path, latest, 4000);
   if (reason === "unsaved") {
-    let checks = 0;
-    r.host.editorReady = async () => ++checks === 1;
+    r.host.editorReady = async () => false;
+    r.host.savedSnapshot = () => true;
   }
   else {
     const original = r.host.writer.bind(r.host);

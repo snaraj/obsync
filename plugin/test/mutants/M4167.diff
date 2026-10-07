@@ -1,0 +1,11 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3057,7 +3057,7 @@
+             // classify unpublished overlaps and automatic rewrite holds.
+             if (!await context.host.editorReady(localPath)) {
+               if (context.host.savedSnapshot?.(localPath, mine) !== true) return null;
+-              throw new EditorBusy();
++              return null;
+             }
+             if (inputs.shared === false) return null;
+             const joined = threeWayMerge(inputs.shared ?? decoder.decode(inputs.base), decoder.decode(published), decoder.decode(inputs.theirs));

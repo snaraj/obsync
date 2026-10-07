@@ -1,0 +1,11 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3334,7 +3334,7 @@
+   const before = await context.host.stat(path);
+   // The caller joined native saving before selecting this path. The final
+   // writer independently refuses input or disk changes during staging.
+-  if (before === null || before.size > CHUNK_MAX) throw new EditorBusy();
++  if (before === null || before.size > CHUNK_MAX || !await context.host.editorReady(path)) throw new EditorBusy();
+   const latest = await context.host.read(path);
+   if (!isMergeableText(path, latest)) return null;
+   const decoder = new TextDecoder();

@@ -1,0 +1,11 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3056,7 +3056,7 @@
+             // Without a saved receipt, ordinary reconciliation still needs to
+             // classify unpublished overlaps and automatic rewrite holds.
+             if (!await context.host.editorReady(localPath)) {
+-              if (context.host.savedSnapshot?.(localPath, mine) !== true) return null;
++              if (context.host.savedSnapshot?.(localPath, mine) !== true) throw new EditorBusy();
+               throw new EditorBusy();
+             }
+             if (inputs.shared === false) return null;

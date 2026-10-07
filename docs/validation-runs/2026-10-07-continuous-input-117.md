@@ -405,3 +405,64 @@ and hashed. No physical-iPhone acceptance is inferred from these emulator runs.
 The page-retry full local `make check` passed in431.12 s:2174 plugin tests,
 873 contracts,83 dashboard tests, Rust line coverage94.72%, both secret scans
 clean. Native acceptance for the new bundle remains a separate requirement.
+
+
+## Page retry comparison and the native save boundary
+
+Five alternating immutable-bundle comparisons of `45e8444` and `2b8e4a5`
+used the unchanged individual-character, during-overlap 1500 ms oracle. Each
+bundle passed only 1/5 trials. All ten retained exact independent editor/disk
+bytes and one head. All forty screenshots were opened. The paired mean
+improvement and 95% bootstrap interval were (ms; positive means faster):
+
+| Destination | p50 improvement [95% interval] | p95 improvement [95% interval] |
+| --- | --- | --- |
+| Desktop | 0.69 [-19.99, 24.97] | 161.98 [-86.00, 539.82] |
+| Android | 20.96 [-17.70, 59.62] | -9.92 [-316.40, 271.56] |
+
+Reproduce with private `paired-page-retry.py` and
+`analyze-native-pairs.py` over its ten retained receipts, 10000 resamples,
+seed117. These results establish neither a latency gain nor acceptance.
+The comparison retains the same local TLS Android and loopback desktop
+limitations as the preceding campaign.
+
+A diagnostic-only publication interval of250 ms passed2/5 trials against
+1/5 with the shipped100 ms interval. Both desktop p50 and p95 became slower
+(paired improvement -24.72 ms [-42.20,-7.24] and -214.26 ms
+[-325.78,-117.12]). Android intervals included zero. All ten final states
+were exact and their forty screenshots were inspected. This experiment is
+rejected; the publication interval is unchanged. Reproduce with private
+`paired-publication.py` and the same analysis procedure.
+
+A read-only phase trace on `2b8e4a5` passed one trial and its four screenshots
+show both streams arriving while typing continues. Android native adapter
+read, write and stat tails reached347.6,232.3 and420.6 ms respectively;
+`getFile` p95/max were48.8/90.3 ms. The slowest changes page took985.2 ms,
+including a780 ms editor merge around a native adapter stall. These durations
+overlap. They cannot be summed as independent shares of latency.
+
+The trace also shows two successive native readiness probes during one
+authenticated merge preparation. The correction joins a pending native save
+once when selecting the saved-editor path. Without a saved receipt, ordinary
+reconciliation still classifies unpublished overlaps and automatic rewrite
+holds. A busy editor with an existing receipt remains deferred. The final
+writer independently checks current bytes, editor identity, input generation
+and composition. Encryption, authentication, parent validation and durable
+writes are unchanged.
+
+The first attempt instead parked every busy editor. The full gate rejected
+that version with six rewrite/overlap/stamper failures (2169/2175 tests).
+Those unchanged tests control the repair: the revised path preserves the
+ordinary fallback. Failed evidence is retained; that first version is not
+shipped. The one-readiness regression fails the prior implementation with two
+checks instead of one. The unsaved-receipt, changed-disk and changed-parent
+cases continue to refuse without advancing ancestry. M4165 restores the
+second probe; M4166 removes the remaining probe; M4167 falls through for a
+busy editor with a receipt; M4168 removes ordinary overlap classification.
+Native acceptance for this correction is pending.
+
+Focused reproduction: `cd plugin && npm run build && node --test
+test/editor-rebase.test.mjs test/merge-budget.test.mjs
+test/rewrite-overlap.test.mjs` (55 passing). Each retained M4165–M4168
+compiles and fails at runtime; sources are restored and rebuilt after every
+mutation. Full-gate and native results must bind the revised bytes.

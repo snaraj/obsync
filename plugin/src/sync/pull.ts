@@ -3048,14 +3048,17 @@ async function resolve(
             if (context.state.fileByPath(localPath)?.versionId !== localVersionId) throw new EditorBusy();
             // Prepare only authenticated parent content, independent of a
             // native save in progress. No current disk/editor bytes enter
-            // this merge. mergeSavedEditor checks readiness after the network
-            // work, then the final writer rechecks every editor and disk.
+            // this merge. Check readiness after the network work, then the
+            // final writer independently rechecks every editor and disk.
             const [inputs, published] = await Promise.all([prepare(), assembleBytes(context, own)]);
             prepared = inputs;
-            // Test the local receipt after the download, so a native save
-            // completing beside it does not abandon this publication turn.
-            // A still-busy editor keeps the ordinary defer/hold decision.
-            if (!await context.host.editorReady(localPath) && context.host.savedSnapshot?.(localPath, mine) !== true) return null;
+            // Join native saving once when selecting the saved-editor path.
+            // Without a saved receipt, ordinary reconciliation still needs to
+            // classify unpublished overlaps and automatic rewrite holds.
+            if (!await context.host.editorReady(localPath)) {
+              if (context.host.savedSnapshot?.(localPath, mine) !== true) return null;
+              throw new EditorBusy();
+            }
             if (inputs.shared === false) return null;
             const joined = threeWayMerge(inputs.shared ?? decoder.decode(inputs.base), decoder.decode(published), decoder.decode(inputs.theirs));
             if (!joined.ok) return null;
@@ -3329,7 +3332,9 @@ async function mergeSavedEditor(
     throw new EditorBusy();
   }
   const before = await context.host.stat(path);
-  if (before === null || before.size > CHUNK_MAX || !await context.host.editorReady(path)) throw new EditorBusy();
+  // The caller joined native saving before selecting this path. The final
+  // writer independently refuses input or disk changes during staging.
+  if (before === null || before.size > CHUNK_MAX) throw new EditorBusy();
   const latest = await context.host.read(path);
   if (!isMergeableText(path, latest)) return null;
   const decoder = new TextDecoder();
