@@ -444,7 +444,15 @@ Several agents work this repository at once. Git worktrees under
 5. **Push and open a DRAFT PR** with `Closes #N`, both agent labels, owner
    assignee, milestone, signed body with reproducible numbers. Apply
    `requires-review` once complete-from-author.
-6. **Adversarial review**; fix findings on the same branch; delta re-review.
+6. **Adversarial review**; before yielding, register the author with the
+   existing reply monitor for this exact PR and verify actual discovery and
+   delivery to that author. Reviewer-dispatch labels and global monitor health
+   do not prove verdict delivery. Monitoring must survive removal of
+   `requires-review`, cover comments and review replies, and deduplicate
+   unchanged events without routine owner notifications. Read any verdict
+   already present, fix findings on the same branch without waiting for the
+   owner to relay them, then request delta re-review. Keep monitoring until
+   the exchange is resolved; never create a duplicate watcher.
 7. **Run the user journeys** for a change to `plugin/` or the sync path: the
    affected journeys in `docs/validation.md`, on real devices, one desktop and
    one phone, with their outcomes recorded in `docs/validation-runs/`. Nothing

@@ -311,7 +311,7 @@ for (const mobile of [false, true]) for (const effect of ["none", "input", "rebi
 
 /** A public TextFileView save/load model with the adapter's actual ordering.
  * No private native editor fields are touched by the product under test. */
-async function queuedEditor(t, afterRename = () => {}) {
+async function queuedEditor(t, afterRename = () => {}, { mobile = false, lateReload = false } = {}) {
   let arrived = () => {};
   const events = [];
   // Disk/queue operations can exceed the 5 ms save interval on any host.
@@ -320,6 +320,7 @@ async function queuedEditor(t, afterRename = () => {}) {
   const timers = new FakeTimers();
   const r = await native(t, {
     afterRename: async () => arrived(),
+    afterWrite: async () => { if (mobile) arrived(); },
     opened: (path, flags, handle) => {
       if (!path.endsWith(nodePath.sep + nodePath.normalize(NOTE))) return;
       const sync = handle.sync.bind(handle);
@@ -328,16 +329,19 @@ async function queuedEditor(t, afterRename = () => {}) {
         events.push("fsync"); await sync();
       };
     },
-  }, { editorTimers: timers });
+  }, { editorTimers: timers, mobile });
   const original = "A: local\nB: \n", incoming = "A: local\nB: remote\n";
   r.seed(NOTE, original, 1000);
   const buffer = { value: original }, view = r.openEditor(NOTE, buffer), file = view.file;
   const vault = r.host.plugin.app.vault, adapter = vault.adapter;
-  let baseline = original, saving = false, saveAgain = false;
+  let baseline = original, saving = false, saveAgain = false, dirty = true;
+  let releaseReloads;
+  const reloadGate = new Promise((resolve) => { releaseReloads = resolve; });
   adapter.promise = Promise.resolve();
   adapter.queue = (action) => (adapter.promise = adapter.promise.then(action, action));
   vault.read = (file) => adapter.queue(async () => readFileSync(join(r.root, file.path), "utf8"));
   view.save = async () => {
+    dirty = false;
     if (saving) { saveAgain = true; return; }
     const text = view.getViewData(), file = view.file;
     if (text === baseline) return;
@@ -346,7 +350,10 @@ async function queuedEditor(t, afterRename = () => {}) {
     events.push("baseline");
     try {
       await adapter.promise;
-      await adapter.queue(async () => writeFileSync(join(r.root, file.path), text));
+      await adapter.queue(async () => {
+        writeFileSync(join(r.root, file.path), text);
+        if (mobile) { events.push("watcher"); vault.trigger("modify", file); }
+      });
     } finally {
       saving = false;
       if (saveAgain) { saveAgain = false; await view.save(); }
@@ -355,10 +362,14 @@ async function queuedEditor(t, afterRename = () => {}) {
   const reads = [];
   vault.trigger = (_event, file) => {
     if (saving || file !== view.file) return;
-    const loading = vault.read(file).then((text) => {
+    const loading = vault.read(file).then(async (text) => {
+      // Native cached-read completion can outlive the adapter read barrier.
+      // TextFileView checks its CURRENT dirty flag when that read completes.
+      if (lateReload) await reloadGate;
       const prior = baseline;
       baseline = text;
       if (text === prior || text === buffer.value) return;
+      if (lateReload && !dirty) { view.setViewData(text, false); return; }
       if (buffer.value !== prior) events.push("external_notice");
       const merged = require("../build/sync/conflict.js").threeWayMerge(prior, buffer.value, text);
       assert.equal(merged.ok, true);
@@ -384,7 +395,8 @@ async function queuedEditor(t, afterRename = () => {}) {
     try { await writer.write(enc(incoming)); return await writer.commit(2000, enc(original)); }
     finally { await writer.abort(); }
   };
-  return { ...r, original, incoming, buffer, view, adapter, vault, events, reads, write, timers };
+  const type = (text) => { dirty = true; r.host.editorActivity.record(view, "beforeinput"); buffer.value = text; };
+  return { ...r, original, incoming, buffer, view, adapter, vault, events, reads, write, timers, type, releaseReloads };
 }
 
 for (const concurrent of [false, true]) test(`a queued durable editor write advances the saved baseline before native reload (typing=${concurrent})`, async (t) => {
@@ -407,6 +419,51 @@ for (const concurrent of [false, true]) test(`a queued durable editor write adva
   assert.equal(r.events.includes("external_notice"), false);
   assert.ok(!r.logs.some((line) => /editor_left|editor_reload_unconfirmed/.test(line)), r.logs.join(" | "));
   assert.deepEqual(r.hidden(), []);
+});
+
+for (const reason of ["composition", "native-only"]) test(`a queued bridge with a second ${reason} pane leaves every pane to one native reload`, async (t) => {
+  let second, secondText, r;
+  r = await queuedEditor(t, ({ host }) => {
+    // The second pane becomes unsafe after the final pre-write check. The
+    // bridge must check ALL panes before saving even the first safe pane.
+    host.editorActivity.record(second, "beforeinput");
+    if (reason === "composition") host.editorActivity.record(second, "compositionstart");
+    else host.editorActivity.nativeOnly.set(second, second.file);
+  });
+  secondText = { value: r.original };
+  const read = r.vault.read;
+  second = r.openEditor(NOTE, secondText);
+  r.vault.read = read;
+  let publicSaves = 0, reloads = 0;
+  const save = r.view.save;
+  r.view.save = async () => { publicSaves++; return save(); };
+  second.save = async () => { publicSaves++; };
+  r.vault.trigger = (event, file) => {
+    assert.equal(event, "modify"); assert.equal(file.path, NOTE);
+    reloads++;
+    const next = readFileSync(join(r.root, NOTE), "utf8");
+    r.view.setViewData(next, false); second.setViewData(next, false);
+  };
+  await r.write(); await r.adapter.promise;
+  assert.equal(publicSaves, 0, "one unsafe pane prevents a partial public-save bridge");
+  assert.equal(reloads, 1, "the native watcher supplies the fallback, with no duplicate reload");
+  assert.equal(r.buffer.value, r.incoming);
+  assert.equal(secondText.value, r.incoming);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming);
+});
+
+test("a desktop adapter without the private queue uses the ordinary native refresh fallback", async (t) => {
+  const r = await openIdle(t, false, "fallback one\nfallback two\n");
+  const adapter = r.host.plugin.app.vault.adapter;
+  assert.equal(adapter.queue, undefined, "this test exercises the public-only adapter shape");
+  let reloads = 0;
+  const trigger = r.host.plugin.app.vault.trigger;
+  r.host.plugin.app.vault.trigger = (...args) => { reloads++; return trigger(...args); };
+  await r.arrive("fallback one\nremote two\n", 2000);
+  assert.equal(reloads, 1);
+  assert.equal(r.shown.value, "fallback one\nremote two\n");
+  assert.deepEqual(r.loaded, [["fallback one\nremote two\n", false]]);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.shown.value);
 });
 
 for (const reason of ["input", "disk", "composition"]) test(`a queued writer rechecks ${reason} after waiting for earlier adapter work`, async (t) => {
@@ -1726,3 +1783,36 @@ for (const mobile of [false, true]) for (const open of [false, true]) for (const
     assert.deepEqual(r.hidden(), []);
   });
 }
+
+for (const typing of [false, true]) test(`mobile incoming text uses the public save before native reload can take ownership (typing=${typing})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile: true });
+  const save = r.view.save;
+  r.view.save = async () => {
+    const result = save();
+    if (typing) {
+      r.host.editorActivity.record(r.view, "beforeinput");
+      r.buffer.value = "A: local typed\nB: remote\n";
+    }
+    return result;
+  };
+  await r.write(); await r.adapter.promise; await Promise.all(r.reads);
+  assert.ok(r.events.indexOf("baseline") >= 0 && r.events.indexOf("baseline") < r.events.indexOf("watcher"),
+    "the incoming write must start through public save, before any native reload");
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming);
+  assert.equal(r.buffer.value, typing ? "A: local typed\nB: remote\n" : r.incoming);
+  assert.equal(r.events.includes("external_notice"), false);
+  assert.deepEqual(r.hidden(), []);
+});
+
+test("mobile saving cannot lose the next input to an older native reload completion", async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile: true, lateReload: true });
+  await r.write();
+  const next = "A: local NEXT\nB: remote\n";
+  r.type(next);
+  const saving = r.view.save();
+  r.releaseReloads();
+  await saving; await r.adapter.promise; await Promise.all(r.reads);
+  assert.equal(r.buffer.value, next, "an earlier native read overwrote already accepted input after save cleared dirty");
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), next);
+  assert.equal(r.events.includes("external_notice"), false);
+});

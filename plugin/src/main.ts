@@ -1664,6 +1664,28 @@ export class ObsidianHost implements VaultHost {
         if (release === null) throw new EditorBusy();
         let confirmed = shown === null;
         try {
+          // An active mobile editor must advance its saved baseline before
+          // the adapter emits a file-change event. Writing underneath it first
+          // lets an earlier native reload replace newer input after save()
+          // clears the dirty flag. Public save owns both baseline and write;
+          // passive, unsafe, binary and non-normalized text keep the adapter
+          // path. Never reach through the mobile adapter's private filesystem.
+          let text: string | null = null;
+          if (shown !== null && bytes.length <= EDITOR_SAVE_MAX_CHARS) {
+            try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { /* Preserve opaque bytes below. */ }
+          }
+          const bridge = shown !== null && text !== null && lines(text) === text
+            ? this.bridgeEditors(path, shown, text) : null;
+          if (bridge !== null && shown !== null && text !== null) {
+            if (bridge.saves.length !== this.views(path).length ||
+              (await Promise.all(bridge.saves)).some((saved) => !saved)) throw new EditorBusy();
+            const saved = new TextEncoder().encode(bridge.text);
+            const stat = await this.landed(path, saved, mtime);
+            if (stat === null) throw new EditorBusy();
+            confirmed = await this.refreshEditors(path, shown, text,
+              async () => new TextDecoder().decode(await adapter.readBinary(path)), bridge);
+            return { path, mtime: stat.mtime, size };
+          }
           await adapter.writeBinary(path, bytes.buffer, { mtime });
           // The SIZE is ours: the bytes handed to the adapter, not what a look
           // at the name says a moment later. The mtime is taken from the name
