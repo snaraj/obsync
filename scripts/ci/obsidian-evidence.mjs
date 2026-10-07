@@ -43,6 +43,11 @@ export function editorBounds(file, text) {
   if ([...document.querySelectorAll(".modal-container, .notice-container .notice")].some(visible)) return null;
   const view = app.workspace.activeLeaf?.view;
   if (view?.file?.path !== file || view.editor?.getValue() !== text) return null;
+  // Public openFile resolves before Obsidian's debounced word-count refresh.
+  // These English ASCII fixtures must show their own character count, not
+  // the previous note's. Waiting observes native UI; it never forces refresh.
+  const footer = document.querySelector(".status-bar-item.plugin-word-count")?.textContent ?? "";
+  if (!footer.endsWith(`words${text.length} characters`)) return null;
   const editor = view.containerEl.querySelector(".markdown-source-view");
   if (!editor || !visible(editor)) return null;
   const rect = editor.getBoundingClientRect();

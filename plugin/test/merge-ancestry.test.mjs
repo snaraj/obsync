@@ -128,6 +128,48 @@ test("a long live feed retains own echoes and superseded peer edits for the fina
   assert.ok(!r.host.logs.some(line => line.includes("reason=merge_ancestry_limit")));
 });
 
+test("a served page skips superseded tracked edits without native disk or head reads", async () => {
+  const r = await windowedFork(80);
+  const page = await r.transport.changes(0, 0, 1000);
+  const peers = page.changes.filter(frame => frame.device_id !== r.context.deviceId && frame.version_id !== r.incoming.version_id);
+  assert.equal(peers.length, 79);
+  const original = r.host.text(NOTE), stat = r.host.stat, nested = r.host.inNestedVault, getFile = r.transport.getFile;
+  r.host.stat = r.host.inNestedVault = r.transport.getFile = async () => { throw Error("obsolete frame issued external work"); };
+  for (const frame of peers) assert.equal(await applyChange(r.context, frame), "skipped");
+  assert.equal(r.host.text(NOTE), original);
+  assert.equal(r.host.files.size, 1);
+  r.host.stat = stat; r.host.inNestedVault = nested; r.transport.getFile = getFile;
+  for (const frame of page.changes.filter(frame => frame.device_id === r.context.deviceId)) {
+    assert.equal(await applyChange(r.context, frame), "echo");
+  }
+  assert.equal(await applyChange(r.context, r.incoming), "merged");
+  assert.equal(r.host.text(NOTE), "Shared: START|" + "A".repeat(80) + "a".repeat(80));
+  assert.equal(r.reads.length, 0);
+  assert.equal(r.server.files.get(r.base.fileId).heads.length, 1);
+});
+
+for (const kind of ["folder", "deletion", "answer", "move", "current_head", "unknown_heads", "older_local"]) {
+  test(`the obsolete-edit shortcut retains native validation for ${kind}`, async () => {
+    const r = await windowedFork(2);
+    const { decodeRecordManifest } = require("../build/sync/pull.js");
+    const manifest = await decodeRecordManifest(r.context, r.incoming);
+    if (kind === "folder") Object.assign(manifest, { v: 2, kind: "directory", size: 0, chunks: [], sha256: "" });
+    if (kind === "deletion") Object.assign(manifest, { deleted: true, size: 0, chunks: [], sha256: "" });
+    if (kind === "answer") manifest.answer = true;
+    if (kind === "move") manifest.path = "Notes/Moved.md";
+    const frame = await r.server.publishManifest({ fileId: r.base.fileId, manifest,
+      sids: manifest.chunks.map(chunk => chunk.sid), bytes: manifest.size,
+      parents: [r.incoming.version_id], manifestKey: r.keys.manifestKey,
+      deviceId: "ff".repeat(16) });
+    const local = r.state.fileByPath(NOTE).versionId;
+    // The page may carry obsolete frames, current heads or no head evidence.
+    const heads = kind === "current_head" ? [local, frame.version_id]
+      : kind === "unknown_heads" ? [] : kind === "older_local" ? ["ab".repeat(16)] : [local];
+    r.host.inNestedVault = async () => { throw Error("native path validation reached"); };
+    await assert.rejects(applyChange(r.context, { ...frame, heads }), /native path validation reached/);
+  });
+}
+
 test("repeated ancestry edges are traversed once, including a hostile cycle", async () => {
   const r = await windowedFork();
   const getFile = r.transport.getFile.bind(r.transport);

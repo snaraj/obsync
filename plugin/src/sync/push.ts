@@ -446,13 +446,18 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
     // whenever that happens makes fast typing outrun every publication.
     // Ordinary copies and streaming files retain the final growing-file
     // check below. Only a recorded, saved editor can supply this proof.
-    if (record !== undefined && context.host.typing(path) &&
-      (context.host.savedSnapshot?.(path, plaintext) === true || await context.host.editorReady(path))) {
-      const saved = await context.host.read(path);
-      const captured = await context.host.stat(path);
-      savedEditorSnapshot = plaintext.length === stat.size && captured !== null &&
-        captured.size === stat.size && captured.mtime === stat.mtime &&
-        saved.length === plaintext.length && saved.every((byte, index) => byte === plaintext[index]);
+    if (record !== undefined && context.host.typing(path)) {
+      // The receipt already proves these exact bytes were saved completely.
+      // Re-reading after that proof races the next save on mobile and turns a
+      // valid snapshot back into a growing file. It cannot make it safer.
+      savedEditorSnapshot = plaintext.length === stat.size && context.host.savedSnapshot?.(path, plaintext) === true;
+      if (!savedEditorSnapshot && await context.host.editorReady(path)) {
+        const saved = await context.host.read(path);
+        const captured = await context.host.stat(path);
+        savedEditorSnapshot = plaintext.length === stat.size && captured !== null &&
+          captured.size === stat.size && captured.mtime === stat.mtime &&
+          saved.length === plaintext.length && saved.every((byte, index) => byte === plaintext[index]);
+      }
     }
     const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
     plan.push({ sid, cid: hex(cid), len: plaintext.length });

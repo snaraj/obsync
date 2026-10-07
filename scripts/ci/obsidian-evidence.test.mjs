@@ -58,18 +58,30 @@ test("custody returns facts only, checks the persisted revision, and sanitizes m
 });
 
 test("captures refuse dialogs, notices, wrong editors, hidden and out-of-viewport content", () => {
+  let footer = "1 words9 characters";
   let blockers = [], rect = { x: 20, y: 40, width: 800, height: 500, right: 820, bottom: 540 };
   const editor = { getBoundingClientRect: () => rect };
   const view = { file: { path: "e2e/test.md" }, editor: { getValue: () => "synthetic" }, containerEl: { querySelector: () => editor } };
   globalThis.app = { workspace: { activeLeaf: { view } } };
-  globalThis.document = { querySelectorAll: (selector) => {
-    assert.equal(selector, ".modal-container, .notice-container .notice"); return blockers;
-  } };
+  globalThis.document = {
+    querySelectorAll: (selector) => {
+      assert.equal(selector, ".modal-container, .notice-container .notice"); return blockers;
+    },
+    querySelector: (selector) => {
+      assert.equal(selector, ".status-bar-item.plugin-word-count");
+      return footer === null ? null : { textContent: footer };
+    },
+  };
   globalThis.innerWidth = 1000;
   globalThis.innerHeight = 700;
   const bounds = () => editorBounds("e2e/test.md", "synthetic");
   try {
     assert.deepEqual(bounds(), { x: 20, y: 40, width: 800, height: 500, scale: 1 });
+    for (const stale of [null, "", "49 words249 characters", "1 words8 characters", "1 words19 characters"]) {
+      footer = stale; assert.equal(bounds(), null, "a stale or absent native count cannot pass capture");
+    }
+    footer = "1 words9 characters";
+    assert.ok(bounds(), "the native counter eventually catches up");
     blockers = [editor]; assert.equal(bounds(), null);
     blockers = [{ getBoundingClientRect: () => ({ width: 0, height: 0 }) }]; assert.ok(bounds());
     blockers = [];

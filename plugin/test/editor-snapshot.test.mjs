@@ -73,3 +73,40 @@ test("publishing a previously confirmed snapshot does not wait for newer unsaved
   assert.equal(r.host.text(path), "BASE first second");
   assert.deepEqual((await r.transport.getFile(r.base.fileId)).heads, [pushed.versionId]);
 });
+
+test("a confirmed saved snapshot needs no second file read that races later input", async () => {
+  const r = await fixture(), read = r.host.read.bind(r.host), put = r.transport.putChunk.bind(r.transport);
+  let reads = 0;
+  r.host.read = async (...args) => {
+    reads++;
+    if (reads > 1) r.host.seed(path, "BASE first second", 3000);
+    return read(...args);
+  };
+  r.host.savedSnapshot = (name, bytes) => name === path && new TextDecoder().decode(bytes) === "BASE first";
+  r.host.editorReady = async () => { throw Error("a historical save receipt needs no current-editor wait"); };
+  r.transport.putChunk = async (...args) => { await put(...args); r.host.seed(path, "BASE first second", 3000); };
+  const pushed = await pushFile(r.context, path);
+  assert.equal(pushed.status, "pushed");
+  assert.equal(reads, 1);
+  const file = await r.transport.getFile(r.base.fileId);
+  const version = file.versions.find((v) => v.version_id === pushed.versionId);
+  const manifest = await decodeRecordManifest(r.context, { ...version, file_id: file.file_id, domain_id: file.domain_id });
+  assert.equal(new TextDecoder().decode(await assembleBytes(r.context, manifest)), "BASE first");
+  assert.equal(r.host.text(path), "BASE first second");
+  assert.equal(r.state.fileByPath(path).mtime, 2000);
+});
+
+test("a save receipt cannot certify bytes whose size disagrees with the captured stat", async () => {
+  const r = await fixture(), stat = r.host.stat.bind(r.host), put = r.transport.putChunk.bind(r.transport);
+  let stats = 0;
+  r.host.stat = async (...args) => {
+    const value = await stat(...args);
+    return ++stats === 1 ? { ...value, size: value.size + 1 } : value;
+  };
+  r.host.savedSnapshot = () => true;
+  r.host.editorReady = async () => false;
+  r.transport.putChunk = async (...args) => { await put(...args); r.host.seed(path, "LATER SAVE", 3000); };
+  const before = r.server.journal.length;
+  assert.equal((await pushFile(r.context, path)).status, "growing");
+  assert.equal(r.server.journal.length, before);
+});

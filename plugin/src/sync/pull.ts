@@ -1264,6 +1264,16 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
     // where the record puts the file and of where this device keeps it,
     // before either is touched.
     const kept = context.state.pathByFileId(change.file_id);
+    // Feed heads describe the file when this page was served. If our held
+    // version is still a head, an obsolete ordinary edit cannot advance it:
+    // reconciliation would skip that edit too. Avoid its disk walk and head
+    // request. Linear replay, moves, deletions and rewrite controls retain
+    // their ordinary paths; keep the obsolete edit's ciphertext ancestry above.
+    if (entry.v === 1 && !entry.deleted && entry.answer !== true && kept === entry.path &&
+      change.heads.includes(context.state.fileByPath(kept)?.versionId ?? "") && !change.heads.includes(change.version_id)) {
+      context.host.log(`pull decision=skipped reason=superseded_in_feed file=${change.file_id} seq=${change.seq}`);
+      return "skipped";
+    }
     if ((await context.host.inNestedVault(entry.path)) || (kept !== undefined && (await context.host.inNestedVault(kept)))) {
       throw new VaultPathError("nested_vault");
     }

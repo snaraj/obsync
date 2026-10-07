@@ -23,6 +23,10 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 - Live version history, including own echoes and superseded peer edits, stays
   in the existing bounded ancestry cache so long typing bursts do not spend
   historical-read budgets fetching records the device already received.
+- Confirmed saved snapshots avoid a second mobile read that races subsequent
+  typing. Obsolete concurrent edits can skip redundant disk and head checks
+  when the served feed still names the locally held version as a head;
+  linear replay, moves, deletions and rewrite controls retain their checks.
 - The container builder base advances to Rust 1.98.1 with its pinned image
   digest; the repository compiler remains pinned to Rust 1.98.0 (#336).
 
