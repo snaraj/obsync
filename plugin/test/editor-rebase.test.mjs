@@ -55,11 +55,13 @@ test("newer saved typing stays local until published as a child of the acknowled
 });
 
 test("a save during download is rebased at commit instead of restarting network preparation", async () => {
-  const r = await fixture(), get = r.transport.getChunk.bind(r.transport);
-  r.transport.getChunk = async (...args) => { const bytes = await get(...args); r.host.seed(path, latest, 4000); return bytes; };
+  const r = await fixture(), get = r.transport.getChunks.bind(r.transport);
+  let requests = 0;
+  r.transport.getChunks = async (...args) => { assert.equal(args[0].length, 3); requests++; const bytes = await get(...args); r.host.seed(path, latest, 4000); return bytes; };
   assert.equal(await applyChange(r.context, r.incoming), "merged");
   assert.equal(r.host.text(path), "A: one two\nB: remote\n");
   assert.deepEqual(r.queued, [path]);
+  assert.equal(requests, 1, "the merge base and both parents share a request");
 });
 
 test("authenticated editor preparation probes native readiness once before staging", async () => {
@@ -78,8 +80,8 @@ test("merge preparation owns its publication turn while a newer save waits to up
   let enter, release;
   const entered = new Promise((resolve) => { enter = resolve; });
   const gate = new Promise((resolve) => { release = resolve; });
-  const get = r.transport.getChunk.bind(r.transport);
-  r.transport.getChunk = async (...args) => { enter(); await gate; return get(...args); };
+  const get = r.transport.getChunks.bind(r.transport);
+  r.transport.getChunks = async (...args) => { enter(); await gate; return get(...args); };
   const applying = applyChange(r.context, r.incoming);
   await entered;
   r.host.seed(path, latest, 4000);
@@ -169,24 +171,24 @@ test("a newer local save made while the merge is acknowledged stays dirty", asyn
 
 
 test("authenticated merge preparation can run beside input when an earlier complete snapshot is proven", async () => {
-  const r = await fixture(), get = r.transport.getChunk.bind(r.transport);
+  const r = await fixture(), get = r.transport.getChunks.bind(r.transport);
   r.host.seed(path, latest, 4000);
   let saved = false;
   r.host.editorReady = async () => saved;
   r.host.savedSnapshot = (name, bytes) => name === path && new TextDecoder().decode(bytes) === latest;
-  r.transport.getChunk = async (...args) => { const bytes = await get(...args); saved = true; return bytes; };
+  r.transport.getChunks = async (...args) => { const bytes = await get(...args); saved = true; return bytes; };
   assert.equal(await applyChange(r.context, r.incoming), "merged");
   assert.equal(r.host.text(path), "A: one two\nB: remote\n");
   assert.deepEqual(r.queued, [path]);
 });
 
 for (const completed of [true, false]) test(`network preparation uses authenticated parents while a native save ${completed ? "completes" : "remains pending"}`, async () => {
-  const r = await fixture(), get = r.transport.getChunk.bind(r.transport);
+  const r = await fixture(), get = r.transport.getChunks.bind(r.transport);
   r.host.seed(path, latest, 4000);
   let ready = false, reads = 0;
   r.host.editorReady = async () => ready;
   r.host.savedSnapshot = () => false;
-  r.transport.getChunk = async (...args) => {
+  r.transport.getChunks = async (...args) => {
     const bytes = await get(...args);
     reads++;
     ready = completed;

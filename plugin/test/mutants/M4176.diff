@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -733 +733 @@
+-  if (manifests.length < 2 || manifests.length > 3 || manifests.some((manifest) => manifest.chunks.length !== 1 || manifest.size > CHUNK_MAX)) {
++  if (manifests.length > 3 || manifests.some((manifest) => manifest.chunks.length !== 1 || manifest.size > CHUNK_MAX)) {

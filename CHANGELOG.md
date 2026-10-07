@@ -20,7 +20,9 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   retain the native refresh fallback.
 - Incoming parent snapshots prepare while native saving continues; a save in
   flight no longer abandons the publication turn and restarts that work.
-  Current editor and disk checks still guard the final write.
+  The base and parents share one bounded authenticated chunk request, with
+  each input independently verified. Current editor and disk checks still
+  guard the final write.
 - Continuing to type before a just-delivered remote addition keeps fast saving
   active. Refresh confirmation no longer mistakes the already displayed
   addition for text that still needs to be merged.

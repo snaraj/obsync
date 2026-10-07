@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -750 +750 @@
+-    return await Promise.all(manifests.map((manifest) => assembleBytes(context, manifest)));
++    throw error;

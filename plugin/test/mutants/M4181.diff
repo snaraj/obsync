@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -738 +738 @@
+-  const sids = [...new Set(chunks.map((chunk) => chunk.sid))];
++  const sids = chunks.map((chunk) => chunk.sid);

@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -741 +741 @@
+-  const patience = context.signal === undefined ? {} : { signal: context.signal };
++  const patience = context.signal === undefined ? {} : { signal: undefined };

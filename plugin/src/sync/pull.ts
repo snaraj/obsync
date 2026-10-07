@@ -707,14 +707,52 @@ async function* chunkPlaintexts(
       const chunk = batch[i] as ManifestChunk;
       // The batch's word for the single fetch's `404 unknown_chunk`, and the
       // same refusal: one missing chunk parks one file (issue #144).
-      if (!body) throw new ApiError(404, "unknown_chunk", `chunk ${chunk.sid} is missing on the server`);
-      const plaintext = await decryptChunk(context.domainKey, unhex(chunk.cid), body);
-      if (plaintext.length !== chunk.len) throw new ManifestError("chunk_len_actual");
+      const plaintext = await openChunk(context, chunk, body);
       control?.check();
       if (stop?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
       yield plaintext;
     }
   }
+}
+
+/** One proof for ordinary reads and batched merge inputs, including missing parts. */
+async function openChunk(context: SyncContext, chunk: ManifestChunk, body: Bytes | null | undefined): Promise<Bytes> {
+  if (!body) throw new ApiError(404, "unknown_chunk", `chunk ${chunk.sid} is missing on the server`);
+  const plaintext = await decryptChunk(context.domainKey, unhex(chunk.cid), body);
+  if (plaintext.length !== chunk.len) throw new ManifestError("chunk_len_actual");
+  return plaintext;
+}
+
+/**
+ * Read the two or three authenticated single-chunk inputs of one merge in
+ * one request. Nothing is cached across resolutions. The response budget is
+ * their declared ciphertext size; every part still proves its cid and length.
+ * Old or multipart-refusing endpoints retain the ordinary verified GET path.
+ */
+export async function assembleMergeInputs(context: SyncContext, manifests: readonly Manifest[]): Promise<Bytes[]> {
+  if (manifests.length < 2 || manifests.length > 3 || manifests.some((manifest) => manifest.chunks.length !== 1 || manifest.size > CHUNK_MAX)) {
+    throw new ManifestError("merge_input_shape");
+  }
+  for (const manifest of manifests) assertSyncPath(manifest.path, context.state.data.syncFolders);
+  const chunks = manifests.map((manifest) => manifest.chunks[0] as ManifestChunk);
+  const sids = [...new Set(chunks.map((chunk) => chunk.sid))];
+  const budget = sids.reduce((sum, sid) => sum + (chunks.find((chunk) => chunk.sid === sid) as ManifestChunk).len + 16, 0);
+  const started = context.now();
+  const patience = context.signal === undefined ? {} : { signal: context.signal };
+  let bodies: (Bytes | null)[];
+  try {
+    bodies = await context.transport.getChunks(sids, undefined, patience, budget);
+  } catch (error) {
+    if (!(error instanceof ApiError) ||
+      !(error.status === 404 && error.code === "not_found") &&
+      !["bad_multipart", "part_mismatch", "response_too_large", "batch_too_large"].includes(error.code)) throw error;
+    context.host.log(`pull decision=merge_inputs_refused reason=${error.code} sids=${sids.length} budget_bytes=${budget} duration_ms=${context.now() - started}`);
+    return await Promise.all(manifests.map((manifest) => assembleBytes(context, manifest)));
+  }
+  const result = await Promise.all(chunks.map((chunk) => openChunk(context, chunk, bodies[sids.indexOf(chunk.sid)])));
+  if (context.signal?.aborted) throw new ApiError(0, "cancelled", "sync stopped on this device");
+  context.host.log(`pull decision=merge_inputs_read sids=${sids.length} budget_bytes=${budget} duration_ms=${context.now() - started}`);
+  return result;
 }
 
 /** Sids one prefetch asks for: the route's own cap (`docs/protocol.md`, `POST /v1/chunks/get`). */
@@ -3032,10 +3070,9 @@ async function resolve(
         }
       }
       const decoder = new TextDecoder();
-      const prepare = async () => {
-        const [base, theirs] = await Promise.all([
-          assembleBytes(context, mergeBase), assembleBytes(context, theirManifest),
-        ]);
+      const prepare = async (own?: Manifest) => {
+        const [base, theirs, published] = await assembleMergeInputs(context,
+          own === undefined ? [mergeBase, theirManifest] : [mergeBase, theirManifest, own]) as [Bytes, Bytes, Bytes | undefined];
         // Resolve the shared base before comparing criss-cross edits.
         const shared = mergeBase === baseManifest
           ? await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base)) : null;
@@ -3047,7 +3084,7 @@ async function resolve(
           context.host.log(`pull decision=deferred reason=history_budget_wait file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started} budget_levels=${CRISS_CROSS_LEVELS}`);
           throw new EditorBusy();
         }
-        return { base, theirs, shared: shared === HISTORY_BUDGET ? false : shared, historyBudget: shared === HISTORY_BUDGET };
+        return { base, theirs, published, shared: shared === HISTORY_BUDGET ? false : shared, historyBudget: shared === HISTORY_BUDGET };
       };
       let prepared: Awaited<ReturnType<typeof prepare>> | undefined;
       // Reserve the publication turn before downloading merge inputs. Local
@@ -3062,7 +3099,8 @@ async function resolve(
             // native save in progress. No current disk/editor bytes enter
             // this merge. Check readiness after the network work, then the
             // final writer independently rechecks every editor and disk.
-            const [inputs, published] = await Promise.all([prepare(), assembleBytes(context, own)]);
+            const inputs = await prepare(own);
+            const published = inputs.published as Bytes;
             prepared = inputs;
             // Join native saving once when selecting the saved-editor path.
             // Without a saved receipt, ordinary reconciliation still needs to
@@ -3799,13 +3837,13 @@ async function crissCrossBase(
     await completeMergeAncestry(context, file, first, other);
   }
   const root = commonAncestor(file.versions, first, other);
-  const texts: string[] = [];
+  const manifests: Manifest[] = [];
   for (const id of [root, other]) {
     const manifest = id === null ? null : await manifestOf(context, file, change, id);
     if (manifest === null || manifest.chunks.length !== 1) return false;
-    texts.push(new TextDecoder().decode(await assembleBytes(context, manifest)));
+    manifests.push(manifest);
   }
-  const [rootText, otherText] = texts as [string, string];
+  const [rootText, otherText] = (await assembleMergeInputs(context, manifests)).map((bytes) => new TextDecoder().decode(bytes)) as [string, string];
   const deeper = await crissCrossBase(context, file, change, [first, other], root as string, rootText, levels - 1);
   const merged = deeper === false || deeper === HISTORY_BUDGET ? { ok: false as const }
     : threeWayMerge(deeper ?? rootText, firstText, otherText);

@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -736 +736 @@
+-  for (const manifest of manifests) assertSyncPath(manifest.path, context.state.data.syncFolders);
++  // scope check removed

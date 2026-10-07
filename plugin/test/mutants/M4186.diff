@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -722 +722 @@
+-  if (plaintext.length !== chunk.len) throw new ManifestError("chunk_len_actual");
++  if (plaintext.length !== chunk.len) { /* declaration ignored */ }

@@ -551,3 +551,80 @@ passing diagnostics do not supply its missing cause. Independent token-union
 inspection of the failed native run found all 598 typed tokens across 25
 desktop note/copy files. No token was missing from that set; the original
 shared-note experience and ordering still failed.
+
+
+## Trusted-input native verification and remaining public-path latency
+
+The trusted-input candidate `29a14d01` was installed and independently
+hash-verified on the existing host-graphics Android/macOS pair. Its plugin
+bundle SHA-256 is `c79c1b069e3a4fbf6e5f873d123e7e8d3be0b051014e8ef57d909d414c1af5da`.
+These results supersede the pending native status above for that candidate;
+they do not establish release acceptance on other platforms.
+
+| Journey | Desktop | Android | Content and scope |
+| --- | --- | --- | --- |
+| Local TLS/loopback, 60 s same-line, 200 ms tokens | 293 eligible, 0 late/missing; max 667.60 ms | 293 eligible, 0 late/missing; max 558.40 ms | 300 tokens per writer, one file each, exact independent buffer/disk bytes and per-writer order |
+| Local TLS/loopback, five fully-visible character trials | 721 eligible, 0 late/missing; max 679.60 ms | 725 eligible, 0 late/missing; max 609.00 ms | Remote character ranges visible inside both editor viewports during simultaneous input; exact final bytes and one head |
+| Public trusted TLS, 60 s same-line | 4/292 late; max 1741.20 ms | 3/292 late; max 1651.90 ms | Latency FAIL; exact final bytes, tokens and order, one file each |
+| Public trusted TLS, fully-visible characters | 0/145 late; max 1340.50 ms | 3/145 late; max 1738.70 ms | Latency FAIL; exact final bytes and one head |
+
+All limits remain 1500 ms including clock uncertainty. The local pair uses
+a run-only CA for Android, desktop loopback and a mock desktop keychain;
+normal TLS validation, E2EE, request authentication and durable writes stay
+enabled. Same-line headings exceed the viewport: their buffer/DOM timing is
+not the strict visible-character oracle. The five strict trials' twenty
+screenshots show both streams advancing with the caret retained. Every listed
+journey's captures were opened and hashed in the private evidence inventory.
+A separate runtime-only ciphertext reuse experiment still exceeded the limit
+(Android five late observations, max 2066.80 ms). It earns no shipped cache or
+latency improvement claim. A later batch diagnostic failed before typing and
+provides no batching measurement.
+
+The slow visible-character sample spans repeated authenticated preparation,
+publication and retry rounds. Individual chunk requests overlapped, but one
+request in a three-input group repeatedly finished much later than its peers.
+A native `active_editor` refusal also occurred between rounds. Those stages
+are concurrent and cannot be summed as causal latency shares. Further
+request/preparation work is required; the public-path failure remains in the
+1.1.7 acceptance scope.
+
+Public-TLS background and process-restart journeys passed with pairing
+retained without setup. Both-direction observed transfer times were
+743/982 ms after background and 981/931 ms after restart. Offline input was
+saved locally and retained through automatic recovery (1590 ms including the
+verification journey). Eleven recovery captures were opened. Native Leave
+revoked the test device, cleared pairing metadata, and preserved all 47 local
+synthetic notes byte-for-byte. Both parent controllers and the TLS sidecar
+exited successfully. Independent checks confirmed all five captured processes,
+six listeners, private/runtime directories and live manifests absent.
+
+## Bounded merge-input batching
+
+A fresh owned public-TLS pair repeated the 60-second, 200-ms-token journey
+on `29a14d01`, then tested a runtime-only request batching diagnostic.
+Both retained every token in order in the original note and independent disk
+reads. Baseline late observations were 2/292 desktop (max 1790.00 ms) and
+3/292 Android (max 2053.80 ms). The diagnostic had 0/293 desktop
+(max 1499.10 ms), 1/293 Android (max 1519.20 ms): still **FAIL**.
+Observed single-plus-batch request counts changed from 469/363 to 239/224
+(desktop/Android), but these two runs are not a repeated paired distribution
+and earn no general speed claim. All twelve captures were opened. The
+diagnostic wrapper was removed after its run and is not product code.
+
+The resulting product helper combines only the two or three authenticated
+single-chunk inputs to one merge. Repeated storage IDs share a fetched body;
+every manifest still independently checks decrypted content ID and length.
+The response cap is the sum of unique inputs' declared ciphertext lengths.
+No content survives the call in a new cache. Only explicit multipart or
+endpoint-compatibility refusals permit ordinary verified reads; authentication,
+cancellation, missing chunks and integrity failures propagate.
+
+Forty focused tests pass, including native saves during preparation, bounded
+shapes, scope, duplicate inputs, corruption and narrow fallback. Seventeen
+retained mutants M4176–M4192 each compile and fail runtime assertions with
+zero cancellations; source is restored after each. The prior four-suite
+comparison passed 122 tests before two additional refusal cases were added.
+Native acceptance of this product implementation remains pending here.
+
+The full local gate passed in 415.93 s: 2,210 plugin tests, 873 contracts,
+83 dashboard tests, 94.72% Rust line coverage and both secret scans.

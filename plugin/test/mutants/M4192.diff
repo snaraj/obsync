@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -747 +747 @@
+-      !(error.status === 404 && error.code === "not_found") &&
++      !(error.code === "not_found") &&

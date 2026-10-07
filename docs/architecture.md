@@ -1317,7 +1317,15 @@ long poll and needs its timeout raised.
    reserve publication before preparing the authenticated parent snapshots,
    merge only those parents while native saving continues, then rebase the
    newest saved local delta onto that result. Preparation does not depend on
-   a receipt for an earlier disk sample; it uses authenticated parent content. The final writer still requires the current editor and disk
+   a receipt for an earlier disk sample; it uses authenticated parent content.
+   Each preparation fetches its base and one or two parent chunks together,
+   bounded to three single-chunk inputs and their declared ciphertext sizes.
+   Shared chunk ids are fetched once; each input independently proves its
+   content id and length. Reconstructing an older shared base uses the same
+   two-input reader. No content is retained across resolutions. A missing
+   batch endpoint or refused multipart framing falls back to verified single
+   reads; authentication, cancellation and missing/corrupt content failures
+   propagate. The final writer still requires the current editor and disk
    to agree. Publish the pure parent merge first; its local delta stays dirty
    and uploads as a child. A changed parent or stopped engine refuses the
    staged write. Unsupported or overlapping states retain the ordinary path:
