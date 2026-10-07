@@ -98,6 +98,13 @@ export class EditorActivity {
     }
     const inputs = views.map((view) => this.inputs.get(view));
     const files = views.map((view) => view.file);
+    // A disk read cannot make an unfinished save, composition or dirty input
+    // ready. Refuse those known states before joining the mobile adapter's
+    // queue; repeated readiness probes otherwise delay the save they need.
+    // The independent read and all post-await checks still prove acceptance.
+    if (views.some((view, i) => this.saving.has(view) ||
+      (this.recent(view) && (inputs[i]?.saved?.generation !== this.generation ||
+        inputs[i]?.saved?.text !== normalized(view.getViewData()))))) return null;
     const disk = normalized(await read(file));
     if (unchanged !== undefined && !await unchanged()) return null;
     const current = this.access.views(path);

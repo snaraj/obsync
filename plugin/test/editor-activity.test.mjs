@@ -45,6 +45,28 @@ test("continuous input coalesces saves without waiting for typing to stop", asyn
   assert.equal(await r.ready(), true);
 });
 
+for (const reason of ["dirty", "composition", "saving", "buffer_changed", "stale_receipt"]) {
+  test(`known ${reason} input refuses readiness without queuing a native read`, async (t) => {
+    const r = fixture(t);
+    r.input(); await r.tick();
+    if (reason === "dirty") r.input();
+    if (reason === "composition") r.input("compositionstart");
+    if (reason === "buffer_changed") r.text += "new input";
+    if (reason === "stale_receipt") r.activity.stop();
+    let release;
+    if (reason === "saving") {
+      r.view.save = () => new Promise(resolve => { release = resolve; });
+      r.input(); await r.tick();
+      const now = Date.now();
+      t.mock.method(Date, "now", () => now + 11_000);
+    }
+    r.read = async () => { throw Error("busy readiness queued a native read"); };
+    assert.equal(await r.ready(), false);
+    r.read = async () => r.disk;
+    release?.(); await drain();
+  });
+}
+
 for (const reason of ["composition", "disabled", "stopped", "rebound", "native_only"]) {
   test(`the refresh bridge refuses ${reason} save ownership`, async (t) => {
     const r = fixture(t);

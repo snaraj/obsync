@@ -25,8 +25,10 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   historical-read budgets fetching records the device already received.
 - Confirmed saved snapshots avoid a second mobile read that races subsequent
   typing. Obsolete concurrent edits can skip redundant disk and head checks
-  when the served feed still names the locally held version as a head;
-  linear replay, moves, deletions and rewrite controls retain their checks.
+  when the served feed names the locally held version as a head or cached
+  ancestry proves the obsolete edit cannot advance it. Known dirty editors
+  refuse readiness before queuing another mobile read. Linear replay, moves,
+  deletions, rewrite controls and uncertain ancestry retain their checks.
 - The container builder base advances to Rust 1.98.1 with its pinned image
   digest; the repository compiler remains pinned to Rust 1.98.0 (#336).
 

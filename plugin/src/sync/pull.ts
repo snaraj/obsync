@@ -1265,12 +1265,15 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
     // before either is touched.
     const kept = context.state.pathByFileId(change.file_id);
     // Feed heads describe the file when this page was served. If our held
-    // version is still a head, an obsolete ordinary edit cannot advance it:
-    // reconciliation would skip that edit too. Avoid its disk walk and head
-    // request. Linear replay, moves, deletions and rewrite controls retain
-    // their ordinary paths; keep the obsolete edit's ciphertext ancestry above.
+    // version is still a head, or cached ancestry proves this obsolete edit
+    // cannot descend from it, reconciliation would skip the edit too. A local
+    // save may have advanced our head since the page was served. Avoid its
+    // disk walk and head request without guessing from incomplete ancestry.
+    // Linear replay, moves, deletions and rewrite controls keep their paths.
+    const held = kept === undefined ? undefined : context.state.fileByPath(kept)?.versionId;
     if (entry.v === 1 && !entry.deleted && entry.answer !== true && kept === entry.path &&
-      change.heads.includes(context.state.fileByPath(kept)?.versionId ?? "") && !change.heads.includes(change.version_id)) {
+      held !== undefined && held !== "" && change.heads.length > 0 && !change.heads.includes(change.version_id) &&
+      (change.heads.includes(held) || cachedDescendant(context, change.file_id, change.version_id, held) === false)) {
       context.host.log(`pull decision=skipped reason=superseded_in_feed file=${change.file_id} seq=${change.seq}`);
       return "skipped";
     }
@@ -2656,6 +2659,23 @@ async function completeMergeAncestry(
 const ancestry = new WeakMap<SyncContext, {
   versions: Map<string, { version: FileRecord["versions"][number]; size: number }>; held: number;
 }>();
+
+/** Ask only the immutable history already received. Missing or excessive
+ * history is unknown, never evidence that a version is on another branch. */
+function cachedDescendant(context: SyncContext, fileId: string, child: string, ancestor: string): boolean | null {
+  const queue = [child], visited = new Set<string>();
+  for (let cursor = 0; cursor < queue.length; cursor++) {
+    const id = queue[cursor] as string;
+    if (id === ancestor) return true;
+    if (visited.has(id)) continue;
+    if (visited.size >= 512) return null;
+    visited.add(id);
+    const version = ancestry.get(context)?.versions.get(`${fileId} ${id}`)?.version;
+    if (version === undefined) return null;
+    queue.push(...version.parents);
+  }
+  return false;
+}
 
 function hold(context: SyncContext, fileId: string, version: FileRecord["versions"][number]): void {
   const memory = ancestry.get(context) ?? { versions: new Map(), held: 0 };

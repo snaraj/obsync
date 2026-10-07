@@ -148,6 +148,70 @@ test("a served page skips superseded tracked edits without native disk or head r
   assert.equal(r.server.files.get(r.base.fileId).heads.length, 1);
 });
 
+test("cached peer ancestry skips an obsolete page after our head advances", async () => {
+  const r = await windowedFork(80);
+  const page = await r.transport.changes(0, 0, 1000);
+  for (const frame of page.changes.filter(frame => frame.device_id === r.context.deviceId)) {
+    assert.equal(await applyChange(r.context, frame), "echo");
+  }
+  r.host.seed(NOTE, "Shared: START|" + "A".repeat(81), 4000);
+  await pushFile(r.context, NOTE);
+  const peers = page.changes.filter(frame => frame.device_id !== r.context.deviceId && frame.version_id !== r.incoming.version_id);
+  assert.ok(peers.every(frame => !frame.heads.includes(r.state.fileByPath(NOTE).versionId)));
+  const stat = r.host.stat, nested = r.host.inNestedVault, getFile = r.transport.getFile;
+  r.host.stat = r.host.inNestedVault = r.transport.getFile = async () => { throw Error("obsolete advanced-head frame issued external work"); };
+  for (const frame of peers) assert.equal(await applyChange(r.context, frame), "skipped");
+  r.host.stat = stat; r.host.inNestedVault = nested; r.transport.getFile = getFile;
+  assert.equal(await applyChange(r.context, r.incoming), "merged");
+  assert.equal(r.host.text(NOTE), "Shared: START|" + "A".repeat(81) + "a".repeat(80));
+  assert.equal(r.host.files.size, 1);
+  assert.equal(r.reads.length, 0);
+});
+
+test("cached ancestry visits repeated edges once during obsolete-page classification", async () => {
+  const r = await windowedFork(80);
+  const page = await r.transport.changes(0, 0, 1000);
+  let traversals = 0;
+  for (const frame of page.changes) {
+    frame.parents = new Proxy([...frame.parents, ...frame.parents], {
+      get(target, key, receiver) {
+        if (key === Symbol.iterator && ++traversals > 200) throw Error("cached ancestry repeated edge work");
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    r.context.authored.add(frame.version_id);
+    assert.equal(await applyChange(r.context, frame), "echo");
+  }
+  r.host.seed(NOTE, "Shared: START|" + "A".repeat(81), 4000);
+  await pushFile(r.context, NOTE);
+  const cached = page.changes.filter(frame => frame.device_id !== r.context.deviceId).at(-2);
+  const frame = { ...cached, parents: cached.parents.slice(0, cached.parents.length / 2) };
+  traversals = 0;
+  r.host.inNestedVault = async () => { throw Error("obsolete advanced-head frame issued external work"); };
+  assert.equal(await applyChange(r.context, frame), "skipped");
+  assert.ok(traversals > 0 && traversals <= 81);
+});
+
+for (const reason of ["linear", "missing", "budget", "empty_held", "empty_heads", "current_head"]) {
+  test(`cached ancestry cannot bypass validation with ${reason} evidence`, async () => {
+    const r = await windowedFork(reason === "budget" ? 513 : 2);
+    const page = await r.transport.changes(0, 0, 2000);
+    const original = r.state.fileByPath(NOTE);
+    // Populate history as echoes, without applying peer bytes or disk work.
+    for (const frame of page.changes) {
+      if (reason === "missing" && frame.version_id === r.base.versionId) continue;
+      r.context.authored.add(frame.version_id);
+      assert.equal(await applyChange(r.context, frame), "echo");
+    }
+    r.state.setFile(NOTE, { ...original, versionId: reason === "linear" ? r.base.versionId
+      : reason === "empty_held" ? "" : original.versionId });
+    const heads = reason === "empty_heads" ? [] : reason === "current_head"
+      ? [r.incoming.version_id] : ["ab".repeat(32)];
+    r.host.inNestedVault = async () => { throw Error("native path validation reached"); };
+    await assert.rejects(applyChange(r.context, { ...r.incoming, heads }), /native path validation reached/);
+  });
+}
+
 for (const kind of ["folder", "deletion", "answer", "move", "current_head", "unknown_heads", "older_local"]) {
   test(`the obsolete-edit shortcut retains native validation for ${kind}`, async () => {
     const r = await windowedFork(2);
