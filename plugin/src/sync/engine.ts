@@ -355,6 +355,9 @@ export interface VaultHost {
   editing(path: string): Promise<"unsaved" | "saved" | null>;
   /** Recent trusted editor input, including a composition still in progress. */
   typing(path: string): boolean;
+  /** Identity changes only on trusted text input; never a save or remote reload.
+   * Optional hosts retain the conservative disk-stamp merge-loop accounting. */
+  editorRevision?(path: string): object | undefined;
   /** All editor buffers are saved and no unconfirmed input/IME can be overwritten. */
   editorReady(path: string): Promise<boolean>;
   /** Complete bytes confirmed by an earlier native save; later input may be unsaved.
@@ -403,7 +406,7 @@ export interface SyncContext {
    * Resolutions of one file inside the current window, for the merge breaker,
    * and the `(mtime, size)` the last one left the note at (`pull.ts`).
    */
-  readonly merges: Map<string, { since: number; count: number; left: string; remote?: Map<string, string>; generation?: object }>;
+  readonly merges: Map<string, { since: number; count: number; left: string; remote?: Map<string, string>; generation?: object; input?: object }>;
   /**
    * File ids whose note here waits on this device's own push to settle a fork
    * (`pull.ts`, `deferred`): the status is not `idle` while one is in flight

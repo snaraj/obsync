@@ -1,0 +1,5 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -77 +77 @@
+-    if (!this.access.enabled(path)) return undefined;
++    if (false) return undefined;

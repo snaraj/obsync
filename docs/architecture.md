@@ -1289,7 +1289,13 @@ long poll and needs its timeout raised.
    version; a result equal to the incoming version's bytes is a fast-forward
    onto it. A device also stops merging one file after more than five
    resolutions of it in a row inside a minute with the note unchanged here in
-   between -- a save starts the count again -- and says so once. Superseded
+   between -- a save starts the count again -- and says so once. Trusted text
+   input also starts a new run, even when an incoming merge's final disk stamp
+   already includes that input's save. The host supplies an opaque in-memory
+   identity, consumed once at reconciliation entry. Input during a merge stays
+   visible to the next resolution; repeated reads, saves, reloads and cursor
+   movement cannot reset the count. This grants no incoming-write permission.
+   Superseded
    incoming heads with a retained descendant are skipped before counting.
    A new peer version that descends from its previous version but not from
    this device's recorded version also starts a new run: it is independent

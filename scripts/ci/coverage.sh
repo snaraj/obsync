@@ -32,7 +32,9 @@ mkdir -p "$out"
 # Instrumented build and run. One profraw per process, merged below.
 export RUSTFLAGS="-C instrument-coverage"
 export LLVM_PROFILE_FILE="${out}/obsync-%p-%m.profraw"
-cargo test --workspace --quiet >/dev/null
+# Keep assertion output: suppressing stdout hid which instrumented CLI test
+# failed and made a failed gate impossible to diagnose from its retained log.
+cargo test --workspace --quiet
 
 # The test binaries carry the coverage mapping; ask cargo which they are.
 binaries="$(cargo test --workspace --no-run --message-format=json 2>/dev/null \

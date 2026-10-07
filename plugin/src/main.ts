@@ -3576,6 +3576,10 @@ export class ObsidianHost implements VaultHost {
     return this.views(path).some((view) => this.editorActivity.recent(view));
   }
 
+  editorRevision(path: string): object | undefined {
+    return this.editorActivity.revision(path);
+  }
+
   savedSnapshot(path: string, bytes: Bytes): boolean {
     try {
       return this.editorActivity.savedSnapshot(path, new TextDecoder("utf-8", { fatal: true }).decode(bytes));

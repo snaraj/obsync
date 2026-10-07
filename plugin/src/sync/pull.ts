@@ -2777,9 +2777,21 @@ async function reconcile(
   const independent = remote !== undefined && remote !== change.version_id &&
     reaches(file.versions, change.version_id, remote) &&
     !reaches(file.versions, change.version_id, localVersionId);
-  if (tally.left !== found || independent) {
+  // A native merge can incorporate input saved during its network/commit
+  // awaits. Its resulting disk stamp then hides that input from the next
+  // resolution. Count each trusted input identity once, at entry, so input
+  // during this resolution remains visible to the next one. A lingering
+  // recent-typing flag, a reload or another look at the same input cannot
+  // exempt an automatic loop. This never admits an editor write.
+  const input = context.host.editorRevision?.(localPath);
+  const advancedInput = input !== undefined && input !== tally.input;
+  if (tally.left !== found || independent || advancedInput) {
     tally.count = 0;
     tally.generation = {};
+  }
+  if (advancedInput) {
+    tally.input = input;
+    context.host.log(`pull decision=merge_budget_reset reason=trusted_editor_input file=${change.file_id} seq=${change.seq}`);
   }
   if (independent) context.host.log(`pull decision=merge_budget_reset reason=independent_peer_progress file=${change.file_id} seq=${change.seq} tracked_authors=${remotes.size}`);
   remotes.set(change.device_id, change.version_id);

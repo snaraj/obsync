@@ -138,3 +138,25 @@ test("onload binds the primary window, pre-existing popouts, and newly opened wi
   opened.emit("beforeinput", b.node);
   assert.equal(r.instance.host.typing("Notes/b.md"), true);
 });
+
+test("the native host exposes only trusted, file-bound text input to merge accounting", async (t) => {
+  const r = await fixture(t), a = r.view("Notes/a.md", r.popout);
+  await r.instance.onload(); await r.instance.firstStart;
+  const host = r.instance.host;
+  Object.assign(r.main, { setTimeout, clearTimeout });
+  r.instance.engine = { stop() {}, editorSaved() {} };
+  assert.equal(host.editorRevision("Notes/a.md"), undefined);
+  r.popout.emit("beforeinput", a.node, false);
+  r.popout.emit("keydown", a.node);
+  r.popout.emit("beforeinput", { nodeType: 1 });
+  assert.equal(host.editorRevision("Notes/a.md"), undefined);
+  r.popout.emit("beforeinput", a.node);
+  const first = host.editorRevision("Notes/a.md");
+  assert.deepEqual(first, {});
+  assert.equal(host.editorRevision("Notes/a.md"), first);
+  r.popout.emit("beforeinput", a.node);
+  assert.notEqual(host.editorRevision("Notes/a.md"), first);
+  assert.equal(host.editorRevision("Notes/other.md"), undefined);
+  host.stopEditorSaves();
+  assert.equal(host.editorRevision("Notes/a.md"), undefined);
+});

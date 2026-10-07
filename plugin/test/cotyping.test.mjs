@@ -588,7 +588,7 @@ test("the merge breaker counts resolutions in a row, and an edit here starts the
  * breaker that read its own writes as the user's would never stop a loop that
  * merges.
  */
-test("merges that rewrite the note with nothing typed here still trip the breaker", async () => {
+for (const continuedInput of [false, true]) test(`merge writes preserve loop accounting when they absorb input (continued: ${continuedInput})`, async () => {
   const r = await rig();
   // Every edit two lines from any other: this merge reads neighbouring lines
   // as one hunk.
@@ -600,6 +600,20 @@ test("merges that rewrite the note with nothing typed here still trip the breake
   r.host.seed(NOTE, text([0]), 2000);
   await pushFile(r.context, NOTE);
 
+  let revision = {};
+  r.host.editorRevision = () => revision;
+  // A merge can absorb a native save before committing and leave a stamp
+  // describing both. Deliver its next input while the previous resolution
+  // is underway, not through a new disk stamp between resolutions.
+  const writer = r.host.writer.bind(r.host);
+  r.host.writer = async (...args) => {
+    const pending = await writer(...args);
+    return { ...pending, commit: async (...params) => {
+      if (continuedInput && args[0] === NOTE) revision = {};
+      return pending.commit(...params);
+    } };
+  };
+
   const results = [];
   for (let round = 1; round <= 6; round++) {
     // Each write lands at its own moment, as real ones do.
@@ -608,8 +622,17 @@ test("merges that rewrite the note with nothing typed here still trip the breake
     results.push(await applyChange(r.context, frame));
   }
   assert.deepEqual(results.slice(0, 5), ["merged", "merged", "merged", "merged", "merged"], pulls(r.host));
-  assert.notEqual(results[5], "merged", pulls(r.host));
-  assert.equal(storms(r).length, 1);
+  if (continuedInput) {
+    assert.equal(results[5], "merged", pulls(r.host));
+    assert.equal(storms(r).length, 0);
+    assert.deepEqual(copies(r.host), []);
+    assert.equal(r.context.merges.get(base.fileId).count, 1);
+    assert.equal(r.host.logs.filter(line => line.includes("reason=trusted_editor_input")).length, 6);
+  } else {
+    assert.notEqual(results[5], "merged", pulls(r.host));
+    assert.equal(storms(r).length, 1);
+    assert.equal(r.host.logs.filter(line => line.includes("reason=trusted_editor_input")).length, 1, "one input cannot repeatedly exempt a loop");
+  }
 });
 
 /**

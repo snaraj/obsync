@@ -1,0 +1,5 @@
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3580 +3580 @@
+-    return this.editorActivity.revision(path);
++    return undefined;

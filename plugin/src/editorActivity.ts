@@ -41,6 +41,7 @@ const normalized = (text: string): string => text.replace(/\r\n?/g, "\n");
  */
 export class EditorActivity {
   private readonly inputs = new WeakMap<MarkdownView, Input>();
+  private readonly revisions = new WeakMap<TFile, { generation: object; token: object }>();
   private readonly snapshots = new WeakMap<MarkdownView, { file: TFile; text: string; generation: object }>();
   private readonly timers = new Map<MarkdownView, unknown>();
   private readonly saving = new Set<MarkdownView>();
@@ -57,6 +58,7 @@ export class EditorActivity {
     const before = this.inputs.get(view);
     const composing = before?.file === file && before.composing;
     if (kind === "focusout" && !composing) return;
+    if (kind === "beforeinput") this.revisions.set(file, { generation: this.generation, token: {} });
     this.inputs.set(view, {
       file, generation: this.generation, at: Date.now(),
       composing: kind === "compositionstart" || (composing && kind !== "compositionend" && kind !== "focusout"),
@@ -67,6 +69,15 @@ export class EditorActivity {
   recent(view: MarkdownView): boolean {
     const input = this.inputs.get(view);
     return input?.file === view.file && (input.composing || Date.now() - input.at < RECENT_INPUT_MS);
+  }
+
+  /** Opaque trusted-input identity, independent of saves and remote reloads.
+   * It grants no write permission and retains no text, key or timestamp. */
+  revision(path: string): object | undefined {
+    if (!this.access.enabled(path)) return undefined;
+    const file = this.access.views(path)[0]?.file;
+    const revision = file && this.revisions.get(file);
+    return revision?.generation === this.generation ? revision.token : undefined;
   }
 
   /** The native refresh bridge must not save unfinished composition or a

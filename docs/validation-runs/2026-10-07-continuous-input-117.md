@@ -403,7 +403,7 @@ runtime and manifest paths absent. All97 peer evidence screenshots were opened
 and hashed. No physical-iPhone acceptance is inferred from these emulator runs.
 
 The page-retry full local `make check` passed in431.12 s:2174 plugin tests,
-873 contracts,83 dashboard tests, Rust line coverage94.72%, both secret scans
+873 contracts, 83 dashboard tests, Rust line coverage94.72%, both secret scans
 clean. Native acceptance for the new bundle remains a separate requirement.
 
 
@@ -466,3 +466,88 @@ test/editor-rebase.test.mjs test/merge-budget.test.mjs
 test/rewrite-overlap.test.mjs` (55 passing). Each retained M4165–M4168
 compiles and fails at runtime; sources are restored and rebuilt after every
 mutation. Full-gate and native results must bind the revised bytes.
+
+
+### Native renderer isolation and sustained same-line regression
+
+The revised one-readiness implementation passed the full local gate: 2175
+plugin tests, 873 contracts, 83 dashboard tests, Rust line coverage 94.72%,
+and both secret scans (`make check`, 436.66s). Five alternating native pairs
+against the preceding page-retry bundle passed 1/5 on each side of the
+comparison; all ten retained exact final bytes and one head. The paired
+baseline-minus-candidate mean p50 improvement was 41.66 ms on desktop
+(95% bootstrap interval 8.41–74.83) and 48.72 ms on Android (17.76–80.32).
+The p95 intervals included zero; no tail-latency gain is established.
+Reproduce with the private `compare-native-bundles.py` and
+`analyze-native-pairs.py` recipes, 10000 resamples, seed 117. All forty images
+were opened. Public-TLS background, restart and offline recovery passed,
+followed by native Leave preserving 39 synthetic notes. Controller exit and
+independent process, listener and filesystem checks confirmed teardown.
+
+On a fresh Android 17/API 37.2 arm64 16 KiB emulator using host graphics,
+the **same** bundle then passed all five fully-visible individual-character
+trials: desktop 721 and Android 725 eligible observations, none over 1500 ms
+or unseen. The largest repeat delays were 569.60 and 869.20 ms respectively.
+Both streams appeared during simultaneous typing; twenty screenshots were
+opened. A separate instrumented trial's largest delays were 664.60/785.40 ms.
+Only the owned emulator process was sampled for CPU: p50/p95/max
+135.45/157.8/165.3%, compared with 619.9/699.5/740.6% for the preceding
+software-renderer trace. The profile and graphics mode both changed: this
+is a rendering-overhead lead, not a paired attribution of every older stall.
+The local run-CA TLS, desktop loopback and mock desktop-keychain limitations
+remain; certificate rejection and hostname checks stayed enabled.
+
+The added 60-second **same-line** diagnostic failed on those bytes despite
+299 trusted five-character tokens per writer. The merge-loop breaker fired
+while input continued, creating conflict copies. Independent disk bytes
+finally matched, but the shared note failed exact token preservation and
+per-writer order. Four screenshots were opened, including visible conflict
+copies and an Android conflict notice. The long heading did not fit the
+viewport; this diagnostic's buffer/DOM observations are not the stricter
+fully-visible individual-character oracle. Its failure is retained and does
+not become acceptance because the short separate-line trials passed.
+
+The repair records an opaque trusted `beforeinput` identity on the native
+file object. Reconciliation consumes each identity once at entry, preserving
+input that arrives during a merge for the next reconciliation. A merge's
+final disk stamp can include a newer native save; that previously hid the
+intervening typing from the disk-stamp-only breaker. Repeated reads of one
+identity, saves, reloads, cursor keys and composition bookkeeping cannot
+exempt a loop. The optional host capability returns no content, key or time,
+is never persisted or sent, and grants no write permission. Disabled scope,
+closed/rebound views and stopped lifecycle cannot supply an identity.
+
+Focused reproduction: `cd plugin && npm run build && node --test
+ test/editor-activity.test.mjs test/cotyping.test.mjs
+ test/merge-budget.test.mjs test/editor-rebase.test.mjs` (155 passing), then
+`node --test test/editor-input.test.mjs` (8 passing). The retained
+M4169–M4175 patches each compile and fail a runtime assertion with zero
+cancellations: no reset, repeated exemption of one input, non-text events,
+disabled scope, stopped lifecycle, missing native-host wiring and a token
+that never advances. The original no-input loop control still trips at six.
+These are author checks; new-bundle native acceptance remains pending.
+
+
+The long run's later Android feed retry was a separate private-harness fault:
+the local TLS proxy allowed 40 seconds for a 55-second changes poll. The host
+could retry the closed request with its original signed nonce, which the
+server correctly refused. The next fixture permits 70 seconds upstream and
+75 seconds downstream; no product replay protection changes. This occurred
+after the initial merge-loop refusal and does not excuse that failure.
+
+The first full-gate attempt for the trusted-input repair failed in the
+instrumented CLI suite. Its coverage wrapper discarded stdout, so the failed
+assertion is unknown. A direct instrumented CLI diagnostic passed 13/13;
+three subsequent instrumented whole-workspace diagnostics passed. These do
+not retroactively clear the original failure. `coverage.sh` now retains test
+stdout so a recurrence identifies its failing assertion. No retry or ignored
+exit is added to the gate.
+
+
+The replacement full local gate passed in 420.32s: 2,183 plugin tests,
+873 contracts, 83 dashboard tests, 94.72% Rust line coverage and both secret
+scans. The original instrumented CLI failure remains unexplained and retained;
+passing diagnostics do not supply its missing cause. Independent token-union
+inspection of the failed native run found all 598 typed tokens across 25
+desktop note/copy files. No token was missing from that set; the original
+shared-note experience and ordering still failed.

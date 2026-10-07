@@ -25,6 +25,36 @@ function fixture(t) {
   return r;
 }
 
+test("input revisions change only with text input and survive native saves and reloads", async (t) => {
+  const r = fixture(t), path = r.view.file.path;
+  assert.equal(r.activity.revision(path), undefined);
+  r.input("keydown");
+  assert.equal(r.activity.revision(path), undefined, "navigation is not text progress");
+  r.input();
+  const first = r.activity.revision(path);
+  assert.deepEqual(first, {}, "the identity contains no input or note data");
+  await r.tick();
+  r.activity.expectRefresh(r.view, r.text, "remote");
+  r.activity.holdReload(path)("confirmed");
+  for (const kind of ["keydown", "compositionstart", "compositionend", "focusout"]) r.input(kind);
+  assert.equal(r.activity.revision(path), first, "save, reload and composition bookkeeping are not new text input");
+  r.input();
+  assert.notEqual(r.activity.revision(path), first);
+});
+
+for (const reason of ["disabled", "closed", "rebound", "stopped", "other_path"]) {
+  test(`input revisions do not outlive ${reason}`, (t) => {
+    const r = fixture(t), path = r.view.file.path;
+    r.input();
+    assert.notEqual(r.activity.revision(path), undefined);
+    if (reason === "disabled") r.enabled = false;
+    if (reason === "closed") r.views = [];
+    if (reason === "rebound") r.view.file = { path };
+    if (reason === "stopped") r.activity.stop();
+    assert.equal(r.activity.revision(reason === "other_path" ? "Other.md" : path), undefined);
+  });
+}
+
 for (const phase of ["scheduled", "saving"]) test(`readiness joins the ${phase} save without polling or a second save`, async (t) => {
   const r = fixture(t);
   let release;
