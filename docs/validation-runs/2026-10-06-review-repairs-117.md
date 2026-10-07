@@ -9,7 +9,7 @@ warning. **The overall commands still failed their 1,500 ms relay visibility
 diagnostic. Physical-iPhone acceptance of these bytes remains unproved.**
 
 These results replace the pending repeat in the
-[earlier record](2026-10-06-saved-editor-117.md#review-repair-in-progress).
+[earlier record](2026-10-06-saved-editor-117.md#review-repair-checkpoints).
 They do not change that record's failed experiments into passes.
 
 ## Artifact and device binding
