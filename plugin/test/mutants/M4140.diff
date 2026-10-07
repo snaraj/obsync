@@ -1,0 +1,10 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2082,7 +2082,6 @@
+     // This is call-local, never a mutable-head cache. A newer local receipt,
+     // an unrelated graph or an absent head needs the ordinary fresh read.
+     const reuse = known?.file_id === change.file_id && known.domain_id === change.domain_id &&
+-      known.heads.includes(change.version_id) &&
+       known.versions.some(version => version.version_id === change.version_id) &&
+       known.versions.some(version => version.version_id === local.versionId);
+     const file = reuse ? known : await context.transport.getFile(change.file_id);

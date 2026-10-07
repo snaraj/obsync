@@ -1315,6 +1315,13 @@ long poll and needs its timeout raised.
    and uploads as a child. A changed parent or stopped engine refuses the
    staged write. Unsupported or overlapping states retain the ordinary path:
    publish local bytes first, then resolve the fork from published versions.
+   Push reconciliation passes its freshly fetched head snapshot into that
+   resolution instead of fetching it a second time. Reuse requires the same
+   file and domain, the incoming version still named as a head in that
+   snapshot, and both incoming and locally held versions present. A newer
+   local receipt absent from it requires a fresh read. This snapshot belongs
+   only to the current call; mutable heads are never cached across calls.
+   Later peer edits remain separate descendants that the next merge includes.
    Two devices resolving one fork then
    post the same bytes, and the server keeps one version; each carrying its
    own unsent save had posted two, a criss-cross one level deeper each round

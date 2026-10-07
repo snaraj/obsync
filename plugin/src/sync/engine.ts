@@ -3000,7 +3000,7 @@ export class SyncEngine {
         heads: file.heads,
         conflicted: true,
       };
-      await applyChange(context, change);
+      await applyChange(context, change, file);
     }
   }
 

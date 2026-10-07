@@ -1213,7 +1213,7 @@ async function deletionOwed(context: SyncContext, change: ChangeRecord): Promise
 /**
  * Apply one change-feed record.
  */
-export async function applyChange(context: SyncContext, change: ChangeRecord): Promise<ApplyResult> {
+export async function applyChange(context: SyncContext, change: ChangeRecord, known?: FileRecord): Promise<ApplyResult> {
   // The owner-only domain map rides the same feed under a reserved file id
   // (`domainmap.ts`). It is not a vault file: it has no path, it is sealed
   // under `K_map` rather than a manifest key, and the engine already read it
@@ -1280,7 +1280,7 @@ export async function applyChange(context: SyncContext, change: ChangeRecord): P
     if ((await context.host.inNestedVault(entry.path)) || (kept !== undefined && (await context.host.inNestedVault(kept)))) {
       throw new VaultPathError("nested_vault");
     }
-    const applied = await applyVersion(context, change, entry).catch((error: unknown) => {
+    const applied = await applyVersion(context, change, entry, known).catch((error: unknown) => {
       if (error instanceof EditorBusy) throw new Unwritable(entry.path, "active_editor");
       // A write THIS device's disk refused, or a chunk the server does not
       // hold: a fact about this one record, named with the path it was for,
@@ -1854,7 +1854,7 @@ async function notifyFolderCase(context: SyncContext, folder: string, deviceId: 
   });
 }
 
-async function applyVersion(context: SyncContext, change: ChangeRecord, entry: Manifest | FolderManifest | PauseManifest): Promise<ApplyResult> {
+async function applyVersion(context: SyncContext, change: ChangeRecord, entry: Manifest | FolderManifest | PauseManifest, known?: FileRecord): Promise<ApplyResult> {
   if (entry.v === 3) return await applyPause(context, change, entry);
   if (entry.v === 2) return await applyFolder(context, change, entry);
   const manifest = entry;
@@ -2076,7 +2076,17 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
     // answers none of them: it was computed when this version was journaled,
     // so the frame for the head another device wrote FIRST still says false
     // after this device forked the file, and obeying it discards the merge.
-    const file = await context.transport.getFile(change.file_id);
+    // Push reconciliation already fetched this head and its graph. Reuse
+    // that request's snapshot when it contains both inputs; another request
+    // costs a round trip and can chase a continuously advancing peer forever.
+    // This is call-local, never a mutable-head cache. A newer local receipt,
+    // an unrelated graph or an absent head needs the ordinary fresh read.
+    const reuse = known?.file_id === change.file_id && known.domain_id === change.domain_id &&
+      known.heads.includes(change.version_id) &&
+      known.versions.some(version => version.version_id === change.version_id) &&
+      known.versions.some(version => version.version_id === local.versionId);
+    const file = reuse ? known : await context.transport.getFile(change.file_id);
+    if (reuse) context.host.log("pull decision=reused reason=head_snapshot_reused reads_saved=1");
     if (reaches(file.versions, local.versionId, change.version_id)) {
       context.host.log(
         `pull path_class=file decision=skipped reason=already_incorporated file=${change.file_id} seq=${change.seq}`,

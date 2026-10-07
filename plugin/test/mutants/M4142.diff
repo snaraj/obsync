@@ -1,0 +1,12 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2083,8 +2083,7 @@
+     // an unrelated graph or an absent head needs the ordinary fresh read.
+     const reuse = known?.file_id === change.file_id && known.domain_id === change.domain_id &&
+       known.heads.includes(change.version_id) &&
+-      known.versions.some(version => version.version_id === change.version_id) &&
+-      known.versions.some(version => version.version_id === local.versionId);
++      known.versions.some(version => version.version_id === change.version_id);
+     const file = reuse ? known : await context.transport.getFile(change.file_id);
+     if (reuse) context.host.log("pull decision=reused reason=head_snapshot_reused reads_saved=1");
+     if (reaches(file.versions, local.versionId, change.version_id)) {

@@ -92,3 +92,41 @@ tooling was preserved. Physical-iPhone current-byte acceptance remains unproved:
 supported native control failed at pipe startup before app discovery, without
 evidence about the phone's lock state. This record alone does not clear native
 acceptance or authorize Ready.
+
+## Reconciliation request boundary
+
+The character-by-character native diagnostic found repeated head requests
+between the push engine and the pull resolver. `reconcileFile` already has
+both heads and their graph, but the resolver fetched the same file again.
+A peer typing continuously can advance during that extra round trip, making
+the selected version obsolete before it can be shown.
+
+The caller now passes its current request's snapshot. Reuse is limited to the
+same file/domain, an incoming head present in the graph, and the locally held
+version also present. No cross-call mutable-head cache is introduced. The
+ordinary fresh read handles missing inputs or a newer local receipt.
+
+```sh
+npm --prefix plugin run build
+node --test plugin/test/reconcile-snapshot.test.mjs \
+  plugin/test/cotyping.test.mjs plugin/test/editor-retry.test.mjs
+```
+
+The focused baseline passes 78 tests. Eight new cases include one head request
+for push reconciliation instead of two, zero extra requests with a supplied
+current snapshot, five refusals of unrelated/incomplete snapshots, and a peer
+advancing after the snapshot whose newer text survives the next merge with
+one head and no copy. The previous implementation fails three of these eight
+cases. This proves request removal and merge behavior, not a native latency
+improvement; the updated bundle still requires live comparison.
+
+Retained mutants M4136–M4142 remove, respectively, the engine's snapshot
+forwarding, the pull forwarding, file binding, domain binding, head membership,
+incoming-record membership and local-record membership. All seven patches
+apply exactly and compile. The eight-case focused suite kills them with
+1, 3, 1, 1, 1, 1 and 1 assertion failures, zero cancellations. Sources are
+restored byte-for-byte and rebuilt afterwards.
+
+The full local `make check` passes after this repair: 2,143 plugin tests,
+873 contract tests and 94.72% Rust line coverage. Both filesystem and history
+secret scans report no leaks. Native timing remains a separate acceptance gate.

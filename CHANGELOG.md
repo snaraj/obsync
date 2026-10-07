@@ -36,6 +36,10 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   delays native mobile file callbacks during typing.
 - Ordinary merges remember the exact result of their authenticated parents,
   as saved-editor merges do, without enlarging history or memory budgets.
+- Push reconciliation reuses the head snapshot it just fetched when that
+  snapshot contains both inputs, avoiding a second request that can chase
+  a continuously advancing peer. Unrelated or incomplete snapshots still
+  require a fresh graph.
 - Long insertion-only edits use a linear proof that every original character
   survives, avoiding quadratic character tables while retaining the general
   alignment budget and conservative replacement handling.
