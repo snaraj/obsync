@@ -3059,12 +3059,18 @@ async function resolve(
         if (!ahead && !sameBytes(text, theirs)) {
           // A head this device cannot open proves nothing about the note.
           const own = await manifestOf(context, file, change, localVersionId).catch(() => null);
-          if (own !== null && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {
-            // How long the note has held text no version has, against the
-            // window in which its editor's own push was due.
-            const age = before === null ? -1 : context.now() - before.mtime;
-            return await deferToPush(context, change, localPath, `${crossed ? "unpublished_criss_cross" : "unpublished_edit"} ` +
-              `age_ms=${age} duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
+          if (own !== null && own.sha256 !== "") {
+            if (hex(await sha256(mine)) !== own.sha256) {
+              // How long the note has held text no version has, against the
+              // window in which its editor's own push was due.
+              const age = before === null ? -1 : context.now() - before.mtime;
+              return await deferToPush(context, change, localPath, `${crossed ? "unpublished_criss_cross" : "unpublished_edit"} ` +
+                `age_ms=${age} duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
+            }
+            // This ordinary merge also contains exactly its authenticated
+            // parents. Remember it as the saved-editor path does: a later
+            // criss-cross must not spend its history budget finding it again.
+            remember(context, `merged ${[localVersionId, change.version_id].sort().join(" ")}`, merged.text);
           }
         }
         // A MERGE THIS DEVICE TOOK NO PART IN IS NOT NEWS HERE (issue #164). A

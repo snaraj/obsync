@@ -29,6 +29,10 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   ancestry proves the obsolete edit cannot advance it. Known dirty editors
   refuse readiness before queuing another mobile read. Linear replay, moves,
   deletions, rewrite controls and uncertain ancestry retain their checks.
+- The rotating sync icon uses its own compositor layer, avoiding repeated
+  editor repaints on mobile. Reduced motion releases that layer.
+- Ordinary merges remember the exact result of their authenticated parents,
+  as saved-editor merges do, without enlarging history or memory budgets.
 - The container builder base advances to Rust 1.98.1 with its pinned image
   digest; the repository compiler remains pinned to Rust 1.98.0 (#336).
 

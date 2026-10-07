@@ -1130,7 +1130,7 @@ test("a device that merged every arrival remembers what it was shown, and merges
   assert.equal(await applyChange(r.context, theirs), "applied", pulls(r.host));
   assert.equal(r.host.text(NOTE), lines(`${b} B37 B38`, a));
   assert.deepEqual(copies(r.host), [], pulls(r.host));
-  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=1 ok=true")), pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross found=verified_merge level=1")), pulls(r.host));
   assert.ok(!r.host.logs.some((line) => line.includes("reason=merge_ancestry_limit")), pulls(r.host));
   assert.ok(seen.reads.length - walked <= 2, `the criss-cross read ${seen.reads.length - walked} versions it had been shown`);
 });
@@ -1227,17 +1227,17 @@ test("a criss-cross one level deeper every round keeps merging while both type (
   const file = r.server.files.get(fileId);
   assert.equal(file.heads.length, 1);
   assert.equal(r.state.fileByPath(NOTE).versionId, file.heads[0]);
-  assert.ok(r.host.logs.some((line) => /reason=criss_cross level=2 ok=true found=before/.test(line)), pulls(r.host));
+  assert.ok(r.host.logs.some((line) => /reason=criss_cross found=verified_merge level=1/.test(line)), pulls(r.host));
   assert.ok(!r.host.logs.some((line) => line.includes("ok=false")), pulls(r.host));
 });
 
 /**
  * The bound is on the levels ONE resolution walks, and a level found before is
  * no walk: a device that resolved the first round and then met the fourth
- * finds the rest at the bound itself. A device that never met the first round
+ * finds the verified parent merge before the bound. A device that never met the first round
  * still settles a fourth by rule (above).
  */
-test("a level found in an earlier round is not walked again, even at the bound (#227)", async () => {
+test("a verified earlier merge stops traversal before the history bound (#227)", async () => {
   const r = await rig();
   const climb = await ladder(r);
   assert.equal(await applyChange(r.context, (await climb(1)).theirs), "merged", pulls(r.host));
@@ -1246,7 +1246,7 @@ test("a level found in an earlier round is not walked again, even at the bound (
   assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
   assert.equal(r.host.text(NOTE), lines(one, five));
   assert.deepEqual(copies(r.host), []);
-  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=4 ok=true found=before")), pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross found=verified_merge level=3")), pulls(r.host));
 });
 
 /**
@@ -1259,6 +1259,16 @@ test("a saved editor reuses a verified parent merge across skipped criss-cross l
   const r = await rig(), climb = await ladder(r);
   r.host.typing = () => true;
   r.host.editorReady = async () => true;
+  assert.equal(await applyChange(r.context, (await climb(3)).theirs), "merged", pulls(r.host));
+  const { theirs, one, five, lines } = await climb(4);
+  assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(one, five));
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.some((line) => line.includes("found=verified_merge")), pulls(r.host));
+});
+
+test("an ordinary authenticated merge is reused after skipped live criss-cross levels", async () => {
+  const r = await rig(), climb = await ladder(r);
   assert.equal(await applyChange(r.context, (await climb(3)).theirs), "merged", pulls(r.host));
   const { theirs, one, five, lines } = await climb(4);
   assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
@@ -1282,7 +1292,7 @@ test("remembered bases hold one merge input's worth, the oldest forgotten first 
   assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=3 ok=false")), pulls(r.host));
   // The newest is kept: the big note's next rounds find its first one.
   assert.equal(await applyChange(r.context, (await big(3)).theirs), "merged", pulls(r.host));
-  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=4 ok=true found=before")), pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross found=verified_merge level=3")), pulls(r.host));
 });
 
 /**
