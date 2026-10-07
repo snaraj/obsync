@@ -6,7 +6,7 @@
  * so typing in a note, which pushes a version per pause, shifted the WHOLE
  * status bar left and right. It is now one icon of a fixed width
  * (`styles.css`, `.obsync-status`): a check when this device is up to date, a
- * slowly turning wheel while it syncs, a cloud struck through while the server
+ * wheel while it syncs, a cloud struck through while the server
  * does not answer, an alert when something needs the person, a pause for a
  * paused note. The words -- always starting "obsync:" -- are its tooltip and
  * accessible name, and Show sync status, which a click opens, says them in
@@ -19,8 +19,9 @@
  *
  * PLATFORM. Desktop shows it in the status bar. Obsidian's mobile app hides
  * the status bar, so a phone or tablet shows the same indicator as an action
- * in the header of the view in front (`main.ts`, `placeIndicator`). Under
- * reduced motion the wheel does not turn; its shape alone tells it apart.
+ * in the header of the view in front (`main.ts`, `placeIndicator`). Its shape
+ * tells it apart without continuous animation: rotating this SVG stalls native
+ * file callbacks on mobile WebViews while someone types.
  */
 
 import { getIcon, setIcon, setTooltip } from "obsidian";

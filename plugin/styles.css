@@ -37,27 +37,6 @@
   color: var(--text-faint);
 }
 
-/* The wheel turns slowly while obsync syncs: one turn in 1.8 s. */
-.obsync-status[data-state="syncing"] svg {
-  /* Keep the rotating SVG off the editor repaint path on mobile WebViews. */
-  will-change: transform;
-  animation: obsync-turn 1.8s linear infinite;
-}
-
-@keyframes obsync-turn {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-/* Reduce Motion: no turning at all; the wheel's shape alone says syncing. */
-@media (prefers-reduced-motion: reduce) {
-  .obsync-status[data-state="syncing"] svg {
-    animation: none;
-    will-change: auto;
-  }
-}
-
 .obsync-code {
   user-select: all;
   overflow-wrap: anywhere;
