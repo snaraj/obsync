@@ -1,5 +1,8 @@
 # Review repairs: native verification, 2026-10-06
 
+Historical checkpoint. The [save-supersession recovery record](2026-10-07-pane-recovery-117.md)
+tests the newer product bytes and the second review's pane-ownership repair.
+
 The repairs at `274fcefa3a4e701d32950fc57e948b98d505fe73` preserved both
 writers in two consecutive three-minute Android/desktop runs. Each accepted
 900 trusted inputs, retained every token once in writer order, matched the
