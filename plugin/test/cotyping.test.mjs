@@ -25,7 +25,7 @@ import { createRequire } from "node:module";
 import { DEVICE_B, FakeHost, KEYS, SECRET_B, STEP_MS, fakeState, pair, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { EditorBusy, applyChange } = require("../build/sync/pull.js");
+const { EditorBusy, Unwritable, applyChange } = require("../build/sync/pull.js");
 const { pendingPublication, pushDelete, pushFile, sidDigest } = require("../build/sync/push.js");
 const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
 
@@ -1213,6 +1213,30 @@ test("merges of merges of one pair merge again, three levels down and no further
  * being typed in (the co-typing run on a busy CI machine, 2026-09-27). The
  * base of that pair was found one round ago, and a version never changes.
  */
+test("an active editor waits for a peer merge when history work reaches its bound", async () => {
+  const r = await rig();
+  const { ours, theirs, one, five, lines, publish } = await (await ladder(r))(4);
+  const original = r.host.text(NOTE), held = { ...r.state.fileByPath(NOTE) };
+  r.host.typing = () => true;
+  r.host.editorReady = async () => true;
+
+  await assert.rejects(applyChange(r.context, theirs), error =>
+    error instanceof Unwritable && error.reason === "active_editor" && error.path === NOTE);
+  assert.equal(r.host.text(NOTE), original);
+  assert.deepEqual(r.state.fileByPath(NOTE), held);
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.some(line => line.includes("reason=history_budget level=4 budget_levels=3")), pulls(r.host));
+  assert.ok(r.host.logs.some(line => line.includes("reason=history_budget_wait")), pulls(r.host));
+  assert.ok(!r.host.logs.some(line => line.includes("decision=unmerged reason=overlap")), pulls(r.host));
+
+  // The peer already knows the deeper base and publishes its clean merge.
+  // Its receipt contains both heads; no deeper traversal or copy is needed.
+  const resolved = await publish(lines(one, five), [ours.version_id, theirs.version_id]);
+  assert.equal(await applyChange(r.context, resolved), "applied", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(one, five));
+  assert.deepEqual(copies(r.host), []);
+});
+
 test("a criss-cross one level deeper every round keeps merging while both type (#227)", async () => {
   const r = await rig();
   const { ours, theirs, one, five, lines, publish, fileId } = await (await ladder(r))(3);

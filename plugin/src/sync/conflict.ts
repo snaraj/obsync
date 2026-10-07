@@ -86,6 +86,29 @@ export function alignLines(base: string[], side: string[]): Map<number, number> 
   return map;
 }
 
+/**
+ * Prove an insertion-only alignment in linear time. A complete embedding of
+ * the base is already a maximal subsequence, so no quadratic table is needed.
+ * Keep the same prefix/suffix anchors and earliest middle matches as alignLines.
+ * If any base point is absent, refuse: this path never guesses a replacement.
+ */
+export function alignInsertions(base: string[], side: string[]): Map<number, number> | null {
+  let prefix = 0, suffix = 0;
+  while (prefix < base.length && prefix < side.length && base[prefix] === side[prefix]) prefix++;
+  while (suffix < base.length - prefix && suffix < side.length - prefix &&
+    base[base.length - 1 - suffix] === side[side.length - 1 - suffix]) suffix++;
+  const map = new Map<number, number>();
+  for (let i = 0; i < prefix; i++) map.set(i, i);
+  let cursor = prefix;
+  for (let i = prefix; i < base.length - suffix; i++) {
+    while (cursor < side.length - suffix && base[i] !== side[cursor]) cursor++;
+    if (cursor === side.length - suffix) return null;
+    map.set(i, cursor++);
+  }
+  for (let i = 0; i < suffix; i++) map.set(base.length - 1 - i, side.length - 1 - i);
+  return map;
+}
+
 type LineEdit = { start: number; end: number; lines: string[] };
 
 /** Changed base intervals from ONE side's alignment, including insertions. */
@@ -139,14 +162,14 @@ function mergeLineAppends(base: string, mine: string, theirs: string): string | 
 
 /**
  * After a merge, continued typing can precede text learned from the peer.
- * Every original code point must remain on both sides. Align those anchors
- * under the same memory bound, then merge each gap independently, including
+ * Every original code point must remain on both sides. Prove those anchors
+ * with a linear scan, then merge each gap independently, including
  * the gap before the first character. Replacements and deletions still refuse.
  */
 function mergeLineInsertions(base: string, mine: string, theirs: string): string | null {
   const points = [...base], left = [...mine], right = [...theirs];
-  const a = alignLines(points, left), b = alignLines(points, right);
-  if (a === null || b === null || a.size !== points.length || b.size !== points.length) return null;
+  const a = alignInsertions(points, left), b = alignInsertions(points, right);
+  if (a === null || b === null) return null;
   const out: string[] = [];
   let m = 0, t = 0;
   for (let at = 0; at <= points.length; at++) {

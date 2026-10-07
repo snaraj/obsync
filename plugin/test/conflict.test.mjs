@@ -10,7 +10,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { alignLines, conflictCopyPath, conflictStamp, isMergeableText, threeWayMerge, MAX_ALIGN_CELLS } =
+const { alignInsertions, alignLines, conflictCopyPath, conflictStamp, isMergeableText, threeWayMerge, MAX_ALIGN_CELLS } =
   require("../build/sync/conflict.js");
 
 const lines = (...values) => values.join("\n");
@@ -163,12 +163,46 @@ test("different inserted words retain their own leading separators", () => {
   }
 });
 
-test("insertion alignment refuses oversized character grids on either side", () => {
+test("insertion-only text avoids a refused grid without changing its allocation bound", () => {
   const base = Array.from({ length: 2100 }, (_, i) => String.fromCodePoint(0x4e00 + i)).join("");
   const expensive = "X" + [...base].join("X") + "X";
   const simple = "Y" + base;
+  assert.equal(alignLines([...base], [...expensive]), null, "the general LCS table still refuses its original budget");
   for (const [mine, theirs] of [[expensive, simple], [simple, expensive]]) {
-    assert.deepEqual(threeWayMerge(base, mine, theirs), { ok: false, reason: "overlap" });
+    assert.deepEqual(threeWayMerge(base, mine, theirs), { ok: true, text: "XY" + [...base].join("X") + "X" });
+  }
+});
+
+test("linear insertion proofs match every accepted bounded LCS alignment", () => {
+  const words = length => length === 0 ? [""] : [...words(length - 1), ...words(length - 1).filter(s => s.length === length - 1).flatMap(s => [s + "a", s + "b"])];
+  for (const base of words(4)) for (const side of words(6)) {
+    const expected = alignLines([...base], [...side]);
+    assert.deepEqual(alignInsertions([...base], [...side]), expected.size === base.length ? expected : null,
+      JSON.stringify({ base, side }));
+  }
+});
+
+test("insertion proof reads at most a linear number of points on long inputs", () => {
+  const base = Array.from({ length: 10000 }, (_, i) => String.fromCodePoint(0x4e00 + i));
+  const side = ["X", ...base.flatMap(c => [c, "X"])];
+  let reads = 0;
+  const counted = items => new Proxy(items, { get(target, property) {
+    if (/^[0-9]+$/.test(String(property))) reads++;
+    return Reflect.get(target, property);
+  } });
+  const result = alignInsertions(counted(base), counted(side));
+  assert.equal(result.size, base.length);
+  assert.ok(reads <= 4 * (base.length + side.length), `point reads=${reads}`);
+  for (let i = 0; i < base.length; i++) assert.equal(result.get(i), 1 + i * 2);
+});
+
+test("the native long typing failure keeps all 823 tokens on one line", () => {
+  const stream = (who, count) => Array.from({ length: count }, (_, i) => ` ${who}${String(i + 1).padStart(3, "0")}`).join("");
+  const text = (a, m) => "# Both" + stream("A", a) + stream("M", m) + "\nthe line nobody edits\nthe last fixed line\n";
+  const base = text(408, 406), mine = text(412, 408), theirs = text(408, 411);
+  assert.equal(base.length, 4119);
+  for (const [a, b] of [[mine, theirs], [theirs, mine]]) {
+    assert.deepEqual(threeWayMerge(base, a, b), { ok: true, text: text(412, 411) });
   }
 });
 

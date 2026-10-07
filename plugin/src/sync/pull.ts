@@ -3010,7 +3010,15 @@ async function resolve(
         // Resolve the shared base before comparing criss-cross edits.
         const shared = mergeBase === baseManifest
           ? await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base)) : null;
-        return { base, theirs, shared };
+        // Exhausting bounded history is not evidence of overlapping text.
+        // During live input, keep this note parked for the existing active-editor
+        // retry: the peer may publish a merge that already contains both heads.
+        // Cold history keeps the conservative copy fallback and the same bound.
+        if (shared === HISTORY_BUDGET && context.host.typing(localPath)) {
+          context.host.log(`pull decision=deferred reason=history_budget_wait file=${change.file_id} seq=${change.seq} duration_ms=${context.now() - started} budget_levels=${CRISS_CROSS_LEVELS}`);
+          throw new EditorBusy();
+        }
+        return { base, theirs, shared: shared === HISTORY_BUDGET ? false : shared, historyBudget: shared === HISTORY_BUDGET };
       };
       let prepared: Awaited<ReturnType<typeof prepare>> | undefined;
       // Reserve the publication turn before downloading merge inputs. Local
@@ -3039,9 +3047,9 @@ async function resolve(
           if (applied !== null) return applied;
         }
       }
-      const { base, theirs, shared } = prepared ?? await prepare();
+      const { base, theirs, shared, historyBudget } = prepared ?? await prepare();
       const crossed = typeof shared === "string";
-      const merged = shared === false ? { ok: false as const, reason: "overlap" as const }
+      const merged = shared === false ? { ok: false as const, reason: historyBudget ? "history_budget" as const : "overlap" as const }
         : threeWayMerge(shared ?? decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
       if (merged.ok) {
         const text = new TextEncoder().encode(merged.text);
@@ -3197,7 +3205,7 @@ async function resolve(
       if (before !== null && !(await unmoved(context, localPath, before))) {
         return deferred(context, change, `saved_during_merge stage=unmerged duration_ms=${context.now() - started}`);
       }
-      context.host.log(`pull decision=unmerged reason=${merged.reason} file=${change.file_id} typing=${context.host.typing(localPath)} duration_ms=${context.now() - started}`);
+      context.host.log(`pull decision=unmerged reason=${merged.reason} file=${change.file_id} seq=${change.seq} typing=${context.host.typing(localPath)} duration_ms=${context.now() - started}`);
     }
   }
 
@@ -3721,7 +3729,7 @@ async function crissCrossBase(
   first: string,
   firstText: string,
   levels = CRISS_CROSS_LEVELS,
-): Promise<string | null | false> {
+): Promise<string | null | false | typeof HISTORY_BUDGET> {
   const pair = [left, right].sort().join(" ");
   const known = bases.get(context)?.get(pair);
   if (known !== undefined) {
@@ -3746,7 +3754,7 @@ async function crissCrossBase(
   }
   if (levels === 0) {
     context.host.log(`pull decision=merge_base reason=history_budget level=${CRISS_CROSS_LEVELS - levels + 1} budget_levels=${CRISS_CROSS_LEVELS}`);
-    return false;
+    return HISTORY_BUDGET;
   }
   if (commonAncestor(file.versions, first, other) === null) {
     await completeMergeAncestry(context, file, first, other);
@@ -3760,13 +3768,13 @@ async function crissCrossBase(
   }
   const [rootText, otherText] = texts as [string, string];
   const deeper = await crissCrossBase(context, file, change, [first, other], root as string, rootText, levels - 1);
-  const merged = deeper === false ? { ok: false as const }
+  const merged = deeper === false || deeper === HISTORY_BUDGET ? { ok: false as const }
     : threeWayMerge(deeper ?? rootText, firstText, otherText);
   context.host.log(
     `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=${merged.ok} ` +
       `file=${change.file_id} seq=${change.seq}`,
   );
-  if (!merged.ok) return false;
+  if (!merged.ok) return deeper === HISTORY_BUDGET ? HISTORY_BUDGET : false;
   remember(context, pair, merged.text);
   return merged.text;
 }
@@ -3778,6 +3786,7 @@ async function crissCrossBase(
  * version graph is another device's to shape.
  */
 const CRISS_CROSS_LEVELS = 3;
+const HISTORY_BUDGET = Symbol("merge history budget");
 
 /**
  * THE BASES ALREADY FOUND, by the two versions they are the base of (issue

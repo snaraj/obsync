@@ -33,6 +33,13 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   delays native mobile file callbacks during typing.
 - Ordinary merges remember the exact result of their authenticated parents,
   as saved-editor merges do, without enlarging history or memory budgets.
+- Long insertion-only edits use a linear proof that every original character
+  survives, avoiding quadratic character tables while retaining the general
+  alignment budget and conservative replacement handling.
+- A live editor reaching the merge-history work limit waits for the peer's
+  next merge instead of classifying the limit as overlapping text. Other
+  notes continue syncing; the existing bounded retry and cold-history
+  fallback remain.
 - The container builder base advances to Rust 1.98.1 with its pinned image
   digest; the repository compiler remains pinned to Rust 1.98.0 (#336).
 
