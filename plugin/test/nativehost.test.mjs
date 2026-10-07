@@ -1923,7 +1923,7 @@ for (const mobile of [false, true]) for (const active of [false, true]) for (con
     assert.equal(r.context.written.size, 0);
     assert.equal(readFileSync(join(r.root, NOTE), "utf8"), local);
     assert.equal(r.host.editorActivity.canRefresh(view), true, "supersession must not demote the winning native pane");
-    assert.equal(await r.host.editorReady(NOTE), false, "refusal cannot mint a new save receipt");
+    assert.equal(await r.host.editorActivity.ready(NOTE), false, "refusal cannot mint a new save receipt before a later native save completes");
     const before = receipts;
     r.host.editorActivity.record(view, "beforeinput"); shown.value = local.replace("NEW", "NEXT");
     await timers.run(5, () => receipts > before && r.host.editorActivity.saving.size === 0);
@@ -1941,6 +1941,27 @@ for (const mobile of [false, true]) for (const active of [false, true]) for (con
     assert.deepEqual(r.hidden(), []);
   });
 }
+
+for (const mobile of [false, true]) test(`host readiness joins an in-flight native save (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  const save = r.view.save;
+  let release;
+  r.view.save = async () => { await new Promise(resolve => { release = resolve; }); await save(); };
+  r.type(r.buffer.value + " NEXT");
+  await r.timers.run(5, () => release !== undefined);
+  let settled = false;
+  const ready = r.host.editorReady(NOTE).then(value => { settled = true; return value; });
+  await until(() => settled || r.host.editorActivity.saveWaiters.size === 1);
+  assert.equal(settled, false, "host must join the existing save rather than abandon prepared work");
+  assert.equal(r.host.editorActivity.saveWaiters.size, 1);
+  release();
+  await until(() => settled);
+  assert.equal(settled, true, "save completion wakes host reconciliation");
+  assert.equal(await ready, true);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.buffer.value);
+  assert.equal(r.host.editorActivity.recent(r.view), true);
+  assert.equal(r.host.editorActivity.saveWaiters.size, 0);
+});
 
 for (const mobile of [false, true]) test(`typing before a delivered remote addition does not demote a confirmed bridge (${mobile ? "mobile" : "desktop"})`, async (t) => {
   const r = await queuedEditor(t, () => {}, { mobile });

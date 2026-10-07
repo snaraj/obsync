@@ -1,0 +1,11 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -100,7 +100,7 @@
+     const files = views.map((view) => view.file);
+     const pending = (): boolean => views.some((view) => this.saving.has(view) || this.timers.has(view));
+     if (!this.access.enabled(path) || this.reloading.has(path) ||
+-      views.some((view) => this.inputs.get(view)?.composing) || !pending()) return false;
++      views.some((view) => this.inputs.get(view)?.composing)) return false;
+     const started = Date.now();
+     await new Promise<void>((resolve) => {
+       const done = (): void => {

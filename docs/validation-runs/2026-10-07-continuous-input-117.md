@@ -169,3 +169,54 @@ Accounting correction: commit a1419d0 contains +212/-5, as reported by
 The corrected full `make check` passes: 2,145 plugin tests, 873 contract
 tests, 83 dashboard tests, 94.72% Rust line coverage and both secret scans.
 This remains pre-native evidence for this preparation change.
+
+## Native save completion
+
+The preparation repair was installed from clean commit `bb34650` on both
+native peers, with independent bundle readback. The fresh Android control
+accepted all 130 trusted characters with matching editor and disk bytes before
+the plugin was installed. Pairing then completed with independent comparison
+and the creator's key-kept acknowledgment.
+
+The shared 16,354 ms typing window contained 200 individual trusted characters
+per writer. Both live editors and independent disk reads ended identical with
+one head. All four during/final captures were inspected: each screen showed
+the other's partial stream during typing and both complete streams afterwards,
+with the caret at its own stream's end. Each during capture had one combined
+notice. The unchanged 1,500 ms visibility budget still failed: desktop had
+22/137 late eligible characters (median 1,008.3 ms, p95 2,076.3 ms, maximum
+2,861.2 ms); Android had 76/145 (median 1,528.3 ms, p95 4,179.7 ms, maximum
+4,993.8 ms). Neither receiver had an eligible character unseen before both
+writers stopped. These are public-relay diagnostics, not paired speed claims.
+
+Read-only tracing then found Android refusing 33/60 preliminary readiness
+checks: 17 during saves, nine before a matching receipt, and seven when input
+changed across a read. Eight final checks passed and one refused. A temporary
+save-completion diagnostic reduced repeated preparation attempts but did not
+pass the visibility budget. Ciphertext reuse and a combined disk-read
+experiment also failed that budget; neither is shipped.
+
+Readiness now joins an already scheduled or running native save for at most
+100 ms, then repeats the ordinary disk/editor proof. It starts no new save and
+performs no readiness polling. Stop wakes waiters immediately. Completion,
+timeout and stop remove their waiter and timer; disabled sync, composition,
+reload ownership, changed panes/files and absent saves cannot gain readiness
+from waiting. The final writer's independent proof remains unchanged.
+
+The focused editor-activity/native-host tests cover both queued and in-flight
+saves, bounded continuous input, failed or mismatched saves, pane changes,
+composition, stop and simultaneous waiters. The superseded-write test still
+requires immediate refusal before any later native save; the host's new wait
+is exercised separately. The timeout test pins the original deadline and
+asserts completion before awaiting its result, so a broken simulated timer
+fails explicitly rather than hanging. This section does not claim native
+acceptance of the save-completion repair.
+
+Retained mutants M4145–M4158 compile and fail assertions in the 21-case
+focused boundary suite, with zero cancellations. Their failure counts are
+2, 4, 6, 3, 1, 1, 1, 1, 16, 4, 1, 3, 2 and 3 respectively. Sources are
+restored byte-for-byte and rebuilt after the audit.
+
+The save-completion candidate passes the full local `make check`: 2,166
+plugin tests, 873 contract tests, 83 dashboard tests, 94.72% Rust line coverage
+and both secret scans. Native acceptance is still outstanding for these bytes.

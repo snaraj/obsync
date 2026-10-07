@@ -6,6 +6,8 @@ import { pageTimers } from "./clock";
 export const RECENT_INPUT_MS = 10_000;
 /** At most one requested save per view per interval, including continuous input. */
 export const EDITOR_SAVE_MS = 5;
+/** Wait for an already scheduled native save, never for typing to stop. */
+export const EDITOR_SAVE_WAIT_MS = 100;
 /** Bound extra whole-text reads on mobile. Larger notes retain native autosave. */
 export const EDITOR_SAVE_MAX_CHARS = 1 << 20;
 
@@ -42,6 +44,7 @@ export class EditorActivity {
   private readonly snapshots = new WeakMap<MarkdownView, { file: TFile; text: string; generation: object }>();
   private readonly timers = new Map<MarkdownView, unknown>();
   private readonly saving = new Set<MarkdownView>();
+  private readonly saveWaiters = new Set<() => void>();
   private readonly reloading = new Set<string>();
   private readonly nativeOnly = new WeakMap<MarkdownView, TFile>();
   private generation = {};
@@ -87,6 +90,34 @@ export class EditorActivity {
 
   async ready(path: string, unchanged?: () => Promise<boolean>): Promise<boolean> {
     return await this.prepareWrite(path, unchanged) !== null;
+  }
+
+  /** Join a save already in progress before probing again. No polling or new
+   * save is started here, and completion itself never grants write readiness. */
+  async settle(path: string): Promise<boolean> {
+    if (await this.ready(path)) return true;
+    const generation = this.generation, views = this.access.views(path);
+    const files = views.map((view) => view.file);
+    const pending = (): boolean => views.some((view) => this.saving.has(view) || this.timers.has(view));
+    if (!this.access.enabled(path) || this.reloading.has(path) ||
+      views.some((view) => this.inputs.get(view)?.composing) || !pending()) return false;
+    const started = Date.now();
+    await new Promise<void>((resolve) => {
+      const done = (): void => {
+        this.clock.clear(timer);
+        this.saveWaiters.delete(wake);
+        resolve();
+      };
+      const wake = (): void => { if (generation !== this.generation || !pending()) done(); };
+      const timer = this.clock.set(done, EDITOR_SAVE_WAIT_MS);
+      this.saveWaiters.add(wake);
+    });
+    const current = this.access.views(path);
+    const bound = generation === this.generation && this.access.enabled(path) &&
+      views.length === current.length && views.every((view, i) => view === current[i] && view.file === files[i]);
+    const ready = bound && await this.ready(path);
+    this.access.log(`editor decision=${ready ? "ready" : "deferred"} reason=save_completion duration_ms=${Date.now() - started} budget_ms=${EDITOR_SAVE_WAIT_MS}`);
+    return ready;
   }
 
   /** Return the checked disk baseline, never a separately sampled editor value.
@@ -165,6 +196,7 @@ export class EditorActivity {
     for (const timer of this.timers.values()) this.clock.clear(timer);
     this.timers.clear();
     this.reloading.clear();
+    for (const wake of this.saveWaiters) wake();
   }
 
   private schedule(view: MarkdownView): void {
@@ -174,7 +206,7 @@ export class EditorActivity {
     const generation = this.generation;
     this.timers.set(view, this.clock.set(() => {
       this.timers.delete(view);
-      void this.save(view, generation);
+      void this.save(view, generation).finally(() => { for (const wake of this.saveWaiters) wake(); });
     }, EDITOR_SAVE_MS));
   }
 

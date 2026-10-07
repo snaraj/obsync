@@ -3583,7 +3583,7 @@ export class ObsidianHost implements VaultHost {
   }
 
   editorReady(path: string): Promise<boolean> {
-    return this.editorActivity.ready(path);
+    return this.editorActivity.settle(path);
   }
 
   stopEditorSaves(): void {

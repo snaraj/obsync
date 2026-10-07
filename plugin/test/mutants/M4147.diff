@@ -1,0 +1,11 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -115,7 +115,7 @@
+     const current = this.access.views(path);
+     const bound = generation === this.generation && this.access.enabled(path) &&
+       views.length === current.length && views.every((view, i) => view === current[i] && view.file === files[i]);
+-    const ready = bound && await this.ready(path);
++    const ready = bound;
+     this.access.log(`editor decision=${ready ? "ready" : "deferred"} reason=save_completion duration_ms=${Date.now() - started} budget_ms=${EDITOR_SAVE_WAIT_MS}`);
+     return ready;
+   }

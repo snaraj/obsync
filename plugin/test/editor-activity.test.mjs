@@ -1,12 +1,12 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-const { EditorActivity, EDITOR_SAVE_MS, EDITOR_SAVE_MAX_CHARS } = createRequire(import.meta.url)("../build/editorActivity.js");
+const { EditorActivity, EDITOR_SAVE_MS, EDITOR_SAVE_WAIT_MS, EDITOR_SAVE_MAX_CHARS } = createRequire(import.meta.url)("../build/editorActivity.js");
 
 const drain = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
 function fixture(t) {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const r = { text: "local", disk: "local", enabled: true, saves: 0, notifications: [], logs: [] };
+  const r = { text: "local", disk: "local", enabled: true, saves: 0, notifications: [], logs: [], armed: new Set() };
   r.view = { file: { path: "Notes/test.md" }, getViewData: () => r.text, save: async () => { r.saves++; r.disk = r.text; } };
   r.views = [r.view];
   r.read = async () => r.disk;
@@ -14,13 +14,133 @@ function fixture(t) {
     views: (path) => r.views.filter((view) => view.file?.path === path),
     read: (file) => r.read(file), enabled: () => r.enabled,
     saved: (path) => r.notifications.push(path), log: (line) => r.logs.push(line),
-  }, { set: (fn, ms) => setTimeout(fn, ms), clear: (handle) => clearTimeout(handle) });
+  }, { set: (fn, ms) => {
+    const handle = setTimeout(() => { r.armed.delete(handle); fn(); }, ms);
+    r.armed.add(handle); return handle;
+  }, clear: (handle) => { r.armed.delete(handle); clearTimeout(handle); } });
   r.input = (kind = "beforeinput") => r.activity.record(r.view, kind);
   r.ready = () => r.activity.ready("Notes/test.md");
   r.tick = async (ms = EDITOR_SAVE_MS) => { t.mock.timers.tick(ms); await drain(); };
   t.after(() => r.activity.stop());
   return r;
 }
+
+for (const phase of ["scheduled", "saving"]) test(`readiness joins the ${phase} save without polling or a second save`, async (t) => {
+  const r = fixture(t);
+  let release;
+  if (phase === "saving") r.view.save = async () => { r.saves++; await new Promise(resolve => { release = resolve; }); r.disk = r.text; };
+  r.input();
+  if (phase === "saving") await r.tick();
+  let reads = 0, settled = false;
+  r.read = async () => { reads++; return r.disk; };
+  const ready = r.activity.settle("Notes/test.md").then(value => { settled = true; return value; });
+  await drain();
+  assert.equal(settled, false);
+  assert.equal(reads, 0, "waiting must not occupy the native adapter queue");
+  if (phase === "scheduled") await r.tick();
+  else { release(); await drain(); }
+  assert.equal(settled, true, "completion wakes the waiting reconciliation immediately");
+  assert.equal(await ready, true);
+  assert.equal(r.saves, 1);
+  assert.equal(r.activity.saveWaiters.size, 0);
+  assert.equal(r.armed.size, 0, "early completion cancels the deadline timer");
+  assert.match(r.logs.at(-1), /^editor decision=ready reason=save_completion duration_ms=\d+ budget_ms=100$/);
+  assert.equal(r.activity.recent(r.view), true, "no idle-input wait");
+});
+
+for (const reason of ["composition", "disabled", "reloading", "no_pending_save"]) {
+  test(`readiness does not wait for ${reason}`, async (t) => {
+    const r = fixture(t);
+    r.input();
+    if (reason === "composition") r.input("compositionstart");
+    if (reason === "disabled") r.enabled = false;
+    if (reason === "reloading") r.activity.holdReload("Notes/test.md");
+    if (reason === "no_pending_save") r.activity.stop();
+    let result;
+    void r.activity.settle("Notes/test.md").then(value => { result = value; });
+    await drain();
+    assert.equal(result, false);
+    assert.equal(r.activity.saveWaiters.size, 0);
+  });
+}
+
+test("save completion waits have a fixed deadline and no wake or timer residue", async (t) => {
+  const r = fixture(t); let release;
+  r.view.save = async () => { r.saves++; await new Promise(resolve => { release = resolve; }); r.disk = r.text; };
+  r.input(); await r.tick();
+  let settled = false;
+  const ready = r.activity.settle("Notes/test.md").then(value => { settled = true; return value; });
+  await drain();
+  await r.tick(EDITOR_SAVE_WAIT_MS - 1); assert.equal(settled, false);
+  await r.tick(1); assert.equal(settled, true, "the original deadline cannot move");
+  assert.equal(await ready, false);
+  assert.equal(r.activity.saveWaiters.size, 0);
+  assert.match(r.logs.at(-1), /^editor decision=deferred reason=save_completion duration_ms=\d+ budget_ms=100$/);
+  release(); await drain();
+  assert.equal(await r.ready(), true, "timeout did not disable the later valid save");
+  assert.equal(r.saves, 1);
+});
+
+test("an already saved editor needs neither a wait nor another save", async (t) => {
+  const r = fixture(t);
+  r.input(); await r.tick();
+  assert.equal(await r.activity.settle("Notes/test.md"), true);
+  assert.equal(r.saves, 1);
+  assert.equal(r.armed.size, 0);
+  assert.equal(r.activity.saveWaiters.size, 0);
+});
+
+for (const reason of ["stopped", "disabled", "rebound", "closed", "new_pane", "composition", "failed", "wrong_disk", "new_input"]) {
+  test(`save completion cannot admit ${reason}`, async (t) => {
+    const r = fixture(t); let release;
+    r.view.save = async () => { r.saves++; await new Promise(resolve => { release = resolve; });
+      if (reason === "failed") throw Error("synthetic save failure");
+      r.disk = reason === "wrong_disk" ? "other bytes" : r.text;
+    };
+    r.input(); await r.tick();
+    const ready = r.activity.settle("Notes/test.md"); await drain();
+    if (reason === "stopped") r.activity.stop();
+    if (reason === "disabled") r.enabled = false;
+    if (reason === "rebound") r.view.file = { path: "Notes/test.md" };
+    if (reason === "closed") r.views = [];
+    if (reason === "new_pane") r.views.push({ file: r.view.file, getViewData: () => r.text });
+    if (reason === "composition") r.input("compositionstart");
+    if (reason === "new_input") { r.text += " newer"; r.input(); }
+    release(); await drain();
+    await r.tick(EDITOR_SAVE_WAIT_MS);
+    assert.equal(await ready, false);
+    assert.equal(r.activity.saveWaiters.size, 0);
+    assert.equal(r.notifications.length, reason === "new_pane" ? 1 : 0,
+      "a valid local save may complete, but a changed pane set still refuses the waiting write");
+  });
+}
+
+test("continuous input cannot extend the save completion deadline", async (t) => {
+  assert.equal(EDITOR_SAVE_WAIT_MS, 100, "native readiness wait has a fixed bounded contract");
+  const r = fixture(t); let release;
+  r.view.save = async () => { r.saves++; await new Promise(resolve => { release = resolve; }); };
+  r.input(); await r.tick();
+  let settled = false;
+  const ready = r.activity.settle("Notes/test.md").then(value => { settled = true; return value; }); await drain();
+  for (let i = 0; i < 20; i++) { r.input(); await r.tick(EDITOR_SAVE_WAIT_MS / 20); }
+  assert.equal(settled, true, "continuous input cannot keep a waiter alive");
+  assert.equal(await ready, false);
+  assert.equal(r.activity.saveWaiters.size, 0);
+  r.activity.stop(); release(); await drain();
+});
+
+test("stopping releases all simultaneous save waiters before the save finishes", async (t) => {
+  const r = fixture(t); let release;
+  r.view.save = async () => { await new Promise(resolve => { release = resolve; }); };
+  r.input(); await r.tick();
+  const waits = [r.activity.settle("Notes/test.md"), r.activity.settle("Notes/test.md")];
+  await drain(); assert.equal(r.activity.saveWaiters.size, 2);
+  r.activity.stop();
+  assert.equal(r.activity.saveWaiters.size, 0, "stop wakes waiters synchronously");
+  assert.deepEqual(await Promise.all(waits), [false, false]);
+  assert.equal(r.activity.saveWaiters.size, 0);
+  release(); await drain();
+});
 
 test("recent input becomes write-ready only after an awaited save and independent read", async (t) => {
   const r = fixture(t);

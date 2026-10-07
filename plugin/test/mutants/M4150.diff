@@ -1,0 +1,11 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -99,7 +99,7 @@
+     const generation = this.generation, views = this.access.views(path);
+     const files = views.map((view) => view.file);
+     const pending = (): boolean => views.some((view) => this.saving.has(view) || this.timers.has(view));
+-    if (!this.access.enabled(path) || this.reloading.has(path) ||
++    if (this.reloading.has(path) ||
+       views.some((view) => this.inputs.get(view)?.composing) || !pending()) return false;
+     const started = Date.now();
+     await new Promise<void>((resolve) => {

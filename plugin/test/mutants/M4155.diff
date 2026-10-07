@@ -1,0 +1,11 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -196,7 +196,7 @@
+     for (const timer of this.timers.values()) this.clock.clear(timer);
+     this.timers.clear();
+     this.reloading.clear();
+-    for (const wake of this.saveWaiters) wake();
++    // Mutation: leave stopped waiters asleep.
+   }
+ 
+   private schedule(view: MarkdownView): void {

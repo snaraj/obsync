@@ -1,0 +1,11 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -7,7 +7,7 @@
+ /** At most one requested save per view per interval, including continuous input. */
+ export const EDITOR_SAVE_MS = 5;
+ /** Wait for an already scheduled native save, never for typing to stop. */
+-export const EDITOR_SAVE_WAIT_MS = 100;
++export const EDITOR_SAVE_WAIT_MS = 101;
+ /** Bound extra whole-text reads on mobile. Larger notes retain native autosave. */
+ export const EDITOR_SAVE_MAX_CHARS = 1 << 20;
+ 

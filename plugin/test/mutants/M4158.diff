@@ -1,0 +1,11 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -95,7 +95,7 @@
+   /** Join a save already in progress before probing again. No polling or new
+    * save is started here, and completion itself never grants write readiness. */
+   async settle(path: string): Promise<boolean> {
+-    if (await this.ready(path)) return true;
++    if (await this.ready(path)) return false;
+     const generation = this.generation, views = this.access.views(path);
+     const files = views.map((view) => view.file);
+     const pending = (): boolean => views.some((view) => this.saving.has(view) || this.timers.has(view));
