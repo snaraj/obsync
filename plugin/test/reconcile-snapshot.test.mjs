@@ -70,3 +70,48 @@ test("a peer advancing after the snapshot keeps its newer edit through the next 
   assert.equal(r.server.files.get(r.base.fileId).heads.length, 1);
   assert.deepEqual([...r.host.files.keys()], [NOTE]);
 });
+
+async function descendant() {
+  const r = await rig();
+  r.host.seed(NOTE, "A:\nB:\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "A: local\nB:\n", 2000);
+  const incoming = await r.server.publish({ fileId: base.fileId, path: NOTE,
+    bytes: enc("A:\nB: remote\n"), mtime: 3000, parents: [base.versionId],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  const snapshot = await r.transport.getFile(base.fileId);
+  let reads = 0;
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (...args) => { reads++; return getFile(...args); };
+  return { ...r, base, incoming, snapshot, reads: () => reads };
+}
+
+test("a descendant over unpushed local input reuses the supplied graph", async () => {
+  const r = await descendant();
+  assert.equal(await applyChange(r.context, r.incoming, r.snapshot), "skipped");
+  assert.equal(r.host.text(NOTE), "A: local\nB:\n");
+  assert.equal(r.reads(), 0);
+  assert.equal(r.context.forked.has(r.base.fileId), true);
+  await pushFile(r.context, NOTE);
+  const engine = new SyncEngine({ state: r.state, transport: r.transport, host: r.host });
+  engine.need = () => r.context;
+  await engine.reconcileFile(r.base.fileId);
+  assert.equal(r.host.text(NOTE), "A: local\nB: remote\n");
+  assert.equal(r.server.files.get(r.base.fileId).heads.length, 1);
+  assert.deepEqual([...r.host.files.keys()], [NOTE]);
+});
+
+for (const reason of ["file", "domain", "incoming_absent", "local_absent", "not_head"]) {
+  test(`a descendant snapshot with ${reason} is fetched again`, async () => {
+    const r = await descendant(), snapshot = structuredClone(r.snapshot);
+    if (reason === "file") snapshot.file_id = "ab".repeat(16);
+    if (reason === "domain") snapshot.domain_id = "ab".repeat(16);
+    if (reason === "incoming_absent") snapshot.versions = snapshot.versions.filter(v => v.version_id !== r.incoming.version_id);
+    if (reason === "local_absent") snapshot.versions = snapshot.versions.filter(v => v.version_id !== r.base.versionId);
+    if (reason === "not_head") snapshot.heads = [r.base.versionId];
+    assert.equal(await applyChange(r.context, r.incoming, snapshot), "skipped");
+    assert.equal(r.host.text(NOTE), "A: local\nB:\n");
+    assert.equal(r.reads(), 1);
+    assert.ok(!r.host.logs.some(line => line.includes("reason=head_snapshot_reused")));
+  });
+}

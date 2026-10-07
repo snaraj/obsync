@@ -1,0 +1,11 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2247,7 +2247,7 @@
+       const decided = await sameNameTiebreak(context, change, manifest, atTarget);
+       if (decided !== null) return decided;
+     } else if (atTarget === "local_edit" && localPath === manifest.path && local !== undefined) {
+-      return await reconcile(context, await reconciliationGraph(context, change, local.versionId, known), change, manifest, localPath, local.versionId);
++      return await reconcile(context, await context.transport.getFile(change.file_id), change, manifest, localPath, local.versionId);
+     } else if (atTarget === null && atSource === "local_edit" && local !== undefined) {
+       // A MOVE MEETING A CHANGE AT ITS SOURCE IS A FORK, NOT TWO NOTES (issues
+       // #151, #174). What this device holds there and has not published -- an

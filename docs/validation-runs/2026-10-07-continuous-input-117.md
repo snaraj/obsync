@@ -220,3 +220,111 @@ restored byte-for-byte and rebuilt after the audit.
 The save-completion candidate passes the full local `make check`: 2,166
 plugin tests, 873 contract tests, 83 dashboard tests, 94.72% Rust line coverage
 and both secret scans. Native acceptance is still outstanding for these bytes.
+
+
+## Paired native save-completion results
+
+Five alternating baseline/candidate pairs compare clean `bb346509` with
+`1b871587`. Each installed bundle was independently read back before its run.
+The same native macOS 27 arm64 / Obsidian 1.13.4 and Android 17 arm64 /
+Obsidian 1.14.4 clients typed 200 individually delivered trusted characters
+per writer at 80 ms cadence for about 16.3 seconds. The receiving oracle
+records text ranges actually inside the editor viewport during the shared
+input window. Final live-editor and independent disk equality, one file and
+one head pass in every run. All 40 during/final screenshots were opened.
+The during frames show the other writer advancing while the local caret is
+still at the growing stream; the final frames show both complete streams.
+Final screenshots alone do not establish cursor position on every mobile frame.
+
+Android used the current API 37 revision-6 image with 16 KiB pages,
+WebView 149.0.7827.5, a Pixel 8 profile, two requested cores and 2 GiB requested
+memory, with software graphics. A disposable local TLS terminator preserved
+certificate/hostname validation, authenticated requests, E2EE and durable
+server writes. Native requests rejected the untrusted certificate before
+installing a run-only emulator CA, accepted the matching endpoint afterwards,
+and still rejected a hostname mismatch. The desktop used a loopback HTTP
+control. This establishes Android local-TLS behavior, not desktop TLS, LAN,
+physical-phone or production-infrastructure acceptance.
+
+| Pair | Bundle | Desktop p50 / p95 / max (ms) | Android p50 / p95 / max (ms) | Late desktop / Android |
+| --- | --- | --- | --- | --- |
+| 1 | baseline | 383.7 / 1085.8 / 1630.4 | 800.7 / 2261.4 / 2888.6 | 2 / 28 |
+| 1 | candidate | 453.6 / 1028.6 / 1199.9 | 559.0 / 1219.1 / 1447.8 | 0 / 0 |
+| 2 | baseline | 340.8 / 765.8 / 969.0 | 644.6 / 1691.2 / 2321.1 | 0 / 13 |
+| 2 | candidate | 422.2 / 765.8 / 971.7 | 523.0 / 1133.2 / 1461.8 | 0 / 0 |
+| 3 | baseline | 402.5 / 850.3 / 1107.3 | 849.4 / 2298.7 / 2869.0 | 0 / 27 |
+| 3 | candidate | 503.8 / 1190.0 / 1600.6 | 577.8 / 1294.6 / 1872.1 | 3 / 4 |
+| 4 | baseline | 441.3 / 1014.4 / 1390.1 | 1067.2 / 3342.3 / 3706.4 | 0 / 52 |
+| 4 | candidate | 374.8 / 908.7 / 1338.7 | 518.1 / 1004.4 / 1259.7 | 0 / 0 |
+| 5 | baseline | 416.6 / 1037.8 / 1582.2 | 710.6 / 1600.5 / 2181.3 | 1 / 11 |
+| 5 | candidate | 418.3 / 803.0 / 1133.0 | 551.9 / 1230.4 / 1805.4 | 0 / 3 |
+
+Three of five candidate runs satisfy the unchanged 1,500 ms visibility
+budget on both screens; all five baselines fail. Android late eligible
+characters decrease from 131/725 to 7/725. No eligible character is missing
+before shared typing ends. Desktop has three late characters in each variant.
+These failures remain acceptance failures.
+
+For paired per-run p50, baseline-minus-candidate has mean 268.5 ms on Android
+(95% bootstrap interval 159.0–409.5 ms). For paired p95 the reduction is
+1,062.5 ms (542.1–1,715.2 ms). Both intervals exclude zero. Desktop intervals
+include zero: p50 difference -37.6 ms (-87.1–23.3), p95 difference 11.6 ms
+(-180.9–162.0); no desktop speed gain is claimed. Calculations use 10,000
+resamples of the five pairs with replacement, seed 117. Reproduce from the
+rounded table by subtracting candidate from baseline in each pair, resampling
+five such differences, and taking the mean and 2.5/97.5 percentiles. Original
+unrounded event receipts and the analysis script remain with the private lab
+record. The whole comparison held one expiring exclusive timing lease and
+retained aggregate host-load samples; the lease cannot prove an absence of
+nonparticipating host load. The full repository gate did not overlap these runs.
+
+Single-run diagnostics on the same candidate do not add paired claims:
+public-relay visibility still failed; local read-only host tracing passed;
+an explicitly enabled bounded ciphertext-reuse experiment failed on six
+Android events, and a 200 ms publication-interval experiment failed on six
+desktop events. Neither experiment ships. An earlier run named for ciphertext
+reuse actually had zero hits, misses and seeded entries: it is a baseline
+repeat, not cache evidence. The runner now records its explicit selection;
+a label alone never establishes which experiment executed.
+
+Background/resume, actual Android process restart, public-TLS offline/reconnect
+and Leave passed on `1b871587`. Background propagation was 514/456 ms and
+restart propagation 427/434 ms (desktop-to-Android / reverse). Offline transport
+refusal was observed before typing, local bytes were saved, and automatic
+reconnect delivered the text in 1,673 ms. Independent bytes and live editors
+agreed. Leave revoked the device, cleared its server/device enrollment and
+file records, and preserved all 22 local notes. All 12 recovery/Leave captures
+were opened. Both controllers exited zero; independent inspection found all
+four owned child PIDs, runtime/private directories and live manifests absent.
+The TLS sidecar exited zero with its listener and private keys absent. Destroying
+the disposable emulator removed its temporary CA and mounts.
+
+Physical-iPhone current-byte acceptance remains unproved. Native control now
+reaches an explicit Mac Touch ID/login prompt in iPhone Mirroring; the old
+native-control startup failure is no longer the current diagnosis.
+
+## Descendant snapshot reuse
+
+A direct descendant arriving over an unpublished local edit formerly repeated
+the head-graph request even when its caller already supplied the matching
+snapshot. Both reconciliation branches now share one call-local validation:
+file, domain, current incoming head and both version records must match.
+Absent or mismatched evidence still performs the fresh authenticated read.
+There is no retained mutable-head cache and no editor or durability guard changes.
+
+The 14 snapshot tests pass; restoring the previous product code fails the new
+positive descendant case on its extra request. The case preserves unpublished
+local bytes, publishes them normally, then proves both authors' text, one head
+and no extra file. Five negative descendant cases require the fresh read.
+M4136–M4142 and M4159 all compile and fail assertions, with respectively
+1, 4, 2, 2, 2, 2, 2 and 1 failures and zero cancellations. The five moved
+validation mutants were regenerated against the shared helper. Sources were
+restored byte-for-byte and rebuilt. Reproduce the focused baseline with
+`cd plugin && npm run build && node --test test/reconcile-snapshot.test.mjs`;
+run each retained patch with `plugin/test/mutants/run.sh` for the whole suite.
+The paired native figures above precede this additional optimization and are
+not a speed claim or native acceptance of the newer bytes.
+
+The descendant change passes the full local `make check`: 2,172 plugin tests,
+873 contracts, 83 dashboard tests, 94.72% Rust line coverage and both secret
+scans; zero failures. The gate completed in 419.62 seconds.

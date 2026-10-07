@@ -1854,6 +1854,23 @@ async function notifyFolderCase(context: SyncContext, folder: string, deviceId: 
   });
 }
 
+/** Reuse only this invocation's matching reconciliation graph. Both a fork
+ * and a descendant arriving over unpushed local input need the same proof. */
+async function reconciliationGraph(context: SyncContext, change: ChangeRecord, localVersionId: string, known?: FileRecord): Promise<FileRecord> {
+  // Push reconciliation already fetched this head and its graph. Reuse
+  // that request's snapshot when it contains both inputs; another request
+  // costs a round trip and can chase a continuously advancing peer forever.
+  // This is call-local, never a mutable-head cache. A newer local receipt,
+  // an unrelated graph or an absent head needs the ordinary fresh read.
+  const reuse = known?.file_id === change.file_id && known.domain_id === change.domain_id &&
+    known.heads.includes(change.version_id) &&
+    known.versions.some(version => version.version_id === change.version_id) &&
+    known.versions.some(version => version.version_id === localVersionId);
+  const file = reuse ? known : await context.transport.getFile(change.file_id);
+  if (reuse) context.host.log("pull decision=reused reason=head_snapshot_reused reads_saved=1");
+  return file;
+}
+
 async function applyVersion(context: SyncContext, change: ChangeRecord, entry: Manifest | FolderManifest | PauseManifest, known?: FileRecord): Promise<ApplyResult> {
   if (entry.v === 3) return await applyPause(context, change, entry);
   if (entry.v === 2) return await applyFolder(context, change, entry);
@@ -2076,17 +2093,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
     // answers none of them: it was computed when this version was journaled,
     // so the frame for the head another device wrote FIRST still says false
     // after this device forked the file, and obeying it discards the merge.
-    // Push reconciliation already fetched this head and its graph. Reuse
-    // that request's snapshot when it contains both inputs; another request
-    // costs a round trip and can chase a continuously advancing peer forever.
-    // This is call-local, never a mutable-head cache. A newer local receipt,
-    // an unrelated graph or an absent head needs the ordinary fresh read.
-    const reuse = known?.file_id === change.file_id && known.domain_id === change.domain_id &&
-      known.heads.includes(change.version_id) &&
-      known.versions.some(version => version.version_id === change.version_id) &&
-      known.versions.some(version => version.version_id === local.versionId);
-    const file = reuse ? known : await context.transport.getFile(change.file_id);
-    if (reuse) context.host.log("pull decision=reused reason=head_snapshot_reused reads_saved=1");
+    const file = await reconciliationGraph(context, change, local.versionId, known);
     if (reaches(file.versions, local.versionId, change.version_id)) {
       context.host.log(
         `pull path_class=file decision=skipped reason=already_incorporated file=${change.file_id} seq=${change.seq}`,
@@ -2240,7 +2247,7 @@ async function applyVersion(context: SyncContext, change: ChangeRecord, entry: M
       const decided = await sameNameTiebreak(context, change, manifest, atTarget);
       if (decided !== null) return decided;
     } else if (atTarget === "local_edit" && localPath === manifest.path && local !== undefined) {
-      return await reconcile(context, await context.transport.getFile(change.file_id), change, manifest, localPath, local.versionId);
+      return await reconcile(context, await reconciliationGraph(context, change, local.versionId, known), change, manifest, localPath, local.versionId);
     } else if (atTarget === null && atSource === "local_edit" && local !== undefined) {
       // A MOVE MEETING A CHANGE AT ITS SOURCE IS A FORK, NOT TWO NOTES (issues
       // #151, #174). What this device holds there and has not published -- an
