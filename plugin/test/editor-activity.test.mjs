@@ -76,7 +76,7 @@ for (const reason of ["composition", "disabled", "stopped", "rebound", "native_o
     if (reason === "disabled") r.enabled = false;
     if (reason === "stopped") r.activity.stop();
     if (reason === "rebound") r.view.file = { path: "Notes/test.md" };
-    if (reason === "native_only") r.activity.holdReload("Notes/test.md")(false);
+    if (reason === "native_only") r.activity.holdReload("Notes/test.md")("unconfirmed");
     assert.equal(r.activity.canRefresh(r.view), false);
   });
 }
@@ -178,20 +178,20 @@ test("a reload has one owner and blocks saves until the native buffer includes i
   r.text = "local with new keystroke"; r.input(); await r.tick();
   assert.equal(r.saves, 1);
   r.text = "local with new keystroke and peer";
-  release(true); await r.tick();
+  release("confirmed"); await r.tick();
   assert.equal(r.saves, 2);
   assert.equal(r.disk, r.text);
   const next = r.activity.holdReload("Notes/test.md");
-  release(true);
+  release("confirmed");
   assert.equal(await r.ready(), false, "an old release cannot clear the next reload");
-  next(true);
+  next("confirmed");
 });
 
 test("a failed native reload disables extra saves for only that view and file", async (t) => {
   const r = fixture(t);
   r.input(); await r.tick();
   const release = r.activity.holdReload("Notes/test.md");
-  release(false); r.input(); await r.tick();
+  release("unconfirmed"); r.input(); await r.tick();
   assert.equal(r.saves, 1);
   assert.equal(await r.ready(), false);
   r.view.file = { path: "Notes/test.md" };
@@ -206,7 +206,7 @@ test("reload and new input during the final input check invalidate write readine
   await r.tick();
   let release;
   assert.equal(await r.activity.ready("Notes/test.md", async () => { release = r.activity.holdReload("Notes/test.md"); return true; }), false);
-  release(true);
+  release("confirmed");
 });
 
 test("a pending native reload finishes before save clears dirty input", async (t) => {
@@ -254,7 +254,7 @@ for (const reason of ["rebound", "closed", "disabled", "stop", "failed_refresh"]
   if (reason === "closed") r.views = [];
   if (reason === "disabled") r.enabled = false;
   if (reason === "stop") r.activity.stop();
-  if (reason === "failed_refresh") r.activity.holdReload("Notes/test.md")(false);
+  if (reason === "failed_refresh") r.activity.holdReload("Notes/test.md")("unconfirmed");
   assert.equal(r.activity.savedSnapshot("Notes/test.md", "local"), false);
 });
 
@@ -266,3 +266,33 @@ test("new typing in a rebound view cannot authorize the previous file's saved sn
   assert.equal(r.activity.savedSnapshot("Notes/test.md", "local"), false);
   assert.equal(await r.ready(), false);
 });
+
+
+for (const state of ["saved", "typing", "composition", "native_only", "rebound", "stopped"]) {
+  test(`superseded reload releases only eligible save ownership (${state})`, async (t) => {
+    const r = fixture(t);
+    r.input(); await r.tick();
+    if (state === "native_only") r.activity.holdReload("Notes/test.md")("unconfirmed");
+    const release = r.activity.holdReload("Notes/test.md");
+    if (state === "typing") { r.text += " new input"; r.input(); }
+    if (state === "composition") { r.text += " unfinished"; r.input("compositionstart"); }
+    if (state === "rebound") r.view.file = { path: "Notes/elsewhere.md" };
+    if (state === "stopped") r.activity.stop();
+    release("superseded");
+    if (state === "saved") assert.equal(await r.ready(), false, "supersession revokes the old receipt before resaving");
+    await r.tick();
+    const eligible = state === "saved" || state === "typing";
+    assert.equal(r.saves, eligible ? 2 : 1);
+    assert.equal(r.notifications.length, eligible ? 2 : 1);
+    if (eligible) {
+      assert.equal(await r.ready(), true);
+      assert.equal(r.activity.canRefresh(r.view), true);
+      assert.equal(r.disk, r.text);
+    }
+    if (state !== "stopped") assert.ok(r.logs.some(line => /^editor decision=reload_released outcome=superseded views=1 duration_ms=\d+ budget_ms=0$/.test(line)));
+    const next = r.activity.holdReload("Notes/test.md");
+    release("confirmed");
+    assert.equal(r.activity.reloading.has("Notes/test.md"), true, "a stale release cannot clear a later hold");
+    next("confirmed");
+  });
+}

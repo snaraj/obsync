@@ -1,0 +1,12 @@
+# M4124: superseded release retains a stale save receipt
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -146,7 +146,7 @@
+       for (const { view, file } of views) {
+         if (!file || view.file !== file) continue;
+         const input = this.inputs.get(view);
+-        if (outcome !== "confirmed" && input) delete input.saved;
++        // Mutant: preserve an obsolete saved-input receipt.
+         if (outcome === "unconfirmed") {
+           this.nativeOnly.set(view, file);
+         } else {

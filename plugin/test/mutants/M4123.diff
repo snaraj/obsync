@@ -1,0 +1,12 @@
+# M4123: desktop supersession loses its release outcome
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2269,7 +2269,7 @@
+           await this.reconcile(path, "file", true, true);
+           return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
+         } catch (error) {
+-          if (error instanceof WriteSuperseded) outcome = "superseded";
++          // Mutant: leave superseded desktop release unconfirmed.
+           await discard();
+           throw error;
+         } finally {

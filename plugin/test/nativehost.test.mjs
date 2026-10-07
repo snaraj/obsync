@@ -1879,3 +1879,80 @@ test("a mobile public save replaced before confirmation refuses the incoming rec
   assert.equal(r.buffer.value, replacement);
   assert.ok(r.logs.some(line => line.includes("editor_left reason=file_changed")));
 });
+
+// A refused incoming version must not permanently hand save ownership away:
+// the winning native input still belongs to the previously applied version.
+for (const mobile of [false, true]) for (const active of [false, true]) for (const sameSize of [false, true]) {
+  test(`a superseded write keeps recent input bridgeable (${mobile ? "mobile" : "desktop"}, active=${active}, same-size=${sameSize})`, async (t) => {
+    const timers = new FakeTimers();
+    const original = "A: old\nB: base\n", incoming = "A: old\nB: peer\n";
+    const local = sameSize ? "A: NEW\nB: base\n" : "A: NEW plus input\nB: base\n";
+    const shown = { value: original };
+    let armed = false, injected = false, view, receipts = 0;
+    const replace = (root) => {
+      if (!armed || injected) return;
+      injected = true;
+      r.host.editorActivity.record(view, "beforeinput");
+      shown.value = local;
+      const path = join(root, NOTE), stat = statSync(path);
+      writeFileSync(path, local); utimesSync(path, stat.atimeMs / 1000, stat.mtimeMs / 1000);
+      r.nativeSaved(view);
+    };
+    const r = await native(t, { afterRename: replace, afterWrite: replace }, { mobile, editorTimers: timers });
+    t.after(() => r.host.stopEditorSaves());
+    r.seed(NOTE, original, 1000);
+    const base = await pushFile(r.context, NOTE);
+    view = r.openEditor(NOTE, shown);
+    view.save = async () => {
+      writeFileSync(join(r.root, NOTE), shown.value);
+      r.nativeSaved(view);
+      if (mobile && active) replace(r.root);
+    };
+    r.host.plugin.engine = { editorSaved(path) { assert.equal(path, NOTE); receipts++; } };
+    if (active) {
+      r.host.editorActivity.record(view, "beforeinput");
+      await timers.run(5, () => receipts === 1 && r.host.editorActivity.saving.size === 0);
+      assert.equal(await r.host.editorReady(NOTE), true);
+    }
+    const change = await r.server.publish({ fileId: base.fileId, path: NOTE, bytes: enc(incoming), mtime: 3000,
+      parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+    armed = true;
+    await assert.rejects(r.applyIncoming(change), { name: "Unwritable", reason: "active_editor" });
+    assert.equal(injected, true);
+    assert.equal(r.state.fileByPath(NOTE).versionId, base.versionId);
+    assert.equal(r.context.written.size, 0);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), local);
+    assert.equal(r.host.editorActivity.canRefresh(view), true, "supersession must not demote the winning native pane");
+    assert.equal(await r.host.editorReady(NOTE), false, "refusal cannot mint a new save receipt");
+    const before = receipts;
+    r.host.editorActivity.record(view, "beforeinput"); shown.value = local.replace("NEW", "NEXT");
+    await timers.run(5, () => receipts > before && r.host.editorActivity.saving.size === 0);
+    assert.equal(receipts, before + 1, "recent input still earns a public save/read receipt");
+    assert.equal(r.host.editorActivity.recent(view), true);
+    assert.equal(await r.host.editorReady(NOTE), true, "no quiet-typing wait after the winning save");
+    const pushed = await pushFile(r.context, NOTE), file = r.server.files.get(base.fileId);
+    assert.deepEqual(file.versions.find(v => v.version_id === pushed.versionId).parents, [base.versionId]);
+    await r.applyIncoming(change);
+    const expected = local.replace("NEW", "NEXT").replace("B: base", "B: peer");
+    assert.equal(shown.value, expected);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), expected);
+    assert.equal(file.heads.length, 1);
+    assert.deepEqual(r.contents(), [expected]);
+    assert.deepEqual(r.hidden(), []);
+  });
+}
+
+for (const mobile of [false, true]) test(`a failed public refresh still keeps native save ownership (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  let attempted = 0;
+  r.view.save = async () => { attempted++; throw Error("synthetic public-save failure"); };
+  await assert.rejects(r.write(), r.EditorBusy);
+  assert.ok(attempted > 0);
+  r.type(r.buffer.value + " NEXT");
+  assert.equal(r.host.editorActivity.canRefresh(r.view), false, "a failed reload is not a superseded native save");
+  assert.equal(await r.host.editorReady(NOTE), false);
+  const before = attempted;
+  await r.timers.run(5);
+  assert.equal(attempted, before, "failed public reload must not resume extra saves");
+  assert.ok(r.logs.some(line => line.includes("decision=reload_released outcome=unconfirmed")));
+});

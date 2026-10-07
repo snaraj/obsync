@@ -1,0 +1,12 @@
+# M4121: superseded reload demotes the native pane
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -147,7 +147,7 @@
+         if (!file || view.file !== file) continue;
+         const input = this.inputs.get(view);
+         if (outcome !== "confirmed" && input) delete input.saved;
+-        if (outcome === "unconfirmed") {
++        if (outcome !== "confirmed") {
+           this.nativeOnly.set(view, file);
+         } else {
+           // Supersession refused the incoming ancestry. A fresh save/read may

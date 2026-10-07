@@ -59,7 +59,7 @@ import { accountRecovery, FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "./accountR
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
-import { EditorActivity, EDITOR_SAVE_MAX_CHARS } from "./editorActivity";
+import { EditorActivity, EDITOR_SAVE_MAX_CHARS, type ReloadOutcome } from "./editorActivity";
 import { threeWayMerge } from "./sync/conflict";
 import { KEYS_LOST, State, StateStorageError, dataLease, isPushed, type Held, type ObsyncData } from "./state";
 import { HELD, LEVELS, MERGES, NOTICE_DEFAULTS, NoticeChannel, count, quoted, scrub, titles, type Drawn, type NoticeSettings, type SyncNotice } from "./notices";
@@ -759,6 +759,9 @@ function isDiskEntry(entry: unknown): entry is DiskEntry {
   return typeof name === "string" && (type === "file" || type === "directory") &&
     typeof size === "number" && Number.isFinite(size) && typeof mtime === "number" && Number.isFinite(mtime);
 }
+
+/** The incoming version was replaced, so no applied ancestry may advance. */
+class WriteSuperseded extends EditorBusy {}
 
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
@@ -1662,7 +1665,7 @@ export class ObsidianHost implements VaultHost {
         const shown = await this.assertEditorIdle(path, expected);
         const release = this.editorActivity.holdReload(path);
         if (release === null) throw new EditorBusy();
-        let confirmed = shown === null;
+        let outcome: ReloadOutcome = shown === null ? "confirmed" : "unconfirmed";
         try {
           // An active mobile editor must advance its saved baseline before
           // the adapter emits a file-change event. Writing underneath it first
@@ -1681,8 +1684,8 @@ export class ObsidianHost implements VaultHost {
               (await Promise.all(bridge.saves)).some((saved) => !saved)) throw new EditorBusy();
             const saved = new TextEncoder().encode(bridge.text);
             const stat = await this.landed(path, saved, mtime);
-            if (stat === null) throw new EditorBusy();
-            confirmed = await this.refreshEditors(path, shown, text,
+            if (stat === null) throw new WriteSuperseded();
+            outcome = await this.refreshEditors(path, shown, text,
               async () => new TextDecoder().decode(await adapter.readBinary(path)), bridge);
             return { path, mtime: stat.mtime, size };
           }
@@ -1695,7 +1698,7 @@ export class ObsidianHost implements VaultHost {
           const stat = await this.landed(path, bytes, mtime);
           if (stat !== null && stat.size === size) {
             if (shown !== null) {
-              confirmed = await this.refreshEditors(path, shown, new TextDecoder().decode(bytes),
+              outcome = await this.refreshEditors(path, shown, new TextDecoder().decode(bytes),
                 async () => new TextDecoder().decode(await adapter.readBinary(path)));
             }
             return { path, mtime: stat.mtime, size };
@@ -1703,8 +1706,11 @@ export class ObsidianHost implements VaultHost {
           this.log(`host path_class=file decision=write_superseded size=${size} found=${stat?.size ?? "absent"}`);
           // A replaced write never advances ancestry: publish the native save
           // against the prior version, then merge this incoming version again.
-          throw new EditorBusy();
-        } finally { release(confirmed); }
+          throw new WriteSuperseded();
+        } catch (error) {
+          if (error instanceof WriteSuperseded) outcome = "superseded";
+          throw error;
+        } finally { release(outcome); }
       },
       abort: async () => {
         bytes = new Uint8Array(0);
@@ -2192,8 +2198,8 @@ export class ObsidianHost implements VaultHost {
           ? adapter.queue : undefined;
         const read = (): Promise<string> => fs.promises.readFile(target, "utf8");
         let shown: string | null = null;
-        let release: ((confirmed: boolean) => void) | null = null;
-        let confirmed = false, superseded = false;
+        let release: ((outcome: ReloadOutcome) => void) | null = null;
+        let outcome: ReloadOutcome = "unconfirmed", superseded = false;
         let bridge: ReturnType<ObsidianHost["bridgeEditors"]> = null;
         const commit = async (): Promise<void> => {
           // Inside the native queue, use the independent filesystem read:
@@ -2205,7 +2211,7 @@ export class ObsidianHost implements VaultHost {
           shown = await this.assertEditorIdle(path, expected, typeof queue === "function" ? read : undefined);
           release = this.editorActivity.holdReload(path);
           if (release === null) throw new EditorBusy();
-          confirmed = shown === null;
+          outcome = shown === null ? "confirmed" : "unconfirmed";
           await fs.promises.rename(temp, target);
           this.temps.delete(temp);
           await this.syncFolder(fs, parent);
@@ -2233,8 +2239,8 @@ export class ObsidianHost implements VaultHost {
         try {
           if (typeof queue === "function") await queue.call(adapter, commit);
           else await commit();
-          if (superseded) throw new EditorBusy();
-          if (shown !== null && text !== null) confirmed = await this.refreshEditors(path, shown, text, read, bridge);
+          if (superseded) throw new WriteSuperseded();
+          if (shown !== null && text !== null) outcome = await this.refreshEditors(path, shown, text, read, bridge);
           if (shown !== null) {
             // Public save may rewrite the inode after our durable rename.
             // Flush that native write too, with the same confined descriptor
@@ -2263,10 +2269,11 @@ export class ObsidianHost implements VaultHost {
           await this.reconcile(path, "file", true, true);
           return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
         } catch (error) {
+          if (error instanceof WriteSuperseded) outcome = "superseded";
           await discard();
           throw error;
         } finally {
-          if (release !== null) (release as (confirmed: boolean) => void)(confirmed);
+          if (release !== null) (release as (outcome: ReloadOutcome) => void)(outcome);
         }
       },
       abort: discard,
@@ -3459,19 +3466,19 @@ export class ObsidianHost implements VaultHost {
    * prior ancestry. A visual reload failure alone leaves the durable write.
    * No private editor state or notice is changed.
    */
-  private async refreshEditors(path: string, shown: string, text: string, read: () => Promise<string>, pendingBridge: ReturnType<ObsidianHost["bridgeEditors"]> = null): Promise<boolean> {
+  private async refreshEditors(path: string, shown: string, text: string, read: () => Promise<string>, pendingBridge: ReturnType<ObsidianHost["bridgeEditors"]> = null): Promise<"confirmed" | "unconfirmed"> {
     const started = Date.now();
     try {
       const written = lines(text);
       if (pendingBridge !== null && (await Promise.all(pendingBridge.saves)).some((saved) => !saved)) throw new EditorBusy();
       if (lines(await read()) !== (pendingBridge?.text ?? written)) {
         this.log(`host path_class=file decision=editor_left reason=file_changed duration_ms=${Date.now() - started}`);
-        throw new EditorBusy();
+        throw new WriteSuperseded();
       }
       const views = this.views(path);
       const file = views[0]?.file;
       const bound = views.map((view) => view.file);
-      if (!file) return true;
+      if (!file) return "confirmed";
       const changed = views.some((view) => lines(view.getViewData()) !== written);
       // Drain earlier native reads before save clears the dirty flag. The
       // final index reconciliation also prevents a late duplicate OS reload.
@@ -3499,7 +3506,7 @@ export class ObsidianHost implements VaultHost {
             if (view?.file && view.file === bound[index]) this.plugin.app.workspace.trigger("quick-preview", view.file, view.getViewData());
           }
           this.log(`host path_class=file decision=${changed ? "editor_refreshed" : "editor_current"} views=${views.length}`);
-          return true;
+          return "confirmed";
         }
         await new Promise<void>((resolve) => this.editorTimers.set(resolve, 10));
       } while (Date.now() < deadline);
@@ -3509,7 +3516,7 @@ export class ObsidianHost implements VaultHost {
       const kind = error instanceof Error ? error.name : "unknown";
       this.log(`host path_class=file decision=failed reason=editor_refresh error=${kind} duration_ms=${Date.now() - started}`);
     }
-    return false;
+    return "unconfirmed";
   }
 
   /** The note's editors. A leaf Obsidian has not loaded yet is not a `MarkdownView` and holds nothing typed. */

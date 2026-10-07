@@ -1,0 +1,12 @@
+# M4126: mobile failed public save is mistaken for supersession
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1708,7 +1708,7 @@
+           // against the prior version, then merge this incoming version again.
+           throw new WriteSuperseded();
+         } catch (error) {
+-          if (error instanceof WriteSuperseded) outcome = "superseded";
++          if (error instanceof EditorBusy) outcome = "superseded";
+           throw error;
+         } finally { release(outcome); }
+       },

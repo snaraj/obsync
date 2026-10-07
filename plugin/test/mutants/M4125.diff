@@ -1,4 +1,4 @@
-# M4118: same-metadata replaced bytes accepted
+# M4125: readback supersession demotes the native pane
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
 @@ -3473,7 +3473,7 @@
@@ -6,7 +6,7 @@
        if (lines(await read()) !== (pendingBridge?.text ?? written)) {
          this.log(`host path_class=file decision=editor_left reason=file_changed duration_ms=${Date.now() - started}`);
 -        throw new WriteSuperseded();
-+        return "unconfirmed";
++        throw new EditorBusy();
        }
        const views = this.views(path);
        const file = views[0]?.file;

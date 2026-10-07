@@ -1,0 +1,12 @@
+# M4127: desktop failed public save is mistaken for supersession
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2269,7 +2269,7 @@
+           await this.reconcile(path, "file", true, true);
+           return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
+         } catch (error) {
+-          if (error instanceof WriteSuperseded) outcome = "superseded";
++          if (error instanceof EditorBusy) outcome = "superseded";
+           await discard();
+           throw error;
+         } finally {

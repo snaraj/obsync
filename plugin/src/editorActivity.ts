@@ -9,6 +9,9 @@ export const EDITOR_SAVE_MS = 5;
 /** Bound extra whole-text reads on mobile. Larger notes retain native autosave. */
 export const EDITOR_SAVE_MAX_CHARS = 1 << 20;
 
+/** A replaced, unapplied write is distinct from a failed native reload. */
+export type ReloadOutcome = "confirmed" | "superseded" | "unconfirmed";
+
 interface Input {
   file: TFile;
   generation: object;
@@ -128,23 +131,30 @@ export class EditorActivity {
   }
 
   /** Never save a pre-reload buffer onto the version being loaded into it. */
-  holdReload(path: string): ((confirmed: boolean) => void) | null {
+  holdReload(path: string): ((outcome: ReloadOutcome) => void) | null {
     if (this.reloading.has(path)) return null;
     this.reloading.add(path);
+    const started = Date.now();
     const views = this.access.views(path).map((view) => ({ view, file: view.file })), generation = this.generation;
     let released = false;
-    return (confirmed) => {
+    return (outcome) => {
       if (released) return;
       released = true;
       if (generation !== this.generation) return;
       this.reloading.delete(path);
+      if (outcome !== "confirmed") this.access.log(`editor decision=reload_released outcome=${outcome} views=${views.length} duration_ms=${Date.now() - started} budget_ms=0`);
       for (const { view, file } of views) {
         if (!file || view.file !== file) continue;
-        if (!confirmed) {
+        const input = this.inputs.get(view);
+        if (outcome !== "confirmed" && input) delete input.saved;
+        if (outcome === "unconfirmed") {
           this.nativeOnly.set(view, file);
-          const input = this.inputs.get(view);
-          if (input) delete input.saved;
-        } else if (!this.inputs.get(view)?.saved) this.schedule(view);
+        } else {
+          // Supersession refused the incoming ancestry. A fresh save/read may
+          // publish the native input against the old version; no reload failed.
+          // Do not lift a demotion from an earlier, genuinely failed reload.
+          if (!input?.saved) this.schedule(view);
+        }
       }
     };
   }
