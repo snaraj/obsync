@@ -71,7 +71,15 @@ for (const mode of ["typing", "unsaved"]) test(`overlapping editor refusals cann
   assert.deepEqual([...r.host.files.keys()].filter(path => path.includes("(conflict")), []);
   assert.equal(r.context.merges.get(r.base.fileId).count, 0, "all refused reservations were refunded");
   assert.ok(!r.host.logs.some(line => line.includes("reason=merge_storm")));
-  assert.equal(r.host.logs.filter(line => line.includes("decision=waiting reason=active_editor phase=merge_limit")).length, 3);
+  // Eight original reservations meet the five-slot limit: exactly three
+  // refuse before any publication retry. Preparing under the typing lane's
+  // reservation now makes the queued retries overlap too; those two further
+  // refusals are refunded as well, rather than counted as completed merges.
+  const retry = r.host.logs.findIndex(line => line.includes("decision=retry reason=upload_completed"));
+  const original = retry < 0 ? r.host.logs : r.host.logs.slice(0, retry);
+  const limited = lines => lines.filter(line => line.includes("decision=waiting reason=active_editor phase=merge_limit")).length;
+  assert.equal(limited(original), 3);
+  assert.equal(limited(r.host.logs), mode === "typing" ? 5 : 3);
   busy = false;
   assert.equal(await applyChange(r.context, r.incoming), "merged");
   assert.equal(r.host.text(NOTE), "Desktop: STARTA\nPhone: STARTa");

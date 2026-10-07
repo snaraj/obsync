@@ -168,3 +168,32 @@ test("authenticated merge preparation can run beside input when an earlier compl
   assert.equal(r.host.text(path), "A: one two\nB: remote\n");
   assert.deepEqual(r.queued, [path]);
 });
+
+for (const completed of [true, false]) test(`network preparation uses authenticated parents while a native save ${completed ? "completes" : "remains pending"}`, async () => {
+  const r = await fixture(), get = r.transport.getChunk.bind(r.transport);
+  r.host.seed(path, latest, 4000);
+  let ready = false, reads = 0;
+  r.host.editorReady = async () => ready;
+  r.host.savedSnapshot = () => false;
+  r.transport.getChunk = async (...args) => {
+    const bytes = await get(...args);
+    reads++;
+    ready = completed;
+    return bytes;
+  };
+  if (completed) {
+    assert.equal(await applyChange(r.context, r.incoming), "merged");
+    assert.equal(r.host.text(path), "A: one two\nB: remote\n");
+    assert.deepEqual(r.queued, [path]);
+    const record = r.state.fileByPath(path), merge = await stored(r, record.versionId);
+    assert.equal(merge.text, "A: one\nB: remote\n");
+    assert.deepEqual([...merge.version.parents].sort(), [r.own.versionId, r.incoming.version_id].sort());
+  } else {
+    assert.equal(await applyChange(r.context, r.incoming), "skipped");
+    assert.equal(r.host.text(path), latest);
+    assert.equal(r.state.fileByPath(path).versionId, r.own.versionId);
+    assert.deepEqual(r.queued, []);
+  }
+  assert.ok(reads > 0, "authenticated inputs were prepared even without a local save receipt");
+  assert.deepEqual([...r.host.files.keys()].filter(name => name.includes("conflict")), []);
+});

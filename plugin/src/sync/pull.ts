@@ -3039,11 +3039,16 @@ async function resolve(
         if (own !== null && !own.deleted && own.path === localPath && own.chunks.length === 1 && own.size <= CHUNK_MAX) {
           const applied = await serialPublication(context, localPath, async () => {
             if (context.state.fileByPath(localPath)?.versionId !== localVersionId) throw new EditorBusy();
-            // Network preparation only needs a proven complete snapshot.
-            // The final writer still requires the CURRENT editor to be saved.
-            if (!await context.host.editorReady(localPath) && context.host.savedSnapshot?.(localPath, mine) !== true) return null;
+            // Prepare only authenticated parent content, independent of a
+            // native save in progress. No current disk/editor bytes enter
+            // this merge. mergeSavedEditor checks readiness after the network
+            // work, then the final writer rechecks every editor and disk.
             const [inputs, published] = await Promise.all([prepare(), assembleBytes(context, own)]);
             prepared = inputs;
+            // Test the local receipt after the download, so a native save
+            // completing beside it does not abandon this publication turn.
+            // A still-busy editor keeps the ordinary defer/hold decision.
+            if (!await context.host.editorReady(localPath) && context.host.savedSnapshot?.(localPath, mine) !== true) return null;
             if (inputs.shared === false) return null;
             const joined = threeWayMerge(inputs.shared ?? decoder.decode(inputs.base), decoder.decode(published), decoder.decode(inputs.theirs));
             if (!joined.ok) return null;

@@ -130,3 +130,42 @@ restored byte-for-byte and rebuilt afterwards.
 The full local `make check` passes after this repair: 2,143 plugin tests,
 873 contract tests and 94.72% Rust line coverage. Both filesystem and history
 secret scans report no leaks. Native timing remains a separate acceptance gate.
+
+## Saving during network preparation
+
+The request-reuse bundle still failed the 1,500 ms continuous-character
+visibility budget on desktop and Android. Both final live editors and disk
+reads agreed, with one head. During shared typing, desktop received 143
+eligible characters (22 late, none missing; median 976.1 ms, p95 1,848.2 ms,
+maximum 2,302.1 ms). Android received 145 (65 late including 14 unseen before
+both writers stopped; observed median 1,321.5 ms, p95 3,473.8 ms, maximum
+4,203.4 ms). These are one-run diagnostics, not a paired speed claim.
+
+Further isolation found that an early editor-readiness check could abandon
+the reserved publication turn even though preparation reads only authenticated
+parent content. The check belongs after network preparation, when the current
+local delta is read. If still busy, the original defer/hold decision applies.
+The final host writer still independently checks all editors and disk before
+committing. No unsaved editor is granted write permission, and unpublished
+input remains outside the parent merge.
+
+The new completion regression fails before this repair: a native save
+completing during download must merge without restarting. Its control keeps
+a save pending and requires deferral without changing local bytes, recorded
+ancestry or the upload queue.
+An initial attempt failed six existing rewrite/overlap cases by bypassing
+their defer/hold decision. Moving the existing check after preparation
+preserves that policy; all 54 rebase/overlap/budget cases and the targeted
+stamper regression pass. The budget test keeps the exact three initial
+refusals and separately pins two subsequent typing-lane retry refusals, with
+all reservations refunded and no copies. M4143 restores the early check
+and fails three assertions across the 24 rebase/budget cases;
+M4144 removes the final readiness check and fails one. Both compile, neither
+cancels a test, and sources are restored byte-for-byte after mutation.
+
+Accounting correction: commit a1419d0 contains +212/-5, as reported by
+`git show --numstat a1419d0`; its message mistakenly says +222/-5.
+
+The corrected full `make check` passes: 2,145 plugin tests, 873 contract
+tests, 83 dashboard tests, 94.72% Rust line coverage and both secret scans.
+This remains pre-native evidence for this preparation change.

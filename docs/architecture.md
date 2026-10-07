@@ -1307,10 +1307,11 @@ long poll and needs its timeout raised.
    editor; the reservation lasts through the receipt and record update. A
    completed upload that advanced the record during merge preparation causes
    a fresh graph read before writing or publishing. A merge holds its two
-   parents and nothing typed since (issue #227). For a saved active editor,
+   parents and nothing typed since (issue #227). For an active editor,
    reserve publication before preparing the authenticated parent snapshots,
-   merge only those parents, then rebase the newest saved local delta onto
-   that result. The final writer still requires the current editor and disk
+   merge only those parents while native saving continues, then rebase the
+   newest saved local delta onto that result. Preparation does not depend on
+   a receipt for an earlier disk sample; it uses authenticated parent content. The final writer still requires the current editor and disk
    to agree. Publish the pure parent merge first; its local delta stays dirty
    and uploads as a child. A changed parent or stopped engine refuses the
    staged write. Unsupported or overlapping states retain the ordinary path:
@@ -1393,8 +1394,8 @@ long poll and needs its timeout raised.
    view to native saving. No private dirty flag or saved baseline is changed,
    and no notification is hidden. An editor differing from disk still holds
    the note. The status names that wait (`waiting for unsaved changes in
-   <note>`); the independently verified saved snapshot grants only upload or
-   merge-preparation eligibility, never overwrite permission.
+   <note>`); the independently verified saved snapshot grants upload eligibility,
+   never overwrite permission.
 
    WHAT OBSYNC CHANGES ON A DESKTOP'S DISK IS LISTED AT ONCE (issue #253).
    The same starved watcher left a note obsync had written on the disk,
