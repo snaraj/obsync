@@ -388,7 +388,7 @@ test("a refused text merge reports typing state and elapsed time without note te
   const r = await rig();
   const { head } = await overlap(r);
   await applyChange(r.context, head);
-  assert.ok(r.host.logs.some(line => /^pull decision=unmerged reason=overlap file=[a-f0-9]+ typing=false duration_ms=[0-9]+$/.test(line)), pulls(r.host));
+  assert.ok(r.host.logs.some(line => /^pull decision=unmerged reason=overlap file=[a-f0-9]+ seq=[0-9]+ typing=false duration_ms=[0-9]+$/.test(line)), pulls(r.host));
 });
 
 for (const isMobile of [false, true]) test(`continued adjacent appends reconcile without copies (${isMobile ? "mobile" : "desktop"})`, async () => {
