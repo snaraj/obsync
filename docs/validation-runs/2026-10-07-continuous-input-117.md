@@ -628,3 +628,76 @@ Native acceptance of this product implementation remains pending here.
 
 The full local gate passed in 415.93 s: 2,210 plugin tests, 873 contracts,
 83 dashboard tests, 94.72% Rust line coverage and both secret scans.
+
+## Installed batching candidate: public-TLS visible input
+
+Product `221e6cd7007481e4862a2b6e540d78b42fdc1190` was installed through
+ordinary plugin reloads on both disposable clients, with independent device
+readback matching main.js SHA-256
+`7ec6a7cf85b0940677d963bd3271cd90b3eb3b9464f9087c2a9347064e5e1551`.
+Both remained paired. This is the real product implementation with only
+read-only timing instrumentation, not the earlier batching wrapper.
+
+Five strict trials sent 200 individual native characters per writer at an
+80 ms cadence, on separate paragraphs that fit both screens. Trusted
+`beforeinput` timestamps are compared with the opposite client's first DOM
+text range wholly inside its viewport and editor scroller. Clock alignment
+adds both peers' best round-trip uncertainty. Only characters sent at least
+1500 ms before simultaneous typing ended are eligible. Every final editor
+and independently read file matched; every note had one head.
+
+| Trial | Desktop eligible / late | Desktop max ms | Android eligible / late | Android max ms |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 144 / 0 | 1156.50 | 145 / 0 | 1383.80 |
+| 2 | 144 / 0 | 1220.80 | 145 / 0 | 1456.20 |
+| 3 | 144 / 0 | 1008.60 | 145 / 0 | 1409.70 |
+| 4 | 144 / 0 | 1242.60 | 145 / 0 | 1163.10 |
+| 5 | 144 / 0 | 1199.50 | 145 / 0 | 1400.90 |
+
+All twenty captures were opened: both streams advance while the local caret
+stays at the input position; final screens contain both complete sequences.
+Representative unedited synthetic captures:
+
+| Client | During simultaneous typing | Final content |
+| --- | --- | --- |
+| Desktop | [Capture](../assets/continuous-input-117/during-A.png) | [Capture](../assets/continuous-input-117/final-A.png) |
+| Android | [Capture](../assets/continuous-input-117/during-M.png) | [Capture](../assets/continuous-input-117/final-M.png) |
+
+The 60-second same-line case at 200 ms per token also passed: 299 tokens per
+writer, all 598 retained exactly once in order, fixed lines intact, one file
+per client, one caret placement and one combined-edit notice per client.
+Each direction had 292 eligible tokens with none late or missing. Desktop
+p50/p95/max was 643.70/953.90/1315.10 ms; Android was
+661.60/942.90/1205.70 ms. Final verification finished 2024 ms after typing.
+All six captures were opened. The long heading scrolls out of view, so that
+case's DOM timing does not establish fully visible character arrival; the
+five strict trials above provide that separate evidence.
+
+Background and actual process-restart recovery passed, retaining pairing
+without setup. Both-direction transfer observations were 750/987 ms after
+background and 960/689 ms after restart. Offline transport failure was
+verified before input; local bytes survived and automatically reached both
+editors/disks after reconnect (1829 ms including verification). All eleven
+recovery captures were opened. This evidence is specific to native macOS and
+the Android emulator; physical-iPhone and replacement-head Windows/Linux
+acceptance remain separate, unfinished checks.
+
+The three-minute same-line case at 400 ms per token passed as well: 449
+tokens per writer, all 898 present exactly once and in writer order, fixed
+lines intact and independent editor/disk equality. Both directions had 446
+eligible tokens, zero late or missing. Desktop p50/p95/max was
+703.90/871.90/1230.60 ms; Android was 593.60/903.10/1241.90 ms. Final
+verification finished 1733 ms after typing. Both peers showed one combined-edit
+notice and no native overwrite warning. All six captures were opened; the
+same long-heading viewport limitation applies. These are absolute acceptance
+measurements, not a repeated paired estimate of a general network speedup.
+
+Native Leave then revoked the Android device, cleared enrollment and stored
+server metadata, and preserved all fifteen local-note hashes. The opened
+capture shows the confirmation, blank server field and unpaired state. Both
+owned controllers exited zero. An independent cleanup check verified all
+four captured application/server/emulator/ADB processes absent, all five
+captured listeners refusing connections, and both fixtures' runtime, private
+data and live manifests absent. Sanitized receipts and synthetic captures
+remain for review. The current plugin bundle is retained for physical-phone
+acceptance; that phone's OS authentication lock remains unresolved.
