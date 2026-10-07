@@ -536,6 +536,17 @@ function lines(text: string): string {
   return text.replace(/\r\n?/g, "\n");
 }
 
+/** A linear, code-point-preserving proof that no delivered character vanished. */
+function onlyInserts(before: string, after: string): boolean {
+  let offset = 0;
+  for (const point of before) {
+    const found = after.indexOf(point, offset);
+    if (found < 0) return false;
+    offset = found + point.length;
+  }
+  return true;
+}
+
 /**
  * Whether a failed start is the server's ABSENCE rather than its DECISION.
  * The transport says `unreachable` after its own retries when nothing
@@ -3436,7 +3447,7 @@ export class ObsidianHost implements VaultHost {
   /** Start the public saved-baseline transition before queued watcher reads.
    * Never await these saves while holding the adapter queue: save itself waits
    * on that queue. The caller awaits them after releasing it. */
-  private bridgeEditors(path: string, shown: string, written: string): { text: string; saves: Promise<boolean>[] } | null {
+  private bridgeEditors(path: string, shown: string, written: string): { text: string; saves: Promise<boolean>[]; bindings: { view: MarkdownView; file: TFile | null }[] } | null {
     const views = this.views(path), bound = views.map((view) => view.file);
     const buffers = views.map((view) => lines(view.getViewData()));
     const updates = buffers.map((current) => threeWayMerge(shown, current, written));
@@ -3453,7 +3464,7 @@ export class ObsidianHost implements VaultHost {
       // in flight. refreshEditors reports failure through its bounded fallback.
       saves.push(view.save().then(() => true, () => false));
     }
-    return updates[0]?.ok ? { text: updates[0].text, saves } : null;
+    return updates[0]?.ok ? { text: updates[0].text, saves, bindings: views.map((view, index) => ({ view, file: bound[index] ?? null })) } : null;
   }
 
   /**
@@ -3486,9 +3497,22 @@ export class ObsidianHost implements VaultHost {
       const bridge = pendingBridge ?? this.bridgeEditors(path, shown, written);
       if (bridge !== null && (await Promise.all(bridge.saves)).some((saved) => !saved)) throw new EditorBusy();
       await this.plugin.app.vault.read(file);
+      let insertionReceiptUsed = false;
       const includesWrite = (): boolean => views.every((view, index) => {
         if (view.file !== bound[index]) return true;
         const current = lines(view.getViewData());
+        // A completed public bridge already delivered these additions. New
+        // typing can precede them: diff3(base, "local remote", "remote")
+        // repeats "remote", so re-merging is not a receipt of that delivery.
+        // Confirm only an intact insertion-only result, on every original
+        // binding after every public save completed. Deletions, replacements,
+        // partial bridges and lost incoming bytes retain the native check.
+        if (bridge !== null && bridge.saves.length === views.length &&
+          bridge.bindings.every((entry, i) => entry.view === views[i] && entry.file === bound[i]) &&
+          onlyInserts(shown, written) && onlyInserts(bridge.text, current)) {
+          insertionReceiptUsed = true;
+          return true;
+        }
         const merged = threeWayMerge(shown, current, written);
         return merged.ok && merged.text === current;
       });
@@ -3496,6 +3520,7 @@ export class ObsidianHost implements VaultHost {
       const deadline = started + 1000;
       do {
         if (includesWrite()) {
+          if (insertionReceiptUsed) this.log(`host path_class=file decision=editor_confirmed reason=delivered_insertions views=${views.length} duration_ms=${Date.now() - started} budget_ms=1000`);
           for (const view of views) this.editorActivity.expectRefresh(view, shown, written);
           // Both a public display update and a native file reload can leave
           // live-preview consumers stale. Notify them with the current buffer

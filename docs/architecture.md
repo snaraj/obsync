@@ -1371,6 +1371,15 @@ long poll and needs its timeout raised.
    because public save can rewrite the durable inode. The existing Windows
    directory-fsync compatibility behavior remains unchanged.
 
+   Confirmation of an insertion-only public transition retains its exact view
+   and file bindings and requires every public save to complete. Later input
+   may insert before the delivered text: the current buffer must still contain
+   every delivered code point in order and with its original multiplicity.
+   Re-merging against the older baseline is not a delivery receipt; it can
+   duplicate an addition that is already displayed. Remote deletions, missing
+   delivered text and incomplete or rebound transitions keep the ordinary
+   native confirmation path.
+
    Mobile and unknown adapters keep their guarded adapter write and public
    refresh path. Passive editors retain native reload ownership. A refresh
    has a bounded confirmation window; failure is logged and returns that

@@ -311,7 +311,8 @@ for (const mobile of [false, true]) for (const effect of ["none", "input", "rebi
 
 /** A public TextFileView save/load model with the adapter's actual ordering.
  * No private native editor fields are touched by the product under test. */
-async function queuedEditor(t, afterRename = () => {}, { mobile = false, lateReload = false } = {}) {
+async function queuedEditor(t, afterRename = () => {}, { mobile = false, lateReload = false,
+  original = "A: local\nB: \n", incoming = "A: local\nB: remote\n" } = {}) {
   let arrived = () => {};
   const events = [];
   // Disk/queue operations can exceed the 5 ms save interval on any host.
@@ -330,7 +331,6 @@ async function queuedEditor(t, afterRename = () => {}, { mobile = false, lateRel
       };
     },
   }, { editorTimers: timers, mobile });
-  const original = "A: local\nB: \n", incoming = "A: local\nB: remote\n";
   r.seed(NOTE, original, 1000);
   const buffer = { value: original }, view = r.openEditor(NOTE, buffer), file = view.file;
   const vault = r.host.plugin.app.vault, adapter = vault.adapter;
@@ -1941,6 +1941,88 @@ for (const mobile of [false, true]) for (const active of [false, true]) for (con
     assert.deepEqual(r.hidden(), []);
   });
 }
+
+for (const mobile of [false, true]) test(`typing before a delivered remote addition does not demote a confirmed bridge (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  r.host.editorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) };
+  const save = r.view.save;
+  let typed = false;
+  r.view.save = async () => {
+    await save();
+    if (!typed) {
+      typed = true;
+      r.type(r.buffer.value.replace("B: remote", "B: local remote"));
+    }
+  };
+  await r.write();
+  assert.equal(r.buffer.value, "A: local\nB: local remote\n");
+  assert.equal(r.host.editorActivity.canRefresh(r.view), true, "a successful public bridge must remain live while typing continues");
+  assert.ok(!r.logs.some(line => /editor_reload_unconfirmed|outcome=unconfirmed/.test(line)), r.logs.join(" | "));
+  assert.equal(r.logs.filter(line => /decision=editor_confirmed reason=delivered_insertions views=1 duration_ms=\d+ budget_ms=1000$/.test(line)).length, 1);
+  let saved = false;
+  r.host.plugin.engine.editorSaved = () => { saved = true; };
+  await r.timers.run(5, () => saved);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), "A: local\nB: local remote\n");
+  assert.equal(await r.host.editorReady(NOTE), true);
+});
+
+for (const mobile of [false, true]) for (const removed of [false, true])
+  test(`an incomplete display cannot use insertion confirmation (${mobile ? "mobile" : "desktop"}, remote-deletion=${removed})`, async (t) => {
+    const r = await queuedEditor(t, () => {}, { mobile,
+      ...(removed ? { original: "A: local\nB: remote\n", incoming: "A: local\nB: \n" } : {}) });
+    r.host.editorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) };
+    r.vault.trigger = () => {};
+    const save = r.view.save;
+    r.view.save = async () => { await save(); r.buffer.value = r.original; };
+    await r.write();
+    assert.equal(r.host.editorActivity.canRefresh(r.view), false, "a stale native display is not a confirmed insertion");
+    assert.ok(r.logs.some(line => line.includes("reason=editor_reload_unconfirmed")));
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming, "the durable incoming bytes remain intact");
+  });
+
+for (const mobile of [false, true]) test(`an unfinished composition cannot confirm a partial public bridge (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  r.host.editorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) };
+  r.vault.trigger = () => {};
+  const update = r.view.setViewData;
+  r.view.setViewData = (text, clear) => {
+    update(text, clear);
+    r.host.editorActivity.record(r.view, "compositionstart");
+    r.buffer.value = text.replace("B: remote", "B: local remote");
+  };
+  if (mobile) await assert.rejects(r.write(), r.EditorBusy);
+  else {
+    await r.write();
+    assert.ok(r.logs.some(line => line.includes("reason=editor_reload_unconfirmed")), "no completed public save supplied an insertion receipt");
+  }
+});
+
+for (const mobile of [false, true]) test(`insertion confirmation preserves repeated delivered characters (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile, incoming: "A: local\nB: rrr\n" });
+  r.host.editorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) };
+  r.vault.trigger = () => {};
+  const save = r.view.save;
+  r.view.save = async () => { await save(); r.buffer.value = "A: local\nB: rr\n"; };
+  await r.write();
+  assert.ok(r.logs.some(line => line.includes("reason=editor_reload_unconfirmed")), "one displayed character cannot prove two delivered characters");
+});
+
+for (const mobile of [false, true]) test(`a replacement pane cannot borrow another pane's insertion receipt (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  r.host.editorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) };
+  r.vault.trigger = () => {};
+  const save = r.view.save;
+  let replacement;
+  r.view.save = async () => {
+    await save();
+    if (!replacement) {
+      replacement = r.openEditor(NOTE, { value: "A: local\nB: local remote\n" });
+      r.host.plugin.app.workspace.getLeavesOfType = () => [{ view: replacement }];
+    }
+  };
+  await r.write();
+  assert.ok(r.logs.some(line => line.includes("reason=editor_reload_unconfirmed")), "the replacement pane did not receive the checked public transition");
+});
 
 for (const mobile of [false, true]) test(`a failed public refresh still keeps native save ownership (${mobile ? "mobile" : "desktop"})`, async (t) => {
   const r = await queuedEditor(t, () => {}, { mobile });

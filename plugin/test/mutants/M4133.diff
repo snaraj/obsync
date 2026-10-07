@@ -1,0 +1,12 @@
+# M4133: accept a missing delivered code point
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -541,7 +541,7 @@
+   let offset = 0;
+   for (const point of before) {
+     const found = after.indexOf(point, offset);
+-    if (found < 0) return false;
++    if (found < 0) return true;
+     offset = found + point.length;
+   }
+   return true;
