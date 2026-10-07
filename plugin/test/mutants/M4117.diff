@@ -1,0 +1,14 @@
+# M4117: mobile replaced adapter write returns success
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1701,9 +1701,7 @@
+             return { path, mtime: stat.mtime, size };
+           }
+           this.log(`host path_class=file decision=write_superseded size=${size} found=${stat?.size ?? "absent"}`);
+-          // A replaced write never advances ancestry: publish the native save
+-          // against the prior version, then merge this incoming version again.
+-          throw new EditorBusy();
++          return { path, mtime, size };
+         } finally { release(confirmed); }
+       },
+       abort: async () => {

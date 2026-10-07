@@ -274,7 +274,7 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none", edi
     return view;
   };
   const applyIncoming = (change) => box.require(join(box.home, "build/sync/pull.js")).applyChange(r.context, change);
-  return { ...r, root, systemBin, host, seed, contents, hidden, logs, trashed, notices, openEditor, applyIncoming, EditorBusy: box.require(join(box.home, "build/sync/pull.js")).EditorBusy };
+  return { ...r, root, systemBin, host, seed, contents, hidden, logs, trashed, notices, openEditor, nativeSaved: (view) => baselines.set(view, view.getViewData()), applyIncoming, EditorBusy: box.require(join(box.home, "build/sync/pull.js")).EditorBusy };
 }
 
 for (const mobile of [false, true]) for (const effect of ["none", "input", "rebind"])
@@ -554,7 +554,7 @@ test("a queued writer never bridges bytes replaced after rename with identical m
     writeFileSync(target, foreign); utimesSync(target, stat.atimeMs / 1000, stat.mtimeMs / 1000);
   });
   assert.equal(foreign.length, r.incoming.length);
-  await r.write(); await r.adapter.promise; await Promise.all(r.reads);
+  await assert.rejects(r.write(), r.EditorBusy); await r.adapter.promise; await Promise.all(r.reads);
   assert.equal(readFileSync(join(r.root, NOTE), "utf8"), foreign);
   assert.equal(r.events.includes("baseline"), false, "the public save must not replace foreign bytes");
   assert.ok(r.logs.some((line) => line.includes("editor_left reason=file_changed")));
@@ -734,7 +734,9 @@ test("preview delivery rechecks a second view rebound by the first consumer", as
 test("an editor is not given a version another write replaced before its rename was checked (desktop)", async (t) => {
   const r = await openIdle(t, false, "lost one\nlost two\n",
     (r) => writeFileSync(join(r.root, NOTE), "SAVE THAT LANDED SENTINEL, longer than ours\n"));
-  await r.arrive("lost one\nnewer\nlost two\n", 3000);
+  const before = r.state.fileByPath(NOTE).versionId;
+  await assert.rejects(r.arrive("lost one\nnewer\nlost two\n", 3000), { name: "Unwritable", reason: "active_editor" });
+  assert.equal(r.state.fileByPath(NOTE).versionId, before);
   assert.deepEqual(r.logs.filter((line) => line.startsWith("host path_class=file decision=")),
     ["host path_class=file decision=write_superseded"], "one outcome, one line");
   assert.deepEqual(r.loaded, [], "the editor was given bytes that are not its file's");
@@ -786,7 +788,9 @@ for (const mobile of [false, true]) {
     });
     const next = "size one\nnewer\nsize two\n";
     assert.equal(same.length, next.length);
-    await r.arrive(next, 3000);
+    const before = r.state.fileByPath(NOTE).versionId;
+    await assert.rejects(r.arrive(next, 3000), { name: "Unwritable", reason: "active_editor" });
+    assert.equal(r.state.fileByPath(NOTE).versionId, before);
     assert.equal(readFileSync(join(r.root, NOTE), "utf8"), same);
     assert.ok(!r.logs.includes("host path_class=file decision=write_superseded"), "the identity check caught it, so this pins nothing");
     assert.deepEqual(r.loaded, [], "the editor was given bytes that are not its file's");
@@ -942,7 +946,7 @@ test("an ordinary native move drops its hold and leaves the copy behind", async 
   assert.deepEqual(r.hidden(), [], "a hold or a moved file was left behind");
 });
 
-test("a native settled write records the metadata of the bytes it committed", async (t) => {
+test("a superseded native settled write keeps its previous applied version", async (t) => {
   let armed = false;
   let injected = false;
   let copy;
@@ -961,7 +965,9 @@ test("a native settled write records the metadata of the bytes it committed", as
   copy = settled.copy;
   armed = true;
   const second = await descend(r, settled.first.version_id, "SECOND\n", 5000);
-  assert.equal(await applyChange(r.context, second), "applied");
+  const before = r.state.fileByPath(copy).versionId;
+  await assert.rejects(r.applyIncoming(second), { name: "Unwritable", reason: "active_editor" });
+  assert.equal(r.state.fileByPath(copy).versionId, before);
   assert.ok(injected, "the test never entered the writer's commit");
   assert.equal(readFileSync(join(r.root, copy), "utf8"), EDIT);
   const recorded = r.state.fileByPath(copy);
@@ -1815,4 +1821,61 @@ test("mobile saving cannot lose the next input to an older native reload complet
   assert.equal(r.buffer.value, next, "an earlier native read overwrote already accepted input after save cleared dirty");
   assert.equal(readFileSync(join(r.root, NOTE), "utf8"), next);
   assert.equal(r.events.includes("external_notice"), false);
+});
+
+// Review follow-up: a native save inside commit must not become a child of
+// incoming text that it never contained, even with identical size and mtime.
+for (const mobile of [false, true]) for (const sameSize of [false, true]) {
+  test(`a superseded native write preserves ancestry and remerges both writers (${mobile ? "mobile" : "desktop"}, same-size=${sameSize})`, async (t) => {
+    let armed = false, injected = false, view;
+    const original = "A: old\nB: base\n", incoming = "A: old\nB: peer\n";
+    const local = sameSize ? "A: NEW\nB: base\n" : "A: NEW plus typing\nB: base\n";
+    const shown = { value: original };
+    const replace = (root) => {
+      if (!armed || injected) return;
+      injected = true;
+      const path = join(root, NOTE), stat = statSync(path);
+      writeFileSync(path, local); utimesSync(path, stat.atimeMs / 1000, stat.mtimeMs / 1000);
+      shown.value = local;
+      r.nativeSaved(view);
+    };
+    const r = await native(t, { afterRename: replace, afterWrite: replace }, { mobile });
+    r.seed(NOTE, original, 1000);
+    const base = await pushFile(r.context, NOTE);
+    view = r.openEditor(NOTE, shown);
+    const change = await r.server.publish({ fileId: base.fileId, path: NOTE, bytes: enc(incoming), mtime: 3000,
+      parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+    armed = true;
+    await assert.rejects(r.applyIncoming(change), { name: "Unwritable", reason: "active_editor" });
+    assert.equal(injected, true);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), local);
+    assert.equal(r.state.fileByPath(NOTE).versionId, base.versionId, "superseded download was recorded as applied");
+    assert.equal(r.context.written.size, 0, "a refused write acquired an echo-suppression receipt");
+    const pushed = await pushFile(r.context, NOTE);
+    const file = r.server.files.get(base.fileId);
+    const child = file.versions.find(version => version.version_id === pushed.versionId);
+    assert.deepEqual(child.parents, [base.versionId], "native input falsely descended from omitted remote text");
+    await r.applyIncoming(change);
+    const expected = local.replace("B: base", "B: peer");
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), expected);
+    assert.equal(shown.value, expected);
+    assert.equal(file.heads.length, 1);
+    assert.deepEqual(r.contents(), [expected]);
+    assert.deepEqual(r.hidden(), []);
+  });
+}
+
+test("a mobile public save replaced before confirmation refuses the incoming receipt", async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile: true });
+  const nativeSave = r.view.save;
+  const replacement = "A: LOCAL\nB: REMOTE\n";
+  r.view.save = async () => {
+    await nativeSave();
+    r.seed(NOTE, replacement, 2000);
+    r.buffer.value = replacement;
+  };
+  await assert.rejects(r.write(), r.EditorBusy);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), replacement);
+  assert.equal(r.buffer.value, replacement);
+  assert.ok(r.logs.some(line => line.includes("editor_left reason=file_changed")));
 });

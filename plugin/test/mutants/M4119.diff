@@ -1,0 +1,12 @@
+# M4119: replacement refusal swallowed as visual failure
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3505,7 +3505,7 @@
+       } while (Date.now() < deadline);
+       this.log(`host path_class=file decision=failed reason=editor_reload_unconfirmed duration_ms=${Date.now() - started} budget_ms=1000`);
+     } catch (error) {
+-      if (error instanceof EditorBusy) throw error;
++      // Mutant: swallow the write refusal as a visual refresh failure.
+       const kind = error instanceof Error ? error.name : "unknown";
+       this.log(`host path_class=file decision=failed reason=editor_refresh error=${kind} duration_ms=${Date.now() - started}`);
+     }

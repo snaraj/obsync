@@ -1,0 +1,12 @@
+# M4118: same-metadata replaced bytes accepted
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3466,7 +3466,7 @@
+       if (pendingBridge !== null && (await Promise.all(pendingBridge.saves)).some((saved) => !saved)) throw new EditorBusy();
+       if (lines(await read()) !== (pendingBridge?.text ?? written)) {
+         this.log(`host path_class=file decision=editor_left reason=file_changed duration_ms=${Date.now() - started}`);
+-        throw new EditorBusy();
++        return false;
+       }
+       const views = this.views(path);
+       const file = views[0]?.file;

@@ -1700,8 +1700,10 @@ export class ObsidianHost implements VaultHost {
             }
             return { path, mtime: stat.mtime, size };
           }
-          if (stat !== null) this.log(`host path_class=file decision=write_superseded size=${size} found=${stat.size}`);
-          return { path, mtime, size };
+          this.log(`host path_class=file decision=write_superseded size=${size} found=${stat?.size ?? "absent"}`);
+          // A replaced write never advances ancestry: publish the native save
+          // against the prior version, then merge this incoming version again.
+          throw new EditorBusy();
         } finally { release(confirmed); }
       },
       abort: async () => {
@@ -2231,7 +2233,8 @@ export class ObsidianHost implements VaultHost {
         try {
           if (typeof queue === "function") await queue.call(adapter, commit);
           else await commit();
-          if (!superseded && shown !== null && text !== null) confirmed = await this.refreshEditors(path, shown, text, read, bridge);
+          if (superseded) throw new EditorBusy();
+          if (shown !== null && text !== null) confirmed = await this.refreshEditors(path, shown, text, read, bridge);
           if (shown !== null) {
             // Public save may rewrite the inode after our durable rename.
             // Flush that native write too, with the same confined descriptor
@@ -3452,6 +3455,8 @@ export class ObsidianHost implements VaultHost {
    * unsafe-to-bridge views use the native file-change handler. Extra saves
    * remain paused until confirmation. A bounded failure keeps the durable
    * write, logs the refusal and leaves saving to the native host for this view.
+   * A replaced write refuses the commit, so the next native save keeps its
+   * prior ancestry. A visual reload failure alone leaves the durable write.
    * No private editor state or notice is changed.
    */
   private async refreshEditors(path: string, shown: string, text: string, read: () => Promise<string>, pendingBridge: ReturnType<ObsidianHost["bridgeEditors"]> = null): Promise<boolean> {
@@ -3461,7 +3466,7 @@ export class ObsidianHost implements VaultHost {
       if (pendingBridge !== null && (await Promise.all(pendingBridge.saves)).some((saved) => !saved)) throw new EditorBusy();
       if (lines(await read()) !== (pendingBridge?.text ?? written)) {
         this.log(`host path_class=file decision=editor_left reason=file_changed duration_ms=${Date.now() - started}`);
-        return false;
+        throw new EditorBusy();
       }
       const views = this.views(path);
       const file = views[0]?.file;
@@ -3500,6 +3505,7 @@ export class ObsidianHost implements VaultHost {
       } while (Date.now() < deadline);
       this.log(`host path_class=file decision=failed reason=editor_reload_unconfirmed duration_ms=${Date.now() - started} budget_ms=1000`);
     } catch (error) {
+      if (error instanceof EditorBusy) throw error;
       const kind = error instanceof Error ? error.name : "unknown";
       this.log(`host path_class=file decision=failed reason=editor_refresh error=${kind} duration_ms=${Date.now() - started}`);
     }

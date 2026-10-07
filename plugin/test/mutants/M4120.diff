@@ -1,0 +1,12 @@
+# M4120: desktop replaced write returns success
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2233,7 +2233,7 @@
+         try {
+           if (typeof queue === "function") await queue.call(adapter, commit);
+           else await commit();
+-          if (superseded) throw new EditorBusy();
++          // Mutant: treat a replaced write as applied.
+           if (shown !== null && text !== null) confirmed = await this.refreshEditors(path, shown, text, read, bridge);
+           if (shown !== null) {
+             // Public save may rewrite the inode after our durable rename.
