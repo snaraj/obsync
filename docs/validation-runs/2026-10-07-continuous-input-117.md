@@ -328,3 +328,80 @@ not a speed claim or native acceptance of the newer bytes.
 The descendant change passes the full local `make check`: 2,172 plugin tests,
 873 contracts, 83 dashboard tests, 94.72% Rust line coverage and both secret
 scans; zero failures. The gate completed in 419.62 seconds.
+
+
+## Descendant comparison and native retry diagnosis
+
+Five alternating comparisons of `1b871587` and `45e8444` used the same
+individual-character input, visible-range oracle and 1500 ms budget as above.
+The descendant optimization passed 2/5 complete trials; the baseline passed
+1/5. All ten trials retained exact independent disk/editor bytes and one head.
+All forty during/final screenshots were inspected: both streams advanced
+while typing continued. This is not consistent latency acceptance.
+
+The paired mean improvement and 95% bootstrap interval (ms, unrounded inputs,
+10000 resamples, seed117; positive means faster) were:
+
+| Destination | p50 improvement [95% interval] | p95 improvement [95% interval] |
+| --- | --- | --- |
+| Desktop | 4.66 [-37.38, 49.74] | 38.92 [-9.40, 94.40] |
+| Android | 8.78 [-37.54, 55.10] | 98.10 [-31.02, 195.58] |
+
+Every interval includes zero. The optimization removes a proven redundant
+request, but this experiment does not establish a user-visible speed gain.
+Reproduction: the private `paired-descendant.py` runner and
+`paired-descendant-analysis.json`, with the same bootstrap procedure above.
+The Android leg used validated local TLS; the desktop was the loopback HTTP
+control. These are not public-network or physical-phone latency claims.
+
+Additional bounded diagnostics retained their failures. Increasing native save
+batching from 5 to100 ms failed the visible deadline. Notifying publication for
+every completed historical save snapshot passed one initial trial, then only
+1/5 paired trials against 2/5 baseline; that instrumentation is not shipped.
+Native phase observation found Android adapter read/write tails of several
+hundred milliseconds, while `getFile` p95/max were53.8/78.5 ms in that trace.
+Concurrent durations overlap and cannot be added as exclusive causal shares.
+
+A further read-only trace wrapped real `applyPage`, `receive` and `retryOne`
+calls. It recorded multiple retries of the same parked file inside one page:
+
+| Changes / distinct files | Page time (ms) | Retries | Time within those retries (ms) |
+| --- | --- | --- | --- |
+| 6 / 1 | 785.9 | 2 | 553.9 |
+| 4 / 1 | 631.4 | 2 | 596.3 |
+| 8 / 1 | 508.2 | 2 | 465.3 |
+| 2 / 1 | 492.1 | 2 | 465.6 |
+
+Reproduce these aggregates with the private `summarize-page-retries.py` over
+its preserved visible-proof receipt. Instrumentation forwards every original
+argument/result, captures no note content in phase rows, and restores wrappers
+in `finally`. This identifies repeated work, not the full cause of every tail.
+
+The resulting engine change applies every feed record in order but retries a
+parked file only after its last record in that page. The retry still checks
+native editor readiness and fetches current server heads. A newly refused
+record keeps its durable wait and scheduled retry. Nothing changes encryption,
+authentication, integrity checks or durable writes. One aggregate diagnostic
+records the retries coalesced, without note paths or content.
+
+The real-engine backlog reproduction fails on the old behavior with six
+retries. The corrected behavior retries once at the final own echo, receives
+an interleaved other note, retains unsaved local content and the durable wait,
+and converges both branches automatically once the editor is ready. A second
+case proves a newly refused record is not immediately retried. The30 focused
+editor/parked tests pass. Mutants M4160–M4164 respectively retry every record,
+never retry, retry a fresh refusal, retry an unparked file, or retry at the
+first record; all compile and fail assertions (1,2,4,2,1), zero cancellations.
+This code still requires its own immutable-bundle native comparison.
+
+The completed diagnostic fixture left through native Settings: server
+revocation proved, all25 local notes unchanged, device identity/server metadata
+cleared. The Settings screenshot shows not paired and blank connection fields.
+Both parent controllers and the TLS sidecar exited0; independent checks proved
+four child PIDs absent, the TLS listener and keys absent, and both private,
+runtime and manifest paths absent. All97 peer evidence screenshots were opened
+and hashed. No physical-iPhone acceptance is inferred from these emulator runs.
+
+The page-retry full local `make check` passed in431.12 s:2174 plugin tests,
+873 contracts,83 dashboard tests, Rust line coverage94.72%, both secret scans
+clean. Native acceptance for the new bundle remains a separate requirement.

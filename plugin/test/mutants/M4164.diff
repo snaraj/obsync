@@ -1,0 +1,11 @@
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3761,7 +3761,7 @@
+     // page: retry after its last record, rather than repeat native editor
+     // readiness and reconciliation before every later echo. Every record is
+     // still applied in order; a refusal retains its durable wait and timer.
+-    const last = new Map(page.changes.map((change) => [change.file_id, change]));
++    const last = new Map([...page.changes].reverse().map((change) => [change.file_id, change]));
+     let deferredRetries = 0;
+     // Whether any change of the page was more than this device's own version
+     // coming back (`pull.ts`, ECHOES) or an entry a replay skips.

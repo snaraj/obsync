@@ -1,0 +1,11 @@
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3790,7 +3790,7 @@
+           if (mark?.replay === true && seenBefore(change, mark)) replayed++;
+           else {
+             const result = await this.receive(context, change);
+-            if (result !== null && context.state.data.parked[change.file_id] !== undefined) {
++            if (context.state.data.parked[change.file_id] !== undefined) {
+               if (last.get(change.file_id) === change) await this.retryOne(context, change.file_id);
+               else deferredRetries++;
+             }

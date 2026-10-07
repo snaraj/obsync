@@ -3299,7 +3299,6 @@ export class SyncEngine {
       this.park(context, change.file_id, error);
       return null;
     }
-    if (context.state.data.parked[change.file_id] !== undefined) await this.retryOne(context, change.file_id);
     return result;
   }
 
@@ -3757,6 +3756,13 @@ export class SyncEngine {
       : asked;
     await this.learnNames(context, page.changes);
     let replayed = 0;
+    // Retrying a parked file asks for its current heads, not the historical
+    // record that woke it. One typing burst can return many own echoes in a
+    // page: retry after its last record, rather than repeat native editor
+    // readiness and reconciliation before every later echo. Every record is
+    // still applied in order; a refusal retains its durable wait and timer.
+    const last = new Map(page.changes.map((change) => [change.file_id, change]));
+    let deferredRetries = 0;
     // Whether any change of the page was more than this device's own version
     // coming back (`pull.ts`, ECHOES) or an entry a replay skips.
     let wrote = false;
@@ -3784,6 +3790,10 @@ export class SyncEngine {
           if (mark?.replay === true && seenBefore(change, mark)) replayed++;
           else {
             const result = await this.receive(context, change);
+            if (result !== null && context.state.data.parked[change.file_id] !== undefined) {
+              if (last.get(change.file_id) === change) await this.retryOne(context, change.file_id);
+              else deferredRetries++;
+            }
             if (result !== "echo") wrote = true;
             this.processed(context, change, result);
           }
@@ -3798,6 +3808,7 @@ export class SyncEngine {
       }
     });
     if (replayed > 0) context.host.log(`feed decision=skipped reason=seen_before_restore entries=${replayed}`);
+    if (deferredRetries > 0) context.host.log(`feed decision=retry_coalesced reason=later_page_record retries_saved=${deferredRetries}`);
     if (!this.caughtUp && page.seq >= page.head_seq) {
       await this.releaseRetired(context);
       await this.returnLost(context);

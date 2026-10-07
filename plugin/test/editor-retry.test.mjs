@@ -84,6 +84,43 @@ test("stopping clears an active-editor retry before it can write", async (t) => 
   assert.equal(r.engine.editorHandle, null);
 });
 
+test("a backlog retries each parked file only after its last page record, without blocking other files", async (t) => {
+  const r = await setup(t);
+  await r.timers.run(STEP_MS, () => r.state.data.lastSeq >= r.incoming.seq);
+  await r.engine.stopAndWait();
+  for (let i = 1; i <= 6; i++) {
+    r.host.seed(NOTE, `BASE local ${i}`, 4000 + i);
+    await pushFile(r.context, NOTE);
+    if (i === 3) await r.server.publish({ fileId: "ab".repeat(16), path: "Notes/Other.md", bytes: enc("OTHER"),
+      mtime: 4000, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  }
+  const engine = new SyncEngine({ state: r.state, transport: r.context.transport, host: r.host,
+    timers: r.timers, now: () => r.host.clock });
+  t.after(() => engine.stop());
+  // Observe real page applications and retries, not a substitute result.
+  const pages = [], applyPage = engine.applyPage.bind(engine), retryOne = engine.retryOne.bind(engine);
+  let active = null;
+  engine.applyPage = async (context, page) => {
+    const entry = { changes: page.changes.length, retries: [], lastSeq: page.seq }; pages.push(entry); active = entry;
+    try { return await applyPage(context, page); } finally { active = null; }
+  };
+  engine.retryOne = async (...args) => { if (active) active.retries.push(r.state.data.lastSeq); return retryOne(...args); };
+  await engine.start();
+  await r.timers.run(STEP_MS, () => r.state.data.lastSeq >= r.server.journal.at(-1).seq);
+  assert.equal(r.host.text("Notes/Other.md"), "OTHER");
+  assert.equal(r.host.text(NOTE), "BASE local 6", "an unsaved editor remains protected");
+  assert.equal((await r.reload()).data.parked[r.base.fileId].reason, "active_editor");
+  const batch = pages.find((page) => page.changes >= 7);
+  assert.ok(batch, "the fixture exercises one multi-record backlog");
+  assert.deepEqual(batch.retries, [batch.lastSeq - 1], "retry once at the last echo, before advancing its cursor");
+  assert.ok(r.host.logs.some((line) => line.includes("decision=retry_coalesced") && line.includes("retries_saved=5")));
+  r.release();
+  await r.timers.run(STEP_MS, () => r.host.text(NOTE).includes("remote") && r.host.text(NOTE).includes("local 6"));
+  await r.timers.run(STEP_MS, () => r.state.data.parked[r.base.fileId] === undefined);
+  assert.equal(r.server.files.get(r.base.fileId).heads.length, 1);
+  assert.deepEqual([...r.host.files.keys()].filter((path) => path.includes("(conflict")), []);
+});
+
 test("a confirmed save retries immediately, independently of recent-input attribution", async (t) => {
   const r = await setup(t);
   r.release();
@@ -95,6 +132,26 @@ test("a confirmed save retries immediately, independently of recent-input attrib
   assert.ok(!r.timers.entries.some((entry) => entry.handle === previous));
   await r.timers.run(0, () => r.host.text(NOTE) === "BASE remote");
   assert.equal(r.host.text(NOTE), "BASE remote");
+});
+
+test("a newly refused page record keeps its timer instead of immediately retrying the same refusal", async (t) => {
+  const r = await setup(t);
+  await r.timers.run(STEP_MS, () => r.state.data.lastSeq >= r.incoming.seq);
+  const applyPage = r.engine.applyPage.bind(r.engine), retryOne = r.engine.retryOne.bind(r.engine);
+  let inPage = false, retries = 0;
+  r.engine.applyPage = async (...args) => {
+    inPage = true;
+    try { return await applyPage(...args); } finally { inPage = false; }
+  };
+  r.engine.retryOne = async (...args) => { if (inPage) retries++; return retryOne(...args); };
+  const latest = await r.server.publish({ fileId: r.base.fileId, path: NOTE, bytes: enc("BASE latest"), mtime: 5000,
+    parents: [r.incoming.version_id], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  await r.timers.run(STEP_MS, () => r.state.data.lastSeq >= latest.seq);
+  assert.equal(retries, 0);
+  assert.equal(r.host.text(NOTE), "BASE");
+  assert.equal((await r.reload()).data.parked[r.base.fileId].reason, "active_editor");
+  r.release();
+  await r.timers.run(STEP_MS, () => r.host.text(NOTE) === "BASE latest");
 });
 
 test("an active-editor wait resumes after restarting with an advanced feed cursor", async (t) => {
