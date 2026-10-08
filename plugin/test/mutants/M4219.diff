@@ -1,0 +1,6 @@
+M4219: complete a pair's ancestry only when the listing shows no common ancestor
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2805 +2805 @@
+-  if (completeHeads) await completeMergeAncestry(context, file, localVersionId, change.version_id);
++  if (completeHeads && commonAncestor(file.versions, localVersionId, change.version_id) === null) await completeMergeAncestry(context, file, localVersionId, change.version_id);

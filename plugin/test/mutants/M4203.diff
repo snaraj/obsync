@@ -1,6 +1,6 @@
 M4203: rebase newer typing into a peer's automatic answer
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3443 +3443 @@
+@@ -3446 +3446 @@
 -  if (rebased.contested && answer) return null;
 +  if (rebased.contested && answer && false) return null;
