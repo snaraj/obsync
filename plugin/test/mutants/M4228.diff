@@ -1,0 +1,6 @@
+M4228: keep typing after a delivered bridge without saying so
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3548 +3548 @@
+-        this.log(`host path_class=file decision=kept reason=typed_since_delivery duration_ms=${Date.now() - started}`);
++        void started;

@@ -1,0 +1,6 @@
+M4224: refuse every changed disk after a delivered bridge
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3542 +3542 @@
+-        const typedSince = pendingBridge !== null &&
++        const typedSince = false && pendingBridge !== null &&

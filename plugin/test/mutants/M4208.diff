@@ -1,6 +1,6 @@
 M4208: confirm a stale display for an incoming deletion after typing
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3566 +3566 @@
+@@ -3577 +3577 @@
 -        if (bridged !== null && onlyInserts(shown, written) && onlyInserts(bridged.text, current)) {
 +        if (bridged !== null && onlyInserts(bridged.text, current)) {
