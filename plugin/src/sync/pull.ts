@@ -2651,10 +2651,7 @@ async function completeMergeAncestry(
   const requested = new Set<string>();
   const known = new Set(file.versions.map(version => version.version_id));
   const insert = (version: FileRecord["versions"][number]): void => {
-    // Searched for only when a parent is here: a remembered chain is one pass.
-    const before = version.parents.some(parent => known.has(parent))
-      ? file.versions.findIndex(candidate => version.parents.includes(candidate.version_id)) : -1;
-    file.versions.splice(before < 0 ? file.versions.length : before, 0, version);
+    file.versions.push(version);
     known.add(version.version_id);
   };
   let recalled = 0;
@@ -2704,13 +2701,50 @@ async function completeMergeAncestry(
         version.parents.length > 64 || !version.parents.every(parent => typeof parent === "string" && isHex(parent, 32))) {
         throw new ApiError(502, "invalid_ancestry", "The server returned an invalid ancestor record.");
       }
-      // Preserve child-before-parent order, including a parent fetched from
-      // the other branch in an earlier round. Timestamp order is not ancestry.
       hold(context, file.file_id, version);
       insert(version);
     }
   }
-  if (requested.size + recalled > 0) context.host.log(`pull decision=loaded reason=merge_ancestry file=${file.file_id} reads=${requested.size} recalled=${recalled} held_chars=${ancestry.get(context)?.held ?? 0} budget_reads=${budget} budget_chars=${CHUNK_MAX} duration_ms=${context.now() - started}`);
+  if (requested.size + recalled === 0) return;
+  // Added as reached, a parent reached first from the other head stood before
+  // its child, and the first common version in that order was not the newest:
+  // a criss-cross level merged an ancestor of its second base instead of it,
+  // and keys both heads held went out of the note (#339, Android emulator).
+  file.versions = childrenFirst(file.versions);
+  context.host.log(`pull decision=loaded reason=merge_ancestry file=${file.file_id} reads=${requested.size} recalled=${recalled} held_chars=${ancestry.get(context)?.held ?? 0} budget_reads=${budget} budget_chars=${CHUNK_MAX} duration_ms=${context.now() - started}`);
+}
+
+/**
+ * The same versions, each after every child of it in the list and otherwise in
+ * the list's order: the order `commonAncestor` and `crissCrossBase` take the
+ * newest from. One pass, each version and parent link once; a cycle a server
+ * could send is cut where it closes, never followed.
+ */
+function childrenFirst<T extends VersionNode>(versions: T[]): T[] {
+  const children = new Map<string, T[]>();
+  for (const version of versions) {
+    for (const parent of version.parents) {
+      const siblings = children.get(parent);
+      if (siblings === undefined) children.set(parent, [version]);
+      else siblings.push(version);
+    }
+  }
+  const entered = new Set<string>(), order: T[] = [];
+  for (const version of versions) {
+    if (entered.has(version.version_id)) continue;
+    entered.add(version.version_id);
+    const stack = [{ version, next: 0 }];
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1] as { version: T; next: number };
+      const child = children.get(top.version.version_id)?.[top.next++];
+      if (child === undefined) order.push((stack.pop() as { version: T }).version);
+      else if (!entered.has(child.version_id)) {
+        entered.add(child.version_id);
+        stack.push({ version: child, next: 0 });
+      }
+    }
+  }
+  return order;
 }
 
 /**
@@ -3882,7 +3916,7 @@ async function crissCrossBase(
   if (other === undefined) return null;
   const mergedBefore = bases.get(context)?.get(`merged ${[first, other].sort().join(" ")}`);
   if (mergedBefore !== undefined) {
-    context.host.log(`pull decision=merge_base reason=criss_cross found=verified_merge level=${CRISS_CROSS_LEVELS - levels + 1} budget_levels=${CRISS_CROSS_LEVELS}`);
+    context.host.log(`pull decision=merge_base reason=criss_cross found=verified_merge level=${CRISS_CROSS_LEVELS - levels + 1} budget_levels=${CRISS_CROSS_LEVELS} bases=${first}+${other}`);
     return mergedBefore;
   }
   if (levels === 0) {
@@ -3903,7 +3937,7 @@ async function crissCrossBase(
   const merged = deeper === false || deeper === HISTORY_BUDGET ? null : mergeText(deeper ?? rootText, firstText, otherText);
   context.host.log(
     `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=${merged !== null} ` +
-      `file=${change.file_id} seq=${change.seq}`,
+      `file=${change.file_id} seq=${change.seq} bases=${first}+${other}`,
   );
   if (merged === null) return deeper as false | typeof HISTORY_BUDGET;
   remember(context, pair, merged);

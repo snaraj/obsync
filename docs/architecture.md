@@ -1376,7 +1376,11 @@ long poll and needs its timeout raised.
    already shows one common ancestor: a pair's second ancestor can sink below
    the listing while two people type, and merged over the one listed, a base
    older than two keys both heads held wrote them twice and the merge over it
-   took both out (#339). A third device, open and
+   took both out (#339). The completed list is then put back in the order
+   the newest base is taken from, each version after its children: versions
+   are found by distance from the two heads, and a parent found first from
+   the other head, left ahead of its child, was taken as a level's second
+   base instead of that child, with the same loss. A third device, open and
    idle while two type, merges every arrival against a base the listing
    holds; remembering only what a walk read, it met its first criss-cross
    across the whole typing history with nothing remembered, read past the

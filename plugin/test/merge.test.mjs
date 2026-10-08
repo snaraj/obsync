@@ -307,6 +307,79 @@ test("two typed keys both heads hold survive a criss-cross whose second ancestor
 });
 
 /**
+ * AND WHERE THAT ANCESTRY WAS ALREADY HELD (#339, Android emulator, after the
+ * fix above). A device that saw every version on the feed recalls the unlisted
+ * ones as its walk reaches them. Added in that order, a parent reached first
+ * from the other head stood before its own child, and the walk took the newest
+ * ancestor by that order: at the second level, the parent of a merge's second
+ * base instead of that base. The base lacked two keys both heads held, and the
+ * merge took them out of the note. The history is the emulator's, cut below the
+ * level that went wrong and to the keys it turns on.
+ */
+test("two typed keys both heads hold survive a criss-cross walked through ancestry this device holds (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile, sidDigest } = require("../build/sync/push.js");
+  const { encryptChunk } = require("../build/crypto.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Held.md";
+  const keys = (start, ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(start + a + i))).join("");
+  const doc = ([, desktop, phone]) => `# Both\nfixed\n0${keys(0x4e00, desktop)}${keys(0xac00, phone)}\n`;
+  // Each version: its parents, by index, then the desktop's and the phone's keys.
+  const history = [
+    [[], [], [[0, 3]]],
+    [[0], [[0, 2]], [[0, 3]]],
+    [[1], [[0, 2]], [[0, 6]]],
+    [[0], [[0, 4]], [[0, 3]]],
+    [[3], [[0, 5]], [[0, 3]]],
+    [[3, 2], [[0, 4]], [[0, 6]]],
+    [[5], [[0, 4]], [[0, 5], [8, 9]]],
+    [[2, 4], [[0, 5]], [[0, 6]]],
+    [[7], [[0, 5], [8, 11]], [[0, 6]]],
+    [[4, 6], [[0, 5]], [[0, 5], [8, 9]]],
+    [[9], [[0, 5]], [[0, 5], [8, 13]]],
+    [[8, 6], [[0, 5], [8, 11]], [[0, 5], [8, 9]]],
+    [[11], [[0, 5], [8, 13]], [[0, 5], [8, 9]]],
+    [[8, 10], [[0, 5], [8, 11]], [[0, 5], [8, 13]]],
+    [[13], [[0, 5], [8, 11]], [[0, 5], [8, 13], [16, 16]]],
+  ];
+  r.host.seed(NOTE, doc(history[0]), 1000);
+  const root = await pushFile(r.context, NOTE);
+  const ids = [root.versionId];
+  let at = 2000;
+  for (const version of history.slice(1)) {
+    ids.push((await r.server.publish({ fileId: root.fileId, path: NOTE, bytes: new TextEncoder().encode(doc(version)),
+      mtime: at += 1000, parents: version[0].map((i) => ids[i]).sort(), domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey })).version_id);
+  }
+  // Every version came by on the feed, so this device holds them all.
+  for (const entry of r.server.journal.filter((entry) => entry.file_id === root.fileId)) {
+    r.context.authored.add(entry.version_id);
+    assert.equal(await applyChange(r.context, entry), "echo");
+  }
+  // It stands on the phone's head; the server lists ten versions and every head.
+  const held = doc(history[14]);
+  r.host.seed(NOTE, held, at += 1000);
+  const { sid } = await encryptChunk(r.keys.domainKey, new TextEncoder().encode(held));
+  r.state.setFile(NOTE, { fileId: root.fileId, versionId: ids[14], mtime: at, size: new TextEncoder().encode(held).length, sha256: await sidDigest([sid]) });
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (...args) => {
+    const file = await getFile(...args);
+    return { ...file, versions: file.versions.filter((version, i) => i < 10 || file.heads.includes(version.version_id)) };
+  };
+  assert.ok(!(await r.transport.getFile(root.fileId)).versions.some((version) => version.version_id === ids[2]), "the second base is still listed");
+  await applyChange(r.context, r.server.journal.find((entry) => entry.version_id === ids[12]));
+  const story = r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+  assert.equal(r.host.text(NOTE), doc([, [[0, 5], [8, 13]], [[0, 5], [8, 13], [16, 16]]]), story);
+  assert.ok(r.host.logs.some((line) => /^pull decision=loaded reason=merge_ancestry file=[0-9a-f]+ reads=0 recalled=[1-9]/.test(line)), story);
+  // The second level merged its two newest bases: the phone's typed version, never the one it typed on.
+  const second = r.host.logs.find((line) => line.startsWith("pull decision=merge_base reason=criss_cross level=2 ok=true "));
+  assert.ok(second?.includes(ids[2]) && !second.includes(ids[1]), story);
+});
+
+/**
  * And a deletion made here and not pushed yet is published before anything is
  * adopted (#339). The note here lost a key the version this device published
  * still holds; the incoming version, older than that key, comes out as the
