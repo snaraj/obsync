@@ -26,10 +26,11 @@
 // point past key i-1 (X counts up from U+4E00, Y from U+AC00), so no two keys share a character, and every
 // seventh is a mistyped key deleted next with a trusted Backspace. PASS then needs, on every disk and
 // editor: line 3 holding exactly X's kept keys and Y's kept keys, each in typed order; no mistyped key
-// left; the other lines intact; no conflict copy; and no state the editor ever showed or the vault ever
-// saved, on either side, holding one person's keys other than strictly rising (`transient`: a key twice
-// or two keys swapped). Each page checks every state itself and keeps only the ones that break the rule;
-// `checked` counts the states it saw, so a zero `transient` is never a check that did not run.
+// left; the other lines intact; no conflict copy; and every state the editor showed and every save the
+// vault reported, on either side, holding each person's keys as that person had them at one moment, never
+// an earlier moment than the one before it in the same place (`transient`: a key twice, out of order or
+// missing, a deleted key back). Each page checks every state itself and keeps only the ones that break the
+// rule; `checked` counts the states it saw, so a zero `transient` is never a check that did not run.
 //
 // A window another covers is hidden, and Chromium throttles a hidden page's timers and work: a covered
 // instance saved typing a minute late and made no request for four minutes (2026-09-29). Each side's
@@ -87,20 +88,33 @@ async function session(port, sel) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // PLACE=same: the first code point of each person's keys, and how many keys each block holds.
 const X_KEYS = 0x4e00, Y_KEYS = 0xac00, KEYS = 11172;
-// True when each person's keys in the text rise strictly: no key twice, none out of typed order.
-const RISING = `(text) => {
-  let x = 0, y = 0;
+// One person's keys at one moment: every kept key up to the last typed, in order, plus that last when it
+// is a mistyped key not yet deleted. After a kept key at i % 8 == 5 the moment is i, or i + 2 once the
+// mistyped key after it is deleted. `floor` holds, per person, the earliest moment one place (an editor,
+// or the vault's saves) may still show; a moment before it is a step back.
+const MOMENT = `(text, floor) => {
+  const seen = { x: [], y: [] };
   for (const c of text) {
     const p = c.codePointAt(0);
-    if (p >= ${X_KEYS} && p < ${X_KEYS + KEYS}) { if (p <= x) return false; x = p; }
-    else if (p >= ${Y_KEYS} && p < ${Y_KEYS + KEYS}) { if (p <= y) return false; y = p; }
+    if (p >= ${X_KEYS} && p < ${X_KEYS + KEYS}) seen.x.push(p - ${X_KEYS});
+    else if (p >= ${Y_KEYS} && p < ${Y_KEYS + KEYS}) seen.y.push(p - ${Y_KEYS});
   }
-  return true;
+  let ok = true;
+  for (const who of ["x", "y"]) {
+    const keys = seen[who], last = keys.length > 0 ? keys[keys.length - 1] : -1;
+    let at = 0;
+    for (let i = 0; i <= last; i++) if (i % 8 !== 7 && (i % 8 !== 6 || i === last) && keys[at++] !== i) ok = false;
+    if (at !== keys.length) ok = false;
+    const moments = (last % 8 === 5 ? [last, last + 2] : [last]).filter((m) => m >= floor[who]);
+    if (moments.length === 0) ok = false;
+    else floor[who] = moments[0];
+  }
+  return ok;
 }`;
 // The trace: obsync's own log lines, and the note's text at each save the vault reports.
 const HOOK = `function (note) {
   window.__cotype = { note, lines: [], notices: [], hiddenMs: 0, hiddenAt: document.hidden ? Date.now() : null,
-    checked: 0, broken: [], rising: ${RISING} };
+    checked: 0, broken: [], moment: ${MOMENT}, floor: { editor: { x: -1, y: -1 }, vault: { x: -1, y: -1 } } };
   if (!window.__cotypeVisibility) {
     document.addEventListener("visibilitychange", () => {
       const c = window.__cotype;
@@ -132,7 +146,7 @@ const HOOK = `function (note) {
       const text = await app.vault.adapter.read(file.path).catch(() => null);
       const c = window.__cotype;
       c.lines.push(at + " vault modify text=" + JSON.stringify(text));
-      if (text !== null && (c.checked++, !c.rising(text))) c.broken.push(at + " vault modify text=" + JSON.stringify(text));
+      if (text !== null && (c.checked++, !c.moment(text, c.floor.vault))) c.broken.push(at + " vault modify text=" + JSON.stringify(text));
     });
     window.__cotypeHooked = true;
   }
@@ -154,7 +168,7 @@ const OPEN = `async function (note) {
     cm.dispatch = (...specs) => {
       const result = dispatch(...specs);
       const c = window.__cotype, text = cm.state.doc.toString();
-      if (c && (c.checked++, !c.rising(text))) c.broken.push(Date.now() + " editor text=" + JSON.stringify(text));
+      if (c && (c.checked++, !c.moment(text, c.floor.editor))) c.broken.push(Date.now() + " editor text=" + JSON.stringify(text));
       return result;
     };
     cm.__cotypeTraced = true;
