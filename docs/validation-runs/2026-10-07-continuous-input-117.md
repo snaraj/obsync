@@ -158,10 +158,14 @@ their defer/hold decision. Moving the existing check after preparation
 preserves that policy; all 54 rebase/overlap/budget cases and the targeted
 stamper regression pass. The budget test keeps the exact three initial
 refusals and separately pins two subsequent typing-lane retry refusals, with
-all reservations refunded and no copies. M4143 restores the early check
-and fails three assertions across the 24 rebase/budget cases;
-M4144 removes the final readiness check and fails one. Both compile, neither
-cancels a test, and sources are restored byte-for-byte after mutation.
+all reservations refunded and no copies. At checkpoint `bb346509`, M4143
+restored the early check and failed three assertions across the 24 rebase/budget
+cases; M4144 removed the final readiness check and failed one. Both compiled
+with zero cancellations, and sources were restored byte-for-byte. The later
+single-probe repair superseded those two patches, so they are removed from
+the current matrix rather than advertised as runnable at the final head.
+Retained M4165 restores the redundant probe and M4166 removes the remaining
+caller probe; their current-head results are recorded below.
 
 Accounting correction: commit a1419d0 contains +212/-5, as reported by
 `git show --numstat a1419d0`; its message mistakenly says +222/-5.
@@ -467,6 +471,12 @@ test/rewrite-overlap.test.mjs` (55 passing). Each retained M4165–M4168
 compiles and fails at runtime; sources are restored and rebuilt after every
 mutation. Full-gate and native results must bind the revised bytes.
 
+The final evidence correction repeats that 55-case baseline successfully.
+M4165 and M4166 still compile and cause one and four assertion failures,
+respectively, with zero cancellations. Sources and the bundle hash are restored.
+All 63 retained delta patches (M4128–M4192 excluding the retired M4143/M4144)
+pass a dry application using the runner's forward-only, zero-fuzz flags.
+
 
 ### Native renderer isolation and sustained same-line regression
 
@@ -619,9 +629,16 @@ No content survives the call in a new cache. Only explicit multipart or
 endpoint-compatibility refusals permit ordinary verified reads; authentication,
 cancellation, missing chunks and integrity failures propagate.
 
-Forty focused tests pass, including native saves during preparation, bounded
-shapes, scope, duplicate inputs, corruption and narrow fallback. Seventeen
-retained mutants M4176–M4192 each compile and fail runtime assertions with
+Forty focused tests pass: 27 merge-input cases plus 13 editor-rebase cases,
+including native saves during preparation, bounded shapes, scope, duplicate
+inputs, corruption and narrow fallback. Reproduce that exact group with:
+
+```sh
+npm --prefix plugin run build
+node --test plugin/test/merge-inputs.test.mjs plugin/test/editor-rebase.test.mjs
+```
+
+Seventeen retained mutants M4176–M4192 each compile and fail runtime assertions with
 zero cancellations; source is restored after each. The prior four-suite
 comparison passed 122 tests before two additional refusal cases were added.
 Native acceptance of this product implementation remains pending here.
