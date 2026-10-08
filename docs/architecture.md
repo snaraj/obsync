@@ -1208,31 +1208,39 @@ long poll and needs its timeout raised.
    named in one `engine decision=waiting` line and still waited for: a stop
    never abandons a pull.
 4. **Conflicts.** Two heads on a text file with a reachable common ancestor
-   → a homegrown three-way line merge. Each side's changed base intervals
-   are compared independently, so adjacent line edits need no unchanged
-   separator. When both replace exactly one line only by appending to its
-   original text, keep their common appended prefix once (by Unicode code
-   point), then join their different additions in lexicographic order. If
-   only leading whitespace is shared and both additions continue differently,
-   retain each addition's whitespace so their words do not run together.
-   This gives both devices the same text without using a clock or device role.
-   Continued typing before an already received suffix uses code-point
-   alignment under the same 4,000,000-cell bound: all original characters
-   must remain in order. Each gap, including the one before the first
-   character, merges by the same rule. If the graph
-   has two incomparable common ancestors, combine them before comparing the
-   current edits, even when the first comparison would look clean. An
-   unresolvable or over-depth shared base refuses the merge; it cannot fall
-   back to just one ancestor and replay the other's text.
-   Replacements of existing characters and multi-line overlaps stay conflicts.
+   → a three-way character merge (`mergeText`, `sync/conflict.ts`), the way
+   collaborative editors combine concurrent keystrokes. Each side's change
+   from the base is found on its own: equal ends are trimmed; text spanning
+   lines is aligned by line, lines occurring once on each side anchoring it
+   (patience alignment) and Myers' algorithm aligning the runs between; each
+   changed run of lines is then aligned by Unicode code point with Myers'
+   algorithm. A per-side step budget (`MERGE_STEPS`) bounds the work, and a
+   region past it is taken whole -- placed less precisely, never refused.
+   The two change lists are combined over the base: a base character
+   survives unless either side deleted it, every insertion survives at its
+   place, and text inserted inside a range the other side deleted is kept.
+   Two different insertions at one place are ordered by content, never by a
+   clock or device role, so every device computes the same bytes whichever
+   side is its own; an insertion that begins the other side's insertion at
+   the same place lands once (one typed stream seen at two lengths, as a base
+   older than both heads' shared text presents it). Text never refuses to
+   merge, with one exception: when both sides changed one place differently
+   and either side is an automatic answer -- a plugin rewriting the note
+   right after a sync (the background-answer hold below) -- two rewritten
+   values joined would be no value, so the pair is held instead. If the graph has
+   two incomparable common ancestors, combine them before comparing the
+   current edits, even when the first comparison would look clean. A shared
+   base this device cannot read, or one past the depth budget, refuses the
+   merge; it cannot fall back to just one ancestor and replay the other's
+   text.
    A clean merge posts a new version with both heads as parents, under a name
    merged the same way against the same ancestor: the side that moved the
    note keeps its name, and two different moves keep, on every device, the
    name that sorts first, which the user is told (issue #151). A folder
    renamed two ways is that rule once per note, so every note takes the same
    side, and the losing folder, emptied, is tombstoned (issue #174).
-   Two heads that do not merge (binary, no
-   ancestor, overlapping hunks) are settled by a rule every device computes
+   Two heads that do not merge (binary, no ancestor, a shared base past
+   reach, an unheld background answer) are settled by a rule every device computes
    alike without asking another: the head with the lower version id is the
    note on every device; the other is ONE conflict copy on every device, with
    a file id derived as `HMAC(K_m,d, "obsync/v1/conflict" || 0x0a || file_id
@@ -1481,7 +1489,8 @@ long poll and needs its timeout raised.
    not originate a hold. External editors, custom views and programmatic editor
    commands without trusted input are not observable as human typing and can
    trigger a conservative hold if they answer a
-   sync on conflicting lines; the notice says another plugin *may* be involved.
+   sync by changing a place the other side changed; the notice says another
+   plugin *may* be involved.
 
    The device receiving an authenticated background answer can detect the
    overlap first while its own editor is being typed in. After trying a clean
@@ -1544,18 +1553,13 @@ long poll and needs its timeout raised.
    - **The two versions share a common ancestor.** Two devices that
      independently created the same path have none — there is nothing to
      merge against, and neither side is a later version of the other.
-   - **The two sides are close enough to align.** The merge lines up each side
-     against the common ancestor with a table bounded at 4,000,000 cells,
-     counted after the shared opening and closing lines are trimmed. Two
-     versions that differ by thousands of lines in the middle exceed it, the
-     merge answers `too_large`, and a conflict copy results.
-   - **The changes can be combined.** Edits in different parts of the file
-     merge. Additions to one line can merge when its original characters
-     remain in order on both devices and its beginning is unchanged. Shared
-     added text appears once; different additions at the same position use a
-     consistent order. Character alignment has the same 4,000,000-cell bound.
-     Competing prefixes, replacements and deletions of the same text remain
-     conflicts.
+   - **No automatic answer meets the other side's change.** Edits at the same
+     place -- insertions, replacements and deletions alike -- merge, unless one
+     side is a background answer; that pair is held (above), and a copy is
+     made only if the hold does not apply.
+
+   How far apart two versions are no longer decides anything: alignment work
+   is bounded per side, and past the bound a region is merged whole.
 
    An identical note is adopted from another file identity only while that
    incoming version is the server's sole current head. Replaying an old

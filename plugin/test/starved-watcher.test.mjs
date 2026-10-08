@@ -683,19 +683,14 @@ test("a listed open note reconciles once and preserves typing begun during the w
     const events = r.vault.events.length;
     await r.adapter.late("Notes/n.md");
     assert.equal(r.vault.events.length, events, "a late OS event must not reload the editor again");
-    if (typing) {
-      // The conservative confirmation merge refuses this overlapping suffix
-      // shape even though the host retained both edits. It must visibly fall
-      // back to native saving, never manufacture a successful save receipt.
-      const deadline = performance.now() + 2500;
-      while (!r.logs.some((line) => line.includes("reason=editor_reload_unconfirmed")) && performance.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        await timers.run(STEP_MS);
-      }
-      assert.ok(r.logs.some((line) => /reason=editor_reload_unconfirmed duration_ms=\d+ budget_ms=1000/.test(line)), story(r));
-      assert.equal(r.host.editorActivity.nativeOnly.get(view), view.file);
-      assert.equal(await r.host.editorReady("Notes/n.md"), false, "unsaved typing remains protected");
-    } else assert.ok(r.logs.includes("host path_class=file decision=editor_refreshed views=1"), story(r));
+    // The host retained both edits, and the character merge recognises it:
+    // the refresh is confirmed and the pane keeps its bridge (#339). The line
+    // merge refused this suffix shape and demoted the pane to native saving
+    // for the rest of its life.
+    assert.ok(r.logs.includes("host path_class=file decision=editor_refreshed views=1"), story(r));
+    assert.ok(!r.logs.some((line) => line.includes("reason=editor_reload_unconfirmed")), story(r));
+    assert.equal(r.host.editorActivity.nativeOnly.get(view), undefined, "a confirmed pane was demoted");
+    if (typing) assert.equal(await r.host.editorReady("Notes/n.md"), false, "unsaved typing remains protected");
     assert.ok(!r.logs.some((line) => line.includes("reason=editor_refresh error=")), story(r));
   }
 });

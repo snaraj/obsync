@@ -350,6 +350,52 @@ test("two devices appending on the same line converge with every keystroke once 
   }
 });
 
+/**
+ * THE SAME PLACE (#339). Both carets sit after one character in the middle of
+ * a line, the phone's included, on hosts that save every keystroke, and both
+ * people type, mistype and delete what they mistyped, as a phone keyboard's
+ * backspace and corrections do. The physical phone run of 2026-10-08 ended
+ * with letters lost or repeated and twelve copies. Every kept keystroke of
+ * both must be in the note once, each person's in the order typed, and every
+ * deleted one gone, on both devices, with no copy.
+ */
+for (const host of [false, true]) test(`two devices typing and deleting at the same place mid-line keep every keystroke once and in order, without copies (#339, ${host ? "saving every key" : "merging under input"})`, async (t) => {
+  const BACK = "\b";
+  // Kept keys from one range, mistyped ones from another, each key unique.
+  const keys = (kept, typo, count) => Array.from({ length: count }, (_, i) =>
+    String.fromCodePoint(kept + i) + (i % 4 === 3 ? String.fromCodePoint(typo + i) + BACK : "")).join("");
+  const textA = keys(0x4e00, 0x6000, 32), textB = keys(0x5000, 0x6100, 20);
+  const intended = (typed) => typed.replace(/.\x08/gu, "");
+  // A caret moves with its own typing and stays where it is when the other
+  // person's text arrives, as CodeMirror maps it; backspace deletes before it.
+  const caret = (own) => (text, typed) => {
+    const start = text.indexOf("0") + 1;
+    let at = start;
+    for (let i = start; i < text.length && text[i] !== "\n"; i++) if (own.includes(text[i] ?? "")) at = i + 1;
+    for (const key of typed) {
+      if (key !== BACK) text = text.slice(0, at) + key + text.slice(at++);
+      else if (at > start && own.includes(text[at - 1] ?? "")) text = text.slice(0, at - 1) + text.slice(at--);
+    }
+    return text;
+  };
+  const { a, b, story } = await session(t, {
+    base: "line one\nline two\n0 tail\n", placeA: caret(textA), placeB: caret(textB),
+    textA, textB, isMobileB: true, host,
+  });
+  for (const device of [a, b]) {
+    const note = device.host.text(NOTE);
+    assert.deepEqual(copies(device.host), [], `typing at one place created copies:\n  ${story}`);
+    assert.ok(note.startsWith("line one\nline two\n0") && note.endsWith(" tail\n"), `the fixed text moved:\n  ${story}`);
+    const main = [...note];
+    for (const typed of [textA, textB]) {
+      const kept = [...intended(typed)], at = kept.map((key) => main.indexOf(key));
+      assert.ok(at.every((place, i) => place >= 0 && main.lastIndexOf(kept[i] ?? "") === place && (i === 0 || place > (at[i - 1] ?? -1))),
+        `a keystroke was lost, repeated or reordered:\n  ${story}`);
+      for (const key of typed) if (!kept.includes(key) && key !== BACK) assert.ok(!main.includes(key), `a deleted keystroke came back:\n  ${story}`);
+    }
+  }
+});
+
 // --- the rules, one at a time ------------------------------------------------
 
 /** One version from the other device, over `rig`'s fixture keys. */
@@ -382,13 +428,6 @@ for (const isMobile of [false, true]) test(`prefix and word-boundary edits recon
     assert.equal(r.server.files.get(base.fileId).heads.length, 1);
     assert.deepEqual(copies(r.host), []);
   }
-});
-
-test("a refused text merge reports typing state and elapsed time without note text", async () => {
-  const r = await rig();
-  const { head } = await overlap(r);
-  await applyChange(r.context, head);
-  assert.ok(r.host.logs.some(line => /^pull decision=unmerged reason=overlap file=[a-f0-9]+ seq=[0-9]+ typing=false duration_ms=[0-9]+$/.test(line)), pulls(r.host));
 });
 
 for (const isMobile of [false, true]) test(`continued adjacent appends reconcile without copies (${isMobile ? "mobile" : "desktop"})`, async () => {
@@ -924,7 +963,10 @@ test("a clean-looking append uses both shared ancestors without replaying their 
   assert.equal(r.server.files.get(root.fileId).heads.length, 1);
 });
 
-for (const deeper of [false, true]) test(`an unresolvable shared base cannot be replaced by one ancestor (deeper: ${deeper})`, async () => {
+// The shared pair one level down was settled by rule (`XY` kept out of `abL`).
+// Its base is rebuilt by merging that pair, never taken from one ancestor, so
+// both heads' common omission of `XY` is one change, not two (#339).
+for (const deeper of [false, true]) test(`a shared base whose pair was settled by rule is rebuilt, not taken from one ancestor (deeper: ${deeper})`, async () => {
   const r = await rig();
   r.host.seed(NOTE, "ab\n", 1000);
   const root = await pushFile(r.context, NOTE);
@@ -942,9 +984,10 @@ for (const deeper of [false, true]) test(`an unresolvable shared base cannot be 
   const mine = r.host.seed(NOTE, text + "x\n", stamp - 1000);
   r.state.setFile(NOTE, { fileId: root.fileId, versionId: ours.version_id,
     mtime: stamp - 1000, size: mine.length, sha256: await sidDigest(ours.sids) });
-  assert.notEqual(await applyChange(r.context, theirs), "merged", pulls(r.host));
-  assert.equal(copies(r.host).length, 1);
-  assert.deepEqual([r.host.text(NOTE), r.host.text(copies(r.host)[0])].sort(), [text + "x\n", text + "y\n"].sort());
+  assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), text + "xy\n");
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.some((line) => line.includes("decision=merge_base reason=criss_cross")), pulls(r.host));
 });
 
 test("typing beyond a criss-cross head is published before another merge of that pair", async () => {
@@ -1588,8 +1631,12 @@ test("a save landing while a version downloads is not written over", async () =>
 
 // --- a fork that does not merge, settled by rule (issue #135) ----------------
 
-/** Two heads over one base that overlap, with this device holding `mine`. */
-async function overlap(r, mine = "mine\n", theirs = "theirs\n") {
+// Text always merges (#339), so these forks are binary: a NUL byte makes each
+// head content that has no merge, which the rule below still settles.
+const MINE = "mine\0\n", THEIRS = "theirs\0\n";
+
+/** Two heads over one base that do not merge, with this device holding `mine`. */
+async function overlap(r, mine = MINE, theirs = THEIRS) {
   r.host.seed(NOTE, "base\n", 1000);
   const base = await pushFile(r.context, NOTE);
   const other = await foreign(r, base.fileId, theirs, [base.versionId], 3000);
@@ -1632,7 +1679,7 @@ for (const incomplete of [false, true]) test(`a fork whose other head a later ve
   assert.equal(await applyChange(r.context, head), "skipped", pulls(r.host));
   assert.ok(r.host.logs.some((line) => line.includes("decision=skipped reason=superseded_head")), pulls(r.host));
   assert.equal(r.server.journal.length, journal, "a stale pair was closed");
-  assert.equal(r.host.text(NOTE), "mine\n");
+  assert.equal(r.host.text(NOTE), MINE);
   assert.deepEqual(copies(r.host), []);
 });
 
@@ -1660,8 +1707,8 @@ test("two settlements of one fork at once on the losing device make one copy", a
   const results = await Promise.all(runs);
   assert.ok(results.includes("applied"), results.join(","));
   assert.equal(copies(r.host).length, 1, `${JSON.stringify(copies(r.host))} ${pulls(r.host)}`);
-  assert.equal(r.host.text(copies(r.host)[0]), "mine\n");
-  assert.equal(r.host.text(NOTE), "theirs\n");
+  assert.equal(r.host.text(copies(r.host)[0]), MINE);
+  assert.equal(r.host.text(NOTE), THEIRS);
   // And the record says what the note is: the head that closed the fork, at
   // the note's own size and time. A second settlement undoing the first's
   // record is a note the next push publishes against the wrong parent.
@@ -1683,8 +1730,8 @@ test("two devices settling the same overlap publish one shared conflict-copy ver
   a.host.seed(NOTE, "base\n", 1000);
   const base = await pushFile(left, NOTE);
   await applyChange(right, server.journal.at(-1));
-  a.host.seed(NOTE, "desktop replacement\n", 2000);
-  b.host.seed(NOTE, "phone replacement\n", 3000);
+  a.host.seed(NOTE, "desktop replacement\0\n", 2000);
+  b.host.seed(NOTE, "phone replacement\0\n", 3000);
   const ours = await pushFile(left, NOTE);
   const ourFrame = server.journal.at(-1);
   const theirs = await pushFile(right, NOTE);
@@ -1725,8 +1772,8 @@ test("two devices settling the same overlap publish one shared conflict-copy ver
   assert.equal(server.deduplicated.filter(entry => entry.fileId === recordA.fileId).length, 1);
   const desktopKept = ours.versionId < theirs.versionId;
   for (const device of [a, b]) {
-    assert.equal(device.host.text(NOTE), desktopKept ? "desktop replacement\n" : "phone replacement\n");
-    assert.equal(device.host.text(copy), desktopKept ? "phone replacement\n" : "desktop replacement\n");
+    assert.equal(device.host.text(NOTE), desktopKept ? "desktop replacement\0\n" : "phone replacement\0\n");
+    assert.equal(device.host.text(copy), desktopKept ? "phone replacement\0\n" : "desktop replacement\0\n");
   }
   assert.equal(server.files.get(base.fileId).heads.length, 1);
   assert.equal(a.state.fileByPath(NOTE).versionId, b.state.fileByPath(NOTE).versionId);
@@ -1740,7 +1787,7 @@ test("two devices settling the same overlap publish one shared conflict-copy ver
  */
 test("text typed on top of the losing head is published as the copy's next version", async () => {
   const { r, head } = await losing();
-  const TYPED = "mine\nand a line typed here since\n";
+  const TYPED = "mine\0\nand a line typed here since\n";
   r.host.seed(NOTE, TYPED, 5555);
 
   assert.equal(await applyChange(r.context, head), "applied", pulls(r.host));
@@ -1766,7 +1813,7 @@ test("text typed on top of the losing head is published as the copy's next versi
 test("a losing note whose editor refuses the kept head keeps its record, and its next save its parent (#227)", async () => {
   const { r, ours, head } = await losing();
   const refused = refusing(r.host, async (path) => path === NOTE);
-  const TYPED = "mine\nand a line typed here since\n";
+  const TYPED = "mine\0\nand a line typed here since\n";
   r.host.seed(NOTE, TYPED, 5555);
 
   await assert.rejects(applyChange(r.context, head), (error) => error.reason === "active_editor");

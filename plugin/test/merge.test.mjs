@@ -122,7 +122,9 @@ test("more than a handful of resolutions of one file in a window stops the mergi
   const NOTE = "Notes/Storm.md";
   r.host.seed(NOTE, "the line both sides start from\n", 1000);
   const base = await pushFile(r.context, NOTE);
-  r.host.seed(NOTE, "the line this device wrote\n", 2000);
+  // Text merges (#339); a NUL byte keeps every round a fork with no merge,
+  // so each resolution is counted and its content kept, never combined.
+  r.host.seed(NOTE, "the line this device wrote\0\n", 2000);
   await pushFile(r.context, NOTE);
 
   const results = [];
@@ -130,7 +132,7 @@ test("more than a handful of resolutions of one file in a window stops the mergi
     const theirs = await r.server.publish({
       fileId: base.fileId,
       path: NOTE,
-      bytes: enc(`the line the other device wrote, round ${round}\n`),
+      bytes: enc(`the line the other device wrote, round ${round}\0\n`),
       mtime: 4000 + round,
       parents: [base.versionId],
       domainKey: r.keys.domainKey,
@@ -155,7 +157,7 @@ test("more than a handful of resolutions of one file in a window stops the mergi
   assert.ok(["skipped", "applied"].includes(results[5]), results.join(","));
   assert.ok(!r.host.logs.slice(r.host.logs.indexOf(storms[0])).some((line) => line.includes("decision=merged")));
   const kept = [...r.host.files.keys()].map((path) => r.host.text(path));
-  for (const text of ["the line this device wrote\n", ...[1, 2, 3, 4, 5, 6].map((round) => `the line the other device wrote, round ${round}\n`)]) {
+  for (const text of ["the line this device wrote\0\n", ...[1, 2, 3, 4, 5, 6].map((round) => `the line the other device wrote, round ${round}\0\n`)]) {
     assert.ok(kept.includes(text), `${JSON.stringify(text)} is in no file: ${JSON.stringify(kept)}`);
   }
   assert.equal(r.server.files.get(base.fileId).heads.length, 1, "the fork was left open");

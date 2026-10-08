@@ -9,6 +9,15 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ### Fixed
 
+- Two devices typing in one note, on the same line or at the same spot, now
+  combine letter by letter, the way a shared document combines two people
+  typing: every keystroke of both stays in the note, deleted text stays
+  deleted, and text is never set apart into a conflict copy. Incoming text
+  reaches an open editor as only the other device's change, so the cursor
+  stays where you type and undo takes back only your own typing. A plugin
+  rewriting a note right after a sync, at a place another device changed, is
+  still held rather than joined. Encryption, the wire format and the server
+  are unchanged (#339).
 - Saved editor input can sync while typing continues. Incoming edits merge
   with acknowledged versions while newer local input stays queued as a child
   version. Save confirmation, unfinished composition and recent human input
@@ -45,19 +54,12 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   snapshot contains both inputs, avoiding a second request that can chase
   a continuously advancing peer. Unrelated or incomplete snapshots still
   require a fresh graph.
-- Long insertion-only edits use a linear proof that every original character
-  survives, avoiding quadratic character tables while retaining the general
-  alignment budget and conservative replacement handling.
 - A live editor reaching the merge-history work limit waits for the peer's
   next merge instead of classifying the limit as overlapping text. Other
   notes continue syncing; the existing bounded retry and cold-history
   fallback remain.
 - The container builder base advances to Rust 1.98.1 with its pinned image
   digest; the repository compiler remains pinned to Rust 1.98.0 (#336).
-
-- Concurrent typing before the first character of a line now combines when
-  both edits preserve the existing text. Different added word streams retain
-  their own leading spaces instead of joining two words together.
 
 - A minimized desktop restores background throttling after unanswered network
   attempts, including while uploads remain queued for retry. An answer lifts

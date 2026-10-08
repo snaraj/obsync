@@ -255,9 +255,7 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none", edi
       const prior = baselines.get(view), current = view.getViewData();
       baselines.set(view, next);
       if (current === next) continue;
-      const combined = require("../build/sync/conflict.js").threeWayMerge(prior, current, next);
-      if (!combined.ok) throw Error("synthetic native reload overlap");
-      view.setViewData(combined.text, false);
+      view.setViewData(require("../build/sync/conflict.js").mergeText(prior, current, next), false);
     }
   };
   const openEditor = (path, text) => {
@@ -371,9 +369,7 @@ async function queuedEditor(t, afterRename = () => {}, { mobile = false, lateRel
       if (text === prior || text === buffer.value) return;
       if (lateReload && !dirty) { view.setViewData(text, false); return; }
       if (buffer.value !== prior) events.push("external_notice");
-      const merged = require("../build/sync/conflict.js").threeWayMerge(prior, buffer.value, text);
-      assert.equal(merged.ok, true);
-      view.setViewData(merged.text, false);
+      view.setViewData(require("../build/sync/conflict.js").mergeText(prior, buffer.value, text), false);
     });
     reads.push(loading);
   };
@@ -420,6 +416,46 @@ for (const concurrent of [false, true]) test(`a queued durable editor write adva
   assert.ok(!r.logs.some((line) => /editor_left|editor_reload_unconfirmed/.test(line)), r.logs.join(" | "));
   assert.deepEqual(r.hidden(), []);
 });
+
+// A PEER'S KEYSTROKES REACH CODEMIRROR AS KEYSTROKES (#339). Replacing the
+// whole buffer moved the caret and put the peer's text into local undo. The
+// bridge dispatches only the difference, as a remote change outside undo
+// history, so CodeMirror maps the caret and selection through it.
+for (const [mobile, typing] of [[false, false], [true, false], [false, true]]) {
+  test(`a remote change reaches a CodeMirror editor as only its difference, outside undo (${mobile ? "mobile" : "desktop"}, typing=${typing})`, async (t) => {
+    const r = await queuedEditor(t, ({ host, buffer, view }) => {
+      if (!typing) return;
+      host.editorActivity.record(view, "beforeinput");
+      buffer.value = "A: local typed\nB: \n";
+    }, { mobile });
+    const dispatched = [], replaced = [];
+    r.view.editor = {
+      cm: {
+        state: { doc: { toString: () => r.buffer.value } },
+        dispatch: (spec) => {
+          dispatched.push(spec);
+          let text = r.buffer.value;
+          for (const { from, to, insert } of [...spec.changes].reverse()) text = text.slice(0, from) + insert + text.slice(to);
+          r.buffer.value = text;
+        },
+      },
+    };
+    const setViewData = r.view.setViewData;
+    r.view.setViewData = (data, clear) => { replaced.push(data); setViewData.call(r.view, data, clear); };
+    await r.write();
+    await r.adapter.promise; await Promise.all(r.reads);
+    const expected = typing ? "A: local typed\nB: remote\n" : r.incoming;
+    assert.equal(r.buffer.value, expected);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), expected);
+    const at = (typing ? "A: local typed\nB: " : "A: local\nB: ").length;
+    assert.deepEqual(dispatched, [{
+      changes: [{ from: at, to: at, insert: "remote" }],
+      annotations: [{ annotation: "addToHistory", value: false }, { annotation: "remote", value: true }],
+    }], "only the peer's text, kept out of local undo");
+    assert.deepEqual(replaced, [], "the buffer is never replaced whole");
+    assert.ok(!r.logs.some((line) => /editor_left|editor_reload_unconfirmed/.test(line)), r.logs.join(" | "));
+  });
+}
 
 for (const reason of ["composition", "native-only"]) test(`a queued bridge with a second ${reason} pane leaves every pane to one native reload`, async (t) => {
   let second, secondText, r;

@@ -47,7 +47,7 @@ const require = createRequire(import.meta.url);
 const c = require("../build/crypto.js");
 const { applyChange } = require("../build/sync/pull.js");
 const { pushFile } = require("../build/sync/push.js");
-const { conflictCopyPath } = require("../build/sync/conflict.js");
+const { conflictCopyPath, mergeText } = require("../build/sync/conflict.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 
@@ -200,26 +200,18 @@ test("an edit made while this device was closed survives one the other device ma
     "the server holds one head and reports no conflict: this is the blind spot",
   );
 
-  // The desktop comes back. Both lines end the same place on both devices
-  // (issue #135): the lower version id is the note everywhere and the other
-  // line is ONE copy everywhere. 1.1.2 kept each device's own line under the
-  // name, which is two different notes for good.
+  // The desktop comes back. Both lines end up in ONE note on both devices, as
+  // two people's typing does (#339). 1.1.2 kept each device's own line under
+  // the name; 1.1.3 to 1.1.6 kept the other line as a conflict copy.
   await a.engine.start();
-  const settledAlike = () =>
-    copies(a.host).length === 1 && copies(b.host).length === 1 &&
-    a.host.text(SHARED) === b.host.text(SHARED) && a.state.fileByPath(SHARED).versionId !== before;
-  await timers.run(STEP_MS, settledAlike);
+  const both = BASE + DESKTOP_LINE + PHONE_LINE;
+  await timers.run(STEP_MS, () => a.host.text(SHARED) === both && b.host.text(SHARED) === both);
   await timers.run(STEP_MS);
 
-  const both = [BASE + DESKTOP_LINE, BASE + PHONE_LINE];
   for (const device of [a, b]) {
-    assert.deepEqual(
-      [device.host.text(SHARED), device.host.text(copies(device.host)[0])].sort(), [...both].sort(),
-      `a line is on neither the note nor its copy: ${story(server, a, b)}`,
-    );
+    assert.equal(device.host.text(SHARED), both, `a line is missing from the note: ${story(server, a, b)}`);
+    assert.deepEqual(copies(device.host), [], `two lines added at one place made a copy: ${story(server, a, b)}`);
   }
-  assert.equal(a.host.text(SHARED), b.host.text(SHARED), `the two devices hold different notes: ${story(server, a, b)}`);
-  assert.deepEqual(copies(a.host), copies(b.host), "the two devices hold the copy under different names");
   assert.equal(server.files.get(a.state.fileByPath(SHARED).fileId).heads.length, 1, "the fork was left open");
 
   const versions = await published(server, k);
@@ -227,7 +219,7 @@ test("an edit made while this device was closed survives one the other device ma
     holds(versions, BASE + DESKTOP_LINE),
     `the desktop's line reached no version, so history cannot restore it: ${story(server, a, b)}`,
   );
-  assert.equal(server.vaultFiles().length, 2, "one note and one copy, each one file");
+  assert.equal(server.vaultFiles().length, 1, "one note, one file");
 });
 
 test("a version that lands while this device's own edit is still waiting to be pushed does not replace it", async (t) => {
@@ -263,17 +255,16 @@ test("a version that lands while this device's own edit is still waiting to be p
 
   // The edit reaches the server intact when the debounce fires -- keeping
   // bytes on one device is only half of not losing them -- and the fork that
-  // makes is settled by rule: both lines kept, one as the note, one copy.
+  // makes merges: both lines in one note (#339).
+  const both = BASE + DESKTOP_LINE + PHONE_LINE;
   await timers.run(STEP_MS, () =>
-    copies(a.host).length === 1 && server.files.get(record.fileId).heads.length === 1);
+    a.host.text(SHARED) === both && server.files.get(record.fileId).heads.length === 1);
   assert.ok(
     holds(await published(server, k), BASE + DESKTOP_LINE),
     `the kept edit was never published: ${story(server, a, b)}`,
   );
-  assert.deepEqual(
-    [a.host.text(SHARED), a.host.text(copies(a.host)[0])].sort(), [BASE + DESKTOP_LINE, BASE + PHONE_LINE].sort(),
-    `a line is on neither the note nor its copy: ${story(server, a, b)}`,
-  );
+  assert.equal(a.host.text(SHARED), both, `a line is missing from the note: ${story(server, a, b)}`);
+  assert.deepEqual(copies(a.host), [], `two lines added at one place made a copy: ${story(server, a, b)}`);
 });
 
 // --- the three ways local bytes can exist nowhere else ----------------------
@@ -323,6 +314,7 @@ const reasons = [
     reason: "local_edit",
     what: "a note edited to exactly the same size",
     mine: EQUAL_NEW,
+    older: EQUAL_OLD,
     async arrange({ host, context }) {
       host.seed(NOTE, EQUAL_OLD, 1000);
       const pushed = await pushFile(context, NOTE);
@@ -334,6 +326,7 @@ const reasons = [
     reason: "local_edit",
     what: "a note edited without its modification time moving",
     mine: LONGER,
+    older: EQUAL_OLD,
     async arrange({ host, context }) {
       host.seed(NOTE, EQUAL_OLD, 1000);
       const pushed = await pushFile(context, NOTE);
@@ -343,7 +336,7 @@ const reasons = [
   },
 ];
 
-for (const { reason, what, arrange, mine = MINE } of reasons) {
+for (const { reason, what, arrange, mine = MINE, older = "an older line\n" } of reasons) {
   test(`a pull never replaces ${what} (${reason})`, async () => {
     const r = await rig();
     const { fileId, parents } = await arrange(r);
@@ -367,15 +360,15 @@ for (const { reason, what, arrange, mine = MINE } of reasons) {
       // A descendant of the version recorded, over an edit not yet pushed:
       // not a fork yet, so nothing is copied here (issue #135). The record is
       // left so the push cannot answer `unchanged`, the push forks the file,
-      // and that fork is settled by rule -- both texts kept, one copy.
+      // and that fork merges like any two edits: both texts, one note (#339).
       assert.equal(result, "skipped");
       assert.deepEqual(copies(r.host), [], "a version that is not a fork yet was copied");
       assert.equal(r.state.fileByPath(NOTE).sha256, "", "the push could come back unchanged");
       const pushed = await pushFile(r.context, NOTE);
       assert.equal(pushed.ack.conflicted, true, "the edit was not published onto the version it was made on");
       await applyChange(r.context, { ...frame, conflicted: true });
-      assert.deepEqual(copies(r.host).length, 1);
-      assert.deepEqual([r.host.text(NOTE), r.host.text(copies(r.host)[0])].sort(), [mine, THEIRS].sort());
+      assert.deepEqual(copies(r.host), []);
+      assert.equal(r.host.text(NOTE), mergeText(older, mine, THEIRS));
       assert.equal(r.server.files.get(fileId).heads.length, 1, "the fork was left open");
       return;
     }
@@ -571,17 +564,19 @@ test("an edited conflict copy survives the next version that would take its name
  * edit made here and NOT yet published is left for its push (issues #135,
  * #151).
  */
-async function editedHere(r) {
+async function editedHere(r, mine = MINE) {
   r.host.seed(NOTE, "an older line\n", 1000);
   const pushed = await pushFile(r.context, NOTE);
-  r.host.seed(NOTE, MINE, 2000);
+  r.host.seed(NOTE, mine, 2000);
   await pushFile(r.context, NOTE);
   return { fileId: pushed.fileId, parents: [pushed.versionId] };
 }
 
 test("resolving the same foreign version twice leaves one copy, not two", async () => {
   const r = await rig();
-  const { fileId, parents } = await editedHere(r);
+  // Text merges (#339); a NUL byte makes this edit content with no merge.
+  const binary = MINE.replace("\n", "\0\n");
+  const { fileId, parents } = await editedHere(r, binary);
   const frame = await foreign(r, { fileId, path: MOVED, text: THEIRS, mtime: 4000, parents });
 
   assert.equal(await applyChange(r.context, frame), "conflict_copy");
@@ -589,7 +584,7 @@ test("resolving the same foreign version twice leaves one copy, not two", async 
 
   assert.deepEqual(copies(r.host), [copyName(r, MOVED, 1)]);
   assert.equal(r.host.text(copyName(r, MOVED, 1)), THEIRS);
-  assert.equal(r.host.text(NOTE), MINE);
+  assert.equal(r.host.text(NOTE), binary);
 });
 
 /**
@@ -877,7 +872,7 @@ test("a failed conflict copy through the real desktop host leaves neither copy n
  */
 test("a replayed head whose copy carries a different timestamp is still one copy", async () => {
   const r = await rig();
-  const { fileId, parents } = await editedHere(r);
+  const { fileId, parents } = await editedHere(r, MINE.replace("\n", "\0\n"));
   const frame = await foreign(r, { fileId, path: MOVED, text: THEIRS, mtime: 4000, parents });
 
   assert.equal(await applyChange(r.context, frame), "conflict_copy");
@@ -965,7 +960,7 @@ test("an occupant of a different length is never read to compare it", async () =
 
 test("a single-chunk version of the same length IS read, and its copy reused", async () => {
   const r = await rig();
-  const { fileId, parents } = await editedHere(r);
+  const { fileId, parents } = await editedHere(r, MINE.replace("\n", "\0\n"));
   const frame = await foreign(r, { fileId, path: MOVED, text: THEIRS, mtime: 4000, parents });
   assert.equal(await applyChange(r.context, frame), "conflict_copy");
 

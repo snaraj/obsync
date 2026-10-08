@@ -117,7 +117,7 @@ import {
   selectionAfterRename,
 } from "../syncScope";
 import { pauseId, publishPause } from "./pause";
-import { conflictCopyPath, conflictStamp, isMergeableText, threeWayMerge } from "./conflict";
+import { conflictCopyPath, conflictStamp, isMergeableText, merge, mergeText } from "./conflict";
 import { FolderManifest, Manifest, ManifestChunk, PauseManifest, bury, pendingPublication, postManifest, pushFile, pushFolderDelete, reviveFile, retire, serialPublication, sidDigest } from "./push";
 
 /**
@@ -3110,22 +3110,33 @@ async function resolve(
               throw new EditorBusy();
             }
             if (inputs.shared === false) return null;
-            const joined = threeWayMerge(inputs.shared ?? decoder.decode(inputs.base), decoder.decode(published), decoder.decode(inputs.theirs));
-            if (!joined.ok) return null;
+            const joined = merge(inputs.shared ?? decoder.decode(inputs.base), decoder.decode(published), decoder.decode(inputs.theirs));
+            // A peer plugin's rewrite meeting this typing at one place is
+            // held below, never joined into it (#179).
+            if (joined.contested && theirManifest.answer === true) return null;
             // This contains exactly the authenticated parents, before any
             // newer local input is rebased. A later criss-cross can reuse the
             // verified result without spending its depth budget on it again.
             remember(context, `merged ${[localVersionId, change.version_id].sort().join(" ")}`, joined.text);
             return mergeSavedEditor(context, change, localPath, localVersionId, published,
-              new TextEncoder().encode(joined.text), inputs.theirs, tally);
+              new TextEncoder().encode(joined.text), inputs.theirs, tally, theirManifest.answer === true);
           });
           if (applied !== null) return applied;
         }
       }
       const { base, theirs, shared, historyBudget } = prepared ?? await prepare();
       const crossed = typeof shared === "string";
-      const merged = shared === false ? { ok: false as const, reason: historyBudget ? "history_budget" as const : "overlap" as const }
-        : threeWayMerge(shared ?? decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
+      // Text always merges, people's edits at one place included. Left
+      // unmerged are a criss-cross base this device cannot read or afford to
+      // rebuild, and an automatic answer -- a plugin rewriting the note right
+      // after a sync, on either side -- meeting the other side's change at
+      // one place: two rewritten values joined are no value, so that pair
+      // goes to the rewrite hold below (#179).
+      const joined = shared === false ? null : merge(shared ?? decoder.decode(base), decoder.decode(mine), decoder.decode(theirs));
+      const automatic = joined?.contested === true && (theirManifest.answer === true ||
+        (before !== null && await editAnswer(context, change.file_id, localPath, before) !== null));
+      const merged = joined === null ? { ok: false as const, reason: historyBudget ? "history_budget" : "base_unreadable" }
+        : automatic ? { ok: false as const, reason: "overlap" } : { ok: true as const, text: joined.text };
       if (merged.ok) {
         const text = new TextEncoder().encode(merged.text);
         // A MERGE HOLDS ITS TWO PARENTS AND NOTHING TYPED SINCE (issue #227).
@@ -3373,7 +3384,7 @@ async function deferToPush(context: SyncContext, change: ChangeRecord, localPath
  */
 async function mergeSavedEditor(
   context: SyncContext, change: ChangeRecord, path: string, localVersionId: string,
-  published: Bytes, merged: Bytes, theirs: Bytes, tally: { left: string },
+  published: Bytes, merged: Bytes, theirs: Bytes, tally: { left: string }, answer: boolean,
 ): Promise<ApplyResult | null> {
   const started = context.now();
   const current = context.state.fileByPath(path);
@@ -3388,8 +3399,10 @@ async function mergeSavedEditor(
   const latest = await context.host.read(path);
   if (!isMergeableText(path, latest)) return null;
   const decoder = new TextDecoder();
-  const rebased = threeWayMerge(decoder.decode(published), decoder.decode(latest), decoder.decode(merged));
-  if (!rebased.ok) return null;
+  const rebased = merge(decoder.decode(published), decoder.decode(latest), decoder.decode(merged));
+  // Newer local text meeting a peer plugin's rewrite at one place is held by
+  // ordinary reconciliation, never joined into it (#179).
+  if (rebased.contested && answer) return null;
   const text = new TextEncoder().encode(rebased.text);
   const pendingLocal = !sameBytes(text, merged);
   const writer = await context.host.writer(path, text.length);
@@ -3796,7 +3809,7 @@ async function manifestOf(context: SyncContext, file: FileRecord, change: Change
  * typing. When the two merges were themselves merged differently, that pair
  * is a criss-cross too, and its base is found the same way one level down, at
  * most `CRISS_CROSS_LEVELS` of them not found before (`bases`). Single-chunk
- * text only, and a pair that does not merge cleanly is no base at all.
+ * text only: a pair whose ancestor cannot be read whole is no base at all.
  */
 async function crissCrossBase(
   context: SyncContext,
@@ -3845,15 +3858,14 @@ async function crissCrossBase(
   }
   const [rootText, otherText] = (await assembleMergeInputs(context, manifests)).map((bytes) => new TextDecoder().decode(bytes)) as [string, string];
   const deeper = await crissCrossBase(context, file, change, [first, other], root as string, rootText, levels - 1);
-  const merged = deeper === false || deeper === HISTORY_BUDGET ? { ok: false as const }
-    : threeWayMerge(deeper ?? rootText, firstText, otherText);
+  const merged = deeper === false || deeper === HISTORY_BUDGET ? null : mergeText(deeper ?? rootText, firstText, otherText);
   context.host.log(
-    `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=${merged.ok} ` +
+    `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=${merged !== null} ` +
       `file=${change.file_id} seq=${change.seq}`,
   );
-  if (!merged.ok) return deeper === HISTORY_BUDGET ? HISTORY_BUDGET : false;
-  remember(context, pair, merged.text);
-  return merged.text;
+  if (merged === null) return deeper as false | typeof HISTORY_BUDGET;
+  remember(context, pair, merged);
+  return merged;
 }
 
 /**

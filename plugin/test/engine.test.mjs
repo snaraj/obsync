@@ -642,15 +642,29 @@ const closing = (server, fileId) => server.files.get(fileId).versions.find((vers
  * every device, and one version naming both closes the fork. Both vantage
  * points, because a rule that holds from one side is not a rule.
  */
-test("overlapping edits: the lower id, this device's, keeps the note and the other is one copy", async () => {
-  const { r, fileId, ours, theirs, head } = await forkOf("Notes/Clash.md", "original line\n", "my line\n", "their line\n", "ours");
+test("two devices replacing the same line keep both texts in one note, without a copy (#339)", async () => {
+  const { mergeText } = require("../build/sync/conflict.js");
+  for (const lower of ["ours", "theirs"]) {
+    const { r, fileId, head } = await forkOf("Notes/Clash.md", "original line\n", "my line\n", "their line\n", lower);
+    assert.equal(await applyChange(r.context, head), "merged");
+    assert.equal(r.host.text("Notes/Clash.md"), mergeText("original line\n", "my line\n", "their line\n"));
+    assert.ok(r.host.text("Notes/Clash.md").includes("my"), "this device's word is in the note");
+    assert.deepEqual([...r.host.files.keys()].filter((path) => path.includes("conflict from")), []);
+    assert.equal(r.server.files.get(fileId).heads.length, 1, "the fork was left open");
+  }
+});
+
+// Text merges (#339): a NUL byte makes these edits content with no merge,
+// which the rule below still settles.
+test("edits that do not merge: the lower id, this device's, keeps the note and the other is one copy", async () => {
+  const { r, fileId, ours, theirs, head } = await forkOf("Notes/Clash.md", "original line\n", "my line\0\n", "their line\0\n", "ours");
 
   assert.equal(await applyChange(r.context, head), "skipped");
-  assert.equal(r.host.text("Notes/Clash.md"), "my line\n", "our edit is untouched");
+  assert.equal(r.host.text("Notes/Clash.md"), "my line\0\n", "our edit is untouched");
   const copy = [...r.host.files.keys()].filter((path) => path.includes("conflict from"));
   assert.equal(copy.length, 1, JSON.stringify(copy));
   assert.match(copy[0], /^Notes\/Clash \(conflict from iPhone, \d{4}-\d{2}-\d{2} \d{4} UTC, [0-9a-f]{6}\)\.md$/);
-  assert.equal(r.host.text(copy[0]), "their line\n");
+  assert.equal(r.host.text(copy[0]), "their line\0\n");
   const closed = closing(r.server, fileId);
   assert.deepEqual([...closed.parents].sort(), [ours.versionId, theirs.version_id].sort());
   assert.deepEqual(closed.sids, r.server.files.get(fileId).versions.find((v) => v.version_id === ours.versionId).sids);
@@ -659,15 +673,15 @@ test("overlapping edits: the lower id, this device's, keeps the note and the oth
   assert.match(r.host.notices.join(" "), /kept both versions/);
 });
 
-test("overlapping edits: the lower id, the other device's, takes the note and this device's is one copy", async () => {
-  const { r, fileId, theirs, head } = await forkOf("Notes/Clash.md", "original line\n", "my line\n", "their line\n", "theirs");
+test("edits that do not merge: the lower id, the other device's, takes the note and this device's is one copy", async () => {
+  const { r, fileId, theirs, head } = await forkOf("Notes/Clash.md", "original line\n", "my line\0\n", "their line\0\n", "theirs");
 
   assert.equal(await applyChange(r.context, head), "applied");
-  assert.equal(r.host.text("Notes/Clash.md"), "their line\n");
+  assert.equal(r.host.text("Notes/Clash.md"), "their line\0\n");
   const copy = [...r.host.files.keys()].filter((path) => path.includes("conflict from"));
   assert.equal(copy.length, 1, JSON.stringify(copy));
   assert.match(copy[0], /^Notes\/Clash \(conflict from this device, /);
-  assert.equal(r.host.text(copy[0]), "my line\n", "this device's edit is not in its copy");
+  assert.equal(r.host.text(copy[0]), "my line\0\n", "this device's edit is not in its copy");
   const closed = closing(r.server, fileId);
   assert.deepEqual(closed.sids, theirs.sids);
   assert.deepEqual(r.server.files.get(fileId).heads, [closed.version_id], "the fork was left open");

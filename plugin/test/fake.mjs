@@ -101,6 +101,19 @@ export function scratch(prefix) {
  */
 export function sandbox({ dist = false } = {}) {
   const home = scratch("obsync-sandbox-");
+  // CodeMirror's state module, which Obsidian also provides to plugins: only
+  // the two annotations a remote change carries, tagged for a test to read.
+  mkdirSync(join(home, "node_modules", "@codemirror", "state"), { recursive: true });
+  writeFileSync(
+    join(home, "node_modules", "@codemirror", "state", "package.json"),
+    JSON.stringify({ name: "@codemirror/state", version: "0.0.0", main: "index.js" }),
+  );
+  writeFileSync(
+    join(home, "node_modules", "@codemirror", "state", "index.js"),
+    `const annotation = (name) => ({ of: (value) => ({ annotation: name, value }) });
+exports.Transaction = { addToHistory: annotation("addToHistory"), remote: annotation("remote") };
+`,
+  );
   mkdirSync(join(home, "node_modules", "obsidian"), { recursive: true });
   writeFileSync(
     join(home, "node_modules", "obsidian", "package.json"),

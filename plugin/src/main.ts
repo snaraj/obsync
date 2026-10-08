@@ -60,7 +60,7 @@ import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
 import { EditorActivity, EDITOR_SAVE_MAX_CHARS, type ReloadOutcome } from "./editorActivity";
-import { threeWayMerge } from "./sync/conflict";
+import { mergeText, textChanges, type TextChange } from "./sync/conflict";
 import { KEYS_LOST, State, StateStorageError, dataLease, isPushed, type Held, type ObsyncData } from "./state";
 import { HELD, LEVELS, MERGES, NOTICE_DEFAULTS, NoticeChannel, count, quoted, scrub, titles, type Drawn, type NoticeSettings, type SyncNotice } from "./notices";
 import {
@@ -545,6 +545,47 @@ function onlyInserts(before: string, after: string): boolean {
     offset = found + point.length;
   }
   return true;
+}
+
+/** What a remote change needs of the CodeMirror 6 view behind `MarkdownView.editor`. */
+interface CodeMirrorView {
+  state: { doc: { toString(): string } };
+  dispatch(spec: { changes: TextChange[]; annotations: unknown[] }): void;
+}
+
+interface CodeMirrorTransaction {
+  addToHistory: { of(value: boolean): unknown };
+  remote: { of(value: boolean): unknown };
+}
+
+/** CodeMirror's `Transaction`, provided to plugins by Obsidian; absent elsewhere. */
+let codeMirrorTransaction: CodeMirrorTransaction | null | undefined;
+
+function remoteChange(): unknown[] {
+  if (codeMirrorTransaction === undefined) {
+    try {
+      codeMirrorTransaction = (require("@codemirror/state") as { Transaction?: CodeMirrorTransaction }).Transaction ?? null;
+    } catch {
+      codeMirrorTransaction = null;
+    }
+  }
+  const transaction = codeMirrorTransaction;
+  return transaction === null ? [] : [transaction.addToHistory.of(false), transaction.remote.of(true)];
+}
+
+/**
+ * Show `after` in an editor holding `before` as the smallest changes, the way
+ * a collaborative editor shows a peer's keystrokes: the caret, selection and
+ * scroll position move with the text around them, and the change stays out of
+ * local undo history, so undo never removes another device's typing. An
+ * editor whose CodeMirror view is unavailable is given the whole text.
+ */
+function showText(view: MarkdownView, before: string, after: string): void {
+  const editor = (view as { editor?: { cm?: CodeMirrorView } }).editor;
+  const cm = editor?.cm;
+  if (cm !== undefined && cm.state.doc.toString() === before) {
+    cm.dispatch({ changes: textChanges(before, after), annotations: remoteChange() });
+  } else view.setViewData(after, false);
 }
 
 /**
@@ -3446,25 +3487,34 @@ export class ObsidianHost implements VaultHost {
 
   /** Start the public saved-baseline transition before queued watcher reads.
    * Never await these saves while holding the adapter queue: save itself waits
-   * on that queue. The caller awaits them after releasing it. */
+   * on that queue. The caller awaits them after releasing it.
+   *
+   * `shown` is the text `written` was merged from. Each buffer holds it plus
+   * any input typed since, which is rebased onto `written` and kept; only the
+   * difference reaches the editor (`showText`), so the caret stays where the
+   * person is typing. Read, merge and apply run without an await between them. */
   private bridgeEditors(path: string, shown: string, written: string): { text: string; saves: Promise<boolean>[]; bindings: { view: MarkdownView; file: TFile | null }[] } | null {
     const views = this.views(path), bound = views.map((view) => view.file);
     const buffers = views.map((view) => lines(view.getViewData()));
-    const updates = buffers.map((current) => threeWayMerge(shown, current, written));
-    if (!views.every((view) => this.editorActivity.canRefresh(view)) ||
-      !updates.every((update) => update.ok && update.text.length <= EDITOR_SAVE_MAX_CHARS && updates[0]?.ok && update.text === updates[0].text)) return null;
+    const first = buffers[0];
+    // Panes that disagree about one note keep native saving: no rebase can pick a buffer.
+    if (first === undefined || buffers.some((buffer) => buffer !== first) ||
+      !views.every((view) => this.editorActivity.canRefresh(view))) return null;
+    const text = mergeText(shown, first, written);
+    if (text.length > EDITOR_SAVE_MAX_CHARS) return null;
     const saves: Promise<boolean>[] = [];
     for (let index = 0; index < views.length; index++) {
-      const view = views[index], update = updates[index];
-      if (!view || !update?.ok) continue;
-      if (view.file !== bound[index] || lines(view.getViewData()) !== buffers[index] || !this.editorActivity.canRefresh(view)) break;
-      if (lines(view.getViewData()) !== update.text) view.setViewData(update.text, false);
-      if (view.file !== bound[index] || lines(view.getViewData()) !== update.text || !this.editorActivity.canRefresh(view)) break;
+      const view = views[index] as MarkdownView;
+      // Panes of one note can share a buffer: an earlier pane's update may already show here.
+      const current = lines(view.getViewData());
+      if (view.file !== bound[index] || (current !== first && current !== text) || !this.editorActivity.canRefresh(view)) break;
+      if (current !== text) showText(view, current, text);
+      if (view.file !== bound[index] || lines(view.getViewData()) !== text || !this.editorActivity.canRefresh(view)) break;
       // Observe rejection immediately even when a filesystem operation remains
       // in flight. refreshEditors reports failure through its bounded fallback.
       saves.push(view.save().then(() => true, () => false));
     }
-    return updates[0]?.ok ? { text: updates[0].text, saves, bindings: views.map((view, index) => ({ view, file: bound[index] ?? null })) } : null;
+    return { text, saves, bindings: views.map((view, index) => ({ view, file: bound[index] ?? null })) };
   }
 
   /**
@@ -3497,30 +3547,33 @@ export class ObsidianHost implements VaultHost {
       const bridge = pendingBridge ?? this.bridgeEditors(path, shown, written);
       if (bridge !== null && (await Promise.all(bridge.saves)).some((saved) => !saved)) throw new EditorBusy();
       await this.plugin.app.vault.read(file);
-      let insertionReceiptUsed = false;
+      // A bridge that reached every original pane and saved there delivered
+      // the incoming text if the display still shows it: exactly, or with
+      // every delivered character still present after typing (for an
+      // insertion-only incoming change: a stale display still holds text a
+      // deletion removed). Re-merging such a buffer proves nothing, because
+      // input typed where the delivered text landed makes the merge repeat it.
+      const bridged = bridge !== null && bridge.saves.length === views.length &&
+        bridge.bindings.every((entry, i) => entry.view === views[i] && entry.file === bound[i]) ? bridge : null;
+      let receipt: "delivered_bridge" | "delivered_insertions" | null = null;
       const includesWrite = (): boolean => views.every((view, index) => {
         if (view.file !== bound[index]) return true;
         const current = lines(view.getViewData());
-        // A completed public bridge already delivered these additions. New
-        // typing can precede them: diff3(base, "local remote", "remote")
-        // repeats "remote", so re-merging is not a receipt of that delivery.
-        // Confirm only an intact insertion-only result, on every original
-        // binding after every public save completed. Deletions, replacements,
-        // partial bridges and lost incoming bytes retain the native check.
-        if (bridge !== null && bridge.saves.length === views.length &&
-          bridge.bindings.every((entry, i) => entry.view === views[i] && entry.file === bound[i]) &&
-          onlyInserts(shown, written) && onlyInserts(bridge.text, current)) {
-          insertionReceiptUsed = true;
+        if (bridged !== null && current === bridged.text) {
+          receipt ??= "delivered_bridge";
           return true;
         }
-        const merged = threeWayMerge(shown, current, written);
-        return merged.ok && merged.text === current;
+        if (bridged !== null && onlyInserts(shown, written) && onlyInserts(bridged.text, current)) {
+          receipt = "delivered_insertions";
+          return true;
+        }
+        return current === written || mergeText(shown, current, written) === current;
       });
       if (!includesWrite()) this.plugin.app.vault.trigger("modify", file);
       const deadline = started + 1000;
       do {
         if (includesWrite()) {
-          if (insertionReceiptUsed) this.log(`host path_class=file decision=editor_confirmed reason=delivered_insertions views=${views.length} duration_ms=${Date.now() - started} budget_ms=1000`);
+          if (receipt !== null) this.log(`host path_class=file decision=editor_confirmed reason=${receipt} views=${views.length} duration_ms=${Date.now() - started} budget_ms=1000`);
           for (const view of views) this.editorActivity.expectRefresh(view, shown, written);
           // Both a public display update and a native file reload can leave
           // live-preview consumers stale. Notify them with the current buffer

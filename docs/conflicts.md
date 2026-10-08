@@ -2,19 +2,23 @@
 
 *For people using obsync.*
 
-Two devices edited the same file before either of them synced. obsync never
-discards an edit to resolve that, so exactly one of two things happens.
+Two devices edited the same note before either of them synced. obsync never
+discards an edit to resolve that.
 
-Changes in different paragraphs usually appear together in one note. Text
-added to the same line can also merge, including continued typing before text
-that just arrived from another device. When both devices replace the same
-existing text, obsync keeps a second file beside the original so you can
-compare them. Your notes remain ordinary files you can open and edit in Obsidian.
+A text note is combined the way a shared document combines two people typing:
+every change from both devices ends up in one note, letter by letter. Two
+people typing on the same line, even at the same spot, both keep every letter
+they typed. Text one device deleted stays deleted, and text one device typed
+inside something the other deleted is kept. Your notes remain ordinary files
+you can open and edit in Obsidian.
 
-While you are typing, incoming changes to that note can wait until you pause.
-obsync waits for your text to save and for ten seconds without typing in the
-note, then brings in the latest changes automatically. Other notes keep
-syncing. You do not need to close the note or press **Sync now**.
+While you type, changes from the other device appear in the open note and your
+cursor stays where you are typing. Undo takes back only your own typing. A word
+your keyboard is still composing, as Android keyboards do with every word, is
+finished before the other device's changes come in.
+
+A second file beside the original, a **conflict copy**, is made only for what
+cannot be combined as text. See [below](#everything-else-becomes-a-conflict-copy).
 
 ## What to do with a conflict copy
 
@@ -23,12 +27,6 @@ syncing. You do not need to close the note or press **Sync now**.
 2. Copy the text you want to keep into the original, then check the result.
 3. Delete the extra copy when you are satisfied. That deletion syncs too;
    [retained history](storage.md) still holds the earlier versions.
-
-This real desktop capture uses a disposable note edited differently on two
-devices. The left note holds the first device's sentence; the right copy holds
-the second. Both files reached both devices.
-
-![The original note and its conflict copy preserve the two different sentences](assets/conflict-comparison.png)
 
 ## One device deleted the note while another edited it
 
@@ -49,12 +47,13 @@ If any one of them is not, you get a conflict copy instead:
   `.csv` or `.log`, is never combined.
 - **Both versions grew from the same earlier version.** Two devices that each
   created a file with the same name have nothing to combine.
-- **The versions are not wildly different.** Two versions that differ by
-  thousands of lines are kept apart. Ordinary note editing is nowhere near this.
-- **The changes fit together.** Edits in different parts of a note combine.
-  Text two devices added to the same line can combine too, as long as the
-  line's original text is still there on both. When both devices replace or
-  delete the same text, that stays a conflict.
+
+Two versions that differ in thousands of places still combine, though text
+may land a few words from where its author put it. One case is held instead:
+when a plugin rewrites a note by itself right after a sync, such as a
+timestamp it updates, at the same place another device changed, obsync
+pauses the note rather than join two automatic values into one. See
+[Stop repeated rewrites](daily-use.md#stop-repeated-rewrites).
 
 The exact rules are in [the architecture](architecture.md#62-plugin-loops),
 under Conflicts.
@@ -96,10 +95,11 @@ the other. There is no third state and no silent overwrite.
 
 ## Avoiding them
 
-- Let a device finish syncing before editing the same note on another one. The
-  status bar shows a check (`obsync: idle`) when there is nothing in flight. This is the
-  only one of these that helps with a large file or a file two devices created
-  independently, because neither of those can ever merge.
+- Text notes need no care: type on any device at any time. For a large file, a
+  file that is not text, or a file two devices are about to create
+  independently, let a device finish syncing before using it on another one.
+  The status bar shows a check (`obsync: idle`) when there is nothing in
+  flight.
 - Do not run a second sync tool on the same vault. Two writers produce
   conflicts neither tool can reconcile, and obsync can only see its own.
 - On a device that has been offline for a long time, open Obsidian and let
