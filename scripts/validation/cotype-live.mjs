@@ -39,8 +39,9 @@
 //
 // TAP=<keys.json> (with PLACE=same): Y is a phone, typed through its on-screen keyboard -- composition,
 // suggestions and autocorrect as a person meets them -- by tapping keys over adb. keys.json holds
-// {"adb": [adb argv up to "shell"], "focus": [x, y], "keys": {"a": [x, y], ..., " ": [x, y], "\b": [x, y]}},
-// the points read from a screenshot of that keyboard; <portY> is the phone WebView's DevTools socket
+// {"adb": [adb argv up to "shell"], "keys": {"a": [x, y], ..., " ": [x, y], "\b": [x, y]}}, the points
+// read from a screenshot of that keyboard (the phone's caret is raised by a tap where its own editor draws
+// line 3, then set exactly); <portY> is the phone WebView's DevTools socket
 // forwarded to this computer (adb forward tcp:<port> localabstract:webview_devtools_remote_<pid>). Y types a
 // word script, every seventh key a wrong letter tapped and then deleted with the keyboard's backspace, after
 // "0 " on line 3; X types its keys there too. The keyboard decides what Y's taps become, so Y's text is
@@ -270,13 +271,17 @@ const { execFile } = await import("node:child_process");
 const tap = (point) => new Promise((ok, bad) => execFile(TAP.adb[0], [...TAP.adb.slice(1), "shell", "input", "tap", ...point.map(String)],
   { timeout: 10_000 }, (error) => (error ? bad(error) : ok())));
 let ai = 0, bi = 0;
-const t0 = Date.now();
 if (TAP) {
-  // A tap at the end of line 3 puts the phone's caret there and raises its keyboard, as a person's does.
-  await tap(TAP.focus);
+  // A tap at the end of line 3 raises the phone's keyboard, as a person's does; the point is where the
+  // phone's own editor draws that line, and the caret is then set exactly, as on X.
+  const at = await Y.js(`(() => { const cm = app.workspace.activeLeaf.view.editor.cm, end = cm.state.doc.line(3).to;
+    const box = cm.coordsAtPos(end), r = window.devicePixelRatio;
+    return [Math.round((box.left + 4) * r), Math.round(((box.top + box.bottom) / 2) * r)]; })()`);
+  await tap(at);
   await sleep(1500);
-  await X.js(CURSOR.zero);
+  for (const s of [X, Y]) await s.js(CURSOR.zero);
 } else if (SAME) for (const s of [X, Y]) await s.js(CURSOR.zero);
+const t0 = Date.now();
 const typist = async (s, where, text, advance) => {
   while (Date.now() - t0 < DURATION) {
     const tick = Date.now();
