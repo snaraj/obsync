@@ -1740,6 +1740,28 @@ make such a copy. Nothing is lost: the missing words are in the copies.
 3. Update obsync on every device that syncs this vault (Settings, Community
    plugins, Check for updates), so no device on 1.1.6 or earlier is left.
 
+## Text you deleted came back
+
+**What you see.** You deleted a word, a line or a single mistyped letter, and a
+moment later, or after the next sync, it was back in the note. It happens while
+another device is editing the same note, often right after you typed and then
+deleted something there.
+
+**Why it happens.** Up to 1.1.6, when obsync combined your version of a note
+with another device's and the result came out exactly as the other device's
+text, this device took the other device's version as its own. That version had
+never seen your deletion, so a later version of the other device's that still
+held the deleted text brought it back: for a moment, or for good when your
+deletion had not been sent to the server yet. From 1.1.7 the combined version
+is sent instead, and a deletion not sent yet goes out first, so deleted text
+stays deleted.
+
+**How to fix it.**
+
+1. Delete the text again. Once it is sent, it stays deleted on every device.
+2. Update obsync on every device that syncs this vault (Settings, Community
+   plugins, Check for updates), so no device on 1.1.6 or earlier is left.
+
 ## A note paused while people typed in it on a very busy computer
 
 **What you see.** The status bar reads `obsync: paused — <note>`, and a notice

@@ -1295,7 +1295,14 @@ long poll and needs its timeout raised.
    device merges that fork to the same bytes forever. A result equal to the
    local bytes therefore posts nothing and advances the record to the incoming
    version; a result equal to the incoming version's bytes is a fast-forward
-   onto it. A device also stops merging one file after more than five
+   onto it. Either is taken only when every version this device published
+   before its own head is already in the incoming version's history, and an
+   edit not sent yet is taken with it only when the incoming version also
+   holds everything published here; otherwise the merge is posted, or the
+   edit goes out first (#339). A record standing on a version missing this
+   device's earlier versions forgot its deletions: a later version that had
+   merged one of them brought deleted text back. A device also stops merging
+   one file after more than five
    resolutions of it in a row inside a minute with the note unchanged here in
    between -- a save starts the count again -- and says so once. Trusted text
    input also starts a new run, even when an incoming merge's final disk stamp

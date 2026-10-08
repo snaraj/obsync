@@ -18,6 +18,11 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   rewriting a note right after a sync, at a place another device changed, is
   still held rather than joined. Encryption, the wire format and the server
   are unchanged (#339).
+- Text deleted on one device no longer comes back from another. When a
+  combined result came out exactly as the other device's text, that device's
+  version was taken as is, and a deletion made here could come back for a
+  moment, or for good when it had not been sent yet. The combined version is
+  now sent instead, and an unsent deletion goes out first (#339).
 - Saved editor input can sync while typing continues. Incoming edits merge
   with acknowledged versions while newer local input stays queued as a child
   version. Save confirmation, unfinished composition and recent human input
