@@ -62,6 +62,8 @@ const SAME = "Same name.md";
 const NOTE = "Notes/One.md";
 const MOVED = "Notes/Two.md";
 const MINE = "the bytes this device has and the server does not\n";
+// The same bytes made binary by a NUL: text merges (#339), this has no merge.
+const MINE_BINARY = "the bytes this device has and the server does not\0\n";
 const THEIRS = "the bytes the other device published\n";
 const THEIRS_AGAIN = "the bytes the other device published next\n";
 const EDITED = "the bytes the user typed into the conflict copy\n";
@@ -574,9 +576,7 @@ async function editedHere(r, mine = MINE) {
 
 test("resolving the same foreign version twice leaves one copy, not two", async () => {
   const r = await rig();
-  // Text merges (#339); a NUL byte makes this edit content with no merge.
-  const binary = MINE.replace("\n", "\0\n");
-  const { fileId, parents } = await editedHere(r, binary);
+  const { fileId, parents } = await editedHere(r, MINE_BINARY);
   const frame = await foreign(r, { fileId, path: MOVED, text: THEIRS, mtime: 4000, parents });
 
   assert.equal(await applyChange(r.context, frame), "conflict_copy");
@@ -584,7 +584,7 @@ test("resolving the same foreign version twice leaves one copy, not two", async 
 
   assert.deepEqual(copies(r.host), [copyName(r, MOVED, 1)]);
   assert.equal(r.host.text(copyName(r, MOVED, 1)), THEIRS);
-  assert.equal(r.host.text(NOTE), binary);
+  assert.equal(r.host.text(NOTE), MINE_BINARY);
 });
 
 /**
@@ -872,7 +872,7 @@ test("a failed conflict copy through the real desktop host leaves neither copy n
  */
 test("a replayed head whose copy carries a different timestamp is still one copy", async () => {
   const r = await rig();
-  const { fileId, parents } = await editedHere(r, MINE.replace("\n", "\0\n"));
+  const { fileId, parents } = await editedHere(r, MINE_BINARY);
   const frame = await foreign(r, { fileId, path: MOVED, text: THEIRS, mtime: 4000, parents });
 
   assert.equal(await applyChange(r.context, frame), "conflict_copy");
@@ -960,7 +960,7 @@ test("an occupant of a different length is never read to compare it", async () =
 
 test("a single-chunk version of the same length IS read, and its copy reused", async () => {
   const r = await rig();
-  const { fileId, parents } = await editedHere(r, MINE.replace("\n", "\0\n"));
+  const { fileId, parents } = await editedHere(r, MINE_BINARY);
   const frame = await foreign(r, { fileId, path: MOVED, text: THEIRS, mtime: 4000, parents });
   assert.equal(await applyChange(r.context, frame), "conflict_copy");
 
