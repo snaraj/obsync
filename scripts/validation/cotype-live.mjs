@@ -18,8 +18,10 @@
 // order, on its line, and the two fixed lines intact); each open editor shows its disk; no conflict copy
 // of this run's note exists anywhere. The note is new each run, so any copy is this run's. The notices
 // each instance showed are counted and printed. With a traceDir, every obsync log line and every save of
-// the note is written there per side. The instances must already be paired; this reads and prints no
-// secret, and the fixture text is sentinel-only.
+// the note is written there per side: its text in a run of two minutes or less, or with TRACE=full, and
+// otherwise its length, as a ten-minute note saved every key is hundreds of megabytes of text. The
+// instances must already be paired; this reads and prints no secret, and the fixture text is
+// sentinel-only.
 //
 // PLACE=same (#339): both carets are placed ONCE after the "0" that starts line 3 and never moved again,
 // so the editor maps each caret through the other side's text as a person would see it. Key i is one code
@@ -112,8 +114,8 @@ const MOMENT = `(text, floor) => {
   return ok;
 }`;
 // The trace: obsync's own log lines, and the note's text at each save the vault reports.
-const HOOK = `function (note) {
-  window.__cotype = { note, lines: [], notices: [], hiddenMs: 0, hiddenAt: document.hidden ? Date.now() : null,
+const HOOK = `function (note, full) {
+  window.__cotype = { note, full, lines: [], notices: [], hiddenMs: 0, hiddenAt: document.hidden ? Date.now() : null,
     checked: 0, broken: [], moment: ${MOMENT}, floor: { editor: { x: -1, y: -1 }, vault: { x: -1, y: -1 } } };
   if (!window.__cotypeVisibility) {
     document.addEventListener("visibilitychange", () => {
@@ -145,7 +147,7 @@ const HOOK = `function (note) {
       const at = Date.now();
       const text = await app.vault.adapter.read(file.path).catch(() => null);
       const c = window.__cotype;
-      c.lines.push(at + " vault modify text=" + JSON.stringify(text));
+      c.lines.push(at + " vault modify " + (c.full ? "text=" + JSON.stringify(text) : "chars=" + (text === null ? -1 : text.length)));
       if (text !== null && (c.checked++, !c.moment(text, c.floor.vault))) c.broken.push(at + " vault modify text=" + JSON.stringify(text));
     });
     window.__cotypeHooked = true;
@@ -207,7 +209,7 @@ const Y = await session(py, ty);
 const [pz, tz] = (process.env.PASSIVE ?? "").split("|");
 const Z = pz ? await session(pz, tz) : null;
 const sides = [["X", X], ["Y", Y], ...(Z ? [["Z", Z]] : [])];
-console.log("note", NOTE, "hook", ...(await Promise.all(sides.map(([, s]) => s.call(HOOK, NOTE)))));
+console.log("note", NOTE, "hook", ...(await Promise.all(sides.map(([, s]) => s.call(HOOK, NOTE, DURATION <= 120_000 || process.env.TRACE === "full")))));
 await X.call(`async function (note, text) { await app.vault.create(note, text); return "created"; }`, NOTE, START);
 for (const [name, s] of sides.slice(1)) {
   let arrived = false;
