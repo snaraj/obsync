@@ -1,6 +1,6 @@
 M4201: join a peer's automatic answer into saved-editor typing
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3144 +3144 @@
+@@ -3178 +3178 @@
 -            if (joined.contested && theirManifest.answer === true) return null;
 +            if (joined.contested && theirManifest.answer === true && false) return null;

@@ -1,6 +1,6 @@
 M4214: adopt a saved editor's incoming bytes even when that forgets this device's history
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3464 +3464 @@
+@@ -3498 +3498 @@
 -  if (adoptable && sameBytes(merged, theirs)) {
 +  if (sameBytes(merged, theirs)) {

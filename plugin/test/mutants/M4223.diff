@@ -1,0 +1,6 @@
+M4223: follow a child already placed, a cycle included
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2741 +2741 @@
+-      else if (!entered.has(child.version_id)) {
++      else {

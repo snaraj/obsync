@@ -1,6 +1,6 @@
 M4212: take the smaller of two identical heads even when it forgets this device's history
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3025 +3025 @@
+@@ -3059 +3059 @@
 -      !keepsOwnHistory(file.versions, localVersionId, change.version_id)) ? localVersionId : change.version_id;
 +      false) ? localVersionId : change.version_id;

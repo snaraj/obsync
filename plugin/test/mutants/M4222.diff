@@ -1,0 +1,6 @@
+M4222: order the ancestry parents first
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2740 +2740 @@
+-      if (child === undefined) order.push((stack.pop() as { version: T }).version);
++      if (child === undefined) order.unshift((stack.pop() as { version: T }).version);
