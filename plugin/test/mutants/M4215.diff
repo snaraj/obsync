@@ -1,0 +1,6 @@
+M4215: take an unsent save with the incoming bytes whatever the published version holds
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3189 +3189 @@
+-                decoder.decode(await assembleBytes(context, own)), decoder.decode(theirs)).text === merged.text;
++                decoder.decode(await assembleBytes(context, own)), decoder.decode(theirs)).text !== "\0";

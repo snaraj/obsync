@@ -1,12 +1,6 @@
-# M4132: let a replacement pane borrow a delivery receipt
+M4132: let a replacement pane borrow a delivery receipt
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3508,7 +3508,7 @@
-         // binding after every public save completed. Deletions, replacements,
-         // partial bridges and lost incoming bytes retain the native check.
-         if (bridge !== null && bridge.saves.length === views.length &&
--          bridge.bindings.every((entry, i) => entry.view === views[i] && entry.file === bound[i]) &&
-+          true &&
-           onlyInserts(shown, written) && onlyInserts(bridge.text, current)) {
-           insertionReceiptUsed = true;
-           return true;
+@@ -3557 +3557 @@
+-        bridge.bindings.every((entry, i) => entry.view === views[i] && entry.file === bound[i]) ? bridge : null;
++        true ? bridge : null;

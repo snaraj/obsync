@@ -1,0 +1,6 @@
+M4216: call a note agreeing with a head through an unpushed edit an agreement
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3013 +3013 @@
+-    if (recorded !== null && recorded.sha256 !== "" && recorded.sha256 !== theirManifest.sha256) {
++    if (false) {

@@ -1,0 +1,6 @@
+M4213: adopt an ordinary merge's incoming bytes even when that forgets this device's history
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3182 +3182 @@
+-        const adopt = sameBytes(text, theirs) && keepsOwnHistory(file.versions, localVersionId, change.version_id);
++        const adopt = sameBytes(text, theirs);

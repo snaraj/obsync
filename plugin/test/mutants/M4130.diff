@@ -1,12 +1,6 @@
-# M4130: confirm missing delivered bytes
+M4130: confirm missing delivered bytes
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3509,7 +3509,7 @@
-         // partial bridges and lost incoming bytes retain the native check.
-         if (bridge !== null && bridge.saves.length === views.length &&
-           bridge.bindings.every((entry, i) => entry.view === views[i] && entry.file === bound[i]) &&
--          onlyInserts(shown, written) && onlyInserts(bridge.text, current)) {
-+          onlyInserts(shown, written)) {
-           insertionReceiptUsed = true;
-           return true;
-         }
+@@ -3566 +3566 @@
+-        if (bridged !== null && onlyInserts(shown, written) && onlyInserts(bridged.text, current)) {
++        if (bridged !== null && onlyInserts(shown, written)) {

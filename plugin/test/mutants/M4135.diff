@@ -1,12 +1,6 @@
-# M4135: omit insertion confirmation diagnostic
+M4135: omit insertion confirmation diagnostic
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3520,7 +3520,7 @@
-       const deadline = started + 1000;
-       do {
-         if (includesWrite()) {
--          if (insertionReceiptUsed) this.log(`host path_class=file decision=editor_confirmed reason=delivered_insertions views=${views.length} duration_ms=${Date.now() - started} budget_ms=1000`);
-+          if (insertionReceiptUsed) { /* diagnostic omitted */ }
-           for (const view of views) this.editorActivity.expectRefresh(view, shown, written);
-           // Both a public display update and a native file reload can leave
-           // live-preview consumers stale. Notify them with the current buffer
+@@ -3576 +3576 @@
+-          if (receipt !== null) this.log(`host path_class=file decision=editor_confirmed reason=${receipt} views=${views.length} duration_ms=${Date.now() - started} budget_ms=1000`);
++          if (receipt !== null) { /* diagnostic omitted */ }
