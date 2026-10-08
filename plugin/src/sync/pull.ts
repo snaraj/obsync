@@ -2797,9 +2797,12 @@ async function reconcile(
     context.host.log(`pull decision=skipped reason=superseded_head file=${change.file_id} seq=${change.seq}`);
     return "skipped";
   }
-  if (completeHeads && commonAncestor(file.versions, localVersionId, change.version_id) === null) {
-    await completeMergeAncestry(context, file, localVersionId, change.version_id);
-  }
+  // The listing is the newest versions, and a common ancestor found among them
+  // need not be the only one: two typists' merges share two, and the other may
+  // have sunk below the listing. Merged over the one listed, a base older than
+  // keys both heads hold lost them (#339), so the ancestry is completed to the
+  // shared frontier first, from what this device already holds where it can.
+  if (completeHeads) await completeMergeAncestry(context, file, localVersionId, change.version_id);
   // THE BREAKER. Everything below is bounded by construction, but a bound
   // that rests on an argument is not a bound: the cost of being wrong here is
   // a device filling the server's journal and its owner's quota, on battery.
@@ -3886,9 +3889,8 @@ async function crissCrossBase(
     context.host.log(`pull decision=merge_base reason=history_budget level=${CRISS_CROSS_LEVELS - levels + 1} budget_levels=${CRISS_CROSS_LEVELS}`);
     return HISTORY_BUDGET;
   }
-  if (commonAncestor(file.versions, first, other) === null) {
-    await completeMergeAncestry(context, file, first, other);
-  }
+  // One level down, the same: the pair's own second ancestor may be unlisted.
+  await completeMergeAncestry(context, file, first, other);
   const root = commonAncestor(file.versions, first, other);
   const manifests: Manifest[] = [];
   for (const id of [root, other]) {

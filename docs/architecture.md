@@ -1371,7 +1371,12 @@ long poll and needs its timeout raised.
    together no longer than one merge input. A base below the versions the
    server lists is read a version at a time, at most 64 a resolution and
    never below the two branches' shared frontier; every version a resolution
-   reads or is shown is remembered too (issue #227). A third device, open and
+   reads or is shown is remembered too (issue #227). That frontier is
+   completed before any base is chosen, at each level, even when the listing
+   already shows one common ancestor: a pair's second ancestor can sink below
+   the listing while two people type, and merged over the one listed, a base
+   older than two keys both heads held wrote them twice and the merge over it
+   took both out (#339). A third device, open and
    idle while two type, merges every arrival against a base the listing
    holds; remembering only what a walk read, it met its first criss-cross
    across the whole typing history with nothing remembered, read past the

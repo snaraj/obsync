@@ -248,6 +248,65 @@ for (const editor of [false, true]) test(`a key typed and deleted here stays del
 });
 
 /**
+ * A CRISS-CROSS WHOSE SECOND ANCESTOR LEFT THE LISTING (#339, Android
+ * emulator, 2026-10-08). Two merges of one pair share two newest ancestors,
+ * and so do the two merges below them; the server lists only its newest
+ * versions. Merged over the one ancestor it listed, a base older than two
+ * keys both heads held wrote those keys twice, and the merge over that base
+ * took both copies out: two typed keys lost on every device. The ancestry is
+ * now completed before the bases are chosen.
+ */
+test("two typed keys both heads hold survive a criss-cross whose second ancestor is no longer listed (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile, sidDigest } = require("../build/sync/push.js");
+  const { encryptChunk } = require("../build/crypto.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Criss.md";
+  const x = (...ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(0x4e00 + a + i))).join("");
+  const y = (...ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(0xac00 + a + i))).join("");
+  const doc = (line) => `# Both\nfixed\n0${line}\n`;
+  r.host.seed(NOTE, doc(x([0, 5], [8, 9]) + y([0, 5], [8, 11])), 1000);
+  const root = await pushFile(r.context, NOTE);
+  let at = 2000;
+  const publish = async (line, parents) => (await r.server.publish({ fileId: root.fileId, path: NOTE,
+    bytes: new TextEncoder().encode(doc(line)), mtime: at += 1000, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey })).version_id;
+  // The phone types three keys, the third a typo; the desktop types three of its own.
+  const m1 = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 14]), [root.versionId]);
+  let m2 = await publish(x([0, 5], [8, 10]) + y([0, 5], [8, 11]), [root.versionId]);
+  for (const k of [11, 12]) m2 = await publish(x([0, 5], [8, k]) + y([0, 5], [8, 11]), [m2]);
+  // The desktop merges the two; the phone deletes its typo, types on, and merges the same two.
+  const ca2 = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 14]), [m1, m2].sort());
+  let phone = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 13]), [m1]);
+  for (const k of [16, 17]) phone = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 13], [16, k]), [phone]);
+  const ca1 = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 17]), [phone, m2].sort());
+  // Each merges those two merges and types on.
+  const p1 = await publish(x([0, 5], [8, 13], [16, 21]) + y([0, 5], [8, 13], [16, 17]), [ca1, ca2].sort());
+  let p2 = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 18]), [ca1, ca2].sort());
+  for (const k of [19, 20]) p2 = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, k]), [p2]);
+  // This device stands on the desktop's head, and the server lists ten versions and every head.
+  const held = doc(x([0, 5], [8, 13], [16, 21]) + y([0, 5], [8, 13], [16, 17]));
+  r.host.seed(NOTE, held, at += 1000);
+  const { sid } = await encryptChunk(r.keys.domainKey, new TextEncoder().encode(held));
+  r.state.setFile(NOTE, { fileId: root.fileId, versionId: p1, mtime: at, size: new TextEncoder().encode(held).length, sha256: await sidDigest([sid]) });
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (...args) => {
+    const file = await getFile(...args);
+    return { ...file, versions: file.versions.filter((version, i) => i < 10 || file.heads.includes(version.version_id)) };
+  };
+  assert.ok(!(await getFile(root.fileId)).versions.slice(0, 10).some((version) => version.version_id === m1), "the second ancestor is still listed");
+  const incoming = r.server.journal.find((entry) => entry.version_id === p2);
+  await applyChange(r.context, incoming);
+  const story = r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+  assert.equal(r.host.text(NOTE), doc(x([0, 5], [8, 13], [16, 21]) + y([0, 5], [8, 13], [16, 20])), story);
+  // The base of the two merges below was itself found from both of theirs, the unlisted one included.
+  assert.ok(r.host.logs.some((line) => /^pull decision=merge_base reason=criss_cross level=2 ok=true /.test(line)), story);
+});
+
+/**
  * And a deletion made here and not pushed yet is published before anything is
  * adopted (#339). The note here lost a key the version this device published
  * still holds; the incoming version, older than that key, comes out as the
