@@ -55,6 +55,10 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   delays native mobile file callbacks during typing.
 - Ordinary merges remember the exact result of their authenticated parents,
   as saved-editor merges do, without enlarging history or memory budgets.
+- History a device recalls or reads for a merge is put back in newest-first
+  order before a base is chosen. Kept in the order it was reached, an older
+  version could be taken as the newest, and keys typed where two people were
+  typing left the note on both devices for a moment (#339).
 - Push reconciliation reuses the head snapshot it just fetched when that
   snapshot contains both inputs, avoiding a second request that can chase
   a continuously advancing peer. Unrelated or incomplete snapshots still
