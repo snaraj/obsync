@@ -307,6 +307,57 @@ test("two typed keys both heads hold survive a criss-cross whose second ancestor
 });
 
 /**
+ * The same at the top, where the listing still shows one common ancestor: the
+ * phone stands on its merge of the pair and receives the desktop's, and the
+ * phone typed on after the first of the pair until it left the listing. The
+ * ancestry is completed even so, or the merge runs over the desktop's typing
+ * alone: the typo the phone deleted came back, and two keys both held twice.
+ */
+test("two merges of one pair combine when one of the pair left the listing and the other did not (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile, sidDigest } = require("../build/sync/push.js");
+  const { encryptChunk } = require("../build/crypto.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Pair.md";
+  const x = (...ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(0x4e00 + a + i))).join("");
+  const y = (...ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(0xac00 + a + i))).join("");
+  const doc = (line) => `# Both\nfixed\n0${line}\n`;
+  r.host.seed(NOTE, doc(x([0, 5], [8, 9]) + y([0, 5], [8, 11])), 1000);
+  const root = await pushFile(r.context, NOTE);
+  let at = 2000;
+  const publish = async (line, parents) => (await r.server.publish({ fileId: root.fileId, path: NOTE,
+    bytes: new TextEncoder().encode(doc(line)), mtime: at += 1000, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey })).version_id;
+  // The phone types three keys, the third a typo; the desktop types three of its own.
+  const m1 = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 14]), [root.versionId]);
+  let m2 = await publish(x([0, 5], [8, 10]) + y([0, 5], [8, 11]), [root.versionId]);
+  for (const k of [11, 12]) m2 = await publish(x([0, 5], [8, k]) + y([0, 5], [8, 11]), [m2]);
+  // The desktop merges the two; the phone deletes its typo, types on, and merges the same two.
+  const desktop = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 14]), [m1, m2].sort());
+  let phone = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 13]), [m1]);
+  for (const k of [16, 17, 18, 19]) phone = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 13], [16, k]), [phone]);
+  const merged = x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 19]);
+  const own = await publish(merged, [phone, m2].sort());
+  r.host.seed(NOTE, doc(merged), at += 1000);
+  const { sid } = await encryptChunk(r.keys.domainKey, new TextEncoder().encode(doc(merged)));
+  r.state.setFile(NOTE, { fileId: root.fileId, versionId: own, mtime: at, size: new TextEncoder().encode(doc(merged)).length, sha256: await sidDigest([sid]) });
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (...args) => {
+    const file = await getFile(...args);
+    return { ...file, versions: file.versions.filter((version, i) => i < 10 || file.heads.includes(version.version_id)) };
+  };
+  const listed = (await r.transport.getFile(root.fileId)).versions.map((version) => version.version_id);
+  assert.ok(listed.includes(m2) && !listed.includes(m1), "the pair is not half listed");
+  await applyChange(r.context, r.server.journal.find((entry) => entry.version_id === desktop));
+  const story = r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+  assert.equal(r.host.text(NOTE), doc(merged), story);
+  assert.ok(r.host.logs.some((line) => /^pull decision=merge_base reason=criss_cross level=1 ok=true /.test(line)), story);
+});
+
+/**
  * AND WHERE THAT ANCESTRY WAS ALREADY HELD (#339, Android emulator, after the
  * fix above). A device that saw every version on the feed recalls the unlisted
  * ones as its walk reaches them. Added in that order, a parent reached first
