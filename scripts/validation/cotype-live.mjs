@@ -21,6 +21,12 @@
 // the note is written there per side. The instances must already be paired; this reads and prints no
 // secret, and the fixture text is sentinel-only.
 //
+// PLACE=same (#339): both carets are placed ONCE after the "0" that starts line 3 and never moved again,
+// so the editor maps each caret through the other side's text as a person would see it. X types capitals
+// and Y small letters, each mistyping every seventh key ("~" or "^") and deleting it with a trusted
+// Backspace. PASS then needs, on every disk and editor: line 3 holding exactly X's kept capitals and Y's
+// kept small letters, each in typed order; no mistyped key left; the other lines intact; no conflict copy.
+//
 // A window another covers is hidden, and Chromium throttles a hidden page's timers and work: a covered
 // instance saved typing a minute late and made no request for four minutes (2026-09-29). Each side's
 // hidden time is printed (`hidden_ms`); a run with any is the host's, not the sync's. Instances launched
@@ -31,9 +37,10 @@ if (!px || !tx || !py || !ty || !(DURATION > 0) || !(INTERVAL > 0) || !(IDLE >= 
   console.error("usage: node cotype-live.mjs <portX> <titleX> <portY> <titleY> <durationMs> <intervalMs> <idleMs> [traceDir]");
   process.exit(2);
 }
+const SAME = process.env.PLACE === "same";
 const NOTE = `Both-${Date.now().toString(36)}.md`;
 const STEM = NOTE.slice(0, -3);
-const START = "# Both\nthe line nobody edits\nthe last fixed line\n";
+const START = SAME ? "# Both\nthe line nobody edits\n0\n" : "# Both\nthe line nobody edits\nthe last fixed line\n";
 
 async function pick(port, sel) {
   const all = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).filter((t) => t.type === "page");
@@ -127,7 +134,9 @@ const OPEN = `async function (note) {
 const CURSOR = {
   end: `(() => { const e = app.workspace.activeLeaf.view.editor; e.focus(); const l = e.lastLine(); e.setCursor({ line: l, ch: e.getLine(l).length }); return true; })()`,
   line1: `(() => { const e = app.workspace.activeLeaf.view.editor; e.focus(); e.setCursor({ line: 0, ch: e.getLine(0).length }); return true; })()`,
+  zero: `(() => { const e = app.workspace.activeLeaf.view.editor; e.focus(); e.setCursor({ line: 2, ch: 1 }); return true; })()`,
 };
+const BACKSPACE = "\b";
 const READ = `async function (note, copy) {
   const view = app.workspace.getLeavesOfType("markdown").map((l) => l.view).find((v) => v.file?.path === note);
   const disk = await app.vault.adapter.read(note);
@@ -167,35 +176,48 @@ console.log("open", await X.call(OPEN, NOTE), await Y.call(OPEN, NOTE), Z && pro
 await sleep(1500);
 
 const n = Math.ceil(DURATION / INTERVAL / 5) + 2;
-const aText = stream("A", (i) => (i === 1 ? "" : " "), n);
-const bText = stream("B", () => " ", n);
+// Same place: one key per tick from an alphabet, every seventh a mistyped key and the next its Backspace.
+const keys = (letters, typo) => [...Array(Math.ceil(DURATION / INTERVAL) + 2)].map((_, i) =>
+  i % 8 === 6 ? typo : i % 8 === 7 ? BACKSPACE : letters[(i - Math.floor(i / 8) * 2) % letters.length]).join("");
+const aText = SAME ? keys("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "~") : stream("A", (i) => (i === 1 ? "" : " "), n);
+const bText = SAME ? keys("abcdefghijklmnopqrstuvwxyz", "^") : stream("B", () => " ", n);
 let ai = 0, bi = 0;
 const t0 = Date.now();
+if (SAME) for (const s of [X, Y]) await s.js(CURSOR.zero);
 const typist = async (s, where, text, advance) => {
   while (Date.now() - t0 < DURATION) {
     const tick = Date.now();
-    await s.js(CURSOR[where]);
-    await s.send("Input.insertText", { text: text[advance()] });
+    if (!SAME) await s.js(CURSOR[where]);
+    const key = text[advance()];
+    if (key !== BACKSPACE) await s.send("Input.insertText", { text: key });
+    else for (const type of ["rawKeyDown", "keyUp"]) {
+      await s.send("Input.dispatchKeyEvent", { type, key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 });
+    }
     const rest = INTERVAL - (Date.now() - tick);
     if (rest > 0) await sleep(rest);
   }
 };
 await Promise.all([typist(X, "end", aText, () => ai++), typist(Y, "line1", bText, () => bi++)]);
 const typedA = aText.slice(0, ai), typedB = bText.slice(0, bi);
+const kept = (typed) => typed.replace(/[~^]\x08/g, "");
 const typedMs = Date.now() - t0;
 console.log(`typed: X ${ai} chars (${typedA.slice(-9)}), Y ${bi} chars (${typedB.slice(-9)}) in ${typedMs} ms; idle ${IDLE} ms`);
 await sleep(IDLE);
 const read = {};
 for (const [name, s] of sides) read[name] = JSON.parse(await s.call(READ, NOTE, `${STEM} (conflict`));
 const all = Object.values(read);
-const expected = `# Both${typedB}\nthe line nobody edits\nthe last fixed line\n${typedA}`;
+const expected = SAME ? null : `# Both${typedB}\nthe line nobody edits\nthe last fixed line\n${typedA}`;
+const third = (r) => r.disk.split("\n")[2] ?? "";
 const verdict = {
-  exact: all.every((r) => r.disk === expected),
+  exact: SAME ? all.every((r) => r.disk === all[0].disk && /^0[A-Za-z]*$/.test(third(r)) &&
+    third(r).replace(/[^A-Z]/g, "") === kept(typedA) && third(r).replace(/[^a-z]/g, "") === kept(typedB))
+    : all.every((r) => r.disk === expected),
   same_disk: all.every((r) => r.disk === all[0].disk),
   editor_is_disk: all.every((r) => r.editor === null || r.editor === r.disk),
-  all_A: all.every((r) => r.disk.includes(typedA)),
-  all_B: all.every((r) => r.disk.split("\n")[0] === `# Both${typedB}`),
-  fixed_lines: all.every((r) => r.disk.includes("\nthe line nobody edits\nthe last fixed line\n")),
+  all_A: all.every((r) => SAME ? third(r).replace(/[^A-Z]/g, "") === kept(typedA) : r.disk.includes(typedA)),
+  all_B: all.every((r) => SAME ? third(r).replace(/[^a-z]/g, "") === kept(typedB) : r.disk.split("\n")[0] === `# Both${typedB}`),
+  fixed_lines: all.every((r) => r.disk.startsWith(SAME ? "# Both\nthe line nobody edits\n0" : "# Both")
+    && (SAME || r.disk.includes("\nthe line nobody edits\nthe last fixed line\n"))),
   copies: new Set(all.flatMap((r) => r.copies)).size,
 };
 const count = (lines, word) => lines.filter((l) => l.includes(word)).length;

@@ -1,0 +1,6 @@
+M4209: bridge panes that disagree about one note
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3501 +3501 @@
+-    if (first === undefined || buffers.some((buffer) => buffer !== first) ||
++    if (first === undefined ||

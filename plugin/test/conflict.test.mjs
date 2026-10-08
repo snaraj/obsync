@@ -140,7 +140,9 @@ test("random concurrent edits never lose, repeat or reorder a character and agre
 test("text changes reproduce the edited text and never split a surrogate pair", () => {
   let seed = 11;
   const random = (n) => Math.floor(((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32) * n);
-  const pieces = ["a", "b", " ", "\n", "😀", "😄"];
+  // 😀 and 😄 share a high surrogate, 😀 and 🨀 a low one: both ends of a
+  // shared run can fall inside a pair.
+  const pieces = ["a", "b", " ", "\n", "😀", "😄", "🨀"];
   const make = (n) => Array.from({ length: n }, () => pieces[random(pieces.length)]).join("");
   const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
   for (let trial = 0; trial < 3000; trial++) {

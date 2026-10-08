@@ -1,0 +1,6 @@
+M4206: bridge the incoming text over input typed since the merge
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3503 +3503 @@
+-    const text = mergeText(shown, first, written);
++    const text = written;

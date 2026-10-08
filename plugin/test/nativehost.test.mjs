@@ -457,23 +457,26 @@ for (const [mobile, typing] of [[false, false], [true, false], [false, true]]) {
   });
 }
 
-for (const reason of ["composition", "native-only"]) test(`a queued bridge with a second ${reason} pane leaves every pane to one native reload`, async (t) => {
+for (const reason of ["composition", "native-only", "disagreeing"]) test(`a queued bridge with a second ${reason} pane leaves every pane to one native reload`, async (t) => {
   let second, secondText, r;
   r = await queuedEditor(t, ({ host }) => {
     // The second pane becomes unsafe after the final pre-write check. The
     // bridge must check ALL panes before saving even the first safe pane.
+    // A pane holding other text leaves no one buffer to rebase (#339).
     host.editorActivity.record(second, "beforeinput");
     if (reason === "composition") host.editorActivity.record(second, "compositionstart");
-    else host.editorActivity.nativeOnly.set(second, second.file);
+    else if (reason === "native-only") host.editorActivity.nativeOnly.set(second, second.file);
+    else secondText.value = r.original.replace("A: local", "A: local, second pane");
   });
   secondText = { value: r.original };
   const read = r.vault.read;
   second = r.openEditor(NOTE, secondText);
   r.vault.read = read;
-  let publicSaves = 0, reloads = 0;
+  let publicSaves = 0, reloads = 0, disagreeing = 0;
   const save = r.view.save;
-  r.view.save = async () => { publicSaves++; return save(); };
-  second.save = async () => { publicSaves++; };
+  const count = () => { publicSaves++; if (r.buffer.value !== secondText.value) disagreeing++; };
+  r.view.save = async () => { count(); return save(); };
+  second.save = async () => { count(); };
   r.vault.trigger = (event, file) => {
     assert.equal(event, "modify"); assert.equal(file.path, NOTE);
     reloads++;
@@ -481,7 +484,9 @@ for (const reason of ["composition", "native-only"]) test(`a queued bridge with 
     r.view.setViewData(next, false); second.setViewData(next, false);
   };
   await r.write(); await r.adapter.promise;
-  assert.equal(publicSaves, 0, "one unsafe pane prevents a partial public-save bridge");
+  // Once the native reload made the panes agree, saving that one text is safe.
+  if (reason === "disagreeing") assert.equal(disagreeing, 0, "a pane was saved over another pane's different text");
+  else assert.equal(publicSaves, 0, "one unsafe pane prevents a partial public-save bridge");
   assert.equal(reloads, 1, "the native watcher supplies the fallback, with no duplicate reload");
   assert.equal(r.buffer.value, r.incoming);
   assert.equal(secondText.value, r.incoming);

@@ -1,0 +1,6 @@
+M4205: replace the whole editor buffer instead of applying the difference
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -586 +586 @@
+-  if (cm !== undefined && cm.state.doc.toString() === before) {
++  if (cm !== undefined && cm.state.doc.toString() === "\0") {

@@ -1,0 +1,6 @@
+M4202: join automatic answers that meet the other side's change
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3136 +3136 @@
+-      const automatic = joined?.contested === true && (theirManifest.answer === true ||
++      const automatic = joined?.contested === undefined && (theirManifest.answer === true ||

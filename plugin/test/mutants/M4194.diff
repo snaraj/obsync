@@ -1,0 +1,6 @@
+M4194: drop the rule that one typed stream seen at two lengths lands once
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -256 +256 @@
+-    if (two.startsWith(one)) out.push(two);
++    if (one === "") out.push(two);

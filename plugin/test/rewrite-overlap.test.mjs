@@ -61,6 +61,15 @@ test("an automatic answer also holds an unpushed typed overlap before deferring 
   assert.deepEqual(r.state.data.paused, { [r.base.fileId]: { path: NOTE, remote: true } });
 });
 
+test("a saved editor holds a peer's automatic answer meeting its published typing", async () => {
+  const r = await fork();
+  r.host.editorReady = async () => true;
+  assert.equal(await applyChange(r.context, r.frame), "skipped");
+  assert.equal(r.host.text(NOTE), OURS);
+  assert.equal(r.host.files.size, 1);
+  assert.deepEqual(r.state.data.paused, { [r.base.fileId]: { path: NOTE, remote: true } });
+});
+
 test("a saved-editor rebase still holds an automatic answer overlapping a newer local delta", async () => {
   const r = await fork({ pushed: false });
   r.host.editorReady = async () => true;

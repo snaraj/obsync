@@ -1,0 +1,6 @@
+M4195: keep only one side's deletion where both delete at one place
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -262 +262 @@
+-    const end = Math.max(x?.to ?? at, y?.to ?? at);
++    const end = x?.to ?? y?.to ?? at;

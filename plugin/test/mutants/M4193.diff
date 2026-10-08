@@ -1,0 +1,6 @@
+M4193: order insertions at one place by side, not content
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -260 +260 @@
+-      out.push(one < two ? one + two : two + one);
++      out.push(one + two);

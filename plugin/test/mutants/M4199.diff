@@ -1,0 +1,6 @@
+M4199: let a shared prefix end inside a surrogate pair
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -210 +210 @@
+-  if (head > 0 && isHigh(before.charCodeAt(head - 1))) head--;
++  if (head > 0 && isHigh(before.charCodeAt(head))) head--;
