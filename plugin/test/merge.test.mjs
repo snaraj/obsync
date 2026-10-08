@@ -540,6 +540,55 @@ test("a key deleted here and not pushed yet is no agreement with a head holding 
 });
 
 /**
+ * Nor is the pair the pull read before an upload of this device's landed
+ * (#339, two desktops). The pull compared the version it found recorded,
+ * whose text the other head shares; the upload of a key typed then moved the
+ * record on, and the key was deleted before the pull settled. Standing on the
+ * other head overwrote the record of that upload, the deletion matched the
+ * other head and went nowhere, and the other device's merge of the upload
+ * brought the key back for good.
+ */
+test("a version this device published while a pull read the graph is the side that pull settles (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+  const NOTE = "Notes/Typo.md";
+
+  const r = await rig();
+  r.host.seed(NOTE, "a\n", 1000);
+  const root = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "0\n", 2000);
+  await pushFile(r.context, NOTE);
+  const publish = (text, parents, mtime) => r.server.publish({ fileId: root.fileId, path: NOTE,
+    bytes: new TextEncoder().encode(text), mtime, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  const theirs = await publish("0\n", [root.versionId], 3000);
+  const getFile = r.transport.getFile.bind(r.transport);
+  let typed = null;
+  r.transport.getFile = async (id) => {
+    if (typed === null) {
+      typed = "uploading";
+      r.host.seed(NOTE, "0T\n", 4000);
+      typed = await pushFile(r.context, NOTE);
+      r.host.seed(NOTE, "0\n", 5000);
+    }
+    return await getFile(id);
+  };
+  await applyChange(r.context, theirs);
+  r.transport.getFile = getFile;
+  const logs = () => r.host.logs.filter((line) => /^(pull|push)/.test(line)).join(" | ");
+  assert.equal(r.state.fileByPath(NOTE).versionId, typed.versionId, logs());
+  const retried = r.host.logs.findIndex((line) => line.startsWith(`pull decision=retry reason=record_advanced stage=identical_bytes file=${root.fileId} `));
+  assert.ok(retried >= 0, logs());
+  assert.ok(r.host.logs.slice(retried).some((line) => line.startsWith("pull decision=deferred reason=unpublished_edit stage=identical_bytes ")), logs());
+  await pushFile(r.context, NOTE);
+  const merged = await publish("0T\n", [typed.versionId, theirs.version_id].sort(), 6000);
+  await applyChange(r.context, await publish("0Tz\n", [merged.version_id], 7000));
+  assert.equal(r.host.text(NOTE), "0z\n", logs());
+});
+
+/**
  * The breaker is a WINDOW, and the notice is once. A log line that prints
  * `window_ms=60000` proves neither: it is a constant in a template string.
  * What proves them is driving past the limit twice inside one window, then

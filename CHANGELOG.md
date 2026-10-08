@@ -22,7 +22,8 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   combined result came out exactly as the other device's text, that device's
   version was taken as is, and a deletion made here could come back for a
   moment, or for good when it had not been sent yet. The combined version is
-  now sent instead, and an unsent deletion goes out first (#339).
+  now sent instead, and an unsent deletion goes out first, even one made
+  while the keystroke before it was still uploading (#339).
 - Saved editor input can sync while typing continues. Incoming edits merge
   with acknowledged versions while newer local input stays queued as a child
   version. Save confirmation, unfinished composition and recent human input

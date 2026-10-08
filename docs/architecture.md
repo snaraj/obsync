@@ -1301,7 +1301,11 @@ long poll and needs its timeout raised.
    holds everything published here; otherwise the merge is posted, or the
    edit goes out first (#339). A record standing on a version missing this
    device's earlier versions forgot its deletions: a later version that had
-   merged one of them brought deleted text back. A device also stops merging
+   merged one of them brought deleted text back. Nor is the record overwritten
+   when it moved on during the pull: an upload of this device's acknowledged
+   while the graph was read leaves the pair compared stale, and a key typed in
+   that upload and deleted since matches the other head, so the deletion was
+   never sent. The pull reads the graph again (#339, two desktops). A device also stops merging
    one file after more than five
    resolutions of it in a row inside a minute with the note unchanged here in
    between -- a save starts the count again -- and says so once. Trusted text

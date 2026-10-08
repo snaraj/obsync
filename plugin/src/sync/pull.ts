@@ -3050,6 +3050,15 @@ async function resolve(
     if (recorded !== null && recorded.sha256 !== "" && recorded.sha256 !== theirManifest.sha256) {
       return await deferToPush(context, change, localPath, "unpublished_edit stage=identical_bytes");
     }
+    // Nor is a pair read before an upload of this device's landed (#339, two
+    // desktops): the record moved on to a version holding a key typed, and
+    // the key deleted since matches the other head. Standing on it would
+    // overwrite that record and publish the deletion nowhere. Read again.
+    const held = context.state.fileByPath(localPath);
+    if (held !== undefined && held.versionId !== localVersionId) {
+      context.host.log(`pull decision=retry reason=record_advanced stage=identical_bytes file=${change.file_id} seq=${change.seq}`);
+      return await startOver(context, change, theirManifest);
+    }
     // A local version the server no longer holds as a head -- one a restored
     // server lost (issue #145) -- is no side of this pair: the one it holds is.
     // Nor is the other's head taken when standing on it would forget a version
@@ -3057,7 +3066,6 @@ async function resolve(
     // the next edit, still settles the pair.
     const head = file.heads.includes(localVersionId) && (localVersionId < change.version_id ||
       !keepsOwnHistory(file.versions, localVersionId, change.version_id)) ? localVersionId : change.version_id;
-    const held = context.state.fileByPath(localPath);
     if (held) context.state.setFile(localPath, { ...held, versionId: head, ts: head === localVersionId ? held.ts : change.ts });
     await context.state.save();
     context.host.log(
