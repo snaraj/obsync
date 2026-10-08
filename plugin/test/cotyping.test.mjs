@@ -156,7 +156,7 @@ function refusing(host, busy = async (path) => host.editors.has(path) && (host.t
  * the run as Obsidian 1.13 and the server make it (#227): a save a keystroke,
  * the server's listing, and no write under an open editor.
  */
-async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB = false, host = false }) {
+async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB = false, host = false, observe }) {
   const { server, timers, a, b } = await pair(t, "immediate", { isMobileB });
   // One clock for everything a device reads the time from: file mtimes, the
   // merge breaker's window, the virtual timers. A minute of typing is a
@@ -200,6 +200,7 @@ async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB
   const fileId = a.state.fileByPath(NOTE).fileId;
 
   const editors = { a: new OpenEditor(a, timers, placeA), b: new OpenEditor(b, timers, placeB) };
+  observe?.(a, b);
   if (!host) {
     // Exercise the permissive legacy host's unsaved-input merge deliberately.
     // A faster publication path can otherwise land every write in a saved
@@ -357,7 +358,11 @@ test("two devices appending on the same line converge with every keystroke once 
  * backspace and corrections do. The physical phone run of 2026-10-08 ended
  * with letters lost or repeated and twelve copies. Every kept keystroke of
  * both must be in the note once, each person's in the order typed, and every
- * deleted one gone, on both devices, with no copy.
+ * deleted one gone, on both devices, with no copy. And on the way: every text
+ * either disk held shows each person's keys as they stood after one of that
+ * person's keystrokes, never an earlier one than the text before it -- a
+ * deleted key that came back for a moment came back on the screen (live run,
+ * 2026-10-08).
  */
 for (const host of [false, true]) test(`two devices typing and deleting at the same place mid-line keep every keystroke once and in order, without copies (#339, ${host ? "saving every key" : "merging under input"})`, async (t) => {
   const BACK = "\b";
@@ -378,10 +383,37 @@ for (const host of [false, true]) test(`two devices typing and deleting at the s
     }
     return text;
   };
+  // Each person's keys as they stood after each of that person's keystrokes: the moment's number.
+  const moments = (typed) => {
+    const at = new Map([["", [0]]]), shown = [];
+    [...typed].forEach((key, i) => {
+      if (key === BACK) shown.pop(); else shown.push(key);
+      at.set(shown.join(""), [...(at.get(shown.join("")) ?? []), i + 1]);
+    });
+    return at;
+  };
+  const people = [textA, textB].map((typed) => ({ keys: new Set([...typed].filter((key) => key !== BACK)), at: moments(typed) }));
+  const stepped = new Map(), checked = [0, 0];
+  const observe = (...devices) => devices.forEach((device, index) => {
+    const floor = people.map(() => 0);
+    device.host.on("modify", (file) => {
+      if (file.path !== NOTE) return;
+      checked[index]++;
+      const text = device.host.text(NOTE) ?? "";
+      people.forEach((person, who) => {
+        const seen = [...text].filter((key) => person.keys.has(key)).join("");
+        const next = (person.at.get(seen) ?? []).filter((moment) => moment >= (floor[who] ?? 0));
+        if (next.length === 0) stepped.set(`${index}:${who}:${seen}`, text);
+        else floor[who] = next[0] ?? 0;
+      });
+    });
+  });
   const { a, b, story } = await session(t, {
     base: "line one\nline two\n0 tail\n", placeA: caret(textA), placeB: caret(textB),
-    textA, textB, isMobileB: true, host,
+    textA, textB, isMobileB: true, host, observe,
   });
+  assert.ok(checked.every((count) => count > 10), `the disks were looked at ${checked.join("/")} times:\n  ${story}`);
+  assert.deepEqual([...stepped.values()], [], `a disk held a moment of someone's typing that never was, or an earlier one:\n  ${story}`);
   for (const device of [a, b]) {
     const note = device.host.text(NOTE);
     assert.deepEqual(copies(device.host), [], `typing at one place created copies:\n  ${story}`);

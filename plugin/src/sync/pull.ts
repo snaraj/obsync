@@ -2592,6 +2592,21 @@ function reaches(versions: VersionNode[], head: string, target: string): boolean
 }
 
 /**
+ * May this device's record name `theirs` in place of its own head `local`?
+ * Only when nothing this device published before `local` is missing from
+ * `theirs`'s history: every parent of `local` is `theirs` or its ancestor. A
+ * record anywhere else forgets this device's earlier versions, and a later
+ * version that merged one of them fast-forwards it back -- a key typed here and
+ * then deleted, back in the note (#339). A head the listing does not show
+ * proves nothing, so nothing is adopted over it.
+ */
+function keepsOwnHistory(versions: VersionNode[], local: string, theirs: string): boolean {
+  const own = versions.find((version) => version.version_id === local);
+  const history = reachable(parentsFrom(versions), theirs);
+  return own !== undefined && own.parents.every((parent) => history.has(parent));
+}
+
+/**
  * The newest version both heads reach, or `null`.
  *
  * THE PROPERTY. `versions` is the server's own order, newest first
@@ -2992,9 +3007,19 @@ async function resolve(
     theirManifest.size === mine.length &&
     hex(await sha256(mine)) === theirManifest.sha256
   ) {
+    // An edit made here and not pushed yet is no agreement (#339): the version
+    // published here still holds what the note no longer does. It goes out
+    // first, on that version, and the pair is settled from what is published.
+    if (recorded !== null && recorded.sha256 !== "" && recorded.sha256 !== theirManifest.sha256) {
+      return await deferToPush(context, change, localPath, "unpublished_edit stage=identical_bytes");
+    }
     // A local version the server no longer holds as a head -- one a restored
     // server lost (issue #145) -- is no side of this pair: the one it holds is.
-    const head = localVersionId < change.version_id && file.heads.includes(localVersionId) ? localVersionId : change.version_id;
+    // Nor is the other's head taken when standing on it would forget a version
+    // published here (`keepsOwnHistory`, #339): the closing merge below, or
+    // the next edit, still settles the pair.
+    const head = file.heads.includes(localVersionId) && (localVersionId < change.version_id ||
+      !keepsOwnHistory(file.versions, localVersionId, change.version_id)) ? localVersionId : change.version_id;
     const held = context.state.fileByPath(localPath);
     if (held) context.state.setFile(localPath, { ...held, versionId: head, ts: head === localVersionId ? held.ts : change.ts });
     await context.state.save();
@@ -3119,7 +3144,8 @@ async function resolve(
             // verified result without spending its depth budget on it again.
             remember(context, `merged ${[localVersionId, change.version_id].sort().join(" ")}`, joined.text);
             return mergeSavedEditor(context, change, localPath, localVersionId, published,
-              new TextEncoder().encode(joined.text), inputs.theirs, tally, theirManifest.answer === true);
+              new TextEncoder().encode(joined.text), inputs.theirs, tally, theirManifest.answer === true,
+              keepsOwnHistory(file.versions, localVersionId, change.version_id));
           });
           if (applied !== null) return applied;
         }
@@ -3148,23 +3174,32 @@ async function resolve(
         // typist's line was settled into a copy. So a note holding text its
         // recorded version does not is published first, on that version, and
         // the fork is merged from what is published, as a fast-forward over an
-        // unpushed edit is (below). A result that is the incoming version
-        // itself makes no merge at all.
-        if (!ahead && !sameBytes(text, theirs)) {
+        // unpushed edit is (below). An incoming version holding both the save
+        // and everything published here is taken with it. One holding the save
+        // but not what was published is not (#339): a key published here and
+        // then deleted, taken over, left the note matching its record, the
+        // deletion was never sent, and the published key came back for good.
+        const adopt = sameBytes(text, theirs) && keepsOwnHistory(file.versions, localVersionId, change.version_id);
+        if (!ahead) {
           // A head this device cannot open proves nothing about the note.
           const own = await manifestOf(context, file, change, localVersionId).catch(() => null);
           if (own !== null && own.sha256 !== "") {
             if (hex(await sha256(mine)) !== own.sha256) {
-              // How long the note has held text no version has, against the
-              // window in which its editor's own push was due.
-              const age = before === null ? -1 : context.now() - before.mtime;
-              return await deferToPush(context, change, localPath, `${crossed ? "unpublished_criss_cross" : "unpublished_edit"} ` +
-                `age_ms=${age} duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
+              const held = adopt && own.chunks.length === 1 && own.size <= CHUNK_MAX && merge(crossed ? shared : decoder.decode(base),
+                decoder.decode(await assembleBytes(context, own)), decoder.decode(theirs)).text === merged.text;
+              if (!held) {
+                // How long the note has held text no version has, against the
+                // window in which its editor's own push was due.
+                const age = before === null ? -1 : context.now() - before.mtime;
+                return await deferToPush(context, change, localPath, `${crossed ? "unpublished_criss_cross" : "unpublished_edit"} ` +
+                  `age_ms=${age} duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
+              }
+            } else {
+              // This ordinary merge also contains exactly its authenticated
+              // parents. Remember it as the saved-editor path does: a later
+              // criss-cross must not spend its history budget finding it again.
+              remember(context, `merged ${[localVersionId, change.version_id].sort().join(" ")}`, merged.text);
             }
-            // This ordinary merge also contains exactly its authenticated
-            // parents. Remember it as the saved-editor path does: a later
-            // criss-cross must not spend its history budget finding it again.
-            remember(context, `merged ${[localVersionId, change.version_id].sort().join(" ")}`, merged.text);
           }
         }
         // A MERGE THIS DEVICE TOOK NO PART IN IS NOT NEWS HERE (issue #164). A
@@ -3241,8 +3276,11 @@ async function resolve(
           // saying what the second already says is how the storm was fed. A
           // result that is new to both sides is a real resolution and is posted
           // once, which terminates because the other device then finds its own
-          // bytes in it.
-          if (sameBytes(text, theirs)) {
+          // bytes in it. So is one that adopting would make this device forget
+          // its own history (`keepsOwnHistory`, #339): a key typed and deleted
+          // here leaves the incoming bytes, but not the incoming history.
+          if (!adopt && sameBytes(text, theirs)) context.host.log(`pull decision=not_adopted reason=own_history file=${change.file_id} seq=${change.seq}`);
+          if (adopt) {
             context.state.setFile(localPath, {
               fileId: change.file_id,
               versionId: change.version_id,
@@ -3384,7 +3422,7 @@ async function deferToPush(context: SyncContext, change: ChangeRecord, localPath
  */
 async function mergeSavedEditor(
   context: SyncContext, change: ChangeRecord, path: string, localVersionId: string,
-  published: Bytes, merged: Bytes, theirs: Bytes, tally: { left: string }, answer: boolean,
+  published: Bytes, merged: Bytes, theirs: Bytes, tally: { left: string }, answer: boolean, adoptable: boolean,
 ): Promise<ApplyResult | null> {
   const started = context.now();
   const current = context.state.fileByPath(path);
@@ -3418,7 +3456,9 @@ async function mergeSavedEditor(
   // A record may describe only the network merge, not the newer local delta.
   // A sentinel mtime keeps that delta dirty across a restart too.
   const recordedMtime = pendingLocal ? -1 : stat.mtime;
-  if (sameBytes(merged, theirs)) {
+  // The incoming version is adopted only when that forgets nothing published here (#339).
+  if (!adoptable && sameBytes(merged, theirs)) context.host.log(`pull decision=not_adopted reason=own_history file=${change.file_id} seq=${change.seq}`);
+  if (adoptable && sameBytes(merged, theirs)) {
     context.state.setFile(path, {
       fileId: change.file_id, versionId: change.version_id, mtime: recordedMtime,
       size: merged.length, sha256: await sidDigest(change.sids), ts: change.ts,

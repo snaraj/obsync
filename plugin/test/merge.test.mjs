@@ -207,6 +207,156 @@ test("a merge that comes out as the other device's bytes is adopted, not posted"
 });
 
 /**
+ * Unless this device's own history reaches past that version's (#339). A key
+ * typed and deleted here before the other device's version arrived makes the
+ * merge come out as the incoming bytes, while the version holding the typed
+ * key is in no history of theirs. Adopted, the record forgot the deletion, and
+ * a later version of theirs that had merged the typed key fast-forwarded it
+ * back into the note (live desktop run, 2026-10-08). The merge is posted, so
+ * that later version meets the deletion and the key stays deleted.
+ */
+for (const editor of [false, true]) test(`a key typed and deleted here stays deleted when the other device later merges the version that held it (#339, ${editor ? "saved editor" : "ordinary merge"})`, async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Typo.md";
+  r.host.seed(NOTE, "0\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "0T\n", 2000);
+  const typed = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "0\n", 3000);
+  await pushFile(r.context, NOTE);
+  if (editor) {
+    r.host.inputAt.set(NOTE, r.host.clock);
+    r.host.editorReady = async () => true;
+  }
+  const publish = (text, parents, mtime) => r.server.publish({ fileId: base.fileId, path: NOTE,
+    bytes: new TextEncoder().encode(text), mtime, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  const theirs = await publish("0y\n", [base.versionId], 4000);
+  await applyChange(r.context, theirs);
+  assert.equal(r.host.text(NOTE), "0y\n");
+  assert.ok(r.host.logs.some((line) => /^pull decision=not_adopted reason=own_history file=[0-9a-f]+ seq=\d+$/.test(line)), r.host.logs.join(" | "));
+  // The other device merged the version holding the typed key, then typed on.
+  const merged = await publish("0Ty\n", [typed.versionId, theirs.version_id].sort(), 5000);
+  await applyChange(r.context, await publish("0Tyz\n", [merged.version_id], 6000));
+  assert.equal(r.host.text(NOTE), "0yz\n", r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
+  assert.deepEqual([...r.host.files.keys()], [NOTE]);
+});
+
+/**
+ * And a deletion made here and not pushed yet is published before anything is
+ * adopted (#339). The note here lost a key the version this device published
+ * still holds; the incoming version, older than that key, comes out as the
+ * merge. Adopted, the note matched its record, so the deletion was never sent,
+ * and the published version brought the key back for good once the other
+ * device merged it.
+ */
+test("a key deleted here and not pushed yet stays deleted when the other device later merges the version that held it (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Typo.md";
+  r.host.seed(NOTE, "0\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "0T\n", 2000);
+  const typed = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "0\n", 3000);
+  const publish = (text, parents, mtime) => r.server.publish({ fileId: base.fileId, path: NOTE,
+    bytes: new TextEncoder().encode(text), mtime, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  const theirs = await publish("0y\n", [base.versionId], 4000);
+  await applyChange(r.context, theirs);
+  await pushFile(r.context, NOTE);
+  const merged = await publish("0Ty\n", [typed.versionId, theirs.version_id].sort(), 5000);
+  await applyChange(r.context, await publish("0Tyz\n", [merged.version_id], 6000));
+  assert.equal(r.host.text(NOTE), "0yz\n", r.host.logs.filter((line) => /^(pull|push)/.test(line)).join(" | "));
+  assert.deepEqual([...r.host.files.keys()], [NOTE]);
+});
+
+/**
+ * The same where two heads hold one text (`converged`): this device's head
+ * stands when the other's would forget a key typed and deleted here. That rule
+ * otherwise takes the smaller id, and ids are random, so the rig is built again
+ * until the other's sorts first; a third head keeps the pair from closing.
+ */
+test("of two heads holding one text, the one remembering a key typed and deleted here stands (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+  const NOTE = "Notes/Typo.md";
+
+  for (let attempt = 0; ; attempt++) {
+    assert.ok(attempt < 40, "the other device's id never sorted first");
+    const r = await rig();
+    r.host.seed(NOTE, "0\n", 1000);
+    const base = await pushFile(r.context, NOTE);
+    r.host.seed(NOTE, "0T\n", 2000);
+    const typed = await pushFile(r.context, NOTE);
+    r.host.seed(NOTE, "0\n", 3000);
+    const local = await pushFile(r.context, NOTE);
+    const publish = (text, parents, mtime) => r.server.publish({ fileId: base.fileId, path: NOTE,
+      bytes: new TextEncoder().encode(text), mtime, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+    const theirs = await publish("0\n", [base.versionId], 4000);
+    if (theirs.version_id > local.versionId) continue;
+    await publish("1\n", [base.versionId], 4500);
+    await applyChange(r.context, theirs);
+    assert.equal(r.state.fileByPath(NOTE).versionId, local.versionId, "the record left the head that remembers the deletion");
+    const merged = await publish("0T\n", [typed.versionId, theirs.version_id].sort(), 5000);
+    await applyChange(r.context, await publish("0Tz\n", [merged.version_id], 6000));
+    assert.equal(r.host.text(NOTE), "0z\n", r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
+    return;
+  }
+});
+
+/**
+ * Nor is a note that holds the other head's text only because of a deletion
+ * made here and not pushed yet (#339): the version this device published still
+ * holds the key. Standing on the other head, the deletion went out as an edit
+ * of THAT head, and the published version brought the key back once merged.
+ * Two heads are closed by a merge carrying the deletion; a third head here
+ * keeps them open, as a third device typing does.
+ */
+test("a key deleted here and not pushed yet is no agreement with a head holding the same text (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+  const NOTE = "Notes/Typo.md";
+
+  for (let attempt = 0; ; attempt++) {
+    assert.ok(attempt < 40, "the other device's id never sorted first");
+    const r = await rig();
+    r.host.seed(NOTE, "0\n", 1000);
+    const base = await pushFile(r.context, NOTE);
+    r.host.seed(NOTE, "0T\n", 2000);
+    const typed = await pushFile(r.context, NOTE);
+    r.host.seed(NOTE, "0\n", 3000);
+    const publish = (text, parents, mtime) => r.server.publish({ fileId: base.fileId, path: NOTE,
+      bytes: new TextEncoder().encode(text), mtime, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+    const theirs = await publish("0\n", [base.versionId], 4000);
+    if (theirs.version_id > typed.versionId) continue;
+    await publish("1\n", [base.versionId], 4500);
+    await applyChange(r.context, theirs);
+    assert.ok(r.host.logs.some((line) => line.startsWith("pull decision=deferred reason=unpublished_edit stage=identical_bytes ")), r.host.logs.join(" | "));
+    await pushFile(r.context, NOTE);
+    const merged = await publish("0T\n", [typed.versionId, theirs.version_id].sort(), 5000);
+    await applyChange(r.context, await publish("0Tz\n", [merged.version_id], 6000));
+    assert.equal(r.host.text(NOTE), "0z\n", r.host.logs.filter((line) => /^(pull|push)/.test(line)).join(" | "));
+    return;
+  }
+});
+
+/**
  * The breaker is a WINDOW, and the notice is once. A log line that prints
  * `window_ms=60000` proves neither: it is a constant in a template string.
  * What proves them is driving past the limit twice inside one window, then
