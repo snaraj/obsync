@@ -3532,9 +3532,20 @@ export class ObsidianHost implements VaultHost {
     try {
       const written = lines(text);
       if (pendingBridge !== null && (await Promise.all(pendingBridge.saves)).some((saved) => !saved)) throw new EditorBusy();
-      if (lines(await read()) !== (pendingBridge?.text ?? written)) {
-        this.log(`host path_class=file decision=editor_left reason=file_changed duration_ms=${Date.now() - started}`);
-        throw new WriteSuperseded();
+      const disk = lines(await read());
+      if (disk !== (pendingBridge?.text ?? written)) {
+        // TYPING AFTER A DELIVERED BRIDGE IS NOT A REPLACED WRITE (#339). The
+        // editor already shows the incoming text; refused, the note kept it
+        // while its record stayed on the version before, and the next save
+        // published it as this device's own typing, beside the version it came
+        // from: the other device's keys twice, and a typo it deleted back.
+        const typedSince = pendingBridge !== null &&
+          ((onlyInserts(shown, written) && onlyInserts(pendingBridge.text, disk)) || mergeText(shown, disk, written) === disk);
+        if (!typedSince) {
+          this.log(`host path_class=file decision=editor_left reason=file_changed duration_ms=${Date.now() - started}`);
+          throw new WriteSuperseded();
+        }
+        this.log(`host path_class=file decision=kept reason=typed_since_delivery duration_ms=${Date.now() - started}`);
       }
       const views = this.views(path);
       const file = views[0]?.file;

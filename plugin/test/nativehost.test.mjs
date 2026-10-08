@@ -1921,6 +1921,34 @@ test("a mobile public save replaced before confirmation refuses the incoming rec
   assert.ok(r.logs.some(line => line.includes("editor_left reason=file_changed")));
 });
 
+// But typing saved right after the bridge delivered the incoming text is no
+// replacement (#339, Android emulator): refused, the note kept the incoming
+// text while its record stayed behind it, and the next save published that
+// text as this device's own typing, beside the version it came from, so a
+// later merge wrote it twice.
+for (const mobile of [false, true]) for (const [edit, typed] of [
+  ["after it", "A: local\nB: remote!\n"], ["before it", "A: local\nB: !remote\n"], ["deleting a key of its own", "A: loca\nB: remote\n"],
+]) test(`the save typed after a delivered version is its child, not its sibling (${mobile ? "mobile" : "desktop"}, ${edit})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  const base = await pushFile(r.context, NOTE);
+  const change = await r.server.publish({ fileId: base.fileId, path: NOTE, bytes: enc(r.incoming), mtime: 3000,
+    parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  const nativeSave = r.view.save;
+  r.view.save = async () => {
+    await nativeSave();
+    r.view.save = nativeSave;
+    r.seed(NOTE, typed, 4000);
+    r.buffer.value = typed;
+  };
+  await r.applyIncoming(change); await r.adapter.promise; await Promise.all(r.reads);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), typed);
+  assert.equal(r.state.fileByPath(NOTE).versionId, change.version_id, r.logs.join(" | "));
+  assert.ok(r.logs.some(line => /^host path_class=file decision=kept reason=typed_since_delivery duration_ms=\d+$/.test(line)), r.logs.join(" | "));
+  const pushed = await pushFile(r.context, NOTE);
+  const child = r.server.files.get(base.fileId).versions.find((version) => version.version_id === pushed.versionId);
+  assert.deepEqual(child.parents, [change.version_id], "the incoming text went out as this device's own typing");
+});
+
 // A refused incoming version must not permanently hand save ownership away:
 // the winning native input still belongs to the previously applied version.
 for (const mobile of [false, true]) for (const active of [false, true]) for (const sameSize of [false, true]) {

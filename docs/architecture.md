@@ -1424,7 +1424,15 @@ long poll and needs its timeout raised.
    Re-merging against the older baseline is not a delivery receipt; it can
    duplicate an addition that is already displayed. Remote deletions, missing
    delivered text and incomplete or rebound transitions keep the ordinary
-   native confirmation path.
+   native confirmation path. A file the editor saved again after a completed
+   transition is typing on the delivered text, not a replaced write, when it
+   still holds that text by the same rules (`decision=kept
+   reason=typed_since_delivery`): the write stands and the save becomes its
+   child. Refused, the note kept the delivered text while its record stayed
+   on the version before it, and the next save published that text as this
+   device's own typing beside the version it came from; a later merge wrote
+   it twice (#339, Android emulator). A file that no longer holds it is still
+   refused.
 
    Mobile and unknown adapters keep their guarded adapter write and public
    refresh path. Passive editors retain native reload ownership. A refresh

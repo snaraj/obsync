@@ -59,6 +59,10 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   order before a base is chosen. Kept in the order it was reached, an older
   version could be taken as the newest, and keys typed where two people were
   typing left the note on both devices for a moment (#339).
+- The other device's typing no longer appears twice, with a letter it
+  deleted back, when you type the moment it arrives. A save landing just
+  after its text appeared was taken for a replaced file: the text stayed in
+  the note, but went out again as your own typing (#339).
 - Push reconciliation reuses the head snapshot it just fetched when that
   snapshot contains both inputs, avoiding a second request that can chase
   a continuously advancing peer. Unrelated or incomplete snapshots still
