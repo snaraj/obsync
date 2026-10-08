@@ -33,6 +33,18 @@
 // an earlier moment than the one before it in the same place (`transient`: a key twice, out of order or
 // missing, a deleted key back). Each page checks every state itself and keeps only the ones that break the
 // rule; `checked` counts the states it saw, so a zero `transient` is never a check that did not run.
+// Every editor transaction is also judged by who made it: one typed here (an input, a deletion, an undo)
+// may change no character of the other person's, and one that synced here may change no character of
+// this person's. PASS needs both kinds seen on both sides.
+//
+// TAP=<keys.json> (with PLACE=same): Y is a phone, typed through its on-screen keyboard -- composition,
+// suggestions and autocorrect as a person meets them -- by tapping keys over adb. keys.json holds
+// {"adb": [adb argv up to "shell"], "focus": [x, y], "keys": {"a": [x, y], ..., " ": [x, y], "\b": [x, y]}},
+// the points read from a screenshot of that keyboard; <portY> is the phone WebView's DevTools socket
+// forwarded to this computer (adb forward tcp:<port> localabstract:webview_devtools_remote_<pid>). Y types a
+// word script, every seventh key a wrong letter tapped and then deleted with the keyboard's backspace, after
+// "0 " on line 3; X types its keys there too. The keyboard decides what Y's taps become, so Y's text is
+// judged by the rule above and by every device ending on one text, not against a script.
 //
 // A window another covers is hidden, and Chromium throttles a hidden page's timers and work: a covered
 // instance saved typing a minute late and made no request for four minutes (2026-09-29). Each side's
@@ -45,9 +57,10 @@ if (!px || !tx || !py || !ty || !(DURATION > 0) || !(INTERVAL > 0) || !(IDLE >= 
   process.exit(2);
 }
 const SAME = process.env.PLACE === "same";
+const TAP = SAME && process.env.TAP ? JSON.parse((await import("node:fs")).readFileSync(process.env.TAP, "utf8")) : null;
 const NOTE = `Both-${Date.now().toString(36)}.md`;
 const STEM = NOTE.slice(0, -3);
-const START = SAME ? "# Both\nthe line nobody edits\n0\n" : "# Both\nthe line nobody edits\nthe last fixed line\n";
+const START = SAME ? `# Both\nthe line nobody edits\n0${TAP ? " " : ""}\n` : "# Both\nthe line nobody edits\nthe last fixed line\n";
 
 async function pick(port, sel) {
   const all = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).filter((t) => t.type === "page");
@@ -113,10 +126,21 @@ const MOMENT = `(text, floor) => {
   }
   return ok;
 }`;
+// Who may change what: line 3 after its "0" is the place both type; X's characters are its key block,
+// Y's every other character there. A transaction typed on one side keeps the other person's characters,
+// and one that synced keeps this side's own.
+const KEEPS = `(before, after, local, side) => {
+  const place = (text) => [...(text.split("\\n")[2] ?? "").slice(1)];
+  const isX = (c) => c.codePointAt(0) >= ${X_KEYS} && c.codePointAt(0) < ${X_KEYS + KEYS};
+  const ofX = (text) => place(text).filter(isX).join(""), ofY = (text) => place(text).filter((c) => !isX(c)).join("");
+  const kept = (side === "X") === local ? ofY : ofX;
+  return kept(before) === kept(after);
+}`;
 // The trace: obsync's own log lines, and the note's text at each save the vault reports.
-const HOOK = `function (note, full) {
-  window.__cotype = { note, full, lines: [], notices: [], hiddenMs: 0, hiddenAt: document.hidden ? Date.now() : null,
-    checked: 0, broken: [], moment: ${MOMENT}, floor: { editor: { x: -1, y: -1 }, vault: { x: -1, y: -1 } } };
+const HOOK = `function (note, full, side) {
+  window.__cotype = { note, full, side, lines: [], notices: [], hiddenMs: 0, hiddenAt: document.hidden ? Date.now() : null,
+    checked: 0, local: 0, synced: 0, broken: [], moment: ${MOMENT}, keeps: ${KEEPS},
+    floor: { editor: { x: -1, y: -1 }, vault: { x: -1, y: -1 } } };
   if (!window.__cotypeVisibility) {
     document.addEventListener("visibilitychange", () => {
       const c = window.__cotype;
@@ -152,7 +176,8 @@ const HOOK = `function (note, full) {
     });
     window.__cotypeHooked = true;
   }
-  require("electron").remote.getCurrentWindow().showInactive();
+  // A desktop window is shown without taking focus; a phone has no such window.
+  try { require("electron").remote.getCurrentWindow().showInactive(); } catch { /* not desktop */ }
   return "hooked";
 }`;
 const OPEN = `async function (note) {
@@ -163,15 +188,22 @@ const OPEN = `async function (note) {
   await new Promise((r) => setTimeout(r, 300));
   const v = app.workspace.activeLeaf.view;
   if (!v.editor) return "no editor";
-  // Every transaction the editor applies, typed or synced, is checked; a text that breaks the rule is kept.
+  // Every transaction the editor applies, typed or synced, is checked; a text that breaks a rule is kept.
   const cm = v.editor.cm;
   if (cm && !cm.__cotypeTraced) {
-    const dispatch = cm.dispatch.bind(cm);
-    cm.dispatch = (...specs) => {
-      const result = dispatch(...specs);
-      const c = window.__cotype, text = cm.state.doc.toString();
-      if (c && (c.checked++, !c.moment(text, c.floor.editor))) c.broken.push(Date.now() + " editor text=" + JSON.stringify(text));
-      return result;
+    const update = cm.update.bind(cm);
+    cm.update = (transactions) => {
+      const c = window.__cotype;
+      if (c) for (const tr of transactions) if (tr.docChanged) {
+        const before = tr.startState.doc.toString(), text = tr.state.doc.toString();
+        const local = ["input", "delete", "undo", "redo", "move"].some((event) => tr.isUserEvent(event));
+        c.checked++;
+        if (local) c.local++; else c.synced++;
+        if (!c.moment(text, c.floor.editor) || (c.side !== "Z" && !c.keeps(before, text, local, c.side))) {
+          c.broken.push(Date.now() + (local ? " typed" : " synced") + " editor text=" + JSON.stringify(text) + " before=" + JSON.stringify(before));
+        }
+      }
+      return update(transactions);
     };
     cm.__cotypeTraced = true;
   }
@@ -181,7 +213,7 @@ const OPEN = `async function (note) {
 const CURSOR = {
   end: `(() => { const e = app.workspace.activeLeaf.view.editor; e.focus(); const l = e.lastLine(); e.setCursor({ line: l, ch: e.getLine(l).length }); return true; })()`,
   line1: `(() => { const e = app.workspace.activeLeaf.view.editor; e.focus(); e.setCursor({ line: 0, ch: e.getLine(0).length }); return true; })()`,
-  zero: `(() => { const e = app.workspace.activeLeaf.view.editor; e.focus(); e.setCursor({ line: 2, ch: 1 }); return true; })()`,
+  zero: `(() => { const e = app.workspace.activeLeaf.view.editor; e.focus(); e.setCursor({ line: 2, ch: ${TAP ? 2 : 1} }); return true; })()`,
 };
 const BACKSPACE = "\b";
 const READ = `async function (note, copy) {
@@ -193,7 +225,7 @@ const READ = `async function (note, copy) {
   return JSON.stringify({ editor: view?.editor?.getValue() ?? null, disk, copies,
     status: status ? (status.getAttribute("aria-label") || status.textContent) : null,
     hidden_ms: c ? c.hiddenMs + (c.hiddenAt === null ? 0 : Date.now() - c.hiddenAt) : null,
-    lines: window.__cotype?.lines ?? [], checked: c?.checked ?? 0, broken: c?.broken ?? [],
+    lines: window.__cotype?.lines ?? [], checked: c?.checked ?? 0, local: c?.local ?? 0, synced: c?.synced ?? 0, broken: c?.broken ?? [],
     notices: (window.__cotype?.notices ?? []).map(({ at, node }) => ({ at, text: (node.textContent || "").trim() })) });
 }`;
 
@@ -209,7 +241,7 @@ const Y = await session(py, ty);
 const [pz, tz] = (process.env.PASSIVE ?? "").split("|");
 const Z = pz ? await session(pz, tz) : null;
 const sides = [["X", X], ["Y", Y], ...(Z ? [["Z", Z]] : [])];
-console.log("note", NOTE, "hook", ...(await Promise.all(sides.map(([, s]) => s.call(HOOK, NOTE, DURATION <= 120_000 || process.env.TRACE === "full")))));
+console.log("note", NOTE, "hook", ...(await Promise.all(sides.map(([name, s]) => s.call(HOOK, NOTE, DURATION <= 120_000 || process.env.TRACE === "full", name)))));
 await X.call(`async function (note, text) { await app.vault.create(note, text); return "created"; }`, NOTE, START);
 for (const [name, s] of sides.slice(1)) {
   let arrived = false;
@@ -229,16 +261,29 @@ const ticks = Math.ceil(DURATION / INTERVAL) + 2;
 if (SAME && ticks > KEYS) throw new Error(`PLACE=same holds ${KEYS} keys a person; ${ticks} asked`);
 const keys = (first) => [...Array(ticks)].map((_, i) => i % 8 === 7 ? BACKSPACE : String.fromCodePoint(first + i)).join("");
 const aText = SAME ? keys(X_KEYS) : stream("A", (i) => (i === 1 ? "" : " "), n);
-const bText = SAME ? keys(Y_KEYS) : stream("B", () => " ", n);
+// TAP: words, every seventh key the next letter along tapped by mistake, the eighth the keyboard's backspace.
+const WORDS = "the quick brown fox jumps over the lazy dog while five wizards pack my box with liquor jugs ";
+const words = () => [...Array(ticks)].map((_, i) => i % 8 === 7 ? BACKSPACE : i % 8 === 6 ? "q" :
+  WORDS[(i - 2 * Math.floor(i / 8)) % WORDS.length]).join("");
+const bText = TAP ? words() : SAME ? keys(Y_KEYS) : stream("B", () => " ", n);
+const { execFile } = await import("node:child_process");
+const tap = (point) => new Promise((ok, bad) => execFile(TAP.adb[0], [...TAP.adb.slice(1), "shell", "input", "tap", ...point.map(String)],
+  { timeout: 10_000 }, (error) => (error ? bad(error) : ok())));
 let ai = 0, bi = 0;
 const t0 = Date.now();
-if (SAME) for (const s of [X, Y]) await s.js(CURSOR.zero);
+if (TAP) {
+  // A tap at the end of line 3 puts the phone's caret there and raises its keyboard, as a person's does.
+  await tap(TAP.focus);
+  await sleep(1500);
+  await X.js(CURSOR.zero);
+} else if (SAME) for (const s of [X, Y]) await s.js(CURSOR.zero);
 const typist = async (s, where, text, advance) => {
   while (Date.now() - t0 < DURATION) {
     const tick = Date.now();
     if (!SAME) await s.js(CURSOR[where]);
     const key = text[advance()];
-    if (key !== BACKSPACE) await s.send("Input.insertText", { text: key });
+    if (TAP && s === Y) await tap(TAP.keys[key]);
+    else if (key !== BACKSPACE) await s.send("Input.insertText", { text: key });
     else for (const type of ["rawKeyDown", "keyUp"]) {
       await s.send("Input.dispatchKeyEvent", { type, key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 });
     }
@@ -260,14 +305,16 @@ const all = Object.values(read);
 const expected = SAME ? null : `# Both${typedB}\nthe line nobody edits\nthe last fixed line\n${typedA}`;
 const third = (r) => r.disk.split("\n")[2] ?? "";
 const verdict = {
-  exact: SAME ? all.every((r) => r.disk === all[0].disk && third(r).startsWith("0") &&
+  exact: TAP ? all.every((r) => r.disk === all[0].disk && third(r).startsWith("0") && ofA(third(r)) === kept(typedA))
+    : SAME ? all.every((r) => r.disk === all[0].disk && third(r).startsWith("0") &&
     ofA(third(r)).length + ofB(third(r)).length === [...third(r)].length - 1 &&
     ofA(third(r)) === kept(typedA) && ofB(third(r)) === kept(typedB))
     : all.every((r) => r.disk === expected),
   same_disk: all.every((r) => r.disk === all[0].disk),
   editor_is_disk: all.every((r) => r.editor === null || r.editor === r.disk),
   all_A: all.every((r) => SAME ? ofA(third(r)) === kept(typedA) : r.disk.includes(typedA)),
-  all_B: all.every((r) => SAME ? ofB(third(r)) === kept(typedB) : r.disk.split("\n")[0] === `# Both${typedB}`),
+  all_B: all.every((r) => TAP ? true : SAME ? ofB(third(r)) === kept(typedB) : r.disk.split("\n")[0] === `# Both${typedB}`),
+  kinds: all.map((r) => `${r.local}/${r.synced}`),
   transient: SAME ? all.reduce((sum, r) => sum + r.broken.length, 0) : 0,
   checked: all.map((r) => r.checked),
   fixed_lines: all.every((r) => r.disk.startsWith(SAME ? "# Both\nthe line nobody edits\n0" : "# Both")
@@ -278,7 +325,8 @@ const count = (lines, word) => lines.filter((l) => l.includes(word)).length;
 const tally = (r) => ["decision=merged", "reason=unmerged", "role=keep", "role=yield", "decision=editor_refreshed", "reason=merge_storm", "merge_ancestry_limit", "ok=false"]
   .map((w) => `${w.replace(/^(decision|reason)=/, "")}=${count(r.lines, w)}`).join(" ");
 const pass = verdict.exact && verdict.editor_is_disk && verdict.copies === 0 && verdict.transient === 0 &&
-  (!SAME || (read.X.checked > 0 && read.Y.checked > 0));
+  (!SAME || [read.X, read.Y].every((r) => r.local > 0 && r.synced > 0));
+if (TAP) console.log("Y tapped", JSON.stringify(typedB), "and the note holds", JSON.stringify(third(read.Y)));
 console.log("verdict", JSON.stringify(verdict));
 // Notices each side showed during the run: how many, and each distinct text with its count.
 const notices = (r) => {
