@@ -7,11 +7,12 @@ The campaign found eight defects in the 1.1.7 candidate, each only once the
 checks were strict enough. Six were fixed before the next run. The seventh,
 found on a physical iPhone, is Obsidian's own: it happens with obsync
 switched off. The eighth, found on the iPhone when both people typed in one
-word, is open. The failing runs stay in this record: each is the evidence for
-one fix, or for what is still open.
+word, is fixed, and the fix kept every key on the iPhone. The failing runs
+stay in this record: each is the evidence for one fix, or for what Obsidian
+does on its own.
 
-- **Date and operator role.** 2026-10-08, `user`, through an agent on the
-  user's development computer.
+- **Date and operator role.** 2026-10-08 and 2026-10-09, `user`, through an
+  agent on the user's development computer.
 - **Route.** None of `docs/validation.md`'s production routes. Each lab runs
   its own `obsyncd` built from the candidate on that computer: over loopback
   HTTP for the desktops; for the phone, through a public quick tunnel of the
@@ -37,6 +38,8 @@ one fix, or for what is still open.
 | `2ff710ee` | `1a21bec4a8ee26e5…` (the same bytes) | iPhone session 1 |
 | `436c2bb5` | `8494d9d57b009cdc…` | iPhone session 2, built from a commit adding only this record on it |
 | `f78f2dab` | `8494d9d57b009cdc…` (the same bytes) | iPhone sessions 3 and 4 |
+| a lab build on `ba704391`, not in this repository | `70dd68ae…` | iPhone session 5 |
+| `9ca63459` | `2edf2b564870847a…` | iPhone session 6 |
 
 Every build is from a clean tree (`source_dirty: false` in its receipt).
 
@@ -210,6 +213,52 @@ had one newest version, and there was no copy. Each session's teardown removed
 every relay and process (`final-cleanup` PASS), and the test vaults and their
 downloads were then deleted from the phone.
 
+Session 5 looked for a way to deliver the other person's text that keeps the
+phone's keys. Its build added, for the lab only, a switch read from a synced
+note that changed what the phone's writer did with a merge for its focused
+editor; nothing else differed from `ba704391`. In every run the desktop typed
+`d1`…`d6` at the end of line 1, a key every 0.3 s, and the phone typed at the
+end of line 1, a key every 0.4 s; the merge puts the desktop's text before the
+phone's `w` keys and after its `a` keys:
+
+| Note | What the phone did with a merge | Phone's keys | Both devices after | Result |
+| --- | --- | --- | --- | --- |
+| s1 | delivered it, as built | `a1`…`a6` | `Desktop control 21a1a2a3a4a5a6d1d2d3d4d5d6` | exact |
+| s2 | delivered it, as built | `w1`…`w6` | `Desktop control 22d1d2d3d4d5d6w1www3w4w5w6` | one key replaced |
+| s3 | delivered it, then took focus from the editor and gave it back | `w1`…`w6` | `Desktop control 23d1d2d3d4d5d6w1www3w4www6` | two replaced |
+| s4 | held it while it changed the word at the caret | `w1`…`w6`, a space, `x7`…`x9` | `Desktop control 24d1d2d3d4d5d6w1w2w3w4w5w6 x7x8x9` | exact; it arrived on the space |
+| s6 | delivered it, as built; the desktop typed only during a 6 s pause | `w1w2w3`, then `w4w5w6` | `Desktop control 26d1d2d3d4d5d6w1w2w3w4w5w6` | exact |
+| s7 | delivered it, then removed the selection and added it back | `w1`…`w8` | `Desktop control 27d1d2d3d4d5d6w122www4w5w6w7w8` | two replaced |
+| s8 | delivered it, then switched autocorrect off for one frame | `w1`…`w8` | `Desktop control 28d1d2d3d4d5d6w122w344w5w6w7w8` | two replaced |
+
+A seventh note, s5, is void: its hold also required a key-press event within
+2 s, and its result matched the build's own, so that event evidently never
+fired through iPhone Mirroring.
+The desktop read every note back, and it matched the phone's screen. The
+teardown removed every relay and process (`final-cleanup` PASS).
+
+Session 6 ran the fix, `9ca63459`, the same way: the phone typed at the end of
+line 1 and the desktop at the end of line 1 while it did, unless the table
+says otherwise; "while typing" is the phone's screen just after its last key,
+and the text after is 4 s later:
+
+| Note | Phone's keys | Desktop's keys | On the phone while typing | Both devices after | Result |
+| --- | --- | --- | --- | --- | --- |
+| s1 | `w1`…`w8`, 0.4 s apart | `d1`…`d6`, 0.3 s apart | its own keys only | `Desktop control 31d1d2d3d4d5d6w1w2w3w4w5w6w7w8` | exact |
+| s2 | `y1`…`y9`, 0.35 s apart | `d1`…`d8`, 0.25 s apart | its own keys only | `Desktop control 32d1d2d3d4d5d6d7d8y1y2y3y4y5y6y7y8y9` | exact |
+| s3 | `w1w2w3`, a 2.0 s pause, `w4`…`w9` 0.3 s apart | `d1d2` during the first keys | not observed | `Desktop control 33d1d2w1w2w3w4w5w6w7w8w9` | exact |
+| s4 | the same with pauses of 1.7 s and 1.6 s | `d1d2` during the first keys | not observed | `Desktop control 34d1d2w1w2w3w4w5w6w7w8w9` | exact |
+| s5 | `w1w2w3`, a space, `x7x8x9` | `d1d2d3` during the first keys | before the space its own keys only; by the fourth key after it, the desktop's text too | `Desktop control 35d1d2d3w1w2w3 x7x8x9` | exact |
+| s6 | `a1`…`a6` | `d1`…`d4` | its own keys only | `Desktop control 36a1a2a3a4a5a6d1d2d3d4` | exact |
+| s7 | `w1`…`w7` on line 2 | `d1`…`d4` | the desktop's text too, by the tenth key | `Desktop control 37d1d2d3d4⏎w1w2w3w4w5w6w7` | exact |
+| s8 | `w1`…`w9` and `v1`…`v3` after `k1`, 0.3 s apart, 8 s in all | `d1`…`d9` | its own keys only | `Desktop control 38k1d1d2d3d4d5d6d7d8d9w1w2w3w4w5w6w7w8w9v1v2v3` | exact |
+
+135 phone keys and 76 desktop keys, none lost, replaced or doubled. The
+desktop read every note back, and it matched the phone's screen; each vault
+held the eight notes and the sentinel, and no copy. The teardown removed
+every relay and process (`final-cleanup` PASS), and both sessions' test
+vaults and downloads were then deleted from the phone.
+
 ## The defects the failures found
 
 1. **A deleted key came back for a moment** (`46fc651b`, desktops). A merge
@@ -279,7 +328,7 @@ downloads were then deleted from the phone.
    Obsidian's developers needs.
 8. **On an iPhone, a key typed right after the other person's text arrived in
    the same word overwrote the key before it** (`f78f2dab`, iPhone session 4,
-   co-typing runs 2 and 4; OPEN). Every key reached the phone's editor and was
+   co-typing runs 2 and 4; fixed by `9ca63459`). Every key reached the phone's editor and was
    published as typed: in run 4 the phone's version after its fourth key
    ends `f1fw1w2`. The phone's next version, after a merge put the desktop's
    `1f` in front of it in the same word, ends `f1fw1www3`: the next key
@@ -289,9 +338,22 @@ downloads were then deleted from the phone.
    text on another line, before the caret (run 3) or after it (run 1), every
    key stayed. Every desktop key was kept, both devices converged, and the
    merges themselves are right; the replaced key is the phone editor's own
-   input after obsync delivered the merge into it. Whether iOS's keyboard
-   keeps an old view of the word once the editor changes it, and what the
-   delivery must do so it does not, is open.
+   input after obsync delivered the merge into it. The iOS keyboard keeps its
+   own record of the word at the caret, and text it did not type, landing in
+   that word while the word is typed, leaves that record stale. Each
+   keystroke's save retries a parked version at once, so a merge usually
+   lands just after a key. In session 5, delivering the merge and then
+   refocusing the editor, re-selecting, or switching autocorrect for a frame
+   each still replaced keys. Holding it until the word was left replaced
+   none, and neither did text that arrived during a pause. Since
+   `9ca63459`, on iOS only, a version that would change the word at a focused
+   caret waits while that word is typed. It lands when the caret leaves the
+   word (a space retries it at once), the editor loses focus, or typing pauses
+   for 1.5 s, and each wait logs one line (`reason=typing_word`). Session 6
+   kept every key in eight runs, including pauses of 1.6 to 2.0 s followed by
+   fast typing, and text on another line still arrived while the phone typed.
+   What the keyboard holds is inferred from what each delivery did; it was
+   not read from iOS.
 
 ## Journeys and timings
 
@@ -301,6 +363,7 @@ downloads were then deleted from the phone.
 | V2 pair a phone | iPhone 1-4 | pass | Paired through the dialogs; the code the phone showed matched the desktop's. |
 | A desktop's note, then typing on the iPhone | iPhone 1-4 | pass for obsync | Every published text equalled the phone's screen. Defect 7 is Obsidian's: it also happened with obsync off (session 4, T2). Exact without a tap before Cmd+Down. |
 | Two people typing in one note, on an iPhone | iPhone 4 | fail | Defect 8 in runs 2 and 4, where both typed in one word; runs 1 and 3 exact; both devices converged every time, with no copy. |
+| Two people typing in one note, on an iPhone | iPhone 6, `9ca63459` | pass | Eight runs, seven of them in one word: 135 phone keys and 76 desktop keys, every one kept, both devices converged, no copy. |
 | V3 typing on a phone shows elsewhere within 3 s | 4 | fail | Cotype journey, 147 keystrokes each way: desktop to phone p50 1,068 ms, p95 1,724 ms, max 3,577 ms; phone to desktop p50 1,040 ms, p95 2,029 ms, max 3,634 ms. |
 | V3 | 5 | pass | Desktop to phone p50 940 ms, p95 1,345 ms, max 1,602 ms; phone to desktop p50 952 ms, p95 1,372 ms, max 1,778 ms. |
 | Cotype journey, 1.5 s for every keystroke | 1, 4, 5 | fail | 5 / 5, 15 / 15, and 2 / 3 keystrokes over 1.5 s (desktop to phone / phone to desktop); none missing. |
@@ -346,23 +409,28 @@ runs the unmutated suite beside them. Killed means at least one test failed.
 | Those five, and M4225 again | `436c2bb5` | 2,225 / 2,225 | 5, and M4225 by timeout again | 0 |
 | The library's re-cut, 142 | `2ff710ee` | 2,220 / 2,220 | 59 of the 68 run | 9: seven now killed by the tests `436c2bb5` adds, two retired |
 | The 74 not run | `436c2bb5` | 2,225 / 2,225 | 74 | 0 |
+| The iPhone word hold's, 15 (M4237–M4251) | `9ca63459` | its 10 tests, 10 / 10 | 15, each by the test written for it | 0 |
 
 The seven survivors' kills were measured against the tests that kill them,
 with the source restored from a copy after each. M3298 and M3300 are retired:
 the order M3298 pinned no longer decides anything, and the check M3300
 removed is the one `436c2bb5` deletes because `canRefresh` already makes it.
-All 2,042 mutants apply at `436c2bb5`. The whole set has not been run again
-at one final commit.
+All 2,042 mutants apply at `436c2bb5`. The word hold's 15 ran in a scratch
+copy against the tests that target them; the hold moved the context of M4116
+and M4146, which are re-cut as one-line hunks and still killed by the whole
+suite (M4116: 10 tests failed and one timed out; M4146: 4 failed), and all
+2,057 apply at `9ca63459`. The whole set has not been run again at one final commit.
 
 ## What was not validated
 
-- **iPhone acceptance.** Four iPhone sessions paired, settled defect 7 as
-  Obsidian's, and found defect 8, which is open, in four short co-typing
-  runs; no background, offline or leave journey, and no timed co-typing
-  journey, ran on an iPhone, and every iPhone key came from a hardware
-  keyboard, none from the on-screen one. Every other phone result is an
-  Android emulator. Nothing here speaks for an iPad, or for a physical
-  Android phone.
+- **iPhone acceptance beyond co-typing.** Six iPhone sessions paired,
+  settled defect 7 as Obsidian's, found defect 8 and kept every key with its
+  fix in eight short co-typing runs. No background, offline or leave
+  journey, and no timed co-typing journey, ran on an iPhone, and every iPhone
+  key came from a hardware keyboard through iPhone Mirroring, none from the
+  on-screen one. Every other phone result is an Android emulator. Nothing here
+  speaks for an iPad, though the word hold applies there too, or for a
+  physical Android phone, where nothing is held.
 - **A production route.** Loopback for the desktops, a public quick tunnel
   for the phone; no deployment behind the user's terminator, no
   TLS-inspecting proxy.

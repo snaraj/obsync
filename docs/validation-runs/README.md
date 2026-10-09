@@ -20,7 +20,7 @@ system; it is not a device run, and only a record below is
 | Client | Recorded on a device | Proven in CI |
 | --- | --- | --- |
 | macOS | The runs below that name it; most recently [2026-10-08](2026-10-08-character-merge-117.md), two instances typing at one place on the 1.1.7 candidate | `desktop-matrix.yml`, `obsidian-macos`: the official Obsidian app, two instances, through setup, pairing, notes both ways, a rename and folders, against the server behind Caddy; `plugin-tests` on macOS |
-| iPhone | The runs below that name it; most recently [2026-10-08](2026-10-08-character-merge-117.md), four sessions on the 1.1.7 candidate: paired, one defect shown to be Obsidian's, and an open co-typing defect found | Nothing: no CI job runs a phone |
+| iPhone | The runs below that name it; most recently [2026-10-08](2026-10-08-character-merge-117.md), six sessions on the 1.1.7 candidate: paired, one defect shown to be Obsidian's, and a co-typing defect found and fixed | Nothing: no CI job runs a phone |
 | iPad | Not yet recorded | Nothing |
 | Windows | [2026-09-27](2026-09-27-windows-11-vm.md): Windows 11 on ARM64 in a virtual machine, the 1.1.4 build; most recently [2026-09-30](2026-09-30-train-1.1.5.md), a 1.1.5 train build | `desktop-matrix.yml`, `obsidian-windows`: the same journeys, plus a case-only rename, the trash and a file another program holds open on NTFS; `plugin-tests` on Windows |
 | Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the same journeys with the official AppImage, the authority trusted in each instance's own NSS store, and a third instance without it refused |
@@ -41,11 +41,12 @@ observed from what was still outstanding.
   through 600 s on desktops and 300 s on the phone. Over the phone's tunnel the
   cotype journey still misses its 1.5 s budget for some keystrokes, and one
   return from the background was slow before the emulator stalled under load.
-  Four iPhone sessions: a seventh defect, the line above typed again after a
+  Six iPhone sessions: a seventh defect, the line above typed again after a
   tap and Cmd+Down from a hardware keyboard, is Obsidian's own, since it also
-  happened with obsync switched off; an eighth, open, is a key typed on the
-  iPhone right after the other person's text arrived in the same word
-  overwriting the key before it.
+  happened with obsync switched off. An eighth, a key typed on the iPhone right
+  after the other person's text arrived in the same word overwriting the key
+  before it, is fixed: on iOS that text now waits until the word is left or
+  typing pauses, and eight co-typing runs on the iPhone kept every key.
 - [2026-10-03 Rust CLI candidate](2026-10-03-rust-cli-candidate.md):
   four native hosted targets, Linux visible/manual readback, and explicit Windows
   software-emulation limits. Public installation remains a separate release gate.
