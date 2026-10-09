@@ -343,14 +343,16 @@ def journey(package, root, trust=()):
         import select
         def terminal(args, answer, expected=0, during=None, prompt=True, piped=None):
             master, slave = pty.openpty()
+            # Piped input is written before the child starts: one exiting unread breaks no writer.
+            given, feed = os.pipe()
+            os.write(feed, b'n\n')
+            os.close(feed)
             child = subprocess.Popen([str(installed / binary), *args], env=default_env,
-                                     stdin=subprocess.PIPE if piped == 'input' else slave,
+                                     stdin=given if piped == 'input' else slave,
                                      stdout=subprocess.PIPE if piped == 'output' else slave,
                                      stderr=subprocess.PIPE if piped == 'error' else slave)
             os.close(slave)
-            if piped == 'input':
-                child.stdin.write(b'n\n')
-                child.stdin.close()
+            os.close(given)
             output, responded = bytearray(), False
             deadline = time.monotonic()+12
             try:
