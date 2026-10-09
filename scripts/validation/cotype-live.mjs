@@ -110,12 +110,12 @@ const X_KEYS = 0x4e00, Y_KEYS = 0xac00, KEYS = 11172;
 // or the vault's saves) may still show; a moment before it is a step back.
 const MOMENT = `(text, floor) => {
   const seen = { x: [], y: [] };
+  let ok = !${SAME} || text.startsWith("# Both\\nthe line nobody edits\\n0") && text.split("\\n").length === 4 && text.endsWith("\\n");
   for (const c of text) {
     const p = c.codePointAt(0);
     if (p >= ${X_KEYS} && p < ${X_KEYS + KEYS}) seen.x.push(p - ${X_KEYS});
     else if (p >= ${Y_KEYS} && p < ${Y_KEYS + KEYS}) seen.y.push(p - ${Y_KEYS});
   }
-  let ok = true;
   for (const who of ["x", "y"]) {
     const keys = seen[who], last = keys.length > 0 ? keys[keys.length - 1] : -1;
     let at = 0;
@@ -302,26 +302,29 @@ const judge = (read, typedA, typedB) => {
     kinds: all.map((r) => `${r.local}/${r.synced}`),
     transient: SAME ? all.reduce((sum, r) => sum + r.broken.length, 0) : 0,
     checked: all.map((r) => r.checked),
-    fixed_lines: all.every((r) => r.disk.startsWith(SAME ? "# Both\nthe line nobody edits\n0" : "# Both")
-      && (SAME || r.disk.includes("\nthe line nobody edits\nthe last fixed line\n"))),
+    fixed_lines: all.every((r) => SAME ? r.disk.startsWith("# Both\nthe line nobody edits\n0") && r.disk.split("\n").length === 4
+      && r.disk.endsWith("\n") : r.disk.startsWith("# Both") && r.disk.includes("\nthe line nobody edits\nthe last fixed line\n")),
     copies: new Set(all.flatMap((r) => r.copies)).size,
   };
   const pass = verdict.exact && verdict.fixed_lines && verdict.editor_is_disk && verdict.copies === 0 && verdict.transient === 0 &&
     (!SAME || [read.X, read.Y].every((r) => r.local > 0 && r.synced > 0));
   return { verdict, pass, expected };
 };
-// THE ORACLE'S OWN CONTROL (review of 8fc0bf43, finding 2). Every typed key in
-// place says nothing of the lines nobody typed in: a note whose untouched lines
-// were rewritten passed. Before any run is judged, a kept note must pass and
-// the same note with its fixed lines changed must fail.
+// THE ORACLE'S OWN CONTROL (review of 8fc0bf43, finding 2; of e37064c3, finding 1).
+// Every typed key in place says nothing of the lines nobody typed in: a note
+// whose untouched lines were rewritten, or with a line added after the typed
+// one, passed. Before any run is judged, a kept note must pass, and the same
+// note with its fixed lines changed, or a line added, must fail -- in the
+// verdict, and in the same place in the check every state passes too.
 {
   const a = String.fromCodePoint(X_KEYS), b = String.fromCodePoint(Y_KEYS);
   const good = SAME ? `# Both\nthe line nobody edits\n0${TAP ? " " : ""}${a}${TAP ? "" : b}\n`
     : `# Both${b}\nthe line nobody edits\nthe last fixed line\n${a}`;
   const bad = good.replace("# Both", "CORRUPTED HEADER").replace("the line nobody edits", "DELETED FIXED LINE");
-  const sample = (disk) => ({ disk, editor: disk, copies: [], broken: [], local: 1, synced: 1, checked: 1 });
-  if (!judge({ X: sample(good), Y: sample(good) }, a, b).pass || judge({ X: sample(bad), Y: sample(bad) }, a, b).pass) {
-    throw new Error("oracle control: the verdict does not tell a kept note from one whose untouched lines changed");
+  const extra = `${good}UNAUTHORED EXTRA LINE\n`, moment = eval(MOMENT);
+  const passes = (disk) => { const s = { disk, editor: disk, copies: [], broken: [], local: 1, synced: 1, checked: 1 }; return judge({ X: s, Y: s }, a, b).pass; };
+  if (!passes(good) || passes(bad) || passes(extra) || SAME && (!moment(good, { x: -1, y: -1 }) || moment(extra, { x: -1, y: -1 }))) {
+    throw new Error("oracle control: the verdict does not tell a kept note from one whose untouched lines changed or grew");
   }
 }
 const t0 = Date.now();
