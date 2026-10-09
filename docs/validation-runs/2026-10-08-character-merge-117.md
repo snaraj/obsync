@@ -3,10 +3,12 @@
 Two people typing at one place in one note -- two desktops, or a desktop and
 a phone -- until every keystroke of both stays, in each person's order, on
 every device, and no state either editor or disk shows in between steps back.
-The campaign found seven defects in the 1.1.7 candidate, each only once the
-checks were strict enough. Six were fixed before the next run; the seventh,
-found on a physical iPhone at the end, is open. The failing runs stay in this
-record: each is the evidence for one fix, or for the one still open.
+The campaign found eight defects in the 1.1.7 candidate, each only once the
+checks were strict enough. Six were fixed before the next run. The seventh,
+found on a physical iPhone, is Obsidian's own: it happens with obsync
+switched off. The eighth, found on the iPhone when both people typed in one
+word, is open. The failing runs stay in this record: each is the evidence for
+one fix, or for what is still open.
 
 - **Date and operator role.** 2026-10-08, `user`, through an agent on the
   user's development computer.
@@ -34,6 +36,7 @@ record: each is the evidence for one fix, or for the one still open.
 | `5544d0ec` | `1a21bec4a8ee26e5…` | phone session 5; desktop same place 60 s and 600 s; desktop latency |
 | `2ff710ee` | `1a21bec4a8ee26e5…` (the same bytes) | iPhone session 1 |
 | `436c2bb5` | `8494d9d57b009cdc…` | iPhone session 2, built from a commit adding only this record on it |
+| `f78f2dab` | `8494d9d57b009cdc…` (the same bytes) | iPhone sessions 3 and 4 |
 
 Every build is from a clean tree (`source_dirty: false` in its receipt).
 
@@ -159,6 +162,54 @@ again before them (A1), within 0.4 s of the first key. One run without obsync
 cannot tell whether Obsidian alone ever doubles the line. Its teardown again
 removed every relay and process (`final-cleanup` PASS).
 
+Session 3 put the keys where session 2's did with one tap at the start of
+line 1, then Cmd+Down: the editor moves its caret to the end and iOS keeps
+typing at the tap (two notes reached the same state through Obsidian's file
+switcher instead). A tap on line 2 alone put both at the end, and those keys
+were exact. "Restarted" is the first keys after Obsidian was quit and opened
+again; two void notes, one created by a mistyped name and one begun after
+letters stopped reaching the phone, are left out:
+
+| Runs | obsync | Keys at the start of line 1 | Line above typed again | Exact |
+| --- | --- | --- | --- | --- |
+| 10 notes typed in a running app | on 6, off 4 | 10 | 0 | -- |
+| 3 notes, a tap on line 2 alone | on 1, off 2 | -- | 0 | 3 |
+| 2 restarted, obsync on | on | 1 | 1 (`Desktop control 73⏎pDesktop control 73hone7`) | -- |
+| 2 restarted, obsync off | off | 2 | 0 | -- |
+
+Session 4, the same build and the same tap at the start of line 1:
+
+| Note | obsync | Started | On the phone after the keys |
+| --- | --- | --- | --- |
+| W1 | on | first keys after pairing | `Desktop control 51⏎pDesktop control 51hone7` |
+| T1 | on | restarted | `phone7Desktop control 31⏎` |
+| W2 | off | running | `phone7Desktop control 52⏎` |
+| T2 | off | restarted | `Desktop control 32⏎pDesktop control 32hone7` |
+| T3 | off | restarted | `phone7Desktop control 33⏎` |
+| T4 | off | restarted | `phone7Desktop control 34⏎` |
+
+T2 is defect 7 with obsync switched off in the test vault: its history holds
+two versions, the desktop's and one upload of the doubled text when obsync
+was switched back on afterwards. Every note's published text equalled the
+phone's screen. Two notes begun while no letter reached the phone are void
+and left out; in both, iPhone Mirroring had been switched to another app
+while iOS showed a suggestion beside the caret.
+
+Session 4 then had both people type in one note at once, a key every 0.3 s on
+the desktop and every 0.4 s on the phone:
+
+| Run | Desktop's keys | Phone's keys | Both devices after | Result |
+| --- | --- | --- | --- | --- |
+| 1 | `d1`…`d9` on line 2 | `x1`…`x6` at the end of line 1 | `Desktop control 35x1x2x3x4x5x6⏎d1d2d3d4d5d6d7d8d9` | exact |
+| 2 | `d1`…`d6` at the end of line 1 | `y1`…`y6` at the end of line 1 | line 1 ends `d1d2d3d4d5d6y1yyy3yyy566` | defect 8 |
+| 3 | `e1`…`e6` at the end of line 1 | `z1`…`z6` on line 2 | `Desktop control 36e1e2e3e4e5e6⏎z1z2z3z4z5z6` | exact |
+| 4 | `f1`…`f6` at the end of line 2 | `w1`…`w6` at the end of line 2 | line 2 ends `f1f2f3f4f5f6w1www3w4w5w6` | defect 8 |
+
+In every run both devices held the same text on screen and on disk, the note
+had one newest version, and there was no copy. Each session's teardown removed
+every relay and process (`final-cleanup` PASS), and the test vaults and their
+downloads were then deleted from the phone.
+
 ## The defects the failures found
 
 1. **A deleted key came back for a moment** (`46fc651b`, desktops). A merge
@@ -208,38 +259,48 @@ removed every relay and process (`final-cleanup` PASS).
    breaker's; closings of two names, and closings nobody typed between, are
    counted as before. The 600 s run on that build reset the count 10 and 8
    times, never past 2, and showed no such notice.
-7. **The line above typed again after the first key, on an iPhone**
-   (`2ff710ee`, iPhone, note 1; OPEN). The phone's first version after its
-   first key held the desktop's line, the key, and the desktop's line again,
-   and the next five keys landed after it; both devices then held that text,
-   with no copy. No merge made it: that version's only parent is the
-   desktop's, so the phone's editor held that text when the save after the
-   key read it. Ruled out by reading the app's code: Obsidian's own handling
-   of a file changed underneath an editor, which merges against the last
-   saved text and only while the editor is unsaved, and of another pane's
-   text, which diffs the live document. Reproduced in session 2 (A1). The
-   trigger is a tap followed by Cmd+Down from a hardware keyboard: the editor
-   then draws its caret at the end, while iOS keeps typing where the tap put
-   it. Without a tap first, the same Cmd+Down and keys were exact (session 1,
-   notes 2 and 3), and inline predictions play no part. Obsidian without
-   obsync put the keys at the start of line 1 and nothing twice in the one run
-   made (A2); with obsync, the line above was typed again in two of three runs
-   (session 1 note 1, A1), and that text synced. Whether obsync takes part is
-   not established. Read in the editor's code: iOS changes the page itself and
-   the editor reads that change after it; any editor transaction in between
-   drops the unread change and redraws the line, and stray text the redraw
-   leaves would be read later as a new line -- the shape seen in A1. The
-   doubled text was already in the editor when obsync's save after the key
-   read it, and obsync's own code makes no editor transaction on a key; what
-   made one, if anything, is open.
+7. **The line above typed again after the first key, on an iPhone: Obsidian's
+   own, not obsync's** (`2ff710ee`, iPhone, note 1; settled in session 4).
+   The phone's first version after its first key held the desktop's line,
+   the key, and the desktop's line again, and the next five keys landed after
+   it; both devices then held that text, with no copy. No merge made it: that
+   version's only parent is the desktop's. The trigger is a tap followed by
+   Cmd+Down from a hardware keyboard: the editor draws its caret at the end,
+   while iOS keeps typing where the tap put it. Session 4 made it with obsync
+   switched off (T2), and that note's history holds one upload of the doubled
+   text, made when obsync was switched back on: Obsidian for iOS 1.14.4 writes
+   it with no plugin running, and obsync only synced what the editor held.
+   Across the four sessions, of the runs whose keys landed at the start of
+   line 1, it happened in 4 of 13 with obsync on and 1 of 11 with it off,
+   every time in the first keys after the app started or the vault was
+   paired, and never in an app already typed in (0 of 13). obsync's code makes
+   no editor transaction on a key and touches no open editor at start. Nothing
+   in obsync is changed for it; the recipe above is what a report to
+   Obsidian's developers needs.
+8. **On an iPhone, a key typed right after the other person's text arrived in
+   the same word overwrote the key before it** (`f78f2dab`, iPhone session 4,
+   co-typing runs 2 and 4; OPEN). Every key reached the phone's editor and was
+   published as typed: in run 4 the phone's version after its fourth key
+   ends `f1fw1w2`. The phone's next version, after a merge put the desktop's
+   `1f` in front of it in the same word, ends `f1fw1www3`: the next key
+   replaced the `2` and the key after it went in. Run 2 lost three keys that
+   way and run 4 one; each loss followed a merge into the phone's open editor
+   that landed in the word being typed, before the caret. With the desktop's
+   text on another line, before the caret (run 3) or after it (run 1), every
+   key stayed. Every desktop key was kept, both devices converged, and the
+   merges themselves are right; the replaced key is the phone editor's own
+   input after obsync delivered the merge into it. Whether iOS's keyboard
+   keeps an old view of the word once the editor changes it, and what the
+   delivery must do so it does not, is open.
 
 ## Journeys and timings
 
 | Row | Session | Result | Observed |
 | --- | --- | --- | --- |
 | V2 pair a phone | 4, 5 | pass | Both sessions paired through the dialogs, codes compared by independent renderers. |
-| V2 pair a phone | iPhone 1, 2 | pass | Paired through the dialogs; the code the phone showed matched the desktop's. |
-| A desktop's note, then typing on the iPhone | iPhone 1, 2 | fail | Defect 7 (session 1 note 1, session 2 A1); exact without a tap before Cmd+Down. |
+| V2 pair a phone | iPhone 1-4 | pass | Paired through the dialogs; the code the phone showed matched the desktop's. |
+| A desktop's note, then typing on the iPhone | iPhone 1-4 | pass for obsync | Every published text equalled the phone's screen. Defect 7 is Obsidian's: it also happened with obsync off (session 4, T2). Exact without a tap before Cmd+Down. |
+| Two people typing in one note, on an iPhone | iPhone 4 | fail | Defect 8 in runs 2 and 4, where both typed in one word; runs 1 and 3 exact; both devices converged every time, with no copy. |
 | V3 typing on a phone shows elsewhere within 3 s | 4 | fail | Cotype journey, 147 keystrokes each way: desktop to phone p50 1,068 ms, p95 1,724 ms, max 3,577 ms; phone to desktop p50 1,040 ms, p95 2,029 ms, max 3,634 ms. |
 | V3 | 5 | pass | Desktop to phone p50 940 ms, p95 1,345 ms, max 1,602 ms; phone to desktop p50 952 ms, p95 1,372 ms, max 1,778 ms. |
 | Cotype journey, 1.5 s for every keystroke | 1, 4, 5 | fail | 5 / 5, 15 / 15, and 2 / 3 keystrokes over 1.5 s (desktop to phone / phone to desktop); none missing. |
@@ -295,9 +356,11 @@ at one final commit.
 
 ## What was not validated
 
-- **iPhone acceptance.** Two iPhone sessions paired and reproduced defect 7,
-  which is open; no co-typing, background, restart, offline or leave journey
-  ran on an iPhone. Every other phone result is an
+- **iPhone acceptance.** Four iPhone sessions paired, settled defect 7 as
+  Obsidian's, and found defect 8, which is open, in four short co-typing
+  runs; no background, offline or leave journey, and no timed co-typing
+  journey, ran on an iPhone, and every iPhone key came from a hardware
+  keyboard, none from the on-screen one. Every other phone result is an
   Android emulator. Nothing here speaks for an iPad, or for a physical
   Android phone.
 - **A production route.** Loopback for the desktops, a public quick tunnel
