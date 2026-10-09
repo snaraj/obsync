@@ -308,7 +308,7 @@ const judge = (read, typedA, typedB) => {
   };
   const pass = verdict.exact && verdict.fixed_lines && verdict.editor_is_disk && verdict.copies === 0 && verdict.transient === 0 &&
     (!SAME || [read.X, read.Y].every((r) => r.local > 0 && r.synced > 0));
-  return { verdict, pass };
+  return { verdict, pass, expected };
 };
 // THE ORACLE'S OWN CONTROL (review of 8fc0bf43, finding 2). Every typed key in
 // place says nothing of the lines nobody typed in: a note whose untouched lines
@@ -346,7 +346,7 @@ console.log(`typed: X ${ai} chars (${typedA.slice(-9)}), Y ${bi} chars (${typedB
 await sleep(IDLE);
 const read = {};
 for (const [name, s] of sides) read[name] = JSON.parse(await s.call(READ, NOTE, `${STEM} (conflict`));
-const { verdict, pass } = judge(read, typedA, typedB);
+const { verdict, pass, expected } = judge(read, typedA, typedB);
 const count = (lines, word) => lines.filter((l) => l.includes(word)).length;
 const tally = (r) => ["decision=merged", "reason=unmerged", "role=keep", "role=yield", "decision=editor_refreshed", "reason=merge_storm", "merge_ancestry_limit", "ok=false"]
   .map((w) => `${w.replace(/^(decision|reason)=/, "")}=${count(r.lines, w)}`).join(" ");
