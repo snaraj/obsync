@@ -11,7 +11,8 @@ word, is fixed, and the fix kept every key on the iPhone. The failing runs
 stay in this record: each is the evidence for one fix, or for what Obsidian
 does on its own. The review of `8fc0bf43` and its CI found three more,
 in code no run here had reached; `f6ab09fd`, `92ddfdbe` and `844c8e4a` fix them
-(defects 9 to 11).
+(defects 9 to 11). The review of `e37064c3` found a fourth, in the judge
+again; `aabd09e3` fixes it (defect 12).
 
 - **Date and operator role.** 2026-10-08 and 2026-10-09, `user`, through an
   agent on the user's development computer.
@@ -44,6 +45,7 @@ in code no run here had reached; `f6ab09fd`, `92ddfdbe` and `844c8e4a` fix them
 | `9ca63459` | `2edf2b564870847a…` | iPhone session 6 |
 | `4f561d4c` | `92fd2f346cd0de06…` | desktop same place 60 s, judged exact, its trace not written [^5] |
 | `c8855743` | `92fd2f346cd0de06…` (the same bytes) | desktop same place 60 s and 600 s |
+| `aabd09e3` | `92fd2f346cd0de06…` (the same bytes) | desktop same place 60 s and 600 s, judged as a whole note |
 
 Every build is from a clean tree (`source_dirty: false` in its receipt).
 
@@ -114,6 +116,8 @@ X is the desktop, Y the other device.
 | Desktops, same place, 60 s | `4f561d4c` | 298 / 298 | 1,201 / 1,193 | 0 / 0 | 0 | exact; no result [^5] |
 | Desktops, same place, 60 s | `c8855743` | 298 / 298 | 1,209 / 1,198 | 0 / 0 | 0 | pass |
 | Desktops, same place, 600 s | `c8855743` | 2,976 / 2,976 | 12,000 / 11,934 | 0 / 0 | 0 | pass |
+| Desktops, same place, 60 s | `aabd09e3` | 298 / 298 | 1,220 / 1,208 | 0 / 0 | 0 | pass |
+| Desktops, same place, 600 s | `aabd09e3` | 2,977 / 2,977 | 11,954 / 11,976 | 0 / 0 | 0 | pass [^6] |
 
 The keyboard runs type words on the phone, so their Y count is keyboard taps.
 Every figure is `final.json` in that run's evidence, read by one script.
@@ -131,6 +135,10 @@ Every figure is `final.json` in that run's evidence, read by one script.
     `92ddfdbe` had moved that text into `judge`. `c8855743` fixes it, and the
     600 s run begun beside it was stopped and run again on that commit. The
     row is the verdict it printed; it has no `final.json`.
+[^6]: Four merges in this run met the 64-read ancestry limit, three on one
+    desktop and one on the other. Each pair waited, as defect 9's fix makes a
+    pair being typed in do (`deferred reason=history_budget_wait`), and a
+    later merge settled it: no copy, no broken state, and the text exact.
 
 ## The iPhone sessions
 
@@ -398,6 +406,14 @@ vaults and downloads were then deleted from the phone.
     changes that share a line taken together and compared by what the line
     reads on each side; the same sample joins none. People's typing is not
     judged by it and still merges letter by letter.
+12. **The same-place judge passed a note with a line added after the typed
+    one** (review of `e37064c3`, finding 1). Defect 10's fix checked the lines
+    before the typed one, not after it, and the check every state passes
+    looked at keys only. Fixed by `aabd09e3`: both require the note's whole
+    shape -- the header, the untouched line, the typed line opening with its
+    `0`, and nothing after -- and the driver's control now also feeds them a
+    note with a line added. Judged again, all 24 recorded runs hold the whole
+    note.
 
 ## Journeys and timings
 
@@ -411,7 +427,7 @@ vaults and downloads were then deleted from the phone.
 | V3 typing on a phone shows elsewhere within 3 s | 4 | fail | Cotype journey, 147 keystrokes each way: desktop to phone p50 1,068 ms, p95 1,724 ms, max 3,577 ms; phone to desktop p50 1,040 ms, p95 2,029 ms, max 3,634 ms. |
 | V3 | 5 | pass | Desktop to phone p50 940 ms, p95 1,345 ms, max 1,602 ms; phone to desktop p50 952 ms, p95 1,372 ms, max 1,778 ms. |
 | Cotype journey, 1.5 s for every keystroke | 1, 4, 5 | fail | 5 / 5, 15 / 15, and 2 / 3 keystrokes over 1.5 s (desktop to phone / phone to desktop); none missing. |
-| Two people typing at one place (this record's scenario) | all | pass on `5544d0ec` and `c8855743` | The results table: no copy, and no lost, doubled or returning key, in any run of the final build. |
+| Two people typing at one place (this record's scenario) | all | pass on `5544d0ec`, `c8855743` and `aabd09e3` | The results table: no copy, and no lost, doubled or returning key, in any run of the final build. |
 | J1, J2 after the app returns from the background | 4 | pass | Desktop to phone 1,065 ms, phone to desktop 1,022 ms. |
 | J1, J2 after the app returns from the background | 5 | pass, slowly | Desktop to phone 127,870 ms, phone to desktop 9,575 ms. [^4] |
 | J10 leave | 4 | pass | The server revoked the device in 3,271 ms; 8 local notes unchanged; the device's records cleared. |
@@ -454,7 +470,7 @@ runs the unmutated suite beside them. Killed means at least one test failed.
 | The library's re-cut, 142 | `2ff710ee` | 2,220 / 2,220 | 59 of the 68 run | 9: seven now killed by the tests `436c2bb5` adds, two retired |
 | The 74 not run | `436c2bb5` | 2,225 / 2,225 | 74 | 0 |
 | The iPhone word hold's, 15 (M4237–M4251) | `9ca63459` | its 10 tests, 10 / 10 | 15, each by the test written for it | 0 |
-| Round six's, 35: 12 new (M4252–M4263), 18 re-cut, and M4201–M4203, M4221, M4223 measured again | `f6ab09fd` | the whole suite 2,240 / 2,240, or the targeted files 68 / 68, 20 / 20, 34 / 34 | 33 | 2: M848, M851 |
+| Round six's, 35: 12 new (M4252–M4263), 18 re-cut, and M4201–M4203, M4221, M4223 measured again | `f6ab09fd` | the whole suite 2,240 / 2,240, or the targeted files 68 / 68, 20 / 20, 34 / 34 | 33 | 2, M848 and M851; killed since `a893e515` |
 
 The seven survivors' kills were measured against the tests that kill them,
 with the source restored from a copy after each. M3298 and M3300 are retired:
@@ -470,10 +486,10 @@ Round six's ran the same way in a scratch copy of `f6ab09fd`'s tree, each
 against the whole suite or the test files written for it, as the commit
 bodies list. The three gates that read the per-line rule (M4201–M4203)
 were run against the whole suite again. M848 and M851, the listing put back
-after a stopped walk, survive the whole suite: after a stopped walk no base
-is taken from either list, so the restore now decides only which listed
-ancestor names a closing of identical heads, and no test reaches that. It
-is kept, since it is not shown redundant. M4223 is counted by the test
+after a stopped walk, survived the whole suite there: what the restore still
+decides is the name two heads of one text close under, and no test reached
+it. `a893e515` adds that test; M848 fails both its cases, and M851, the
+read-limit site, its read-budget one, each by assertion. M4223 is counted by the test
 written for it, run alone; against its whole file it exhausts the heap at
 the 29th test, a cycle, which is not counted. M4196 and M4197 are retired
 with the character-level contest they mutated. All 2,067 apply at
@@ -497,12 +513,11 @@ with the character-level contest they mutated. All 2,067 apply at
   this work; the median is about one second. The desktop latency scenario
   passes over loopback.
 - **A prompt return from the background on Android.** See the journey rows.
-- **Ancestry past the read budget, live.** In the final 600 s desktop run
-  on `5544d0ec` one device's held ancestry reached its 8 MiB budget and one
-  merge read 64 versions and stopped (`merge_ancestry_limit`). That build fell
-  back to the listed base, and that run's text stayed exact; since defect 9's
-  fix such a pair waits while typed in and is otherwise kept as two texts. No
-  run here has met that path on the fixed build: its evidence is the tests.
+- **Ancestry past the read budget, for a pair nobody types in.** On
+  `5544d0ec` one merge read 64 versions and stopped, fell back to the listed
+  base, and that run's text stayed exact; on `aabd09e3` four did, each waited
+  while typed in, and the text stayed exact (footnote 6). A pair met there
+  with nobody typing is kept as two texts, and only the tests show that.
 - **The same text typed at one place by both people at one moment.** Kept
   once, not twice: two insertions where one is the start of the other combine
   into the longer one, by design of the merge.
