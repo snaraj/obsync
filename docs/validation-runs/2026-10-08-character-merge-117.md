@@ -46,6 +46,7 @@ again; `aabd09e3` fixes it (defect 12).
 | `4f561d4c` | `92fd2f346cd0de06…` | desktop same place 60 s, judged exact, its trace not written [^5] |
 | `c8855743` | `92fd2f346cd0de06…` (the same bytes) | desktop same place 60 s and 600 s |
 | `aabd09e3` | `92fd2f346cd0de06…` (the same bytes) | desktop same place 60 s and 600 s, judged as a whole note |
+| `fbcf53b0` | `8b0488c5d83b6c0d…` | iPhone session 7: the phone journeys |
 
 Every build is from a clean tree (`source_dirty: false` in its receipt).
 
@@ -432,6 +433,12 @@ vaults and downloads were then deleted from the phone.
 | J1, J2 after the app returns from the background | 5 | pass, slowly | Desktop to phone 127,870 ms, phone to desktop 9,575 ms. [^4] |
 | J10 leave | 4 | pass | The server revoked the device in 3,271 ms; 8 local notes unchanged; the device's records cleared. |
 | J10 leave | 5 | not attempted | The emulator had stopped responding [^4]. |
+| V2 pair a phone | iPhone 7, `fbcf53b0` | pass | Paired through the dialogs; the code the phone showed matched the desktop's; the phone's one note went up. |
+| J1, J2 | iPhone 7 | pass | The desktop's new note appeared on the phone with no tap; a line typed on the phone reached the desktop's disk and editor. |
+| J1, J2 after the app returns from the background | iPhone 7 | pass | Ten seconds on the Home screen: the desktop's line was on the phone within 1 s of reopening, with no tap; the phone's reply reached the desktop. |
+| J8 quit and relaunch, on the phone | iPhone 7 | pass | Swiped away in the app switcher. Relaunched, the line the desktop typed meanwhile showed within 2.7 s, with no setup or pairing prompt; the phone's reply reached the desktop. |
+| Offline, then back | iPhone 7 | pass | The server paused for 63 s. The phone said "Your server is not answering", state "offline — retrying"; nothing crossed. A line typed on each device meanwhile was on both, and on the server, 1.4 s after the server came back, with no tap and no copy [^7]. |
+| J10 leave | iPhone 7 | pass | The server revoked exactly the phone, the desktop still active. The phone showed "not paired" and an empty Server URL; both notes, and their text, unchanged. |
 | Desktop latency, loopback | `5544d0ec` | pass | One line typed: remote 187 ms, converged 297 ms; both lines: 314 / 354 ms; continuous typing: 564 / 314 ms; no unexpected notice. |
 | Every other V and J row | -- | not attempted | |
 
@@ -456,6 +463,16 @@ within 1.5 s; their routes were not re-read for this record.
     cores at that time, from other work. One earlier session saw an
     87 s return the same way; session 4 saw 1 s. Whether a real phone on a
     stable route returns slowly is not established.
+
+[^7]: The two lines were typed at one place: the phone's `Offline-ok` and the
+    desktop's `desktop-offline-42`. They combined as `Offline-desktop-offline-42`
+    then `ok`: every key of both, each in its writer's order. A verify pass on
+    the desktop afterwards sent nothing, so its disk, its editor, the phone's
+    screen and the server's newest version held one text. The server's list
+    shows the phone's queued versions meeting the desktop's line one at a time,
+    the first one character long and then the whole line; which of those
+    merges put the desktop's line inside the phone's is not reproduced here.
+    A shared editor would keep the phone's line whole.
 
 ## Mutation evidence
 
@@ -497,12 +514,12 @@ with the character-level contest they mutated. All 2,067 apply at
 
 ## What was not validated
 
-- **iPhone acceptance beyond co-typing.** Six iPhone sessions paired,
+- **iPhone acceptance beyond these journeys.** Seven iPhone sessions paired,
   settled defect 7 as Obsidian's, found defect 8 and kept every key with its
-  fix in eight short co-typing runs. No background, offline or leave
-  journey, and no timed co-typing journey, ran on an iPhone, and every iPhone
-  key came from a hardware keyboard through iPhone Mirroring, none from the
-  on-screen one. Every other phone result is an Android emulator. Nothing here
+  fix in eight short co-typing runs, then passed the background, relaunch,
+  offline and leave journeys on `fbcf53b0`. No timed co-typing journey ran on
+  an iPhone, and every iPhone key came from a hardware keyboard through iPhone
+  Mirroring, none from the on-screen one. Every other phone result is an Android emulator. Nothing here
   speaks for an iPad, though the word hold applies there too, or for a
   physical Android phone, where nothing is held.
 - **A production route.** Loopback for the desktops, a public quick tunnel
@@ -525,5 +542,5 @@ with the character-level contest they mutated. All 2,067 apply at
   lab's settings step, stood over the phone's vault after pairing in one
   session and was dismissed as a person would; it is Obsidian's, not obsync's.
 - **The in-app Obsidian version on the desktops** during the runs.
-- **Restart, offline, rename, folder, large-file and every other journey not
-  in the table**, on this build.
+- **Rename, folder, large-file and every other journey not in the table**,
+  on this build; restart and offline only as the iPhone rows show.
