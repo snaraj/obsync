@@ -519,7 +519,8 @@ with the character-level contest they mutated. All 2,067 apply at
   fix in eight short co-typing runs, then passed the background, relaunch,
   offline and leave journeys on `fbcf53b0`. No timed co-typing journey ran on
   an iPhone, and every iPhone key came from a hardware keyboard through iPhone
-  Mirroring, none from the on-screen one. Every other phone result is an Android emulator. Nothing here
+  Mirroring, none from the on-screen one; on 2026-10-09 both were deferred to
+  v1.1.8 (#339). Every other phone result is an Android emulator. Nothing here
   speaks for an iPad, though the word hold applies there too, or for a
   physical Android phone, where nothing is held.
 - **A production route.** Loopback for the desktops, a public quick tunnel
