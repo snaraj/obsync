@@ -473,6 +473,69 @@ for (const reason of ["read budget", "unavailable ancestor", "read budget while 
 });
 
 /**
+ * AND THE NAME A STOPPED WALK GIVES (review of e37064c3, finding 3). Two heads
+ * of one text close under the name `settledName` takes from their shared
+ * ancestor. A walk that stops is put back to the listing: how far this device
+ * read is no evidence the other device holds, so both settle the name from
+ * what the server lists -- here no shared ancestor, and the rule every device
+ * computes alike -- never from the one ancestor this device happened to read.
+ */
+for (const reason of ["read budget", "unavailable ancestor"]) test(`identical heads settle their name from the listing when the walk to their ancestors stops (${reason}) (#151, #339)`, async () => {
+  const { rig, published } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile, sidDigest } = require("../build/sync/push.js");
+  const { ApiError } = require("../build/transport.js");
+  const c = require("../build/crypto.js");
+
+  const r = await rig();
+  const NOTE = "Notes/b.md", MOVED = "Notes/z.md", TEXT = "the same text on both\n";
+  r.host.seed(NOTE, "first\n", 1000);
+  const root = await pushFile(r.context, NOTE);
+  let at = 2000;
+  const publish = async (path, text, parents) => (await r.server.publish({ fileId: root.fileId, path,
+    bytes: new TextEncoder().encode(text), mtime: at += 1000, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey })).version_id;
+  // Two edits of the note, both shared by the two heads; one is behind a long
+  // run of this device's own versions, past the listing and the read budget.
+  const m1 = await publish(NOTE, "one\n", [root.versionId]);
+  const m2 = await publish(NOTE, "two\n", [root.versionId]);
+  let chain = m1;
+  for (let i = 0; i < (reason === "read budget" ? 80 : 12); i++) chain = await publish(NOTE, `chain ${i}\n`, [chain]);
+  // Both close the same pair to one text; the other device also moved the note.
+  const own = await publish(NOTE, TEXT, [chain, m2].sort());
+  const desktop = await publish(MOVED, TEXT, [m1, m2].sort());
+  r.host.seed(NOTE, TEXT, at += 1000);
+  const { sid } = await c.encryptChunk(r.keys.domainKey, new TextEncoder().encode(TEXT));
+  r.state.setFile(NOTE, { fileId: root.fileId, versionId: own, mtime: at, size: TEXT.length, sha256: await sidDigest([sid]) });
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (...args) => {
+    const file = await getFile(...args);
+    return { ...file, versions: file.versions.filter((version, i) => i < 10 || file.heads.includes(version.version_id)) };
+  };
+  if (reason === "unavailable ancestor") {
+    const getVersion = r.transport.getVersion.bind(r.transport);
+    r.transport.getVersion = async (fileId, id, ...rest) => {
+      if (id === m1) throw new ApiError(404, "not_found", "retained ancestor unavailable");
+      return await getVersion(fileId, id, ...rest);
+    };
+  }
+  const listed = (await r.transport.getFile(root.fileId)).versions.map((version) => version.version_id);
+  assert.ok(!listed.includes(m1) && !listed.includes(m2) && !listed.includes(root.versionId), "a shared ancestor is listed");
+  const story = () => r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+
+  assert.equal(await applyChange(r.context, r.server.journal.find((entry) => entry.version_id === desktop)), "skipped", story());
+
+  const stopped = reason === "unavailable ancestor" ? /^pull decision=unavailable reason=merge_ancestor / : /^pull decision=refused reason=merge_ancestry_limit /;
+  assert.ok(r.host.logs.some((line) => stopped.test(line)), story());
+  assert.ok(r.host.logs.some((line) => line.startsWith("pull decision=renamed_twice kept=ours base=unknown ")), story());
+  assert.equal((await published(r.server, root.fileId, r.keys.manifestKey)).at(-1).path, NOTE, "the name came from an ancestor no listing shows");
+  assert.equal(r.host.text(NOTE), TEXT);
+  assert.equal(r.host.text(MOVED), null);
+  assert.equal(r.server.files.get(root.fileId).heads.length, 1, `the fork was left open: ${story()}`);
+});
+
+/**
  * AND WHERE THAT ANCESTRY WAS ALREADY HELD (#339, Android emulator, after the
  * fix above). A device that saw every version on the feed recalls the unlisted
  * ones as its walk reaches them. Added in that order, a parent reached first
