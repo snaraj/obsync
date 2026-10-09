@@ -42,8 +42,9 @@ observed from what was still outstanding.
   cotype journey still misses its 1.5 s budget for some keystrokes, and one
   return from the background was slow before the emulator stalled under load.
   Two iPhone sessions reproduced a seventh defect, open: after a tap and
-  Cmd+Down from a hardware keyboard, keys land where the editor's selection
-  still is, and with obsync the line above can be typed again before them.
+  Cmd+Down from a hardware keyboard, iOS types where the tap was, and with
+  obsync on the line above was typed again in two of three runs; whether
+  obsync takes part is not established.
 - [2026-10-03 Rust CLI candidate](2026-10-03-rust-cli-candidate.md):
   four native hosted targets, Linux visible/manual readback, and explicit Windows
   software-emulation limits. Public installation remains a separate release gate.

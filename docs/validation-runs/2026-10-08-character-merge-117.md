@@ -151,12 +151,13 @@ notes, and nothing else changed:
 | A4 | on | unchanged | void: no key reached any field until Mirroring was reconnected |
 | B1 | off | unchanged | void: begun while no key reached any field |
 
-Obsidian without obsync shows the cause: after the tap and Cmd+Down, the
-caret is drawn at the end of the note, and the keys land where the editor's
-own selection still is, the start of line 1. With obsync on, the same keys
-landed there too (A3), or the editor showed the line above typed again before
-them (A1), within 0.4 s of the first key. Its teardown again removed every
-relay and process (`final-cleanup` PASS).
+After the tap and Cmd+Down, the editor draws its caret at the end of the
+note, but iOS keeps typing where the tap put it: in A2, without obsync, the
+keys landed at the start of line 1 and nothing twice. With obsync on, the
+same keys landed there too (A3), or the editor showed the line above typed
+again before them (A1), within 0.4 s of the first key. One run without obsync
+cannot tell whether Obsidian alone ever doubles the line. Its teardown again
+removed every relay and process (`final-cleanup` PASS).
 
 ## The defects the failures found
 
@@ -217,17 +218,20 @@ relay and process (`final-cleanup` PASS).
    of a file changed underneath an editor, which merges against the last
    saved text and only while the editor is unsaved, and of another pane's
    text, which diffs the live document. Reproduced in session 2 (A1). The
-   trigger is a tap followed by Cmd+Down from a hardware keyboard: the caret
-   is then drawn at the end while the editor's own selection stays where the
-   tap put it, and keys typed next land there. Obsidian without obsync puts
-   them at the start of line 1 and nothing twice (A2); with obsync, the line
-   above was typed again in one of two runs (A1, A3), so obsync turns a
-   misplaced key into a doubled line, which then syncs. Without a tap first,
-   the same Cmd+Down and keys were exact (session 1, notes 2 and 3), and
-   inline predictions play no part. The link is not established yet; the
-   leading candidate is obsync's save of the editor 5 ms after each key,
-   which on this path can run between iOS changing the page and the editor
-   reading that change.
+   trigger is a tap followed by Cmd+Down from a hardware keyboard: the editor
+   then draws its caret at the end, while iOS keeps typing where the tap put
+   it. Without a tap first, the same Cmd+Down and keys were exact (session 1,
+   notes 2 and 3), and inline predictions play no part. Obsidian without
+   obsync put the keys at the start of line 1 and nothing twice in the one run
+   made (A2); with obsync, the line above was typed again in two of three runs
+   (session 1 note 1, A1), and that text synced. Whether obsync takes part is
+   not established. Read in the editor's code: iOS changes the page itself and
+   the editor reads that change after it; any editor transaction in between
+   drops the unread change and redraws the line, and stray text the redraw
+   leaves would be read later as a new line -- the shape seen in A1. The
+   doubled text was already in the editor when obsync's save after the key
+   read it, and obsync's own code makes no editor transaction on a key; what
+   made one, if anything, is open.
 
 ## Journeys and timings
 
