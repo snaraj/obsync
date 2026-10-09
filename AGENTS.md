@@ -44,8 +44,8 @@ not by setting.
 
 `docs/architecture.md` is the design; `docs/protocol.md` the wire contract;
 `docs/storage.md` the volume and durability contract; `docs/threat-model.md`
-what is and is not defended; `docs/benchmarks.md` the numbers LiveSync sets
-and obsync must beat; `docs/validation.md` the device validation plan;
+what is and is not defended; `docs/benchmarks.md` the numbers the reference
+self-hosted sync plugin sets and obsync must beat; `docs/validation.md` the device validation plan;
 `docs/platform-onboarding.md` what the platform repository must add.
 
 ## Requirements

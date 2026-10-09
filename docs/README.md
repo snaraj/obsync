@@ -71,7 +71,7 @@ These documents describe planned work, not commands available in the current rel
 | [CI map](ci-map.md) | What each CI job runs and what that proves |
 | [Validation](validation.md) | The device validation plan and what "ready" means |
 | [Validation runs](validation-runs/README.md) | What each run on real devices covered, and what it did not |
-| [Benchmarks](benchmarks.md) | Measured against LiveSync, each number naming the command that produced it |
+| [Benchmarks](benchmarks.md) | Measured against the reference self-hosted sync plugin, each number naming the command that produced it |
 | [Platform onboarding](platform-onboarding.md) | What a GitOps platform repository adds to run the chart |
 | [Captures](captures/README.md) | The five validated-run screenshots, their form, and the redaction rules |
 | [Translations](translations.md) | Which languages the guides exist in, and how they are kept current |

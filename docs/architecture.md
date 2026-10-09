@@ -23,8 +23,8 @@ Two programs and one contract between them:
 - **The wire protocol** (`docs/protocol.md`) — a small HTTP+JSON API with
   per-device HMAC request authentication and a long-poll change feed.
 
-LiveSync (CouchDB replication, base64 binaries, per-chunk compression, manual
-garbage collection) is the reference to beat on fidelity, speed,
+The reference self-hosted sync plugin (document-database replication, base64
+binaries, per-chunk compression, manual garbage collection) is the bar to beat on fidelity, speed,
 reliability, and resource use; `docs/benchmarks.md` pins the numbers.
 
 ## 2. Trust model (decided 2026-09-07)
@@ -167,7 +167,7 @@ every device, so deduplication works across devices without the server
 learning anything about `P`. The server verifies `sid` on every upload and
 on every scrub, so a corrupted or forged chunk is refused or quarantined.
 
-No compression in v1. LiveSync's own measurements show a 9 % storage gain
+No compression in v1. The reference plugin's own measurements show a 9 % storage gain
 for a 2× wall-time and 6× CPU cost, and the target workload (video, images,
 archives) is incompressible. Text-only opt-in compression is a later
 decision, not a default.

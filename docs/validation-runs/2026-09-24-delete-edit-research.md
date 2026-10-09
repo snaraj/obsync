@@ -3,12 +3,10 @@
 The user chose edit-wins behavior for #178: one live head, deletion retained
 in history, and no repeat deletion notices after settlement.
 
-Obsidian's [Sync troubleshooting](https://obsidian.md/help/sync/troubleshoot)
-describes Markdown merge and other-file conflict handling; its
-[version history](https://obsidian.md/help/sync/version-history) documents
-recovering deleted notes separately from current files. Notion's
-[delete and restore guide](https://www.notion.com/help/duplicate-delete-and-restore-content)
-describes Trash and restoration before editing a deleted page. These sources
+A hosted sync service's troubleshooting guide describes Markdown merge and
+other-file conflict handling, and its version history documents recovering
+deleted notes separately from current files. A block-based editor's delete and
+restore guide describes Trash and restoration before editing a deleted page. These sources
 do not establish a universal delete-versus-edit winner. The exact winner here
 is the user's explicit decision, not a claimed guarantee about either product.
 
