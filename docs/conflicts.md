@@ -5,17 +5,20 @@
 Two devices edited the same note before either of them synced. obsync never
 discards an edit to resolve that.
 
-A text note is combined the way a shared document combines two people typing:
-every change from both devices ends up in one note, letter by letter. Two
-people typing on the same line, even at the same spot, both keep every letter
-they typed. Text one device deleted stays deleted, and text one device typed
-inside something the other deleted is kept. Your notes remain ordinary files
-you can open and edit in Obsidian.
+A text note is combined letter by letter: every change from both devices ends
+up in one note. Two people typing on the same line, even at the same spot,
+both keep what they typed; the same text typed at the same spot on both
+devices at once appears once. Text one device deleted stays deleted, and text
+one device typed inside something the other deleted is kept. Your notes remain
+ordinary files you can open and edit in Obsidian.
 
 While you type, changes from the other device appear in the open note and your
 cursor stays where you are typing. Undo takes back only your own typing. A word
 your keyboard is still composing, as Android keyboards do with every word, is
-finished before the other device's changes come in.
+finished before the other device's changes come in. On iPhone and iPad,
+changes that reach the word you are typing wait until you pause for a moment,
+finish the word, or move the cursor: the keyboard there would otherwise put
+back the letters it remembers over them.
 
 A second file beside the original, a **conflict copy**, is made only for what
 cannot be combined as text. See [below](#everything-else-becomes-a-conflict-copy).
@@ -47,12 +50,16 @@ If any one of them is not, you get a conflict copy instead:
   `.csv` or `.log`, is never combined.
 - **Both versions grew from the same earlier version.** Two devices that each
   created a file with the same name have nothing to combine.
+- **obsync can read back to where they grew apart.** After a very long run of
+  separate edits, or when an earlier version is no longer kept, it keeps both
+  rather than guess; while you type in that note, it waits for the other
+  device instead.
 
 Two versions that differ in thousands of places still combine, though text
 may land a few words from where its author put it. One case is held instead:
 when a plugin rewrites a note by itself right after a sync, such as a
-timestamp it updates, at the same place another device changed, obsync
-pauses the note rather than join two automatic values into one. See
+timestamp it updates, on a line another device also changed, obsync pauses
+the note rather than join two values into one neither wrote. See
 [Stop repeated rewrites](daily-use.md#stop-repeated-rewrites).
 
 The exact rules are in [the architecture](architecture.md#62-plugin-loops),

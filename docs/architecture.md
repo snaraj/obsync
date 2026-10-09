@@ -1208,8 +1208,7 @@ long poll and needs its timeout raised.
    named in one `engine decision=waiting` line and still waited for: a stop
    never abandons a pull.
 4. **Conflicts.** Two heads on a text file with a reachable common ancestor
-   → a three-way character merge (`mergeText`, `sync/conflict.ts`), the way
-   collaborative editors combine concurrent keystrokes. Each side's change
+   → a three-way character merge (`mergeText`, `sync/conflict.ts`). Each side's change
    from the base is found on its own: equal ends are trimmed; text spanning
    lines is aligned by line, lines occurring once on each side anchoring it
    (patience alignment) and Myers' algorithm aligning the runs between; each
@@ -1224,15 +1223,23 @@ long poll and needs its timeout raised.
    side is its own; an insertion that begins the other side's insertion at
    the same place lands once (one typed stream seen at two lengths, as a base
    older than both heads' shared text presents it). Text never refuses to
-   merge, with one exception: when both sides changed one place differently
-   and either side is an automatic answer -- a plugin rewriting the note
-   right after a sync (the background-answer hold below) -- two rewritten
-   values joined would be no value, so the pair is held instead. If the graph has
+   merge, with one exception: when both sides changed one line so that it
+   reads differently on each, and either side is an automatic answer -- a
+   plugin rewriting the note right after a sync (the background-answer hold
+   below) -- two rewritten values joined would be no value, so the pair is
+   held instead. That is judged per base line, not per character: the
+   changes that share a line are taken together, so two stamps rewriting
+   different digits of one time meet, and one rewrite both sides made alike
+   does not. If the graph has
    two incomparable common ancestors, combine them before comparing the
    current edits, even when the first comparison would look clean. A shared
    base this device cannot read, or one past the depth budget, refuses the
    merge; it cannot fall back to just one ancestor and replay the other's
-   text.
+   text. So does an ancestry walk to the pair's shared frontier that stops
+   at its read budget (64 reads) or at a retained version the server no
+   longer has: no base is taken from the partial listing
+   (`unmerged reason=history_budget`, or, while the note is typed in,
+   `deferred reason=history_budget_wait`).
    A clean merge posts a new version with both heads as parents, under a name
    merged the same way against the same ancestor: the side that moved the
    note keeps its name, and two different moves keep, on every device, the
@@ -1586,10 +1593,10 @@ long poll and needs its timeout raised.
    - **The two versions share a common ancestor.** Two devices that
      independently created the same path have none — there is nothing to
      merge against, and neither side is a later version of the other.
-   - **No automatic answer meets the other side's change.** Edits at the same
-     place -- insertions, replacements and deletions alike -- merge, unless one
-     side is a background answer; that pair is held (above), and a copy is
-     made only if the hold does not apply.
+   - **No automatic answer meets the other side's change.** Edits on one
+     line -- insertions, replacements and deletions alike -- merge, unless one
+     side is a background answer and the line reads differently on each; that
+     pair is held (above), and a copy is made only if the hold does not apply.
 
    How far apart two versions are no longer decides anything: alignment work
    is bounded per side, and past the bound a region is merged whole.

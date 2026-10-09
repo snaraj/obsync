@@ -10,14 +10,17 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 ### Fixed
 
 - Two devices typing in one note, on the same line or at the same spot, now
-  combine letter by letter, the way a shared document combines two people
-  typing: every keystroke of both stays in the note, deleted text stays
-  deleted, and text is never set apart into a conflict copy. Incoming text
-  reaches an open editor as only the other device's change, so the cursor
-  stays where you type and undo takes back only your own typing. A plugin
-  rewriting a note right after a sync, at a place another device changed, is
-  still held rather than joined. Encryption, the wire format and the server
-  are unchanged (#339).
+  combine letter by letter: every keystroke of both stays in the note, the
+  same text typed at the same spot on both at once appears once, deleted text
+  stays deleted, and text goes to a conflict copy only when the two versions'
+  shared history cannot be read in full (below). Incoming
+  text reaches an open editor as only the other device's change, so the
+  cursor stays where you type and undo takes back only your own typing. A
+  plugin rewriting a note right after a sync, on a line another device also
+  changed, is still held rather than joined, even where the two rewrites
+  changed different characters of that line: two times stamped on two
+  devices no longer combine into a time neither wrote. Encryption, the wire
+  format and the server are unchanged (#339).
 - Text deleted on one device no longer comes back from another. When a
   combined result came out exactly as the other device's text, that device's
   version was taken as is, and a deletion made here could come back for a
@@ -79,6 +82,11 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   next merge instead of classifying the limit as overlapping text. Other
   notes continue syncing; the existing bounded retry and cold-history
   fallback remain.
+- Two versions whose shared history could not be read in full -- past the
+  merge-history work limit, or with a retained version gone -- are no longer
+  combined over the older history that was listed, which could bring a
+  deleted letter back or type two letters twice. While you type, the note
+  waits as above; otherwise both texts are kept, the note and one copy (#339).
 - The container builder base advances to Rust 1.98.1 with its pinned image
   digest; the repository compiler remains pinned to Rust 1.98.0 (#336).
 
