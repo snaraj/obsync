@@ -295,6 +295,7 @@ async function receiver(t, { server, timers, a }, { iterate = true, ...options }
   const promises = {
     ...fsPromises,
     rename: async (from, to) => {
+      if (hooks.beforeRename) await hooks.beforeRename(from, to);
       await fsPromises.rename(from, to);
       if (hooks.afterRename) await hooks.afterRename(from, to);
     },
@@ -692,6 +693,36 @@ test("a listed open note reconciles once and preserves typing begun during the w
     assert.equal(r.host.editorActivity.nativeOnly.get(view), undefined, `typing=${typing}: a confirmed pane was demoted: ${story(r)}`);
     if (typing) assert.equal(await r.host.editorReady("Notes/n.md"), false, "unsaved typing remains protected");
     assert.ok(!r.logs.some((line) => line.includes("reason=editor_refresh error=")), story(r));
+  }
+});
+
+/**
+ * A RENAME THE SYSTEM REFUSES IS NO RELOAD (Desktop matrix, windows-2025, at
+ * 9949dc61). Windows can refuse a rename for a moment, and the write is tried
+ * again and lands. The first try reached neither the disk nor the editor, yet
+ * its reload was released `unconfirmed`: the pane was demoted to native saving
+ * for the rest of its life, and the test above failed so, with the retry's
+ * refresh logged and no unconfirmed refresh to explain it.
+ */
+test("a rename the system refuses for a moment leaves the pane its bridge (#267)", async (t) => {
+  for (const typing of [false, true]) {
+    let refused = 0;
+    const { r, view } = await editListed(t, {}, (r) => {
+      const view = openEditor(r, "Notes/n.md");
+      r.hooks.beforeRename = async (_from, to) => {
+        if (refused > 0 || !to.endsWith(`${nodePath.sep}n.md`)) return;
+        refused++;
+        throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+      };
+      if (typing) r.hooks.afterRename = async (_from, to) => { if (to.endsWith(`${nodePath.sep}n.md`)) view.type("TYPED"); };
+      return view;
+    });
+    assert.equal(refused, 1, story(r));
+    assert.ok(r.logs.includes("host path_class=file decision=failed reason=write error=EPERM outcome=superseded"), story(r));
+    assert.ok(r.logs.some((line) => line.startsWith("editor decision=reload_released outcome=superseded ")), story(r));
+    assert.ok(r.logs.includes("host path_class=file decision=editor_refreshed views=1"), story(r));
+    assert.equal(r.host.editorActivity.nativeOnly.get(view), undefined, `typing=${typing}: a refused rename demoted the pane: ${story(r)}`);
+    assert.equal(view.data, typing ? `${AFTER}TYPED` : AFTER, story(r));
   }
 });
 

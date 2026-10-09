@@ -1,0 +1,6 @@
+M4266: leave a failed desktop write unlogged
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2328 +2328 @@
+-          else this.log(`host path_class=file decision=failed reason=write error=${(error as { code?: string }).code ?? (error instanceof Error ? error.name : "unknown")} outcome=${outcome}`);
++          else void 0;

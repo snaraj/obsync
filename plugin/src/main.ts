@@ -2253,7 +2253,7 @@ export class ObsidianHost implements VaultHost {
         const read = (): Promise<string> => fs.promises.readFile(target, "utf8");
         let shown: string | null = null;
         let release: ((outcome: ReloadOutcome) => void) | null = null;
-        let outcome: ReloadOutcome = "unconfirmed", superseded = false;
+        let outcome: ReloadOutcome = "superseded", superseded = false;
         let bridge: ReturnType<ObsidianHost["bridgeEditors"]> = null;
         const commit = async (): Promise<void> => {
           // Inside the native queue, use the independent filesystem read:
@@ -2265,8 +2265,9 @@ export class ObsidianHost implements VaultHost {
           shown = await this.assertEditorIdle(path, expected, typeof queue === "function" ? read : undefined);
           release = this.editorActivity.holdReload(path);
           if (release === null) throw new EditorBusy();
-          outcome = shown === null ? "confirmed" : "unconfirmed";
+          // No reload can follow a rename the system refused (Windows can, for a moment).
           await fs.promises.rename(temp, target);
+          outcome = shown === null ? "confirmed" : "unconfirmed";
           this.temps.delete(temp);
           await this.syncFolder(fs, parent);
           // The rename is the moment the file takes its real name, so the
@@ -2324,6 +2325,7 @@ export class ObsidianHost implements VaultHost {
           return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
         } catch (error) {
           if (error instanceof WriteSuperseded) outcome = "superseded";
+          else this.log(`host path_class=file decision=failed reason=write error=${(error as { code?: string }).code ?? (error instanceof Error ? error.name : "unknown")} outcome=${outcome}`);
           await discard();
           throw error;
         } finally {

@@ -1,0 +1,6 @@
+M4265: release a refused rename's reload as unconfirmed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2256 +2256 @@
+-        let outcome: ReloadOutcome = "superseded", superseded = false;
++        let outcome: ReloadOutcome = "unconfirmed", superseded = false;

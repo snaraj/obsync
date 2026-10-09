@@ -1,0 +1,8 @@
+M4264: count a reload as unconfirmed before the rename lands
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -2269,2 +2269,2 @@
+-          await fs.promises.rename(temp, target);
+-          outcome = shown === null ? "confirmed" : "unconfirmed";
++          outcome = shown === null ? "confirmed" : "unconfirmed";
++          await fs.promises.rename(temp, target);
