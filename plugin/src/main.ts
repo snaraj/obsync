@@ -3505,11 +3505,13 @@ export class ObsidianHost implements VaultHost {
     const saves: Promise<boolean>[] = [];
     for (let index = 0; index < views.length; index++) {
       const view = views[index] as MarkdownView;
-      // Panes of one note can share a buffer: an earlier pane's update may already show here.
+      // Panes of one note can share a buffer: an earlier pane's update may
+      // already show here. A pane moved to another note fails `canRefresh`,
+      // which judges a pane by the file its input was typed in.
       const current = lines(view.getViewData());
-      if (view.file !== bound[index] || (current !== first && current !== text) || !this.editorActivity.canRefresh(view)) break;
+      if ((current !== first && current !== text) || !this.editorActivity.canRefresh(view)) break;
       if (current !== text) showText(view, current, text);
-      if (view.file !== bound[index] || lines(view.getViewData()) !== text || !this.editorActivity.canRefresh(view)) break;
+      if (lines(view.getViewData()) !== text || !this.editorActivity.canRefresh(view)) break;
       // Observe rejection immediately even when a filesystem operation remains
       // in flight. refreshEditors reports failure through its bounded fallback.
       saves.push(view.save().then(() => true, () => false));

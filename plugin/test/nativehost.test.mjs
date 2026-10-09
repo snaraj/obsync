@@ -493,6 +493,52 @@ for (const reason of ["composition", "native-only", "disagreeing"]) test(`a queu
   assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming);
 });
 
+// WHAT THE FIRST PANE'S UPDATE DOES TO THE SECOND (#339). The bridge reads
+// every pane, merges once and then updates pane by pane with no await between,
+// but CodeMirror's update runs listeners synchronously: Obsidian copies the
+// text into another pane of the note, and a plugin can type into it or move
+// it. Each pane is judged again when its turn comes.
+for (const effect of ["shown", "typed", "moved"]) test(`a second pane the first pane's update ${effect === "shown" ? "already showed" : effect === "typed" ? "typed into" : "moved away"} is not loaded with text the merge never read`, async (t) => {
+  let second;
+  const secondText = { value: "A: local\nB: \n" }, typed = "A: local, second pane\nB: \n";
+  const r = await queuedEditor(t, ({ host }) => host.editorActivity.record(second, "beforeinput"));
+  r.seed("Notes/Elsewhere.md", r.original, 1000);
+  second = r.openEditor(NOTE, secondText);
+  const loaded = [];
+  second.setViewData = (data) => { loaded.push({ path: second.file.path, data }); secondText.value = data; };
+  second.save = async () => {};
+  r.view.editor = {
+    cm: {
+      state: { doc: { toString: () => r.buffer.value } },
+      dispatch: (spec) => {
+        let text = r.buffer.value;
+        for (const { from, to, insert } of [...spec.changes].reverse()) text = text.slice(0, from) + insert + text.slice(to);
+        r.buffer.value = text;
+        if (effect === "shown") secondText.value = text;
+        else if (effect === "typed") secondText.value = typed;
+        else second.file = { path: "Notes/Elsewhere.md" };
+      },
+    },
+  };
+  // The native reload: Obsidian merges a dirty pane's text with the disk.
+  const merge = require("../build/sync/conflict.js").mergeText;
+  r.vault.trigger = () => {
+    const disk = readFileSync(join(r.root, NOTE), "utf8");
+    if (second.file.path === NOTE && secondText.value !== disk) second.setViewData(merge(r.original, secondText.value, disk), false);
+  };
+  await r.write(); await r.adapter.promise;
+  assert.equal(r.buffer.value, r.incoming);
+  if (effect === "shown") assert.deepEqual(loaded, [], "a pane already showing the text was loaded again");
+  if (effect === "typed") {
+    assert.ok(loaded.every(({ data }) => data.includes("second pane")), `typing in the second pane was loaded over: ${JSON.stringify(loaded)}`);
+    assert.equal(secondText.value, "A: local, second pane\nB: remote\n");
+  }
+  if (effect === "moved") {
+    assert.deepEqual(loaded, [], "the note a pane moved to was given this note's text");
+    assert.equal(readFileSync(join(r.root, "Notes/Elsewhere.md"), "utf8"), r.original);
+  }
+});
+
 test("a desktop adapter without the private queue uses the ordinary native refresh fallback", async (t) => {
   const r = await openIdle(t, false, "fallback one\nfallback two\n");
   const adapter = r.host.plugin.app.vault.adapter;

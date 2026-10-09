@@ -1354,6 +1354,54 @@ test("a criss-cross one level deeper every round keeps merging while both type (
 });
 
 /**
+ * A pull that failed after the walk walks nothing again: the base of a pair is
+ * remembered by the pair, not only once this device has merged it, so the
+ * retry reads no history it already read.
+ */
+test("a criss-cross pull retried after its merge failed to publish finds its base again without walking (#227)", async () => {
+  const r = await rig();
+  const { theirs, one, five, lines } = await (await ladder(r))(3);
+  const post = r.transport.postVersion;
+  r.transport.postVersion = async () => { throw new Error("fake transport: connection reset"); };
+  const first = await applyChange(r.context, theirs).then((result) => result, (error) => error);
+  assert.notEqual(first, "merged", pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=1 ok=true file=")), pulls(r.host));
+  const walked = r.host.logs.length;
+  r.transport.postVersion = post;
+  await applyChange(r.context, theirs);
+  const retry = r.host.logs.slice(walked);
+  // The merge this device wrote but could not publish is its push's to publish.
+  assert.ok(retry.some((line) => line.includes("decision=deferred reason=unpublished_criss_cross")), retry.join(" | "));
+  assert.equal(r.host.text(NOTE), lines(one, five));
+  assert.ok(retry.some((line) => line.includes("reason=criss_cross level=1 ok=true found=before")), pulls(r.host));
+  assert.ok(!retry.some((line) => /reason=criss_cross level=[23]/.test(line)), `the retry walked again: ${retry.join(" | ")}`);
+});
+
+/**
+ * A pull that walked three levels and then waited for this device's own
+ * typing to be pushed merged nothing, so no merge of it is verified here; its
+ * bases are still known. Three rounds later that pair is the fourth level of
+ * the next walk -- the bound -- and is found, not refused.
+ */
+test("a base walked by a pull that waited for typing is found at the bound rounds later (#227)", async () => {
+  const r = await rig();
+  const climb = await ladder(r);
+  const { theirs, one, five, lines } = await climb(3);
+  r.host.seed(NOTE, lines(`typed ${one}`, five.replace(/^b\d+ /, "")), 10_000);
+  await applyChange(r.context, theirs);
+  assert.ok(r.host.logs.some((line) => line.includes("decision=deferred reason=unpublished_criss_cross")), pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=3 ok=true file=")), pulls(r.host));
+  const walked = r.host.logs.length;
+  const top = await climb(3);
+  assert.equal(await applyChange(r.context, top.theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), top.lines(top.one, top.five));
+  assert.deepEqual(copies(r.host), []);
+  const later = r.host.logs.slice(walked);
+  assert.ok(later.some((line) => line.includes("reason=criss_cross level=4 ok=true found=before")), later.join(" | "));
+  assert.ok(!later.some((line) => line.includes("history_budget")), later.join(" | "));
+});
+
+/**
  * The bound is on the levels ONE resolution walks, and a level found before is
  * no walk: a device that resolved the first round and then met the fourth
  * finds the verified parent merge before the bound. A device that never met the first round

@@ -1,6 +1,6 @@
 # M3287: a view already showing the written text is loaded again
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3511 +3511 @@
+@@ -3513 +3513 @@
 -      if (current !== text) showText(view, current, text);
 +      showText(view, current, text);

@@ -335,6 +335,7 @@ test("a reload of the same plugin instance closes the question its old host aske
   assert.equal(question.hidden, false);
   await r.instance.onload();
   await r.instance.firstStart;
+  assert.equal(question.hidden, true, "the replaced host left its question on screen");
   r.instance.host.notify(ask("Holding deletions again"));
   assert.equal(question.hidden, true, "the replaced host left its question on screen beside the new one");
 });
