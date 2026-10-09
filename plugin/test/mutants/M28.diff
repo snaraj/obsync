@@ -1,15 +1,12 @@
 # M28: any held answer enters the rule, not only one about the destination
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1720,24 +1720,8 @@
-     // does, the rule hands the version to `updateSettled`, which re-checks
-     // that source before writing a byte. Trashing a source that holds an
-     // unpushed edit is the loss issue #98 is about.
+@@ -2284,18 +2284,2 @@
 -    if (atTarget === "other_file" || atTarget === "no_record") {
 -      const decided = await sameNameTiebreak(context, change, manifest, atTarget);
 -      if (decided !== null) return decided;
 -    } else if (atTarget === "local_edit" && localPath === manifest.path && local !== undefined) {
--      return await reconcile(context, await context.transport.getFile(change.file_id), change, manifest, localPath, local.versionId);
+-      return await reconcile(context, await reconciliationGraph(context, change, local.versionId, known), change, manifest, localPath, local.versionId);
 -    } else if (atTarget === null && atSource === "local_edit" && local !== undefined) {
 -      // A MOVE MEETING A CHANGE AT ITS SOURCE IS A FORK, NOT TWO NOTES (issues
 -      // #151, #174). What this device holds there and has not published -- an
@@ -25,6 +22,3 @@
 -    }
 +    const decided = await sameNameTiebreak(context, change, manifest, held as "other_file" | "no_record");
 +    if (decided !== null) return decided;
-   }
- 
-   // NOTHING MOVED AND NOTHING CHANGED, SO NOTHING IS FETCHED (issue #108).

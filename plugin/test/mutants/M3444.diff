@@ -1,12 +1,6 @@
 # M3444: the merge is deferred when the note holds its recorded text, and made when it holds unsent text
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2867,7 +2867,7 @@
-         if (!ahead && !sameBytes(text, theirs)) {
-           // A head this device cannot open proves nothing about the note.
-           const own = await manifestOf(context, file, change, localVersionId).catch(() => null);
--          if (own !== null && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {
-+          if (own !== null && own.sha256 !== "" && hex(await sha256(mine)) === own.sha256) {
-             // How long the note has held text no version has, against the
-             // window in which its editor's own push was due.
-             const age = before === null ? -1 : context.now() - before.mtime;
+@@ -3232 +3232 @@
+-            if (hex(await sha256(mine)) !== own.sha256) {
++            if (hex(await sha256(mine)) === own.sha256) {

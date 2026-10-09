@@ -1,11 +1,5 @@
 # M2050: a stopped download writes the rest of its batch
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -649,7 +649,6 @@
-       const plaintext = await decryptChunk(context.domainKey, unhex(chunk.cid), body);
-       if (plaintext.length !== chunk.len) throw new ManifestError("chunk_len_actual");
-       control?.check();
+@@ -712 +711,0 @@
 -      if (stop?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
-       yield plaintext;
-     }
-   }

@@ -1,11 +1,5 @@
 # M3001: a base found is never remembered
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3322,7 +3322,6 @@
-       `file=${change.file_id} seq=${change.seq}`,
-   );
-   if (!merged.ok) return false;
--  remember(context, pair, merged.text);
-   return merged.text;
- }
- 
+@@ -3951 +3950,0 @@
+-  remember(context, pair, merged);

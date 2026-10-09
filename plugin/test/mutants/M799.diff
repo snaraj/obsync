@@ -1,12 +1,6 @@
 # M799: Desktop writes beneath an active native editor.
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1594,7 +1594,7 @@
-         let shown: string | null;
-         try {
-           text = this.views(path).length > 0 ? await fs.promises.readFile(temp, "utf8") : null;
--          shown = await this.assertEditorIdle(path);
+@@ -2263 +2263 @@
+-          shown = await this.assertEditorIdle(path, expected, typeof queue === "function" ? read : undefined);
 +          shown = null;
-         } catch (error) {
-           await discard();
-           throw error;

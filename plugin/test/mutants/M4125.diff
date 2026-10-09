@@ -1,12 +1,6 @@
 # M4125: readback supersession demotes the native pane
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3473,7 +3473,7 @@
-       if (pendingBridge !== null && (await Promise.all(pendingBridge.saves)).some((saved) => !saved)) throw new EditorBusy();
-       if (lines(await read()) !== (pendingBridge?.text ?? written)) {
-         this.log(`host path_class=file decision=editor_left reason=file_changed duration_ms=${Date.now() - started}`);
--        throw new WriteSuperseded();
-+        throw new EditorBusy();
-       }
-       const views = this.views(path);
-       const file = views[0]?.file;
+@@ -3546 +3546 @@
+-          throw new WriteSuperseded();
++          throw new EditorBusy();

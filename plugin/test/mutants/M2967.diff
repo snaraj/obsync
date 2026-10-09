@@ -1,11 +1,5 @@
 # M2967: a second load leaves the first load's worker running
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2882,7 +2882,6 @@
-     // A reload of this instance keeps no question the old host asked.
-     this.host?.closeQuestion();
-     this.host = new ObsidianHost(this);
+@@ -3807 +3806,0 @@
 -    this.clock?.stop();
-     const clock = this.clock = Platform.isDesktopApp ? workerClock(pageTimers, (line) => this.log(line)) : null;
-     const timers = clock ?? pageTimers;
-     const transport: Transport = new Transport({

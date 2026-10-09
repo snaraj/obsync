@@ -1,12 +1,6 @@
 # M3272: the refused push reports the note unchanged, and nothing looks at it again
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -436,7 +436,7 @@
-     const mark = context.state.data.dropped[path];
-     if (plaintext.length === 0 && mark !== undefined) {
-       context.host.log(`push path_class=file decision=abandoned reason=write_dropped file=${mark} duration_ms=${context.now() - started}`);
+@@ -442 +442 @@
 -      return { status: "growing", fileId, versionId: "" };
 +      return { status: "unchanged", fileId, versionId: "" };
-     }
-     const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
-     plan.push({ sid, cid: hex(cid), len: plaintext.length });

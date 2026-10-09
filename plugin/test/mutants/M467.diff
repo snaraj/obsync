@@ -1,12 +1,6 @@
 # M467: an entry the feed parked does not move the mark: every start reads the journal as rebuilt
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3167,7 +3167,7 @@
-           else {
-             const result = await this.receive(context, change);
-             if (result !== "echo") wrote = true;
+@@ -3801 +3801 @@
 -            this.processed(context, change, result);
 +            if (result !== null) this.processed(context, change, result);
-           }
-           context.state.data.lastSeq = change.seq;
-           this.pulls--;

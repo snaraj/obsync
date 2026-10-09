@@ -1,11 +1,5 @@
 # M1921: a merge posted under a name taken here forgets the name it waits for
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -4209,7 +4209,6 @@
-     mtime,
-     size: text.length,
-     sha256: digest,
+@@ -5376 +5375,0 @@
 -    ...(target === path ? {} : { name: target }),
-   });
-   await context.state.save();
- }

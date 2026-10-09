@@ -1,13 +1,7 @@
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3055,10 +3055,6 @@
-             // Join native saving once when selecting the saved-editor path.
-             // Without a saved receipt, ordinary reconciliation still needs to
-             // classify unpublished overlaps and automatic rewrite holds.
+@@ -3178,4 +3177,0 @@
 -            if (!await context.host.editorReady(localPath)) {
 -              if (context.host.savedSnapshot?.(localPath, mine) !== true) return null;
 -              throw new EditorBusy();
 -            }
-             if (inputs.shared === false) return null;
-             const joined = threeWayMerge(inputs.shared ?? decoder.decode(inputs.base), decoder.decode(published), decoder.decode(inputs.theirs));
-             if (!joined.ok) return null;

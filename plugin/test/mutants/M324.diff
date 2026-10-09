@@ -1,12 +1,6 @@
 # M324: a note with Windows line endings open on this device can never be deleted from another device
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -289,7 +289,7 @@
- 
- /** An editor keeps one `\n` for a file that has `\r\n`: text is compared line endings aside. */
- function lines(text: string): string {
+@@ -536 +536 @@
 -  return text.replace(/\r\n?/g, "\n");
 +  return text;
- }
- 
- /**

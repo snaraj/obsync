@@ -1,12 +1,6 @@
 # M665: switching files carries the old file input to the new one
---- a/plugin/src/main.ts
-+++ b/plugin/src/main.ts
-@@ -1732,7 +1732,7 @@
-       if (!(view instanceof MarkdownView) || view.file?.path !== path) return false;
-       const input = this.inputAt.get(view);
-       return this.composing.get(view) === path ||
--        (input?.path === path && Date.now() - input.at < EDITING_WINDOW_MS);
-+        (input !== undefined && Date.now() - input.at < EDITING_WINDOW_MS);
-     });
-   }
- 
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -71 +71 @@
+-    return input?.file === view.file && (input.composing || Date.now() - input.at < RECENT_INPUT_MS);
++    return input !== undefined && (input.composing || Date.now() - input.at < RECENT_INPUT_MS);

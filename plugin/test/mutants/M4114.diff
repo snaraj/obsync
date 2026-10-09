@@ -1,12 +1,6 @@
 # M4114: All panes must be bridgeable before the first public save
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -3408,7 +3408,7 @@
-     const views = this.views(path), bound = views.map((view) => view.file);
-     const buffers = views.map((view) => lines(view.getViewData()));
-     const updates = buffers.map((current) => threeWayMerge(shown, current, written));
--    if (!views.every((view) => this.editorActivity.canRefresh(view)) ||
-+    if (false ||
-       !updates.every((update) => update.ok && update.text.length <= EDITOR_SAVE_MAX_CHARS && updates[0]?.ok && update.text === updates[0].text)) return null;
-     const saves: Promise<boolean>[] = [];
-     for (let index = 0; index < views.length; index++) {
+@@ -3502 +3502 @@
+-      !views.every((view) => this.editorActivity.canRefresh(view))) return null;
++      false) return null;

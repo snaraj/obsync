@@ -1,12 +1,11 @@
 # M801: A saved buffer is overwritten while native typing is still active.
---- a/plugin/src/main.ts
-+++ b/plugin/src/main.ts
-@@ -2717,7 +2717,7 @@
-     // engine retries this note after input settles, without blocking others.
-     // Check after downloads and filesystem preparation have waited.
-     const open = await this.editing(path);
--    if (open === "unsaved" || this.typing(path)) throw new EditorBusy();
-+    if (open === "unsaved") throw new EditorBusy();
-     // No await since `editing` compared every view with the file.
-     const view = this.views(path)[0];
-     return open === null || view === undefined ? null : lines(view.getViewData());
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -150,3 +150 @@
+-    if (views.some((view, i) => this.saving.has(view) ||
+-      (this.recent(view) && (inputs[i]?.saved?.generation !== this.generation ||
+-        inputs[i]?.saved?.text !== normalized(view.getViewData()))))) return null;
++    if (views.some((view) => this.saving.has(view))) return null;
+@@ -161 +159 @@
+-      if (current === disk && (!this.recent(view) || (input?.saved?.text === disk && input.saved.generation === this.generation))) return true;
++      if (current === disk) return true;

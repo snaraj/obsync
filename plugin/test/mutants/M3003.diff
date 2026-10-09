@@ -1,12 +1,6 @@
 # M3003: a level found before still counts against the bound
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3287,7 +3287,7 @@
- ): Promise<string | null | false> {
-   const pair = [left, right].sort().join(" ");
-   const known = bases.get(context)?.get(pair);
+@@ -3910 +3910 @@
 -  if (known !== undefined) {
 +  if (known !== undefined && levels > 0) {
-     context.host.log(
-       `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=true found=before ` +
-         `file=${change.file_id} seq=${change.seq}`,

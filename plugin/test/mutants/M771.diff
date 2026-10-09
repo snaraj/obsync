@@ -1,25 +1,15 @@
 # M771: carry local proof onto incoming-only content
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3055,6 +3055,10 @@
-           // result that is new to both sides is a real resolution and is posted
-           // once, which terminates because the other device then finds its own
-           // bytes in it.
+@@ -3328 +3328,5 @@
+-          if (adopt) {
 +          if (answer !== null && !context.host.typing(localPath)) {
 +            context.answering.set(change.file_id, { arrived: answer, mtime: stat.mtime });
 +            context.host.log(`pull decision=edit_verdict_retained reason=local_merge file=${change.file_id} seq=${change.seq}`);
 +          }
-           if (sameBytes(text, theirs)) {
-             context.state.setFile(localPath, {
-               fileId: change.file_id,
-@@ -3077,10 +3081,6 @@
-           // cannot give this device the editor's Resume role. A stale verdict,
-           // an actual editor input, and an incoming-only result prove no such
-           // contribution; the latter returned above without carrying it.
++          if (adopt) {
+@@ -3350,4 +3353,0 @@
 -          if (answer !== null && !context.host.typing(localPath)) {
 -            context.answering.set(change.file_id, { arrived: answer, mtime: stat.mtime });
 -            context.host.log(`pull decision=edit_verdict_retained reason=local_merge file=${change.file_id} seq=${change.seq}`);
 -          }
-           await postMerged(context, change, localPath, target, localVersionId, text, stat.mtime);
-           // Named by its title and the other device's name, and quiet or once
-           // per note as the person chose (`notices.ts`, "Combined edits").

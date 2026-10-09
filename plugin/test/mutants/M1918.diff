@@ -1,12 +1,6 @@
 # M1918: the closing budget never forgets its window
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2983,7 +2983,7 @@
-   if (files === undefined) closings.set(context, (files = new Map()));
-   const now = context.now();
-   const seen = files.get(change.file_id);
--  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0 };
-+  const tally = seen ?? { since: now, count: 0 };
-   files.set(change.file_id, tally);
-   if (tally.count < MERGE_STORM_LIMIT) {
-     tally.count++;
+@@ -4026 +4026 @@
+-  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS && !typed ? seen : { since: now, count: 0 };
++  const tally = seen !== undefined && !typed ? seen : { since: now, count: 0 };

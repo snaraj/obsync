@@ -1,11 +1,5 @@
 # M2229: the fake's writer commits short of the declared size
 --- a/plugin/test/fake.mjs
 +++ b/plugin/test/fake.mjs
-@@ -358,7 +358,6 @@
-         parts.push(bytes);
-       },
-       async commit(mtime) {
+@@ -498 +497,0 @@
 -        if (size !== undefined && held !== size) throw new Error("A download ended short of its declared size.");
-         let total = 0;
-         for (const part of parts) total += part.length;
-         const joined = new Uint8Array(total);

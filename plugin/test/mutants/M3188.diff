@@ -1,12 +1,6 @@
 # M3188: a resolution that only recalls versions says nothing
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2472,7 +2472,7 @@
-       insert(version);
-     }
-   }
--  if (requested.size + recalled > 0) context.host.log(`pull decision=loaded reason=merge_ancestry file=${file.file_id} reads=${requested.size} recalled=${recalled} held_chars=${ancestry.get(context)?.held ?? 0} budget_reads=${budget} budget_chars=${CHUNK_MAX} duration_ms=${context.now() - started}`);
+@@ -2714 +2714 @@
+-  context.host.log(`pull decision=loaded reason=merge_ancestry file=${file.file_id} reads=${requested.size} recalled=${recalled} held_chars=${ancestry.get(context)?.held ?? 0} budget_reads=${budget} budget_chars=${CHUNK_MAX} duration_ms=${context.now() - started}`);
 +  if (requested.size > 0) context.host.log(`pull decision=loaded reason=merge_ancestry file=${file.file_id} reads=${requested.size} recalled=${recalled} held_chars=${ancestry.get(context)?.held ?? 0} budget_reads=${budget} budget_chars=${CHUNK_MAX} duration_ms=${context.now() - started}`);
- }
- 
- /**

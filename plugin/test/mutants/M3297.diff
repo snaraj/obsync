@@ -1,12 +1,6 @@
 # M3297: a view whose data matches it is taken as untouched (the build the iPhone run proved wrong, 2026-09-28)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2772,7 +2772,7 @@
-     const file = views[0]?.file;
-     if (!file) return null;
-     const disk = lines(await this.plugin.app.vault.read(file));
+@@ -3635 +3635 @@
 -    return views.some((view) => lines(view.getViewData()) !== disk) ? "unsaved" : "saved";
 +    return views.some((view) => lines(view.getViewData()) !== disk && lines(view.getViewData()) !== lines(String(view.data))) ? "unsaved" : "saved";
-   }
- 
-   /** A passive editor does not make plugin writes into human typing (#179). */

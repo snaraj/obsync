@@ -1,12 +1,6 @@
 # M3287: a view already showing the written text is loaded again
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2761,7 +2761,7 @@
-       for (const view of this.views(path)) {
-         if (view.file?.path !== path) continue;
-         const now = lines(view.getViewData());
--        if (now !== shown || now === written) continue;
-+        if (now !== shown) continue;
-         view.setViewData(written, false);
-         views++;
-       }
+@@ -3511 +3511 @@
+-      if (current !== text) showText(view, current, text);
++      showText(view, current, text);

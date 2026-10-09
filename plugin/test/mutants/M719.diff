@@ -1,12 +1,6 @@
 # M719: independent peer typing consumes the loop budget
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2039,7 +2039,7 @@
-   const independent = remote !== undefined && remote !== change.version_id &&
-     reaches(file.versions, change.version_id, remote) &&
-     !reaches(file.versions, change.version_id, localVersionId);
--  if (tally.left !== found || independent) {
-+  if (tally.left !== found) {
-     tally.count = 0;
-     tally.generation = {};
-   }
+@@ -2878 +2878 @@
+-  if (tally.left !== found || independent || advancedInput) {
++  if (tally.left !== found || advancedInput) {

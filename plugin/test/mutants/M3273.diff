@@ -1,12 +1,6 @@
 # M3273: the refused push reports a publication, and the engine counts an edit that was never sent
 --- a/plugin/src/sync/push.ts
 +++ b/plugin/src/sync/push.ts
-@@ -436,7 +436,7 @@
-     const mark = context.state.data.dropped[path];
-     if (plaintext.length === 0 && mark !== undefined) {
-       context.host.log(`push path_class=file decision=abandoned reason=write_dropped file=${mark} duration_ms=${context.now() - started}`);
+@@ -442 +442 @@
 -      return { status: "growing", fileId, versionId: "" };
 +      return { status: "pushed", fileId, versionId: "" };
-     }
-     const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
-     plan.push({ sid, cid: hex(cid), len: plaintext.length });

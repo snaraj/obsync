@@ -1,12 +1,6 @@
 # M3467: another device's new note is written into the nested vault, which publishes it one level deeper (M427's mutation, its context moved at this head)
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -1201,7 +1201,7 @@
-     // where the record puts the file and of where this device keeps it,
-     // before either is touched.
-     const kept = context.state.pathByFileId(change.file_id);
+@@ -1318 +1318 @@
 -    if ((await context.host.inNestedVault(entry.path)) || (kept !== undefined && (await context.host.inNestedVault(kept)))) {
 +    if (kept !== undefined && (await context.host.inNestedVault(kept))) {
-       throw new VaultPathError("nested_vault");
-     }
-     const applied = await applyVersion(context, change, entry).catch((error: unknown) => {

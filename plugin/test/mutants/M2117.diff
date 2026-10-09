@@ -1,12 +1,7 @@
 # M2117: a prefetched body skips decryption and the cid proof
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -656,7 +656,7 @@
-       // The batch's word for the single fetch's `404 unknown_chunk`, and the
-       // same refusal: one missing chunk parks one file (issue #144).
-       if (!body) throw new ApiError(404, "unknown_chunk", `chunk ${chunk.sid} is missing on the server`);
--      const plaintext = await decryptChunk(context.domainKey, unhex(chunk.cid), body);
-+      const plaintext = ahead !== null ? body : await decryptChunk(context.domainKey, unhex(chunk.cid), body);
-       if (plaintext.length !== chunk.len) throw new ManifestError("chunk_len_actual");
-       control?.check();
-       if (stop?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
+@@ -710 +710,2 @@
+-      const plaintext = await openChunk(context, chunk, body);
++      const plaintext = ahead !== null ? body as Bytes : await openChunk(context, chunk, body);
++      if (ahead !== null && plaintext.length !== chunk.len) throw new ManifestError("chunk_len_actual");
