@@ -1,6 +1,6 @@
 # M834: fetch ancestry for incomplete head listings
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2839 +2839 @@
--  if (completeHeads) await completeMergeAncestry(context, file, localVersionId, change.version_id);
-+  await completeMergeAncestry(context, file, localVersionId, change.version_id);
+@@ -2845 +2845 @@
+-  const historyRead = !completeHeads || await completeMergeAncestry(context, file, localVersionId, change.version_id);
++  const historyRead = await completeMergeAncestry(context, file, localVersionId, change.version_id);

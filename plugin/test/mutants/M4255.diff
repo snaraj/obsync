@@ -1,0 +1,6 @@
+M4255: an exhausted ancestry read budget counts as a complete frontier
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2691 +2691 @@
+-        return false;
++        return true;

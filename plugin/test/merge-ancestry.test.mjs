@@ -292,6 +292,16 @@ test("a fetched child precedes its already-fetched parent when choosing the merg
   assert.equal([...r.host.files.keys()].filter(p => p.includes("(conflict")).length, 0);
 });
 
+/** Each version once, after every child of it: B and C both reach A, and a
+ * second visit placed A twice and, on a cycle, never ended (review of
+ * 8fc0bf43, finding 4). */
+test("ancestry ordering places a version two children reach once, after both", () => {
+  const { childrenFirst } = require("../build/sync/pull.js");
+  const version = (id, ...parents) => ({ version_id: id, parents });
+  const order = childrenFirst([version("D"), version("B", "D"), version("C", "D"), version("A", "B", "C")]);
+  assert.deepEqual(order.map((entry) => entry.version_id), ["A", "B", "C", "D"]);
+});
+
 test("a partial ancestry graph is discarded when its newer common base is unavailable", async () => {
   const r = await crossedWindow();
   const getVersion = r.transport.getVersion.bind(r.transport);

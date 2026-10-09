@@ -1,7 +1,7 @@
 # M152: two different merges of one pair are never merged again, so every later version of the note becomes a conflict copy
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3147,2 +3147 @@
--        const shared = mergeBase === baseManifest
--          ? await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base)) : null;
+@@ -3154,2 +3154 @@
+-        const shared = mergeBase !== baseManifest ? null : !historyRead ? HISTORY_BUDGET
+-          : await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base));
 +        const shared = null as string | null | false | typeof HISTORY_BUDGET;

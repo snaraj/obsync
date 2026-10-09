@@ -2640,12 +2640,14 @@ export function commonAncestor(
 /** The file listing is a recent window, not the retained ancestry. Walk only
  * the two branches down to their shared frontier, fetching omitted records
  * through the existing version endpoint. Never walk below that frontier.
- * A missing retained version or an exhausted read budget keeps the existing
- * conflict fallback; neither permits inventing a merge base. A version an
- * earlier resolution read or listed costs no read (`ancestry`, issue #227). */
+ * A version an earlier resolution read or listed costs no read (`ancestry`,
+ * issue #227). False when the frontier could not be completed: a missing
+ * retained version or an exhausted read budget. The listing is then restored,
+ * and the newest ancestor found in it is no base: an older one replays keys
+ * both heads deleted (review of 8fc0bf43, finding 1). */
 async function completeMergeAncestry(
   context: SyncContext, file: FileRecord, left: string, right: string,
-): Promise<void> {
+): Promise<boolean> {
   const started = context.now(), budget = 64;
   const original = [...file.versions];
   const requested = new Set<string>();
@@ -2686,7 +2688,7 @@ async function completeMergeAncestry(
       if (requested.size >= budget) {
         context.host.log(`pull decision=refused reason=merge_ancestry_limit file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
         file.versions = original;
-        return;
+        return false;
       }
       requested.add(id);
       let version;
@@ -2695,7 +2697,7 @@ async function completeMergeAncestry(
         if (!(error instanceof ApiError) || error.status !== 404) throw error;
         context.host.log(`pull decision=unavailable reason=merge_ancestor file=${file.file_id} reads=${requested.size} budget_reads=${budget} duration_ms=${context.now() - started}`);
         file.versions = original;
-        return;
+        return false;
       }
       if (version.version_id !== id || !Array.isArray(version.parents) ||
         version.parents.length > 64 || !version.parents.every(parent => typeof parent === "string" && isHex(parent, 32))) {
@@ -2705,13 +2707,14 @@ async function completeMergeAncestry(
       insert(version);
     }
   }
-  if (requested.size + recalled === 0) return;
+  if (requested.size + recalled === 0) return true;
   // Added as reached, a parent reached first from the other head stood before
   // its child, and the first common version in that order was not the newest:
   // a criss-cross level merged an ancestor of its second base instead of it,
   // and keys both heads held went out of the note (#339, Android emulator).
   file.versions = childrenFirst(file.versions);
   context.host.log(`pull decision=loaded reason=merge_ancestry file=${file.file_id} reads=${requested.size} recalled=${recalled} held_chars=${ancestry.get(context)?.held ?? 0} budget_reads=${budget} budget_chars=${CHUNK_MAX} duration_ms=${context.now() - started}`);
+  return true;
 }
 
 /**
@@ -2720,7 +2723,7 @@ async function completeMergeAncestry(
  * newest from. One pass, each version and parent link once; a cycle a server
  * could send is cut where it closes, never followed.
  */
-function childrenFirst<T extends VersionNode>(versions: T[]): T[] {
+export function childrenFirst<T extends VersionNode>(versions: T[]): T[] {
   const children = new Map<string, T[]>();
   for (const version of versions) {
     for (const parent of version.parents) {
@@ -2836,7 +2839,10 @@ async function reconcile(
   // have sunk below the listing. Merged over the one listed, a base older than
   // keys both heads hold lost them (#339), so the ancestry is completed to the
   // shared frontier first, from what this device already holds where it can.
-  if (completeHeads) await completeMergeAncestry(context, file, localVersionId, change.version_id);
+  // A walk that stops short leaves no base to take from the listing: the merge
+  // takes the history-budget path, parked while typing, otherwise the
+  // conservative fallback (review of 8fc0bf43, finding 1).
+  const historyRead = !completeHeads || await completeMergeAncestry(context, file, localVersionId, change.version_id);
   // THE BREAKER. Everything below is bounded by construction, but a bound
   // that rests on an argument is not a bound: the cost of being wrong here is
   // a device filling the server's journal and its owner's quota, on battery.
@@ -2928,7 +2934,7 @@ async function reconcile(
   context.forked.delete(change.file_id);
   let result: ApplyResult;
   try {
-    result = await resolve(context, file, change, theirManifest, localPath, localVersionId, tally, tripped);
+    result = await resolve(context, file, change, theirManifest, localPath, localVersionId, tally, tripped, historyRead);
   } catch (error) {
     // Refusing an editor write made no merge. Repeated arrivals while typing
     // must not exhaust the loop budget and turn compatible edits into copies.
@@ -2991,6 +2997,7 @@ async function resolve(
   localVersionId: string,
   tally: { left: string },
   tripped: boolean,
+  historyRead: boolean,
 ): Promise<ApplyResult> {
   const started = context.now();
   // A merge must know the receipt of an upload already carrying these bytes.
@@ -3144,8 +3151,8 @@ async function resolve(
         const [base, theirs, published] = await assembleMergeInputs(context,
           own === undefined ? [mergeBase, theirManifest] : [mergeBase, theirManifest, own]) as [Bytes, Bytes, Bytes | undefined];
         // Resolve the shared base before comparing criss-cross edits.
-        const shared = mergeBase === baseManifest
-          ? await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base)) : null;
+        const shared = mergeBase !== baseManifest ? null : !historyRead ? HISTORY_BUDGET
+          : await crissCrossBase(context, file, change, [localVersionId, change.version_id], baseId, decoder.decode(base));
         // Exhausting bounded history is not evidence of overlapping text.
         // During live input, keep this note parked for the existing active-editor
         // retry: the peer may publish a merge that already contains both heads.
@@ -3932,7 +3939,7 @@ async function crissCrossBase(
     return HISTORY_BUDGET;
   }
   // One level down, the same: the pair's own second ancestor may be unlisted.
-  await completeMergeAncestry(context, file, first, other);
+  if (!(await completeMergeAncestry(context, file, first, other))) return HISTORY_BUDGET;
   const root = commonAncestor(file.versions, first, other);
   const manifests: Manifest[] = [];
   for (const id of [root, other]) {

@@ -1,0 +1,6 @@
+M4253: a pair whose frontier was not completed still takes a base from the listing
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3154 +3154 @@
+-        const shared = mergeBase !== baseManifest ? null : !historyRead ? HISTORY_BUDGET
++        const shared = mergeBase !== baseManifest ? null : Boolean(false) ? HISTORY_BUDGET
