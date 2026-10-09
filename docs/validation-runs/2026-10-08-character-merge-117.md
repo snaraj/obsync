@@ -9,7 +9,9 @@ found on a physical iPhone, is Obsidian's own: it happens with obsync
 switched off. The eighth, found on the iPhone when both people typed in one
 word, is fixed, and the fix kept every key on the iPhone. The failing runs
 stay in this record: each is the evidence for one fix, or for what Obsidian
-does on its own.
+does on its own. The review of `8fc0bf43` and its CI found three more,
+in code no run here had reached; `f6ab09fd`, `92ddfdbe` and `844c8e4a` fix them
+(defects 9 to 11).
 
 - **Date and operator role.** 2026-10-08 and 2026-10-09, `user`, through an
   agent on the user's development computer.
@@ -40,6 +42,8 @@ does on its own.
 | `f78f2dab` | `8494d9d57b009cdc…` (the same bytes) | iPhone sessions 3 and 4 |
 | a lab build on `ba704391`, not in this repository | `70dd68ae…` | iPhone session 5 |
 | `9ca63459` | `2edf2b564870847a…` | iPhone session 6 |
+| `4f561d4c` | `92fd2f346cd0de06…` | desktop same place 60 s, judged exact, its trace not written [^5] |
+| `c8855743` | `92fd2f346cd0de06…` (the same bytes) | desktop same place 60 s and 600 s |
 
 Every build is from a clean tree (`source_dirty: false` in its receipt).
 
@@ -107,6 +111,9 @@ X is the desktop, Y the other device.
 | Phone, same place, 60 s | `5544d0ec` | 298 / 298 | 832 / 758 | 0 / 0 | 0 | pass |
 | Phone, same place, 300 s | `5544d0ec` | 1,490 / 1,490 | 4,064 / 3,771 | 0 / 0 | 0 | pass |
 | Phone keyboard, 60 s | `5544d0ec` | 239 / 239 | 671 / 594 | 0 / 0 | 0 | pass |
+| Desktops, same place, 60 s | `4f561d4c` | 298 / 298 | 1,201 / 1,193 | 0 / 0 | 0 | exact; no result [^5] |
+| Desktops, same place, 60 s | `c8855743` | 298 / 298 | 1,209 / 1,198 | 0 / 0 | 0 | pass |
+| Desktops, same place, 600 s | `c8855743` | 2,976 / 2,976 | 12,000 / 11,934 | 0 / 0 | 0 | pass |
 
 The keyboard runs type words on the phone, so their Y count is keyboard taps.
 Every figure is `final.json` in that run's evidence, read by one script.
@@ -119,6 +126,11 @@ Every figure is `final.json` in that run's evidence, read by one script.
 [^3]: Every text check passed. One desktop told the user it had "stopped
     renaming" the note because the other "keeps giving it a different name",
     and to update obsync; nobody renamed it. That is defect 6.
+[^5]: The driver judged the run exact and then threw
+    `ReferenceError: expected is not defined` before its result line:
+    `92ddfdbe` had moved that text into `judge`. `c8855743` fixes it, and the
+    600 s run begun beside it was stopped and run again on that commit. The
+    row is the verdict it printed; it has no `final.json`.
 
 ## The iPhone sessions
 
@@ -354,6 +366,38 @@ vaults and downloads were then deleted from the phone.
    fast typing, and text on another line still arrived while the phone typed.
    What the keyboard holds is inferred from what each delivery did; it was
    not read from iOS.
+9. **A merge over a partial history** (review of `8fc0bf43`, finding 1;
+   reproduced there on unchanged product bytes, not in a run here). When the
+   walk to a pair's shared frontier stopped -- its 64 reads spent, or a
+   retained ancestor answering 404 -- it put the listing back and the merge
+   went on over the newest ancestor listed. That base can be older than keys
+   both heads hold, the class of defect 2: the review's two variants brought
+   a deleted typo back and typed two keys twice. Fixed by `f6ab09fd`: a walk that
+   stops says so, and that pair takes no base from the listing, at the top
+   or at any criss-cross level. While the note is typed in, it waits for the
+   next try (`deferred reason=history_budget_wait`), as an exhausted
+   criss-cross level already did; otherwise both texts are kept, the note
+   and one copy (`unmerged reason=history_budget`).
+10. **The same-place judge passed a note whose untouched lines had changed**
+    (review of `8fc0bf43`, finding 2). Its pass checked every typed key on
+    line 3 and left out `fixed_lines`, which it computed. Fixed by `92ddfdbe`:
+    the pass needs the fixed lines, and before judging a run the driver
+    judges a kept note and the same note with its fixed lines changed, and
+    stops unless it tells them apart. Judged again, all 22 recorded
+    same-place and keyboard runs hold their fixed lines: no result here
+    rested on the gap.
+11. **Two plugins' stamps of one line joined into a time neither wrote**
+    (this PR's CI at `8fc0bf43`: `stamper.test.mjs:243`, a rewrite storm
+    paused after 11 or 12 versions where the bound is 10). Since `ccd0f828`
+    the hold for a plugin's automatic rewrite (#179) took two sides as
+    meeting only where they changed one character differently. Two stamps
+    of `updated:` that rewrote different digits of one time joined cleanly
+    -- `05.010Z` and `06.000Z` over `05.000Z` made `06.010Z` -- and the storm
+    went unseen for that round: of 148,682 sampled pairs of stamps, 24,702
+    joined that way. Fixed by `844c8e4a`: the hold is judged per line, the
+    changes that share a line taken together and compared by what the line
+    reads on each side; the same sample joins none. People's typing is not
+    judged by it and still merges letter by letter.
 
 ## Journeys and timings
 
@@ -367,7 +411,7 @@ vaults and downloads were then deleted from the phone.
 | V3 typing on a phone shows elsewhere within 3 s | 4 | fail | Cotype journey, 147 keystrokes each way: desktop to phone p50 1,068 ms, p95 1,724 ms, max 3,577 ms; phone to desktop p50 1,040 ms, p95 2,029 ms, max 3,634 ms. |
 | V3 | 5 | pass | Desktop to phone p50 940 ms, p95 1,345 ms, max 1,602 ms; phone to desktop p50 952 ms, p95 1,372 ms, max 1,778 ms. |
 | Cotype journey, 1.5 s for every keystroke | 1, 4, 5 | fail | 5 / 5, 15 / 15, and 2 / 3 keystrokes over 1.5 s (desktop to phone / phone to desktop); none missing. |
-| Two people typing at one place (this record's scenario) | all | pass on `5544d0ec` | The results table: no copy, and no lost, doubled or returning key, in any run of the final build. |
+| Two people typing at one place (this record's scenario) | all | pass on `5544d0ec` and `c8855743` | The results table: no copy, and no lost, doubled or returning key, in any run of the final build. |
 | J1, J2 after the app returns from the background | 4 | pass | Desktop to phone 1,065 ms, phone to desktop 1,022 ms. |
 | J1, J2 after the app returns from the background | 5 | pass, slowly | Desktop to phone 127,870 ms, phone to desktop 9,575 ms. [^4] |
 | J10 leave | 4 | pass | The server revoked the device in 3,271 ms; 8 local notes unchanged; the device's records cleared. |
@@ -410,6 +454,7 @@ runs the unmutated suite beside them. Killed means at least one test failed.
 | The library's re-cut, 142 | `2ff710ee` | 2,220 / 2,220 | 59 of the 68 run | 9: seven now killed by the tests `436c2bb5` adds, two retired |
 | The 74 not run | `436c2bb5` | 2,225 / 2,225 | 74 | 0 |
 | The iPhone word hold's, 15 (M4237–M4251) | `9ca63459` | its 10 tests, 10 / 10 | 15, each by the test written for it | 0 |
+| Round six's, 35: 12 new (M4252–M4263), 18 re-cut, and M4201–M4203, M4221, M4223 measured again | `f6ab09fd` | the whole suite 2,240 / 2,240, or the targeted files 68 / 68, 20 / 20, 34 / 34 | 33 | 2: M848, M851 |
 
 The seven survivors' kills were measured against the tests that kill them,
 with the source restored from a copy after each. M3298 and M3300 are retired:
@@ -419,7 +464,20 @@ All 2,042 mutants apply at `436c2bb5`. The word hold's 15 ran in a scratch
 copy against the tests that target them; the hold moved the context of M4116
 and M4146, which are re-cut as one-line hunks and still killed by the whole
 suite (M4116: 10 tests failed and one timed out; M4146: 4 failed), and all
-2,057 apply at `9ca63459`. The whole set has not been run again at one final commit.
+2,057 apply at `9ca63459`.
+
+Round six's ran the same way in a scratch copy of `f6ab09fd`'s tree, each
+against the whole suite or the test files written for it, as the commit
+bodies list. The three gates that read the per-line rule (M4201–M4203)
+were run against the whole suite again. M848 and M851, the listing put back
+after a stopped walk, survive the whole suite: after a stopped walk no base
+is taken from either list, so the restore now decides only which listed
+ancestor names a closing of identical heads, and no test reaches that. It
+is kept, since it is not shown redundant. M4223 is counted by the test
+written for it, run alone; against its whole file it exhausts the heap at
+the 29th test, a cycle, which is not counted. M4196 and M4197 are retired
+with the character-level contest they mutated. All 2,067 apply at
+`f6ab09fd`. The whole set has not been run again at one final commit.
 
 ## What was not validated
 
@@ -439,12 +497,12 @@ suite (M4116: 10 tests failed and one timed out; M4146: 4 failed), and all
   this work; the median is about one second. The desktop latency scenario
   passes over loopback.
 - **A prompt return from the background on Android.** See the journey rows.
-- **Ancestry past the read budget.** In the final 600 s desktop run one
-  device's held ancestry reached its 8 MiB budget and one merge read 64
-  versions and stopped (`merge_ancestry_limit`). It fell back to the listed
-  base and that run's text stayed exact, but a base chosen past the budget can
-  be older than keys both heads hold -- the class of defect 2 -- so a longer
-  session than any here could meet it.
+- **Ancestry past the read budget, live.** In the final 600 s desktop run
+  on `5544d0ec` one device's held ancestry reached its 8 MiB budget and one
+  merge read 64 versions and stopped (`merge_ancestry_limit`). That build fell
+  back to the listed base, and that run's text stayed exact; since defect 9's
+  fix such a pair waits while typed in and is otherwise kept as two texts. No
+  run here has met that path on the fixed build: its evidence is the tests.
 - **The same text typed at one place by both people at one moment.** Kept
   once, not twice: two insertions where one is the start of the other combine
   into the longer one, by design of the merge.

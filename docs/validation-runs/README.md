@@ -47,6 +47,10 @@ observed from what was still outstanding.
   after the other person's text arrived in the same word overwriting the key
   before it, is fixed: on iOS that text now waits until the word is left or
   typing pauses, and eight co-typing runs on the iPhone kept every key.
+  Its review found three more in code no run had reached -- a merge over a
+  partial history, a judge blind to untouched lines, two plugins' stamps
+  joined into a time neither wrote -- all fixed, and the desktop runs pass
+  again on that build.
 - [2026-10-03 Rust CLI candidate](2026-10-03-rust-cli-candidate.md):
   four native hosted targets, Linux visible/manual readback, and explicit Windows
   software-emulation limits. Public installation remains a separate release gate.
