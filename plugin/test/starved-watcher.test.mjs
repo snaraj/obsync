@@ -319,7 +319,7 @@ async function receiver(t, { server, timers, a }, { iterate = true, ...options }
 }
 
 const listed = (r, path) => r.vault.getAbstractFileByPath(path);
-const story = (r) => [...r.logs.filter((line) => /^(pull|watch|vault|folder|push|host)/.test(line)), ...r.vault.events.map((e) => `event ${e}`)].join(" | ");
+const story = (r) => [...r.logs.filter((line) => /^(pull|watch|vault|folder|push|host|editor)/.test(line)), ...r.vault.events.map((e) => `event ${e}`)].join(" | ");
 
 test("a note pulled into a new folder while the watcher is starved is listed at once, its folders with it, and is not sent back", async (t) => {
   const devices = await pair(t);
@@ -689,7 +689,7 @@ test("a listed open note reconciles once and preserves typing begun during the w
     // for the rest of its life.
     assert.ok(r.logs.includes("host path_class=file decision=editor_refreshed views=1"), story(r));
     assert.ok(!r.logs.some((line) => line.includes("reason=editor_reload_unconfirmed")), story(r));
-    assert.equal(r.host.editorActivity.nativeOnly.get(view), undefined, "a confirmed pane was demoted");
+    assert.equal(r.host.editorActivity.nativeOnly.get(view), undefined, `typing=${typing}: a confirmed pane was demoted: ${story(r)}`);
     if (typing) assert.equal(await r.host.editorReady("Notes/n.md"), false, "unsaved typing remains protected");
     assert.ok(!r.logs.some((line) => line.includes("reason=editor_refresh error=")), story(r));
   }
