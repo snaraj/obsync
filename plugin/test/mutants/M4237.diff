@@ -1,0 +1,6 @@
+M4237: the phone's writer never asks about the word being typed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1723 +1723 @@
+-        if (shown !== null && text !== null && this.typingWord(path, shown, text)) throw new EditorBusy();
++        if (Boolean(false) && shown !== null && text !== null && this.typingWord(path, shown, text)) throw new EditorBusy();

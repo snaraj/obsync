@@ -1,0 +1,6 @@
+M4241: a pause of exactly WORD_PAUSE_MS does not end the word
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3507 +3507 @@
+-      if (cm?.hasFocus !== true || idle === null || idle >= WORD_PAUSE_MS) continue;
++      if (cm?.hasFocus !== true || idle === null || idle > WORD_PAUSE_MS) continue;

@@ -59,7 +59,7 @@ import { accountRecovery, FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "./accountR
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
-import { EditorActivity, EDITOR_SAVE_MAX_CHARS, type ReloadOutcome } from "./editorActivity";
+import { EditorActivity, EDITOR_SAVE_MAX_CHARS, WORD_PAUSE_MS, type ReloadOutcome } from "./editorActivity";
 import { mergeText, textChanges, type TextChange } from "./sync/conflict";
 import { KEYS_LOST, State, StateStorageError, dataLease, isPushed, type Held, type ObsyncData } from "./state";
 import { HELD, LEVELS, MERGES, NOTICE_DEFAULTS, NoticeChannel, count, quoted, scrub, titles, type Drawn, type NoticeSettings, type SyncNotice } from "./notices";
@@ -549,7 +549,8 @@ function onlyInserts(before: string, after: string): boolean {
 
 /** What a remote change needs of the CodeMirror 6 view behind `MarkdownView.editor`. */
 interface CodeMirrorView {
-  state: { doc: { toString(): string } };
+  hasFocus?: boolean;
+  state: { doc: { toString(): string }; selection: { main: { head: number } } };
   dispatch(spec: { changes: TextChange[]; annotations: unknown[] }): void;
 }
 
@@ -1715,6 +1716,11 @@ export class ObsidianHost implements VaultHost {
         if (before?.type === "folder") throw new VaultPathError("not_a_file");
         if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
         const shown = await this.assertEditorIdle(path, expected);
+        let text: string | null = null;
+        if (shown !== null && bytes.length <= EDITOR_SAVE_MAX_CHARS) {
+          try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { /* Preserve opaque bytes below. */ }
+        }
+        if (shown !== null && text !== null && this.typingWord(path, shown, text)) throw new EditorBusy();
         const release = this.editorActivity.holdReload(path);
         if (release === null) throw new EditorBusy();
         let outcome: ReloadOutcome = shown === null ? "confirmed" : "unconfirmed";
@@ -1725,10 +1731,6 @@ export class ObsidianHost implements VaultHost {
           // clears the dirty flag. Public save owns both baseline and write;
           // passive, unsafe, binary and non-normalized text keep the adapter
           // path. Never reach through the mobile adapter's private filesystem.
-          let text: string | null = null;
-          if (shown !== null && bytes.length <= EDITOR_SAVE_MAX_CHARS) {
-            try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { /* Preserve opaque bytes below. */ }
-          }
           const bridge = shown !== null && text !== null && lines(text) === text
             ? this.bridgeEditors(path, shown, text) : null;
           if (bridge !== null && shown !== null && text !== null) {
@@ -3483,6 +3485,36 @@ export class ObsidianHost implements VaultHost {
       throw new EditorBusy();
     }
     return shown;
+  }
+
+  /**
+   * Whether `written` must wait for someone typing the word it would change.
+   * The iOS keyboard keeps its own record of the word at the caret. Text
+   * that the keyboard did not type, arriving in that word while it is being
+   * typed, leaves the record stale, and the next key replaces the character
+   * before the caret (#339). On an iPhone, focusing the editor again,
+   * selecting again, or switching autocorrect after the change still lost
+   * keys. Text that landed during a pause, or once the caret had left the
+   * word, lost none. So on iOS that text waits until the caret leaves the
+   * word (every save retries it at once), the editor loses focus, or typing
+   * pauses for `WORD_PAUSE_MS`.
+   */
+  private typingWord(path: string, shown: string, written: string): boolean {
+    if (!Platform.isIosApp) return false;
+    for (const view of this.views(path)) {
+      const cm = (view as { editor?: { cm?: CodeMirrorView } }).editor?.cm;
+      const idle = this.editorActivity.idle(view);
+      if (cm?.hasFocus !== true || idle === null || idle >= WORD_PAUSE_MS) continue;
+      const doc = cm.state.doc.toString(), head = cm.state.selection.main.head;
+      let start = head, end = head;
+      while (start > 0 && !/\s/.test(doc[start - 1] as string)) start--;
+      while (end < doc.length && !/\s/.test(doc[end] as string)) end++;
+      if (textChanges(doc, mergeText(shown, doc, lines(written))).some((change) => change.from <= end && change.to >= start)) {
+        this.log(`editor decision=deferred reason=typing_word duration_ms=${idle} budget_ms=${WORD_PAUSE_MS}`);
+        return true;
+      }
+    }
+    return false;
   }
 
   /** Start the public saved-baseline transition before queued watcher reads.

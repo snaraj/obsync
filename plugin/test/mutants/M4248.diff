@@ -1,0 +1,6 @@
+M4248: a CRLF version is compared with its line endings
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3512 +3512 @@
+-      if (textChanges(doc, mergeText(shown, doc, lines(written))).some((change) => change.from <= end && change.to >= start)) {
++      if (textChanges(doc, mergeText(shown, doc, written)).some((change) => change.from <= end && change.to >= start)) {

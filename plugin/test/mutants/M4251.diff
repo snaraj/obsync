@@ -1,0 +1,6 @@
+M4251: typing in a pane's previous note counts as typing this one
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -74 +74 @@
+-    return input?.file === view.file ? Date.now() - input.at : null;
++    return input === undefined ? null : Date.now() - input.at;

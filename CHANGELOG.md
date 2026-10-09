@@ -27,6 +27,10 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 - Two people typing in one note for minutes no longer get a notice that
   obsync "stopped renaming" it when nobody renamed it. A device that really
   keeps giving a note a different name is still stopped and named (#339).
+- On an iPhone or iPad, text from another device that arrives inside the
+  word you are typing no longer makes your next key replace the letter before
+  the cursor. That text now appears as soon as you pause, finish the word or
+  move the cursor away (#339).
 - Saved editor input can sync while typing continues. Incoming edits merge
   with acknowledged versions while newer local input stays queued as a child
   version. Save confirmation, unfinished composition and recent human input

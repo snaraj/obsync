@@ -272,7 +272,7 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none", edi
     return view;
   };
   const applyIncoming = (change) => box.require(join(box.home, "build/sync/pull.js")).applyChange(r.context, change);
-  return { ...r, root, systemBin, host, seed, contents, hidden, logs, trashed, notices, openEditor, nativeSaved: (view) => baselines.set(view, view.getViewData()), applyIncoming, EditorBusy: box.require(join(box.home, "build/sync/pull.js")).EditorBusy };
+  return { ...r, root, systemBin, host, seed, contents, hidden, logs, trashed, notices, openEditor, nativeSaved: (view) => baselines.set(view, view.getViewData()), applyIncoming, EditorBusy: box.require(join(box.home, "build/sync/pull.js")).EditorBusy, Platform: box.require("obsidian").Platform };
 }
 
 for (const mobile of [false, true]) for (const effect of ["none", "input", "rebind"])
@@ -456,6 +456,84 @@ for (const [mobile, typing] of [[false, false], [true, false], [false, true]]) {
     assert.ok(!r.logs.some((line) => /editor_left|editor_reload_unconfirmed/.test(line)), r.logs.join(" | "));
   });
 }
+
+// THE WORD AN IPHONE IS TYPING (#339). The iOS keyboard keeps its own record
+// of the word at the caret. Text it did not type, landing in that word while
+// it is typed, makes the next key replace the character before the caret.
+// On iOS such a version waits until typing pauses for WORD_PAUSE_MS, the caret
+// leaves the word, or the editor loses focus. Any other version lands at once.
+const WORD = "A: local\nB: w1w2\n";
+for (const [name, { written = "A: local\nB: dw1w2\n", idle = 1499, ios = true, focus = true, head = 16, panes = 1, moved = false }, held] of [
+  ["text lands before the caret, typed 1499 ms ago", {}, true],
+  ["typing paused 1500 ms ago", { idle: 1500 }, false],
+  ["not on iOS", { ios: false }, false],
+  ["the editor has no focus", { focus: false }, false],
+  ["text lands at the end of the word, after a caret inside it", { written: "A: local\nB: w1w2d\n", head: 14 }, true],
+  ["text lands in the word before, past a space", { written: "A: local\nBx: w1w2\n" }, false],
+  ["a CRLF version changes another line", { written: "A: local, remote\r\nB: w1w2\r\n" }, false],
+  ["the second of two panes is the one typed in", { panes: 2 }, true],
+  ["the typing was in the note this pane showed before", { moved: true }, false],
+]) test(`incoming text waits only for the word an iPhone is typing (${name})`, async (t) => {
+  const r = await native(t, {}, { mobile: true, editorTimers: new FakeTimers() });
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  t.after(() => { Date.now = realNow; r.Platform.isIosApp = false; });
+  r.Platform.isIosApp = ios;
+  const file = { path: NOTE };
+  const pane = (hasFocus) => ({
+    file, getViewData: () => WORD,
+    editor: { cm: { hasFocus, state: { doc: { toString: () => WORD }, selection: { main: { head } } } } },
+  });
+  const views = panes === 2 ? [pane(false), pane(focus)] : [pane(focus)];
+  for (const view of views) {
+    if (moved) view.file = { path: "Notes/Before.md" };
+    r.host.editorActivity.record(view, "beforeinput");
+    view.file = file;
+  }
+  r.host.views = () => views;
+  now += idle;
+  assert.equal(r.host.typingWord(NOTE, WORD, written), held);
+  assert.deepEqual(r.logs.filter((line) => line.includes("typing_word")),
+    held ? [`editor decision=deferred reason=typing_word duration_ms=${idle} budget_ms=1500`] : []);
+});
+
+// The phone's writer asks before it touches the editor or the disk, and the
+// parked retry that follows the pause delivers the same version.
+test("an iPhone's incoming version waits beneath the word being typed, then lands after the pause", async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile: true, original: WORD, incoming: "A: local\nB: dw1w2\n" });
+  const realNow = Date.now;
+  let shift = 0;
+  Date.now = () => realNow() + shift;
+  t.after(() => { Date.now = realNow; r.Platform.isIosApp = false; });
+  r.Platform.isIosApp = true;
+  const dispatched = [];
+  r.view.editor = {
+    cm: {
+      hasFocus: true,
+      state: { doc: { toString: () => r.buffer.value }, selection: { main: { head: 16 } } },
+      dispatch: (spec) => {
+        dispatched.push(spec.changes);
+        let text = r.buffer.value;
+        for (const { from, to, insert } of [...spec.changes].reverse()) text = text.slice(0, from) + insert + text.slice(to);
+        r.buffer.value = text;
+      },
+    },
+  };
+  // The fixture's own saved keystroke is the typing; its save receipt stands.
+  await assert.rejects(r.write(), r.EditorBusy);
+  assert.equal(r.logs.filter((line) => line.includes("reason=typing_word")).length, 1, r.logs.join(" | "));
+  assert.equal(r.buffer.value, WORD);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), WORD);
+  assert.deepEqual(dispatched, []);
+  shift = 1500;
+  await r.write();
+  await r.adapter.promise; await Promise.all(r.reads);
+  assert.equal(r.buffer.value, r.incoming);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming);
+  assert.deepEqual(dispatched, [[{ from: 12, to: 12, insert: "d" }]]);
+  assert.equal(r.logs.filter((line) => line.includes("typing_word")).length, 1);
+});
 
 for (const reason of ["composition", "native-only", "disagreeing"]) test(`a queued bridge with a second ${reason} pane leaves every pane to one native reload`, async (t) => {
   let second, secondText, r;

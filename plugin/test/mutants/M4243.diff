@@ -1,0 +1,6 @@
+M4243: the word's start is read one character late
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3510 +3510 @@
+-      while (start > 0 && !/\s/.test(doc[start - 1] as string)) start--;
++      while (start > 0 && !/\s/.test(doc[start] as string)) start--;

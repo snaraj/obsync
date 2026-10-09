@@ -10,6 +10,8 @@ export const EDITOR_SAVE_MS = 5;
 export const EDITOR_SAVE_WAIT_MS = 100;
 /** Bound extra whole-text reads on mobile. Larger notes retain native autosave. */
 export const EDITOR_SAVE_MAX_CHARS = 1 << 20;
+/** iOS: a pause this long ends the typing of a word; incoming text inside it waits until then. */
+export const WORD_PAUSE_MS = 1_500;
 
 /** A replaced, unapplied write is distinct from a failed native reload. */
 export type ReloadOutcome = "confirmed" | "superseded" | "unconfirmed";
@@ -64,6 +66,12 @@ export class EditorActivity {
       composing: kind === "compositionstart" || (composing && kind !== "compositionend" && kind !== "focusout"),
     });
     this.schedule(view);
+  }
+
+  /** Milliseconds since this view's last trusted input in its current file, or null. */
+  idle(view: MarkdownView): number | null {
+    const input = this.inputs.get(view);
+    return input?.file === view.file ? Date.now() - input.at : null;
   }
 
   recent(view: MarkdownView): boolean {

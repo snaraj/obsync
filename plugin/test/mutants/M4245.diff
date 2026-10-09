@@ -1,0 +1,5 @@
+M4245: the word ends at the caret
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3511 +3510,0 @@
+-      while (end < doc.length && !/\s/.test(doc[end] as string)) end++;
