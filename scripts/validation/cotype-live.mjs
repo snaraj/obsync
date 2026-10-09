@@ -281,6 +281,49 @@ if (TAP) {
   await sleep(1500);
   for (const s of [X, Y]) await s.js(CURSOR.zero);
 } else if (SAME) for (const s of [X, Y]) await s.js(CURSOR.zero);
+const kept = (typed) => typed.replace(/.\x08/gsu, "");
+const of = (first) => (text) => [...text].filter((c) => c.codePointAt(0) >= first && c.codePointAt(0) < first + KEYS).join("");
+const ofA = of(X_KEYS), ofB = of(Y_KEYS);
+const third = (r) => r.disk.split("\n")[2] ?? "";
+/** The verdict on what each side holds after the run, and whether it passes. */
+const judge = (read, typedA, typedB) => {
+  const all = Object.values(read);
+  const expected = SAME ? null : `# Both${typedB}\nthe line nobody edits\nthe last fixed line\n${typedA}`;
+  const verdict = {
+    exact: TAP ? all.every((r) => r.disk === all[0].disk && third(r).startsWith("0") && ofA(third(r)) === kept(typedA))
+      : SAME ? all.every((r) => r.disk === all[0].disk && third(r).startsWith("0") &&
+      ofA(third(r)).length + ofB(third(r)).length === [...third(r)].length - 1 &&
+      ofA(third(r)) === kept(typedA) && ofB(third(r)) === kept(typedB))
+      : all.every((r) => r.disk === expected),
+    same_disk: all.every((r) => r.disk === all[0].disk),
+    editor_is_disk: all.every((r) => r.editor === null || r.editor === r.disk),
+    all_A: all.every((r) => SAME ? ofA(third(r)) === kept(typedA) : r.disk.includes(typedA)),
+    all_B: all.every((r) => TAP ? true : SAME ? ofB(third(r)) === kept(typedB) : r.disk.split("\n")[0] === `# Both${typedB}`),
+    kinds: all.map((r) => `${r.local}/${r.synced}`),
+    transient: SAME ? all.reduce((sum, r) => sum + r.broken.length, 0) : 0,
+    checked: all.map((r) => r.checked),
+    fixed_lines: all.every((r) => r.disk.startsWith(SAME ? "# Both\nthe line nobody edits\n0" : "# Both")
+      && (SAME || r.disk.includes("\nthe line nobody edits\nthe last fixed line\n"))),
+    copies: new Set(all.flatMap((r) => r.copies)).size,
+  };
+  const pass = verdict.exact && verdict.fixed_lines && verdict.editor_is_disk && verdict.copies === 0 && verdict.transient === 0 &&
+    (!SAME || [read.X, read.Y].every((r) => r.local > 0 && r.synced > 0));
+  return { verdict, pass };
+};
+// THE ORACLE'S OWN CONTROL (review of 8fc0bf43, finding 2). Every typed key in
+// place says nothing of the lines nobody typed in: a note whose untouched lines
+// were rewritten passed. Before any run is judged, a kept note must pass and
+// the same note with its fixed lines changed must fail.
+{
+  const a = String.fromCodePoint(X_KEYS), b = String.fromCodePoint(Y_KEYS);
+  const good = SAME ? `# Both\nthe line nobody edits\n0${TAP ? " " : ""}${a}${TAP ? "" : b}\n`
+    : `# Both${b}\nthe line nobody edits\nthe last fixed line\n${a}`;
+  const bad = good.replace("# Both", "CORRUPTED HEADER").replace("the line nobody edits", "DELETED FIXED LINE");
+  const sample = (disk) => ({ disk, editor: disk, copies: [], broken: [], local: 1, synced: 1, checked: 1 });
+  if (!judge({ X: sample(good), Y: sample(good) }, a, b).pass || judge({ X: sample(bad), Y: sample(bad) }, a, b).pass) {
+    throw new Error("oracle control: the verdict does not tell a kept note from one whose untouched lines changed");
+  }
+}
 const t0 = Date.now();
 const typist = async (s, where, text, advance) => {
   while (Date.now() - t0 < DURATION) {
@@ -298,39 +341,15 @@ const typist = async (s, where, text, advance) => {
 };
 await Promise.all([typist(X, "end", aText, () => ai++), typist(Y, "line1", bText, () => bi++)]);
 const typedA = aText.slice(0, ai), typedB = bText.slice(0, bi);
-const kept = (typed) => typed.replace(/.\x08/gsu, "");
-const of = (first) => (text) => [...text].filter((c) => c.codePointAt(0) >= first && c.codePointAt(0) < first + KEYS).join("");
-const ofA = of(X_KEYS), ofB = of(Y_KEYS);
 const typedMs = Date.now() - t0;
 console.log(`typed: X ${ai} chars (${typedA.slice(-9)}), Y ${bi} chars (${typedB.slice(-9)}) in ${typedMs} ms; idle ${IDLE} ms`);
 await sleep(IDLE);
 const read = {};
 for (const [name, s] of sides) read[name] = JSON.parse(await s.call(READ, NOTE, `${STEM} (conflict`));
-const all = Object.values(read);
-const expected = SAME ? null : `# Both${typedB}\nthe line nobody edits\nthe last fixed line\n${typedA}`;
-const third = (r) => r.disk.split("\n")[2] ?? "";
-const verdict = {
-  exact: TAP ? all.every((r) => r.disk === all[0].disk && third(r).startsWith("0") && ofA(third(r)) === kept(typedA))
-    : SAME ? all.every((r) => r.disk === all[0].disk && third(r).startsWith("0") &&
-    ofA(third(r)).length + ofB(third(r)).length === [...third(r)].length - 1 &&
-    ofA(third(r)) === kept(typedA) && ofB(third(r)) === kept(typedB))
-    : all.every((r) => r.disk === expected),
-  same_disk: all.every((r) => r.disk === all[0].disk),
-  editor_is_disk: all.every((r) => r.editor === null || r.editor === r.disk),
-  all_A: all.every((r) => SAME ? ofA(third(r)) === kept(typedA) : r.disk.includes(typedA)),
-  all_B: all.every((r) => TAP ? true : SAME ? ofB(third(r)) === kept(typedB) : r.disk.split("\n")[0] === `# Both${typedB}`),
-  kinds: all.map((r) => `${r.local}/${r.synced}`),
-  transient: SAME ? all.reduce((sum, r) => sum + r.broken.length, 0) : 0,
-  checked: all.map((r) => r.checked),
-  fixed_lines: all.every((r) => r.disk.startsWith(SAME ? "# Both\nthe line nobody edits\n0" : "# Both")
-    && (SAME || r.disk.includes("\nthe line nobody edits\nthe last fixed line\n"))),
-  copies: new Set(all.flatMap((r) => r.copies)).size,
-};
+const { verdict, pass } = judge(read, typedA, typedB);
 const count = (lines, word) => lines.filter((l) => l.includes(word)).length;
 const tally = (r) => ["decision=merged", "reason=unmerged", "role=keep", "role=yield", "decision=editor_refreshed", "reason=merge_storm", "merge_ancestry_limit", "ok=false"]
   .map((w) => `${w.replace(/^(decision|reason)=/, "")}=${count(r.lines, w)}`).join(" ");
-const pass = verdict.exact && verdict.editor_is_disk && verdict.copies === 0 && verdict.transient === 0 &&
-  (!SAME || [read.X, read.Y].every((r) => r.local > 0 && r.synced > 0));
 if (TAP) console.log("Y tapped", JSON.stringify(typedB), "and the note holds", JSON.stringify(third(read.Y)));
 console.log("verdict", JSON.stringify(verdict));
 // Notices each side showed during the run: how many, and each distinct text with its count.
