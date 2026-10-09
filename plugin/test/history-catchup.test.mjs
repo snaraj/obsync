@@ -64,10 +64,11 @@ test("an old live head outside the newest ten versions is still a real conflict"
     fileId: FILE, path: NOTE, bytes: bytes(text), parents, mtime: 1000 + r.server.journal.length,
     domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
   });
+  // Text merges (#339): a NUL byte keeps these two branches a fork with no merge.
   const base = await post("base\n", []);
-  const oldHead = await post("older live branch\n", [base.version_id]);
+  const oldHead = await post("older live branch\0\n", [base.version_id]);
   let other = base;
-  for (let n = 0; n < 12; n++) other = await post(`other branch ${n}\n`, [other.version_id]);
+  for (let n = 0; n < 12; n++) other = await post(`other branch ${n}\0\n`, [other.version_id]);
   boundedFileView(r);
   const view = await r.transport.getFile(FILE);
   assert.equal(view.versions.length, 11, "the head outside the window must remain visible");
@@ -77,7 +78,7 @@ test("an old live head outside the newest ten versions is still a real conflict"
 
   const kept = [...r.host.files.keys()].filter(path => path === NOTE || path.includes("(conflict from"));
   assert.equal(kept.length, 2);
-  assert.deepEqual(kept.map(path => r.host.text(path)).sort(), ["older live branch\n", "other branch 11\n"].sort());
+  assert.deepEqual(kept.map(path => r.host.text(path)).sort(), ["older live branch\0\n", "other branch 11\0\n"].sort());
   assert.equal(r.server.files.get(FILE).heads.length, 1, "the actual fork must settle");
 });
 

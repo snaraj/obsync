@@ -1,0 +1,6 @@
+M4258: call a line both sides changed contested even when it reads the same on both
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -299 +299 @@
+-    return stretch.some((each) => each.mine) && stretch.some((each) => !each.mine) && made(true) !== made(false);
++    return stretch.some((each) => each.mine) && stretch.some((each) => !each.mine);

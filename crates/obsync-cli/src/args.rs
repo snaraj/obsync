@@ -177,6 +177,9 @@ impl Args {
     }
 
     fn suggestion(&self) -> String {
+        if self.words.first().map(String::as_str) == Some("status") {
+            return "Server status is not available yet. Run 'obsync doctor' to check local settings; it does not contact a server.".into();
+        }
         let query = self
             .words
             .iter()

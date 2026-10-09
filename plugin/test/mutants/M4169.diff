@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2787 +2787 @@
+-  const advancedInput = input !== undefined && input !== tally.input;
++  const advancedInput = false;

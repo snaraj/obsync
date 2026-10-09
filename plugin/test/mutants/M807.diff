@@ -1,15 +1,9 @@
 # M807: A waiting editor repeatedly downloads and tries to overwrite the note.
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2725,11 +2725,6 @@
-    */
-   private async retryOne(context: SyncContext, fileId: string): Promise<boolean> {
-     const waiting = context.state.data.parked[fileId];
+@@ -3580,5 +3579,0 @@
 -    if (waiting?.reason === "active_editor" &&
--      (context.host.typing(waiting.path) || await context.host.editing(waiting.path) === "unsaved")) {
+-      !await context.host.editorReady(waiting.path)) {
 -      this.armEditorRetry();
 -      return false;
 -    }
-     try {
-       const file = await context.transport.getFile(fileId);
-       // A head too large to fetch under the pull lock goes to the lane.

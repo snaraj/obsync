@@ -1,18 +1,9 @@
 # M3277: a yield puts its claimed record back after the refusal's mark, which ends it
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3306,12 +3306,12 @@
-       // so its record: claimed, the next save was published as a child of the
-       // kept head, taking that head's text out of the note on every device.
-       const started = context.now();
--      const landed = await landedAt(context, await commitMarked(context, change.file_id, localPath, () => writer.commit(theirManifest.mtime).catch(async (error: unknown) => {
-+      const landed = await landedAt(context, await commitMarked(context, change.file_id, localPath, () => writer.commit(theirManifest.mtime)).catch(async (error: unknown) => {
-         await release();
-         context.host.log(`pull decision=released reason=not_written role=yield file=${change.file_id} seq=${change.seq} ` +
-           `duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
-         throw error;
+@@ -3774 +3774 @@
+-      const landed = await landedAt(context, await commitMarked(context, change.file_id, localPath, () => writer.commit(theirManifest.mtime, mine).catch(async (error: unknown) => {
++      const landed = await landedAt(context, await commitMarked(context, change.file_id, localPath, () => writer.commit(theirManifest.mtime, mine)).catch(async (error: unknown) => {
+@@ -3779 +3779 @@
 -      })));
 +      }));
-       tally.left = stamp(landed);
-       await recordAt(context, change, localPath, landed);
-     } catch (error) {

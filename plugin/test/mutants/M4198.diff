@@ -1,0 +1,6 @@
+M4198: align lines without unique-line anchors
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -107 +107 @@
+-    const anchors = depth < ANCHOR_DEPTH ? uniqueAnchors(a, a0, a1, b, b0, b1) : [];
++    const anchors = depth < 0 ? uniqueAnchors(a, a0, a1, b, b0, b1) : [];

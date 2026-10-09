@@ -1,0 +1,6 @@
+M4200: let a shared suffix begin inside a surrogate pair
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -214 +214 @@
+-  if (tail > 0 && isLow(before.charCodeAt(before.length - tail))) tail--;
++  if (tail > 0 && isLow(before.charCodeAt(before.length - tail - 1))) tail--;

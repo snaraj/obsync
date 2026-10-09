@@ -1,0 +1,6 @@
+M4128: discard successful insertion delivery confirmation
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3577 +3577 @@
+-        if (bridged !== null && onlyInserts(shown, written) && onlyInserts(bridged.text, current)) {
++        if (bridged !== null && onlyInserts(shown, written) && onlyInserts(bridged.text, current) && false) {

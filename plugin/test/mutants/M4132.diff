@@ -1,0 +1,6 @@
+M4132: let a replacement pane borrow a delivery receipt
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3568 +3568 @@
+-        bridge.bindings.every((entry, i) => entry.view === views[i] && entry.file === bound[i]) ? bridge : null;
++        true ? bridge : null;

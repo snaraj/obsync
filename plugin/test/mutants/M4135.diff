@@ -1,0 +1,6 @@
+M4135: omit insertion confirmation diagnostic
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3587 +3587 @@
+-          if (receipt !== null) this.log(`host path_class=file decision=editor_confirmed reason=${receipt} views=${views.length} duration_ms=${Date.now() - started} budget_ms=1000`);
++          if (receipt !== null) { /* diagnostic omitted */ }

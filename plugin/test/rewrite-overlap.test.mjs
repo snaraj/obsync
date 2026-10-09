@@ -61,6 +61,25 @@ test("an automatic answer also holds an unpushed typed overlap before deferring 
   assert.deepEqual(r.state.data.paused, { [r.base.fileId]: { path: NOTE, remote: true } });
 });
 
+test("a saved editor holds a peer's automatic answer meeting its published typing", async () => {
+  const r = await fork();
+  r.host.editorReady = async () => true;
+  assert.equal(await applyChange(r.context, r.frame), "skipped");
+  assert.equal(r.host.text(NOTE), OURS);
+  assert.equal(r.host.files.size, 1);
+  assert.deepEqual(r.state.data.paused, { [r.base.fileId]: { path: NOTE, remote: true } });
+});
+
+test("a saved-editor rebase still holds an automatic answer overlapping a newer local delta", async () => {
+  const r = await fork({ pushed: false });
+  r.host.editorReady = async () => true;
+  assert.equal(await applyChange(r.context, r.frame), "skipped");
+  assert.equal(r.host.text(NOTE), OURS);
+  assert.equal(r.host.files.size, 1);
+  assert.deepEqual((await r.reload()).data.paused, { [r.base.fileId]: { path: NOTE, remote: true } });
+  assert.equal(r.host.notices.length, 1);
+});
+
 for (const [name, facts] of [
   ["a competing user edit has no automatic-answer flag", { answer: false }],
   ["a passive editor is not trusted typing", { typed: false }],
@@ -75,6 +94,23 @@ for (const [name, facts] of [
     assert.equal(r.host.text(NOTE), OURS.replace("end", "remote end"));
     assert.equal(r.host.files.size, 1);
   }
+});
+
+test("a refused text merge reports typing state and elapsed time without note text", async () => {
+  const r = await fork({ typed: false });
+  await applyChange(r.context, r.frame);
+  assert.ok(r.host.logs.some(line => /^pull decision=unmerged reason=overlap file=[a-f0-9]+ seq=[0-9]+ typing=false duration_ms=[0-9]+$/.test(line)), r.host.logs.join(" | "));
+  assert.ok(!r.host.logs.some(line => line.includes("stamp:")), "note text reached the log");
+});
+
+test("two people's edits at one place merge; only an automatic answer there is held", async () => {
+  const r = await fork({ answer: false, typed: false });
+  assert.equal(await applyChange(r.context, r.frame), "merged");
+  const { mergeText } = require("../build/sync/conflict.js");
+  assert.equal(r.host.text(NOTE), mergeText(BASE, OURS, BASE.replace("stamp: base", "stamp: theirs")));
+  assert.ok(r.host.text(NOTE).includes("ABCDEFGH"), "this device's own edit elsewhere survives");
+  assert.equal(r.host.files.size, 1);
+  assert.deepEqual(r.state.data.paused, {});
 });
 
 test("parallel overlap detection announces one hold without duplicating notices", async () => {

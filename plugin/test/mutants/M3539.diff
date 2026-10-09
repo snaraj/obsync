@@ -1,11 +1,11 @@
-# M3539: the engine never tells its host the work is over: the throttling stays lifted (#283)
+# M3539: never restores host throttling (#283)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1285,7 +1285,7 @@
+@@ -1394,7 +1394,7 @@
      } else if (this.hurried && this.calmHandle === null) {
        this.calmHandle = this.timers.set(() => {
          this.calmHandle = null;
--        this.options.host.hurry?.(this.hurried = false);
+-        this.options.host.hurry?.(this.hurried = false, this.networkAvailable ? "calm" : "unanswered");
 +        this.hurried = false;
        }, CALM_MS);
      }

@@ -1,12 +1,6 @@
 # M792: treat an unresolvable shared base as absent
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3321,7 +3321,7 @@
-     `pull decision=merge_base reason=criss_cross level=${CRISS_CROSS_LEVELS - levels + 1} ok=${merged.ok} ` +
-       `file=${change.file_id} seq=${change.seq}`,
-   );
--  if (!merged.ok) return false;
-+  if (!merged.ok) return null;
-   remember(context, pair, merged.text);
-   return merged.text;
- }
+@@ -3950 +3950 @@
+-  if (merged === null) return deeper as false | typeof HISTORY_BUDGET;
++  if (merged === null) return null;

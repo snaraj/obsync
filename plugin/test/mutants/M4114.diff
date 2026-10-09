@@ -1,0 +1,6 @@
+# M4114: All panes must be bridgeable before the first public save
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3502 +3502 @@
+-      !views.every((view) => this.editorActivity.canRefresh(view))) return null;
++      false) return null;

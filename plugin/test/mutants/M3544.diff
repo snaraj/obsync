@@ -1,12 +1,12 @@
-# M3544: one absence and the window is never asked again (#283)
+# M3544: one unavailable host is never asked again (#283)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -759,7 +759,7 @@
+@@ -925,7 +925,7 @@
     * says so. Desktop only: a phone has no such window.
     */
-   hurry(busy: boolean): void {
+   hurry(busy: boolean, reason: "work" | "calm" | "stop" | "unanswered" = busy ? "work" : "calm"): void {
 -    if (!Platform.isDesktopApp) return;
 +    if (!Platform.isDesktopApp || this.throttleTold) return;
      const started = Date.now();
-     const reason = busy ? "work" : "idle";
      try {
+       const contents = (window as unknown as { electronWindow?: { webContents?: { setBackgroundThrottling?: unknown } } })

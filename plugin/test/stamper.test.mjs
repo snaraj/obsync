@@ -232,7 +232,13 @@ for (const passive of [false, true]) for (const reverseResume of [false, true]) 
   assert.equal(told(b.host).length, 1, story());
   assert.match(told(b.host)[0], /^obsync: paused syncing "n10": a plugin \(such as one that stamps "updated:"\) keeps rewriting it right after sync, which would bounce it between your devices\. Stop that plugin changing synced notes, then press Resume in Show sync status; nothing was deleted\.$/);
   assert.equal(told(a.host).length, 1, story());
-  assert.ok(a.host.logs.some((line) => line.startsWith("pull decision=paused reason=peer_rewrite_storm")), story());
+  // Either the authenticated pause control or the peer's automatic answer
+  // can arrive first. Both preserve A's editor/Resume role. Require one
+  // attributed decision with its complete timing fields, independent of
+  // WebCrypto completion order; the direct overlap suite pins that path.
+  const peerHold = a.host.logs.filter((line) => /^pull decision=paused reason=peer_rewrite_(?:storm|overlap) /.test(line));
+  assert.equal(peerHold.length, 1, story());
+  assert.match(peerHold[0], new RegExp(`^pull decision=paused reason=peer_rewrite_(?:storm|overlap) file=${fileId} seq=\\d+ duration_ms=\\d+ budget_ms=${ANSWER_MS}$`), story());
   assert.ok(!a.host.logs.some((line) => line.startsWith("pull decision=paused reason=rewrite_storm")), story());
   assert.ok(rig.versions().length <= 10, story());
   assert.deepEqual(b.statuses.at(-1), { kind: "paused", message: `${NOTE} (Show sync status)` }, story());

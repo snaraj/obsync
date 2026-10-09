@@ -1,0 +1,6 @@
+M4252: an incomplete walk to the shared frontier still merges over the listing
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2845 +2845 @@
+-  const historyRead = !completeHeads || await completeMergeAncestry(context, file, localVersionId, change.version_id);
++  const historyRead = !completeHeads || (await completeMergeAncestry(context, file, localVersionId, change.version_id), true);

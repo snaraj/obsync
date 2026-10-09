@@ -1,0 +1,5 @@
+M4239: every platform holds the word being typed
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3503 +3502,0 @@
+-    if (!Platform.isIosApp) return false;

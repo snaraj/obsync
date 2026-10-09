@@ -16,7 +16,7 @@ const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
 const { SyncEngine, HEARTBEAT_MS, SCAN_MS } = require("../build/sync/engine.js");
 const { pushDelete, pushFile } = require("../build/sync/push.js");
-const { applyChange, fetchRemoteOnly, remoteOnlyList, commonAncestor } = require("../build/sync/pull.js");
+const { applyChange, assembleBytes, decodeRecordManifest, fetchRemoteOnly, remoteOnlyList, commonAncestor } = require("../build/sync/pull.js");
 const c = require("../build/crypto.js");
 const dm = require("../build/domainmap.js");
 
@@ -642,15 +642,29 @@ const closing = (server, fileId) => server.files.get(fileId).versions.find((vers
  * every device, and one version naming both closes the fork. Both vantage
  * points, because a rule that holds from one side is not a rule.
  */
-test("overlapping edits: the lower id, this device's, keeps the note and the other is one copy", async () => {
-  const { r, fileId, ours, theirs, head } = await forkOf("Notes/Clash.md", "line\n", "my line\n", "their line\n", "ours");
+test("two devices replacing the same line keep both texts in one note, without a copy (#339)", async () => {
+  const { mergeText } = require("../build/sync/conflict.js");
+  for (const lower of ["ours", "theirs"]) {
+    const { r, fileId, head } = await forkOf("Notes/Clash.md", "original line\n", "my line\n", "their line\n", lower);
+    assert.equal(await applyChange(r.context, head), "merged");
+    assert.equal(r.host.text("Notes/Clash.md"), mergeText("original line\n", "my line\n", "their line\n"));
+    assert.ok(r.host.text("Notes/Clash.md").includes("my"), "this device's word is in the note");
+    assert.deepEqual([...r.host.files.keys()].filter((path) => path.includes("conflict from")), []);
+    assert.equal(r.server.files.get(fileId).heads.length, 1, "the fork was left open");
+  }
+});
+
+// Text merges (#339): a NUL byte makes these edits content with no merge,
+// which the rule below still settles.
+test("edits that do not merge: the lower id, this device's, keeps the note and the other is one copy", async () => {
+  const { r, fileId, ours, theirs, head } = await forkOf("Notes/Clash.md", "original line\n", "my line\0\n", "their line\0\n", "ours");
 
   assert.equal(await applyChange(r.context, head), "skipped");
-  assert.equal(r.host.text("Notes/Clash.md"), "my line\n", "our edit is untouched");
+  assert.equal(r.host.text("Notes/Clash.md"), "my line\0\n", "our edit is untouched");
   const copy = [...r.host.files.keys()].filter((path) => path.includes("conflict from"));
   assert.equal(copy.length, 1, JSON.stringify(copy));
   assert.match(copy[0], /^Notes\/Clash \(conflict from iPhone, \d{4}-\d{2}-\d{2} \d{4} UTC, [0-9a-f]{6}\)\.md$/);
-  assert.equal(r.host.text(copy[0]), "their line\n");
+  assert.equal(r.host.text(copy[0]), "their line\0\n");
   const closed = closing(r.server, fileId);
   assert.deepEqual([...closed.parents].sort(), [ours.versionId, theirs.version_id].sort());
   assert.deepEqual(closed.sids, r.server.files.get(fileId).versions.find((v) => v.version_id === ours.versionId).sids);
@@ -659,15 +673,15 @@ test("overlapping edits: the lower id, this device's, keeps the note and the oth
   assert.match(r.host.notices.join(" "), /kept both versions/);
 });
 
-test("overlapping edits: the lower id, the other device's, takes the note and this device's is one copy", async () => {
-  const { r, fileId, theirs, head } = await forkOf("Notes/Clash.md", "line\n", "my line\n", "their line\n", "theirs");
+test("edits that do not merge: the lower id, the other device's, takes the note and this device's is one copy", async () => {
+  const { r, fileId, theirs, head } = await forkOf("Notes/Clash.md", "original line\n", "my line\0\n", "their line\0\n", "theirs");
 
   assert.equal(await applyChange(r.context, head), "applied");
-  assert.equal(r.host.text("Notes/Clash.md"), "their line\n");
+  assert.equal(r.host.text("Notes/Clash.md"), "their line\0\n");
   const copy = [...r.host.files.keys()].filter((path) => path.includes("conflict from"));
   assert.equal(copy.length, 1, JSON.stringify(copy));
   assert.match(copy[0], /^Notes\/Clash \(conflict from this device, /);
-  assert.equal(r.host.text(copy[0]), "my line\n", "this device's edit is not in its copy");
+  assert.equal(r.host.text(copy[0]), "my line\0\n", "this device's edit is not in its copy");
   const closed = closing(r.server, fileId);
   assert.deepEqual(closed.sids, theirs.sids);
   assert.deepEqual(r.server.files.get(fileId).heads, [closed.version_id], "the fork was left open");
@@ -1918,4 +1932,57 @@ test("a pull publication joining an older upload still sends the edit made while
   assert.equal(file.versions.length, 2);
   assert.deepEqual(file.heads, [record.versionId]);
   assert.equal(reads, 2, "overlapping pull requests share one upload and one follow-up read, not one read per request");
+});
+
+for (const echo of ["during-write", "after-merge"]) test(`the real engine publishes a saved-editor delta despite its ${echo} modify echo`, async (t) => {
+  const r = await rig(), timers = new FakeTimers(), path = "Typing.md";
+  r.host.seed(path, "A: \nB: \n", 1000);
+  const base = await pushFile(r.context, path);
+  r.host.seed(path, "A: one\nB: \n", 2000);
+  const own = await pushFile(r.context, path);
+  parkedFeed(r.server);
+  const engine = engineOf(r, timers);
+  t.after(() => engine.stop());
+  await engine.start();
+  await timers.run(100);
+  const incoming = await r.server.publish({ fileId: own.fileId, path,
+    bytes: enc("A: \nB: remote\n"), mtime: 3000, parents: [base.versionId],
+    domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  r.host.seed(path, "A: one two\nB: \n", 4000);
+  r.host.typing = (p) => p === path;
+  r.host.editorReady = async () => true;
+  r.host.savedSnapshot = (p, bytes) => p === path && new TextDecoder().decode(bytes) === "A: one two\nB: \n";
+  const writer = r.host.writer.bind(r.host);
+  r.host.writer = async (...args) => {
+    const staged = await writer(...args);
+    return { ...staged, commit: async (...commitArgs) => {
+      const stat = await staged.commit(...commitArgs);
+      if (echo === "during-write") engine.changed(path);
+      return stat;
+    } };
+  };
+  assert.equal(await applyChange(engine.context, incoming), "merged");
+  if (echo === "after-merge") engine.changed(path);
+  // A watcher echo is suppressed; it cannot be the publication path. No
+  // manual pushFile, syncNow or periodic scan supplies the missing queue.
+  // Hold virtual time below the periodic scan: advancing it repeatedly while
+  // waiting for a missing child would let that scan hide a lost queueLocal.
+  await timers.run(5, () => r.host.logs.some((line) => line.includes("echo_suppressed")));
+  await timers.run(0);
+  assert.ok(timers.now < SCAN_MS, "periodic discovery cannot rescue the publication under test");
+  assert.ok(r.host.logs.some((line) => line.includes("echo_suppressed")));
+  assert.ok(r.host.logs.some((line) => line.includes("saved_editor_rebase pending_local=true")));
+  const file = await r.transport.getFile(own.fileId);
+  assert.equal(file.heads.length, 1);
+  const child = file.versions.find((v) => v.version_id === file.heads[0]);
+  assert.equal(child.parents.length, 1, "the delta was published after the acknowledged merge");
+  const merge = file.versions.find((v) => v.version_id === child.parents[0]);
+  assert.deepEqual([...merge.parents].sort(), [own.versionId, incoming.version_id].sort());
+  const text = async (version) => new TextDecoder().decode(await assembleBytes(engine.context,
+    await decodeRecordManifest(engine.context, { ...version, file_id: own.fileId, domain_id: file.domain_id })));
+  assert.equal(await text(merge), "A: one\nB: remote\n");
+  assert.equal(await text(child), "A: one two\nB: remote\n");
+  assert.equal(r.host.text(path), await text(child));
+  assert.equal(r.state.fileByPath(path).versionId, child.version_id);
+  assert.deepEqual([...r.host.files.keys()].filter((name) => name.includes("conflict")), []);
 });

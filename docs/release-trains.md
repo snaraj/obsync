@@ -8,7 +8,7 @@ are applied on GitHub; they describe planned delivery, not completed acceptance.
 | Release | Scope | Issues |
 | --- | --- | --- |
 | [v1.1.6](https://github.com/snaraj/obsync/milestone/31) | Native Rust CLI discovery, contexts and verified installation | #255 |
-| [v1.1.7](https://github.com/snaraj/obsync/milestone/33) | First-sync writes, background performance, load-test regressions and measured pipeline/design work | #274, #277, #283, #319, #325 |
+| [v1.1.7](https://github.com/snaraj/obsync/milestone/33) | First-sync writes, background performance, load-test regressions, measured pipeline/design work and CLI usability | #274, #277, #283, #319, #325, #329 |
 | [v1.1.8](https://github.com/snaraj/obsync/milestone/34) | Pairing confirmation and physical-phone blind-start/readback acceptance | #290, #314 |
 | [v1.1.9](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs and final integrated acceptance | #254, #256, #257, #258, #261, #262, #321 |
 | [v1.1.10](https://github.com/snaraj/obsync/milestone/32) | Deferred export, storage/deployment, backup/recovery and co-editing engine | #259, #260, #315, #317 |
@@ -39,6 +39,8 @@ The release order follows the table; no date or completed capability is promised
   recovery, native-device, mixed-version and convergence requirement.
 
 Security, E2EE, durability and performance requirements remain unchanged.
+The owner added CLI help, diagnostics and XDG defaults (#329) during the
+1.1.6 delivery handoff on 2026-10-04; its existing machine interface stays stable.
 Each capability needs its applicable V01–V19, S01–S12 and P01–P10 evidence from
 the [acceptance plan](validation-plans/cli-mcp-v1.1.6.md). Deferred capabilities
 remain visibly unsupported until delivered. No unit-test or CI result substitutes

@@ -1,0 +1,5 @@
+M4250: a held word is not logged
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3513 +3512,0 @@
+-        this.log(`editor decision=deferred reason=typing_word duration_ms=${idle} budget_ms=${WORD_PAUSE_MS}`);

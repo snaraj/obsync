@@ -339,6 +339,30 @@ scan, out-of-lane paths untouched); check doctrine (nothing weakened). The
 posted verdict removes `requires-review`. A REQUEST-CHANGES verdict returns
 the work to the same branch owner for a delta re-review of the changed scope.
 
+### Author reply delivery
+
+The repository requires an observed reply route, not a particular monitoring
+service. It must cover ordinary issue comments and inline PR review replies,
+remain active after `requires-review` is removed, and deduplicate unchanged
+content and the author's own comments. Routine progress needs no owner push.
+
+Where the execution environment provides a monitor, subscribe the participating
+author to this exact PR and verify discovery plus delivery of its current
+conversation. A healthy process or accepted queue entry alone does not show
+that the author read it. Reuse an existing monitor; do not create a duplicate.
+Credentials, local service setup and session identifiers belong to that
+environment, never this repository.
+
+Otherwise, keep an explicit read-only polling route in the author environment.
+With GitHub CLI, read `gh pr view NUMBER --repo OWNER/REPO --comments` and
+`gh api --paginate repos/OWNER/REPO/pulls/NUMBER/comments` for inline replies.
+Read both immediately before yielding and every 60–90 seconds while awaiting
+review; retain comment IDs and body hashes so edits are detected and unchanged
+replies do not wake an agent. Test the route against the current thread before
+relying on it. If the environment cannot resume an author after a reply, state
+that limitation rather than claim unattended delivery. These reads grant no
+implementation, review or merge authority.
+
 ### After review, Ready
 
 Once the independent review has approved the exact final head and all
@@ -444,7 +468,12 @@ Several agents work this repository at once. Git worktrees under
 5. **Push and open a DRAFT PR** with `Closes #N`, both agent labels, owner
    assignee, milestone, signed body with reproducible numbers. Apply
    `requires-review` once complete-from-author.
-6. **Adversarial review**; fix findings on the same branch; delta re-review.
+6. **Adversarial review**; before yielding, establish how the author will
+   receive replies on this exact PR, following "Author reply delivery".
+   Reviewer-dispatch labels alone do not prove verdict delivery. Read any
+   verdict already present, fix findings on the same branch without waiting
+   for the owner to relay them, then request delta re-review. Keep the reply
+   route active until the exchange is resolved.
 7. **Run the user journeys** for a change to `plugin/` or the sync path: the
    affected journeys in `docs/validation.md`, on real devices, one desktop and
    one phone, with their outcomes recorded in `docs/validation-runs/`. Nothing

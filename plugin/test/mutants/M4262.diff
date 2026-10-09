@@ -1,0 +1,6 @@
+M4262: judge only the last stretch
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -303 +303 @@
+-      if (differs()) return true;
++      differs();

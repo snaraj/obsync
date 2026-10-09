@@ -423,6 +423,7 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
 
   const plan: ManifestChunk[] = [];
   let single: Bytes | null = null;
+  let savedEditorSnapshot = false;
   let plaintextHash = "";
   let uploads = 0;
   const before = context.transport.uploadStats();
@@ -439,6 +440,24 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
     if (plaintext.length === 0 && mark !== undefined) {
       context.host.log(`push path_class=file decision=abandoned reason=write_dropped file=${mark} duration_ms=${context.now() - started}`);
       return { status: "growing", fileId, versionId: "" };
+    }
+    // A confirmed native editor save is a complete snapshot. New typing
+    // during its upload belongs to the next version; discarding this one
+    // whenever that happens makes fast typing outrun every publication.
+    // Ordinary copies and streaming files retain the final growing-file
+    // check below. Only a recorded, saved editor can supply this proof.
+    if (record !== undefined && context.host.typing(path)) {
+      // The receipt already proves these exact bytes were saved completely.
+      // Re-reading after that proof races the next save on mobile and turns a
+      // valid snapshot back into a growing file. It cannot make it safer.
+      savedEditorSnapshot = plaintext.length === stat.size && context.host.savedSnapshot?.(path, plaintext) === true;
+      if (!savedEditorSnapshot && await context.host.editorReady(path)) {
+        const saved = await context.host.read(path);
+        const captured = await context.host.stat(path);
+        savedEditorSnapshot = plaintext.length === stat.size && captured !== null &&
+          captured.size === stat.size && captured.mtime === stat.mtime &&
+          saved.length === plaintext.length && saved.every((byte, index) => byte === plaintext[index]);
+      }
     }
     const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
     plan.push({ sid, cid: hex(cid), len: plaintext.length });
@@ -488,12 +507,15 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
   // per-run summary. One name for two different measurements is how a
   // composition loses one of them.
   const afterRead = await context.host.stat(path);
-  if (afterRead === null || afterRead.size !== stat.size || afterRead.mtime !== stat.mtime) {
+  if (afterRead === null || (!savedEditorSnapshot && (afterRead.size !== stat.size || afterRead.mtime !== stat.mtime))) {
     context.host.log(
       `push path_class=file decision=abandoned reason=changed_during_read bytes=${stat.size} ` +
         `bytes_after=${afterRead === null ? -1 : afterRead.size} duration_ms=${context.now() - started}`,
     );
     return { status: "growing", fileId, versionId: "" };
+  }
+  if (savedEditorSnapshot && (afterRead.size !== stat.size || afterRead.mtime !== stat.mtime)) {
+    context.host.log(`push path_class=file decision=snapshot reason=newer_saved_input bytes=${stat.size} duration_ms=${context.now() - started} budget_bytes=${CHUNK_MAX}`);
   }
 
   // A RECORD THAT APPEARED WHILE THIS PUSH READ (issue #131). A note this

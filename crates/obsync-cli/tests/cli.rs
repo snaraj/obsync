@@ -34,7 +34,8 @@ fn fresh_process_help_is_readable_without_runtime_or_configuration() {
         assert!(output.stderr.is_empty());
         let text = String::from_utf8(output.stdout).unwrap();
         assert!(text.contains("Usage:\n  obsync COMMAND"));
-        assert!(text.contains("config get-contexts"));
+        assert!(text.contains("context list"));
+        assert!(!text.contains("config get-contexts"));
         assert!(!text.contains('\u{1b}'));
         assert!(!text.starts_with('{'));
     }

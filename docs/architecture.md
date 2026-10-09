@@ -774,10 +774,20 @@ long poll and needs its timeout raised.
    per path, and the growing-file guard then compares each stat with the one
    the previous recheck took, 400 ms earlier. A note of at most one chunk
    that someone typed in within the last 10 s is the editor's own save: it
-   settles 150 ms after its event, with no recheck (issue #195). A file that has been seen
+   settles 150 ms after its event, with no recheck (issue #195). Confirmed
+   editor saves use a separate 100 ms publication batch whose deadline starts
+   at the first save; subsequent saves cannot postpone it. Incoming editor
+   retries run immediately after a confirmed save, independently of that
+   upload batch. A file that has been seen
    changing must hold still for 5 s before it is queued, and a push whose
    file moved between the start and the end of its read is abandoned before
    a version exists. A file still growing is retried, never uploaded torn.
+   A small recorded text note has one exception: a completed native save,
+   independently read back and then checked against the captured bytes and
+   stat, proves a complete historical snapshot even while newer input is
+   being saved. That snapshot may upload; the later edit stays dirty and
+   follows as a child. This proof never permits an incoming write over
+   unsaved input, nor applies to external copies or large-file streaming.
    A volume that keeps a modification time to the whole second (FAT32 keeps
    it to the even second) can give a second save of the same size the same
    `(mtime, size)` as the first, so a push made less than one 2 s step from
@@ -1198,29 +1208,46 @@ long poll and needs its timeout raised.
    named in one `engine decision=waiting` line and still waited for: a stop
    never abandons a pull.
 4. **Conflicts.** Two heads on a text file with a reachable common ancestor
-   → a homegrown three-way line merge. Each side's changed base intervals
-   are compared independently, so adjacent line edits need no unchanged
-   separator. When both replace exactly one line only by appending to its
-   original text, keep their common appended prefix once (by Unicode code
-   point), then join their different additions in lexicographic order.
-   This gives both devices the same text without using a clock or device role.
-   Continued typing before an already received suffix uses code-point
-   alignment under the same 4,000,000-cell bound: all original characters
-   must remain in order, with the first in place. Each gap merges by the same
-   shared-prefix rule. Competing prefixes remain conflicts. If the graph
-   has two incomparable common ancestors, combine them before comparing the
-   current edits, even when the first comparison would look clean. An
-   unresolvable or over-depth shared base refuses the merge; it cannot fall
-   back to just one ancestor and replay the other's text.
-   Replacements of existing characters and multi-line overlaps stay conflicts.
+   → a three-way character merge (`mergeText`, `sync/conflict.ts`). Each side's change
+   from the base is found on its own: equal ends are trimmed; text spanning
+   lines is aligned by line, lines occurring once on each side anchoring it
+   (patience alignment) and Myers' algorithm aligning the runs between; each
+   changed run of lines is then aligned by Unicode code point with Myers'
+   algorithm. A per-side step budget (`MERGE_STEPS`) bounds the work, and a
+   region past it is taken whole -- placed less precisely, never refused.
+   The two change lists are combined over the base: a base character
+   survives unless either side deleted it, every insertion survives at its
+   place, and text inserted inside a range the other side deleted is kept.
+   Two different insertions at one place are ordered by content, never by a
+   clock or device role, so every device computes the same bytes whichever
+   side is its own; an insertion that begins the other side's insertion at
+   the same place lands once (one typed stream seen at two lengths, as a base
+   older than both heads' shared text presents it). Text never refuses to
+   merge, with one exception: when both sides changed one line so that it
+   reads differently on each, and either side is an automatic answer -- a
+   plugin rewriting the note right after a sync (the background-answer hold
+   below) -- two rewritten values joined would be no value, so the pair is
+   held instead. That is judged per base line, not per character: the
+   changes that share a line are taken together, so two stamps rewriting
+   different digits of one time meet, and one rewrite both sides made alike
+   does not. If the graph has
+   two incomparable common ancestors, combine them before comparing the
+   current edits, even when the first comparison would look clean. A shared
+   base this device cannot read, or one past the depth budget, refuses the
+   merge; it cannot fall back to just one ancestor and replay the other's
+   text. So does an ancestry walk to the pair's shared frontier that stops
+   at its read budget (64 reads) or at a retained version the server no
+   longer has: no base is taken from the partial listing
+   (`unmerged reason=history_budget`, or, while the note is typed in,
+   `deferred reason=history_budget_wait`).
    A clean merge posts a new version with both heads as parents, under a name
    merged the same way against the same ancestor: the side that moved the
    note keeps its name, and two different moves keep, on every device, the
    name that sorts first, which the user is told (issue #151). A folder
    renamed two ways is that rule once per note, so every note takes the same
    side, and the losing folder, emptied, is tombstoned (issue #174).
-   Two heads that do not merge (binary, no
-   ancestor, overlapping hunks) are settled by a rule every device computes
+   Two heads that do not merge (binary, no ancestor, a shared base past
+   reach, an unheld background answer) are settled by a rule every device computes
    alike without asking another: the head with the lower version id is the
    note on every device; the other is ONE conflict copy on every device, with
    a file id derived as `HMAC(K_m,d, "obsync/v1/conflict" || 0x0a || file_id
@@ -1275,9 +1302,31 @@ long poll and needs its timeout raised.
    device merges that fork to the same bytes forever. A result equal to the
    local bytes therefore posts nothing and advances the record to the incoming
    version; a result equal to the incoming version's bytes is a fast-forward
-   onto it. A device also stops merging one file after more than five
+   onto it. Either is taken only when every version this device published
+   before its own head is already in the incoming version's history, and an
+   edit not sent yet is taken with it only when the incoming version also
+   holds everything published here; otherwise the merge is posted, or the
+   edit goes out first (#339). A record standing on a version missing this
+   device's earlier versions forgot its deletions: a later version that had
+   merged one of them brought deleted text back. Nor is the record overwritten
+   when it moved on during the pull: an upload of this device's acknowledged
+   while the graph was read leaves the pair compared stale, and a key typed in
+   that upload and deleted since matches the other head, so the deletion was
+   never sent. The pull reads the graph again (#339, two desktops). A device also stops merging
+   one file after more than five
    resolutions of it in a row inside a minute with the note unchanged here in
-   between -- a save starts the count again -- and says so once. Superseded
+   between -- a save starts the count again -- and says so once. Trusted text
+   input also starts a new run, even when an incoming merge's final disk stamp
+   already includes that input's save. The host supplies an opaque in-memory
+   identity, consumed once at reconciliation entry. Input during a merge stays
+   visible to the next resolution; repeated reads, saves, reloads and cursor
+   movement cannot reset the count. This grants no incoming-write permission.
+   Closings of two heads holding one text are counted apart, five in a row
+   inside a minute. Trusted input here starts that count again only for two
+   heads of one name: two people typing close such pairs a few times a
+   minute, while two names closed back and forth are the loop a device older
+   than the rename rule makes, and stay counted (#151, #339).
+   Superseded
    incoming heads with a retained descendant are skipped before counting.
    A new peer version that descends from its previous version but not from
    this device's recorded version also starts a new run: it is independent
@@ -1295,9 +1344,31 @@ long poll and needs its timeout raised.
    editor; the reservation lasts through the receipt and record update. A
    completed upload that advanced the record during merge preparation causes
    a fresh graph read before writing or publishing. A merge holds its two
-   parents and nothing typed since (issue #227): a note holding text its
-   recorded version does not is published first, on that version, and the
-   fork is merged from what is published. Two devices resolving one fork then
+   parents and nothing typed since (issue #227). For an active editor,
+   reserve publication before preparing the authenticated parent snapshots,
+   merge only those parents while native saving continues, then rebase the
+   newest saved local delta onto that result. Preparation does not depend on
+   a receipt for an earlier disk sample; it uses authenticated parent content.
+   Each preparation fetches its base and one or two parent chunks together,
+   bounded to three single-chunk inputs and their declared ciphertext sizes.
+   Shared chunk ids are fetched once; each input independently proves its
+   content id and length. Reconstructing an older shared base uses the same
+   two-input reader. No content is retained across resolutions. A missing
+   batch endpoint or refused multipart framing falls back to verified single
+   reads; authentication, cancellation and missing/corrupt content failures
+   propagate. The final writer still requires the current editor and disk
+   to agree. Publish the pure parent merge first; its local delta stays dirty
+   and uploads as a child. A changed parent or stopped engine refuses the
+   staged write. Unsupported or overlapping states retain the ordinary path:
+   publish local bytes first, then resolve the fork from published versions.
+   Push reconciliation passes its freshly fetched head snapshot into that
+   resolution instead of fetching it a second time. Reuse requires the same
+   file and domain, the incoming version still named as a head in that
+   snapshot, and both incoming and locally held versions present. A newer
+   local receipt absent from it requires a fresh read. This snapshot belongs
+   only to the current call; mutable heads are never cached across calls.
+   Later peer edits remain separate descendants that the next merge includes.
+   Two devices resolving one fork then
    post the same bytes, and the server keeps one version; each carrying its
    own unsent save had posted two, a criss-cross one level deeper each round
    while both typed. When two devices merged one pair differently (a device
@@ -1308,48 +1379,85 @@ long poll and needs its timeout raised.
    at most three levels, each one single-chunk text. A base found once is
    remembered (issue #227), because two versions never change: two people
    typing make each round's criss-cross one level deeper than the last, and a
-   round walks only the levels not found before. The remembered bases are
+   round walks only the levels not found before. Pure parent merges this
+   client already computed are also reusable bases for that exact parent
+   pair; another device's unverified claimed merge is not. This reuse keeps
+   continuous typing within the existing three-level recursion bound without
+   relaxing it. The remembered bases are
    together no longer than one merge input. A base below the versions the
    server lists is read a version at a time, at most 64 a resolution and
    never below the two branches' shared frontier; every version a resolution
-   reads or is shown is remembered too (issue #227). A third device, open and
+   reads or is shown is remembered too (issue #227). That frontier is
+   completed before any base is chosen, at each level, even when the listing
+   already shows one common ancestor: a pair's second ancestor can sink below
+   the listing while two people type, and merged over the one listed, a base
+   older than two keys both heads held wrote them twice and the merge over it
+   took both out (#339). The completed list is then put back in the order
+   the newest base is taken from, each version after its children: versions
+   are found by distance from the two heads, and a parent found first from
+   the other head, left ahead of its child, was taken as a level's second
+   base instead of that child, with the same loss. A third device, open and
    idle while two type, merges every arrival against a base the listing
    holds; remembering only what a walk read, it met its first criss-cross
    across the whole typing history with nothing remembered, read past the
-   budget and settled one typist's last words into a copy. Nothing is written under an editor
-   someone is typing in, so two people typing keep a note forked for as long
-   as both type and its base sinks a version a save: a resolution reads only
+   budget and settled one typist's last words into a copy. Unsaved input and
+   unfinished composition hold an incoming write; recent typing alone does
+   not. A resolution reads only
    what none before it did, and the remembered versions are together no
    longer than one merge input. A device whose own head lost the rule keeps
    its record on that head until the kept head is written: while someone
    types there the write waits, and the next save is an edit of the head the
    note still holds.
 
-   AN EDITOR OBSYNC WROTE UNDER SHOWS WHAT IT WROTE (issue #252). Obsidian
-   loads an outside change into an open note when its file watcher reports
-   one. On a Mac whose file-event daemon was starved for minutes it reported
-   nothing, so the editor kept the old text. Every later version of the note
-   was then held as unsaved (`active_editor`) behind "syncing 1", and a
-   keystroke there would have saved the old text over the new. So a write
-   judged safe remembers what the note's editors showed at that moment, which
-   was its file's text. Nothing awaits between that judgment and the write:
-   on a desktop the bytes to show are read from the temp before the editor
-   is judged, not between the judgment and the rename. After the write lands,
-   the file is read back, and only if it holds exactly the written text (a
-   save of the same size, even the same mtime, can land after the write)
-   does each view still of this note and still showing that text load it
-   (`setViewData`), with no await after the read; each view is judged at its
-   own load, because a load can rebind another leaf. On a desktop that text
-   is the bytes renamed into place; on a phone it is the bytes handed to the
-   adapter. A view typed in since shows something else and is left alone. A
-   load that fails is logged (`decision=failed reason=editor_refresh`) and
-   never fails the write, which has landed. A view that
-   differs from its file still holds the note: nothing on the view says
-   whether the difference is typing. `TextFileView.data` follows every
-   keystroke (Obsidian 1.13.4), and a build that read it as "what the view
-   last loaded or saved" wrote merges under typing on an iPhone and garbled
-   the note (live, 2026-09-28). The status names a held note
-   (`waiting for unsaved changes in <note>`).
+   **Editor ownership and refresh (#252, #325).** Recent human input is an
+   attribution signal, not a ten-second write lock. `EditorActivity` requests
+   the public native save after 5 ms and independently reads the saved text.
+   New input, composition, rebinding, pause and stop invalidate write
+   readiness. Extra saves are bounded to 1 Mi characters and agreeing panes;
+   larger notes, composition and unsupported states retain native autosave.
+   A prior adapter read drains before save starts so a queued native reload
+   cannot overwrite input after save clears its dirty flag.
+
+   The desktop writer stages and fsyncs the incoming file before its final
+   editor and disk check. Where the native adapter exposes its queue, commit
+   runs inside it, with an independent filesystem read to avoid waiting on
+   the same queue. It retains path, inode, exact-byte, file and directory
+   durability checks. A refresh lease suspends extra saves through commit
+   and confirmation. After rename, re-read the exact bytes, merge any newer
+   non-overlapping editor input, and start public `setViewData`/`save` before
+   releasing the adapter queue. That advances the native saved baseline
+   before watcher reloads. Never await that save inside the queue. Recheck
+   every view's file and text before and after the synchronous transition;
+   another plugin can rebind a view during it. Await saves outside the queue,
+   independently verify the result, then fsync the final desktop file again
+   because public save can rewrite the durable inode. The existing Windows
+   directory-fsync compatibility behavior remains unchanged.
+
+   Confirmation of an insertion-only public transition retains its exact view
+   and file bindings and requires every public save to complete. Later input
+   may insert before the delivered text: the current buffer must still contain
+   every delivered code point in order and with its original multiplicity.
+   Re-merging against the older baseline is not a delivery receipt; it can
+   duplicate an addition that is already displayed. Remote deletions, missing
+   delivered text and incomplete or rebound transitions keep the ordinary
+   native confirmation path. A file the editor saved again after a completed
+   transition is typing on the delivered text, not a replaced write, when it
+   still holds that text by the same rules (`decision=kept
+   reason=typed_since_delivery`): the write stands and the save becomes its
+   child. Refused, the note kept the delivered text while its record stayed
+   on the version before it, and the next save published that text as this
+   device's own typing beside the version it came from; a later merge wrote
+   it twice (#339, Android emulator). A file that no longer holds it is still
+   refused.
+
+   Mobile and unknown adapters keep their guarded adapter write and public
+   refresh path. Passive editors retain native reload ownership. A refresh
+   has a bounded confirmation window; failure is logged and returns that
+   view to native saving. No private dirty flag or saved baseline is changed,
+   and no notification is hidden. An editor differing from disk still holds
+   the note. The status names that wait (`waiting for unsaved changes in
+   <note>`); the independently verified saved snapshot grants upload eligibility,
+   never overwrite permission.
 
    WHAT OBSYNC CHANGES ON A DESKTOP'S DISK IS LISTED AT ONCE (issue #253).
    The same starved watcher left a note obsync had written on the disk,
@@ -1421,7 +1529,8 @@ long poll and needs its timeout raised.
    not originate a hold. External editors, custom views and programmatic editor
    commands without trusted input are not observable as human typing and can
    trigger a conservative hold if they answer a
-   sync on conflicting lines; the notice says another plugin *may* be involved.
+   sync by changing a place the other side changed; the notice says another
+   plugin *may* be involved.
 
    The device receiving an authenticated background answer can detect the
    overlap first while its own editor is being typed in. After trying a clean
@@ -1484,18 +1593,13 @@ long poll and needs its timeout raised.
    - **The two versions share a common ancestor.** Two devices that
      independently created the same path have none — there is nothing to
      merge against, and neither side is a later version of the other.
-   - **The two sides are close enough to align.** The merge lines up each side
-     against the common ancestor with a table bounded at 4,000,000 cells,
-     counted after the shared opening and closing lines are trimmed. Two
-     versions that differ by thousands of lines in the middle exceed it, the
-     merge answers `too_large`, and a conflict copy results.
-   - **The changes can be combined.** Edits in different parts of the file
-     merge. Additions to one line can merge when its original characters
-     remain in order on both devices and its beginning is unchanged. Shared
-     added text appears once; different additions at the same position use a
-     consistent order. Character alignment has the same 4,000,000-cell bound.
-     Competing prefixes, replacements and deletions of the same text remain
-     conflicts.
+   - **No automatic answer meets the other side's change.** Edits on one
+     line -- insertions, replacements and deletions alike -- merge, unless one
+     side is a background answer and the line reads differently on each; that
+     pair is held (above), and a copy is made only if the hold does not apply.
+
+   How far apart two versions are no longer decides anything: alignment work
+   is bounded per side, and past the bound a region is merged whole.
 
    An identical note is adopted from another file identity only while that
    incoming version is the server's sole current head. Replaying an old

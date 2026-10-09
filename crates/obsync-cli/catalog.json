@@ -226,7 +226,7 @@
     {
       "operation": "capabilities",
       "command": "capabilities",
-      "summary": "List locally implemented operations; no server intersection is claimed.",
+      "summary": "List commands available on this device. No server is contacted.",
       "availability": "implemented",
       "errors": [
         "invalid_input",

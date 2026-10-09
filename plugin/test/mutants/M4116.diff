@@ -1,0 +1,6 @@
+# M4116: mobile incoming writes must start through the public saved-baseline transition
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1734 +1734 @@
+-          const bridge = shown !== null && text !== null && lines(text) === text
++          const bridge = Boolean(false) && shown !== null && text !== null && lines(text) === text

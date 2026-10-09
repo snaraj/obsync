@@ -1,0 +1,6 @@
+M4256: an unavailable ancestor counts as a complete frontier
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2700 +2700 @@
+-        return false;
++        return true;

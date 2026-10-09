@@ -1,0 +1,6 @@
+M4211: adopt the other device's version whatever this device published before its head
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2606 +2606 @@
+-  return own !== undefined && own.parents.every((parent) => history.has(parent));
++  return true;

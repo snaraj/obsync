@@ -122,7 +122,9 @@ test("more than a handful of resolutions of one file in a window stops the mergi
   const NOTE = "Notes/Storm.md";
   r.host.seed(NOTE, "the line both sides start from\n", 1000);
   const base = await pushFile(r.context, NOTE);
-  r.host.seed(NOTE, "the line this device wrote\n", 2000);
+  // Text merges (#339); a NUL byte keeps every round a fork with no merge,
+  // so each resolution is counted and its content kept, never combined.
+  r.host.seed(NOTE, "the line this device wrote\0\n", 2000);
   await pushFile(r.context, NOTE);
 
   const results = [];
@@ -130,7 +132,7 @@ test("more than a handful of resolutions of one file in a window stops the mergi
     const theirs = await r.server.publish({
       fileId: base.fileId,
       path: NOTE,
-      bytes: enc(`the line the other device wrote, round ${round}\n`),
+      bytes: enc(`the line the other device wrote, round ${round}\0\n`),
       mtime: 4000 + round,
       parents: [base.versionId],
       domainKey: r.keys.domainKey,
@@ -155,7 +157,7 @@ test("more than a handful of resolutions of one file in a window stops the mergi
   assert.ok(["skipped", "applied"].includes(results[5]), results.join(","));
   assert.ok(!r.host.logs.slice(r.host.logs.indexOf(storms[0])).some((line) => line.includes("decision=merged")));
   const kept = [...r.host.files.keys()].map((path) => r.host.text(path));
-  for (const text of ["the line this device wrote\n", ...[1, 2, 3, 4, 5, 6].map((round) => `the line the other device wrote, round ${round}\n`)]) {
+  for (const text of ["the line this device wrote\0\n", ...[1, 2, 3, 4, 5, 6].map((round) => `the line the other device wrote, round ${round}\0\n`)]) {
     assert.ok(kept.includes(text), `${JSON.stringify(text)} is in no file: ${JSON.stringify(kept)}`);
   }
   assert.equal(r.server.files.get(base.fileId).heads.length, 1, "the fork was left open");
@@ -202,6 +204,566 @@ test("a merge that comes out as the other device's bytes is adopted, not posted"
     r.host.logs.some((line) => line.includes("decision=applied reason=incoming_holds_merge")),
     r.host.logs.filter((line) => line.startsWith("pull")).join(" | "),
   );
+});
+
+/**
+ * Unless this device's own history reaches past that version's (#339). A key
+ * typed and deleted here before the other device's version arrived makes the
+ * merge come out as the incoming bytes, while the version holding the typed
+ * key is in no history of theirs. Adopted, the record forgot the deletion, and
+ * a later version of theirs that had merged the typed key fast-forwarded it
+ * back into the note (live desktop run, 2026-10-08). The merge is posted, so
+ * that later version meets the deletion and the key stays deleted.
+ */
+for (const editor of [false, true]) test(`a key typed and deleted here stays deleted when the other device later merges the version that held it (#339, ${editor ? "saved editor" : "ordinary merge"})`, async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Typo.md";
+  r.host.seed(NOTE, "0\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "0T\n", 2000);
+  const typed = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "0\n", 3000);
+  await pushFile(r.context, NOTE);
+  if (editor) {
+    r.host.inputAt.set(NOTE, r.host.clock);
+    r.host.editorReady = async () => true;
+  }
+  const publish = (text, parents, mtime) => r.server.publish({ fileId: base.fileId, path: NOTE,
+    bytes: new TextEncoder().encode(text), mtime, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  const theirs = await publish("0y\n", [base.versionId], 4000);
+  await applyChange(r.context, theirs);
+  assert.equal(r.host.text(NOTE), "0y\n");
+  assert.ok(r.host.logs.some((line) => /^pull decision=not_adopted reason=own_history file=[0-9a-f]+ seq=\d+$/.test(line)), r.host.logs.join(" | "));
+  // The other device merged the version holding the typed key, then typed on.
+  const merged = await publish("0Ty\n", [typed.versionId, theirs.version_id].sort(), 5000);
+  await applyChange(r.context, await publish("0Tyz\n", [merged.version_id], 6000));
+  assert.equal(r.host.text(NOTE), "0yz\n", r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
+  assert.deepEqual([...r.host.files.keys()], [NOTE]);
+});
+
+/**
+ * A CRISS-CROSS WHOSE SECOND ANCESTOR LEFT THE LISTING (#339, Android
+ * emulator, 2026-10-08). Two merges of one pair share two newest ancestors,
+ * and so do the two merges below them; the server lists only its newest
+ * versions. Merged over the one ancestor it listed, a base older than two
+ * keys both heads held wrote those keys twice, and the merge over that base
+ * took both copies out: two typed keys lost on every device. The ancestry is
+ * now completed before the bases are chosen. When the server no longer holds
+ * the ancestor that walk needs one level down, the pair is not combined over
+ * what is listed: each head is kept whole (review of 8fc0bf43, finding 1).
+ */
+for (const unavailable of [false, true]) test(`two typed keys both heads hold survive a criss-cross whose second ancestor is no longer listed${unavailable ? " or held" : ""} (#339)`, async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile, sidDigest } = require("../build/sync/push.js");
+  const { encryptChunk } = require("../build/crypto.js");
+  const { ApiError } = require("../build/transport.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Criss.md";
+  const x = (...ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(0x4e00 + a + i))).join("");
+  const y = (...ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(0xac00 + a + i))).join("");
+  const doc = (line) => `# Both\nfixed\n0${line}\n`;
+  r.host.seed(NOTE, doc(x([0, 5], [8, 9]) + y([0, 5], [8, 11])), 1000);
+  const root = await pushFile(r.context, NOTE);
+  let at = 2000;
+  const publish = async (line, parents) => (await r.server.publish({ fileId: root.fileId, path: NOTE,
+    bytes: new TextEncoder().encode(doc(line)), mtime: at += 1000, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey })).version_id;
+  // The phone types three keys, the third a typo; the desktop types three of its own.
+  const m1 = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 14]), [root.versionId]);
+  let m2 = await publish(x([0, 5], [8, 10]) + y([0, 5], [8, 11]), [root.versionId]);
+  for (const k of [11, 12]) m2 = await publish(x([0, 5], [8, k]) + y([0, 5], [8, 11]), [m2]);
+  // The desktop merges the two; the phone deletes its typo, types on, and merges the same two.
+  const ca2 = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 14]), [m1, m2].sort());
+  let phone = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 13]), [m1]);
+  for (const k of [16, 17]) phone = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 13], [16, k]), [phone]);
+  const ca1 = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 17]), [phone, m2].sort());
+  // Each merges those two merges and types on.
+  const p1 = await publish(x([0, 5], [8, 13], [16, 21]) + y([0, 5], [8, 13], [16, 17]), [ca1, ca2].sort());
+  let p2 = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 18]), [ca1, ca2].sort());
+  for (const k of [19, 20]) p2 = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, k]), [p2]);
+  // This device stands on the desktop's head, and the server lists ten versions and every head.
+  const held = doc(x([0, 5], [8, 13], [16, 21]) + y([0, 5], [8, 13], [16, 17]));
+  r.host.seed(NOTE, held, at += 1000);
+  const { sid } = await encryptChunk(r.keys.domainKey, new TextEncoder().encode(held));
+  r.state.setFile(NOTE, { fileId: root.fileId, versionId: p1, mtime: at, size: new TextEncoder().encode(held).length, sha256: await sidDigest([sid]) });
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (...args) => {
+    const file = await getFile(...args);
+    return { ...file, versions: file.versions.filter((version, i) => i < 10 || file.heads.includes(version.version_id)) };
+  };
+  assert.ok(!(await getFile(root.fileId)).versions.slice(0, 10).some((version) => version.version_id === m1), "the second ancestor is still listed");
+  if (unavailable) {
+    const getVersion = r.transport.getVersion.bind(r.transport);
+    r.transport.getVersion = async (fileId, id, ...rest) => {
+      if (id === m1) throw new ApiError(404, "not_found", "retained ancestor unavailable");
+      return await getVersion(fileId, id, ...rest);
+    };
+  }
+  const incoming = r.server.journal.find((entry) => entry.version_id === p2);
+  await applyChange(r.context, incoming);
+  const story = r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+  if (unavailable) {
+    assert.ok(r.host.logs.some((line) => line.startsWith("pull decision=unavailable reason=merge_ancestor ")), story);
+    assert.ok(r.host.logs.some((line) => line.startsWith("pull decision=unmerged reason=history_budget ")), story);
+    assert.ok(!r.host.logs.some((line) => line.startsWith("pull decision=merged ")), story);
+    const copies = [...r.host.files.keys()].filter((path) => path.startsWith("Notes/Criss (conflict from "));
+    assert.equal(copies.length, 1, story);
+    const theirs = doc(x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 20]));
+    assert.deepEqual([r.host.text(NOTE), r.host.text(copies[0])].sort(), [held, theirs].sort(), story);
+    return;
+  }
+  assert.equal(r.host.text(NOTE), doc(x([0, 5], [8, 13], [16, 21]) + y([0, 5], [8, 13], [16, 20])), story);
+  // The base of the two merges below was itself found from both of theirs, the unlisted one included.
+  assert.ok(r.host.logs.some((line) => /^pull decision=merge_base reason=criss_cross level=2 ok=true /.test(line)), story);
+});
+
+/**
+ * The same at the top, where the listing still shows one common ancestor: the
+ * phone stands on its merge of the pair and receives the desktop's, and the
+ * phone typed on after the first of the pair until it left the listing. The
+ * ancestry is completed even so, or the merge runs over the desktop's typing
+ * alone: the typo the phone deleted came back, and two keys both held twice.
+ */
+test("two merges of one pair combine when one of the pair left the listing and the other did not (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile, sidDigest } = require("../build/sync/push.js");
+  const { encryptChunk } = require("../build/crypto.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Pair.md";
+  const x = (...ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(0x4e00 + a + i))).join("");
+  const y = (...ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(0xac00 + a + i))).join("");
+  const doc = (line) => `# Both\nfixed\n0${line}\n`;
+  r.host.seed(NOTE, doc(x([0, 5], [8, 9]) + y([0, 5], [8, 11])), 1000);
+  const root = await pushFile(r.context, NOTE);
+  let at = 2000;
+  const publish = async (line, parents) => (await r.server.publish({ fileId: root.fileId, path: NOTE,
+    bytes: new TextEncoder().encode(doc(line)), mtime: at += 1000, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey })).version_id;
+  // The phone types three keys, the third a typo; the desktop types three of its own.
+  const m1 = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 14]), [root.versionId]);
+  let m2 = await publish(x([0, 5], [8, 10]) + y([0, 5], [8, 11]), [root.versionId]);
+  for (const k of [11, 12]) m2 = await publish(x([0, 5], [8, k]) + y([0, 5], [8, 11]), [m2]);
+  // The desktop merges the two; the phone deletes its typo, types on, and merges the same two.
+  const desktop = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 14]), [m1, m2].sort());
+  let phone = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 13]), [m1]);
+  for (const k of [16, 17, 18, 19]) phone = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 13], [16, k]), [phone]);
+  const merged = x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 19]);
+  const own = await publish(merged, [phone, m2].sort());
+  r.host.seed(NOTE, doc(merged), at += 1000);
+  const { sid } = await encryptChunk(r.keys.domainKey, new TextEncoder().encode(doc(merged)));
+  r.state.setFile(NOTE, { fileId: root.fileId, versionId: own, mtime: at, size: new TextEncoder().encode(doc(merged)).length, sha256: await sidDigest([sid]) });
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (...args) => {
+    const file = await getFile(...args);
+    return { ...file, versions: file.versions.filter((version, i) => i < 10 || file.heads.includes(version.version_id)) };
+  };
+  const listed = (await r.transport.getFile(root.fileId)).versions.map((version) => version.version_id);
+  assert.ok(listed.includes(m2) && !listed.includes(m1), "the pair is not half listed");
+  await applyChange(r.context, r.server.journal.find((entry) => entry.version_id === desktop));
+  const story = r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+  assert.equal(r.host.text(NOTE), doc(merged), story);
+  assert.ok(r.host.logs.some((line) => /^pull decision=merge_base reason=criss_cross level=1 ok=true /.test(line)), story);
+});
+
+/**
+ * AND WHERE THAT ANCESTRY CANNOT BE COMPLETED (review of 8fc0bf43, finding 1).
+ * The walk to the pair's shared frontier stops at its read budget, or at an
+ * ancestor the server no longer holds. The newest ancestor the listing still
+ * shows is then older than the pair's own: merged over it, the typo the phone
+ * deleted came back and two keys both heads held went in twice. No merge is
+ * made from that listing. While someone types, the pair waits for the next
+ * turn; otherwise the two heads are settled by rule, each kept whole.
+ */
+for (const reason of ["read budget", "unavailable ancestor", "read budget while typing"]) test(`two merges of one pair are never combined over a partial history (${reason}) (#339)`, async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile, sidDigest } = require("../build/sync/push.js");
+  const { ApiError } = require("../build/transport.js");
+  const c = require("../build/crypto.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Pair.md";
+  const x = (...ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(0x4e00 + a + i))).join("");
+  const y = (...ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(0xac00 + a + i))).join("");
+  const doc = (line) => `# Both\nfixed\n0${line}\n`;
+  r.host.seed(NOTE, doc(x([0, 5], [8, 9]) + y([0, 5], [8, 11])), 1000);
+  const root = await pushFile(r.context, NOTE);
+  let at = 2000;
+  const publish = async (line, parents) => (await r.server.publish({ fileId: root.fileId, path: NOTE,
+    bytes: new TextEncoder().encode(doc(line)), mtime: at += 1000, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey })).version_id;
+  // The phone types three keys, the third a typo; the desktop types three of its own.
+  const m1 = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 14]), [root.versionId]);
+  let phone = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 13]), [m1]);
+  for (const k of [16, 17, 18, 19]) phone = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 13], [16, k]), [phone]);
+  // Retained history past the read budget: each version valid and immutable.
+  if (reason !== "unavailable ancestor") {
+    for (let i = 0; i < 75; i++) phone = await publish(x([0, 5], [8, 9]) + y([0, 5], [8, 13], [16, 19]), [phone]);
+  }
+  let m2 = await publish(x([0, 5], [8, 10]) + y([0, 5], [8, 11]), [root.versionId]);
+  for (const k of [11, 12]) m2 = await publish(x([0, 5], [8, k]) + y([0, 5], [8, 11]), [m2]);
+  // The desktop merges the two; the phone deletes its typo, types on, and merges the same two.
+  const theirs = doc(x([0, 5], [8, 12]) + y([0, 5], [8, 14]));
+  const desktop = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 14]), [m1, m2].sort());
+  const ours = doc(x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 19]));
+  const own = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 19]), [phone, m2].sort());
+  r.host.seed(NOTE, ours, at += 1000);
+  const { sid } = await c.encryptChunk(r.keys.domainKey, new TextEncoder().encode(ours));
+  r.state.setFile(NOTE, { fileId: root.fileId, versionId: own, mtime: at, size: new TextEncoder().encode(ours).length, sha256: await sidDigest([sid]) });
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (...args) => {
+    const file = await getFile(...args);
+    return { ...file, versions: file.versions.filter((version, i) => i < 10 || file.heads.includes(version.version_id)) };
+  };
+  if (reason === "unavailable ancestor") {
+    const getVersion = r.transport.getVersion.bind(r.transport);
+    r.transport.getVersion = async (fileId, id, ...rest) => {
+      if (id === m1) throw new ApiError(404, "not_found", "retained ancestor unavailable");
+      return await getVersion(fileId, id, ...rest);
+    };
+  }
+  const listed = (await r.transport.getFile(root.fileId)).versions.map((version) => version.version_id);
+  assert.ok(listed.includes(m2) && !listed.includes(m1), "the pair is not half listed");
+  if (reason.endsWith("while typing")) r.host.inputAt.set(NOTE, r.host.clock);
+  const sent = r.server.journal.length;
+  const incoming = r.server.journal.find((entry) => entry.version_id === desktop);
+  const story = () => r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+  const stopped = reason === "unavailable ancestor" ? /^pull decision=unavailable reason=merge_ancestor / : /^pull decision=refused reason=merge_ancestry_limit reads=64 budget_reads=64 /;
+  if (reason.endsWith("while typing")) {
+    // Parked for the active-editor retry, as a pair past the history budget is.
+    await assert.rejects(applyChange(r.context, incoming), (error) => error?.reason === "active_editor", story());
+    assert.ok(r.host.logs.some((line) => stopped.test(line.replace(/ file=\S+/, ""))), story());
+    assert.ok(r.host.logs.some((line) => line.startsWith("pull decision=deferred reason=history_budget_wait ")), story());
+    assert.equal(r.host.text(NOTE), ours, "the note is left as typed");
+    assert.equal(r.server.journal.length, sent, "nothing is published while the pair waits");
+    return;
+  }
+  await applyChange(r.context, incoming);
+  assert.ok(r.host.logs.some((line) => stopped.test(line.replace(/ file=\S+/, ""))), story());
+  assert.ok(r.host.logs.some((line) => line.startsWith("pull decision=unmerged reason=history_budget ")), story());
+  assert.ok(!r.host.logs.some((line) => line.startsWith("pull decision=merged ")), story());
+  // Each head is kept whole, one in the note and the other in its copy.
+  const copies = [...r.host.files.keys()].filter((path) => path.startsWith("Notes/Pair (conflict from "));
+  assert.equal(copies.length, 1, story());
+  assert.deepEqual([r.host.text(NOTE), r.host.text(copies[0])].sort(), [ours, theirs].sort(), story());
+  // And nothing published holds a mixture of the two.
+  const texts = [];
+  for (const frame of r.server.journal.slice(sent)) {
+    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
+    const manifest = JSON.parse(await c.decryptManifest(r.keys.manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct)));
+    const parts = [];
+    for (const chunk of manifest.chunks) parts.push(await c.decryptChunk(r.keys.domainKey, c.unhex(chunk.cid), r.server.chunks.get(chunk.sid)));
+    texts.push(parts.map((part) => new TextDecoder().decode(part)).join(""));
+  }
+  assert.ok(texts.length > 0, story());
+  for (const text of texts) assert.ok(text === ours || text === theirs, `${JSON.stringify(text)}\n  ${story()}`);
+});
+
+/**
+ * AND THE NAME A STOPPED WALK GIVES (review of e37064c3, finding 3). Two heads
+ * of one text close under the name `settledName` takes from their shared
+ * ancestor. A walk that stops is put back to the listing: how far this device
+ * read is no evidence the other device holds, so both settle the name from
+ * what the server lists -- here no shared ancestor, and the rule every device
+ * computes alike -- never from the one ancestor this device happened to read.
+ */
+for (const reason of ["read budget", "unavailable ancestor"]) test(`identical heads settle their name from the listing when the walk to their ancestors stops (${reason}) (#151, #339)`, async () => {
+  const { rig, published } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile, sidDigest } = require("../build/sync/push.js");
+  const { ApiError } = require("../build/transport.js");
+  const c = require("../build/crypto.js");
+
+  const r = await rig();
+  const NOTE = "Notes/b.md", MOVED = "Notes/z.md", TEXT = "the same text on both\n";
+  r.host.seed(NOTE, "first\n", 1000);
+  const root = await pushFile(r.context, NOTE);
+  let at = 2000;
+  const publish = async (path, text, parents) => (await r.server.publish({ fileId: root.fileId, path,
+    bytes: new TextEncoder().encode(text), mtime: at += 1000, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey })).version_id;
+  // Two edits of the note, both shared by the two heads; one is behind a long
+  // run of this device's own versions, past the listing and the read budget.
+  const m1 = await publish(NOTE, "one\n", [root.versionId]);
+  const m2 = await publish(NOTE, "two\n", [root.versionId]);
+  let chain = m1;
+  for (let i = 0; i < (reason === "read budget" ? 80 : 12); i++) chain = await publish(NOTE, `chain ${i}\n`, [chain]);
+  // Both close the same pair to one text; the other device also moved the note.
+  const own = await publish(NOTE, TEXT, [chain, m2].sort());
+  const desktop = await publish(MOVED, TEXT, [m1, m2].sort());
+  r.host.seed(NOTE, TEXT, at += 1000);
+  const { sid } = await c.encryptChunk(r.keys.domainKey, new TextEncoder().encode(TEXT));
+  r.state.setFile(NOTE, { fileId: root.fileId, versionId: own, mtime: at, size: TEXT.length, sha256: await sidDigest([sid]) });
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (...args) => {
+    const file = await getFile(...args);
+    return { ...file, versions: file.versions.filter((version, i) => i < 10 || file.heads.includes(version.version_id)) };
+  };
+  if (reason === "unavailable ancestor") {
+    const getVersion = r.transport.getVersion.bind(r.transport);
+    r.transport.getVersion = async (fileId, id, ...rest) => {
+      if (id === m1) throw new ApiError(404, "not_found", "retained ancestor unavailable");
+      return await getVersion(fileId, id, ...rest);
+    };
+  }
+  const listed = (await r.transport.getFile(root.fileId)).versions.map((version) => version.version_id);
+  assert.ok(!listed.includes(m1) && !listed.includes(m2) && !listed.includes(root.versionId), "a shared ancestor is listed");
+  const story = () => r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+
+  assert.equal(await applyChange(r.context, r.server.journal.find((entry) => entry.version_id === desktop)), "skipped", story());
+
+  const stopped = reason === "unavailable ancestor" ? /^pull decision=unavailable reason=merge_ancestor / : /^pull decision=refused reason=merge_ancestry_limit /;
+  assert.ok(r.host.logs.some((line) => stopped.test(line)), story());
+  assert.ok(r.host.logs.some((line) => line.startsWith("pull decision=renamed_twice kept=ours base=unknown ")), story());
+  assert.equal((await published(r.server, root.fileId, r.keys.manifestKey)).at(-1).path, NOTE, "the name came from an ancestor no listing shows");
+  assert.equal(r.host.text(NOTE), TEXT);
+  assert.equal(r.host.text(MOVED), null);
+  assert.equal(r.server.files.get(root.fileId).heads.length, 1, `the fork was left open: ${story()}`);
+});
+
+/**
+ * AND WHERE THAT ANCESTRY WAS ALREADY HELD (#339, Android emulator, after the
+ * fix above). A device that saw every version on the feed recalls the unlisted
+ * ones as its walk reaches them. Added in that order, a parent reached first
+ * from the other head stood before its own child, and the walk took the newest
+ * ancestor by that order: at the second level, the parent of a merge's second
+ * base instead of that base. The base lacked two keys both heads held, and the
+ * merge took them out of the note. The history is the emulator's, cut below the
+ * level that went wrong and to the keys it turns on.
+ */
+test("two typed keys both heads hold survive a criss-cross walked through ancestry this device holds (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile, sidDigest } = require("../build/sync/push.js");
+  const { encryptChunk } = require("../build/crypto.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Held.md";
+  const keys = (start, ranges) => ranges.flatMap(([a, b]) => [...Array(b - a + 1)].map((_, i) => String.fromCodePoint(start + a + i))).join("");
+  const doc = ([, desktop, phone]) => `# Both\nfixed\n0${keys(0x4e00, desktop)}${keys(0xac00, phone)}\n`;
+  // Each version: its parents, by index, then the desktop's and the phone's keys.
+  const history = [
+    [[], [], [[0, 3]]],
+    [[0], [[0, 2]], [[0, 3]]],
+    [[1], [[0, 2]], [[0, 6]]],
+    [[0], [[0, 4]], [[0, 3]]],
+    [[3], [[0, 5]], [[0, 3]]],
+    [[3, 2], [[0, 4]], [[0, 6]]],
+    [[5], [[0, 4]], [[0, 5], [8, 9]]],
+    [[2, 4], [[0, 5]], [[0, 6]]],
+    [[7], [[0, 5], [8, 11]], [[0, 6]]],
+    [[4, 6], [[0, 5]], [[0, 5], [8, 9]]],
+    [[9], [[0, 5]], [[0, 5], [8, 13]]],
+    [[8, 6], [[0, 5], [8, 11]], [[0, 5], [8, 9]]],
+    [[11], [[0, 5], [8, 13]], [[0, 5], [8, 9]]],
+    [[8, 10], [[0, 5], [8, 11]], [[0, 5], [8, 13]]],
+    [[13], [[0, 5], [8, 11]], [[0, 5], [8, 13], [16, 16]]],
+  ];
+  r.host.seed(NOTE, doc(history[0]), 1000);
+  const root = await pushFile(r.context, NOTE);
+  const ids = [root.versionId];
+  let at = 2000;
+  for (const version of history.slice(1)) {
+    ids.push((await r.server.publish({ fileId: root.fileId, path: NOTE, bytes: new TextEncoder().encode(doc(version)),
+      mtime: at += 1000, parents: version[0].map((i) => ids[i]).sort(), domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey })).version_id);
+  }
+  // Every version came by on the feed, so this device holds them all.
+  for (const entry of r.server.journal.filter((entry) => entry.file_id === root.fileId)) {
+    r.context.authored.add(entry.version_id);
+    assert.equal(await applyChange(r.context, entry), "echo");
+  }
+  // It stands on the phone's head; the server lists ten versions and every head.
+  const held = doc(history[14]);
+  r.host.seed(NOTE, held, at += 1000);
+  const { sid } = await encryptChunk(r.keys.domainKey, new TextEncoder().encode(held));
+  r.state.setFile(NOTE, { fileId: root.fileId, versionId: ids[14], mtime: at, size: new TextEncoder().encode(held).length, sha256: await sidDigest([sid]) });
+  const getFile = r.transport.getFile.bind(r.transport);
+  r.transport.getFile = async (...args) => {
+    const file = await getFile(...args);
+    return { ...file, versions: file.versions.filter((version, i) => i < 10 || file.heads.includes(version.version_id)) };
+  };
+  assert.ok(!(await r.transport.getFile(root.fileId)).versions.some((version) => version.version_id === ids[2]), "the second base is still listed");
+  await applyChange(r.context, r.server.journal.find((entry) => entry.version_id === ids[12]));
+  const story = r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+  assert.equal(r.host.text(NOTE), doc([, [[0, 5], [8, 13]], [[0, 5], [8, 13], [16, 16]]]), story);
+  assert.ok(r.host.logs.some((line) => /^pull decision=loaded reason=merge_ancestry file=[0-9a-f]+ reads=0 recalled=[1-9]/.test(line)), story);
+  // The second level merged its two newest bases: the phone's typed version, never the one it typed on.
+  const second = r.host.logs.find((line) => line.startsWith("pull decision=merge_base reason=criss_cross level=2 ok=true "));
+  assert.ok(second?.includes(ids[2]) && !second.includes(ids[1]), story);
+});
+
+/**
+ * And a deletion made here and not pushed yet is published before anything is
+ * adopted (#339). The note here lost a key the version this device published
+ * still holds; the incoming version, older than that key, comes out as the
+ * merge. Adopted, the note matched its record, so the deletion was never sent,
+ * and the published version brought the key back for good once the other
+ * device merged it.
+ */
+test("a key deleted here and not pushed yet stays deleted when the other device later merges the version that held it (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+
+  const r = await rig();
+  const NOTE = "Notes/Typo.md";
+  r.host.seed(NOTE, "0\n", 1000);
+  const base = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "0T\n", 2000);
+  const typed = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "0\n", 3000);
+  const publish = (text, parents, mtime) => r.server.publish({ fileId: base.fileId, path: NOTE,
+    bytes: new TextEncoder().encode(text), mtime, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  const theirs = await publish("0y\n", [base.versionId], 4000);
+  await applyChange(r.context, theirs);
+  await pushFile(r.context, NOTE);
+  const merged = await publish("0Ty\n", [typed.versionId, theirs.version_id].sort(), 5000);
+  await applyChange(r.context, await publish("0Tyz\n", [merged.version_id], 6000));
+  assert.equal(r.host.text(NOTE), "0yz\n", r.host.logs.filter((line) => /^(pull|push)/.test(line)).join(" | "));
+  assert.deepEqual([...r.host.files.keys()], [NOTE]);
+});
+
+/**
+ * The same where two heads hold one text (`converged`): this device's head
+ * stands when the other's would forget a key typed and deleted here. That rule
+ * otherwise takes the smaller id, and ids are random, so the rig is built again
+ * until the other's sorts first; a third head keeps the pair from closing.
+ */
+test("of two heads holding one text, the one remembering a key typed and deleted here stands (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+  const NOTE = "Notes/Typo.md";
+
+  for (let attempt = 0; ; attempt++) {
+    assert.ok(attempt < 40, "the other device's id never sorted first");
+    const r = await rig();
+    r.host.seed(NOTE, "0\n", 1000);
+    const base = await pushFile(r.context, NOTE);
+    r.host.seed(NOTE, "0T\n", 2000);
+    const typed = await pushFile(r.context, NOTE);
+    r.host.seed(NOTE, "0\n", 3000);
+    const local = await pushFile(r.context, NOTE);
+    const publish = (text, parents, mtime) => r.server.publish({ fileId: base.fileId, path: NOTE,
+      bytes: new TextEncoder().encode(text), mtime, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+    const theirs = await publish("0\n", [base.versionId], 4000);
+    if (theirs.version_id > local.versionId) continue;
+    await publish("1\n", [base.versionId], 4500);
+    await applyChange(r.context, theirs);
+    assert.equal(r.state.fileByPath(NOTE).versionId, local.versionId, "the record left the head that remembers the deletion");
+    const merged = await publish("0T\n", [typed.versionId, theirs.version_id].sort(), 5000);
+    await applyChange(r.context, await publish("0Tz\n", [merged.version_id], 6000));
+    assert.equal(r.host.text(NOTE), "0z\n", r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
+    return;
+  }
+});
+
+/**
+ * Nor is a note that holds the other head's text only because of a deletion
+ * made here and not pushed yet (#339): the version this device published still
+ * holds the key. Standing on the other head, the deletion went out as an edit
+ * of THAT head, and the published version brought the key back once merged.
+ * Two heads are closed by a merge carrying the deletion; a third head here
+ * keeps them open, as a third device typing does.
+ */
+test("a key deleted here and not pushed yet is no agreement with a head holding the same text (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+  const NOTE = "Notes/Typo.md";
+
+  for (let attempt = 0; ; attempt++) {
+    assert.ok(attempt < 40, "the other device's id never sorted first");
+    const r = await rig();
+    r.host.seed(NOTE, "0\n", 1000);
+    const base = await pushFile(r.context, NOTE);
+    r.host.seed(NOTE, "0T\n", 2000);
+    const typed = await pushFile(r.context, NOTE);
+    r.host.seed(NOTE, "0\n", 3000);
+    const publish = (text, parents, mtime) => r.server.publish({ fileId: base.fileId, path: NOTE,
+      bytes: new TextEncoder().encode(text), mtime, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+    const theirs = await publish("0\n", [base.versionId], 4000);
+    if (theirs.version_id > typed.versionId) continue;
+    await publish("1\n", [base.versionId], 4500);
+    await applyChange(r.context, theirs);
+    assert.ok(r.host.logs.some((line) => line.startsWith("pull decision=deferred reason=unpublished_edit stage=identical_bytes ")), r.host.logs.join(" | "));
+    await pushFile(r.context, NOTE);
+    const merged = await publish("0T\n", [typed.versionId, theirs.version_id].sort(), 5000);
+    await applyChange(r.context, await publish("0Tz\n", [merged.version_id], 6000));
+    assert.equal(r.host.text(NOTE), "0z\n", r.host.logs.filter((line) => /^(pull|push)/.test(line)).join(" | "));
+    return;
+  }
+});
+
+/**
+ * Nor is the pair the pull read before an upload of this device's landed
+ * (#339, two desktops). The pull compared the version it found recorded,
+ * whose text the other head shares; the upload of a key typed then moved the
+ * record on, and the key was deleted before the pull settled. Standing on the
+ * other head overwrote the record of that upload, the deletion matched the
+ * other head and went nowhere, and the other device's merge of the upload
+ * brought the key back for good.
+ */
+test("a version this device published while a pull read the graph is the side that pull settles (#339)", async () => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+  const NOTE = "Notes/Typo.md";
+
+  const r = await rig();
+  r.host.seed(NOTE, "a\n", 1000);
+  const root = await pushFile(r.context, NOTE);
+  r.host.seed(NOTE, "0\n", 2000);
+  await pushFile(r.context, NOTE);
+  const publish = (text, parents, mtime) => r.server.publish({ fileId: root.fileId, path: NOTE,
+    bytes: new TextEncoder().encode(text), mtime, parents, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  const theirs = await publish("0\n", [root.versionId], 3000);
+  const getFile = r.transport.getFile.bind(r.transport);
+  let typed = null;
+  r.transport.getFile = async (id) => {
+    if (typed === null) {
+      typed = "uploading";
+      r.host.seed(NOTE, "0T\n", 4000);
+      typed = await pushFile(r.context, NOTE);
+      r.host.seed(NOTE, "0\n", 5000);
+    }
+    return await getFile(id);
+  };
+  await applyChange(r.context, theirs);
+  r.transport.getFile = getFile;
+  const logs = () => r.host.logs.filter((line) => /^(pull|push)/.test(line)).join(" | ");
+  assert.equal(r.state.fileByPath(NOTE).versionId, typed.versionId, logs());
+  const retried = r.host.logs.findIndex((line) => line.startsWith(`pull decision=retry reason=record_advanced stage=identical_bytes file=${root.fileId} `));
+  assert.ok(retried >= 0, logs());
+  assert.ok(r.host.logs.slice(retried).some((line) => line.startsWith("pull decision=deferred reason=unpublished_edit stage=identical_bytes ")), logs());
+  await pushFile(r.context, NOTE);
+  const merged = await publish("0T\n", [typed.versionId, theirs.version_id].sort(), 6000);
+  await applyChange(r.context, await publish("0Tz\n", [merged.version_id], 7000));
+  assert.equal(r.host.text(NOTE), "0z\n", logs());
 });
 
 /**
@@ -590,6 +1152,66 @@ test("one file's identical heads are closed at most five times in a minute from 
   });
   assert.equal(await settle(theirs), 1);
   assert.equal(r.server.files.get(fileId).heads.length, 1);
+});
+
+/*
+ * Two people typing close pairs of one name (#339): each device merges the
+ * same fork to the same bytes a few times a minute, and the count told the
+ * user a device kept renaming the note. A keystroke here between two such
+ * closings starts the count again; closings nobody typed between, and
+ * closings of two names, are counted as before.
+ */
+const closingRounds = async (rename) => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+  const r = await rig();
+  const SHARED = "the bytes every head carries\n";
+  r.host.seed(NAMED, SHARED, 1000);
+  const { fileId } = await pushFile(r.context, NAMED);
+  let revision = {};
+  r.host.editorRevision = () => revision;
+  const round = async (mtime, typed) => {
+    if (typed) revision = {};
+    const path = r.state.pathByFileId(fileId);
+    const head = r.state.fileByPath(path).versionId;
+    await pushFile(r.context, path, true);
+    const theirs = await r.server.publish({
+      fileId, path: rename ? (path === NAMED ? MOVED : NAMED) : path, bytes: new TextEncoder().encode(SHARED), mtime,
+      parents: [head], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+    });
+    const before = r.server.journal.length;
+    assert.equal(await applyChange(r.context, theirs), "skipped");
+    return r.server.journal.length - before;
+  };
+  return { r, fileId, round };
+};
+
+test("identical heads of one name closed between keystrokes typed here are no closing storm (#339)", async () => {
+  const { r, fileId, round } = await closingRounds(false);
+  const logs = () => r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+  const typed = [];
+  for (let n = 1; n <= 8; n++) typed.push(await round(4000 + n, true));
+  assert.deepEqual(typed, [1, 1, 1, 1, 1, 1, 1, 1], logs());
+  assert.ok(r.host.logs.some((line) => line.startsWith(`pull decision=closing_budget_reset reason=trusted_editor_input file=${fileId} `)), logs());
+  assert.equal(r.host.logs.some((line) => line.includes("reason=closing_storm")), false, logs());
+  assert.deepEqual(r.host.notices.filter((notice) => notice.startsWith("obsync: stopped renaming")), []);
+  // Nobody types: the fifth closing in a row is the last.
+  const untyped = [];
+  for (let n = 1; n <= 5; n++) untyped.push(await round(5000 + n, false));
+  assert.deepEqual(untyped, [1, 1, 1, 1, 0], logs());
+  assert.ok(r.host.logs.some((line) => line.startsWith(`pull decision=refused reason=closing_storm file=${fileId} count=6 `)), logs());
+});
+
+test("identical heads of two names are counted however fast someone types here (#151, #339)", async () => {
+  const { r, fileId, round } = await closingRounds(true);
+  const closed = [];
+  for (let n = 1; n <= 6; n++) closed.push(await round(4000 + n, true));
+  assert.deepEqual(closed, [1, 1, 1, 1, 1, 0], r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
+  assert.ok(r.host.logs.some((line) => line.startsWith(`pull decision=refused reason=closing_storm file=${fileId} count=6 `)));
+  assert.equal(r.host.logs.some((line) => line.includes("closing_budget_reset")), false);
 });
 
 /** The digest a single-chunk manifest carries. */

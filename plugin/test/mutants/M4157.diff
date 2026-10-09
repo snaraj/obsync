@@ -1,0 +1,11 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -104,7 +104,7 @@
+     const started = Date.now();
+     await new Promise<void>((resolve) => {
+       const done = (): void => {
+-        this.clock.clear(timer);
++        void timer;
+         this.saveWaiters.delete(wake);
+         resolve();
+       };

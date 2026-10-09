@@ -1,0 +1,6 @@
+M4231: drop a pair read before this device's own upload landed instead of reading it again
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3060 +3060 @@
+-      return await startOver(context, change, theirManifest);
++      return "skipped";

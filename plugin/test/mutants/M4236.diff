@@ -1,0 +1,6 @@
+M4236: take every pair of identical heads for one name when counting closings
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3096 +3096 @@
+-      closingAllowed(context, change, localPath, theirManifest.path === here)
++      closingAllowed(context, change, localPath, true)

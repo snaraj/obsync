@@ -1,12 +1,6 @@
 # M815: The native commit ignores unsaved text when no recent input was recorded.
---- a/plugin/src/main.ts
-+++ b/plugin/src/main.ts
-@@ -2717,7 +2717,7 @@
-     // engine retries this note after input settles, without blocking others.
-     // Check after downloads and filesystem preparation have waited.
-     const open = await this.editing(path);
--    if (open === "unsaved" || this.typing(path)) throw new EditorBusy();
-+    if (this.typing(path)) throw new EditorBusy();
-     // No await since `editing` compared every view with the file.
-     const view = this.views(path)[0];
-     return open === null || view === undefined ? null : lines(view.getViewData());
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -161 +161 @@
+-      if (current === disk && (!this.recent(view) || (input?.saved?.text === disk && input.saved.generation === this.generation))) return true;
++      if ((!this.recent(view) || (input?.saved?.text === disk && input.saved.generation === this.generation))) return true;

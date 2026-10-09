@@ -1,0 +1,6 @@
+M4227: keep typing after a delivered bridge only when it inserts
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3543 +3543 @@
+-          ((onlyInserts(shown, written) && onlyInserts(pendingBridge.text, disk)) || mergeText(shown, disk, written) === disk);
++          (onlyInserts(shown, written) && onlyInserts(pendingBridge.text, disk));

@@ -1,0 +1,6 @@
+M4220: merge a criss-cross's two bases over the one ancestor listed
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3943 +3943 @@
+-  if (!(await completeMergeAncestry(context, file, first, other))) return HISTORY_BUDGET;
++  if (commonAncestor(file.versions, first, other) === null && !(await completeMergeAncestry(context, file, first, other))) return HISTORY_BUDGET;

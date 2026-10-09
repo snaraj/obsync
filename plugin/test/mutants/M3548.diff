@@ -1,14 +1,8 @@
 # M3548: the kept poll's late page, asked from an older cursor, moves the cursor back (#288)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -3534,9 +3534,7 @@
-     // older cursor: what that read applied is not applied again, and the
-     // cursor never goes back.
-     const cursor = context.state.data.lastSeq;
+@@ -3757,3 +3757 @@
 -    const page = asked.seq < cursor || asked.changes.some((change) => change.seq <= cursor)
 -      ? { ...asked, seq: Math.max(asked.seq, cursor), changes: asked.changes.filter((change) => change.seq > cursor) }
 -      : asked;
 +    const page = asked;
-     await this.learnNames(context, page.changes);
-     let replayed = 0;
-     // Whether any change of the page was more than this device's own version

@@ -1,12 +1,6 @@
 # M3441: a fast-forward over an unpushed edit is deferred as an unpublished merge edit, not as the push's
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2864,7 +2864,7 @@
-         // the fork is merged from what is published, as a fast-forward over an
-         // unpushed edit is (below). A result that is the incoming version
-         // itself makes no merge at all.
--        if (!ahead && !sameBytes(text, theirs)) {
-+        if (!sameBytes(text, theirs)) {
-           // A head this device cannot open proves nothing about the note.
-           const own = await manifestOf(context, file, change, localVersionId).catch(() => null);
-           if (own !== null && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {
+@@ -3228 +3228 @@
+-        if (!ahead) {
++        if (!ahead || ahead) {

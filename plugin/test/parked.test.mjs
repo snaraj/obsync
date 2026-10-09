@@ -381,7 +381,18 @@ test("a full disk parks the big file without re-downloading it in a loop, and le
   // attempt and by the retries 1, 3 and 7 minutes after the park, and never
   // in a loop -- where the five-second loop fetched it 120 times.
   const parkedAt = d.timers.now;
-  await d.timers.run(5000, () => d.timers.now >= parkedAt + 10 * MINUTE);
+  // This test measures retry intervals, not WebCrypto's real completion
+  // time. Finish each timer-started pull before moving virtual time again;
+  // otherwise a loaded worker moves minutes while a decrypt is in flight,
+  // shifting the next retry and observing eight downloads instead of nine.
+  const advanceThrough = async (target) => {
+    while (d.timers.now < target) {
+      d.timers.now = Math.min(target, d.timers.now + 5000);
+      await d.timers.run(0, () => true);
+      await d.engine.pulling;
+    }
+  };
+  await advanceThrough(parkedAt + 10 * MINUTE);
   assert.equal(fetches(r, big), 4, `the attachment was fetched ${fetches(r, big)} times in ten minutes`);
   assert.equal(full.attempts.length, 4);
   assert.equal(notices(r, "Attachments/big.bin").length, 1, "one notice, not one per retry");
@@ -389,7 +400,7 @@ test("a full disk parks the big file without re-downloading it in a loop, and le
   // The wait doubles and then holds at half an hour: retries 15, 31, 61, 91
   // and 121 minutes after the park, so a disk that stays full for two hours
   // costs nine downloads, and a file that fits again waits at most that long.
-  await d.timers.run(5000, () => d.timers.now >= parkedAt + 125 * MINUTE);
+  await advanceThrough(parkedAt + 125 * MINUTE);
   assert.equal(fetches(r, big), 9, `the attachment was fetched ${fetches(r, big)} times in two hours`);
   assert.ok(r.host.logs.some((line) => line.startsWith("feed decision=retried trigger=timer released=0 parked=1 retry_ms=1800000 ")));
   assert.equal(notices(r, "Attachments/big.bin").length, 1, "one notice, not one per retry");
@@ -399,7 +410,7 @@ test("a full disk parks the big file without re-downloading it in a loop, and le
   await d.timers.run(100, () => Object.keys(r.state.data.parked).length === 0 && d.last().kind === "idle");
   assert.deepEqual(d.last(), { kind: "idle" });
   const settledAt = d.timers.now;
-  await d.timers.run(5000, () => d.timers.now >= settledAt + 40 * MINUTE);
+  await advanceThrough(settledAt + 40 * MINUTE);
   assert.equal(fetches(r, big), 9, "nothing is fetched for a file that no longer exists");
   assert.equal(r.host.text("Attachments/big.bin"), null);
 });

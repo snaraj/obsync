@@ -1,0 +1,6 @@
+M4249: the first pane not typing ends the search
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3507 +3507 @@
+-      if (cm?.hasFocus !== true || idle === null || idle >= WORD_PAUSE_MS) continue;
++      if (cm?.hasFocus !== true || idle === null || idle >= WORD_PAUSE_MS) return false;

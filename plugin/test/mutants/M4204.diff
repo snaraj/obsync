@@ -1,0 +1,6 @@
+M4204: put another device's text into local undo history
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -573 +573 @@
+-  return transaction === null ? [] : [transaction.addToHistory.of(false), transaction.remote.of(true)];
++  return transaction === null ? [] : [transaction.addToHistory.of(true), transaction.remote.of(true)];

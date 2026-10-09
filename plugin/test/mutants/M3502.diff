@@ -1,11 +1,5 @@
 # M3502: a removed name's events reach the engine (#253)
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1529,7 +1529,6 @@
-         return;
-       }
-       const stat = changed ? entry.stat : null;
+@@ -2078 +2077,0 @@
 -      if (!present) this.unghosting.add(path);
-       try {
-         await queue.call(adapter, () => reconcileInternalFile.call(adapter, path));
-       } finally {

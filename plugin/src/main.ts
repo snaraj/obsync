@@ -59,6 +59,8 @@ import { accountRecovery, FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "./accountR
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
+import { EditorActivity, EDITOR_SAVE_MAX_CHARS, WORD_PAUSE_MS, type ReloadOutcome } from "./editorActivity";
+import { mergeText, textChanges, type TextChange } from "./sync/conflict";
 import { KEYS_LOST, State, StateStorageError, dataLease, isPushed, type Held, type ObsyncData } from "./state";
 import { HELD, LEVELS, MERGES, NOTICE_DEFAULTS, NoticeChannel, count, quoted, scrub, titles, type Drawn, type NoticeSettings, type SyncNotice } from "./notices";
 import {
@@ -73,7 +75,7 @@ import {
 } from "./syncScope";
 import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
 import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
-import { EDITING_WINDOW_MS, EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
+import { EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, pastedToken, platformLabel, refusalFor, refusalText } from "./pairing";
 import { COPIED_VAULT, ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
@@ -534,6 +536,59 @@ function lines(text: string): string {
   return text.replace(/\r\n?/g, "\n");
 }
 
+/** A linear, code-point-preserving proof that no delivered character vanished. */
+function onlyInserts(before: string, after: string): boolean {
+  let offset = 0;
+  for (const point of before) {
+    const found = after.indexOf(point, offset);
+    if (found < 0) return false;
+    offset = found + point.length;
+  }
+  return true;
+}
+
+/** What a remote change needs of the CodeMirror 6 view behind `MarkdownView.editor`. */
+interface CodeMirrorView {
+  hasFocus?: boolean;
+  state: { doc: { toString(): string }; selection: { main: { head: number } } };
+  dispatch(spec: { changes: TextChange[]; annotations: unknown[] }): void;
+}
+
+interface CodeMirrorTransaction {
+  addToHistory: { of(value: boolean): unknown };
+  remote: { of(value: boolean): unknown };
+}
+
+/** CodeMirror's `Transaction`, provided to plugins by Obsidian; absent elsewhere. */
+let codeMirrorTransaction: CodeMirrorTransaction | null | undefined;
+
+function remoteChange(): unknown[] {
+  if (codeMirrorTransaction === undefined) {
+    try {
+      codeMirrorTransaction = (require("@codemirror/state") as { Transaction?: CodeMirrorTransaction }).Transaction ?? null;
+    } catch {
+      codeMirrorTransaction = null;
+    }
+  }
+  const transaction = codeMirrorTransaction;
+  return transaction === null ? [] : [transaction.addToHistory.of(false), transaction.remote.of(true)];
+}
+
+/**
+ * Show `after` in an editor holding `before` as the smallest changes, the way
+ * a collaborative editor shows a peer's keystrokes: the caret, selection and
+ * scroll position move with the text around them, and the change stays out of
+ * local undo history, so undo never removes another device's typing. An
+ * editor whose CodeMirror view is unavailable is given the whole text.
+ */
+function showText(view: MarkdownView, before: string, after: string): void {
+  const editor = (view as { editor?: { cm?: CodeMirrorView } }).editor;
+  const cm = editor?.cm;
+  if (cm !== undefined && cm.state.doc.toString() === before) {
+    cm.dispatch({ changes: textChanges(before, after), annotations: remoteChange() });
+  } else view.setViewData(after, false);
+}
+
 /**
  * Whether a failed start is the server's ABSENCE rather than its DECISION.
  * The transport says `unreachable` after its own retries when nothing
@@ -758,6 +813,9 @@ function isDiskEntry(entry: unknown): entry is DiskEntry {
     typeof size === "number" && Number.isFinite(size) && typeof mtime === "number" && Number.isFinite(mtime);
 }
 
+/** The incoming version was replaced, so no applied ancestry may advance. */
+class WriteSuperseded extends EditorBusy {}
+
 export class ObsidianHost implements VaultHost {
   private readonly desktop: DesktopVault | null;
   /** The temps this host's writers hold open now, which `sweep` never takes. */
@@ -801,8 +859,7 @@ export class ObsidianHost implements VaultHost {
   private ghostKeptTold = false;
   /** Tracked notes whose other spelling was just deleted here, to that spelling and the end of the watch (`twinDeleted`). */
   private readonly twinGuards = new Map<string, { via: string; until: number }>();
-  private readonly inputAt = new WeakMap<MarkdownView, { path: string; at: number }>();
-  private readonly composing = new WeakMap<MarkdownView, string>();
+  private readonly editorActivity: EditorActivity;
   private readonly inputWindows = new WeakSet<Window>();
 
   /**
@@ -814,7 +871,25 @@ export class ObsidianHost implements VaultHost {
   constructor(
     private readonly plugin: ObsyncPlugin,
     desktop?: DesktopVault | null,
+    private readonly editorTimers: Timers = pageTimers,
   ) {
+    this.editorActivity = new EditorActivity({
+      views: (path) => this.views(path),
+      read: (file) => this.plugin.app.vault.read(file),
+      enabled: (path) => this.plugin.engine != null && inSyncScope(path, this.plugin.state.data.syncFolders),
+      saved: (path) => {
+        this.plugin.engine?.editorSaved(path);
+        // Early public saves can cancel the native preview notification.
+        // Notify after confirmed saving, with no later save after consumers
+        // can synchronously type, rebind another pane or stop the engine.
+        const views = this.views(path), files = views.map((view) => view.file);
+        for (let i = 0; i < views.length; i++) {
+          const view = views[i];
+          if (view?.file === files[i] && view?.file?.path === path) this.plugin.app.workspace.trigger("quick-preview", view.file, view.getViewData());
+        }
+      },
+      log: (line) => this.log(line),
+    }, this.editorTimers);
     const log = (line: string): void => this.log(line);
     if (desktop !== undefined) {
       this.desktop = desktop === null ? null : { ...desktop, fs: boundedFs(desktop.fs, log) };
@@ -924,10 +999,9 @@ export class ObsidianHost implements VaultHost {
    * absent or refuses, the window keeps the pace it always had, and one line
    * says so. Desktop only: a phone has no such window.
    */
-  hurry(busy: boolean): void {
+  hurry(busy: boolean, reason: "work" | "calm" | "stop" | "unanswered" = busy ? "work" : "calm"): void {
     if (!Platform.isDesktopApp) return;
     const started = Date.now();
-    const reason = busy ? "work" : "idle";
     try {
       const contents = (window as unknown as { electronWindow?: { webContents?: { setBackgroundThrottling?: unknown } } })
         .electronWindow?.webContents;
@@ -1632,7 +1706,7 @@ export class ObsidianHost implements VaultHost {
         bytes.set(part, at);
         at += part.length;
       },
-      commit: async (mtime) => {
+      commit: async (mtime, expected) => {
         if (at !== size) throw new Error("A download ended short of its declared size.");
         // A folder can stand where a remote manifest names a file now that
         // folders sync, and `writeBinary` would not say so. Desktop refuses
@@ -1641,23 +1715,56 @@ export class ObsidianHost implements VaultHost {
         const before = await adapter.stat(path);
         if (before?.type === "folder") throw new VaultPathError("not_a_file");
         if (folder !== "" && !(await adapter.exists(folder))) await adapter.mkdir(folder);
-        const shown = await this.assertEditorIdle(path);
-        await adapter.writeBinary(path, bytes.buffer, { mtime });
-        // The SIZE is ours: the bytes handed to the adapter, not what a look
-        // at the name says a moment later. The mtime is taken from the name
-        // only while the name still holds that many bytes -- a save landing
-        // between the write and the lookup must not have its metadata
-        // recorded as this version's (round 3, finding 2).
-        const stat = await this.landed(path, bytes, mtime);
-        if (stat !== null && stat.size === size) {
-          if (shown !== null) {
-            await this.refreshEditors(path, shown, new TextDecoder().decode(bytes),
-              async () => new TextDecoder().decode(await adapter.readBinary(path)));
-          }
-          return { path, mtime: stat.mtime, size };
+        const shown = await this.assertEditorIdle(path, expected);
+        let text: string | null = null;
+        if (shown !== null && bytes.length <= EDITOR_SAVE_MAX_CHARS) {
+          try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { /* Preserve opaque bytes below. */ }
         }
-        if (stat !== null) this.log(`host path_class=file decision=write_superseded size=${size} found=${stat.size}`);
-        return { path, mtime, size };
+        if (shown !== null && text !== null && this.typingWord(path, shown, text)) throw new EditorBusy();
+        const release = this.editorActivity.holdReload(path);
+        if (release === null) throw new EditorBusy();
+        let outcome: ReloadOutcome = shown === null ? "confirmed" : "unconfirmed";
+        try {
+          // An active mobile editor must advance its saved baseline before
+          // the adapter emits a file-change event. Writing underneath it first
+          // lets an earlier native reload replace newer input after save()
+          // clears the dirty flag. Public save owns both baseline and write;
+          // passive, unsafe, binary and non-normalized text keep the adapter
+          // path. Never reach through the mobile adapter's private filesystem.
+          const bridge = shown !== null && text !== null && lines(text) === text
+            ? this.bridgeEditors(path, shown, text) : null;
+          if (bridge !== null && shown !== null && text !== null) {
+            if (bridge.saves.length !== this.views(path).length ||
+              (await Promise.all(bridge.saves)).some((saved) => !saved)) throw new EditorBusy();
+            const saved = new TextEncoder().encode(bridge.text);
+            const stat = await this.landed(path, saved, mtime);
+            if (stat === null) throw new WriteSuperseded();
+            outcome = await this.refreshEditors(path, shown, text,
+              async () => new TextDecoder().decode(await adapter.readBinary(path)), bridge);
+            return { path, mtime: stat.mtime, size };
+          }
+          await adapter.writeBinary(path, bytes.buffer, { mtime });
+          // The SIZE is ours: the bytes handed to the adapter, not what a look
+          // at the name says a moment later. The mtime is taken from the name
+          // only while the name still holds that many bytes -- a save landing
+          // between the write and the lookup must not have its metadata
+          // recorded as this version's (round 3, finding 2).
+          const stat = await this.landed(path, bytes, mtime);
+          if (stat !== null && stat.size === size) {
+            if (shown !== null) {
+              outcome = await this.refreshEditors(path, shown, new TextDecoder().decode(bytes),
+                async () => new TextDecoder().decode(await adapter.readBinary(path)));
+            }
+            return { path, mtime: stat.mtime, size };
+          }
+          this.log(`host path_class=file decision=write_superseded size=${size} found=${stat?.size ?? "absent"}`);
+          // A replaced write never advances ancestry: publish the native save
+          // against the prior version, then merge this incoming version again.
+          throw new WriteSuperseded();
+        } catch (error) {
+          if (error instanceof WriteSuperseded) outcome = "superseded";
+          throw error;
+        } finally { release(outcome); }
       },
       abort: async () => {
         bytes = new Uint8Array(0);
@@ -1944,12 +2051,12 @@ export class ObsidianHost implements VaultHost {
    * NEW BYTES UNDER A NOTE OBSIDIAN LISTS (`written`, issue #267) leave its
    * cached stat and read cache -- search, backlinks -- describing the old ones,
    * so the note is reconciled too, which raises the `modify` a watcher would:
-   * the engine settles it against the echo mark like the `create` above. Not
-   * while a leaf shows the note (`inView`): Obsidian reloads a view on that
-   * event, and merges into one with unsaved typing behind a notice -- typing
-   * that can begin while the reconcile waits in the queue. #252's refresh
-   * shows such a view the new text; its index follows the editor's next
-   * save, the late event, or a restart.
+   * the engine settles it against the echo mark like the `create` above.
+   * Open notes use that same event too. Skipping their index update lets a
+   * late OS event start a second native reload during the next save, after
+   * that save clears the dirty flag. `refreshEditors` drains and confirms the
+   * native reload before releasing extra saves; it does not replace the
+   * native saved baseline with a display-only update.
    */
   private async reconcile(path: string, kind: "file" | "folder", present: boolean, written = false): Promise<void> {
     const started = Date.now();
@@ -1969,10 +2076,6 @@ export class ObsidianHost implements VaultHost {
       const entry = vault.getAbstractFileByPath(path);
       const changed = written && present && entry instanceof TFile;
       if ((entry !== null) === present && !changed) return;
-      if (changed && this.inView(path)) {
-        this.log(`vault path_class=${kind} decision=skipped reason=open_view`);
-        return;
-      }
       const stat = changed ? entry.stat : null;
       if (!present) this.unghosting.add(path);
       try {
@@ -1994,22 +2097,6 @@ export class ObsidianHost implements VaultHost {
           `duration_ms=${Date.now() - started}`,
       );
     }
-  }
-
-  /**
-   * Does any leaf show `path` -- an editor, a canvas, a preview -- or can this
-   * host not tell (`reconcile`)? Asked right before the reconcile is queued: a
-   * view that opens after that read the new bytes, and Obsidian ignores a
-   * `modify` whose bytes its view last loaded (`TextFileView`, 1.13.4).
-   */
-  private inView(path: string): boolean {
-    const workspace = this.plugin.app.workspace as Partial<App["workspace"]>;
-    if (typeof workspace.iterateAllLeaves !== "function") return true;
-    let found = false;
-    workspace.iterateAllLeaves((leaf) => {
-      if ((leaf.view as { file?: TAbstractFile | null }).file?.path === path) found = true;
-    });
-    return found;
   }
 
   /**
@@ -2131,7 +2218,7 @@ export class ObsidianHost implements VaultHost {
       write: async (bytes) => {
         await handle.write(bytes);
       },
-      commit: async (mtime) => {
+      commit: async (mtime, expected) => {
         await bind();
         // DURABLE BEFORE IT HAS A NAME (issue #202). A rename is atomic for
         // the name, not for the bytes under it, and closing a file flushes
@@ -2154,48 +2241,96 @@ export class ObsidianHost implements VaultHost {
         // place, read BEFORE the editor is judged: nothing awaits between that
         // judgment and the rename, or typing begun in between is written
         // under (review of dec081c, finding 1).
-        let text: string | null;
-        let shown: string | null;
+        const text = this.views(path).length > 0 ? await fs.promises.readFile(temp, "utf8") : null;
+        const adapter = this.plugin.app.vault.adapter as typeof this.plugin.app.vault.adapter & {
+          queue?: (action: () => Promise<void>) => Promise<void>;
+        };
+        // Native watcher reloads share this queue. Hold their reads until the
+        // durable write and public saved-baseline transition have both begun.
+        // An unknown adapter keeps the ordinary file-change fallback.
+        const queue = text !== null && this.views(path).some((view) => this.editorActivity.canRefresh(view))
+          ? adapter.queue : undefined;
+        const read = (): Promise<string> => fs.promises.readFile(target, "utf8");
+        let shown: string | null = null;
+        let release: ((outcome: ReloadOutcome) => void) | null = null;
+        let outcome: ReloadOutcome = "superseded", superseded = false;
+        let bridge: ReturnType<ObsidianHost["bridgeEditors"]> = null;
+        const commit = async (): Promise<void> => {
+          // Inside the native queue, use the independent filesystem read:
+          // Vault.read would queue behind this action and deadlock. The same
+          // exact-byte, editor-generation and path guards still run here,
+          // after waiting for earlier native actions and before rename.
+          const before = await chainRefusal(chain, walker(fs));
+          if (before !== null || !sameFile(opened, await walker(fs).lstat(temp))) throw new VaultPathError(before ?? "temp_identity");
+          shown = await this.assertEditorIdle(path, expected, typeof queue === "function" ? read : undefined);
+          release = this.editorActivity.holdReload(path);
+          if (release === null) throw new EditorBusy();
+          // No reload can follow a rename the system refused (Windows can, for a moment).
+          await fs.promises.rename(temp, target);
+          outcome = shown === null ? "confirmed" : "unconfirmed";
+          this.temps.delete(temp);
+          await this.syncFolder(fs, parent);
+          // The rename is the moment the file takes its real name, so the
+          // chain is checked again here: a parent swapped after the last
+          // binding would otherwise leave our own inode sitting outside the
+          // vault, reachable under a vault path.
+          const refusal = await chainRefusal(chain, walker(fs));
+          const landed = await walker(fs).lstat(target);
+          if (refusal !== null || !sameFile(opened, landed)) {
+            // Remove what we put there, or a link planted in its place, and
+            // nothing else: a regular file that is not ours may be the user's.
+            if (sameFile(opened, landed) || (landed !== null && landed.isSymbolicLink())) {
+              await fs.promises.unlink(target).catch(() => undefined);
+            }
+            throw new VaultPathError(refusal ?? "target_identity");
+          }
+          const ours = landed as PathStat;
+          superseded = ours.size !== wrote.size || Math.round(ours.mtimeMs) !== Math.round(wrote.mtimeMs);
+          if (superseded) this.log("host path_class=file decision=write_superseded");
+          else if (typeof queue === "function" && shown !== null && text !== null && lines(await read()) === lines(text)) {
+            bridge = this.bridgeEditors(path, shown, lines(text));
+          }
+        };
         try {
-          text = this.views(path).length > 0 ? await fs.promises.readFile(temp, "utf8") : null;
-          shown = await this.assertEditorIdle(path);
+          if (typeof queue === "function") await queue.call(adapter, commit);
+          else await commit();
+          if (superseded) throw new WriteSuperseded();
+          if (shown !== null && text !== null) outcome = await this.refreshEditors(path, shown, text, read, bridge);
+          if (shown !== null) {
+            // Public save may rewrite the inode after our durable rename.
+            // Flush that native write too, with the same confined descriptor
+            // proof. Holding the adapter queue prevents its next save from
+            // truncating the file while this durability receipt is taken.
+            const flush = async (): Promise<void> => {
+              const bound = await this.confine(desktop, path, ["file"]);
+              // Windows FlushFileBuffers requires write access. r+ grants it
+              // without creating or truncating the independently checked file.
+              const saved = await fs.promises.open(bound.target, "r+");
+              try {
+                const identity = await fstat(saved);
+                const verify = async (): Promise<void> => {
+                  const refusal = await chainRefusal(bound.chain, walker(fs));
+                  if (refusal !== null || !sameFile(identity, await walker(fs).lstat(bound.target))) throw new VaultPathError(refusal ?? "target_identity");
+                };
+                await verify();
+                await saved.sync();
+                await verify();
+              } finally { await saved.close(); }
+              await this.syncFolder(fs, parent);
+            };
+            if (typeof queue === "function") await queue.call(adapter, flush);
+            else await flush();
+          }
+          await this.reconcile(path, "file", true, true);
+          return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
         } catch (error) {
+          if (error instanceof WriteSuperseded) outcome = "superseded";
+          else this.log(`host path_class=file decision=failed reason=write error=${(error as { code?: string }).code ?? (error instanceof Error ? error.name : "unknown")} outcome=${outcome}`);
           await discard();
           throw error;
+        } finally {
+          if (release !== null) (release as (outcome: ReloadOutcome) => void)(outcome);
         }
-        await fs.promises.rename(temp, target);
-        this.temps.delete(temp);
-        await this.syncFolder(fs, parent);
-        // The rename is the moment the file takes its real name, so the
-        // chain is checked again here: a parent swapped after the last
-        // binding would otherwise leave our own inode sitting outside the
-        // vault, reachable under a vault path.
-        const refusal = await chainRefusal(chain, walker(fs));
-        const landed = await walker(fs).lstat(target);
-        if (refusal !== null || !sameFile(opened, landed)) {
-          // Remove what we put there, or a link planted in its place, and
-          // nothing else: a regular file that is not ours may be the user's.
-          if (sameFile(opened, landed) || (landed !== null && landed.isSymbolicLink())) {
-            await fs.promises.unlink(target).catch(() => undefined);
-          }
-          throw new VaultPathError(refusal ?? "target_identity");
-        }
-        // Proven at its name: Obsidian lists it now, with these bytes
-        // (`reconcile`). One it reconciles is in no view, so nothing below
-        // awaits after the event this may raise, which the caller's echo
-        // mark settles.
-        await this.reconcile(path, "file", true, true);
-        // The rename kept the inode, and the inode is what `sameFile` proves
-        // -- but an ordinary in-place save keeps the inode too, so identity
-        // alone does not say these are still our bytes. The answer is bound
-        // to what was written; the name is only reported on.
-        const ours = landed as PathStat;
-        if (ours.size !== wrote.size || Math.round(ours.mtimeMs) !== Math.round(wrote.mtimeMs)) {
-          this.log("host path_class=file decision=write_superseded");
-        } else if (shown !== null && text !== null) {
-          await this.refreshEditors(path, shown, text, () => fs.promises.readFile(target, "utf8"));
-        }
-        return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
       },
       abort: discard,
     };
@@ -3325,64 +3460,188 @@ export class ObsidianHost implements VaultHost {
 
   /**
    * The text the note's open editors show, which is its file's, or null when
-   * none is open; one holding unsaved typing, or being typed in, refuses the
-   * write.
+   * none is open. Unsaved input, composition and an unconfirmed save refuse
+   * the write; recent input alone does not impose a delay.
    */
-  private async assertEditorIdle(path: string): Promise<string | null> {
-    // A stable disk stat does not include the keystrokes still waiting in
-    // Obsidian's two-second save debounce. Writing under that buffer invokes
-    // a second, host-app merge of text obsync has already merged (#135).
-    // The file can briefly match the buffer while the host still has an
-    // external reload queued. Leave recent trusted typing alone too; the
-    // engine retries this note after input settles, without blocking others.
-    // Check after downloads and filesystem preparation have waited.
-    const open = await this.editing(path);
-    if (open === "unsaved" || this.typing(path)) throw new EditorBusy();
-    // No await since `editing` compared every view with the file.
-    const view = this.views(path)[0];
-    return open === null || view === undefined ? null : lines(view.getViewData());
+  private async assertEditorIdle(path: string, expected?: Bytes | Pick<VaultStat, "mtime" | "size"> | null, read?: (file: TFile) => Promise<string>): Promise<string | null> {
+    const started = Date.now();
+    const unchanged = expected === undefined ? undefined : async (): Promise<boolean> => {
+      const stat = await this.stat(path);
+      let matches: boolean;
+      if (expected === null) matches = stat === null;
+      else if (expected instanceof Uint8Array) {
+        const disk = stat?.size === expected.length ? await this.read(path) : null;
+        matches = disk !== null && disk.length === expected.length && disk.every((byte, i) => byte === expected[i]);
+      } else matches = stat !== null && stat.size === expected.size && stat.mtime === expected.mtime;
+      if (!matches) this.log(`host path_class=file decision=deferred reason=merge_input_changed duration_ms=${Date.now() - started} budget_ms=0`);
+      return matches;
+    };
+    // Recheck the caller's input AFTER staging/fsync, then validate the same
+    // editor/input generation after every await. A save being complete says
+    // nothing about whether it was the text this merge was computed from.
+    const prepared = await this.editorActivity.prepareWrite(path, unchanged, read);
+    if (prepared === null) throw new EditorBusy();
+    const shown = prepared.text;
+    if (shown !== null && expected instanceof Uint8Array && shown !== lines(new TextDecoder().decode(expected))) {
+      this.log(`host path_class=file decision=deferred reason=merge_input_changed duration_ms=${Date.now() - started} budget_ms=0`);
+      throw new EditorBusy();
+    }
+    return shown;
   }
 
   /**
-   * AN EDITOR OBSYNC WROTE UNDER SHOWS WHAT IT WROTE (issue #252).
-   * Obsidian loads an outside change into an open note when its file watcher
-   * reports one, and a starved watcher reported nothing for minutes: the
-   * editor kept the old text, every later version of the note was held as
-   * unsaved behind "syncing 1", and a keystroke there would have saved the
-   * old text over the new. So each view still showing `shown`, the text every
-   * view showed when the write was judged safe, loads the written text, as
-   * Obsidian's own reload would. A view typed in since shows something else
-   * and is left alone. `TextFileView.data` follows every keystroke (Obsidian
-   * 1.13.4), so it can say nothing of typing (live, 2026-09-28).
-   *
-   * Only while the file still holds exactly what was written: a save of the
-   * same size can land after the write, so the file is read and compared,
-   * and the loads follow with no await after that read. Each view is judged
-   * as it is at its own load, because a load can rebind another leaf. The
-   * write has landed and stands: a failure here is logged, never thrown
-   * (review of dec081c, finding 3).
+   * Whether `written` must wait for someone typing the word it would change.
+   * The iOS keyboard keeps its own record of the word at the caret. Text
+   * that the keyboard did not type, arriving in that word while it is being
+   * typed, leaves the record stale, and the next key replaces the character
+   * before the caret (#339). On an iPhone, focusing the editor again,
+   * selecting again, or switching autocorrect after the change still lost
+   * keys. Text that landed during a pause, or once the caret had left the
+   * word, lost none. So on iOS that text waits until the caret leaves the
+   * word (every save retries it at once), the editor loses focus, or typing
+   * pauses for `WORD_PAUSE_MS`.
    */
-  private async refreshEditors(path: string, shown: string, text: string, read: () => Promise<string>): Promise<void> {
+  private typingWord(path: string, shown: string, written: string): boolean {
+    if (!Platform.isIosApp) return false;
+    for (const view of this.views(path)) {
+      const cm = (view as { editor?: { cm?: CodeMirrorView } }).editor?.cm;
+      const idle = this.editorActivity.idle(view);
+      if (cm?.hasFocus !== true || idle === null || idle >= WORD_PAUSE_MS) continue;
+      const doc = cm.state.doc.toString(), head = cm.state.selection.main.head;
+      let start = head, end = head;
+      while (start > 0 && !/\s/.test(doc[start - 1] as string)) start--;
+      while (end < doc.length && !/\s/.test(doc[end] as string)) end++;
+      if (textChanges(doc, mergeText(shown, doc, lines(written))).some((change) => change.from <= end && change.to >= start)) {
+        this.log(`editor decision=deferred reason=typing_word duration_ms=${idle} budget_ms=${WORD_PAUSE_MS}`);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Start the public saved-baseline transition before queued watcher reads.
+   * Never await these saves while holding the adapter queue: save itself waits
+   * on that queue. The caller awaits them after releasing it.
+   *
+   * `shown` is the text `written` was merged from. Each buffer holds it plus
+   * any input typed since, which is rebased onto `written` and kept; only the
+   * difference reaches the editor (`showText`), so the caret stays where the
+   * person is typing. Read, merge and apply run without an await between them. */
+  private bridgeEditors(path: string, shown: string, written: string): { text: string; saves: Promise<boolean>[]; bindings: { view: MarkdownView; file: TFile | null }[] } | null {
+    const views = this.views(path), bound = views.map((view) => view.file);
+    const buffers = views.map((view) => lines(view.getViewData()));
+    const first = buffers[0];
+    // Panes that disagree about one note keep native saving: no rebase can pick a buffer.
+    if (first === undefined || buffers.some((buffer) => buffer !== first) ||
+      !views.every((view) => this.editorActivity.canRefresh(view))) return null;
+    const text = mergeText(shown, first, written);
+    if (text.length > EDITOR_SAVE_MAX_CHARS) return null;
+    const saves: Promise<boolean>[] = [];
+    for (let index = 0; index < views.length; index++) {
+      const view = views[index] as MarkdownView;
+      // Panes of one note can share a buffer: an earlier pane's update may
+      // already show here. A pane moved to another note fails `canRefresh`,
+      // which judges a pane by the file its input was typed in.
+      const current = lines(view.getViewData());
+      if ((current !== first && current !== text) || !this.editorActivity.canRefresh(view)) break;
+      if (current !== text) showText(view, current, text);
+      if (lines(view.getViewData()) !== text || !this.editorActivity.canRefresh(view)) break;
+      // Observe rejection immediately even when a filesystem operation remains
+      // in flight. refreshEditors reports failure through its bounded fallback.
+      saves.push(view.save().then(() => true, () => false));
+    }
+    return { text, saves, bindings: views.map((view, index) => ({ view, file: bound[index] ?? null })) };
+  }
+
+  /**
+   * Confirm that the displayed text includes the durable incoming version.
+   * Active editors advance their baseline through public save; passive or
+   * unsafe-to-bridge views use the native file-change handler. Extra saves
+   * remain paused until confirmation. A bounded failure keeps the durable
+   * write, logs the refusal and leaves saving to the native host for this view.
+   * A replaced write refuses the commit, so the next native save keeps its
+   * prior ancestry. A visual reload failure alone leaves the durable write.
+   * No private editor state or notice is changed.
+   */
+  private async refreshEditors(path: string, shown: string, text: string, read: () => Promise<string>, pendingBridge: ReturnType<ObsidianHost["bridgeEditors"]> = null): Promise<"confirmed" | "unconfirmed"> {
     const started = Date.now();
     try {
       const written = lines(text);
-      if (lines(await read()) !== written) {
-        this.log(`host path_class=file decision=editor_left reason=file_changed duration_ms=${Date.now() - started}`);
-        return;
+      if (pendingBridge !== null && (await Promise.all(pendingBridge.saves)).some((saved) => !saved)) throw new EditorBusy();
+      const disk = lines(await read());
+      if (disk !== (pendingBridge?.text ?? written)) {
+        // TYPING AFTER A DELIVERED BRIDGE IS NOT A REPLACED WRITE (#339). The
+        // editor already shows the incoming text; refused, the note kept it
+        // while its record stayed on the version before, and the next save
+        // published it as this device's own typing, beside the version it came
+        // from: the other device's keys twice, and a typo it deleted back.
+        const typedSince = pendingBridge !== null &&
+          ((onlyInserts(shown, written) && onlyInserts(pendingBridge.text, disk)) || mergeText(shown, disk, written) === disk);
+        if (!typedSince) {
+          this.log(`host path_class=file decision=editor_left reason=file_changed duration_ms=${Date.now() - started}`);
+          throw new WriteSuperseded();
+        }
+        this.log(`host path_class=file decision=kept reason=typed_since_delivery duration_ms=${Date.now() - started}`);
       }
-      let views = 0;
-      for (const view of this.views(path)) {
-        if (view.file?.path !== path) continue;
-        const now = lines(view.getViewData());
-        if (now !== shown || now === written) continue;
-        view.setViewData(written, false);
-        views++;
-      }
-      if (views > 0) this.log(`host path_class=file decision=editor_refreshed views=${views}`);
+      const views = this.views(path);
+      const file = views[0]?.file;
+      const bound = views.map((view) => view.file);
+      if (!file) return "confirmed";
+      const changed = views.some((view) => lines(view.getViewData()) !== written);
+      // Drain earlier native reads before save clears the dirty flag. The
+      // final index reconciliation also prevents a late duplicate OS reload.
+      await this.plugin.app.vault.read(file);
+      const bridge = pendingBridge ?? this.bridgeEditors(path, shown, written);
+      if (bridge !== null && (await Promise.all(bridge.saves)).some((saved) => !saved)) throw new EditorBusy();
+      await this.plugin.app.vault.read(file);
+      // A bridge that reached every original pane and saved there delivered
+      // the incoming text if the display still shows it: exactly, or with
+      // every delivered character still present after typing (for an
+      // insertion-only incoming change: a stale display still holds text a
+      // deletion removed). Re-merging such a buffer proves nothing, because
+      // input typed where the delivered text landed makes the merge repeat it.
+      const bridged = bridge !== null && bridge.saves.length === views.length &&
+        bridge.bindings.every((entry, i) => entry.view === views[i] && entry.file === bound[i]) ? bridge : null;
+      let receipt: "delivered_bridge" | "delivered_insertions" | null = null;
+      const includesWrite = (): boolean => views.every((view, index) => {
+        if (view.file !== bound[index]) return true;
+        const current = lines(view.getViewData());
+        if (bridged !== null && current === bridged.text) {
+          receipt ??= "delivered_bridge";
+          return true;
+        }
+        if (bridged !== null && onlyInserts(shown, written) && onlyInserts(bridged.text, current)) {
+          receipt = "delivered_insertions";
+          return true;
+        }
+        return current === written || mergeText(shown, current, written) === current;
+      });
+      if (!includesWrite()) this.plugin.app.vault.trigger("modify", file);
+      const deadline = started + 1000;
+      do {
+        if (includesWrite()) {
+          if (receipt !== null) this.log(`host path_class=file decision=editor_confirmed reason=${receipt} views=${views.length} duration_ms=${Date.now() - started} budget_ms=1000`);
+          for (const view of views) this.editorActivity.expectRefresh(view, shown, written);
+          // Both a public display update and a native file reload can leave
+          // live-preview consumers stale. Notify them with the current buffer
+          // only after confirmation. Do not save after callbacks: they may type
+          // or switch tabs synchronously. Recheck each binding before delivery.
+          for (let index = 0; index < views.length; index++) {
+            const view = views[index];
+            if (view?.file && view.file === bound[index]) this.plugin.app.workspace.trigger("quick-preview", view.file, view.getViewData());
+          }
+          this.log(`host path_class=file decision=${changed ? "editor_refreshed" : "editor_current"} views=${views.length}`);
+          return "confirmed";
+        }
+        await new Promise<void>((resolve) => this.editorTimers.set(resolve, 10));
+      } while (Date.now() < deadline);
+      this.log(`host path_class=file decision=failed reason=editor_reload_unconfirmed duration_ms=${Date.now() - started} budget_ms=1000`);
     } catch (error) {
+      if (error instanceof EditorBusy) throw error;
       const kind = error instanceof Error ? error.name : "unknown";
       this.log(`host path_class=file decision=failed reason=editor_refresh error=${kind} duration_ms=${Date.now() - started}`);
     }
+    return "unconfirmed";
   }
 
   /** The note's editors. A leaf Obsidian has not loaded yet is not a `MarkdownView` and holds nothing typed. */
@@ -3412,14 +3671,27 @@ export class ObsidianHost implements VaultHost {
     return views.some((view) => lines(view.getViewData()) !== disk) ? "unsaved" : "saved";
   }
 
-  /** A passive editor does not make plugin writes into human typing (#179). */
+  /** Recent human activity is attribution, independent of safe incoming writes. */
   typing(path: string): boolean {
-    return this.plugin.app.workspace.getLeavesOfType("markdown").some(({ view }) => {
-      if (!(view instanceof MarkdownView) || view.file?.path !== path) return false;
-      const input = this.inputAt.get(view);
-      return this.composing.get(view) === path ||
-        (input?.path === path && Date.now() - input.at < EDITING_WINDOW_MS);
-    });
+    return this.views(path).some((view) => this.editorActivity.recent(view));
+  }
+
+  editorRevision(path: string): object | undefined {
+    return this.editorActivity.revision(path);
+  }
+
+  savedSnapshot(path: string, bytes: Bytes): boolean {
+    try {
+      return this.editorActivity.savedSnapshot(path, new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    } catch { return false; }
+  }
+
+  editorReady(path: string): Promise<boolean> {
+    return this.editorActivity.settle(path);
+  }
+
+  stopEditorSaves(): void {
+    this.editorActivity.stop();
   }
 
   /** Trusted DOM input covers physical keys, paste, touch keyboards and IME. */
@@ -3430,9 +3702,7 @@ export class ObsidianHost implements VaultHost {
       if (!event.isTrusted || event.target === null || !("nodeType" in event.target)) return;
       for (const { view } of this.plugin.app.workspace.getLeavesOfType("markdown")) {
         if (!(view instanceof MarkdownView) || !view.file || !view.containerEl.contains(event.target as Node)) continue;
-        if (event.type !== "focusout" || this.composing.get(view) === view.file.path) this.inputAt.set(view, { path: view.file.path, at: Date.now() });
-        if (event.type === "compositionstart") this.composing.set(view, view.file.path);
-        if (event.type === "compositionend" || event.type === "focusout") this.composing.delete(view);
+        this.editorActivity.record(view, event.type);
       }
     };
     for (const kind of ["keydown", "beforeinput", "compositionstart", "compositionend", "focusout"] as const) {
@@ -3570,10 +3840,10 @@ export default class ObsyncPlugin extends Plugin {
     this.state = state;
     // A reload of this instance keeps no question the old host asked.
     this.host?.closeQuestion();
-    this.host = new ObsidianHost(this);
     this.clock?.stop();
     const clock = this.clock = Platform.isDesktopApp ? workerClock(pageTimers, (line) => this.log(line)) : null;
     const timers = clock ?? pageTimers;
+    this.host = new ObsidianHost(this, undefined, timers);
     const transport: Transport = new Transport({
       request: (request) => {
         state.assertAvailable();
@@ -4100,6 +4370,7 @@ export default class ObsyncPlugin extends Plugin {
     // Unload, reload and a failed state write all come through here, and a
     // retry that outlived any of them would start an engine nobody asked for.
     this.cancelReconnect();
+    this.host?.stopEditorSaves();
     const engine = this.engine;
     if (engine === null) return;
     this.engine = null;
@@ -4188,6 +4459,7 @@ export default class ObsyncPlugin extends Plugin {
       },
     });
     this.engine = engine;
+    engine.reachability(!this.unanswered);
     try {
       // Before anything is sent, and a refusal like any other below: the
       // status says why until the person acts, and no timer retries it. The
@@ -5456,6 +5728,7 @@ export default class ObsyncPlugin extends Plugin {
    * was back. Said once per change, not per attempt.
    */
   private reachability(answered: boolean, request?: string): void {
+    this.engine?.reachability(answered);
     if (this.unanswered !== answered) return;
     this.unanswered = !answered;
     // The request it gave up on is named (#288): an `offline` of a second

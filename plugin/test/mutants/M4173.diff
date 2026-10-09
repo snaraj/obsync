@@ -1,0 +1,5 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -80 +80 @@
+-    return revision?.generation === this.generation ? revision.token : undefined;
++    return revision ? revision.token : undefined;

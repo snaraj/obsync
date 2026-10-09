@@ -1,0 +1,6 @@
+M4260: put a change at a line's start on the line before
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -280 +280 @@
+-      if ((starts[middle] as number) <= at) low = middle;
++      if ((starts[middle] as number) < at) low = middle;

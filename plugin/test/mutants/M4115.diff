@@ -1,0 +1,12 @@
+# M4115: The engine must queue the rebased local delta independently of watcher echoes
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3339,7 +3339,7 @@
+     context.host.notify({ kind: "combined", text: "combined your edits to {notes} with {device}'s.", paths: [path],
+       device: context.deviceNameFor(change.device_id) });
+   }
+-  if (pendingLocal) context.queueLocal?.(path);
++  // MUTANT: omit publication of the pending local delta.
+   context.host.log(`pull decision=merged reason=saved_editor_rebase pending_local=${pendingLocal} duration_ms=${context.now() - started} budget_bytes=${CHUNK_MAX}`);
+   return "merged";
+ }

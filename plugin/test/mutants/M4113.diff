@@ -1,0 +1,13 @@
+# M4113: status dedupe hides power policy callbacks (#283)
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -5456,8 +5456,8 @@
+    * was back. Said once per change, not per attempt.
+    */
+   private reachability(answered: boolean, request?: string): void {
++    if (this.unanswered !== answered) return;
+     this.engine?.reachability(answered);
+-    if (this.unanswered !== answered) return;
+     this.unanswered = !answered;
+     // The request it gave up on is named (#288): an `offline` of a second
+     // beside a dropped poll said nothing of which request, or why.

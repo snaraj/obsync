@@ -24,11 +24,15 @@ async function phone(t) {
   const { ObsidianHost } = box.require(join(box.home, "build", "main.js"));
   const { state } = await fakeState(true);
   const written = [];
+  const files = new Map();
   const adapter = {
-    stat: async () => null,
+    stat: async (path) => files.get(path) ?? null,
     exists: async () => true,
     mkdir: async () => undefined,
-    writeBinary: async (path, data, options) => { written.push({ path, data, mtime: options?.mtime }); },
+    writeBinary: async (path, data, options) => {
+      written.push({ path, data, mtime: options?.mtime });
+      files.set(path, { type: "file", size: data.byteLength, mtime: options?.mtime });
+    },
   };
   const plugin = {
     state,
@@ -134,7 +138,7 @@ async function dropping(t, drops, { existing = null, landing = null, late = null
       if (late !== null && writes.length === 3 && found?.size === 0) queueMicrotask(() => files.set(path, { size: late, mtime: 5 }));
       if (saved !== null && writes.length === 1 && found?.size === 0) queueMicrotask(() => files.set(path, { size: saved, mtime: 5 }));
       if (typing === "during-stat" && writes.length === 1 && found?.size === 0 && ++emptyLooks === 2) {
-        queueMicrotask(() => host.inputAt.set(view, { path, at: Date.now() }));
+        queueMicrotask(() => host.editorActivity.record(view, "beforeinput"));
       }
       return found;
     },
@@ -144,7 +148,7 @@ async function dropping(t, drops, { existing = null, landing = null, late = null
       writes.push(data.byteLength);
       const size = left > 0 ? (left--, 0) : landing ?? data.byteLength;
       files.set(path, { size, mtime: options.mtime });
-      if (typing === "keystroke") host.inputAt.set(view, { path, at: Date.now() });
+      if (typing === "keystroke") host.editorActivity.record(view, "beforeinput");
     },
     remove: async (path) => { removed.push(path); files.delete(path); },
   };
@@ -153,7 +157,7 @@ async function dropping(t, drops, { existing = null, landing = null, late = null
     log: (line) => logs.push(line),
     app: {
       vault: { adapter, read: async () => {
-        if (typing === "during-read" && writes.length === 1) queueMicrotask(() => host.inputAt.set(view, { path: "Notes/a.md", at: Date.now() }));
+        if (typing === "during-read" && writes.length === 1) queueMicrotask(() => host.editorActivity.record(view, "beforeinput"));
         return "";
       } },
       workspace: { getLeavesOfType: () => (typing === null ? [] : [{ view }]) },
@@ -161,7 +165,7 @@ async function dropping(t, drops, { existing = null, landing = null, late = null
     manifest: { version: "1.1.4" },
   };
   const host = new ObsidianHost(plugin, null);
-  return { host, writes, removed, logs, files };
+  return { host, writes, removed, logs, files, EditorBusy: box.require(join(box.home, "build", "sync", "pull.js")).EditorBusy };
 }
 
 const HELLO = new TextEncoder().encode("hello");
@@ -192,10 +196,10 @@ test("a download a phone keeps leaving empty is refused as that file's, never re
   }
   // A save that lands while the phone looks at its third empty write is met
   // by the last look before the refusal: kept, and the write stands down.
-  const { host, writes, removed, logs, files } = await dropping(t, 99, { late: 12 });
+  const { host, writes, removed, logs, files, EditorBusy } = await dropping(t, 99, { late: 12 });
   const writer = await host.writer("Notes/a.md", 5);
   await writer.write(HELLO);
-  assert.deepEqual(await writer.commit(1000), { path: "Notes/a.md", mtime: 1000, size: 5 });
+  await assert.rejects(writer.commit(1000), EditorBusy);
   assert.deepEqual(writes, [5, 5, 5]);
   assert.deepEqual(removed, []);
   assert.equal(files.get("Notes/a.md").size, 12, "the late save was not kept");
@@ -214,10 +218,10 @@ test("a phone never writes a download again beneath an editor that became busy d
 });
 
 test("a save that lands while a phone looks at its empty write is kept, and no retry writes over it (review of 90d2042)", async (t) => {
-  const { host, writes, files, logs } = await dropping(t, 99, { saved: 36 });
+  const { host, writes, files, logs, EditorBusy } = await dropping(t, 99, { saved: 36 });
   const writer = await host.writer("Notes/a.md", 5);
   await writer.write(HELLO);
-  assert.deepEqual(await writer.commit(1000), { path: "Notes/a.md", mtime: 1000, size: 5 });
+  await assert.rejects(writer.commit(1000), EditorBusy);
   assert.deepEqual(writes, [5], "the first write only");
   assert.equal(files.get("Notes/a.md").size, 36, "the save was written over");
   assert.ok(logs.includes("host path_class=file decision=write_superseded size=5 found=36"), logs.join(" | "));
@@ -231,7 +235,7 @@ test("an empty download is written once, and a file holding other bytes is a sav
   const saved = await dropping(t, 0, { landing: 9 });
   const writer = await saved.host.writer("Notes/a.md", 5);
   await writer.write(HELLO);
-  assert.deepEqual(await writer.commit(1000), { path: "Notes/a.md", mtime: 1000, size: 5 });
+  await assert.rejects(writer.commit(1000), saved.EditorBusy);
   assert.deepEqual(saved.writes, [5]);
   assert.ok(saved.logs.includes("host path_class=file decision=write_superseded size=5 found=9"), saved.logs.join(" | "));
 });

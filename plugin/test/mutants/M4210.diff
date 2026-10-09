@@ -1,0 +1,6 @@
+M4210: require an unbridged display to equal the written text exactly
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3581 +3581 @@
+-        return current === written || mergeText(shown, current, written) === current;
++        return current === written;

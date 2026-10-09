@@ -1,0 +1,6 @@
+M4221: keep fetched ancestors in the order the walk reached them
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -2713 +2713 @@
+-  file.versions = childrenFirst(file.versions);
++  file.versions = [...file.versions];

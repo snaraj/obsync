@@ -1,12 +1,8 @@
-# M3541: a feed that has answered and waits on its poll counts as work: the throttling is lifted with none (#283)
+# M3541: waiting feed counts as work (#283)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -1277,7 +1277,7 @@
-    * allows (`main.ts`, `hurry`).
-    */
+@@ -1388,3 +1388,3 @@
    private pace(): void {
--    const busy = this.running && (this.draining || this.pulls > 0 || this.laning || this.feedBehind);
-+    const busy = this.running && (this.draining || this.pulls > 0 || this.laning || this.feedBehind || this.feedAnswered);
+-    const busy = this.running && this.networkAvailable && (this.draining || this.pulls > 0 || this.laning || this.feedBehind);
++    const busy = this.running && this.networkAvailable && (this.draining || this.pulls > 0 || this.laning || this.feedBehind || this.feedAnswered);
      if (busy || !this.running) {
-       if (this.calmHandle !== null) this.timers.clear(this.calmHandle);
-       this.calmHandle = null;

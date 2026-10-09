@@ -1,6 +1,6 @@
 # obsync CLI
 
-A native Rust client with human output by default, saved contexts, and a
+A native Rust client with human output by default, saved servers, and a
 versioned JSON interface. Its command groups follow
 [kubectl conventions](https://kubernetes.io/docs/reference/kubectl/conventions/).
 It needs no Node runtime, npm package or downloaded filesystem helper.
@@ -160,7 +160,9 @@ Use `--yes` to explicitly apply without a prompt. A pipe, `--non-interactive`,
 `--plan`, or `-o json` returns a plan unless `--yes` explicitly requests a write.
 `--yes` and `--plan` cannot be combined. A declined confirmation changes nothing.
 
-Settings default to `$XDG_CONFIG_HOME/obsync` (or `$HOME/.config/obsync`) on Linux,
+Settings default to `$XDG_CONFIG_HOME/obsync` on Linux when that variable is an
+absolute path; unset, empty or relative values use `$HOME/.config/obsync`.
+An unsafe absolute destination is refused. On other systems, settings use
 `$HOME/Library/Application Support/obsync` on macOS, and `%APPDATA%\obsync` on
 Windows. `--config-dir` overrides this with an absolute private path. The same
 ownership, ACL, local-filesystem and link checks apply to defaults and overrides.

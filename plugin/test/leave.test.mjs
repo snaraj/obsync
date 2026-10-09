@@ -566,16 +566,38 @@ test("a revoke nothing answers is given up after ten seconds, and the local leav
   const r = await fixture(t, { devices: 2 });
   const s = await syncing(r);
   const route = r.instance.transport.options.request;
-  r.instance.transport.options.request = (request) =>
-    request.url.endsWith("/revoke") || request.url.endsWith("/v1/devices") ? new Promise(() => undefined) : route(request);
+  const asked = [];
+  r.instance.transport.options.request = (request) => {
+    if (request.url.endsWith("/revoke") || request.url.endsWith("/v1/devices")) {
+      asked.push({ revoke: request.url.endsWith("/revoke"), at: s.timers.now });
+      return new Promise(() => undefined);
+    }
+    return route(request);
+  };
   const real = globalThis.window;
   globalThis.window = { ...real, setTimeout: (fn, ms) => s.timers.set(fn, ms), clearTimeout: (handle) => s.timers.clear(handle) };
   t.after(() => { globalThis.window = real; });
 
-  const refused = await measured(s.timers, r.instance.leaveServer({ discardUnpushed: false, localOnly: false }), 100);
-
-  assert.equal(refused.value.reason, "unreachable");
-  assert.ok(refused.ms <= 21000, `the leave waited ${refused.ms} ms of virtual time for a server that never answers`);
+  let done = false;
+  const leaving = r.instance.leaveServer({ discardUnpushed: false, localOnly: false }).finally(() => { done = true; });
+  // WebCrypto uses the real thread pool. Hold virtual time still while it
+  // signs each request; machine load must not count as invented user delay.
+  await s.timers.run(0, () => asked.length === 1);
+  const started = s.timers.now;
+  s.timers.now += 9999;
+  await s.timers.run(0);
+  assert.equal(asked.length, 1, "the revoke keeps its full ten-second budget");
+  assert.equal(done, false);
+  s.timers.now++;
+  await s.timers.run(0, () => asked.length === 2);
+  assert.deepEqual(asked, [{ revoke: true, at: started }, { revoke: false, at: started + 10000 }]);
+  s.timers.now += 9999;
+  await s.timers.run(0);
+  assert.equal(done, false, "verification keeps its own ten-second budget");
+  s.timers.now++;
+  await s.timers.run(0, () => done);
+  assert.equal((await leaving).reason, "unreachable");
+  assert.equal(s.timers.now - started, 20000);
   assert.ok(r.logs.some((line) => /^http GET \/v1\/devices decision=gave_up reason=deadline attempts=1 budget_ms=10000/.test(line)), r.logs.join("\n"));
 });
 

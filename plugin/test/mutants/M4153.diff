@@ -1,0 +1,11 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -105,7 +105,7 @@
+     await new Promise<void>((resolve) => {
+       const done = (): void => {
+         this.clock.clear(timer);
+-        this.saveWaiters.delete(wake);
++        // Mutation: retain the resolved waiter.
+         resolve();
+       };
+       const wake = (): void => { if (generation !== this.generation || !pending()) done(); };

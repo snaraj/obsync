@@ -1,0 +1,91 @@
+{
+  "result": "PASS",
+  "sourceMerge": "aca403b0f23737476bad2166c79dcef1f38a238c",
+  "head": "a6cd169943938b37b81881b2015a226a0df5e603",
+  "base": "72bdcf94ed40fc8769c8baad5a6b2db56ae92cfe",
+  "run": 37414363816,
+  "sixPNGsOpenedAndRead": [
+    "cotype-a",
+    "cotype-b",
+    "restart-a-a",
+    "restart-a-b",
+    "restart-b-a",
+    "restart-b-b"
+  ],
+  "receiptsAndPngHashesVerified": true,
+  "observations": "Both peers show matching co-typing and restart-note content; editor and disk receipts agree. Capture reflects visible viewport; final complete stream proof comes from native driver independent-byte checks.",
+  "coTypingInputsPerPeer": 99,
+  "convergenceAfterLastInputMs": 10652,
+  "journeys": 14,
+  "hostedObsidian": "1.13.7",
+  "localWindowsVM": false,
+  "cleanup": "Hosted disposable runner; no independent per-resource absence proof.",
+  "captures": [
+    {
+      "phase": "cotype",
+      "peer": "a",
+      "platform": "win32",
+      "source": "aca403b0f23737476bad2166c79dcef1f38a238c",
+      "editorSha256": "6ef502565b6f2a6733ec212de5ca9d0aff564e2a560d9f34d5e226807f9cd87d",
+      "diskSha256": "6ef502565b6f2a6733ec212de5ca9d0aff564e2a560d9f34d5e226807f9cd87d",
+      "pngSha256": "857f41c3f6786e927340eae0be6e6759792ed2962c2a07476bebc1ac794b760c",
+      "width": 680,
+      "height": 641.171875
+    },
+    {
+      "phase": "cotype",
+      "peer": "b",
+      "platform": "win32",
+      "source": "aca403b0f23737476bad2166c79dcef1f38a238c",
+      "editorSha256": "6ef502565b6f2a6733ec212de5ca9d0aff564e2a560d9f34d5e226807f9cd87d",
+      "diskSha256": "6ef502565b6f2a6733ec212de5ca9d0aff564e2a560d9f34d5e226807f9cd87d",
+      "pngSha256": "30cf35bac06b6fba1968a67c28c398eda659c2591b539a13d73f97d13a64a417",
+      "width": 680,
+      "height": 641.171875
+    },
+    {
+      "phase": "restart-a",
+      "peer": "a",
+      "platform": "win32",
+      "source": "aca403b0f23737476bad2166c79dcef1f38a238c",
+      "editorSha256": "8033931b15edd2c1b1eeda4f62b0b3cff554d89c4e213c139e59993279719028",
+      "diskSha256": "8033931b15edd2c1b1eeda4f62b0b3cff554d89c4e213c139e59993279719028",
+      "pngSha256": "a0739cdbb4ecebc0ee8cce2b0da376adc7d9f0d9bbb0d7df12e8e76494200cc6",
+      "width": 680,
+      "height": 641.171875
+    },
+    {
+      "phase": "restart-a",
+      "peer": "b",
+      "platform": "win32",
+      "source": "aca403b0f23737476bad2166c79dcef1f38a238c",
+      "editorSha256": "8033931b15edd2c1b1eeda4f62b0b3cff554d89c4e213c139e59993279719028",
+      "diskSha256": "8033931b15edd2c1b1eeda4f62b0b3cff554d89c4e213c139e59993279719028",
+      "pngSha256": "a0739cdbb4ecebc0ee8cce2b0da376adc7d9f0d9bbb0d7df12e8e76494200cc6",
+      "width": 680,
+      "height": 641.171875
+    },
+    {
+      "phase": "restart-b",
+      "peer": "a",
+      "platform": "win32",
+      "source": "aca403b0f23737476bad2166c79dcef1f38a238c",
+      "editorSha256": "1fbc25272ba467baea93d4e42a9b3101b6d2d424d1218e1d1d7501644a2a9ea3",
+      "diskSha256": "1fbc25272ba467baea93d4e42a9b3101b6d2d424d1218e1d1d7501644a2a9ea3",
+      "pngSha256": "4522547cccb8b93852a02e98ebc4be15d78c3974d231cf875c643b96780412fe",
+      "width": 680,
+      "height": 641.171875
+    },
+    {
+      "phase": "restart-b",
+      "peer": "b",
+      "platform": "win32",
+      "source": "aca403b0f23737476bad2166c79dcef1f38a238c",
+      "editorSha256": "1fbc25272ba467baea93d4e42a9b3101b6d2d424d1218e1d1d7501644a2a9ea3",
+      "diskSha256": "1fbc25272ba467baea93d4e42a9b3101b6d2d424d1218e1d1d7501644a2a9ea3",
+      "pngSha256": "4522547cccb8b93852a02e98ebc4be15d78c3974d231cf875c643b96780412fe",
+      "width": 680,
+      "height": 641.171875
+    }
+  ]
+}

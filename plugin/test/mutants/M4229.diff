@@ -1,0 +1,6 @@
+M4229: settle identical bytes on a pair read before this device's own upload landed
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3058 +3058 @@
+-    if (held !== undefined && held.versionId !== localVersionId) {
++    if (false) {

@@ -5,6 +5,105 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.7 - Unreleased
+
+### Fixed
+
+- Two devices typing in one note, on the same line or at the same spot, now
+  combine letter by letter: every keystroke of both stays in the note, the
+  same text typed at the same spot on both at once appears once, deleted text
+  stays deleted, and text goes to a conflict copy only when the two versions'
+  shared history cannot be read in full (below). Incoming
+  text reaches an open editor as only the other device's change, so the
+  cursor stays where you type and undo takes back only your own typing. A
+  plugin rewriting a note right after a sync, on a line another device also
+  changed, is still held rather than joined, even where the two rewrites
+  changed different characters of that line: two times stamped on two
+  devices no longer combine into a time neither wrote. Encryption, the wire
+  format and the server are unchanged (#339).
+- Text deleted on one device no longer comes back from another. When a
+  combined result came out exactly as the other device's text, that device's
+  version was taken as is, and a deletion made here could come back for a
+  moment, or for good when it had not been sent yet. The combined version is
+  now sent instead, and an unsent deletion goes out first, even one made
+  while the keystroke before it was still uploading (#339).
+- Two people typing in one note for minutes no longer get a notice that
+  obsync "stopped renaming" it when nobody renamed it. A device that really
+  keeps giving a note a different name is still stopped and named (#339).
+- On an iPhone or iPad, text from another device that arrives inside the
+  word you are typing no longer makes your next key replace the letter before
+  the cursor. That text now appears as soon as you pause, finish the word or
+  move the cursor away (#339).
+- Saved editor input can sync while typing continues. Incoming edits merge
+  with acknowledged versions while newer local input stays queued as a child
+  version. Save confirmation, unfinished composition and recent human input
+  now have separate checks instead of sharing a ten-second delay (#325).
+- Desktop editor refresh advances the native saved baseline before queued
+  watcher reloads, preserving keystrokes and avoiding repeated external-change
+  notices. Both the staged download and the editor's subsequent save are
+  flushed before the write completes. Unsafe or unsupported editor states
+  retain the native refresh fallback.
+- Incoming parent snapshots prepare while native saving continues; a save in
+  flight no longer abandons the publication turn and restarts that work.
+  The base and parents share one bounded authenticated chunk request, with
+  each input independently verified. Current editor and disk checks still
+  guard the final write.
+- Continuing to type before a just-delivered remote addition keeps fast saving
+  active. Refresh confirmation no longer mistakes the already displayed
+  addition for text that still needs to be merged.
+- Confirmed local saves and remote refreshes update live-preview consumers, including the
+  native word and character counts, without another save after callbacks.
+- Live version history, including own echoes and superseded peer edits, stays
+  in the existing bounded ancestry cache so long typing bursts do not spend
+  historical-read budgets fetching records the device already received.
+- Confirmed saved snapshots avoid a second mobile read that races subsequent
+  typing. Obsolete concurrent edits can skip redundant disk and head checks
+  when the served feed names the locally held version as a head or cached
+  ancestry proves the obsolete edit cannot advance it. Known dirty editors
+  refuse readiness before queuing another mobile read. Linear replay, moves,
+  deletions, rewrite controls and uncertain ancestry retain their checks.
+- Sync status uses a static icon, avoiding continuous SVG animation that
+  delays native mobile file callbacks during typing.
+- Ordinary merges remember the exact result of their authenticated parents,
+  as saved-editor merges do, without enlarging history or memory budgets.
+- History a device recalls or reads for a merge is put back in newest-first
+  order before a base is chosen. Kept in the order it was reached, an older
+  version could be taken as the newest, and keys typed where two people were
+  typing left the note on both devices for a moment (#339).
+- The other device's typing no longer appears twice, with a letter it
+  deleted back, when you type the moment it arrives. A save landing just
+  after its text appeared was taken for a replaced file: the text stayed in
+  the note, but went out again as your own typing (#339).
+- Push reconciliation reuses the head snapshot it just fetched when that
+  snapshot contains both inputs, avoiding a second request that can chase
+  a continuously advancing peer. Unrelated or incomplete snapshots still
+  require a fresh graph.
+- A live editor reaching the merge-history work limit waits for the peer's
+  next merge instead of classifying the limit as overlapping text. Other
+  notes continue syncing; the existing bounded retry and cold-history
+  fallback remain.
+- Two versions whose shared history could not be read in full -- past the
+  merge-history work limit, or with a retained version gone -- are no longer
+  combined over the older history that was listed, which could bring a
+  deleted letter back or type two letters twice. While you type, the note
+  waits as above; otherwise both texts are kept, the note and one copy (#339).
+- The container builder base advances to Rust 1.98.1 with its pinned image
+  digest; the repository compiler remains pinned to Rust 1.98.0 (#336).
+
+- A minimized desktop restores background throttling after unanswered network
+  attempts, including while uploads remain queued for retry. An answer lifts
+  it again while work remains. Logs distinguish calm, unanswered and stopped
+  restoration (#283).
+- The left-selection regression sets up its settled large-file state directly,
+  avoiding an unrelated initial download under CI load while retaining byte and
+  request checks (#319).
+- CLI help and empty lists consistently describe saved servers. The unknown
+  `status` command points to `doctor`, which checks local settings without
+  contacting a server. Capability help states that same local-only boundary.
+- On Linux, an unset, empty or relative `XDG_CONFIG_HOME` uses
+  `$HOME/.config/obsync`. Unsafe absolute destinations and invalid explicit
+  `--config-dir` paths remain refused.
+
 ## 1.1.6 - Unreleased
 
 ### Added

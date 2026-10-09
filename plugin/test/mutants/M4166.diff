@@ -1,0 +1,7 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3178,4 +3177,0 @@
+-            if (!await context.host.editorReady(localPath)) {
+-              if (context.host.savedSnapshot?.(localPath, mine) !== true) return null;
+-              throw new EditorBusy();
+-            }

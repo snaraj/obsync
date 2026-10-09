@@ -1,0 +1,11 @@
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -3000,7 +3000,7 @@
+         heads: file.heads,
+         conflicted: true,
+       };
+-      await applyChange(context, change, file);
++      await applyChange(context, change);
+     }
+   }
+ 

@@ -223,6 +223,7 @@ function obsidianIndex(root, obsidian, { insensitive = folds(root), api = true }
     fileMap,
     events,
     metadata,
+    trigger: emit,
     on(name, handler) {
       listeners.set(name, [...(listeners.get(name) ?? []), handler]);
       return { name };
@@ -281,7 +282,7 @@ async function receiver(t, { server, timers, a }, { iterate = true, ...options }
   const plugin = new main.default();
   // The workspace: its leaves, and `iterateAllLeaves` unless a test takes it away.
   const leaves = [];
-  const workspace = { getLeavesOfType: (type) => (type === "markdown" ? leaves : []) };
+  const workspace = { getLeavesOfType: (type) => (type === "markdown" ? leaves : []), trigger: () => {} };
   if (iterate) workspace.iterateAllLeaves = (visit) => leaves.forEach(visit);
   plugin.app = { vault: index.vault, fileManager: index.fileManager, workspace };
   plugin.manifest = { id: "obsync-private-sync", version: "1.1.4", dir: ".obsidian/plugins/obsync-private-sync" };
@@ -294,6 +295,7 @@ async function receiver(t, { server, timers, a }, { iterate = true, ...options }
   const promises = {
     ...fsPromises,
     rename: async (from, to) => {
+      if (hooks.beforeRename) await hooks.beforeRename(from, to);
       await fsPromises.rename(from, to);
       if (hooks.afterRename) await hooks.afterRename(from, to);
     },
@@ -318,7 +320,7 @@ async function receiver(t, { server, timers, a }, { iterate = true, ...options }
 }
 
 const listed = (r, path) => r.vault.getAbstractFileByPath(path);
-const story = (r) => [...r.logs.filter((line) => /^(pull|watch|vault|folder|push|host)/.test(line)), ...r.vault.events.map((e) => `event ${e}`)].join(" | ");
+const story = (r) => [...r.logs.filter((line) => /^(pull|watch|vault|folder|push|host|editor)/.test(line)), ...r.vault.events.map((e) => `event ${e}`)].join(" | ");
 
 test("a note pulled into a new folder while the watcher is starved is listed at once, its folders with it, and is not sent back", async (t) => {
   const devices = await pair(t);
@@ -618,7 +620,14 @@ function openEditor(r, path) {
     const last = view.lastSavedData;
     view.lastSavedData = bytes;
     if (last === bytes) return;
-    if (view.dirty && view.data !== bytes && view.data !== last) { view.merges++; bytes = view.data; }
+    if (view.dirty && view.data !== bytes && view.data !== last) {
+      // This fixture only appends local typing while a remote earlier line
+      // changes. Model that disjoint native merge with a literal append;
+      // do not use the product merge implementation as its own oracle.
+      assert.ok(view.data.startsWith(last), "fixture supports appended local input only");
+      view.merges++;
+      bytes += view.data.slice(last.length);
+    }
     if (view.data !== bytes) view.setViewData(bytes);
   });
   r.leaves.push({ view });
@@ -641,27 +650,79 @@ async function editListed(t, options, arm = () => undefined) {
   await timers.run(STEP_MS);
   const view = arm(r);
   const calls = r.adapter.calls.length;
+  const applied = () => r.logs.filter((line) => line.startsWith("pull path_class=file") && line.includes("decision=applied")).length;
+  const before = applied();
   a.host.write("Notes/n.md", AFTER, 2000);
   await timers.run(STEP_MS, () => r.text("Notes/n.md") === AFTER && r.state.fileByPath("Notes/n.md")?.mtime === 2000);
+  // The host's native refresh deadline uses wall time. Do not advance the
+  // simulated thirty-second scan past it while the real one-second reload is
+  // still pending; wait for the pull receipt, not merely the written bytes.
+  const deadline = performance.now() + 2500;
+  while (applied() === before && performance.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await timers.run(0);
+  }
+  assert.ok(applied() > before, `incoming write did not finish: ${story(r)}`);
   await timers.run(STEP_MS);
   assert.deepEqual(r.posted(), [], `the receiver published what it received: ${story(r)}`);
-  return { r, view, reconciled: r.adapter.calls.length - calls };
+  return { r, view, timers, reconciled: r.adapter.calls.length - calls };
 }
 
-test("a listed note open in an editor is never reconciled: an idle editor gets #252's refresh, a typed one is left alone (#267)", async (t) => {
+test("a listed open note reconciles once and preserves typing begun during the write (#267)", async (t) => {
   for (const typing of [false, true]) {
-    const { r, view, reconciled } = await editListed(t, {}, (r) => {
+    const { r, view, timers, reconciled } = await editListed(t, {}, (r) => {
       const view = openEditor(r, "Notes/n.md");
       // Typing begun after the write was judged safe, before anything could reconcile.
       if (typing) r.hooks.afterRename = async (_from, to) => { if (to.endsWith(`${nodePath.sep}n.md`)) view.type("TYPED"); };
       return view;
     });
-    assert.equal(reconciled, 0, `typing=${typing}: a note in a view was reconciled: ${story(r)}`);
-    assert.equal(view.merges, 0, `typing=${typing}: Obsidian merged under the person's typing`);
-    assert.deepEqual(view.loads, typing ? [] : [AFTER], `typing=${typing}: ${story(r)}`);
-    assert.equal(view.data, typing ? `${BEFORE}TYPED` : AFTER);
-    assert.ok(r.logs.includes("vault path_class=file decision=skipped reason=open_view"), story(r));
-    assert.equal(r.logs.includes("host path_class=file decision=editor_refreshed views=1"), !typing, story(r));
+    assert.equal(reconciled, 1, `typing=${typing}: the native index must describe the incoming bytes: ${story(r)}`);
+    assert.equal(view.merges, typing ? 1 : 0, `typing=${typing}: native merge ownership`);
+    assert.deepEqual(view.loads, [typing ? `${AFTER}TYPED` : AFTER], `typing=${typing}: ${story(r)}`);
+    assert.equal(view.data, typing ? `${AFTER}TYPED` : AFTER);
+    assert.equal(r.vault.metadata["Notes/n.md"], AFTER, story(r));
+    const events = r.vault.events.length;
+    await r.adapter.late("Notes/n.md");
+    assert.equal(r.vault.events.length, events, "a late OS event must not reload the editor again");
+    // The host retained both edits, and the character merge recognises it:
+    // the refresh is confirmed and the pane keeps its bridge (#339). The line
+    // merge refused this suffix shape and demoted the pane to native saving
+    // for the rest of its life.
+    assert.ok(r.logs.includes("host path_class=file decision=editor_refreshed views=1"), story(r));
+    assert.ok(!r.logs.some((line) => line.includes("reason=editor_reload_unconfirmed")), story(r));
+    assert.equal(r.host.editorActivity.nativeOnly.get(view), undefined, `typing=${typing}: a confirmed pane was demoted: ${story(r)}`);
+    if (typing) assert.equal(await r.host.editorReady("Notes/n.md"), false, "unsaved typing remains protected");
+    assert.ok(!r.logs.some((line) => line.includes("reason=editor_refresh error=")), story(r));
+  }
+});
+
+/**
+ * A RENAME THE SYSTEM REFUSES IS NO RELOAD (Desktop matrix, windows-2025, at
+ * 9949dc61). Windows can refuse a rename for a moment, and the write is tried
+ * again and lands. The first try reached neither the disk nor the editor, yet
+ * its reload was released `unconfirmed`: the pane was demoted to native saving
+ * for the rest of its life, and the test above failed so, with the retry's
+ * refresh logged and no unconfirmed refresh to explain it.
+ */
+test("a rename the system refuses for a moment leaves the pane its bridge (#267)", async (t) => {
+  for (const typing of [false, true]) {
+    let refused = 0;
+    const { r, view } = await editListed(t, {}, (r) => {
+      const view = openEditor(r, "Notes/n.md");
+      r.hooks.beforeRename = async (_from, to) => {
+        if (refused > 0 || !to.endsWith(`${nodePath.sep}n.md`)) return;
+        refused++;
+        throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+      };
+      if (typing) r.hooks.afterRename = async (_from, to) => { if (to.endsWith(`${nodePath.sep}n.md`)) view.type("TYPED"); };
+      return view;
+    });
+    assert.equal(refused, 1, story(r));
+    assert.ok(r.logs.includes("host path_class=file decision=failed reason=write error=EPERM outcome=superseded"), story(r));
+    assert.ok(r.logs.some((line) => line.startsWith("editor decision=reload_released outcome=superseded ")), story(r));
+    assert.ok(r.logs.includes("host path_class=file decision=editor_refreshed views=1"), story(r));
+    assert.equal(r.host.editorActivity.nativeOnly.get(view), undefined, `typing=${typing}: a refused rename demoted the pane: ${story(r)}`);
+    assert.equal(view.data, typing ? `${AFTER}TYPED` : AFTER, story(r));
   }
 });
 
@@ -685,9 +746,11 @@ test("a view opened while the reconcile waits read the new bytes and ignores its
   assert.equal(r.vault.metadata["Notes/n.md"], AFTER, story(r));
 });
 
-test("a host that cannot see its leaves reconciles no listed note (#267)", async (t) => {
+test("a host without leaf iteration still updates its native file index (#267)", async (t) => {
   const { r, reconciled } = await editListed(t, { iterate: false });
-  assert.equal(reconciled, 0, story(r));
-  assert.equal(r.vault.metadata["Notes/n.md"], BEFORE);
-  assert.ok(r.logs.includes("vault path_class=file decision=skipped reason=open_view"), story(r));
+  assert.equal(reconciled, 1, story(r));
+  assert.equal(r.vault.metadata["Notes/n.md"], AFTER);
+  const events = r.vault.events.length;
+  await r.adapter.late("Notes/n.md");
+  assert.equal(r.vault.events.length, events);
 });

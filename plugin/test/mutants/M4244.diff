@@ -1,0 +1,6 @@
+M4244: only a line break ends a word
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3510 +3510 @@
+-      while (start > 0 && !/\s/.test(doc[start - 1] as string)) start--;
++      while (start > 0 && !/\n/.test(doc[start - 1] as string)) start--;

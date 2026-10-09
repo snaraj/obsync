@@ -1,0 +1,11 @@
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3583,7 +3583,7 @@
+   }
+ 
+   editorReady(path: string): Promise<boolean> {
+-    return this.editorActivity.settle(path);
++    return this.editorActivity.ready(path);
+   }
+ 
+   stopEditorSaves(): void {

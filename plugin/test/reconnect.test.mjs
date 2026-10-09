@@ -91,6 +91,7 @@ async function fixture(t) {
   let starts = 0;
   let plan = async () => undefined;
   box.require(join(box.home, "build/sync/engine.js")).SyncEngine = class {
+    reachability(answered) { (this.answers ??= []).push(answered); }
     started = false;
     constructor(options) { this.options = options; engines.push(this); }
     async start() { await plan(++starts, this); this.started = true; }
@@ -485,6 +486,30 @@ test("the real engine surfaces the transport's own classification, unwrapped", a
 
 /** The report the plugin's own transport makes after one attempt. */
 const report = (r, answered) => r.instance.transport.options.reachable(answered);
+
+test("every current answer reaches the power policy and a replacement engine inherits an offline session (#283)", async (t) => {
+  const r = await fixture(t);
+  await r.instance.onload();
+  const first = r.engines[0];
+  assert.equal(first.answers[0], true);
+  first.answers.length = 0;
+  report(r, false);
+  report(r, false);
+  assert.deepEqual(first.answers, [false, false], "status deduplication cannot hide an engine update");
+  await r.instance.restartEngine();
+  const next = r.engines.at(-1);
+  assert.notEqual(next, first);
+  assert.equal(next.answers[0], false, "an already offline session seeds its new engine");
+  next.answers.length = 0;
+  report(r, true);
+  assert.deepEqual(next.answers, [true]);
+  const oldTransport = r.instance.transport;
+  const stale = oldTransport.options.reachable;
+  r.instance.transport = { options: {} };
+  stale(false);
+  assert.deepEqual(next.answers, [true], "replaced transport cannot change the power policy");
+  r.instance.transport = oldTransport;
+});
 
 test("a start still inside the transport's retries already reads offline, and the answer puts idle back", async (t) => {
   const r = await fixture(t);

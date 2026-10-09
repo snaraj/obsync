@@ -1,0 +1,6 @@
+M4240: an editor without focus still holds its caret's word
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3507 +3507 @@
+-      if (cm?.hasFocus !== true || idle === null || idle >= WORD_PAUSE_MS) continue;
++      if (cm === undefined || idle === null || idle >= WORD_PAUSE_MS) continue;

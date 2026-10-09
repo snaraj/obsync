@@ -1,12 +1,6 @@
 # M3002: the pair is remembered in the order it was met, so the reverse walk misses it
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -3285,7 +3285,7 @@
-   firstText: string,
-   levels = CRISS_CROSS_LEVELS,
- ): Promise<string | null | false> {
+@@ -3908 +3908 @@
 -  const pair = [left, right].sort().join(" ");
 +  const pair = [left, right].join(" ");
-   const known = bases.get(context)?.get(pair);
-   if (known !== undefined) {
-     context.host.log(

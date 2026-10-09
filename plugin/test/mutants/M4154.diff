@@ -1,0 +1,11 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -206,7 +206,7 @@
+     const generation = this.generation;
+     this.timers.set(view, this.clock.set(() => {
+       this.timers.delete(view);
+-      void this.save(view, generation).finally(() => { for (const wake of this.saveWaiters) wake(); });
++      void this.save(view, generation);
+     }, EDITOR_SAVE_MS));
+   }
+ 

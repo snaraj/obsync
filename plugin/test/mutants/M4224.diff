@@ -1,0 +1,6 @@
+M4224: refuse every changed disk after a delivered bridge
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3544 +3544 @@
+-        if (!typedSince) {
++        if (typedSince || !typedSince) {

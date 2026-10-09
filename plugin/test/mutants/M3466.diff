@@ -1,11 +1,6 @@
 # M3466: a parked attachment deleted on another device stays named in the status bar until the next slow retry (M226's mutation, its context moved at this head)
 --- a/plugin/src/sync/engine.ts
 +++ b/plugin/src/sync/engine.ts
-@@ -2722,7 +2722,6 @@
-       this.park(context, change.file_id, error);
-       return null;
-     }
--    if (context.state.data.parked[change.file_id] !== undefined) await this.retryOne(context, change.file_id);
-     return result;
-   }
- 
+@@ -3797 +3797 @@
+-              if (last.get(change.file_id) === change) await this.retryOne(context, change.file_id);
++              if (last.get(change.file_id) === change) void 0;

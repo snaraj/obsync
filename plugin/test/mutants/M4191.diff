@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -754 +754 @@
+-  context.host.log(`pull decision=merge_inputs_read sids=${sids.length} budget_bytes=${budget} duration_ms=${context.now() - started}`);
++  // read diagnostic removed

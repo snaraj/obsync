@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -752 +752 @@
+-  const result = await Promise.all(chunks.map((chunk) => openChunk(context, chunk, bodies[sids.indexOf(chunk.sid)])));
++  const result = await Promise.all(chunks.map((chunk) => openChunk(context, chunk, bodies[0])));

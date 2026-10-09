@@ -125,7 +125,7 @@ test("a transfer shows the wheel once it has run half a second, and holds it lon
   assert.equal(el.attributes["data-state"], "offline");
 });
 
-test("the stylesheet gives the indicator one width in every state, and Reduce Motion stops the wheel", () => {
+test("the stylesheet keeps one indicator width without continuous animation", () => {
   const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
   const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body }));
   const base = rules.find((rule) => rule.selector.endsWith(".obsync-status"));
@@ -137,10 +137,10 @@ test("the stylesheet gives the indicator one width in every state, and Reduce Mo
     assert.doesNotMatch(rule.body, /(^|[\s;])(width|min-width|max-width|padding|margin|font-size)\s*:/,
       `${rule.selector} changes only colour or motion, never the box`);
   }
-  const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
-  assert.ok(css.includes("@media (prefers-reduced-motion: reduce)"), "a Reduce Motion rule");
-  assert.match(reduced, /\.obsync-status\[data-state="syncing"\] svg\s*\{\s*animation:\s*none;/);
-  assert.match(css, /animation:\s*obsync-turn\s+1\.[5-9]s\s+linear\s+infinite;/, "one slow turn in 1.5 to 2 seconds");
+  for (const rule of rules.filter((candidate) => candidate.selector.includes(".obsync-status"))) {
+    assert.doesNotMatch(rule.body, /(?:^|[\s;])animation(?:-[a-z-]+)?:/,
+      "continuous indicator animation stalls native mobile callbacks");
+  }
   for (const rule of rules.filter((candidate) => candidate.selector.includes(".obsync-status"))) {
     for (const [, value] of rule.body.matchAll(/(?:^|[\s;])color:\s*([^;]+);/g)) assert.match(value, /^var\(--[a-z-]+\)$/, "the theme's colours only");
   }
@@ -157,6 +157,7 @@ async function plugin(t, { mobile = false, view = null, data = null } = {}) {
   let sent = 0;
   let verified = { checked: 0, sent: 0 };
   b.require(join(b.home, "build/sync/engine.js")).SyncEngine = class {
+    reachability() {}
     constructor(options) { this.options = options; }
     get context() { return { state: this.options.state }; }
     async start() {}

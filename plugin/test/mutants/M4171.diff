@@ -1,0 +1,5 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -61 +61 @@
+-    if (kind === "beforeinput") this.revisions.set(file, { generation: this.generation, token: {} });
++    if (true) this.revisions.set(file, { generation: this.generation, token: {} });

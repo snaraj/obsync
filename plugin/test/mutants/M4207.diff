@@ -1,0 +1,6 @@
+M4207: confirm a bridge whatever the display shows
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3573 +3573 @@
+-        if (bridged !== null && current === bridged.text) {
++        if (bridged !== null && current !== "\0") {

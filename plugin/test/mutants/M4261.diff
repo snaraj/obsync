@@ -1,0 +1,6 @@
+M4261: cover only the first line a change spans
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -286 +286 @@
+-    .map((each) => ({ ...each, first: lineOf(each.change.from), last: lineOf(Math.max(each.change.from, each.change.to - 1)) }))
++    .map((each) => ({ ...each, first: lineOf(each.change.from), last: lineOf(each.change.from) }))

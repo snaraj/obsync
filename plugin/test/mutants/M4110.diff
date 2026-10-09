@@ -1,0 +1,8 @@
+# M4110: unanswered draining never restores throttling (#283)
+--- a/plugin/src/sync/engine.ts
++++ b/plugin/src/sync/engine.ts
+@@ -1388,3 +1388,3 @@
+   private pace(): void {
+-    const busy = this.running && this.networkAvailable && (this.draining || this.pulls > 0 || this.laning || this.feedBehind);
++    const busy = this.running && (this.draining || this.pulls > 0 || this.laning || this.feedBehind);
+     if (busy || !this.running) {

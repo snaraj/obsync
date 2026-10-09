@@ -247,15 +247,65 @@ def journey(package, root, trust=()):
     default_env = {key: str(root)}
     defaults = root / ('Library/Application Support/obsync' if sys.platform == 'darwin' else 'obsync')
     text, _ = run(['doctor'], human=True, env=default_env)
-    assert 'No server yet.' in text and 'obsync config set-context' in text and not defaults.exists()
+    assert 'No server yet.' in text and 'obsync context add' in text and not defaults.exists()
+    text, _ = run(['context', 'list'], human=True, env=default_env)
+    assert 'No servers saved.' in text and not defaults.exists()
+    text, _ = run(['status'], 2, human=True, env=default_env)
+    assert "'obsync doctor'" in text and 'does not contact a server' in text and not defaults.exists()
+    text, _ = run(['capabilities', '--help'], human=True, env=default_env)
+    assert 'No server is contacted.' in text
     planned, _ = run(['context', 'add', 'home', '--server', 'https://example.invalid'], env=default_env)
     assert planned['state'] == 'planned' and not defaults.exists()
     for extra in [[], ['--non-interactive'], ['--plan']]:
         text, _ = run(['context', 'add', 'home', '--server', 'https://example.invalid', *extra],
                       human=True, env=default_env)
         assert 'in 5 minutes' in text and 'Unix milliseconds' not in text and not defaults.exists()
-    refused, _ = run(['doctor'], 4, env={key: 'relative-fixture'})
-    assert refused['error']['code'] == 'unsafe_config' and not defaults.exists()
+    if sys.platform == 'linux':
+        # XDG ignores empty/relative values. Inspect the resulting snapshots,
+        # not merely doctor output, and keep unsafe absolute paths refused.
+        for label, value in [('unset', None), ('empty', ''), ('relative', 'relative-fixture'),
+                             ('absolute', str(root / 'xdg-absolute'))]:
+            home = root / ('xdg-home-' + label)
+            home.mkdir(mode=0o700)
+            sentinel = home / 'unrelated'
+            sentinel.write_bytes(b'XDG unrelated directory sentinel')
+            isolated_env = {'HOME': str(home)}
+            if value is not None:
+                isolated_env['XDG_CONFIG_HOME'] = value
+            expected = (Path(value) if label == 'absolute' else home / '.config') / 'obsync'
+            text, _ = run(['context', 'list'], human=True, env=isolated_env)
+            assert 'No servers saved.' in text and not expected.exists()
+            run(['context', 'add', 'xdg', '--server', 'https://example.invalid', '--yes'],
+                env=isolated_env)
+            assert run(['context', 'current', '--config-dir', str(expected)],
+                       env=isolated_env)[0]['data']['context']['name'] == 'xdg'
+            frame = (expected / 'contexts.1').read_bytes()
+            prefix = b'OBSYNC-CONTEXT-1\n'
+            assert frame.startswith(prefix)
+            length = int.from_bytes(frame[len(prefix):len(prefix)+4], 'big')
+            end = len(prefix)+4+length
+            assert len(frame) == end+32 and hashlib.sha256(frame[:end]).digest() == frame[end:]
+            saved = json.loads(frame[len(prefix)+4:end])
+            assert saved['revision'] == 1 and saved['current'] == 'xdg'
+            assert [item['name'] for item in saved['contexts']] == ['xdg']
+            assert set(p.name for p in home.iterdir()) == ({'unrelated'} if label == 'absolute' else {'unrelated', '.config'})
+            assert sentinel.read_bytes() == b'XDG unrelated directory sentinel'
+            before_xdg = {p.name: p.read_bytes() for p in expected.iterdir()}
+            refusal, _ = run(['doctor', '--config-dir', 'relative-fixture'], 4, env=isolated_env)
+            assert refusal['error']['code'] == 'unsafe_config'
+            assert before_xdg == {p.name: p.read_bytes() for p in expected.iterdir()}
+        unsafe = root / 'xdg-unsafe'
+        unsafe.mkdir(mode=0o777)
+        unsafe.chmod(0o777)
+        fallback_home = root / 'xdg-no-fallback'
+        fallback_home.mkdir(mode=0o700)
+        refused, _ = run(['context', 'add', 'xdg', '--server', 'https://example.invalid', '--yes'],
+                        4, env={'HOME': str(fallback_home), 'XDG_CONFIG_HOME': str(unsafe)})
+        assert refused['error']['code'] == 'unsafe_config'
+        assert not list(unsafe.iterdir()) and not list(fallback_home.iterdir())
+    else:
+        refused, _ = run(['doctor'], 4, env={key: 'relative-fixture'})
+        assert refused['error']['code'] == 'unsafe_config' and not defaults.exists()
     text, _ = run(['context', 'add', 'home', '--server', 'https://example.invalid', '--yes'],
                   human=True, env=default_env)
     assert 'Added server "home".' in text and 'selected server' in text and 'Receipt:' not in text
@@ -293,14 +343,16 @@ def journey(package, root, trust=()):
         import select
         def terminal(args, answer, expected=0, during=None, prompt=True, piped=None):
             master, slave = pty.openpty()
+            # Piped input is written before the child starts: one exiting unread breaks no writer.
+            given, feed = os.pipe()
+            os.write(feed, b'n\n')
+            os.close(feed)
             child = subprocess.Popen([str(installed / binary), *args], env=default_env,
-                                     stdin=subprocess.PIPE if piped == 'input' else slave,
+                                     stdin=given if piped == 'input' else slave,
                                      stdout=subprocess.PIPE if piped == 'output' else slave,
                                      stderr=subprocess.PIPE if piped == 'error' else slave)
             os.close(slave)
-            if piped == 'input':
-                child.stdin.write(b'n\n')
-                child.stdin.close()
+            os.close(given)
             output, responded = bytearray(), False
             deadline = time.monotonic()+12
             try:

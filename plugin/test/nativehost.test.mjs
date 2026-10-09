@@ -53,7 +53,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
-import { diskWatchdog, rig, sandbox, scratch, until } from "./fake.mjs";
+import { diskWatchdog, FakeTimers, rig, sandbox, scratch, until } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -71,7 +71,7 @@ const LOWER = "11".repeat(16);
  * A real vault directory under the real host, wired into the rig's state,
  * server and keys. `hooks` fire INSIDE the host's own filesystem calls.
  */
-async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = {}) {
+async function native(t, hooks = {}, { mobile = false, trashOption = "none", editorTimers } = {}) {
   const r = await rig({ isMobile: mobile });
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-native-"));
@@ -222,13 +222,13 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = 
         },
       },
       // No editor is open on anything here (issue #146).
-      workspace: { getLeavesOfType: () => [] },
+      workspace: { getLeavesOfType: () => [], trigger: () => {} },
     },
     manifest: { version: "1.0.7" },
     platformName: () => (mobile ? "ios" : "linux"),
     deviceName: () => "sentinel-device",
   };
-  const host = new ObsidianHost(plugin, mobile ? null : { base: root, path: nodePath, fs: { promises } });
+  const host = new ObsidianHost(plugin, mobile ? null : { base: root, path: nodePath, fs: { promises } }, editorTimers);
   const notices = [];
   host.notify = (message) => notices.push(message);
   r.context.host = host;
@@ -243,11 +243,27 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = 
       .map((name) => readFileSync(join(root, "Notes", name), "utf8"));
   const hidden = () => readdirSync(join(root, "Notes")).filter((name) => name.startsWith("."));
   const leaves = [];
+  const baselines = new WeakMap();
+  // The public modify notification enters the native reload handler, which
+  // updates its saved baseline and combines input typed during the disk write.
+  // Real Obsidian end-to-end runs remain the authority for that host behavior.
+  vault.trigger = (event, file) => {
+    assert.equal(event, "modify");
+    for (const { view } of leaves) {
+      if (view.file?.path !== file.path) continue;
+      const next = readFileSync(join(root, file.path), "utf8").replace(/\r\n?/g, "\n");
+      const prior = baselines.get(view), current = view.getViewData();
+      baselines.set(view, next);
+      if (current === next) continue;
+      view.setViewData(require("../build/sync/conflict.js").mergeText(prior, current, next), false);
+    }
+  };
   const openEditor = (path, text) => {
     const { MarkdownView } = box.require("obsidian");
     const view = new MarkdownView();
     view.file = { path };
     view.getViewData = () => text.value;
+    baselines.set(view, text.value);
     // What the editor shows becomes what it was given, as Obsidian's does.
     view.setViewData = (data) => { text.value = data; };
     vault.read =async (file) => readFileSync(join(root, file.path), "utf8");
@@ -256,8 +272,458 @@ async function native(t, hooks = {}, { mobile = false, trashOption = "none" } = 
     return view;
   };
   const applyIncoming = (change) => box.require(join(box.home, "build/sync/pull.js")).applyChange(r.context, change);
-  return { ...r, root, systemBin, host, seed, contents, hidden, logs, trashed, notices, openEditor, applyIncoming };
+  return { ...r, root, systemBin, host, seed, contents, hidden, logs, trashed, notices, openEditor, nativeSaved: (view) => baselines.set(view, view.getViewData()), applyIncoming, EditorBusy: box.require(join(box.home, "build/sync/pull.js")).EditorBusy, Platform: box.require("obsidian").Platform };
 }
+
+for (const mobile of [false, true]) for (const effect of ["none", "input", "rebind"])
+  test(`a confirmed local save refreshes native consumers without another save (${mobile}, ${effect})`, async (t) => {
+    const timers = new FakeTimers(), r = await native(t, {}, { mobile, editorTimers: timers });
+    r.seed(NOTE, "old", 1000);
+    r.seed("Notes/Elsewhere.md", "OTHER", 1000);
+    const buffer = { value: "new local text" }, view = r.openEditor(NOTE, buffer);
+    const second = effect === "rebind" ? r.openEditor(NOTE, buffer) : null;
+    let saves = 0, queued = 0;
+    const previews = [];
+    view.save = async () => { saves++; writeFileSync(join(r.root, NOTE), buffer.value); };
+    r.host.plugin.engine = { editorSaved(path) { assert.equal(path, NOTE); queued++; } };
+    r.host.plugin.app.workspace.trigger = (event, file, text) => {
+      assert.equal(queued, 1, "publication is queued before reentrant consumers run");
+      previews.push({ event, path: file.path, text });
+      assert.equal(readFileSync(join(r.root, NOTE), "utf8"), "new local text");
+      if (effect === "input") {
+        r.host.editorActivity.record(view, "beforeinput");
+        buffer.value += " unsaved";
+      }
+      if (second) second.file = { path: "Notes/Elsewhere.md" };
+    };
+    t.after(() => r.host.stopEditorSaves());
+    r.host.editorActivity.record(view, "beforeinput");
+    await timers.run(5, () => queued === 1 && r.host.editorActivity.saving.size === 0);
+    r.host.stopEditorSaves();
+    assert.deepEqual(previews, [{ event: "quick-preview", path: NOTE, text: "new local text" }]);
+    assert.equal(saves, 1);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), "new local text");
+    assert.equal(readFileSync(join(r.root, "Notes/Elsewhere.md"), "utf8"), "OTHER");
+    assert.equal(buffer.value, "new local text" + (effect === "input" ? " unsaved" : ""));
+  });
+
+/** A public TextFileView save/load model with the adapter's actual ordering.
+ * No private native editor fields are touched by the product under test. */
+async function queuedEditor(t, afterRename = () => {}, { mobile = false, lateReload = false,
+  original = "A: local\nB: \n", incoming = "A: local\nB: remote\n" } = {}) {
+  let arrived = () => {};
+  const events = [];
+  // Disk/queue operations can exceed the 5 ms save interval on any host.
+  // Advance saving explicitly so tests own which side of that boundary they
+  // exercise, rather than accidentally saving the injected pending input.
+  const timers = new FakeTimers();
+  const r = await native(t, {
+    afterRename: async () => arrived(),
+    afterWrite: async () => { if (mobile) arrived(); },
+    opened: (path, flags, handle) => {
+      if (!path.endsWith(nodePath.sep + nodePath.normalize(NOTE))) return;
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        assert.equal(flags, "r+", "final durability needs a writable, nontruncating existing-file handle on Windows too");
+        events.push("fsync"); await sync();
+      };
+    },
+  }, { editorTimers: timers, mobile });
+  r.seed(NOTE, original, 1000);
+  const buffer = { value: original }, view = r.openEditor(NOTE, buffer), file = view.file;
+  const vault = r.host.plugin.app.vault, adapter = vault.adapter;
+  let baseline = original, saving = false, saveAgain = false, dirty = true;
+  let releaseReloads;
+  const reloadGate = new Promise((resolve) => { releaseReloads = resolve; });
+  adapter.promise = Promise.resolve();
+  adapter.queue = (action) => (adapter.promise = adapter.promise.then(action, action));
+  vault.read = (file) => adapter.queue(async () => readFileSync(join(r.root, file.path), "utf8"));
+  view.save = async () => {
+    dirty = false;
+    if (saving) { saveAgain = true; return; }
+    const text = view.getViewData(), file = view.file;
+    if (text === baseline) return;
+    saving = true;
+    baseline = text;
+    events.push("baseline");
+    try {
+      await adapter.promise;
+      await adapter.queue(async () => {
+        writeFileSync(join(r.root, file.path), text);
+        if (mobile) { events.push("watcher"); vault.trigger("modify", file); }
+      });
+    } finally {
+      saving = false;
+      if (saveAgain) { saveAgain = false; await view.save(); }
+    }
+  };
+  const reads = [];
+  vault.trigger = (_event, file) => {
+    if (saving || file !== view.file) return;
+    const loading = vault.read(file).then(async (text) => {
+      // Native cached-read completion can outlive the adapter read barrier.
+      // TextFileView checks its CURRENT dirty flag when that read completes.
+      if (lateReload) await reloadGate;
+      const prior = baseline;
+      baseline = text;
+      if (text === prior || text === buffer.value) return;
+      if (lateReload && !dirty) { view.setViewData(text, false); return; }
+      if (buffer.value !== prior) events.push("external_notice");
+      view.setViewData(require("../build/sync/conflict.js").mergeText(prior, buffer.value, text), false);
+    });
+    reads.push(loading);
+  };
+  r.host.plugin.engine = { editorSaved() {} };
+  r.host.editorActivity.record(view, "beforeinput");
+  let ready = false;
+  timers.now += 5;
+  await timers.run(0, () => ready || (void r.host.editorReady(NOTE).then((value) => { ready = value; }), false));
+  assert.equal(await r.host.editorReady(NOTE), true, "fixture acquired an actual save/read receipt");
+  t.after(() => r.host.stopEditorSaves());
+  arrived = () => {
+    afterRename({ ...r, buffer, view, adapter, vault });
+    // An OS event can be delivered as soon as rename completes. The reload
+    // action queues behind any currently owned native adapter action.
+    void adapter.queue(async () => { events.push("watcher"); vault.trigger("modify", file); });
+  };
+  const write = async () => {
+    const writer = await r.host.writer(NOTE, enc(incoming).length);
+    try { await writer.write(enc(incoming)); return await writer.commit(2000, enc(original)); }
+    finally { await writer.abort(); }
+  };
+  const type = (text) => { dirty = true; r.host.editorActivity.record(view, "beforeinput"); buffer.value = text; };
+  return { ...r, original, incoming, buffer, view, adapter, vault, events, reads, write, timers, type, releaseReloads };
+}
+
+for (const concurrent of [false, true]) test(`a queued durable editor write advances the saved baseline before native reload (typing=${concurrent})`, async (t) => {
+  const r = await queuedEditor(t, ({ host, buffer, view }) => {
+    if (concurrent) {
+      host.editorActivity.record(view, "beforeinput");
+      buffer.value = "A: local typed\nB: \n";
+    }
+  });
+  const previews = [];
+  r.host.plugin.app.workspace.trigger = (event, file, text) => previews.push({ event, file, text });
+  await r.write();
+  await r.adapter.promise; await Promise.all(r.reads);
+  const expected = concurrent ? "A: local typed\nB: remote\n" : r.incoming;
+  assert.equal(r.buffer.value, expected);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), expected);
+  assert.deepEqual(previews, [{ event: "quick-preview", file: r.view.file, text: expected }], "live-preview consumers receive the complete current buffer");
+  assert.ok(r.events.indexOf("baseline") < r.events.indexOf("watcher"));
+  assert.ok(r.events.lastIndexOf("fsync") > r.events.indexOf("baseline"), "the public editor save is flushed too");
+  assert.equal(r.events.includes("external_notice"), false);
+  assert.ok(!r.logs.some((line) => /editor_left|editor_reload_unconfirmed/.test(line)), r.logs.join(" | "));
+  assert.deepEqual(r.hidden(), []);
+});
+
+// A PEER'S KEYSTROKES REACH CODEMIRROR AS KEYSTROKES (#339). Replacing the
+// whole buffer moved the caret and put the peer's text into local undo. The
+// bridge dispatches only the difference, as a remote change outside undo
+// history, so CodeMirror maps the caret and selection through it.
+for (const [mobile, typing] of [[false, false], [true, false], [false, true]]) {
+  test(`a remote change reaches a CodeMirror editor as only its difference, outside undo (${mobile ? "mobile" : "desktop"}, typing=${typing})`, async (t) => {
+    const r = await queuedEditor(t, ({ host, buffer, view }) => {
+      if (!typing) return;
+      host.editorActivity.record(view, "beforeinput");
+      buffer.value = "A: local typed\nB: \n";
+    }, { mobile });
+    const dispatched = [], replaced = [];
+    r.view.editor = {
+      cm: {
+        state: { doc: { toString: () => r.buffer.value } },
+        dispatch: (spec) => {
+          dispatched.push(spec);
+          let text = r.buffer.value;
+          for (const { from, to, insert } of [...spec.changes].reverse()) text = text.slice(0, from) + insert + text.slice(to);
+          r.buffer.value = text;
+        },
+      },
+    };
+    const setViewData = r.view.setViewData;
+    r.view.setViewData = (data, clear) => { replaced.push(data); setViewData.call(r.view, data, clear); };
+    await r.write();
+    await r.adapter.promise; await Promise.all(r.reads);
+    const expected = typing ? "A: local typed\nB: remote\n" : r.incoming;
+    assert.equal(r.buffer.value, expected);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), expected);
+    const at = (typing ? "A: local typed\nB: " : "A: local\nB: ").length;
+    assert.deepEqual(dispatched, [{
+      changes: [{ from: at, to: at, insert: "remote" }],
+      annotations: [{ annotation: "addToHistory", value: false }, { annotation: "remote", value: true }],
+    }], "only the peer's text, kept out of local undo");
+    assert.deepEqual(replaced, [], "the buffer is never replaced whole");
+    assert.ok(!r.logs.some((line) => /editor_left|editor_reload_unconfirmed/.test(line)), r.logs.join(" | "));
+  });
+}
+
+// THE WORD AN IPHONE IS TYPING (#339). The iOS keyboard keeps its own record
+// of the word at the caret. Text it did not type, landing in that word while
+// it is typed, makes the next key replace the character before the caret.
+// On iOS such a version waits until typing pauses for WORD_PAUSE_MS, the caret
+// leaves the word, or the editor loses focus. Any other version lands at once.
+const WORD = "A: local\nB: w1w2\n";
+for (const [name, { written = "A: local\nB: dw1w2\n", idle = 1499, ios = true, focus = true, head = 16, panes = 1, moved = false }, held] of [
+  ["text lands before the caret, typed 1499 ms ago", {}, true],
+  ["typing paused 1500 ms ago", { idle: 1500 }, false],
+  ["not on iOS", { ios: false }, false],
+  ["the editor has no focus", { focus: false }, false],
+  ["text lands at the end of the word, after a caret inside it", { written: "A: local\nB: w1w2d\n", head: 14 }, true],
+  ["text lands in the word before, past a space", { written: "A: local\nBx: w1w2\n" }, false],
+  ["a CRLF version changes another line", { written: "A: local, remote\r\nB: w1w2\r\n" }, false],
+  ["the second of two panes is the one typed in", { panes: 2 }, true],
+  ["the typing was in the note this pane showed before", { moved: true }, false],
+]) test(`incoming text waits only for the word an iPhone is typing (${name})`, async (t) => {
+  const r = await native(t, {}, { mobile: true, editorTimers: new FakeTimers() });
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  t.after(() => { Date.now = realNow; r.Platform.isIosApp = false; });
+  r.Platform.isIosApp = ios;
+  const file = { path: NOTE };
+  const pane = (hasFocus) => ({
+    file, getViewData: () => WORD,
+    editor: { cm: { hasFocus, state: { doc: { toString: () => WORD }, selection: { main: { head } } } } },
+  });
+  const views = panes === 2 ? [pane(false), pane(focus)] : [pane(focus)];
+  for (const view of views) {
+    if (moved) view.file = { path: "Notes/Before.md" };
+    r.host.editorActivity.record(view, "beforeinput");
+    view.file = file;
+  }
+  r.host.views = () => views;
+  now += idle;
+  assert.equal(r.host.typingWord(NOTE, WORD, written), held);
+  assert.deepEqual(r.logs.filter((line) => line.includes("typing_word")),
+    held ? [`editor decision=deferred reason=typing_word duration_ms=${idle} budget_ms=1500`] : []);
+});
+
+// The phone's writer asks before it touches the editor or the disk, and the
+// parked retry that follows the pause delivers the same version.
+test("an iPhone's incoming version waits beneath the word being typed, then lands after the pause", async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile: true, original: WORD, incoming: "A: local\nB: dw1w2\n" });
+  const realNow = Date.now;
+  let shift = 0;
+  Date.now = () => realNow() + shift;
+  t.after(() => { Date.now = realNow; r.Platform.isIosApp = false; });
+  r.Platform.isIosApp = true;
+  const dispatched = [];
+  r.view.editor = {
+    cm: {
+      hasFocus: true,
+      state: { doc: { toString: () => r.buffer.value }, selection: { main: { head: 16 } } },
+      dispatch: (spec) => {
+        dispatched.push(spec.changes);
+        let text = r.buffer.value;
+        for (const { from, to, insert } of [...spec.changes].reverse()) text = text.slice(0, from) + insert + text.slice(to);
+        r.buffer.value = text;
+      },
+    },
+  };
+  // The fixture's own saved keystroke is the typing; its save receipt stands.
+  await assert.rejects(r.write(), r.EditorBusy);
+  assert.equal(r.logs.filter((line) => line.includes("reason=typing_word")).length, 1, r.logs.join(" | "));
+  assert.equal(r.buffer.value, WORD);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), WORD);
+  assert.deepEqual(dispatched, []);
+  shift = 1500;
+  await r.write();
+  await r.adapter.promise; await Promise.all(r.reads);
+  assert.equal(r.buffer.value, r.incoming);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming);
+  assert.deepEqual(dispatched, [[{ from: 12, to: 12, insert: "d" }]]);
+  assert.equal(r.logs.filter((line) => line.includes("typing_word")).length, 1);
+});
+
+for (const reason of ["composition", "native-only", "disagreeing"]) test(`a queued bridge with a second ${reason} pane leaves every pane to one native reload`, async (t) => {
+  let second, secondText, r;
+  r = await queuedEditor(t, ({ host }) => {
+    // The second pane becomes unsafe after the final pre-write check. The
+    // bridge must check ALL panes before saving even the first safe pane.
+    // A pane holding other text leaves no one buffer to rebase (#339).
+    host.editorActivity.record(second, "beforeinput");
+    if (reason === "composition") host.editorActivity.record(second, "compositionstart");
+    else if (reason === "native-only") host.editorActivity.nativeOnly.set(second, second.file);
+    else secondText.value = r.original.replace("A: local", "A: local, second pane");
+  });
+  secondText = { value: r.original };
+  const read = r.vault.read;
+  second = r.openEditor(NOTE, secondText);
+  r.vault.read = read;
+  let publicSaves = 0, reloads = 0, disagreeing = 0;
+  const save = r.view.save;
+  const count = () => { publicSaves++; if (r.buffer.value !== secondText.value) disagreeing++; };
+  r.view.save = async () => { count(); return save(); };
+  second.save = async () => { count(); };
+  r.vault.trigger = (event, file) => {
+    assert.equal(event, "modify"); assert.equal(file.path, NOTE);
+    reloads++;
+    const next = readFileSync(join(r.root, NOTE), "utf8");
+    r.view.setViewData(next, false); second.setViewData(next, false);
+  };
+  await r.write(); await r.adapter.promise;
+  // Once the native reload made the panes agree, saving that one text is safe.
+  if (reason === "disagreeing") assert.equal(disagreeing, 0, "a pane was saved over another pane's different text");
+  else assert.equal(publicSaves, 0, "one unsafe pane prevents a partial public-save bridge");
+  assert.equal(reloads, 1, "the native watcher supplies the fallback, with no duplicate reload");
+  assert.equal(r.buffer.value, r.incoming);
+  assert.equal(secondText.value, r.incoming);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming);
+});
+
+// WHAT THE FIRST PANE'S UPDATE DOES TO THE SECOND (#339). The bridge reads
+// every pane, merges once and then updates pane by pane with no await between,
+// but CodeMirror's update runs listeners synchronously: Obsidian copies the
+// text into another pane of the note, and a plugin can type into it or move
+// it. Each pane is judged again when its turn comes.
+for (const effect of ["shown", "typed", "moved"]) test(`a second pane the first pane's update ${effect === "shown" ? "already showed" : effect === "typed" ? "typed into" : "moved away"} is not loaded with text the merge never read`, async (t) => {
+  let second;
+  const secondText = { value: "A: local\nB: \n" }, typed = "A: local, second pane\nB: \n";
+  const r = await queuedEditor(t, ({ host }) => host.editorActivity.record(second, "beforeinput"));
+  r.seed("Notes/Elsewhere.md", r.original, 1000);
+  second = r.openEditor(NOTE, secondText);
+  const loaded = [];
+  second.setViewData = (data) => { loaded.push({ path: second.file.path, data }); secondText.value = data; };
+  second.save = async () => {};
+  r.view.editor = {
+    cm: {
+      state: { doc: { toString: () => r.buffer.value } },
+      dispatch: (spec) => {
+        let text = r.buffer.value;
+        for (const { from, to, insert } of [...spec.changes].reverse()) text = text.slice(0, from) + insert + text.slice(to);
+        r.buffer.value = text;
+        if (effect === "shown") secondText.value = text;
+        else if (effect === "typed") secondText.value = typed;
+        else second.file = { path: "Notes/Elsewhere.md" };
+      },
+    },
+  };
+  // The native reload: Obsidian merges a dirty pane's text with the disk.
+  const merge = require("../build/sync/conflict.js").mergeText;
+  r.vault.trigger = () => {
+    const disk = readFileSync(join(r.root, NOTE), "utf8");
+    if (second.file.path === NOTE && secondText.value !== disk) second.setViewData(merge(r.original, secondText.value, disk), false);
+  };
+  await r.write(); await r.adapter.promise;
+  assert.equal(r.buffer.value, r.incoming);
+  if (effect === "shown") assert.deepEqual(loaded, [], "a pane already showing the text was loaded again");
+  if (effect === "typed") {
+    assert.ok(loaded.every(({ data }) => data.includes("second pane")), `typing in the second pane was loaded over: ${JSON.stringify(loaded)}`);
+    assert.equal(secondText.value, "A: local, second pane\nB: remote\n");
+  }
+  if (effect === "moved") {
+    assert.deepEqual(loaded, [], "the note a pane moved to was given this note's text");
+    assert.equal(readFileSync(join(r.root, "Notes/Elsewhere.md"), "utf8"), r.original);
+  }
+});
+
+test("a desktop adapter without the private queue uses the ordinary native refresh fallback", async (t) => {
+  const r = await openIdle(t, false, "fallback one\nfallback two\n");
+  const adapter = r.host.plugin.app.vault.adapter;
+  assert.equal(adapter.queue, undefined, "this test exercises the public-only adapter shape");
+  let reloads = 0;
+  const trigger = r.host.plugin.app.vault.trigger;
+  r.host.plugin.app.vault.trigger = (...args) => { reloads++; return trigger(...args); };
+  await r.arrive("fallback one\nremote two\n", 2000);
+  assert.equal(reloads, 1);
+  assert.equal(r.shown.value, "fallback one\nremote two\n");
+  assert.deepEqual(r.loaded, [["fallback one\nremote two\n", false]]);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.shown.value);
+});
+
+for (const reason of ["input", "disk", "composition"]) test(`a queued writer rechecks ${reason} after waiting for earlier adapter work`, async (t) => {
+  const r = await queuedEditor(t);
+  const queue = r.adapter.queue;
+  let injected = false;
+  r.adapter.queue = (action) => queue(async () => {
+    if (!injected) {
+      injected = true;
+      if (reason === "input") { r.host.editorActivity.record(r.view, "beforeinput"); r.buffer.value += "unsaved"; }
+      if (reason === "disk") r.seed(NOTE, "different saved bytes", 4000);
+      if (reason === "composition") r.host.editorActivity.record(r.view, "compositionstart");
+    }
+    return action();
+  });
+  await assert.rejects(r.write(), (error) => error instanceof r.EditorBusy);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), reason === "disk" ? "different saved bytes" : r.original);
+  assert.equal(r.events.includes("baseline"), false);
+  assert.deepEqual(r.hidden(), []);
+  if (reason === "input") {
+    r.timers.now += 5;
+    await r.timers.run(0, () => readFileSync(join(r.root, NOTE), "utf8") === r.original + "unsaved");
+    assert.equal(r.buffer.value, r.original + "unsaved", "the refused incoming write leaves the later local save intact");
+  }
+});
+
+test("a view rebound while a write queues never receives the old note's text or save", async (t) => {
+  const r = await queuedEditor(t), queue = r.adapter.queue;
+  r.adapter.queue = (action) => queue(async () => {
+    r.view.file = { path: "Notes/Elsewhere.md" };
+    return action();
+  });
+  await r.write(); await r.adapter.promise;
+  assert.equal(r.buffer.value, r.original);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming);
+  assert.equal(r.events.includes("baseline"), false);
+});
+
+for (const reason of ["composition", "pause"]) test(`a native bridge never saves ${reason} input begun during rename`, async (t) => {
+  const r = await queuedEditor(t, ({ host, buffer, view }) => {
+    host.editorActivity.record(view, reason === "composition" ? "compositionstart" : "beforeinput");
+    buffer.value = "A: local pending\nB: \n";
+    if (reason === "pause") { host.stopEditorSaves(); host.plugin.engine = null; }
+  });
+  await r.write(); await r.adapter.promise; await Promise.all(r.reads);
+  assert.equal(r.events.includes("baseline"), false, "only native save owns that unsaved input");
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming);
+  assert.equal(r.buffer.value, "A: local pending\nB: remote\n");
+});
+
+test("a synchronous tab change during display update never saves the former note into the new tab", async (t) => {
+  const r = await queuedEditor(t), update = r.view.setViewData;
+  r.seed("Notes/Elsewhere.md", "OTHER NOTE", 1000);
+  r.view.setViewData = (text, clear) => { update(text, clear); r.view.file = { path: "Notes/Elsewhere.md" }; };
+  await r.write(); await r.adapter.promise;
+  assert.equal(readFileSync(join(r.root, "Notes/Elsewhere.md"), "utf8"), "OTHER NOTE");
+  assert.equal(r.events.includes("baseline"), false);
+});
+
+for (const effect of ["rebind", "input", "composition"]) test(`a synchronous preview consumer ${effect} never forces a stale public save`, async (t) => {
+  const r = await queuedEditor(t);
+  r.seed("Notes/Elsewhere.md", "OTHER NOTE", 1000);
+  let delivered = 0;
+  let savesAtDelivery = 0;
+  r.host.plugin.app.workspace.trigger = (event, file, text) => {
+    assert.equal(event, "quick-preview");
+    assert.equal(file.path, NOTE);
+    assert.equal(text, r.incoming);
+    delivered++;
+    savesAtDelivery = r.events.filter((event) => event === "baseline").length;
+    if (effect === "rebind") r.view.file = { path: "Notes/Elsewhere.md" };
+    if (effect === "input") r.buffer.value += "NEW INPUT";
+    if (effect === "composition") r.host.editorActivity.record(r.view, "compositionstart");
+  };
+  await r.write(); await r.adapter.promise; await Promise.all(r.reads);
+  assert.equal(delivered, 1);
+  assert.equal(savesAtDelivery, 1, "preview follows the completed saved-baseline transition");
+  assert.equal(r.events.filter((event) => event === "baseline").length, savesAtDelivery, "no later public save can overwrite reentrant edits or a rebound view");
+  assert.equal(readFileSync(join(r.root, "Notes/Elsewhere.md"), "utf8"), "OTHER NOTE");
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming);
+  if (effect === "input") assert.equal(r.buffer.value, r.incoming + "NEW INPUT");
+});
+
+test("a queued writer never bridges bytes replaced after rename with identical metadata", async (t) => {
+  const foreign = "A: LOCAL\nB: REMOTE\n";
+  const r = await queuedEditor(t, ({ root }) => {
+    const target = join(root, NOTE), stat = statSync(target);
+    writeFileSync(target, foreign); utimesSync(target, stat.atimeMs / 1000, stat.mtimeMs / 1000);
+  });
+  assert.equal(foreign.length, r.incoming.length);
+  await assert.rejects(r.write(), r.EditorBusy); await r.adapter.promise; await Promise.all(r.reads);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), foreign);
+  assert.equal(r.events.includes("baseline"), false, "the public save must not replace foreign bytes");
+  assert.ok(r.logs.some((line) => line.includes("editor_left reason=file_changed")));
+});
 
 for (const mobile of [false, true]) {
   for (const fork of [false, true]) {
@@ -336,6 +802,8 @@ async function openIdle(t, mobile, disk, during, readingTemp) {
   r.view = r.openEditor(NOTE, r.shown);
   Object.defineProperty(r.view, "data", { get: () => r.shown.value, set: () => {}, configurable: true });
   r.loaded = [];
+  r.previews = [];
+  r.host.plugin.app.workspace.trigger = (event, file, text) => r.previews.push({ event, file, text });
   r.view.setViewData = (data, clear) => { r.loaded.push([data, clear]); r.shown.value = data; };
   r.seed("Notes/Other.md", "OTHER NOTE SENTINEL\n", 1000);
   const other = r.openEditor("Notes/Other.md", { value: "OTHER NOTE SENTINEL\n" });
@@ -366,7 +834,9 @@ for (const mobile of [false, true]) {
         assert.equal(readFileSync(join(r.root, NOTE), "utf8"), next);
         // A starved watcher reloads nothing: the editor shows it because obsync loaded it.
         assert.deepEqual(r.loaded, [[next.replace(/\r\n/g, "\n"), false]], `the editor did not load version ${n + 1}`);
+        assert.deepEqual(r.previews, [{ event: "quick-preview", file: r.view.file, text: next.replace(/\r\n/g, "\n") }], "passive live-preview consumers receive each confirmed version");
         r.loaded.length = 0;
+        r.previews.length = 0;
       }
       assert.equal(r.logs.filter((line) => line === "host path_class=file decision=editor_refreshed views=1").length, 2, r.logs.join(" | "));
       assert.deepEqual(r.foreign, [], "an editor of another note was loaded");
@@ -390,12 +860,13 @@ for (const mobile of [false, true]) {
     assert.deepEqual(r.loaded, [], "a second load puts the cursor back at the start of a note already shown");
   });
 
-  test(`typing that starts while the version lands is not loaded over (${on})`, async (t) => {
+  test(`typing that starts while the version lands survives the native reload (${on})`, async (t) => {
     const typed = "race one\nrace two\ntyped now\n";
     const r = await openIdle(t, mobile, "race one\nrace two\n", (r) => { r.shown.value = typed; });
     await r.arrive("race one\nnewer\nrace two\n", 3000);
-    assert.deepEqual(r.loaded, []);
-    assert.equal(r.shown.value, typed);
+    const merged = "race one\nnewer\nrace two\ntyped now\n";
+    assert.deepEqual(r.loaded, [[merged, false]]);
+    assert.equal(r.shown.value, merged);
   });
 
   // Live, 2026-09-28: a build that read `data` as "what the view last loaded
@@ -412,10 +883,25 @@ for (const mobile of [false, true]) {
   });
 }
 
+test("preview delivery rechecks a second view rebound by the first consumer", async (t) => {
+  const r = await openIdle(t, false, MINE);
+  const second = r.openEditor(NOTE, { value: MINE });
+  const previews = [];
+  r.host.plugin.app.workspace.trigger = (event, file, text) => {
+    previews.push({ event, path: file.path, text });
+    second.file = { path: "Notes/Other.md" };
+  };
+  await r.arrive(THEIRS, 3000);
+  assert.deepEqual(previews, [{ event: "quick-preview", path: NOTE, text: THEIRS }]);
+  assert.equal(readFileSync(join(r.root, "Notes/Other.md"), "utf8"), "OTHER NOTE SENTINEL\n");
+});
+
 test("an editor is not given a version another write replaced before its rename was checked (desktop)", async (t) => {
   const r = await openIdle(t, false, "lost one\nlost two\n",
     (r) => writeFileSync(join(r.root, NOTE), "SAVE THAT LANDED SENTINEL, longer than ours\n"));
-  await r.arrive("lost one\nnewer\nlost two\n", 3000);
+  const before = r.state.fileByPath(NOTE).versionId;
+  await assert.rejects(r.arrive("lost one\nnewer\nlost two\n", 3000), { name: "Unwritable", reason: "active_editor" });
+  assert.equal(r.state.fileByPath(NOTE).versionId, before);
   assert.deepEqual(r.logs.filter((line) => line.startsWith("host path_class=file decision=")),
     ["host path_class=file decision=write_superseded"], "one outcome, one line");
   assert.deepEqual(r.loaded, [], "the editor was given bytes that are not its file's");
@@ -467,7 +953,9 @@ for (const mobile of [false, true]) {
     });
     const next = "size one\nnewer\nsize two\n";
     assert.equal(same.length, next.length);
-    await r.arrive(next, 3000);
+    const before = r.state.fileByPath(NOTE).versionId;
+    await assert.rejects(r.arrive(next, 3000), { name: "Unwritable", reason: "active_editor" });
+    assert.equal(r.state.fileByPath(NOTE).versionId, before);
     assert.equal(readFileSync(join(r.root, NOTE), "utf8"), same);
     assert.ok(!r.logs.includes("host path_class=file decision=write_superseded"), "the identity check caught it, so this pins nothing");
     assert.deepEqual(r.loaded, [], "the editor was given bytes that are not its file's");
@@ -482,7 +970,7 @@ for (const mobile of [false, true]) {
     const base = await pushFile(r.context, NOTE);
     const buffered = { value: "Shared: START|" };
     const view = r.openEditor(NOTE, buffered);
-    r.host.inputAt.set(view, { path: NOTE, at: Date.now() });
+    r.host.editorActivity.record(view, "beforeinput");
     const incoming = await r.server.publish({
       fileId: base.fileId, path: NOTE, bytes: enc("Shared: START|a"), mtime: 3000,
       parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
@@ -492,7 +980,7 @@ for (const mobile of [false, true]) {
     await assert.rejects(r.applyIncoming(incoming), { name: "Unwritable", reason: "active_editor" });
     assert.equal(readFileSync(join(r.root, NOTE), "utf8"), buffered.value);
     assert.deepEqual(r.hidden(), []);
-    r.host.inputAt.delete(view);
+    r.host.editorActivity.inputs.delete(view);
     assert.equal(await r.applyIncoming(incoming), "applied");
     assert.equal(readFileSync(join(r.root, NOTE), "utf8"), "Shared: START|a");
     assert.deepEqual(r.hidden(), []);
@@ -623,7 +1111,7 @@ test("an ordinary native move drops its hold and leaves the copy behind", async 
   assert.deepEqual(r.hidden(), [], "a hold or a moved file was left behind");
 });
 
-test("a native settled write records the metadata of the bytes it committed", async (t) => {
+test("a superseded native settled write keeps its previous applied version", async (t) => {
   let armed = false;
   let injected = false;
   let copy;
@@ -642,7 +1130,9 @@ test("a native settled write records the metadata of the bytes it committed", as
   copy = settled.copy;
   armed = true;
   const second = await descend(r, settled.first.version_id, "SECOND\n", 5000);
-  assert.equal(await applyChange(r.context, second), "applied");
+  const before = r.state.fileByPath(copy).versionId;
+  await assert.rejects(r.applyIncoming(second), { name: "Unwritable", reason: "active_editor" });
+  assert.equal(r.state.fileByPath(copy).versionId, before);
   assert.ok(injected, "the test never entered the writer's commit");
   assert.equal(readFileSync(join(r.root, copy), "utf8"), EDIT);
   const recorded = r.state.fileByPath(copy);
@@ -1443,3 +1933,322 @@ for (const mobile of [false, true]) {
     );
   });
 }
+
+for (const mobile of [false, true]) for (const open of [false, true]) for (const sameSize of [false, true]) {
+  test(`a staged merge cannot replace a newer saved input (${mobile ? "mobile" : "desktop"}, ${open ? "open" : "closed"}, ${sameSize ? "same-size" : "grown"})`, async (t) => {
+    const r = await native(t, {}, { mobile });
+    const old = "A: old\nB: base\n", newer = sameSize ? "A: NEW\nB: base\n" : "A: old plus input\nB: base\n";
+    r.seed(NOTE, old, 1000);
+    const shown = { value: old };
+    if (open) r.openEditor(NOTE, shown);
+    const incoming = enc("A: old\nB: peer\n"), writer = await r.host.writer(NOTE, incoming.length);
+    try {
+      await writer.write(incoming);
+      // Identical metadata makes this a byte-precondition test, not a stat test.
+      r.seed(NOTE, newer, 1000); shown.value = newer;
+      await assert.rejects(writer.commit(2000, enc(old)), { name: "Error" });
+      assert.equal(readFileSync(join(r.root, NOTE), "utf8"), newer);
+      assert.equal(shown.value, newer);
+      assert.ok(r.logs.some(line => line.includes("reason=merge_input_changed")));
+    } finally { await writer.abort(); }
+    assert.deepEqual(r.hidden(), []);
+  });
+}
+
+for (const typing of [false, true]) test(`mobile incoming text uses the public save before native reload can take ownership (typing=${typing})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile: true });
+  const save = r.view.save;
+  r.view.save = async () => {
+    const result = save();
+    if (typing) {
+      r.host.editorActivity.record(r.view, "beforeinput");
+      r.buffer.value = "A: local typed\nB: remote\n";
+    }
+    return result;
+  };
+  await r.write(); await r.adapter.promise; await Promise.all(r.reads);
+  assert.ok(r.events.indexOf("baseline") >= 0 && r.events.indexOf("baseline") < r.events.indexOf("watcher"),
+    "the incoming write must start through public save, before any native reload");
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming);
+  assert.equal(r.buffer.value, typing ? "A: local typed\nB: remote\n" : r.incoming);
+  assert.equal(r.events.includes("external_notice"), false);
+  assert.deepEqual(r.hidden(), []);
+});
+
+test("mobile saving cannot lose the next input to an older native reload completion", async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile: true, lateReload: true });
+  await r.write();
+  const next = "A: local NEXT\nB: remote\n";
+  r.type(next);
+  const saving = r.view.save();
+  r.releaseReloads();
+  await saving; await r.adapter.promise; await Promise.all(r.reads);
+  assert.equal(r.buffer.value, next, "an earlier native read overwrote already accepted input after save cleared dirty");
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), next);
+  assert.equal(r.events.includes("external_notice"), false);
+});
+
+// Review follow-up: a native save inside commit must not become a child of
+// incoming text that it never contained, even with identical size and mtime.
+for (const mobile of [false, true]) for (const sameSize of [false, true]) {
+  test(`a superseded native write preserves ancestry and remerges both writers (${mobile ? "mobile" : "desktop"}, same-size=${sameSize})`, async (t) => {
+    let armed = false, injected = false, view;
+    const original = "A: old\nB: base\n", incoming = "A: old\nB: peer\n";
+    const local = sameSize ? "A: NEW\nB: base\n" : "A: NEW plus typing\nB: base\n";
+    const shown = { value: original };
+    const replace = (root) => {
+      if (!armed || injected) return;
+      injected = true;
+      const path = join(root, NOTE), stat = statSync(path);
+      writeFileSync(path, local); utimesSync(path, stat.atimeMs / 1000, stat.mtimeMs / 1000);
+      shown.value = local;
+      r.nativeSaved(view);
+    };
+    const r = await native(t, { afterRename: replace, afterWrite: replace }, { mobile });
+    r.seed(NOTE, original, 1000);
+    const base = await pushFile(r.context, NOTE);
+    view = r.openEditor(NOTE, shown);
+    const change = await r.server.publish({ fileId: base.fileId, path: NOTE, bytes: enc(incoming), mtime: 3000,
+      parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+    armed = true;
+    await assert.rejects(r.applyIncoming(change), { name: "Unwritable", reason: "active_editor" });
+    assert.equal(injected, true);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), local);
+    assert.equal(r.state.fileByPath(NOTE).versionId, base.versionId, "superseded download was recorded as applied");
+    assert.equal(r.context.written.size, 0, "a refused write acquired an echo-suppression receipt");
+    const pushed = await pushFile(r.context, NOTE);
+    const file = r.server.files.get(base.fileId);
+    const child = file.versions.find(version => version.version_id === pushed.versionId);
+    assert.deepEqual(child.parents, [base.versionId], "native input falsely descended from omitted remote text");
+    await r.applyIncoming(change);
+    const expected = local.replace("B: base", "B: peer");
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), expected);
+    assert.equal(shown.value, expected);
+    assert.equal(file.heads.length, 1);
+    assert.deepEqual(r.contents(), [expected]);
+    assert.deepEqual(r.hidden(), []);
+  });
+}
+
+test("a mobile public save replaced before confirmation refuses the incoming receipt", async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile: true });
+  const nativeSave = r.view.save;
+  const replacement = "A: LOCAL\nB: REMOTE\n";
+  r.view.save = async () => {
+    await nativeSave();
+    r.seed(NOTE, replacement, 2000);
+    r.buffer.value = replacement;
+  };
+  await assert.rejects(r.write(), r.EditorBusy);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), replacement);
+  assert.equal(r.buffer.value, replacement);
+  assert.ok(r.logs.some(line => line.includes("editor_left reason=file_changed")));
+});
+
+// But typing saved right after the bridge delivered the incoming text is no
+// replacement (#339, Android emulator): refused, the note kept the incoming
+// text while its record stayed behind it, and the next save published that
+// text as this device's own typing, beside the version it came from, so a
+// later merge wrote it twice.
+for (const mobile of [false, true]) for (const [edit, typed] of [
+  ["after it", "A: local\nB: remote!\n"], ["before it", "A: local\nB: !remote\n"], ["deleting a key of its own", "A: loca\nB: remote\n"],
+]) test(`the save typed after a delivered version is its child, not its sibling (${mobile ? "mobile" : "desktop"}, ${edit})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  const base = await pushFile(r.context, NOTE);
+  const change = await r.server.publish({ fileId: base.fileId, path: NOTE, bytes: enc(r.incoming), mtime: 3000,
+    parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  const nativeSave = r.view.save;
+  r.view.save = async () => {
+    await nativeSave();
+    r.view.save = nativeSave;
+    r.seed(NOTE, typed, 4000);
+    r.buffer.value = typed;
+  };
+  await r.applyIncoming(change); await r.adapter.promise; await Promise.all(r.reads);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), typed);
+  assert.equal(r.state.fileByPath(NOTE).versionId, change.version_id, r.logs.join(" | "));
+  assert.ok(r.logs.some(line => /^host path_class=file decision=kept reason=typed_since_delivery duration_ms=\d+$/.test(line)), r.logs.join(" | "));
+  const pushed = await pushFile(r.context, NOTE);
+  const child = r.server.files.get(base.fileId).versions.find((version) => version.version_id === pushed.versionId);
+  assert.deepEqual(child.parents, [change.version_id], "the incoming text went out as this device's own typing");
+});
+
+// A refused incoming version must not permanently hand save ownership away:
+// the winning native input still belongs to the previously applied version.
+for (const mobile of [false, true]) for (const active of [false, true]) for (const sameSize of [false, true]) {
+  test(`a superseded write keeps recent input bridgeable (${mobile ? "mobile" : "desktop"}, active=${active}, same-size=${sameSize})`, async (t) => {
+    const timers = new FakeTimers();
+    const original = "A: old\nB: base\n", incoming = "A: old\nB: peer\n";
+    const local = sameSize ? "A: NEW\nB: base\n" : "A: NEW plus input\nB: base\n";
+    const shown = { value: original };
+    let armed = false, injected = false, view, receipts = 0;
+    const replace = (root) => {
+      if (!armed || injected) return;
+      injected = true;
+      r.host.editorActivity.record(view, "beforeinput");
+      shown.value = local;
+      const path = join(root, NOTE), stat = statSync(path);
+      writeFileSync(path, local); utimesSync(path, stat.atimeMs / 1000, stat.mtimeMs / 1000);
+      r.nativeSaved(view);
+    };
+    const r = await native(t, { afterRename: replace, afterWrite: replace }, { mobile, editorTimers: timers });
+    t.after(() => r.host.stopEditorSaves());
+    r.seed(NOTE, original, 1000);
+    const base = await pushFile(r.context, NOTE);
+    view = r.openEditor(NOTE, shown);
+    view.save = async () => {
+      writeFileSync(join(r.root, NOTE), shown.value);
+      r.nativeSaved(view);
+      if (mobile && active) replace(r.root);
+    };
+    r.host.plugin.engine = { editorSaved(path) { assert.equal(path, NOTE); receipts++; } };
+    if (active) {
+      r.host.editorActivity.record(view, "beforeinput");
+      await timers.run(5, () => receipts === 1 && r.host.editorActivity.saving.size === 0);
+      assert.equal(await r.host.editorReady(NOTE), true);
+    }
+    const change = await r.server.publish({ fileId: base.fileId, path: NOTE, bytes: enc(incoming), mtime: 3000,
+      parents: [base.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+    armed = true;
+    await assert.rejects(r.applyIncoming(change), { name: "Unwritable", reason: "active_editor" });
+    assert.equal(injected, true);
+    assert.equal(r.state.fileByPath(NOTE).versionId, base.versionId);
+    assert.equal(r.context.written.size, 0);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), local);
+    assert.equal(r.host.editorActivity.canRefresh(view), true, "supersession must not demote the winning native pane");
+    assert.equal(await r.host.editorActivity.ready(NOTE), false, "refusal cannot mint a new save receipt before a later native save completes");
+    const before = receipts;
+    r.host.editorActivity.record(view, "beforeinput"); shown.value = local.replace("NEW", "NEXT");
+    await timers.run(5, () => receipts > before && r.host.editorActivity.saving.size === 0);
+    assert.equal(receipts, before + 1, "recent input still earns a public save/read receipt");
+    assert.equal(r.host.editorActivity.recent(view), true);
+    assert.equal(await r.host.editorReady(NOTE), true, "no quiet-typing wait after the winning save");
+    const pushed = await pushFile(r.context, NOTE), file = r.server.files.get(base.fileId);
+    assert.deepEqual(file.versions.find(v => v.version_id === pushed.versionId).parents, [base.versionId]);
+    await r.applyIncoming(change);
+    const expected = local.replace("NEW", "NEXT").replace("B: base", "B: peer");
+    assert.equal(shown.value, expected);
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), expected);
+    assert.equal(file.heads.length, 1);
+    assert.deepEqual(r.contents(), [expected]);
+    assert.deepEqual(r.hidden(), []);
+  });
+}
+
+for (const mobile of [false, true]) test(`host readiness joins an in-flight native save (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  const save = r.view.save;
+  let release;
+  r.view.save = async () => { await new Promise(resolve => { release = resolve; }); await save(); };
+  r.type(r.buffer.value + " NEXT");
+  await r.timers.run(5, () => release !== undefined);
+  let settled = false;
+  const ready = r.host.editorReady(NOTE).then(value => { settled = true; return value; });
+  await until(() => settled || r.host.editorActivity.saveWaiters.size === 1);
+  assert.equal(settled, false, "host must join the existing save rather than abandon prepared work");
+  assert.equal(r.host.editorActivity.saveWaiters.size, 1);
+  release();
+  await until(() => settled);
+  assert.equal(settled, true, "save completion wakes host reconciliation");
+  assert.equal(await ready, true);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.buffer.value);
+  assert.equal(r.host.editorActivity.recent(r.view), true);
+  assert.equal(r.host.editorActivity.saveWaiters.size, 0);
+});
+
+for (const mobile of [false, true]) test(`typing before a delivered remote addition does not demote a confirmed bridge (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  r.host.editorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) };
+  const save = r.view.save;
+  let typed = false;
+  r.view.save = async () => {
+    await save();
+    if (!typed) {
+      typed = true;
+      r.type(r.buffer.value.replace("B: remote", "B: local remote"));
+    }
+  };
+  await r.write();
+  assert.equal(r.buffer.value, "A: local\nB: local remote\n");
+  assert.equal(r.host.editorActivity.canRefresh(r.view), true, "a successful public bridge must remain live while typing continues");
+  assert.ok(!r.logs.some(line => /editor_reload_unconfirmed|outcome=unconfirmed/.test(line)), r.logs.join(" | "));
+  assert.equal(r.logs.filter(line => /decision=editor_confirmed reason=delivered_insertions views=1 duration_ms=\d+ budget_ms=1000$/.test(line)).length, 1);
+  let saved = false;
+  r.host.plugin.engine.editorSaved = () => { saved = true; };
+  await r.timers.run(5, () => saved);
+  assert.equal(readFileSync(join(r.root, NOTE), "utf8"), "A: local\nB: local remote\n");
+  assert.equal(await r.host.editorReady(NOTE), true);
+});
+
+for (const mobile of [false, true]) for (const removed of [false, true])
+  test(`an incomplete display cannot use insertion confirmation (${mobile ? "mobile" : "desktop"}, remote-deletion=${removed})`, async (t) => {
+    const r = await queuedEditor(t, () => {}, { mobile,
+      ...(removed ? { original: "A: local\nB: remote\n", incoming: "A: local\nB: \n" } : {}) });
+    r.host.editorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) };
+    r.vault.trigger = () => {};
+    const save = r.view.save;
+    r.view.save = async () => { await save(); r.buffer.value = r.original; };
+    await r.write();
+    assert.equal(r.host.editorActivity.canRefresh(r.view), false, "a stale native display is not a confirmed insertion");
+    assert.ok(r.logs.some(line => line.includes("reason=editor_reload_unconfirmed")));
+    assert.equal(readFileSync(join(r.root, NOTE), "utf8"), r.incoming, "the durable incoming bytes remain intact");
+  });
+
+for (const mobile of [false, true]) test(`an unfinished composition cannot confirm a partial public bridge (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  r.host.editorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) };
+  r.vault.trigger = () => {};
+  const update = r.view.setViewData;
+  r.view.setViewData = (text, clear) => {
+    update(text, clear);
+    r.host.editorActivity.record(r.view, "compositionstart");
+    r.buffer.value = text.replace("B: remote", "B: local remote");
+  };
+  if (mobile) await assert.rejects(r.write(), r.EditorBusy);
+  else {
+    await r.write();
+    assert.ok(r.logs.some(line => line.includes("reason=editor_reload_unconfirmed")), "no completed public save supplied an insertion receipt");
+  }
+});
+
+for (const mobile of [false, true]) test(`insertion confirmation preserves repeated delivered characters (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile, incoming: "A: local\nB: rrr\n" });
+  r.host.editorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) };
+  r.vault.trigger = () => {};
+  const save = r.view.save;
+  r.view.save = async () => { await save(); r.buffer.value = "A: local\nB: rr\n"; };
+  await r.write();
+  assert.ok(r.logs.some(line => line.includes("reason=editor_reload_unconfirmed")), "one displayed character cannot prove two delivered characters");
+});
+
+for (const mobile of [false, true]) test(`a replacement pane cannot borrow another pane's insertion receipt (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  r.host.editorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) };
+  r.vault.trigger = () => {};
+  const save = r.view.save;
+  let replacement;
+  r.view.save = async () => {
+    await save();
+    if (!replacement) {
+      replacement = r.openEditor(NOTE, { value: "A: local\nB: local remote\n" });
+      r.host.plugin.app.workspace.getLeavesOfType = () => [{ view: replacement }];
+    }
+  };
+  await r.write();
+  assert.ok(r.logs.some(line => line.includes("reason=editor_reload_unconfirmed")), "the replacement pane did not receive the checked public transition");
+});
+
+for (const mobile of [false, true]) test(`a failed public refresh still keeps native save ownership (${mobile ? "mobile" : "desktop"})`, async (t) => {
+  const r = await queuedEditor(t, () => {}, { mobile });
+  let attempted = 0;
+  r.view.save = async () => { attempted++; throw Error("synthetic public-save failure"); };
+  await assert.rejects(r.write(), r.EditorBusy);
+  assert.ok(attempted > 0);
+  r.type(r.buffer.value + " NEXT");
+  assert.equal(r.host.editorActivity.canRefresh(r.view), false, "a failed reload is not a superseded native save");
+  assert.equal(await r.host.editorReady(NOTE), false);
+  const before = attempted;
+  await r.timers.run(5);
+  assert.equal(attempted, before, "failed public reload must not resume extra saves");
+  assert.ok(r.logs.some(line => line.includes("decision=reload_released outcome=unconfirmed")));
+});

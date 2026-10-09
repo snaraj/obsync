@@ -1,0 +1,6 @@
+M4131: confirm a public bridge before all saves started
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3567 +3567 @@
+-      const bridged = bridge !== null && bridge.saves.length === views.length &&
++      const bridged = bridge !== null &&

@@ -1,0 +1,6 @@
+M4225: keep any changed disk after a delivered bridge
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -3543 +3543 @@
+-          ((onlyInserts(shown, written) && onlyInserts(pendingBridge.text, disk)) || mergeText(shown, disk, written) === disk);
++          true;

@@ -145,7 +145,9 @@ interface Settled {
 /** An atomic vault write: nothing is visible at `path` until `commit`. */
 export interface VaultWriter {
   write(bytes: Bytes): Promise<void>;
-  commit(mtime: number): Promise<VaultStat>;
+  /** Recheck the input after staging/fsync: exact bytes for a bounded merge,
+   * metadata for a streaming replacement, null for an absent destination. */
+  commit(mtime: number, expected?: Bytes | Pick<VaultStat, "mtime" | "size"> | null): Promise<VaultStat>;
   abort(): Promise<void>;
   /**
    * After a `commit` that failed, take back the copy it published anyway
@@ -353,6 +355,14 @@ export interface VaultHost {
   editing(path: string): Promise<"unsaved" | "saved" | null>;
   /** Recent trusted editor input, including a composition still in progress. */
   typing(path: string): boolean;
+  /** Identity changes only on trusted text input; never a save or remote reload.
+   * Optional hosts retain the conservative disk-stamp merge-loop accounting. */
+  editorRevision?(path: string): object | undefined;
+  /** All editor buffers are saved and no unconfirmed input/IME can be overwritten. */
+  editorReady(path: string): Promise<boolean>;
+  /** Complete bytes confirmed by an earlier native save; later input may be unsaved.
+   * This capability permits publishing that snapshot, never replacing the editor. */
+  savedSnapshot?(path: string, bytes: Bytes): boolean;
   /** Tell the person, through the one notice channel (`notices.ts`). */
   notify(notice: SyncNotice): void;
   /** Take the held-deletions question off the screen once nothing is held (`hold`). */
@@ -365,7 +375,7 @@ export interface VaultHost {
    */
   pass?(open: boolean): void;
   /** The engine has sync work in hand, or none left: said once at each change (`SyncEngine.pace`, issue #283). */
-  hurry?(busy: boolean): void;
+  hurry?(busy: boolean, reason: "work" | "calm" | "stop" | "unanswered"): void;
 }
 
 export interface SyncContext {
@@ -396,7 +406,7 @@ export interface SyncContext {
    * Resolutions of one file inside the current window, for the merge breaker,
    * and the `(mtime, size)` the last one left the note at (`pull.ts`).
    */
-  readonly merges: Map<string, { since: number; count: number; left: string; remote?: Map<string, string>; generation?: object }>;
+  readonly merges: Map<string, { since: number; count: number; left: string; remote?: Map<string, string>; generation?: object; input?: object }>;
   /**
    * File ids whose note here waits on this device's own push to settle a fork
    * (`pull.ts`, `deferred`): the status is not `idle` while one is in flight
@@ -431,6 +441,8 @@ export interface SyncContext {
    * queue behind it, and then the pull keeps both and settles nothing.
    */
   publish?(path: string): Promise<void>;
+  /** Queue saved local input rebased onto an acknowledged merge, without waiting on this pull. */
+  queueLocal?(path: string): void;
   /**
    * Aborted the moment the engine that made this context stops (`stop`): the
    * long poll, a retry asleep in its backoff and a chunk upload end at once,
@@ -648,6 +660,8 @@ export const RECHECK_MS = 400;
  * `EDITOR_SETTLE_MAX_BYTES`, one chunk; any other writer keeps the full guard.
  */
 export const EDITOR_SETTLE_MS = 150;
+/** Bound publication batches from the first confirmed save, never the last key. */
+export const EDITOR_PUBLISH_MS = 100;
 export const EDITOR_SETTLE_MAX_BYTES = CHUNK_MAX;
 /**
  * How long a file that has been SEEN changing must then hold still before it
@@ -892,7 +906,7 @@ export class SyncEngine {
   private readonly timers: Timers;
   private readonly onStatus: (status: EngineStatus) => void;
   private readonly nowFn: () => number;
-  private readonly pending = new Map<string, { handle: unknown; tries: number }>();
+  private readonly pending = new Map<string, { handle: unknown; tries: number; editor?: true }>();
   private readonly queue: string[] = [];
   private readonly deletions = new Set<string>();
   /** Paths whose NAME changed: their bytes are identical, so the push must be forced. */
@@ -936,6 +950,8 @@ export class SyncEngine {
   private contextValue: SyncContext | null = null;
   private active = 0;
   private draining = false;
+  /** Latest attempt answered; used only for the desktop power policy (#283). */
+  private networkAvailable = true;
   /** The drain in flight, so a second caller waits for it instead of for nothing. */
   private drainWork: Promise<void> | null = null;
   /** Ends the drain's wait for a push to land, when a path is queued (`drain`). */
@@ -1200,6 +1216,7 @@ export class SyncEngine {
       arrivals: new Map<string, number>(),
       forked: new Set<string>(),
       publish: (path) => this.pushOne(path),
+      queueLocal: (path) => { if (this.running) this.enqueue(path); },
       signal,
       copies: new Map(),
       staged: new Map(),
@@ -1370,18 +1387,29 @@ export class SyncEngine {
    * than shown at load 27, and a download half as fast at load 6. The
    * host is told once when work begins and once when none has been left for
    * `CALM_MS`, or at a stop, never per note, and does what its platform
-   * allows (`main.ts`, `hurry`).
+   * allows (`main.ts`, `hurry`). An unanswered attempt also starts this
+   * grace: draining includes transport backoff, which can last minutes. An
+   * answer cancels it or lifts throttling again while work remains. This
+   * latest-attempt policy can throttle concurrent local work after a lost
+   * request; it changes no queue, retry, or persistence decision. Refusals
+   * that answer are reachable, not proof of progress.
    */
+  reachability(answered: boolean): void {
+    if (this.networkAvailable === answered) return;
+    this.networkAvailable = answered;
+    this.pace();
+  }
+
   private pace(): void {
-    const busy = this.running && (this.draining || this.pulls > 0 || this.laning || this.feedBehind);
+    const busy = this.running && this.networkAvailable && (this.draining || this.pulls > 0 || this.laning || this.feedBehind);
     if (busy || !this.running) {
       if (this.calmHandle !== null) this.timers.clear(this.calmHandle);
       this.calmHandle = null;
-      if (busy !== this.hurried) this.options.host.hurry?.(this.hurried = busy);
+      if (busy !== this.hurried) this.options.host.hurry?.(this.hurried = busy, busy ? "work" : "stop");
     } else if (this.hurried && this.calmHandle === null) {
       this.calmHandle = this.timers.set(() => {
         this.calmHandle = null;
-        this.options.host.hurry?.(this.hurried = false);
+        this.options.host.hurry?.(this.hurried = false, this.networkAvailable ? "calm" : "unanswered");
       }, CALM_MS);
     }
   }
@@ -2313,6 +2341,7 @@ export class SyncEngine {
   private debounce(path: string, tries: number, seen: Settled | null = null): void {
     if (!this.running) return;
     const existing = this.pending.get(path);
+    if (tries === 0 && existing?.editor === true) return;
     if (existing) this.timers.clear(existing.handle);
     const handle = this.timers.set(() => {
       void this.track(this.settle(path, tries, seen));
@@ -2974,7 +3003,7 @@ export class SyncEngine {
         heads: file.heads,
         conflicted: true,
       };
-      await applyChange(context, change);
+      await applyChange(context, change, file);
     }
   }
 
@@ -3273,7 +3302,6 @@ export class SyncEngine {
       this.park(context, change.file_id, error);
       return null;
     }
-    if (context.state.data.parked[change.file_id] !== undefined) await this.retryOne(context, change.file_id);
     return result;
   }
 
@@ -3442,13 +3470,33 @@ export class SyncEngine {
   }
 
   /** Active-editor waits use the durable parked record, but need no error notice or long backoff. */
-  private armEditorRetry(): void {
+  editorSaved(path: string): void {
+    if (!this.running || !this.tracked(path, "editor_save")) return;
+    // Coalesce completed native saves for one bounded publication interval.
+    // Later keys and filesystem echoes cannot postpone this deadline. Disk
+    // saving and incoming editor retries stay independent of upload batching.
+    this.changed(path);
+    if (this.pending.get(path)?.editor !== true) {
+      this.unschedule(path);
+      const handle = this.timers.set(() => { void this.track(this.settle(path, 0, null)); }, EDITOR_PUBLISH_MS);
+      this.pending.set(path, { handle, tries: 0, editor: true });
+    }
+    if (!Object.values(this.options.state.data.parked)
+      .some((entry) => entry.reason === "active_editor" && entry.path === path)) return;
+    if (this.editorHandle !== null) this.timers.clear(this.editorHandle);
+    this.editorHandle = null;
+    // This is a completed save, not a filesystem event waiting to settle.
+    // Reusing the watcher's delay can miss every gap in continuous typing.
+    this.armEditorRetry(0);
+  }
+
+  private armEditorRetry(delay = 1000): void {
     if (!this.running || this.editorHandle !== null ||
       !Object.values(this.options.state.data.parked).some((entry) => entry.reason === "active_editor")) return;
     this.editorHandle = this.timers.set(() => {
       this.editorHandle = null;
       void this.track(this.retryEditors());
-    }, 1000);
+    }, delay);
   }
 
   private retryEditors(): Promise<void> {
@@ -3530,7 +3578,7 @@ export class SyncEngine {
   private async retryOne(context: SyncContext, fileId: string): Promise<boolean> {
     const waiting = context.state.data.parked[fileId];
     if (waiting?.reason === "active_editor" &&
-      (context.host.typing(waiting.path) || await context.host.editing(waiting.path) === "unsaved")) {
+      !await context.host.editorReady(waiting.path)) {
       this.armEditorRetry();
       return false;
     }
@@ -3711,6 +3759,13 @@ export class SyncEngine {
       : asked;
     await this.learnNames(context, page.changes);
     let replayed = 0;
+    // Retrying a parked file asks for its current heads, not the historical
+    // record that woke it. One typing burst can return many own echoes in a
+    // page: retry after its last record, rather than repeat native editor
+    // readiness and reconciliation before every later echo. Every record is
+    // still applied in order; a refusal retains its durable wait and timer.
+    const last = new Map(page.changes.map((change) => [change.file_id, change]));
+    let deferredRetries = 0;
     // Whether any change of the page was more than this device's own version
     // coming back (`pull.ts`, ECHOES) or an entry a replay skips.
     let wrote = false;
@@ -3738,6 +3793,10 @@ export class SyncEngine {
           if (mark?.replay === true && seenBefore(change, mark)) replayed++;
           else {
             const result = await this.receive(context, change);
+            if (result !== null && context.state.data.parked[change.file_id] !== undefined) {
+              if (last.get(change.file_id) === change) await this.retryOne(context, change.file_id);
+              else deferredRetries++;
+            }
             if (result !== "echo") wrote = true;
             this.processed(context, change, result);
           }
@@ -3752,6 +3811,7 @@ export class SyncEngine {
       }
     });
     if (replayed > 0) context.host.log(`feed decision=skipped reason=seen_before_restore entries=${replayed}`);
+    if (deferredRetries > 0) context.host.log(`feed decision=retry_coalesced reason=later_page_record retries_saved=${deferredRetries}`);
     if (!this.caughtUp && page.seq >= page.head_seq) {
       await this.releaseRetired(context);
       await this.returnLost(context);

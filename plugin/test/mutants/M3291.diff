@@ -1,12 +1,5 @@
 # M3291: a desktop does not refresh the editor it wrote under
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -1623,8 +1623,6 @@
-         const ours = landed as PathStat;
-         if (ours.size !== wrote.size || Math.round(ours.mtimeMs) !== Math.round(wrote.mtimeMs)) {
-           this.log("host path_class=file decision=write_superseded");
--        } else if (shown !== null && text !== null) {
--          await this.refreshEditors(path, shown, text, () => fs.promises.readFile(target, "utf8"));
-         }
-         return { path, mtime: Math.round(wrote.mtimeMs), size: wrote.size };
-       },
+@@ -2295 +2294,0 @@
+-          if (shown !== null && text !== null) outcome = await this.refreshEditors(path, shown, text, read, bridge);

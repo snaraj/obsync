@@ -19,12 +19,12 @@ system; it is not a device run, and only a record below is
 
 | Client | Recorded on a device | Proven in CI |
 | --- | --- | --- |
-| macOS | The runs below that name it; most recently [2026-09-30](2026-09-30-train-1.1.5.md) | `desktop-matrix.yml`, `obsidian-macos`: the official Obsidian app, two instances, through setup, pairing, notes both ways, a rename and folders, against the server behind Caddy; `plugin-tests` on macOS |
-| iPhone | The runs below that name it; most recently [2026-09-30](2026-09-30-train-1.1.5.md) | Nothing: no CI job runs a phone |
+| macOS | The runs below that name it; most recently [2026-10-08](2026-10-08-character-merge-117.md), two instances typing at one place on the 1.1.7 candidate | `desktop-matrix.yml`, `obsidian-macos`: the official Obsidian app, two instances, through setup, pairing, notes both ways, a rename and folders, against the server behind Caddy; `plugin-tests` on macOS |
+| iPhone | The runs below that name it; most recently [2026-10-08](2026-10-08-character-merge-117.md), seven sessions on the 1.1.7 candidate: paired, one defect shown to be Obsidian's, a co-typing defect found and fixed, and the background, relaunch, offline and leave journeys passed | Nothing: no CI job runs a phone |
 | iPad | Not yet recorded | Nothing |
 | Windows | [2026-09-27](2026-09-27-windows-11-vm.md): Windows 11 on ARM64 in a virtual machine, the 1.1.4 build; most recently [2026-09-30](2026-09-30-train-1.1.5.md), a 1.1.5 train build | `desktop-matrix.yml`, `obsidian-windows`: the same journeys, plus a case-only rename, the trash and a file another program holds open on NTFS; `plugin-tests` on Windows |
 | Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the same journeys with the official AppImage, the authority trusted in each instance's own NSS store, and a third instance without it refused |
-| Android | [2026-09-27](2026-09-27-android-emulator.md): an Android 15 emulator, not a physical phone, the 1.1.4 build; most recently [2026-09-30](2026-09-30-train-1.1.5.md), the same emulator on the 1.1.5 train's builds | Nothing: no CI job runs a phone |
+| Android | [2026-09-27](2026-09-27-android-emulator.md): an Android 15 emulator, not a physical phone, the 1.1.4 build; most recently [2026-10-08](2026-10-08-character-merge-117.md), the same emulator typing at one place with a desktop on the 1.1.7 candidate | Nothing: no CI job runs a phone |
 
 `desktop-matrix.yml` runs nightly and on pull requests that change the plugin
 or its harnesses; a red leg there is a finding to read.
@@ -34,6 +34,27 @@ or its harnesses; a red leg there is a finding to read.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-10-08 character merge](2026-10-08-character-merge-117.md): two
+  desktops, and a desktop with an Android emulator, typing at one place on the
+  1.1.7 candidate. Six defects found and fixed in turn; the final build keeps
+  every keystroke of both, in order, with no copy and no state stepping back,
+  through 600 s on desktops and 300 s on the phone. Over the phone's tunnel the
+  cotype journey still misses its 1.5 s budget for some keystrokes, and one
+  return from the background was slow before the emulator stalled under load.
+  Six iPhone sessions: a seventh defect, the line above typed again after a
+  tap and Cmd+Down from a hardware keyboard, is Obsidian's own, since it also
+  happened with obsync switched off. An eighth, a key typed on the iPhone right
+  after the other person's text arrived in the same word overwriting the key
+  before it, is fixed: on iOS that text now waits until the word is left or
+  typing pauses, and eight co-typing runs on the iPhone kept every key.
+  A seventh session passed the background, relaunch, offline and leave
+  journeys; two lines typed at one place while the server was away kept
+  every key, but the desktop's landed inside the phone's.
+  Its reviews found four more in code no run had reached -- a merge over a
+  partial history, a judge blind first to untouched lines and then to an
+  added one, two plugins' stamps joined into a time neither wrote -- all
+  fixed, and the desktop runs pass again on that build, one of them through
+  four merges at the ancestry read limit.
 - [2026-10-03 Rust CLI candidate](2026-10-03-rust-cli-candidate.md):
   four native hosted targets, Linux visible/manual readback, and explicit Windows
   software-emulation limits. Public installation remains a separate release gate.

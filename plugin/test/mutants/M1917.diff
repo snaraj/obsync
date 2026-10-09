@@ -1,12 +1,6 @@
 # M1917: identical heads are closed without bound
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2985,7 +2985,7 @@
-   const seen = files.get(change.file_id);
-   const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0 };
-   files.set(change.file_id, tally);
+@@ -4029 +4029 @@
 -  if (tally.count < MERGE_STORM_LIMIT) {
 +  if (true) {
-     tally.count++;
-     return true;
-   }

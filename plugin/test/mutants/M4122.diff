@@ -1,0 +1,12 @@
+# M4122: mobile supersession loses its release outcome
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -1708,7 +1708,7 @@
+           // against the prior version, then merge this incoming version again.
+           throw new WriteSuperseded();
+         } catch (error) {
+-          if (error instanceof WriteSuperseded) outcome = "superseded";
++          // Mutant: leave superseded mobile release unconfirmed.
+           throw error;
+         } finally { release(outcome); }
+       },

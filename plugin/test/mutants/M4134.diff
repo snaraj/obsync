@@ -1,0 +1,12 @@
+# M4134: reuse one displayed code point for repeated delivery
+--- a/plugin/src/main.ts
++++ b/plugin/src/main.ts
+@@ -542,7 +542,7 @@
+   for (const point of before) {
+     const found = after.indexOf(point, offset);
+     if (found < 0) return false;
+-    offset = found + point.length;
++    offset = found;
+   }
+   return true;
+ }

@@ -1,0 +1,7 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -746,3 +746 @@
+-    if (!(error instanceof ApiError) ||
+-      !(error.status === 404 && error.code === "not_found") &&
+-      !["bad_multipart", "part_mismatch", "response_too_large", "batch_too_large"].includes(error.code)) throw error;
++    if (!(error instanceof ApiError)) throw error;

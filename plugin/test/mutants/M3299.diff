@@ -1,11 +1,7 @@
 # M3299: a failed load fails a write that has landed
 --- a/plugin/src/main.ts
 +++ b/plugin/src/main.ts
-@@ -2769,6 +2769,7 @@
-     } catch (error) {
-       const kind = error instanceof Error ? error.name : "unknown";
-       this.log(`host path_class=file decision=failed reason=editor_refresh error=${kind} duration_ms=${Date.now() - started}`);
+@@ -3606 +3606,2 @@
+-      this.log(`host path_class=file decision=failed reason=editor_refresh error=${kind} duration_ms=${Date.now() - started}`);
++      this.log(`host path_class=file decision=failed reason=editor_refresh error=${kind} duration_ms=${Date.now() - started}`);
 +      throw error;
-     }
-   }
- 

@@ -1,0 +1,6 @@
+M4232: let typing here reset the count of closings of two names
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4021 +4021 @@
+-  const input = sameName ? context.host.editorRevision?.(path) : undefined;
++  const input = context.host.editorRevision?.(path);

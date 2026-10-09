@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -749 +749 @@
+-    context.host.log(`pull decision=merge_inputs_refused reason=${error.code} sids=${sids.length} budget_bytes=${budget} duration_ms=${context.now() - started}`);
++    // refusal diagnostic removed

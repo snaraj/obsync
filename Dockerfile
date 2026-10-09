@@ -51,10 +51,11 @@ COPY --from=plugin /src/plugin/dist/styles.css /styles.css
 # server -- test once natively, then cross-compile one fully static binary.
 #
 # The digest was resolved with:
-#   docker buildx imagetools inspect docker.io/library/rust:1.98.0-slim-trixie
-# and independently against the registry manifest for that tag on 2026-09-07.
+#   docker buildx imagetools inspect docker.io/library/rust:1.98.1-slim-trixie
+# The index digest was independently rechecked on 2026-10-06 for PR #336.
+# The compiler below remains selected by rust-toolchain.toml.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.98.0-slim-trixie@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27 AS server
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.98.1-slim-trixie@sha256:4cd829461bd5c4d511c32e269da9cb8929223b666519d8004e35fc8d1d771ab7 AS server
 ARG TARGETARCH
 ENV CARGO_TERM_COLOR=never
 WORKDIR /src

@@ -25,7 +25,7 @@ import { createRequire } from "node:module";
 import { DEVICE_B, FakeHost, KEYS, SECRET_B, STEP_MS, fakeState, pair, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { EditorBusy, applyChange } = require("../build/sync/pull.js");
+const { EditorBusy, Unwritable, applyChange } = require("../build/sync/pull.js");
 const { pendingPublication, pushDelete, pushFile, sidDigest } = require("../build/sync/push.js");
 const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
 
@@ -156,7 +156,7 @@ function refusing(host, busy = async (path) => host.editors.has(path) && (host.t
  * the run as Obsidian 1.13 and the server make it (#227): a save a keystroke,
  * the server's listing, and no write under an open editor.
  */
-async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB = false, host = false }) {
+async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB = false, host = false, observe }) {
   const { server, timers, a, b } = await pair(t, "immediate", { isMobileB });
   // One clock for everything a device reads the time from: file mtimes, the
   // merge breaker's window, the virtual timers. A minute of typing is a
@@ -165,7 +165,22 @@ async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB
     Object.defineProperty(device.host, "clock", { get: () => T0 + timers.now, set: () => undefined });
   }
   const refused = host ? [refusing(a.host), refusing(b.host)] : [];
-  if (host) for (const device of [a, b]) listing(device.transport);
+  for (const [index, device] of [a, b].entries()) {
+    if (host) {
+      listing(device.transport);
+      const ready = device.host.editorReady.bind(device.host);
+      device.host.editorReady = async (path) => {
+        const allowed = await ready(path);
+        if (!allowed) refused[index].count++;
+        return allowed;
+      };
+    } else {
+      // Deliberately permissive legacy host: this case exercises a native
+      // merge under unsaved input. The guarded host cases count refusals at
+      // both the preparation and final-commit boundaries.
+      device.host.editorReady = async () => true;
+    }
+  }
   const statuses = { a: [], b: [] };
   a.engine.onStatus = (status) => statuses.a.push(status.kind);
   b.engine.onStatus = (status) => statuses.b.push(status.kind);
@@ -185,6 +200,27 @@ async function session(t, { placeA, placeB, textA, textB, base = BASE, isMobileB
   const fileId = a.state.fileByPath(NOTE).fileId;
 
   const editors = { a: new OpenEditor(a, timers, placeA), b: new OpenEditor(b, timers, placeB) };
+  observe?.(a, b);
+  if (!host) {
+    // Exercise the permissive legacy host's unsaved-input merge deliberately.
+    // A faster publication path can otherwise land every write in a saved
+    // gap and make this test's required branch depend on crypto scheduling.
+    const writer = a.host.writer.bind(a.host), type = editors.a.type.bind(editors.a);
+    let release, delayed = false;
+    editors.a.type = (text) => { type(text); if (text && release) { release(); release = null; } };
+    a.host.writer = async (...args) => {
+      const output = await writer(...args);
+      return { ...output, commit: async (...commitArgs) => {
+        if (args[0] === NOTE && !delayed) {
+          delayed = true;
+          await new Promise((resolve) => { release = resolve; });
+          assert.notEqual(editors.a.unsaved, "", "legacy incoming write meets real pending input");
+        }
+        return output.commit(...commitArgs);
+      } };
+    };
+    t.after(() => release?.());
+  }
   const typedA = [...textA];
   const typedB = [...textB];
   const every = host ? 1 : AUTOSAVE_MS / KEY_MS;
@@ -315,6 +351,83 @@ test("two devices appending on the same line converge with every keystroke once 
   }
 });
 
+/**
+ * THE SAME PLACE (#339). Both carets sit after one character in the middle of
+ * a line, the phone's included, on hosts that save every keystroke, and both
+ * people type, mistype and delete what they mistyped, as a phone keyboard's
+ * backspace and corrections do. The physical phone run of 2026-10-08 ended
+ * with letters lost or repeated and twelve copies. Every kept keystroke of
+ * both must be in the note once, each person's in the order typed, and every
+ * deleted one gone, on both devices, with no copy. And on the way: every text
+ * either disk held shows each person's keys as they stood after one of that
+ * person's keystrokes, never an earlier one than the text before it -- a
+ * deleted key that came back for a moment came back on the screen (live run,
+ * 2026-10-08).
+ */
+for (const host of [false, true]) test(`two devices typing and deleting at the same place mid-line keep every keystroke once and in order, without copies (#339, ${host ? "saving every key" : "merging under input"})`, async (t) => {
+  const BACK = "\b";
+  // Kept keys from one range, mistyped ones from another, each key unique.
+  const keys = (kept, typo, count) => Array.from({ length: count }, (_, i) =>
+    String.fromCodePoint(kept + i) + (i % 4 === 3 ? String.fromCodePoint(typo + i) + BACK : "")).join("");
+  const textA = keys(0x4e00, 0x6000, 32), textB = keys(0x5000, 0x6100, 20);
+  const intended = (typed) => typed.replace(/.\x08/gu, "");
+  // A caret moves with its own typing and stays where it is when the other
+  // person's text arrives, as CodeMirror maps it; backspace deletes before it.
+  const caret = (own) => (text, typed) => {
+    const start = text.indexOf("0") + 1;
+    let at = start;
+    for (let i = start; i < text.length && text[i] !== "\n"; i++) if (own.includes(text[i] ?? "")) at = i + 1;
+    for (const key of typed) {
+      if (key !== BACK) text = text.slice(0, at) + key + text.slice(at++);
+      else if (at > start && own.includes(text[at - 1] ?? "")) text = text.slice(0, at - 1) + text.slice(at--);
+    }
+    return text;
+  };
+  // Each person's keys as they stood after each of that person's keystrokes: the moment's number.
+  const moments = (typed) => {
+    const at = new Map([["", [0]]]), shown = [];
+    [...typed].forEach((key, i) => {
+      if (key === BACK) shown.pop(); else shown.push(key);
+      at.set(shown.join(""), [...(at.get(shown.join("")) ?? []), i + 1]);
+    });
+    return at;
+  };
+  const people = [textA, textB].map((typed) => ({ keys: new Set([...typed].filter((key) => key !== BACK)), at: moments(typed) }));
+  const stepped = new Map(), checked = [0, 0];
+  const observe = (...devices) => devices.forEach((device, index) => {
+    const floor = people.map(() => 0);
+    device.host.on("modify", (file) => {
+      if (file.path !== NOTE) return;
+      checked[index]++;
+      const text = device.host.text(NOTE) ?? "";
+      people.forEach((person, who) => {
+        const seen = [...text].filter((key) => person.keys.has(key)).join("");
+        const next = (person.at.get(seen) ?? []).filter((moment) => moment >= (floor[who] ?? 0));
+        if (next.length === 0) stepped.set(`${index}:${who}:${seen}`, text);
+        else floor[who] = next[0] ?? 0;
+      });
+    });
+  });
+  const { a, b, story } = await session(t, {
+    base: "line one\nline two\n0 tail\n", placeA: caret(textA), placeB: caret(textB),
+    textA, textB, isMobileB: true, host, observe,
+  });
+  assert.ok(checked.every((count) => count > 10), `the disks were looked at ${checked.join("/")} times:\n  ${story}`);
+  assert.deepEqual([...stepped.values()], [], `a disk held a moment of someone's typing that never was, or an earlier one:\n  ${story}`);
+  for (const device of [a, b]) {
+    const note = device.host.text(NOTE);
+    assert.deepEqual(copies(device.host), [], `typing at one place created copies:\n  ${story}`);
+    assert.ok(note.startsWith("line one\nline two\n0") && note.endsWith(" tail\n"), `the fixed text moved:\n  ${story}`);
+    const main = [...note];
+    for (const typed of [textA, textB]) {
+      const kept = [...intended(typed)], at = kept.map((key) => main.indexOf(key));
+      assert.ok(at.every((place, i) => place >= 0 && main.lastIndexOf(kept[i] ?? "") === place && (i === 0 || place > (at[i - 1] ?? -1))),
+        `a keystroke was lost, repeated or reordered:\n  ${story}`);
+      for (const key of typed) if (!kept.includes(key) && key !== BACK) assert.ok(!main.includes(key), `a deleted keystroke came back:\n  ${story}`);
+    }
+  }
+});
+
 // --- the rules, one at a time ------------------------------------------------
 
 /** One version from the other device, over `rig`'s fixture keys. */
@@ -323,6 +436,31 @@ const foreign = (r, fileId, text, parents, mtime) => r.server.publish({
   domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
 });
 const storms = (r) => r.host.logs.filter((line) => line.includes("reason=merge_storm"));
+
+for (const isMobile of [false, true]) test(`prefix and word-boundary edits reconcile into one encrypted history (${isMobile ? "mobile" : "desktop"})`, async () => {
+  for (const [original, left, right, expected] of [
+    ["ABCDEFGHIJKL", "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"],
+    ["# Both", "# Both A001 A002", "# Both B001 B002", "# Both A001 A002 B001 B002"],
+  ]) {
+    const r = await rig({ isMobile });
+    r.host.seed(NOTE, original, 1000);
+    const base = await pushFile(r.context, NOTE);
+    r.host.seed(NOTE, left, 2000);
+    await pushFile(r.context, NOTE);
+    const incoming = await foreign(r, base.fileId, right, [base.versionId], 3000);
+    assert.equal(await applyChange(r.context, incoming), "merged", pulls(r.host));
+    assert.equal(r.host.text(NOTE), expected);
+    assert.ok(r.host.logs.some(line => /^pull decision=merged .* duration_ms=[0-9]+ announced=(true|false)$/.test(line)), pulls(r.host));
+    assert.deepEqual(copies(r.host), []);
+    const file = r.server.files.get(base.fileId);
+    assert.equal(file.heads.length, 1);
+    assert.equal(r.state.fileByPath(NOTE).versionId, file.heads[0]);
+    r.host.seed(NOTE, expected + "!", 4000);
+    await pushFile(r.context, NOTE);
+    assert.equal(r.server.files.get(base.fileId).heads.length, 1);
+    assert.deepEqual(copies(r.host), []);
+  }
+});
 
 for (const isMobile of [false, true]) test(`continued adjacent appends reconcile without copies (${isMobile ? "mobile" : "desktop"})`, async () => {
   const r = await rig({ isMobile });
@@ -521,7 +659,7 @@ test("the merge breaker counts resolutions in a row, and an edit here starts the
  * breaker that read its own writes as the user's would never stop a loop that
  * merges.
  */
-test("merges that rewrite the note with nothing typed here still trip the breaker", async () => {
+for (const continuedInput of [false, true]) test(`merge writes preserve loop accounting when they absorb input (continued: ${continuedInput})`, async () => {
   const r = await rig();
   // Every edit two lines from any other: this merge reads neighbouring lines
   // as one hunk.
@@ -533,6 +671,20 @@ test("merges that rewrite the note with nothing typed here still trip the breake
   r.host.seed(NOTE, text([0]), 2000);
   await pushFile(r.context, NOTE);
 
+  let revision = {};
+  r.host.editorRevision = () => revision;
+  // A merge can absorb a native save before committing and leave a stamp
+  // describing both. Deliver its next input while the previous resolution
+  // is underway, not through a new disk stamp between resolutions.
+  const writer = r.host.writer.bind(r.host);
+  r.host.writer = async (...args) => {
+    const pending = await writer(...args);
+    return { ...pending, commit: async (...params) => {
+      if (continuedInput && args[0] === NOTE) revision = {};
+      return pending.commit(...params);
+    } };
+  };
+
   const results = [];
   for (let round = 1; round <= 6; round++) {
     // Each write lands at its own moment, as real ones do.
@@ -541,8 +693,17 @@ test("merges that rewrite the note with nothing typed here still trip the breake
     results.push(await applyChange(r.context, frame));
   }
   assert.deepEqual(results.slice(0, 5), ["merged", "merged", "merged", "merged", "merged"], pulls(r.host));
-  assert.notEqual(results[5], "merged", pulls(r.host));
-  assert.equal(storms(r).length, 1);
+  if (continuedInput) {
+    assert.equal(results[5], "merged", pulls(r.host));
+    assert.equal(storms(r).length, 0);
+    assert.deepEqual(copies(r.host), []);
+    assert.equal(r.context.merges.get(base.fileId).count, 1);
+    assert.equal(r.host.logs.filter(line => line.includes("reason=trusted_editor_input")).length, 6);
+  } else {
+    assert.notEqual(results[5], "merged", pulls(r.host));
+    assert.equal(storms(r).length, 1);
+    assert.equal(r.host.logs.filter(line => line.includes("reason=trusted_editor_input")).length, 1, "one input cannot repeatedly exempt a loop");
+  }
 });
 
 /**
@@ -834,7 +995,10 @@ test("a clean-looking append uses both shared ancestors without replaying their 
   assert.equal(r.server.files.get(root.fileId).heads.length, 1);
 });
 
-for (const deeper of [false, true]) test(`an unresolvable shared base cannot be replaced by one ancestor (deeper: ${deeper})`, async () => {
+// The shared pair one level down was settled by rule (`XY` kept out of `abL`).
+// Its base is rebuilt by merging that pair, never taken from one ancestor, so
+// both heads' common omission of `XY` is one change, not two (#339).
+for (const deeper of [false, true]) test(`a shared base whose pair was settled by rule is rebuilt, not taken from one ancestor (deeper: ${deeper})`, async () => {
   const r = await rig();
   r.host.seed(NOTE, "ab\n", 1000);
   const root = await pushFile(r.context, NOTE);
@@ -852,9 +1016,10 @@ for (const deeper of [false, true]) test(`an unresolvable shared base cannot be 
   const mine = r.host.seed(NOTE, text + "x\n", stamp - 1000);
   r.state.setFile(NOTE, { fileId: root.fileId, versionId: ours.version_id,
     mtime: stamp - 1000, size: mine.length, sha256: await sidDigest(ours.sids) });
-  assert.notEqual(await applyChange(r.context, theirs), "merged", pulls(r.host));
-  assert.equal(copies(r.host).length, 1);
-  assert.deepEqual([r.host.text(NOTE), r.host.text(copies(r.host)[0])].sort(), [text + "x\n", text + "y\n"].sort());
+  assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), text + "xy\n");
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.some((line) => line.includes("decision=merge_base reason=criss_cross")), pulls(r.host));
 });
 
 test("typing beyond a criss-cross head is published before another merge of that pair", async () => {
@@ -1063,7 +1228,7 @@ test("a device that merged every arrival remembers what it was shown, and merges
   assert.equal(await applyChange(r.context, theirs), "applied", pulls(r.host));
   assert.equal(r.host.text(NOTE), lines(`${b} B37 B38`, a));
   assert.deepEqual(copies(r.host), [], pulls(r.host));
-  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=1 ok=true")), pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross found=verified_merge level=1")), pulls(r.host));
   assert.ok(!r.host.logs.some((line) => line.includes("reason=merge_ancestry_limit")), pulls(r.host));
   assert.ok(seen.reads.length - walked <= 2, `the criss-cross read ${seen.reads.length - walked} versions it had been shown`);
 });
@@ -1129,7 +1294,9 @@ test("merges of merges of one pair merge again, three levels down and no further
       assert.notEqual(result, "merged", pulls(r.host));
       assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=3 ok=false")), pulls(r.host));
     }
-    assert.ok(!r.host.logs.some((line) => line.includes("level=4")), pulls(r.host));
+    assert.ok(!r.host.logs.some((line) => line.includes("reason=criss_cross level=4")), pulls(r.host));
+    assert.equal(r.host.logs.some((line) => line.includes("reason=history_budget level=4 budget_levels=3")), levels === 4,
+      "the refused fourth level is reported without traversing or merging it");
   }
 });
 
@@ -1144,6 +1311,30 @@ test("merges of merges of one pair merge again, three levels down and no further
  * being typed in (the co-typing run on a busy CI machine, 2026-09-27). The
  * base of that pair was found one round ago, and a version never changes.
  */
+test("an active editor waits for a peer merge when history work reaches its bound", async () => {
+  const r = await rig();
+  const { ours, theirs, one, five, lines, publish } = await (await ladder(r))(4);
+  const original = r.host.text(NOTE), held = { ...r.state.fileByPath(NOTE) };
+  r.host.typing = () => true;
+  r.host.editorReady = async () => true;
+
+  await assert.rejects(applyChange(r.context, theirs), error =>
+    error instanceof Unwritable && error.reason === "active_editor" && error.path === NOTE);
+  assert.equal(r.host.text(NOTE), original);
+  assert.deepEqual(r.state.fileByPath(NOTE), held);
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.some(line => line.includes("reason=history_budget level=4 budget_levels=3")), pulls(r.host));
+  assert.ok(r.host.logs.some(line => line.includes("reason=history_budget_wait")), pulls(r.host));
+  assert.ok(!r.host.logs.some(line => line.includes("decision=unmerged reason=overlap")), pulls(r.host));
+
+  // The peer already knows the deeper base and publishes its clean merge.
+  // Its receipt contains both heads; no deeper traversal or copy is needed.
+  const resolved = await publish(lines(one, five), [ours.version_id, theirs.version_id]);
+  assert.equal(await applyChange(r.context, resolved), "applied", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(one, five));
+  assert.deepEqual(copies(r.host), []);
+});
+
 test("a criss-cross one level deeper every round keeps merging while both type (#227)", async () => {
   const r = await rig();
   const { ours, theirs, one, five, lines, publish, fileId } = await (await ladder(r))(3);
@@ -1158,17 +1349,65 @@ test("a criss-cross one level deeper every round keeps merging while both type (
   const file = r.server.files.get(fileId);
   assert.equal(file.heads.length, 1);
   assert.equal(r.state.fileByPath(NOTE).versionId, file.heads[0]);
-  assert.ok(r.host.logs.some((line) => /reason=criss_cross level=2 ok=true found=before/.test(line)), pulls(r.host));
+  assert.ok(r.host.logs.some((line) => /reason=criss_cross found=verified_merge level=1/.test(line)), pulls(r.host));
   assert.ok(!r.host.logs.some((line) => line.includes("ok=false")), pulls(r.host));
+});
+
+/**
+ * A pull that failed after the walk walks nothing again: the base of a pair is
+ * remembered by the pair, not only once this device has merged it, so the
+ * retry reads no history it already read.
+ */
+test("a criss-cross pull retried after its merge failed to publish finds its base again without walking (#227)", async () => {
+  const r = await rig();
+  const { theirs, one, five, lines } = await (await ladder(r))(3);
+  const post = r.transport.postVersion;
+  r.transport.postVersion = async () => { throw new Error("fake transport: connection reset"); };
+  const first = await applyChange(r.context, theirs).then((result) => result, (error) => error);
+  assert.notEqual(first, "merged", pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=1 ok=true file=")), pulls(r.host));
+  const walked = r.host.logs.length;
+  r.transport.postVersion = post;
+  await applyChange(r.context, theirs);
+  const retry = r.host.logs.slice(walked);
+  // The merge this device wrote but could not publish is its push's to publish.
+  assert.ok(retry.some((line) => line.includes("decision=deferred reason=unpublished_criss_cross")), retry.join(" | "));
+  assert.equal(r.host.text(NOTE), lines(one, five));
+  assert.ok(retry.some((line) => line.includes("reason=criss_cross level=1 ok=true found=before")), pulls(r.host));
+  assert.ok(!retry.some((line) => /reason=criss_cross level=[23]/.test(line)), `the retry walked again: ${retry.join(" | ")}`);
+});
+
+/**
+ * A pull that walked three levels and then waited for this device's own
+ * typing to be pushed merged nothing, so no merge of it is verified here; its
+ * bases are still known. Three rounds later that pair is the fourth level of
+ * the next walk -- the bound -- and is found, not refused.
+ */
+test("a base walked by a pull that waited for typing is found at the bound rounds later (#227)", async () => {
+  const r = await rig();
+  const climb = await ladder(r);
+  const { theirs, one, five, lines } = await climb(3);
+  r.host.seed(NOTE, lines(`typed ${one}`, five.replace(/^b\d+ /, "")), 10_000);
+  await applyChange(r.context, theirs);
+  assert.ok(r.host.logs.some((line) => line.includes("decision=deferred reason=unpublished_criss_cross")), pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=3 ok=true file=")), pulls(r.host));
+  const walked = r.host.logs.length;
+  const top = await climb(3);
+  assert.equal(await applyChange(r.context, top.theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), top.lines(top.one, top.five));
+  assert.deepEqual(copies(r.host), []);
+  const later = r.host.logs.slice(walked);
+  assert.ok(later.some((line) => line.includes("reason=criss_cross level=4 ok=true found=before")), later.join(" | "));
+  assert.ok(!later.some((line) => line.includes("history_budget")), later.join(" | "));
 });
 
 /**
  * The bound is on the levels ONE resolution walks, and a level found before is
  * no walk: a device that resolved the first round and then met the fourth
- * finds the rest at the bound itself. A device that never met the first round
+ * finds the verified parent merge before the bound. A device that never met the first round
  * still settles a fourth by rule (above).
  */
-test("a level found in an earlier round is not walked again, even at the bound (#227)", async () => {
+test("a verified earlier merge stops traversal before the history bound (#227)", async () => {
   const r = await rig();
   const climb = await ladder(r);
   assert.equal(await applyChange(r.context, (await climb(1)).theirs), "merged", pulls(r.host));
@@ -1177,7 +1416,7 @@ test("a level found in an earlier round is not walked again, even at the bound (
   assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
   assert.equal(r.host.text(NOTE), lines(one, five));
   assert.deepEqual(copies(r.host), []);
-  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=4 ok=true found=before")), pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross found=verified_merge level=3")), pulls(r.host));
 });
 
 /**
@@ -1186,6 +1425,28 @@ test("a level found in an earlier round is not walked again, even at the bound (
  * note whose base fills a chunk leaves no room for the one found before it,
  * which is then walked from the bottom again, as a device that never met it.
  */
+test("a saved editor reuses a verified parent merge across skipped criss-cross levels", async () => {
+  const r = await rig(), climb = await ladder(r);
+  r.host.typing = () => true;
+  r.host.editorReady = async () => true;
+  assert.equal(await applyChange(r.context, (await climb(3)).theirs), "merged", pulls(r.host));
+  const { theirs, one, five, lines } = await climb(4);
+  assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(one, five));
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.some((line) => line.includes("found=verified_merge")), pulls(r.host));
+});
+
+test("an ordinary authenticated merge is reused after skipped live criss-cross levels", async () => {
+  const r = await rig(), climb = await ladder(r);
+  assert.equal(await applyChange(r.context, (await climb(3)).theirs), "merged", pulls(r.host));
+  const { theirs, one, five, lines } = await climb(4);
+  assert.equal(await applyChange(r.context, theirs), "merged", pulls(r.host));
+  assert.equal(r.host.text(NOTE), lines(one, five));
+  assert.deepEqual(copies(r.host), []);
+  assert.ok(r.host.logs.some((line) => line.includes("found=verified_merge")), pulls(r.host));
+});
+
 test("remembered bases hold one merge input's worth, the oldest forgotten first (#227)", async () => {
   const r = await rig();
   // A 4 KiB base, then one 2 KiB short of a chunk: together over it, while
@@ -1201,7 +1462,7 @@ test("remembered bases hold one merge input's worth, the oldest forgotten first 
   assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=3 ok=false")), pulls(r.host));
   // The newest is kept: the big note's next rounds find its first one.
   assert.equal(await applyChange(r.context, (await big(3)).theirs), "merged", pulls(r.host));
-  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross level=4 ok=true found=before")), pulls(r.host));
+  assert.ok(r.host.logs.some((line) => line.includes("reason=criss_cross found=verified_merge level=3")), pulls(r.host));
 });
 
 /**
@@ -1288,6 +1549,9 @@ test("remembered versions hold one merge input's worth, the oldest forgotten fir
   await pushFile(r.context, BIG);
   const other = await r.server.publish({ fileId: root.fileId, path: BIG, bytes: enc("big there\n"), mtime: 3000,
     parents: [root.versionId], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
+  // The feed now reaches the same cache before getFile does. Apply identical
+  // hostile memory pressure at both entry points, not two bodies for one id.
+  other.pad = "x".repeat(CHUNK_MAX);
   const getFile = r.transport.getFile.bind(r.transport);
   r.transport.getFile = async (id) => {
     const file = await getFile(id);
@@ -1447,8 +1711,12 @@ test("a save landing while a version downloads is not written over", async () =>
 
 // --- a fork that does not merge, settled by rule (issue #135) ----------------
 
-/** Two heads over one base that overlap, with this device holding `mine`. */
-async function overlap(r, mine = "mine\n", theirs = "theirs\n") {
+// Text always merges (#339), so these forks are binary: a NUL byte makes each
+// head content that has no merge, which the rule below still settles.
+const MINE = "mine\0\n", THEIRS = "theirs\0\n";
+
+/** Two heads over one base that do not merge, with this device holding `mine`. */
+async function overlap(r, mine = MINE, theirs = THEIRS) {
   r.host.seed(NOTE, "base\n", 1000);
   const base = await pushFile(r.context, NOTE);
   const other = await foreign(r, base.fileId, theirs, [base.versionId], 3000);
@@ -1491,7 +1759,7 @@ for (const incomplete of [false, true]) test(`a fork whose other head a later ve
   assert.equal(await applyChange(r.context, head), "skipped", pulls(r.host));
   assert.ok(r.host.logs.some((line) => line.includes("decision=skipped reason=superseded_head")), pulls(r.host));
   assert.equal(r.server.journal.length, journal, "a stale pair was closed");
-  assert.equal(r.host.text(NOTE), "mine\n");
+  assert.equal(r.host.text(NOTE), MINE);
   assert.deepEqual(copies(r.host), []);
 });
 
@@ -1519,8 +1787,8 @@ test("two settlements of one fork at once on the losing device make one copy", a
   const results = await Promise.all(runs);
   assert.ok(results.includes("applied"), results.join(","));
   assert.equal(copies(r.host).length, 1, `${JSON.stringify(copies(r.host))} ${pulls(r.host)}`);
-  assert.equal(r.host.text(copies(r.host)[0]), "mine\n");
-  assert.equal(r.host.text(NOTE), "theirs\n");
+  assert.equal(r.host.text(copies(r.host)[0]), MINE);
+  assert.equal(r.host.text(NOTE), THEIRS);
   // And the record says what the note is: the head that closed the fork, at
   // the note's own size and time. A second settlement undoing the first's
   // record is a note the next push publishes against the wrong parent.
@@ -1542,8 +1810,8 @@ test("two devices settling the same overlap publish one shared conflict-copy ver
   a.host.seed(NOTE, "base\n", 1000);
   const base = await pushFile(left, NOTE);
   await applyChange(right, server.journal.at(-1));
-  a.host.seed(NOTE, "desktop replacement\n", 2000);
-  b.host.seed(NOTE, "phone replacement\n", 3000);
+  a.host.seed(NOTE, "desktop replacement\0\n", 2000);
+  b.host.seed(NOTE, "phone replacement\0\n", 3000);
   const ours = await pushFile(left, NOTE);
   const ourFrame = server.journal.at(-1);
   const theirs = await pushFile(right, NOTE);
@@ -1584,8 +1852,8 @@ test("two devices settling the same overlap publish one shared conflict-copy ver
   assert.equal(server.deduplicated.filter(entry => entry.fileId === recordA.fileId).length, 1);
   const desktopKept = ours.versionId < theirs.versionId;
   for (const device of [a, b]) {
-    assert.equal(device.host.text(NOTE), desktopKept ? "desktop replacement\n" : "phone replacement\n");
-    assert.equal(device.host.text(copy), desktopKept ? "phone replacement\n" : "desktop replacement\n");
+    assert.equal(device.host.text(NOTE), desktopKept ? "desktop replacement\0\n" : "phone replacement\0\n");
+    assert.equal(device.host.text(copy), desktopKept ? "phone replacement\0\n" : "desktop replacement\0\n");
   }
   assert.equal(server.files.get(base.fileId).heads.length, 1);
   assert.equal(a.state.fileByPath(NOTE).versionId, b.state.fileByPath(NOTE).versionId);
@@ -1599,7 +1867,7 @@ test("two devices settling the same overlap publish one shared conflict-copy ver
  */
 test("text typed on top of the losing head is published as the copy's next version", async () => {
   const { r, head } = await losing();
-  const TYPED = "mine\nand a line typed here since\n";
+  const TYPED = "mine\0\nand a line typed here since\n";
   r.host.seed(NOTE, TYPED, 5555);
 
   assert.equal(await applyChange(r.context, head), "applied", pulls(r.host));
@@ -1625,7 +1893,7 @@ test("text typed on top of the losing head is published as the copy's next versi
 test("a losing note whose editor refuses the kept head keeps its record, and its next save its parent (#227)", async () => {
   const { r, ours, head } = await losing();
   const refused = refusing(r.host, async (path) => path === NOTE);
-  const TYPED = "mine\nand a line typed here since\n";
+  const TYPED = "mine\0\nand a line typed here since\n";
   r.host.seed(NOTE, TYPED, 5555);
 
   await assert.rejects(applyChange(r.context, head), (error) => error.reason === "active_editor");

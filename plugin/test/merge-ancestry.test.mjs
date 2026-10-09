@@ -106,6 +106,134 @@ test("ancestry reads stop at the fixed budget on a long private branch", async (
   assert.ok([...r.host.files.keys()].some(p => p.includes("(conflict")));
 });
 
+test("a long live feed retains own echoes and superseded peer edits for the final merge", async () => {
+  const r = await windowedFork(80);
+  const original = r.host.text(NOTE);
+  const frames = [...r.server.journal];
+  const own = frames.filter(frame => frame.device_id === r.context.deviceId);
+  const peers = frames.filter(frame => frame.device_id !== r.context.deviceId && frame.version_id !== r.incoming.version_id);
+  assert.equal(own.length, 81);
+  assert.equal(peers.length, 79);
+  for (const frame of own) assert.equal(await applyChange(r.context, frame), "echo");
+  for (const frame of peers) assert.equal(await applyChange(r.context, frame), "skipped");
+  assert.equal(r.host.text(NOTE), original, "caching feed history must not apply obsolete edits");
+  assert.equal(r.host.files.size, 1);
+  assert.equal(r.reads.length, 0);
+  assert.equal(await applyChange(r.context, r.incoming), "merged");
+  assert.equal(r.host.text(NOTE), "Shared: START|" + "A".repeat(80) + "a".repeat(80));
+  assert.equal(r.server.files.get(r.base.fileId).heads.length, 1);
+  assert.equal(r.host.files.size, 1, "ordinary live history must not displace typing into copies");
+  assert.equal(r.reads.length, 0, "already received ancestry needs no historical requests");
+  assert.match(r.host.logs.find(line => line.includes("reason=merge_ancestry ")) ?? "", /reads=0 recalled=[1-9]\d* held_chars=\d+ budget_reads=64 budget_chars=8388608 duration_ms=\d+$/);
+  assert.ok(!r.host.logs.some(line => line.includes("reason=merge_ancestry_limit")));
+});
+
+test("a served page skips superseded tracked edits without native disk or head reads", async () => {
+  const r = await windowedFork(80);
+  const page = await r.transport.changes(0, 0, 1000);
+  const peers = page.changes.filter(frame => frame.device_id !== r.context.deviceId && frame.version_id !== r.incoming.version_id);
+  assert.equal(peers.length, 79);
+  const original = r.host.text(NOTE), stat = r.host.stat, nested = r.host.inNestedVault, getFile = r.transport.getFile;
+  r.host.stat = r.host.inNestedVault = r.transport.getFile = async () => { throw Error("obsolete frame issued external work"); };
+  for (const frame of peers) assert.equal(await applyChange(r.context, frame), "skipped");
+  assert.equal(r.host.text(NOTE), original);
+  assert.equal(r.host.files.size, 1);
+  r.host.stat = stat; r.host.inNestedVault = nested; r.transport.getFile = getFile;
+  for (const frame of page.changes.filter(frame => frame.device_id === r.context.deviceId)) {
+    assert.equal(await applyChange(r.context, frame), "echo");
+  }
+  assert.equal(await applyChange(r.context, r.incoming), "merged");
+  assert.equal(r.host.text(NOTE), "Shared: START|" + "A".repeat(80) + "a".repeat(80));
+  assert.equal(r.reads.length, 0);
+  assert.equal(r.server.files.get(r.base.fileId).heads.length, 1);
+});
+
+test("cached peer ancestry skips an obsolete page after our head advances", async () => {
+  const r = await windowedFork(80);
+  const page = await r.transport.changes(0, 0, 1000);
+  for (const frame of page.changes.filter(frame => frame.device_id === r.context.deviceId)) {
+    assert.equal(await applyChange(r.context, frame), "echo");
+  }
+  r.host.seed(NOTE, "Shared: START|" + "A".repeat(81), 4000);
+  await pushFile(r.context, NOTE);
+  const peers = page.changes.filter(frame => frame.device_id !== r.context.deviceId && frame.version_id !== r.incoming.version_id);
+  assert.ok(peers.every(frame => !frame.heads.includes(r.state.fileByPath(NOTE).versionId)));
+  const stat = r.host.stat, nested = r.host.inNestedVault, getFile = r.transport.getFile;
+  r.host.stat = r.host.inNestedVault = r.transport.getFile = async () => { throw Error("obsolete advanced-head frame issued external work"); };
+  for (const frame of peers) assert.equal(await applyChange(r.context, frame), "skipped");
+  r.host.stat = stat; r.host.inNestedVault = nested; r.transport.getFile = getFile;
+  assert.equal(await applyChange(r.context, r.incoming), "merged");
+  assert.equal(r.host.text(NOTE), "Shared: START|" + "A".repeat(81) + "a".repeat(80));
+  assert.equal(r.host.files.size, 1);
+  assert.equal(r.reads.length, 0);
+});
+
+test("cached ancestry visits repeated edges once during obsolete-page classification", async () => {
+  const r = await windowedFork(80);
+  const page = await r.transport.changes(0, 0, 1000);
+  let traversals = 0;
+  for (const frame of page.changes) {
+    frame.parents = new Proxy([...frame.parents, ...frame.parents], {
+      get(target, key, receiver) {
+        if (key === Symbol.iterator && ++traversals > 200) throw Error("cached ancestry repeated edge work");
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    r.context.authored.add(frame.version_id);
+    assert.equal(await applyChange(r.context, frame), "echo");
+  }
+  r.host.seed(NOTE, "Shared: START|" + "A".repeat(81), 4000);
+  await pushFile(r.context, NOTE);
+  const cached = page.changes.filter(frame => frame.device_id !== r.context.deviceId).at(-2);
+  const frame = { ...cached, parents: cached.parents.slice(0, cached.parents.length / 2) };
+  traversals = 0;
+  r.host.inNestedVault = async () => { throw Error("obsolete advanced-head frame issued external work"); };
+  assert.equal(await applyChange(r.context, frame), "skipped");
+  assert.ok(traversals > 0 && traversals <= 81);
+});
+
+for (const reason of ["linear", "missing", "budget", "empty_held", "empty_heads", "current_head"]) {
+  test(`cached ancestry cannot bypass validation with ${reason} evidence`, async () => {
+    const r = await windowedFork(reason === "budget" ? 513 : 2);
+    const page = await r.transport.changes(0, 0, 2000);
+    const original = r.state.fileByPath(NOTE);
+    // Populate history as echoes, without applying peer bytes or disk work.
+    for (const frame of page.changes) {
+      if (reason === "missing" && frame.version_id === r.base.versionId) continue;
+      r.context.authored.add(frame.version_id);
+      assert.equal(await applyChange(r.context, frame), "echo");
+    }
+    r.state.setFile(NOTE, { ...original, versionId: reason === "linear" ? r.base.versionId
+      : reason === "empty_held" ? "" : original.versionId });
+    const heads = reason === "empty_heads" ? [] : reason === "current_head"
+      ? [r.incoming.version_id] : ["ab".repeat(32)];
+    r.host.inNestedVault = async () => { throw Error("native path validation reached"); };
+    await assert.rejects(applyChange(r.context, { ...r.incoming, heads }), /native path validation reached/);
+  });
+}
+
+for (const kind of ["folder", "deletion", "answer", "move", "current_head", "unknown_heads", "older_local"]) {
+  test(`the obsolete-edit shortcut retains native validation for ${kind}`, async () => {
+    const r = await windowedFork(2);
+    const { decodeRecordManifest } = require("../build/sync/pull.js");
+    const manifest = await decodeRecordManifest(r.context, r.incoming);
+    if (kind === "folder") Object.assign(manifest, { v: 2, kind: "directory", size: 0, chunks: [], sha256: "" });
+    if (kind === "deletion") Object.assign(manifest, { deleted: true, size: 0, chunks: [], sha256: "" });
+    if (kind === "answer") manifest.answer = true;
+    if (kind === "move") manifest.path = "Notes/Moved.md";
+    const frame = await r.server.publishManifest({ fileId: r.base.fileId, manifest,
+      sids: manifest.chunks.map(chunk => chunk.sid), bytes: manifest.size,
+      parents: [r.incoming.version_id], manifestKey: r.keys.manifestKey,
+      deviceId: "ff".repeat(16) });
+    const local = r.state.fileByPath(NOTE).versionId;
+    // The page may carry obsolete frames, current heads or no head evidence.
+    const heads = kind === "current_head" ? [local, frame.version_id]
+      : kind === "unknown_heads" ? [] : kind === "older_local" ? ["ab".repeat(16)] : [local];
+    r.host.inNestedVault = async () => { throw Error("native path validation reached"); };
+    await assert.rejects(applyChange(r.context, { ...frame, heads }), /native path validation reached/);
+  });
+}
+
 test("repeated ancestry edges are traversed once, including a hostile cycle", async () => {
   const r = await windowedFork();
   const getFile = r.transport.getFile.bind(r.transport);
@@ -162,6 +290,16 @@ test("a fetched child precedes its already-fetched parent when choosing the merg
   assert.equal(await applyChange(r.context, r.right), "merged");
   assert.equal(r.host.text(NOTE), "Shared: START|XLR");
   assert.equal([...r.host.files.keys()].filter(p => p.includes("(conflict")).length, 0);
+});
+
+/** Each version once, after every child of it: B and C both reach A, and a
+ * second visit placed A twice and, on a cycle, never ended (review of
+ * 8fc0bf43, finding 4). */
+test("ancestry ordering places a version two children reach once, after both", () => {
+  const { childrenFirst } = require("../build/sync/pull.js");
+  const version = (id, ...parents) => ({ version_id: id, parents });
+  const order = childrenFirst([version("D"), version("B", "D"), version("C", "D"), version("A", "B", "C")]);
+  assert.deepEqual(order.map((entry) => entry.version_id), ["A", "B", "C", "D"]);
 });
 
 test("a partial ancestry graph is discarded when its newer common base is unavailable", async () => {

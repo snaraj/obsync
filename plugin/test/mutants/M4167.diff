@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -3180 +3180 @@
+-              throw new EditorBusy();
++              return null;

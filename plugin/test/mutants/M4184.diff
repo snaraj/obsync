@@ -1,0 +1,4 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -753 +752,0 @@
+-  if (context.signal?.aborted) throw new ApiError(0, "cancelled", "sync stopped on this device");

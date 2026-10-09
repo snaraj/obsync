@@ -1,12 +1,6 @@
 # M3578: the merge notice names the device by its id
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2962,7 +2962,7 @@
-           if (ours) {
-             context.host.notify({
-               kind: "combined", text: "combined your edits to {notes} with {device}'s.", paths: [target],
+@@ -3360 +3360 @@
 -              device: context.deviceNameFor(change.device_id),
 +              device: change.device_id,
-             });
-           }
-           context.host.log(`pull decision=merged file=${change.file_id} seq=${change.seq} announced=${ours}`);

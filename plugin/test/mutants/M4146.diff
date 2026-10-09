@@ -1,0 +1,5 @@
+--- a/plugin/src/editorActivity.ts
++++ b/plugin/src/editorActivity.ts
+@@ -10 +10 @@
+-export const EDITOR_SAVE_WAIT_MS = 100;
++export const EDITOR_SAVE_WAIT_MS = 101;

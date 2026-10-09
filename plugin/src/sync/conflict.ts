@@ -1,217 +1,312 @@
 /**
  * Conflict resolution, `docs/architecture.md` 6.2 item 4.
  *
- * Two heads on a text file with a reachable common ancestor get a homegrown
- * three-way line merge, including append-only changes to the same line;
- * a clean merge becomes a new version with BOTH heads
- * as parents. Anything else — binary content, no common ancestor, delete
- * versus edit, overlapping hunks, or a file too large to align — keeps both
- * sides: the foreign head is written beside the local one as
+ * Two heads on a text file with a reachable common ancestor are merged
+ * character by character, the way collaborative editors combine concurrent
+ * keystrokes: each side's change from the base is applied, insertions at one
+ * place are both kept, deletions combine, and text one side inserted inside a
+ * range the other deleted survives. The merge never refuses text, so typing on
+ * one line on two devices never splits a note into a conflict copy. A merge
+ * becomes a new version with BOTH heads as parents.
+ *
+ * Every device computes the same text from the same three inputs, whichever
+ * side is its own: insertions at one place are ordered by their content, not
+ * by who made them, and an identical insertion lands once. Two devices closing
+ * one fork therefore post the same bytes.
+ *
+ * Conflict copies remain for what has no text merge: binary content, no
+ * common ancestor, or a file too large to hold whole. The foreign head is
+ * then written beside the local one as
  * `<name> (conflict from <device>, <YYYY-MM-DD HHmm>).<ext>` and the user is
  * told. obsync never silently discards an edit.
  *
- * The merge is line-based diff3 over an LCS alignment of each side against
- * the base. Alignment cost is bounded: after common prefix and suffix lines
- * are trimmed, the LCS table is refused above `MAX_ALIGN_CELLS`, and the
- * refusal takes the conflict-copy path. A merge that cannot be afforded is
- * not a merge that may be guessed.
+ * Alignment cost is bounded. Text spanning lines is aligned by line first:
+ * lines that occur once on each side anchor it (patience alignment), Myers'
+ * difference algorithm aligns the runs between anchors under a step budget,
+ * and each changed run of lines is then aligned by character. A region past
+ * every bound is taken whole. A coarser alignment can place an insertion less
+ * precisely; it never drops text either side holds.
  *
  * PLATFORM. Pure string work, identical on desktop and mobile.
  */
 
-/** 4 M cells ≈ 16 MB of Uint32 table: affordable on a phone, and generous for notes. */
-export const MAX_ALIGN_CELLS = 4_000_000;
+/** Alignment work per side of one merge: well under a second on a phone. */
+export const MERGE_STEPS = 10_000_000;
+/** The most differences one alignment explores before a coarser unit is tried. */
+const MAX_DISTANCE = 1_000;
+/** Characters held as separate tokens at once; longer regions align by line first. */
+const CHARACTER_SPAN = 1 << 20;
 
-export type MergeOutcome =
-  | { ok: true; text: string }
-  | { ok: false; reason: "overlap" | "too_large" | "binary" };
+/** One side's change: `base[from, to)` becomes `insert`. Offsets are UTF-16 units. */
+export interface TextChange { from: number; to: number; insert: string }
 
-function splitLines(text: string): string[] {
-  return text.split("\n");
-}
-
-function sameLines(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
+const isHigh = (unit: number): boolean => unit >= 0xd800 && unit <= 0xdbff;
+const isLow = (unit: number): boolean => unit >= 0xdc00 && unit <= 0xdfff;
 
 /**
- * Longest common subsequence alignment as a base-index → side-index map.
- * Returns `null` when the table would exceed `MAX_ALIGN_CELLS`.
+ * Myers' O(ND) alignment: matched token index pairs in order, or null past
+ * `MAX_DISTANCE` differences or the step budget.
  */
-export function alignLines(base: string[], side: string[]): Map<number, number> | null {
-  let prefix = 0;
-  while (prefix < base.length && prefix < side.length && base[prefix] === side[prefix]) prefix++;
-  let suffix = 0;
-  while (
-    suffix < base.length - prefix &&
-    suffix < side.length - prefix &&
-    base[base.length - 1 - suffix] === side[side.length - 1 - suffix]
-  ) {
-    suffix++;
-  }
-  const map = new Map<number, number>();
-  for (let i = 0; i < prefix; i++) map.set(i, i);
-  for (let i = 0; i < suffix; i++) map.set(base.length - 1 - i, side.length - 1 - i);
-
-  const rows = base.length - prefix - suffix;
-  const columns = side.length - prefix - suffix;
-  if (rows <= 0 || columns <= 0) return map;
-  if (rows * columns > MAX_ALIGN_CELLS) return null;
-
-  const table = new Uint32Array((rows + 1) * (columns + 1));
-  for (let i = rows - 1; i >= 0; i--) {
-    for (let j = columns - 1; j >= 0; j--) {
-      const here = i * (columns + 1) + j;
-      table[here] =
-        base[prefix + i] === side[prefix + j]
-          ? (table[here + columns + 2] as number) + 1
-          : Math.max(table[here + columns + 1] as number, table[here + 1] as number);
+function align(a: readonly string[], b: readonly string[], budget: { steps: number }): [number, number][] | null {
+  const n = a.length, m = b.length, mid = MAX_DISTANCE + 1;
+  const v = new Int32Array(2 * MAX_DISTANCE + 3);
+  const trace: Int32Array[] = [];
+  for (let d = 0; d <= MAX_DISTANCE; d++) {
+    trace.push(v.slice(mid - d - 1, mid + d + 2));
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && (v[mid + k - 1] as number) < (v[mid + k + 1] as number))
+        ? v[mid + k + 1] as number : (v[mid + k - 1] as number) + 1;
+      let y = x - k;
+      const from = x;
+      while (x < n && y < m && a[x] === b[y]) { x++; y++; }
+      budget.steps -= x - from + 1;
+      v[mid + k] = x;
+      if (x >= n && y >= m) return backtrack(trace, n, m);
+      if (budget.steps < 0) return null;
     }
   }
-  let i = 0;
-  let j = 0;
-  while (i < rows && j < columns) {
-    if (base[prefix + i] === side[prefix + j]) {
-      map.set(prefix + i, prefix + j);
-      i++;
-      j++;
-    } else if ((table[(i + 1) * (columns + 1) + j] as number) >= (table[i * (columns + 1) + j + 1] as number)) {
-      i++;
+  return null;
+}
+
+function backtrack(trace: readonly Int32Array[], n: number, m: number): [number, number][] {
+  const pairs: [number, number][] = [];
+  let x = n, y = m;
+  for (let d = trace.length - 1; d >= 0; d--) {
+    const v = trace[d] as Int32Array, at = (k: number): number => v[k + d + 1] as number;
+    const k = x - y;
+    const before = k === -d || (k !== d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1;
+    const px = at(before), py = px - before;
+    while (x > px && y > py) pairs.push([--x, --y]);
+    if (d > 0) { x = px; y = py; }
+  }
+  return pairs.reverse();
+}
+
+/** Lines with their line feeds, so the tokens join back into the text. */
+function lineTokens(text: string): string[] {
+  return text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+}
+
+/** Nesting of anchored runs inside anchored runs; deeper runs align by Myers alone. */
+const ANCHOR_DEPTH = 32;
+
+/**
+ * Patience alignment of lines: equal ends match, lines occurring once on each
+ * side and in the same order anchor the rest, and each run between anchors is
+ * aligned the same way, or by Myers when it has no anchor of its own. A run
+ * Myers cannot afford stays unmatched, so it is one change.
+ */
+function alignLines(
+  a: readonly string[], a0: number, a1: number, b: readonly string[], b0: number, b1: number,
+  budget: { steps: number }, out: [number, number][], depth = 0,
+): void {
+  while (a0 < a1 && b0 < b1 && a[a0] === b[b0]) out.push([a0++, b0++]);
+  const tail: [number, number][] = [];
+  while (a0 < a1 && b0 < b1 && a[a1 - 1] === b[b1 - 1]) tail.push([--a1, --b1]);
+  if (a0 < a1 && b0 < b1) {
+    const anchors = depth < ANCHOR_DEPTH ? uniqueAnchors(a, a0, a1, b, b0, b1) : [];
+    if (anchors.length === 0) {
+      for (const [i, j] of align(a.slice(a0, a1), b.slice(b0, b1), budget) ?? []) out.push([a0 + i, b0 + j]);
     } else {
-      j++;
-    }
-  }
-  return map;
-}
-
-type LineEdit = { start: number; end: number; lines: string[] };
-
-/** Changed base intervals from ONE side's alignment, including insertions. */
-function lineEdits(base: string[], side: string[], alignment: Map<number, number>): LineEdit[] {
-  const edits: LineEdit[] = [];
-  let start = 0;
-  let sideStart = 0;
-  for (let at = 0; at <= base.length; at++) {
-    const there = at === base.length ? side.length : alignment.get(at);
-    if (there === undefined) continue;
-    if (at > start || there > sideStart) {
-      const lines = side.slice(sideStart, there);
-      // A peer may already have combined appends to neighboring lines. LCS
-      // then groups them into one replacement, hiding the independent lines
-      // from later typing. Split only an equal-length run that preserves every
-      // original line as its prefix; structural edits remain one interval.
-      if (at - start > 1 && lines.length === at - start &&
-        lines.every((line, index) => line.startsWith(base[start + index] as string))) {
-        for (let index = 0; index < lines.length; index++) {
-          edits.push({ start: start + index, end: start + index + 1, lines: [lines[index] as string] });
-        }
-      } else edits.push({ start, end: at, lines });
-    }
-    start = at + 1;
-    sideStart = there + 1;
-  }
-  return edits;
-}
-
-/** Both users only appended: retain the shared prefix and order additions alike. */
-function mergeLineAppends(base: string, mine: string, theirs: string): string | null {
-  if (!mine.startsWith(base) || !theirs.startsWith(base)) return mergeLineInsertions(base, mine, theirs);
-  const left = mine.slice(base.length);
-  const right = theirs.slice(base.length);
-  let shared = 0;
-  // Walk code points so different emoji cannot share half a surrogate pair.
-  for (const point of left) {
-    if (!right.startsWith(point, shared)) break;
-    shared += point.length;
-  }
-  const a = left.slice(shared);
-  const b = right.slice(shared);
-  return base + left.slice(0, shared) + (a < b ? a + b : b + a);
-}
-
-/**
- * After a merge, continued typing can precede text learned from the peer.
- * It still extends an unchanged beginning: every original code point must
- * remain on both sides, with the first one in place. Align those anchors
- * under the same memory bound, then merge each gap independently. Competing
- * prefixes, replacements and deletions remain conflicts.
- */
-function mergeLineInsertions(base: string, mine: string, theirs: string): string | null {
-  const points = [...base], left = [...mine], right = [...theirs];
-  const a = alignLines(points, left), b = alignLines(points, right);
-  if (a === null || b === null || a.size !== points.length || b.size !== points.length) return null;
-  if (a.get(0) !== 0 || b.get(0) !== 0) return null;
-  const out: string[] = [];
-  let m = 0, t = 0;
-  for (let at = 0; at <= points.length; at++) {
-    const endM = at === points.length ? left.length : a.get(at) as number;
-    const endT = at === points.length ? right.length : b.get(at) as number;
-    out.push(mergeLineAppends("", left.slice(m, endM).join(""), right.slice(t, endT).join("")) as string);
-    if (at < points.length) out.push(points[at] as string);
-    m = endM + 1; t = endT + 1;
-  }
-  return out.join("");
-}
-
-/**
- * Three-way line merge. `base` is the common ancestor, `mine` the local
- * text, `theirs` the foreign head. A hunk where only one side moved takes
- * that side; identical edits are taken once. Appends to one line retain its
- * existing text, keep a shared addition once, and join the different additions
- * in lexicographic order. Other intersecting edits remain a conflict.
- */
-export function threeWayMerge(base: string, mine: string, theirs: string): MergeOutcome {
-  const baseLines = splitLines(base);
-  const mineLines = splitLines(mine);
-  const theirsLines = splitLines(theirs);
-  const toMine = alignLines(baseLines, mineLines);
-  const toTheirs = alignLines(baseLines, theirsLines);
-  if (!toMine || !toTheirs) return { ok: false, reason: "too_large" };
-
-  // Intersecting unchanged anchors groups adjacent, independent line edits
-  // into one false overlap. Compare each side's actual changed intervals.
-  const left = lineEdits(baseLines, mineLines, toMine);
-  const right = lineEdits(baseLines, theirsLines, toTheirs);
-  const out: string[] = [];
-  let cursor = 0;
-  let m = 0;
-  let t = 0;
-  while (m < left.length || t < right.length) {
-    const mine = left[m];
-    const theirs = right[t];
-    let next: LineEdit;
-    if (mine && theirs) {
-      if (mine.start === theirs.start && mine.end === theirs.end && sameLines(mine.lines, theirs.lines)) {
-        next = mine; m++; t++;
-      } else if (
-        mine.start === theirs.start && mine.end === theirs.end &&
-        mine.end === mine.start + 1 && mine.lines.length === 1 && theirs.lines.length === 1
-      ) {
-        const appended = mergeLineAppends(baseLines[mine.start] as string, mine.lines[0] as string, theirs.lines[0] as string);
-        if (appended === null) return { ok: false, reason: "overlap" };
-        next = { start: mine.start, end: mine.end, lines: [appended] }; m++; t++;
-      } else if (mine.end <= theirs.start && mine.start < theirs.start) {
-        next = mine; m++;
-      } else if (theirs.end <= mine.start && theirs.start < mine.start) {
-        next = theirs; t++;
-      } else {
-        // Different insertions at one boundary, or intersecting changed
-        // intervals: ordering these would guess which text the user meant.
-        return { ok: false, reason: "overlap" };
+      for (const [i, j] of anchors) {
+        alignLines(a, a0, i, b, b0, j, budget, out, depth + 1);
+        out.push([i, j]);
+        a0 = i + 1;
+        b0 = j + 1;
       }
-    } else if (mine) {
-      next = mine; m++;
-    } else {
-      next = theirs as LineEdit; t++;
+      alignLines(a, a0, a1, b, b0, b1, budget, out, depth + 1);
     }
-    while (cursor < next.start) out.push(baseLines[cursor++] as string);
-    for (const line of next.lines) out.push(line);
-    cursor = next.end;
   }
-  while (cursor < baseLines.length) out.push(baseLines[cursor++] as string);
-  return { ok: true, text: out.join("\n") };
+  for (let k = tail.length - 1; k >= 0; k--) out.push(tail[k] as [number, number]);
+}
+
+/** Lines once on each side, as the longest run in the same order on both. */
+function uniqueAnchors(
+  a: readonly string[], a0: number, a1: number, b: readonly string[], b0: number, b1: number,
+): [number, number][] {
+  const seen = new Map<string, { a: number; b: number; at: number }>();
+  for (let i = a0; i < a1; i++) {
+    const entry = seen.get(a[i] as string);
+    if (entry === undefined) seen.set(a[i] as string, { a: 1, b: 0, at: -1 });
+    else entry.a++;
+  }
+  for (let j = b0; j < b1; j++) {
+    const entry = seen.get(b[j] as string);
+    if (entry !== undefined) { entry.b++; entry.at = j; }
+  }
+  const pairs: [number, number][] = [];
+  for (let i = a0; i < a1; i++) {
+    const entry = seen.get(a[i] as string) as { a: number; b: number; at: number };
+    if (entry.a === 1 && entry.b === 1) pairs.push([i, entry.at]);
+  }
+  // Longest increasing run of `b` positions, by patience sorting.
+  const piles: number[] = [], previous = new Int32Array(pairs.length).fill(-1);
+  for (let k = 0; k < pairs.length; k++) {
+    const j = (pairs[k] as [number, number])[1];
+    let low = 0, high = piles.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if ((pairs[piles[middle] as number] as [number, number])[1] < j) low = middle + 1;
+      else high = middle;
+    }
+    if (low > 0) previous[k] = piles[low - 1] as number;
+    piles[low] = k;
+  }
+  const run: [number, number][] = [];
+  for (let k = piles.length > 0 ? piles[piles.length - 1] as number : -1; k >= 0; k = previous[k] as number) {
+    run.push(pairs[k] as [number, number]);
+  }
+  return run.reverse();
+}
+
+/** Hand each unmatched run of an alignment, with its base offset, to `gap`. */
+function gaps(
+  a: readonly string[], b: readonly string[], pairs: readonly [number, number][], offset: number,
+  gap: (before: string, after: string, at: number) => void,
+): void {
+  let i = 0, j = 0, at = offset;
+  for (const [pi, pj] of [...pairs, [a.length, b.length] as [number, number]]) {
+    if (pi > i || pj > j) {
+      const removed = a.slice(i, pi).join("");
+      gap(removed, b.slice(j, pj).join(""), at);
+      at += removed.length;
+    }
+    if (pi < a.length) at += (a[pi] as string).length;
+    i = pi + 1;
+    j = pj + 1;
+  }
+}
+
+/** Align by line when the region spans lines, then each changed run by character. */
+function refine(before: string, after: string, at: number, budget: { steps: number }, out: TextChange[]): void {
+  if (before !== "" && after !== "" && (before.includes("\n") || after.includes("\n"))) {
+    const a = lineTokens(before), b = lineTokens(after), pairs: [number, number][] = [];
+    alignLines(a, 0, a.length, b, 0, b.length, budget, pairs);
+    gaps(a, b, pairs, at, (x, y, here) => characters(x, y, here, budget, out));
+  } else characters(before, after, at, budget, out);
+}
+
+function characters(before: string, after: string, at: number, budget: { steps: number }, out: TextChange[]): void {
+  if (before !== "" && after !== "" && before.length + after.length <= CHARACTER_SPAN) {
+    const a = Array.from(before), b = Array.from(after);
+    const pairs = align(a, b, budget);
+    if (pairs !== null) {
+      gaps(a, b, pairs, at, (x, y, here) => out.push({ from: here, to: here + x.length, insert: y }));
+      return;
+    }
+  }
+  out.push({ from: at, to: at + before.length, insert: after });
+}
+
+/**
+ * The changes that turn `before` into `after`, in `before`'s offsets: sorted,
+ * separated by unchanged text, and never splitting a surrogate pair.
+ */
+export function textChanges(before: string, after: string): TextChange[] {
+  if (before === after) return [];
+  const shorter = Math.min(before.length, after.length);
+  let head = 0;
+  while (head < shorter && before.charCodeAt(head) === after.charCodeAt(head)) head++;
+  if (head > 0 && isHigh(before.charCodeAt(head - 1))) head--;
+  let tail = 0;
+  while (tail < shorter - head &&
+    before.charCodeAt(before.length - 1 - tail) === after.charCodeAt(after.length - 1 - tail)) tail++;
+  if (tail > 0 && isLow(before.charCodeAt(before.length - tail))) tail--;
+  const out: TextChange[] = [];
+  refine(before.slice(head, before.length - tail), after.slice(head, after.length - tail), head, { steps: MERGE_STEPS }, out);
+  return out;
+}
+
+/**
+ * Three-way character merge. `base` is the common ancestor; `mine` and
+ * `theirs` are the two heads, in either order: the result is the same. Each
+ * base character survives unless either side deleted it, and every inserted
+ * run survives at its place. Two different insertions at one place are
+ * ordered by content. An insertion that begins the other side's insertion at
+ * the same place lands once: that is one typed stream seen at two lengths,
+ * which a base older than both heads' shared text presents twice.
+ */
+export function mergeText(base: string, mine: string, theirs: string): string {
+  return merge(base, mine, theirs).text;
+}
+
+/**
+ * `mergeText`, also saying whether both sides changed one line differently.
+ * That is how two people typing together meet, and the merge keeps both. Two
+ * plugins rewriting one value meet the same way, and their values joined are
+ * no value at all -- letter by letter too: `05.010Z` and `06.000Z`, each
+ * rewriting another digit of `05.000Z`, join as `06.010Z` -- so the caller
+ * holds an automatic answer instead. A line is the measure, as it was before
+ * letters merged.
+ */
+export function merge(base: string, mine: string, theirs: string): { text: string; contested: boolean } {
+  if (mine === theirs || theirs === base) return { text: mine, contested: false };
+  if (mine === base) return { text: theirs, contested: false };
+  const left = textChanges(base, mine), right = textChanges(base, theirs);
+  const out: string[] = [];
+  let l = 0, r = 0, done = 0;
+  while (l < left.length || r < right.length) {
+    const at = Math.min(left[l]?.from ?? Infinity, right[r]?.from ?? Infinity);
+    if (at > done) {
+      out.push(base.slice(done, at));
+      done = at;
+    }
+    const x = left[l]?.from === at ? left[l++] : undefined;
+    const y = right[r]?.from === at ? right[r++] : undefined;
+    const one = x?.insert ?? "", two = y?.insert ?? "";
+    if (two.startsWith(one)) out.push(two);
+    else if (one.startsWith(two)) out.push(one);
+    else out.push(one < two ? one + two : two + one);
+    done = Math.max(done, x?.to ?? at, y?.to ?? at);
+  }
+  out.push(base.slice(done));
+  return { text: out.join(""), contested: contestedLines(base, left, right) };
+}
+
+/**
+ * Whether two sides' changes meet on a base line and make it differently.
+ * Each change covers the lines it touches -- text at a line's end is on that
+ * line -- and changes sharing a line join into one stretch. A stretch both
+ * sides changed is contested unless it reads the same on both: how each
+ * side's diff spelled one edit does not matter.
+ */
+function contestedLines(base: string, left: TextChange[], right: TextChange[]): boolean {
+  const starts = [0];
+  for (let at = base.indexOf("\n"); at !== -1; at = base.indexOf("\n", at + 1)) starts.push(at + 1);
+  const lineOf = (at: number): number => {
+    let low = 0, high = starts.length - 1;
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if ((starts[middle] as number) <= at) low = middle;
+      else high = middle - 1;
+    }
+    return low;
+  };
+  const spans = [...left.map((change) => ({ change, mine: true })), ...right.map((change) => ({ change, mine: false }))]
+    .map((each) => ({ ...each, first: lineOf(each.change.from), last: lineOf(Math.max(each.change.from, each.change.to - 1)) }))
+    .sort((x, y) => x.first - y.first);
+  let stretch: typeof spans = [], last = -1;
+  const differs = (): boolean => {
+    const from = starts[stretch[0]?.first ?? 0] as number, to = starts[last + 1] ?? base.length;
+    const made = (mine: boolean): string => {
+      let out = "", at = from;
+      for (const { change } of stretch.filter((each) => each.mine === mine)) {
+        out += base.slice(at, change.from) + change.insert;
+        at = change.to;
+      }
+      return out + base.slice(at, to);
+    };
+    return stretch.some((each) => each.mine) && stretch.some((each) => !each.mine) && made(true) !== made(false);
+  };
+  for (const span of spans) {
+    if (span.first > last) {
+      if (differs()) return true;
+      stretch = [];
+    }
+    stretch.push(span);
+    last = Math.max(last, span.last);
+  }
+  return differs();
 }
 
 /**

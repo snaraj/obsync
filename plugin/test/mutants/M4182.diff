@@ -1,0 +1,5 @@
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -744 +744 @@
+-    bodies = await context.transport.getChunks(sids, undefined, patience, budget);
++    bodies = await context.transport.getChunks(sids, undefined, patience, budget + 1);

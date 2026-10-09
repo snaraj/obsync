@@ -229,6 +229,7 @@ async function loaded(t, { mobile = false, worker = true } = {}) {
   const Plugin = box.require(join(box.home, "build/main.js")).default;
   const engines = [];
   box.require(join(box.home, "build/sync/engine.js")).SyncEngine = class {
+    reachability(answered) { (this.answers ??= []).push(answered); }
     constructor(options) { this.options = options; engines.push(this); }
     async start() {}
     stop() {}
@@ -334,6 +335,7 @@ test("a reload of the same plugin instance closes the question its old host aske
   assert.equal(question.hidden, false);
   await r.instance.onload();
   await r.instance.firstStart;
+  assert.equal(question.hidden, true, "the replaced host left its question on screen");
   r.instance.host.notify(ask("Holding deletions again"));
   assert.equal(question.hidden, true, "the replaced host left its question on screen beside the new one");
 });
@@ -351,7 +353,8 @@ test("the host is told of sync work once as it begins and once after CALM_MS wit
   const { CALM_MS } = require("../build/sync/engine.js");
   const { server, timers, a, b } = await pair(t);
   const told = { a: [], b: [] };
-  a.host.hurry = (busy) => told.a.push(busy);
+  const reasons = [];
+  a.host.hurry = (busy, reason) => { told.a.push(busy); reasons.push(reason); };
   b.host.hurry = (busy) => told.b.push(busy);
   // Nothing to sync: the feed's first read answered, its poll waiting on the server.
   await a.engine.start();
@@ -379,6 +382,76 @@ test("the host is told of sync work once as it begins and once after CALM_MS wit
   await timers.run(STEP_MS, () => told.a.length === 3);
   a.engine.stop();
   assert.deepEqual(told.a, [true, false, true, false]);
+  assert.deepEqual(reasons, ["work", "calm", "work", "stop"]);
+});
+
+test("unanswered attempts restore throttling during a drain, answers resume it, and neither idle nor stopped engines lift it (#283)", async (t) => {
+  const { CALM_MS } = require("../build/sync/engine.js");
+  const { timers, a, b } = await pair(t);
+  const told = [];
+  a.host.hurry = (busy, reason) => told.push([busy, reason]);
+  await a.engine.start();
+  await timers.run(CALM_MS);
+  a.engine.reachability(false);
+  a.engine.reachability(true);
+  assert.deepEqual(told, [], "answers without work do not lift throttling");
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  t.after(release);
+  const request = a.transport.options.request;
+  let held = false;
+  a.transport.options.request = async (value) => {
+    if (value.method === "PUT") { held = true; await gate; }
+    return request(value);
+  };
+  const path = "Notes/unanswered.md", text = "UNANSWERED SENTINEL\n";
+  a.host.write(path, text, 5000);
+  await timers.run(2, () => held);
+  assert.deepEqual(told, [[true, "work"]]);
+  // Step this power-policy deadline exactly; the PUT stays in flight.
+  const deadline = () => {
+    const timer = timers.entries.find((entry) => entry.handle === a.engine.calmHandle);
+    assert.ok(timer, "unanswered draining work must arm the calm deadline");
+    return timer.due;
+  };
+  const advance = async (ms) => { timers.now += ms; await timers.run(0); };
+  a.engine.reachability(false);
+  const first = deadline();
+  await advance(CALM_MS - 1);
+  a.engine.reachability(false);
+  assert.equal(deadline(), first, "repeated unanswered attempts cannot postpone restoration");
+  assert.deepEqual(told, [[true, "work"]]);
+  a.engine.reachability(true);
+  assert.equal(a.engine.calmHandle, null, "an answer within the grace cancels restoration");
+  await advance(1);
+  assert.deepEqual(told, [[true, "work"]]);
+  // A later failure wins even if another request just answered.
+  a.engine.reachability(false);
+  await advance(CALM_MS - 1);
+  assert.equal(a.engine.draining, true, "the real held upload is still draining");
+  assert.deepEqual(told, [[true, "work"]]);
+  await advance(1);
+  assert.deepEqual(told, [[true, "work"], [false, "unanswered"]]);
+  a.engine.reachability(true);
+  assert.deepEqual(told.at(-1), [true, "work"], "an answer after restoration lifts it immediately");
+  release();
+  await timers.run(2, () => settled(a, path));
+  await b.engine.start();
+  await timers.run(2, () => settled(b, path));
+  assert.equal(b.host.text(path), text, "the normal authenticated encrypted upload still converges");
+  await timers.run(CALM_MS);
+  assert.deepEqual(told.at(-1), [false, "calm"]);
+  a.engine.reachability(true);
+  assert.deepEqual(told.at(-1), [false, "calm"]);
+  a.host.write("Notes/stop-grace.md", "STOP SENTINEL\n", 6000);
+  await timers.run(2, () => told.at(-1)[0]);
+  a.engine.reachability(false);
+  a.engine.stop();
+  const stopped = told.slice();
+  assert.deepEqual(told.at(-1), [false, "stop"]);
+  a.engine.reachability(true);
+  await advance(CALM_MS);
+  assert.deepEqual(told, stopped, "late answers or grace timers cannot lift after stop");
 });
 
 test("the desktop host lifts its window's background throttling for work and puts it back after, a line each; a window without the means, or one that refuses, keeps its pace and says so once (#283)", async (t) => {
@@ -404,9 +477,9 @@ test("the desktop host lifts its window's background throttling for work and put
   globalThis.window = { ...previous, ...electron };
   const host = new ObsidianHost(plugin, null);
   host.hurry(true);
-  host.hurry(false);
+  host.hurry(false, "stop");
   assert.deepEqual(asked, [false, true]);
-  assert.deepEqual(said(), ["host decision=throttle_lifted reason=work", "host decision=throttle_restored reason=idle"]);
+  assert.deepEqual(said(), ["host decision=throttle_lifted reason=work", "host decision=throttle_restored reason=stop"]);
 
   // Absent: the window keeps its pace, said once however many changes follow.
   globalThis.window = { ...previous };
@@ -418,7 +491,7 @@ test("the desktop host lifts its window's background throttling for work and put
   globalThis.window = { ...previous, ...electron };
   host.hurry(false);
   assert.deepEqual(asked, [false, true, true]);
-  assert.deepEqual(said(), ["host decision=throttle_restored reason=idle"]);
+  assert.deepEqual(said(), ["host decision=throttle_restored reason=calm"]);
 
   // Refused: the same one line.
   globalThis.window = { ...previous, electronWindow: { webContents: { setBackgroundThrottling() { throw new Error("SENTINEL refused"); } } } };

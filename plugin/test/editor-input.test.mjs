@@ -20,7 +20,7 @@ async function fixture(t) {
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const { ObsidianHost, default: Plugin } = box.require(join(box.home, "build/main.js"));
   const { MarkdownView } = box.require("obsidian");
-  const { EDITING_WINDOW_MS } = box.require(join(box.home, "build/sync/pull.js"));
+  const { RECENT_INPUT_MS } = box.require(join(box.home, "build/editorActivity.js"));
   const main = surface(), popout = surface(), leaves = [], registered = [], hooks = new Map();
   const instance = new Plugin();
   instance.loadData = async () => null;
@@ -47,7 +47,7 @@ async function fixture(t) {
     } });
     leaves.push({ view }); return { view, node };
   }
-  return { host, instance, main, popout, leaves, hooks, view, registered, window: EDITING_WINDOW_MS,
+  return { host, instance, main, popout, leaves, hooks, view, registered, window: RECENT_INPUT_MS,
     advance: (ms) => { now += ms; } };
 }
 
@@ -137,4 +137,26 @@ test("onload binds the primary window, pre-existing popouts, and newly opened wi
   r.hooks.get("window-open")({}, opened);
   opened.emit("beforeinput", b.node);
   assert.equal(r.instance.host.typing("Notes/b.md"), true);
+});
+
+test("the native host exposes only trusted, file-bound text input to merge accounting", async (t) => {
+  const r = await fixture(t), a = r.view("Notes/a.md", r.popout);
+  await r.instance.onload(); await r.instance.firstStart;
+  const host = r.instance.host;
+  Object.assign(r.main, { setTimeout, clearTimeout });
+  r.instance.engine = { stop() {}, editorSaved() {} };
+  assert.equal(host.editorRevision("Notes/a.md"), undefined);
+  r.popout.emit("beforeinput", a.node, false);
+  r.popout.emit("keydown", a.node);
+  r.popout.emit("beforeinput", { nodeType: 1 });
+  assert.equal(host.editorRevision("Notes/a.md"), undefined);
+  r.popout.emit("beforeinput", a.node);
+  const first = host.editorRevision("Notes/a.md");
+  assert.deepEqual(first, {});
+  assert.equal(host.editorRevision("Notes/a.md"), first);
+  r.popout.emit("beforeinput", a.node);
+  assert.notEqual(host.editorRevision("Notes/a.md"), first);
+  assert.equal(host.editorRevision("Notes/other.md"), undefined);
+  host.stopEditorSaves();
+  assert.equal(host.editorRevision("Notes/a.md"), undefined);
 });

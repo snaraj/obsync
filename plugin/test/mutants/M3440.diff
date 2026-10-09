@@ -1,22 +1,7 @@
 # M3440: a merge carries text saved here and not sent yet, so two devices post two merges of one pair
 --- a/plugin/src/sync/pull.ts
 +++ b/plugin/src/sync/pull.ts
-@@ -2864,17 +2864,7 @@
-         // the fork is merged from what is published, as a fast-forward over an
-         // unpushed edit is (below). A result that is the incoming version
-         // itself makes no merge at all.
--        if (!ahead && !sameBytes(text, theirs)) {
--          // A head this device cannot open proves nothing about the note.
--          const own = await manifestOf(context, file, change, localVersionId).catch(() => null);
--          if (own !== null && own.sha256 !== "" && hex(await sha256(mine)) !== own.sha256) {
--            // How long the note has held text no version has, against the
--            // window in which its editor's own push was due.
--            const age = before === null ? -1 : context.now() - before.mtime;
--            return await deferToPush(context, change, localPath, `${crossed ? "unpublished_criss_cross" : "unpublished_edit"} ` +
--              `age_ms=${age} duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
--          }
--        }
-+        void crossed; void started;
-         // A MERGE THIS DEVICE TOOK NO PART IN IS NOT NEWS HERE (issue #164). A
-         // first download, or a replay from zero, meets forks that other devices
-         // edited and merged before this one joined, and the person here edited
+@@ -3239,2 +3239 @@
+-                return await deferToPush(context, change, localPath, `${crossed ? "unpublished_criss_cross" : "unpublished_edit"} ` +
+-                  `age_ms=${age} duration_ms=${context.now() - started} budget_ms=${EDITING_WINDOW_MS}`);
++                void 0;

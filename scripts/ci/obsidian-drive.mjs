@@ -35,14 +35,16 @@
 //   OBSYNC_E2E_ARGS        optional JSON array of extra Chromium switches
 //   OBSYNC_E2E_HOMES       "1" to give each instance its own HOME (Linux: its own NSS store)
 //   OBSYNC_E2E_NTFS        "1" to add the Windows filesystem journeys
-//   OBSYNC_E2E_SECRET_STORE  "gnome-keyring" or "none" (Linux): what holds the keys; both
+//   OBSYNC_E2E_SECRET_STORE  "gnome-keyring", "none" (Linux), or "windows": expected custody; both
 //                          instances are restarted after the journeys and must sync again
+//   OBSYNC_E2E_CAPTURES    optional fresh directory for verified synthetic editor PNGs only
 //   OBSYNC_E2E_LAUNCHER    optional command each instance is started through, the
 //                          Obsidian executable as its first argument
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { secretFacts, assertCustody, captureEditor as captureVerifiedEditor, finishEvidence } from "./obsidian-evidence.mjs";
 
 const PLUGIN_ID = "obsync-private-sync";
 const STEP_BUDGET_MS = 90_000;
@@ -242,28 +244,6 @@ function pairingCode() {
 
 function notices() {
   return [...document.querySelectorAll(".notice")].map((n) => n.textContent.trim());
-}
-
-/**
- * What Obsidian's secret storage did with the keys, read in the vault window:
- * whether it could encrypt, with which backend, and whether the one stored
- * entry is readable as plain JSON. Values never leave the window; only these
- * facts do.
- */
-function secretStore() {
-  const raw = app.loadLocalStorage("secrets-encrypted");
-  let plain = false;
-  try {
-    plain = typeof raw === "string" && typeof JSON.parse(raw) === "object";
-  } catch {
-    plain = false;
-  }
-  return {
-    encrypted: app.secretStorage.isEncryptionAvailable(),
-    backend: app.secretStorage.adapter?.getSelectedStorageBackend?.() ?? "none reported",
-    stored: typeof raw === "string" && raw.length > 0,
-    plain,
-  };
 }
 
 /** What is on screen, by label only: never an input's value, never the phrase or the code. */
@@ -533,6 +513,7 @@ async function cotyping(a, b) {
   const words = (letter) => Array.from({ length: 30 }, (_, i) => `${letter}${String(i + 1).padStart(3, "0")}`);
   const streams = { a: words("A").join(" "), b: ` ${words("B").join(" ")}` };
   const typed = { a: 0, b: 0 };
+  let lastInserted = 0;
   const started = Date.now();
   const typist = async (instance, key, place) => {
     const main = await instance.main();
@@ -546,6 +527,7 @@ async function cotyping(a, b) {
         return true;
       }, place);
       await main.send("Input.insertText", { text: streams[key][typed[key]] });
+      lastInserted = Date.now();
       typed[key] += 1;
       await sleep(Math.max(0, 200 - (Date.now() - tick)));
     }
@@ -566,7 +548,8 @@ async function cotyping(a, b) {
   const copies = [a, b].flatMap((instance) => listing(instance, "e2e").filter((name) => name.startsWith(`${stem} (conflict`)));
   if (copies.length !== 0) throw new Denied(`co-typing left conflict copies: ${copies.join(", ")}`);
   prove(`co-typing: ${typed.a} and ${typed.b} keystrokes typed into one open note on both instances over ${stopped - started} ms; ` +
-    `both disks and editors hold all of them ${Date.now() - stopped} ms after the typing stopped, no conflict copy`);
+    `both disks and editors hold all of them ${Date.now() - lastInserted} ms after the last completed insertion, no conflict copy`);
+  for (const instance of [a, b]) await captureEditor(instance, "cotype", note, expected);
 }
 
 async function main() {
@@ -580,6 +563,9 @@ async function main() {
   const ntfs = process.env.OBSYNC_E2E_NTFS === "1";
   const store = process.env.OBSYNC_E2E_SECRET_STORE || "";
   if (store && !STORES[store]) throw new Denied(`OBSYNC_E2E_SECRET_STORE must be one of ${Object.keys(STORES)}, not ${store}`);
+  if (store === "windows" && process.platform !== "win32") throw new Denied("Windows custody requires native Windows");
+  const captures = process.env.OBSYNC_E2E_CAPTURES;
+  if (captures) fs.mkdirSync(captures); // Refuse a pre-existing output, including a link.
   const token = fs.readFileSync(tokenFile, "utf8").trim();
   fs.rmSync(tokenFile, { force: true });
   secrets.push(token);
@@ -663,7 +649,8 @@ async function main() {
     await cotyping(a, b);
     await starvedWatcher(a, b);
     if (ntfs) await windowsJourneys(a, b);
-    if (store) await restarted(a, b, { binary, extra, homes, store });
+    const custody = store ? await restarted(a, b, { binary, extra, homes, store }) : null;
+    if (captures) finishEvidence(captures, custody);
     if (homes) await untrusted(work, pluginDir, binary, extra, url);
     console.log(`obsidian-drive: SUMMARY steps=${proven} duration=${((Date.now() - started) / 1000).toFixed(1)}s decision=pass`);
   } catch (error) {
@@ -697,16 +684,14 @@ async function main() {
 const STORES = {
   "gnome-keyring": { encrypted: true, backend: "gnome_libsecret", plain: false },
   none: { encrypted: false, plain: true },
+  windows: { encrypted: true, plain: false },
 };
 const UNENCRYPTED = "Secrets are stored without encryption";
 
 function holds(instance, found, store, when) {
   const want = STORES[store];
-  const wrong = Object.entries(want).filter(([key, value]) => found[key] !== value);
-  if (!found.stored || wrong.length) {
-    throw new Denied(`${instance.name} ${when}: Obsidian's secret storage reports ${JSON.stringify(found)}, `
-      + `and with ${store} it must report ${JSON.stringify({ stored: true, ...want })}`);
-  }
+  try { assertCustody(found, want); }
+  catch { throw new Denied(`${instance.name} ${when}: custody refused for ${store}: ${JSON.stringify(found)}`); }
 }
 
 /**
@@ -716,28 +701,49 @@ function holds(instance, found, store, when) {
  * secret both.
  */
 async function restarted(a, b, { binary, extra, homes, store }) {
-  for (const instance of [a, b]) holds(instance, await inVault(instance, secretStore), store, "before the restart");
+  for (const instance of [a, b]) holds(instance, await inVault(instance, secretFacts), store, "before the restart");
+  const evidence = { before: true, quit: false, paired: false, transferred: false, after: false };
   await Promise.all([a.halt(), b.halt()]);
+  evidence.quit = true;
   a.launch(binary, 19222, extra, homes);
   b.launch(binary, 19223, extra, homes);
   await Promise.all([reopen(a), reopen(b)]);
   await until("a: paired again, from its secret storage", () => paired(a));
   await until("b: paired again, from its secret storage", () => paired(b));
-  const text = `after the restart ${randomBytes(6).toString("hex")}\n`;
-  await inVault(b, async (body) => { await app.vault.create("e2e/after-restart.md", body); return true; }, text);
-  const ms = await arrives(a, "e2e/after-restart.md", Buffer.from(text), "a note after the restart");
+  evidence.paired = true;
+  const times = [];
+  for (const [sender, receiver] of [[a, b], [b, a]]) {
+    const file = `e2e/after-restart-${sender.name}.md`;
+    const text = `# After restart\nSent from ${sender.name}; encrypted keys survived the restart.\n`;
+    await inVault(sender, async (file, body) => { await app.vault.create(file, body); return true; }, file, text);
+    times.push(await arrives(receiver, file, Buffer.from(text), "a note after the restart"));
+    for (const instance of [sender, receiver]) {
+      await inVault(instance, async (file) => {
+        await app.workspace.getLeaf(false).openFile(app.vault.getAbstractFileByPath(file), { state: { mode: "source" } });
+        return true;
+      }, file);
+      await captureEditor(instance, `restart-${sender.name}`, file, text);
+    }
+  }
+  evidence.transferred = true;
   const [found] = await Promise.all([a, b].map(async (instance) => {
-    const seen = await inVault(instance, secretStore);
+    const seen = await inVault(instance, secretFacts);
     holds(instance, seen, store, "after the restart");
     return seen;
   }));
   const warned = [...(await a.all(notices)), ...(await b.all(notices))].flat().filter((line) => line.startsWith(UNENCRYPTED));
-  if (store === "gnome-keyring" && warned.length) {
+  if (STORES[store].encrypted && warned.length) {
     throw new Denied(`with an unlocked keyring Obsidian still says "${warned[0]}"`);
   }
   prove(`the keys with ${store}: backend ${found.backend}, encrypted=${found.encrypted}, stored as plain JSON=${found.plain}; `
-    + `both instances restarted, paired again from their secret storage, and a note crossed in ${ms} ms; `
+    + `both instances restarted, paired again from their secret storage, and notes crossed both ways in ${times.join("/")} ms; `
     + `after the restart Obsidian ${warned.length ? `says "${warned[0]}" (${warned.length} windows)` : "shows no warning about it"}`);
+  evidence.after = true;
+  return evidence;
+}
+
+async function captureEditor(instance, phase, file, text) {
+  await captureVerifiedEditor(instance, phase, file, text, process.env.OBSYNC_E2E_CAPTURES, until);
 }
 
 /** A relaunched instance: the vault opens where it was, and the plugin loads from what it kept. */

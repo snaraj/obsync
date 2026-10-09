@@ -233,3 +233,19 @@ redaction rules. The quickstart's five captures are taken during the run -- 01 f
 the production-path install above, 02 and 03 from V1, 04 from V2, 05 from V3
 -- and are committed under [`docs/captures/`](captures/README.md) by
 the convention recorded there.
+
+### Windows editor and credential evidence
+
+The Windows leg of `Desktop matrix` runs two fresh Obsidian profiles through
+trusted TLS, concurrent editor input, ordinary application quit/relaunch and
+bidirectional post-restart sync. It requires encrypted secret storage, an
+opaque persisted entry and matching credential revisions before and after
+restart. It reports only custody facts, never stored credential values.
+
+A successful job retains `windows-editor-captures` for three days: six PNGs
+of the synthetic editors and their independent disk hashes. Captures exclude
+settings, dialogs and the surrounding desktop. Download the artifact with
+`gh run download RUN_ID --name windows-editor-captures --dir FRESH_DIRECTORY`,
+inspect every PNG and bind the inspection receipt to the run and source SHA.
+A captured image alone is not a visual acceptance result. Runtime profiles,
+server fixtures and temporary trust are removed by the job's teardown.
