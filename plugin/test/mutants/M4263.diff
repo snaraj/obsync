@@ -1,0 +1,6 @@
+M4263: split changes that share a line into separate stretches
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -302 +302 @@
+-    if (span.first > last) {
++    if (span.first >= last) {

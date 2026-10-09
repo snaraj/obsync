@@ -231,18 +231,20 @@ export function mergeText(base: string, mine: string, theirs: string): string {
 }
 
 /**
- * `mergeText`, also saying whether both sides changed one place differently:
- * different insertions at one place, or a change inside text the other side
- * deleted. That is how two people typing together meet, and the merge keeps
- * both. Two plugins rewriting one value meet the same way, and their values
- * joined are no value at all, so the caller holds an automatic answer instead.
+ * `mergeText`, also saying whether both sides changed one line differently.
+ * That is how two people typing together meet, and the merge keeps both. Two
+ * plugins rewriting one value meet the same way, and their values joined are
+ * no value at all -- letter by letter too: `05.010Z` and `06.000Z`, each
+ * rewriting another digit of `05.000Z`, join as `06.010Z` -- so the caller
+ * holds an automatic answer instead. A line is the measure, as it was before
+ * letters merged.
  */
 export function merge(base: string, mine: string, theirs: string): { text: string; contested: boolean } {
   if (mine === theirs || theirs === base) return { text: mine, contested: false };
   if (mine === base) return { text: theirs, contested: false };
   const left = textChanges(base, mine), right = textChanges(base, theirs);
   const out: string[] = [];
-  let l = 0, r = 0, done = 0, deleter: TextChange[] | null = null, contested = false;
+  let l = 0, r = 0, done = 0;
   while (l < left.length || r < right.length) {
     const at = Math.min(left[l]?.from ?? Infinity, right[r]?.from ?? Infinity);
     if (at > done) {
@@ -251,22 +253,60 @@ export function merge(base: string, mine: string, theirs: string): { text: strin
     }
     const x = left[l]?.from === at ? left[l++] : undefined;
     const y = right[r]?.from === at ? right[r++] : undefined;
-    if (at < done && ((x !== undefined && deleter !== left) || (y !== undefined && deleter !== right))) contested = true;
     const one = x?.insert ?? "", two = y?.insert ?? "";
     if (two.startsWith(one)) out.push(two);
     else if (one.startsWith(two)) out.push(one);
-    else {
-      contested = true;
-      out.push(one < two ? one + two : two + one);
-    }
-    const end = Math.max(x?.to ?? at, y?.to ?? at);
-    if (end > done) {
-      done = end;
-      deleter = (x?.to ?? at) >= (y?.to ?? at) && x !== undefined ? left : right;
-    }
+    else out.push(one < two ? one + two : two + one);
+    done = Math.max(done, x?.to ?? at, y?.to ?? at);
   }
   out.push(base.slice(done));
-  return { text: out.join(""), contested };
+  return { text: out.join(""), contested: contestedLines(base, left, right) };
+}
+
+/**
+ * Whether two sides' changes meet on a base line and make it differently.
+ * Each change covers the lines it touches -- text at a line's end is on that
+ * line -- and changes sharing a line join into one stretch. A stretch both
+ * sides changed is contested unless it reads the same on both: how each
+ * side's diff spelled one edit does not matter.
+ */
+function contestedLines(base: string, left: TextChange[], right: TextChange[]): boolean {
+  const starts = [0];
+  for (let at = base.indexOf("\n"); at !== -1; at = base.indexOf("\n", at + 1)) starts.push(at + 1);
+  const lineOf = (at: number): number => {
+    let low = 0, high = starts.length - 1;
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if ((starts[middle] as number) <= at) low = middle;
+      else high = middle - 1;
+    }
+    return low;
+  };
+  const spans = [...left.map((change) => ({ change, mine: true })), ...right.map((change) => ({ change, mine: false }))]
+    .map((each) => ({ ...each, first: lineOf(each.change.from), last: lineOf(Math.max(each.change.from, each.change.to - 1)) }))
+    .sort((x, y) => x.first - y.first);
+  let stretch: typeof spans = [], last = -1;
+  const differs = (): boolean => {
+    const from = starts[stretch[0]?.first ?? 0] as number, to = starts[last + 1] ?? base.length;
+    const made = (mine: boolean): string => {
+      let out = "", at = from;
+      for (const { change } of stretch.filter((each) => each.mine === mine)) {
+        out += base.slice(at, change.from) + change.insert;
+        at = change.to;
+      }
+      return out + base.slice(at, to);
+    };
+    return stretch.some((each) => each.mine) && stretch.some((each) => !each.mine) && made(true) !== made(false);
+  };
+  for (const span of spans) {
+    if (span.first > last) {
+      if (differs()) return true;
+      stretch = [];
+    }
+    stretch.push(span);
+    last = Math.max(last, span.last);
+  }
+  return differs();
 }
 
 /**

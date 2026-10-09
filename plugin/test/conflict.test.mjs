@@ -11,7 +11,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { conflictCopyPath, conflictStamp, isMergeableText, mergeText, textChanges, MERGE_STEPS } =
+const { conflictCopyPath, conflictStamp, isMergeableText, merge, mergeText, textChanges, MERGE_STEPS } =
   require("../build/sync/conflict.js");
 
 const lines = (...values) => values.join("\n");
@@ -87,6 +87,37 @@ test("one typed stream seen at two lengths lands once", () => {
   // text is no new insertion, at any length one side has seen.
   merges("note: AB", "note: AaaBbb", "note: AaaB", "note: AaaBbb");
   merges("note: ", "note: abc", "note: ab", "note: abc");
+});
+
+test("two rewrites of one line are contested, letter by letter too, in both orders (#179)", () => {
+  /** Whether a pair is contested, the same in both argument orders, as both devices must find it. */
+  const contested = (base, a, b) => {
+    const one = merge(base, a, b).contested;
+    assert.equal(merge(base, b, a).contested, one, JSON.stringify({ base, a, b }));
+    return one;
+  };
+  const note = (stamp, body = "typed") => `---\nupdated: ${stamp}\n---\n# n10\n${body}\n`;
+  // Two plugins stamping one value, each rewriting other digits of it: joined,
+  // a time neither wrote.
+  const base = note("2026-01-01T00:00:05.000Z");
+  const a = note("2026-01-01T00:00:05.010Z", "typed here"), b = note("2026-01-01T00:00:06.000Z");
+  merges(base, a, b, note("2026-01-01T00:00:06.010Z", "typed here"));
+  assert.equal(contested(base, a, b), true);
+  // One stamp on both sides is one value; a stamp and typing on another line meet nowhere.
+  assert.equal(contested(base, a, note("2026-01-01T00:00:05.010Z")), false);
+  assert.equal(contested(base, b, note("2026-01-01T00:00:05.000Z", "typed here")), false);
+  // Text at a line's end is on that line, not the next.
+  assert.equal(contested("a\nb\n", "ax\nb\n", "a\nyb\n"), false);
+  assert.equal(contested("a\nb\n", "ax\nb\n", "ay\nb\n"), true);
+  // A deletion across lines meets a change on any line it spans, and no other.
+  assert.equal(contested("a\nb\nc\nd\n", "a\nd\n", "a\nb\nC\nd\n"), true);
+  assert.equal(contested("a\nb\nc\nd\n", "a\nd\n", "a\nb\nc\nD\n"), false);
+  // Different insertions at one place, and an edit inside the other side's deletion.
+  assert.equal(contested("word!", "wordX", "wordY"), true);
+  assert.equal(contested("abcdef", "af", "abXcdef"), true);
+  // One side unchanged, or both the same.
+  assert.equal(contested(base, base, a), false);
+  assert.equal(contested(base, a, a), false);
 });
 
 test("the native long typing failure keeps all 823 tokens on one line", () => {

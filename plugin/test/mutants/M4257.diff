@@ -1,0 +1,6 @@
+M4257: never call two rewrites of one line contested
+--- a/plugin/src/sync/conflict.ts
++++ b/plugin/src/sync/conflict.ts
+@@ -263 +263 @@
+-  return { text: out.join(""), contested: contestedLines(base, left, right) };
++  return { text: out.join(""), contested: false };

@@ -1,6 +1,0 @@
-M4196: never call an edit inside the other side's deletion contested
---- a/plugin/src/sync/conflict.ts
-+++ b/plugin/src/sync/conflict.ts
-@@ -254 +254 @@
--    if (at < done && ((x !== undefined && deleter !== left) || (y !== undefined && deleter !== right))) contested = true;
-+    if (at < done && false) contested = true;
