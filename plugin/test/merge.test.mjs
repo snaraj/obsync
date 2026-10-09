@@ -976,6 +976,66 @@ test("one file's identical heads are closed at most five times in a minute from 
   assert.equal(r.server.files.get(fileId).heads.length, 1);
 });
 
+/*
+ * Two people typing close pairs of one name (#339): each device merges the
+ * same fork to the same bytes a few times a minute, and the count told the
+ * user a device kept renaming the note. A keystroke here between two such
+ * closings starts the count again; closings nobody typed between, and
+ * closings of two names, are counted as before.
+ */
+const closingRounds = async (rename) => {
+  const { rig } = await import("./fake.mjs");
+  const { createRequire } = await import("node:module");
+  const require = createRequire(import.meta.url);
+  const { applyChange } = require("../build/sync/pull.js");
+  const { pushFile } = require("../build/sync/push.js");
+  const r = await rig();
+  const SHARED = "the bytes every head carries\n";
+  r.host.seed(NAMED, SHARED, 1000);
+  const { fileId } = await pushFile(r.context, NAMED);
+  let revision = {};
+  r.host.editorRevision = () => revision;
+  const round = async (mtime, typed) => {
+    if (typed) revision = {};
+    const path = r.state.pathByFileId(fileId);
+    const head = r.state.fileByPath(path).versionId;
+    await pushFile(r.context, path, true);
+    const theirs = await r.server.publish({
+      fileId, path: rename ? (path === NAMED ? MOVED : NAMED) : path, bytes: new TextEncoder().encode(SHARED), mtime,
+      parents: [head], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
+    });
+    const before = r.server.journal.length;
+    assert.equal(await applyChange(r.context, theirs), "skipped");
+    return r.server.journal.length - before;
+  };
+  return { r, fileId, round };
+};
+
+test("identical heads of one name closed between keystrokes typed here are no closing storm (#339)", async () => {
+  const { r, fileId, round } = await closingRounds(false);
+  const logs = () => r.host.logs.filter((line) => line.startsWith("pull")).join(" | ");
+  const typed = [];
+  for (let n = 1; n <= 8; n++) typed.push(await round(4000 + n, true));
+  assert.deepEqual(typed, [1, 1, 1, 1, 1, 1, 1, 1], logs());
+  assert.ok(r.host.logs.some((line) => line.startsWith(`pull decision=closing_budget_reset reason=trusted_editor_input file=${fileId} `)), logs());
+  assert.equal(r.host.logs.some((line) => line.includes("reason=closing_storm")), false, logs());
+  assert.deepEqual(r.host.notices.filter((notice) => notice.startsWith("obsync: stopped renaming")), []);
+  // Nobody types: the fifth closing in a row is the last.
+  const untyped = [];
+  for (let n = 1; n <= 5; n++) untyped.push(await round(5000 + n, false));
+  assert.deepEqual(untyped, [1, 1, 1, 1, 0], logs());
+  assert.ok(r.host.logs.some((line) => line.startsWith(`pull decision=refused reason=closing_storm file=${fileId} count=6 `)), logs());
+});
+
+test("identical heads of two names are counted however fast someone types here (#151, #339)", async () => {
+  const { r, fileId, round } = await closingRounds(true);
+  const closed = [];
+  for (let n = 1; n <= 6; n++) closed.push(await round(4000 + n, true));
+  assert.deepEqual(closed, [1, 1, 1, 1, 1, 0], r.host.logs.filter((line) => line.startsWith("pull")).join(" | "));
+  assert.ok(r.host.logs.some((line) => line.startsWith(`pull decision=refused reason=closing_storm file=${fileId} count=6 `)));
+  assert.equal(r.host.logs.some((line) => line.includes("closing_budget_reset")), false);
+});
+
 /** The digest a single-chunk manifest carries. */
 function digestOf(text) {
   return createHash("sha256").update(text).digest("hex");

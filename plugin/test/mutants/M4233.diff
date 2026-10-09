@@ -1,0 +1,6 @@
+M4233: count closings of one name with keystrokes typed between them
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4026 +4026 @@
+-  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS && !typed ? seen : { since: now, count: 0 };
++  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0 };

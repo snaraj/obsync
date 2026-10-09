@@ -1,0 +1,6 @@
+M4235: start the closing count again without saying so
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4024 +4024 @@
+-    context.host.log(`pull decision=closing_budget_reset reason=trusted_editor_input file=${change.file_id} seq=${change.seq} count=${seen.count}`);
++    void now;

@@ -3093,7 +3093,7 @@ async function resolve(
       file.heads.length === 2 &&
       file.heads.includes(localVersionId) &&
       file.heads.includes(change.version_id) &&
-      closingAllowed(context, change, localPath)
+      closingAllowed(context, change, localPath, theirManifest.path === here)
     ) {
       const base = baseId === null ? undefined : (await manifestOf(context, file, change, baseId).catch(() => null))?.path;
       const target = settledName(context, change, base, here, theirManifest.path);
@@ -4006,14 +4006,25 @@ const MERGE_STORM_MS = 60_000;
  * file, this device closes no more of it until the window has passed, and
  * says so once. Nothing is lost -- both heads hold the same bytes.
  */
-const closings = new WeakMap<SyncContext, Map<string, { since: number; count: number }>>();
+const closings = new WeakMap<SyncContext, Map<string, { since: number; count: number; input?: object }>>();
 
-function closingAllowed(context: SyncContext, change: ChangeRecord, path: string): boolean {
+function closingAllowed(context: SyncContext, change: ChangeRecord, path: string, sameName: boolean): boolean {
   let files = closings.get(context);
   if (files === undefined) closings.set(context, (files = new Map()));
   const now = context.now();
   const seen = files.get(change.file_id);
-  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS ? seen : { since: now, count: 0 };
+  // TWO PEOPLE TYPING CLOSE PAIRS OF ONE NAME (#339). Each device merges the
+  // same fork to the same bytes, a few times a minute, and the count told the
+  // user a device kept renaming the note. Trusted input here between two such
+  // closings starts it again, as it does the merge breaker's; closings of two
+  // names, and closings nobody typed between, are counted as before.
+  const input = sameName ? context.host.editorRevision?.(path) : undefined;
+  const typed = input !== undefined && seen !== undefined && input !== seen.input;
+  if (typed && seen.count > 0) {
+    context.host.log(`pull decision=closing_budget_reset reason=trusted_editor_input file=${change.file_id} seq=${change.seq} count=${seen.count}`);
+  }
+  const tally = seen !== undefined && now - seen.since < MERGE_STORM_MS && !typed ? seen : { since: now, count: 0 };
+  if (input !== undefined) tally.input = input;
   files.set(change.file_id, tally);
   if (tally.count < MERGE_STORM_LIMIT) {
     tally.count++;

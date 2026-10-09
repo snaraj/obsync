@@ -1314,6 +1314,11 @@ long poll and needs its timeout raised.
    identity, consumed once at reconciliation entry. Input during a merge stays
    visible to the next resolution; repeated reads, saves, reloads and cursor
    movement cannot reset the count. This grants no incoming-write permission.
+   Closings of two heads holding one text are counted apart, five in a row
+   inside a minute. Trusted input here starts that count again only for two
+   heads of one name: two people typing close such pairs a few times a
+   minute, while two names closed back and forth are the loop a device older
+   than the rename rule makes, and stay counted (#151, #339).
    Superseded
    incoming heads with a retained descendant are skipped before counting.
    A new peer version that descends from its previous version but not from

@@ -1,0 +1,6 @@
+M4234: forget which keystroke the last closing saw, so every closing looks typed between
+--- a/plugin/src/sync/pull.ts
++++ b/plugin/src/sync/pull.ts
+@@ -4027 +4027 @@
+-  if (input !== undefined) tally.input = input;
++  void input;

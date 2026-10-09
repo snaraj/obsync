@@ -24,6 +24,9 @@ advances exactly one SemVer step -- one patch, one minor, or one major
   moment, or for good when it had not been sent yet. The combined version is
   now sent instead, and an unsent deletion goes out first, even one made
   while the keystroke before it was still uploading (#339).
+- Two people typing in one note for minutes no longer get a notice that
+  obsync "stopped renaming" it when nobody renamed it. A device that really
+  keeps giving a note a different name is still stopped and named (#339).
 - Saved editor input can sync while typing continues. Incoming edits merge
   with acknowledged versions while newer local input stays queued as a child
   version. Save confirmation, unfinished composition and recent human input
