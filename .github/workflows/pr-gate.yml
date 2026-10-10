@@ -171,6 +171,11 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npm run build
           npm test
+      - name: Verify real plugin/server encryption boundaries
+        run: |
+          set -euo pipefail
+          cargo build --locked -p obsyncd
+          node scripts/ci/e2ee.mjs
       - name: Build and test the offline CLI
         run: |
           cargo build --locked --release -p obsync-cli

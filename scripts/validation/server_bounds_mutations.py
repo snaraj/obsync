@@ -36,7 +36,7 @@ BUDGET = "three_hundred_slow_bodies_stay_inside_the_unverified_body_budget"
 SHARE = "a_device_at_its_share_is_refused_and_no_other_device_is"
 STREAM = "a_batch_streams_and_names_a_lost_chunk_missing"
 PROBE = "the_readiness_probe_never_writes_through_a_planted_link"
-KEY_FILE = "export_reads_the_key_from_a_file_only_its_owner_can_read"
+KEY_INPUT = "export_refuses_key_inputs_without_echoing_or_reading_them"
 INCOMPLETE = "a_body_is_too_large_only_when_it_passed_its_ceiling"
 ACCEPT = "an_unverified_body_stays_reserved_until_its_check_has_run"
 SIGNED = "a_signed_body_stays_reserved_until_its_nonce_is_remembered"
@@ -262,11 +262,15 @@ CASES = [
      "    let mut f = std::fs::OpenOptions::new()\n        .write(true)\n        .create_new(true)\n"
      "        .mode(0o600)\n        .open(&path)?;", PROBE),
     ("probe-never-follows", SERVER, API, PROBE_BODY, "    let mut f = std::fs::File::create(&path)?;", PROBE),
-    ("key-file-owner-only", SERVER, CLI, "    if meta.permissions().mode() & 0o077 != 0 {", "    if false {",
-     KEY_FILE),
-    ("key-file-regular", SERVER, CLI, "    if !meta.is_file() {", "    if false {", KEY_FILE),
-    ("argv-key-warned", SERVER, CLI, "        let key_on_argv = key.is_some();",
-     "        let key_on_argv = false;", "a_key_on_the_command_line_still_parses_and_is_warned_about"),
+    # Export accepts no content key at all; file-reading permission guards
+    # disappeared with that input path. Silently accepting an old flag is the
+    # regression now, including a complete otherwise valid invocation.
+    ("key-input-refused", SERVER, CLI,
+     'return Err("content keys are refused; export writes ciphertext only".into());',
+     'i += 2; continue;', KEY_INPUT),
+    ("export-argument-redaction", SERVER, CLI,
+     'return Err("unknown export flag".into());',
+     'return Err(format!("unknown export flag: {flag}"));', KEY_INPUT),
     ("body-rate-floor", SERVER, SERVE, "pub const MIN_BODY_RATE: u64 = 16 * 1024;",
      "pub const MIN_BODY_RATE: u64 = 0;", "a_chunk_body_trickled_below_the_rate_floor_is_refused"),
     ("body-rate-floor-lowered", SERVER, SERVE, "pub const MIN_BODY_RATE: u64 = 16 * 1024;",

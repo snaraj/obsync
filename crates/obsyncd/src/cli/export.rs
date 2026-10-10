@@ -10,13 +10,8 @@
 //! files and no others. Which PATHS a domain covers is still owner-only and
 //! still invisible here; the server needs only the label.
 //!
-//! It does not write plaintext. That needs AES-256-GCM, which the server
-//! deliberately does not implement (docs/architecture.md §3: "The server
-//! performs no AES and no asymmetric operation in v1"). Plaintext export
-//! lands with that primitive in a later version; until then the operator
-//! decrypts the exported ciphertext on a device that holds the key, and the
-//! `--key` argument is accepted so the command line does not change when
-//! that lands.
+//! Content keys and plaintext decryption belong exclusively on trusted clients.
+//! This server command accepts no key and exports ciphertext only.
 #![forbid(unsafe_code)]
 
 use std::fs::{self, File};
@@ -62,22 +57,13 @@ impl ExportReport {
         for sid in &self.missing {
             println!("  {sid}");
         }
-        println!("content: ciphertext (plaintext export lands with AES-GCM)");
+        println!("content: ciphertext (decrypt only on a trusted client)");
         println!("result: {}", if self.ok() { "ok" } else { "FAILED" });
     }
 }
 
 /// Export every file's newest head as ciphertext, with a manifest beside it.
-pub fn run(
-    cfg: &Config,
-    domain: &DomainId,
-    key: &[u8; 32],
-    out: &Path,
-) -> Result<ExportReport, StoreError> {
-    // Accepted so the command line is stable when decryption lands; the
-    // server holds no AES implementation to use it with today.
-    let _ = key;
-
+pub fn run(cfg: &Config, domain: &DomainId, out: &Path) -> Result<ExportReport, StoreError> {
     let log = Log::new(cfg.log_level);
     let storage = cfg.storage();
     let posture = Posture::enforce(&storage, &log)?;
@@ -217,7 +203,6 @@ mod tests {
     use crate::types::FileId;
     use obsync_core::sha256::sha256;
 
-    const KEY: [u8; 32] = [5u8; 32];
     const ONE: DomainId = DomainId::new([0xd1; 16]);
     const TWO: DomainId = DomainId::new([0xd2; 16]);
     const ABSENT: DomainId = DomainId::new([0xd3; 16]);
@@ -289,7 +274,7 @@ mod tests {
         let (first, second) = seed(&cfg);
 
         let out = dir.path().join("out-one");
-        let report = run(&cfg, &ONE, &KEY, &out).expect("export runs");
+        let report = run(&cfg, &ONE, &out).expect("export runs");
         assert_eq!(report.files, 1, "one file is in this domain");
         assert_eq!(report.versions, 1);
         assert!(report.missing.is_empty());
@@ -308,7 +293,7 @@ mod tests {
 
         // The other domain exports its own file, and nothing else.
         let other = dir.path().join("out-two");
-        let report = run(&cfg, &TWO, &KEY, &other).expect("export runs");
+        let report = run(&cfg, &TWO, &other).expect("export runs");
         assert_eq!(report.files, 1);
         assert!(other.join(format!("{second}.bin.enc")).is_file());
         assert!(!other.join(format!("{first}.bin.enc")).exists());
@@ -321,7 +306,7 @@ mod tests {
         seed(&cfg);
         let out = dir.path().join("out");
         assert!(matches!(
-            run(&cfg, &ABSENT, &KEY, &out),
+            run(&cfg, &ABSENT, &out),
             Err(StoreError::UnknownDomain)
         ));
         assert!(!out.exists(), "a refused export creates no directory");

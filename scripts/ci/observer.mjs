@@ -1,5 +1,5 @@
 // observer -- what a network operator in front of obsyncd sees of a real
-// session, and a scan that proves it is metadata and ciphertext only.
+// session, and a bounded scan for seeded content and content keys.
 //
 // WHY. obsync's promise (docs/threat-model.md) is that content and names are
 // encrypted on the device and the server -- and so anyone in front of it,
@@ -20,15 +20,12 @@
 // THE SCANNER reassembles the captured streams into HTTP exchanges (bodies
 // de-chunked and decompressed, targets percent-decoded, JSON walked and every
 // JSON string that itself decodes as base64/base64url/hex decoded again), then
-// searches every one of those views for every NEEDLE in every encoding a leak
-// could take. A needle is a sentinel the session wrote or key material read
-// off the devices; PASS is zero hits. It also lists what IS visible, so the
+// searches those views for each NEEDLE in the supported encodings. A needle is a sentinel the session wrote or key material read
+// off disposable test devices; PASS requires complete evidence and zero unexpected hits. It also lists what IS visible, so the
 // threat model can be held to exactly that. Needle values are never printed.
-// A single recovery word is a needle of its own only when it is not part of
-// the protocol's own vocabulary (a JSON key, header name or route word the
-// capture itself uses): a BIP-39 word such as a device-list field name would
-// otherwise "leak" on every run whose phrase happens to hold it. The whole
-// phrase stays a needle, and each skipped word is named by label.
+// Individual recovery words of at least seven letters are searched in values,
+// including a value that repeats a protocol field name. Structural names are
+// excluded only from that per-word scan; the full phrase is searched everywhere.
 //
 // usage:
 //   node observer.mjs record --listen 127.0.0.1:18802 --upstream 127.0.0.1:18801 --out <dir>
@@ -53,183 +50,242 @@ function splitHostPort(value) {
  * resume() }`. `pause` stops accepting and cuts live connections (a network
  * gone, for a Leave-and-pair-again leg); `resume` listens again on the port.
  */
+function writeFully(fd, bytes) {
+  const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  for (let at = 0; at < data.length;) {
+    const written = fs.writeSync(fd, data, at, data.length - at);
+    if (written <= 0) throw new Error("recorder_write");
+    at += written;
+  }
+}
+
 export async function startRecorder({ listen, upstream, out }) {
   const [host, wantPort] = splitHostPort(listen);
   const [upHost, upPort] = splitHostPort(upstream);
   fs.mkdirSync(out, { recursive: true, mode: 0o700 });
-  const index = fs.openSync(path.join(out, "index.jsonl"), "a");
-  const liveSockets = new Set();
-  // Continue numbering past whatever the directory already holds, so a
-  // restart into the same capture appends rather than clobbering c1, c2, ….
-  let count = fs.readdirSync(out)
-    .filter((f) => /^c\d+\.(up|down)$/.test(f))
-    .reduce((max, f) => Math.max(max, Number(f.slice(1, f.indexOf(".")))), 0);
-
+  if (!fs.lstatSync(out).isDirectory() || fs.readdirSync(out).length) throw new Error("capture_not_empty");
+  const index = fs.openSync(path.join(out, "index.jsonl"), "wx", 0o600);
+  const sockets = new Set(), closing = new Set(), errors = new Set();
+  let count = 0, listener = null, stopped = false, port = wantPort;
   const onClient = (client) => {
-    const n = ++count;
-    const opened = Date.now();
-    const up = fs.openSync(path.join(out, `c${n}.up`), "w", 0o600);
-    const down = fs.openSync(path.join(out, `c${n}.down`), "w", 0o600);
-    const sizes = { up: 0, down: 0 };
-    const server = net.connect({ host: upHost, port: upPort });
-    liveSockets.add(client);
-    liveSockets.add(server);
-
+    const n = ++count, sizes = { up: 0, down: 0 }, fds = [];
+    let server;
+    try {
+      fds.push(fs.openSync(path.join(out, `c${n}.up`), "wx", 0o600));
+      fds.push(fs.openSync(path.join(out, `c${n}.down`), "wx", 0o600));
+      server = net.connect({ host: upHost, port: upPort });
+    } catch {
+      errors.add("recorder_open");
+      for (const fd of fds) fs.closeSync(fd);
+      client.destroy();
+      return;
+    }
+    let finished = 0, resolve, upstreamEnded = false;
+    server.on("end", () => { upstreamEnded = true; });
+    const done = new Promise((r) => { resolve = r; });
+    closing.add(done);
+    const finish = () => {
+      if (++finished !== 2) return;
+      if (!upstreamEnded) errors.add("recorder_truncated");
+      for (const socket of [client, server]) sockets.delete(socket);
+      for (const fd of fds) {
+        try { fs.fsyncSync(fd); } catch { errors.add("recorder_flush"); }
+        try { fs.closeSync(fd); } catch { errors.add("recorder_close"); }
+      }
+      try { writeFully(index, `${JSON.stringify({ n, ...sizes, upstreamEnded })}\n`); }
+      catch { errors.add("recorder_index"); }
+      closing.delete(done);
+      resolve();
+    };
     const pump = (from, to, fd, dir) => {
       from.on("data", (bytes) => {
-        try { fs.writeSync(fd, bytes); } catch { /* closed */ }
-        sizes[dir] += bytes.length;
+        try { writeFully(fd, bytes); sizes[dir] += bytes.length; }
+        catch { errors.add("recorder_write"); client.destroy(); server.destroy(); return; }
         if (!to.write(bytes)) from.pause();
       });
       to.on("drain", () => from.resume());
       from.on("end", () => to.end());
     };
-    pump(client, server, up, "up");
-    pump(server, client, down, "down");
-
-    let closed = 0;
-    const finish = () => {
-      if (++closed < 2) return;
-      liveSockets.delete(client);
-      liveSockets.delete(server);
-      try { fs.closeSync(up); } catch { /* */ }
-      try { fs.closeSync(down); } catch { /* */ }
-      fs.writeSync(index, `${JSON.stringify({ n, opened, closed: Date.now(), up: sizes.up, down: sizes.down })}\n`);
-    };
-    for (const s of [client, server]) {
-      s.on("close", finish);
-      s.on("error", () => { client.destroy(); server.destroy(); });
+    pump(client, server, fds[0], "up");
+    pump(server, client, fds[1], "down");
+    for (const socket of [client, server]) {
+      sockets.add(socket);
+      socket.on("close", finish);
+      socket.on("error", () => { errors.add("recorder_socket"); client.destroy(); server.destroy(); });
     }
   };
-
-  let listener = null;
   const listenOn = () => new Promise((resolve, reject) => {
     listener = net.createServer(onClient);
     listener.on("error", reject);
-    listener.listen(wantPort, host, () => resolve(listener.address().port));
+    listener.listen(port, host, () => { port = listener.address().port; resolve(port); });
   });
-  const port = await listenOn();
-
+  const pause = async () => {
+    const pending = [...closing];
+    for (const socket of sockets) socket.destroy();
+    if (listener) {
+      const current = listener;
+      listener = null;
+      await new Promise((resolve) => current.close(resolve));
+    }
+    await Promise.all(pending);
+  };
+  try { await listenOn(); } catch (error) { fs.closeSync(index); throw error; }
   return {
-    port,
-    connections: () => count,
-    pause: () => new Promise((resolve) => {
-      for (const s of liveSockets) s.destroy();
-      liveSockets.clear();
-      if (listener) listener.close(() => { listener = null; resolve(); });
-      else resolve();
-    }),
-    resume: () => (listener ? Promise.resolve(port) : listenOn()),
-    close: () => new Promise((resolve) => {
-      for (const s of liveSockets) s.destroy();
-      liveSockets.clear();
-      const end = () => { try { fs.closeSync(index); } catch { /* */ } resolve(); };
-      if (listener) listener.close(end);
-      else end();
-    }),
+    port, connections: () => count, pause,
+    resume: () => {
+      if (stopped) throw new Error("recorder_stopped");
+      return listener ? Promise.resolve(port) : listenOn();
+    },
+    close: async () => {
+      if (stopped) throw new Error("recorder_stopped");
+      stopped = true;
+      // Let EOF from a completed response reach the relay. A bounded grace
+      // period is not evidence of EOF: forced termination below still fails.
+      let grace;
+      await Promise.race([Promise.all([...closing]), new Promise((resolve) => { grace = setTimeout(resolve, 250); })]);
+      clearTimeout(grace);
+      await pause();
+      try { fs.fsyncSync(index); } catch { errors.add("recorder_flush"); }
+      try { fs.closeSync(index); } catch { errors.add("recorder_close"); }
+      fs.writeFileSync(path.join(out, "complete.json"), JSON.stringify({ version: 1, connections: count, errors: [...errors] }), { flag: "wx", mode: 0o600 });
+      if (errors.size) throw new Error("recorder_failed");
+    },
   };
 }
 
-// ---- Reassembly: captured bytes -> HTTP exchanges.
-
+// ---- Reassembly. Every byte is scanned; incomplete or ambiguous evidence refuses PASS.
 const CRLF2 = Buffer.from("\r\n\r\n");
+const MAX_BYTES = 64 * 1024 * 1024;
+const MAX_DEPTH = 12;
+const refuse = (reason) => { throw new Error(reason); };
 
-/** De-chunk a `Transfer-Encoding: chunked` body; returns the decoded bytes. */
-function dechunk(buf) {
-  const out = [];
-  let at = 0;
-  while (at < buf.length) {
-    const nl = buf.indexOf("\r\n", at, "latin1");
-    if (nl < 0) break;
-    const size = parseInt(buf.toString("latin1", at, nl).split(";")[0].trim(), 16);
-    if (!Number.isFinite(size) || size === 0) break;
-    const start = nl + 2;
-    out.push(buf.subarray(start, start + size));
-    at = start + size + 2;
-  }
-  return Buffer.concat(out);
-}
-
-/** Header block -> lowercase-keyed map, first line kept as `.line`, whole
- * block kept as `.raw` so the search covers every header VALUE, not just the
- * names. */
-function parseHead(text) {
+function parseHead(text, kind) {
   const lines = text.split("\r\n");
-  const headers = { line: lines[0], raw: text };
-  for (const line of lines.slice(1)) {
-    const at = line.indexOf(":");
-    if (at > 0) headers[line.slice(0, at).trim().toLowerCase()] = line.slice(at + 1).trim();
+  const line = lines.shift();
+  if (!(kind === "request" ? /^[A-Z]+ [^ \r\n]+ HTTP\/1\.[01]$/ : /^HTTP\/1\.[01] [1-5][0-9]{2}(?: [^\r\n]*)?$/).test(line)) refuse("http_start_line");
+  const headers = { line, raw: text };
+  for (const row of lines) {
+    const match = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+):[ \t]*([^\r\n]*)$/.exec(row);
+    if (!match) refuse("http_header");
+    const key = match[1].toLowerCase();
+    if (key === "line" || key === "raw" || key === "__proto__") refuse("http_header_reserved");
+    if (headers[key] !== undefined && ["content-length", "transfer-encoding", "content-encoding"].includes(key)) refuse("http_duplicate_framing");
+    headers[key] = headers[key] === undefined ? match[2].trim() : `${headers[key]}, ${match[2].trim()}`;
   }
   return headers;
 }
 
-/** Undo any content-encoding the body declares. */
+function dechunk(buf, start) {
+  const chunks = [], wireValues = [];
+  let at = start, total = 0;
+  for (;;) {
+    const end = buf.indexOf("\r\n", at);
+    if (end < 0) refuse("http_chunk_header");
+    const line = buf.toString("latin1", at, end);
+    if (!/^[0-9a-fA-F]+(?:;[^\r\n]*)?$/.test(line)) refuse("http_chunk_size");
+    if (line.includes(";")) wireValues.push(line.slice(line.indexOf(";") + 1));
+    const size = Number.parseInt(line.split(";")[0], 16);
+    if (!Number.isSafeInteger(size) || size > MAX_BYTES - total) refuse("scan_budget");
+    at = end + 2;
+    if (size === 0) {
+      // Keep trailer VALUES for the recovery-word scan, as well as raw bytes.
+      for (;;) {
+        const tail = buf.indexOf("\r\n", at);
+        if (tail < 0) refuse("http_chunk_trailer");
+        const row = buf.toString("latin1", at, tail);
+        at = tail + 2;
+        if (!row) return { body: Buffer.concat(chunks), next: at, wireValues };
+        if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*$/.test(row) || /^(content-length|transfer-encoding):/i.test(row)) refuse("http_chunk_trailer");
+        wireValues.push(row.slice(row.indexOf(":") + 1));
+      }
+    }
+    if (at + size + 2 > buf.length || buf.toString("latin1", at + size, at + size + 2) !== "\r\n") refuse("http_chunk_truncated");
+    chunks.push(buf.subarray(at, at + size));
+    total += size;
+    at += size + 2;
+  }
+}
+
 function decompress(bytes, encoding) {
-  try {
-    if (/gzip/.test(encoding)) return zlib.gunzipSync(bytes);
-    if (/deflate/.test(encoding)) return zlib.inflateSync(bytes);
-    if (/\bbr\b/.test(encoding)) return zlib.brotliDecompressSync(bytes);
-  } catch { /* leave as-is */ }
+  for (const part of encoding.split(",").map((s) => s.trim().toLowerCase()).reverse()) {
+    if (!part || part === "identity") continue;
+    const decode = { gzip: zlib.gunzipSync, deflate: zlib.inflateSync, br: zlib.brotliDecompressSync }[part];
+    if (!decode) refuse("http_content_encoding");
+    try { bytes = decode(bytes, { maxOutputLength: MAX_BYTES }); }
+    catch { refuse("http_decompression"); }
+  }
   return bytes;
 }
 
-/**
- * Split one direction's byte stream into messages. Each message is its head
- * map and its decoded body. Works for requests and responses: the body length
- * is Content-Length, else chunked, else (a response that closes the
- * connection) the remainder.
- */
-function splitMessages(buf, kind) {
+function splitMessages(buf, kind, requests = []) {
   const messages = [];
-  let at = 0;
+  let at = 0, responseIndex = 0;
   while (at < buf.length) {
     const headEnd = buf.indexOf(CRLF2, at);
-    if (headEnd < 0) break;
-    const head = parseHead(buf.toString("latin1", at, headEnd));
-    const bodyStart = headEnd + 4;
-    let body;
-    let next;
-    const cl = head["content-length"];
-    if (head["transfer-encoding"] && /chunked/i.test(head["transfer-encoding"])) {
-      const term = buf.indexOf(Buffer.from("0\r\n\r\n"), bodyStart);
-      const end = term < 0 ? buf.length : term + 5;
-      body = dechunk(buf.subarray(bodyStart, end));
-      next = end;
+    if (headEnd < 0) refuse("http_header_truncated");
+    const head = parseHead(buf.toString("latin1", at, headEnd), kind);
+    const start = headEnd + 4, cl = head["content-length"], te = head["transfer-encoding"];
+    if (cl !== undefined && te !== undefined) refuse("http_ambiguous_length");
+    if (cl !== undefined && (!/^[0-9]+$/.test(cl) || !Number.isSafeInteger(Number(cl)) || Number(cl) > MAX_BYTES)) refuse("http_content_length");
+    if (te !== undefined && te.toLowerCase() !== "chunked") refuse("http_transfer_encoding");
+    const status = kind === "response" ? Number(head.line.split(" ")[1]) : 0;
+    if ((status > 0 && status < 200 && (cl !== undefined || te !== undefined)) || (status === 204 && (te !== undefined || cl !== undefined && Number(cl) !== 0))) refuse("http_bodyless_framing");
+    const noBody = status && (status < 200 || status === 204 || status === 304 || requests[responseIndex]?.head.line.startsWith("HEAD "));
+    let body, next, wireValues = [];
+    if (noBody) { body = Buffer.alloc(0); next = start; }
+    else if (te !== undefined) {
+      ({ body, next, wireValues } = dechunk(buf, start));
     } else if (cl !== undefined) {
-      const len = Number(cl);
-      body = buf.subarray(bodyStart, bodyStart + len);
-      next = bodyStart + len;
-    } else {
-      body = Buffer.alloc(0);
-      next = bodyStart;
-    }
+      const size = Number(cl);
+      if (!Number.isSafeInteger(size) || size > MAX_BYTES || start + size > buf.length) refuse("http_body_truncated");
+      body = buf.subarray(start, start + size); next = start + size;
+    } else if (kind === "response") {
+      body = buf.subarray(start); next = buf.length;
+    } else { body = Buffer.alloc(0); next = start; }
     body = decompress(body, head["content-encoding"] || "");
-    messages.push({ head, body });
-    if (next <= at) break;
+    messages.push({ head, body, wireValues, wire: buf.subarray(at, next),
+      plainBodyOffset: te === undefined && !head["content-encoding"] ? start - at : null,
+      informational: status > 0 && status < 200 });
+    if (status >= 200) responseIndex++;
     at = next;
   }
   return messages;
 }
 
-/** Read every connection's two files back, in order. */
 export function readCapture(dir) {
   const conns = [];
-  // Every connection file on disk, whether or not it reached the index: a
-  // long-poll connection cut at shutdown never wrote its index line, and its
-  // bytes must be scanned too.
-  const ns = [...new Set(
-    fs.readdirSync(dir)
-      .filter((f) => /^c\d+\.(up|down)$/.test(f))
-      .map((f) => Number(f.slice(1, f.indexOf(".")))),
-  )].sort((a, b) => a - b);
-  for (const n of ns) {
-    const upPath = path.join(dir, `c${n}.up`);
-    const downPath = path.join(dir, `c${n}.down`);
-    conns.push({
-      n,
-      requests: fs.existsSync(upPath) ? splitMessages(fs.readFileSync(upPath), "request") : [],
-      responses: fs.existsSync(downPath) ? splitMessages(fs.readFileSync(downPath), "response") : [],
-    });
+  conns.errors = [];
+  const bad = (reason) => conns.errors.push(reason);
+  let ns, receipt, rows;
+  try {
+    const names = fs.readdirSync(dir);
+    if (names.some((name) => !/^(c[1-9][0-9]*\.(up|down)|index\.jsonl|complete\.json)$/.test(name))) bad("capture_inventory");
+    if (names.some((name) => !fs.lstatSync(path.join(dir, name)).isFile())) refuse("capture_inventory");
+    ns = [...new Set(names.filter((f) => /^c[1-9][0-9]*\.(up|down)$/.test(f)).map((f) => Number(f.slice(1, f.indexOf(".")))))].sort((a, b) => a - b);
+    receipt = JSON.parse(fs.readFileSync(path.join(dir, "complete.json"), "utf8"));
+    rows = fs.readFileSync(path.join(dir, "index.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    if (receipt.version !== 1 || receipt.connections !== ns.length || !Array.isArray(receipt.errors) || receipt.errors.length || rows.length !== ns.length || new Set(rows.map((row) => row.n)).size !== ns.length) bad("capture_receipt");
+    if (rows.some((row) => row.upstreamEnded !== true)) bad("capture_termination");
+  } catch { bad("capture_incomplete"); }
+  if (!ns?.length) bad("capture_empty");
+  for (const n of ns || []) {
+    const conn = { n, requests: [], responses: [], raw: {} };
+    conns.push(conn);
+    for (const [suffix, kind] of [["up", "request"], ["down", "response"]]) {
+      try {
+        const file = path.join(dir, `c${n}.${suffix}`);
+        const stat = fs.lstatSync(file);
+        if (!stat.isFile()) refuse("capture_inventory");
+        if (stat.size > MAX_BYTES) refuse("scan_budget");
+        const bytes = fs.readFileSync(file);
+        conn.raw[kind] = bytes;
+        if (rows?.find((row) => row.n === n)?.[suffix] !== bytes.length) bad("capture_byte_count");
+        conn[kind === "request" ? "requests" : "responses"] = splitMessages(bytes, kind, conn.requests);
+      } catch (error) {
+        bad(["scan_budget", "http_"].some((r) => error.message.startsWith(r)) ? error.message : "capture_read");
+      }
+    }
+    if (!conn.requests.length || conn.responses.filter((r) => !r.informational).length !== conn.requests.length) bad("capture_exchange_count");
   }
   return conns;
 }
@@ -272,6 +328,13 @@ function encodingsOf(value, kind) {
   const baseForms = (b) => {
     add(b.toString("base64"));
     add(b.toString("base64url"));
+    // Only characters entirely inside the needle: arbitrary prefix bytes
+    // change the boundary sextets when the needle is encoded at offsets 1/2.
+    for (let offset = 0; offset < 3; offset++) {
+      const encoded = Buffer.concat([Buffer.alloc(offset), b]).toString("base64");
+      const inside = encoded.slice(Math.ceil(offset * 8 / 6), Math.floor((offset + b.length) * 8 / 6));
+      add(inside); add(inside.replaceAll("+", "-").replaceAll("/", "_"));
+    }
     add(base32(b));
     add(b.toString("hex"));
     add(b.toString("hex").toUpperCase());
@@ -295,7 +358,7 @@ function encodingsOf(value, kind) {
       addRaw(be);   // as UTF-16BE bytes
       add(s);       // the text verbatim
       add(encodeURIComponent(s));
-      add([...s].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`).join(""));
+      add(s.split("").map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`).join(""));
       baseForms(u8);
       add(le.toString("hex"));
       add(be.toString("hex"));
@@ -309,7 +372,17 @@ function encodingsOf(value, kind) {
  * obsync derives from the vault key that must equally never cross. A label is
  * kept for the report; the value never is.
  */
-function buildNeedles(spec) {
+export function buildNeedles(spec) {
+  if (!spec || typeof spec !== "object" || Array.isArray(spec) || Object.keys(spec).some((key) => !["text", "hex", "phrase", "codes", "domainId"].includes(key))) refuse("needles_invalid");
+  for (const kind of ["text", "hex"]) {
+    if (spec[kind] !== undefined && (!spec[kind] || typeof spec[kind] !== "object" || Array.isArray(spec[kind]))) refuse("needles_invalid");
+    for (const [label, value] of Object.entries(spec[kind] || {})) {
+      if (!label || typeof value !== "string" || value.length < 4 || value.length > MAX_BYTES || (kind === "hex" && !/^(?:[0-9a-fA-F]{2}){4,}$/.test(value))) refuse("needles_invalid");
+    }
+  }
+  if (spec.phrase !== undefined && (typeof spec.phrase !== "string" || spec.phrase.trim().length < 4)) refuse("needles_invalid");
+  if (spec.codes !== undefined && (!Array.isArray(spec.codes) || spec.codes.some((v) => typeof v !== "string" || v.length < 4))) refuse("needles_invalid");
+  if (spec.domainId !== undefined && !/^[0-9a-f]{32}$/.test(spec.domainId)) refuse("needles_invalid");
   const needles = [];
   const push = (label, value, kind, extra = {}) => {
     if (!value) return;
@@ -319,25 +392,25 @@ function buildNeedles(spec) {
     }
   };
   for (const [label, value] of Object.entries(spec.text || {})) push(`text:${label}`, value, "text");
-  for (const [label, value] of Object.entries(spec.hex || {})) push(`key:${label}`, value, "hex");
+  for (const [label, value] of Object.entries(spec.hex || {})) if (label !== "domain_id") push(`key:${label}`, value, "hex");
   if (spec.phrase) {
     push("recovery:phrase", spec.phrase.trim(), "text");
-    for (const word of spec.phrase.trim().split(/\s+/)) {
+    for (const [index, word] of spec.phrase.trim().split(/\s+/).entries()) {
       // A single common word is not a needle, but a run of them is the phrase,
       // covered above; individual rare words are still worth flagging.
-      if (word.length >= 7) push(`recovery:word:${word.slice(0, 2)}…`, word, "text", { word: word.toLowerCase() });
+      if (word.length >= 7) push(`recovery:word:${index}`, word, "text", { word: word.toLowerCase() });
     }
   }
   for (const [i, code] of (spec.codes || []).entries()) push(`pairing:code:${i}`, code, "text");
   // Derived from the vault key with no other input: the domain-map key. Chunk
   // and manifest keys need the (server-visible) domain id; pass it as
-  // spec.hex.domain_id to add them. None may ever appear in a capture.
+  // spec.domainId to add them. None may ever appear in a capture.
   const vrk = spec.hex && spec.hex.vrk;
   if (vrk && /^[0-9a-f]{64}$/.test(vrk)) {
     const key = Buffer.from(vrk, "hex");
     const mapKey = Buffer.from(hkdfSync("sha256", key, Buffer.from("obsync/v1/domainmap"), Buffer.alloc(0), 32));
     push("key:derived:domain-map", mapKey.toString("hex"), "hex");
-    const domainId = spec.hex.domain_id;
+    const domainId = spec.domainId ?? spec.hex.domain_id;
     if (domainId && /^[0-9a-f]{32}$/.test(domainId)) {
       const domainKey = Buffer.from(hkdfSync("sha256", key, Buffer.from("obsync/v1/domain"), Buffer.from(domainId), 32));
       push("key:derived:domain", domainKey.toString("hex"), "hex");
@@ -345,6 +418,7 @@ function buildNeedles(spec) {
       push("key:derived:manifest", manifestKey.toString("hex"), "hex");
     }
   }
+  if (!needles.length) refuse("needles_empty");
   return needles;
 }
 
@@ -352,6 +426,30 @@ function buildNeedles(spec) {
 
 const LOOKS_B64 = /^[A-Za-z0-9+/_-]{16,}={0,2}$/;
 const LOOKS_HEX = /^(?:[0-9a-f]{2}){8,}$/i;
+
+// JSON.parse discards duplicate members. Validate lexical member uniqueness
+// first, retaining top-level string-value spans for narrow credential sinks.
+// Offsets are UTF-16 string offsets, converted to byte offsets by the caller.
+export function uniqueJson(text) {
+  const value = JSON.parse(text), stack = [], fields = [];
+  const tokens = /"(?:[^"\\]|\\.)*"|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/g;
+  for (const token of text.matchAll(tokens)) {
+    const word = token[0], top = stack.at(-1);
+    if (word === "{") stack.push({ keys: new Set(), key: true });
+    else if (word === "[") stack.push({});
+    else if (word === "}" || word === "]") stack.pop();
+    else if (word === "," && top?.keys) top.key = true;
+    else if (word === ":" && top?.keys) top.key = false;
+    else if (word.startsWith('"') && top?.keys) {
+      const decoded = JSON.parse(word);
+      if (top.key) {
+        if (top.keys.has(decoded)) refuse("http_json_duplicate");
+        top.keys.add(decoded); top.name = decoded;
+      } else if (stack.length === 1) fields.push({ name: top.name, value: decoded, start: token.index, end: token.index + word.length });
+    }
+  }
+  return { value, fields };
+}
 
 /** Decode a JSON string one more level if it is base64/base64url or hex. */
 function decodeDeeper(s) {
@@ -364,18 +462,21 @@ function decodeDeeper(s) {
 }
 
 /** Walk parsed JSON, collecting every string, recursing into decodable ones. */
-function walkJson(value, out, depth) {
-  if (depth > 6) return;
+function walkJson(value, out, depth, valuesOnly = false, budget = { nodes: 0 }) {
+  if (depth > MAX_DEPTH || ++budget.nodes > 50000) refuse("scan_decode_budget");
   if (typeof value === "string") {
     out.push(value);
     for (const b of decodeDeeper(value)) {
       out.push(b.toString("latin1"));
-      try { walkJson(JSON.parse(b.toString("utf8")), out, depth + 1); } catch { /* not json */ }
+      let inner;
+      try { inner = uniqueJson(b.toString("utf8")).value; }
+      catch (error) { if (error.message === "http_json_duplicate") throw error; continue; }
+      walkJson(inner, out, depth + 1, valuesOnly, budget);
     }
   } else if (Array.isArray(value)) {
-    for (const v of value) walkJson(v, out, depth + 1);
+    for (const v of value) walkJson(v, out, depth + 1, valuesOnly, budget);
   } else if (value && typeof value === "object") {
-    for (const k of Object.keys(value)) { out.push(k); walkJson(value[k], out, depth + 1); }
+    for (const k of Object.keys(value)) { if (!valuesOnly) out.push(k); walkJson(value[k], out, depth + 1, valuesOnly, budget); }
   }
 }
 
@@ -385,18 +486,38 @@ function walkJson(value, out, depth) {
  * substring), the percent-decoded request target, and every JSON string in
  * the body with each decodable one taken a level deeper.
  */
-function viewsOf(message, isRequest) {
+function viewsOf(message, isRequest, valuesOnly = false) {
   const views = [];
   // The whole header block (every name AND value) plus the body, as latin1 so
   // any byte sequence in transit is found by substring.
   const wire = Buffer.concat([Buffer.from(message.head.raw + "\r\n\r\n", "latin1"), message.body]);
-  views.push(wire.toString("latin1"));
+  if (!valuesOnly) views.push(wire.toString("latin1"));
+  else {
+    for (const [name, value] of Object.entries(message.head)) if (!["line", "raw"].includes(name)) views.push(value);
+    if (!isRequest) views.push(message.head.line.split(" ").slice(2).join(" "));
+    views.push(...(message.wireValues || []));
+  }
   if (isRequest) {
     const target = message.head.line.split(" ")[1] || "";
-    try { views.push(decodeURIComponent(target)); } catch { /* */ }
+    try {
+      if (valuesOnly) {
+        const parsed = new URL(target, "http://obsync.invalid");
+        views.push(decodeURIComponent(parsed.pathname), ...parsed.searchParams.values());
+      } else views.push(decodeURIComponent(target));
+    } catch { refuse("http_target_encoding"); }
   }
   const text = message.body.toString("utf8");
-  try { const collected = []; walkJson(JSON.parse(text), collected, 0); views.push(...collected); } catch { /* not json */ }
+  let value;
+  try { value = uniqueJson(text).value; }
+  catch (error) {
+    if (error.message === "http_json_duplicate") throw error;
+    if (/(?:application\/json|\+json)(?:;|$)/i.test(message.head["content-type"] || "")) refuse("http_json");
+    if (valuesOnly) views.push(text);
+    return views;
+  }
+  const collected = [];
+  walkJson(value, collected, 0, valuesOnly);
+  views.push(...collected);
   return views;
 }
 
@@ -452,7 +573,11 @@ export function scan(conns, allNeedles) {
   const vocabulary = vocabularyOf(conns);
   const isProtocol = (n) => n.word !== undefined && vocabulary.some((w) => w.includes(n.word));
   const skipped = allNeedles.filter(isProtocol).map((n) => n.label);
-  const needles = allNeedles.filter((n) => !isProtocol(n));
+  const needles = allNeedles.filter((n) => n.word === undefined);
+  const words = allNeedles.filter((n) => n.word !== undefined);
+  const errors = Array.isArray(conns.errors) ? [...conns.errors] : ["capture_unverified"];
+  if (!allNeedles.length) errors.push("needles_empty");
+  if (!conns.length) errors.push("capture_empty");
   const routes = new Map();
   const requestHeaders = new Set();
   const responseHeaders = new Set();
@@ -460,9 +585,9 @@ export function scan(conns, allNeedles) {
   const credentialLegs = new Set();
   let agent = null;
 
-  const check = (views, where) => {
+  const check = (views, where, selected = needles) => {
     for (const view of views) {
-      for (const needle of needles) {
+      for (const needle of selected) {
         if (hits.some((h) => h.label === needle.label && h.where === where)) continue;
         const hit = needle.raws.some((r) => view.includes(r)) || needle.forms.some((f) => view.includes(f));
         if (hit) hits.push({ label: needle.label, where });
@@ -470,7 +595,14 @@ export function scan(conns, allNeedles) {
     }
   };
 
+  const message = (m, request) => {
+    try {
+      check(viewsOf(m, request), request ? "request" : "response");
+      check(viewsOf(m, request, true), request ? "request" : "response", words);
+    } catch (error) { errors.push(error.message); }
+  };
   for (const conn of conns) {
+    for (const [kind, bytes] of Object.entries(conn.raw || {})) check([bytes.toString("latin1")], kind);
     for (const req of conn.requests) {
       const cls = routeClass(req.head.line);
       const method = req.head.line.split(" ")[0];
@@ -487,7 +619,7 @@ export function scan(conns, allNeedles) {
         const body = JSON.parse(req.body.toString("utf8"));
         for (const k of Object.keys(body)) jsonFields.add(`req:${k}`);
       } catch { /* */ }
-      check(viewsOf(req, true), "request");
+      message(req, true);
     }
     for (const res of conn.responses) {
       for (const k of Object.keys(res.head)) if (k !== "line" && k !== "raw") responseHeaders.add(k);
@@ -501,13 +633,17 @@ export function scan(conns, allNeedles) {
           }
         }
       } catch { /* */ }
-      check(viewsOf(res, false), "response");
+      message(res, false);
     }
   }
   return {
+    decision: hits.length || errors.length ? "fail" : "pass",
+    errors: [...new Set(errors)],
     hits,
     skipped,
-    visible: {
+    // Failed captures may contain a needle in a route, header or field NAME.
+    // Never echo those values into a report or CI log on a refused capture.
+    visible: hits.length || errors.length ? {} : {
       routes: [...routes.entries()].map(([r, n]) => `${r} ×${n}`).sort(),
       requestHeaders: [...requestHeaders].sort(),
       responseHeaders: [...responseHeaders].sort(),
@@ -543,28 +679,31 @@ async function cli() {
     // Hold the process open.
     await new Promise(() => {});
   } else if (cmd === "scan") {
-    const spec = JSON.parse(fs.readFileSync(args.needles, "utf8"));
-    const needles = buildNeedles(spec);
-    const conns = readCapture(args.capture);
-    const { hits, skipped, visible } = scan(conns, needles);
+    let needles = [], conns = [], result;
+    try {
+      needles = buildNeedles(JSON.parse(fs.readFileSync(args.needles, "utf8")));
+      conns = readCapture(args.capture);
+      result = scan(conns, needles);
+    } catch { result = { decision: "fail", errors: ["needles_invalid"], hits: [], skipped: [], visible: {} }; }
+    const { hits, skipped, visible, errors, decision } = result;
     const requests = conns.reduce((n, c) => n + c.requests.length, 0);
     const responses = conns.reduce((n, c) => n + c.responses.length, 0);
     if (args.json) {
-      process.stdout.write(`${JSON.stringify({ decision: hits.length === 0 ? "pass" : "fail", needles: needles.length, connections: conns.length, requests, responses, hits, skipped, visible }, null, 2)}\n`);
+      process.stdout.write(`${JSON.stringify({ decision, errors, needles: needles.length, connections: conns.length, requests, responses, hits, skipped, visible }, null, 2)}\n`);
     } else {
       process.stdout.write(`observer scan: ${conns.length} connections, ${requests} requests, ${responses} responses, ${needles.length} needles in ${needles.reduce((n, x) => n + x.forms.length + x.raws.length, 0)} encodings\n`);
-      process.stdout.write(`observer scan: DECISION ${hits.length === 0 ? "PASS (zero needle hits)" : `FAIL (${hits.length} hit(s))`}\n`);
+      process.stdout.write(`observer scan: DECISION ${decision === "pass" ? "PASS (complete capture; zero unexpected hits)" : `FAIL (${hits.length} hit(s); ${errors.join(",")})`}\n`);
       for (const h of hits) process.stdout.write(`observer scan:   HIT ${h.label} in a ${h.where}\n`);
-      if (skipped.length) process.stdout.write(`observer scan: ${skipped.length} single recovery word(s) not searched, being the protocol's own vocabulary here: ${skipped.join(", ")}\n`);
+      if (skipped.length) process.stdout.write(`observer scan: ${skipped.length} structural recovery-word exception(s), with all values still searched: ${skipped.join(", ")}\n`);
       process.stdout.write("observer scan: VISIBLE to the hop:\n");
-      process.stdout.write(`  routes: ${visible.routes.join(", ")}\n`);
-      process.stdout.write(`  request headers: ${visible.requestHeaders.join(", ")}\n`);
-      process.stdout.write(`  response headers: ${visible.responseHeaders.join(", ")}\n`);
-      process.stdout.write(`  json fields: ${visible.jsonFields.join(", ")}\n`);
-      process.stdout.write(`  credentials in clear on this hop: ${visible.credentialLegs.join("; ") || "none observed"}\n`);
+      process.stdout.write(`  routes: ${(visible.routes || []).join(", ")}\n`);
+      process.stdout.write(`  request headers: ${(visible.requestHeaders || []).join(", ")}\n`);
+      process.stdout.write(`  response headers: ${(visible.responseHeaders || []).join(", ")}\n`);
+      process.stdout.write(`  json fields: ${(visible.jsonFields || []).join(", ")}\n`);
+      process.stdout.write(`  credentials in clear on this hop: ${(visible.credentialLegs || []).join("; ") || "none observed"}\n`);
       process.stdout.write(`  user agent: ${visible.agent || "none"}\n`);
     }
-    process.exit(hits.length === 0 ? 0 : 1);
+    process.exitCode = decision === "pass" ? 0 : 1;
   } else {
     process.stderr.write("usage: observer.mjs record --listen H:P --upstream H:P --out DIR | scan --capture DIR --needles FILE [--json]\n");
     process.exit(2);

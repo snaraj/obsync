@@ -81,6 +81,8 @@ CANONICAL=(
   'npm ci --ignore-scripts --no-audit --no-fund'
   'npm run build'
   'npm test'
+  'cargo build --locked -p obsyncd'
+  'node scripts/ci/e2ee.mjs'
   'cargo build --locked --release -p obsync-cli'
   'python3 cli/check.py'
   'node --test dashboard/test/*.test.mjs'
@@ -99,7 +101,7 @@ CANONICAL=(
 # The prerequisite list `check` must carry. Stated here so a target silently
 # dropped from the chain -- which leaves `make check` green while running less
 # -- is a failure rather than a difference nobody notices.
-CHECK_PREREQUISITES='fmt lint test coverage plugin cli dashboard chart contracts secrets'
+CHECK_PREREQUISITES='fmt lint test coverage plugin e2ee cli dashboard chart contracts secrets'
 
 fail() {
   printf 'makefile-invariants: %s\n' "$1" >&2
@@ -198,6 +200,9 @@ for command in "${CANONICAL[@]}"; do
 done
 printf 'makefile-invariants: (a) all %d canonical commands are run by both %s and %s\n' \
   "${#CANONICAL[@]}" "${makefile}" "${workflow}"
+
+# Required E2EE evidence must fail the job, not merely appear in its text.
+python3 -B "${here}/e2ee_contract.py" "${workflow}" "${makefile}"
 
 # (b) `make check` still chains every target that carries one of them.
 observed="$(awk -F: '/^check:/{sub(/ *#.*/, "", $2); print $2; exit}' "${makefile}" \
