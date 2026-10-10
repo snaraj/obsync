@@ -92,6 +92,11 @@ fn human_errors_use_stderr_without_echoing_arguments() {
     for (args, error_stream) in [(&["version"][..], false), (&["unknown-fixture"][..], true)] {
         use std::os::{fd::OwnedFd, unix::net::UnixStream};
         let (writer, reader) = UnixStream::pair().unwrap();
+        // A concurrently forked child can retain a peer descriptor until exec.
+        // Closing only our copy then races its first write. Shut down the
+        // writer instead; retain a peer to prove the refusal is deterministic.
+        let held_peer = reader.try_clone().unwrap();
+        writer.shutdown(std::net::Shutdown::Write).unwrap();
         drop(reader);
         let mut command = Command::new(env!("CARGO_BIN_EXE_obsync"));
         command.args(args).env_clear();
@@ -104,6 +109,7 @@ fn human_errors_use_stderr_without_echoing_arguments() {
         let output = command.output().unwrap();
         assert_eq!(output.status.code(), Some(9));
         assert!(output.stdout.is_empty() && output.stderr.is_empty());
+        drop(held_peer);
     }
 }
 

@@ -80,17 +80,19 @@ export async function startRecorder({ listen, upstream, out }) {
       client.destroy();
       return;
     }
-    let finished = 0, resolve;
+    let finished = 0, resolve, upstreamEnded = false;
+    server.on("end", () => { upstreamEnded = true; });
     const done = new Promise((r) => { resolve = r; });
     closing.add(done);
     const finish = () => {
       if (++finished !== 2) return;
+      if (!upstreamEnded) errors.add("recorder_truncated");
       for (const socket of [client, server]) sockets.delete(socket);
       for (const fd of fds) {
         try { fs.fsyncSync(fd); } catch { errors.add("recorder_flush"); }
         try { fs.closeSync(fd); } catch { errors.add("recorder_close"); }
       }
-      try { writeFully(index, `${JSON.stringify({ n, ...sizes })}\n`); }
+      try { writeFully(index, `${JSON.stringify({ n, ...sizes, upstreamEnded })}\n`); }
       catch { errors.add("recorder_index"); }
       closing.delete(done);
       resolve();
@@ -137,6 +139,11 @@ export async function startRecorder({ listen, upstream, out }) {
     close: async () => {
       if (stopped) throw new Error("recorder_stopped");
       stopped = true;
+      // Let EOF from a completed response reach the relay. A bounded grace
+      // period is not evidence of EOF: forced termination below still fails.
+      let grace;
+      await Promise.race([Promise.all([...closing]), new Promise((resolve) => { grace = setTimeout(resolve, 250); })]);
+      clearTimeout(grace);
       await pause();
       try { fs.fsyncSync(index); } catch { errors.add("recorder_flush"); }
       try { fs.closeSync(index); } catch { errors.add("recorder_close"); }
@@ -169,25 +176,27 @@ function parseHead(text, kind) {
 }
 
 function dechunk(buf, start) {
-  const chunks = [];
+  const chunks = [], wireValues = [];
   let at = start, total = 0;
   for (;;) {
     const end = buf.indexOf("\r\n", at);
     if (end < 0) refuse("http_chunk_header");
     const line = buf.toString("latin1", at, end);
     if (!/^[0-9a-fA-F]+(?:;[^\r\n]*)?$/.test(line)) refuse("http_chunk_size");
+    if (line.includes(";")) wireValues.push(line.slice(line.indexOf(";") + 1));
     const size = Number.parseInt(line.split(";")[0], 16);
     if (!Number.isSafeInteger(size) || size > MAX_BYTES - total) refuse("scan_budget");
     at = end + 2;
     if (size === 0) {
-      // Trailers are still scanned in the original bytes; require complete framing.
+      // Keep trailer VALUES for the recovery-word scan, as well as raw bytes.
       for (;;) {
         const tail = buf.indexOf("\r\n", at);
         if (tail < 0) refuse("http_chunk_trailer");
         const row = buf.toString("latin1", at, tail);
         at = tail + 2;
-        if (!row) return { body: Buffer.concat(chunks), next: at };
+        if (!row) return { body: Buffer.concat(chunks), next: at, wireValues };
         if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*$/.test(row) || /^(content-length|transfer-encoding):/i.test(row)) refuse("http_chunk_trailer");
+        wireValues.push(row.slice(row.indexOf(":") + 1));
       }
     }
     if (at + size + 2 > buf.length || buf.toString("latin1", at + size, at + size + 2) !== "\r\n") refuse("http_chunk_truncated");
@@ -217,15 +226,16 @@ function splitMessages(buf, kind, requests = []) {
     const head = parseHead(buf.toString("latin1", at, headEnd), kind);
     const start = headEnd + 4, cl = head["content-length"], te = head["transfer-encoding"];
     if (cl !== undefined && te !== undefined) refuse("http_ambiguous_length");
+    if (cl !== undefined && (!/^[0-9]+$/.test(cl) || !Number.isSafeInteger(Number(cl)) || Number(cl) > MAX_BYTES)) refuse("http_content_length");
+    if (te !== undefined && te.toLowerCase() !== "chunked") refuse("http_transfer_encoding");
     const status = kind === "response" ? Number(head.line.split(" ")[1]) : 0;
+    if ((status > 0 && status < 200 && (cl !== undefined || te !== undefined)) || (status === 204 && (te !== undefined || cl !== undefined && Number(cl) !== 0))) refuse("http_bodyless_framing");
     const noBody = status && (status < 200 || status === 204 || status === 304 || requests[responseIndex]?.head.line.startsWith("HEAD "));
-    let body, next;
+    let body, next, wireValues = [];
     if (noBody) { body = Buffer.alloc(0); next = start; }
     else if (te !== undefined) {
-      if (te.toLowerCase() !== "chunked") refuse("http_transfer_encoding");
-      ({ body, next } = dechunk(buf, start));
+      ({ body, next, wireValues } = dechunk(buf, start));
     } else if (cl !== undefined) {
-      if (!/^[0-9]+$/.test(cl)) refuse("http_content_length");
       const size = Number(cl);
       if (!Number.isSafeInteger(size) || size > MAX_BYTES || start + size > buf.length) refuse("http_body_truncated");
       body = buf.subarray(start, start + size); next = start + size;
@@ -233,7 +243,9 @@ function splitMessages(buf, kind, requests = []) {
       body = buf.subarray(start); next = buf.length;
     } else { body = Buffer.alloc(0); next = start; }
     body = decompress(body, head["content-encoding"] || "");
-    messages.push({ head, body, informational: status > 0 && status < 200 });
+    messages.push({ head, body, wireValues, wire: buf.subarray(at, next),
+      plainBodyOffset: te === undefined && !head["content-encoding"] ? start - at : null,
+      informational: status > 0 && status < 200 });
     if (status >= 200) responseIndex++;
     at = next;
   }
@@ -253,6 +265,7 @@ export function readCapture(dir) {
     receipt = JSON.parse(fs.readFileSync(path.join(dir, "complete.json"), "utf8"));
     rows = fs.readFileSync(path.join(dir, "index.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
     if (receipt.version !== 1 || receipt.connections !== ns.length || !Array.isArray(receipt.errors) || receipt.errors.length || rows.length !== ns.length || new Set(rows.map((row) => row.n)).size !== ns.length) bad("capture_receipt");
+    if (rows.some((row) => row.upstreamEnded !== true)) bad("capture_termination");
   } catch { bad("capture_incomplete"); }
   if (!ns?.length) bad("capture_empty");
   for (const n of ns || []) {
@@ -414,6 +427,30 @@ export function buildNeedles(spec) {
 const LOOKS_B64 = /^[A-Za-z0-9+/_-]{16,}={0,2}$/;
 const LOOKS_HEX = /^(?:[0-9a-f]{2}){8,}$/i;
 
+// JSON.parse discards duplicate members. Validate lexical member uniqueness
+// first, retaining top-level string-value spans for narrow credential sinks.
+// Offsets are UTF-16 string offsets, converted to byte offsets by the caller.
+export function uniqueJson(text) {
+  const value = JSON.parse(text), stack = [], fields = [];
+  const tokens = /"(?:[^"\\]|\\.)*"|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/g;
+  for (const token of text.matchAll(tokens)) {
+    const word = token[0], top = stack.at(-1);
+    if (word === "{") stack.push({ keys: new Set(), key: true });
+    else if (word === "[") stack.push({});
+    else if (word === "}" || word === "]") stack.pop();
+    else if (word === "," && top?.keys) top.key = true;
+    else if (word === ":" && top?.keys) top.key = false;
+    else if (word.startsWith('"') && top?.keys) {
+      const decoded = JSON.parse(word);
+      if (top.key) {
+        if (top.keys.has(decoded)) refuse("http_json_duplicate");
+        top.keys.add(decoded); top.name = decoded;
+      } else if (stack.length === 1) fields.push({ name: top.name, value: decoded, start: token.index, end: token.index + word.length });
+    }
+  }
+  return { value, fields };
+}
+
 /** Decode a JSON string one more level if it is base64/base64url or hex. */
 function decodeDeeper(s) {
   const bufs = [];
@@ -454,7 +491,11 @@ function viewsOf(message, isRequest, valuesOnly = false) {
   // any byte sequence in transit is found by substring.
   const wire = Buffer.concat([Buffer.from(message.head.raw + "\r\n\r\n", "latin1"), message.body]);
   if (!valuesOnly) views.push(wire.toString("latin1"));
-  else for (const [name, value] of Object.entries(message.head)) if (!["line", "raw"].includes(name)) views.push(value);
+  else {
+    for (const [name, value] of Object.entries(message.head)) if (!["line", "raw"].includes(name)) views.push(value);
+    if (!isRequest) views.push(message.head.line.split(" ").slice(2).join(" "));
+    views.push(...(message.wireValues || []));
+  }
   if (isRequest) {
     const target = message.head.line.split(" ")[1] || "";
     try {
@@ -466,8 +507,9 @@ function viewsOf(message, isRequest, valuesOnly = false) {
   }
   const text = message.body.toString("utf8");
   let value;
-  try { value = JSON.parse(text); }
-  catch {
+  try { value = uniqueJson(text).value; }
+  catch (error) {
+    if (error.message === "http_json_duplicate") throw error;
     if (/(?:application\/json|\+json)(?:;|$)/i.test(message.head["content-type"] || "")) refuse("http_json");
     if (valuesOnly) views.push(text);
     return views;
@@ -660,7 +702,7 @@ async function cli() {
       process.stdout.write(`  credentials in clear on this hop: ${(visible.credentialLegs || []).join("; ") || "none observed"}\n`);
       process.stdout.write(`  user agent: ${visible.agent || "none"}\n`);
     }
-    process.exit(decision === "pass" ? 0 : 1);
+    process.exitCode = decision === "pass" ? 0 : 1;
   } else {
     process.stderr.write("usage: observer.mjs record --listen H:P --upstream H:P --out DIR | scan --capture DIR --needles FILE [--json]\n");
     process.exit(2);

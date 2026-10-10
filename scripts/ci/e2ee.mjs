@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { buildNeedles, readCapture, scan, startRecorder } from "./observer.mjs";
+import { buildNeedles, readCapture, scan, startRecorder, uniqueJson } from "./observer.mjs";
 import { FakeHost, FakeTimers, fakeState } from "../../plugin/test/fake.mjs";
 
 const require = createRequire(import.meta.url);
@@ -76,7 +76,7 @@ async function device(name) {
   const { state, reload } = await fakeState();
   state.data.deviceId = null;
   state.data.deviceSecret = null;
-  state.data.vrk = secret;
+  state.data.vrk = null;
   state.data.serverUrl = `http://127.0.0.1:${recorder.port}`;
   const host = new FakeHost({ deviceName: name });
   host.clock = Date.now();
@@ -131,7 +131,9 @@ function files(dir) {
 
 function assertNoNeedles(bytes, needles, surface) {
   const view = bytes.toString("latin1");
-  for (const needle of needles) assert.ok(![...needle.forms, ...needle.raws].some((value) => view.includes(value)), `unexpected ${needle.label} on ${surface}`);
+  // Partial recovery words need structural/value context (traffic scanner).
+  // Opaque storage/log bytes are checked for the full phrase and other secrets.
+  for (const needle of needles.filter((entry) => entry.word === undefined)) assert.ok(![...needle.forms, ...needle.raws].some((value) => view.includes(value)), `unexpected ${needle.label} on ${surface}`);
 }
 
 async function positiveControl(name) {
@@ -165,16 +167,27 @@ async function positiveControl(name) {
   controls.add(name);
 }
 
+function credentialNeedles(credentials) {
+  const hex = { setup: credentials.setup, proof: credentials.proof, enroll: credentials.enroll };
+  for (const [i, value] of [...credentials.devices.values()].entries()) hex[`device_${i}`] = value;
+  return buildNeedles({ hex });
+}
+
 function credentialScan(conns, credentials) {
   const counts = { setup_token: 0, recovery_proof: 0, enroll_token: 0, device_secret: 0 };
+  const errors = [...conns.errors];
   const content = conns.map((conn) => {
     const redact = (message, request, route) => {
-      let body;
-      try { body = JSON.parse(message.body.toString("utf8")); } catch { return message; }
+      const text = message.body.toString("utf8");
+      let parsed;
+      try { parsed = uniqueJson(text); } catch (error) {
+        if (error.message === "http_json_duplicate") errors.push(error.message);
+        return message;
+      }
+      const { value: body, fields } = parsed, spans = [];
       const allow = (field, expected) => {
-        if (typeof expected === "string" && body[field] === expected) {
-          body[field] = "<expected-authentication-credential>"; counts[field]++;
-        }
+        const span = fields.find((entry) => entry.name === field && entry.value === expected);
+        if (typeof expected === "string" && span) { spans.push(span); counts[field]++; }
       };
       if (request && route === "POST /v1/setup") {
         allow("setup_token", credentials.setup);
@@ -184,20 +197,32 @@ function credentialScan(conns, credentials) {
       if (!request && route === "POST /v1/pairing" && /^HTTP\/1\.[01] 201 /.test(message.head.line)) allow("enroll_token", credentials.enroll);
       if (!request && /^HTTP\/1\.[01] 20[01] /.test(message.head.line) &&
         ["POST /v1/setup", `POST /v1/pairing/${credentials.pairing}/claim`].includes(route)) {
-        allow("device_secret", credentials.devices.get(body.device_id));
+        allow("device_secret", credentials.devices.get(body?.device_id));
       }
-      return { ...message, body: Buffer.from(JSON.stringify(body)) };
+      if (!spans.length) return message;
+      // Exact byte spans only. Refuse exception-bearing compressed/chunked
+      // bodies rather than discarding framing or encoded bytes to redact them.
+      if (!Number.isInteger(message.plainBodyOffset) || !message.wire) {
+        errors.push("credential_wire_unsupported"); return message;
+      }
+      let wire = Buffer.from(message.wire), bytes = Buffer.from(message.body);
+      for (const span of spans.sort((a, b) => b.start - a.start)) {
+        const start = Buffer.byteLength(text.slice(0, span.start)), end = Buffer.byteLength(text.slice(0, span.end));
+        const replacement = Buffer.from('"<expected-authentication-credential>"');
+        bytes = Buffer.concat([bytes.subarray(0, start), replacement, bytes.subarray(end)]);
+        wire = Buffer.concat([wire.subarray(0, message.plainBodyOffset + start), replacement, wire.subarray(message.plainBodyOffset + end)]);
+      }
+      return { ...message, body: bytes, wire };
     };
-    const route = (i) => conn.requests[i].head.line.split(" ").slice(0, 2).join(" ");
-    // Completeness and content-key scanning were checked on the ORIGINAL raw
-    // bytes. Only this separate credential check redacts exact typed sinks.
-    return { requests: conn.requests.map((m, i) => redact(m, true, route(i))),
-      responses: conn.responses.filter((m) => !m.informational).map((m, i) => redact(m, false, route(i))) };
+    const route = (i) => conn.requests[i]?.head.line.split(" ").slice(0, 2).join(" ");
+    let responseIndex = 0;
+    const requests = conn.requests.map((m, i) => redact(m, true, route(i)));
+    const responses = conn.responses.map((m) => redact(m, false, route(m.informational ? responseIndex : responseIndex++)));
+    return { requests, responses, raw: {
+      request: Buffer.concat(requests.map((m) => m.wire)), response: Buffer.concat(responses.map((m) => m.wire)) } };
   });
-  content.errors = conns.errors;
-  const hex = { setup: credentials.setup, proof: credentials.proof, enroll: credentials.enroll };
-  for (const [i, value] of [...credentials.devices.values()].entries()) hex[`device_${i}`] = value;
-  return { report: scan(content, buildNeedles({ hex })), counts };
+  content.errors = errors;
+  return { report: scan(content, credentialNeedles(credentials)), counts };
 }
 
 try {
@@ -207,8 +232,11 @@ try {
   const capture = path.join(root, "capture");
   recorder = await startRecorder({ listen: "127.0.0.1:0", upstream: `127.0.0.1:${port}`, out: capture });
   const a = await device("QA A"), b = await device("QA B");
+  a.state.data.vrk = secret;
   const token = fs.readFileSync(path.join(root, "journal/v1/setup-token"), "utf8").trim();
   const recovery = await accountRecovery(secret);
+  spec.phrase = (await pairing.recoveryPhrase(c.unhex(secret))).join(" ");
+  assert.equal(c.hex(await pairing.entropyFromPhrase(pairing.normalisePhrase(spec.phrase))), secret);
   credential(a, ok(await a.transport.setup(token, "QA account", { name: "QA A", platform: "linux", app_version: version }, { verifier: recovery.verifier })));
   flows.add("setup");
   const invitation = ok(await a.transport.pairingCreate());
@@ -232,11 +260,20 @@ try {
     await pairing.matchCodeV2(ps, invitation.pairing_id, claimed.claimant.claimant_pub, creator.publicKey));
   const impostor = await pairing.newPairingKeyExchange();
   assert.equal(await pairing.keptCommitment(commitment, invitation.pairing_id, impostor.publicKey), false);
+  const envelopeKey = await c.derivePairingV2Key(creator.pair, await c.importPairingPublicKey(pairing.checkedPublicKey(claimant.publicKey)), ps, invitation.pairing_id);
+  spec.hex.pairing_envelope = c.hex(envelopeKey);
   const envelope = await pairing.sealEnvelopeV2(creator, claimed.claimant.claimant_pub, ps, invitation.pairing_id, { vrk: secret });
   ok(await a.transport.pairingApprove(invitation.pairing_id, envelope.envelope, envelope.nonce));
   const collected = ok(await b.transport.pairingEnvelope(invitation.pairing_id));
+  const handle = await crypto.subtle.importKey("raw", envelopeKey, { name: "AES-GCM" }, false, ["decrypt"]);
+  const envelopePlain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: c.unhex(collected.nonce),
+    additionalData: c.concat(c.utf8(invitation.pairing_id), pairing.checkedPublicKey(claimant.publicKey), pairing.checkedPublicKey(creator.publicKey)), tagLength: 128 },
+    handle, c.unbase64(collected.envelope));
+  assert.equal(JSON.parse(new TextDecoder().decode(envelopePlain)).vrk, secret, "inventoried envelope key must open the actual envelope");
   const opened = await pairing.openEnvelopeV2(claimant, collected.creator_pub, ps, invitation.pairing_id, collected.envelope, collected.nonce);
   assert.ok(opened.vrk === secret, "paired client received the device-held key");
+  b.state.data.vrk = opened.vrk;
+  assert.ok(b.state.data.vrk === secret, "recipient must keep the key delivered by pairing before sync");
   flows.add("pairing");
   await a.engine.start(); await b.engine.start();
   phase("sync");
@@ -265,6 +302,8 @@ try {
   assert.equal(await b.host.stat(filename), null);
   flows.add("rename");
   const recovered = await device("QA recovered");
+  // Recovery begins with possession of the user's root key, unlike pairing.
+  recovered.state.data.vrk = secret;
   const recoveredSetup = ok(await recovered.transport.setup(token, "QA account",
     { name: "QA recovered", platform: "linux", app_version: version }, recovery));
   assert.equal(recoveredSetup.recovered, true);
@@ -332,7 +371,7 @@ try {
   await positiveControl("control-after");
   const needles = buildNeedles(spec), conns = readCapture(capture), report = scan(conns, needles);
   for (const label of ["text:note", "text:filename", "text:folder", "text:vault", "text:attachment", "text:edit", "text:futureContent",
-    "key:vrk", "key:derived:domain-map", "key:domain", "key:manifest", "key:pairing_secret", "pairing:code:0"]) {
+    "key:vrk", "key:derived:domain-map", "key:domain", "key:manifest", "key:pairing_secret", "key:pairing_envelope", "recovery:phrase", "pairing:code:0"]) {
     assert.ok(needles.some((needle) => needle.label === label), `required needle absent: ${label}`);
   }
   assert.equal(report.decision, "pass", `traffic scan: ${JSON.stringify(report.errors)} ${report.hits.map((h) => h.label)}`);
@@ -352,11 +391,31 @@ try {
   assert.deepEqual(wrong.errors, []);
   assert.equal(wrong.decision, "fail", "a valid proof in an unrelated header must fail");
   assert.ok(wrong.hits.some((hit) => hit.label === "key:proof" && hit.where === "request"));
+  // Duplicate members must not erase the earlier credential before scanning.
+  const setupConn = conns.find((conn) => conn.requests[0]?.head.line.startsWith("POST /v1/setup "));
+  for (const field of ['"debug"', '"de\\u0062ug"']) {
+    const original = setupConn.responses[0];
+    const addition = `"debug":"${recovery.proof}",${field}:null,`;
+    const body = Buffer.from(original.body.toString("utf8").replace("{", "{" + addition));
+    const poisoned = { ...original, body, wire: Buffer.concat([original.wire.subarray(0, original.plainBodyOffset), body]) };
+    const duplicate = [{ ...setupConn, responses: [poisoned] }]; duplicate.errors = [];
+    const denied = credentialScan(duplicate, credentials).report;
+    assert.equal(denied.decision, "fail", "duplicate credential fields must fail");
+    assert.ok(denied.hits.some((hit) => hit.label === "key:proof"));
+    assert.ok(denied.errors.includes("http_json_duplicate"));
+  }
+  const diagnosticNeedles = [...needles, ...credentialNeedles(credentials)];
+  for (const credential of credentialNeedles(credentials)) {
+    for (const surface of ["server_logs", "client_diagnostics"]) {
+      assert.throws(() => assertNoNeedles(Buffer.from(credential.raws[0], "latin1"), diagnosticNeedles, surface),
+        /unexpected key:/, "diagnostic credential positive control");
+    }
+  }
   const stored = [...files(path.join(root, "blobs")), ...files(path.join(root, "journal"))];
   assert.ok(stored.length > 3, "server storage was exercised");
   for (const file of stored) assertNoNeedles(fs.readFileSync(file), needles, "server_storage");
-  assertNoNeedles(Buffer.from(logs), needles, "server_logs");
-  for (const d of devices) assertNoNeedles(Buffer.from(d.host.logs.join("\n")), needles, "client_diagnostics");
+  assertNoNeedles(Buffer.from(logs), diagnosticNeedles, "server_logs");
+  for (const d of devices) assertNoNeedles(Buffer.from(d.host.logs.join("\n")), diagnosticNeedles, "client_diagnostics");
   assert.deepEqual([...flows].sort(), ["attachment", "create", "edit", "history", "pairing", "recovery", "rename", "revocation-access-only", "setup", "tamper-refusal"]);
   assert.deepEqual([...controls].sort(), ["control-after", "control-before"]);
   assert.ok(Date.now() - started < budget, "fixture exceeded wall-clock budget");

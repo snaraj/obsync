@@ -201,6 +201,9 @@ done
 printf 'makefile-invariants: (a) all %d canonical commands are run by both %s and %s\n' \
   "${#CANONICAL[@]}" "${makefile}" "${workflow}"
 
+# Required E2EE evidence must fail the job, not merely appear in its text.
+python3 -B "${here}/e2ee_contract.py" "${workflow}" "${makefile}"
+
 # (b) `make check` still chains every target that carries one of them.
 observed="$(awk -F: '/^check:/{sub(/ *#.*/, "", $2); print $2; exit}' "${makefile}" \
   | tr -s ' ' | sed 's/^ *//; s/ *$//')"

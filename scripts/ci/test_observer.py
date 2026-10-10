@@ -53,7 +53,7 @@ def _capture(tmp: str, up: bytes, down: bytes = b"") -> str:
 def _seal(cap):
     sizes = {part: os.path.getsize(os.path.join(cap, f"c1.{part}")) for part in ("up", "down")}
     with open(os.path.join(cap, "index.jsonl"), "w") as handle:
-        handle.write(json.dumps({"n": 1, **sizes}) + "\n")
+        handle.write(json.dumps({"n": 1, **sizes, "upstreamEnded": True}) + "\n")
     with open(os.path.join(cap, "complete.json"), "w") as handle:
         json.dump({"version": 1, "connections": 1, "errors": []}, handle)
 
@@ -76,7 +76,10 @@ def _scan(cap: str, needles: dict) -> dict:
         )
     finally:
         os.unlink(needles_file)
-    out = json.loads(result.stdout)
+    try:
+        out = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise AssertionError("scanner must emit a complete JSON verdict") from error
     if result.returncode != (0 if out["decision"] == "pass" else 1):
         raise AssertionError("scanner verdict and exit disagree")
     return out
@@ -276,7 +279,7 @@ if (mode !== "short") assert.ok(result.errors.length);
 
     def test_bodyless_responses_still_refuse_duplicate_framing(self):
         cap = _capture(self.tmp, _message("GET", "/v1/x", b""),
-                       b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n")
+                       b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\nContent-Encoding: identity\r\nContent-Encoding: identity\r\n\r\n")
         self.assertEqual(_scan(cap, self.text_needles)["decision"], "fail")
 
     def test_needle_builder_refuses_an_empty_corpus(self):
@@ -356,6 +359,129 @@ assert.throws(() => buildNeedles({}), /needles_empty/);
                         json.dump({"version": 1, "connections": 2 if action == "wrong_count" else 1,
                                    "errors": ["recorder_write"] if action == "write_failure" else []}, handle)
                 self.assertEqual(_scan(cap, self.text_needles)["decision"], "fail")
+
+
+    def test_reserved_headers_cannot_replace_parser_metadata(self):
+        for name in (b"Raw", b"Line", b"__proto__"):
+            out = _scan(_capture(self.tmp, b"GET / HTTP/1.1\r\n" + name + b": public\r\n\r\n"), self.text_needles)
+            self.assertEqual(out["decision"], "fail")
+            self.assertIn("http_header_reserved", out["errors"])
+
+    def test_final_response_count_must_equal_request_count(self):
+        up = _message("GET", "/", b"")
+        out = _scan(_capture(self.tmp, up, _message_response() * 2), self.text_needles)
+        self.assertEqual(out["decision"], "fail")
+        self.assertIn("capture_exchange_count", out["errors"])
+        interim = b"HTTP/1.1 100 Continue\r\n\r\n"
+        self.assertEqual(_scan(_capture(self.tmp, up, interim + _message_response()), self.text_needles)["decision"], "pass")
+
+    def test_json_node_budget_refuses(self):
+        for length, decision in [(49998, "pass"), (50001, "fail")]:
+            cap = _capture(self.tmp, _message("POST", "/", json.dumps([0] * length).encode()))
+            self.assertEqual(_scan(cap, self.text_needles)["decision"], decision)
+
+    def test_domain_and_manifest_keys_are_derived(self):
+        import hashlib
+        import hmac
+        def hkdf(key, salt, info):
+            prk = hmac.new(salt, key, hashlib.sha256).digest()
+            return hmac.new(prk, info + b"\x01", hashlib.sha256).digest()
+        domain_id = "ab" * 16
+        domain = hkdf(bytes.fromhex(VRK_HEX), b"obsync/v1/domain", domain_id.encode())
+        manifest = hkdf(domain, b"obsync/v1/manifest", domain_id.encode())
+        for label, key in [("domain", domain), ("manifest", manifest)]:
+            cap = _capture(self.tmp, _message("POST", "/", b"prefix" + key + b"suffix"))
+            out = _scan(cap, {**self.key_needles, "domainId": domain_id})
+            self.assertEqual(out["decision"], "fail")
+            self.assertEqual(out["errors"], [])
+            self.assertTrue(any(h["label"] == "key:derived:" + label for h in out["hits"]))
+
+    def test_bodyless_framing_is_validated(self):
+        for method, status in [("HEAD", 200), ("GET", 100), ("GET", 204), ("GET", 304)]:
+            for field in (b"Content-Length: NaN", b"Content-Length: -1", b"Transfer-Encoding: xchunked"):
+                with self.subTest(method=method, status=status, field=field):
+                    down = f"HTTP/1.1 {status} Public\r\n".encode() + field + b"\r\n\r\n"
+                    if status == 100:
+                        down += _message_response()
+                    out = _scan(_capture(self.tmp, _message(method, "/", b""), down), self.text_needles)
+                    self.assertEqual(out["decision"], "fail")
+            # HEAD and 304 may advertise the hypothetical body length.
+            field = b"Content-Length: 123\r\n" if method == "HEAD" or status == 304 else b""
+            down = f"HTTP/1.1 {status} Public\r\n".encode() + field + b"\r\n"
+            if status == 100:
+                down += _message_response()
+            self.assertEqual(_scan(_capture(self.tmp, _message(method, "/", b""), down), self.text_needles)["decision"], "pass")
+        for status in (100, 204):
+            down = f"HTTP/1.1 {status} Public\r\nContent-Length: 1\r\n\r\n".encode()
+            if status == 100:
+                down += _message_response()
+            self.assertEqual(_scan(_capture(self.tmp, _message("GET", "/", b""), down), self.text_needles)["decision"], "fail")
+
+    def test_recovery_words_in_reason_trailers_and_chunk_extensions(self):
+        needles = {"phrase": "abandon ability address"}
+        for value, decision in [(b"ability", "fail"), (b"public", "pass")]:
+            down = b"HTTP/1.1 200 " + value + b"\r\nContent-Length: 0\r\n\r\n"
+            self.assertEqual(_scan(_capture(self.tmp, _message("GET", "/", b""), down), needles)["decision"], decision)
+            for framing in (b"0\r\nX-One: " + value + b"\r\n\r\n", b"0;debug=" + value + b"\r\n\r\n"):
+                up = b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n" + framing
+                out = _scan(_capture(self.tmp, up), needles)
+                self.assertEqual(out["errors"], [])
+                self.assertEqual(out["decision"], decision)
+        up = b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-One: abandon\r\nX-Two: ability\r\nX-Three: address\r\n\r\n"
+        out = _scan(_capture(self.tmp, up), needles)
+        self.assertEqual({h["label"] for h in out["hits"]}, {f"recovery:word:{i}" for i in range(3)})
+
+    def test_duplicate_json_values_cannot_disappear(self):
+        for body in [b'{"debug":"ability","debug":null}', b'{"debug":"ability","de\\u0062ug":null}',
+                     b'{"outer":{"debug":"ability","debug":null}}']:
+            out = _scan(_capture(self.tmp, _message("POST", "/", body)), {"phrase": "abandon ability address"})
+            self.assertEqual(out["decision"], "fail")
+            self.assertIn("http_json_duplicate", out["errors"])
+        clean = b'{"outer":{"debug":"public"},"debug":"public"}'
+        self.assertEqual(_scan(_capture(self.tmp, _message("POST", "/", clean)), self.text_needles)["decision"], "pass")
+
+    def test_recorder_requires_upstream_eof(self):
+        source = r'''
+import assert from "node:assert/strict";
+import net from "node:net";
+import { once } from "node:events";
+const module = process.argv[1]; process.argv[1] = "recorder-eof-test";
+const { startRecorder, readCapture, scan, buildNeedles } = await import(module);
+const complete = process.argv[2] === "complete", out = process.argv[3];
+const sockets = new Set();
+const origin = net.createServer((s) => {
+  sockets.add(s); s.on("close", () => sockets.delete(s));
+  s.once("data", () => {
+    s.write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\npublic-prefix");
+    if (complete) s.end();
+  });
+});
+origin.listen(0, "127.0.0.1"); await once(origin, "listening");
+const relay = await startRecorder({ listen: "127.0.0.1:0", upstream: `127.0.0.1:${origin.address().port}`, out });
+const client = net.connect(relay.port, "127.0.0.1");
+client.write("GET / HTTP/1.1\r\nHost: public\r\n\r\n");
+await once(client, "data");
+if (complete) await relay.close();
+else await assert.rejects(relay.close(), /recorder_failed/);
+client.destroy(); for (const s of sockets) s.destroy();
+await new Promise((resolve) => origin.close(resolve));
+const result = scan(readCapture(out), buildNeedles({ text: { note: "SENTINEL-not-sent" } }));
+assert.equal(result.decision, complete ? "pass" : "fail");
+if (!complete) assert.ok(result.errors.includes("capture_termination"));
+'''
+        for mode in ("complete", "unfinished"):
+            result = subprocess.run([NODE, "--input-type=module", "-e", source, OBSERVER, mode, os.path.join(self.tmp, mode)],
+                                    capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_missing_upstream_eof_receipt_refuses(self):
+        cap = _capture(self.tmp, _message("GET", "/", b""))
+        with open(os.path.join(cap, "index.jsonl")) as handle:
+            row = json.load(handle)
+        del row["upstreamEnded"]
+        with open(os.path.join(cap, "index.jsonl"), "w") as handle:
+            json.dump(row, handle)
+        self.assertIn("capture_termination", _scan(cap, self.text_needles)["errors"])
 
 
 if __name__ == "__main__":
