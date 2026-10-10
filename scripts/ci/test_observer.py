@@ -440,6 +440,29 @@ assert.throws(() => buildNeedles({}), /needles_empty/);
         clean = b'{"outer":{"debug":"public"},"debug":"public"}'
         self.assertEqual(_scan(_capture(self.tmp, _message("POST", "/", clean)), self.text_needles)["decision"], "pass")
 
+    def test_encoded_duplicate_json_cannot_erase_a_secret(self):
+        # Mixed literal/escaped characters evade a raw substring check, so the
+        # decoded JSON layer must either preserve the value or refuse it.
+        escaped = ''.join(c if i % 2 == 0 else f'\\u{ord(c):04x}' for i, c in enumerate(SENTINEL))
+        encode = {'base64': lambda b: base64.b64encode(b).decode(), 'hex': lambda b: b.hex()}
+        cases = [('duplicate', '{"note":"' + escaped + '","note":"public"}'),
+                 ('escaped-duplicate', '{"note":"' + escaped + '","n\\u006fte":"public"}'),
+                 ('leak', '{"note":"' + escaped + '"}'), ('public', '{"note":"public"}')]
+        for encoding, wrap in encode.items():
+            for layers in (1, 2):
+                for kind, text in cases:
+                    body = text.encode()
+                    for _ in range(layers):
+                        body = json.dumps({'wrapped': wrap(body)}).encode()
+                    with self.subTest(encoding=encoding, layers=layers, kind=kind):
+                        out = _scan(_capture(self.tmp, _message('POST', '/', body)), self.text_needles)
+                        self.assertEqual(out['decision'], 'pass' if kind == 'public' else 'fail')
+                        if 'duplicate' in kind:
+                            self.assertIn('http_json_duplicate', out['errors'])
+                        else:
+                            self.assertEqual(out['errors'], [])
+                            self.assertEqual(any(hit['label'] == 'text:note' for hit in out['hits']), kind == 'leak')
+
     def test_recorder_requires_upstream_eof(self):
         source = r'''
 import assert from "node:assert/strict";

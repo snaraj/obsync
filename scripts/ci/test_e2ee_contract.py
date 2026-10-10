@@ -1,6 +1,7 @@
 """Exercise real CI failure propagation, plus meaningful neutralizations."""
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -19,7 +20,7 @@ class E2eeContract(unittest.TestCase):
     def test_current_contract(self):
         self.assertTrue(contract.validate(self.workflow, self.makefile))
 
-    def execute(self, run, failure):
+    def execute(self, run, failure, makefile=None):
         with tempfile.TemporaryDirectory(prefix='e2ee-ci-control-') as tmp:
             for command in ('node', 'cargo'):
                 stub = Path(tmp, command)
@@ -27,8 +28,13 @@ class E2eeContract(unittest.TestCase):
                                 + ('exit 17\n' if command == failure else 'exit 0\n'))
                 stub.chmod(0o700)
             trace = Path(tmp, 'trace')
-            result = subprocess.run(['/bin/bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', run],
-                                    env={'PATH': tmp, 'TRACE': str(trace)}, capture_output=True, timeout=5)
+            command = ['/bin/bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', run]
+            if makefile is not None:
+                recipe = Path(tmp, 'Makefile')
+                recipe.write_text(makefile)
+                command = [shutil.which('make'), '--no-print-directory', '-r', '-f', str(recipe), '-o', 'plugin', 'e2ee']
+            result = subprocess.run(command, cwd=tmp,
+                                    env={'PATH': tmp + os.pathsep + '/usr/bin:/bin', 'TRACE': str(trace)}, capture_output=True, timeout=5)
             return result.returncode, trace.read_text()
 
     def test_workflow_executes_and_propagates_failure(self):
@@ -83,6 +89,33 @@ class E2eeContract(unittest.TestCase):
             command = 'node scripts/ci/e2ee.mjs'
             with self.assertRaises(ValueError):
                 contract.validate(self.workflow, self.makefile.replace('\t' + command, '\t' + prefix + command + suffix))
+
+    def test_make_target_propagates_failure(self):
+        for failure in ('node', 'cargo', None):
+            code, trace = self.execute('', failure, self.makefile)
+            self.assertEqual(code, 0 if failure is None else 2)
+            self.assertIn('cargo build --locked -p obsyncd', trace)
+            self.assertEqual('node scripts/ci/e2ee.mjs' in trace, failure != 'cargo')
+        for suppression in ('.IGNORE: e2ee', '.IGNORE:', 'MAKEFLAGS += --ignore-errors'):
+            mutant = self.makefile + '\n' + suppression + '\n'
+            with self.subTest(suppression=suppression):
+                code, trace = self.execute('', 'node', mutant)
+                self.assertEqual(code, 0)
+                self.assertIn('node scripts/ci/e2ee.mjs', trace)
+                with self.assertRaises(ValueError):
+                    contract.validate(self.workflow, mutant)
+
+    def test_unsupported_make_declarations_refuse(self):
+        for declaration in ('export MAKEFLAGS = -i', 'override MAKEFLAGS := -i', 'GNUMAKEFLAGS += -i',
+                            'MFLAGS = -i', 'e2ee: MAKEFLAGS += -i', 'SHELL := /bin/true', '.SHELLFLAGS := -c',
+                            'include other.mk', '$(eval MAKEFLAGS += -i)', '.ONESHELL:', 'define bypass'):
+            with self.subTest(declaration=declaration), self.assertRaises(ValueError):
+                contract.validate(self.workflow, self.makefile + '\n' + declaration + '\n')
+
+    def test_duplicate_make_target_refuses(self):
+        mutant = self.makefile + '\ne2ee: plugin\n\ttrue\n'
+        with self.assertRaises(ValueError):
+            contract.validate(self.workflow, mutant)
 
     def test_inventory_also_refuses_swallowed_failure(self):
         with tempfile.TemporaryDirectory(prefix='e2ee-invariant-control-') as tmp:

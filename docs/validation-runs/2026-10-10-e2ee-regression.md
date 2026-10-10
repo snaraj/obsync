@@ -28,6 +28,12 @@ also rejects conditional execution and ignored failures in the job, step and
 Makefile recipe. Its behavioral control runs the actual workflow body with a
 stub E2EE command returning 17, observes exit 17, then observes the forbidden
 `|| true` mutation swallow that failure.
+The actual Make target is also executed with its plugin prerequisite already
+built and stub build/test commands. Its failure returns 2; `.IGNORE` and
+`MAKEFLAGS += --ignore-errors` controls return 0 and must be rejected. A closed
+Makefile declaration grammar permits literal targets, `.PHONY` and the two
+existing defaults; it refuses error-control flags, shell overrides, includes
+and evaluated declarations. Exactly one `e2ee` target is permitted.
 
 The integration uses production WebCrypto, pairing, transport, state and sync
 engine modules. Only the Obsidian vault/secret-store boundary and periodic
@@ -42,7 +48,8 @@ The final scenario covers ten named flows:
 2. Pairing v2: encrypted vault name, commitment verification, comparison-code
    agreement before approval, authenticated envelope collection and key readback.
    The recipient starts without a VRK and keeps only the opened envelope's key;
-   an independently derived inventoried envelope key opens the real ciphertext.
+   independently derived inventoried keys open both the real VRK envelope and
+   the separate vault-details ciphertext returned through pairing status.
 3. Note creation and recipient content readback.
 4. Note editing and recipient content readback.
 5. A 700,000-byte random attachment containing a sentinel; byte-for-byte readback.
@@ -54,8 +61,8 @@ The final scenario covers ten named flows:
 10. Tampered chunk and manifest refusals, wrong-file binding and wrong-key
     refusal, with honest history still readable afterward.
 
-An observed repaired scenario run completed in 2,911 ms, with 80 recorded
-requests and responses, nine server storage files and 30 needles. Counts are
+An observed repaired scenario run completed in 2,858 ms, with 80 recorded
+requests and responses, nine server storage files and 28 needles. Counts are
 asserted against actual requests, required material classes and named flows.
 Random keys affect eligible partial recovery words; random attachment chunking
 and asynchronous feed timing also affect counts. Recipient reads have a
@@ -64,7 +71,8 @@ an independent incoming feed has finished.
 
 The corpus covers seeded note text, paths, folder and vault names, attachment
 bytes, edits and post-revocation content; the actual VRK, domain-map, domain,
-manifest and chunk keys; pairing code/secret and envelope key; and the actual
+manifest and chunk keys; pairing code/secret, envelope key and vault-details
+key; and the actual
 VRK recovery phrase. Authenticated manifests
 supply the actual chunk-key inventory. Every original request and response
 is searched, without exempting content keys under credential field names.
@@ -76,6 +84,10 @@ JSON members (including escaped aliases) are refused without discarding their
 bytes. Exception-bearing compressed/chunked credential bodies are deliberately
 unsupported and refused, rather than normalized into incomplete evidence.
 Content-key scanning still uses the untouched original recording.
+Duplicate-member refusal also applies at every recursively decoded JSON layer.
+Base64 and hex controls wrap mixed literal/Unicode-escaped leaked values with
+duplicate or escaped-alias members; one and two wrapper layers must refuse.
+Removing the duplicate exposes the expected secret hit, and public controls pass.
 
 Server logs and client diagnostics also receive the authentication credential
 inventory, with a planted control for every credential and each diagnostic
@@ -98,7 +110,7 @@ complete malicious-server implementation or proof of rollback detection.
 
 ## Recorder and scanner checks
 
-33 scanner tests passed. They cover the original false-PASS cases, byte-count
+34 scanner tests passed. They cover the original false-PASS cases, byte-count
 receipts, absent directions, framing ambiguity, incomplete headers/bodies,
 close-delimited bodies, chunk terminators/trailers, unsupported or corrupt
 compression, nested encodings, base64 alignment, word/value separation,
@@ -117,12 +129,14 @@ This scanner is bounded regression tooling, not a claim to scan arbitrary
 size recordings or every possible encoding.
 
 `python3 -B scripts/validation/e2ee_mutations.py` runs disposable copies with
-passing baselines before and after. The repaired matrix passed all 54 assertion-kill cases: 28
-recorder/scanner mutations, 20 engine/inventory/planted-leak mutations and six
+passing baselines before and after. The repaired matrix passed all 61 assertion-kill cases: 30
+recorder/scanner mutations, 23 engine/inventory/planted-leak mutations and eight
 CI-contract mutations. Planted actual request leaks cover content, VRK, pairing
-envelope key and recovery phrase; diagnostic leaks cover the actual recovery
+envelope key, vault-details key and recovery phrase; diagnostic leaks cover the actual recovery
 proof in server and client logs. Removal of raw credential evidence is caught
-by duplicate-member controls. The CI cases remove each required execution guard.
+by duplicate-member controls. Recursive uniqueness and refusal propagation
+are each mutated separately. The CI cases remove each required execution guard,
+including Make declaration restrictions and target uniqueness.
 A mutant must parse and fail its intended assertion; setup, syntax and timeout
 errors do not count. Earlier duplicate-framing probes overlapped another guard;
 the duplicate content-encoding control establishes an independent assertion.
@@ -152,12 +166,22 @@ it passes. Shutting down only the peer was tested and did not solve the macOS
 case. This is a fixture-only repair; CLI runtime code is unchanged. The initial
 failed full-gate result is retained separately from the repaired run.
 
-The complete repaired-source `make check` then passed: 2,244 plugin tests,
+At `e44c12262034f7adb1439eda00f74a3a260ef45c`, `make check` passed: 2,244 plugin tests,
 905 contract tests, 83 dashboard tests, all Rust workspace suites, 94.71%
 coverage, native CLI/chart checks and both secret scans. Its E2EE run recorded
 ten flows, two controls, 80 requests/responses, nine storage files and 29
 needles in 3,172 ms. The 54-case instrument matrix and separate CLI shutdown
 mutation all failed their intended assertions and passed after restoration.
+
+The subsequent recursive-decoder, vault-details-inventory and Make-enforcement
+repairs passed the complete local gate: 2,244 plugin tests, 909 contracts,
+83 dashboard tests, Rust workspace suites, 94.71% coverage, CLI/chart checks
+and both secret scans. That run recorded ten flows, two controls, 80 requests,
+nine storage files and 31 needles in 3,120 ms. All 61 instrument mutations
+failed their intended assertions with passing restored baselines. The duplicate
+JSON fixture now uses an explicit byte splice instead of first-occurrence
+replacement; no CodeQL disposition or exclusion was added. Hosted analysis of
+that correction remains a separate requirement.
 
 The source digest was updated only after re-reading every export printer:
 counts, ciphertext SIDs and fixed content/result labels, with no content key

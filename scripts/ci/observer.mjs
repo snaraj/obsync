@@ -469,7 +469,8 @@ function walkJson(value, out, depth, valuesOnly = false, budget = { nodes: 0 }) 
     for (const b of decodeDeeper(value)) {
       out.push(b.toString("latin1"));
       let inner;
-      try { inner = JSON.parse(b.toString("utf8")); } catch { continue; }
+      try { inner = uniqueJson(b.toString("utf8")).value; }
+      catch (error) { if (error.message === "http_json_duplicate") throw error; continue; }
       walkJson(inner, out, depth + 1, valuesOnly, budget);
     }
   } else if (Array.isArray(value)) {

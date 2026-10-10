@@ -43,6 +43,8 @@ OBSERVER_CASES=[
 ('bodyless_transfer', 'if (te !== undefined && te.toLowerCase() !== "chunked") refuse("http_transfer_encoding");', '', 'test_bodyless_framing_is_validated'),
 ('bodyless_forbidden', 'if ((status > 0 && status < 200 && (cl !== undefined || te !== undefined)) || (status === 204 && (te !== undefined || cl !== undefined && Number(cl) !== 0))) refuse("http_bodyless_framing");', '', 'test_bodyless_framing_is_validated'),
 ('duplicate_json', 'if (top.keys.has(decoded)) refuse("http_json_duplicate");', '', 'test_duplicate_json_values_cannot_disappear'),
+('decoded_json_unique', 'inner = uniqueJson(b.toString("utf8")).value;', 'inner = JSON.parse(b.toString("utf8"));', 'test_encoded_duplicate_json_cannot_erase_a_secret'),
+('decoded_json_refusal', 'catch (error) { if (error.message === "http_json_duplicate") throw error; continue; }', 'catch { continue; }', 'test_encoded_duplicate_json_cannot_erase_a_secret'),
 ('report_flush', 'process.exitCode = decision === "pass" ? 0 : 1;', 'process.exit(decision === "pass" ? 0 : 1);', 'test_json_node_budget_refuses'),
 
 ]
@@ -62,6 +64,9 @@ ENGINE_CASES=[
 ('required_tamper', 'flows.add("tamper-refusal");', ''),
 
 ('envelope_inventory', 'spec.hex.pairing_envelope = c.hex(envelopeKey);', ''),
+('vault_details_inventory', 'spec.hex.pairing_vault_details = c.hex(vaultDetailsKey);', ''),
+('vault_details_readback', 'pairing.sealPairingVault(ps, invitation.pairing_id, { name: vaultName, notes: 0 })', 'pairing.sealPairingVault(ps, invitation.pairing_id, { name: vaultName, notes: 1 })'),
+('real_request_vault_details_leak', 'sent++;', 'sent++; if (spec.hex.pairing_vault_details) input.headers["X-E2EE-Control"] = spec.hex.pairing_vault_details;'),
 ('phrase_inventory', '  const needles = buildNeedles(spec),', '  delete spec.phrase; const needles = buildNeedles(spec),'),
 ('real_request_envelope_leak', 'sent++;', 'sent++; if (spec.hex.pairing_envelope) input.headers["X-E2EE-Control"] = spec.hex.pairing_envelope;'),
 ('real_request_phrase_leak', 'sent++;', 'sent++; if (spec.phrase) input.headers["X-E2EE-Control"] = spec.phrase;'),
@@ -79,6 +84,8 @@ CONTRACT_CASES = [
     ('ci_context', 'if "working-directory" in step or step.get("shell", "bash") != "bash":', 'if False:', 'test_wrong_execution_context_refuses'),
     ('ci_command_failure', 'if [line.strip() for line in run.splitlines() if line.strip()] != ["set -euo pipefail", *COMMANDS]:', 'if False:', 'test_workflow_executes_and_propagates_failure'),
     ('make_command_failure', 'if not match or [line.strip() for line in match[1].splitlines()] != COMMANDS:', 'if False:', 'test_make_cannot_ignore_errors'),
+    ('make_global_failure', 'raise ValueError("unsupported Make declaration can suppress E2EE failure")', 'pass', 'test_make_target_propagates_failure'),
+    ('make_unique_target', 'if len(re.findall(r"^e2ee:", makefile, re.M)) != 1:', 'if False:', 'test_duplicate_make_target_refuses'),
 ]
 
 

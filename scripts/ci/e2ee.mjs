@@ -245,11 +245,18 @@ try {
   const commitment = await pairing.pairingCommitment(invitation.pairing_id, creator.publicKey);
   const code = pairing.encodePairingCode(invitation.pairing_id, invitation.enroll_token, ps, commitment);
   spec.codes = [code]; spec.hex.pairing_secret = c.hex(ps);
+  const vaultDetailsKey = await c.hkdf(ps, c.utf8("obsync/v1/pair-vault"), c.utf8(invitation.pairing_id), 32);
+  spec.hex.pairing_vault_details = c.hex(vaultDetailsKey);
   const vault = await pairing.sealPairingVault(ps, invitation.pairing_id, { name: vaultName, notes: 0 });
   credential(b, ok(await b.transport.pairingClaim(invitation.pairing_id, invitation.enroll_token,
     { name: "QA B", platform: "linux", app_version: version, claimant_pub: claimant.publicKey, vault })));
   const claimed = await a.transport.pairingStatus(invitation.pairing_id);
   assert.equal(claimed.claimant.claimant_pub, claimant.publicKey);
+  const vaultHandle = await crypto.subtle.importKey("raw", vaultDetailsKey, { name: "AES-GCM" }, false, ["decrypt"]);
+  const vaultPlain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: c.unhex(claimed.claimant.vault.nonce),
+    additionalData: c.utf8(invitation.pairing_id), tagLength: 128 }, vaultHandle, c.unbase64(claimed.claimant.vault.envelope));
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(vaultPlain)), { name: vaultName, notes: 0 },
+    "inventoried vault-details key must open the actual paired vault details");
   await a.transport.pairingReveal(invitation.pairing_id, creator.publicKey);
   let revealed;
   await assert.rejects(b.transport.pairingEnvelope(invitation.pairing_id), (error) => {
@@ -371,7 +378,7 @@ try {
   await positiveControl("control-after");
   const needles = buildNeedles(spec), conns = readCapture(capture), report = scan(conns, needles);
   for (const label of ["text:note", "text:filename", "text:folder", "text:vault", "text:attachment", "text:edit", "text:futureContent",
-    "key:vrk", "key:derived:domain-map", "key:domain", "key:manifest", "key:pairing_secret", "key:pairing_envelope", "recovery:phrase", "pairing:code:0"]) {
+    "key:vrk", "key:derived:domain-map", "key:domain", "key:manifest", "key:pairing_secret", "key:pairing_envelope", "key:pairing_vault_details", "recovery:phrase", "pairing:code:0"]) {
     assert.ok(needles.some((needle) => needle.label === label), `required needle absent: ${label}`);
   }
   assert.equal(report.decision, "pass", `traffic scan: ${JSON.stringify(report.errors)} ${report.hits.map((h) => h.label)}`);
@@ -396,7 +403,7 @@ try {
   for (const field of ['"debug"', '"de\\u0062ug"']) {
     const original = setupConn.responses[0];
     const addition = `"debug":"${recovery.proof}",${field}:null,`;
-    const body = Buffer.from(original.body.toString("utf8").replace("{", "{" + addition));
+    const body = Buffer.concat([original.body.subarray(0, 1), Buffer.from(addition), original.body.subarray(1)]);
     const poisoned = { ...original, body, wire: Buffer.concat([original.wire.subarray(0, original.plainBodyOffset), body]) };
     const duplicate = [{ ...setupConn, responses: [poisoned] }]; duplicate.errors = [];
     const denied = credentialScan(duplicate, credentials).report;

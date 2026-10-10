@@ -3,7 +3,7 @@
 The generic command inventory is not a shell interpreter. This security gate
 has a deliberately small recipe; reject unsupported shell/control constructs
 instead of claiming they propagate failure. Behavioral tests execute the
-actual workflow body with a failing test command as a separate control.
+actual workflow body and Make target with failing commands as separate controls.
 """
 from pathlib import Path
 import re
@@ -31,7 +31,18 @@ def validate(workflow, makefile):
     run = step.get("run", "")
     if [line.strip() for line in run.splitlines() if line.strip()] != ["set -euo pipefail", *COMMANDS]:
         raise ValueError("E2EE step must execute both commands without suppressing failure")
-    match = re.search(r"^e2ee: plugin[^\n]*\n((?:\t[^\n]*\n)+)", makefile, re.M)
+    # Closed declaration grammar: Make can suppress errors outside a recipe
+    # through .IGNORE, flags, shell overrides or evaluated/included text.
+    # Only literal targets, .PHONY and the two existing defaults are supported.
+    for line in makefile.splitlines():
+        declaration = line.split("#", 1)[0].strip()
+        if not declaration or line.startswith("\t"):
+            continue
+        if not re.fullmatch(r"(?:(?:[a-z][a-z0-9-]*|\.PHONY):(?:\s+[a-z][a-z0-9-]*)*|RUST_COVERAGE_FLOOR\s+\?=\s+\d+|BASE\s+\?=\s+[\w./-]+)", declaration):
+            raise ValueError("unsupported Make declaration can suppress E2EE failure")
+    if len(re.findall(r"^e2ee:", makefile, re.M)) != 1:
+        raise ValueError("exactly one E2EE Make target is required")
+    match = re.search(r"^e2ee: plugin(?:\s*#[^\n]*)?\n((?:\t[^\n]*\n)+)", makefile, re.M)
     if not match or [line.strip() for line in match[1].splitlines()] != COMMANDS:
         raise ValueError("E2EE make target must execute both commands without ignoring failure")
     return run
