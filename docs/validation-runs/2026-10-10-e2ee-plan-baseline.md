@@ -17,7 +17,7 @@ physical device or production credential took part.
   `sw_vers -productVersion`, `uname -m` and each tool's version command).
 - Build: `cd plugin && npm ci --ignore-scripts --no-audit --no-fund && npm run build`.
   The run used an isolated npm cache. It built 27 modules.
-- Built `plugin/main.js`: 1,403,979 bytes, SHA-256
+- Built `plugin/dist/main.js`: 1,403,979 bytes, SHA-256
   `8b0488c5d83b6c0d2991dba73af8512fa2be8a3e2b9279994a114261a7a184c4`.
   This identifies the tested bundle; it is not an installed-device measurement
   or a byte-for-byte comparison with downloaded release assets.
