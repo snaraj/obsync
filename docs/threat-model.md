@@ -2,7 +2,7 @@
 
 *For anyone deciding whether to trust obsync, and for reviewers.*
 
-Dated 2026-09-20. Assets, adversaries, what holds, what does not.
+Dated 2026-10-10. Assets, adversaries, what holds, what does not.
 
 The dashboard is one surface with its own entry points, session rules and
 residuals; [`security/dashboard.md`](security/dashboard.md) is that page and
@@ -21,7 +21,9 @@ this one does not repeat it.
   provider) sees the same, plus the sign-in credentials that pass through it.
   It never sees note contents or the key.
 - **A paired device can read the whole vault.** If one is lost, revoke it
-  ([Recovery](recovery.md)).
+  ([Recovery](recovery.md)). This blocks its requests on an honest server;
+  it does not rotate content keys. A revoked device that retains those keys
+  can decrypt future ciphertext supplied by a compromised server.
 - **Not hidden from the server:** the number of files, their sizes and their
   timing.
 
@@ -31,8 +33,7 @@ The rest of this page is the precise version, for reviewers.
 
 The question this answers: *I use Obsidian on my work laptop, behind my
 employer's VPN, and I don't want them to see my notes.* Two different things
-are in play, and obsync defends one of them completely and the other not at
-all.
+are in play: network observation and control of the device itself.
 
 **The network — defended.** An employer's VPN, an "TLS-inspecting" proxy, or
 any box that decrypts your HTTPS to look inside it, sees exactly what the
@@ -41,10 +42,26 @@ there are and how big, when they change, and your devices' names, platforms,
 app versions and addresses. It does **not** see the contents of any note or
 attachment, any file or folder name, your vault key, or your recovery words —
 those are encrypted on your device before anything is sent, and only
-ciphertext leaves it. This is proven, not asserted: `scripts/ci/observer.mjs`
-records every byte of a real session exactly as such a proxy would hold it and
-searches it for the note text, the names, the vault key and the recovery
-words, in every encoding; the search finds nothing (`docs/validation-runs`).
+ciphertext carries that content. The required `scripts/ci/e2ee.mjs` regression
+uses the real plugin crypto, transport and sync engine against `obsyncd`, with
+in-memory vault and timer adapters. It checks setup, pairing, note creation,
+edits, attachments, rename, recovery and history readback, and rejects tampered
+content. It also pins the current limits of access-only revocation.
+`scripts/ci/observer.mjs` scans the recorded HTTP bytes and decoded bodies for
+the seeded content and content keys in supported encodings; the run also
+scans server storage and diagnostic logs. Planted leaks before and after the
+run must be detected. Missing evidence, unparseable framing or exhausted scan
+budgets fail the run. This is scoped regression evidence, not a mathematical
+proof, a test of every encoding, or native-device acceptance. The scanner
+currently refuses streams or decompressed bodies over 64 MiB and nested
+values beyond its decoding budget. Historical device records in
+`docs/validation-runs/` retain their own source versions and limitations.
+
+Content encryption does not hide sizes, timing, version relationships or
+repeated-chunk equality within a domain. An active adversary's ability to
+confirm guesses through chosen inputs needs separate analysis. Authentication
+of ciphertext alone also does not prove freshness or identify which trusted
+device authored it when devices share content keys.
 
 **The laptop itself — not defended, by anyone.** If your employer manages the
 laptop (MDM), runs endpoint monitoring (EDR), can read its disk or its
@@ -53,8 +70,9 @@ you can, because the notes are decrypted there for you to work on. No sync tool
 changes that: the plaintext lives on the device by definition. If that is your
 worry, the answer is a device you control, not a setting in obsync.
 
-**The one credential that does cross in clear: your device's key to the
-server.** When you set up the first device, and when you pair a new one, the
+**Account credentials cross the TLS terminator.** These include the setup
+token, recovery authentication proof, dashboard credentials and your device's
+key to the server. When you set up the first device, and when you pair a new one, the
 server hands that device a *device secret* — its key for making authenticated
 requests. That secret crosses the network at that moment, so a proxy that is
 decrypting your traffic then can capture it. The secret is **not** your vault

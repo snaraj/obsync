@@ -118,8 +118,12 @@ Numbered for citation, repo-scoped, none negotiable in code:
    domain key, a chunk key, a plaintext chunk, or a clear file path to the
    server. The server never decrypts content and cannot: it holds no key
    material for it. Path names travel only inside encrypted manifests.
-   `TestBlindServer` in `crates/obsyncd` pins that no handler, log line, or
-   journal frame carries a field named or shaped like a key or a path.
+   `no_field_is_named_or_shaped_like_a_key_or_a_path` in
+   `crates/obsyncd/src/doctrine_test.rs` checks selected field-name patterns in
+   server source. It is a source guard, not a runtime confidentiality proof.
+   The required `scripts/ci/e2ee.mjs` run exercises the real plugin engine
+   and server, scans captured traffic and server storage/logs for seeded
+   content and content keys, and requires planted leak controls to fail.
 7. **Truthful serving contract, TLS outside the process.** The server
    listens on plain HTTP, port 8080 by default, and is always deployed behind
    a TLS terminator (a reverse proxy the owner trusts on the reference
@@ -211,8 +215,14 @@ addresses. `TestProviderNeutrality` pins zero provider names under
   timing. Every case names the refusal it expects.
 - Plugin tests run under `node --test` against Node's built-in WebCrypto
   and a hand-written fake of the Obsidian `Vault`/`DataAdapter` surface.
-  Encrypt/decrypt round-trips are cross-checked against fixtures produced
-  by the Rust core so the two implementations agree on every byte.
+  Crypto fixtures are produced by WebCrypto, alongside published primitive
+  vectors; a round-trip using one implementation is not independent proof of
+  that implementation. The Rust primitive vectors have their own tests.
+- `make e2ee` builds the actual plugin and server and runs their transport,
+  pairing and sync paths together. The vault and timers are in-memory host
+  adapters; this required CI regression does not replace native desktop or
+  phone acceptance. Empty/incomplete captures, an empty needle set, parser
+  failures and scanner-budget exhaustion must refuse PASS.
 - Tests are stdlib-only with hand-written fakes; no assertion libraries,
   no mock frameworks. Fixture text is sentinel-only.
 - Every test removes what it creates, on failure too: a plugin test's temp

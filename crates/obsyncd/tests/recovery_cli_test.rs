@@ -118,13 +118,7 @@ mod tests {
                 }
                 if verb == "export" {
                     command
-                        .args([
-                            "--domain",
-                            &domain.to_string(),
-                            "--key",
-                            &"00".repeat(32),
-                            "--out",
-                        ])
+                        .args(["--domain", &domain.to_string(), "--out"])
                         .arg(fixture.0.join(format!("export-{complete}")));
                 }
                 let output = command.output().expect("CLI completes");

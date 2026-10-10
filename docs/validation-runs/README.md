@@ -34,6 +34,10 @@ or its harnesses; a red leg there is a finding to read.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-10-10 E2EE regression](2026-10-10-e2ee-regression.md): real plugin/server
+  confidentiality and tamper regression, fail-closed observer mutation checks,
+  and two disposable native desktop instances. Explicitly incomplete whole-system
+  and physical-phone assurance.
 - [2026-10-08 character merge](2026-10-08-character-merge-117.md): two
   desktops, and a desktop with an Android emulator, typing at one place on the
   1.1.7 candidate. Six defects found and fixed in turn; the final build keeps

@@ -32,8 +32,11 @@ reliability, and resource use; `docs/benchmarks.md` pins the numbers.
 **Blind server.** The server never holds the vault key and cannot decrypt
 anything. What it learns is exactly: device identities and their activity,
 opaque file identifiers, ciphertext chunk hashes and sizes, version graph
-shape, and timestamps. What it never learns: file names, paths, contents,
-or which plaintext two chunks share.
+shape, and timestamps. File names, paths and contents are encrypted. Repeated
+chunks in the same domain have the same ciphertext identifier, revealing
+equality and deduplication patterns. Chosen-input confirmation attacks and
+other metadata inference require separate analysis; encryption does not hide
+those observations.
 
 **Why this default.** The product must be trustworthy to strangers who run
 it on hardware they do not fully control, and it must match a privacy-first,
@@ -485,10 +488,14 @@ and [API baseline](https://github.com/snaraj/obsync/blob/main/plugin/vendor/obsi
 
 The dashboard and any paired device can revoke a device; the server drops
 its wrapped secret and every request from it fails from that moment. Data
-already on a revoked device stays readable there; rotating `VRK` after a
-device compromise is a phase-2 operation (re-encrypt manifests and
-re-derive domain keys; chunks under a domain whose key is rotated are
-re-uploaded lazily).
+already on a revoked device stays readable there. Revocation does not rotate
+content keys: that device can also decrypt future ciphertext encrypted under
+the keys it retained if a compromised server or another source supplies it.
+Cryptographic revocation is not implemented. It requires independent new
+content keys and authenticated distribution to remaining devices; deriving a
+new key from a compromised old key or wrapping it with that old key does not
+exclude the revoked device. Offline devices and partitioned servers also need
+an explicit epoch-transition policy before that stronger guarantee can ship.
 
 A REVOKED device can also be taken off the device lists, from the same two
 places (`POST /v1/devices/{id}/archive`, plugin and server 1.1.5; the person
@@ -598,14 +605,12 @@ anyone but the owner access to anything, and no wording in this repository
 should suggest otherwise.
 
 **Manual access on the host** is the only access path beyond a paired
-device: `obsyncd export --domain <id> --key-file <file> --out <dir>`
-reconstructs that domain's stored ciphertext from the volumes -- file records
-carry their domain in clear (5.1 item 4), so the filter is exact -- and the
-operator decrypts it on a device that holds the key. The key file must be
-readable by its owner alone (`chmod 600`), and `--key-file -` reads the key
-from standard input instead. The older `--key <hex>` still works but prints
-a warning: a key on the command line is visible in the process list and
-kept in shell history. It is the same binary; opening
+device: `obsyncd export --domain <id> --out <dir>` reconstructs that domain's
+stored ciphertext from the volumes -- file records carry their domain in
+clear (5.1 item 4), so the filter is exact. Decryption belongs on a trusted
+client holding the key. The server command accepts no content key: `--key`
+and `--key-file` are refused, including stdin. Never send content keys to
+server/admin tooling. It is the same binary; opening
 storage performs the recovery and posture changes described in
 [Offline check and recovery verdicts](storage.md#offline-check-and-recovery-verdicts).
 Use a restored copy with the server stopped, preserving the pristine backup.
