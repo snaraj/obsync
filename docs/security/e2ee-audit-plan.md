@@ -18,7 +18,7 @@ of decrypting them. Vault-name exchange during pairing is also in scope.
 Installation, setup, pairing, sync, history, recovery, revocation and export
 must preserve that boundary.
 
-The supported consumer is one owner synchronizing a vault among their own
+The supported consumer is one user synchronizing a vault among their own
 Obsidian devices, including a phone and computers on inspected networks.
 Every currently paired device has whole-vault authority. Folder selection is
 a local preference, not a cryptographic sharing boundary. The dashboard and
@@ -148,6 +148,10 @@ choice at revocation, not a global E2EE-disable switch:
 | --- | --- |
 | **Revoke access and rotate keys** — recommended default | Stop API access and establish a new content-key epoch unavailable to the removed device. Future protected updates include content, names, manifests, maps and controls. Completion names the established cutover and transitioned writers. |
 | **Revoke server access only** | Keep current keys. Before confirmation, explain that retained keys can decrypt later ciphertext obtained from a copied volume or colluding server. This is not cryptographic revocation. |
+
+The choice is made per revocation. No stored preference, server setting,
+environment value or build flag may preselect the weaker action
+(requirement 4).
 
 Both choices retain encryption/integrity. Neither erases copied data, old keys
 or recovery material. Strong revocation is a new protocol capability, not a
