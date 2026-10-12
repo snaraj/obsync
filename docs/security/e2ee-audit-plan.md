@@ -49,9 +49,10 @@ and a separate maintainer decision.
 
 ### Hard requirements: no backdoors
 
-There is no vendor/operator/administrator master decryption key, key escrow,
-or debug, environment, compatibility or recovery switch that bypasses content
-encryption or integrity verification. A server credential, setup token,
+There is no vendor/operator/administrator master decryption key, no
+third-party custody of content keys, and no debug, environment,
+compatibility or recovery switch that bypasses content encryption or
+integrity verification. A server credential, setup token,
 dashboard session or offline account reset cannot substitute for device-held
 content-key authority. Losing every authorized content key and valid recovery
 secret leaves the content unrecoverable.
