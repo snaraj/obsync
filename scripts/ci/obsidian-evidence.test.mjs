@@ -159,6 +159,7 @@ test("the real driver cannot report success when its restart journey is omitted"
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "obsync-driver-test-"));
   const source = fs.readFileSync(new URL("./obsidian-drive.mjs", import.meta.url), "utf8");
   const main = source.slice(source.indexOf("async function main() {"), source.indexOf("\n/**\n * The two Linux cases"));
+  const stores = vm.runInNewContext(source.slice(source.indexOf("const STORES = {"), source.indexOf("const UNENCRYPTED")) + "STORES");
   const png = Buffer.from("synthetic-png"), hash = createHash("sha256").update(png).digest("hex");
   const capture = (name) => {
     fs.writeFileSync(path.join(root, name + ".png"), png);
@@ -166,11 +167,12 @@ test("the real driver cannot report success when its restart journey is omitted"
   };
   const environment = { OBSYNC_E2E_SECRET_STORE: "windows", OBSYNC_E2E_CAPTURES: root };
   const localProcess = { env: environment, platform: "win32", exitCode: undefined };
+  let preflightTouches = 0;
   const context = {
-    process: localProcess, env: (name) => name, STORES: { windows: {} }, secrets: [], started: Date.now(), proven: 0,
-    fs: { readFileSync: () => "a".repeat(64), rmSync() {}, mkdirSync() {}, existsSync: () => true }, path,
+    process: localProcess, env: (name) => name, STORES: stores, secrets: [], started: Date.now(), proven: 0,
+    fs: { readFileSync: () => { preflightTouches++; return "a".repeat(64); }, rmSync() {}, mkdirSync() {}, existsSync: () => true }, path,
     Denied: Error, scrub: String, console: { log() {}, error() {} }, Buffer, randomBytes: () => Buffer.from("test"),
-    Instance: class { constructor() { this.root = root; this.vault = root; } launch() {} stop() {} async anywhere() { return true; } async all() { return []; } pluginLog() { return []; } },
+    Instance: class { constructor() { preflightTouches++; this.root = root; this.vault = root; } launch() {} stop() {} async anywhere() { return true; } async all() { return []; } pluginLog() { return []; } },
     openVault: async () => ({ obsidian: "test", electron: "test" }), setServer: async () => {},
     until: async (_, probe) => probe(), paired: () => true, inVault: async () => true,
     fillPlaceholder() {}, click() {}, confirmPhrase() {}, pairingCode() {}, fillSetting() {}, describe() {}, notices() {},
@@ -182,6 +184,7 @@ test("the real driver cannot report success when its restart journey is omitted"
     }, finishEvidence, untrusted() {},
   };
   try {
+    const restarted = context.restarted;
     await vm.runInNewContext(`(${main})()`, context);
     assert.equal(localProcess.exitCode, undefined, "the unmodified driver completes its restart and publication gates");
     for (const name of fs.readdirSync(root)) fs.rmSync(path.join(root, name));
@@ -189,17 +192,34 @@ test("the real driver cannot report success when its restart journey is omitted"
     context.restarted = async () => null;
     await vm.runInNewContext(`(${main})()`, context);
     assert.equal(localProcess.exitCode, 1, "an omitted restart must fail the real driver's success path");
+    context.restarted = restarted;
+    environment.OBSYNC_E2E_SECRET_STORE = "macos";
+    localProcess.platform = "darwin"; localProcess.exitCode = undefined;
+    await vm.runInNewContext(`(${main})()`, context);
+    assert.equal(localProcess.exitCode, undefined, "native macOS runs the same restart and publication gates");
+    for (const platform of ["linux", "win32"]) {
+      localProcess.platform = platform;
+      await assert.rejects(vm.runInNewContext(`(${main})()`, context), /macOS custody requires native macOS/);
+    }
+    localProcess.platform = "darwin";
+    for (const store of ["toString", "constructor", "unknown"]) {
+      environment.OBSYNC_E2E_SECRET_STORE = store;
+      const touches = preflightTouches;
+      await assert.rejects(vm.runInNewContext(`(${main})()`, context), /OBSYNC_E2E_SECRET_STORE must be one of/);
+      assert.equal(preflightTouches, touches, "invalid modes are refused before token or profile access");
+    }
   } finally { fs.rmSync(root, { recursive: true }); }
 });
 
 test("actual restart checks custody before and after, waits for native exit, and propagates refusal", async () => {
   const fs = await import("node:fs"), vm = await import("node:vm");
   const source = fs.readFileSync(new URL("./obsidian-drive.mjs", import.meta.url), "utf8");
+  const stores = vm.runInNewContext(source.slice(source.indexOf("const STORES = {"), source.indexOf("const UNENCRYPTED")) + "STORES");
   const restart = source.slice(source.indexOf("async function restarted("), source.indexOf("\nasync function captureEditor("));
   const holdsAt = source.indexOf("function holds(");
   const holds = source.slice(holdsAt, source.indexOf("\n}\n", holdsAt) + 2);
   const secretFactsMarker = () => {};
-  async function run({ bad = "", failedHalt = false, failedTransfer = false, warning = false } = {}) {
+  async function run({ bad = "", badField = "revisionMatches", store = "windows", failedHalt = false, failedTransfer = false, warning = false } = {}) {
     const calls = [], closed = new Set(), captured = [], transfers = [];
     let facts = 0;
     const instance = (name) => ({ name,
@@ -208,11 +228,11 @@ test("actual restart checks custody before and after, waits for native exit, and
       async all() { return warning ? ["Secrets are stored without encryption"] : []; },
     });
     const context = {
-      STORES: { windows: required }, Denied: Error, assertCustody, secretFacts: secretFactsMarker,
+      STORES: stores, Denied: Error, assertCustody, secretFacts: secretFactsMarker,
       inVault: async (_, fn) => {
         if (fn !== secretFactsMarker) return true;
         facts++;
-        return { ...valid, revisionMatches: bad === (facts <= 2 ? "before" : "after") ? false : true };
+        return { ...valid, ...(bad === (facts <= 2 ? "before" : "after") ? { [badField]: !valid[badField] } : {}) };
       },
       reopen: async (instance) => calls.push("reopen-" + instance.name), paired: () => true,
       until: async (_, probe) => probe(), Buffer,
@@ -221,7 +241,7 @@ test("actual restart checks custody before and after, waits for native exit, and
       notices() {}, UNENCRYPTED: "Secrets are stored without encryption", prove() {},
     };
     const program = vm.runInNewContext(`${holds}\n(${restart})`, context);
-    const promise = program(instance("a"), instance("b"), { binary: "test", extra: [], homes: false, store: "windows" });
+    const promise = program(instance("a"), instance("b"), { binary: "test", extra: [], homes: false, store });
     if (bad || failedHalt || failedTransfer || warning) {
       await assert.rejects(promise, /custody refused|native quit refused|transfer refused|still says/);
       if (bad === "before") assert.deepEqual(calls, [], "bad saved custody prevents restart");
@@ -238,4 +258,8 @@ test("actual restart checks custody before and after, waits for native exit, and
   await run();
   await run({ bad: "before" }); await run({ bad: "after" });
   await run({ failedHalt: true }); await run({ failedTransfer: true }); await run({ warning: true });
+  await run({ store: "macos" });
+  for (const bad of ["before", "after"]) {
+    for (const badField of ["encrypted", "plain", "revisionMatches"]) await run({ store: "macos", bad, badField });
+  }
 });

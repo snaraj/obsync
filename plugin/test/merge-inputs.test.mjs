@@ -75,7 +75,7 @@ for (const kind of ["missing", "ciphertext", "cid", "length"]) test(`a batch's $
   };
   let singles = 0;
   r.transport.getChunk = () => { singles++; throw Error("invalid body retried"); };
-  await assert.rejects(assembleMergeInputs(r.context, r.manifests), error => kind === "missing" ? error.code === "unknown_chunk" : kind === "length" ? error.reason === "chunk_len_actual" : error.name === "OperationError");
+  await assert.rejects(assembleMergeInputs(r.context, r.manifests), error => kind === "missing" ? error.code === "unknown_chunk" : kind === "length" ? error.reason === "chunk_len_actual" : error.name === "ManifestError" && error.reason === "chunk_authentication");
   assert.equal(singles,0);
   assert.equal(r.host.files.size,0);
 });

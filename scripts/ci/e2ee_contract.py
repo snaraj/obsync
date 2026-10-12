@@ -40,7 +40,7 @@ def validate(workflow, makefile):
             continue
         if not re.fullmatch(r"(?:(?:[a-z][a-z0-9-]*|\.PHONY):(?:\s+[a-z][a-z0-9-]*)*|RUST_COVERAGE_FLOOR\s+\?=\s+\d+|BASE\s+\?=\s+[\w./-]+)", declaration):
             raise ValueError("unsupported Make declaration can suppress E2EE failure")
-    if len(re.findall(r"^e2ee:", makefile, re.M)) != 1:
+    if len(re.findall(r"^[ \t]*e2ee:", makefile, re.M)) != 1:
         raise ValueError("exactly one E2EE Make target is required")
     match = re.search(r"^e2ee: plugin(?:\s*#[^\n]*)?\n((?:\t[^\n]*\n)+)", makefile, re.M)
     if not match or [line.strip() for line in match[1].splitlines()] != COMMANDS:

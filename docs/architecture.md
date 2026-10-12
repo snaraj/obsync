@@ -71,12 +71,13 @@ could remove the terminator from that device-credential exchange; it is not
 implemented by the current protocol. Nothing removes a terminator from the session
 path; reading cookies is what terminating TLS means.
 
-Strip the terminator entirely and the server's own authentication still
-holds: every device request carries an HMAC over method, path, query,
+The server also authenticates every device request with an HMAC over method, path, query,
 timestamp, nonce and body hash, with a +/-300 s window and a 600 s nonce
-cache, so a recorded request cannot be replayed and an altered one cannot be
-presented. What plain HTTP loses is confidentiality of the metadata and of
-the credential itself, never request integrity and never content. This cuts
+cache, so a recorded signature alone cannot authorize an altered request or
+a replay. Someone who captures the device secret during setup or pairing
+can create new valid requests with that device's account authority. Plain
+HTTP exposes that exchange as well as metadata; content remains encrypted
+with separate device-held keys. This cuts
 the other way too, and it is the reason the private deployment is not a soft
 one: **being on the LAN or the VPN grants nothing to this application.**
 Reaching the port is not authorisation. Every request is still authenticated
@@ -166,8 +167,9 @@ For plaintext chunk `P` in domain `d`:
    on upload, and reports in the change feed.
 
 Identical plaintext in the same domain yields identical `C` and `sid` on
-every device, so deduplication works across devices without the server
-learning anything about `P`. The server verifies `sid` on every upload and
+every device, so deduplication works across devices. The server observes
+equality and ciphertext length; it does not receive `P` or the key. The
+server verifies `sid` on every upload and
 on every scrub, so a corrupted or forged chunk is refused or quarantined.
 
 No compression in v1. LiveSync's own measurements show a 9 % storage gain
@@ -255,11 +257,12 @@ Two properties make a folder record safe to publish from anywhere:
   The bytes two devices produce for the same folder in the same state are
   then identical, so the `version_id` is identical and the second device's
   post is the `200` no-op `docs/protocol.md` already promises. The key is
-  shared with the randomly-nonced file manifests and that costs nothing: a
-  nonce derived by HKDF from the message is a pseudorandom 96-bit value, so
-  the chance it meets a random one is the chance two random ones meet, and it
-  repeats only for a message identical in both AAD and plaintext — whose
-  ciphertext was already identical.
+  shared with randomly-nonced file manifests. Both callers consume one
+  96-bit collision budget across all devices and restarts. Identical AAD and
+  plaintext repeat deterministically; distinct inputs can also collide with
+  bounded probability under the cryptographic assumptions. The runtime does
+  not enforce an aggregate lifetime limit; see the
+  [key and nonce accounting note](security/e09-key-nonce-inventory.md).
 
 What the server additionally learns is that a folder deleted and recreated at
 one path is the same opaque label, which is what a file id already tells it
@@ -682,8 +685,10 @@ the 1 MiB manifest ceiling. Its nonce is derived, not random —
 `HKDF(K_map, "obsync/v1/nonce", SHA-256(aad || plaintext))[0..12]` — so two
 devices that write the same map at the same moment produce the same bytes
 and the same version id and collide harmlessly, exactly as two devices
-producing the same chunk do (3.2). The key and nonce repeat only for a
-message that is identical in both its plaintext and its AAD.
+producing the same chunk do (3.2). Identical plaintext and AAD repeat
+deterministically; distinct inputs can still collide in the 96-bit nonce.
+The [key and nonce accounting note](security/e09-key-nonce-inventory.md)
+states the conditional bound and unresolved aggregate lifetime limit.
 
 The map on the server is the authority. A device reads it at every start,
 before it syncs anything: if it is absent the device writes one (v0.1's map

@@ -77,6 +77,43 @@ ENGINE_CASES=[
 
 ]
 
+# New receive/flow guards get the same disposable red/restored-green audit.
+ENGINE_CASES += [
+('clear_field_allowlist', 'assert.deepEqual(Object.keys(value).sort(), names.split(" ").sort(), "ciphertext response clear-field allowlist")', 'undefined'),
+('clear_field_inventory', 'inventoried.add(route === "/v1/changes" ? "changes" : route.includes("/versions/") ? "version" : "file");', ''),
+('folder_move', 'a.host.moveFolder("SENTINEL-private-folder", movedFolder)', 'a.host.moveFolder("SENTINEL-private-folder", "SENTINEL-wrong-folder")'),
+('delete_publication', 'await a.host.trash(deletePath);', ''),
+('restore_readback', 'assert.equal(a.host.text(restored.path), deleteText);', 'a.host.seed(restored.path, "SENTINEL-wrong-restored-bytes"); assert.equal(a.host.text(restored.path), deleteText);'),
+('restore_fresh_identity', 'assert.notEqual(a.state.fileByPath(restored.path).fileId, deleteRecord.fileId,', 'deleteRecord.fileId = a.state.fileByPath(restored.path).fileId; assert.notEqual(a.state.fileByPath(restored.path).fileId, deleteRecord.fileId,'),
+('pause_delivery', 'await publishPause(a.engine.contextValue, pauseTarget, movedNote, true);', ''),
+('pause_resume', 'await b.engine.resume(pauseTarget);', ''),
+('hostile_manifest', 'changed[changed.length - 1] ^= 1; row.manifest_ct = changed.toString("base64");', 'row.manifest_ct = changed.toString("base64");'),
+('hostile_parents', 'row.parents = ["0".repeat(64)];', 'row.parents = row.parents;'),
+('hostile_chunk', 'injected++; const changed = Buffer.from(bytes); changed[changed.length - 1] ^= 1; return changed;', 'injected++; const changed = Buffer.from(bytes); return changed;'),
+('hostile_saved_state', 'assert.deepEqual(recipientSnapshot(recovered), beforeReceive,', 'recovered.host.seed("SENTINEL-poisoned-write.md", "SENTINEL-poisoned-bytes"); assert.deepEqual(recipientSnapshot(recovered), beforeReceive,'),
+('hostile_staged_state', 'assert.equal(receiveContext.staged?.size ?? 0, 0,', 'receiveContext.staged = new Map([["poisoned", {}]]); assert.equal(receiveContext.staged?.size ?? 0, 0,'),
+('hostile_map_ciphertext', 'changed[changed.length - 1] ^= 1; body.versions[0].manifest_ct = changed.toString("base64");', 'body.versions[0].manifest_ct = changed.toString("base64");'),
+('hostile_map_heads', 'body.heads.push("0".repeat(64));', 'body.heads = body.heads;'),
+('hostile_map_saved_state', 'assert.deepEqual(recipientSnapshot(recovered), beforeMap,', 'recovered.host.seed("SENTINEL-poisoned-map-write.md", "SENTINEL-poisoned-bytes"); assert.deepEqual(recipientSnapshot(recovered), beforeMap,'),
+('real_map_fork', 'await dm.saveDomainMap(a.transport, mapKeys, mapB, originalMapFile.heads);', 'await dm.saveDomainMap(a.transport, mapKeys, mapA, originalMapFile.heads);'),
+('map_replay_authenticity', 'replayed++; return Buffer.from(JSON.stringify(originalMapFile));', 'replayed++; return Buffer.from(JSON.stringify(fork));'),
+('map_replay_reached', 'replayed++; return Buffer.from(JSON.stringify(originalMapFile));', 'return Buffer.from(JSON.stringify(originalMapFile));'),
+('real_request_restored_path_leak', 'sent++;', 'sent++; if (spec.text.restoredPath) input.headers["X-E2EE-Control"] = spec.text.restoredPath;'),
+('api_only_manifest_key', 'const wrongDomain = await c.deriveDomainKey(c.unhex(apiSecret), context.domainId);', 'const wrongDomain = context.domainKey;'),
+('api_only_chunk_key', 'c.decryptChunk(wrongDomain, c.unhex(originalChunk.cid), originalCiphertext)', 'c.decryptChunk(context.domainKey, c.unhex(originalChunk.cid), originalCiphertext)'),
+('public_feed_tamper', 'corruptions++; const changed = Buffer.from(bytes); changed[changed.length - 1] ^= 1; return changed;', 'corruptions++; const changed = Buffer.from(bytes); return changed;'),
+('public_feed_sibling', 'a.host.seed(siblingPath, spec.text.siblingText, Date.now() + 11);', ''),
+('public_feed_cursor', 'assert.ok(recovered.state.data.lastSeq >= siblingRecord.seq,', 'recovered.state.data.lastSeq = badRecord.seq - 1; assert.ok(recovered.state.data.lastSeq >= siblingRecord.seq,'),
+('public_feed_log', 'recovered.host.logs.slice(logsBeforeFeed).some((line) => line.includes("decision=parked reason=chunk_authentication"))', 'false'),
+('direct_chunk_parking', 'assert.deepEqual(recovered.state.data.parked[futureRecord.file_id],', 'delete recovered.state.data.parked[futureRecord.file_id]; assert.deepEqual(recovered.state.data.parked[futureRecord.file_id],'),
+('public_feed_parking', 'assert.deepEqual(recovered.state.data.parked[badRecord.file_id],', 'delete recovered.state.data.parked[badRecord.file_id]; assert.deepEqual(recovered.state.data.parked[badRecord.file_id],'),
+('public_feed_durable_parking', 'await readback(async () => (await recovered.reload()).data.parked[badRecord.file_id]?.reason === "chunk_authentication",', 'delete recovered.state.data.parked[badRecord.file_id]; await recovered.state.save(); await readback(async () => (await recovered.reload()).data.parked[badRecord.file_id]?.reason === "chunk_authentication",'),
+('public_feed_recovery', 'const badFileId = a.state.fileByPath(badPath).fileId;', 'const badFileId = a.state.fileByPath(badPath).fileId; delete recovered.state.data.parked[badFileId];'),
+('public_feed_durable_clear', 'assert.equal((await recovered.reload()).data.parked[badFileId], undefined,', 'recovered.state.data.parked[badFileId] = { path: badPath, reason: "chunk_authentication" }; await recovered.state.save(); assert.equal((await recovered.reload()).data.parked[badFileId], undefined,'),
+('real_request_feed_chunk_leak', 'sent++;', 'sent++; if (spec.hex.feed_bad_chunk) input.headers["X-E2EE-Control"] = spec.hex.feed_bad_chunk;'),
+('feed_chunk_inventory', 'spec.hex[label] = c.hex(await c.hkdf(context.domainKey, c.utf8("obsync/v1/chunk"), c.unhex(manifest.chunks[0].cid), 32));', ''),
+]
+
 CONTRACT_CASES = [
     ('ci_job_failure', 'if "if" in job or job.get("continue-on-error", False) is not False:', 'if False:', 'test_conditional_and_ignored_jobs_or_steps_refuse'),
     ('ci_unique_step', 'if len(candidates) != 1:', 'if len(candidates) < 1:', 'test_missing_or_duplicate_step_refuses'),
@@ -85,7 +122,8 @@ CONTRACT_CASES = [
     ('ci_command_failure', 'if [line.strip() for line in run.splitlines() if line.strip()] != ["set -euo pipefail", *COMMANDS]:', 'if False:', 'test_workflow_executes_and_propagates_failure'),
     ('make_command_failure', 'if not match or [line.strip() for line in match[1].splitlines()] != COMMANDS:', 'if False:', 'test_make_cannot_ignore_errors'),
     ('make_global_failure', 'raise ValueError("unsupported Make declaration can suppress E2EE failure")', 'pass', 'test_make_target_propagates_failure'),
-    ('make_unique_target', 'if len(re.findall(r"^e2ee:", makefile, re.M)) != 1:', 'if False:', 'test_duplicate_make_target_refuses'),
+    ('make_unique_target', 'if len(re.findall(r"^[ \\t]*e2ee:", makefile, re.M)) != 1:', 'if False:', 'test_duplicate_make_target_refuses'),
+    ('make_indented_target', 'r"^[ \\t]*e2ee:"', 'r"^e2ee:"', 'test_duplicate_make_target_refuses'),
 ]
 
 
@@ -144,6 +182,50 @@ def main():
                 raise SystemExit(f"mutation={name} decision=not-killed-by-diagnostic-scan")
             print(f"mutation={name} decision=killed", flush=True)
             engine_file.write_text(engine)
+        # One demonstrated runtime defect: deleting chunk-error normalization
+        # used to stall the public feed. Mutate ONLY a copied compiled module,
+        # never the shared plugin symlink or a production source checkout.
+        (root / "plugin").unlink()
+        shutil.copytree(ROOT / "plugin/build", root / "plugin/build")
+        (root / "plugin/test").mkdir()
+        shutil.copyfile(ROOT / "plugin/test/fake.mjs", root / "plugin/test/fake.mjs")
+        chunk_file = root / "plugin/build/sync/pull.js"
+        chunk_source = chunk_file.read_text()
+        guard = 'throw new ManifestError("chunk_authentication");'
+        assert chunk_source.count(guard) == 1
+        for name, fixture in [("chunk_receive_normalization", engine),
+                              ("chunk_public_feed_normalization", engine.replace('["manifest", "parents", "chunk"]', '["manifest", "parents"]'))]:
+            engine_file.write_text(fixture)
+            chunk_file.write_text(chunk_source.replace(guard, 'throw error;').replace(
+                'catch {\n        // A failed tag/cid belongs',
+                'catch (error) {\n        // A failed tag/cid belongs'))
+            assert run(["node", "--check", str(chunk_file)], ROOT, 10).returncode == 0
+            result = run(engine_command, ROOT, 30)
+            expected = "per-record refusal" if name == "chunk_receive_normalization" else "valid sibling must pass"
+            if result.returncode == 0 or "AssertionError" not in result.stderr or expected not in result.stderr:
+                raise SystemExit(f"mutation={name} decision=not-killed-by-target-assertion")
+            print(f"mutation={name} decision=killed", flush=True)
+            chunk_file.write_text(chunk_source)
+        # Without this exact existing parking mapping the cursor advances but
+        # the damaged record is forgotten. Isolate eventual recovery from the
+        # earlier mark/log assertions so the mutation must fail byte readback.
+        mapping = 'if (error instanceof ManifestError && error.reason === "chunk_authentication")\n        return error.reason;'
+        assert chunk_source.count(mapping) == 1
+        fixture = engine.replace('["manifest", "parents", "chunk"]', '["manifest", "parents"]')
+        fixture = '\n'.join(line for line in fixture.splitlines() if not any(guard in line for guard in [
+            'assert.deepEqual(recovered.state.data.parked[badRecord.file_id]',
+            'public-feed parking must persist for restart recovery',
+            'public-feed chunk parking must be visible',
+        ]))
+        engine_file.write_text(fixture)
+        chunk_file.write_text(chunk_source.replace(mapping, ''))
+        assert run(["node", "--check", str(chunk_file)], ROOT, 10).returncode == 0
+        result = run(engine_command, ROOT, 30)
+        if result.returncode == 0 or "AssertionError" not in result.stderr or "honest public-feed retry must recover" not in result.stderr:
+            raise SystemExit("mutation=chunk_retry_mapping decision=not-killed-by-recovery-assertion")
+        print("mutation=chunk_retry_mapping decision=killed", flush=True)
+        chunk_file.write_text(chunk_source)
+        engine_file.write_text(engine)
         for name, old, new, test in CONTRACT_CASES:
             assert old in contract, name
             contract_file.write_text(contract.replace(old, new))
@@ -154,7 +236,7 @@ def main():
             print(f"mutation={name} decision=killed", flush=True)
             contract_file.write_text(contract)
         baseline()
-        print(f"e2ee-mutations decision=pass killed={len(OBSERVER_CASES) + len(ENGINE_CASES) + len(CONTRACT_CASES)} restored=pass")
+        print(f"e2ee-mutations decision=pass killed={len(OBSERVER_CASES) + len(ENGINE_CASES) + len(CONTRACT_CASES) + 3} restored=pass")
 
 
 if __name__ == "__main__":

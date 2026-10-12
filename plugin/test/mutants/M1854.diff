@@ -1,12 +1,12 @@
 # M1854: the creator announces paired as soon as its approval is posted (#153)
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -419,7 +419,8 @@
+@@ -449,7 +449,8 @@
        answer.settingEl.remove();
        this.close();
-       tell(this.plugin, `approved "${claimant.name}": it finishes pairing by itself, and obsync tells you here when it has.`);
+       tell(this.plugin, `approved "${claimant.name}": it finishes pairing by itself. obsync shows the server's report here; check that device to confirm its notes sync.`);
 -      await this.watch(pairingId, claimant);
-+      tell(this.plugin, `"${claimant.name}" is paired: it holds the vault key now.`);
++      tell(this.plugin, `the server reports "${claimant.name}" is paired. Check that device to confirm its notes are syncing.`);
 +      this.collecting = false;
      } catch (error) {
        this.collecting = false;

@@ -41,7 +41,7 @@ import { createRequire } from "node:module";
 import { DEVICE_B, FakeServer, KEYS, SECRET_B, STEP_MS, keys, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { Transport } = require("../build/transport.js");
+const { ApiError, Transport } = require("../build/transport.js");
 const { applyChange } = require("../build/sync/pull.js");
 const { carryPost, pushFile } = require("../build/sync/push.js");
 const c = require("../build/crypto.js");
@@ -551,14 +551,31 @@ test("the fixture server verifies each request against the device that claims it
   assert.equal((await claim(server, DEVICE_B, SECRET_B)).devices.length, 2);
 
   // An identity the server never enrolled is refused, whatever it signs with.
-  await assert.rejects(claim(server, UNENROLLED, SECRET_C), /bad_signature/);
-  await assert.rejects(claim(server, UNENROLLED, KEYS.deviceSecret), /bad_signature/);
+  const unregistered = (error) => {
+    assert.ok(error instanceof ApiError);
+    assert.equal(error.status, 401);
+    assert.equal(error.code, "bad_signature");
+    assert.equal(error.detail, "signature does not match");
+    return true;
+  };
+  await assert.rejects(claim(server, UNENROLLED, SECRET_C), unregistered);
+  await assert.rejects(claim(server, UNENROLLED, KEYS.deviceSecret), unregistered);
 
   // Each enrolled device signing with the OTHER one's secret is refused: one
   // device cannot post as the other, which is what makes a per-device
   // assertion about a published version mean anything.
-  await assert.rejects(claim(server, DEVICE_B, KEYS.deviceSecret), /bad signature/);
-  await assert.rejects(claim(server, KEYS.deviceId, SECRET_B), /bad signature/);
+  // The fixture throws on a mismatched signature; the transport reports that
+  // unanswered attempt with its reason intact, rather than a server status.
+  const mismatched = (error) => {
+    assert.ok(error instanceof ApiError);
+    assert.equal(error.status, 0);
+    assert.equal(error.code, "unreachable");
+    assert.equal(error.detail, "network=fake server: bad signature on /v1/devices");
+    assert.equal(error.message, "0 unreachable");
+    return true;
+  };
+  await assert.rejects(claim(server, DEVICE_B, KEYS.deviceSecret), mismatched);
+  await assert.rejects(claim(server, KEYS.deviceId, SECRET_B), mismatched);
 
   // And the refusals cost the caller nothing but the refusal: no device was
   // enrolled, renamed or revoked by any of them.

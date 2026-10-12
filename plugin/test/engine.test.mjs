@@ -153,7 +153,7 @@ test("a pull refuses content whose plaintext hash does not match its manifest", 
   // manifest's cid no longer matches, so the chunk must be refused.
   const other = await c.encryptChunk(k.domainKey, enc("substituted bytes\n"));
   server.chunks.set(frame.sids[0], other.ciphertext);
-  await assert.rejects(() => applyChange(context, frame));
+  await assert.rejects(() => applyChange(context, frame), { name: "Unwritable", reason: "chunk_authentication" });
   assert.equal(host.files.has("Notes/Tampered.md"), false, "nothing unverified reached the vault");
 });
 

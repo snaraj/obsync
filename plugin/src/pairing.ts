@@ -180,7 +180,7 @@ export function serverPairsV2(version: unknown): boolean {
   return true;
 }
 
-/** The device-list fields that say what a new device did with the key it collected. */
+/** Server-reported device activity fields; none proves content-key possession. */
 export interface KeptRow {
   state?: string;
   revoked: boolean;
@@ -190,23 +190,25 @@ export interface KeptRow {
 }
 
 /**
- * What a new device did with the vault key it collected, read from its row
- * of the device list. Collection proves only that the envelope left the
- * server; a device that cannot open it, or whose person cancels, takes itself
- * back. Its first request after collection signs it in (`last_sign_in`, the
+ * Classify what the server reports about the new device's activity. A
+ * collection report says an envelope left the server, not that its recipient
+ * opened it. An honest device that cannot open it, or whose person cancels,
+ * takes itself back. Its first request after collection signs it in (`last_sign_in`, the
  * survey that reads the server's vault); a KEPT key then starts its sync, and
  * that sync's heartbeat moves `last_seen` past the sign-in. So: `kept` once
  * active and seen after signing in, `dropped` once revoked or gone, and
  * `open` while it is still deciding.
  *
- * A HEARTBEAT IS THE EVIDENCE, NOT A LATER SECOND (issue #290). The server
+ * USE THE REPORTED HEARTBEAT, NOT A LATER SECOND (issue #290). The server
  * stamps these fields in whole seconds, and a sync that starts in the second
  * of its sign-in leaves `last_seen` EQUAL to `last_sign_in`: the creator
  * waited out its ten minutes on a device that was syncing all along. Only a
  * started sync sends a heartbeat -- the engine's start, never the claim or
  * the survey -- a pending device's is refused, and the row is minted for this
- * claim, so any `last_heartbeat` on an active row is a kept key. A server
- * that does not list the field is read by the comparison alone, which can
+ * claim, so `last_heartbeat` on an active row reports that activity. The
+ * server controls every field and can spoof this report without the content
+ * key; the creator must direct the user to confirm sync on the recipient.
+ * A server that does not list the field is read by the comparison alone, which can
  * only wait longer, never say "paired" sooner.
  */
 export function keptOutcome(row: KeptRow | undefined): "kept" | "dropped" | "open" {

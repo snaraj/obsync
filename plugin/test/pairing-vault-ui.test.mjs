@@ -208,9 +208,9 @@ test("the creator says paired only once the server reports the key collected (#1
   assert.deepEqual(r.said().filter((call) => !call.approve), ["reveal", "status", "status", "status", "devices", "names"]);
   // DONE ONCE THE APPROVAL LANDS (1.1.5): the dialog closed with the
   // approval, said so, and the rest was said in a notice behind it.
-  assert.equal(r.notices[0], 'obsync: approved "iPhone 7KQ4": it finishes pairing by itself, and obsync tells you here when it has.');
+  assert.equal(r.notices[0], 'obsync: approved "iPhone 7KQ4": it finishes pairing by itself. obsync shows the server\'s report here; check that device to confirm its notes sync.');
   const paired = r.notices.filter((notice) => notice.includes("is paired"));
-  assert.deepEqual(paired, ['obsync: "iPhone 7KQ4" is paired: it holds the vault key now.']);
+  assert.deepEqual(paired, ['obsync: the server reports "iPhone 7KQ4" is paired. Check that device to confirm its notes are syncing.']);
   assert.equal(r.buttons.length, 0, "no answer is offered twice");
   assert.equal(r.closed(), 1);
   assert.ok(r.logs.includes("pairing role=creator decision=paired polls=1"));
@@ -220,7 +220,7 @@ test("the creator says paired only once the server reports the key collected (#1
 });
 
 test("a claim that is never collected is never announced as paired (#153)", async t => {
-  for (const [ending, words] of [["expired", "did not collect the vault key"], [null, "ended before this device saw"]]) {
+  for (const [ending, words] of [["expired", "The server did not report"], [null, "The server no longer reports"]]) {
     const r = await prompt(t, { statuses: ["approved"] });
     r.modal.plugin.transport.pairingStatus = async () => {
       r.calls.push("status");
@@ -233,6 +233,7 @@ test("a claim that is never collected is never announced as paired (#153)", asyn
     await until(() => r.notices.at(-1)?.includes(words), words);
     assert.ok(!r.notices.some((notice) => notice.includes("is paired")), r.notices.join(" | "));
     assert.equal(r.closed(), 1, "the dialog closed with the approval; the outcome is a notice");
+    assert.match(r.notices.at(-1), /Check that device; if its notes are not syncing, make a new code/);
     assert.ok(!RAW.test(r.notices.at(-1)));
   }
 });
@@ -294,7 +295,7 @@ test("behind the closed dialog the wait ends by itself: with the code's ten minu
   await never.press("Approve");
   await until(() => never.logs.includes("pairing role=creator decision=failed reason=not_collected"), "the wait ended");
   assert.equal(never.calls.filter((call) => call === "status").length, 300);
-  assert.match(never.notices.at(-1), /^obsync: "iPhone 7KQ4" did not collect the vault key before the code expired/);
+  assert.match(never.notices.at(-1), /^obsync: The server did not report "iPhone 7KQ4" collecting its pairing envelope before this wait ended/);
   // A plugin that unloads ends it at once, and says nothing more.
   const unloads = [];
   const gone = await prompt(t, { statuses: Array(400).fill("approved") });
@@ -459,7 +460,7 @@ async function collected(t, rows, done) {
 test("collection is not pairing: paired waits for the new device's first sync, not its sign-in", async t => {
   const r = await collected(t, (poll, row) => [poll === 1 ? row({ last_seen: 1000 }) : row({ last_seen: 1500 })], paired);
   assert.equal(r.calls.filter((call) => call === "devices").length, 2, "signed in but not yet synced is still open");
-  assert.deepEqual(r.notices.filter((notice) => notice.includes("is paired")), ['obsync: "iPhone 7KQ4" is paired: it holds the vault key now.']);
+  assert.deepEqual(r.notices.filter((notice) => notice.includes("is paired")), ['obsync: the server reports "iPhone 7KQ4" is paired. Check that device to confirm its notes are syncing.']);
   assert.ok(r.logs.includes("pairing role=creator decision=paired polls=2"), r.logs.join(" | "));
 });
 
@@ -471,7 +472,8 @@ test("a new device that did not keep the key is never announced as paired, and t
   ]) {
     const r = await collected(t, answer, (r) => r.logs.some((line) => line.includes("reason=key_not_kept")));
     assert.ok(!r.notices.some((notice) => notice.includes("is paired")), `${what}: ${r.notices.join(" | ")}`);
-    assert.match(r.notices.at(-1), /^obsync: "iPhone 7KQ4" did not keep the vault key and removed itself from the server/, what);
+    assert.match(r.notices.at(-1), /^obsync: "iPhone 7KQ4" is reported by the server as removed or absent/, what);
+    assert.match(r.notices.at(-1), /Check that device; if its notes are not syncing, make a new code and paste it whole there\./, what);
     assert.ok(!RAW.test(r.notices.at(-1)), what);
     assert.equal(r.obsidian.raised.at(-1).duration, 0, `${what}: the outcome stays on screen until dismissed`);
     assert.ok(r.logs.includes("pairing role=creator decision=failed reason=key_not_kept polls=1"), what);
@@ -482,7 +484,9 @@ test("a new device that never confirms within ten minutes is told so, not called
   const r = await collected(t, (poll, row) => [row({ last_seen: 1000 })], (r) => r.logs.some((line) => line.includes("reason=key_unconfirmed")));
   assert.equal(r.calls.filter((call) => call === "devices").length, 300);
   assert.ok(!r.notices.some((notice) => notice.includes("is paired")), r.notices.join(" | "));
-  assert.match(r.notices.at(-1), /^obsync: "iPhone 7KQ4" collected the vault key but has not started syncing within ten minutes/);
+  assert.match(r.notices.at(-1), /^obsync: "iPhone 7KQ4" was reported by the server as having collected its pairing envelope, but the server has not reported its sync starting within ten minutes/);
+  assert.ok(r.notices.at(-1).includes("Check that device: if it asks whether to add its notes, answer there"));
+  assert.ok(r.notices.at(-1).includes("if it says it could not open the vault key, remove it under Devices"));
   assert.ok(r.logs.includes("pairing role=creator decision=failed reason=key_unconfirmed polls=300"));
 });
 
@@ -491,7 +495,7 @@ test("a new device whose sync starts in the second of its sign-in is paired, not
   // passed `last_sign_in`, and a device syncing 7,700 notes read "not confirmed".
   const r = await collected(t, (poll, row) => [poll === 1 ? row({ last_seen: 1000, last_heartbeat: null }) : row({ last_seen: 1000, last_heartbeat: 1000 })], paired);
   assert.equal(r.calls.filter((call) => call === "devices").length, 2, "signed in, no heartbeat yet, is still open");
-  assert.deepEqual(r.notices.filter((notice) => notice.includes("is paired")), ['obsync: "iPhone 7KQ4" is paired: it holds the vault key now.']);
+  assert.deepEqual(r.notices.filter((notice) => notice.includes("is paired")), ['obsync: the server reports "iPhone 7KQ4" is paired. Check that device to confirm its notes are syncing.']);
   assert.ok(r.logs.includes("pairing role=creator decision=paired polls=2"), r.logs.join(" | "));
   assert.ok(!r.logs.some((line) => line.includes("key_unconfirmed")), r.logs.join(" | "));
 });
@@ -500,6 +504,19 @@ test("a failed device-list read decides nothing: it is logged once and the wait 
   const r = await collected(t, (poll, row) => (poll < 3 ? new Error("offline") : [row()]), paired);
   assert.equal(r.logs.filter((line) => line.includes("reason=devices_unread")).length, 1, r.logs.join(" | "));
   assert.ok(r.logs.includes("pairing role=creator decision=paired polls=3"));
+});
+
+test("a spoofed consumed and active heartbeat row is a server report, never key-possession proof", async t => {
+  const r = await collected(t, (poll, row) => [row({ last_seen: 1000, last_heartbeat: 1000 })], paired);
+  const { envelope, nonce } = r.calls.find((call) => call.approve).approve;
+  // A malicious server corrupts delivery but still reports collection and
+  // a started sync. The intended recipient actually refuses that delivery.
+  const corrupt = Buffer.from(envelope, "base64"); corrupt[corrupt.length - 1] ^= 1;
+  await assert.rejects(r.pairing.openEnvelopeV2(r.claimantKex, r.kex.publicKey, r.secret, r.id, corrupt.toString("base64"), nonce));
+  const notice = r.notices.find((line) => line.includes("is paired"));
+  assert.equal(notice, 'obsync: the server reports "iPhone 7KQ4" is paired. Check that device to confirm its notes are syncing.');
+  assert.ok(!notice.includes("holds the vault key"), notice);
+  assert.equal(r.calls.filter((call) => call === "devices").length, 1, "the existing server-report heuristic is unchanged");
 });
 
 /**

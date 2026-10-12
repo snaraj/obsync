@@ -221,9 +221,9 @@ const PAIR_INTRO =
 const SERVER_TOO_OLD =
   "Your obsync server runs a version older than 1.1.5, or does not say which, so no code was made. Update your obsync server to 1.1.5 or later, then pair again. See Troubleshooting, \"Pairing says to update your obsync server\".";
 const KEY_DROPPED =
-  "did not keep the vault key and removed itself from the server: the code it used did not match this one, or pairing was cancelled on it. It does not sync; to pair it, make a new code and paste it whole there.";
+  "is reported by the server as removed or absent. Check that device; if its notes are not syncing, make a new code and paste it whole there.";
 const KEY_UNCONFIRMED =
-  "collected the vault key but has not started syncing within ten minutes. Look at it: if it asks whether to add its notes, answer there; if it says it could not open the vault key, remove it under Devices.";
+  "was reported by the server as having collected its pairing envelope, but the server has not reported its sync starting within ten minutes. Check that device: if it asks whether to add its notes, answer there; if it says it could not open the vault key, remove it under Devices.";
 /** Two-second reads for ten minutes: while the new device collects the key, and again while it opens it. */
 const CONFIRM_POLLS = 300;
 
@@ -236,9 +236,9 @@ function versionWord(version: unknown): string {
 /**
  * Creator side of pairing. Mints the pairing, keeps `PS` on this device,
  * polls for a claimant, and seals the vault key only after the user has
- * approved it by name, platform, time and match code. It says "paired" only
- * once the new device KEPT the key it collected (`keptOutcome`): collection,
- * which activates it (issue #153), is not yet a pairing. Before any code, it
+ * approved it by name, platform, time and match code. Its completion notice
+ * attributes the activity classified by `keptOutcome` to the server: that
+ * report cannot prove the recipient holds the key. Before any code, it
  * refuses a server older than 1.1.5 (`serverPairsV2`).
  *
  * `PS` lives in this dialog and nowhere else, so once it closes nobody can
@@ -448,7 +448,7 @@ export class PairCreateModal extends Modal {
       this.plugin.register?.(() => { this.collecting = false; });
       answer.settingEl.remove();
       this.close();
-      tell(this.plugin, `approved "${claimant.name}": it finishes pairing by itself, and obsync tells you here when it has.`);
+      tell(this.plugin, `approved "${claimant.name}": it finishes pairing by itself. obsync shows the server's report here; check that device to confirm its notes sync.`);
       await this.watch(pairingId, claimant);
     } catch (error) {
       this.collecting = false;
@@ -484,16 +484,16 @@ export class PairCreateModal extends Modal {
     this.collecting = false;
     this.plugin.log(`pairing role=creator decision=failed reason=${state === "ended" ? "ended_unseen" : "not_collected"}`);
     tell(this.plugin, state === "ended"
-      ? `pairing "${claimant.name}" ended before this device saw it collect the vault key. If it is not under Devices, make a new code and pair it again.`
-      : `"${claimant.name}" did not collect the vault key before the code expired, so nothing was shared with it. To pair it, make a new code and paste it there.`, "error");
+      ? `The server no longer reports this pairing for "${claimant.name}". Check that device; if its notes are not syncing, make a new code and pair it again.`
+      : `The server did not report "${claimant.name}" collecting its pairing envelope before this wait ended. Check that device; if its notes are not syncing, make a new code and paste it there.`, "error");
   }
 
   /**
-   * "PAIRED" ONLY ONCE THE NEW DEVICE KEPT THE KEY (owner ruling, lab leg B3):
+   * WAIT FOR REPORTED SYNC ACTIVITY (owner ruling, lab leg B3):
    * a device that collected it and could not open it was announced as paired
-   * here while its own screen said nothing was shared. Its row in the device
-   * list decides (`keptOutcome`); a failed read decides nothing and is logged
-   * once.
+   * here while its own screen said nothing was shared. The server-controlled
+   * device row supplies an activity report (`keptOutcome`), not key-possession
+   * proof. The recipient confirms actual sync; a failed read decides nothing.
    */
   private async confirmKept(claimant: PairingClaimant): Promise<void> {
     let unread = false;
@@ -513,7 +513,7 @@ export class PairCreateModal extends Modal {
       if (outcome === "kept") {
         this.collecting = false;
         this.plugin.log(`pairing role=creator decision=paired polls=${poll}`);
-        tell(this.plugin, `"${claimant.name}" is paired: it holds the vault key now.`);
+        tell(this.plugin, `the server reports "${claimant.name}" is paired. Check that device to confirm its notes are syncing.`);
         void this.plugin.refreshDeviceNames();
         return;
       }

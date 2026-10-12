@@ -129,7 +129,9 @@ export class ApiError extends Error {
     /** The refusal's other body fields, such as the `creator_pub` a pairing wait carries. */
     readonly fields: Readonly<Record<string, unknown>> = {},
   ) {
-    super(`${status} ${code}: ${detail}`);
+    // Generic downstream diagnostics log Error.message. Free-text server
+    // detail remains available to explicit consumers, never to that sink.
+    super(`${status} ${code}`);
     this.name = "ApiError";
   }
 }
@@ -651,8 +653,21 @@ type Attempt =
   | { kind: "settled"; response: HttpResponse }
   | { kind: "unsettled"; status: number; reason: string; answered: boolean };
 
-/** An obsync refusal code (`StoreError::code`): what makes a 5xx the server's own answer. */
-const OBSYNC_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+/** ApiError and StoreError::code's wire vocabulary. Server text is never a log code. */
+const OBSYNC_CODES: ReadonlySet<string> = new Set([
+  "already_approved", "already_claimed", "already_revealed", "already_set_up", "bad_json", "bad_login_token",
+  "bad_recovery_proof", "bad_request", "bad_setup_token", "bad_signature", "batch_too_large", "body_incomplete",
+  "body_too_large", "corrupt", "csrf_failed", "device_not_pending", "device_not_revoked", "device_pending",
+  "device_revoked", "domain_mismatch", "edge_required", "envelope_consumed", "io_error", "journal_faulted",
+  "journal_full", "journal_locked", "journal_unverified", "last_device", "length_mismatch", "length_required",
+  "missing_auth", "missing_chunks", "no_randomness", "no_session", "nonce_cache_full", "nonce_log_faulted",
+  "nonce_log_unavailable", "nonce_share_full", "not_approved", "not_claimant", "not_claimed", "not_creator",
+  "not_found", "not_ready", "not_set_up", "own_device", "pairing_expired", "plugin_unavailable", "preauth_budget_full",
+  "quota_exceeded", "range_not_satisfiable", "recovery_mismatch", "recovery_too_new", "recovery_unavailable",
+  "replayed_nonce", "route_not_found", "seq_ahead", "sid_mismatch", "slow_body", "stale_timestamp", "storage_full", "too_many_heads",
+  "unknown_chunk", "unknown_device", "unknown_domain", "unknown_file", "unknown_pairing", "unknown_version",
+  "unsafe_posture", "version_id_mismatch", "volume_full",
+]);
 
 /** The attempts and the wall clock one call may spend (`Patience`). */
 interface Budget {
@@ -839,7 +854,7 @@ export class Transport {
       const code = response.status < 500 || response.status === 507 ? null : parseError(response.text).code;
       outcome = code === null || RESTART_CODES.has(code)
         ? { kind: "settled", response }
-        : code !== NOT_OBSYNC && OBSYNC_CODE.test(code)
+        : code !== NOT_OBSYNC
           ? { kind: "unsettled", status: response.status, reason: `status=${response.status} code=${code}`, answered: true }
           : { kind: "unsettled", status: response.status, reason: `status=${response.status}`, answered: false };
     } catch (error) {
@@ -1609,7 +1624,7 @@ function decode<T>(response: HttpResponse): T {
 function parseError(text: string): { code: string; detail: string; fields: Record<string, unknown> } {
   try {
     const parsed: unknown = JSON.parse(text);
-    if (typeof parsed === "object" && parsed !== null && typeof (parsed as Record<string, unknown>)["error"] === "string") {
+    if (typeof parsed === "object" && parsed !== null && OBSYNC_CODES.has((parsed as Record<string, unknown>)["error"] as string)) {
       const { error, detail, ...fields } = parsed as Record<string, unknown>;
       return { code: error as string, detail: typeof detail === "string" ? detail : "", fields };
     }

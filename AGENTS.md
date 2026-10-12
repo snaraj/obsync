@@ -195,8 +195,10 @@ names live only in `chart/values.yaml` defaults and `docs/`. In
 `cloudflare` mode the server requires the edge's connecting-address and
 request-id headers on every request and refuses requests that lack them;
 in `none` mode it trusts only `OBSYNC_TRUSTED_PROXY_CIDRS` for forwarded
-addresses. `TestProviderNeutrality` pins zero provider names under
-`crates/` and `plugin/src/`.
+addresses. `no_provider_name_outside_the_edge_setting` in `doctrine_test.rs`
+checks source exceptions for the edge setting. Provider-specific header
+constants are confined to `crates/obsyncd/src/api/edge.rs`; the adapter is an
+explicit boundary, not a claim that the source contains no provider strings.
 
 ## Testing doctrine
 

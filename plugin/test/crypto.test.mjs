@@ -1,11 +1,11 @@
 /**
  * Device cryptography, checked three ways:
  *
- * 1. Against `fixtures/crypto.json`, the frozen cross-implementation vectors
- *    the Rust core must reproduce byte for byte.
- * 2. Against Node's `node:crypto` as an INDEPENDENT oracle — a different
- *    implementation of SHA-256, HMAC, HKDF and AES-256-GCM than the WebCrypto
- *    the plugin uses, so agreement is evidence rather than a tautology.
+ * 1. Against `fixtures/crypto.json`, frozen generated vectors. Rust core
+ *    reproduces its shared hashing/encoding fields; it does not perform AES.
+ * 2. Against Node's `node:crypto` API for separate byte-composition checks.
+ *    WebCrypto and this API may share the native cipher implementation;
+ *    their agreement does not prove independent AES implementations.
  * 3. Against the RFC 4648 encoding vectors.
  *
  * Node's built-in modules only: no assertion library, no mock framework.
@@ -208,8 +208,8 @@ test("the domain map's nonce is derived, so identical writes collide instead of 
   assert.equal(c.hex(again.nonce), m.nonce, "the same map sealed twice is the same bytes");
   assert.equal(c.hex(again.ciphertext), m.ciphertext_hex);
 
-  // A different plaintext, or a different binder, moves the nonce: the key
-  // and nonce repeat only for a message identical in BOTH.
+  // These different plaintext/binder samples move the nonce. This is not a
+  // proof of uniqueness for every input or a lifetime collision bound.
   const other = await c.encryptDomainMap(mapKey, m.file_id, m.content_version_id, `${m.json} `);
   assert.notEqual(c.hex(other.nonce), m.nonce);
   const binder = await c.contentVersionId(m.file_id, [fixtures.manifest.parents[0]], []);

@@ -2,7 +2,7 @@
 
 *For anyone deciding whether to trust obsync, and for reviewers.*
 
-Dated 2026-10-10. Assets, adversaries, what holds, what does not.
+Dated 2026-10-12. Assets, adversaries, what holds, what does not.
 
 The dashboard is one surface with its own entry points, session rules and
 residuals; [`security/dashboard.md`](security/dashboard.md) is that page and
@@ -28,6 +28,33 @@ this one does not repeat it.
   timing.
 
 The rest of this page is the precise version, for reviewers.
+
+## Visible metadata and attribution
+
+Encryption protects contents and private names. It does not hide the fields
+the sync protocol needs to store and route ciphertext:
+
+| Surface | Visible information |
+| --- | --- |
+| Account and devices | Account name, device names, platform and app versions, device state and policy, creation and activity times, network address and edge-provided country when available. These names are user-supplied metadata; do not put a private note or vault title in them. |
+| File and change records | Stable file/domain identifiers, version identifiers and parents, chunk identifiers and ordering, exact declared plaintext byte counts, ciphertext lengths, manifest nonces, deletion flags, heads and sequence numbers. |
+| Repeated content | Equal chunks within a domain have equal ciphertext identifiers. Folder identifiers repeat for the same path in that domain. These disclose relationships without exposing the names themselves. |
+| Activity and administration | Request timing and outcomes, storage/quota usage and per-device activity history, currently bounded to 256 events per device. The bound limits the application's history; an operator or network observer can retain its own observations. |
+
+The wire fields are defined in [Protocol](protocol.md), with serialization in
+`crates/obsyncd/src/api/render.rs`, address handling in `api/edge.rs` and
+activity retention in `storage/index.rs`. Timing can reveal editing cadence;
+obsync does not pad sizes or disguise traffic patterns.
+
+A server-provided device id, timestamp, sequence or head list is an assertion
+by that server. The content authentication described below does not make it
+an independently authenticated statement of authorship or freshness. Devices
+sharing the vault key can produce valid content for the same vault. A server
+without that key cannot create new valid content, but can withhold or replay
+previously valid ciphertext; local history can constrain what a client accepts
+without proving that every client has seen the latest state. Pairing completion
+on the creator likewise reports server activity; check the recipient itself to
+confirm its notes sync. A server heartbeat is not proof that the recipient holds the key.
 
 ## On a work laptop, or a network you don't control
 
@@ -86,9 +113,12 @@ shows a warning that cannot be dismissed, a recovery key registered in the last
 7 days cannot be used to remove your last working device, and whoever runs the
 server can clear an unrecognised recovery key with an `obsyncd` command
 ([Recovery](recovery.md)). They cannot read, forge, or silently alter your
-notes: a change that isn't sealed with your vault key is refused by every
-device that has the key, your note is left untouched, and you are told which
-device sent it.
+notes by creating newly authenticated content: a change that isn't sealed with
+your vault key is refused by every device that has the key and your note is
+left untouched. Replaying previously authentic content has the freshness
+limits described above. The displayed
+device attribution comes from the server; it is not proof of authorship
+against a compromised server.
 
 **What to do.**
 
@@ -123,8 +153,9 @@ device sent it.
 | Passive network attacker | nothing beyond TLS metadata on the public leg | read content or forge requests |
 | TLS terminator / edge operator | request metadata, ciphertext, and credentials in clear at the terminator: the device secret at setup/pairing, the account-recovery authentication proof and setup token, dashboard session cookies and recovery sign-in links. A captured device secret carries that device's **account** authority (the "Compromised or lost device" row): the holder can disrupt sync and act on devices, without ever reading content | read vault content, names or vault keys; replace client code through the sync server (installation uses Obsidian's directory and GitHub assets, with the client trust limits in `docs/community-plugin.md`) |
 | Server operator or stolen volumes | ciphertext, sizes, version graph, device activity; wrapped device credentials can be recovered if the server wrapping key is also available | decrypt vault content without a device-held vault key |
-| Compromised or lost device, or a holder of its device secret | read the vault it holds; and, with only the device secret and no vault key: rename or revoke ANY device, register account recovery, change a device's mobile ceilings, post tombstones or garbage versions (clutter, forced-conflict state, and quota or journal exhaustion). All of this is availability and account control; NONE of it reads or forges content | read or forge content with that secret; register a recovery verifier unnoticed — every device that meets a verifier it did not register shows a warning that cannot be muted, a verifier registered in the last 7 days cannot unlock revoking the last active device, and the operator can clear an unrecognised verifier with an `obsyncd` command (1.1.5); erase history (retention keeps versions); make new authenticated server requests after revocation; make ANOTHER device accept altered or injected content or a deletion — a change not sealed with the vault key is refused as `undecryptable`, the receiver's note is left untouched and it is told which device sent it (`plugin/test/vault-identity.test.mjs`); write outside another device's vault root, through a symlinked folder, or into hidden folders (manifest paths are confined on the filesystem, not lexically); make another device exceed its per-file ceiling, its total budget, or its batch memory bound, or write a byte it has not verified (every decrypted manifest is bound field by field to the authenticated record before policy, download, or a write, and every declared chunk length is proved against the bytes); lock the other devices out of the replay cache (each device holds its own share of it) |
+| Holder of a device secret without the vault key | rename or revoke ANY device, register account recovery, change a device's mobile ceilings, post tombstones or garbage versions (clutter, forced-conflict state, and quota or journal exhaustion). All of this is availability and account control; NONE of it reads or forges content | read or forge content with that secret; register a recovery verifier unnoticed — every device that meets a verifier it did not register shows a warning that cannot be muted, a verifier registered in the last 7 days cannot unlock revoking the last active device, and the operator can clear an unrecognised verifier with an `obsyncd` command (1.1.5); erase history (retention keeps versions); make new authenticated server requests after revocation; make ANOTHER device accept altered or injected content or a deletion — a change not sealed with the vault key is refused as `undecryptable`, the receiver's note is left untouched and it is shown the server-reported device attribution (`plugin/test/vault-identity.test.mjs`); write outside another device's vault root, through a symlinked folder, or into hidden folders (manifest paths are confined on the filesystem, not lexically); make another device exceed its per-file ceiling, its total budget, or its batch memory bound, or write a byte it has not verified (every decrypted manifest is bound field by field to the authenticated record before policy, download, or a write, and every declared chunk length is proved against the bytes); lock the other devices out of the replay cache (each device holds its own share of it) |
 | Unapproved pairing claimant | poll its own pairing for the envelope | call any other device route: a pending device has no authority until it collects the envelope the creator approved; outlive its pairing without collecting it (expiry destroys it, approved or not, and so does the next start, since pairings do not survive one) |
+| Compromised paired device holding the vault key | read and produce valid content in that key's scope, including after access-only revocation if a server supplies ciphertext | decrypt a different vault without its key; bypass a receiving device's filesystem confinement and resource limits merely by producing valid encrypted content. Shared-key content does not establish which device authored it |
 | Holder of a leaked pairing code, even one that also controls the server or the network path (a TLS-inspecting proxy) | claim it first, under any name it likes, and be refused when the person compares the codes; with a device before 1.1.5 on one end, nothing: 1.1.5 refuses to pair with one, on either side | open the vault key from the code plus a record of every pairing request (the envelope key also needs an ephemeral exchange held only by the two devices); make the two screens agree on a substituted key more often than once in a million attempts, each of which costs the person a new code: the code commits to the creator's key, the creator fixes the claim before revealing that key, and the match code covers both keys and nothing the server chooses (`docs/protocol.md`, "Pairing v2"); downgrade a 1.1.5 pair to the older pairing, which no 1.1.5 device performs (1.1.5) |
 | Other cluster tenant, or another account on the host | nothing (default-deny NetworkPolicy, non-root pod, volume roots 0700 and credential files 0600, measured and corrected on every start, `docs/storage.md`) | reach the API or the volumes, or read the recovery login or the wrapping key off a restored or bind-mounted volume |
 | Malicious client input | attempt parser abuse, oversize bodies, replay, forged sids | pass unverified data (sid check, HMAC, limits); replay a captured request across a restart (accepted nonces are durable); grow a file record or a feed page without bound (heads, sids, parents and manifests are all capped, a file record stops at 450 MiB with every head in it, and a feed page stops at 8 MiB, `docs/protocol.md`); make the server keep more than 64 MiB of what callers sent before their credential verified, parsed or waiting for a lock included (each body stays reserved until its credential verifies, and a setup or claim body, parsed first, reserves 4 MiB for at most 16 KiB) |
@@ -207,10 +238,11 @@ Native app-restart persistence remains separate acceptance evidence.
    trail: unauthenticated traffic evicts only unauthenticated traffic, but
    neither ring is durable and a restart empties both. Process stdout is the
    record ([`security/dashboard.md`](security/dashboard.md)).
-7. Homegrown primitives: mitigated by published test vectors,
-   differential tests against the host's OpenSSL in CI, a verify-only
-   asymmetric surface, and constant-time construction by design; a
-   dedicated security review is required before any primitive changes.
+7. Server primitives are checked against published vectors. The SHA-256
+   differential test compares with an available host tool and skips when
+   none is present; it is not differential evidence for every primitive.
+   Device encryption and pairing use platform WebCrypto. A dedicated
+   security review is required before any primitive changes.
 8. On Linux, Obsidian's secret storage is only as private as the desktop's
    keyring: without one it still keeps the vault key and device secret,
    unencrypted (Obsidian 1.13.7, issue #217; from its next start Obsidian

@@ -193,6 +193,7 @@ export const UNWRITABLE: Readonly<Record<string, string>> = {
   EDQUOT: "the disk is full",
   ENAMETOOLONG: "its name is too long for this device",
   unknown_chunk: "the server is missing part of it; open a device that has it",
+  chunk_authentication: "a downloaded chunk failed its integrity check; the file was left unchanged",
   // A phone's write that left the file empty however often it was made
   // (`ObsidianHost.landed`): parked and tried again, never recorded.
   write_dropped: "it stayed empty when it was written",
@@ -204,7 +205,7 @@ export function unwritableText(path: string, reason: string): string {
   // said as if it were (2026-09-24 verification, X2).
   if (reason === "active_editor") return `Waiting for unsaved changes in ${path} to be saved; its newer version follows`;
   if (reason === "downloading") return `Downloading ${path}`;
-  if (reason === "unknown_chunk") return `Cannot download ${path}: ${UNWRITABLE[reason]}`;
+  if (reason === "unknown_chunk" || reason === "chunk_authentication") return `Cannot download ${path}: ${UNWRITABLE[reason]}`;
   return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;
 }
 
@@ -252,6 +253,9 @@ export class Unwritable extends Error {
  * an `ApiError` its server code; nothing else the pull path throws has one.
  */
 function unwritable(error: unknown): string | null {
+  // A valid manifest can point to a damaged response. Retain this file for
+  // retry without blocking unrelated feed records or admitting bad bytes.
+  if (error instanceof ManifestError && error.reason === "chunk_authentication") return error.reason;
   const code = (error as { code?: unknown } | null)?.code;
   return typeof code === "string" && Object.hasOwn(UNWRITABLE, code) ? code : null;
 }
@@ -718,7 +722,14 @@ async function* chunkPlaintexts(
 /** One proof for ordinary reads and batched merge inputs, including missing parts. */
 async function openChunk(context: SyncContext, chunk: ManifestChunk, body: Bytes | null | undefined): Promise<Bytes> {
   if (!body) throw new ApiError(404, "unknown_chunk", `chunk ${chunk.sid} is missing on the server`);
-  const plaintext = await decryptChunk(context.domainKey, unhex(chunk.cid), body);
+  let plaintext: Bytes;
+  try {
+    plaintext = await decryptChunk(context.domainKey, unhex(chunk.cid), body);
+  } catch {
+    // A failed tag/cid belongs to this record. Use the existing per-record
+    // refusal so a corrupted chunk cannot keep later feed entries waiting.
+    throw new ManifestError("chunk_authentication");
+  }
   if (plaintext.length !== chunk.len) throw new ManifestError("chunk_len_actual");
   return plaintext;
 }

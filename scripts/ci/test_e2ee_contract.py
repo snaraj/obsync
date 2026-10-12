@@ -35,7 +35,7 @@ class E2eeContract(unittest.TestCase):
                 command = [shutil.which('make'), '--no-print-directory', '-r', '-f', str(recipe), '-o', 'plugin', 'e2ee']
             result = subprocess.run(command, cwd=tmp,
                                     env={'PATH': tmp + os.pathsep + '/usr/bin:/bin', 'TRACE': str(trace)}, capture_output=True, timeout=5)
-            return result.returncode, trace.read_text()
+            return result.returncode, trace.read_text() if trace.exists() else ''
 
     def test_workflow_executes_and_propagates_failure(self):
         run = contract.validate(self.workflow, self.makefile)
@@ -113,9 +113,16 @@ class E2eeContract(unittest.TestCase):
                 contract.validate(self.workflow, self.makefile + '\n' + declaration + '\n')
 
     def test_duplicate_make_target_refuses(self):
-        mutant = self.makefile + '\ne2ee: plugin\n\ttrue\n'
-        with self.assertRaises(ValueError):
-            contract.validate(self.workflow, mutant)
+        for prefix in ('', ' ', '  ', ' \t', '  \t  '):
+            mutant = self.makefile + '\n' + prefix + 'e2ee: plugin\n\ttrue\n'
+            # GNU Make accepts the indented declaration and replaces the
+            # required recipe; the failing Node command is never executed.
+            with self.subTest(prefix=prefix):
+                code, trace = self.execute('', 'node', mutant)
+                self.assertEqual(code, 0)
+                self.assertNotIn('node scripts/ci/e2ee.mjs', trace)
+                with self.assertRaises(ValueError):
+                    contract.validate(self.workflow, mutant)
 
     def test_inventory_also_refuses_swallowed_failure(self):
         with tempfile.TemporaryDirectory(prefix='e2ee-invariant-control-') as tmp:

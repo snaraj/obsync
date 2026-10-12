@@ -12,7 +12,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createHash, createHmac } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { sandbox } from "./fake.mjs";
@@ -262,6 +262,43 @@ test("a 4xx is a decision: it is reported and never retried", async () => {
   );
   assert.equal(sent.length, 1);
   assert.equal(logged.some((line) => line.includes("decision=refused") && line.includes("code=missing_chunks")), true);
+});
+
+test("server refusal codes cannot inject paths, key-shaped text or extra log lines", async () => {
+  for (const code of ["Notes/LOG PATH SENTINEL.md", "f".repeat(64), "bad_signature\nKEY SENTINEL", "unknown_sentinel"]) {
+    const text = JSON.stringify({ error: code, detail: "DETAIL SENTINEL" });
+    const r = harness([{ status: 403, text }]);
+    await assert.rejects(() => r.transport.account(), (error) => error.code === "not_obsync" && error.message === "403 not_obsync");
+    assert.equal(r.sent.length, 1, "a settled refusal is never retried");
+    assert.equal(r.logged.length, 1);
+    assert.ok(r.logged[0].includes("decision=refused code=not_obsync"), r.logged[0]);
+    assert.ok(!r.logged.some((line) => line.includes(code) || line.includes("DETAIL SENTINEL") || line.includes("\n")), r.logged.join(" | "));
+
+    const failing = harness([{ status: 500, text }], { maxAttempts: 1 });
+    await assert.rejects(() => failing.transport.account(), (error) => error.code === "unreachable" && !error.answered);
+    assert.ok(!failing.logged.some((line) => line.includes(code)), failing.logged.join(" | "));
+  }
+  const control = harness([{ status: 403, text: JSON.stringify({ error: "device_revoked" }) }]);
+  await assert.rejects(() => control.transport.account(), (error) => error.code === "device_revoked");
+  assert.ok(control.logged[0].includes("code=device_revoked"));
+});
+
+test("every server refusal code stays usable through the closed client vocabulary", async () => {
+  // The compatibility oracle is the server's declarations, not a copy of
+  // the client's list. A new server code needs a deliberate client entry.
+  const folder = new URL("../../crates/obsyncd/src/api/", import.meta.url);
+  const sources = readdirSync(folder).filter((name) => name.endsWith(".rs") && !name.endsWith("_test.rs"))
+    .map((name) => readFileSync(new URL(name, folder), "utf8")).join("\n");
+  const codes = new Set(Array.from(sources.matchAll(/(?:ApiError|Self)::new\(\s*\d+,\s*"([a-z0-9_]+)"/g), (match) => match[1]));
+  const storage = readFileSync(new URL("../../crates/obsyncd/src/storage/types.rs", import.meta.url), "utf8")
+    .split("pub fn code(&self)")[1].split("#[cfg(test)]")[0];
+  for (const match of storage.matchAll(/(?:=>|return)\s*"([a-z0-9_]+)"/g)) codes.add(match[1]);
+  assert.ok(codes.size >= 70, "the server vocabulary extraction must not be empty or partial");
+  for (const code of codes) {
+    const r = harness([{ status: 400, text: JSON.stringify({ error: code, detail: "REFUSAL SENTINEL" }) }]);
+    await assert.rejects(() => r.transport.account(), (error) => error.code === code && error.detail === "REFUSAL SENTINEL", code);
+    assert.ok(r.logged[0].includes(`code=${code} `), code);
+  }
 });
 
 test("an answer without obsync's shape is its own refusal: something in front of the server gave it (#155)", async () => {

@@ -35,7 +35,7 @@
 //   OBSYNC_E2E_ARGS        optional JSON array of extra Chromium switches
 //   OBSYNC_E2E_HOMES       "1" to give each instance its own HOME (Linux: its own NSS store)
 //   OBSYNC_E2E_NTFS        "1" to add the Windows filesystem journeys
-//   OBSYNC_E2E_SECRET_STORE  "gnome-keyring", "none" (Linux), or "windows": expected custody; both
+//   OBSYNC_E2E_SECRET_STORE  "gnome-keyring", "none" (Linux), "windows", or "macos": expected custody; both
 //                          instances are restarted after the journeys and must sync again
 //   OBSYNC_E2E_CAPTURES    optional fresh directory for verified synthetic editor PNGs only
 //   OBSYNC_E2E_LAUNCHER    optional command each instance is started through, the
@@ -562,8 +562,9 @@ async function main() {
   const homes = process.env.OBSYNC_E2E_HOMES === "1";
   const ntfs = process.env.OBSYNC_E2E_NTFS === "1";
   const store = process.env.OBSYNC_E2E_SECRET_STORE || "";
-  if (store && !STORES[store]) throw new Denied(`OBSYNC_E2E_SECRET_STORE must be one of ${Object.keys(STORES)}, not ${store}`);
+  if (store && !Object.hasOwn(STORES, store)) throw new Denied(`OBSYNC_E2E_SECRET_STORE must be one of ${Object.keys(STORES)}, not ${store}`);
   if (store === "windows" && process.platform !== "win32") throw new Denied("Windows custody requires native Windows");
+  if (store === "macos" && process.platform !== "darwin") throw new Denied("macOS custody requires native macOS");
   const captures = process.env.OBSYNC_E2E_CAPTURES;
   if (captures) fs.mkdirSync(captures); // Refuse a pre-existing output, including a link.
   const token = fs.readFileSync(tokenFile, "utf8").trim();
@@ -685,6 +686,7 @@ const STORES = {
   "gnome-keyring": { encrypted: true, backend: "gnome_libsecret", plain: false },
   none: { encrypted: false, plain: true },
   windows: { encrypted: true, plain: false },
+  macos: { encrypted: true, plain: false },
 };
 const UNENCRYPTED = "Secrets are stored without encryption";
 

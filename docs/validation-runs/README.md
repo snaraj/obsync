@@ -34,6 +34,9 @@ or its harnesses; a red leg there is a finding to read.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-10-12 security train](2026-10-12-security-train.md): expanded real
+  plugin/server regressions, diagnostic and chunk-refusal repairs, and a native
+  redirect-containment failure. Revocation design and final acceptance remain open.
 - [2026-10-10 E2EE regression](2026-10-10-e2ee-regression.md): real plugin/server
   confidentiality and tamper regression, fail-closed observer mutation checks,
   and two disposable native desktop instances. Explicitly incomplete whole-system

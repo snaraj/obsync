@@ -20,6 +20,9 @@ const { SyncEngine } = require("../../plugin/build/sync/engine.js");
 const c = require("../../plugin/build/crypto.js");
 const pairing = require("../../plugin/build/pairing.js");
 const pull = require("../../plugin/build/sync/pull.js");
+const dm = require("../../plugin/build/domainmap.js");
+const history = require("../../plugin/build/sync/history.js");
+const { publishPause } = require("../../plugin/build/sync/pause.js");
 const { accountRecovery } = require("../../plugin/build/accountRecovery.js");
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "obsync-e2ee-")));
 const started = Date.now(), live = new Set(), devices = [], flows = new Set(), controls = new Set();
@@ -34,7 +37,10 @@ const deadline = setTimeout(() => {
 }, budget);
 const binary = path.resolve("target/debug/obsyncd");
 const version = JSON.parse(fs.readFileSync("manifest.json", "utf8")).version;
-const secret = c.hex(pairing.newVaultKey());
+// Explicit synthetic vector: random recovery words can coincide with this
+// fixture's ordinary clear vocabulary and make its per-word scan flaky.
+// Pairing secrets/nonces and every production derivation still run normally.
+const secret = c.hex(Uint8Array.from({ length: 32 }, (_, i) => i + 1));
 const marker = "SENTINEL-obsync-E2EE-note-corpus-2026";
 const filename = "SENTINEL-private-folder/秘密-SENTINEL-private-note.md";
 const vaultName = "SENTINEL-private-vault-name";
@@ -225,6 +231,29 @@ function credentialScan(conns, credentials) {
   return { report: scan(content, credentialNeedles(credentials)), counts };
 }
 
+// Closed clear-field inventory for the ciphertext-bearing read routes this
+// fixture exercises. This does not claim inventory of every production API.
+function ciphertextFields(route, body) {
+  const fields = (value, names) => assert.deepEqual(Object.keys(value).sort(), names.split(" ").sort(), "ciphertext response clear-field allowlist");
+  const version = "version_id parents sids bytes manifest_ct manifest_nonce device_id ts deleted";
+  if (route === "/v1/changes") {
+    fields(body, "seq head_seq changes");
+    for (const row of body.changes) fields(row, `seq file_id domain_id ${version} heads conflicted`);
+  } else if (/^\/v1\/files\/[0-9a-f]{32}\/versions\/[0-9a-f]{64}$/.test(route)) {
+    fields(body, version);
+  } else if (/^\/v1\/files\/[0-9a-f]{32}$/.test(route)) {
+    fields(body, "file_id domain_id heads conflicted versions");
+    for (const row of body.versions) fields(row, version);
+  } else return false;
+  return true;
+}
+
+function recipientSnapshot(d) {
+  return { files: [...d.host.files].map(([name, file]) => [name, Buffer.from(file.bytes).toString("hex"), file.mtime]),
+    folders: [...d.host.explicitFolders], records: structuredClone(d.state.data.files),
+    folderRecords: structuredClone(d.state.data.folders), paused: structuredClone(d.state.data.paused) };
+}
+
 try {
   phase("start");
   await positiveControl("control-before");
@@ -308,6 +337,54 @@ try {
   await readback(() => b.host.text(renamed) === a.host.text(renamed), "renamed recipient readback");
   assert.equal(await b.host.stat(filename), null);
   flows.add("rename");
+  const movedFolder = "SENTINEL-moved-folder", movedNote = `${movedFolder}/SENTINEL-renamed-note.md`;
+  spec.text.movedFolder = movedFolder; spec.text.movedNote = movedNote;
+  await a.host.createFolder("SENTINEL-private-folder/SENTINEL-empty-folder");
+  a.engine.folderCreated("SENTINEL-private-folder/SENTINEL-empty-folder");
+  await a.engine.syncNow(); await b.engine.syncNow();
+  await readback(async () => (await b.host.listFolders()).includes("SENTINEL-private-folder/SENTINEL-empty-folder"), "empty folder readback");
+  assert.equal(await a.host.moveFolder("SENTINEL-private-folder", movedFolder), "moved");
+  a.engine.renamedFolder("SENTINEL-private-folder", movedFolder);
+  a.engine.folderRenamed("SENTINEL-private-folder", movedFolder);
+  await a.engine.syncNow(); await b.engine.syncNow();
+  await readback(async () => b.host.text(movedNote) === a.host.text(movedNote) &&
+    (await b.host.listFolders()).includes(`${movedFolder}/SENTINEL-empty-folder`), "folder move content and empty-folder readback");
+  assert.equal(await b.host.stat(renamed), null);
+  assert.ok(!(await b.host.listFolders()).includes("SENTINEL-private-folder"));
+  flows.add("folder-move");
+  const deletePath = "SENTINEL-delete-restore.md", deleteText = "SENTINEL-deleted-private-content";
+  spec.text.deletePath = deletePath; spec.text.deleteText = deleteText;
+  a.host.seed(deletePath, deleteText, Date.now() + 3);
+  await a.engine.syncNow(); await b.engine.syncNow();
+  await readback(() => b.host.text(deletePath) === deleteText, "pre-delete readback");
+  const deleteRecord = a.state.fileByPath(deletePath);
+  assert.ok(deleteRecord, "deletion must have an uploaded content version");
+  await a.host.trash(deletePath); a.engine.deleted(deletePath);
+  await a.engine.syncNow(); await b.engine.syncNow();
+  await readback(async () => await b.host.stat(deletePath) === null, "deleted recipient readback");
+  flows.add("delete");
+  const browser = new history.HistoryBrowser(a.engine.contextValue, new history.HistoryOperation(), { newestFirst: false });
+  const entries = (await browser.next()).entries;
+  const selected = entries.find((entry) => entry.fileId === deleteRecord.fileId && !entry.deleted);
+  assert.ok(selected, "real history must retain deleted content");
+  assert.ok(entries.some((entry) => entry.fileId === deleteRecord.fileId && entry.deleted), "real history must show the tombstone");
+  const restored = await history.restoreCopy(browser, selected);
+  spec.text.restoredPath = restored.path;
+  assert.equal(a.host.text(restored.path), deleteText);
+  await a.engine.syncNow(); await b.engine.syncNow();
+  await readback(() => b.host.text(restored.path) === deleteText, "restored-copy recipient readback");
+  assert.notEqual(a.state.fileByPath(restored.path).fileId, deleteRecord.fileId, "restoration must use a fresh identity");
+  assert.equal(await b.host.stat(deletePath), null, "restoration must not resurrect the deleted original");
+  flows.add("restore-copy");
+  const pauseTarget = a.state.fileByPath(movedNote).fileId;
+  await publishPause(a.engine.contextValue, pauseTarget, movedNote, true);
+  // Sync now itself resumes holds; observe the ordinary incoming feed first.
+  await readback(() => b.state.data.paused[pauseTarget] !== undefined, "encrypted pause applied");
+  assert.equal(b.host.text(movedNote), a.host.text(movedNote), "pause preserves saved bytes");
+  await publishPause(a.engine.contextValue, pauseTarget, movedNote, false);
+  await b.engine.resume(pauseTarget);
+  assert.equal(b.state.data.paused[pauseTarget], undefined, "explicit resume clears the hold");
+  flows.add("pause-control");
   const recovered = await device("QA recovered");
   // Recovery begins with possession of the user's root key, unlike pairing.
   recovered.state.data.vrk = secret;
@@ -316,8 +393,10 @@ try {
   assert.equal(recoveredSetup.recovered, true);
   credential(recovered, recoveredSetup);
   await recovered.engine.start(); await recovered.engine.syncNow();
-  await readback(() => recovered.host.text(renamed) === a.host.text(renamed), "recovery retains client-side content decryption");
+  await readback(() => recovered.host.text(movedNote) === a.host.text(movedNote), "recovery retains client-side content decryption");
   flows.add("recovery");
+  const receiveContext = { ...recovered.engine.contextValue, signal: new AbortController().signal };
+  await recovered.engine.stopAndWait();
   const revokedContext = b.engine.contextValue;
   await b.engine.stopAndWait();
   ok(await a.transport.revokeDevice(b.state.data.deviceId));
@@ -342,6 +421,114 @@ try {
   }
   assert.ok(chunks >= 3, "chunk-key inventory must cover real writes");
   assert.ok(futureRecord, "a new version was written after revocation");
+  // The real recipient engine's receive entry, with only its periodic feed
+  // stopped so the hostile adapter cannot race an honest delivery. Record
+  // bytes come from the real HTTP response and all writes use production pull.
+  const beforeReceive = recipientSnapshot(recovered);
+  for (const attack of ["manifest", "parents", "chunk"]) {
+    phase(`hostile-${attack}`);
+    let injected = 0;
+    mutation = (input, _res, bytes) => {
+      if (input.headers["X-Obsync-Device"] !== recovered.state.data.deviceId) return bytes;
+      const route = new URL(input.url).pathname;
+      if (attack === "chunk" && route.startsWith("/v1/chunks/")) {
+        injected++; const changed = Buffer.from(bytes); changed[changed.length - 1] ^= 1; return changed;
+      }
+      if (attack !== "chunk" && route === "/v1/changes") {
+        const body = JSON.parse(bytes);
+        const row = body.changes.find((entry) => entry.version_id === futureRecord.version_id);
+        assert.ok(row, "hostile response must contain the target version");
+        injected++;
+        if (attack === "parents") row.parents = ["0".repeat(64)];
+        else { const changed = Buffer.from(row.manifest_ct, "base64"); changed[changed.length - 1] ^= 1; row.manifest_ct = changed.toString("base64"); }
+        return Buffer.from(JSON.stringify(body));
+      }
+      return bytes;
+    };
+    try {
+      const response = await recovered.transport.changes(0, 0);
+      const hostile = response.changes.find((entry) => entry.version_id === futureRecord.version_id);
+      let outcome;
+      await assert.doesNotReject(async () => { outcome = await recovered.engine.receive(receiveContext, hostile); }, `hostile ${attack} must be a per-record refusal`);
+      assert.equal(outcome, attack === "chunk" ? null : "refused", `hostile ${attack} must not be applied by the recipient`);
+      if (attack === "chunk") {
+        assert.deepEqual(recovered.state.data.parked[futureRecord.file_id], { path: future, reason: "chunk_authentication" }, "chunk corruption must remain retryable");
+        assert.ok(recovered.host.logs.some((line) => line.includes("decision=parked reason=chunk_authentication")), "chunk parking must be visible");
+      }
+      assert.ok(injected > 0, `hostile ${attack} must reach an actual response`);
+      assert.deepEqual(recipientSnapshot(recovered), beforeReceive, `hostile ${attack} must not change saved bytes or sync records`);
+      assert.equal(receiveContext.staged?.size ?? 0, 0, "refused data must not remain staged for reuse");
+    } finally { mutation = null; }
+  }
+  // Keep the real parking mark: ordinary startup/retry must recover it.
+  await recovered.engine.start(); await recovered.engine.syncNow();
+  await readback(() => recovered.host.text(future) === spec.text.futureContent &&
+    recovered.state.data.parked[futureRecord.file_id] === undefined, "honest retry must deliver previously damaged bytes and clear parking");
+  flows.add("hostile-receive");
+  // Exercise the public feed as well: a damaged record is parked, never
+  // applied, and does not stop an unrelated following record from arriving.
+  const badPath = "SENTINEL-feed-corruption.md", siblingPath = "SENTINEL-feed-sibling.md";
+  spec.text.badPath = badPath; spec.text.badText = "SENTINEL-feed-corrupt-content";
+  spec.text.siblingPath = siblingPath; spec.text.siblingText = "SENTINEL-feed-sibling-content";
+  const badChunk = await c.encryptChunk(context.domainKey, c.utf8(spec.text.badText)), badSid = badChunk.sid;
+  let corruptions = 0;
+  mutation = (input, _res, bytes) => {
+    if (input.headers["X-Obsync-Device"] !== recovered.state.data.deviceId || !new URL(input.url).pathname.startsWith("/v1/chunks/")) return bytes;
+    // Damage only the corrupt note's chunk. The sibling must receive honest
+    // bytes, or this would merely test a second damaged version.
+    if (new URL(input.url).pathname !== `/v1/chunks/${badSid}`) return bytes;
+    corruptions++; const changed = Buffer.from(bytes); changed[changed.length - 1] ^= 1; return changed;
+  };
+  const logsBeforeFeed = recovered.host.logs.length;
+  try {
+    a.host.seed(badPath, spec.text.badText, Date.now() + 10); await a.engine.syncNow();
+    a.host.seed(siblingPath, spec.text.siblingText, Date.now() + 11); await a.engine.syncNow();
+    await readback(() => recovered.host.text(siblingPath) === spec.text.siblingText, "valid sibling must pass the corrupted feed record");
+    const feed = await a.transport.changes(0, 0);
+    const badRecord = feed.changes.find((row) => row.file_id === a.state.fileByPath(badPath).fileId);
+    const siblingRecord = feed.changes.find((row) => row.file_id === a.state.fileByPath(siblingPath).fileId);
+    assert.ok(badRecord && siblingRecord && badRecord.seq < siblingRecord.seq, "corrupted feed record must precede its honest sibling");
+    for (const [label, record] of [["feed_bad_chunk", badRecord], ["feed_sibling_chunk", siblingRecord]]) {
+      const manifest = await pull.decodeRecordManifest(context, record);
+      spec.hex[label] = c.hex(await c.hkdf(context.domainKey, c.utf8("obsync/v1/chunk"), c.unhex(manifest.chunks[0].cid), 32));
+    }
+    assert.ok(corruptions > 0, "public feed must receive a damaged real chunk response");
+    assert.equal(await recovered.host.stat(badPath), null, "corrupted public-feed bytes must not be applied");
+    assert.equal(recovered.state.fileByPath(badPath), undefined, "corrupted public-feed record must not be retained as applied");
+    assert.ok(recovered.state.data.lastSeq >= siblingRecord.seq, "feed cursor must advance past the valid sibling");
+    assert.deepEqual(recovered.state.data.parked[badRecord.file_id], { path: badPath, reason: "chunk_authentication" }, "damaged public-feed record must remain parked for retry");
+    await readback(async () => (await recovered.reload()).data.parked[badRecord.file_id]?.reason === "chunk_authentication", "public-feed parking must persist for restart recovery");
+    assert.ok(recovered.host.logs.slice(logsBeforeFeed).some((line) => line.includes("decision=parked reason=chunk_authentication")), "public-feed chunk parking must be visible");
+  } finally { mutation = null; }
+  const badFileId = a.state.fileByPath(badPath).fileId;
+  await recovered.engine.syncNow();
+  await readback(() => recovered.host.text(badPath) === spec.text.badText &&
+    recovered.state.data.parked[badFileId] === undefined, "honest public-feed retry must recover damaged bytes and clear parking");
+  assert.equal(recovered.host.text(siblingPath), spec.text.siblingText, "honest retry must preserve sibling bytes");
+  assert.equal((await recovered.reload()).data.parked[badFileId], undefined, "successful public-feed retry must durably clear parking");
+  await recovered.engine.stopAndWait();
+  flows.add("hostile-feed-progress");
+  const mapKeys = await dm.domainMapKeys(c.unhex(secret));
+  const honestMap = await dm.loadDomainMap(recovered.transport, mapKeys);
+  assert.equal(dm.soleDomain(honestMap), context.domainId, "real encrypted domain-map readback");
+  for (const attack of ["ciphertext", "fork"]) {
+    let injected = 0;
+    mutation = (input, _res, bytes) => {
+      if (new URL(input.url).pathname !== `/v1/files/${mapKeys.fileId}`) return bytes;
+      const body = JSON.parse(bytes); injected++;
+      if (attack === "fork") body.heads.push("0".repeat(64));
+      else { const changed = Buffer.from(body.versions[0].manifest_ct, "base64"); changed[changed.length - 1] ^= 1; body.versions[0].manifest_ct = changed.toString("base64"); }
+      return Buffer.from(JSON.stringify(body));
+    };
+    const beforeMap = recipientSnapshot(recovered);
+    try {
+      await assert.rejects(dm.loadDomainMap(recovered.transport, mapKeys), /domain map refused/);
+      assert.ok(injected > 0, "hostile map must reach a real response");
+      assert.deepEqual(recipientSnapshot(recovered), beforeMap, "hostile map must leave saved state untouched");
+    } finally { mutation = null; }
+    assert.deepEqual(await dm.loadDomainMap(recovered.transport, mapKeys), honestMap, "honest domain map after refusal");
+  }
+  flows.add("domain-map-refusal");
   // Pin the PRESENT LIMITATION, never call this cryptographic revocation.
   // Model a compromised server supplying ciphertext by using A's transport
   // with only the keys B retained before it was revoked.
@@ -353,6 +540,17 @@ try {
   assert.ok(original && oldRecord, "original history version must exist");
   assert.ok(new TextDecoder().decode(await pull.assembleBytes(context, original)) === marker + "\n", "history readback decrypts original bytes");
   flows.add("history");
+  // Give API-only credentials even the decrypted chunk id; they still cannot
+  // derive content keys or authenticate a real manifest/chunk ciphertext.
+  const originalChunk = original.chunks[0], originalCiphertext = await a.transport.getChunk(originalChunk.sid);
+  for (const apiSecret of [recovered.state.data.deviceSecret, recovery.proof]) {
+    const wrongDomain = await c.deriveDomainKey(c.unhex(apiSecret), context.domainId);
+    const wrongManifest = await c.deriveManifestKey(wrongDomain, context.domainId);
+    await assert.rejects(pull.decodeRecordManifest({ ...context, manifestKey: wrongManifest }, oldRecord));
+    await assert.rejects(c.decryptChunk(wrongDomain, c.unhex(originalChunk.cid), originalCiphertext));
+  }
+  assert.equal(new TextDecoder().decode(await c.decryptChunk(context.domainKey, c.unhex(originalChunk.cid), originalCiphertext)), marker + "\n", "actual content key still decrypts after API-only refusals");
+  flows.add("api-only-no-decryption");
   // Exercise the production receive path with hostile bytes at the HTTP
   // adapter boundary. The raw recording remains the real server's bytes.
   let tampered = 0;
@@ -373,18 +571,52 @@ try {
   await assert.rejects(pull.decodeRecordManifest({ ...context, manifestKey: pairing.newVaultKey() }, oldRecord));
   flows.add("tamper-refusal");
   for (const d of devices) await d.engine.stopAndWait();
+  const originalMapFile = await a.transport.getFile(mapKeys.fileId);
+  const mapA = { v: 1, domains: [{ id: c.hex(c.randomBytes(16)), paths: [""] }] };
+  const mapB = { v: 1, domains: [{ id: c.hex(c.randomBytes(16)), paths: [""] }] };
+  await dm.saveDomainMap(a.transport, mapKeys, mapA, originalMapFile.heads);
+  await dm.saveDomainMap(a.transport, mapKeys, mapB, originalMapFile.heads);
+  const fork = await a.transport.getFile(mapKeys.fileId);
+  assert.equal(fork.heads.length, 2, "real divergent encrypted maps must leave two heads");
+  await assert.rejects(dm.loadDomainMap(a.transport, mapKeys), /domain map refused: conflicted/);
+  // LIMITATION: an authentic older map plus a falsely presented sole head is
+  // decryptable. AEAD supplies authenticity, not universal server freshness.
+  let replayed = 0;
+  mutation = (input, _res, bytes) => {
+    if (new URL(input.url).pathname !== `/v1/files/${mapKeys.fileId}`) return bytes;
+    replayed++; return Buffer.from(JSON.stringify(originalMapFile));
+  };
+  try {
+    let replay;
+    await assert.doesNotReject(async () => { replay = await dm.loadDomainMap(recovered.transport, mapKeys); }, "authentic old map remains readable under a server replay");
+    assert.deepEqual(replay, honestMap, "replayed map must be the original authentic content");
+    assert.ok(replayed > 0, "rollback limitation must exercise the real response boundary");
+  } finally { mutation = null; }
+  await assert.rejects(dm.loadDomainMap(a.transport, mapKeys), /domain map refused: conflicted/, "honest fork is still refused after replay");
+  flows.add("domain-map-rollback-limit");
   await stopServer();
   await recorder.close(); recorder = null;
   await positiveControl("control-after");
   const needles = buildNeedles(spec), conns = readCapture(capture), report = scan(conns, needles);
   for (const label of ["text:note", "text:filename", "text:folder", "text:vault", "text:attachment", "text:edit", "text:futureContent",
-    "key:vrk", "key:derived:domain-map", "key:domain", "key:manifest", "key:pairing_secret", "key:pairing_envelope", "key:pairing_vault_details", "recovery:phrase", "pairing:code:0"]) {
+    "key:vrk", "key:derived:domain-map", "key:domain", "key:manifest", "key:feed_bad_chunk", "key:feed_sibling_chunk", "key:pairing_secret", "key:pairing_envelope", "key:pairing_vault_details", "recovery:phrase", "pairing:code:0"]) {
     assert.ok(needles.some((needle) => needle.label === label), `required needle absent: ${label}`);
   }
   assert.equal(report.decision, "pass", `traffic scan: ${JSON.stringify(report.errors)} ${report.hits.map((h) => h.label)}`);
   const requests = conns.reduce((n, conn) => n + conn.requests.length, 0);
   assert.equal(requests, sent, "every client request reached capture");
   assert.equal(received, sent, "every request has a response");
+  const inventoried = new Set();
+  for (const conn of conns) {
+    const req = conn.requests[0], response = conn.responses.find((message) => !message.informational);
+    const [method, target] = req.head.line.split(" "), route = target.split("?")[0];
+    if (method === "GET" && (route === "/v1/changes" || /^\/v1\/files\/[0-9a-f]{32}(?:\/versions\/[0-9a-f]{64})?$/.test(route)) &&
+      /^HTTP\/1\.[01] 200 /.test(response.head.line) && ciphertextFields(route, uniqueJson(response.body.toString("utf8")).value)) {
+      inventoried.add(route === "/v1/changes" ? "changes" : route.includes("/versions/") ? "version" : "file");
+    }
+  }
+  assert.deepEqual([...inventoried].sort(), ["changes", "file", "version"], "clear-field inventory must exercise all three read routes");
+  assert.throws(() => ciphertextFields("/v1/changes", { seq: 0, head_seq: 0, changes: [], debug: "SENTINEL-unlisted-field" }), /clear-field allowlist/);
   const credentials = { setup: token, proof: recovery.proof, enroll: invitation.enroll_token, pairing: invitation.pairing_id,
     devices: new Map(devices.map((d) => [d.state.data.deviceId, d.state.data.deviceSecret])) };
   const auth = credentialScan(conns, credentials);
@@ -423,7 +655,7 @@ try {
   for (const file of stored) assertNoNeedles(fs.readFileSync(file), needles, "server_storage");
   assertNoNeedles(Buffer.from(logs), diagnosticNeedles, "server_logs");
   for (const d of devices) assertNoNeedles(Buffer.from(d.host.logs.join("\n")), diagnosticNeedles, "client_diagnostics");
-  assert.deepEqual([...flows].sort(), ["attachment", "create", "edit", "history", "pairing", "recovery", "rename", "revocation-access-only", "setup", "tamper-refusal"]);
+  assert.deepEqual([...flows].sort(), ["api-only-no-decryption", "attachment", "create", "delete", "domain-map-refusal", "domain-map-rollback-limit", "edit", "folder-move", "history", "hostile-feed-progress", "hostile-receive", "pairing", "pause-control", "recovery", "rename", "restore-copy", "revocation-access-only", "setup", "tamper-refusal"]);
   assert.deepEqual([...controls].sort(), ["control-after", "control-before"]);
   assert.ok(Date.now() - started < budget, "fixture exceeded wall-clock budget");
   console.log(`e2ee decision=pass flows=${flows.size} controls=${controls.size} requests=${requests} storage_files=${stored.length} needles=${needles.length} duration_ms=${Date.now() - started} budget_ms=${budget}`);
