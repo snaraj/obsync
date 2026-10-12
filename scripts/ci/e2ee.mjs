@@ -26,7 +26,7 @@ const { publishPause } = require("../../plugin/build/sync/pause.js");
 const { accountRecovery } = require("../../plugin/build/accountRecovery.js");
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "obsync-e2ee-")));
 const started = Date.now(), live = new Set(), devices = [], flows = new Set(), controls = new Set();
-let server, recorder, logs = "", sent = 0, received = 0, mutation = null;
+let server, recorder, logs = "", sent = 0, received = 0, mutation = null, failure;
 const budget = 120000;
 const deadline = setTimeout(() => {
   // Bound a hung fixture without leaving its child serving after CI exits.
@@ -159,7 +159,7 @@ async function positiveControl(name) {
   } finally {
     await relay.close(); await new Promise((resolve) => responder.close(resolve));
   }
-  assert.equal(sent - before[0], 1); assert.equal(received - before[1], 1);
+  assert.equal(sent - before[0], 1, "positive-control request count"); assert.equal(received - before[1], 1, "positive-control response count");
   sent = before[0]; received = before[1];
   const report = scan(readCapture(capture), needles);
   assert.deepEqual(report.errors, [], "control must have complete parseable evidence");
@@ -168,7 +168,7 @@ async function positiveControl(name) {
     for (const where of ["request", "response"]) assert.ok(report.hits.some((hit) => hit.label === label && hit.where === where), `control ${label} ${where}`);
   }
   for (const surface of ["server_storage", "server_logs", "client_diagnostics"]) {
-    assert.throws(() => assertNoNeedles(Buffer.from(plaintext + key), needles, surface));
+    assert.throws(() => assertNoNeedles(Buffer.from(plaintext + key), needles, surface), undefined, "storage/log scanner positive control");
   }
   controls.add(name);
 }
@@ -370,7 +370,7 @@ try {
   assert.ok(entries.some((entry) => entry.fileId === deleteRecord.fileId && entry.deleted), "real history must show the tombstone");
   const restored = await history.restoreCopy(browser, selected);
   spec.text.restoredPath = restored.path;
-  assert.equal(a.host.text(restored.path), deleteText);
+  assert.equal(a.host.text(restored.path), deleteText, "restored-copy local byte readback");
   await a.engine.syncNow(); await b.engine.syncNow();
   await readback(() => b.host.text(restored.path) === deleteText, "restored-copy recipient readback");
   assert.notEqual(a.state.fileByPath(restored.path).fileId, deleteRecord.fileId, "restoration must use a fresh identity");
@@ -381,9 +381,11 @@ try {
   // Sync now itself resumes holds; observe the ordinary incoming feed first.
   await readback(() => b.state.data.paused[pauseTarget] !== undefined, "encrypted pause applied");
   assert.equal(b.host.text(movedNote), a.host.text(movedNote), "pause preserves saved bytes");
-  await publishPause(a.engine.contextValue, pauseTarget, movedNote, false);
+  // The remote hold must still exist when explicit resume is exercised.
+  // Publishing a peer's unpause first lets the feed satisfy this assertion.
   await b.engine.resume(pauseTarget);
   assert.equal(b.state.data.paused[pauseTarget], undefined, "explicit resume clears the hold");
+  await publishPause(a.engine.contextValue, pauseTarget, movedNote, false);
   flows.add("pause-control");
   const recovered = await device("QA recovered");
   // Recovery begins with possession of the user's root key, unlike pairing.
@@ -522,7 +524,7 @@ try {
     };
     const beforeMap = recipientSnapshot(recovered);
     try {
-      await assert.rejects(dm.loadDomainMap(recovered.transport, mapKeys), /domain map refused/);
+      await assert.rejects(dm.loadDomainMap(recovered.transport, mapKeys), /domain map refused/, `hostile map ${attack} must be refused`);
       assert.ok(injected > 0, "hostile map must reach a real response");
       assert.deepEqual(recipientSnapshot(recovered), beforeMap, "hostile map must leave saved state untouched");
     } finally { mutation = null; }
@@ -546,8 +548,8 @@ try {
   for (const apiSecret of [recovered.state.data.deviceSecret, recovery.proof]) {
     const wrongDomain = await c.deriveDomainKey(c.unhex(apiSecret), context.domainId);
     const wrongManifest = await c.deriveManifestKey(wrongDomain, context.domainId);
-    await assert.rejects(pull.decodeRecordManifest({ ...context, manifestKey: wrongManifest }, oldRecord));
-    await assert.rejects(c.decryptChunk(wrongDomain, c.unhex(originalChunk.cid), originalCiphertext));
+    await assert.rejects(pull.decodeRecordManifest({ ...context, manifestKey: wrongManifest }, oldRecord), undefined, "API-only credentials cannot decrypt manifests");
+    await assert.rejects(c.decryptChunk(wrongDomain, c.unhex(originalChunk.cid), originalCiphertext), undefined, "API-only credentials cannot decrypt chunks");
   }
   assert.equal(new TextDecoder().decode(await c.decryptChunk(context.domainKey, c.unhex(originalChunk.cid), originalCiphertext)), marker + "\n", "actual content key still decrypts after API-only refusals");
   flows.add("api-only-no-decryption");
@@ -616,7 +618,7 @@ try {
     }
   }
   assert.deepEqual([...inventoried].sort(), ["changes", "file", "version"], "clear-field inventory must exercise all three read routes");
-  assert.throws(() => ciphertextFields("/v1/changes", { seq: 0, head_seq: 0, changes: [], debug: "SENTINEL-unlisted-field" }), /clear-field allowlist/);
+  assert.throws(() => ciphertextFields("/v1/changes", { seq: 0, head_seq: 0, changes: [], debug: "SENTINEL-unlisted-field" }), /clear-field allowlist/, "clear-field allowlist negative control");
   const credentials = { setup: token, proof: recovery.proof, enroll: invitation.enroll_token, pairing: invitation.pairing_id,
     devices: new Map(devices.map((d) => [d.state.data.deviceId, d.state.data.deviceSecret])) };
   const auth = credentialScan(conns, credentials);
@@ -640,7 +642,7 @@ try {
     const duplicate = [{ ...setupConn, responses: [poisoned] }]; duplicate.errors = [];
     const denied = credentialScan(duplicate, credentials).report;
     assert.equal(denied.decision, "fail", "duplicate credential fields must fail");
-    assert.ok(denied.hits.some((hit) => hit.label === "key:proof"));
+    assert.ok(denied.hits.some((hit) => hit.label === "key:proof"), "duplicate credential fields must retain the leaked proof hit");
     assert.ok(denied.errors.includes("http_json_duplicate"));
   }
   const diagnosticNeedles = [...needles, ...credentialNeedles(credentials)];
@@ -655,15 +657,27 @@ try {
   for (const file of stored) assertNoNeedles(fs.readFileSync(file), needles, "server_storage");
   assertNoNeedles(Buffer.from(logs), diagnosticNeedles, "server_logs");
   for (const d of devices) assertNoNeedles(Buffer.from(d.host.logs.join("\n")), diagnosticNeedles, "client_diagnostics");
-  assert.deepEqual([...flows].sort(), ["api-only-no-decryption", "attachment", "create", "delete", "domain-map-refusal", "domain-map-rollback-limit", "edit", "folder-move", "history", "hostile-feed-progress", "hostile-receive", "pairing", "pause-control", "recovery", "rename", "restore-copy", "revocation-access-only", "setup", "tamper-refusal"]);
-  assert.deepEqual([...controls].sort(), ["control-after", "control-before"]);
+  assert.deepEqual([...flows].sort(), ["api-only-no-decryption", "attachment", "create", "delete", "domain-map-refusal", "domain-map-rollback-limit", "edit", "folder-move", "history", "hostile-feed-progress", "hostile-receive", "pairing", "pause-control", "recovery", "rename", "restore-copy", "revocation-access-only", "setup", "tamper-refusal"], "required runtime flows");
+  assert.deepEqual([...controls].sort(), ["control-after", "control-before"], "required scanner positive controls");
   assert.ok(Date.now() - started < budget, "fixture exceeded wall-clock budget");
   console.log(`e2ee decision=pass flows=${flows.size} controls=${controls.size} requests=${requests} storage_files=${stored.length} needles=${needles.length} duration_ms=${Date.now() - started} budget_ms=${budget}`);
+} catch (error) {
+  failure = error;
+  throw error;
 } finally {
   clearTimeout(deadline);
   for (const req of live) req.destroy();
   await Promise.allSettled(devices.map((d) => d.engine.stopAndWait()));
-  try { await stopServer(); } finally {
-    try { if (recorder) await recorder.close(); } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  try {
+    try { await stopServer(); } finally {
+      if (recorder) await recorder.close();
+    }
+  } catch (error) {
+    // An aborted fixture may truncate its relay. Keep that shutdown failure
+    // visible without replacing the behavior assertion that aborted it.
+    if (failure === undefined) throw error;
+    console.error("e2ee cleanup=fail reason=shutdown_failed");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
   }
 }

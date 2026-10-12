@@ -89,6 +89,56 @@ test("custody returns facts only, checks the persisted revision, and sanitizes m
   } finally { delete globalThis.app; }
 });
 
+test("early availability returns reduced facts without reading plugin metadata or credentials", async () => {
+  let available = false;
+  globalThis.app = {
+    loadLocalStorage: () => '{"synthetic":"NEVER_RETURN_THE_SYNTHETIC_SECRET"}',
+    plugins: { get plugins() { throw new Error("early metadata access forbidden"); } },
+    secretStorage: {
+      getSecret() { throw new Error("early credential access forbidden"); },
+      isEncryptionAvailable: () => available,
+    },
+  };
+  try {
+    const found = await secretFacts(false);
+    assert.deepEqual(found, { encrypted: false, backend: "none reported", stored: true, plain: true, revisionMatches: null });
+    assert.ok(!JSON.stringify(found).includes("NEVER_RETURN"));
+    available = true;
+    assert.equal((await secretFacts(false)).encrypted, true);
+    delete app.secretStorage;
+    assert.equal((await secretFacts(false)).encrypted, null, "not yet exposed is unknown, never green");
+  } finally { delete globalThis.app; }
+});
+
+test("real workspace-ready observation precedes plugin trust and exports fixed diagnostic fields only", async () => {
+  const fs = await import("node:fs"), vm = await import("node:vm");
+  const source = fs.readFileSync(new URL("./obsidian-drive.mjs", import.meta.url), "utf8");
+  const ready = source.slice(source.indexOf("async function openVault("), source.indexOf("\nasync function setServer("));
+  const at = source.indexOf("function diagnose(");
+  const diagnosis = source.slice(at, source.indexOf("\n}\n", at) + 2);
+  const events = [], lines = [], pluginState = () => {}, marker = () => {};
+  const context = { secretFacts: marker, pluginState, PLUGIN_ID: "test", LABELS: { trust: "trust" }, click() {},
+    console: { log: (line) => { events.push("diagnostic"); lines.push(line); } },
+    until: async (_, probe) => probe(),
+  };
+  const main = { run: async (fn, ...args) => {
+    if (fn === marker) { assert.deepEqual(args, [false]); events.push("availability"); return { ...valid, revisionMatches: null, backend: "NEVER_RETURN_BACKEND_SECRET", unknown: "NEVER_RETURN_SECRET" }; }
+    if (fn === pluginState) { events.push("plugin"); return true; }
+    if (fn.toString().includes("navigator.userAgent")) { events.push("agent"); return "obsidian/1.13.7 Electron/43.3.0"; }
+    events.push("workspace"); return true;
+  } };
+  const instance = { name: "a", main: async () => main, anywhere: async () => { events.push("trust"); return true; } };
+  const program = vm.runInNewContext(`${diagnosis}\n(${ready})`, context);
+  await program(instance, true);
+  assert.deepEqual(events, ["workspace", "availability", "diagnostic", "trust", "plugin", "agent"]);
+  assert.equal(lines[0], 'obsidian-drive: availability peer=a phase=workspace_ready {"encrypted":true,"stored":true,"plain":false,"revisionMatches":null}');
+  assert.ok(!lines[0].includes("NEVER_RETURN"));
+  events.length = 0; lines.length = 0;
+  await program(instance);
+  assert.deepEqual(events, ["workspace", "trust", "plugin", "agent"], "no-store behavior performs no new storage observation");
+  assert.equal(lines.length, 0);
+});
+
 test("captures refuse dialogs, notices, wrong editors, hidden and out-of-viewport content", () => {
   let footer = "1 words9 characters";
   let blockers = [], rect = { x: 20, y: 40, width: 800, height: 500, right: 820, bottom: 540 };
@@ -200,6 +250,8 @@ test("the real driver requires matching prompts before approval and its restart 
   const environment = { OBSYNC_E2E_SECRET_STORE: "windows", OBSYNC_E2E_CAPTURES: root };
   const localProcess = { env: environment, platform: "win32", exitCode: undefined };
   let preflightTouches = 0, approvals = 0;
+  const launches = [], observed = [];
+  const secretFactsMarker = () => {};
   let comparison = { creator: ["123 456"], claimant: ["123 456"] };
   let nextComparison = null;
   const context = {
@@ -208,7 +260,7 @@ test("the real driver requires matching prompts before approval and its restart 
     Denied: Error, scrub: String, console: { log() {}, error() {} }, Buffer, randomBytes: () => Buffer.from("test"),
     Instance: class {
       constructor(work, name) { preflightTouches++; this.name = name; this.root = root; this.vault = root; }
-      launch() {} stop() {}
+      launch() { launches.push("launch-" + this.name); } stop() {}
       async anywhere(fn, label) { if (fn === context.click && label === "Approve") approvals++; return true; }
       async all(fn) {
         if (fn !== pairingCodes) return [];
@@ -218,18 +270,20 @@ test("the real driver requires matching prompts before approval and its restart 
       }
       pluginLog() { return []; }
     },
-    openVault: async () => ({ obsidian: "test", electron: "test" }), setServer: async () => {},
+    openVault: async (instance, diagnostic) => { launches.push("ready-" + instance.name); assert.equal(diagnostic, true); return { obsidian: "test", electron: "test" }; }, setServer: async () => {},
+    secretFacts: secretFactsMarker, diagnose: (instance, phase, found) => { observed.push(instance.name + ":" + phase); assert.deepEqual(found, valid); },
     until: async (_, probe) => {
       let last;
       for (let attempt = 0; attempt < 2; attempt++) {
         try { const value = await probe(); if (value) return value; } catch (error) { last = error; }
       }
       throw last ?? new Error("test wait exhausted");
-    }, paired: () => true, inVault: async () => true,
+    }, paired: () => true, inVault: async (_, fn) => fn === secretFactsMarker ? valid : true,
     fillPlaceholder() {}, click() {}, confirmPhrase() {}, pairingCode() {}, fillSetting() {}, describe() {}, notices() {},
     LABELS: { approve: "Approve" }, pairingCodes, assertPairingCodes, PLUGIN_ID: "test", SYNC_BUDGET_MS: 1, prove() {}, arrives: () => 1, leaves() {}, listing: () => [],
     cotyping: async () => { capture("cotype-a"); capture("cotype-b"); }, starvedWatcher() {}, windowsJourneys() {},
-    restarted: async () => {
+    restarted: async (_a, _b, options) => {
+      assert.equal(options.launchOrder, environment.OBSYNC_E2E_LAUNCH_ORDER || "simultaneous", "restart receives the same selected launch order");
       for (const name of ["restart-a-a", "restart-a-b", "restart-b-a", "restart-b-b"]) capture(name);
       return { before: true, quit: true, paired: true, transferred: true, after: true };
     }, finishEvidence, untrusted() {},
@@ -239,6 +293,8 @@ test("the real driver requires matching prompts before approval and its restart 
     await vm.runInNewContext(`(${main})()`, context);
     assert.equal(localProcess.exitCode, undefined, "the unmodified driver completes its restart and publication gates");
     assert.equal(approvals, 1, "the matched prompts allow the actual approval path");
+    assert.deepEqual(launches, ["launch-a", "launch-b", "ready-a", "ready-b"]);
+    assert.deepEqual(observed, ["a:enrolled", "b:enrolled"]);
     comparison = { creator: ["123 456"], claimant: ["123 457"] };
     nextComparison = { creator: ["123 456"], claimant: ["123 456"] };
     localProcess.exitCode = undefined;
@@ -274,6 +330,19 @@ test("the real driver requires matching prompts before approval and its restart 
       await assert.rejects(vm.runInNewContext(`(${main})()`, context), /macOS custody requires native macOS/);
     }
     localProcess.platform = "darwin";
+    environment.OBSYNC_E2E_LAUNCH_ORDER = "serialized";
+    launches.length = 0; observed.length = 0; localProcess.exitCode = undefined;
+    await vm.runInNewContext(`(${main})()`, context);
+    assert.equal(localProcess.exitCode, undefined);
+    assert.deepEqual(launches, ["launch-a", "ready-a", "launch-b", "ready-b"]);
+    assert.deepEqual(observed, ["a:enrolled", "b:enrolled"]);
+    for (const mode of ["unknown", "toString", "constructor"]) {
+      environment.OBSYNC_E2E_LAUNCH_ORDER = mode;
+      const touches = preflightTouches;
+      await assert.rejects(vm.runInNewContext(`(${main})()`, context), /OBSYNC_E2E_LAUNCH_ORDER must be/);
+      assert.equal(preflightTouches, touches, "invalid launch order refuses before token/profile access");
+    }
+    delete environment.OBSYNC_E2E_LAUNCH_ORDER;
     for (const store of ["toString", "constructor", "unknown"]) {
       environment.OBSYNC_E2E_SECRET_STORE = store;
       const touches = preflightTouches;
@@ -291,7 +360,7 @@ test("actual restart checks custody before and after, waits for native exit, and
   const holdsAt = source.indexOf("function holds(");
   const holds = source.slice(holdsAt, source.indexOf("\n}\n", holdsAt) + 2);
   const secretFactsMarker = () => {};
-  async function run({ bad = "", badField = "revisionMatches", store = "windows", failedHalt = false, failedTransfer = false, warning = false } = {}) {
+  async function run({ bad = "", badField = "revisionMatches", store = "windows", failedHalt = false, failedTransfer = false, warning = false, launchOrder = "simultaneous" } = {}) {
     const calls = [], closed = new Set(), captured = [], transfers = [];
     let facts = 0;
     const instance = (name) => ({ name,
@@ -300,7 +369,7 @@ test("actual restart checks custody before and after, waits for native exit, and
       async all() { return warning ? ["Secrets are stored without encryption"] : []; },
     });
     const context = {
-      STORES: stores, Denied: Error, assertCustody, secretFacts: secretFactsMarker,
+      STORES: stores, Denied: Error, assertCustody, secretFacts: secretFactsMarker, diagnose() {},
       inVault: async (_, fn) => {
         if (fn !== secretFactsMarker) return true;
         facts++;
@@ -313,7 +382,7 @@ test("actual restart checks custody before and after, waits for native exit, and
       notices() {}, UNENCRYPTED: "Secrets are stored without encryption", prove() {},
     };
     const program = vm.runInNewContext(`${holds}\n(${restart})`, context);
-    const promise = program(instance("a"), instance("b"), { binary: "test", extra: [], homes: false, store });
+    const promise = program(instance("a"), instance("b"), { binary: "test", extra: [], homes: false, store, launchOrder });
     if (bad || failedHalt || failedTransfer || warning) {
       await assert.rejects(promise, /custody refused|native quit refused|transfer refused|still says/);
       if (bad === "before") assert.deepEqual(calls, [], "bad saved custody prevents restart");
@@ -322,7 +391,9 @@ test("actual restart checks custody before and after, waits for native exit, and
     }
     const receipt = await promise;
     assert.equal(facts, 4, "both peers were checked before and after restart");
-    assert.deepEqual(calls, ["halt-a", "halt-b", "launch-a", "launch-b", "reopen-a", "reopen-b"]);
+    assert.deepEqual(calls, launchOrder === "serialized"
+      ? ["halt-a", "halt-b", "launch-a", "reopen-a", "launch-b", "reopen-b"]
+      : ["halt-a", "halt-b", "launch-a", "launch-b", "reopen-a", "reopen-b"]);
     assert.deepEqual(transfers, ["b:e2e/after-restart-a.md", "a:e2e/after-restart-b.md"]);
     assert.deepEqual(captured, ["restart-a-a", "restart-a-b", "restart-b-b", "restart-b-a"]);
     assert.deepEqual(JSON.parse(JSON.stringify(receipt)), { before: true, quit: true, paired: true, transferred: true, after: true });
@@ -331,6 +402,7 @@ test("actual restart checks custody before and after, waits for native exit, and
   await run({ bad: "before" }); await run({ bad: "after" });
   await run({ failedHalt: true }); await run({ failedTransfer: true }); await run({ warning: true });
   await run({ store: "macos" });
+  await run({ store: "macos", launchOrder: "serialized" });
   for (const bad of ["before", "after"]) {
     for (const badField of ["encrypted", "plain", "revisionMatches"]) await run({ store: "macos", bad, badField });
   }

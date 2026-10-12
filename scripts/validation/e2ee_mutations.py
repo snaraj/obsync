@@ -11,6 +11,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 import shutil
+import re
+import json
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -83,7 +85,7 @@ ENGINE_CASES += [
 ('clear_field_inventory', 'inventoried.add(route === "/v1/changes" ? "changes" : route.includes("/versions/") ? "version" : "file");', ''),
 ('folder_move', 'a.host.moveFolder("SENTINEL-private-folder", movedFolder)', 'a.host.moveFolder("SENTINEL-private-folder", "SENTINEL-wrong-folder")'),
 ('delete_publication', 'await a.host.trash(deletePath);', ''),
-('restore_readback', 'assert.equal(a.host.text(restored.path), deleteText);', 'a.host.seed(restored.path, "SENTINEL-wrong-restored-bytes"); assert.equal(a.host.text(restored.path), deleteText);'),
+('restore_readback', 'assert.equal(a.host.text(restored.path), deleteText, "restored-copy local byte readback");', 'a.host.seed(restored.path, "SENTINEL-wrong-restored-bytes"); assert.equal(a.host.text(restored.path), deleteText, "restored-copy local byte readback");'),
 ('restore_fresh_identity', 'assert.notEqual(a.state.fileByPath(restored.path).fileId, deleteRecord.fileId,', 'deleteRecord.fileId = a.state.fileByPath(restored.path).fileId; assert.notEqual(a.state.fileByPath(restored.path).fileId, deleteRecord.fileId,'),
 ('pause_delivery', 'await publishPause(a.engine.contextValue, pauseTarget, movedNote, true);', ''),
 ('pause_resume', 'await b.engine.resume(pauseTarget);', ''),
@@ -113,6 +115,72 @@ ENGINE_CASES += [
 ('real_request_feed_chunk_leak', 'sent++;', 'sent++; if (spec.hex.feed_bad_chunk) input.headers["X-E2EE-Control"] = spec.hex.feed_bad_chunk;'),
 ('feed_chunk_inventory', 'spec.hex[label] = c.hex(await c.hkdf(context.domainKey, c.utf8("obsync/v1/chunk"), c.unhex(manifest.chunks[0].cid), 32));', ''),
 ]
+
+# The first uncaught assertion must be the behavior this mutant attacks.
+# Fixture setup, HTTP-result and unrelated readback assertions are not kills.
+ENGINE_ASSERTIONS = {
+    'control_before': ('required scanner positive controls',),
+    'control_after': ('required scanner positive controls',),
+    'setup_flow': ('required runtime flows',),
+    'root_key_inventory': ('required needle absent: key:vrk',),
+    'paired_key_kept': ('recipient must keep the key delivered by pairing before sync',),
+    'storage_scanner': ('storage/log scanner positive control',),
+    'needle_capture': ('positive-control request count',),
+    'typed_sink': ('credential sink scan:',),
+    'ciphertext_negative': ('hostile manifest must not be applied by the recipient',),
+    'required_tamper': ('required runtime flows',),
+    'envelope_inventory': ('required needle absent: key:pairing_envelope',),
+    'vault_details_inventory': ('required needle absent: key:pairing_vault_details',),
+    'vault_details_readback': ('inventoried vault-details key must open the actual paired vault details',),
+    'phrase_inventory': ('required needle absent: recovery:phrase',),
+    'credential_raw_bytes': ('duplicate credential fields must retain the leaked proof hit',),
+    'diagnostic_inventory': ('diagnostic credential positive control',),
+    'server_log_credential_leak': ('unexpected key:proof on server_logs',),
+    'client_log_credential_leak': ('unexpected key:proof on client_diagnostics',),
+    'clear_field_allowlist': ('clear-field allowlist negative control',),
+    'clear_field_inventory': ('clear-field inventory must exercise all three read routes',),
+    'folder_move': ('folder move content and empty-folder readback',),
+    'delete_publication': ('deleted recipient readback',),
+    'restore_readback': ('restored-copy local byte readback',),
+    'restore_fresh_identity': ('restoration must use a fresh identity',),
+    'pause_delivery': ('encrypted pause applied',),
+    'pause_resume': ('explicit resume clears the hold',),
+    'hostile_manifest': ('hostile manifest must not be applied by the recipient',),
+    'hostile_parents': ('hostile parents must not be applied by the recipient',),
+    'hostile_chunk': ('hostile chunk must not be applied by the recipient',),
+    'hostile_saved_state': ('hostile manifest must not change saved bytes or sync records',),
+    'hostile_staged_state': ('refused data must not remain staged for reuse',),
+    'hostile_map_ciphertext': ('hostile map ciphertext must be refused',),
+    'hostile_map_heads': ('hostile map fork must be refused',),
+    'hostile_map_saved_state': ('hostile map must leave saved state untouched',),
+    'real_map_fork': ('real divergent encrypted maps must leave two heads',),
+    'map_replay_authenticity': ('authentic old map remains readable under a server replay',),
+    'map_replay_reached': ('rollback limitation must exercise the real response boundary',),
+    'api_only_manifest_key': ('API-only credentials cannot decrypt manifests',),
+    'api_only_chunk_key': ('API-only credentials cannot decrypt chunks',),
+    'public_feed_tamper': ('corrupted public-feed bytes must not be applied',),
+    'public_feed_sibling': ('valid sibling must pass the corrupted feed record',),
+    'public_feed_cursor': ('feed cursor must advance past the valid sibling',),
+    'public_feed_log': ('public-feed chunk parking must be visible',),
+    'direct_chunk_parking': ('chunk corruption must remain retryable',),
+    'public_feed_parking': ('damaged public-feed record must remain parked for retry',),
+    'public_feed_durable_parking': ('public-feed parking must persist for restart recovery',),
+    'public_feed_recovery': ('honest public-feed retry must recover damaged bytes and clear parking',),
+    'public_feed_durable_clear': ('successful public-feed retry must durably clear parking',),
+    'feed_chunk_inventory': ('required needle absent: key:feed_bad_chunk',),
+}
+ENGINE_ASSERTIONS.update({name: ('traffic scan:',) for name, *_ in ENGINE_CASES if name.startswith('real_request_')})
+
+
+def engine_kill(name, result, expected):
+    first = re.search(r"^AssertionError \[ERR_ASSERTION\]: (.+)$", result.stderr, re.M)
+    message = re.sub(r"^(?:Missing expected (?:exception|rejection)|Got unwanted rejection): ", "", first[1]) if first else ""
+    matched = any(message == label or label in ("traffic scan:", "credential sink scan:") and message.startswith(label) for label in expected)
+    if result.returncode == 0 or first is None or not matched:
+        raise SystemExit(f"mutation={name} decision=not-killed-by-target-assertion")
+    # Only the assertion header, never actual/expected values or stack dumps.
+    print(f"mutation={name} decision=killed assertion={json.dumps(first[1])}", flush=True)
+
 
 CONTRACT_CASES = [
     ('ci_job_failure', 'if "if" in job or job.get("continue-on-error", False) is not False:', 'if False:', 'test_conditional_and_ignored_jobs_or_steps_refuse'),
@@ -158,6 +226,7 @@ def main():
                 result = run(command, cwd, 60)
                 if result.returncode:
                     raise SystemExit("baseline refused; no mutation evidence: " + result.stderr[-2000:])
+        assert set(ENGINE_ASSERTIONS) == {case[0] for case in ENGINE_CASES}
         baseline()
         for name, old, new, test in OBSERVER_CASES:
             assert old in source, name
@@ -174,13 +243,7 @@ def main():
             engine_file.write_text(engine.replace(old, new))
             assert run(["node", "--check", str(engine_file)], ROOT, 10).returncode == 0, name
             result = run(engine_command, ROOT, 30)
-            if result.returncode == 0 or "AssertionError" not in result.stderr:
-                raise SystemExit(f"mutation={name} decision=not-killed-by-assertion")
-            if name.startswith("real_request_") and "traffic scan:" not in result.stderr:
-                raise SystemExit(f"mutation={name} decision=not-killed-by-traffic-scan")
-            if name.endswith("log_credential_leak") and "unexpected key:proof on" not in result.stderr:
-                raise SystemExit(f"mutation={name} decision=not-killed-by-diagnostic-scan")
-            print(f"mutation={name} decision=killed", flush=True)
+            engine_kill(name, result, ENGINE_ASSERTIONS[name])
             engine_file.write_text(engine)
         # One demonstrated runtime defect: deleting chunk-error normalization
         # used to stall the public feed. Mutate ONLY a copied compiled module,
@@ -199,12 +262,11 @@ def main():
             chunk_file.write_text(chunk_source.replace(guard, 'throw error;').replace(
                 'catch {\n        // A failed tag/cid belongs',
                 'catch (error) {\n        // A failed tag/cid belongs'))
-            assert run(["node", "--check", str(chunk_file)], ROOT, 10).returncode == 0
+            syntax = run(["node", "--check", str(chunk_file)], ROOT, 10)
+            assert syntax.returncode == 0, syntax.stderr
             result = run(engine_command, ROOT, 30)
-            expected = "per-record refusal" if name == "chunk_receive_normalization" else "valid sibling must pass"
-            if result.returncode == 0 or "AssertionError" not in result.stderr or expected not in result.stderr:
-                raise SystemExit(f"mutation={name} decision=not-killed-by-target-assertion")
-            print(f"mutation={name} decision=killed", flush=True)
+            expected = "hostile chunk must be a per-record refusal" if name == "chunk_receive_normalization" else "valid sibling must pass the corrupted feed record"
+            engine_kill(name, result, (expected,))
             chunk_file.write_text(chunk_source)
         # Without this exact existing parking mapping the cursor advances but
         # the damaged record is forgotten. Isolate eventual recovery from the
@@ -219,11 +281,10 @@ def main():
         ]))
         engine_file.write_text(fixture)
         chunk_file.write_text(chunk_source.replace(mapping, ''))
-        assert run(["node", "--check", str(chunk_file)], ROOT, 10).returncode == 0
+        syntax = run(["node", "--check", str(chunk_file)], ROOT, 10)
+        assert syntax.returncode == 0, syntax.stderr
         result = run(engine_command, ROOT, 30)
-        if result.returncode == 0 or "AssertionError" not in result.stderr or "honest public-feed retry must recover" not in result.stderr:
-            raise SystemExit("mutation=chunk_retry_mapping decision=not-killed-by-recovery-assertion")
-        print("mutation=chunk_retry_mapping decision=killed", flush=True)
+        engine_kill("chunk_retry_mapping", result, ("honest public-feed retry must recover damaged bytes and clear parking",))
         chunk_file.write_text(chunk_source)
         engine_file.write_text(engine)
         for name, old, new, test in CONTRACT_CASES:

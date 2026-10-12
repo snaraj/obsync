@@ -33,6 +33,7 @@
 //   OBSYNC_E2E_URL         the server URL devices are given, https://name:port
 //   OBSYNC_E2E_TOKEN_FILE  a file holding the setup token; deleted once read
 //   OBSYNC_E2E_ARGS        optional JSON array of extra Chromium switches
+//   OBSYNC_E2E_LAUNCH_ORDER  "simultaneous" (default) or "serialized": a ready before b starts
 //   OBSYNC_E2E_HOMES       "1" to give each instance its own HOME (Linux: its own NSS store)
 //   OBSYNC_E2E_NTFS        "1" to add the Windows filesystem journeys
 //   OBSYNC_E2E_SECRET_STORE  "gnome-keyring", "none" (Linux), "windows", or "macos": expected custody; both
@@ -420,10 +421,11 @@ class Instance {
   }
 }
 
-async function openVault(instance) {
+async function openVault(instance, diagnostic = false) {
   const main = await instance.main();
   await until(`${instance.name}: Obsidian's workspace ready`, () =>
     main.run(() => !!(window.app && app.workspace && app.workspace.layoutReady)));
+  if (diagnostic) diagnose(instance, "workspace_ready", await main.run(secretFacts, false));
   // A vault that lists a community plugin opens in Restricted Mode and asks
   // whether to trust its author: the answer a person gives is the button.
   await until(`${instance.name}: ${LABELS.trust}`, () => instance.anywhere(click, LABELS.trust));
@@ -565,20 +567,29 @@ async function main() {
   if (store && !Object.hasOwn(STORES, store)) throw new Denied(`OBSYNC_E2E_SECRET_STORE must be one of ${Object.keys(STORES)}, not ${store}`);
   if (store === "windows" && process.platform !== "win32") throw new Denied("Windows custody requires native Windows");
   if (store === "macos" && process.platform !== "darwin") throw new Denied("macOS custody requires native macOS");
+  const launchOrder = process.env.OBSYNC_E2E_LAUNCH_ORDER || "simultaneous";
+  if (!["simultaneous", "serialized"].includes(launchOrder)) throw new Denied("OBSYNC_E2E_LAUNCH_ORDER must be simultaneous or serialized");
   const captures = process.env.OBSYNC_E2E_CAPTURES;
   if (captures) fs.mkdirSync(captures); // Refuse a pre-existing output, including a link.
   const token = fs.readFileSync(tokenFile, "utf8").trim();
   fs.rmSync(tokenFile, { force: true });
   secrets.push(token);
   if (!/^[0-9a-f]{64}$/.test(token)) throw new Denied("the setup token file does not hold 64 lowercase hex characters");
-  console.log(`obsidian-drive: START binary=${binary} url=${url} platform=${process.platform} homes=${homes} ntfs=${ntfs}`);
+  console.log(`obsidian-drive: START binary=${binary} url=${url} platform=${process.platform} homes=${homes} ntfs=${ntfs} launch_order=${launchOrder}`);
 
   const a = new Instance(work, "a", pluginDir);
   const b = new Instance(work, "b", pluginDir);
   try {
     a.launch(binary, 19222, extra, homes);
-    b.launch(binary, 19223, extra, homes);
-    const [version] = await Promise.all([openVault(a), openVault(b)]);
+    let version;
+    if (launchOrder === "serialized") {
+      version = await openVault(a, !!store);
+      b.launch(binary, 19223, extra, homes);
+      await openVault(b, !!store);
+    } else {
+      b.launch(binary, 19223, extra, homes);
+      [version] = await Promise.all([openVault(a, !!store), openVault(b, !!store)]);
+    }
     prove(`two instances: Obsidian ${version.obsidian} on Electron ${version.electron}, own user-data directories, the vault trusted and the plugin loaded in each`);
 
     // First device: server, token, the fresh vault key, the phrase confirmed.
@@ -587,6 +598,7 @@ async function main() {
     await until(`a: ${LABELS.setupButton}`, () => a.anywhere(click, LABELS.setupButton));
     await until("a: the recovery phrase confirmed", () => a.anywhere(confirmPhrase, LABELS.phraseDone));
     await until("a: paired after setup", () => paired(a));
+    if (store) diagnose(a, "enrolled", await inVault(a, secretFacts));
     prove("first device: Server URL, setup token and the recovery-phrase check, through the plugin's own settings and dialog");
 
     // Second device: claim with the code the first one shows, then approve.
@@ -606,6 +618,7 @@ async function main() {
     assertPairingCodes(comparison);
     await until(`a: ${LABELS.approve} for the new device`, () => a.anywhere(click, LABELS.approve));
     await until("b: paired after approval", () => paired(b));
+    if (store) diagnose(b, "enrolled", await inVault(b, secretFacts));
     prove("second device: the invitation typed into the second, both visible comparison codes matched before approval on the first");
 
     // Two-way notes, a rename, folders.
@@ -657,7 +670,7 @@ async function main() {
     await cotyping(a, b);
     await starvedWatcher(a, b);
     if (ntfs) await windowsJourneys(a, b);
-    const custody = store ? await restarted(a, b, { binary, extra, homes, store }) : null;
+    const custody = store ? await restarted(a, b, { binary, extra, homes, store, launchOrder }) : null;
     if (captures) finishEvidence(captures, custody);
     if (homes) await untrusted(work, pluginDir, binary, extra, url);
     console.log(`obsidian-drive: SUMMARY steps=${proven} duration=${((Date.now() - started) / 1000).toFixed(1)}s decision=pass`);
@@ -697,7 +710,16 @@ const STORES = {
 };
 const UNENCRYPTED = "Secrets are stored without encryption";
 
+/** Availability diagnostics only: fixed fields, no credential values or backend text. */
+function diagnose(instance, phase, found) {
+  const flag = (value) => typeof value === "boolean" ? value : null;
+  console.log(`obsidian-drive: availability peer=${instance.name} phase=${phase} ${JSON.stringify({
+    encrypted: flag(found.encrypted), stored: flag(found.stored), plain: flag(found.plain), revisionMatches: flag(found.revisionMatches),
+  })}`);
+}
+
 function holds(instance, found, store, when) {
+  diagnose(instance, when === "before the restart" ? "before_restart" : "after_restart", found);
   const want = STORES[store];
   try { assertCustody(found, want); }
   catch { throw new Denied(`${instance.name} ${when}: custody refused for ${store}: ${JSON.stringify(found)}`); }
@@ -709,14 +731,20 @@ function holds(instance, found, store, when) {
  * and a note must still cross, which needs the vault key and the device
  * secret both.
  */
-async function restarted(a, b, { binary, extra, homes, store }) {
+async function restarted(a, b, { binary, extra, homes, store, launchOrder = "simultaneous" }) {
   for (const instance of [a, b]) holds(instance, await inVault(instance, secretFacts), store, "before the restart");
   const evidence = { before: true, quit: false, paired: false, transferred: false, after: false };
   await Promise.all([a.halt(), b.halt()]);
   evidence.quit = true;
   a.launch(binary, 19222, extra, homes);
-  b.launch(binary, 19223, extra, homes);
-  await Promise.all([reopen(a), reopen(b)]);
+  if (launchOrder === "serialized") {
+    await reopen(a);
+    b.launch(binary, 19223, extra, homes);
+    await reopen(b);
+  } else {
+    b.launch(binary, 19223, extra, homes);
+    await Promise.all([reopen(a), reopen(b)]);
+  }
   await until("a: paired again, from its secret storage", () => paired(a));
   await until("b: paired again, from its secret storage", () => paired(b));
   evidence.paired = true;

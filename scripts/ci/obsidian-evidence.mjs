@@ -23,28 +23,38 @@ export function assertPairingCodes({ creator, claimant }) {
 
 // Only reduced custody facts and a verified synthetic editor may leave a renderer.
 // These functions run inside Obsidian; never return credential values.
-export async function secretFacts() {
+export async function secretFacts(checkRevision = true) {
   const raw = app.loadLocalStorage("secrets-encrypted");
   let plain = false;
   try { plain = typeof raw === "string" && typeof JSON.parse(raw) === "object"; } catch {}
-  const plugin = app.plugins.plugins["obsync-private-sync"];
-  const metadata = await plugin.loadData();
-  const secret = app.secretStorage.getSecret(metadata.credentialRef);
-  let envelope = null;
-  try { envelope = secret === null ? null : JSON.parse(secret); }
-  catch { throw new Error("credential envelope is not valid JSON"); }
+  // Test-only host implementation observation, not a public SecretStorage
+  // capability guarantee. Before credentials exist, observe once without
+  // loading plugin metadata or reading any credential value.
+  let metadata = null, envelope = null;
+  if (checkRevision) {
+    const plugin = app.plugins.plugins["obsync-private-sync"];
+    metadata = await plugin.loadData();
+    const secret = app.secretStorage.getSecret(metadata.credentialRef);
+    try { envelope = secret === null ? null : JSON.parse(secret); }
+    catch { throw new Error("credential envelope is not valid JSON"); }
+  }
   // Obsidian exposes this wrapper on Windows, but Electron implements it
   // only on Linux. Required Linux backends still refuse an unavailable name.
   let backend = "none reported";
-  try { backend = app.secretStorage.adapter?.getSelectedStorageBackend?.() ?? backend; }
+  try { backend = app.secretStorage?.adapter?.getSelectedStorageBackend?.() ?? backend; }
   catch { backend = "unavailable"; }
+  let encrypted = null;
+  if (checkRevision) encrypted = app.secretStorage.isEncryptionAvailable();
+  else {
+    try { encrypted = app.secretStorage?.isEncryptionAvailable?.() ?? null; } catch {}
+  }
   return {
-    encrypted: app.secretStorage.isEncryptionAvailable(),
+    encrypted,
     backend,
     stored: typeof raw === "string" && raw.length > 0,
     plain,
-    revisionMatches: Number.isSafeInteger(metadata.credentialRevision)
-      && metadata.credentialRevision > 0 && metadata.credentialRevision === envelope?.current?.revision,
+    revisionMatches: checkRevision ? Number.isSafeInteger(metadata.credentialRevision)
+      && metadata.credentialRevision > 0 && metadata.credentialRevision === envelope?.current?.revision : null,
   };
 }
 

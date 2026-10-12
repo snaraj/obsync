@@ -112,13 +112,21 @@ jobs:
           exit 0
 
   obsidian-macos:
+    name: obsidian-macos (${{ matrix.launch-order }})
     runs-on: macos-15
     timeout-minutes: 45
     permissions:
       contents: read
+    # Diagnostic comparison: each order gets a fresh runner/profile, with no
+    # retries or relaxed custody. A differing outcome is evidence, not a cause.
+    strategy:
+      fail-fast: false
+      matrix:
+        launch-order: [simultaneous, serialized]
     env:
-      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-macos
+      OBSYNC_E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-macos-${{ matrix.launch-order }}
       OBSYNC_E2E_SECRET_STORE: macos
+      OBSYNC_E2E_LAUNCH_ORDER: ${{ matrix.launch-order }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

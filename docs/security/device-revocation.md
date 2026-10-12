@@ -1,8 +1,11 @@
 # Device revocation: fresh-root re-enrollment proposal
 
-**Status: design for independent protocol review; not implemented or reviewed.**
+**Status: unimplemented proposal; delta independent review pending.**
 This is the revocation candidate for [audit #344](https://github.com/snaraj/obsync/issues/344). No security PASS,
 shipping capability or release assignment follows from this document.
+This delta addresses findings 1, 2, 3 and 7 of the
+[independent checkpoint](https://github.com/snaraj/obsync/issues/344#issuecomment-6131002504);
+its mechanisms and acceptance cases below are specifications, not passing evidence.
 
 ## Choice and cost
 
@@ -26,11 +29,58 @@ directory. Cost: upload every current file again, temporary space for both
 generations, a new recovery backup, and one comparison/confirmation on every
 retained device. Unsynced edits remain available locally throughout.
 
+This proposal alone does not solve the separate [E09 key-lifetime finding](e09-key-nonce-inventory.md).
+If that sealing-format candidate is accepted, compose its authenticated format
+floor with the new-generation pin and enrollment/recovery rules before either
+change ships. Freeze one supported format and migration contract together;
+do not deploy two independent migrations or treat rotation approval as approval
+of a new cipher composition. The statements below about unchanged ciphertext
+format describe revocation alone.
+
 Transparent automatic group rotation would additionally require independently
 authenticated persistent recipient identities, membership authorization,
 per-recipient delivery, anti-replay state and fork/concurrent-update rules.
 Current device IDs and API secrets do not supply those properties against a
 compromised server. That larger protocol is not part of this candidate.
+
+## Separate owner authorization and supported-server preflight
+
+Routine device authentication must never replace recovery authority or retire
+all other credentials. Both prepare **and commit** require the initiating
+device's existing HMAC authentication **plus the owner-supplied standing setup
+token**, checked with the existing setup-token semantics. The old or new
+VRK-derived proof is not this independent factor. Present the exact operation,
+old/new map IDs, target and staged verifier on the trusted client before each
+owner authorization; persist those typed fields as the immutable intent.
+Commit additionally binds the frozen cutoff/inventory and completed catalog
+commitments below. A changed field refuses rather than revising the operation.
+
+The plugin keeps this token only in memory for the requested action, never in
+its secret envelope, metadata, logs, dashboard or management CLI. Re-enter it
+after restart and at commit; do not make a stored bearer grant that a routine
+coordinator credential alone can use to commit. This reuses separate operator
+authority and introduces no new credential service. The server/terminator
+already holds/sees this authentication material; it is not a content identity
+or protection from a malicious server bypassing its own authorization.
+
+Before stopping normal sync irreversibly, generating a new root or saving a
+rotation phase, read `GET /v1/account/rotation/capabilities` with existing
+device authentication. Require the explicit protocol version supporting owner
+authorization, stable cutoff inventory, paged catalog and atomic coordinator
+transfer; no inference from a general plugin/server version. Missing, malformed
+or unsupported capability refuses strong rotation without changing the current
+root/pin or silently executing access-only removal. Check again before prepare.
+Discovery is availability evidence, never cryptographic server trust.
+
+If support disappears before any prepare request is sent, discard only the
+uncommitted draft on explicit cancellation and preserve the old identity/edits.
+After dispatch, lost replies, contradictory status or unsupported status routes
+are `prepare_unknown`: remain stopped/pending. Only an explicit, reliable
+no-transition result from an honest server allows the person to cancel a draft
+and explicitly resume the unchanged old generation, with no strong-revocation
+claim. Once prepare has applied, no automatic abort or old-root resumption is
+allowed. A server denial alone cannot prove nontransition against a malicious
+server; uncertain state must not become a downgrade.
 
 ## Generation and authority
 
@@ -135,44 +185,67 @@ the pinned snapshot/catalog. No root, domain, manifest, map or chunk key enters 
 requests, dashboard, CLI, diagnostics or logs. Server API credentials retain
 their existing role and custody; they are not content keys.
 
-The local phases are `prepared`, `seeding`, `commit_unknown`, `active` and
-`blocked`. Once prepared, no reload, credential revision fallback, server
-response, missing map or retry may resume old-root encryption. Missing or
+The local phases are `draft`, `prepare_unknown`, `prepared`, `seeding`,
+`commit_unknown`, `active` and `blocked`; only `draft` is reversible as described
+above. While prepare is applied or its outcome unknown, no reload, credential
+revision fallback, missing map or retry may resume old-root encryption. Missing or
 inconsistent rotation/pin state stops sync; rotated metadata with a missing
 owned secret must not take today's fresh-copy/unpaired fallback. Preserve the
 existing serialized saves, session/lifecycle binding and engine-drain ownership; a late old-engine
 callback cannot save an old root or upload its queued ciphertext.
 
-1. On the trusted initiator, stop/drain the engine and settle editor saves.
-   Capture the current accepted file/folder catalog, scope, tombstones,
-   controls and history frontier locally. Preserve pending edits and queued
-   work. Resolve required remote-only current files before approving the
-   snapshot; a missing file or uncertain/conflicted source stays pending.
-   The person confirms which local/snapshot bytes form the new generation.
+1. Complete supported-server preflight, then stop/drain the initiating engine
+   and settle editor saves. Preserve local bytes, dirty edits and retry intent.
+   A local pre-fence catalog is only an edit baseline, **not** the accepted
+   server snapshot or completeness boundary. No prior device selection or
+   download ceiling defines which server content the operation may omit.
 2. Generate and persist/read back the independent new root and fixed context,
    a fresh map/domain and a separate new-file-ID catalog. Confirm the new
    recovery backup. Record person-designated retained devices locally, not
    from server membership assertions. Do not overwrite the old catalog,
    local notes or old pending queue. A failed local save performs no server transition.
-3. Prepare the server operation below: revoke the selected target and fence
-   ordinary old-credential writes. Report “Server reports access revoked;
+3. With separate owner authorization, prepare the server operation below.
+   It serializes against the durable write pipeline and returns cutoff `C`
+   and an immutable snapshot of every current-generation head at that cutoff, `H`.
+   Reconcile through `C` before choosing the reseed source: every racing old
+   write is durably included before the fence or refused afterward, even if
+   its request authenticated before prepare. Report “Server reports access revoked;
    rotation pending” only after resulting-state readback. With an uncertain
    response,
    show “Server access outcome unknown; rotation pending” and reconcile.
-4. Reseed current scope through existing chunk/version/map routes using
-   fresh keys and IDs. Do not reuse old sids, cids, ciphertext, manifests,
+4. Page the full current-generation account inventory `H`, across every
+   domain, including map/control/folder/tombstone heads and **every live file
+   fork head**. Prior labelled generations remain separate history under the
+   server-internal ownership rule below; no lost local retirement catalog or
+   old root is required for new-phrase recovery and a later rotation. Unknown
+   ownership or an undecryptable current head is pending, never silently skipped.
+   Materialize and validate all current content despite the initiating device's `syncFolders`
+   or normal download eligibility. Preserve each fork's content/conflict;
+   do not arbitrarily pick one head. Reconcile concurrent cutoff heads and
+   local dirty edits without overwriting either accepted bytes or editor work.
+   Use a capable trusted client's verified source if this device cannot do it.
+   Reseed the complete accounted vault through existing routes with fresh
+   keys/IDs. Do not reuse old sids, cids, ciphertext, manifests,
    cached chunks, parent version IDs, folder/control records or retry bodies.
    Same new-generation chunks may deduplicate normally. Read back and decrypt
-   the new map and seeded records and compare actual plaintext with the
-   locally pinned source catalog. Server counts/receipts alone are insufficient.
-   Omitted old records must not become deletions in the new catalog.
+   the new map and every seeded record against the reconciled cutoff source.
+   Preserve tombstone/control semantics separately from live file bytes and
+   publish the complete source-head to destination-head catalog below.
+   Server counts/receipts alone are insufficient. Normal local selection
+   applies after transition, not to the account-wide reseed obligation.
+   Reserve explicit space/memory budgets; stream bounded chunks on supported
+   clients. A remote-only, corrupt, missing or oversized source that cannot
+   be safely materialized leaves rotation pending and forbids commit. Do not
+   silently disable device ceilings or report an empty/narrow reseed complete.
 5. Changes during reseeding remain local dirty work; check the source before
    and after each read and retry a changed file. Never overwrite a newer
    local/editor version to finish the snapshot. Drain old retries into
    quarantine; re-encrypt their plaintext intent under the new root rather
    than reposting an old body. A missing source, quota, disk-full or storage
    failure keeps the operation pending and the local bytes intact.
-6. Commit the server transition, persist/read back the new-root pin bound to
+6. Re-enter owner authority and confirm the exact frozen intent, cutoff and
+   completed catalog commitment. Commit the server transition, persist/read
+   back the new-root pin bound to
    the unchanged initiating credential, and start only the new-root engine. It
    uses a separate bookkeeping catalog/cache and derives its domain solely
    from the new root's authenticated map. Never load an old map because the
@@ -208,29 +281,93 @@ its edits. A consciously excluded device is not reported as transitioned.
 ## Minimal server coordination; not a cryptographic trust anchor
 
 Add one bounded account rotation record, using the existing journal/snapshot
-durability path. No generation namespace or changed blob/version format is
-necessary for confidentiality. The record holds `operation`, expected/current
-map IDs, coordinator device ID, target ID, phase and staged verifier. All IDs
+durability path. Fresh roots need no new ciphertext namespace for confidentiality;
+add **server-internal file generation ownership** for inventory coordination.
+This explicitly changes version journal records, replay and snapshots, not API
+blob/version fields or content crypto. An older server reader must refuse the
+new durable format, including compacted snapshots, rather than drop ownership
+or fence state. The record holds the immutable authorized
+intent, coordinator device ID/grant, phase, cutoff/inventory reference and
+catalog-page commitments. All IDs
 are opaque; no content key is sent. The trusted initiator retains its existing
 API credential: changing this server-known authentication secret adds no
 content protection and would require unnecessary handoff/receipt machinery.
-On a legacy account, first prepare records the supplied old map ID; that
-initial association is server coordination, not authenticated vault identity.
+On a legacy account, first prepare records the supplied old map ID and assigns
+all existing unlabelled file IDs to `G_old` in the same durable transition.
+This bootstrap is permitted only when the upgraded store has no prior generation
+association; conflicting/partially migrated ownership refuses. Snapshot/replay
+must reproduce the assignment before acknowledging it. New files thereafter
+receive the authenticated grant's server-assigned generation on first durable
+publication; ownership is immutable. Existing IDs cannot be overwritten by a
+different generation. While pending, only the coordinator may create/write
+fresh `G_new` IDs; no grant may publish another `G_old` head. Validate the fence,
+grant scope and file ownership under the serialized storage mutation lock,
+including queued/grouped posts authenticated earlier, not just in HTTP auth.
+On commit the surviving grant becomes ordinary `G_new`; later enrollment is
+scoped to the current generation. Unknown ownership refuses publication.
+Freeze ordinary pairing, setup/recovery and verifier registration while pending,
+except the narrow coordinator transfer below; it cannot bypass the fence.
 
-| Request (existing device HMAC auth) | Durable semantics |
+`H` contains **all** heads of every `G_old` file across the account, independent
+of local selection. Earlier labelled generations are history and excluded from
+current reconciliation; they are not deleted by rotation. This association is
+honest-server coordination, never authenticated vault identity. Clients derive
+their map locally and still check root/domain AEAD and their pin; a server label
+cannot select a key, adopt old ciphertext or attest inventory freshness. A
+malicious server can omit/mislabel unseen heads, within the stated omission
+limit. Phrase-only recovery need not reconstruct a chain of retirement catalogs.
+
+| Request | Durable semantics |
 | --- | --- |
-| `POST /v1/account/rotation` with `{operation, previous_map, current_map, target, recovery_verifier}` | Under one store lock, require target differs from coordinator, no different pending operation and no current-map mismatch; record the operation, revoke target/close its sessions and links, and fence old ordinary writes. Same coordinator/operation/exact fields returns the same state; a changed field or competing operation is `409 rotation_conflict`. Only the coordinator may stage ciphertext through existing write routes. Freeze ordinary pairing, setup/recovery and verifier registration while pending, except the narrow recovery below. No last-device hold is disabled as a setting. |
-| `GET /v1/account/rotation/{operation}` | Coordinator-only read of pending/committed state; settles a lost prepare/commit response. No root, phrase, new API credential or recipient content secret appears. |
-| `POST /v1/account/rotation/{operation}/commit` | Coordinator-only, idempotent. One fsynced frame changes current map ID and recovery verifier/registration time, retires every OTHER prior device credential/closes its sessions and links, lifts the coordinator's staging fence, and marks committed. The coordinator keeps its existing credential. No intermediate state exposes new recovery with other old credentials active. |
+| `POST /v1/account/rotation` with the exact intent plus `setup_token` | Device HMAC **and separate owner token** required. Require the recorded current map to match `G_old` (or the permitted first-legacy bootstrap). In the serialized write pipeline, settle prior accepted batches, fence admissions, capture durable cutoff `C`/inventory `H`, then publish the prepare frame referencing that durable snapshot and any first-legacy ownership assignment. Revoke target/close its sessions and links in that same transition. Target must differ from coordinator. The current coordinator's same operation/exact intent returns the same cutoff/snapshot; changed or competing intent is `409 rotation_conflict`. No general recovery-verifier setter or disabled last-device hold. |
+| `GET /v1/account/rotation/{operation}` and its paged inventory | Current coordinator-only status and stable pages for the recorded cutoff. Settle lost responses; never recompute `H` from later staged writes. No content secret or API credential appears. |
+| `PUT /v1/account/rotation/{operation}/catalog/{page}` | Current coordinator-only immutable bounded pages linking opaque source heads in `H` to uploaded opaque destination heads. An identical retry is harmless; changed page or out-of-inventory source refuses. No path, key, cid or plaintext field. This is rotation bookkeeping, not a general catalog framework. |
+| `POST /v1/account/rotation/{operation}/commit` with exact intent, `C`, inventory/catalog commitments and `setup_token` | Device HMAC **and freshly entered owner token** required. Compare all fields to frozen intent and complete catalog. One fsynced transition changes current map/recovery verifier, retires every OTHER prior credential/closes its sessions/links, lifts only the current coordinator's staging fence and marks committed. Exact retry returns that result; it cannot substitute a verifier/target/catalog. |
 
-Prepare supplies early honest-server removal/write fencing; commit switches
-authority atomically; status settles lost responses. There is no ack endpoint,
-credential receipt or new content protocol.
+The prepare frame references a durable immutable inventory, not an unbounded
+head list packed into one frame. Capture it with bounded I/O and existing
+file/directory fsync/rename rules while serialized admissions are held. Publish
+neither fence acknowledgement nor prepare success before the snapshot and
+referencing frame are durable. Crash before publication leaves no acknowledged
+transition; replay after publication restores exactly `C`, `H` and the fence.
+Retain the referenced old manifests/chunks against retention/GC while pending.
 
-Pending recovery reuses `POST /v1/setup`: only setup token plus a proof
-matching the **staged new verifier** may create a replacement rotation-scoped
-coordinator credential, retiring the prior coordinator grant atomically.
-It cannot grant ordinary sync or change the pending root/verifier/operation.
+Catalog pages contain ordered tuples
+`[old_file_id, old_head_id, new_file_id, new_head_id]`, sorted by source tuple;
+use bounded page sizes and deterministic compact JSON of lowercase fixed-size
+hex IDs. Hash each page with existing SHA-256; the completed commitment is
+SHA-256 of the ordered raw page hashes, bound to page count/operation/cutoff by
+the authenticated commit body. Stream this checksum rather than retaining all
+pages in memory; inability to finish is pending. Pages are consecutively numbered
+from zero; source tuples are globally ordered, unique and exhaustive for `H`.
+Every frozen current head must have a mapping and every
+destination must exist under `G_new` ownership; an old-generation destination
+cannot satisfy reseeding. Extras from local edits are recorded separately and
+cannot substitute for required source membership. The trusted client verifies
+plaintext, names, controls, conflict preservation and every mapped destination.
+The honest server enforces inventory membership, not plaintext correctness.
+This catalog reveals cross-generation ID linkage to the server: fresh IDs give
+cryptographic separation, **not server unlinkability**. A malicious server can
+omit/fork its inventory; the checksum is not authenticated global freshness.
+
+Prepare supplies honest-server removal and a frozen inclusion boundary; catalog
+pages account for the complete reseed; separately authorized commit switches
+authority. There is no ack endpoint or new content/group-key protocol.
+
+Pending recovery reuses `POST /v1/setup`: only the separate setup token plus a
+proof matching the **staged new verifier**, exact frozen intent and a locally
+persisted resume request ID may request coordinator transfer. One fsynced
+transition retires the old grant and updates the operation's coordinator
+device ID and restricted wrapped credential together. The replacement can
+read that operation/status/inventory, stage and submit its catalog; commit
+still separately requires owner token. No ordinary sync, changed intent,
+new verifier, unfenced old writes or broader membership is granted.
+Persist the request-ID to grant association with existing device/grant records:
+an exact lost-response retry returns the same current grant without minting
+another. An old/superseded resume ID refuses; replay must never re-enable a
+retired grant or disclose a later coordinator's credential. Replay/snapshot
+recovery restores the identity and grant together. A fresh later transfer
+requires owner authority again and atomically retires the then-current grant.
 The restored phrase derives the map ID locally; returned operation hints must
 match it and cannot choose a root. A conflict remains stopped. Rebuild missing
 progress from new-root ciphertext while preserving local edits; do not infer
@@ -238,7 +375,8 @@ completed reseeding from the server's phase alone. After commit, ordinary
 new-phrase recovery follows existing account enrollment semantics.
 
 The server does not certify reseed completeness or client membership. The
-coordinator commits only after its own verified reseed and recovery backup.
+coordinator requests owner-authorized commit only after its own verified
+complete reseed and recovery backup.
 Without durable room for the single transition frame, refuse without partial
 changes. Journal replay must reproduce the same fence/verifier/credential
 phase; the usual timestamp/nonce persistence applies on every attempt.
@@ -318,6 +456,15 @@ remain separate required evidence.
 | Wrong new phrase, old phrase, unverifiable backup; lost coordinator credential while pending | No new-generation recovery/completion claim or automatic fallback. Correct staged new proof plus setup authority resumes only the fixed pending operation; old material opens only old history. |
 | Dashboard/CLI strong action with no trusted client; self/last-device strong removal | Visible unavailable/pending, no key input and no access-only action under the strong label. |
 | Secret/encoding leak across both actions and all failures | Existing E2EE capture/scanner controls cover new/old roots and every exercised derived key; no unexpected server/dashboard/CLI/log hit. |
+| Routine/stolen device credential, with old VRK proof, attempts prepare or commit | Both refuse without separate setup-token authority; old verifier, other grants and frozen state survive. A legitimate pending operation cannot be prematurely committed by its stolen routine coordinator credential. |
+| Change intent, cutoff, source inventory or completed catalog after owner authorization | Exact-field comparison refuses substitution/replay; setup token is never persisted/logged and must be re-entered after restart. |
+| Old write races prepare; authenticated/in-flight/grouped post spans the fence | Every accepted durable write is in `C`/`H`; later publication refuses. Lost prepare reply/restart returns the same frozen snapshot. Reconciled new content includes the racing edit. |
+| Empty/narrow selection; remote-only oversized file; multiple current fork heads | Full account inventory remains required. Preserve all fork content/conflicts and control/map/tombstone semantics; no partial/empty completion or silent ceiling bypass. |
+| First legacy ownership migration, later new-phrase recovery/rotation, staged write reuses an old file ID, older server reads compacted state | Durable assignment includes every legacy head; replay restores it atomically, unknown/partial association refuses. Later cutoff contains all current-generation heads and excludes prior labelled history without needing lost local catalogs/old roots. Staging cannot overwrite an old-generation ID; labels never bypass client AEAD/pin checks. Older server refuses durable-format downgrade rather than losing the fence/ownership. |
+| Missing/corrupt/omitted inventory page or source, exhausted staging space/memory, GC during reseed | No commit/completion; preserve local edits and frozen sources, report pending. Server inventory omission under compromise retains its stated freshness limit. |
+| Capability absent/legacy/malformed before prepare; support vanishes or reply is lost after dispatch | No irreversible local prepare for unsupported discovery. No silent access-only action. Uncertain/dispatched/applied state stays stopped/pending; explicit no-transition cancellation makes no strong claim. |
+| Coordinator transfer: wrong token/proof/context, lost response, crash before/after frame, repeat/superseded resume ID | Authority and immutable intent checked; identity/grant transfer recovers atomically, exact retry returns one grant, retired coordinator and superseded requests cannot stage/commit/reactivate. Commit still needs separate owner authority. |
+| Legacy claimant activates on envelope collection, then rejects strict nested enrollment | No root adoption/sync; self-revoke cleanup removes the briefly active grant or reports stranded server authority. Never treat collection/heartbeat as proof of compatible key possession. |
 
 Review must decide whether this composition and its costly user workflow
 meet the owner requirement **before** production implementation. In particular,
@@ -327,9 +474,10 @@ Implementation, mutation evidence, native acceptance and delivery are pending.
 
 ## Source inventory and minimum change boundary
 
-Baseline examined: declared predecessor
-`482d512e027b57154bfac07b71ea2a706102642f`; plan section 4 examined separately
-in the current planning lane. These are source observations, not live proof.
+Baseline for this delta: `ceadfe08b75076ec8f67e255a768c36373af6153` and checkpoint
+comment `6131002504`. Earlier source inventory used declared predecessor
+`482d512e027b57154bfac07b71ea2a706102642f`. These are source observations,
+not implementation or live proof.
 
 | Source / existing interface | Needed change or reused property |
 | --- | --- |
@@ -341,7 +489,7 @@ in the current planning lane. These are source observations, not live proof.
 | `plugin/src/main.ts`: `revokeDevice`, `unpushedEdits`, `leaveServer`, root adoption/setup/recovery, engine drain | One bounded orchestration state machine; explicit two-choice UI; preserve edits and guard every root-adoption continuation. |
 | `plugin/src/sync/engine.ts` start/domain context; `sync/pull.ts` domain binding; push/history/repair and caches | Reuse one-domain admission; separate fresh bookkeeping/reseed from old history and clear/quarantine all old encrypted reuse/retries. Audit every alternate ingest/cache path, not just normal pull. |
 | `plugin/src/accountRecovery.ts`; server `api/setup.rs` | Reuse proof/verifier derivation. Existing registration rejects replacement; only atomic rotation commit may install the new verifier. |
-| Server `api/devices.rs`, `api/admin.rs`, `api/auth.rs`, routing; `storage/{types,journal,index,mod}.rs` | Bounded rotation endpoints/record, write fence, idempotence, combined authority frame and replay/snapshot tests; existing chunk/file storage format remains. No crypto on server. |
+| Server `crates/obsyncd/src/api/setup.rs`: `check_token`/`create`; `api/auth.rs`, routing; `storage/{types,journal,index,mod}.rs` | Separate owner authority at prepare/commit; server-internal file ownership/grant scope in version journal records/replay/snapshots, legacy migration, durable cutoff/inventory, bounded catalog pages, exact-intent checks, atomic coordinator transfer and fault tests. API ciphertext/blob format remains; journal/snapshot format changes and public ID linkage are explicit. No content crypto on server. |
 | Plugin `ui/settings.ts`, `ui/modals.ts`; dashboard `app.js`/pure helpers; transport | Per-action choice, trusted-client/unavailable/pending language and operation responses. Current standalone CLI's catalog/args make device management unavailable; do not expand it here. |
 
 This file is the entire design artifact. It changes no runtime, release lock,

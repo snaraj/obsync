@@ -23,10 +23,10 @@ unit-test success into a whole-product approval.
 | E04: authenticate before publication | Real manifest, parent and chunk corruption refusal; unchanged accepted bytes/state; damaged chunk parks durably while valid siblings progress; honest retry restores exact bytes. Mutations kill normalization and retry removal. | Independent assessment of the complete receive/control surface, beyond these exercised routes. |
 | E05: recovery separates content from account authority | Actual recovery journey and API/account-proof decryption negatives. Fresh-root primitive probe rejects the old phrase for new-root data. | Whole recovery-flow review; fresh-root transaction/recovery is still a proposal. |
 | E06: custody and diagnostics | Closed error-code messages, explicit detail consumers, relative filesystem/control-character redaction, focused mutation controls. Existing credential lifecycle suites pass 169 tests. Local macOS 1.13.7 passes both encrypted-storage restarts; separate simultaneous/serialized synthetic probes pass eight custody observations. | Hosted macOS 1.13.7 custody refused plaintext storage and remains unresolved; local success does not diagnose or override it. Public API readback is not joint crash durability or secure erasure. Physical-phone custody remains open. Arbitrary free text is not universally sanitized. |
-| E07: revocation matches its selected guarantee | Current access-only test proves both API refusal and retained-key decryption when later ciphertext is supplied separately. [Fresh-root/re-pair design](device-revocation.md) is ready for protocol review. | Independent protocol approval, implementation of the per-removal choice, restart/fault cases and actual device acceptance. No strong-revocation capability is claimed today. |
+| E07: revocation matches its selected guarantee | Current access-only test proves both API refusal and retained-key decryption when later ciphertext is supplied separately. The independent protocol checkpoint required changes to authorization, cutoff, completeness and recovery in the [fresh-root/re-pair design](device-revocation.md). | Approval of the revised protocol, implementation of the per-removal choice, restart/fault cases and actual device acceptance. No strong-revocation capability is claimed today. |
 | E08: integrity is distinguished from freshness/attribution | Corruption and visible fork refuse; authentic sole-head map rollback remains readable in a deliberate regression demonstration. Docs distinguish shared-key authority from a device signature. | Independent replay/rollback/omission review; no global latest-state or server-independent availability guarantee. |
-| E09: key/nonce composition and lifetime | [Inventory and conditional collision analysis](e09-key-nonce-inventory.md); absolute uniqueness/oracle claims corrected. Forced RNG exceptions refuse; synthetic repeated-zero RNG causes GCM reuse. | Review aggregate shared-key lifetime and the randomness fault model; no real CSPRNG failure or implemented global invocation cap is claimed. |
-| E10: observations cannot silently pass incomplete | Scanner/recorder refusal tests, exact typed credential sinks, planted controls, manifest/traffic/storage linkage, closed inventories for three read routes, mutation controls. | Expand only for demonstrated new surfaces; the native scan and complete engine key inventory remain distinct. |
+| E09: key/nonce composition and lifetime | [Inventory, conditional analysis and candidate per-record key derivation](e09-key-nonce-inventory.md); absolute uniqueness/oracle claims corrected. Forced RNG exceptions refuse; synthetic repeated-zero RNG causes GCM reuse. | Independent composition and migration review, implementation and negative cases. The candidate is not a literal invocation quota or a NIST conformance claim; no real CSPRNG failure or implemented lifetime mitigation is claimed. |
+| E10: observations cannot silently pass incomplete | Scanner/recorder refusal tests, exact typed credential sinks, planted controls, manifest/traffic/storage linkage and closed inventories for three read routes. The repaired complete 98-case mutation batch passes; engine/runtime kills require the intended first assertion, with restored controls. | Expand only for demonstrated new surfaces; the native scan and complete engine key inventory remain distinct. |
 | E11: no alternate content-key access | Server-export key argument removed; API/admin surfaces retain their distinct non-content authority. No optional encryption/integrity bypass was added. | Independent whole-source/dependency/distribution review. Passing absence scans is not proof that no backdoor exists. |
 | E12: failed invariants prevent delivery | E2EE is in the canonical local and hosted gate, with scanner/Make/workflow mutations; release classifier refuses the current unversioned artifact range. macOS CI now requires custody restart when that job runs. | Owner-agreed release placement, final hosted checks, independent verdict, physical acceptance and publication evidence. Desktop matrix remains optional; no universal live publication claim. |
 
@@ -44,7 +44,7 @@ device. It reuses the existing primitives and pairing v2. Server device lists
 do not select cryptographic recipients. An offline old client can continue
 using its old root with a colluding server until that client transitions;
 instantaneous global cutover is not promised. The independent reviewer must
-accept the [transaction and 19 negative acceptance cases](device-revocation.md)
+accept the [transaction and required negative acceptance cases](device-revocation.md)
 before production implementation.
 
 Native `requestUrl` **failed redirect containment**: a second loopback origin
@@ -57,8 +57,10 @@ CORS preflight compatibility; no unvalidated transport replacement is shipped.
 Nonce analysis also remains conditional. File and folder manifests share one
 96-bit nonce collision budget per actual key across devices/restarts. Sample
 tests cannot establish a lifetime guarantee. The [inventory](e09-key-nonce-inventory.md)
-records assumptions, the synthetic fault and unresolved lifetime accounting;
-it does not propose a new cryptographic system.
+records assumptions, the synthetic fault and unresolved lifetime accounting.
+Its candidate extends the existing chunk-style per-record key approach to
+metadata, with a keyed plaintext commitment and strict format migration.
+That composition remains unapproved and unimplemented.
 
 ## Bounded completion sequence
 

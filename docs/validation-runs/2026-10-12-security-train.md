@@ -22,8 +22,8 @@ The candidate's relevant source hashes are:
 | `plugin/src/vaultPath.ts` | `aea14a28198f8d1606c85ead0c6a9c7e6295e58ad5ef4c7f221d10a7ec5eeea2` |
 | `plugin/src/ui/modals.ts` | `5bdaadbda407ea971d2dfd46f0aae516ed4dccd125100620c72a092ed96bfcd2` |
 | `plugin/src/pairing.ts` | `f12d16b2a0d068b67bc41d9e48f87c24af98feed6e18f582f3296c56bad5a74d` |
-| `scripts/ci/e2ee.mjs` | `c2257bb189062b0acabc1d244952943bc7ea360b94bf7d856100c93724709767` |
-| `scripts/validation/e2ee_mutations.py` | `ff5754f068f5806177b9b64363ae0be041354569938bc764415766e7064aebbf` |
+| `scripts/ci/e2ee.mjs` | `47107cc01c5ae63a3399520b196ebb5acc97035732d4250df804dc37992683c1` |
+| `scripts/validation/e2ee_mutations.py` | `a2ee563c79ab32e84ff92e660d39d5935b44e4c3ac153aee641692e7cc7335ff` |
 
 ## Reproduction entry points
 
@@ -41,9 +41,10 @@ node --test scripts/ci/obsidian-evidence.test.mjs
 ```
 
 `python3 -B scripts/validation/e2ee_mutations.py` is the complete mutation
-entry point after building the plugin and server. The executed subsets and
-overlapping author controls below are described separately; this record does
-not claim a single final 98-case execution. Native results come from
+entry point after building the plugin and server. The repaired sources listed
+above passed one complete 98-case execution, with restored controls, as recorded
+below. Earlier subsets and overlapping author controls are kept separate.
+Native results come from
 `node scripts/ci/obsidian-drive.mjs`, configured through its documented
 environment inputs with `OBSYNC_E2E_SECRET_STORE=macos`, the installed Obsidian
 binary, this built plugin, disposable vaults/token and a recording loopback
@@ -57,6 +58,88 @@ Local logs are reduced to the observations below; raw credentials, profiles
 and captures are removed after verification.
 
 ## Implemented and exercised
+
+### Independent checkpoint and assertion repair
+
+The independent [checkpoint at `ceadfe08`](https://github.com/snaraj/obsync/issues/344#issuecomment-6131002504)
+required changes. Its seven findings cover rotation authority, the write cutoff,
+complete reseeding, redirects, mutation evidence, shared-key lifetime and
+capability/coordinator recovery. It supplies no full PR approval. The revised
+rotation and E09 proposals remain design-only until independent acceptance.
+
+The reviewer reproduced mutation `pause_resume` failing through recorder cleanup
+instead of its intended behavior assertion. The fixture had published a remote
+unpause before exercising explicit resume, allowing the feed to clear the hold.
+The repair exercises resume while the hold still exists, then publishes unpause.
+Cleanup failure remains visible and fatal, but no longer replaces an earlier
+behavior exception. The mutation runner now maps each engine mutation to its
+intended first assertion; an unrelated setup/request/readback assertion is
+insufficient. Two permanent repository tests refuse those false kills and keep
+actual/expected values out of receipts. Five final author mutations of that classifier
+and receipt boundary fail those tests; restored controls pass. An initial
+mutation selector matched two source locations and was refused, then narrowed
+to the intended guard before execution.
+
+The first repaired batch stopped after 88 cases at a runtime mutation's syntax
+check; that intermediate refusal was not reproduced on the isolated copied
+module and is not counted as a kill. Adding intended-assertion matching then
+exposed an incorrect expected label for the duplicate-JSON raw-credential
+control. A diagnostic pass classified the remaining 37 engine cases: only that
+label needed correction. The final matcher requires exact behavior messages
+after finite Node assertion wrappers, with prefixes only for the two structured
+scanner reports. It rejects an unrelated assertion merely mentioning the target.
+These failed batches and diagnostic observations are not final-batch passes.
+
+During this work, the machine's global Node/npm changed to 26.11.1/11.20.0.
+Final focused checks and the complete mutation run use an isolated official
+Node **26.10.0**, npm **11.19.1**, with the archive verified against its unique
+entry in the official `SHASUMS256.txt`. The macOS arm64 archive SHA-256 is
+`f222f7e85cc1d5a3d84786aa86836ec3d41c4dcdf59a40e4a9d719b6b0ae28af`.
+The pinned rebuild reproduces the unchanged plugin bundle above; no system
+toolchain or credential store was modified by this work.
+
+The complete execution on these exact sources then passed **all 98 cases**:
+30 scanner, 56 engine, nine CI and three compiled-runtime mutations. All 59
+engine/runtime cases reached their declared first behavior assertion; scanner,
+engine and CI baselines passed again after restoration. The command was
+`python3 -B scripts/validation/e2ee_mutations.py` with the pinned Node/npm on
+`PATH`. Its reduced result is `e2ee-mutations decision=pass killed=98 restored=pass`.
+The retained log SHA-256 is
+`8530943b1edfedf6b897fb4d6612fdf53f55cd84a9f15cbf2d6cd4690b973317`;
+the reduced receipt containing the ordered cases, first assertion headers,
+source/tool hashes and excluded failures has SHA-256
+`82e62c3617b607394736ef8884b5912568131b0cd1f1cb67f5230463f8add565`.
+These test repairs do not change the runtime bundle or resolve other findings.
+
+Parent verification on the pinned tools passed **912 repository contracts**
+in 159.357 seconds, followed by the affected two assertion-classifier tests
+after their final controls were added. The final composed engine baseline
+passed **19 flows, two controls, 188 requests, 12 storage files and 50 needles
+in 8,635 ms**. The native diagnostic delta separately passed ten JavaScript
+tests and both Python custody contracts. These results do not represent a
+new full `make check` or native-device acceptance run.
+
+The coordinator rebuilt the unchanged plugin bundle and independently ran
+`node scripts/ci/e2ee.mjs`: **19 flows, two controls, 188 requests, 12 storage
+files, 50 needles, 5,853 ms**. Isolated deletion of resume failed the exact
+“explicit resume clears the hold” assertion. A forced recorder-close error
+containing that text was correctly distinguished from an assertion; combining
+that error with deleted resume preserved the assertion and separately reported
+cleanup failure. Restoring the source passed. These are focused controls, not
+the complete mutation batch. An initial build used the release binary while
+the harness requires `target/debug/obsyncd`, and an initial cleanup fault was
+inserted after the recorder had already closed; neither attempt counts as a
+passing control. The corrected debug build and actual recorder-close injection
+produced the results above. Disposable parent scripts and data were removed.
+
+At the same `ceadfe08` head, hosted application, container, platform, proxy and
+source-analysis checks passed. The security job still refused the unversioned
+artifact range. Hosted macOS again refused peer B's pre-restart custody with
+`encrypted=false, stored=true, plain=true, revisionMatches=true`; the relevant
+[job](https://github.com/snaraj/obsync/actions/runs/38295696544/job/114966107096)
+does not become passing evidence because local checks succeeded.
+
+### Earlier integrated checks
 
 The coordinator's initial integrated real-plugin/real-server sample recorded
 **19 flows, two planted-leak controls, 185 requests/responses,
@@ -196,8 +279,9 @@ one final immutable head passed every later check in that same run.
 The final assurance inventory contains **98 mutation cases** (30 scanner,
 56 engine, nine CI, three compiled-runtime). The initial 90-case audit above
 was followed by 15 affected/new parking cases and two late-key cases, with
-passing restored controls. Unchanged cases were not rerun as a full 98-case
-batch. The late-key delta adds the actual keys for two chunks created after
+passing restored controls. That earlier checkpoint did not run a full 98-case
+batch; the complete execution after the independent review is recorded above.
+The late-key delta adds the actual keys for two chunks created after
 the earlier inventory loop, bringing the baseline to **50 needles**. The
 coordinator independently killed five final feed-leak/inventory/runtime/retry
 mutations and two integrity-notice mutations, with restored controls passing.
@@ -457,8 +541,22 @@ observed before and after SIGTERM/relaunch. All eight rows reported encryption
 available, stored/non-plaintext data, matching revision, successful readback
 and no literal sentinel in the stored representation. It used the exact same
 pinned 1.13.7 app. Both controls passing does **not** reproduce or diagnose the
-hosted failure, nor prove startup ordering causes it. No startup-order patch,
-OS keychain change or weakened assertion follows from this experiment.
+hosted failure, nor prove startup ordering causes it. No production startup-order
+fix, OS keychain change or weakened assertion follows from this experiment.
+
+The subsequent diagnostic-only harness delta emits fixed boolean/null
+availability observations at workspace readiness, before trusting/loading the
+plugin, and after enrollment. The early observation does not call `getSecret`
+or load plugin metadata. It queries a host implementation method, not a public
+plugin API guarantee; even this observation may affect initialization and is
+not a passive proof of cause. Existing strict custody checks still run before
+and after restart. The macOS workflow compares fixed `simultaneous` and
+`serialized` launch orders on separate fresh runners, with no retries and
+`fail-fast: false`; both retain the same encrypted/non-plaintext expectation.
+The order also applies at restart. Ten focused Node tests and two Python
+contracts pass in both worker and parent checks. Eleven author mutations fail
+on the early-read, field, mode, order, propagation and matrix boundaries.
+Hosted observations for this delta are pending; no product remedy is claimed.
 
 Existing credential-lifecycle coverage was also rerun at `0624b7ab`:
 

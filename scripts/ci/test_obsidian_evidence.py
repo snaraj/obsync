@@ -12,6 +12,10 @@ class ObsidianEvidence(unittest.TestCase):
         job = document['jobs']['obsidian-macos']
         self.assertEqual(job['runs-on'], 'macos-15')
         self.assertEqual(job['env'].get('OBSYNC_E2E_SECRET_STORE'), 'macos')
+        self.assertEqual(job['strategy']['matrix']['launch-order'], ['simultaneous', 'serialized'])
+        self.assertFalse(job['strategy']['fail-fast'])
+        self.assertEqual(job['env'].get('OBSYNC_E2E_LAUNCH_ORDER'), '${{ matrix.launch-order }}')
+        self.assertTrue(job['env']['OBSYNC_E2E_RUN_ID'].endswith('-macos-${{ matrix.launch-order }}'))
         steps = [step for step in job['steps'] if 'scripts/ci/obsidian-host.sh' in step.get('run', '')]
         self.assertEqual(len(steps), 1)
         self.assertNotIn('if', job)
