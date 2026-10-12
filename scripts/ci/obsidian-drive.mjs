@@ -44,7 +44,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { secretFacts, assertCustody, captureEditor as captureVerifiedEditor, finishEvidence } from "./obsidian-evidence.mjs";
+import { secretFacts, assertCustody, pairingCodes, assertPairingCodes, captureEditor as captureVerifiedEditor, finishEvidence } from "./obsidian-evidence.mjs";
 
 const PLUGIN_ID = "obsync-private-sync";
 const STEP_BUDGET_MS = 90_000;
@@ -597,9 +597,16 @@ async function main() {
     secrets.push(code);
     await until(`b: the ${LABELS.pairingCode} field`, () => b.anywhere(fillSetting, "dialog", LABELS.pairingCode, code));
     await until(`b: ${LABELS.pairButton}`, () => b.anywhere(click, LABELS.pairButton));
+    const comparison = await until("both devices show their pairing comparison code", async () => {
+      const creator = (await a.all(pairingCodes)).flatMap((shown) => shown.creator);
+      const claimant = (await b.all(pairingCodes)).flatMap((shown) => shown.claimant);
+      return creator.length && claimant.length ? { creator, claimant } : null;
+    });
+    // Outside `until`: a mismatch refuses immediately, never a retry until equal.
+    assertPairingCodes(comparison);
     await until(`a: ${LABELS.approve} for the new device`, () => a.anywhere(click, LABELS.approve));
     await until("b: paired after approval", () => paired(b));
-    prove("second device: the code shown on the first, typed into the second, approved on the first");
+    prove("second device: the invitation typed into the second, both visible comparison codes matched before approval on the first");
 
     // Two-way notes, a rename, folders.
     const first = `e2e note ${randomBytes(6).toString("hex")}\n`;

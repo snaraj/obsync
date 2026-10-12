@@ -1,6 +1,38 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { secretFacts, assertCustody, editorBounds } from "./obsidian-evidence.mjs";
+import { secretFacts, assertCustody, editorBounds, pairingCodes, assertPairingCodes } from "./obsidian-evidence.mjs";
+
+test("pairing comparison reads visible role-specific prompts and refuses missing, ambiguous or mismatched codes", () => {
+  const creator = "Approve only if the new device shows the code 123 456.";
+  const claimant = "Waiting for approval on the other device. Its prompt shows the code 123 456: if it shows another, choose Reject there.";
+  let modals = [];
+  globalThis.document = { querySelectorAll: (selector) => {
+    assert.equal(selector, ".modal:not(.mod-settings)"); return modals;
+  } };
+  const modal = (textContent, width = 200, height = 100) => ({ textContent, getBoundingClientRect: () => ({ width, height }) });
+  try {
+    assert.deepEqual(pairingCodes(), { creator: [], claimant: [] });
+    modals = [modal(creator)];
+    assert.deepEqual(pairingCodes(), { creator: ["123 456"], claimant: [] });
+    modals = [modal(claimant.replace("123 456", "234 567"))];
+    assert.deepEqual(pairingCodes(), { creator: [], claimant: ["234 567"] });
+    modals = [modal(creator), modal(claimant), modal("Invitation 999 999"), modal(creator, 0), modal(claimant, 200, 0)];
+    const matched = pairingCodes();
+    assert.deepEqual(matched, { creator: ["123 456"], claimant: ["123 456"] });
+    assertPairingCodes(matched);
+    modals = [modal(creator), modal(claimant.replace("123 456", "123 457"))];
+    assert.throws(() => assertPairingCodes(pairingCodes()), /approval refused/);
+    modals = [modal(creator + creator), modal(claimant)];
+    assert.throws(() => assertPairingCodes(pairingCodes()), /approval refused/);
+    for (const bad of [
+      { creator: [], claimant: [] }, { creator: ["123 456"], claimant: [] },
+      { creator: [], claimant: ["123 456"] }, { creator: ["123 456"], claimant: ["123 456", "123 456"] },
+      { creator: ["123456"], claimant: ["123456"] },
+    ]) assert.throws(() => assertPairingCodes(bad), /approval refused/);
+    modals = [modal(creator.replace("123 456", "1234 567")), modal(claimant.replace("123 456", "123 4567"))];
+    assert.deepEqual(pairingCodes(), { creator: [], claimant: [] });
+  } finally { delete globalThis.document; }
+});
 
 const required = { encrypted: true, plain: false };
 const valid = { encrypted: true, plain: false, stored: true, revisionMatches: true };
@@ -150,7 +182,7 @@ test("publication requires all six captures and every restart/custody phase", as
   } finally { fs.rmSync(root, { recursive: true }); }
 });
 
-test("the real driver cannot report success when its restart journey is omitted", async () => {
+test("the real driver requires matching prompts before approval and its restart journey before success", async () => {
   // Execute the real orchestration, substituting native boundaries only. The
   // complete inventory gate remains real, so omitting the restart call fails.
   const { finishEvidence } = await import("./obsidian-evidence.mjs");
@@ -167,16 +199,35 @@ test("the real driver cannot report success when its restart journey is omitted"
   };
   const environment = { OBSYNC_E2E_SECRET_STORE: "windows", OBSYNC_E2E_CAPTURES: root };
   const localProcess = { env: environment, platform: "win32", exitCode: undefined };
-  let preflightTouches = 0;
+  let preflightTouches = 0, approvals = 0;
+  let comparison = { creator: ["123 456"], claimant: ["123 456"] };
+  let nextComparison = null;
   const context = {
     process: localProcess, env: (name) => name, STORES: stores, secrets: [], started: Date.now(), proven: 0,
     fs: { readFileSync: () => { preflightTouches++; return "a".repeat(64); }, rmSync() {}, mkdirSync() {}, existsSync: () => true }, path,
     Denied: Error, scrub: String, console: { log() {}, error() {} }, Buffer, randomBytes: () => Buffer.from("test"),
-    Instance: class { constructor() { preflightTouches++; this.root = root; this.vault = root; } launch() {} stop() {} async anywhere() { return true; } async all() { return []; } pluginLog() { return []; } },
+    Instance: class {
+      constructor(work, name) { preflightTouches++; this.name = name; this.root = root; this.vault = root; }
+      launch() {} stop() {}
+      async anywhere(fn, label) { if (fn === context.click && label === "Approve") approvals++; return true; }
+      async all(fn) {
+        if (fn !== pairingCodes) return [];
+        const shown = { creator: this.name === "a" ? comparison.creator : [], claimant: this.name === "b" ? comparison.claimant : [] };
+        if (this.name === "b" && nextComparison !== null) { comparison = nextComparison; nextComparison = null; }
+        return [shown];
+      }
+      pluginLog() { return []; }
+    },
     openVault: async () => ({ obsidian: "test", electron: "test" }), setServer: async () => {},
-    until: async (_, probe) => probe(), paired: () => true, inVault: async () => true,
+    until: async (_, probe) => {
+      let last;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try { const value = await probe(); if (value) return value; } catch (error) { last = error; }
+      }
+      throw last ?? new Error("test wait exhausted");
+    }, paired: () => true, inVault: async () => true,
     fillPlaceholder() {}, click() {}, confirmPhrase() {}, pairingCode() {}, fillSetting() {}, describe() {}, notices() {},
-    LABELS: {}, PLUGIN_ID: "test", SYNC_BUDGET_MS: 1, prove() {}, arrives: () => 1, leaves() {}, listing: () => [],
+    LABELS: { approve: "Approve" }, pairingCodes, assertPairingCodes, PLUGIN_ID: "test", SYNC_BUDGET_MS: 1, prove() {}, arrives: () => 1, leaves() {}, listing: () => [],
     cotyping: async () => { capture("cotype-a"); capture("cotype-b"); }, starvedWatcher() {}, windowsJourneys() {},
     restarted: async () => {
       for (const name of ["restart-a-a", "restart-a-b", "restart-b-a", "restart-b-b"]) capture(name);
@@ -187,6 +238,27 @@ test("the real driver cannot report success when its restart journey is omitted"
     const restarted = context.restarted;
     await vm.runInNewContext(`(${main})()`, context);
     assert.equal(localProcess.exitCode, undefined, "the unmodified driver completes its restart and publication gates");
+    assert.equal(approvals, 1, "the matched prompts allow the actual approval path");
+    comparison = { creator: ["123 456"], claimant: ["123 457"] };
+    nextComparison = { creator: ["123 456"], claimant: ["123 456"] };
+    localProcess.exitCode = undefined;
+    await vm.runInNewContext(`(${main})()`, context);
+    assert.equal(nextComparison, null, "the claimant read returned its initial mismatch before becoming an honest match");
+    assert.equal(localProcess.exitCode, 1, "an initial mismatch must refuse, never retry until it matches");
+    assert.equal(approvals, 1, "no approval after an initial mismatch");
+    for (comparison of [
+      { creator: ["123 456"], claimant: ["123 457"] },
+      { creator: ["123 456"], claimant: [] },
+      { creator: [], claimant: ["123 456"] },
+      { creator: ["123 456", "123 456"], claimant: ["123 456"] },
+      { creator: ["123 456"], claimant: ["123 456", "123 456"] },
+    ]) {
+      localProcess.exitCode = undefined;
+      await vm.runInNewContext(`(${main})()`, context);
+      assert.equal(localProcess.exitCode, 1, "missing, ambiguous or mismatched prompts refuse the actual driver");
+      assert.equal(approvals, 1, "no approval click after an invalid comparison");
+    }
+    comparison = { creator: ["123 456"], claimant: ["123 456"] };
     for (const name of fs.readdirSync(root)) fs.rmSync(path.join(root, name));
     localProcess.exitCode = undefined;
     context.restarted = async () => null;

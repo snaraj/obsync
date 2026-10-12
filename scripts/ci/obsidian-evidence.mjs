@@ -2,6 +2,25 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 
+/** Read only comparison codes from visible pairing dialogs, never invitation fields. */
+export function pairingCodes() {
+  const shown = { creator: [], claimant: [] };
+  for (const modal of document.querySelectorAll(".modal:not(.mod-settings)")) {
+    const rect = modal.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    const text = modal.textContent ?? "";
+    for (const match of text.matchAll(/Approve only if the new device shows the code (\d{3} \d{3})\./g)) shown.creator.push(match[1]);
+    for (const match of text.matchAll(/Waiting for approval on the other device\. Its prompt shows the code (\d{3} \d{3}):/g)) shown.claimant.push(match[1]);
+  }
+  return shown;
+}
+
+export function assertPairingCodes({ creator, claimant }) {
+  if (creator.length !== 1 || claimant.length !== 1 || !/^\d{3} \d{3}$/.test(creator[0]) || creator[0] !== claimant[0]) {
+    throw new Error("pairing comparison requires exactly one matching code on each device; approval refused");
+  }
+}
+
 // Only reduced custody facts and a verified synthetic editor may leave a renderer.
 // These functions run inside Obsidian; never return credential values.
 export async function secretFacts() {

@@ -395,3 +395,105 @@ release placement, lockstep metadata and current hosted gates. Live deployment,
 Cloudflare account/billing and immutable publication are not established by
 these local tests. No Ready, release completion or universal no-backdoor
 certification follows from this record.
+
+## Continued author validation: native comparison and custody
+
+At checkpoint `0624b7ab7c155739472fc35ca1fbf08a0c4e5da0`, hosted jobs
+completed: application, container, both compose architectures, proxy matrix,
+native CLI/distribution matrix, plugin tests on macOS/Windows, Linux/Windows
+Obsidian, documentation, CodeQL and dispositions passed. The Docker input and
+device-name wait repairs are now exercised by hosted jobs. Security failed
+only its release-transition step, and the aggregate gate consequently failed.
+The separate macOS Obsidian job still refused plaintext custody on peer B
+after ten steps; peer A passed the preceding assertion. These are individual
+job results, not an overall passing release gate.
+
+The native driver had a separate assurance gap: it clicked **Approve** without
+comparing the verification codes on both screens. It now reads only the
+role-specific comparison sentences in visible dialogs on each instance,
+requires exactly one matching six-digit code per device, and then approves.
+Missing/ambiguous prompts and mismatches cannot click Approve. Comparison
+failure sits outside the wait loop: a mismatch must not be retried until a
+later pair happens to match. The codes are never printed. This strengthens
+the test journey; no product pairing or crypto implementation changes.
+
+Commands for its focused controls:
+
+```sh
+node --test scripts/ci/obsidian-evidence.test.mjs
+python3 -B -m unittest discover -s scripts/ci -p test_obsidian_evidence.py
+```
+
+Eight JavaScript tests, both focused Python contracts and the full 910-test
+repository contract suite passed. Author mutation checking initially found
+two surviving controls: swapped prompt roles and moving the assertion inside
+the retry loop. Single-role DOM fixtures and a mismatch-then-match read now
+exercise those boundaries. The strengthened tests kill all 14 applied
+mutations by assertion: width/height, role extraction/swap, format, both
+exact-one checks, equality, skipped caller, approval-before-check, reading
+both codes from either same peer, and two assertion-inside-wait placements.
+Restoration and parent reruns pass all eight tests and both Python contracts;
+the full 910-test run preceded those final test-only controls. A real driver run
+using the same native invocation described above, with `OBSYNC_E2E_SECRET_STORE=macos`,
+used checksum-pinned Obsidian 1.13.7 / Electron 43.3.0 and a disposable
+loopback-only HTTP server. No OS trust was changed. It passed all 11 steps in
+49.4 seconds, including the new visible-code comparison before approval and
+both encrypted-storage restarts. The runtime bundle remains exactly
+`eac31da302ebd62fba3c8011fcc9a83045ee194abd84b5c9e1362ea1fa430a2a`
+(1,406,984 bytes). Ten disk-to-disk edits measured p50 1,007 ms and p95/max
+1,009 ms. Co-typing inserted 100 characters on each instance over 20,080 ms;
+both editors/disks held every insertion 201 ms after the final insertion,
+without conflict copies. Six editor/disk receipts matched. Both restarts
+reported encryption available, non-plaintext storage and matching credential
+revision; subsequent transfers took 1,007/1,005 ms. No custody warning appeared.
+The unknown backend label is not a provider identity. Profiles, captures,
+fixture data and all app processes were removed after reduced receipts were
+retained. This run adds no phone, TLS, native key inventory or malicious-relay
+acceptance claim.
+
+An additional predeclared local custody experiment used two fresh synthetic
+profiles for simultaneous startup and two for serialized startup, each
+observed before and after SIGTERM/relaunch. All eight rows reported encryption
+available, stored/non-plaintext data, matching revision, successful readback
+and no literal sentinel in the stored representation. It used the exact same
+pinned 1.13.7 app. Both controls passing does **not** reproduce or diagnose the
+hosted failure, nor prove startup ordering causes it. No startup-order patch,
+OS keychain change or weakened assertion follows from this experiment.
+
+Existing credential-lifecycle coverage was also rerun at `0624b7ab`:
+
+```sh
+cd plugin
+node --test test/state.test.mjs test/secret-storage.test.mjs \
+  test/credential-lifecycle.test.mjs test/keys-lost.test.mjs \
+  test/copied-vault.test.mjs test/pairing-claim.test.mjs \
+  test/leave.test.mjs test/leave-dialog.test.mjs
+```
+
+169 passed, zero failed/skipped. Cases include corrupt/missing reads, failed
+writes/readback, metadata persistence failure, restart revision selection,
+save-before-sync and Leave cleanup. No new defect was demonstrated. Public
+`setSecret`/`getSecret` readback cannot establish a joint fsync transaction
+with plugin metadata, native secure erasure or isolation from the trusted OS
+and other trusted plugins. These fake-host cases do not replace native proof.
+
+The redirect remedy remains a concrete platform constraint. The
+[official Obsidian API declarations](https://github.com/obsidianmd/obsidian-api/blob/master/obsidian.d.ts)
+provide no redirect policy in `RequestUrlParam`; `throw` controls HTTP error
+handling. [Mobile guidance](https://docs.obsidian.md/Plugins/Getting%20started/Mobile%20development)
+excludes Node/Electron on phones. Browser fetch with `redirect: "error"`
+requires CORS compatibility; its [preflight excludes credentials](https://fetch.spec.whatwg.org/#cors-protocol-and-credentials),
+so an authenticating edge may refuse it before the API is reached. Electron's
+[redirect policy](https://www.electronjs.org/docs/latest/api/client-request)
+belongs to Main/Utility processes, not a supported Obsidian renderer bridge.
+A desktop Node replacement would also need proxy/certificate-store
+compatibility evidence and would leave mobile unresolved. No speculative
+transport replacement is included. Any future adapter must prove zero
+destination requests for all five redirect statuses, preserved positive
+JSON/binary/authentication flows and existing retry/cancellation semantics.
+
+The strict Linux/Python 3.12 documentation build with hash-pinned requirements
+passed; origin validation reported 160 files, 8,351 anchors and zero refusals.
+The working-tree and outgoing-range pinned secret scans passed. An initial
+offline compiler install refused an empty disposable cache; fetching the
+unchanged pinned compiler then built the byte-identical runtime bundle.
