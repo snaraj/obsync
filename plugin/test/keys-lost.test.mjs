@@ -199,7 +199,7 @@ function plugin(t, metadata, secrets, localStorage) {
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const obsidian = box.require("obsidian");
   const requests = [];
-  obsidian.requestUrl = async (request) => { requests.push(request); return { status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }; };
+  box.require(join(box.home, "build/fetchHttp.js")).fetchHttp = async (request) => { requests.push(request); return { status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }; };
   const Plugin = box.require(join(box.home, "build/main.js")).default;
   const instance = new Plugin();
   let data = clone(metadata);

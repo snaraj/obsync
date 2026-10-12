@@ -90,6 +90,13 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
    plain `http://127.0.0.1:8080` for a server on that same machine; Obsidian
    on iOS and Android refuses plain HTTP.
 
+   Use the final server URL: the plugin refuses redirects. Upgrade the server
+   before this client. An authenticating proxy must allow credential-free CORS
+   preflight and preserve the server's CORS responses while protecting actual
+   requests. [Proxy and header requirements](protocol.md#browser-transport-and-cors)
+   explain the compatibility boundary; unsupported custom headers are refused
+   in settings.
+
    ![The plugin's settings tab: the Server URL field holding a demo host name, the Custom request headers box, and the Connection row with its Check and Open dashboard buttons](assets/settings-server.png)
 
 4. Under **Sync folders on this device**, choose **Selected folders only**

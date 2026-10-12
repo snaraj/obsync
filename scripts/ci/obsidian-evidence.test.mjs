@@ -249,7 +249,8 @@ test("the real driver requires matching prompts before approval and its restart 
   };
   const environment = { OBSYNC_E2E_SECRET_STORE: "windows", OBSYNC_E2E_CAPTURES: root };
   const localProcess = { env: environment, platform: "win32", exitCode: undefined };
-  let preflightTouches = 0, approvals = 0;
+  let preflightTouches = 0, approvals = 0, redirects = 0, enrollments = 0;
+  let redirectChecked = false, redirectFails = false;
   const launches = [], observed = [];
   const secretFactsMarker = () => {};
   let comparison = { creator: ["123 456"], claimant: ["123 456"] };
@@ -259,8 +260,9 @@ test("the real driver requires matching prompts before approval and its restart 
     fs: { readFileSync: () => { preflightTouches++; return "a".repeat(64); }, rmSync() {}, mkdirSync() {}, existsSync: () => true }, path,
     Denied: Error, scrub: String, console: { log() {}, error() {} }, Buffer, randomBytes: () => Buffer.from("test"),
     Instance: class {
-      constructor(work, name) { preflightTouches++; this.name = name; this.root = root; this.vault = root; }
+      constructor(work, name) { preflightTouches++; this.name = name; this.root = root; this.vault = root; if (name === "a") redirectChecked = false; }
       launch() { launches.push("launch-" + this.name); } stop() {}
+      async main() { return this.name; }
       async anywhere(fn, label) { if (fn === context.click && label === "Approve") approvals++; return true; }
       async all(fn) {
         if (fn !== pairingCodes) return [];
@@ -270,7 +272,12 @@ test("the real driver requires matching prompts before approval and its restart 
       }
       pluginLog() { return []; }
     },
-    openVault: async (instance, diagnostic) => { launches.push("ready-" + instance.name); assert.equal(diagnostic, true); return { obsidian: "test", electron: "test" }; }, setServer: async () => {},
+    openVault: async (instance, diagnostic) => { launches.push("ready-" + instance.name); assert.equal(diagnostic, true); return { obsidian: "test", electron: "test" }; },
+    verifyNativeRedirects: async (page) => {
+      assert.equal(page, "a"); redirects++; redirectChecked = true;
+      if (redirectFails) throw new Error("synthetic native redirect refusal");
+    },
+    setServer: async () => { assert.equal(redirectChecked, true, "native redirect check precedes enrollment"); enrollments++; },
     secretFacts: secretFactsMarker, diagnose: (instance, phase, found) => { observed.push(instance.name + ":" + phase); assert.deepEqual(found, valid); },
     until: async (_, probe) => {
       let last;
@@ -295,6 +302,14 @@ test("the real driver requires matching prompts before approval and its restart 
     assert.equal(approvals, 1, "the matched prompts allow the actual approval path");
     assert.deepEqual(launches, ["launch-a", "launch-b", "ready-a", "ready-b"]);
     assert.deepEqual(observed, ["a:enrolled", "b:enrolled"]);
+    assert.equal(redirects, 1, "the real driver must call the native redirect fixture");
+    const beforeEnrollment = enrollments;
+    redirectFails = true;
+    await vm.runInNewContext(`(${main})()`, context);
+    assert.equal(localProcess.exitCode, 1, "redirect refusal must stop the real driver");
+    assert.equal(enrollments, beforeEnrollment, "redirect refusal must precede enrollment");
+    assert.equal(approvals, 1, "redirect refusal must precede pairing approval");
+    redirectFails = false;
     comparison = { creator: ["123 456"], claimant: ["123 457"] };
     nextComparison = { creator: ["123 456"], claimant: ["123 456"] };
     localProcess.exitCode = undefined;

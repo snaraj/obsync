@@ -16,7 +16,7 @@
  * | Upload/download  | 4 concurrent chunks                          | 2 concurrent chunks                    |
  * | Per-file ceiling | unlimited                                    | 512 MiB, then remote-only              |
  * | Total budget     | unlimited                                    | 50 GiB, then remote-only               |
- * | Transport        | `requestUrl`, HTTP or HTTPS                  | `requestUrl`, HTTPS only               |
+ * | Transport        | browser fetch, HTTP or HTTPS                  | browser fetch, HTTPS only               |
  * | Crypto           | WebCrypto                                    | WebCrypto                              |
  *
  * A device with no Node filesystem (mobile, or a desktop adapter that does
@@ -52,9 +52,10 @@
  * the vault's config folder.
  */
 
-import { ItemView, MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
+import { ItemView, MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder } from "obsidian";
 import type { App, CliData, CliFlag, CliFlags, CliHandler } from "obsidian";
 import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
+import { fetchHttp } from "./fetchHttp";
 import { accountRecovery, FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "./accountRecovery";
 import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
@@ -715,8 +716,8 @@ const START_SETTLE_MS = 500;
 
 /**
  * A request sent once that a person is waiting on: `lost` when nothing has
- * answered within `INTERACTIVE_MS` (issue #157). `requestUrl` cannot be
- * withdrawn, so the request goes on and its late answer is discarded -- a
+ * answered within `INTERACTIVE_MS` (issue #157). Cancellation is logical,
+ * so the request goes on and its late answer is discarded -- a
  * revoke that lands afterwards has still done what the person asked.
  */
 function patiently<T>(sent: Promise<Sent<T>>, patience: Patience): Promise<Sent<T>> {
@@ -3849,7 +3850,7 @@ export default class ObsyncPlugin extends Plugin {
         state.assertAvailable();
         // Ends the call, never retried (`SessionEnded`, issue #272).
         if (!this.isCurrent(generation) || this.state !== state) throw new SessionEnded();
-        return requestUrl(request);
+        return fetchHttp(request);
       },
       serverUrl: () => state.data.serverUrl,
       device: () => this.credential(state),

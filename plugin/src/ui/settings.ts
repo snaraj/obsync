@@ -42,7 +42,7 @@ import { parseSyncFolders } from "../syncScope";
 import { refusalStatus, refusalText } from "../sync/engine";
 import { KEYS_LOST, type EdgeHeader } from "../state";
 import { LEVELS, MERGES, count } from "../notices";
-import { HEADER_NAME, ownHeader, type DeviceRecord } from "../transport";
+import { HEADER_NAME, ownHeader, browserHeader, customHeaderBudget, type DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
 import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVERY_UNCONFIRMED, RecoveryPhraseModal, VaultKeyModal, confirmFirst, literal, secretText } from "./modals";
 
@@ -161,6 +161,7 @@ function character(char: string): string {
  */
 export function parseEdgeHeaders(text: string): { headers: EdgeHeader[]; trimmed: string[] } | { refusal: string; reason: string } {
   const headers: EdgeHeader[] = [];
+  const names = new Set<string>();
   const trimmed: string[] = [];
   const lines = text.split(/\r?\n/);
   for (const [index, typed] of lines.entries()) {
@@ -200,8 +201,12 @@ export function parseEdgeHeaders(text: string): { headers: EdgeHeader[]; trimmed
       return { refusal: `${where}: a header name cannot contain ${shown}. ${HEADER_FORM}`, reason: "bad_name" };
     }
     if (ownHeader(name)) return { refusal: `${where}: obsync sets ${name} itself, so it cannot be a custom request header. Remove that line.`, reason: "own_header" };
+    if (browserHeader(name)) return { refusal: `${where}: obsync cannot send ${name} as a custom request header. Remove that line.`, reason: "browser_header" };
+    if (names.has(name.toLowerCase())) return { refusal: `${where}: ${name} repeats a header name. Keep only one line for it.`, reason: "duplicate_header" };
     if (value === "") return { refusal: `${where} has no value after the colon. ${HEADER_FORM}`, reason: "no_value" };
+    names.add(name.toLowerCase());
     headers.push({ name, value });
+    if (!customHeaderBudget(headers.map((header) => header.name))) return { refusal: "Too many custom request headers, or their names are too long. Remove unused headers.", reason: "header_budget" };
   }
   return { headers, trimmed };
 }

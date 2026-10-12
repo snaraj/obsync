@@ -392,7 +392,7 @@ async function loaded(t, root, metadata) {
   const requests = [], logs = [];
   // What the status indicator says on hover: its words, never a text node (#156).
   const item = statusItem(), bar = item.tooltips;
-  obsidian.requestUrl = async (request) => {
+  box.require(join(box.home, "build/fetchHttp.js")).fetchHttp = async (request) => {
     requests.push(request.url);
     return { status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) };
   };

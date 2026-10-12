@@ -62,7 +62,7 @@ function vaultWindow(t) {
     const box = sandbox();
     t.after(() => rmSync(box.home, { recursive: true, force: true }));
     const obsidian = box.require("obsidian");
-    obsidian.requestUrl = async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) });
+    box.require(join(box.home, "build/fetchHttp.js")).fetchHttp = async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) });
     const plugin = new (box.require(join(box.home, "build/main.js")).default)();
     const logs = [];
     plugin.app = app;

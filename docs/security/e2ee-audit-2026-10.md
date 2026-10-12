@@ -50,9 +50,16 @@ before production implementation.
 Native `requestUrl` **failed redirect containment**: a second loopback origin
 received synthetic API/edge headers on 301/302/303, and those headers plus the
 POST body on 307/308. The tested untrusted TLS certificate was refused before
-HTTP. This is an unresolved additional-origin credential exposure, not a
-demonstrated content-key leak. Native `fetch` can refuse redirects but requires
-CORS preflight compatibility; no unvalidated transport replacement is shipped.
+HTTP. This exposed authentication material, not a demonstrated content-key leak.
+The implementation candidate now uses browser Fetch with redirect refusal
+selected before sending, no native fallback, explicit custom-header refusals
+and narrowly scoped server CORS. An actual Obsidian 1.13.7 probe refused all
+five redirect statuses for GET and POST with zero destination requests; its
+positive controls reached the destination. The final candidate passed the
+12-step desktop journey, including the permanent native redirect regression,
+setup, pairing, sync and encrypted-storage restarts. Phone and proxy/certificate
+compatibility, the separate hosted custody finding and independent review
+remain open; no released or platform-wide remedy is claimed.
 
 Nonce analysis also remains conditional. File and folder manifests share one
 96-bit nonce collision budget per actual key across devices/restarts. Sample

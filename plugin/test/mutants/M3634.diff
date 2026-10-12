@@ -7,6 +7,6 @@
          // Ends the call, never retried (`SessionEnded`, issue #272).
 -        if (!this.isCurrent(generation) || this.state !== state) throw new SessionEnded();
 +        if (!this.isCurrent(generation) || this.state !== state) throw new Error("The previous plugin session is inactive.");
-         return requestUrl(request);
+         return fetchHttp(request);
        },
        serverUrl: () => state.data.serverUrl,

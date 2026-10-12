@@ -1,11 +1,10 @@
 /**
  * The wire client for `docs/protocol.md` v1.
  *
- * Every call goes through Obsidian's `requestUrl` (injected as `request`),
- * which is the only HTTP surface available on all platforms: mobile
- * WebViews cannot `fetch` a cross-origin host, and `requestUrl` also frees
- * the request from CORS. `throw: false` is set on every call so a 4xx is
- * data, not an exception, and every refusal can be logged with its code.
+ * Every call uses browser fetch (injected as `request`) with redirect refusal
+ * selected before sending and no platform fallback. Cross-origin servers and
+ * authenticating edges must permit credential-free CORS preflight. A 4xx is
+ * returned as data so every refusal can be logged with its code.
  *
  * SIGNING IS NOT OPTIONAL. Every attempt signs whenever the endpoint is a
  * device endpoint, and the endpoint decides, not a setting (AGENTS.md requirement
@@ -82,7 +81,7 @@ export interface HttpResponse {
 
 export type RequestFn = (request: HttpRequest) => Promise<HttpResponse>;
 
-/** A manual read can be cancelled logically; requestUrl itself cannot abort. */
+/** A manual read can be cancelled logically; this adapter does not abort the send. */
 export interface ReadControl {
   check(): void;
   wait<T>(work: Promise<T>): Promise<T>;
@@ -282,7 +281,7 @@ export interface TransportOptions {
 }
 
 /**
- * HOW LONG ONE ATTEMPT MAY GO UNANSWERED (#195). `requestUrl` has no timeout
+ * HOW LONG ONE ATTEMPT MAY GO UNANSWERED (#195). The adapter has no deadline
  * of its own, and a connection that died under a sleeping laptop or a network
  * change can leave an attempt waiting far longer than any answer takes. Past
  * its deadline an attempt counts as unanswered: a repeatable route signs
@@ -327,8 +326,8 @@ export class SessionEnded extends Error {
  * it throws `unreachable` like any other call that ran out.
  *
  * `signal` ends the call: a retry asleep in its backoff rejects at once, and
- * an attempt in flight is abandoned -- `requestUrl` cannot be aborted, so its
- * late answer is discarded -- with `ApiError(0, "cancelled")`. Either way one
+ * an attempt in flight is abandoned -- the adapter preserves logical
+ * cancellation, so its late answer is discarded -- with `ApiError(0, "cancelled")`. Either way one
  * line is logged. A route that must not be repeated takes no patience: its one
  * attempt is the whole call already.
  */
@@ -580,8 +579,8 @@ type CallOptions = Patience & {
 /**
  * THE LARGEST ANSWER A ROUTE MAY BRING (#202, security item 10).
  *
- * `requestUrl` hands this client a whole answer or nothing: no cap here can
- * stop a broken or hostile terminator making the platform read a body. What a
+ * The adapter buffers each answer before these checks: no cap here stops
+ * a broken or hostile terminator making the platform read a body. What a
  * cap does stop is this client parsing, decoding, copying and keeping it --
  * the part that is this code's -- and it turns such an answer into a named
  * refusal instead of a stall. Each is at least the largest answer the route
@@ -697,6 +696,30 @@ export function ownHeader(name: string): boolean {
   return lower === "content-type" || lower === "content-length" || lower === "host" || lower.startsWith("x-obsync-");
 }
 
+/** Browser-controlled headers cannot carry configured edge credentials. */
+const BROWSER_HEADERS: ReadonlySet<string> = new Set([
+  "accept-charset", "accept-encoding", "access-control-request-headers", "access-control-request-method",
+  "connection", "content-length", "cookie", "cookie2", "date", "dnt", "expect", "host", "keep-alive",
+  "origin", "referer", "set-cookie", "te", "trailer", "transfer-encoding", "upgrade", "via",
+  // Portability policy: method overrides depend on their values in Fetch;
+  // User-Agent is no longer standard-forbidden but browsers may replace it.
+  "x-http-method", "x-http-method-override", "x-method-override", "user-agent",
+  // An ACAH response containing this token would grant a wildcard.
+  "*",
+]);
+
+export function browserHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return BROWSER_HEADERS.has(lower) || lower.startsWith("proxy-") || lower.startsWith("sec-");
+}
+
+/** Same bounded preflight names as the server; reserve all five protocol names. */
+export function customHeaderBudget(names: readonly string[]): boolean {
+  // content-type,x-obsync-device,x-obsync-ts,x-obsync-nonce,x-obsync-sig = 68 bytes.
+  return names.length + 5 <= 64 && names.every((name) => name.length <= 128)
+    && 68 + names.length + names.reduce((total, name) => total + name.length, 0) <= 4096;
+}
+
 export class Transport {
   // Shared across modal close/reopen. Cancellation discards a late result,
   // but cannot permit a second buffered request before the first settles.
@@ -786,17 +809,25 @@ export class Transport {
       headers["X-Obsync-Device"] = device.id;
       digest = options.digest ?? await bodyHash(body);
     }
-    for (const header of this.options.edgeHeaders()) {
+    const edgeHeaders = this.options.edgeHeaders();
+    const customNames = new Set<string>();
+    for (const header of edgeHeaders) {
       // AN EDGE HEADER NEVER REPLACES ONE OBSYNC SETS, and one the platform
       // would drop without a word -- Obsidian's desktop request layer did,
       // for a name pasted with its `-H` -- is refused by name before anything
       // is sent (issue #183). Settings refuses both at entry; this holds for
       // a list saved before it did.
-      if (ownHeader(header.name) || !HEADER_NAME.test(header.name) || !HEADER_VALUE.test(header.value)) {
+      if (ownHeader(header.name) || browserHeader(header.name) || customNames.has(header.name.toLowerCase())
+          || !HEADER_NAME.test(header.name) || !HEADER_VALUE.test(header.value)) {
         this.log(`http ${target} decision=refused reason=edge_header`);
         throw new Error(`The custom request header "${header.name}" cannot be sent as written, so obsync sent nothing. Correct it in obsync's settings, under Custom request headers.`);
       }
+      customNames.add(header.name.toLowerCase());
       headers[header.name] = header.value;
+    }
+    if (!customHeaderBudget(edgeHeaders.map((header) => header.name))) {
+      this.log(`http ${target} decision=refused reason=edge_header_budget`);
+      throw new Error("Too many custom request headers, or their names are too long, so obsync sent nothing. Remove unused headers in obsync’s settings, under Custom request headers.");
     }
     const deadlineMs = attemptMs(target, (options.binary?.length ?? 0) + (options.bulk === true ? options.cap ?? 0 : 0));
     return { headers, body, bodyText, digest, device, deadlineMs };
@@ -1038,7 +1069,7 @@ export class Transport {
   /**
    * Long polls sent and not yet over (#297): the one the feed waits on, every
    * one a caller stopped waiting for, and every one past its deadline until
-   * the platform lets go of it. `requestUrl` cannot withdraw a request, so
+   * the platform lets go of it. The adapter does not withdraw requests, so
    * each keeps its connection to the end of the server's wait, and one sent
    * again for the same url waits behind it on a desktop (#288). An answered
    * poll counts until its attempt has reported it (`reachable`), so a wake

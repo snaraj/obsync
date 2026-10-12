@@ -238,7 +238,11 @@ module.exports = {
     // Where `visibilitychange` is raised; a test that fires it installs its own window.
     document: { visibilityState: "visible", addEventListener: () => undefined, removeEventListener: () => undefined },
   };
-  return { home, require: createRequire(join(home, "x.js")) };
+  const localRequire = createRequire(join(home, "x.js"));
+  // Native plugin tests replace their copied adapter, never global fetch or
+  // another sandbox's requests. The real adapter has its own network tests.
+  localRequire(join(home, "build/fetchHttp.js")).fetchHttp = async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) });
+  return { home, require: localRequire };
 }
 
 const enc = (text) => new TextEncoder().encode(text);

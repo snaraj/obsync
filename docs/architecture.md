@@ -1938,9 +1938,12 @@ restore/manual-download settlement before loading state, then only the
 current load generation resumes sync, including after publication errors.
 Network cancellation detaches the waiter,
 but a shared outstanding-request guard prevents another manual request
-until the old one settles. `requestUrl` exposes neither abort nor streaming
-or a pre-buffer byte ceiling; the size check runs before JSON parsing, after
-Obsidian has buffered the response. A local publication already dispatched
+until the old one settles. The browser Fetch adapter retains logical
+cancellation and buffers the complete response once; it does not add a
+pre-buffer byte ceiling. The size check runs before JSON parsing, after
+buffering. Its redirect refusal and credential-free preflight requirements are
+defined in [the transport contract](protocol.md#browser-transport-and-cors).
+A local publication already dispatched
 must settle. It is never undone after cancellation: success is a local-copy
 receipt, and an uncertain outcome names the path to check.
 

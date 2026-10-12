@@ -52,9 +52,46 @@ Pairing claim and envelope fetch are the only device endpoints with their own
 rules (below). Admin endpoints use the dashboard session cookie plus
 `X-Obsync-Csrf`.
 
-In `OBSYNC_EDGE=cloudflare` mode every request must also carry the edge's
+In `OBSYNC_EDGE=cloudflare` mode application requests must also carry the edge's
 connecting-address and request-id headers, once each, from a peer inside
 `OBSYNC_TRUSTED_PROXY_CIDRS`, or it is refused with `421 edge_required`.
+Health checks and the stateless CORS preflight below are exceptions; neither
+grants device or dashboard authority.
+
+## Browser transport and CORS
+
+The plugin selects Fetch `redirect: "error"`, `credentials: "omit"`,
+`mode: "cors"`, `cache: "no-store"` and `referrerPolicy: "no-referrer"` before
+sending. Every redirect refuses, including same-origin redirects. There is no
+fallback to a transport that follows redirects. Fetch does not distinguish
+redirect, CORS, TLS and network failure to the client; a one-shot request may
+still have applied at the original origin and retains its lost-response rules.
+
+`OPTIONS` accepts only a method/path in the plugin's closed route set, including
+the device-authenticated `POST /v1/dashboard/login-link`. Dashboard cookie/admin
+routes, assets and health endpoints receive no CORS grant. Valid preflight has
+one nonempty Origin, one supported method, and at most one header-name list.
+Names must be unique HTTP tokens, at most 64 names, 128 bytes each and 4,096
+list bytes; browser-controlled names/prefixes and `*` refuse. The response is
+empty 204 with allow-origin `*`, that method, the explicit normalized requested
+names, max-age 0 and Vary for Origin/method/header selection. It neither checks
+credentials nor consumes device nonces or changes storage. Malformed preflight
+is 400; an excluded route/method is 404. Neither refusal grants CORS.
+
+Actual allowlisted responses, including application errors, carry allow-origin
+`*`; their existing authentication and body limits still apply. No response
+grants ambient credentials or exposes extra headers, including `X-Obsync-Seq`.
+Parser refusals outside the application can remain generic Fetch failures.
+
+Upgrade the server before the client. An authenticating proxy must answer or
+pass credential-free OPTIONS without a redirect/login challenge, preserve CORS
+on application errors, and authenticate the actual request. This does not make
+the actual sync API public. Old clients can use the upgraded server; a new
+client against a server/edge without CORS visibly fails and never falls back.
+Configured cookies, browser-controlled headers, method overrides, User-Agent
+and duplicate names are refused in settings and before sending. Explicit
+Authorization and supported custom edge headers remain available. Physical
+phone and deployment-specific proxy/certificate acceptance remain required.
 
 ## Idempotence
 

@@ -372,6 +372,40 @@ test("a header that cannot be sent is refused as it is entered, naming the line 
   }
 });
 
+test("browser header policy and case-insensitive duplicates refuse visible edits without exposing values", t => {
+  for (const name of ["Cookie", "Cookie2", "Connection", "Origin", "Referer", "Accept-Encoding", "Proxy-Authorization", "Sec-Fixture", "User-Agent", "X-HTTP-Method", "X-HTTP-Method-Override", "X-Method-Override", "*"]) {
+    const s = open(t); s.plugin.state.data.edgeHeaders = [{ name: "X-Before", value: "kept" }];
+    s.render("Custom request headers").made.find(c => c.kind === "textarea").commit(`${name}: NEVER_PRINT_SYNTHETIC_SECRET`);
+    assert.deepEqual(s.plugin.state.data.edgeHeaders, [{ name: "X-Before", value: "kept" }]);
+    assert.deepEqual(s.calls, []);
+    assert.equal(s.obsidian.notices.at(-1), `obsync: custom request headers were not saved: line 1: obsync cannot send ${name} as a custom request header. Remove that line.`);
+    assert.ok(!s.obsidian.notices.join(" ").includes("NEVER_PRINT"));
+  }
+  for (const name of ["X-Service-Id", "x-service-id"]) {
+    const s = open(t);
+    s.render("Custom request headers").made.find(c => c.kind === "textarea").commit(`X-Service-Id: first\n${name}: NEVER_PRINT_DUPLICATE`);
+    assert.deepEqual(s.plugin.state.data.edgeHeaders, []);
+    assert.deepEqual(s.calls, []);
+    assert.ok(s.obsidian.notices.at(-1).includes("repeats a header name"));
+    assert.ok(!s.obsidian.notices.at(-1).includes("NEVER_PRINT"));
+  }
+});
+
+test("settings enforce preflight name budgets while preserving ordinary configured credentials", t => {
+  const list = (count, length = 6) => Array.from({ length: count }, (_, i) => `X-${String(i).padStart(3, "0")}`.padEnd(length, "a") + ": sentinel").join("\n");
+  for (const typed of [list(60), list(1, 129), list(32, 128)]) {
+    const s = open(t);
+    s.render("Custom request headers").made.find(c => c.kind === "textarea").commit(typed);
+    assert.deepEqual(s.calls, []);
+    assert.ok(s.obsidian.notices.at(-1).includes("Too many custom request headers, or their names are too long"));
+  }
+  const s = open(t);
+  const expected = [{ name: "Authorization", value: "Bearer sentinel" }, { name: "X-Service-Secret", value: "opaque" }, { name: "CF-Access-Client-Id", value: "id" }, { name: "CF-Access-Client-Secret", value: "secret" }];
+  s.render("Custom request headers").made.find(c => c.kind === "textarea").commit(expected.map(h => `${h.name}: ${h.value}`).join("\n"));
+  assert.deepEqual(s.plugin.state.data.edgeHeaders, expected);
+  assert.deepEqual(s.calls, ["state.save"]);
+});
+
 test("edge headers typed and left behind are adopted when Settings closes, and a refused draft is not kept (#183)", (t) => {
   const s = open(t);
   s.render("Custom request headers").made.find((c) => c.kind === "textarea").change("-H 'X-Id: abc'");

@@ -264,6 +264,37 @@ test("a 4xx is a decision: it is reported and never retried", async () => {
   assert.equal(logged.some((line) => line.includes("decision=refused") && line.includes("code=missing_chunks")), true);
 });
 
+test("browser-forbidden, portable-policy and duplicate custom headers refuse before any send", async () => {
+  const names = ["Accept-Charset", "Accept-Encoding", "Access-Control-Request-Headers", "Access-Control-Request-Method", "Connection", "Cookie", "Cookie2", "Date", "DNT", "Expect", "Keep-Alive", "Origin", "Referer", "Set-Cookie", "TE", "Trailer", "Transfer-Encoding", "Upgrade", "Via", "Proxy-Authorization", "Sec-Fixture", "User-Agent", "X-HTTP-Method", "X-HTTP-Method-Override", "X-Method-Override", "*"];
+  for (const name of names) {
+    const r = harness([], { edgeHeaders: [{ name, value: "NEVER_PRINT_SYNTHETIC_CREDENTIAL" }] });
+    await assert.rejects(r.transport.account(), error => error.message.includes(name) && !error.message.includes("NEVER_PRINT"));
+    assert.equal(r.sent.length, 0, name);
+    assert.ok(r.logged.every(line => !line.includes("NEVER_PRINT")), name);
+  }
+  for (const name of ["X-Service-Id", "x-service-id"]) {
+    const r = harness([], { edgeHeaders: [{ name: "X-Service-Id", value: "first" }, { name, value: "NEVER_PRINT_DUPLICATE" }] });
+    await assert.rejects(r.transport.account(), error => error.message.includes(name) && !error.message.includes("NEVER_PRINT"));
+    assert.equal(r.sent.length, 0);
+  }
+});
+
+test("custom header preflight budgets refuse locally and permit their exact boundaries", async () => {
+  const list = (count, length = 6) => Array.from({ length: count }, (_, i) => ({ name: `X-${String(i).padStart(3, "0")}`.padEnd(length, "a"), value: "sentinel" }));
+  for (const edgeHeaders of [list(60), list(1, 129), list(32, 128)]) {
+    const r = harness([], { edgeHeaders });
+    await assert.rejects(r.transport.account(), /Too many custom request headers, or their names are too long/);
+    assert.equal(r.sent.length, 0);
+  }
+  // Count 59 reserves all five protocol fields; length 128 is inclusive.
+  // 28*125 + 4*124 = 3996 name bytes + 32 commas + 68 protocol bytes = 4096.
+  for (const edgeHeaders of [list(59), list(1, 128), list(32, 124).map((h, i) => ({ ...h, name: h.name + (i < 28 ? "a" : "") }))]) {
+    const r = harness([{ status: 200, text: "{}" }], { edgeHeaders });
+    await r.transport.account();
+    assert.equal(r.sent.length, 1);
+  }
+});
+
 test("server refusal codes cannot inject paths, key-shaped text or extra log lines", async () => {
   for (const code of ["Notes/LOG PATH SENTINEL.md", "f".repeat(64), "bad_signature\nKEY SENTINEL", "unknown_sentinel"]) {
     const text = JSON.stringify({ error: code, detail: "DETAIL SENTINEL" });

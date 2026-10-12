@@ -9,11 +9,13 @@ acceptance. It is not a whole-system security approval.
 
 Protected base: `c2796b7a5b6abd38be23b4f93c6fb620ab7688c0` (1.1.7).
 Implementation predecessor: `482d512e027b57154bfac07b71ea2a706102642f`.
-The candidate adds diagnostic, chunk-retry and pairing-report repairs to that predecessor.
-The resulting plugin bundle SHA-256 is
+The checkpoint through `3af8bb0299ddc89b096f5fb9933ff226bc209bd3` adds
+diagnostic, chunk-retry and pairing-report repairs to that predecessor.
+That checkpoint's plugin bundle SHA-256 is
 `eac31da302ebd62fba3c8011fcc9a83045ee194abd84b5c9e1362ea1fa430a2a`
 (1,406,984 bytes).
-The candidate's relevant source hashes are:
+Its relevant source hashes are below. The later browser-transport candidate
+and its distinct evidence are recorded in the last section.
 
 | File | SHA-256 |
 | --- | --- |
@@ -556,7 +558,20 @@ and after restart. The macOS workflow compares fixed `simultaneous` and
 The order also applies at restart. Ten focused Node tests and two Python
 contracts pass in both worker and parent checks. Eleven author mutations fail
 on the early-read, field, mode, order, propagation and matrix boundaries.
-Hosted observations for this delta are pending; no product remedy is claimed.
+The fresh hosted comparison at `3af8bb02` now has a concrete difference.
+[Simultaneous startup](https://github.com/snaraj/obsync/actions/runs/38301472490/job/114985151705)
+reports peer A encryption unavailable at `workspace_ready`, before plugin
+trust/enrollment; A then stores plaintext at enrollment and is refused before
+restart after ten steps (56.8 seconds). Peer B reports encryption available
+and non-plaintext storage. The separate
+[serialized startup](https://github.com/snaraj/obsync/actions/runs/38301472490/job/114985151680)
+reports both available before enrollment and passes all eight observations
+through restart, eleven steps in 59.1 seconds. This is one predeclared fresh-run
+comparison, not a randomized causal study. It supports an initialization/order
+hypothesis; it does not prove an OS/backend cause or make serialization a
+product remedy. Both jobs and the failing assertion remain. The vendored public
+SecretStorage API exposes set/get/list, not a guaranteed encryption-availability
+method. No undocumented product bridge or OS trust/store change was introduced.
 
 Existing credential-lifecycle coverage was also rerun at `0624b7ab`:
 
@@ -585,8 +600,8 @@ so an authenticating edge may refuse it before the API is reached. Electron's
 [redirect policy](https://www.electronjs.org/docs/latest/api/client-request)
 belongs to Main/Utility processes, not a supported Obsidian renderer bridge.
 A desktop Node replacement would also need proxy/certificate-store
-compatibility evidence and would leave mobile unresolved. No speculative
-transport replacement is included. Any future adapter must prove zero
+compatibility evidence and would leave mobile unresolved. That checkpoint
+included no transport replacement. The adapter candidate below must prove zero
 destination requests for all five redirect statuses, preserved positive
 JSON/binary/authentication flows and existing retry/cancellation semantics.
 
@@ -595,3 +610,116 @@ passed; origin validation reported 160 files, 8,351 anchors and zero refusals.
 The working-tree and outgoing-range pinned secret scans passed. An initial
 offline compiler install refused an empty disposable cache; fetching the
 unchanged pinned compiler then built the byte-identical runtime bundle.
+
+## Browser transport candidate after the protocol checkpoint
+
+The candidate replaces the native request adapter with browser Fetch. Its
+redirect, ambient-credential, CORS, cache and referrer policies are fixed before
+sending, without a native fallback. Settings and the send boundary refuse
+browser-controlled custom headers, duplicate names and bounded preflight-name
+overruns. Application authentication/retries and one-shot uncertainty remain.
+The server grants credential-free preflight only for the 26 plugin routes,
+including the device-HMAC dashboard link; cookie/admin routes stay excluded.
+The [wire contract](../protocol.md#browser-transport-and-cors) describes server
+upgrade order and authenticating-proxy requirements. No production proxy or
+provider configuration was changed.
+
+The first integrated candidate bundle is
+`5718bc3dcd562cb76d3fe64a62c299aaad9d2005ce576e3aa4a051d01e45f52d`
+(1,410,553 bytes). Author client checks pass 182 focused tests and 23 intended
+mutation failures. Server checks pass 235 API tests and 19 intended mutation
+failures; a final two-literal test-fixture change replaces a provider header
+with a generic edge header, after which all three affected wire tests and
+20 doctrine tests pass again. Rust formatting and Clippy pass. Counts from
+overlapping suites/mutations are not summed.
+
+In actual Obsidian **1.13.7 / Electron 43.3.0**, the loaded plugin's injected
+request function refused **301/302/303/307/308 for GET and POST**. Each original
+request reached its synthetic source with the expected authentication/custom
+headers and body, while the destination observed **zero requests**, including
+OPTIONS. Direct-destination and explicit browser redirect-follow controls
+reach it. JSON/custom-auth and exact binary round-trips pass. An untrusted
+synthetic TLS certificate refuses before any HTTP request. Raw native Fetch
+silently replaces a synthetic User-Agent value, supporting the explicit
+portability refusal. The first probe failed only when its legacy-API positive
+control tried importing `obsidian` from the raw renderer; that import was
+unavailable. It was retained as a failed attempt, then replaced by the explicit
+browser-follow control. No native-API comparison is inferred from that control.
+Reduced native redirect receipt SHA-256:
+`5ac54581e083a05abb340224003646eb492fbcc90786cfb0aa5c72c9ab6c333a`.
+
+The same candidate, paired with the actual upgraded server, passed the existing
+**11-step native journey in 51.5 seconds**: setup/recovery confirmation, both
+visible comparison codes before approval, two-way note/folder/rename behavior,
+concurrent editing, watcher recovery and both encrypted-storage restarts.
+Ten edits measured p50 1,016 ms and p95/max 1,301 ms. Both editors/disks held
+100+100 insertions 202 ms after the final insertion; six editor/disk receipts
+matched. Post-restart transfers took 1,008/1,006 ms, with encryption available,
+non-plaintext stored data and matching credential revisions. Reduced journey
+receipt SHA-256:
+`3f1049bf54b6ff093514fd48afaa04b31ad0a31f40c7262784c60fcac6e70459`.
+All owned app processes, profiles, captures and fixture storage were removed.
+
+These are local desktop HTTP-loopback and untrusted-TLS refusal observations.
+They do not prove physical-phone behavior, a trusted-certificate/proxy journey,
+or repair the separate hosted custody failure. The subsequent native automation,
+URL-diagnostic repair and final artifact are recorded below; independent
+assessment and overall F4 acceptance remain open.
+
+The first integrated candidate passed the canonical `make check` using Node
+26.10.0/npm 11.19.1/Rust 1.98.0: Rust formatting/lint/workspace tests and
+**94.78% line coverage**, **2,258 plugin tests**, **83 dashboard tests**, the
+CLI/chart checks, **912 contracts** (146.939 seconds) and both secret scans.
+Its actual engine/server run passed 19 flows, two controls, 186 requests,
+12 storage files and 50 needles in 5,745 ms. It precedes the narrow URL repair
+and automated native redirect helper below, whose affected checks are separate.
+
+A worker then reproduced a synthetic credential leak in diagnostics when a
+legacy stored URL includes userinfo: Node Fetch's construction error echoes
+that URL. Current settings normally normalize the address, but legacy state
+can bypass that path. The adapter now parses before Fetch and refuses malformed,
+non-HTTP(S) or credential-bearing URLs with one fixed value-free error, without
+rewriting valid request bytes. The separate delta passes 58 affected tests and
+five targeted mutants with restored controls. Its candidate bundle is
+`e7fd641b6c7cd274fd389dd6480193b43b5e908ddd88799a456636c71b121e56`
+(1,411,025 bytes). No general diagnostic rewrite or content-crypto change was
+introduced. Native evidence for the earlier `5718bc3d` artifact is not silently
+attributed to this later bundle.
+
+The permanent native driver now invokes `verifyNativeRedirects` on the loaded
+plugin adapter before enrollment. It sends only synthetic authentication,
+headers and bodies through two disposable loopback servers. All ten GET/POST
+redirect legs must reach their source with the expected inputs, refuse in the
+adapter and produce zero destination requests, including preflight. Direct
+destination, JSON, binary and explicit browser-follow controls must succeed.
+The helper owns bounded evaluator/socket lifetimes and closes its listeners
+and connections on failure too. It reads no real device credential and writes
+no plugin state.
+
+The required Python contract invokes both native-evidence JavaScript suites:
+**26 Node tests and two Python contracts pass**. Parent mutations that remove
+the helper call, put it behind `if (false)`, or swallow its failure each fail
+the real driver-orchestration assertion before enrollment. Removing the new
+suite from the required Python entry point also fails its execution assertion.
+These four controls are separate from the helper author's guard audit.
+That audit kills 19 mutations: 15 assertion/integration cases and four
+evaluator-deadline, socket-inactivity and cleanup controls. All restored
+controls pass. An initial fake-page serialization failure and an inadequately
+staged held-socket survivor are retained and excluded; the corrected cleanup
+probe waits for an actual parsed HTTP request before testing shutdown. No
+external timeout or setup failure counts as a kill. Reduced audit receipt
+SHA-256: `639f9019ef4b12975054a552959d7c34c0dd2839874845e03c86147835a3bfab`.
+
+On the final `e7fd641b` bundle, actual Obsidian 1.13.7 / Electron 43.3.0 with
+the upgraded server passes the **12-step native journey in 50.2 seconds**,
+including the new redirect step in 0.4 seconds. Ten edits measure p50 1,010 ms
+and p95/max 1,263 ms. Both editors/disks contain all 100+100 insertions 453 ms
+after the last insertion; six editor/disk receipts match. Both encrypted,
+non-plaintext, revision-matching credential stores survive restart, followed
+by two-way transfers in 1,005/1,008 ms. This is one local HTTP-loopback run,
+not physical-phone or trusted-proxy acceptance and not a repair of the hosted
+custody finding. All owned app processes are absent and profiles removed.
+Reduced final journey receipt SHA-256:
+`5b5faa9dccb704eba6d36f2347c1cec57a1ee9e45a21c758b62c07d167dbe94f`.
+The tested server binary SHA-256 is
+`d960a4a8ac261dc1e516a6ea7a98defbb68ee19554b84540c5deda6ec0bdf976`.

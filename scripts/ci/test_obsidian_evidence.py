@@ -27,7 +27,10 @@ class ObsidianEvidence(unittest.TestCase):
 
     def test_reduced_custody_and_capture_refusals(self):
         result = subprocess.run(
-            ["node", "--test", str(Path(__file__).with_name("obsidian-evidence.test.mjs"))],
+            ["node", "--test", str(Path(__file__).with_name("obsidian-evidence.test.mjs")),
+             str(Path(__file__).with_name("obsidian-redirect.test.mjs"))],
             capture_output=True, text=True, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("real loopback fixture proves ten redirect refusals", result.stdout,
+                      "the native redirect refusal controls must actually execute")

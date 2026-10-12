@@ -45,6 +45,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { verifyNativeRedirects } from "./obsidian-redirect.mjs";
 import { secretFacts, assertCustody, pairingCodes, assertPairingCodes, captureEditor as captureVerifiedEditor, finishEvidence } from "./obsidian-evidence.mjs";
 
 const PLUGIN_ID = "obsync-private-sync";
@@ -591,6 +592,9 @@ async function main() {
       [version] = await Promise.all([openVault(a, !!store), openVault(b, !!store)]);
     }
     prove(`two instances: Obsidian ${version.obsidian} on Electron ${version.electron}, own user-data directories, the vault trusted and the plugin loaded in each`);
+
+    await verifyNativeRedirects(await a.main());
+    prove("native request adapter: all five redirect statuses refused for GET and POST, no destination request; JSON, binary and explicit-follow controls passed");
 
     // First device: server, token, the fresh vault key, the phrase confirmed.
     await setServer(a, url);

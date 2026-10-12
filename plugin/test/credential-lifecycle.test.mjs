@@ -13,7 +13,7 @@ async function fixture(t, initial = null) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const obsidian = box.require("obsidian"), requests = [], logs = [], statuses = [];
-  obsidian.requestUrl = async (request) => { requests.push(request); return { status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }; };
+  box.require(join(box.home, "build/fetchHttp.js")).fetchHttp = async (request) => { requests.push(request); return { status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }; };
   const Plugin = box.require(join(box.home, "build/main.js")).default;
   const instance = new Plugin();
   let metadata = structuredClone(initial), loads = 0, starts = 0;
@@ -34,6 +34,17 @@ async function fixture(t, initial = null) {
 
 const identity = () => ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret,
   serverUrl: "https://sync.example.invalid", edgeHeaders: [] });
+
+test("the real plugin sends through its fetch adapter, never Obsidian requestUrl", async t => {
+  const r = await fixture(t, identity());
+  r.obsidian.requestUrl = () => assert.fail("requestUrl fallback is forbidden");
+  await r.instance.onload();
+  t.after(() => r.instance.onunload());
+  await r.instance.transport.account();
+  assert.equal(r.requests.length, 1);
+  assert.equal(r.requests[0].url, "https://sync.example.invalid/v1/account");
+  assert.equal(r.requests[0].headers["X-Obsync-Device"], KEYS.deviceId);
+});
 
 test("unavailable native storage stops startup without writing metadata or starting requests", async (t) => {
   const r = await fixture(t, identity());

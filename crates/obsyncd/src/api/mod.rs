@@ -12,6 +12,7 @@ pub mod admin;
 pub mod auth;
 pub mod changes;
 pub mod chunks;
+mod cors;
 pub mod devices;
 pub mod edge;
 pub mod files;
@@ -816,31 +817,35 @@ impl App {
         let start = Instant::now();
         let path = req.path.clone();
         let method = req.method.clone();
-        let (class, credentialed, out) = match resolve(&method, &path) {
-            Some((route, class)) => {
-                let health = matches!(route, Route::Livez | Route::Readyz);
-                let demands = demands_credential(&route);
-                let client = edge::derive(&self.cfg, req);
-                if let Ok(c) = &client {
-                    if let Some(reason) = c.ignored {
-                        self.forwarding_ignored(reason);
+        let (class, credentialed, out) = if method == "OPTIONS" {
+            ("/preflight", false, cors::preflight(&path, &req.headers))
+        } else {
+            match resolve(&method, &path) {
+                Some((route, class)) => {
+                    let health = matches!(route, Route::Livez | Route::Readyz);
+                    let demands = demands_credential(&route);
+                    let client = edge::derive(&self.cfg, req);
+                    if let Ok(c) = &client {
+                        if let Some(reason) = c.ignored {
+                            self.forwarding_ignored(reason);
+                        }
+                        if let Some(fields) = c.joined {
+                            self.forwarding_joined(fields);
+                        }
                     }
-                    if let Some(fields) = c.joined {
-                        self.forwarding_joined(fields);
-                    }
+                    let out = match (health, client) {
+                        (true, _) => self.dispatch(route, req, &ClientInfo::unknown()),
+                        (false, Ok(c)) => self.dispatch(route, req, &c),
+                        (false, Err(e)) => Err(e),
+                    };
+                    (class, demands, out)
                 }
-                let out = match (health, client) {
-                    (true, _) => self.dispatch(route, req, &ClientInfo::unknown()),
-                    (false, Ok(c)) => self.dispatch(route, req, &c),
-                    (false, Err(e)) => Err(e),
-                };
-                (class, demands, out)
+                None => (
+                    "/unknown",
+                    false,
+                    Err(ApiError::not_found("no route for this method and path")),
+                ),
             }
-            None => (
-                "/unknown",
-                false,
-                Err(ApiError::not_found("no route for this method and path")),
-            ),
         };
         let (resp, decision) = match out {
             Ok(r) if r.status >= 400 => (r, "refused"),
@@ -849,6 +854,11 @@ impl App {
                 let code = e.code;
                 (e.to_response(), code)
             }
+        };
+        let resp = if cors::allowlisted(&method, &path) {
+            resp.header("Access-Control-Allow-Origin", "*")
+        } else {
+            resp
         };
         self.finish(req, resp, class, decision, start, credentialed)
     }
@@ -1122,6 +1132,7 @@ fn method_word(method: &str) -> &'static str {
         "PATCH" => "PATCH",
         "DELETE" => "DELETE",
         "HEAD" => "HEAD",
+        "OPTIONS" => "OPTIONS",
         _ => "other",
     }
 }

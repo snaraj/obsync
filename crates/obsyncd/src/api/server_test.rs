@@ -477,6 +477,293 @@ impl Res {
     }
 }
 
+fn cors_preflight(method: &str, path: &str) -> Req {
+    Req::new("OPTIONS", path)
+        .header("Origin", "app://obsidian.md")
+        .header("Access-Control-Request-Method", method)
+}
+
+fn assert_cors_absent(response: &Res) {
+    assert!(
+        response
+            .headers
+            .iter()
+            .all(|(name, _)| !name.starts_with("access-control-")),
+        "assertion failed: unexpected CORS grant: {:?}",
+        response.headers
+    );
+}
+
+#[test]
+fn cors_preflight_covers_only_exact_plugin_routes_without_credentials() {
+    let h = Harness::start("cors-routes");
+    let id = "ab".repeat(16);
+    let sid = "cd".repeat(32);
+    let routes = [
+        ("GET", "/v1/account".into()),
+        ("GET", "/v1/devices".into()),
+        ("GET", "/v1/changes?since=0".into()),
+        ("GET", "/v1/files".into()),
+        ("GET", format!("/v1/files/{id}")),
+        ("GET", format!("/v1/files/{id}/versions/{sid}")),
+        ("GET", format!("/v1/chunks/{sid}")),
+        ("GET", format!("/v1/pairing/{id}")),
+        ("GET", "/v1/plugin/manifest".into()),
+        ("PUT", format!("/v1/chunks/{sid}")),
+        ("POST", "/v1/chunks/exists".into()),
+        ("POST", "/v1/chunks/get".into()),
+        ("POST", format!("/v1/pairing/{id}/reveal")),
+        ("GET", format!("/v1/pairing/{id}/envelope")),
+        ("POST", "/v1/setup".into()),
+        ("POST", "/v1/account/recovery".into()),
+        ("POST", "/v1/pairing".into()),
+        ("POST", format!("/v1/pairing/{id}/claim")),
+        ("POST", format!("/v1/pairing/{id}/approve")),
+        ("POST", format!("/v1/pairing/{id}/reject")),
+        ("PATCH", format!("/v1/devices/{id}")),
+        ("POST", format!("/v1/devices/{id}/revoke")),
+        ("POST", format!("/v1/devices/{id}/archive")),
+        ("POST", "/v1/devices/heartbeat".into()),
+        ("POST", format!("/v1/files/{id}/versions")),
+        ("POST", "/v1/dashboard/login-link".into()),
+    ];
+    let before = h.app.store.head_seq();
+    for (method, path) in routes {
+        let preflight = cors_preflight(method, &path)
+            .header("Access-Control-Request-Headers", "X-Obsync-Sig, Authorization, Content-Type, X-Obsync-Device, X-Obsync-Ts, X-Obsync-Nonce, X-Service, X-Edge-Id")
+            .send(h.addr);
+        assert_eq!(
+            preflight.status,
+            204,
+            "{method} {path}: {}",
+            preflight.text()
+        );
+        assert!(preflight.body.is_empty());
+        assert_eq!(preflight.headers_all("access-control-allow-origin"), ["*"]);
+        assert_eq!(
+            preflight.header("access-control-allow-methods"),
+            Some(method)
+        );
+        assert_eq!(
+            preflight.header("access-control-allow-headers"),
+            Some(
+                "authorization, content-type, x-edge-id, x-obsync-device, x-obsync-nonce, x-obsync-sig, x-obsync-ts, x-service"
+            )
+        );
+        assert_eq!(preflight.header("access-control-max-age"), Some("0"));
+        assert_eq!(
+            preflight.header("vary"),
+            Some("Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
+        );
+        assert_eq!(preflight.header("access-control-allow-credentials"), None);
+        assert_eq!(preflight.header("access-control-expose-headers"), None);
+        assert_eq!(preflight.header("x-obsync-seq"), None);
+        let actual = Req::new(method, &path).send(h.addr);
+        assert_eq!(
+            actual.headers_all("access-control-allow-origin"),
+            ["*"],
+            "{method} {path}"
+        );
+        assert_eq!(actual.header("access-control-allow-credentials"), None);
+        assert_eq!(actual.header("access-control-expose-headers"), None);
+    }
+    assert_eq!(h.app.store.head_seq(), before);
+    assert!(
+        h.app.store.account().is_none(),
+        "OPTIONS setup never enrolls"
+    );
+    for (method, path) in [
+        ("GET", "/livez".into()),
+        ("GET", "/readyz".into()),
+        ("GET", "/login".into()),
+        ("GET", "/".into()),
+        ("GET", "/app.js".into()),
+        ("GET", "/v1/admin/overview".into()),
+        ("POST", "/v1/admin/logout".into()),
+        ("POST", "/v1/admin/logout-all".into()),
+        ("POST", "/v1/admin/gc/run".into()),
+        ("GET", "/v1/plugin/bundle".into()),
+        ("GET", "/v1/dashboard/login-link".into()),
+        ("DELETE", "/v1/devices".into()),
+        ("GET", "/v1/devices/heartbeat".into()),
+        ("GET", "/v1/account/".into()),
+        ("GET", "/v1//account".into()),
+        ("GET", "/v1/files/not-an-id".into()),
+        ("GET", format!("/v1/files/{}", id.to_ascii_uppercase())),
+        ("GET", format!("/v1/chunks/{id}")),
+        ("GET", format!("/v1/files/{id}/versions/{id}")),
+    ] {
+        let preflight = cors_preflight(method, &path).send(h.addr);
+        assert_eq!(preflight.status, 404, "{method} {path}");
+        assert_cors_absent(&preflight);
+        assert_cors_absent(&Req::new(method, &path).send(h.addr));
+    }
+}
+
+#[test]
+fn cors_preflight_rejects_malformed_duplicate_forbidden_and_unbounded_headers() {
+    let h = Harness::start("cors-malformed");
+    let name_limit = format!("x-{}", "a".repeat(127));
+    let byte_limit = format!("x-{}", "a".repeat(4096));
+    let count_limit = (0..65)
+        .map(|n| format!("x-{n}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    for request in [
+        Req::new("OPTIONS", "/v1/account").header("Access-Control-Request-Method", "GET"),
+        Req::new("OPTIONS", "/v1/account").header("Origin", "null"),
+        cors_preflight("GET", "/v1/account").header("Origin", "null"),
+        cors_preflight("GET", "/v1/account").header("Access-Control-Request-Method", "GET"),
+        Req::new("OPTIONS", "/v1/account")
+            .header("Origin", " ")
+            .header("Access-Control-Request-Method", "GET"),
+        Req::new("OPTIONS", "/v1/account")
+            .header("Origin", "null null")
+            .header("Access-Control-Request-Method", "GET"),
+        cors_preflight("TRACE", "/v1/account"),
+        cors_preflight("get", "/v1/account"),
+        cors_preflight("GET, POST", "/v1/account"),
+        cors_preflight("GET", "/v1/account")
+            .header("Access-Control-Request-Headers", "x-a")
+            .header("Access-Control-Request-Headers", "x-b"),
+    ] {
+        let response = request.send(h.addr);
+        assert_eq!(response.status, 400, "{}", response.text());
+        assert_cors_absent(&response);
+    }
+    for names in [
+        "",
+        ",",
+        "x-a,",
+        "x-a,,x-b",
+        "X-A, x-a",
+        "x bad",
+        "x:bad",
+        "x-\tbad",
+        "x-\u{7f}bad",
+        "x-é",
+        "*",
+        "Cookie",
+        "Cookie2",
+        "Host",
+        "Origin",
+        "Authorization, Sec-Fetch-Site",
+        "pRoXy-Authorization",
+        "Access-Control-Request-Method",
+        "Access-Control-Request-Headers",
+        "Connection",
+        "Content-Length",
+        "Transfer-Encoding",
+        "User-Agent",
+        "X-HTTP-Method",
+        "X-HTTP-Method-Override",
+        "X-Method-Override",
+        &name_limit,
+        &byte_limit,
+        &count_limit,
+    ] {
+        let response = cors_preflight("GET", "/v1/account")
+            .header("Access-Control-Request-Headers", names)
+            .send(h.addr);
+        assert_eq!(response.status, 400, "{names:?}: {}", response.text());
+        assert_cors_absent(&response);
+    }
+    let no_headers = cors_preflight("GET", "/v1/account").send(h.addr);
+    assert_eq!(no_headers.status, 204);
+    assert_eq!(no_headers.header("access-control-allow-headers"), None);
+    let longest_name = format!("x-{}", "a".repeat(126));
+    assert_eq!(
+        cors_preflight("GET", "/v1/account")
+            .header("Access-Control-Request-Headers", &longest_name)
+            .send(h.addr)
+            .status,
+        204,
+        "128-byte names are valid"
+    );
+    let mut names: Vec<_> = (0..64)
+        .map(|n| format!("x-{n:02}-{}", "a".repeat(58)))
+        .collect();
+    names[0].push('a');
+    let at_limit = names.join(",");
+    assert_eq!(at_limit.len(), 4096);
+    assert_eq!(
+        cors_preflight("GET", "/v1/account")
+            .header("Access-Control-Request-Headers", &at_limit)
+            .send(h.addr)
+            .status,
+        204,
+        "64 names/4096 bytes are valid"
+    );
+    let response = cors_preflight("GET", "/v1/account")
+        .header("Access-Control-Request-Headers", &(at_limit + "a"))
+        .send(h.addr);
+    assert_eq!(response.status, 400);
+    assert_cors_absent(&response);
+}
+
+#[test]
+fn cors_options_does_not_consume_device_nonce_and_actual_auth_limits_still_apply() {
+    let h = Harness::start_with(
+        "cors-auth",
+        Setup {
+            dashboard: true,
+            ..Setup::default()
+        },
+    );
+    let cred = h.setup_account();
+    let before = h.app.store.head_seq();
+    let n = nonce();
+    let empty = hex::encode(&sha256::sha256(b""));
+    let preflight = cors_preflight("GET", "/v1/account")
+        .sign_with(&cred, NOW, &n, &empty)
+        .send(h.addr);
+    assert_eq!(preflight.status, 204);
+    assert_eq!(preflight.header("x-obsync-seq"), None);
+    assert_eq!(h.app.store.head_seq(), before);
+    let good = Req::get("/v1/account")
+        .sign_with(&cred, NOW, &n, &empty)
+        .send(h.addr);
+    assert_eq!(good.status, 200, "{}", good.text());
+    assert_eq!(good.header("access-control-allow-origin"), Some("*"));
+    let replay = Req::get("/v1/account")
+        .header("Origin", "null")
+        .sign_with(&cred, NOW, &n, &empty)
+        .send(h.addr);
+    assert_eq!(replay.status, 401);
+    assert_eq!(replay.code(), "replayed_nonce");
+    assert_eq!(replay.header("access-control-allow-origin"), Some("*"));
+    let oversized = Req::post("/v1/setup")
+        .raw_body(&vec![b'x'; crate::api::TOKEN_BODY_LIMIT as usize + 1])
+        .send(h.addr);
+    assert_eq!(oversized.status, 413);
+    assert_eq!(oversized.header("access-control-allow-origin"), Some("*"));
+    let cookie = admin_cookie(&h, &cred);
+    let admin = Req::get("/v1/admin/overview")
+        .header("Cookie", &cookie)
+        .send(h.addr);
+    assert_eq!(admin.status, 200, "{}", admin.text());
+    assert_cors_absent(&admin);
+    let login = Req::post("/v1/dashboard/login-link")
+        .sign(&cred, NOW)
+        .send(h.addr);
+    assert_eq!(login.status, 200);
+    assert_eq!(login.header("access-control-allow-origin"), Some("*"));
+    let edge = Harness::start_with(
+        "cors-edge-refusal",
+        Setup {
+            edge_mode: true,
+            ..Setup::default()
+        },
+    );
+    assert_eq!(
+        cors_preflight("GET", "/v1/account").send(edge.addr).status,
+        204
+    );
+    let refused = Req::get("/v1/account").send(edge.addr);
+    assert_eq!(refused.status, 421);
+    assert_eq!(refused.header("access-control-allow-origin"), Some("*"));
+}
+
 /// Security item 2 over the wire: three hundred uploads that each declare a
 /// maximal body to the unauthenticated setup route, each reserving
 /// `TOKEN_BODY_RESERVE`, and then send it slowly. What the process reserves for bodies no credential has verified
