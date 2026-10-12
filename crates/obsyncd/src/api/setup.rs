@@ -7,7 +7,7 @@ use obsync_core::http::{Request, Response};
 use obsync_core::json::obj;
 
 use crate::log::Val;
-use crate::storage::types::DeviceState;
+use crate::storage::types::NewSetup;
 use crate::types::UnixMs;
 
 use super::devices::Enrolment;
@@ -48,96 +48,55 @@ pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
         None => None,
         Some(_) => Some(verifier_field(&body, "recovery_verifier")?),
     };
-    let (account_id, recovered) = if let Some(account) = app.store.account() {
-        // An existing account is recovered, never recreated: the caller proves
-        // the vault key with a recovery proof, or pairs from a syncing device.
-        let Some(proof) = body.get("recovery_proof") else {
-            return Err(ApiError::new(
-                409,
-                "already_set_up",
-                "this account already exists; pair from a syncing device, or recover with its setup token and vault recovery phrase",
-            ));
-        };
-        // No verifier and no reset since: nothing here proves the vault, and
-        // the token alone must not. 1.1.4's answer, before any proof is read.
-        if account.recovery_verifier.is_none() && account.recovery_cleared.is_none() {
-            return Err(ApiError::new(
-                409,
-                "recovery_unavailable",
-                "no recovery key is registered for this account; pair from a syncing device, or ask the operator to reset recovery",
-            ));
-        }
-        // The verifier the proof derives. The server computes it, so a caller
-        // cannot register one without a proof that produces it.
-        let derived = proof
-            .as_str()
-            .filter(|text| super::is_hex(text, 64))
-            .and_then(|text| obsync_core::hex::decode(text).ok())
-            .map(|bytes| obsync_core::hex::encode(&obsync_core::sha256::sha256(&bytes)))
-            .ok_or_else(|| {
-                ApiError::new(
-                    403,
-                    "bad_recovery_proof",
-                    "these recovery words do not prove this vault; no device was enrolled",
-                )
-            })?;
-        match account.recovery_verifier.as_deref() {
-            Some(expected) => {
-                // Ordinary recovery: the proof must prove the registered key.
-                if !ct::eq(derived.as_bytes(), expected.as_bytes()) {
-                    return Err(ApiError::new(
-                        403,
-                        "bad_recovery_proof",
-                        "these recovery words do not prove this vault; no device was enrolled",
-                    ));
-                }
-            }
-            None => {
-                // The re-enrolment the operator's reset armed
-                // (`obsyncd recovery reset apply`, `docs/recovery.md`). There
-                // is nothing to check the proof against: the authority is that
-                // offline reset and the token it rotated, which only a reader
-                // of the journal volume since holds. The proof only chooses
-                // the verifier, registered timed so the last-device hold runs
-                // from now, and registering spends the arm; a wrong phrase
-                // locks out only its user, and the operator can reset again.
-                // No device credential reaches this: setup is authenticated by
-                // the token, and only the offline reset arms it. A verifier
-                // registered since the read is compared instead, so a proof
-                // that does not produce it is refused.
-                if !app.store.register_recovery(&derived, now)? {
-                    return Err(ApiError::new(
-                        403,
-                        "bad_recovery_proof",
-                        "these recovery words do not prove this vault; no device was enrolled",
-                    ));
-                }
-                app.log.info(
-                    "recovery_reestablished",
-                    &[
-                        ("account", Val::account(&account.account_id)),
-                        ("decision", Val::word("reestablished")),
-                        ("at", Val::ts(now)),
-                        // Some: checked above, beside no verifier.
-                        (
-                            "armed_at",
-                            Val::ts(account.recovery_cleared.unwrap_or_default()),
-                        ),
-                    ],
-                );
-            }
-        }
-        (account.account_id, true)
-    } else {
-        (
-            app.store
-                .setup_with_recovery(&account_name, recovery, now)?,
-            false,
-        )
+    let recover_only = match body.get("recover_only") {
+        None => false,
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| ApiError::bad_request("recover_only must be a boolean"))?,
     };
-    // Device one is active on creation: pairing approval needs an approver,
-    // and at setup there is none (`docs/architecture.md` 4.1).
-    let (record, secret) = devices::enrol(app, enrolment, DeviceState::Active)?;
+    if body.get("mode").is_some() {
+        return Err(ApiError::bad_request(
+            "unknown setup mode; use recover_only boolean",
+        ));
+    }
+    let mut secret = [0u8; 32];
+    super::rand::fill(&mut secret)
+        .map_err(|_| ApiError::new(500, "no_randomness", "the system CSPRNG is unavailable"))?;
+    // The setup token is immutable for this App's lifetime. The offline reset
+    // first takes the exclusive store lock and refuses while this App serves;
+    // it rotates the token before arming recovery. No queued old-token request
+    // can cross that boundary. Proof/reset validation is repeated under the
+    // journal writer lock, not against a stale account read in this handler.
+    let outcome = app.store.setup_enrolment(
+        NewSetup {
+            account_name,
+            recovery_verifier: recovery,
+            recovery_proof: body
+                .get("recovery_proof")
+                .map(|p| p.as_str().unwrap_or("").to_string()),
+            recover_only,
+            device_name: enrolment.name,
+            platform: enrolment.platform,
+            app_version: enrolment.app_version,
+            secret,
+        },
+        now,
+    )?;
+    let record = outcome.device;
+    let account_id = record.account_id;
+    let recovered = outcome.recovered;
+    if let Some(armed_at) = outcome.armed_at {
+        app.log.info(
+            "recovery_reestablished",
+            &[
+                ("account", Val::account(&account_id)),
+                ("decision", Val::word("reestablished")),
+                ("at", Val::ts(now)),
+                ("armed_at", Val::ts(armed_at)),
+            ],
+        );
+    }
+    let secret = obsync_core::hex::encode(&secret);
     app.log.info(
         if recovered {
             "account_recovered"
@@ -214,6 +173,14 @@ fn check_token(app: &App, token: &Credential) -> Result<(), ApiError> {
         ));
     }
     Ok(())
+}
+
+/// Public, state-independent discovery. It makes no suite-floor claim.
+pub fn capabilities() -> Response {
+    Response::json(
+        200,
+        &obj(vec![("recover_only", obsync_core::json::Value::Bool(true))]),
+    )
 }
 
 /// `GET /v1/account`.

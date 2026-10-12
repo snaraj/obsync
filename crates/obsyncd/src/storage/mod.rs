@@ -65,8 +65,8 @@ pub use self::index::FILE_MAX_HEADS;
 pub use self::posture::{Decision, Outcome, PathClass, Posture};
 pub use self::types::{
     AccountRecord, AppendDecision, AppendOutcome, Change, Changes, DevicePolicy, DeviceRecord,
-    DeviceState, FileRecord, FileSummary, GcSummary, NewDevice, NewVersion, PutOutcome,
-    ScrubSummary, SeenEvent, SeenKind, StoreError, VersionRecord, VolumeStatus,
+    DeviceState, FileRecord, FileSummary, GcSummary, NewDevice, NewSetup, NewVersion, PutOutcome,
+    ScrubSummary, SeenEvent, SeenKind, SetupOutcome, StoreError, VersionRecord, VolumeStatus,
 };
 
 /// The domain separator device secrets rest under
@@ -1060,6 +1060,85 @@ impl Store {
 
     // -- account and devices ----------------------------------------------
 
+    /// Create/recover an account and enroll an active device atomically.
+    /// Validation and publication share the journal lock, including reset-arm
+    /// consumption. One frame is required: a batch can replay a torn prefix.
+    pub fn setup_enrolment(&self, d: NewSetup, now: UnixMs) -> Result<SetupOutcome, StoreError> {
+        let mut journal = self.journal();
+        let index = self.index();
+        let recovered = index.account.is_some();
+        let mut armed_at = None;
+        let account = if let Some(mut account) = index.account.clone() {
+            let proof = d
+                .recovery_proof
+                .as_deref()
+                .ok_or(StoreError::AlreadySetUp)?;
+            if account.recovery_verifier.is_none() && account.recovery_cleared.is_none() {
+                return Err(StoreError::RecoveryUnavailable);
+            }
+            let bytes = if proof.len() == 64
+                && proof
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                hex::decode(proof).ok()
+            } else {
+                None
+            }
+            .ok_or(StoreError::BadRecoveryProof)?;
+            let derived = hex::encode(&obsync_core::sha256::sha256(&bytes));
+            if let Some(expected) = &account.recovery_verifier {
+                if !obsync_core::ct::eq(derived.as_bytes(), expected.as_bytes()) {
+                    return Err(StoreError::BadRecoveryProof);
+                }
+            } else {
+                armed_at = account.recovery_cleared;
+                account.recovery_verifier = Some(derived);
+                account.recovery_registered = Some(now);
+                account.recovery_cleared = None;
+            }
+            account
+        } else {
+            if d.recover_only {
+                return Err(StoreError::NotSetUp);
+            }
+            AccountRecord {
+                account_id: AccountId::new(random_bytes::<16>()?),
+                name: d.account_name,
+                created: now,
+                quota_bytes: None,
+                recovery_registered: d.recovery_verifier.as_ref().map(|_| now),
+                recovery_verifier: d.recovery_verifier,
+                recovery_cleared: None,
+                used_bytes: 0,
+            }
+        };
+        let record = new_device_record(
+            NewDevice {
+                account_id: account.account_id,
+                name: d.device_name,
+                platform: d.platform,
+                app_version: d.app_version,
+                secret: d.secret,
+                state: DeviceState::Active,
+            },
+            now,
+        )?;
+        let wrapped = self.wrap(record.device_id.as_bytes(), &d.secret);
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::Setup {
+                account,
+                record: record.clone(),
+                wrapped,
+            }]
+        })?;
+        Ok(SetupOutcome {
+            device: record,
+            recovered,
+            armed_at,
+        })
+    }
+
     /// Create the one account. Valid once (docs/protocol.md, `/v1/setup`).
     pub fn setup(&self, name: &str) -> Result<AccountId, StoreError> {
         self.setup_with_recovery(name, None, UnixMs::now())
@@ -1167,25 +1246,11 @@ impl Store {
             Some(id) if id == d.account_id => {}
             _ => return Err(StoreError::NotSetUp),
         }
-        let device_id = DeviceId::new(random_bytes::<16>()?);
-        let record = DeviceRecord {
-            device_id,
-            account_id: d.account_id,
-            name: d.name,
-            platform: d.platform,
-            app_version: d.app_version,
-            created: UnixMs::now(),
-            last_seen: None,
-            last_sign_in: None,
-            last_edit: None,
-            last_heartbeat: None,
-            address: None,
-            country: None,
-            policy: DevicePolicy::default(),
-            state: d.state,
-            archived: false,
-        };
-        let wrapped = self.wrap(device_id.as_bytes(), &d.secret);
+        let state = d.state;
+        let secret = d.secret;
+        let record = new_device_record(d, UnixMs::now())?;
+        let device_id = record.device_id;
+        let wrapped = self.wrap(device_id.as_bytes(), &secret);
         let stored = record.clone();
         self.commit(&mut journal, index, |_| {
             vec![Frame::Device {
@@ -1197,7 +1262,7 @@ impl Store {
             "device_created",
             &[
                 ("device", Val::device(&device_id)),
-                ("state", Val::word(d.state.as_word())),
+                ("state", Val::word(state.as_word())),
             ],
         );
         Ok(record)
@@ -2318,4 +2383,25 @@ impl Store {
     fn wrapped_secret(&self, id: &DeviceId) -> Option<[u8; 32]> {
         self.index().devices.get(id).map(|entry| entry.wrapped)
     }
+}
+
+fn new_device_record(d: NewDevice, now: UnixMs) -> Result<DeviceRecord, StoreError> {
+    let device_id = DeviceId::new(random_bytes::<16>()?);
+    Ok(DeviceRecord {
+        device_id,
+        account_id: d.account_id,
+        name: d.name,
+        platform: d.platform,
+        app_version: d.app_version,
+        created: now,
+        last_seen: None,
+        last_sign_in: None,
+        last_edit: None,
+        last_heartbeat: None,
+        address: None,
+        country: None,
+        policy: DevicePolicy::default(),
+        state: d.state,
+        archived: false,
+    })
 }

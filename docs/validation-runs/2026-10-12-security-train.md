@@ -917,3 +917,88 @@ The simultaneous macOS native job still refuses plaintext custody on one peer
 before restart; the serialized journey passes. Neither result establishes a
 root cause. The required security job failed before release classification in
 this run; the unassigned release step remains a separate outstanding gate.
+
+## Atomic recovery and isolated suite-2 components
+
+This checkpoint implements atomic server enrollment and adds an isolated backup
+codec and RFC 5297 cipher module. The live sync engine and pairing still use
+their prior format. The suite floor, rotation transaction, local pin and client
+staging are not complete here; none of these component results proves their
+end-to-end behavior.
+
+### Atomic server enrollment
+
+`Store::setup_enrolment` serializes proof/reset-arm validation and active-device
+creation, appending one durable `setup_enrolment` frame before either account or
+device becomes visible. The previous split transaction reproduced a consumed
+reset arm with no device after a device-creation failure. The new tests cover
+every torn frame byte boundary, append/fsync failures, lost reply after durable
+publication, competing proofs/registration, restart and real referenced-blob
+quota preservation. Replay also rejects recursively nested frames and mismatched
+outer/nested account or device identities. `recover_only:true` refuses an absent
+account without changing it; public `GET /v1/setup` advertises that capability.
+These are current semantics, not an implemented suite-2 account floor.
+
+Worker validation passes 29 journal, seven atomic storage and three recovery
+wire tests, plus 12 intended assertion mutations. The coordinator independently
+passes those same 39 tests. Its first wire attempt was denied loopback binding
+by the sandbox and is excluded; the authorized fixture run passes. Commands:
+`cargo test -p obsyncd atomic_setup`, `cargo test -p obsyncd recover_only`, and
+`cargo test -p obsyncd storage::journal::tests`.
+
+### Cipher and backup components
+
+The standalone AES-SIV module uses native WebCrypto CBC/CTR primitives and no
+new runtime dependency. Its 23 tests include published RFC 5297 and NIST CMAC
+vectors, boundary lengths, tag/mask refusal, input snapshots, budgets and
+unavailable RNG. The worker's 42 intended assertion mutations fail; an initial
+snapshot mutation that failed outside its assertion was corrected and excluded.
+The coordinator independently removes CTR mask byte 8, observes the intended
+assertion failure, restores the source and passes all 23 tests.
+
+The coordinator runs `node plugin/test/aes-siv-evp.mjs <compiled-siv-reference>`
+against the committed, test-only OpenSSL EVP helper: 133 differential cases,
+266 cross-decryptions, ten negative cases and two RFC wrapper vectors pass in
+2,300 ms. Node 26.10.0 uses OpenSSL 3.5.8; the oracle is OpenSSL 4.0.3's default
+AES-256-SIV provider. These are independent full-mode implementations, but both
+use OpenSSL AES primitives: this is not two independent AES engines. The helper
+is manual test tooling, not a product dependency or an enforced hosted job.
+
+The detached backup codec's ten tests and 21 existing pairing tests pass. Its
+worker reports 19 intended assertion mutations; the coordinator independently
+proves a valid 24-word phrase with its live prefix stripped is refused, removes
+only that refusal to obtain the intended assertion failure, then restores and
+passes all ten tests. Two earlier coarse probes failed different assertions
+and are not counted as the targeted prefix control. The combined coordinator
+run passes all 54 cipher/backup/pairing tests:
+`node --test plugin/test/aes-siv.test.mjs plugin/test/recoveryBackup.test.mjs plugin/test/pairing.test.mjs`.
+
+The [specified suite-2 context and KDF](../security/e09-key-nonce-inventory.md)
+and [migration contract](../security/device-revocation.md) replace the rejected
+custom GCM composition. They remain subject to independent architecture review,
+quantitative workload assessment, integration, crash controls and native device
+acceptance. A missing map cannot authorize fallback or a new live vault; a
+legacy backup is an explicit history/migration input, never a silent live-v2
+parser fallback.
+
+### Composed gate and scan controls
+
+The composed `make check` passes Rust format/lint/workspace tests, **94.85%**
+line coverage, **2,292** plugin tests, **83** dashboard tests, the native CLI
+journey, chart checks and **922** contracts. Its E2EE run passes **19 flows,
+two planted controls, 187 requests, 12 storage files and 50 needles** in
+**5,680 ms**. The first attempt caught the old GET-setup-is-unknown route
+expectation; the corrected test positively checks GET capabilities and keeps
+PUT refused before the composed run above.
+
+That run stops at the final secret scan on the SIV fixture's public `00..3f`
+counting-sequence key. The repair adds a `generic-api-key` finding-level
+exception requiring both the exact fixture path and that exact public value.
+An initial global path/value exception incorrectly skipped the entire file;
+the coordinator's planted different-key and extra-key controls exposed it, and
+that form is discarded. The final rule-scoped exception detects both controls,
+the same value in a different file, and removal of the exception. Exact/restored
+fixtures pass. Both full working-tree and outgoing-range scans are rerun after
+the repair. No product or test assertion changed after the composed battery;
+this is the full battery followed by a bounded scanner-configuration repair,
+not one successful `make check` invocation at the final snapshot.

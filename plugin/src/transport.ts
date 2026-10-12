@@ -219,6 +219,7 @@ const SID = "[0-9a-f]{64}";
  * table nobody reads.
  */
 export const ROUTES: readonly Route[] = [
+  { method: "GET", path: /^\/v1\/setup$/, idempotent: true },
   { method: "GET", path: /^\/v1\/account$/, idempotent: true },
   { method: "GET", path: /^\/v1\/devices$/, idempotent: true },
   { method: "GET", path: /^\/v1\/changes$/, idempotent: true },

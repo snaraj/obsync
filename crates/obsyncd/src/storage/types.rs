@@ -158,6 +158,36 @@ pub struct NewDevice {
     pub state: DeviceState,
 }
 
+/// Authenticated setup input; the account and active device are one transaction.
+pub struct NewSetup {
+    /// First-boot account name; recovery never changes an existing name.
+    pub account_name: String,
+    /// Optional first-boot verifier.
+    pub recovery_verifier: Option<String>,
+    /// Recovery proof for an existing account (not a content key).
+    pub recovery_proof: Option<String>,
+    /// Refuse an absent account instead of creating one.
+    pub recover_only: bool,
+    /// Validated device name.
+    pub device_name: String,
+    /// Validated platform word.
+    pub platform: String,
+    /// Validated plugin version.
+    pub app_version: String,
+    /// Newly generated device API secret.
+    pub secret: [u8; 32],
+}
+
+/// The durable setup result.
+pub struct SetupOutcome {
+    /// Enrolled active device.
+    pub device: DeviceRecord,
+    /// Whether an existing account was recovered.
+    pub recovered: bool,
+    /// The reset arm consumed by this transaction, if any.
+    pub armed_at: Option<UnixMs>,
+}
+
 /// What kind of activity a [`SeenEvent`] records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SeenKind {
@@ -566,6 +596,10 @@ pub enum StoreError {
     NotSetUp,
     /// Setup has already run.
     AlreadySetUp,
+    /// No verifier is registered and no operator reset armed recovery.
+    RecoveryUnavailable,
+    /// The recovery proof is malformed or does not match the verifier.
+    BadRecoveryProof,
     /// The filesystem refused.
     Io(io::Error),
     /// A volume root or credential file whose type, owner, or mode is not
@@ -641,6 +675,8 @@ impl fmt::Display for StoreError {
             StoreError::UnknownVersion => f.write_str("unknown version"),
             StoreError::NotSetUp => f.write_str("not set up"),
             StoreError::AlreadySetUp => f.write_str("already set up"),
+            StoreError::RecoveryUnavailable => f.write_str("recovery unavailable"),
+            StoreError::BadRecoveryProof => f.write_str("bad recovery proof"),
             StoreError::Io(e) => write!(f, "io error: {:?}", e.kind()),
             StoreError::Locked => write!(f, "the journal is held by another obsyncd process"),
             StoreError::Posture { class, reason } => {
@@ -707,6 +743,8 @@ impl StoreError {
             StoreError::UnknownVersion => "unknown_version",
             StoreError::NotSetUp => "not_set_up",
             StoreError::AlreadySetUp => "already_set_up",
+            StoreError::RecoveryUnavailable => "recovery_unavailable",
+            StoreError::BadRecoveryProof => "bad_recovery_proof",
             StoreError::Io(_) => "io_error",
             StoreError::Locked => "journal_locked",
             StoreError::Posture { .. } => "unsafe_posture",

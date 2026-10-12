@@ -126,6 +126,31 @@ impl Index {
                     used_bytes: 0,
                 });
             }
+            Frame::Setup {
+                account,
+                record: device,
+                wrapped,
+            } => {
+                // Called under the index guard: readers see both changes together.
+                self.apply(&Record {
+                    seq: record.seq,
+                    account_id: record.account_id,
+                    frame: super::account_frame(
+                        account.clone(),
+                        account.recovery_verifier.clone(),
+                        account.recovery_registered,
+                        account.recovery_cleared,
+                    ),
+                });
+                self.apply(&Record {
+                    seq: record.seq,
+                    account_id: record.account_id,
+                    frame: Frame::Device {
+                        record: device.clone(),
+                        wrapped: *wrapped,
+                    },
+                });
+            }
             Frame::Device {
                 record: device,
                 wrapped,

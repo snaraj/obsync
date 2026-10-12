@@ -1,9 +1,9 @@
 # Secret-scan configuration.
 #
 # The default gitleaks rule set is used WHOLE -- `useDefault = true` below --
-# and nothing here disables, edits, or narrows a rule. The only entry is one
-# path allowlist, for one file, with the reason written down. That is the
-# entire mechanism: requirement 11 says no credential enters this repository,
+# and nothing here disables or edits a rule. Exceptions name public test
+# vectors and git-ignored mirrors, with their reasons below. Requirement 11
+# says no credential enters this repository,
 # and a scan configuration is the last place that promise should be quietly
 # renegotiated.
 #
@@ -53,6 +53,20 @@ paths = ['''^plugin/test/fixtures/crypto\.json$''']
 [[allowlists]]
 description = "Sentinel-derived pairing v2 known-answer vector, regenerable from plugin/test/fixtures/generate-pairing-v2.mjs; the P-256 scalars are 01..01 and 02..02 and every other value derives from them."
 paths = ['''^plugin/test/fixtures/pairing-v2\.json$''']
+
+# One exact public counting-sequence input, not the whole SIV fixture. The
+# independent EVP vectors use bytes 00..3f as their 64-byte key. AND requires
+# both this path and this exact captured value; another key in the same file
+# and this value in another file remain scanned. targetRules makes this a
+# finding-level exception: a global path allowance would skip the entire file
+# before checking the value. No rule is disabled.
+[[allowlists]]
+description = "Exact public 00..3f AES-SIV fixture input; ciphertext regenerated with the committed OpenSSL EVP helper."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^plugin/test/fixtures/aes-siv-512\.json$''']
+regexTarget = "secret"
+regexes = ['''^000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f$''']
 
 # The git-ignored MIRRORS. `gitleaks dir` walks the working tree, which on a
 # developer's machine and inside a lane's worktree contains three directories

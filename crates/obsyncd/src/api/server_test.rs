@@ -6379,3 +6379,125 @@ fn first_setup_accepts_a_verifier_and_rejects_malformed_values_before_claiming()
         Some("ab".repeat(32))
     );
 }
+
+#[test]
+fn recover_only_discovery_is_public_and_state_independent() {
+    let h = Harness::start("recover-only-capability");
+    let before = Req::get("/v1/setup").send(h.addr);
+    assert_eq!(before.status, 200);
+    assert_eq!(before.json().to_json(), r#"{"recover_only":true}"#);
+    assert_eq!(before.header("access-control-allow-origin"), Some("*"));
+    assert!(h.app.store.account().is_none());
+    assert!(h.app.store.devices().is_empty());
+    let seq = h.app.store.head_seq();
+    let preflight = Req::new("OPTIONS", "/v1/setup")
+        .header("Origin", "app://obsidian.md")
+        .header("Access-Control-Request-Method", "GET")
+        .send(h.addr);
+    assert_eq!(preflight.status, 204);
+    assert_eq!(h.app.store.head_seq(), seq);
+    h.setup_account();
+    assert_eq!(Req::get("/v1/setup").send(h.addr).body, before.body);
+}
+
+#[test]
+fn recover_only_strict_mode_refuses_absent_account_without_mutation() {
+    let h = Harness::start("recover-only-absent");
+    let original = setup_body(&h.token);
+    for suffix in [
+        r#", "recover_only":"true""#,
+        r#", "recover_only":null"#,
+        r#", "recover_only":0"#,
+        r#", "recover_only":[]"#,
+        r#", "recover_only":{}"#,
+        r#", "mode":"recover_only""#,
+        r#", "mode":"unknown""#,
+    ] {
+        let body = format!("{}{suffix}}}", &original[..original.len() - 1]);
+        let response = Req::post("/v1/setup").body(&body).send(h.addr);
+        assert_eq!(response.status, 400, "{suffix}");
+        assert_eq!(response.code(), "bad_request");
+        assert!(h.app.store.account().is_none());
+        assert!(h.app.store.devices().is_empty());
+        assert_eq!(h.app.store.head_seq().0, 0);
+    }
+    let only = format!(
+        "{}, \"recover_only\":true, \"recovery_proof\":\"{}\"}}",
+        &original[..original.len() - 1],
+        "a7".repeat(32)
+    );
+    let response = Req::post("/v1/setup").body(&only).send(h.addr);
+    assert_eq!(response.status, 409);
+    assert_eq!(response.code(), "not_set_up");
+    assert!(h.app.store.account().is_none());
+    assert!(h.app.store.devices().is_empty());
+    assert_eq!(h.app.store.head_seq().0, 0);
+    let false_mode = format!(
+        "{}, \"recover_only\":false}}",
+        &original[..original.len() - 1]
+    );
+    assert_eq!(
+        Req::post("/v1/setup").body(&false_mode).send(h.addr).status,
+        201,
+        "explicit false preserves generic first setup"
+    );
+}
+
+#[test]
+fn recover_only_existing_proof_and_reply_bind_the_durable_device() {
+    let h = Harness::start("recover-only-existing");
+    let first = h.setup_account();
+    let proof = "a7".repeat(32);
+    let verifier = hex::encode(&sha256::sha256(&[0xa7; 32]));
+    let register = Req::post("/v1/account/recovery")
+        .body(&format!(r#"{{"recovery_verifier":"{verifier}"}}"#))
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(register.status, 204);
+    let body = reenrol_body(&h.token, &proof);
+    let body = format!("{}, \"recover_only\":true}}", &body[..body.len() - 1]);
+    let result = Req::post("/v1/setup").body(&body).send(h.addr);
+    assert_eq!(result.status, 201);
+    let reply = result.json();
+    assert_eq!(reply.get("recovered").and_then(Value::as_bool), Some(true));
+    let device_id = reply
+        .get("device_id")
+        .and_then(Value::as_str)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let persisted = h.app.store.device(&device_id).unwrap();
+    assert_eq!(persisted.name, "returned");
+    assert_eq!(persisted.platform, "macos");
+    assert_eq!(persisted.app_version, "1.1.5");
+    assert_eq!(
+        persisted.account_id.to_string(),
+        reply.get("account_id").and_then(Value::as_str).unwrap()
+    );
+    assert_eq!(persisted.state, crate::storage::DeviceState::Active);
+    assert_eq!(
+        hex::encode(&h.app.store.device_secret(&device_id).unwrap()),
+        reply.get("device_secret").and_then(Value::as_str).unwrap()
+    );
+    assert_eq!(h.app.store.account().unwrap().name, "vault");
+    assert_eq!(
+        h.app.store.account().unwrap().recovery_verifier,
+        Some(verifier)
+    );
+    let seq = h.app.store.head_seq();
+    let wrong = body.replace(&proof, &"b8".repeat(32));
+    let refused = Req::post("/v1/setup").body(&wrong).send(h.addr);
+    assert_eq!(refused.status, 403);
+    assert_eq!(refused.code(), "bad_recovery_proof");
+    assert_eq!(h.app.store.head_seq(), seq);
+    assert_eq!(h.app.store.devices().len(), 2);
+    for malformed in [proof.to_ascii_uppercase(), "broken".to_string()] {
+        let result = Req::post("/v1/setup")
+            .body(&body.replace(&proof, &malformed))
+            .send(h.addr);
+        assert_eq!(result.status, 403);
+        assert_eq!(result.code(), "bad_recovery_proof");
+        assert_eq!(h.app.store.head_seq(), seq);
+        assert_eq!(h.app.store.devices().len(), 2);
+    }
+}

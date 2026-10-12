@@ -20,7 +20,8 @@ pub(super) fn allowlisted(method: &str, path: &str) -> bool {
         return false;
     };
     match route {
-        Route::Setup
+        Route::SetupCapabilities
+        | Route::Setup
         | Route::Account
         | Route::RecoveryRegister
         | Route::PairingCreate

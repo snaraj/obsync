@@ -291,7 +291,21 @@ impl From<StoreError> for ApiError {
             ),
             StoreError::UnknownVersion => ApiError::new(404, code, "no such version"),
             StoreError::NotSetUp => ApiError::new(409, code, "no account exists yet"),
-            StoreError::AlreadySetUp => ApiError::new(409, code, "the account already exists"),
+            StoreError::AlreadySetUp => ApiError::new(
+                409,
+                code,
+                "the account already exists; pair or supply its recovery proof",
+            ),
+            StoreError::RecoveryUnavailable => ApiError::new(
+                409,
+                code,
+                "no recovery key is registered; pair or ask the operator to reset recovery",
+            ),
+            StoreError::BadRecoveryProof => ApiError::new(
+                403,
+                code,
+                "these recovery words do not prove this vault; no device was enrolled",
+            ),
             // The same decision `code` took, so the status and the code agree:
             // a disk with no room is full, whatever the watermark believed.
             ref full if full.out_of_space() => {
@@ -872,6 +886,7 @@ impl App {
         match route {
             Route::Livez => Ok(Response::text(200, "ok")),
             Route::Readyz => self.readyz(),
+            Route::SetupCapabilities => Ok(setup::capabilities()),
             Route::Setup => setup::create(self, req),
             Route::Account => setup::account(self, req, client),
             Route::RecoveryRegister => setup::register_recovery(self, req, client),
@@ -1077,6 +1092,7 @@ fn demands_credential(route: &Route) -> bool {
         // neither can be told from a probe by its status alone.
         Route::Livez
         | Route::Readyz
+        | Route::SetupCapabilities
         | Route::Setup
         | Route::PairingClaim(_)
         | Route::PluginManifest
@@ -1192,6 +1208,8 @@ pub enum Route {
     Livez,
     /// `GET /readyz`
     Readyz,
+    /// `GET /v1/setup`
+    SetupCapabilities,
     /// `POST /v1/setup`
     Setup,
     /// `GET /v1/account`
@@ -1278,6 +1296,7 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
         ("GET", ["livez"]) => (Route::Livez, "/livez"),
         ("GET", ["readyz"]) => (Route::Readyz, "/readyz"),
 
+        ("GET", ["v1", "setup"]) => (Route::SetupCapabilities, "/v1/setup"),
         ("POST", ["v1", "setup"]) => (Route::Setup, "/v1/setup"),
         ("GET", ["v1", "account"]) => (Route::Account, "/v1/account"),
         ("POST", ["v1", "account", "recovery"]) => {

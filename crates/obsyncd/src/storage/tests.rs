@@ -4498,3 +4498,348 @@ fn releasing_waiters_answers_a_long_poll_at_once_and_every_later_one() {
         "and a later one does not wait"
     );
 }
+
+fn atomic_setup(proof: Option<&str>, recover_only: bool) -> NewSetup {
+    NewSetup {
+        account_name: "atomic sentinel".into(),
+        recovery_verifier: None,
+        recovery_proof: proof.map(str::to_string),
+        recover_only,
+        device_name: "atomic device".into(),
+        platform: "linux".into(),
+        app_version: "1.1.7".into(),
+        secret: [0x59; 32],
+    }
+}
+
+#[test]
+fn atomic_setup_append_refusals_preserve_account_arm_and_devices() {
+    for initial in [true, false] {
+        for at in [AppendPhase::Write, AppendPhase::Sync] {
+            let dir = TempDir::new("atomic-setup-refusal");
+            let cfg = config(&dir);
+            let store = open(&cfg);
+            if !initial {
+                store.setup("existing sentinel").unwrap();
+                store.reset_recovery(UnixMs(7)).unwrap();
+            }
+            let before = store.account();
+            let seq = store.head_seq();
+            store.set_fault(Fault::JournalAppendErrno { code: 28, at });
+            assert!(
+                store
+                    .setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), !initial), UnixMs(9))
+                    .is_err()
+            );
+            assert_eq!(store.head_seq(), seq);
+            assert!(store.devices().is_empty());
+            assert_eq!(
+                store.account().map(|a| (
+                    a.account_id,
+                    a.name,
+                    a.recovery_verifier,
+                    a.recovery_cleared
+                )),
+                before.clone().map(|a| (
+                    a.account_id,
+                    a.name,
+                    a.recovery_verifier,
+                    a.recovery_cleared
+                ))
+            );
+            drop(store);
+            let store = open(&cfg);
+            assert!(store.devices().is_empty());
+            assert_eq!(
+                store.account().map(|a| (
+                    a.account_id,
+                    a.name,
+                    a.recovery_verifier,
+                    a.recovery_cleared
+                )),
+                before.map(|a| (
+                    a.account_id,
+                    a.name,
+                    a.recovery_verifier,
+                    a.recovery_cleared
+                ))
+            );
+        }
+    }
+}
+
+#[test]
+fn atomic_setup_every_torn_byte_boundary_replays_both_or_neither() {
+    for initial in [true, false] {
+        let dir = TempDir::new("atomic-setup-byte-cut");
+        let cfg = config(&dir);
+        let store = open(&cfg);
+        if !initial {
+            store.setup("existing sentinel").unwrap();
+            store.reset_recovery(UnixMs(7)).unwrap();
+        }
+        let segment = cfg.journal_dir.join("v1/journal/000001.log");
+        let prefix = fs::read(&segment).map(|b| b.len()).unwrap_or(0);
+        let before = store.account();
+        let outcome = store
+            .setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), !initial), UnixMs(9))
+            .unwrap();
+        let complete = fs::read(&segment).unwrap();
+        drop(store);
+        for cut in prefix..=complete.len() {
+            fs::write(&segment, &complete[..cut]).unwrap();
+            let restored = open(&cfg);
+            if cut == complete.len() {
+                let devices = restored.devices();
+                assert_eq!(devices.len(), 1, "cut {cut}");
+                assert_eq!(devices[0].device_id, outcome.device.device_id);
+                assert_eq!(
+                    devices[0].account_id,
+                    restored.account().unwrap().account_id
+                );
+                assert_eq!(
+                    restored.device_secret(&devices[0].device_id),
+                    Some([0x59; 32])
+                );
+                assert_eq!(restored.account().unwrap().recovery_cleared, None);
+                if !initial {
+                    assert!(restored.account().unwrap().recovery_verifier.is_some());
+                }
+            } else {
+                assert!(restored.devices().is_empty(), "cut {cut}");
+                assert_eq!(
+                    restored.account().map(|a| (
+                        a.account_id,
+                        a.recovery_verifier,
+                        a.recovery_cleared
+                    )),
+                    before
+                        .clone()
+                        .map(|a| (a.account_id, a.recovery_verifier, a.recovery_cleared)),
+                    "cut {cut}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn atomic_setup_lost_reply_restarts_with_the_complete_enrollment() {
+    let dir = TempDir::new("atomic-setup-lost-reply");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    store.setup("existing sentinel").unwrap();
+    store.reset_recovery(UnixMs(7)).unwrap();
+    store.set_fault(Fault::JournalCrashAfterSync);
+    assert!(
+        store
+            .setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), true), UnixMs(9))
+            .is_err()
+    );
+    assert!(
+        store.devices().is_empty(),
+        "crash happened before index apply"
+    );
+    assert_eq!(store.account().unwrap().recovery_cleared, Some(UnixMs(7)));
+    drop(store);
+    let restored = open(&cfg);
+    let device = &restored.devices()[0];
+    assert_eq!(device.name, "atomic device");
+    assert_eq!(device.state, DeviceState::Active);
+    assert_eq!(restored.device_secret(&device.device_id), Some([0x59; 32]));
+    let account = restored.account().unwrap();
+    assert_eq!(account.name, "existing sentinel");
+    assert_eq!(account.recovery_cleared, None);
+    assert_eq!(account.recovery_registered, Some(UnixMs(9)));
+    assert_eq!(
+        account.recovery_verifier,
+        Some(hex::encode(&sha256(&[0xa7; 32])))
+    );
+    assert!(matches!(
+        restored.setup_enrolment(atomic_setup(Some(&"b8".repeat(32)), true), UnixMs(10)),
+        Err(StoreError::BadRecoveryProof)
+    ));
+    // POST setup remains non-idempotent: a deliberate same-proof recovery
+    // enrolls another device, but never consumes a second reset arm.
+    let retry = restored
+        .setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), true), UnixMs(10))
+        .unwrap();
+    assert_eq!(retry.armed_at, None);
+    assert_eq!(
+        restored.account().unwrap().recovery_registered,
+        Some(UnixMs(9))
+    );
+    assert_eq!(restored.devices().len(), 2);
+}
+
+#[test]
+fn atomic_setup_reset_arm_races_choose_one_verifier_and_one_device() {
+    let dir = TempDir::new("atomic-setup-race");
+    let cfg = config(&dir);
+    let store = Arc::new(open(&cfg));
+    store.setup("existing sentinel").unwrap();
+    store.reset_recovery(UnixMs(7)).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let workers: Vec<_> = ["a7".repeat(32), "b8".repeat(32)]
+        .into_iter()
+        .map(|proof| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                store.setup_enrolment(atomic_setup(Some(&proof), true), UnixMs(9))
+            })
+        })
+        .collect();
+    barrier.wait();
+    let results: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, Err(StoreError::BadRecoveryProof)))
+            .count(),
+        1
+    );
+    assert_eq!(store.devices().len(), 1);
+    assert_eq!(store.account().unwrap().recovery_cleared, None);
+    drop(store);
+    let restored = open(&cfg);
+    assert_eq!(restored.devices().len(), 1);
+    assert_eq!(restored.account().unwrap().recovery_cleared, None);
+}
+
+#[test]
+fn atomic_setup_registration_race_cannot_spend_arm_and_enroll_wrong_proof() {
+    let dir = TempDir::new("atomic-registration-race");
+    let cfg = config(&dir);
+    let store = Arc::new(open(&cfg));
+    store.setup("existing sentinel").unwrap();
+    store.reset_recovery(UnixMs(7)).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let verifier = hex::encode(&sha256(&[0xb8; 32]));
+    let register = {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            store.register_recovery(&verifier, UnixMs(8)).unwrap()
+        })
+    };
+    let recover = {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            store.setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), true), UnixMs(9))
+        })
+    };
+    barrier.wait();
+    let registered = register.join().unwrap();
+    let recovered = recover.join().unwrap();
+    assert_ne!(
+        registered,
+        recovered.is_ok(),
+        "exactly one verifier won the serialized boundary"
+    );
+    assert_eq!(store.devices().len(), usize::from(recovered.is_ok()));
+    let expected = if registered { [0xb8; 32] } else { [0xa7; 32] };
+    assert_eq!(
+        store.account().unwrap().recovery_verifier,
+        Some(hex::encode(&sha256(&expected)))
+    );
+    assert_eq!(store.account().unwrap().recovery_cleared, None);
+}
+
+#[test]
+fn atomic_setup_before_append_watermark_refusal_changes_nothing() {
+    for initial in [true, false] {
+        let dir = TempDir::new("atomic-setup-watermark");
+        let cfg = config(&dir);
+        let store = open(&cfg);
+        if !initial {
+            store.setup("existing sentinel").unwrap();
+            store.reset_recovery(UnixMs(7)).unwrap();
+        }
+        let before = store.account();
+        let seq = store.head_seq();
+        drop(store);
+        let mut tight = cfg.clone();
+        tight.journal_capacity = journal_root_bytes(&cfg) + WATERMARK;
+        let store = open(&tight);
+        assert!(matches!(
+            store.setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), !initial), UnixMs(9)),
+            Err(StoreError::JournalFull { .. })
+        ));
+        assert_eq!(store.head_seq(), seq);
+        assert!(store.devices().is_empty());
+        drop(store);
+        let restored = open(&cfg);
+        assert_eq!(
+            restored
+                .account()
+                .map(|a| (a.account_id, a.recovery_verifier, a.recovery_cleared)),
+            before.map(|a| (a.account_id, a.recovery_verifier, a.recovery_cleared))
+        );
+        assert!(restored.devices().is_empty());
+        assert_eq!(restored.head_seq(), seq);
+    }
+}
+
+#[test]
+fn atomic_setup_recovery_preserves_referenced_blob_usage_and_quota_after_restart() {
+    for reset in [false, true] {
+        let dir = TempDir::new("atomic-recovery-quota");
+        let cfg = config(&dir);
+        let setup = ready(&cfg);
+        let account_id = setup.account;
+        set_quota(&setup, 8);
+        let sid = put(&setup, b"sentinel");
+        let reference = version(&setup, file(7), "quota", &[], &[sid], false);
+        setup.store.append_version(reference).unwrap();
+        let proof = "a7".repeat(32);
+        if reset {
+            setup.store.reset_recovery(UnixMs(7)).unwrap();
+        } else {
+            assert!(
+                setup
+                    .store
+                    .register_recovery(&hex::encode(&sha256(&[0xa7; 32])), UnixMs(7))
+                    .unwrap()
+            );
+        }
+        let assert_quota = |store: &Store| {
+            let account = store.account().unwrap();
+            assert_eq!(account.account_id, account_id);
+            assert_eq!(account.used_bytes, 8, "real blob inventory, reset={reset}");
+            assert_eq!(account.quota_bytes, Some(8));
+            assert!(store.chunk_exists(&sid));
+            assert!(
+                store.file(&file(7)).is_some(),
+                "referenced version survives"
+            );
+            let new_sid = Sid::new(sha256(b"x"));
+            assert!(matches!(
+                store.put_chunk(&account_id, &new_sid, 1, &mut &b"x"[..]),
+                Err(StoreError::QuotaExceeded { used: 9, quota: 8 })
+            ));
+            assert!(!store.chunk_exists(&new_sid), "refused body did not land");
+            assert_eq!(store.account().unwrap().used_bytes, 8);
+        };
+        assert_quota(&setup.store);
+        let recovery = setup
+            .store
+            .setup_enrolment(atomic_setup(Some(&proof), true), UnixMs(9))
+            .unwrap();
+        assert!(recovery.recovered);
+        assert_eq!(recovery.device.account_id, account_id);
+        assert_quota(&setup.store);
+        drop(setup);
+        let restored = open(&cfg);
+        assert_quota(&restored);
+        assert_eq!(
+            restored.device_secret(&recovery.device.device_id),
+            Some([0x59; 32])
+        );
+    }
+}

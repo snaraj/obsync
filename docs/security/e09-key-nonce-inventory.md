@@ -107,135 +107,166 @@ it across device/restart/retry paths. No numeric current-use or full security
 failure rate is established here. The candidate below has no runtime effect
 and supplies no publication decision or independent verdict.
 
-## Candidate mitigation for checkpoint finding 6 — design pending review
+## Chosen replacement: RFC 5297 AES-SIV with one migration
 
-This section proposes a protocol change against `ceadfe08b75076ec8f67e255a768c36373af6153`.
-It is **not implemented, not independently accepted, and not E09 PASS**. The
-current lifetime and broken-nonce-RNG findings above remain open.
+Implementation contract, 2026-10-12; **activation and E09 acceptance remain
+incomplete**. This supersedes the rejected per-input HMAC/HKDF/GCM proposal.
+The author is implementing the mode and parsers separately from the live
+migration; passing component tests do not make existing traffic suite 2.
 
-A true aggregate AES invocation quota cannot be enforced by independent offline
-writers holding the same key without an authoritative allocation/coordination
-mechanism and rollback-resistant state. Per-device counters, server counters,
-GC, restart and a local nonce cache do not establish that quota here. Fresh-root
-rotation would end an old key's writing lifetime only after its protocol actually
-excludes legacy writers; its proposed transaction is not today's mitigation.
+Use [RFC 5297](https://www.rfc-editor.org/rfc/rfc5297.html)'s
+AES-SIV-CMAC-512: two AES-256 halves, a 128-bit SIV followed by ciphertext,
+and deterministic operation without a nonce. CMAC/S2V formatting follows the
+specification; AES itself uses native WebCrypto CBC/CTR. CBC processes complete
+prepared input in bulk; discard its extra PKCS#7 block when selecting the CMAC
+result. CTR uses the specified mask and 128-bit counter. Authenticate the full
+unmasked SIV before returning any plaintext. No JavaScript AES, runtime package,
+custom GCM construction or alternative-mode fallback is introduced.
 
-The smallest candidate using existing primitives is to make each **distinct
-immutable encryption input** select its own AES key, extending the chunk pattern
-to manifests/maps and repeatable pairing vault details. Pairing envelopes should
-use the same construction under a separate kind if approved, rather than leaving
-a caller capable of repeated random-nonce seals. Chunks remain unchanged.
+The [WebCrypto specification](https://www.w3.org/TR/webcrypto/) defines CBC/CTR
+operations but does not mandate support on every host. Published vectors,
+independent full-mode comparison, actual desktop and phone execution, memory
+and latency checks are required. A native unsupported-operation refusal must
+stop. The 64-byte derived key still originates from a 256-bit root; it does not
+supply 512 bits of entropy. Equality, lengths and traffic remain visible.
 
-Let `B` be the existing scope secret (domain manifest key, root map key, pairing
-vault-details derivation, or ECDH/PS envelope derivation). Never encrypt with `B`
-in the new format. For exact plaintext bytes `P`, define:
+### Exact context and key scope
+
+All layouts below are byte concatenation. `prefix` is ASCII `obsync/seal/2`
+followed by one NUL; `kind` is one byte; `U32` is four-byte unsigned big-endian.
+Lowercase hex IDs decode to raw bytes: generation `G`, domain `D`, file `F`
+and pairing ID are 16 bytes; parent IDs, SIDs and CID are 32 bytes.
+Parents are unique, sorted bytewise, and capped at 64. SID order and legitimate
+repeats are retained, capped at 65,536. Validate before allocation.
+
+| Kind | Complete context `T` |
+| --- | --- |
+| 1: manifest, including folder/control/tombstone | `prefix || 01 || G || D || F || U32(parent_count) || parents || U32(sid_count) || sids` |
+| 2: map | Same layout with `02`; require `F=G` and no SIDs; use the locally derived map domain |
+| 3: chunk | `prefix || 03 || G || D || CID`; CID/context stay inside encrypted metadata, not a wire header |
+| 4: pairing root envelope | `prefix || 04 || pairing_id || claimant_public_65 || creator_public_65` |
+| 5: pairing vault details | `prefix || 05 || pairing_id`; creator key is not yet revealed at claim time |
+
+Every operation uses the one-component AD vector `[T]` and
+`K = HKDF-SHA256(B, utf8("obsync/seal-v2/siv"), T, 64)`.
+For manifests/maps, `B` is the existing domain-manifest/root-map secret.
+Pairing uses its existing ECDH/PS envelope secret or separate PS/details secret.
+Keep the current creator commitment and meaningful two-screen comparison.
+Select the key from local/paired authority; never try server-supplied roots.
+The decrypted enrollment must bind its root to the locally derived generation.
+There is no additional key-commitment or global freshness claim.
+
+For chunks, separate identifier and cipher base derivations:
 
 ```
-T       = encode(seal_format, kind, scope_identity, existing_AAD)
-K_id    = HKDF-SHA256(B, "obsync/seal-v2/id", T, 32)
-K_seed  = HKDF-SHA256(B, "obsync/seal-v2/seed", T, 32)
-D       = SHA256(P)
-I       = HMAC-SHA256(K_id, encode(T, D))
-K_enc   = HKDF-SHA256(K_seed, "obsync/seal-v2/key", I, 32)
-N       = HKDF-SHA256(K_enc, "obsync/seal-v2/nonce", empty, 12)
-C       = AES-256-GCM(K_enc, N, P, encode(T, I)), tag_length=128
+K_id = HKDF(K_d, utf8("obsync/seal-v2/chunk-id"), G || D, 32)
+B    = HKDF(K_d, utf8("obsync/seal-v2/chunk-base"), G || D, 32)
+CID  = HMAC-SHA256(K_id, P)
 ```
 
-`encode` must have one fixed, length-delimited byte layout, not ambiguous string
-concatenation. Version/kind are finite tags. Scope includes the domain ID for
-manifests, the map's reserved identity for maps, and pairing ID plus the existing
-public-key binder for envelopes. Existing manifest AAD remains file ID plus the
-**content** version binder; the wire version ID hashes the ciphertext and cannot
-be fed back into its own key derivation. No clear path enters `T`. Every byte of
-`P`, including JSON serialization differences, changes the commitment input.
-Domain-separated sibling HKDF outputs and the subsequent keyed commitment/key
-derivation need joint composition review; RFC 5869 alone does not prove it.
+Use `B` and kind-3 `T` above for the SIV key, then `SID=SHA256(packet)`.
+Opening verifies SIV and recomputes CID before release. Snapshot mutable inputs
+before asynchronous work. Same context with different plaintext is ordinary
+SIV use, not a one-message-per-key invariant. Domain-separated KDF outputs
+need their joint pseudorandomness assumption, including adaptive verification
+contexts; they are not literally independent random samples.
 
-Carry `I` in a strictly versioned ciphertext header; authenticate that header and
-`T`. **Do not transmit `D`: an unkeyed plaintext digest would disclose dictionary
-confirmation of guessed paths/maps.** The reader checks version/kind/lengths,
-derives the key/nonce, checks the supplied nonce against the derivation if the
-existing nonce field remains, verifies GCM, then recomputes `I` before parsing or
-publishing any plaintext. Wrong context, malformed headers or a commitment
-mismatch refuse without legacy fallback. Determinism reveals equality for the
-same scoped context and enables confirmation by an actor able to cause guessed
-plaintext to be sealed there. Server-visible lengths/timing remain; this does
-not provide randomized metadata privacy.
+The existing wire version hash stays unchanged. Do not use the old
+`contentVersionId` as the new security context: it flattens parent and SID lists
+without counts. Moving a 32-byte value between those lists can preserve its
+preimage. The new counted context must reject that substitution without relying
+on a hash collision assumption. Ciphertext-dependent version IDs never enter
+key derivation, avoiding a circular definition.
 
-### What this would bound, and what it would not
+### Finite assurance and resource limits
 
-- Across honest peers, retries and restarts, identical `(T,P)` repeats the same
-  key/nonce/AAD/ciphertext. A changed input selects a new key, conditional on the
-  primitive assumptions. No shared counter or nonce RNG is required. Literal
-  AES encryption calls remain unbounded; the bound is **one distinct input per
-  actual AES key**, not one call. RNG health for roots/ECDH/identities is separate.
-- For `Q` distinct inputs, a simple idealized union estimate for SHA-256 digest,
-  HMAC identifier and 256-bit derived-key collisions is at most
-  `3*Q*(Q-1)/2^257`, plus the relevant collision/PRF distinguishing advantages.
-  At hypothetical `Q=2^64` this term is below `2^-127`. It is conditional, not a
-  usage ceiling or a full confidentiality/authenticity bound. Matching 96-bit
-  nonces across different AES keys do not constitute same-key nonce reuse.
-- Require a metadata GHASH-input ceiling `ell <= 2^20` blocks per new seal/read,
-  including AAD and its length block; this is above today's 4 MiB JSON wire
-  ceiling and is not a new file-content ceiling. Thus each honest derived key
-  protects at most one distinct record of that size. Repeated identical seals
-  do not create new equations, but cannot be described as a NIST total-block cap.
-- Keep 128-bit tags. NIST Appendix B's targeted-forgery scale is approximately
-  `ell/2^128` per attempt (at this ceiling, `2^-108`), not universally `2^-128`.
-  `V` failed verification attempts across peers/restarts are not globally capped;
-  successful forgeries can change subsequent assurance. A full multikey bound
-  must include `Q`, message lengths, verification attempts and primitive terms.
-  The post-decryption commitment is an additional acceptance check, not a reason
-  to omit that analysis. No fixed lifetime failure rate or NIST conformance is
-  claimed. Independently reviewed quantitative composition is a release gate.
+Use the published deterministic-AE model, which admits equality leakage and
+quotients repeated queries. [Rogaway–Shrimpton, Theorem 2 and Corollary 4](https://web.cs.ucdavis.edu/~rogaway/papers/keywrap.pdf)
+give the conditional per-key composition below, after a KDF hybrid:
 
-### Activation, migration and refusal
+```
+Adv <= Adv_KDF + sum_i(Adv_CTR,i + Adv_CMAC,i + (p_i*q_i + q_i)/2^128)
+```
 
-This changes ciphertext framing and derivation; it is not a comment-only fix.
-A format marker belongs inside the opaque ciphertext container, so the existing
-server need not learn `I`'s interpretation or gain a trusted counter. Pin exact
-header sizes and existing route budgets before implementation. Preserve old
-fixtures and use an explicit legacy decoder for authenticated historical data;
-a failed v2 read must never try the legacy algorithm.
+Index every actual queried scope, including attacker-selected verification-only
+scopes; `q_i` includes seal/open queries and `p_i` counts their vector components.
+Apply Corollary 4 with its stated `q >= 3` condition (pad a smaller query budget
+upward for that corollary); do not substitute a one-query budget into its bound.
+Retain reduction resources and the native AES multi-key terms inside the
+component advantages. The paper's AES instantiation has processed-block birthday
+scale, not an unlimited-lifetime guarantee. Define `sigma_i` conservatively over
+both passes, AD, failed verifications and repeats across devices/restarts.
+The normalized `sum(sigma_i^2)/2^128` scale is **not** a complete bound with
+all constants and primitive terms evaluated.
 
-Writers must learn the required format from authenticated owner/domain state,
-not the server's unauthenticated version manifest. Retain a local authenticated
-format floor across restart; server rollback must not authorize legacy writes.
-Fresh pairing/recovery must obtain the floor from authenticated owner/device
-authority; a valid old map served to a fresh client does not prove it is current.
-The proposed generation/rotation ceremony must close this bootstrap/rollback
-boundary before activation. Prove supported client capability and block legacy
-writers. Existing clients still holding old keys cannot be cryptographically
-prevented from emitting legacy records: account-wide exclusion requires the
-separately reviewed fresh-root/client-generation transition. If legacy records
-remain writeable, this candidate only protects new-format records and E09 is
-still unresolved for the old keys. Do not silently strand an old client.
+The mode caps plaintext at 8 MiB, packet at 8 MiB + 16, AD count at 126 and
+total AD at 8 MiB. Product wrappers use one AD component and the smaller layouts
+above; existing manifest/pairing route budgets remain. These are per-operation
+limits. They do not enforce a global quota on offline holders of a root.
+For illustration only, one query per scope of at most `2^21` processed blocks
+has normalized scale `2^-54` over `2^32` scopes, but `2^-22` over `2^64` scopes.
+Repeated queries concentrated in one scope worsen the square. Neither example
+is a measured workload, complete failure probability or acceptable-use promise.
+A reviewed quantitative workload profile with component terms remains an
+acceptance gate; counters, GC, key-handle imports and restart do not reset it.
+Root, ECDH and identity generation still depend on healthy platform randomness.
 
-Preserve legacy content/history for recoverability. An authenticated migration
-must inventory/reseal every retained metadata object it promises to protect,
-including remote-only live heads, folders, tombstones, pause controls and maps;
-restart/lost-response resumes from durable progress. Previously exposed old-key
-ciphertexts cannot be made secure retroactively. This key-use change neither
-revokes root holders nor protects against a malicious paired writer holding `B`.
+### Framing, admission and recovery
 
-### Required negative and recovery cases before implementation acceptance
+Activate suite 2 and [fresh-root migration](device-revocation.md) together.
+Chunks are raw SIV plus ciphertext, preserving the existing 16-byte expansion.
+Version records explicitly carry `seal_suite:2` and `manifest_ct`; they have no
+`manifest_nonce`. Pairing sealed objects likewise carry the explicit suite and
+one packet. Legacy suite 1 has its old nonce field and is reachable only in the
+explicit legacy operation. Reject mixed/unknown variants before decryption;
+never try another decoder after failure.
 
-- Same exact input from two peers, retry and fresh process: identical bytes;
-  changed plaintext (including same-size sentinels), AAD, kind, scope and format:
-  distinct derived key inputs. Forced all-zero/throwing nonce RNG must not cause
-  different records to share an AES key/nonce in this format.
-- Substitute/truncate the header or `I`, supply wrong nonce/context, change tag or
-  ciphertext: refuse before filesystem/UI publication, without legacy fallback.
-  A deliberately mismatched commitment with an otherwise valid GCM seal must
-  also refuse. Independent fixed byte vectors must cover the complete framing.
-- Omit any context component, separation label, commitment recheck or size guard:
-  a focused mutation must fail its intended assertion. Forced digest/HMAC/key
-  collisions demonstrate the stated assumption failure, never a claim that all
-  such collisions can be detected globally before encryption.
-- Restart/rollback the advertised format, recover/pair an incompatible client,
-  lose a migration response, and interrupt resealing with remote-only data:
-  no automatic old-format write, no plaintext fallback, no lost recoverable data.
+Prepare/commit atomically record the account/generation minimum enrollment and
+write suite. Honest-server setup, recovery, pairing, activation and publication
+reject legacy or stripped capabilities after cutover, including requests already
+queued before the fence. Persist this authority through journal replay and
+compaction. Old server executables must refuse the new store rather than skip
+an unfamiliar snapshot and resume from incomplete history. Updated clients
+independently reject legacy records against their authenticated local pin even
+when a malicious server permits an old client to write them.
 
-Review references: [NIST SP 800-38D §§8–9 and Appendix B](https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-38d.pdf)
-and [RFC 5869 §3](https://www.rfc-editor.org/rfc/rfc5869.html#section-3).
-This is **not AES-GCM-SIV** and does not inherit [RFC 8452](https://www.rfc-editor.org/rfc/rfc8452.html)'s proofs or bounds.
+Canonical recovery text is ASCII `obsync-recovery-v2`, one space, and 24 lowercase
+English BIP39 words separated by single spaces. Input accepts only ASCII space,
+tab, CR and LF as separators/outer whitespace, at most 512 bytes before trimming,
+exact prefix/case/checksum and end-of-input. Unknown, duplicated, truncated,
+suffixed or stripped prefixes refuse live recovery. Select live-v2 or legacy-
+history parsing explicitly; never try/fallback. Repeated legitimate BIP39 words
+remain valid. The prefix identifies a format, not freshness.
+
+Bare legacy words stage detached history/migration bytes: no request, adoption,
+credential change or engine start. Live recovery requires public explicit
+`recover_only` capability, then a token-authenticated strict mode. In one durable
+transaction require an existing account, its suite floor, valid proof or one
+operator reset arm, and active enrollment. Stage the root until authenticated
+resulting-state readback and the required current map match its derived identity.
+A missing map stays pending. A lost one-time credential response stays unknown;
+no nonexistent credential-readback service is implied.
+
+Registered proof shows continuity with that verifier. After offline reset, the
+new token/reset arm authorize choosing a verifier; the words can be wrong, and
+the confirmation must say continuity is unproved. Verify/read back the complete
+new backup and prepared local pin before migration commit. A lost/torn backup
+confirmation cannot invalidate the only old recovery material. After cutover
+old copies are history-only; software cannot prove offline-copy erasure. A valid
+old backup without a trusted witness cannot prove it is newest.
+
+### Bounded acceptance
+
+Require fixed published CMAC/SIV vectors and an established independent full-mode
+oracle; the same OpenSSL AES implementation under two wrappers is not a second
+primitive implementation. Mutate context counts/roles/kinds, tag/mask, length
+limits and plaintext release. Force nonce RNG failure/repetition to prove the
+new sealing path does not depend on it; do not infer root RNG safety.
+
+End-to-end negatives include old binary + stripped backup + generic setup,
+capability stripping, absent-account recovery with zero mutations, withheld map,
+old-root ciphertext after pin, failed/torn recovery enrollment, lost replies and
+restart. Rotation additionally needs the complete cutoff/reseed/transfer matrix
+in its contract. Each must preserve local edits and usable recovery. Native
+persistence, physical phones, independent protocol acceptance and exact-head
+release gates remain separate from component tests.

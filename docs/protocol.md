@@ -109,6 +109,7 @@ answers the same.
 | --- | --- | --- |
 | `GET /livez`, `GET /readyz` | yes | reads |
 | `GET /v1/account` | yes | read |
+| `GET /v1/setup` | yes | public state-independent recovery capability |
 | `POST /v1/setup` | **no** | creates or recovers the account and mints a credential |
 | `POST /v1/account/recovery` | **no** | explicit registration acknowledgement; a lost response is surfaced |
 | `POST /v1/pairing` | **no** | mints a pairing and an enroll token |
@@ -150,6 +151,10 @@ and a test asserts every route it emits appears there.
 
 ## Setup and account
 
+- `GET /v1/setup` is public and state independent: `200 {"recover_only":true}`.
+  It discloses no account/device/verifier state. A recovery-only caller must
+  require explicit support; absent or unknown capability never permits a
+  fallback to generic creation. This capability makes no sealing-suite claim.
 - `POST /v1/setup` (no device auth; the token is the credential)
   `{"setup_token":"…","account_name":"…","device":{"name":"…","platform":
   "…","app_version":"…"}}` → `201 {"account_id":"…","device_id":"<32hex>",
@@ -159,8 +164,14 @@ and a test asserts every route it emits appears there.
   token is compared FIRST, so both refusals are reachable only in that
   order: a caller holding the token learns the account exists, and a caller
   without it learns nothing about whether the server is claimed.
-- First setup may include `recovery_verifier:<64hex>`, committed in the same
-  durable account frame. Existing accounts may be re-entered through the same
+- Optional `recover_only` must be a JSON boolean. True requires an existing
+  account (`409 not_set_up` with no mutation if absent); absent/false retain
+  generic setup. An alternative `mode` field is refused. Account authority and
+  active-device enrollment publish together in one fsynced journal frame;
+  a refusal cannot consume the reset arm while failing to enroll. A lost reply
+  may leave the entire transaction durable; the route remains non-repeatable.
+- First setup may include `recovery_verifier:<64hex>`, committed in that same
+  durable enrollment frame. Existing accounts may be re-entered through the same
   `POST /v1/setup` with the setup token and `recovery_proof:<64hex>`; the response
   also has `recovered:true`. The proof is 32 bytes from
   `HKDF-SHA-256(VRK, salt=utf8("obsync/v1/account-recovery"), info="", L=32)`.

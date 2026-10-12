@@ -23,19 +23,18 @@ keys or recovery phrases. Strong removal requires a separate trusted client:
 the device being excluded must never generate or receive the replacement root.
 
 The smallest candidate is a **fresh root, full reseed and explicit re-pair**.
-It reuses current encryption, keyed map identity, per-domain admission and
+It reuses keyed map identity, per-domain admission and
 pairing v2. There is no automatic group-key broadcast or trusted server key
 directory. Cost: upload every current file again, temporary space for both
 generations, a new recovery backup, and one comparison/confirmation on every
 retained device. Unsynced edits remain available locally throughout.
 
-This proposal alone does not solve the separate [E09 key-lifetime finding](e09-key-nonce-inventory.md).
-If that sealing-format candidate is accepted, compose its authenticated format
-floor with the new-generation pin and enrollment/recovery rules before either
-change ships. Freeze one supported format and migration contract together;
-do not deploy two independent migrations or treat rotation approval as approval
-of a new cipher composition. The statements below about unchanged ciphertext
-format describe revocation alone.
+Compose this transaction with the [suite-2 sealing contract](e09-key-nonce-inventory.md#chosen-replacement-rfc-5297-aes-siv-with-one-migration):
+RFC 5297 SIV, counted context, strict recovery backup and durable enrollment/write
+floor. They activate in one migration. The earlier custom GCM candidate is
+rejected. Existing root/domain/map identity labels remain; content and pairing
+seals use the new suite. Neither design acceptance nor component tests establish
+the completed transaction.
 
 Transparent automatic group rotation would additionally require independently
 authenticated persistent recipient identities, membership authorization,
@@ -95,9 +94,9 @@ O = randomBytes(16)                            // one rotation operation
 
 Generate a fresh default content domain and fresh ordinary file IDs. Existing
 folder/conflict IDs and the map's domain ID derive under the new keys. Reuse
-the current primitive labels, key derivations, chunk/manifest AAD, version
-format and request signatures. Fresh roots separate generations without a
-generation tag on every ciphertext or server storage record. Reject equality
+the root/domain/map identity derivations and request signatures; use suite 2's
+separate sealing derivations and counted generation context. Fresh roots and
+the authenticated generation pin separate current content from history. Reject equality
 with the prior root/map/domain identities; RNG errors stop before revocation.
 
 `{L, O, G_old, G_new}` is a fixed enrollment context, not a server identity.
@@ -120,9 +119,9 @@ person deliberately approves or that is already compromised.
 ## Pairing and recovery: extend data, preserve pairing v2
 
 Keep v2's fresh ephemeral P-256 keys, creator commitment in the out-of-band
-code, claim fixed before reveal, six-digit comparison and ECDH/PS AES-GCM
-envelope exactly as specified in `protocol.md`. No new code format, match
-function, KDF or asymmetric identity scheme is needed. Compare the codes on
+code, claim fixed before reveal, six-digit comparison and ECDH/PS base-key
+derivation. Seal with suite 2's SIV/context and explicit wire variant. No new
+comparison function or asymmetric identity scheme is needed. Compare the codes on
 the two actual device screens; never compare a server/dashboard rendering.
 
 For a rotated vault, the encrypted envelope plaintext is a new strict variant:
@@ -140,9 +139,10 @@ rejects unknown fields, invalid hex and a `current_map` unequal to
 and `previous_map` are all present for this normal rotation, or all absent
 for enrollment from a phrase-only recovered root with no migration history.
 Their absence is explicit recovered-state bookkeeping, never permission to
-replace a client's existing pin without confirmation. Normal pre-rotation
-enrollment retains today's `{vrk}` shape. All subsequent enrollment of a
-rotated vault uses the strict variant. A claimant shows “New vault generation;
+replace a client's existing pin without confirmation. Legacy `{vrk}` envelopes
+belong only to an explicitly selected old-generation operation. Updated live
+enrollment requires the strict suite-2 variant, including new accounts without
+migration history. A claimant shows “New vault generation;
 pair from the device performing this rotation”, then explicitly accepts the
 authenticated context. A device already pinned to another generation requires
 the migration flow; an ordinary pair/setup reply cannot replace its pin.
@@ -155,8 +155,9 @@ the meaningful screen comparison; retain v2's stated per-attempt comparison
 bound. Never approve automatically based on app version or device name.
 
 Existing recovery phrases encode root entropy. Generate and show the new
-24-word phrase **only on the trusted plugin**. Require explicit backup and
-phrase verification before server commit. Restoring this phrase derives the
+prefixed 24-word backup **only on the trusted plugin**, following suite 2's exact
+ASCII grammar and explicit live/history parsers. Require complete backup and
+readback verification before server commit. Restoring this backup derives the
 new root and `G_new` without any recovery card or server-selected map. Reuse
 the existing account-recovery proof and
 verifier derivation under `VRK_new`, with its existing content/authentication
@@ -283,10 +284,28 @@ its edits. A consciously excluded device is not reported as transitioned.
 Add one bounded account rotation record, using the existing journal/snapshot
 durability path. Fresh roots need no new ciphertext namespace for confidentiality;
 add **server-internal file generation ownership** for inventory coordination.
-This explicitly changes version journal records, replay and snapshots, not API
-blob/version fields or content crypto. An older server reader must refuse the
+This changes version journal records, replay and snapshots; suite 2 separately
+changes the explicit version/pairing sealing fields and content encryption.
+An older server reader must refuse the
 new durable format, including compacted snapshots, rather than drop ownership
-or fence state. The record holds the immutable authorized
+or fence state. Old readers currently skip unfamiliar/corrupt snapshots, so a
+snapshot field alone cannot establish that barrier. Reserve `000000.log` for
+one immutable CRC-framed `format_floor` marker. First durably append a floor-
+bearing fact with a new record kind; then publish the marker by file fsync,
+rename and directory fsync, before index publication or acknowledgment. Ordinary
+append, roll and prune never use or remove the marker. If marker publication
+fails after the fact is durable, retain that authority in memory, refuse the
+request and forbid compaction until the barrier is complete. Upgraded startup
+validates an existing marker separately before replay; a torn/malformed marker
+refuses. Proven replayed floor-2 authority may finish a missing marker before
+serving. A marker with only pre-floor authority after snapshot fallback refuses
+as ambiguous, even if the older snapshot itself parses successfully.
+Old replay decodes every frame before filtering its sequence, so the unknown
+kind must stop an old executable even after snapshot compaction/fallback. Verify
+that behavior with the actual predecessor binary, including the intermediate
+atomic-enrollment format. No unfamiliar snapshot may silently lower the floor.
+
+The record holds the immutable authorized
 intent, coordinator device ID/grant, phase, cutoff/inventory reference and
 catalog-page commitments. All IDs
 are opaque; no content key is sent. The trusted initiator retains its existing
@@ -308,6 +327,16 @@ scoped to the current generation. Unknown ownership refuses publication.
 Freeze ordinary pairing, setup/recovery and verifier registration while pending,
 except the narrow coordinator transfer below; it cannot bypass the fence.
 
+Prepare/commit also carry minimum enrollment/write suite 2. Enrollment declares
+top-level `seal_suite:2`; setup/recovery also declares locally derived
+`generation`. After commit, legacy generic setup/recovery, missing/unknown suite,
+legacy pairing/grant activation and legacy publication refuse on an honest
+server. A stripped backup prefix cannot bypass this policy. Check grants,
+suite and ownership under the mutation lock, including queued requests. A
+malicious server can ignore its policy; transitioned clients independently
+enforce their authenticated suite/generation pin and never initialize a lower
+floor from a missing map.
+
 `H` contains **all** heads of every `G_old` file across the account, independent
 of local selection. Earlier labelled generations are history and excluded from
 current reconciliation; they are not deleted by rotation. This association is
@@ -323,6 +352,17 @@ limit. Phrase-only recovery need not reconstruct a chain of retirement catalogs.
 | `GET /v1/account/rotation/{operation}` and its paged inventory | Current coordinator-only status and stable pages for the recorded cutoff. Settle lost responses; never recompute `H` from later staged writes. No content secret or API credential appears. |
 | `PUT /v1/account/rotation/{operation}/catalog/{page}` | Current coordinator-only immutable bounded pages linking opaque source heads in `H` to uploaded opaque destination heads. An identical retry is harmless; changed page or out-of-inventory source refuses. No path, key, cid or plaintext field. This is rotation bookkeeping, not a general catalog framework. |
 | `POST /v1/account/rotation/{operation}/commit` with exact intent, `C`, inventory/catalog commitments and `setup_token` | Device HMAC **and freshly entered owner token** required. Compare all fields to frozen intent and complete catalog. One fsynced transition changes current map/recovery verifier, retires every OTHER prior credential/closes its sessions/links, lifts only the current coordinator's staging fence and marks committed. Exact retry returns that result; it cannot substitute a verifier/target/catalog. |
+
+The intent's `target` is an explicit device ID for removal, or explicit `null`
+for a standalone migration to suite 2. A non-null target must exist and differ
+from the coordinator. The null form still performs the complete fresh-root
+reseed and retires every other credential at commit; it is not a weaker mode.
+An existing legacy account refuses suite-2 recovery with `migration_required`
+without changing state. Before its suite floor advances, explicit legacy
+recovery may enroll a migration coordinator, whose updated client keeps normal
+sync stopped and treats the old root as a read-only source. It then performs
+this transaction. Only a genuinely new, absent account can initialize suite 2
+directly; recovery or pairing cannot create a missing map.
 
 The prepare frame references a durable immutable inventory, not an unbounded
 head list packed into one frame. Capture it with bounded I/O and existing

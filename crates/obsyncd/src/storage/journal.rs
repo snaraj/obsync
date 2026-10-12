@@ -27,8 +27,8 @@ use crate::config::StorageConfig;
 use crate::log::{Log, Val};
 use crate::storage::index::{DeviceEntry, FileEntry, Index};
 use crate::storage::types::{
-    DevicePolicy, DeviceRecord, DeviceState, GcSummary, ScrubSummary, SeenEvent, SeenKind,
-    StoreError, VersionRecord,
+    AccountRecord, DevicePolicy, DeviceRecord, DeviceState, GcSummary, ScrubSummary, SeenEvent,
+    SeenKind, StoreError, VersionRecord,
 };
 use crate::types::{AccountId, DeviceId, FileId, Seq, Sid, UnixMs, VersionId};
 
@@ -70,6 +70,13 @@ pub(crate) enum Frame {
         /// When the operator's reset armed one re-enrolment:
         /// `recovery_cleared_at`, read only beside no verifier.
         recovery_cleared: Option<UnixMs>,
+    },
+    /// Setup/recovery and active enrollment in ONE CRC-framed durable fact.
+    /// Older readers refuse the unknown kind rather than applying half.
+    Setup {
+        account: AccountRecord,
+        record: DeviceRecord,
+        wrapped: [u8; 32],
     },
     /// A device was paired. `wrapped` is the secret under the server key.
     Device {
@@ -1690,6 +1697,26 @@ fn scrub_from(value: &Value) -> Result<ScrubSummary, StoreError> {
     })
 }
 
+/// Decode only the existing account fields, without dispatching nested records.
+fn account_from(value: &Value) -> Result<AccountRecord, StoreError> {
+    let (recovery_verifier, recovery_registered, recovery_cleared) = recovery(value)?;
+    Ok(AccountRecord {
+        account_id: field_id(value, "id")?,
+        name: field_str(value, "name")?.to_string(),
+        created: UnixMs(field_num(value, "created")?),
+        quota_bytes: field_opt_num(value, "quota"),
+        recovery_verifier,
+        recovery_registered,
+        recovery_cleared,
+        used_bytes: 0,
+    })
+}
+
+/// An absent context is initial creation; a present context must be a valid ID.
+fn account_context(value: &Value) -> Result<Option<AccountId>, StoreError> {
+    value.get("a").map(|_| field_id(value, "a")).transpose()
+}
+
 impl Record {
     /// The canonical JSON for this record.
     fn to_value(&self) -> Value {
@@ -1718,6 +1745,25 @@ impl Record {
                     "recovery_cleared_at",
                     opt_num(recovery_cleared.map(|t| t.0)),
                 ));
+            }
+            Frame::Setup {
+                account,
+                record,
+                wrapped,
+            } => {
+                let account = Record {
+                    seq: self.seq,
+                    account_id: self.account_id,
+                    frame: super::account_frame(
+                        account.clone(),
+                        account.recovery_verifier.clone(),
+                        account.recovery_registered,
+                        account.recovery_cleared,
+                    ),
+                }
+                .to_value();
+                pairs.push(("account", account));
+                pairs.push(("device", device_value(record, wrapped)));
             }
             Frame::Device { record, wrapped } => {
                 pairs.push(("device", device_value(record, wrapped)));
@@ -1795,15 +1841,41 @@ impl Record {
             .and_then(|s| s.parse().ok());
         let frame = match field_str(&value, "t")? {
             "account" => {
-                let (recovery_verifier, recovery_registered, recovery_cleared) = recovery(&value)?;
-                Frame::Account {
-                    account_id: field_id(&value, "id")?,
-                    name: field_str(&value, "name")?.to_string(),
-                    created: UnixMs(field_num(&value, "created")?),
-                    quota_bytes: field_opt_num(&value, "quota"),
-                    recovery_verifier,
-                    recovery_registered,
-                    recovery_cleared,
+                let account = account_from(&value)?;
+                super::account_frame(
+                    account.clone(),
+                    account.recovery_verifier.clone(),
+                    account.recovery_registered,
+                    account.recovery_cleared,
+                )
+            }
+            "setup_enrolment" => {
+                let nested = field(&value, "account")?;
+                // Parse exactly ONE account value; never recurse through the
+                // record decoder on an attacker-selected nested frame kind.
+                if field_str(nested, "t")? != "account" {
+                    return Err(StoreError::Corrupt(
+                        "setup account is not an account frame".into(),
+                    ));
+                }
+                let account = account_from(nested)?;
+                let outer_context = account_context(&value)?;
+                let nested_context = account_context(nested)?;
+                let (record, wrapped) = device_from(field(&value, "device")?)?;
+                if Seq(field_num(nested, "s")?) != seq
+                    || nested_context != outer_context
+                    || outer_context.is_some_and(|id| id != account.account_id)
+                    || record.account_id != account.account_id
+                    || record.state != DeviceState::Active
+                {
+                    return Err(StoreError::Corrupt(
+                        "setup enrollment context mismatch".into(),
+                    ));
+                }
+                Frame::Setup {
+                    account,
+                    record,
+                    wrapped,
                 }
             }
             "device" => {
@@ -1863,6 +1935,7 @@ impl Frame {
     /// The wire name of this frame type (docs/storage.md, "Journal frames").
     pub(crate) const fn kind(&self) -> &'static str {
         match self {
+            Frame::Setup { .. } => "setup_enrolment",
             Frame::Account { .. } => "account",
             Frame::Device { .. } => "device",
             Frame::DeviceUpdate { .. } => "device_update",
@@ -2137,6 +2210,91 @@ mod tests {
     }
 
     #[test]
+    fn setup_frame_refuses_inconsistent_account_device_and_nested_context() {
+        let account_id = AccountId::new([1; 16]);
+        let setup = record(
+            3,
+            Frame::Setup {
+                account: AccountRecord {
+                    account_id,
+                    name: "sentinel".into(),
+                    created: UnixMs(7),
+                    quota_bytes: None,
+                    recovery_verifier: Some("c3".repeat(32)),
+                    recovery_registered: Some(UnixMs(9)),
+                    recovery_cleared: None,
+                    used_bytes: 0,
+                },
+                record: device_record(),
+                wrapped: [9; 32],
+            },
+        )
+        .to_value()
+        .to_json();
+        Record::decode(setup.as_bytes()).unwrap();
+        // Initial creation has no previously authoritative account context.
+        // commit() writes the same absence into both outer and nested records.
+        let no_context = setup.replace(&format!(",\"a\":\"{account_id}\""), "");
+        Record::decode(no_context.as_bytes()).unwrap();
+        // Matching context labels are insufficient if both name another
+        // account than the nested account ID and enrolled device do.
+        let other = AccountId::new([2; 16]);
+        let label = format!("\"a\":\"{account_id}\"");
+        assert_eq!(setup.matches(&label).count(), 2);
+        let mislabeled = setup.replace(&label, &format!("\"a\":\"{other}\""));
+        assert!(Record::decode(mislabeled.as_bytes()).is_err());
+        for malformed in ["null", "17", "\"invalid\""] {
+            let changed = setup.replace(&label, &format!("\"a\":{malformed}"));
+            assert!(Record::decode(changed.as_bytes()).is_err());
+        }
+        // A nested setup record is not an account, even when its fields
+        // would otherwise make a valid setup. Refuse its kind directly.
+        let mut nested_setup = json::parse(setup.as_bytes()).unwrap();
+        let Value::Object(ref mut members) = nested_setup else {
+            panic!("object");
+        };
+        members.iter_mut().find(|(k, _)| k == "account").unwrap().1 =
+            json::parse(setup.as_bytes()).unwrap();
+        assert!(Record::decode(nested_setup.to_json().as_bytes()).is_err());
+        let mut incomplete = json::parse(setup.as_bytes()).unwrap();
+        let Value::Object(ref mut members) = incomplete else {
+            panic!("object");
+        };
+        members.iter_mut().find(|(k, _)| k == "account").unwrap().1 =
+            json::obj(vec![("t", text("setup_enrolment"))]);
+        let refusal = Record::decode(incomplete.to_json().as_bytes()).unwrap_err();
+        assert_eq!(
+            refusal.to_string(),
+            "corrupt on-disk state: setup account is not an account frame",
+            "kind refused before nested dispatch"
+        );
+        for (old, new) in [
+            (
+                "\"t\":\"account\"".to_string(),
+                "\"t\":\"unknown\"".to_string(),
+            ),
+            ("\"s\":3,\"a\":".to_string(), "\"s\":4,\"a\":".to_string()),
+            (
+                "\"state\":\"active\"".to_string(),
+                "\"state\":\"pending\"".to_string(),
+            ),
+            (
+                format!("\"id\":\"{account_id}\""),
+                format!("\"id\":\"{}\"", AccountId::new([2; 16])),
+            ),
+        ] {
+            assert!(setup.contains(&old), "mutation must match {old}");
+            // Nested seq is changed independently of the outer seq.
+            let changed = if old.starts_with("\"s\"") {
+                setup.replacen(&old, &new, 2).replacen(&new, &old, 1)
+            } else {
+                setup.replacen(&old, &new, 1)
+            };
+            assert!(Record::decode(changed.as_bytes()).is_err(), "{old}");
+        }
+    }
+
+    #[test]
     fn account_recovery_frames_refuse_malformed_verifiers_and_read_legacy_frames() {
         let good = format!("\"{}\"", "a5".repeat(32));
         for bad in [
@@ -2261,6 +2419,20 @@ mod tests {
                 recovery_verifier: None,
                 recovery_registered: None,
                 recovery_cleared: Some(UnixMs(1_757_000_000_900)),
+            },
+            Frame::Setup {
+                account: AccountRecord {
+                    account_id: device.account_id,
+                    name: "setup sentinel".into(),
+                    created: UnixMs(7),
+                    quota_bytes: None,
+                    recovery_verifier: Some("c3".repeat(32)),
+                    recovery_registered: Some(UnixMs(9)),
+                    recovery_cleared: None,
+                    used_bytes: 0,
+                },
+                record: device.clone(),
+                wrapped: [9u8; 32],
             },
             Frame::Device {
                 record: device.clone(),

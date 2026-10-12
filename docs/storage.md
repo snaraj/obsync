@@ -370,6 +370,18 @@ requires the refusal.
 
 ## Journal frames
 
+`setup_enrolment` publishes the complete account/recovery authority and active
+device (including its wrapped API secret) in one CRC-framed append. All IDs,
+proof/reset checks and wrapping precede publication under the journal lock;
+readers observe both index changes after fsync. A torn prefix applies neither,
+while a lost response after fsync can leave the whole enrollment durable.
+The nested account's kind/sequence/context and actual device/account IDs must
+agree. Ordinary account updates remain separate `account` frames.
+
+An old reader refuses this unknown journal kind in the replay tail. Compacted
+snapshots still use existing account/device records at this increment; this
+alone does not establish the proposed suite-2 downgrade barrier.
+
 `account` (setup, and every change to the account's recovery verifier:
 its registration, and the operator's `obsyncd recovery reset apply`, which
 writes the account again without one and with `recovery_cleared_at`, the
