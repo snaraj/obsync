@@ -192,7 +192,9 @@ class ProxyCertificateFixtures(unittest.TestCase):
         else:
             block = text[text.index('tls="${scratch}/tls"'):text.index("export OBSYNC_IMAGE")]
         if missing_aki:
-            block = block.replace(r"authorityKeyIdentifier=keyid,issuer\n", "")
+            # OpenSSL 3 adds AKI when unspecified; make the hostile fixture
+            # explicitly omit it instead of relying on generator defaults.
+            block = block.replace(r"authorityKeyIdentifier=keyid,issuer\n", r"authorityKeyIdentifier=none\n")
         subprocess.run(["bash", "-c", 'set -e; scratch="$1"; HOST=fixture.proxy.invalid; prove() { :; }; deny() { exit 1; }; ' + block, "fixture", str(scratch)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return scratch / "ca.crt", scratch / "tls/tls.crt", scratch / "tls/tls.key"
 
@@ -234,8 +236,11 @@ class ProxyCertificateFixtures(unittest.TestCase):
     def test_missing_aki_keeps_the_strict_verifier_refusal(self):
         for script in ["scripts/ci/proxy-e2e.sh", "scripts/validation/proxy_matrix.sh"]:
             with self.subTest(script=script), tempfile.TemporaryDirectory() as directory:
+                ca, cert, key = self.certificate(script, Path(directory), missing_aki=True)
+                leaf = subprocess.check_output(["openssl", "x509", "-in", str(cert), "-noout", "-text"], text=True)
+                self.assertNotIn("X509v3 Authority Key Identifier:", leaf, "hostile leaf must actually omit AKI")
                 with self.assertRaisesRegex(ssl.SSLCertVerificationError, "Missing Authority Key Identifier"):
-                    self.handshake(*self.certificate(script, Path(directory), missing_aki=True))
+                    self.handshake(ca, cert, key)
 
 
 if __name__ == "__main__":

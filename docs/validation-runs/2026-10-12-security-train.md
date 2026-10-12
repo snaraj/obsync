@@ -889,3 +889,31 @@ seven restored passing tests. An initial private mutation broke a multiline
 shell command and was excluded before running the test. This is a full gate
 followed by focused verification of a test-only delta, not a second complete
 gate at the final file snapshot.
+
+### Hosted follow-up and portable negative TLS fixture
+
+At `6b23916805b4bf1e9e87618c81c8412e30defc61`, the
+[five proxy jobs](https://github.com/snaraj/obsync/actions/runs/38309855922)
+pass both CORS entrypoints, full sync/held-poll and forwarded-header checks:
+Caddy, nginx, Traefik, HAProxy, and native arm64 nginx. The repaired Windows
+plugin and CLI package jobs also pass. These supersede the local-only hosted
+limitations above; phone and real authenticating-edge acceptance remain open.
+
+The [security job](https://github.com/snaraj/obsync/actions/runs/38309855924/job/115012643507)
+instead fails the two missing-AKI negative controls: OpenSSL 3 adds AKI when
+the extension is unspecified. Removing its recipe line did not produce the
+intended hostile certificate. The repair explicitly selects
+`authorityKeyIdentifier=none`, asserts the leaf actually omits AKI, then
+requires the existing strict TLS verifier to refuse it. Both recipe fixtures
+now pass all seven tests with OpenSSL 3.6.5 and 4.0.3 certificate generators
+and Python's OpenSSL 4.0.3 verifier. The original test reproduces both assertion
+failures with the OpenSSL 3 generator. Omitting the override or inverting the
+new certificate precondition fails the intended assertions; restored controls
+pass. Command: `python3 -B -m unittest discover -s scripts/ci -p test_proxy_cors.py -v`,
+with each generator's `bin` first in PATH. This is a test-only repair; hosted
+acceptance of the repair is still required. No TLS policy or trust store changes.
+
+The simultaneous macOS native job still refuses plaintext custody on one peer
+before restart; the serialized journey passes. Neither result establishes a
+root cause. The required security job failed before release classification in
+this run; the unassigned release step remains a separate outstanding gate.
