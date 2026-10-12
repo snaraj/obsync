@@ -321,6 +321,50 @@ so the exact earlier 44-to-34 difference cannot now be reconciled; no explanatio
 is presented as a measured fact. Its owned four app groups, driver/server and raw fixtures were
 removed; only reduced evidence and the local-only notice image remain.
 
+## Hosted checkpoint findings
+
+After publishing `f7b9bb576e16cada148acde49094e7be1f00f5b0`, the
+[application job](https://github.com/snaraj/obsync/actions/runs/38290903629/job/114950472239)
+passed: Rust line coverage 94.71%, 2,240 passing plugin tests and nine skips,
+83 passing dashboard tests, and the real-engine run with 19 flows, two controls,
+188 requests, 12 storage files and 50 needles in 2,507 ms. The security job
+passed 910 contracts before correctly refusing the unversioned artifact range.
+Both CodeQL language analyses and their dispositions job passed; fresh open-alert
+queries for the default branch and PR ref returned empty. These individual
+results do not make the overall hosted gate green.
+
+Hosted image builds exposed a missing test input: the Docker plugin stage
+copied the plugin but not the server declarations the new transport-vocabulary
+test reads. It failed with `ENOENT` before completing the image. The repair
+copies only the API source directory and `storage/types.rs` into that test
+stage; the bundle still exports the same three assets. On exact checkpoint
+sources, a disposable stage-layout reproduction failed before the repair,
+passed all 51 transport tests after it, failed when either source copy was
+omitted, then passed after restoration. The coordinator separately passed all
+51 transport tests and both dependency-pin contracts. These are local layout
+and test results, not an observed successful hosted image build.
+
+The newly enforced
+[macOS custody job](https://github.com/snaraj/obsync/actions/runs/38290903628/job/114950472522)
+completed ten sync steps in Obsidian 1.13.7 / Electron 43.3.0, then refused
+before restart: encryption unavailable, stored plaintext JSON, matching
+credential revision. The optional backend-name wrapper reported unavailable;
+that does not identify an OS backend or a cause. This result remains a finding;
+the successful local Obsidian 1.13.4 custody runs above do not override it.
+No encrypted-storage assertion is relaxed or skipped.
+
+The separate hosted macOS plugin suite failed an existing device-name test:
+it checked for the naming PATCH after observing the device-list read, before
+the asynchronous own-name save/PATCH finished. A deferred save reproduced
+the original `0 !== 1` assertion without a sleep. The one-line repair waits
+for the renamed outcome, retaining every PATCH count/body, server-name,
+default-name and once-only assertion. Releasing the controlled save makes
+the repaired test pass. Removing the production PATCH while retaining its
+success log still fails the repaired count assertion, rather than timing out.
+Restored production code passes all seven device-name tests; no runtime
+defect or production change is asserted for this race. Hosted revalidation
+of both repairs remains necessary.
+
 ## Architecture and remaining acceptance
 
 The [revocation proposal](../security/device-revocation.md) is a design for

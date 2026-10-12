@@ -28,6 +28,10 @@ RUN test "$(node --version)" = "v26.10.0" && \
     npm ci --ignore-scripts --no-audit --no-fund
 COPY plugin/ ./
 COPY manifest.json /src/manifest.json
+# Transport tests inventory the server refusal vocabulary. These are test
+# inputs only; the bundle stage below exports only the three plugin assets.
+COPY crates/obsyncd/src/api/ /src/crates/obsyncd/src/api/
+COPY crates/obsyncd/src/storage/types.rs /src/crates/obsyncd/src/storage/types.rs
 RUN npm run build && npm test
 
 # ---------------------------------------------------------------------------

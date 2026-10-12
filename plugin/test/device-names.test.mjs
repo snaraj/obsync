@@ -121,6 +121,7 @@ test("a refresh after pairing or renaming reads the names at once (#164)", async
 
 test("a device enrolled as its bare platform gives the server the name it shows, once (#152)", async () => {
   const r = await started({ ownName: "linux" });
+  await r.timers.run(1000, () => r.host.logs.includes("device decision=renamed reason=legacy_default"));
   const patches = r.server.requests.filter((request) => request.method === "PATCH");
   assert.equal(patches.length, 1);
   assert.deepEqual(JSON.parse(patches[0].json), { name: "test-device" });
