@@ -723,3 +723,169 @@ Reduced final journey receipt SHA-256:
 `5b5faa9dccb704eba6d36f2347c1cec57a1ee9e45a21c758b62c07d167dbe94f`.
 The tested server binary SHA-256 is
 `d960a4a8ac261dc1e516a6ea7a98defbb68ee19554b84540c5deda6ec0bdf976`.
+
+### Hosted native transport verification
+
+The coordinator separately read the job steps and native logs from
+[run 38304480403](https://github.com/snaraj/obsync/actions/runs/38304480403).
+They check out the test merge of author head
+`a8d7f161720191933c3e0b32f212611381e1c611` into protected base
+`c2796b7a5b6abd38be23b4f93c6fb620ab7688c0`. Actual Obsidian 1.13.7 /
+Electron 43.3.0 completes enrollment, pairing, sync, restart and the ten-leg
+redirect regression through the committed Caddy/TLS fixture:
+
+| Hosted job | Observed result | Credential-storage boundary |
+| --- | --- | --- |
+| [Linux, no secret store](https://github.com/snaraj/obsync/actions/runs/38304480403/job/114995081390) | 13 steps, 56.0 s; a separate instance without CA trust is refused | Expected local plaintext fallback and visible warning, not encrypted local custody |
+| [macOS, sequential startup](https://github.com/snaraj/obsync/actions/runs/38304480403/job/114995081485) | 12 steps, 64.3 s | Both stored revisions match and remain encrypted across restart |
+| [Windows](https://github.com/snaraj/obsync/actions/runs/38304480403/job/114995703615) | 15 steps, 118.3 s, including NTFS journeys | Both stored revisions match and remain encrypted across restart |
+
+Linux and macOS build the `e7fd641b` bundle above. Windows builds the same
+1,411,025 bytes of modules in a different order, with bundle SHA-256
+`d26d2d9544f81026bd0ceb1f695920b455eba027d5c6e3fd086464a95be84739`.
+Sorting the existing compiled module paths using Windows separators reproduces
+that exact hash without changing any module bytes. The bundler sorts host paths
+before normalizing module identifiers; cross-host byte identity is therefore
+not claimed here.
+
+[Simultaneous macOS startup](https://github.com/snaraj/obsync/actions/runs/38304480403/job/114995081718)
+still **fails**: peer A reports encryption unavailable at workspace readiness,
+stores its enrolled revision as plaintext, and the strict pre-restart check
+refuses it. Peer B reports encrypted storage. The sequential success does not
+repair or supersede that failure. No custody assertion was weakened.
+
+These jobs prove native desktop behavior through this Caddy fixture. They do
+not establish phone acceptance, other proxy/browser combinations, an
+authenticating edge, mutual TLS, or all certificate stores. The existing proxy
+wire matrices lacked CORS assertions at this head; their success alone is not
+browser compatibility evidence.
+
+### Hosted fixture failures and focused repairs
+
+Two other jobs failed before completing their intended evidence:
+
+- [Windows plugin tests](https://github.com/snaraj/obsync/actions/runs/38304480403/job/114995081432)
+  exhausted the fake timer wait in the transient rename-refusal case. The
+  repaired fixture waits for the completed `EPERM` parking transition before
+  advancing the retry phase. A deliberately delayed first syscall reaches the
+  existing virtual advance ceiling; all editor, typing and no-echo assertions
+  remain. All 16 tests in `starved-watcher.test.mjs` pass locally. Removing the
+  phase or accepting it early causes the named in-process virtual-clock budget
+  timeout; removing the delayed boundary causes its assertion to fail. These
+  timeouts are not counted as assertion kills in the E2EE mutation inventory.
+  The original hosted filesystem interleaving was not captured, so attribution
+  remains an inference and a fresh Windows job is still required.
+- [The nginx image-build job](https://github.com/snaraj/obsync/actions/runs/38304480412/job/114995081638)
+  failed in the unchanged CLI package fixture with Linux `ETXTBSY`, before any
+  nginx request. A mutex now covers only the three fixture process-spawn
+  handoffs; child waits, test work and test parallelism remain unchanged. The
+  [upstream descriptor-inheritance mechanism](https://github.com/rust-lang/rust/issues/114554)
+  was reproduced in a private controlled Linux probe: removing only that
+  guard produces actual OS error 26, whereas guarded and restored executions
+  succeed after the sibling's exec closes its inherited descriptor. No probe
+  FFI, retry, sleep or unsafe code is added to the repository. All six package
+  tests pass on Linux arm64 with Rust 1.98.0 and on the coordinator's macOS.
+  An initial sandboxed macOS run refused the fixed OS custody helper; the
+  authorized unsandboxed run passes. Twelve batches of the original Linux
+  tests did not naturally reproduce the race; the controlled probe establishes
+  the mechanism, not certain attribution of the hosted occurrence.
+
+Neither repair changes product behavior or certifies the previously failing
+hosted jobs. Their next exact-head runs remain the acceptance evidence.
+
+### Client/server CORS route regression
+
+`python3 -B scripts/ci/test_cors_routes.py` evaluates the compiled plugin's
+`ROUTES` and probes actual server preflights for representatives derived from
+all 41 declared Rust resolver arms and the client regexes. It observes exactly
+26 grants and 36 refusals across 62 method/path pairs. Unsupported resolver or
+regex grammar refuses explicitly; this is not exhaustive regex-language proof
+or a third maintained route allowlist. Existing Rust tests retain malformed-ID
+and header-policy coverage.
+
+Cold-checkout contract discovery passes three tests without compiled artifacts;
+the explicit post-build CLI passes four, including the real server. Three
+artifact mutations add an unsupported client route or wrongly grant the real
+admin-overview/cookie-login routes; each fails the intended grant-equality
+assertion. Five CLI/parser mutations fail their intended assertions, and all
+restored controls pass. The coordinator independently reproduced the new-client
+route failure and restored its compiled module byte for byte. Initial fixture
+path, sandbox and receipt-matcher failures are excluded from these counts.
+
+The CLI is required after the existing engine E2EE run in both `make e2ee` and
+the hosted application job. Eleven command-contract tests pass, executing the
+actual shell/Make recipes with separate failed-build, failed-engine and failed-
+route-command controls. Cold contract discovery also executes the real CLI
+entry with a planted failing live test to reject a missing, dead or swallowed
+entry. No production route or encryption code changes in this follow-up.
+
+### Proxy CORS wire acceptance
+
+Both existing proxy entrypoints now invoke the shared `api_flow.py cors` phase
+after enrollment. It checks credential-free GET/POST preflight, exact explicit
+header/method grants, cache variation, signed JSON/binary success, a real
+bad-signature refusal, and malformed/forbidden/duplicate requests. Actual
+`/login` and `/v1/admin/overview` preflights must refuse alongside health and
+wrong-method cases. Duplicate CORS response fields refuse before conversion to
+a dictionary can discard them. No ambient credentials, exposed headers or
+cookies are granted by these fixture responses.
+
+On a disposable Linux arm64 image compiled from `a8d7f161` production source,
+`SKIP_LONGPOLL=1 scripts/validation/proxy_matrix.sh <fixture-image>` passes all
+four committed profiles: Caddy, nginx, Traefik and HAProxy, **22 steps in
+14 seconds**, including existing forwarded-address and direct/edge controls.
+The image uses the pinned build inputs and canonical final runtime layout;
+it is a fixture build, not certification of the complete shipping-image gate.
+Its local image ID is
+`sha256:0eafc939b3b695872acfad88982d322abb8b3c6fa8bd3112d5eae3ce9ac52b58`.
+The coordinator independently repeats nginx from the integrated checkout:
+**seven steps in four seconds**, also with `SKIP_LONGPOLL=1`.
+
+The separate Caddy `proxy-e2e.sh` run passes **eight steps in 69 seconds**,
+including the 8 MiB chunk, 32 MiB batch, 55.0-second held poll and 27 ms woken
+poll. That run predates correction of two negative paths from nonexistent
+endpoints to the real cookie/admin routes; the final four-profile matrix
+supplies those corrected negative cases. The other three profiles receive no
+held-poll claim from this local matrix. The native `--then` branch is unchanged.
+
+The first matrix attempt failed strict Python TLS verification because the
+generated leaf lacked an authority-key identifier. Both disposable certificate
+recipes now explicitly emit subject/authority-key identifiers. A real in-memory
+TLS handshake and matching CA-SKI/leaf-AKI checks pass; removing AKI still
+refuses strict verification. No trust bypass or OS trust-store change is made.
+
+These are wire-client checks, not renderer or phone executions. Synthetic
+Authorization/custom headers are sent, and device HMAC is actually checked;
+no authenticating edge or destination capture proves those optional header
+values. The local edge-mode test establishes the server's trusted-peer/header
+boundary, not a live provider policy. Hosted Caddy native evidence remains the
+separate browser-execution evidence above.
+
+The focused proxy suite passes seven tests. Its 28 initial mutations fail the
+intended named tests with retained output; these include actual oracle refusals,
+not uniformly `AssertionError` exits. The coordinator then demonstrated two
+survivors: putting either script's CORS call behind `if false` passed the
+original substring-only invocation test. The repaired test executes the whole
+local CORS block between neighboring enrollment/proxy steps, checks the exact
+call and requires a helper failure to reach `deny`. Six comment/dead-branch/
+swallowed-refusal mutations now fail their intended assertions, with restored
+controls passing. Prior survivors remain failures of the earlier test, not
+successful coverage. This test-only follow-up does not change proxy traffic.
+
+### Integrated local gate for this follow-up
+
+The coordinator's `make check` passes with Rust line coverage **94.78%**,
+**2,259** plugin tests, **83** dashboard tests and **922** contract tests.
+The real-engine E2EE run passes **19 flows, two planted leak controls,
+186 requests, 12 storage files and 50 needles** in **6,884 ms**; the new
+live route command passes all four tests. Both secret scans pass.
+
+After that full run, the only code delta replaces the proxy invocation test
+with the bounded shell execution described above. The coordinator reruns
+seven proxy tests, three cold route tests, four live route tests and eleven
+command-contract tests: all pass. The six valid-shell invocation mutations
+also fail their intended assertions in the integrated checkout, followed by
+seven restored passing tests. An initial private mutation broke a multiline
+shell command and was excluded before running the test. This is a full gate
+followed by focused verification of a test-only delta, not a second complete
+gate at the final file snapshot.

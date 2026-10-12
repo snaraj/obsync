@@ -638,7 +638,7 @@ const BEFORE = "first line\nold words SENTINEL\n";
 const AFTER = "first line\nnew words SENTINEL, longer\n";
 
 /** A receiver holding `Notes/n.md` at `BEFORE`, listed as a person's notes are (the watcher reported it), then A's edit to it. */
-async function editListed(t, options, arm = () => undefined) {
+async function editListed(t, options, arm = () => undefined, firstAttempt = null) {
   const devices = await pair(t);
   const { timers, a } = devices;
   a.host.write("Notes/n.md", BEFORE, 1000);
@@ -648,11 +648,14 @@ async function editListed(t, options, arm = () => undefined) {
   await timers.run(STEP_MS, () => settled(r, "Notes/n.md"));
   for (const path of ["Notes", "Notes/n.md"]) await r.adapter.late(path);
   await timers.run(STEP_MS);
-  const view = arm(r);
+  const view = arm(r, timers);
   const calls = r.adapter.calls.length;
   const applied = () => r.logs.filter((line) => line.startsWith("pull path_class=file") && line.includes("decision=applied")).length;
   const before = applied();
   a.host.write("Notes/n.md", AFTER, 2000);
+  // A syscall may finish after this wait spends its virtual advance budget.
+  // Observe completed failure handling before driving the retry it arms.
+  if (firstAttempt !== null) await timers.run(STEP_MS, () => firstAttempt(r));
   await timers.run(STEP_MS, () => r.text("Notes/n.md") === AFTER && r.state.fileByPath("Notes/n.md")?.mtime === 2000);
   // The host's native refresh deadline uses wall time. Do not advance the
   // simulated thirty-second scan past it while the real one-second reload is
@@ -706,18 +709,24 @@ test("a listed open note reconciles once and preserves typing begun during the w
  */
 test("a rename the system refuses for a moment leaves the pane its bridge (#267)", async (t) => {
   for (const typing of [false, true]) {
-    let refused = 0;
-    const { r, view } = await editListed(t, {}, (r) => {
+    let refused = 0, waitedToCeiling = false;
+    const { r, view } = await editListed(t, {}, (r, timers) => {
       const view = openEditor(r, "Notes/n.md");
+      const waitAt = timers.now;
       r.hooks.beforeRename = async (_from, to) => {
         if (refused > 0 || !to.endsWith(`${nodePath.sep}n.md`)) return;
+        // Hold the first syscall to the wait's existing 1800-step ceiling.
+        // Its retry is armed only AFTER that I/O rejects, not before it.
+        if (!typing) await new Promise(resolve => timers.set(resolve, Math.max(0, waitAt + 1800 * STEP_MS - timers.now)));
+        waitedToCeiling = timers.now >= waitAt + 1800 * STEP_MS;
         refused++;
         throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
       };
       if (typing) r.hooks.afterRename = async (_from, to) => { if (to.endsWith(`${nodePath.sep}n.md`)) view.type("TYPED"); };
       return view;
-    });
+    }, (r) => r.logs.some(line => /^feed decision=parked reason=EPERM file=[0-9a-f]{32} parked=1 retry_ms=60000$/.test(line)));
     assert.equal(refused, 1, story(r));
+    if (!typing) assert.equal(waitedToCeiling, true, "fixture observed the exhausted virtual advance window");
     assert.ok(r.logs.includes("host path_class=file decision=failed reason=write error=EPERM outcome=superseded"), story(r));
     assert.ok(r.logs.some((line) => line.startsWith("editor decision=reload_released outcome=superseded ")), story(r));
     assert.ok(r.logs.includes("host path_class=file decision=editor_refreshed views=1"), story(r));

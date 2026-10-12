@@ -11,9 +11,30 @@ use std::{
     fs::{self, File},
     os::unix::fs::{DirBuilderExt, PermissionsExt},
     path::PathBuf,
-    process::Command,
-    sync::atomic::{AtomicU64, Ordering},
+    process::{Child, Command, Output, Stdio},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
+
+// A sibling fork can inherit a writable fixture FD until its exec closes it,
+// even after the writing test closes its own copy (Linux ETXTBSY). Serialize
+// only spawn's fork/exec handoff; child waits and fixture work remain parallel.
+static SPAWN_HANDOFF: Mutex<()> = Mutex::new(());
+
+fn spawn_fixture(command: &mut Command) -> std::io::Result<Child> {
+    let _handoff = SPAWN_HANDOFF.lock().unwrap();
+    command.spawn()
+}
+
+fn fixture_output(command: &mut Command) -> Output {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    spawn_fixture(command).unwrap().wait_with_output().unwrap()
+}
 
 struct Lab {
     root: PathBuf,
@@ -54,10 +75,9 @@ impl Lab {
                 // private executable copy before hashing it: Linux DWARF can
                 // exceed the unchanged 8 MiB package limit in a debug build.
                 assert!(
-                    Command::new("/usr/bin/strip")
-                        .arg("-S")
-                        .arg(&p)
-                        .status()
+                    spawn_fixture(Command::new("/usr/bin/strip").arg("-S").arg(&p))
+                        .unwrap()
+                        .wait()
                         .unwrap()
                         .success()
                 );
@@ -117,7 +137,7 @@ impl Lab {
         if let Some(p) = std::env::var_os("LLVM_PROFILE_FILE") {
             cmd.env("LLVM_PROFILE_FILE", p);
         }
-        let output = cmd.output().unwrap();
+        let output = fixture_output(&mut cmd);
         assert_eq!(
             output.status.code(),
             Some(code),
@@ -158,11 +178,11 @@ fn native_install_repeat_upgrade_and_uninstall_preserve_external_contexts() {
     let first = lab.bytes(&lab.prefix);
     lab.run("install", 0);
     assert_eq!(first, lab.bytes(&lab.prefix));
-    let v = Command::new(lab.prefix.join("obsync"))
-        .arg("--version")
-        .env_clear()
-        .output()
-        .unwrap();
+    let v = fixture_output(
+        Command::new(lab.prefix.join("obsync"))
+            .arg("--version")
+            .env_clear(),
+    );
     assert!(v.status.success());
     assert!(String::from_utf8_lossy(&v.stdout).contains("native Rust"));
     let old = lab.prefix.clone();

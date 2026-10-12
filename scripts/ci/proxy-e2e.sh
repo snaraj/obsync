@@ -173,7 +173,7 @@ mkdir -m 0755 "${scratch}/tls"
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
   -keyout "${scratch}/tls/tls.key" -out "${scratch}/leaf.csr" -subj "/CN=${HOST}" >/dev/null 2>&1 \
   || deny 'openssl could not make the leaf key'
-printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "${HOST}" > "${scratch}/leaf.ext"
+printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n' "${HOST}" > "${scratch}/leaf.ext"
 openssl x509 -req -in "${scratch}/leaf.csr" -CA "${scratch}/ca.crt" -CAkey "${scratch}/ca.key" \
   -CAcreateserial -days 1 -extfile "${scratch}/leaf.ext" -out "${scratch}/tls/tls.crt" >/dev/null 2>&1 \
   || deny 'openssl could not sign the leaf'
@@ -260,6 +260,8 @@ else
   }
   client enroll < "${scratch}/token" || deny "the sync flow failed through ${proxy}"
   prove "it syncs: first boot, pairing, one file each way and four refusals, through ${proxy}"
+  client cors < /dev/null || deny "the plugin CORS contract failed through ${proxy}"
+  prove "${proxy} carries anonymous preflight and authenticated plugin success/refusal without an ambient credential grant"
   client proxy --expect-address "${CLIENT_IP}" --bypass "${server_ip}:8080" < /dev/null \
     || deny "${proxy} broke a property the sync path needs"
   prove "${proxy} keeps out of the way: the largest chunk, a full batch, a held and a woken long poll, the real client address, no way around it"

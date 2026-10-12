@@ -37,6 +37,7 @@ plugin: ## Build and test the plugin
 e2ee: plugin ## Real plugin/server confidentiality and tamper regression
 	cargo build --locked -p obsyncd
 	node scripts/ci/e2ee.mjs
+	python3 -B scripts/ci/test_cors_routes.py
 
 cli: ## Build and exercise the installed native management CLI
 	cargo build --locked --release -p obsync-cli

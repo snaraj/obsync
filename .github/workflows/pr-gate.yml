@@ -176,6 +176,7 @@ jobs:
           set -euo pipefail
           cargo build --locked -p obsyncd
           node scripts/ci/e2ee.mjs
+          python3 -B scripts/ci/test_cors_routes.py
       - name: Build and test the offline CLI
         run: |
           cargo build --locked --release -p obsync-cli

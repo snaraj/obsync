@@ -11,7 +11,8 @@ import sys
 
 import miniyaml
 
-COMMANDS = ["cargo build --locked -p obsyncd", "node scripts/ci/e2ee.mjs"]
+COMMANDS = ["cargo build --locked -p obsyncd", "node scripts/ci/e2ee.mjs",
+            "python3 -B scripts/ci/test_cors_routes.py"]
 STEP = "Verify real plugin/server encryption boundaries"
 
 
@@ -30,7 +31,7 @@ def validate(workflow, makefile):
         raise ValueError("E2EE step requires the repository root and bash")
     run = step.get("run", "")
     if [line.strip() for line in run.splitlines() if line.strip()] != ["set -euo pipefail", *COMMANDS]:
-        raise ValueError("E2EE step must execute both commands without suppressing failure")
+        raise ValueError("E2EE step must execute all required commands without suppressing failure")
     # Closed declaration grammar: Make can suppress errors outside a recipe
     # through .IGNORE, flags, shell overrides or evaluated/included text.
     # Only literal targets, .PHONY and the two existing defaults are supported.
@@ -44,7 +45,7 @@ def validate(workflow, makefile):
         raise ValueError("exactly one E2EE Make target is required")
     match = re.search(r"^e2ee: plugin(?:\s*#[^\n]*)?\n((?:\t[^\n]*\n)+)", makefile, re.M)
     if not match or [line.strip() for line in match[1].splitlines()] != COMMANDS:
-        raise ValueError("E2EE make target must execute both commands without ignoring failure")
+        raise ValueError("E2EE make target must execute all required commands without ignoring failure")
     return run
 
 

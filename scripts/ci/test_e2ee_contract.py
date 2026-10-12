@@ -22,7 +22,7 @@ class E2eeContract(unittest.TestCase):
 
     def execute(self, run, failure, makefile=None):
         with tempfile.TemporaryDirectory(prefix='e2ee-ci-control-') as tmp:
-            for command in ('node', 'cargo'):
+            for command in ('node', 'cargo', 'python3'):
                 stub = Path(tmp, command)
                 stub.write_text('#!/bin/sh\nprintf "%s\\n" "$0 $*" >> "$TRACE"\n'
                                 + ('exit 17\n' if command == failure else 'exit 0\n'))
@@ -39,11 +39,12 @@ class E2eeContract(unittest.TestCase):
 
     def test_workflow_executes_and_propagates_failure(self):
         run = contract.validate(self.workflow, self.makefile)
-        for failure in ('node', 'cargo', None):
+        for failure in ('node', 'cargo', 'python3', None):
             code, trace = self.execute(run, failure)
             self.assertEqual(code, 0 if failure is None else 17)
             self.assertIn('cargo build --locked -p obsyncd', trace)
             self.assertEqual('node scripts/ci/e2ee.mjs' in trace, failure != 'cargo')
+            self.assertEqual('python3 -B scripts/ci/test_cors_routes.py' in trace, failure not in ('cargo', 'node'))
         # This is the independently reproduced surviving mutant. Its exit is
         # green despite the failing invariant; the contract must reject it.
         mutant = run.replace('node scripts/ci/e2ee.mjs', 'node scripts/ci/e2ee.mjs || true')
@@ -85,17 +86,18 @@ class E2eeContract(unittest.TestCase):
                                   '      - ' + field + '\n        name: ' + contract.STEP), self.makefile)
 
     def test_make_cannot_ignore_errors(self):
-        for prefix, suffix in [('-', ''), ('@-', ''), ('', ' || true'), ('', ' | true'), ('# ', '')]:
-            command = 'node scripts/ci/e2ee.mjs'
-            with self.assertRaises(ValueError):
-                contract.validate(self.workflow, self.makefile.replace('\t' + command, '\t' + prefix + command + suffix))
+        for command in contract.COMMANDS:
+            for prefix, suffix in [('-', ''), ('@-', ''), ('', ' || true'), ('', ' | true'), ('# ', '')]:
+                with self.subTest(command=command, prefix=prefix, suffix=suffix), self.assertRaises(ValueError):
+                    contract.validate(self.workflow, self.makefile.replace('\t' + command, '\t' + prefix + command + suffix))
 
     def test_make_target_propagates_failure(self):
-        for failure in ('node', 'cargo', None):
+        for failure in ('node', 'cargo', 'python3', None):
             code, trace = self.execute('', failure, self.makefile)
             self.assertEqual(code, 0 if failure is None else 2)
             self.assertIn('cargo build --locked -p obsyncd', trace)
             self.assertEqual('node scripts/ci/e2ee.mjs' in trace, failure != 'cargo')
+            self.assertEqual('python3 -B scripts/ci/test_cors_routes.py' in trace, failure not in ('cargo', 'node'))
         for suppression in ('.IGNORE: e2ee', '.IGNORE:', 'MAKEFLAGS += --ignore-errors'):
             mutant = self.makefile + '\n' + suppression + '\n'
             with self.subTest(suppression=suppression):

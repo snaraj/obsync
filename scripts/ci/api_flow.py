@@ -37,6 +37,8 @@ PHASES, because a restart happens between them:
           still byte-for-byte, the nonce spent before the restart is still
           refused (the journal remembers it), and a freshly signed request
           still works.
+  cors    after `enroll`, anonymous browser-like preflight and authenticated
+          success/refusal through the proxy; wire headers, not browser execution.
   proxy   after `enroll`, the properties a reverse proxy in front can break
           while `/readyz` stays green: the largest chunk the protocol admits,
           a full 32 MiB batch download, a 55 s long poll held open and a
@@ -223,6 +225,7 @@ class Server:
         corrupt: bool = False,
         timeout: int | None = None,
         extra: dict[str, str] | None = None,
+        strict_cors: bool = False,
     ) -> tuple[int, dict[str, str], bytes]:
         """One request, signed as `docs/protocol.md` says, or unsigned."""
         headers = {"Content-Length": str(len(body))}
@@ -259,7 +262,15 @@ class Server:
         try:
             connection.request(method, target, body=body, headers=headers)
             response = connection.getresponse()
-            result = response.status, dict(response.getheaders()), response.read()
+            fields = response.getheaders()
+            if strict_cors:
+                seen = set()
+                for name, _ in fields:
+                    name = name.lower()
+                    if name.startswith("access-control-") and name in seen:
+                        raise Denied("duplicate CORS response header")
+                    seen.add(name)
+            result = response.status, dict(fields), response.read()
             if response.will_close:
                 close = True
             return result
@@ -687,6 +698,65 @@ def multipart_parts(headers: dict[str, str], body: bytes) -> list[tuple[str, byt
     return parts
 
 
+def cors(flow: Flow) -> None:
+    """Browser-like wire checks; this client neither follows redirects nor sends cookies."""
+    server, state = flow.server, flow.load()
+    first = Credential(state["first"]["device_id"], state["first"]["secret"])
+    origin = {"Origin": "app://obsidian.md"}
+    names = ["Authorization", "X-Obsync-Device", "X-Obsync-Ts", "X-Obsync-Nonce", "X-Obsync-Sig", "X-Service-Secret"]
+
+    def grant(headers: dict[str, str], allowed: bool) -> dict[str, str]:
+        fields = {name.lower(): value for name, value in headers.items()}
+        if fields.get("access-control-allow-origin") != ("*" if allowed else None):
+            raise Denied("CORS origin grant was missing or granted outside the plugin routes")
+        if any(name in fields for name in ("access-control-allow-credentials", "access-control-expose-headers", "set-cookie")):
+            raise Denied("CORS response granted ambient credentials, exposed extra headers or set a cookie")
+        return fields
+
+    # No credential/signature/cookie values on OPTIONS: only requested NAMES.
+    for method, target, requested in [("GET", "/v1/account", names), ("POST", "/v1/devices/heartbeat", names + ["Content-Type"])]:
+        status, headers, body = server.call("OPTIONS", target, extra={**origin, "Access-Control-Request-Method": method, "Access-Control-Request-Headers": ", ".join(requested)}, strict_cors=True)
+        flow.expect(status, 204, "anonymous plugin preflight", body)
+        fields = grant(headers, True)
+        if body or fields.get("access-control-allow-methods") != method or fields.get("access-control-allow-headers") != ", ".join(sorted(name.lower() for name in requested)) or fields.get("access-control-max-age") != "0":
+            raise Denied("CORS preflight lost its exact method/header grant or empty uncached response")
+        if {name.strip().lower() for name in fields.get("vary", "").split(",")} != {"origin", "access-control-request-method", "access-control-request-headers"}:
+            raise Denied("CORS preflight lost its cache variation")
+    flow.prove("credential-free preflight: explicit protocol/Authorization/custom headers and no ambient credential grant")
+
+    actual = {**origin, "Authorization": "Bearer SYNTHETIC_EDGE", "X-Service-Secret": "SYNTHETIC_EDGE"}
+    for corrupt, expected in [(False, 200), (True, 401)]:
+        status, headers, body = server.call("GET", "/v1/account", cred=first, corrupt=corrupt, extra=actual, strict_cors=True)
+        flow.expect(status, expected, "signed account with Origin", body)
+        if corrupt:
+            flow.expect_code(status, 401, "bad_signature", "signed account refusal with Origin", body)
+        grant(headers, True)
+    status, headers, body = server.call("POST", "/v1/devices/heartbeat", body=json.dumps({"app_version": APP_VERSION}).encode(), cred=first, extra=actual, strict_cors=True)
+    flow.expect(status, 204, "signed heartbeat with Origin", body)
+    grant(headers, True)
+    status, headers, body = server.call("GET", f"/v1/chunks/{state['sid']}", cred=first, extra=actual, strict_cors=True)
+    flow.expect(status, 200, "signed binary read with Origin", body)
+    grant(headers, True)
+    if body != base64.b64decode(state["chunk"]):
+        raise Denied("CORS binary read changed the enrolled chunk bytes")
+    flow.prove("authenticated JSON/binary success and bad_signature refusal retain CORS and exact chunk bytes")
+
+    base = {**origin, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "x-obsync-device"}
+    negative = [
+        ("/v1/account", {name: value for name, value in base.items() if name != "Origin"}, 400),
+        *[("/v1/account", {**base, "Access-Control-Request-Headers": name}, 400) for name in ["Cookie", "*", "X-HTTP-Method-Override", "Proxy-Authorization", "Sec-Fetch-Site", "X-Obsync-Device, x-obsync-device"]],
+        ("/login", base, 404),
+        ("/v1/admin/overview", base, 404), ("/readyz", base, 404), ("/v1/devices/heartbeat", base, 404),
+    ]
+    for target, extra, expected in negative:
+        status, headers, body = server.call("OPTIONS", target, extra=extra, strict_cors=True)
+        flow.expect(status, expected, "refused CORS preflight", body)
+        fields = grant(headers, False)
+        if any(name.startswith("access-control-") for name in fields):
+            raise Denied("refused preflight retained a CORS grant")
+    flow.prove("malformed/forbidden/duplicate preflight and cookie/admin/health/wrong-method routes receive no CORS grant")
+
+
 def proxy(flow: Flow, expect_address: str, bypass: str) -> None:
     """What a reverse proxy in front can break while `/readyz` stays green."""
     server = flow.server
@@ -1109,7 +1179,7 @@ def bench(flow: Flow, token: str, arguments: argparse.Namespace) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("phase", choices=("enroll", "verify", "proxy", "bench", "full"))
+    parser.add_argument("phase", choices=("enroll", "verify", "cors", "proxy", "bench", "full"))
     parser.add_argument("--host", required=True, help="the name the certificate carries")
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--address", required=True, help="the address that name is reached on")
@@ -1170,6 +1240,8 @@ def main(argv: list[str]) -> int:
                 full(flow, token)
             else:
                 bench(flow, token, arguments)
+        elif arguments.phase == "cors":
+            cors(flow)
         elif arguments.phase == "proxy":
             proxy(flow, arguments.expect_address, arguments.bypass)
         else:
