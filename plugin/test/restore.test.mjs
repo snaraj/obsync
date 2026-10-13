@@ -190,8 +190,12 @@ test("a server restored from last night's backup gets the day's notes, rename an
     caughtUp(server, a));
   const postsBeforeB = server.requests.filter(request => request.method === "POST" && request.target.endsWith("/versions")).length;
   const idsBeforeB = [...server.files].map(([id, file]) => [id, file.versions.map(version => version.version_id)]);
+  const readsBeforeB = b.engine.feedReads;
   server.unreachable.delete(DEVICE_B);
-  await recovered(timers, () => caughtUp(server, b) && caughtUp(server, a) && strays(server, b).length === 0);
+  // Equal SIV versions/cursors do not prove B has retried its feed. A new
+  // automatic feed read follows its restore probe and recovery, before replay.
+  await recovered(timers, () => b.engine.feedReads > readsBeforeB && caughtUp(server, b) &&
+    caughtUp(server, a) && strays(server, b).length === 0);
   // SIV restores the same immutable IDs. B already holds those versions,
   // so its reconnect requires no redundant publication or resend notice.
   assert.equal(server.requests.filter(request => request.method === "POST" && request.target.endsWith("/versions")).length, postsBeforeB, "second device must not republish already restored versions");

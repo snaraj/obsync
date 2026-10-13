@@ -1507,3 +1507,72 @@ Python 3.12/Linux build and origin checks. Its container, task-only image,
 generated site and empty Docker configuration were removed. The first attempt
 refused an already existing scratch directory before creating a container;
 that directory was preserved and a unique task path used for the successful run.
+
+The first hosted comparison of head
+`bb290bcb1af0dafeeb07d469acc92abb4a9f352e` tests merge commit
+`8b1b6c919ec426d97731a8fa711fed3ffad617ef`; its two parents are the named
+head and unchanged protected base `c2796b7a5b6abd38be23b4f93c6fb620ab7688c0`.
+Both macOS launch orders pass with every enrolled, before-restart and
+after-restart custody assertion retained: simultaneous job 115087038286 reports
+12 steps in 59.0 seconds, and serialized job 115087038151 reports 12 in 65.9
+seconds. Each records six observations with encryption available, nonplaintext
+storage and matching revisions. This is one successful bounded comparison
+after removing the early availability probe; it does not establish the earlier
+native error's root cause or absence of timing failures.
+
+ARM64 Compose job 115087038228 passes the repaired occupied-setup oracle,
+including both absent and false recovery-mode refusals, then seven enrollment
+and three restart/persistence properties with exact 2 MiB readback. This closes
+the missing hosted example for the focused deployment-test finding without
+turning opaque-byte API acceptance into E2EE proof. Security job 115087037916
+passes all 925 contracts in 100.787 seconds and signed identity, then refuses
+the unchanged artifact release version; later security-tool/secret steps are
+not supplied by that job. Dispositions job 115087751868 covers the one PR alert
+(the existing reviewed ciphertext-SID export) with zero uncovered findings,
+and separately passes main coverage. The aggregate CodeQL check remains red.
+
+Two image builds expose additional test observations requiring repair: binary
+job 115087038137 fails the S75 restore START-log assertion, while Helm job
+115087038371 records an extra retry in the page-coalescing test. These failures
+remain part of this checkpoint; passing sibling deployments do not erase them.
+The seven downloaded job logs are inventoried in reduced receipt SHA-256
+`072be373509235a330a81e358514262a015bf1fadaf93f03b855c6c742082fb5`.
+
+The terminal hosted inventory for `bb290bcb` has 42 passing checks, five failed
+checks and one skipped documentation-deployment check. The failures are the
+two image builds above, release classification, its dependent aggregate gate
+and aggregate CodeQL. Application job 115087037942 passes 734 Rust tests,
+94.84% hosted line coverage, 2,480 plugin tests with nine case-folding filesystem
+skips, 87 dashboard tests and the required real-server E2EE run: 21 flows, two
+controls, 382 requests and 8,137 ms. These platform counts are distinct from
+the local macOS run. Both Compose architectures, all native desktop journeys,
+proxy cases and distributions pass. This is a failed overall gate with named
+passing components, not a Ready result.
+
+The two failures above have minimal test-only repairs. S75 previously accepted
+an already-equal in-memory cursor after device A restored the same immutable
+SIV versions, before device B had completed its automatic reconnect. It now
+requires a later automatic feed read, which follows the awaited recovery.
+Delaying B's actual restore probe reproduces the original missing START
+assertion; the repaired wait passes. Bypassing B's recovery while allowing later
+feed reads still fails the unchanged START assertion. The full restore file
+passes 12 tests, and its zero-resend, byte/state and SUMMARY assertions remain.
+
+The page-retry observer previously stayed active through the asynchronous tail
+after the page-exclusive turn ended. A real editor timer in that tail was
+miscounted as a second page retry. The observer now records only the actual
+page turn. Holding its tail save until the armed editor timer runs reproduces
+the original `[10,11]` versus `[10]` failure; the same controlled interleaving
+passes after repair. Omitting the production page retry fails with `[]`;
+moving it after cursor advancement fails with `[11]`. Both hit the unchanged
+exact-order assertion. All 12 tests in that file pass. Its reduced causal
+receipt digest is `75abd13676c2da429b8f69e22848ff5444934d462eef9f0ed57b63e7ea9a0350`.
+
+The parent reviewed both runtime boundaries and causal controls, then ran both
+complete files together using pinned Node 26.10.0: 24 pass, no failures or
+skips, 2,899.859084 ms. An earlier default-shell 26.11.1 run is excluded from
+the pinned evidence. No runtime source or bundle changed; the bundle remains
+`9989e1c257191a6fc0723b11527790d8201706d1cef3b8462ef9f27b0d40f7ad`.
+These are focused deltas to the recorded complete local and hosted batteries,
+not another claimed full local gate or new physical-device run. No assertion
+was relaxed and no hosted rerun was used to erase an observed failure.

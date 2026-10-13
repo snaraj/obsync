@@ -104,7 +104,8 @@ test("a backlog retries each parked file only after its last page record, withou
     const entry = { changes: page.changes.length, retries: [], lastSeq: page.seq }; pages.push(entry); active = entry;
     try { return await applyPage(context, page); } finally { active = null; }
   };
-  engine.retryOne = async (...args) => { if (active) active.retries.push(r.state.data.lastSeq); return retryOne(...args); };
+  // applyPage also awaits work after its page turn; editor timers can retry independently in that tail.
+  engine.retryOne = async (...args) => { if (active && engine.holder?.label === "page") active.retries.push(r.state.data.lastSeq); return retryOne(...args); };
   await engine.start();
   await r.timers.run(STEP_MS, () => r.state.data.lastSeq >= r.server.journal.at(-1).seq);
   assert.equal(r.host.text("Notes/Other.md"), "OTHER");

@@ -12,8 +12,9 @@ The focused independent F6 assessment of `c1d60b89` accepted the implemented
 mode/context composition, strict recovery, and the reproduced durable-floor
 and rotation boundaries. It does not approve the whole PR. It retains the
 quantitative model as a conditional analytical horizon, and identified a stale
-deployment-test refusal expectation. Its repaired local API probe passes;
-exact-head hosted deployment proof remains required.
+deployment-test refusal expectation. The repaired local API probe and hosted
+ARM64 Compose acceptance pass at `bb290bcb`; later heads retain their own
+hosted gate requirement.
 
 ## Claim-to-evidence map
 
@@ -28,7 +29,7 @@ unit-test success into a whole-product approval.
 | E03: pairing gives the root only to the approved recipient | Existing v2 commitment, fixed claim, ECDH/secret-bound suite-2 envelope, mandatory sealed vault details and screen comparison; missing, mixed and unknown suite variants refuse. Creator notices identify spoofable server status, with a corrupted-envelope/spoofed-row control. The native driver now requires matching visible comparison codes on both devices before approval; real Obsidian 1.13.7 exercised that path. | Independent malicious-relay review, including every proposed rotation enrollment change. The native honest comparison and injected driver failures are not a coupled native malicious-relay journey. |
 | E04: authenticate before publication | Real manifest, parent and chunk corruption refusal; unchanged accepted bytes/state; damaged chunk parks durably while valid siblings progress; honest retry restores exact bytes. Mutations kill normalization and retry removal. | Independent assessment of the complete receive/control surface, beyond these exercised routes. |
 | E05: recovery separates content from account authority | Recovery/API-proof decryption negatives; one-frame server authority; strict occupied-account recover-only admission; client root staging, authenticated account/map readback and save acknowledgement. Complete prefixed backups are used by live setup/recovery/pairing/rotation. The real-engine legacy upgrade reads back preserved plaintext after commit; actual desktop UI upgrade and old-generation sibling restoration pass on the final bundle. | Whole-protocol review and physical-phone acceptance; broader native recovery failures remain distinct from the completed legacy journey. Lost one-time enrollment responses can leave unused server credentials; they do not justify automatic retries. |
-| E06: custody and diagnostics | Closed error-code messages, explicit detail consumers, relative filesystem/control-character redaction, focused mutation controls. Current-format custody refuses missing/copied/torn pins and withholds replacement identity until save acknowledgement. Local macOS 1.13.7 and hosted sequential macOS/Windows pass both encrypted-storage restarts. Hosted Linux without a secret store exercises the explicit local-plaintext warning. | Hosted simultaneous macOS startup still yields plaintext storage and refuses custody; other successes do not diagnose or override it. Public API readback is not joint crash durability or secure erasure. Physical-phone custody remains open. Arbitrary free text is not universally sanitized. |
+| E06: custody and diagnostics | Closed error-code messages, explicit detail consumers, relative filesystem/control-character redaction, focused mutation controls. Current-format custody refuses missing/copied/torn pins and withholds replacement identity until save acknowledgement. Local macOS 1.13.7 and hosted Windows pass encrypted-storage restarts. Both hosted macOS launch orders pass all six custody observations at `bb290bcb` after removing the early initialization probe. Hosted Linux without a secret store exercises the explicit local-plaintext warning. | One passing hosted comparison does not establish the earlier failure's root cause or prove absence of timing failures. Public API readback is not joint crash durability or secure erasure. Physical-phone custody remains open. Arbitrary free text is not universally sanitized. |
 | E07: revocation matches its selected guarantee | Per-removal access-only/rotation choice is implemented. Real-engine tests prove access-only retained-key decryption and old-root failure against actual new-generation ciphertext. Prepare/commit require separate owner-token authority, complete reseed/readback and locally pinned context. Actual old binaries refuse the durable format marker after normal floor-log pruning; removing only that marker makes both controls open the legacy fallback. Three actual desktops exercise targeted removal, prepared/catalog restarts, retained-peer re-pairing and two-way byte readback; the excluded instance retains old bytes and refuses sync. | Independent whole-protocol approval and remaining fault coverage; physical-phone acceptance. The native server refusal is distinct from the direct-ciphertext old-root proof. Only transitioned clients obtain future-content separation; copied plaintext and old/offline branches remain. |
 | E08: integrity is distinguished from freshness/attribution | Corruption and visible fork refuse; authentic sole-head map rollback remains readable in a deliberate regression demonstration. Docs distinguish shared-key authority from a device signature. | Independent replay/rollback/omission review; no global latest-state or server-independent availability guarantee. |
 | E09: key/nonce composition and lifetime | [Inventory and implemented AES-SIV replacement](e09-key-nonce-inventory.md). Live wrappers use counted context, context-hash HKDF info and the full context as AD. Published vectors, full-mode EVP comparisons and forced RNG failure/repetition controls pass. Focused independent review accepts the implemented component/live composition and reproduces the finite model's displayed terms. | The model remains a conditional analytical horizon, not an enforced operating profile or E09 PASS. Primitive/KDF terms remain unevaluated; complete protocol and device acceptance remain open. No aggregate offline quota or numeric whole-system failure probability is claimed. |
@@ -67,11 +68,11 @@ five redirect statuses for GET and POST with zero destination requests; its
 positive controls reached the destination. The composed suite-2 candidate passed the
 12-step desktop journey, including the permanent native redirect regression,
 setup, pairing, sync and encrypted-storage restarts. Hosted Linux, Windows and
-sequential-start macOS also pass native journeys through the Caddy/TLS fixture;
-Linux additionally refuses an instance without CA trust. Phone, other proxy
-and certificate combinations, the simultaneous macOS custody finding and
-final independent review remain open; no released or platform-wide remedy is
-claimed.
+macOS also pass native journeys through the Caddy/TLS fixture. Both macOS
+launch orders pass at `bb290bcb`; the earlier failure and bounded instrumentation
+experiment remain recorded separately. Linux additionally refuses an instance
+without CA trust. Phone, other proxy and certificate combinations, and final
+independent review remain open; no released or platform-wide remedy is claimed.
 
 The historical GCM analysis identified a shared 96-bit nonce budget and a
 synthetic repeated-RNG failure. Live callers now use established RFC 5297 SIV
