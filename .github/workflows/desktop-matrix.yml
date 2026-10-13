@@ -59,9 +59,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up the pinned Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.10.0'
+          node-version: '26.11.1'
           check-latest: false
       - name: Build the plugin from this commit
         working-directory: plugin
@@ -118,9 +118,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up the pinned Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.10.0'
+          node-version: '26.11.1'
           check-latest: false
       - name: Build the plugin from this commit
         working-directory: plugin
@@ -172,7 +172,7 @@ jobs:
           docker cp "${container}:/out/obsyncd" "${RUNNER_TEMP}/obsyncd"
           docker rm --force "${container}" >/dev/null
       - name: Hand the binary to the Windows leg
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: obsyncd-linux-amd64
           path: ${{ runner.temp }}/obsyncd
@@ -198,9 +198,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up the pinned Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.10.0'
+          node-version: '26.11.1'
           check-latest: false
       - name: Build the plugin from this commit
         working-directory: plugin
@@ -209,7 +209,7 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npm run build
       - name: Take the server binary this commit built
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: obsyncd-linux-amd64
           path: ${{ runner.temp }}/binary
@@ -218,7 +218,7 @@ jobs:
           OBSYNC_E2E_CAPTURES: ${{ runner.temp }}/obsync-editor-captures
         run: scripts/ci/obsidian-host.sh "${RUNNER_TEMP}/binary/obsyncd"
       - name: Retain verified synthetic editor captures
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-editor-captures
           path: ${{ runner.temp }}/obsync-editor-captures
@@ -253,14 +253,14 @@ jobs:
         with:
           persist-credentials: false
       - name: Set up the pinned Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '26.10.0'
+          node-version: '26.11.1'
           check-latest: false
       - name: Install, build and test the plugin
         run: |
           set -euo pipefail
-          test "$(node --version)" = "v26.10.0"
+          test "$(node --version)" = "v26.11.1"
           npm ci --ignore-scripts --no-audit --no-fund
           npm run build
           npm test

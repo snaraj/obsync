@@ -22,6 +22,13 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 - Run real plugin/server confidentiality and hostile-server regressions in the
   required gate, with planted leaks that prove the scanner can refuse exposure.
 
+### Changed
+
+- Update the Node build runtime/image to 26.11.1 and the Rust builder image
+  to 1.99.0 while retaining the independent Rust 1.98.0 compiler pin.
+- Update CodeQL actions to 4.38.3, setup-node to 7.1.0, upload-artifact to
+  7.0.2 and download-artifact to 8.0.2, with immutable action/image pins.
+
 ## 1.1.7 - Unreleased
 
 ### Fixed

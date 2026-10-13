@@ -2024,3 +2024,47 @@ groups, the server and driver are stopped, and runtime fixture data is absent.
 This remains actual positive acceptance; no native actual-false observation
 is inferred from it. The earlier 52.3-second receipt remains bound to its
 original helper hash.
+
+## Dependency composition, 2026-10-13
+
+The owner expanded v1.1.8 to include Dependabot PRs #348–#353 in #347.
+Node advances coherently to 26.11.1 with its bundled npm 11.20.0 across
+package metadata, both workflows, the image assertions and the documented
+toolchain. The Rust builder image advances to 1.99.0; the compiler remains
+the independently selected and asserted 1.98.0. CodeQL 4.38.3, setup-node
+7.1.0, upload-artifact 7.0.2 and download-artifact 8.0.2 retain exact commit
+pins. The coordinator independently resolves all four official release tags
+and matches their commit hashes. Both official image indexes match the
+proposed digests. No runtime dependency or security exemption is added.
+
+The isolated composition worker passes three dependency-pin tests, 14 workflow
+integrity tests, 135 CodeQL-disposition tests, 88 dashboard tests and Makefile
+invariants. Its 37 targeted mutations all fail the intended checks: stale
+Node/npm readers, mutable action references, wrong image pins, missing Rust
+compiler selection/assertion and an unapproved compiler upgrade. All mutations
+are restored. The coordinator reruns the three pin tests, Makefile invariants
+and actionlint on the integrated tree successfully. The worker's scratch tree
+is removed. The updated build is subject to the complete composed gate below;
+the individual bot PR results do not validate it.
+
+The original Node PR failed because its image and exact version assertions
+disagreed. The other five bot PRs failed the existing commit identity/trailer
+contract. Composition retains that contract and publishes through the existing
+signed author branch; it does not exempt bot commits. Read-only release-settings
+preflight confirms protected main, strict eight required checks, signed commits,
+immutable releases and no force-push or deletion allowance.
+
+Physical-phone control now connects through the native computer-use interface.
+This establishes access only; installation, trusted HTTPS and device journeys
+remain separate acceptance evidence.
+
+The coordinator's complete composed `make check` exits zero: 734 Rust tests
+including two doctests (one additional ignored), 94.85% line coverage, 2,508
+plugin tests, 207 native CLI checks, 88 dashboard tests, 930 repository contracts
+and both secret scans. The E2EE run passes 21 flows and two planted controls in
+15,296 ms: 383 total requests (342 main), 22 main storage files and 148 needles;
+the legacy leg has 41 requests, ten files and 33 needles. Local chart checks
+first use installed Helm 4.3.0, then independently pass `make chart` again with
+official checksum-verified Helm 3.19.2, matching the CI version. The release
+server and plugin rebuild reproduce `3b4f94a7` and `d6504987` respectively.
+The updated container build and hosted replacement-head results are pending.

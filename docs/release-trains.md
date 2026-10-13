@@ -9,7 +9,7 @@ are applied on GitHub; they describe planned delivery, not completed acceptance.
 | --- | --- | --- |
 | [v1.1.6](https://github.com/snaraj/obsync/milestone/31) | Native Rust CLI discovery, contexts and verified installation | #255 |
 | [v1.1.7](https://github.com/snaraj/obsync/milestone/33) | First-sync writes, background performance, load-test regressions, measured pipeline/design work and CLI usability | #274, #277, #283, #319, #325, #329 |
-| [v1.1.8](https://github.com/snaraj/obsync/milestone/37) | End-to-end encryption assurance, strict recovery, client key custody and configurable device revocation | #344, #346 |
+| [v1.1.8](https://github.com/snaraj/obsync/milestone/37) | End-to-end encryption assurance, strict recovery, client key custody, configurable device revocation and build/CI dependency updates | #344, #346; dependency PRs #348–#353 |
 | [v1.1.9](https://github.com/snaraj/obsync/milestone/34) | Pairing confirmation, physical-phone blind-start/readback, remaining concurrent-input timing and conflict-notice acceptance | #290, #314, #339, #340 |
 | [v1.1.10](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs and final integrated acceptance | #254, #256, #257, #258, #261, #262, #321 |
 | [v1.1.11](https://github.com/snaraj/obsync/milestone/32) | Deferred export, storage/deployment, backup/recovery and co-editing engine | #259, #260, #315, #317 |
@@ -28,6 +28,15 @@ pairing/phone train includes #339 and #340 from the owner's 2026-10-09 ruling.
 The large-files train (#330, #331, #332) was agreed on 2026-10-05. This ordering
 changes no acceptance requirement and does not assert that any train is ready.
 
+Owner decision, 2026-10-13: include all six open Dependabot PRs (#348–#353)
+in the same **v1.1.8** security artifact PR (#347). This updates the Node
+build runtime/image to 26.11.1, the Rust builder image to 1.99.0, CodeQL
+actions to 4.38.3, setup-node to 7.1.0, upload-artifact to 7.0.2 and
+download-artifact to 8.0.2. The repository Rust compiler stays pinned to
+1.98.0 independently of its builder image. These changes require coherent
+pins and fresh composed validation; the six PRs do not publish separate
+releases. Later release memberships and numbering remain unchanged.
+
 ## Composition and acceptance
 
 Each numbered release is assembled into one artifact PR before owner merge.
@@ -42,7 +51,8 @@ The release order follows the table; no date or completed capability is promised
   reviewed design and applicable desktop/phone sync evidence.
 - 1.1.8 requires the security claim-to-evidence map, required confidentiality
   regressions, encrypted local custody or pre-persistence refusal, native
-  desktop/physical-phone acceptance and exact-head independent approval.
+  desktop/physical-phone acceptance, verified dependency pins and composed
+  build/CI compatibility, and exact-head independent approval.
 - 1.1.9 requires pairing-state readback and physical-phone acceptance; emulator
   rehearsal is supplemental evidence.
 - 1.1.10 requires the integrated CLI, native Obsidian and real MCP-host journeys,
