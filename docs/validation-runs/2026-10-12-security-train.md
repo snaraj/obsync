@@ -1613,3 +1613,52 @@ The documentation correction passes all 100 onboarding and 24 community-release
 contracts, whitespace validation and both secret scans. It changes no runtime,
 test assertion, native launch order, API surface or version lock. Native custody
 remains an open acceptance requirement; the documentation does not waive it.
+
+## Required desktop custody and approved release placement
+
+The owner assigned #344, #346 and #347 to security release **v1.1.8**, moving
+the existing four trains forward one patch without changing their membership.
+The seven release locks and changelog agree. All 105 release-contract tests
+pass, and the actual committed-range classifier accepts `c2796b7a..726b2909`
+as an artifact release with tag `v1.1.8`. This is local release authorization
+evidence, not a hosted gate or publication result.
+
+The desktop matrix is now an unconditional, same-commit reusable call from
+the PR gate. Its old standalone path-filtered PR trigger is removed, so this
+does not duplicate that run. Nightly and manual entrypoints remain. The
+aggregate requires custody success alongside its existing four dependencies;
+failure, cancellation, skipping and a missing result all refuse. Publication
+independently requires the five root jobs and all eight exact desktop leaf
+names, statuses and source/run identities. There are no bypass inputs, new
+credentials or write grants. Native commands, launch orders and assertions
+are unchanged by this CI connection.
+
+The integrated release-contract suite passes **109 tests in 14.000 seconds**;
+the workflow-integrity suite passes **14 tests**, and actionlint reports no
+diagnostic. The worker additionally runs 32 related contracts and kills 26
+intended assertion mutations before restoring all four source hashes. The
+coordinator independently omits the custody aggregate comparison, omits the
+Windows publication leaf and skips the Windows native step: all three fail
+their intended assertions, followed by three restored passing controls.
+The disposable parent mutation tree is removed. Commands:
+
+```sh
+python3 -B -m unittest discover -s scripts/ci -p 'test_release_contract.py'
+python3 -B -m unittest discover -s scripts/ci -p 'test_workflow_integrity.py'
+actionlint .github/workflows/pr-gate.yml .github/workflows/desktop-matrix.yml
+```
+
+The first hosted call must still confirm the API's reusable-job display names;
+an inventory mismatch refuses publication. Making the matrix required does
+not repair the existing local-at-rest failure. The owner has separately
+approved the narrowly scoped desktop OS-encryption wrapper; its implementation,
+native acceptance and complete-head review remain separate from these CI results.
+
+The broader author contract run found two release-metadata omissions: the
+plugin compatibility ledger lacked 1.1.8 and the chart install examples still
+named 1.1.7. Both are corrected without changing compatibility floors or test
+assertions. That first attempt also used the wrong Node executable and its
+sandbox refused disposable loopback listeners; those are execution failures,
+not product or mutation results. With pinned Node 26.10.0 and loopback access,
+the restored complete suite passes **929 tests in 144.108 seconds**. This is
+the contract suite, not a complete runtime `make check` or native acceptance.

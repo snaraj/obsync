@@ -24,29 +24,14 @@ name: Desktop matrix
 #   plugin-tests      `npm test` on Windows and macOS, where the desktop code's
 #                     rename, link and inode assumptions meet NTFS and APFS.
 #
-# WHEN IT RUNS. Nightly, by hand, and on a pull request that changes the
-# plugin or these harnesses. The desktop legs take minutes and depend on a GUI
-# session each runner provides; they are not required checks, and a red leg
-# here is a finding to read, not a merge to hold by rule.
-#
-# IT IS A WORKFLOW OF ITS OWN, for the reason compose-e2e.yml gives.
-
+# Required on every PR/main through pr-gate's custody job; also runnable
+# nightly and by hand. The local reusable call uses this exact commit. There
+# is no second standalone PR run, path filter or skipped-native success.
 on:
+  workflow_call:
   schedule:
     - cron: '53 4 * * *'
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/desktop-matrix.yml'
-      - 'plugin/**'
-      - 'scripts/ci/obsidian-drive.mjs'
-      - 'scripts/ci/obsidian-evidence.mjs'
-      - 'scripts/ci/obsidian-evidence.test.mjs'
-      - 'scripts/ci/obsidian-e2e.sh'
-      - 'scripts/ci/obsidian-host.sh'
-      - 'scripts/ci/proxy-e2e.sh'
-      - 'deploy/proxies/compose.yml'
-      - 'deploy/proxies/caddy/**'
 
 permissions: {}
 

@@ -225,7 +225,8 @@ and nothing reachable from the internet. Both routes' serving paths are
 re-proven on every pull request by a synthetic client; neither of those CI
 jobs drives the real plugin or a real device. `.github/workflows/desktop-matrix.yml`
 does drive the real plugin, inside the official Obsidian desktop app on Linux,
-macOS and Windows, nightly and on plugin changes: setup, pairing, notes both
+macOS and Windows, on every PR and main push through the required gate, and
+nightly: setup, pairing, notes both
 ways, a rename and folders, against the server behind Caddy. That is CI
 evidence for those three desktops, not a device run, and no CI job drives a
 phone. Real devices are what the run records are for. The

@@ -26,8 +26,9 @@ system; it is not a device run, and only a record below is
 | Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the same journeys with the official AppImage, the authority trusted in each instance's own NSS store, and a third instance without it refused |
 | Android | [2026-09-27](2026-09-27-android-emulator.md): an Android 15 emulator, not a physical phone, the 1.1.4 build; most recently [2026-10-08](2026-10-08-character-merge-117.md), the same emulator typing at one place with a desktop on the 1.1.7 candidate | Nothing: no CI job runs a phone |
 
-`desktop-matrix.yml` runs nightly and on pull requests that change the plugin
-or its harnesses; a red leg there is a finding to read.
+`desktop-matrix.yml` runs on every PR and main push through the required
+aggregate gate, and separately nightly or by manual dispatch. A failed,
+cancelled or skipped leaf blocks the gate and publication.
 
 ## The runs
 

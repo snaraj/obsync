@@ -8,7 +8,8 @@ locally, and `scripts/ci/makefile-invariants.sh` fails the gate if the two ever
 stop agreeing. The one group `check` does not chain is the `container` job's
 two `docker build` commands and the image smoke that follows them — `check`
 stays runnable with no container runtime — and `make image` reproduces all
-three exactly. On a host whose Docker declares a credential helper,
+three exactly. Native desktop custody runs separately through the reusable
+desktop matrix and is also required by the aggregate gate. On a host whose Docker declares a credential helper,
 `make image-isolated` is the same build with an empty `DOCKER_CONFIG`, which is
 what the gate uses; it carries the caller's current daemon endpoint in so
 emptying the configuration cannot also drop the context that names the socket.
@@ -41,7 +42,8 @@ emptying the configuration cannot also drop the context that names the socket.
 | `container` | `docker build --tag obsync-gate-full:<sha> .` | The whole Dockerfile builds: the plugin stage's own `npm ci`/build/test inside the image, the bundle stage the Release asset is exported from, and the final image with the dashboard it serves. |
 | `container` | `docker image inspect` | The shipped image is `User=nonroot` with entrypoint `/usr/local/bin/obsyncd`, command `serve`, and one exposed port `8080/tcp` — the half of AGENTS.md's non-root invariant that lives in the bytes rather than in the chart. |
 | `container` | `scripts/ci/image-smoke.sh obsync-gate-full:<sha>` | The shipped image SERVES, run the way README.md's quick start runs it: two FRESH named volumes, `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`, a loopback-published port. Five properties — `/readyz` answers `{"ready":true` inside a 60 s budget, every process in the container is uid 65532, the README's own `docker cp … \| tar -xO` yields a 64-lowercase-hex setup token, the same read works on the STOPPED container, and the run carried the hardening it claims. It builds nothing; the image reference is the argument, so the gate smokes exactly what it just built. The build steps above were all green on an image that exited at first boot with `event=server_key_failed decision=exit refusal=io_error`, because the final stage declared `USER nonroot` without creating `/data/blobs` and `/data/journal` and Docker therefore created both mount points root-owned. A sixth property weakens the real key, token and roots on the same volumes to the round-8 reviewer's restored-volume shape and requires a second start to repair every class, log each repair, and log only the modes it read back. A seventh starts a second container on the same volumes while the first serves and requires it to refuse with `reason=journal_locked`, exit non-zero, and leave the first serving: `ReadWriteOnce` excludes other nodes, the server's own lock excludes a second process. An eighth presents root-owned `0755` volumes holding no root, the shape a dynamic provisioner hands a non-root workload, and requires the `unwritable` refusal with nothing created. A ninth exhausts a real blob volume — a tmpfs-backed volume the digest-pinned throwaway fills while the server serves, because a `--tmpfs` mount belongs to one container and `docker cp` into one writes past the mount — and requires `/readyz` to answer `503 not_ready` naming the volume, the log to carry `event=readiness decision=not_ready volume=blobs io=StorageFull`, the container to stay running, and readiness to return once the space does. While the volume is full it also sends one signed chunk through `PUT /v1/chunks/{sid}` with `scripts/ci/api_flow.py full` (plain HTTP to the loopback port, and nowhere else) and requires `507 storage_full` and an empty `v1/tmp` (issue #291). `scripts/ci/test_image_smoke_contract.py` pins the property's executable structure — the size option, the separate journal volume, the hardening, the pinned filler, the grep, the write and its residue check, and the recovery half. |
-| `gate` | asserts each job's result | One aggregate required context that names every job, so a job renamed, conditioned out, or removed turns the gate red instead of leaving a required check that never reports. |
+| `custody` | calls this commit's `desktop-matrix.yml` | Runs the native desktop and platform plugin-test jobs below on every PR and main push. Every leaf must succeed; skipped, cancelled or failed native validation blocks the aggregate and publication. |
+| `gate` | asserts each job's result | One aggregate required context that names security, application, chart, container and custody, so a job renamed, conditioned out, or removed turns the gate red instead of leaving a required check that never reports. |
 
 ### What the chart pins prove
 
@@ -299,7 +301,14 @@ wrong — the three peer labels, the upstream Service, and the body ceiling. An
 | `k3d` | `install-tools.sh`, `install-k3d.sh`, `docker build`, then `scripts/ci/k3d-e2e.sh` | The chart on k3s as k3s ships: local-path volumes, which the server REFUSES as provisioned (`reason=writable_by_others`) until the documented administrator step (chown to 65532, `0700`, on the node) is taken; k3s's own Traefik as the ingress, its labels read off the running Deployment into the peer values; the sync flow through it; the NetworkPolicy enforced by k3s's controller (`np-probe.sh`); a replacement pod on the same volumes |
 | `kind-ipv6` | `helm-e2e.sh` with `OBSYNC_E2E_IP_FAMILY=ipv6` | The whole Kubernetes guide on an IPv6-only cluster, where a server listening on the IPv4 wildcard alone never answers its startup probe; the chart's `[::]` listener is what this leg holds, and the terminator runs with the IPv6 `listen` line the page tells an IPv6 cluster to uncomment, answering through its Service's IPv6 address |
 
-## `desktop-matrix.yml` — nightly, manual dispatch, and pull requests that change the plugin or these harnesses
+## `desktop-matrix.yml` — required through PR gate, nightly and manual dispatch
+
+The same-commit reusable call runs on every PR and main push. There is no
+separate path-filtered PR run. Its eight leaf jobs appear under `custody /`
+in the caller's run. The aggregate requires the call to succeed, and the
+publisher independently requires all eight exact leaf names and successful
+results in the main run's inventory. The branch's required context remains
+`gate`; this change does not alter repository settings.
 
 | Job | Command | What it proves |
 | --- | --- | --- |
@@ -326,8 +335,9 @@ download/install acceptance remain separate release checks.
 
 CLI native acceptance is in the release chain: publisher authorization waits
 for the successful exact-source main run and requires all four native jobs.
-The other workflows above remain outside that chain, for the reason
-`docs-site.yml` gives. Adding a branch-protection required check remains an
+The desktop matrix is also in that chain through the PR gate's reusable call.
+The standalone docs, deployment, generic-path and benchmark workflows remain
+outside that chain. Adding a branch-protection required check remains an
 owner setting; publication authorization is enforced separately in source.
 
 ## `arch-matrix.yml` — pull requests, pushes to `main`, manual dispatch
@@ -343,13 +353,12 @@ instead of first at publication, here and in `compose-e2e.yml`. The amd64 half o
 overlaps the gate's `container` job: one set of steps proving both
 architectures is worth more than a smaller matrix proving them differently.
 
-**None of the three is in the release chain**, for the reason `docs-site.yml`
-gives: `release-after-main.yml` fires on a completed `PR gate` run and nothing
-else, and the publisher authorizes against the job inventories of
-`pr-gate.yml` and `codeql.yml` alone. A workflow of its own adds a job to
-neither. Whether any of them becomes a REQUIRED check is the owner's ruleset
-decision; until it is entered into `Protect-Main` a red run here does not block
-a merge, and the list below is unchanged.
+The standalone architecture matrix is outside the release chain.
+`release-after-main.yml` fires on a completed `PR gate` run; the publisher
+checks that run's root and reusable desktop jobs, CodeQL and the separately
+required CLI-native run. The architecture workflow adds no job to those
+inventories. Making it a branch-protection required check remains the owner's
+ruleset decision; the list below is unchanged.
 
 ## `dependabot.yml`
 

@@ -71,13 +71,27 @@ GITHUB_API_VERSION = "2026-03-10"
 # obsync's gate has no pull-request-only job, so every entry is `success`: a
 # `skipped` here would mean a job stopped running on main and nobody
 # re-anchored the surface the publisher authorizes against.
-EXPECTED_MAIN_JOBS = {
+EXPECTED_GATE_JOBS = {
     "application": "success",
     "chart": "success",
     "container": "success",
     "gate": "success",
     "security": "success",
 }
+# Reusable desktop jobs appear in the caller run with the caller-name prefix.
+# The publisher requires every leaf, not an invented wrapper check or just the
+# aggregate result. The required branch contexts remain the existing gate set.
+EXPECTED_CUSTODY_JOBS = {
+    "custody / obsidian-linux (none)": "success",
+    "custody / obsidian-linux (gnome-keyring)": "success",
+    "custody / obsidian-macos (simultaneous)": "success",
+    "custody / obsidian-macos (serialized)": "success",
+    "custody / static-binary": "success",
+    "custody / obsidian-windows": "success",
+    "custody / plugin-tests (windows-2025)": "success",
+    "custody / plugin-tests (macos-15)": "success",
+}
+EXPECTED_MAIN_JOBS = {**EXPECTED_GATE_JOBS, **EXPECTED_CUSTODY_JOBS}
 EXPECTED_CODEQL_MATRIX_JOBS = {
     "analyze (javascript-typescript, none)": "success",
     "analyze (rust, none)": "success",

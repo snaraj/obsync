@@ -348,6 +348,12 @@ jobs:
         # reads as a registry failure and never as an obsync defect.
         run: scripts/ci/compose-smoke.sh "obsync-gate-full:${GITHUB_SHA}"
 
+  custody:
+    name: custody
+    uses: ./.github/workflows/desktop-matrix.yml
+    permissions:
+      contents: read
+
   gate:
     # The one aggregate context the ruleset requires, listing every job by
     # name. It exists so a job that stops running -- renamed, conditioned out,
@@ -356,7 +362,7 @@ jobs:
     # dependency leaves this job skipped, and a skipped required check can
     # satisfy a ruleset, so each result is asserted explicitly.
     if: always()
-    needs: [security, application, chart, container]
+    needs: [security, application, chart, container, custody]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -367,10 +373,11 @@ jobs:
           APPLICATION: ${{ needs.application.result }}
           CHART: ${{ needs.chart.result }}
           CONTAINER: ${{ needs.container.result }}
+          CUSTODY: ${{ needs.custody.result }}
         run: |
           set -euo pipefail
           failed=0
-          for entry in "security=${SECURITY}" "application=${APPLICATION}" "chart=${CHART}" "container=${CONTAINER}"; do
+          for entry in "security=${SECURITY}" "application=${APPLICATION}" "chart=${CHART}" "container=${CONTAINER}" "custody=${CUSTODY}"; do
             printf '%-12s %s\n' "${entry%%=*}" "${entry#*=}"
             if [ "${entry#*=}" != success ]; then
               failed=1
