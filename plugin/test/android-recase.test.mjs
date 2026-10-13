@@ -701,7 +701,8 @@ for (const tracked of [false, true]) {
     if (tracked) {
       await r.b.engine.start();
       await r.timers.run(STEP_MS, () => settled(r.b, "Notes/Probe.md"));
-      r.b.engine.stop();
+      // Finish the stopped engine and its custody save before reopening this profile.
+      await r.b.engine.stopAndWait();
     }
     // Two adapter renames, back to back: the disk is re-cased, and the
     // watcher's late reconcile of the old name indexes it again.
@@ -903,6 +904,8 @@ for (const folds of [true, false]) {
   const kind = folds ? "Android" : "an iPhone";
   test(`on ${kind}, a deletion for a note the phone no longer has settles as done, and the feed goes on (#234)`, async (t) => {
     const r = await seeded(t, { "Gone/Lost.md": BODY, "Gone/Kept.md": OTHER }, { folds });
+    // Finish the incoming create watchers before simulating an unwatched removal.
+    await r.timers.run(STEP_MS, () => r.b.logs.filter((line) => line === "watch path_class=file decision=echo_suppressed").length === 2);
     // The note leaves the phone's storage with nobody watching: the Files app,
     // or Obsidian closed. Its record stays; nothing on the phone says it went.
     r.vault.disk.delete("Gone/Lost.md");

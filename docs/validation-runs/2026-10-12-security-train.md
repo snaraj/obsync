@@ -1296,3 +1296,214 @@ The evidence JSON hashes are
 `a7b1b1e8532c8a060e3f84c2ae4b3e7a472b1bf4b05b3e85c2eb78469df49bcf`
 (29 assertion mutations). Independent review must still assess these controls
 and the complete client/server composition.
+
+## Post-integration acceptance repairs
+
+Hosted image/platform runs at runtime checkpoint `a6a3e74e` exposed four
+fixture-ordering failures after the local complete gate had passed. These are
+reproduced assertion failures, not reclassified passing hosted jobs. The fixes
+retain the original assertions and budgets:
+
+| Fixture | Reproduction and repair |
+| --- | --- |
+| Notification palette persistence | Hold the real metadata write: five event-loop turns finish before the stored choice and confirmation. The fixture now awaits the actual compiled command's `setNotices` promise. |
+| Parked-note pending count | Hold the feed page's final save: the in-memory cursor advances before the final status reports one pending note. Wait for the persisted cursor and completed save, then finish the status continuation. |
+| Re-cased tracked note reopened on a phone fixture | Hold the record-bearing save: fire-and-forget stop lets the replacement instance reopen stale state and publish two IDs. Await existing `stopAndWait()` before reopening. |
+| Missing-note deletion on a phone fixture | Keep the incoming create watcher pending, then remove the note without a watcher event: the unfinished watcher publishes its own deletion first. Wait for both incoming create echoes to finish before simulating the unwatched removal. |
+
+The first two original assertions failed under held writes; the repaired
+controls and restored baselines passed. Both complete files passed 45 tests
+in the parent. The Android/iPhone adapter fixture controls reproduced the
+original two-ID and missing-absent-row assertions; restored controls passed,
+and the parent passed all 53 tests in that file. These are fixture timing
+controls, not security-mutation kills or physical-phone evidence. The respective
+patch hashes are
+`e06297f34c0ebaff182d48f16234004fe7e3eeb6c7d63faeb713c26cc2c54385`
+and `0d934b80b732d472f1296412c6d39fe7eafa5d277e03878bfab82c3f95fc371f`.
+
+The native driver also stops querying encryption availability before plugin
+setup. This is an instrumentation repair with one fresh hosted comparison
+pending, not a demonstrated fix of the macOS failure. Electron 43.3.0's
+[macOS synchronous storage backend](https://raw.githubusercontent.com/electron/electron/v43.3.0/patches/chromium/revert_oscrypt_remove_sync_backend.patch)
+initializes storage on the availability query and retains a failed attempt for
+that process. Its pinned
+[Chromium password-creation path](https://raw.githubusercontent.com/chromium/chromium/150.0.7871.212/components/os_crypt/common/keychain_password_mac.mm)
+returns failure when adding an absent item fails, without rereading a concurrently
+created item. This supports an initialization-race hypothesis; the hosted native
+error code was not observed. Earlier failures also predate some diagnostics.
+The experiment preserves both launch orders and every post-enrollment and
+before/after-restart encrypted-storage assertion. Eleven source-execution tests
+pass; three assertion mutations catch the removed helper call, a direct native
+availability call and the obsolete initialization flag. Both parent Python
+contracts pass with loopback access; the sandbox-denied attempt is excluded.
+
+Recovery/leave/settings/status instructions now consistently ask for the
+complete current backup, including its format marker; explicit old-format
+24-word history/upgrade instructions remain. The command ID stays stable.
+Leaving explicitly says it does not rotate keys or erase copied data.
+Affected recovery, custody and settings tests passed 176 cases before the
+additional explanatory Leave sentence; the final composed gate below is the
+acceptance for the complete copy change. The real-device checklist now names
+both removal choices and their different guarantees.
+
+The completed parent native labs were removed after their records were committed:
+both recorded servers and task app groups were absent, the read-only image was
+ejected, and both profile/vault trees and the downloaded image were deleted.
+Small reduced receipts and reproduction scripts remain. The coordinator's
+mutation tree copies were removed too. Worker cleanup separately removed owned
+old-binary, source and fixture labs; active author worktrees and shared pinned
+tools were preserved.
+
+The dashboard now displays separate strong-removal and access-only choices,
+with no choice selected initially. Strong removal gives the exact trusted-client
+steps and sends no request; a stale access-only confirmation after selecting
+strong or cancelling is refused. Access-only needs its own confirmation and
+explains retained-key decryption before and after the request. Archived Forget,
+CSRF and last-device refusals remain covered. The worker passed all 87 dashboard
+tests and 14 intended assertion mutations with no survivors; deleting the
+selection fence caused an actual recorded revoke POST under strong selection.
+Patch SHA-256 is
+`f4d66c8274195a32e6bda7d56014804aedc20213f56eb0a9e276e3ca4ebb882e`.
+This closes the previously omitted dashboard half of the existing revocation
+contract, without introducing any key input or management subsystem.
+
+The parent additionally qualifies the access-only result as server-reported
+and says this action does not rotate keys. All 87 dashboard tests pass after
+that copy change; deleting the qualification fails its intended assertion and
+the restored test passes. The disposable mutation copy was removed. A local
+mock server was started for visual inspection, but the IAB and Chrome browser
+adapters were unavailable. Automatic approval review refused the native Safari
+fallback because it could expose unrelated private tabs. No visual PASS or
+browser capture is claimed; the exact mock process was stopped and its absence
+checked. Fresh owner-approved captures remain required for the changed UI.
+
+The subsequent composed gate initially passed 2,488 plugin tests and failed one
+notice assertion still expecting the old “recovery phrase” wording. Updating
+that assertion to the complete-backup wording preserves its behavior and
+changes no runtime logic. The final gate result is recorded below separately.
+The strict pinned Python 3.12/linux-amd64 docs build passes: 160 files,
+8,467 anchors and zero origin refusals. Its task-only container, image,
+generated site and empty Docker configuration were removed. Later additions
+to this validation record are plain receipt paragraphs, with no new links or
+anchors.
+
+The next complete-gate attempt again passed 2,488 plugin tests and failed a
+separate receive-hold fixture. Its guessed two-page initial feed could instead
+need three pages when startup publishes a folder between reads. Refusing that
+third page changed the intended named hold (`all=0`) into an unread-feed hold
+(`all=1`). The fixture now injects the outage after the successful empty terminal
+page. Pinning the folder acknowledgement between the initial page snapshot and
+next read reproduces the exact original release assertion; the repair passes.
+Disabling the fault switch fails the original no-early-publication assertion.
+The full file passes 26 tests; the parent focused case also passes. Runtime,
+time increments and release assertions are unchanged. Causal receipt SHA-256:
+`44b9350ffd4d50257c591704f98ed78b48154ca8080b176ec4e541659977ef4e`.
+
+Focused independent F6 comment 6135783798 assessed `c1d60b89`. It resolved the
+strict-recovery and RNG-evidence findings and accepted the reproduced mode,
+context, durable-floor and rotation boundaries. It retained the quantitative
+model as a conditional analytical horizon, not an operating limit, compromise
+probability or E09 PASS. Its new finding was a stale deployment assertion:
+the real server correctly refuses occupied generic setup with
+`409 recover_only_required`, while `api_flow.py` expected `already_set_up`.
+
+The API-flow repair expects the actual strict refusal for both absent and false
+`recover_only`, then still authenticates the account and requires one device.
+Three focused oracle tests pass in worker and parent; six status/code/count/mode
+mutations fail by assertion with restored PASS. The direct current-server
+probe first reproduces the old assertion, then passes all seven enrollment/sync
+properties and three post-restart properties, including exact 2 MiB readback,
+persistent nonce refusal and two enrolled devices. This is opaque-byte local
+API acceptance, not TLS/proxy deployment or E2EE evidence. Fixture storage and
+the child server were removed. Repaired source digest (SHA-256):
+`76c9b15a2971ead443e942117864434a5d31431436a232adfd6ef39219c48d38`;
+mutation receipt SHA-256:
+`b34e6ebeb5efe5f9f4baa90b73a510e7083a8e39cfce51803d55f6b421063075`.
+Exact-head hosted deployment acceptance remains required.
+
+The complete-backup wording produces bundle SHA-256
+`9989e1c257191a6fc0723b11527790d8201706d1cef3b8462ef9f27b0d40f7ad`.
+The earlier two native desktop receipts identify their earlier bundle exactly;
+they are not relabelled as acceptance of this later artifact. The dashboard
+choice and native instrumentation changes likewise await their own current
+hosted/visual evidence.
+
+The composed follow-up `make check` passed Rust format/lint, 734 passing Rust tests
+(one additional ignored), 94.85% line coverage, all 2,489 plugin tests (none skipped),
+21 real-engine E2EE flows/two planted controls, four live CORS tests, the
+207-command native CLI journey, all 87 dashboard tests, chart checks and all
+925 repository contracts (153.149 seconds). The E2EE run observed 382 requests
+(341 main, 41 legacy), 22 main storage files/148 needles and ten legacy files/33
+needles in 13,961 ms. The request total can vary with background traffic; no
+fixed 383-request claim is carried onto this run.
+
+That command exited 2 at its final scan because the generic credential rule
+matched a public source digest immediately following the words “API-flow”.
+Recomputing the named file confirmed the value is its SHA-256. The description
+now calls it a source digest; the value, scan rules and exceptions are unchanged.
+Both working-tree and 13-commit-range scans then passed via `make secrets`.
+Thus every canonical gate stage has passing evidence, while the interrupted
+command and scoped scan repair remain separate results. No unchanged code tests
+were rerun solely for this documentation-label edit. Full-run log SHA-256:
+`c24350310fda756d5e795a8de2662547d06ce0e3d727956da129172b8cc53201`;
+restored scan log SHA-256:
+`87e661dd6a551c6a918d7397ac33e517998eea875ee3a122daa17bad58688312`.
+
+On the final wording bundle above, two additional actual Obsidian 1.13.7 /
+Electron 43.3.0 probes passed: 16 reduced observations for three-device removal
+and six for legacy upgrade/history restoration. The three-device run pairs
+both peers with visible-code comparison, targets the excluded device through
+Revoke/Rotate key, restarts the coordinator at prepared and pending-commit
+phases, commits, explicitly re-pairs the retained peer, and verifies two-way
+new bytes. The excluded instance retains its old generation and original
+bytes, receives `403 device_revoked`, enters its native refused lifecycle and
+has no tested future note. This proves the honest server/device journey; the
+required real-engine test separately proves old-root failure when new ciphertext
+is supplied directly. It does not infer cryptographic exclusion from HTTP 403.
+
+The legacy probe seeds two authenticated historical versions through public
+protocol calls, recovers through the explicit old-backup UI, and completes
+upgrade/reseed/catalog restart/commit. Current bytes remain exact and native
+custody reports encryption available, nonplaintext representation, matching
+revision/pin/envelope and a suite-1 history-only root. In Previous generation
+history, the first bounded Load next discovers migration pointers; the second
+reads the old ancestry. The actual UI selects the earlier 31-byte version and
+Restore a copy creates a byte-identical sibling without changing the latest
+original. The parent inspected the actual cropped dialog capture: previous
+scope is selected and the synthetic filename/Restore button is visible. The
+crop does not show the full selected-version description; the selection and
+resulting bytes are enforced by the probe, not inferred from that image.
+
+Three failed fixture attempts remain explicit: an unsupported synthetic
+platform refused before launch; the first history probe incorrectly waited for
+rows after the discovery step alone; the optional capture guard mistook a
+checkbox's fixed value for text input. Each was diagnosed before a single
+corrected continuation. The final capture guard still refuses text-bearing
+secrets and the app result is not counted from any failed attempt. These are
+native acceptance probes, not added CI regressions or physical-phone results.
+Reduced result digests are
+`96be53c0b2f50f50cfaf3dc23a095cbdc25ad4ecd1872e3da95eea2bc62891af`
+(three-device removal) and
+`06af35e865ec827fdfe23944878267cef18ce09e60847934cc37a15b03980e17`
+(legacy history); the private cropped capture digest is
+`b809ada0c3da886f7fcf9baab4ee4f1f86d55d974475619f0316339898af885f`.
+The recorded server executable digest is
+`360182c4be69309be458d9635104f7c36c9c303bf96d8b12a7266a14713e4f2c`.
+
+A final onboarding read also corrected the README and setup/install guidance:
+current backups include their format marker, and old copied-vault/unpaired
+fallback instructions do not apply to current strict generation pins. Current
+pin failures are not repaired by editing away credential records. The affected
+100 onboarding and 24 community-release contracts pass; no runtime or bundle
+change accompanies those documentation edits.
+
+Final native-addendum teardown verifies zero owned app/server processes, zero
+fixture rig directories, and removal of the owned read-only mount and downloaded
+image. Small reduced receipts, the inspected capture and reproduction sources
+remain. The complete accounting capsule digest is
+`2df6700202d943466c8ec998eacbf6a773cbc0998aee705f8bce82cc2e4a3567`.
+The final onboarding/security documentation also passes the pinned strict
+Python 3.12/Linux build and origin checks. Its container, task-only image,
+generated site and empty Docker configuration were removed. The first attempt
+refused an already existing scratch directory before creating a container;
+that directory was preserved and a unique task path used for the successful run.

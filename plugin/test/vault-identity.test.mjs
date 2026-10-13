@@ -105,7 +105,7 @@ test("records sealed under another vault key are skipped by name, and the feed k
   assert.equal(host.notices.length, 1, "one notice for the device, not one per record");
   assert.deepEqual(host.toasts.map((toast) => [toast.text, toast.ms]), [[host.notices[0], 0]], "it needs the person: shown under the quietest settings, until dismissed");
   assert.match(host.notices[0], /cannot read changes from Study laptop: they are locked with a different vault key/);
-  assert.match(host.notices[0], /On Study laptop, restore this vault's recovery phrase/);
+  assert.match(host.notices[0], /On Study laptop, restore this vault's complete recovery backup/);
   assert.equal(statuses.includes("offline"), false, "a reachable server is never reported offline");
   assert.equal(host.logs.some((line) => line.startsWith("feed decision=retry")), false, "nothing was retried");
   engine.stop();

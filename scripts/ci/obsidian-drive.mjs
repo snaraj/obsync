@@ -421,11 +421,10 @@ class Instance {
   }
 }
 
-async function openVault(instance, diagnostic = false) {
+async function openVault(instance) {
   const main = await instance.main();
   await until(`${instance.name}: Obsidian's workspace ready`, () =>
     main.run(() => !!(window.app && app.workspace && app.workspace.layoutReady)));
-  if (diagnostic) diagnose(instance, "workspace_ready", await main.run(secretFacts, false));
   // A vault that lists a community plugin opens in Restricted Mode and asks
   // whether to trust its author: the answer a person gives is the button.
   await until(`${instance.name}: ${LABELS.trust}`, () => instance.anywhere(click, LABELS.trust));
@@ -583,12 +582,12 @@ async function main() {
     a.launch(binary, 19222, extra, homes);
     let version;
     if (launchOrder === "serialized") {
-      version = await openVault(a, !!store);
+      version = await openVault(a);
       b.launch(binary, 19223, extra, homes);
-      await openVault(b, !!store);
+      await openVault(b);
     } else {
       b.launch(binary, 19223, extra, homes);
-      [version] = await Promise.all([openVault(a, !!store), openVault(b, !!store)]);
+      [version] = await Promise.all([openVault(a), openVault(b)]);
     }
     prove(`two instances: Obsidian ${version.obsidian} on Electron ${version.electron}, own user-data directories, the vault trusted and the plugin loaded in each`);
 

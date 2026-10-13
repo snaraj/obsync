@@ -1243,8 +1243,8 @@ function refuse(context: SyncContext, change: ChangeRecord, reason: string): App
     context.host.notify({
       kind: "error", device: context.deviceNameFor(change.device_id),
       text: "cannot read changes from {device}: they are locked with a different vault key, so this device skips them " +
-        "and keeps syncing everything else. On {device}, restore this vault's recovery phrase (obsync settings, " +
-        "Recovery phrase), or leave the server there and pair it again.",
+        "and keeps syncing everything else. On {device}, restore this vault's complete recovery backup (obsync settings, " +
+        "Recovery backup), or leave the server there and pair it again.",
     });
   }
   if (reason !== "undecryptable" && !context.refused.has(change.file_id)) {

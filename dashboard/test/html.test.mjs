@@ -313,6 +313,15 @@ test('the devices table, its skeleton, and its history row agree on 11 columns',
   assert.ok(APP_JS.includes('skeleton(body, 11, 3)'));
 });
 
+test('device removal ships both explicit choices and a hidden access-only confirmation, without key inputs', () => {
+  const device = HTML.slice(HTML.indexOf('<template id="tpl-device">'), HTML.indexOf('<template id="tpl-history">'));
+  assert.ok(device.includes('data-f="revoke-open">Remove device</button>'));
+  assert.ok(device.includes('data-f="revoke-strong" aria-pressed="false">Revoke access and rotate keys (Recommended)</button>'));
+  assert.ok(device.includes('data-f="revoke-access" aria-pressed="false">Revoke server access only</button>'));
+  assert.ok(device.includes('data-f="revoke-do" hidden>Confirm server access only</button>'));
+  assert.deepEqual(tags(device).filter((tag) => ['input', 'select', 'textarea', 'form'].includes(tag.name)), []);
+});
+
 // Every endpoint app.js calls, as the exact literal the mock must contain to
 // route it: a table key for a GET, the path itself for a fixed mutation, and
 // the anchored tail of the matching regex for a mutation with an id in it.

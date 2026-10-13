@@ -984,17 +984,17 @@ export type LeaveMode = "leave" | "switch";
 const UNPUSHED_SHOWN = 10;
 
 const LEAVE_KEPT =
-  "Every note in this vault stays exactly where it is. Leaving changes nothing inside the vault, and the 24 words still open the SAME vault afterwards, so pairing again is not a new vault. This device's name, its folder selection and its two ceilings are kept too.";
+  "Every note in this vault stays exactly where it is. Leaving changes nothing inside the vault, and the complete recovery backup still opens the SAME vault afterwards, so pairing again is not a new vault. This device's name, its folder selection and its two ceilings are kept too. Leaving does not rotate vault keys or erase copied data. Start key rotation on a retained device for stronger removal.";
 const LEAVE_LOST =
   "What is lost is this device's sync identity: the server revokes its device id and credential, and this device forgets the server address, any custom request headers, its place in the change feed and its record of every synced file. No other device is touched.";
 const LEAVE_AGAIN =
   "Pairing again — with this server or another — is a first sync for this device. Identical notes stay one note. If a local note differs from the server's note at the same path, both versions are kept for you to review.";
 const LEAVE_UNKNOWN_DEVICE =
-  "This server does not recognise this device: it was rebuilt or restored from a backup, or it is not the server this device paired with, so there is nothing there this device can revoke. You can leave on this device only: this device forgets the server and keeps every note, and the 24 words still open the same vault. If the server does still list this device, revoke it from the dashboard or from another device.";
+  "This server does not recognise this device: it was rebuilt or restored from a backup, or it is not the server this device paired with, so there is nothing there this device can revoke. You can leave on this device only: this device forgets the server and keeps every note, and the complete recovery backup still opens the same vault. If the server does still list this device, revoke it from the dashboard or from another device.";
 const LEAVE_LAST_DEVICE =
-  "This account has no registered vault recovery yet, or the server is too old to support it. Update both server and plugin while a device still syncs, then keep the setup token and 24-word recovery phrase before leaving. You can also pair another device first. Leaving on this device only keeps every note and leaves this credential active on the server; losing that final credential before recovery is registered can strand the account.";
+  "This account has no registered vault recovery yet, or the server is too old to support it. Update both server and plugin while a device still syncs, then keep the setup token and complete recovery backup before leaving. You can also pair another device first. Leaving on this device only keeps every note and leaves this credential active on the server; losing that final credential before recovery is registered can strand the account.";
 const LEAVE_ONLY_HERE =
-  "You can leave on this device only: this device forgets the server and its credential and keeps every note, and the 24 words still open the same vault. The server still lists this device until you remove it from another device's Devices list or the dashboard.";
+  "You can leave on this device only: this device forgets the server and its credential and keeps every note, and the complete recovery backup still opens the same vault. The server still lists this device until you remove it from another device's Devices list or the dashboard.";
 /** `409 recovery_too_new` (1.1.5): the words the server's own hold stands for. */
 const LEAVE_RECOVERY_TOO_NEW =
   "This is the only device syncing this vault, and its recovery key was set less than 7 days ago. For your safety the server keeps its last device until that key is 7 days old, so a stolen device credential cannot lock you out of your own server. Pair another device first, or leave on this device only: it forgets the server and keeps every note, and the server lists this device until you remove it.";
@@ -1437,7 +1437,7 @@ export class StatusModal extends Modal {
     // The one thing to do that nothing else here would show (issue #170).
     if (data.vrk !== null && data.recoveryPhrase !== "confirmed") {
       new Setting(this.contentEl)
-        .setName("Recovery phrase")
+        .setName("Recovery backup")
         .setDesc(RECOVERY_UNCONFIRMED)
         .addButton((button) => button.setButtonText("Show and confirm").setCta().onClick(() => {
           this.close();

@@ -1264,6 +1264,12 @@ side failed: find this device's `GET /v1/changes` lines.
 
 ## A copied or renamed vault says it is a copy
 
+This section describes older storage formats. Current-format installations
+stop if copied metadata has no matching owned secret or generation pin; they
+do not automatically reset that identity. Keep the original vault and complete
+recovery backup. Pair a fresh installation in a new vault; do not remove a pin
+or edit credential records to bypass the refusal.
+
 **What you see.** In obsync's settings: "This vault is a copy, or its folder
 was renamed. It will not sync as the original. Pair it as a new device, or
 start fresh." Up to 1.1.3 the plugin failed to load instead, with "Credential
@@ -1290,6 +1296,12 @@ untouched.
 ![This device on a copied vault: Pairing reads This vault is a copy, or its folder was renamed. It will not sync as the original. Pair it as a new device, or start fresh. Pair this device and Start fresh beside it](assets/settings-copied-vault.png)
 
 ## Obsidian closed while obsync was saving this device's keys
+
+The unpaired fallback below applies to older storage formats. Current-format
+installations require the metadata revision and generation pin to match the
+owned secret exactly. A mismatch stops sync. Preserve the vault and complete
+recovery backup, and use a fresh installation for pairing or recovery rather
+than changing those records.
 
 **What you see.** Once as Obsidian starts, then beside **Pairing** in obsync's
 settings and in **Show sync status**: "Obsidian closed while obsync was saving

@@ -396,12 +396,13 @@ async function plugin(t, { data = null, cli, secrets = memorySecrets() } = {}) {
   }
   await instance.onload();
   await instance.firstStart;
-  const run = (id) => commands.find((command) => command.id === id).callback();
+  const setNotices = instance.setNotices.bind(instance);
+  let noticeWork;
+  instance.setNotices = (...args) => (noticeWork = setNotices(...args));
+  const run = (id) => { noticeWork = undefined; commands.find((command) => command.id === id).callback(); return noticeWork; };
   const cliRun = (command, params = {}) => instance.cli.get(`obsync-private-sync:${command}`).handler(params);
   return { box, obsidian, instance, commands, run, cliRun, saves, logs, files, opened, stored: () => stored, secrets };
 }
-
-const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(setImmediate); };
 
 test("each value is a command a hotkey can take, the palette's answer is said, and the choice is kept", async (t) => {
   const p = await plugin(t);
@@ -410,10 +411,8 @@ test("each value is a command a hotkey can take, the palette's answer is said, a
   assert.equal(p.commands.find((command) => command.id === "notices-needs-me").name, "Notifications: Only what needs me (obsync)");
   assert.equal(p.commands.find((command) => command.id === "merges-off").name, "Combined edits: Recent only (obsync)");
   const from = p.obsidian.notices.length;
-  p.run("notices-needs-me");
-  await settle();
-  p.run("merges-every");
-  await settle();
+  await p.run("notices-needs-me");
+  await p.run("merges-every");
   assert.deepEqual(p.instance.state.data.notices, { level: "needs-me", merges: "every" });
   assert.deepEqual(p.stored().notices, { level: "needs-me", merges: "every" }, "saved to the data file");
   assert.deepEqual(p.obsidian.notices.slice(from), [

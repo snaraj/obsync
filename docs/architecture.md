@@ -138,7 +138,7 @@ vectors. The server performs no AES and no asymmetric operation in v1.
 
 | Key | Size | Where it lives | Derived how |
 | --- | --- | --- | --- |
-| Vault root key `VRK` | 32 B random | Every paired device; recovery phrase | Created by the first device |
+| Vault root key `VRK` | 32 B random | Every paired device; complete recovery backup | Created by the first device |
 | Domain key `K_d` | 32 B | Devices only; never sent to the server | `HKDF(VRK, salt="obsync/v1/domain", info=domain_id)` |
 | Manifest key `K_m,d` | 32 B | Devices holding `K_d` | `HKDF(K_d, salt="obsync/v1/manifest", info=domain_id)` |
 | Domain-map key `K_map` | 32 B | Devices holding `VRK`; owner only | `HKDF(VRK, salt="obsync/v1/domainmap", info="")` |

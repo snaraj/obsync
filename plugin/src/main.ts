@@ -3938,7 +3938,7 @@ export default class ObsyncPlugin extends Plugin {
     });
     this.addCommand({
       id: "show-recovery-phrase",
-      name: "Show recovery phrase (obsync)",
+      name: "Show recovery backup (obsync)",
       callback: () => new RecoveryPhraseModal(this.app, this, false).open(),
     });
     this.addCommand({ id: "open-dashboard", name: "Open dashboard (obsync)", callback: () => void this.openDashboard() });

@@ -41,7 +41,8 @@ device to your server: pair each device once, and sync then runs by itself.
    pairing. For a workspace vault, select only the note folders you mean to
    share. Each device keeps its own folder selection.
 4. On the first device, use **Setup or recover** with the server's setup token
-   and keep the recovery phrase safe. On every other device, enter the pairing
+   and keep the complete recovery backup safe, including `obsync-recovery-v2`
+   and all 24 words. On every other device, enter the pairing
    code from **Pair a new device** on a device that already syncs, then approve
    the new device there. The [Quickstart](quickstart.md) shows each step.
 
@@ -78,18 +79,20 @@ If secret storage is unavailable or cannot be verified, sync stops with an
 error, and nothing is sent or changed. Then:
 
 1. Reload Obsidian.
-2. If it keeps happening, have your recovery phrase or another syncing device
+2. If it keeps happening, have your complete recovery backup or another syncing device
    at hand, reinstall obsync, and pair this device again. Your notes stay in
    the vault. Do not repeat server setup.
 
-A copied vault, or one whose folder was renamed outside Obsidian, is not an
-error: it opens unpaired, says so, and offers **Pair this device** and
-**Start fresh**
+A current-format installation stops if its metadata lacks the matching owned
+secret or generation pin; copying or renaming its vault does not reset that
+check. Keep the original vault and complete backup, and pair a fresh
+installation in a new vault rather than editing those records. Older storage
+formats may instead open unpaired and offer **Pair this device** and **Start fresh**
 ([what to do](troubleshooting.md#a-copied-or-renamed-vault-says-it-is-a-copy)).
 
 A pairing waiting for approval finishes even if its dialog was closed, and
 after Obsidian restarts, as long as it is approved within the code's ten
-minutes; after that, pair again with a new code. The recovery phrase cannot
+minutes; after that, pair again with a new code. The recovery backup cannot
 approve a pending device. Other plugin installations are never imported
 automatically.
 

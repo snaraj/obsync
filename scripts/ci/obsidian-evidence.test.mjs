@@ -110,33 +110,32 @@ test("early availability returns reduced facts without reading plugin metadata o
   } finally { delete globalThis.app; }
 });
 
-test("real workspace-ready observation precedes plugin trust and exports fixed diagnostic fields only", async () => {
+test("workspace readiness does not initialize native secret storage before product setup", async () => {
   const fs = await import("node:fs"), vm = await import("node:vm");
   const source = fs.readFileSync(new URL("./obsidian-drive.mjs", import.meta.url), "utf8");
   const ready = source.slice(source.indexOf("async function openVault("), source.indexOf("\nasync function setServer("));
-  const at = source.indexOf("function diagnose(");
-  const diagnosis = source.slice(at, source.indexOf("\n}\n", at) + 2);
-  const events = [], lines = [], pluginState = () => {}, marker = () => {};
+  const events = [], pluginState = () => {}, marker = () => {};
   const context = { secretFacts: marker, pluginState, PLUGIN_ID: "test", LABELS: { trust: "trust" }, click() {},
-    console: { log: (line) => { events.push("diagnostic"); lines.push(line); } },
+    diagnose() { assert.fail("no diagnostic native initialization before enrollment"); },
     until: async (_, probe) => probe(),
   };
-  const main = { run: async (fn, ...args) => {
-    if (fn === marker) { assert.deepEqual(args, [false]); events.push("availability"); return { ...valid, revisionMatches: null, backend: "NEVER_RETURN_BACKEND_SECRET", unknown: "NEVER_RETURN_SECRET" }; }
+  const app = { workspace: { layoutReady: true }, get secretStorage() { assert.fail("native storage initialization before product setup"); } };
+  const renderer = { app, window: { app, get electron() { assert.fail("native storage bridge before product setup"); } },
+    navigator: { userAgent: "obsidian/1.13.7 Electron/43.3.0" } };
+  const main = { run: async (fn) => {
+    assert.notEqual(fn, marker, "no native availability read before product setup");
     if (fn === pluginState) { events.push("plugin"); return true; }
-    if (fn.toString().includes("navigator.userAgent")) { events.push("agent"); return "obsidian/1.13.7 Electron/43.3.0"; }
-    events.push("workspace"); return true;
+    if (fn.toString().includes("navigator.userAgent")) events.push("agent");
+    else events.push("workspace");
+    return vm.runInNewContext(`(${fn})()`, renderer);
   } };
   const instance = { name: "a", main: async () => main, anywhere: async () => { events.push("trust"); return true; } };
-  const program = vm.runInNewContext(`${diagnosis}\n(${ready})`, context);
-  await program(instance, true);
-  assert.deepEqual(events, ["workspace", "availability", "diagnostic", "trust", "plugin", "agent"]);
-  assert.equal(lines[0], 'obsidian-drive: availability peer=a phase=workspace_ready {"encrypted":true,"stored":true,"plain":false,"revisionMatches":null}');
-  assert.ok(!lines[0].includes("NEVER_RETURN"));
-  events.length = 0; lines.length = 0;
+  const program = vm.runInNewContext(`(${ready})`, context);
+  await program(instance, true); // An obsolete caller cannot re-enable the initializing observation.
+  assert.deepEqual(events, ["workspace", "trust", "plugin", "agent"]);
+  events.length = 0;
   await program(instance);
-  assert.deepEqual(events, ["workspace", "trust", "plugin", "agent"], "no-store behavior performs no new storage observation");
-  assert.equal(lines.length, 0);
+  assert.deepEqual(events, ["workspace", "trust", "plugin", "agent"]);
 });
 
 test("captures refuse dialogs, notices, wrong editors, hidden and out-of-viewport content", () => {
@@ -295,7 +294,7 @@ test("the real driver requires matching prompts before approval and its restart 
       }
       pluginLog() { return []; }
     },
-    openVault: async (instance, diagnostic) => { launches.push("ready-" + instance.name); assert.equal(diagnostic, true); return { obsidian: "test", electron: "test" }; },
+    openVault: async (instance, ...args) => { launches.push("ready-" + instance.name); assert.equal(args.length, 0, "the actual launch path passes no native initialization flag"); return { obsidian: "test", electron: "test" }; },
     verifyNativeRedirects: async (page) => {
       assert.equal(page, "a"); redirects++; redirectChecked = true;
       if (redirectFails) throw new Error("synthetic native redirect refusal");

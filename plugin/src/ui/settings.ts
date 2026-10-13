@@ -818,7 +818,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private setup(): Row {
     return {
       name: "Setup or recover",
-      desc: "Paste the setup token your server wrote at first boot. For an empty server, it creates the account. For an existing account with no syncing device, restore this vault’s 24-word recovery phrase first, then use the token to re-enrol. A retained vault key works too. If the server has no recovery key for this vault, whoever runs it resets its recovery first and gives you the new token. Keep both the token and phrase private.",
+      desc: "Paste the setup token your server wrote at first boot. For an empty server, it creates the account. For an existing account with no syncing device, stage this vault’s complete recovery backup, including its format marker, first, then use the token to re-enrol. A retained vault key works too. If the server has no recovery key for this vault, whoever runs it resets its recovery first and gives you the new token. Keep both the token and backup private.",
       visible: () => this.plugin.state.data.deviceId === null || this.plugin.forgottenDevice,
       render: (setting) => {
         secretText(setting, "Setup token", this.draftToken, (value) => { this.draftToken = value.trim(); });

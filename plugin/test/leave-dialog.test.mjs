@@ -93,7 +93,7 @@ test("the dialog states what is kept and what is lost before it will leave", asy
   assert.equal(d.modal.title, "Leave this server");
   const text = d.drawn.join("\n");
   assert.match(text, /Every note in this vault stays exactly where it is/);
-  assert.match(text, /the 24 words still open the SAME vault/);
+  assert.match(text, /the complete recovery backup still opens the SAME vault/);
   assert.match(text, /the server revokes its device id and credential/);
   assert.match(text, /No other device is touched/);
   assert.match(text, /Identical notes stay one note/);
@@ -146,7 +146,7 @@ test("a last-device refusal offers leaving locally, and says what that leaves be
   const text = d.drawn.join("\n");
   assert.match(text, /The server refused to revoke this device: the only active device cannot be revoked; pair another first\./);
   assert.match(text, /no registered vault recovery yet/);
-  assert.match(text, /setup token and 24-word recovery phrase/);
+  assert.match(text, /setup token and complete recovery backup/);
   assert.equal(d.button("Leave on this device only").destructive, true);
 
   d.button("Leave on this device only").click();

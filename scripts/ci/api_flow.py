@@ -407,9 +407,10 @@ def pair_two(flow: Flow, token: str) -> tuple[Credential, Credential]:
 
     # (1) First boot.
     first, body = first_boot(flow, token)
-    status, _, answer = server.call("POST", "/v1/setup", body=body)
-    flow.expect_code(status, 409, "already_set_up", "a second POST /v1/setup", answer)
-    flow.prove("first boot: the setup token created the account and device one; a second setup is 409 already_set_up")
+    for occupied in [body, json.dumps({**json.loads(body), "recover_only": False}).encode("utf-8")]:
+        status, _, answer = server.call("POST", "/v1/setup", body=occupied)
+        flow.expect_code(status, 409, "recover_only_required", "an occupied POST /v1/setup without explicit recovery", answer)
+    flow.prove("first boot: the setup token created the account and device one; occupied setup with recover_only absent or false is 409 recover_only_required")
 
     # (2) The account reads back, signed. This is the first proof the
     # credential the server just minted actually authenticates.

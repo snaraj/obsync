@@ -44,7 +44,7 @@ export interface SecretStore {
  */
 export class StateStorageError extends Error {
   constructor(readonly reason: string, message?: string) {
-    super(message ?? "obsync could not read or save this vault's sync credentials in Obsidian's secret storage. Sync is stopped, and nothing was sent or changed. Reload Obsidian. If this keeps happening, have your 24-word recovery phrase or another syncing device at hand, then reinstall obsync and pair this device again; your notes stay in this vault.");
+    super(message ?? "obsync could not read or save this vault's sync credentials in Obsidian's secret storage. Sync is stopped, and nothing was sent or changed. Reload Obsidian. If this keeps happening, have your complete recovery backup or another syncing device at hand, then reinstall obsync and pair this device again; your notes stay in this vault.");
   }
 }
 
@@ -331,8 +331,8 @@ export interface ObsyncData {
    */
   pendingRecase?: { from: string; temp: string; to: string };
   /**
-   * Whether the 24 words were confirmed ON THIS DEVICE, by the three-word
-   * check or by restoring them (issue #170). `skipped` is a check closed
+   * Whether the complete recovery backup was confirmed ON THIS DEVICE by
+   * readback or by restoring it (issue #170). `skipped` is a check closed
    * unanswered: the next start says so once and sets it back to
    * `unconfirmed`. Nothing before 1.1.4 recorded a confirmation, so a device
    * that never recorded one is `unconfirmed`.

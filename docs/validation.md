@@ -176,7 +176,17 @@ else. The acting device is named first.
 | J8 | Quit and relaunch Obsidian on both devices | each device returns to idle on its own, with no tap, no **Sync now**, and no setup or pairing prompt; record the time each took | both devices act |
 | J9 | Open a vault that also holds a large non-note folder tree (record the file count and total size) | the vault opens and the plugin reaches idle within a recorded time, or it says why not in one visible line naming the budget it exceeded and what it skipped (requirement 12); silence, a hang, or an unexplained partial scan is a fail | desktop acts, phone observes |
 | J10 | Unpair the device, then pair the same vault again | every local note is still on disk with unchanged bytes, the device appears exactly once in Devices, and sync resumes both ways; no duplicate note and no conflict copy | either device acts, the other observes |
-| J11 | After recovery is registered, close every paired test vault; restore the saved phrase in a fresh vault and use **Setup or recover** with the server's setup token | the new device receives the retained notes without approval from an old device; wrong phrases and wrong setup tokens are refused; an old account without recovery registration explains why a paired device is still needed | fresh desktop or phone acts; existing test devices stay closed |
+| J11 | After recovery is registered, close every paired test vault; stage the complete saved recovery backup, including its format marker, in a fresh vault and use **Set up or recover** with the server's setup token | the new device receives the retained notes without approval from an old device; wrong backups, stripped format markers and wrong setup tokens are refused; an old account without recovery registration explains why a paired device is still needed | fresh desktop or phone acts; existing test devices stay closed |
+| J12 | Remove the other disposable device using **Block server access only**, then explicitly pair it again | the choice explains that retained keys can still decrypt later same-key ciphertext; the removed credential stops syncing on the test server; local notes remain and explicit re-pairing restores sync | either device acts, the other observes |
+| J13 | On a retained device choose **Rotate key** for the other test device; save the complete new backup, prepare, quit/relaunch, re-encrypt, quit/relaunch and commit; then use **Pair after rotation** on the retained peer | sync stays stopped while pending; both restarts preserve the exact transition; commit requires the new backup and owner token; the old credential remains refused until explicit pairing with matching visible codes; new notes sync both ways and old history opens only with its retained old key | desktop coordinates, phone re-pairs; use only disposable data |
+
+J12 and J13 exercise the user choices and custody on real devices. The required
+real-engine E2EE gate separately supplies new ciphertext directly to the removed
+key and tests decryption, including a colluding-server scenario; a normal server
+access refusal alone cannot prove that distinction. Follow the
+[rotation acceptance cases](security/device-revocation.md) for lost replies,
+legacy upgrade and interrupted-state controls, and record unattempted native
+cases explicitly.
 
 Every release whose range touches `plugin/` or the server's sync path -- the
 chunk, change, and file handlers in `crates/obsyncd/src/api/` and the storage

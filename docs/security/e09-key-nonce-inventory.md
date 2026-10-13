@@ -105,8 +105,9 @@ randomness acceptance. A focused issue candidate is **“Justify and constrain
 shared AES-GCM key lifetime; test broken-RNG behavior”**: choose and review a
 concrete aggregate bound/mitigation and pin negative expectations, then prove
 it across device/restart/retry paths. No numeric current-use or full security
-failure rate is established here. The candidate below has no runtime effect
-and supplies no publication decision or independent verdict.
+failure rate is established by this historical inventory. The replacement
+below changes the candidate runtime but has not shipped and supplies no
+publication decision or independent verdict.
 
 ## Chosen replacement: RFC 5297 AES-SIV with one migration
 
