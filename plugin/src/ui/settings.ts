@@ -40,7 +40,7 @@ import { formatBytes, parseBytes, type Policy } from "../policy";
 import { platformLabel } from "../pairing";
 import { parseSyncFolders } from "../syncScope";
 import { refusalStatus, refusalText } from "../sync/engine";
-import { KEYS_LOST, type EdgeHeader } from "../state";
+import { KEYS_LOST, type EdgeHeader, type State } from "../state";
 import { LEVELS, MERGES, count } from "../notices";
 import { HEADER_NAME, ownHeader, browserHeader, customHeaderBudget, type DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
@@ -49,6 +49,13 @@ import { LegacyUpgradeModal, PreviousKeyModal, RevokeModal, RotationModal } from
 
 /** The dashboard's label for the one account a server holds. */
 export const ACCOUNT_NAME = "obsync";
+
+/** Refuse before editing identity or dispatching a storage transaction. */
+export function pendingServerUrlRefusal(state: State, url: string): string | null {
+  return url !== state.data.serverUrl && state.custody2()?.enrollment
+    ? "Setup, recovery or pairing is unfinished for this server. Server URL was not changed. Finish it at the same address. For a different server, use a fresh vault; your local notes stay here."
+    : null;
+}
 
 /** What a copied vault, or one whose folder was renamed outside Obsidian, is told (issue #168). */
 /** The devices that sync, then those that do not, each counted for what it is. */
@@ -416,9 +423,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
     if (this.draftUrl === null) return;
     const url = normalizeServerUrl(this.draftUrl);
     this.draftUrl = null;
-    const refusal = serverUrlRefusal(url, this.plugin.isMobile);
+    const pendingRefusal = pendingServerUrlRefusal(this.plugin.state, url);
+    const refusal = serverUrlRefusal(url, this.plugin.isMobile) ?? pendingRefusal;
     this.refusedUrl = refusal;
     if (refusal !== null) {
+      if (refusal === pendingRefusal) this.plugin.log("settings decision=refused reason=enrollment_pending_server");
       this.say(refusal);
       return;
     }

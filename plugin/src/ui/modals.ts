@@ -203,7 +203,7 @@ const CLAIM_ENDED: Record<string, string> = {
   unopened: "This device could not open the vault key it was sent: the code it used does not match the other device's, most likely one mistyped character, or the key was changed on the way. Nothing was shared. Make a new code there with Pair a new device, and paste it whole.",
   consumed: `This device collected the vault key but stopped before keeping it, so it holds none. ${PAIR_AGAIN}`,
   unverified: "The other device's key does not match the code this device was given, so pairing stopped and nothing was shared. Someone may have changed it on the way: choose Reject on the other device, then make a new code there with Pair a new device and type it here.",
-  declined: "Pairing cancelled: nothing was uploaded, and this device was removed from the server again.",
+  declined: "Pairing cancelled: nothing was uploaded. The trusted key is still saved for this server's vault while pairing is unfinished. Keep the same Server URL and try again with a new code from a device syncing that vault. For a different server, use a fresh vault; your local notes stay here.",
 };
 const STILL_LISTED = " The server may still list this device. obsync could not remove this device from the server again: revoke it from the other device's Devices list.";
 const V2_WAITING =

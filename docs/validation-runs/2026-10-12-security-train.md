@@ -2108,3 +2108,122 @@ tests, 94.85% coverage, 2,508 plugin tests, 207 CLI checks, 88 dashboard tests,
 planted controls in 14,076 ms, with 381 requests (340 main), 22 main storage
 files and 148 needles; the legacy leg retains 41 requests, ten files and 33
 needles. Hosted verification of this test-only replacement remains pending.
+
+
+## Hosted completion and physical phone enrollment refusal
+
+At signed head `fb82499d29355ba80f472b8cef104aa33d5c4cc1`,
+[PR Gate run 38470433201](https://github.com/snaraj/obsync/actions/runs/38470433201)
+passes, including protected Linux and every native custody leaf. All eight
+required checks pass. The rollup has 46 passes, one expected skip and only
+the non-required CodeQL wrapper for the unchanged reviewed export disposition;
+both required language analyses and dispositions pass. No alert was manually
+dismissed. The six dependency proposals are closed unmerged, superseded by the
+composed candidate. These results supersede the pending hosted result above
+for that exact head, not for later runtime changes.
+
+The physical iPhone runs Obsidian 1.14.5. The original synthetic ZIP arrived
+through the owner-approved temporary HTTPS transfer, was independently located
+in Files, and opened as the disposable vault. Plugin inventory shows version
+1.1.8; an independent hash of the installed phone main.js is not measured.
+The original pairing compared the two independently observed verification
+codes, but the operator declined the subsequent local-note upload confirmation.
+Server credential revocation succeeded. This is not successful pairing evidence.
+The original session ended at its one-hour deadline; cleanup receipts establish
+absence of its relay children, owned process groups, private/runtime directory
+and manifest. The phone fixture was preserved for diagnosis.
+
+The replacement authenticated API was separately approved for one hour, with
+no download relay. An attempted phone claim did not reach this server. Native
+field inspection found the previous expired endpoint still saved. After the
+operator selected and entered the approved replacement address, the phone
+showed a credential-storage stop. Normal app restart cleared the stop, restored
+the previous saved URL and left the synthetic note intact. The exact structured
+phone error code was unavailable through the observed native UI. These facts
+agree with the local identity guard refusing a changed endpoint before writes;
+they do not prove a missing or unprotected native SecretStorage service.
+
+Source inspection identifies why the earlier description of cancellation was
+incomplete. Pairing deliberately saves a trusted pending root before the
+fallible authenticated map/survey, but active credential adoption and sync wait
+for that readback and explicit local-note consent. Cancel revokes the server
+credential while retaining the pending root. Changing the endpoint of that
+pending enrollment violates the custody identity guard. The root retention is
+required for interrupted pairing and remains enforced; server revocation is
+not deletion of local custody. A fresh extraction of the original clean ZIP,
+which contains only plugin assets, a synthetic note and the initial server URL,
+is used for the distinct retry fixture. No used-vault credentials are copied.
+
+The bounded correction refuses an endpoint edit before changing State, saving
+or waking transport, and explains the retained pending enrollment and same-server
+retry. It introduces no custody rollback, new root-replacement authority or
+change to encryption. Physical phone acceptance and independent final-head
+approval remain incomplete; desktop and automated results cannot replace them.
+
+
+The worker's focused checks pass 159 tests, plus 117 tests for other callers of
+`setServerUrl`, with zero skips. Seven mutations fail by assertion: removal of
+either edit-path guard, either refusal log, same-address allowance, enrollment
+scope or cancellation guidance. Source is restored. The regression opens the
+settings field before staging each of new/setup, recovery and pairing, then
+tries to change the endpoint. It compares actual State, custody, metadata and
+secret-envelope bytes, checks no write or network wake and no storage-failure
+latch, and permits the normalized same address. The parent verifies all five
+integrated file hashes, independently passes the 112 pairing/settings tests,
+and kills removal of the compiled shared guard. That mutant reproduces the
+misleading credential-storage failure; the generated module is restored
+byte-for-byte. Patch SHA-256:
+`ba110c444af74922508f400d29e285485ff0cc638931d8308435ae147f21ef24`.
+The complete gate and native acceptance of this runtime follow-up are separate.
+
+
+The replacement API also reached its hard one-hour expiry. Its controller exits
+zero; cleanup receipts show the relay absent, zero remaining owned process
+groups and holders, and private/runtime data and manifest removed. No phone
+claim reached that replacement server and no comparison code was observed.
+The fresh retry folder was extracted and moved into the phone's Obsidian
+container, preserving the original fixture. Native vault-chooser navigation
+was blocked by automatic approval review because it could reveal other vault
+names, despite the earlier cropped-chooser authorization. No blocked capture
+is credited and no public exposure was extended. Preparing the retry fixture
+does not count as opening, configuring, pairing or validating that vault.
+
+
+## Pending-enrollment correction: complete local gate and native desktop
+
+The corrected runtime passes the complete local `make check`: 734 Rust tests,
+94.85% Rust line coverage, 2,509 plugin tests with zero skips, 207 CLI checks,
+88 dashboard tests, 930 contracts, chart checks and both secret scans.
+The real-engine E2EE regression passes 21 flows and two planted leak controls
+in 14,994 ms: 382 requests (341 main), 22 main storage files and 148 needles.
+The legacy leg records 41 requests, ten files and 33 needles.
+
+A fresh isolated native desktop run uses the compiled plugin SHA-256
+`7c34f4abc5994707e9dddc19ac89b75396667f6599318bf496cfe41fda7901af`
+and the already verified official Obsidian application. It creates a pending
+new-vault enrollment through the ordinary Recovery backup dialog, independently
+reads back its complete saved backup, and attempts a different loopback server
+address through the ordinary Server URL field. The refusal is clear and logs
+`settings decision=refused reason=enrollment_pending_server`. Independent reads
+prove that disk metadata bytes, the precisely referenced OS-encrypted custody
+entry, State and the pending pin are unchanged. No failure latch appears; the
+same original address is accepted. Completing the normal setup form at that
+address succeeds with suite 2 and healthy idle, proving that the refused edit
+has not made the pending setup unusable.
+
+![Native desktop refusal before changing a pending enrollment endpoint](../assets/security-pending-enrollment-refusal.png)
+
+The parent inspected every pixel of this native capture: it contains only the
+static refusal notice, with no address, key, credential, identifier or personal
+content. Image SHA-256:
+`190a1012707d82f2ae53cabeb0b5e127d3f86258faf4d096a67207f3ea5d0b49`.
+This is desktop evidence using loopback HTTP, not phone, public HTTPS, a
+pairing-cancel capture or production-distribution evidence. The validation
+operator records a dirty source tree based on predecessor `fb82499`; payload
+hash equivalence must be checked after committing. Its phase sequence was
+`init`, `stage`, `check`, `resume`, `quit`, followed by identity-safe teardown
+and finalization. Final receipts prove zero remaining owned process groups or
+holders and absence of runtime, private material and the lab manifest; 5,420
+private bytes were removed. The leased app image remains only while the broader
+device campaign needs it. Physical-phone acceptance and independent approval
+of the eventual final head remain open.

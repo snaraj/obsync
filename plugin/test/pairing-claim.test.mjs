@@ -593,9 +593,17 @@ test("a vault holding notes the server's vault does not know is asked before its
   assert.equal(cancel.text, "Cancel");
   assert.equal(cancel.focused, true);
   assert.equal(result.restarted, 0, "no sync started, so nothing was uploaded");
-  assert.deepEqual(result.saves, [], "the other vault's key and its credential were never kept");
+  assert.deepEqual(result.saves, [], "no active root or credential was adopted");
   assert.ok(result.logs.includes("pairing role=claimant decision=declined unknown=3"));
   assert.ok(result.notices.some((notice) => notice.includes("nothing was uploaded")));
+  assert.equal(result.rootRetained, true, "the trusted enrollment survives explicit upload refusal");
+  const before = structuredClone(result.plugin.state.data), custody = result.plugin.state.custody2();
+  const notice = result.notices.find(text => text.includes("Pairing cancelled"));
+  assert.ok(notice.includes("trusted key is still saved") && notice.includes("same Server URL") && notice.includes("fresh vault"), notice);
+  await assert.rejects(result.plugin.setServerUrl("https://different.example.invalid"), /Server URL was not changed/);
+  assert.deepEqual(result.plugin.state.data, before);
+  assert.deepEqual(result.plugin.state.custody2(), custody);
+  assert.doesNotThrow(() => result.plugin.state.assertAvailable(), "an origin refusal must not latch a storage failure");
 });
 
 test("one note the server's vault does not have is one note, and it is uploaded (iPhone pass, 2026-09-26)", async (t) => {

@@ -85,7 +85,7 @@ import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, MoveResult, NOT_A
 import { EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, pastedToken, platformLabel, refusalFor, refusalText } from "./pairing";
-import { COPIED_VAULT, ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
+import { COPIED_VAULT, ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, pendingServerUrlRefusal, serverUrlRefusal } from "./ui/settings";
 import {
   LeaveServerModal, PairClaimModal, PairCreateModal, RecentModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, alreadyPaired,
 } from "./ui/modals";
@@ -5475,8 +5475,12 @@ export default class ObsyncPlugin extends Plugin {
    */
   async setServerUrl(value: string): Promise<void> {
     const url = normalizeServerUrl(value);
-    const refusal = serverUrlRefusal(url, this.isMobile);
-    if (refusal !== null) throw new Error(refusal);
+    const pendingRefusal = pendingServerUrlRefusal(this.state, url);
+    const refusal = serverUrlRefusal(url, this.isMobile) ?? pendingRefusal;
+    if (refusal !== null) {
+      if (refusal === pendingRefusal) this.log("settings decision=refused reason=enrollment_pending_server");
+      throw new Error(refusal);
+    }
     this.state.data.serverUrl = url;
     await this.state.save();
     this.wake("address");

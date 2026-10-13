@@ -10,7 +10,7 @@ import test from "node:test";
 import { readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandbox } from "./fake.mjs";
+import { KEYS, memorySecrets, sandbox } from "./fake.mjs";
 
 const tick = () => new Promise(setImmediate);
 
@@ -121,6 +121,34 @@ function open(t, overrides) {
   const button = (list, text) => { const found = list.find((c) => c.kind === "button" && c.text === text); assert.ok(found, `button ${text}`); return found; };
   return { box, obsidian, plugin, calls, settings, tab, rows, row, shown, render, button, made, vault, updates: () => updates };
 }
+
+test("pending setup/recovery/pairing refuses both endpoint edit paths before storage and keeps its pin available", async t => {
+  for (const purpose of ["new", "recover", "pair"]) {
+    const s = open(t), { State } = s.box.require(join(s.box.home, "build/state.js"));
+    let metadata = { serverUrl: "https://same.example.invalid" }, writes = 0;
+    const secrets = memorySecrets();
+    const state = await State.open({ loadData: async () => metadata, saveData: async value => { metadata = structuredClone(value); writes++; } }, false, secrets);
+    s.plugin.state = state;
+    const field = s.render("Server URL").made.find(c => c.kind === "text");
+    await state.stageEnrollment2(KEYS.vrk, purpose);
+    const before = structuredClone(state.data), pin = state.custody2(), saved = structuredClone(metadata);
+    const envelope = secrets.getSecret(metadata.credentialRef), written = writes;
+    field.commit("different.example.invalid"); // The field predates the pending enrollment.
+    await tick();
+    const Plugin = s.box.require(join(s.box.home, "build/main.js")).default;
+    await assert.rejects(Plugin.prototype.setServerUrl.call(s.plugin, "https://another.example.invalid"), /Server URL was not changed/);
+    assert.equal(writes, written, "neither refusal dispatched a storage write");
+    assert.deepEqual(state.data, before); assert.deepEqual(metadata, saved); assert.deepEqual(state.custody2(), pin);
+    assert.equal(secrets.getSecret(metadata.credentialRef), envelope);
+    assert.doesNotThrow(() => state.assertAvailable(), "pending custody remains usable after both refusals");
+    assert.ok(s.obsidian.notices.some(text => text.includes("same address") && text.includes("fresh vault")));
+    assert.equal(s.plugin.logs.filter(line => line === "settings decision=refused reason=enrollment_pending_server").length, 2);
+    assert.equal(s.calls.filter(call => call === "wake:address").length, 0);
+    await assert.doesNotReject(Plugin.prototype.setServerUrl.call(s.plugin, "same.example.invalid"));
+    assert.deepEqual(state.custody2(), pin); assert.doesNotThrow(() => state.assertAvailable());
+    assert.equal(state.data.serverUrl, before.serverUrl, "normalization of the same endpoint stays permitted");
+  }
+});
 
 test("the tab keeps the id and name Obsidian gives it, before and after every draft is used", async (t) => {
   // Obsidian sets `id` and `name` on the tab in its constructor and reads
