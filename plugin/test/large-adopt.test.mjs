@@ -22,6 +22,7 @@ import { createRequire } from "node:module";
 import { FakeHost, FakeServer, FakeTimers, KEYS, STEP_MS, keys, memorySecrets, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { State } = require("../build/state.js");
 const { Transport } = require("../build/transport.js");
 const { LARGE_APPLY_BYTES, SyncEngine } = require("../build/sync/engine.js");
@@ -63,7 +64,7 @@ const join = (...parts) => {
 async function sealed(domainKey, bytes) {
   const chunks = [];
   for await (const plaintext of chunkStream(bytesSource(bytes))) {
-    const { cid, sid, ciphertext } = await c.encryptChunk(domainKey, plaintext);
+    const { cid, sid, ciphertext } = await seal2.encryptChunk2(domainKey, { generation: (await keys()).generation, domainId: KEYS.domainId }, plaintext);
     chunks.push({ sid, cid: c.hex(cid), len: plaintext.length, ciphertext });
   }
   return chunks;
@@ -308,8 +309,10 @@ function memoryStore() {
 async function paired(server, host) {
   const store = memoryStore();
   const state = await State.open(store, false, store.secrets);
-  Object.assign(state.data, { vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid" });
+  state.data.serverUrl = "https://sync.example.invalid";
   await state.save();
+  await state.stageEnrollment2(KEYS.vrk, "pair");
+  await state.adoptSuite2({ root: KEYS.vrk, generation: (await keys()).generation, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
   const timers = new FakeTimers();
   const transport = new Transport({
     request: (request) => server.request(request),

@@ -6,7 +6,7 @@
  * Closing the dialog used to record nothing, so a person who pressed Escape
  * on the words at setup was never asked again (S35). What is pinned: Escape
  * leaves the words unconfirmed and owes ONE notice at the next start; the
- * three-word check, or a restore from the 24 words, confirms them; Settings
+ * full prefixed-backup readback confirms them; Settings
  * and Show sync status say "not confirmed" until then, quietly.
  */
 
@@ -43,17 +43,22 @@ function box(t) {
   const modals = b.require(join(b.home, "build/ui/modals.js"));
   const pairing = b.require(join(b.home, "build/pairing.js"));
   const c = b.require(join(b.home, "build/crypto.js"));
-  return { ...b, obsidian, made, opened, modals, words: () => pairing.recoveryPhrase(c.unhex(KEYS.vrk)) };
+  const backup = b.require(join(b.home, "build/recoveryBackup.js"));
+  return { ...b, obsidian, made, opened, modals, words: () => pairing.recoveryPhrase(c.unhex(KEYS.vrk)),
+    backup: () => backup.encodeRecoveryBackup(c.unhex(KEYS.vrk)) };
 }
 
 function plugin(data = {}) {
   const calls = [];
-  return {
+  const p = {
     calls,
     logs: [],
     log(line) { this.logs.push(line); },
-    state: { data: { vrk: KEYS.vrk, recoveryPhrase: "unconfirmed", ...data }, save: async () => { calls.push("save"); } },
+    state: { data: { vrk: KEYS.vrk, recoveryPhrase: "unconfirmed", ...data }, save: async () => { calls.push("save"); },
+      custody2: () => ({ suite: 2 }), stagedEnrollment2: () => null },
   };
+  p.captureSession = () => ({ state: p.state, assertCurrent: () => {} });
+  return p;
 }
 
 /** A real dialog whose drawing is recorded and whose close runs `onClose`, as Escape does. */
@@ -79,12 +84,12 @@ function dialog(b, p, confirmFirst, afterClose) {
 
 test("Escape on the words at setup leaves them unconfirmed, owed one reminder; passing the check confirms them (#170)", async (t) => {
   const b = box(t);
-  const words = await b.words();
+  const backup = await b.backup();
   const p = plugin();
   const d = dialog(b, p, true);
   await d.ready();
-  const fields = b.made.filter((w) => w.kind === "text");
-  assert.equal(fields.length, 3, "the three-word check is drawn");
+  const fields = b.made.filter((w) => w.kind === "textarea");
+  assert.equal(fields.length, 1, "complete-backup readback is drawn");
   for (const field of fields) {
     // A recovery word a phone keyboard learned would sit in its dictionary (#208).
     assert.deepEqual(field.inputEl.attributes, { autocapitalize: "off", autocorrect: "off", autocomplete: "off", spellcheck: "false" });
@@ -92,25 +97,25 @@ test("Escape on the words at setup leaves them unconfirmed, owed one reminder; p
   d.modal.onClose(); // Escape, the cross, a tap outside
   assert.equal(p.state.data.recoveryPhrase, "skipped");
   assert.deepEqual(p.calls, ["save"], "the skip is persisted");
-  assert.deepEqual(p.logs, ["phrase decision=skipped"]);
+  assert.deepEqual(p.logs, ["backup decision=skipped"]);
 
   // Opened again from Settings: a wrong word changes nothing, the right ones confirm.
   const again = dialog(b, p, true);
   await again.ready();
-  const [w3, w11, w20] = b.made.filter((w) => w.kind === "text");
-  const confirm = b.made.find((w) => w.kind === "button" && w.text === "I have written it down");
-  w3.change(words[2]); w11.change("wrong"); w20.change(words[19]);
-  confirm.click();
+  const readback = b.made.find((w) => w.kind === "textarea");
+  const confirm = b.made.find((w) => w.kind === "button" && w.text === "Confirm complete backup");
+  readback.change(backup.replace("obsync-recovery-v2 ", ""));
+  await confirm.click();
   assert.equal(p.state.data.recoveryPhrase, "skipped");
   assert.equal(again.closed(), 0);
-  w11.change(` ${words[10].toUpperCase()} `);
-  confirm.click();
+  readback.change(backup);
+  await confirm.click();
   assert.equal(p.state.data.recoveryPhrase, "confirmed");
   assert.equal(again.closed(), 1);
   assert.equal(p.state.data.recoveryPhrase, "confirmed", "closing after the check does not undo it");
   assert.deepEqual(p.calls, ["save", "save"]);
-  assert.deepEqual(p.logs, ["phrase decision=skipped", "phrase decision=confirmed"]);
-  assert.ok(b.obsidian.notices.includes("obsync: recovery phrase confirmed."));
+  assert.deepEqual(p.logs, ["backup decision=skipped", "backup decision=confirmed"]);
+  assert.ok(b.obsidian.notices.includes("obsync: Complete recovery backup confirmed."));
 });
 
 test("the words shown from the palette offer the check to an unconfirmed device, and closing them records nothing (#170)", async (t) => {
@@ -120,8 +125,8 @@ test("the words shown from the palette offer the check to an unconfirmed device,
     let after = 0;
     const d = dialog(b, p, false, () => { after++; });
     await d.ready();
-    assert.equal(d.drawn.filter((line) => line.startsWith("li: ")).length, 24);
-    assert.equal(b.made.filter((w) => w.kind === "text").length, check ? 3 : 0, state);
+    assert.deepEqual(d.drawn.filter((line) => line.startsWith("pre: ")), [`pre: ${await b.backup()}`]);
+    assert.equal(b.made.filter((w) => w.kind === "textarea").length, check ? 1 : 0, state);
     d.modal.onClose();
     assert.equal(p.state.data.recoveryPhrase, state, "only a dialog opened to confirm records a skip");
     assert.deepEqual(p.calls, []);
@@ -191,7 +196,7 @@ test("the start after a skipped confirmation says so once, and never again on it
   const r = await fixture(t, { vrk: KEYS.vrk, deviceId: null, deviceSecret: null, serverUrl: "", recoveryPhrase: "skipped" });
   await r.instance.onload();
   await tick();
-  const reminders = () => r.obsidian.notices.filter((message) => message.startsWith("obsync: your 24-word recovery phrase is not confirmed:"));
+  const reminders = () => r.obsidian.notices.filter((message) => message.startsWith("obsync: your recovery backup is not confirmed:"));
   assert.equal(reminders().length, 1);
   assert.match(reminders()[0], /In obsync's settings, under Vault key, choose Show and confirm\./);
   // A question: it stays until dismissed, and a click on it opens those settings.
@@ -219,13 +224,18 @@ test("a device upgraded from 1.1.3 reads as not confirmed without a notice; a co
   }
 });
 
-test("a new vault key is a phrase to confirm; restoring one from its 24 words confirms it (#170)", async (t) => {
-  const r = await fixture(t, { vrk: KEYS.vrk, deviceId: null, deviceSecret: null, serverUrl: "", recoveryPhrase: "confirmed" });
+test("new staging requires backup confirmation; complete restored backup stays detached until enrollment", async (t) => {
+  const r = await fixture(t, { vrk: null, deviceId: null, deviceSecret: null, serverUrl: "", recoveryPhrase: "confirmed" });
   await r.instance.onload();
-  await r.instance.adoptVaultKey(KEYS.vrk);
-  assert.equal(r.metadata().recoveryPhrase, "confirmed", "the same key keeps its confirmation");
-  await r.instance.adoptVaultKey("ab".repeat(32));
-  assert.equal(r.metadata().recoveryPhrase, "unconfirmed", "another key's words were never confirmed here");
-  await r.instance.restoreVaultKey("cd".repeat(32));
-  assert.equal(r.metadata().recoveryPhrase, "confirmed", "typing all 24 words back is the confirmation");
+  await r.instance.stageNewVaultKey();
+  assert.equal(r.metadata().recoveryPhrase, "unconfirmed");
+  assert.equal(r.instance.state.data.vrk, null);
+  assert.equal(r.instance.state.stagedEnrollment2().purpose, "new");
+  const recovered = await fixture(t, null); await recovered.instance.onload();
+  const b = box(t), backup = await b.backup();
+  await recovered.instance.stageRecoveryBackup(backup);
+  assert.equal(recovered.metadata().recoveryPhrase, "confirmed");
+  assert.equal(recovered.instance.state.data.vrk, null);
+  assert.equal(recovered.instance.state.stagedEnrollment2().purpose, "recover");
+  assert.equal(recovered.instance.state.stagedEnrollment2().root, KEYS.vrk);
 });

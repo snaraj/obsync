@@ -36,7 +36,7 @@ def server_targets(source):
         for token in filter(None, (part.strip() for part in arm[2].split(','))):
             if re.fullmatch(r'"[a-z0-9./-]+"', token):
                 segments.append([json.loads(token)])
-            elif token in ('id', 'sid', 'f', 'v'):
+            elif token in ('id', 'sid', 'f', 'v', 'op'):
                 # Both hex widths used by production routes; regex matching below
                 # determines which concrete method/path belongs to the client.
                 segments.append(['1' * 32, '1' * 64])

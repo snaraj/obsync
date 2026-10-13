@@ -46,7 +46,7 @@ const SENTINEL = "LOCAL NOTE SENTINEL\n";
  * vault host, the transport and the engine are replaced afterwards: the
  * leaving code itself is untouched.
  */
-async function fixture(t, { devices = 1, isMobile = false } = {}) {
+async function fixture(t, { devices = 1, isMobile = false, legacy = false } = {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const obsidian = box.require("obsidian");
@@ -72,6 +72,21 @@ async function fixture(t, { devices = 1, isMobile = false } = {}) {
   };
   metadata.files[NOTE] = { fileId: "12".repeat(16), versionId: "34".repeat(32), mtime: 1757200000000, size: SENTINEL.length, sha256: "" };
   host.seed(NOTE, SENTINEL, 1757200000000);
+
+  if (!legacy) {
+    // A live fixture has the same durable suite-2 authority as an enrolled app.
+    const { State } = box.require(join(box.home, "build/state.js"));
+    const initial = structuredClone(metadata);
+    metadata = null;
+    const state = await State.open({ loadData: async () => metadata,
+      saveData: async (value) => { metadata = structuredClone(value); } }, isMobile, secrets);
+    Object.assign(state.data, initial, { vrk: null, deviceId: null, deviceSecret: null });
+    await state.save();
+    await state.stageEnrollment2(KEYS.vrk, "pair");
+    await state.adoptSuite2({ root: KEYS.vrk, generation: (await keys()).generation,
+      deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
+    await old.seedDomainMap((await keys()).map, KEYS.domainId);
+  }
 
   const instance = new Plugin();
   let starts = 0;
@@ -196,7 +211,7 @@ test("the credential this device gave up does not survive in the native store", 
   assert.equal(reloaded.paired, false);
 });
 
-test("a device that has left can enrol on another server, and it is still the same vault", async (t) => {
+test("a device that has left can recover the same occupied vault on another server", async (t) => {
   const r = await fixture(t, { devices: 2 });
 
   // The stuck state issue #79 describes: an enrolled device cannot set up.
@@ -210,17 +225,41 @@ test("a device that has left can enrol on another server, and it is still the sa
   await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
   await r.instance.setServerUrl("other.example.invalid");
   assert.equal(r.state().serverUrl, NEW);
+  // A retained key grants recovery of its existing vault, never absent-account creation.
+  r.other.claimed = true;
+  await r.other.seedDomainMap((await keys()).map, KEYS.domainId);
+  const { accountRecovery } = r.box.require(join(r.box.home, "build/accountRecovery.js"));
+  r.other.recoveryVerifier = (await accountRecovery(KEYS.vrk)).verifier;
   await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
 
-  assert.equal(r.state().deviceId, SETUP_DEVICE, "a new identity on the new server");
+  assert.equal(r.state().deviceId, "0".repeat(31) + "1", "a new identity on the new server");
   assert.equal(r.state().deviceSecret, SETUP_SECRET);
   assert.equal(r.state().vrk, KEYS.vrk, "the SAME vault key: not a new vault");
   assert.equal(r.instance.state.paired, true);
   assert.equal(r.other.devices.length, 1);
   assert.equal(r.other.devices[0].name, "Study laptop");
-  assert.ok(r.obsidian.notices.some((message) => message.includes("set up your server's vault")));
+  assert.ok(r.obsidian.notices.some((message) => message.includes("Recovered this vault's enrollment")));
   assert.equal(r.envelope().includes(KEYS.deviceSecret), false, "the old server's credential is still gone");
   assert.deepEqual(r.host.trashed, [], "pairing again moved no note");
+});
+
+test("a retained vault key cannot create an absent account on another server", async (t) => {
+  const r = await fixture(t, { devices: 2 });
+  await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
+  await r.instance.setServerUrl("other.example.invalid");
+  const before = vault(r.host);
+  await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
+  assert.equal(r.other.claimed, false, "recover_only did not create the absent account");
+  assert.deepEqual(r.other.devices, [], "no enrollment was created");
+  assert.equal(r.other.files.size, 0, "no map or content was written");
+  assert.equal(r.other.journal.length, 0);
+  assert.equal(r.state().deviceId, null, "no detached credential was adopted");
+  assert.equal(r.state().deviceSecret, null);
+  assert.equal(r.state().vrk, KEYS.vrk, "the retained key stayed unchanged");
+  assert.deepEqual(vault(r.host), before);
+  const setup = r.other.requests.filter((request) => request.method === "POST" && request.target === "/v1/setup");
+  assert.equal(setup.length, 1);
+  assert.equal(JSON.parse(setup[0].json).recover_only, true);
 });
 
 test("the last active device is refused, with the server's own reason and nothing changed", async (t) => {
@@ -672,8 +711,8 @@ async function until(condition, what) {
  * vault's map. `hold(test)` keeps the first request `test` accepts, and
  * `gate.wait()` any step, until `gate.release()`.
  */
-async function phone(t) {
-  const r = await fixture(t, { devices: 2 });
+async function phone(t, { legacy = false } = {}) {
+  const r = await fixture(t, { devices: 2, legacy });
   r.obsidian.Platform.isMobile = true;
   t.after(() => { r.obsidian.Platform.isMobile = false; });
   const engines = r.box.require(join(r.box.home, "build/sync/engine.js"));
@@ -701,7 +740,6 @@ for (const [stage, where, made, superseded] of [
   ["before it has made its engine", null, 0, 1],
   ["while it asks whether this vault sits inside another", "vault", 1, 1],
   ["while its engine reads the vault's map", "map", 1, 1],
-  ["while it registers account recovery", "recovery", 1, 0],
 ]) test(`Leave while obsync is still starting, ${stage}: no engine outlives it, nothing goes out after its revoke, and nothing is said (#233)`, async (t) => {
   // The rig, 8216bbb: enable the plugin and leave at once, and requests went
   // on under the revoked credential, a feed retried every 5 s with no server,
@@ -709,7 +747,6 @@ for (const [stage, where, made, superseded] of [
   const r = await phone(t);
   if (where === "vault") r.host.enclosingVault = async () => { await r.gate.wait(); return null; };
   if (where === "map") r.hold((target) => target === `/v1/files/${r.old.mapFileId}`);
-  if (where === "recovery") r.hold((target) => target === "/v1/account/recovery");
   let settled = false;
   const start = r.instance.startEngine().then(() => { settled = true; });
   if (where !== null) await until(() => r.gate.asked, `the start reached ${where}`);
@@ -719,7 +756,7 @@ for (const [stage, where, made, superseded] of [
   // What was held is answered once the leave has stopped the engine, and the
   // leave asks nothing of the server until then; the map read is not
   // answered, because that stop abandoned it.
-  if (where === "vault" || where === "recovery") {
+  if (where === "vault") {
     await until(() => r.host.logs.includes("engine stop"), "the leave stopped the engine");
     await new Promise((resolve) => setTimeout(resolve, 250));
     assert.deepEqual(r.revokes(), [], "the leave waits for the start's step before it revokes");
@@ -735,8 +772,8 @@ for (const [stage, where, made, superseded] of [
   const sent = r.sent(), revoke = `POST /v1/devices/${KEYS.deviceId}/revoke`, at = sent.indexOf(revoke);
   assert.deepEqual(sent.slice(at + 1), [], "nothing went out after the revoke");
   // A running engine's own work may still land before the revoke; the start's registration must.
-  if (where === "recovery") assert.ok(sent.slice(0, at).includes("POST /v1/account/recovery"), "the start's registration was answered first");
-  else assert.deepEqual(sent.slice(began), [revoke], "once the leave began, the start sent nothing");
+  assert.deepEqual(sent.slice(began), [revoke], "once the leave began, the start sent nothing");
+  assert.equal(sent.includes("POST /v1/account/recovery"), false, "suite 2 never separately registers recovery at start");
   assert.equal(r.instance.statusText(), "not paired");
   assert.equal(r.instance.forgottenDevice, false);
   assert.deepEqual(r.obsidian.notices, [], "a phone says nothing after a successful leave");
@@ -744,33 +781,25 @@ for (const [stage, where, made, superseded] of [
   assert.equal(r.logs.filter((line) => /^engine decision=stopped reason=superseded duration_ms=\d+$/.test(line)).length, superseded);
 });
 
-test("a start whose recovery registration nothing answers holds Leave half a second, and its late answer changes nothing (#233, #157)", async (t) => {
-  // CI, 1443ad3: a leave waited on a start's registration for a server that
-  // never answered, and #157's ten-second promise became 22.3 s.
+test("suite-2 startup and Leave never send a separate recovery registration (#233)", async (t) => {
   const r = await phone(t);
-  r.hold((target) => target === "/v1/account/recovery");
-  const start = r.instance.startEngine();
-  await until(() => r.gate.asked, "the start is registering account recovery");
-
-  // Raced against the bound, so a leave held for good fails here rather than
-  // leaving the test to be cancelled (M3163).
-  const began = Date.now();
-  let bound;
-  const left = await Promise.race([r.instance.leaveServer({ discardUnpushed: true, localOnly: false }),
-    new Promise((resolve) => { bound = setTimeout(() => resolve("held"), 5000); })]);
-  clearTimeout(bound);
-  assert.deepEqual(left, { decision: "left", revoked: true }, `the leave took ${Date.now() - began} ms behind a registration nothing answered`);
-  assert.equal(r.logs.filter((line) => /^unpair decision=gave_up reason=start_under_way starts=1 budget_ms=500 duration_ms=\d+$/.test(line)).length, 1);
+  const register = r.instance.transport.registerRecovery;
+  let registrations = 0;
+  r.instance.transport.registerRecovery = () => { registrations++; throw new Error("UNAVAILABLE LEGACY REGISTRATION SENTINEL"); };
+  await r.instance.startEngine();
+  assert.equal(r.made.length, 1);
+  assert.equal(r.made[0].started, true, "the suite-2 engine really started");
+  assert.equal(registrations, 0, "the unavailable legacy registration did not hold startup");
+  assert.equal(r.sent().includes("POST /v1/account/recovery"), false);
+  assert.deepEqual(await r.instance.leaveServer({ discardUnpushed: true, localOnly: false }), { decision: "left", revoked: true });
   assert.equal(r.instance.engine, null);
-
-  // The registration was sent before the leave began; answered now, after the
-  // revoke, it is refused and says nothing.
-  r.gate.release();
-  await start;
-  assert.deepEqual(r.made.filter((engine) => engine.started), [], "no engine outlived the leave");
+  assert.deepEqual(r.made.filter((engine) => engine.started), [], "no engine outlived Leave");
+  const sent = r.sent(), at = sent.indexOf(`POST /v1/devices/${KEYS.deviceId}/revoke`);
+  assert.ok(at >= 0);
+  assert.deepEqual(sent.slice(at + 1), [], "nothing went out after the revoke");
   assert.equal(r.instance.statusText(), "not paired");
-  assert.deepEqual(r.obsidian.notices, [], "a phone says nothing after a successful leave");
-  assert.equal(r.logs.filter((line) => /^recovery decision=unavailable reason=\w+ session=ended$/.test(line)).length, 1, r.logs.join("\n"));
+  assert.deepEqual(r.obsidian.notices, []);
+  r.instance.transport.registerRecovery = register;
 });
 
 test("a folder Save while obsync is still starting leaves one engine running, the Save's own (#233)", async (t) => {
@@ -795,8 +824,8 @@ test("a folder Save while obsync is still starting leaves one engine running, th
   assert.equal(r.logs.filter((line) => line.startsWith("engine decision=stopped reason=superseded ")).length, 1);
 });
 
-test("a recovery registration the server refuses after Leave changes nothing on screen (#233)", async (t) => {
-  const r = await phone(t);
+test("an explicit legacy recovery registration refused after Leave changes nothing on screen (#233)", async (t) => {
+  const r = await phone(t, { legacy: true });
   r.hold((target) => target === "/v1/account/recovery");
   const registering = r.instance.registerAccountRecovery();
   await until(() => r.gate.asked, "the registration is out");

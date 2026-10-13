@@ -324,6 +324,13 @@ test("every server refusal code stays usable through the closed client vocabular
   const storage = readFileSync(new URL("../../crates/obsyncd/src/storage/types.rs", import.meta.url), "utf8")
     .split("pub fn code(&self)")[1].split("#[cfg(test)]")[0];
   for (const match of storage.matchAll(/(?:=>|return)\s*"([a-z0-9_]+)"/g)) codes.add(match[1]);
+  // Scoped authority refusals carry a literal code through the StoreError
+  // variant, so its type-level match alone cannot enumerate these routes.
+  for (const file of ["mod.rs", "rotation.rs"]) {
+    const source = readFileSync(new URL(`../../crates/obsyncd/src/storage/${file}`, import.meta.url), "utf8");
+    for (const match of source.matchAll(/StoreError::AuthorityRefused\(\s*"([a-z0-9_]+)"\s*\)/g)) codes.add(match[1]);
+  }
+  assert.ok(codes.has("rotation_pending") && codes.has("resume_superseded"), "the variable-bearing authority codes must be inventoried");
   assert.ok(codes.size >= 70, "the server vocabulary extraction must not be empty or partial");
   for (const code of codes) {
     const r = harness([{ status: 400, text: JSON.stringify({ error: code, detail: "REFUSAL SENTINEL" }) }]);
@@ -712,15 +719,34 @@ const INTERNAL = [
   "timed",
   // And the signing handle a leave drops (#197), which reaches no route.
   "forgetDevice",
+  "withCredential",
 ];
 const READ_CONTROL = { check() {}, wait: (work) => work };
+const ROTATION_INTENT = { operation: "ab".repeat(16), previous_map: "ac".repeat(16), current_map: "ad".repeat(16),
+  target: null, recovery_verifier: "ae".repeat(32), seal_suite: 2 };
+const ROTATION_STATUS = { intent: ROTATION_INTENT, coordinator: DEVICE_ID, cutoff: 1, inventory_hash: SID,
+  inventory_heads: 1, catalog_pages: 0, catalog_heads: 0, catalog_last: null, committed: false, resume_id: null, catalog_hash: SID };
 
 /** Every route-emitting method, arguments that make it emit, and its verdict. */
 const CALLS = [
+  ["setupCapabilities2", [], true],
+  ["setup2", ["token", "account", INFO, { verifier: SID, proof: SID, generation: FILE_ID, recoverOnly: true }], false],
+  ["setupRotationResume", ["token", INFO, { verifier: ROTATION_INTENT.recovery_verifier, proof: SID, generation: ROTATION_INTENT.current_map,
+    intent: ROTATION_INTENT, resumeId: "ef".repeat(16) }], false],
+  ["recoverLegacyForUpgrade", ["token", INFO, { verifier: SID, proof: SID }], false],
+  ["rotationCapabilities2", [], true],
+  ["rotationStatus", [ROTATION_INTENT, DEVICE_ID], true],
+  ["prepareRotation", [ROTATION_INTENT, DEVICE_ID, "token"], false],
+  ["rotationInventory", [ROTATION_STATUS, 0], true],
+  ["rotationCatalog", [ROTATION_INTENT, DEVICE_ID, 0, [[FILE_ID, SID, FILE_ID, SID]]], false],
+  ["commitRotation", [ROTATION_STATUS, "token"], false],
   ["setup", ["token", "account", INFO], false],
   ["account", [], true],
   ["registerRecovery", ["11".repeat(32)], false],
   ["pairingCreate", [], false],
+  ["pairingCreate2", [], false],
+  ["pairingClaim2", [PAIRING_ID, "11".repeat(32), { ...INFO, claimant_pub: "test", vault: { seal_suite: 2, envelope: "AAAA" } }], false],
+  ["pairingApprove2", [PAIRING_ID, { seal_suite: 2, envelope: "AAAA" }], false],
   ["pairingClaim", [PAIRING_ID, "11".repeat(32), INFO], false],
   ["pairingStatus", [PAIRING_ID], true],
   ["pairingReveal", [PAIRING_ID, "BB".repeat(43)], true],
@@ -743,6 +769,7 @@ const CALLS = [
   ["changes", [7, 0], true],
   ["historyChanges", [7, READ_CONTROL], true, true],
   ["historyVersion", [FILE_ID, SID, READ_CONTROL], true, true],
+  ["historyFile", [FILE_ID, READ_CONTROL], true, true],
   ["dashboardLoginLink", [], false],
   ["pluginManifest", [], true],
 ];
@@ -755,10 +782,19 @@ function always(status, text) {
   const transport = new Transport({
     request: async (request) => {
       sent.push(request);
+      let body = text;
+      if (status === 200) {
+        const url = new URL(request.url);
+        if (url.pathname === "/v1/setup" && request.method === "GET") body = JSON.stringify({ recover_only: true, seal_suite: 2 });
+        if (url.pathname === "/v1/rotation/capabilities") body = JSON.stringify({ rotation_protocol: 1, seal_suite: 2 });
+        else if (url.pathname.includes("/rotation/")) body = JSON.stringify(url.pathname.endsWith("/inventory")
+          ? { operation: ROTATION_INTENT.operation, cutoff: 1, inventory_hash: SID, inventory_heads: 1, page: 0, heads: [[FILE_ID, SID]] }
+          : ROTATION_STATUS);
+      }
       return {
         status,
         headers: { "content-type": 'multipart/mixed; boundary="b"' },
-        text,
+        text: body,
         arrayBuffer: part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength),
       };
     },
@@ -766,7 +802,9 @@ function always(status, text) {
     device: () => ({ id: DEVICE_ID, secret: Uint8Array.from(Buffer.from(DEVICE_SECRET_HEX, "hex")) }),
     edgeHeaders: () => [],
     now: () => 1757200000000,
-    sleep: async () => undefined,
+    // This route test has a fixed clock: deadlines never fire, while retry
+    // backoffs settle. Timing behavior has its own wall-clock tests below.
+    sleep: (ms) => ms === 10000 ? new Promise(() => {}) : Promise.resolve(),
     maxAttempts: 2,
   });
   return { transport, sent };

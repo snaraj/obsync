@@ -238,8 +238,9 @@ async function loaded(t, { mobile = false, worker = true } = {}) {
     current() { return { kind: "idle" }; }
   };
   const instance = new Plugin();
-  instance.loadData = async () => ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid", edgeHeaders: [] });
-  instance.saveData = async () => {};
+  let metadata = { serverUrl: "https://sync.example.invalid", edgeHeaders: [] };
+  instance.loadData = async () => structuredClone(metadata);
+  instance.saveData = async value => { metadata = structuredClone(value); };
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => statusItem();
   instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: {
@@ -247,6 +248,12 @@ async function loaded(t, { mobile = false, worker = true } = {}) {
   } };
   instance.manifest = { id: "obsync-private-sync", version: "1.1.4" };
   instance.checkForUpdate = async () => {};
+  // Admit the suite2 fixture with the same native store the plugin later reopens.
+  const { State } = box.require(join(box.home, "build/state.js")), c = box.require(join(box.home, "build/crypto.js"));
+  const admitted = await State.open(instance, mobile, instance.app.secretStorage);
+  await admitted.stageEnrollment2(KEYS.vrk, "pair");
+  await admitted.adoptSuite2({ root: KEYS.vrk, generation: (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(KEYS.vrk)))).fileId,
+    deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
   await instance.onload();
   await instance.firstStart;
   return { instance, engines, workers, said, raised: box.require("obsidian").raised };

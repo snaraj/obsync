@@ -32,6 +32,8 @@ COPY manifest.json /src/manifest.json
 # inputs only; the bundle stage below exports only the three plugin assets.
 COPY crates/obsyncd/src/api/ /src/crates/obsyncd/src/api/
 COPY crates/obsyncd/src/storage/types.rs /src/crates/obsyncd/src/storage/types.rs
+COPY crates/obsyncd/src/storage/mod.rs /src/crates/obsyncd/src/storage/mod.rs
+COPY crates/obsyncd/src/storage/rotation.rs /src/crates/obsyncd/src/storage/rotation.rs
 RUN npm run build && npm test
 
 # ---------------------------------------------------------------------------

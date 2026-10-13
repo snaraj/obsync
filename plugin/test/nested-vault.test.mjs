@@ -35,7 +35,7 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
-import { FakeTimers, KEYS, SETUP_TOKEN, STEP_MS, memorySecrets, rig, sandbox, statusItem } from "./fake.mjs";
+import { openPublishedManifest, FakeTimers, KEYS, SETUP_TOKEN, STEP_MS, memorySecrets, rig, sandbox, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -177,10 +177,8 @@ async function ownPaths(r) {
   const paths = [];
   for (const frame of r.server.journal) {
     if (frame.device_id !== KEYS.deviceId) continue;
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const manifest = JSON.parse(await c.decryptManifest(
-      r.keys.manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
-    ));
+
+    const manifest = await openPublishedManifest(frame, r.keys.manifestKey);
     paths.push(manifest.path);
   }
   return paths.sort();
@@ -408,6 +406,14 @@ async function loaded(t, root, metadata) {
   instance.checkForUpdate = async () => {};
   instance.log = (line) => logs.push(line);
   t.after(() => instance.onunload());
+  if (stored.vrk && stored.deviceId && stored.deviceSecret) {
+    const identity = { root: stored.vrk, deviceId: stored.deviceId, deviceSecret: stored.deviceSecret };
+    stored = { ...stored, vrk: null, deviceId: null, deviceSecret: null };
+    const { State } = box.require(join(box.home, "build/state.js")), c = box.require(join(box.home, "build/crypto.js"));
+    const state = await State.open(instance, false, instance.app.secretStorage);
+    await state.stageEnrollment2(identity.root, "pair");
+    await state.adoptSuite2({ ...identity, generation: (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(identity.root)))).fileId, purpose: "pair" });
+  }
   await instance.onload();
   await instance.firstStart;
   return { instance, requests, logs, bar, notices: obsidian.notices };

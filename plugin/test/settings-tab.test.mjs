@@ -60,6 +60,8 @@ function stubPlugin(overrides = {}) {
       paired: false,
       save: async () => { calls.push("state.save"); },
       localBytes: () => 0,
+      custody2: () => null,
+      stagedEnrollment2: () => null,
     },
     transport: { account: async () => ({ name: "obsync", device_count: 1 }) },
     forgottenDevice: false,
@@ -1404,16 +1406,16 @@ test("closing a completed pairing redraws settings for the new identity", async 
   assert.equal(s.row("Device list").desc, "Reading the device list…");
 });
 
-test("the Recovery phrase row reads Not confirmed with a Show and confirm button until the words are confirmed (#170)", (t) => {
+test("the Recovery backup row reads Not confirmed with a Show and confirm button until the words are confirmed (#170)", (t) => {
   const s = open(t);
   const { RECOVERY_UNCONFIRMED } = s.box.require(join(s.box.home, "build/ui/modals.js"));
   const opened = [];
   s.obsidian.Modal.prototype.open = function () { opened.push(this); };
-  const show = () => s.render("Recovery phrase").made.find((c) => c.text === "Show" || c.text === "Show and confirm");
+  const show = () => s.render("Recovery backup").made.find((c) => c.text === "Show" || c.text === "Show and confirm");
   s.plugin.state.data.vrk = "00".repeat(32);
   for (const state of [undefined, "unconfirmed", "skipped"]) {
     s.plugin.state.data.recoveryPhrase = state;
-    assert.equal(s.row("Recovery phrase").desc, RECOVERY_UNCONFIRMED, String(state));
+    assert.equal(s.row("Recovery backup").desc, RECOVERY_UNCONFIRMED, String(state));
     assert.match(RECOVERY_UNCONFIRMED, /^Not confirmed — Show and confirm\. /);
     const button = show();
     assert.deepEqual([button.text, button.cta, button.disabled], ["Show and confirm", true, false], String(state));
@@ -1426,7 +1428,8 @@ test("the Recovery phrase row reads Not confirmed with a Show and confirm button
     assert.equal(s.updates(), before + 1, "closing it redraws the row");
   }
   s.plugin.state.data.recoveryPhrase = "confirmed";
-  assert.match(s.row("Recovery phrase").desc, /^24 words that are the vault key\./);
+  assert.match(s.row("Recovery backup").desc, /^Keep the complete backup, including its format marker\./);
+  assert.match(s.row("Recovery backup").desc, /without it and without a paired device the vault cannot be recovered\./);
   assert.deepEqual([show().text, show().cta], ["Show", undefined]);
   opened.length = 0;
   show().click();
@@ -1434,7 +1437,7 @@ test("the Recovery phrase row reads Not confirmed with a Show and confirm button
 
   s.plugin.state.data.vrk = null;
   s.plugin.state.data.recoveryPhrase = undefined;
-  assert.match(s.row("Recovery phrase").desc, /^This device holds no vault key\./, "no key, nothing to confirm");
+  assert.match(s.row("Recovery backup").desc, /^This device holds no vault key\./, "no key, nothing to confirm");
   assert.deepEqual([show().text, show().disabled], ["Show", true]);
 });
 

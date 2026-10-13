@@ -56,20 +56,20 @@ ENGINE_CASES=[
 ('control_after', 'await positiveControl("control-after");', ''),
 ('setup_flow', 'flows.add("setup");', ''),
 ('root_key_inventory', 'hex: { vrk: secret }', 'hex: {}'),
-('paired_key_kept', 'b.state.data.vrk = opened.vrk;', ''),
+('paired_key_kept', '  await b.state.adoptSuite2({ root: opened.vrk, generation: opened.generation,\n    deviceId: claimedCredential.device_id, deviceSecret: claimedCredential.device_secret, purpose: "pair" });', ''),
 ('real_request_content_leak', 'sent++;', 'sent++; input.headers["X-E2EE-Control"] = marker;'),
 ('real_request_key_leak', 'sent++;', 'sent++; input.headers["X-E2EE-Control"] = secret;'),
 ('storage_scanner', 'assert.ok(![...needle.forms, ...needle.raws].some((value) => view.includes(value)), `unexpected ${needle.label} on ${surface}`);', ';'),
 ('needle_capture', 'sent++;', 'sent += 2;'),
-('typed_sink', 'allow("recovery_proof", credentials.proof);', ''),
+('typed_sink', 'if (route === "POST /v1/setup") for (const proof of credentials.proofs) allow("recovery_proof", proof);', ''),
 ('ciphertext_negative', 'changed[changed.length - 1] ^= 1;', ''),
 ('required_tamper', 'flows.add("tamper-refusal");', ''),
 
 ('envelope_inventory', 'spec.hex.pairing_envelope = c.hex(envelopeKey);', ''),
 ('vault_details_inventory', 'spec.hex.pairing_vault_details = c.hex(vaultDetailsKey);', ''),
-('vault_details_readback', 'pairing.sealPairingVault(ps, invitation.pairing_id, { name: vaultName, notes: 0 })', 'pairing.sealPairingVault(ps, invitation.pairing_id, { name: vaultName, notes: 1 })'),
+('vault_details_readback', 'pairing.sealPairingVault2(ps, invitation.pairing_id, { name: vaultName, notes: 0 })', 'pairing.sealPairingVault2(ps, invitation.pairing_id, { name: vaultName, notes: 1 })'),
 ('real_request_vault_details_leak', 'sent++;', 'sent++; if (spec.hex.pairing_vault_details) input.headers["X-E2EE-Control"] = spec.hex.pairing_vault_details;'),
-('phrase_inventory', '  const needles = buildNeedles(spec),', '  delete spec.phrase; const needles = buildNeedles(spec),'),
+('phrase_inventory', '  const originalNeedles = buildNeedles(spec),', '  delete spec.phrase; const originalNeedles = buildNeedles(spec),'),
 ('real_request_envelope_leak', 'sent++;', 'sent++; if (spec.hex.pairing_envelope) input.headers["X-E2EE-Control"] = spec.hex.pairing_envelope;'),
 ('real_request_phrase_leak', 'sent++;', 'sent++; if (spec.phrase) input.headers["X-E2EE-Control"] = spec.phrase;'),
 ('credential_raw_bytes', 'request: Buffer.concat(requests.map((m) => m.wire)), response: Buffer.concat(responses.map((m) => m.wire))', 'request: Buffer.alloc(0), response: Buffer.alloc(0)'),
@@ -102,7 +102,7 @@ ENGINE_CASES += [
 ('map_replay_reached', 'replayed++; return Buffer.from(JSON.stringify(originalMapFile));', 'return Buffer.from(JSON.stringify(originalMapFile));'),
 ('real_request_restored_path_leak', 'sent++;', 'sent++; if (spec.text.restoredPath) input.headers["X-E2EE-Control"] = spec.text.restoredPath;'),
 ('api_only_manifest_key', 'const wrongDomain = await c.deriveDomainKey(c.unhex(apiSecret), context.domainId);', 'const wrongDomain = context.domainKey;'),
-('api_only_chunk_key', 'c.decryptChunk(wrongDomain, c.unhex(originalChunk.cid), originalCiphertext)', 'c.decryptChunk(context.domainKey, c.unhex(originalChunk.cid), originalCiphertext)'),
+('api_only_chunk_key', 'seal2.decryptChunk2(wrongDomain, { generation, domainId: context.domainId }, c.unhex(originalChunk.cid), originalCiphertext)', 'seal2.decryptChunk2(context.domainKey, { generation, domainId: context.domainId }, c.unhex(originalChunk.cid), originalCiphertext)'),
 ('public_feed_tamper', 'corruptions++; const changed = Buffer.from(bytes); changed[changed.length - 1] ^= 1; return changed;', 'corruptions++; const changed = Buffer.from(bytes); return changed;'),
 ('public_feed_sibling', 'a.host.seed(siblingPath, spec.text.siblingText, Date.now() + 11);', ''),
 ('public_feed_cursor', 'assert.ok(recovered.state.data.lastSeq >= siblingRecord.seq,', 'recovered.state.data.lastSeq = badRecord.seq - 1; assert.ok(recovered.state.data.lastSeq >= siblingRecord.seq,'),
@@ -113,7 +113,18 @@ ENGINE_CASES += [
 ('public_feed_recovery', 'const badFileId = a.state.fileByPath(badPath).fileId;', 'const badFileId = a.state.fileByPath(badPath).fileId; delete recovered.state.data.parked[badFileId];'),
 ('public_feed_durable_clear', 'assert.equal((await recovered.reload()).data.parked[badFileId], undefined,', 'recovered.state.data.parked[badFileId] = { path: badPath, reason: "chunk_authentication" }; await recovered.state.save(); assert.equal((await recovered.reload()).data.parked[badFileId], undefined,'),
 ('real_request_feed_chunk_leak', 'sent++;', 'sent++; if (spec.hex.feed_bad_chunk) input.headers["X-E2EE-Control"] = spec.hex.feed_bad_chunk;'),
-('feed_chunk_inventory', 'spec.hex[label] = c.hex(await c.hkdf(context.domainKey, c.utf8("obsync/v1/chunk"), c.unhex(manifest.chunks[0].cid), 32));', ''),
+('feed_chunk_inventory', 'spec.hex[label] = c.hex(inventory.key);', ''),
+]
+
+# Bounded strong-rotation additions: full reseed, direct AEAD key controls,
+# a fresh-root leak, and the exact owner/proof sink. Existing98 controls stay intact.
+ENGINE_CASES += [
+('rotation_owner_proof_sink', 'if (route === "POST /v1/setup") for (const proof of credentials.proofs)', 'for (const proof of credentials.proofs)'),
+('rotation_reseed', '  await client.seed();', ''),
+('rotation_required', 'flows.add("rotation-future-no-decryption");', ''),
+('rotation_manifest_key', 'const removedManifestKey = await c.deriveManifestKey(removedDomainKey, currentContext.domainId);', 'const removedManifestKey = currentContext.manifestKey;'),
+('rotation_chunk_key', 'seal2.decryptChunk2(removedDomainKey,', 'seal2.decryptChunk2(currentContext.domainKey,'),
+('real_request_rotated_root_leak', 'sent++;', 'sent++; if (spec.hex.rotated_root) input.headers["X-E2EE-Control"] = spec.hex.rotated_root;'),
 ]
 
 # The first uncaught assertion must be the behavior this mutant attacks.
@@ -169,6 +180,13 @@ ENGINE_ASSERTIONS = {
     'public_feed_durable_clear': ('successful public-feed retry must durably clear parking',),
     'feed_chunk_inventory': ('required needle absent: key:feed_bad_chunk',),
 }
+ENGINE_ASSERTIONS.update({
+    'rotation_owner_proof_sink': ('a recovery proof in an owner rotation request must fail',),
+    'rotation_reseed': ('real reseed must persist commit receipt',),
+    'rotation_required': ('required runtime flows',),
+    'rotation_manifest_key': ('removed device old root cannot decrypt new-generation manifest',),
+    'rotation_chunk_key': ('removed device old root cannot decrypt new-generation chunk even with its ID',),
+})
 ENGINE_ASSERTIONS.update({name: ('traffic scan:',) for name, *_ in ENGINE_CASES if name.startswith('real_request_')})
 
 
@@ -254,14 +272,12 @@ def main():
         shutil.copyfile(ROOT / "plugin/test/fake.mjs", root / "plugin/test/fake.mjs")
         chunk_file = root / "plugin/build/sync/pull.js"
         chunk_source = chunk_file.read_text()
-        guard = 'throw new ManifestError("chunk_authentication");'
+        guard = 'catch {\n        // A failed tag/cid belongs to this record. Use the existing per-record\n        // refusal so a corrupted chunk cannot keep later feed entries waiting.\n        throw new ManifestError("chunk_authentication");'
         assert chunk_source.count(guard) == 1
         for name, fixture in [("chunk_receive_normalization", engine),
                               ("chunk_public_feed_normalization", engine.replace('["manifest", "parents", "chunk"]', '["manifest", "parents"]'))]:
             engine_file.write_text(fixture)
-            chunk_file.write_text(chunk_source.replace(guard, 'throw error;').replace(
-                'catch {\n        // A failed tag/cid belongs',
-                'catch (error) {\n        // A failed tag/cid belongs'))
+            chunk_file.write_text(chunk_source.replace(guard, guard.replace('catch {', 'catch (error) {').replace('throw new ManifestError("chunk_authentication");', 'throw error;')))
             syntax = run(["node", "--check", str(chunk_file)], ROOT, 10)
             assert syntax.returncode == 0, syntax.stderr
             result = run(engine_command, ROOT, 30)

@@ -19,6 +19,7 @@ import { createRequire } from "node:module";
 import { FakeTimers, KEYS, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { Transport, SMALL_BODY_MAX, SMALL_INFLIGHT_MAX, UPLOAD_INFLIGHT_MAX } = require("../build/transport.js");
 /** A large body two of which do not fit in flight together. */
 const HALF = Math.floor(UPLOAD_INFLIGHT_MAX / 2) + 1;
@@ -94,7 +95,7 @@ const within = (timers, until, step = 10) => timers.run(step, until).then(() => 
 async function publishLarge(r, { fileId, path, bytes, parents = [] }) {
   const chunks = [];
   for await (const plaintext of chunkStream(bytesSource(bytes))) {
-    const { cid, sid, ciphertext } = await c.encryptChunk(r.keys.domainKey, plaintext);
+    const { cid, sid, ciphertext } = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, plaintext);
     r.server.chunks.set(sid, ciphertext);
     chunks.push({ sid, cid: c.hex(cid), len: plaintext.length });
   }
@@ -537,7 +538,7 @@ test("a note behind a large incoming version is applied before that download com
   assert.equal(d.state.data.parked["5e".repeat(16)]?.reason, "downloading");
 
   release.resolve();
-  assert.ok(await within(d.timers, () => d.state.fileByPath("Media/film.bin") !== undefined));
+  assert.ok(await within(d.timers, () => d.state.fileByPath("Media/film.bin") !== undefined && Object.keys(d.state.data.parked).length === 0));
   assert.deepEqual(d.host.files.get("Media/film.bin").bytes, bytes);
   assert.equal(fetched, frame.sids.length, "the apply took what the lane fetched, and fetched nothing again");
   assert.equal(d.state.fileByPath("Media/film.bin").versionId, frame.version_id);
@@ -658,7 +659,7 @@ test("the lane reads the file's heads again under the lock: a newer large versio
   const two = await publishLarge(d, { fileId, path: "Media/cut.bin", bytes: second, parents: [one.version_id] });
   assert.ok(await within(d.timers, () => d.state.data.lastSeq >= d.server.seq), "the feed moved past both");
   release.resolve();
-  assert.ok(await within(d.timers, () => d.state.fileByPath("Media/cut.bin")?.versionId === two.version_id));
+  assert.ok(await within(d.timers, () => d.state.fileByPath("Media/cut.bin")?.versionId === two.version_id && Object.keys(d.state.data.parked).length === 0));
   assert.deepEqual(d.host.files.get("Media/cut.bin").bytes, second);
   assert.deepEqual(committed, [second.length], "the older version was written at the name");
   assert.deepEqual(d.state.data.parked, {});

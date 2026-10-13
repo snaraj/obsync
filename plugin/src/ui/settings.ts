@@ -45,6 +45,7 @@ import { LEVELS, MERGES, count } from "../notices";
 import { HEADER_NAME, ownHeader, browserHeader, customHeaderBudget, type DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
 import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVERY_UNCONFIRMED, RecoveryPhraseModal, VaultKeyModal, confirmFirst, literal, secretText } from "./modals";
+import { LegacyUpgradeModal, PreviousKeyModal, RevokeModal, RotationModal } from "./rotation";
 
 /** The dashboard's label for the one account a server holds. */
 export const ACCOUNT_NAME = "obsync";
@@ -1105,12 +1106,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
     } else {
       row.render = (setting) => {
         setting.addButton((button) => button.setButtonText("Revoke").setDestructive().onClick(() => {
-          new ConfirmModal(
-            this.app,
-            `Revoke ${named}?`,
-            self
-              ? "This device will stop syncing immediately. To return, pair from another syncing device, or recover with the setup token and this vault’s key after recovery has been registered. Keep the setup token and 24-word phrase before revoking the last device. The vault key stays in this vault's secret storage."
-              : `${named} will stop syncing immediately. Files already on it stay readable there; it cannot write, delete or read anything new.`,
+          new RevokeModal(
+            this.app, this.plugin, device.device_id, named,
             () => { void this.revoke(device, named); },
           ).open();
         }));
@@ -1169,11 +1166,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private recoveryPhrase(): Row {
     const unconfirmed = (): boolean => this.plugin.state.data.vrk !== null && this.plugin.state.data.recoveryPhrase !== "confirmed";
     return {
-      name: "Recovery phrase",
+      name: "Recovery backup",
       desc: () => this.plugin.state.data.vrk === null
         ? "This device holds no vault key. Pair with a device that has one, or restore the phrase."
         : unconfirmed() ? RECOVERY_UNCONFIRMED
-          : "24 words that are the vault key. Anyone holding them can read this vault; without them and without a paired device the vault cannot be recovered.",
+          : "Keep the complete backup, including its format marker. Anyone holding it can read this vault; without it and without a paired device the vault cannot be recovered.",
       render: (setting) => {
         setting
           .addButton((button) => {
@@ -1184,6 +1181,16 @@ export class ObsyncSettingTab extends PluginSettingTab {
             if (unconfirmed()) button.setCta();
           })
           .addButton((button) => button.setButtonText("Restore or create").onClick(() => { new VaultKeyModal(this.app, this.plugin).open(); }));
+        if (this.plugin.state.paired) setting.addButton(button => button
+          .setButtonText(this.plugin.state.custody2()?.rotation ? "Resume encryption transition" : this.plugin.state.custody2() === null ? "Upgrade encryption" : "Rotate vault key")
+          .onClick(() => { new RotationModal(this.app, this.plugin).open(); }));
+        if (!this.plugin.state.paired && this.plugin.state.custody2() === null) setting.addButton(button => button
+          .setButtonText("Recover legacy vault for upgrade")
+          .onClick(() => { new LegacyUpgradeModal(this.app, this.plugin).open(); }));
+        if (this.plugin.state.paired) setting.addButton(button => button.setButtonText("Pair after rotation")
+          .onClick(() => { new PreviousKeyModal(this.app, this.plugin, "replace").open(); }));
+        if (this.plugin.state.custody2()?.history) setting.addButton(button => button.setButtonText("Remove previous history key")
+          .onClick(() => { new PreviousKeyModal(this.app, this.plugin, "retire").open(); }));
       },
     };
   }

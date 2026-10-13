@@ -4,6 +4,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 import { rig } from "./fake.mjs";
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { pushFile, postManifest, sidDigest } = require("../build/sync/push.js");
 const { resumePaused, decryptRecordManifest } = require("../build/sync/pull.js");
 const { conflictFileId, decryptChunk, unhex } = require("../build/crypto.js");
@@ -33,7 +34,7 @@ async function history(r) {
   const file = r.server.files.get(r.copyId), texts = [];
   for (const version of file.versions) {
     const manifest = await decryptRecordManifest(r.context, { ...version, file_id: r.copyId, domain_id: file.domain_id });
-    const chunks = await Promise.all(manifest.chunks.map(async chunk => decryptChunk(r.keys.domainKey, unhex(chunk.cid), await r.transport.getChunk(chunk.sid))));
+    const chunks = await Promise.all(manifest.chunks.map(async chunk => seal2.decryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, unhex(chunk.cid), await r.transport.getChunk(chunk.sid))));
     texts.push(new TextDecoder().decode(Buffer.concat(chunks)));
   }
   return texts;

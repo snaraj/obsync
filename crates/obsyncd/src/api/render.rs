@@ -139,6 +139,14 @@ pub fn policy(p: &DevicePolicy) -> Value {
     ])
 }
 
+/// Manifest wire discriminator, shared by version and change responses.
+fn manifest_seal_field(seal: crate::storage::ManifestSeal) -> (&'static str, Value) {
+    match seal {
+        crate::storage::ManifestSeal::Legacy(nonce) => ("manifest_nonce", s(&hex::encode(&nonce))),
+        crate::storage::ManifestSeal::Suite2 => ("seal_suite", n(2)),
+    }
+}
+
 /// One version record.
 pub fn version(v: &VersionRecord) -> Value {
     obj(vec![
@@ -147,7 +155,7 @@ pub fn version(v: &VersionRecord) -> Value {
         ("sids", strs(v.sids.iter().map(ToString::to_string))),
         ("bytes", n(v.bytes)),
         ("manifest_ct", s(&base64::encode(&v.manifest_ct))),
-        ("manifest_nonce", s(&hex::encode(&v.manifest_nonce))),
+        manifest_seal_field(v.manifest_seal),
         ("device_id", s(&v.device_id.to_string())),
         ("ts", ms(v.ts)),
         ("deleted", b(v.deleted)),
@@ -217,7 +225,10 @@ fn version_len(v: &VersionRecord) -> usize {
         ("sids", ids(v.sids.len())),
         ("bytes", int(v.bytes)),
         ("manifest_ct", 2 + v.manifest_ct.len().div_ceil(3) * 4),
-        ("manifest_nonce", 2 + 2 * v.manifest_nonce.len()),
+        match v.manifest_seal {
+            crate::storage::ManifestSeal::Legacy(_) => ("manifest_nonce", 26),
+            crate::storage::ManifestSeal::Suite2 => ("seal_suite", 1),
+        },
         ("device_id", 34),
         ("ts", int(ms_u64(v.ts))),
         ("deleted", if v.deleted { 4 } else { 5 }),
@@ -292,7 +303,7 @@ pub fn change(c: &Change) -> Value {
         ("sids", strs(v.sids.iter().map(ToString::to_string))),
         ("bytes", n(v.bytes)),
         ("manifest_ct", s(&base64::encode(&v.manifest_ct))),
-        ("manifest_nonce", s(&hex::encode(&v.manifest_nonce))),
+        manifest_seal_field(v.manifest_seal),
         ("device_id", s(&v.device_id.to_string())),
         ("ts", ms(v.ts)),
         ("deleted", b(v.deleted)),
@@ -647,7 +658,7 @@ mod tests {
                 .collect(),
             bytes: 8 * 1024 * 1024 * sids as u64,
             manifest_ct: vec![0xa5; manifest],
-            manifest_nonce: [0x44; 12],
+            manifest_seal: crate::storage::ManifestSeal::Legacy([0x44; 12]),
             device_id: DeviceId::new([0x55; 16]),
             ts: UnixMs(1_790_000_000_000 + u64::from(id)),
             deleted: false,
@@ -902,7 +913,7 @@ mod tests {
             sids,
             bytes: u64::MAX,
             manifest_ct,
-            manifest_nonce: [0x44; 12],
+            manifest_seal: crate::storage::ManifestSeal::Legacy([0x44; 12]),
             device_id: DeviceId::new([0x55; 16]),
             ts: UnixMs(u64::MAX),
             deleted: false,

@@ -1,10 +1,11 @@
 # E09: key and nonce accounting note
 
 Author analysis, 2026-10-12; **not an independent review or E09 PASS**.
-Source: predecessor `482d512e027b57154bfac07b71ea2a706102642f`, approved plan
-`83549f4c` E09/section 5, and its unchanged cryptographic operations. Source anchors below refer to
-that predecessor. The implementation candidate corrects the comments identified
-below; no cryptographic operation changes follow from this note.
+The first four sections record the historical GCM assessment at predecessor
+`482d512e027b57154bfac07b71ea2a706102642f`, under approved plan
+`83549f4c` E09/section 5. Their source anchors and unimplemented-work statements
+refer to that predecessor. The suite-2 implementation and its remaining
+acceptance limits are described under **Chosen replacement** below.
 
 ## Actual encryption keys and calls
 
@@ -109,10 +110,11 @@ and supplies no publication decision or independent verdict.
 
 ## Chosen replacement: RFC 5297 AES-SIV with one migration
 
-Implementation contract, 2026-10-12; **activation and E09 acceptance remain
+Implementation contract, 2026-10-12; **independent E09 acceptance remains
 incomplete**. This supersedes the rejected per-input HMAC/HKDF/GCM proposal.
-The author is implementing the mode and parsers separately from the live
-migration; passing component tests do not make existing traffic suite 2.
+The candidate integrates the mode, strict wire parsers, admission and fresh-root
+migration. It has not shipped; component and local integration tests do not
+substitute for the remaining release and native-device gates.
 
 Use [RFC 5297](https://www.rfc-editor.org/rfc/rfc5297.html)'s
 AES-SIV-CMAC-512: two AES-256 halves, a 128-bit SIV followed by ciphertext,
@@ -148,7 +150,12 @@ repeats are retained, capped at 65,536. Validate before allocation.
 | 5: pairing vault details | `prefix || 05 || pairing_id`; creator key is not yet revealed at claim time |
 
 Every operation uses the one-component AD vector `[T]` and
-`K = HKDF-SHA256(B, utf8("obsync/seal-v2/siv"), T, 64)`.
+`K = HKDF-SHA256(B, utf8("obsync/seal-v2/siv"), SHA256(T), 64)`.
+Hash the complete counted context for HKDF info: native WebCrypto implementations
+can reject info longer than 1,024 bytes, while ordinary multi-chunk manifests
+exceed that size. SIV still authenticates the full, unhashed `T`. This change
+applies to every kind, including short contexts; there is no length-dependent
+format or fallback.
 For manifests/maps, `B` is the existing domain-manifest/root-map secret.
 Pairing uses its existing ECDH/PS envelope secret or separate PS/details secret.
 Keep the current creator commitment and meaningful two-screen comparison.
@@ -180,36 +187,76 @@ key derivation, avoiding a circular definition.
 
 ### Finite assurance and resource limits
 
-Use the published deterministic-AE model, which admits equality leakage and
-quotients repeated queries. [Rogaway–Shrimpton, Theorem 2 and Corollary 4](https://web.cs.ucdavis.edu/~rogaway/papers/keywrap.pdf)
-give the conditional per-key composition below, after a KDF hybrid:
+The proposed analytical horizon includes every device, restart, retry, repair,
+migration, pairing and hostile verification using the assessed bases. Its
+finite workload assumptions are:
+
+| Quantity | Proposed bound |
+| --- | --- |
+| `N`: distinct `(secret base B, complete context T)` scopes, including verification-only scopes | `2^24` |
+| `Q = sum r_i`: all physical seal/open calls, including repeats and failed verification | `2^32` |
+| `r_i`: physical calls in any one scope | `2^16` |
+| Adversary time/program size `t`, in a fixed RAM model | `2^64` steps |
+
+These are proposed assessment limits, **not enforced quotas, observed usage or
+an accepted lifetime promise**. They cover the collection of bases/generations;
+applying the profile separately to several roots requires summing advantages.
+Deletion and restart do not erase prior use. Work outside the profile has no
+quantified claim here.
+
+Use the deterministic-AE game in
+[Rogaway–Shrimpton, Definition 1, Theorem 2 and Corollary 4](https://web.cs.ucdavis.edu/~rogaway/papers/keywrap.pdf).
+For scope `i`, `q_i` counts nonrepeated, nontrivial seal/open oracle queries;
+opening a prior seal is excluded from the decryption oracle. Thus `q_i <= r_i`.
+The S2V vector is `(T,P)`: its total component count is `p_i=2*q_i`, including
+plaintext, not bytes, context fields or AES calls. Pad `qbar_i=max(q_i,3)` and
+`pbar_i=2*qbar_i` for Corollary 4's condition. The conditional composition is:
 
 ```
-Adv <= Adv_KDF + sum_i(Adv_CTR,i + Adv_CMAC,i + (p_i*q_i + q_i)/2^128)
+Adv_DAE <= epsilon_KDF_joint + epsilon_context_SHA256
+           + sum_i [epsilon_CTR_i + epsilon_CMAC_i
+                    + (2*qbar_i^2 + qbar_i)/2^128].
 ```
 
-Index every actual queried scope, including attacker-selected verification-only
-scopes; `q_i` includes seal/open queries and `p_i` counts their vector components.
-Apply Corollary 4 with its stated `q >= 3` condition (pad a smaller query budget
-upward for that corollary); do not substitute a one-query budget into its bound.
-Retain reduction resources and the native AES multi-key terms inside the
-component advantages. The paper's AES instantiation has processed-block birthday
-scale, not an unlimited-lifetime guarantee. Define `sigma_i` conservatively over
-both passes, AD, failed verifications and repeats across devices/restarts.
-The normalized `sum(sigma_i^2)/2^128` scale is **not** a complete bound with
-all constants and primitive terms evaluated.
+The KDF hybrid covers the full hierarchy, related root/domain/map/chunk/pairing
+bases, adaptive verification contexts, and both AES halves. The context term
+accounts for distinct `T` sharing SHA-256 HKDF info under one base. CTR means
+the RFC's two-bit-masked counter, including AES and overlap terms; CMAC retains
+AES and collision terms. Reduction time includes
+`t + Time_CTR(mu) + c*mu + O(mu+p+q)` and padded queries. None of these primitive
+advantages or hidden constants is numerically evaluated here. Root entropy
+remains 256 bits.
 
-The mode caps plaintext at 8 MiB, packet at 8 MiB + 16, AD count at 126 and
-total AD at 8 MiB. Product wrappers use one AD component and the smaller layouts
-above; existing manifest/pairing route budgets remain. These are per-operation
-limits. They do not enforce a global quota on offline holders of a root.
-For illustration only, one query per scope of at most `2^21` processed blocks
-has normalized scale `2^-54` over `2^32` scopes, but `2^-22` over `2^64` scopes.
-Repeated queries concentrated in one scope worsen the square. Neither example
-is a measured workload, complete failure probability or acceptable-use promise.
-A reviewed quantitative workload profile with component terms remains an
-acceptance gate; counters, GC, key-handle imports and restart do not reset it.
-Root, ECDH and identity generation still depend on healthy platform randomness.
+The mode caps plaintext and aggregate AD at 8 MiB, packet at 8 MiB + 16, and
+AD count at 126. The wrappers use one AD item. Source accounting in `seal2.ts`
+and `aesSiv.ts`, following [RFC 5297 §§2.3–2.7](https://www.rfc-editor.org/rfc/rfc5297.html#section-2.3),
+gives `a+m+c+6` native AES block calls per operation, where `a=ceil(|T|/16)`,
+`m=max(1,ceil(|P|/16))`, and `c=ceil(|P|/16)`. This includes four discarded
+WebCrypto CBC padding blocks. A failed valid-size open uses `|packet|-16`
+for `|P|`. Maximum manifest context is
+`14+1+48+8+32*(64+65536)=2,099,271` bytes; maximum work is 1,179,787 blocks,
+below `L=2^21`. Map/chunk/pair-root/pair-details context maxima are
+2,119/79/161/31 bytes. These per-operation checks do not impose aggregate limits
+on offline key holders.
+
+For the profile above, conservative padded accounting gives:
+
+```
+sum qbar_i^2 <= 2^16*Q + 8*N
+sum qbar_i   <= Q + 2*N
+explicit theorem residual <= [2*(2^16*2^32+8*2^24)+2^32+2*2^24]/2^128
+                          < 2^-78  (approximately 2^-79)
+sum sigma_i^2/2^128 <= L^2*(2^16*Q+8*N)/2^128 <= 2^-38+2^-59.
+```
+
+The last value is only a normalized processed-block birthday scale, **not a
+complete AES-SIV bound or probability of compromise**. Repeats and failed opens
+still consume this physical-work budget even when the DAE game removes them.
+The paper and RFC alone do not instantiate the application-specific KDF or all
+CTR/CMAC constants. Independent acceptance of this workload and its conditional
+primitive/resource terms remains required; this document claims no overall
+numeric failure probability. Root, ECDH and identity generation still require
+healthy native randomness. Equality and chosen-input confirmation remain visible.
 
 ### Framing, admission and recovery
 
@@ -238,8 +285,10 @@ suffixed or stripped prefixes refuse live recovery. Select live-v2 or legacy-
 history parsing explicitly; never try/fallback. Repeated legitimate BIP39 words
 remain valid. The prefix identifies a format, not freshness.
 
-Bare legacy words stage detached history/migration bytes: no request, adoption,
-credential change or engine start. Live recovery requires public explicit
+Decoding bare legacy words requires explicit legacy selection and is detached
+from live admission. The explicit legacy recovery-and-upgrade action obtains
+a stopped coordinator credential and stages a fresh-root draft; it never starts
+the legacy engine. Live recovery requires public explicit
 `recover_only` capability, then a token-authenticated strict mode. In one durable
 transaction require an existing account, its suite floor, valid proof or one
 operator reset arm, and active enrollment. Stage the root until authenticated

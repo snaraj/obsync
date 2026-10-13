@@ -40,6 +40,28 @@ test("AES-SIV-CMAC-512 fixed independent EVP boundary oracles", async () => {
   }
 });
 
+test("sealing and opening use no RNG when randomness fails or repeats", async t => {
+  const descriptor = Object.getOwnPropertyDescriptor(crypto, "getRandomValues");
+  t.after(() => { if (descriptor) Object.defineProperty(crypto, "getRandomValues", descriptor); else delete crypto.getRandomValues; });
+  let calls = 0;
+  const vector = rfc[0], raw = unhex(vector.key), plaintext = unhex(vector.plaintext), components = vector.ad.map(unhex);
+  for (const mode of ["unavailable", "repeated"]) {
+    crypto.getRandomValues = buffer => {
+      calls++;
+      if (mode === "unavailable") throw new Error("synthetic RNG unavailable");
+      buffer.fill(0); return buffer;
+    };
+    for (let repeat = 0; repeat < 2; repeat++) {
+      let sealed, opened;
+      await assert.doesNotReject(async () => { sealed = await seal(raw, plaintext, components); }, mode);
+      assert.equal(hex(sealed), vector.sealed, mode);
+      await assert.doesNotReject(async () => { opened = await open(raw, sealed, components); }, mode);
+      assert.deepEqual(opened, plaintext, mode);
+    }
+    assert.equal(calls, 0, `no hidden randomness dependency: ${mode}`);
+  }
+});
+
 test("RFC intermediate CMAC values fix the CBC prepared-block selection", async () => {
   const macKey = unhex(rfc[0].key).slice(0, 16);
   assert.equal(hex(await aesCmac(macKey, new Uint8Array(16))), "0e04dfafc1efbf040140582859bf073a");

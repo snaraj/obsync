@@ -20,7 +20,9 @@ pub(super) fn allowlisted(method: &str, path: &str) -> bool {
         return false;
     };
     match route {
-        Route::SetupCapabilities
+        Route::RotationCapabilities
+        | Route::RotationPrepare
+        | Route::SetupCapabilities
         | Route::Setup
         | Route::Account
         | Route::RecoveryRegister
@@ -33,7 +35,11 @@ pub(super) fn allowlisted(method: &str, path: &str) -> bool {
         | Route::Changes
         | Route::LoginLink
         | Route::PluginManifest => true,
-        Route::PairingClaim(id)
+        Route::RotationStatus(id)
+        | Route::RotationInventory(id)
+        | Route::RotationCatalog(id)
+        | Route::RotationCommit(id)
+        | Route::PairingClaim(id)
         | Route::PairingState(id)
         | Route::PairingReveal(id)
         | Route::PairingApprove(id)

@@ -232,6 +232,28 @@ test("publication requires all six captures and every restart/custody phase", as
   } finally { fs.rmSync(root, { recursive: true }); }
 });
 
+test("native backup helper copies exactly one complete prefixed backup and never exports its text", async () => {
+  const fs = await import("node:fs"), vm = await import("node:vm");
+  const source = fs.readFileSync(new URL("./obsidian-drive.mjs", import.meta.url), "utf8");
+  const fn = source.slice(source.indexOf("function confirmPhrase("), source.indexOf("\nfunction pairingCode("));
+  const backup = "obsync-recovery-v2 " + Array(24).fill("synthetic").join(" ");
+  for (const shape of ["valid", "stripped", "short", "duplicate", "wrong-row", "no-input", "duplicate-button"]) {
+    let events = 0, clicks = 0;
+    const input = { value: "", dispatchEvent(event) { assert.equal(event.type, "input"); events++; } };
+    const button = { textContent: "Confirm complete backup", click() { clicks++; assert.equal(input.value, backup); assert.equal(events, 1); } };
+    const row = { querySelector(selector) { return selector === "textarea" ? shape === "no-input" ? null : input
+      : { textContent: shape === "wrong-row" ? "Unrelated setting" : "Read back your saved backup" }; } };
+    const text = shape === "stripped" ? backup.replace("obsync-recovery-v2 ", "") : shape === "short" ? backup.replace(/ synthetic$/, "") : backup;
+    const modal = { querySelectorAll(selector) {
+      return selector === "pre" ? [{ textContent: text }] : selector === "button" ? (shape === "duplicate-button" ? [button, button] : [button]) : [row];
+    } };
+    const context = { document: { querySelectorAll: () => shape === "duplicate" ? [modal, modal] : [modal] }, Event: class { constructor(type) { this.type = type; } } };
+    const result = vm.runInNewContext(fn + '\nconfirmPhrase("Confirm complete backup")', context);
+    assert.equal(result, shape === "valid", shape); assert.equal(clicks, shape === "valid" ? 1 : 0, shape);
+    assert.equal(typeof result, "boolean", "backup never crosses the renderer boundary");
+  }
+});
+
 test("the real driver requires matching prompts before approval and its restart journey before success", async () => {
   // Execute the real orchestration, substituting native boundaries only. The
   // complete inventory gate remains real, so omitting the restart call fails.
@@ -250,6 +272,7 @@ test("the real driver requires matching prompts before approval and its restart 
   const environment = { OBSYNC_E2E_SECRET_STORE: "windows", OBSYNC_E2E_CAPTURES: root };
   const localProcess = { env: environment, platform: "win32", exitCode: undefined };
   let preflightTouches = 0, approvals = 0, redirects = 0, enrollments = 0;
+  let backupAcknowledged = true, backupReads = 0;
   let redirectChecked = false, redirectFails = false;
   const launches = [], observed = [];
   const secretFactsMarker = () => {};
@@ -285,7 +308,10 @@ test("the real driver requires matching prompts before approval and its restart 
         try { const value = await probe(); if (value) return value; } catch (error) { last = error; }
       }
       throw last ?? new Error("test wait exhausted");
-    }, paired: () => true, inVault: async (_, fn) => fn === secretFactsMarker ? valid : true,
+    }, paired: () => true, inVault: async (_, fn) => {
+      if (fn.toString().includes("recoveryPhrase")) { backupReads++; return backupAcknowledged; }
+      return fn === secretFactsMarker ? valid : true;
+    },
     fillPlaceholder() {}, click() {}, confirmPhrase() {}, pairingCode() {}, fillSetting() {}, describe() {}, notices() {},
     LABELS: { approve: "Approve" }, pairingCodes, assertPairingCodes, PLUGIN_ID: "test", SYNC_BUDGET_MS: 1, prove() {}, arrives: () => 1, leaves() {}, listing: () => [],
     cotyping: async () => { capture("cotype-a"); capture("cotype-b"); }, starvedWatcher() {}, windowsJourneys() {},
@@ -303,6 +329,12 @@ test("the real driver requires matching prompts before approval and its restart 
     assert.deepEqual(launches, ["launch-a", "launch-b", "ready-a", "ready-b"]);
     assert.deepEqual(observed, ["a:enrolled", "b:enrolled"]);
     assert.equal(redirects, 1, "the real driver must call the native redirect fixture");
+    assert.equal(backupReads, 1, "the real driver must read the persisted confirmation after its click");
+    backupAcknowledged = false;
+    await vm.runInNewContext(`(${main})()`, context);
+    assert.equal(localProcess.exitCode, 1, "a confirmation click without acknowledged custody must refuse");
+    assert.equal(approvals, 1, "unacknowledged backup cannot proceed to pairing");
+    backupAcknowledged = true; localProcess.exitCode = undefined;
     const beforeEnrollment = enrollments;
     redirectFails = true;
     await vm.runInNewContext(`(${main})()`, context);

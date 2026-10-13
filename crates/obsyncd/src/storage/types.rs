@@ -160,13 +160,15 @@ pub struct NewDevice {
 
 /// Authenticated setup input; the account and active device are one transaction.
 pub struct NewSetup {
+    /// Suite2 generation, absent only for legacy pre-floor setup/recovery.
+    pub generation: Option<FileId>,
     /// First-boot account name; recovery never changes an existing name.
     pub account_name: String,
     /// Optional first-boot verifier.
     pub recovery_verifier: Option<String>,
     /// Recovery proof for an existing account (not a content key).
     pub recovery_proof: Option<String>,
-    /// Refuse an absent account instead of creating one.
+    /// True is required to recover an existing account and refuses an absent one.
     pub recover_only: bool,
     /// Validated device name.
     pub device_name: String,
@@ -255,7 +257,7 @@ pub struct VersionRecord {
     /// The encrypted manifest. The server cannot read it.
     pub manifest_ct: Vec<u8>,
     /// The manifest's AES-GCM nonce.
-    pub manifest_nonce: [u8; 12],
+    pub manifest_seal: ManifestSeal,
     /// The device that wrote it.
     pub device_id: DeviceId,
     /// When the server accepted it.
@@ -264,6 +266,25 @@ pub struct VersionRecord {
     pub deleted: bool,
     /// Journal position, the change feed's cursor.
     pub seq: Seq,
+}
+
+/// The two valid manifest seal forms; there is no optional-nonce fallback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManifestSeal {
+    /// Existing AES-GCM records with an explicit 12-byte nonce.
+    Legacy([u8; 12]),
+    /// Suite2: manifest_ct is the 16-byte SIV tag followed by ciphertext.
+    Suite2,
+}
+
+impl ManifestSeal {
+    /// The admission suite for this record.
+    pub const fn suite(self) -> u8 {
+        match self {
+            Self::Legacy(_) => 1,
+            Self::Suite2 => 2,
+        }
+    }
 }
 
 /// A version to append.
@@ -287,7 +308,7 @@ pub struct NewVersion {
     /// The encrypted manifest.
     pub manifest_ct: Vec<u8>,
     /// The manifest's nonce.
-    pub manifest_nonce: [u8; 12],
+    pub manifest_seal: ManifestSeal,
     /// The authoring device.
     pub device_id: DeviceId,
     /// Whether this is a tombstone.
@@ -600,6 +621,8 @@ pub enum StoreError {
     RecoveryUnavailable,
     /// The recovery proof is malformed or does not match the verifier.
     BadRecoveryProof,
+    /// Generation, suite or rotation authority refused this transition.
+    AuthorityRefused(&'static str),
     /// The filesystem refused.
     Io(io::Error),
     /// A volume root or credential file whose type, owner, or mode is not
@@ -677,6 +700,7 @@ impl fmt::Display for StoreError {
             StoreError::AlreadySetUp => f.write_str("already set up"),
             StoreError::RecoveryUnavailable => f.write_str("recovery unavailable"),
             StoreError::BadRecoveryProof => f.write_str("bad recovery proof"),
+            StoreError::AuthorityRefused(code) => write!(f, "authority refused: {code}"),
             StoreError::Io(e) => write!(f, "io error: {:?}", e.kind()),
             StoreError::Locked => write!(f, "the journal is held by another obsyncd process"),
             StoreError::Posture { class, reason } => {
@@ -745,6 +769,7 @@ impl StoreError {
             StoreError::AlreadySetUp => "already_set_up",
             StoreError::RecoveryUnavailable => "recovery_unavailable",
             StoreError::BadRecoveryProof => "bad_recovery_proof",
+            StoreError::AuthorityRefused(code) => code,
             StoreError::Io(_) => "io_error",
             StoreError::Locked => "journal_locked",
             StoreError::Posture { .. } => "unsafe_posture",

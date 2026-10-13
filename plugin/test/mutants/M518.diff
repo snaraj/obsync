@@ -2,7 +2,7 @@
 --- a/plugin/src/pairing.ts
 +++ b/plugin/src/pairing.ts
 @@ -166,7 +166,7 @@
- export async function sealPairingVault(secret: Bytes, id: string, vault: PairingVault): Promise<SealedPairingVault> {
+ export async function sealPairingVaultLegacy(secret: Bytes, id: string, vault: PairingVault): Promise<SealedPairingVault> {
    const nonce = randomBytes(12);
    const envelope = await crypto.subtle.encrypt(
 -    { name: "AES-GCM", iv: nonce, additionalData: utf8(id), tagLength: 128 },

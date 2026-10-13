@@ -263,7 +263,12 @@ async function receiver(t, { server, timers, a }, { iterate = true, ...options }
   const { State } = box.require(join(box.home, "build/state.js"));
   let stored = null;
   const state = await State.open({ loadData: async () => stored, saveData: async (value) => { stored = JSON.parse(JSON.stringify(value)); } }, false, memorySecrets());
-  Object.assign(state.data, { vrk: KEYS.vrk, deviceId: RECEIVER, deviceSecret: RECEIVER_SECRET, serverUrl: "https://sync.example.invalid" });
+  state.data.serverUrl = "https://sync.example.invalid";
+  await state.save();
+  const c = box.require(join(box.home, "build/crypto.js"));
+  await state.stageEnrollment2(KEYS.vrk, "pair");
+  await state.adoptSuite2({ root: KEYS.vrk, generation: (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(KEYS.vrk)))).fileId,
+    deviceId: RECEIVER, deviceSecret: RECEIVER_SECRET, purpose: "pair" });
   const logs = [];
   const { Transport } = box.require(join(box.home, "build/transport.js"));
   const transport = new Transport({

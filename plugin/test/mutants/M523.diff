@@ -1,15 +1,8 @@
-# M523: missing vault details are not backward compatible
+# M523: a stripped required suite2 details container skips authentication
 --- a/plugin/src/ui/modals.ts
 +++ b/plugin/src/ui/modals.ts
-@@ -245,9 +245,9 @@
-     const asked = new Date();
-     this.asking = pairingId;
-     let vault: PairingVault | null = null;
--    if (claimant.vault !== undefined) {
-+    if (true) {
-       try {
--        vault = await openPairingVault(secret, pairingId, claimant.vault);
-+        vault = await openPairingVault(secret, pairingId, claimant.vault!);
-       } catch {
-         if (this.asking !== pairingId) return;
-         this.asking = null;
+@@ -386,3 +386,3 @@
+     try {
+-      vault = await openPairingVault2(secret, pairingId, claimant.vault);
++      if (claimant.vault !== undefined) vault = await openPairingVault2(secret, pairingId, claimant.vault);
+     } catch {

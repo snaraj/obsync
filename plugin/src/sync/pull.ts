@@ -84,15 +84,17 @@
  * a stale file and a remote-only entry for the same path (issue #100).
  */
 
-import type { MoveResult, SyncContext, VaultStat, VaultWriter } from "./engine";
+import { sealScope, type MoveResult, type SyncContext, type VaultStat, type VaultWriter } from "./engine";
+import { decryptChunk2, encryptChunk2, openRecord, type ChunkScope } from "../seal2";
+import { readManifestSeal2, type ManifestSeal } from "../sealWire";
 import { CHUNK_MAX, CHUNK_MIN, CHUNK_CIPHERTEXT_MAX, chunkStream } from "../chunker";
 import {
   Bytes,
+  base64,
   conflictFileId,
   contentVersionId,
   decryptChunk,
-  decryptManifest,
-  encryptChunk,
+  decryptManifestBytes,
   hex,
   isHex,
   randomBytes,
@@ -294,6 +296,7 @@ function manifestObject(json: string): Record<string, unknown> {
     throw new ManifestError("not_json");
   }
   if (!isRecord(value)) throw new ManifestError("not_an_object");
+  if (value["migration_origin"] !== undefined && (typeof value["migration_origin"] !== "string" || !isHex(value["migration_origin"], 48))) throw new ManifestError("migration_origin");
   const refusal = vaultPathRefusal(value["path"]);
   if (refusal !== null) throw new ManifestError(`path_${refusal}`);
   return value;
@@ -484,17 +487,14 @@ export function bindFolderToRecord(
  * renderer, and the feed retried that one record for ever under "offline".
  * Any OTHER failure is a fault on this device and still propagates.
  */
-async function openManifest(
-  manifestKey: Bytes,
-  record: Pick<ChangeRecord, "file_id" | "parents" | "sids" | "manifest_ct" | "manifest_nonce">,
-): Promise<string> {
-  const binder = await contentVersionId(record.file_id, record.parents, record.sids);
+type ManifestRecord = Pick<ChangeRecord, "file_id" | "parents" | "sids"> & ManifestSeal;
+
+async function openManifest(manifestKey: Bytes, scope: ChunkScope, record: ManifestRecord): Promise<string> {
   try {
-    return await decryptManifest(manifestKey, record.file_id, binder, unhex(record.manifest_nonce), unbase64(record.manifest_ct));
-  } catch (error) {
-    if ((error as { name?: unknown } | null)?.name === "OperationError") throw new ManifestError("undecryptable");
-    throw error;
-  }
+    const plaintext = await openRecord(manifestKey, 1, { ...scope, fileId: record.file_id,
+      parents: record.parents, sids: record.sids }, readManifestSeal2(record));
+    return new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
+  } catch { throw new ManifestError("undecryptable"); }
 }
 
 /**
@@ -516,7 +516,7 @@ export type HeldNote = Manifest & Pick<ChangeRecord, "file_id" | "version_id" | 
  * publishes any of them. A record this key cannot open is not one it holds.
  * From a cursor, it is what changed since then (issue #181).
  */
-export async function heldNotes(transport: Transport, manifestKey: Bytes, from = 0): Promise<Map<string, HeldNote>> {
+export async function heldNotes(transport: Transport, manifestKey: Bytes, scope: ChunkScope, from = 0): Promise<Map<string, HeldNote>> {
   const newest = new Map<string, Omit<HeldNote, "versions" | "behind"> | null>();
   const versions = new Map<string, Set<string>>();
   const graph: VersionNode[] = [];
@@ -525,7 +525,9 @@ export async function heldNotes(transport: Transport, manifestKey: Bytes, from =
     for (const change of page.changes) {
       graph.push(change);
       try {
-        const entry = parseEntry(await openManifest(manifestKey, change));
+        const entry = parseEntry(await openManifest(manifestKey, scope, change));
+        if (entry.v === 1) bindManifestToRecord(change, entry, scope.domainId);
+        else bindFolderToRecord(change, entry, scope.domainId);
         const { file_id, version_id, sids, device_id } = change;
         const live = entry.v === 1 && !entry.deleted;
         newest.set(file_id, live ? { ...entry, file_id, version_id, sids, device_id } : null);
@@ -553,9 +555,9 @@ export async function heldNotes(transport: Transport, manifestKey: Bytes, from =
  */
 export async function decodeRecordManifest(
   context: SyncContext,
-  record: BoundRecord & Pick<ChangeRecord, "file_id" | "parents" | "manifest_ct" | "manifest_nonce">,
+  record: BoundRecord & ManifestRecord,
 ): Promise<Manifest | FolderManifest | PauseManifest> {
-  const entry = parseEntry(await openManifest(context.manifestKey, record));
+  const entry = parseEntry(await openManifest(context.manifestKey, sealScope(context), record));
   // A FOLDER RECORD IS JUDGED BY THE FOLDER RULE, which differs from a file's
   // at the selection root: the selected folder itself has a record, and that
   // record is the only thing that can carry its own rename (`syncScope.ts`,
@@ -645,7 +647,7 @@ function notifyFolderTwin(context: SyncContext, selected: string, twin: string):
 
 export async function decryptRecordManifest(
   context: SyncContext,
-  record: BoundRecord & Pick<ChangeRecord, "file_id" | "parents" | "manifest_ct" | "manifest_nonce">,
+  record: BoundRecord & ManifestRecord,
 ): Promise<Manifest> {
   // The one choke point: every path that decrypts a manifest from a record
   // -- the feed, an on-demand fetch, a conflict head, a merge base, a history
@@ -657,6 +659,23 @@ export async function decryptRecordManifest(
   // the same words a 1.0.x device refuses it in.
   if (entry.v !== 1) throw new ManifestError("version");
   return entry;
+}
+
+/** Explicit old-format history/reseed read only; never called by live decode. */
+export async function decryptLegacyRecordManifest(context: SyncContext, record: BoundRecord & ManifestRecord): Promise<Manifest> {
+  if ("seal_suite" in record || typeof record.manifest_nonce !== "string" || !isHex(record.manifest_nonce, 12) ||
+      typeof record.manifest_ct !== "string" || record.manifest_ct.length > (1 << 20)) throw new ManifestError("legacy_seal");
+  let json: string;
+  try {
+    const ciphertext = unbase64(record.manifest_ct);
+    if (base64(ciphertext) !== record.manifest_ct || ciphertext.length < 16) throw new Error("legacy packet");
+    const binder = await contentVersionId(record.file_id, record.parents, record.sids);
+    json = new TextDecoder("utf-8", { fatal: true }).decode(await decryptManifestBytes(
+      context.manifestKey, record.file_id, binder, unhex(record.manifest_nonce), ciphertext));
+  } catch { throw new ManifestError("undecryptable"); }
+  const manifest = parseManifest(json);
+  bindManifestToRecord(record, manifest, context.domainId);
+  return manifest;
 }
 
 /**
@@ -724,7 +743,7 @@ async function openChunk(context: SyncContext, chunk: ManifestChunk, body: Bytes
   if (!body) throw new ApiError(404, "unknown_chunk", `chunk ${chunk.sid} is missing on the server`);
   let plaintext: Bytes;
   try {
-    plaintext = await decryptChunk(context.domainKey, unhex(chunk.cid), body);
+    plaintext = await decryptChunk2(context.domainKey, sealScope(context), unhex(chunk.cid), body);
   } catch {
     // A failed tag/cid belongs to this record. Use the existing per-record
     // refusal so a corrupted chunk cannot keep later feed entries waiting.
@@ -904,6 +923,25 @@ export async function assembleBytes(context: SyncContext, manifest: Manifest): P
     out.set(part, at);
     at += part.length;
   }
+  return out;
+}
+
+/** Explicit old-format history/reseed assembly; no suite trial or live writes. */
+export async function assembleLegacyBytes(context: SyncContext, manifest: Manifest, control?: ReadControl): Promise<Bytes> {
+  assertSyncPath(manifest.path, context.state.data.syncFolders);
+  const out = new Uint8Array(manifest.size);
+  let at = 0;
+  for (const chunk of manifest.chunks) {
+    control?.check();
+    const body = await context.transport.getChunk(chunk.sid, control);
+    let part: Bytes;
+    try { part = await decryptChunk(context.domainKey, unhex(chunk.cid), body); }
+    catch { throw new ManifestError("chunk_authentication"); }
+    if (part.length !== chunk.len || at + part.length > out.length) throw new ManifestError("chunk_len_actual");
+    control?.check(); out.set(part, at); at += part.length;
+  }
+  if (at !== out.length) throw new ManifestError("size");
+  if (manifest.sha256 !== "" && hex(await sha256(out)) !== manifest.sha256) throw new ManifestError("sha256");
   return out;
 }
 
@@ -1286,28 +1324,40 @@ export async function applyChange(context: SyncContext, change: ChangeRecord, kn
   // deleted or hidden while it was out -- is applied as any other device's
   // would be, once the engine has proved it is still the file's head
   // (`returning`, issue #239).
-  if ((authored || change.device_id === context.deviceId) && context.returning?.has(change.version_id) !== true &&
-    !(await deletionOwed(context, change))) return "echo";
-  // A PAUSED NOTE TAKES NOTHING (issue #179): not from the feed, and not from
-  // a push that was in flight when it paused and came back conflicted. Its
-  // versions are asked of the server again, as the file stands then, when it
-  // is resumed (`engine.ts`, `resume`).
-  if (context.state.data.paused[change.file_id] !== undefined) {
-    context.host.log(`pull path_class=file decision=skipped reason=paused file=${change.file_id} seq=${change.seq}`);
-    return "skipped";
-  }
-  // NOR DOES A NOTE THAT LEFT THE SELECTION (issues #91, #239). This device
-  // keeps it under its new name and no longer syncs it; written again at the
-  // old one, it was a second copy here. What another device did to it
-  // meanwhile meets this device's move when that move is published
-  // (`engine.ts`, `rejoin`), by the rules for a rename meeting an edit or a
-  // deletion (issue #151).
-  if (context.state.data.departed[change.file_id] !== undefined) {
-    context.host.log(`pull path_class=file decision=skipped reason=left_selection file=${change.file_id} seq=${change.seq}`);
-    return "skipped";
-  }
+  let decoded: Manifest | FolderManifest | PauseManifest | undefined;
   try {
-    const entry = await decodeRecordManifest(context, change);
+    if ((authored || change.device_id === context.deviceId) && context.returning?.has(change.version_id) !== true &&
+      !(await deletionOwed(context, change))) {
+      const path = context.state.pathByFileId(change.file_id);
+      const held = path === undefined ? undefined : context.state.fileByPath(path);
+      const folder = Object.values(context.state.data.folders).find(item => item.fileId === change.file_id);
+      if (authored || held?.versionId === change.version_id || folder?.versionId === change.version_id) return "echo";
+      // Reseeding publishes every retained version as the coordinator. That
+      // does not mean this device has its bytes: recovery may start blank,
+      // and the selection may widen later. Authenticate the reseed pointer
+      // with the current key before applying it through the ordinary guards.
+      decoded = await decodeRecordManifest(context, change);
+      if (decoded.migration_origin === undefined) return "echo";
+    }
+    // A PAUSED NOTE TAKES NOTHING (issue #179): not from the feed, and not from
+    // a push that was in flight when it paused and came back conflicted. Its
+    // versions are asked of the server again, as the file stands then, when it
+    // is resumed (`engine.ts`, `resume`).
+    if (context.state.data.paused[change.file_id] !== undefined) {
+      context.host.log(`pull path_class=file decision=skipped reason=paused file=${change.file_id} seq=${change.seq}`);
+      return "skipped";
+    }
+    // NOR DOES A NOTE THAT LEFT THE SELECTION (issues #91, #239). This device
+    // keeps it under its new name and no longer syncs it; written again at the
+    // old one, it was a second copy here. What another device did to it
+    // meanwhile meets this device's move when that move is published
+    // (`engine.ts`, `rejoin`), by the rules for a rename meeting an edit or a
+    // deletion (issue #151).
+    if (context.state.data.departed[change.file_id] !== undefined) {
+      context.host.log(`pull path_class=file decision=skipped reason=left_selection file=${change.file_id} seq=${change.seq}`);
+      return "skipped";
+    }
+    const entry = decoded ?? await decodeRecordManifest(context, change);
     // NOTHING INTO A VAULT OF ITS OWN, AND NOTHING OUT OF ONE (issue #180):
     // that vault would publish the write again one level deeper. Asked of
     // where the record puts the file and of where this device keeps it,
@@ -3589,7 +3639,7 @@ export async function resumePaused(context: SyncContext, fileId: string): Promis
   if (before === null) return "deleted_here";
   if (before.size > CHUNK_MAX) return "ordinary";
   const mine = await context.host.read(path);
-  if ((await sidDigest([(await encryptChunk(context.domainKey, mine)).sid])) === record.sha256) return "unchanged";
+  if ((await sidDigest([(await encryptChunk2(context.domainKey, sealScope(context), mine)).sid])) === record.sha256) return "unchanged";
   const file = await context.transport.getFile(fileId);
   const version = file.versions.find((candidate) => candidate.version_id === record.versionId);
   if (version === undefined) return "ordinary";
@@ -3634,7 +3684,7 @@ async function keepResumed(
   if (path === null) return null;
   const id = await conflictFileId(context.manifestKey, change.file_id, version.version_id);
   const baseDigest = await sidDigest(baseline.chunks.map((chunk) => chunk.sid));
-  const mineDigest = await sidDigest([(await encryptChunk(context.domainKey, mine)).sid]);
+  const mineDigest = await sidDigest([(await encryptChunk2(context.domainKey, sealScope(context), mine)).sid]);
   const known = (digest: string): boolean => digest === baseDigest || digest === mineDigest;
   const pushed = await pushFile(context, path, false, async () => {
     // This lookup and write share the copy's publication queue, so an older
@@ -3643,7 +3693,7 @@ async function keepResumed(
     if (record?.fileId !== id) return fail("identity");
     const before = await context.host.stat(path);
     if (before === null || before.size > CHUNK_MAX) return fail("local_budget");
-    const localDigest = await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]);
+    const localDigest = await sidDigest([(await encryptChunk2(context.domainKey, sealScope(context), await context.host.read(path))).sid]);
     if (!known(localDigest)) return fail("local_edit");
     const file = await context.transport.getFile(id);
     if (file.heads.length !== 1) return fail("heads");
@@ -3654,7 +3704,7 @@ async function keepResumed(
     const writer = await context.host.writer(path, mine.length);
     try {
       await writer.write(mine);
-      if (!(await unmoved(context, path, before)) || localDigest !== await sidDigest([(await encryptChunk(context.domainKey, await context.host.read(path))).sid]) || context.state.fileByPath(path) !== record) return fail("saved_meanwhile");
+      if (!(await unmoved(context, path, before)) || localDigest !== await sidDigest([(await encryptChunk2(context.domainKey, sealScope(context), await context.host.read(path))).sid]) || context.state.fileByPath(path) !== record) return fail("saved_meanwhile");
       await landedAt(context, await commitMarked(context, id, path, () => writer.commit(mtime)));
     } finally { await writer.abort(); }
     return file.heads;
@@ -5079,7 +5129,7 @@ export async function sameChunks(
   try {
     for await (const plaintext of chunkStream(context.host.source(path, size))) {
       if (context.signal?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
-      if ((await encryptChunk(context.domainKey, plaintext)).sid !== sids[count++]) return null;
+      if ((await encryptChunk2(context.domainKey, sealScope(context), plaintext)).sid !== sids[count++]) return null;
     }
   } catch (error) {
     if (error instanceof ApiError) throw error;
@@ -5356,7 +5406,7 @@ async function postMerged(
   recordedMtime = mtime,
 ): Promise<void> {
   const expected = context.state.fileByPath(path);
-  const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, text);
+  const { cid, sid, ciphertext } = await encryptChunk2(context.domainKey, sealScope(context), text);
   const missing = await context.transport.missingChunks([sid]);
   if (missing.length > 0) await context.transport.putChunk(sid, ciphertext);
   const manifest: Manifest = {

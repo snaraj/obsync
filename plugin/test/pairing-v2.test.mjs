@@ -60,8 +60,8 @@ test("a creator seals the vault key and only the claimant opens it", async () =>
   const claimant = await fixed(KAT.claimantPriv, KAT.claimantRaw);
   const creator = await fixed(KAT.creatorPriv, KAT.creatorRaw);
   const ps = c.unhex(KAT.psHex);
-  const sealed = await p.sealEnvelopeV2(creator, KAT.claimantRaw, ps, KAT.pairingId, { vrk: VRK });
-  const opened = await p.openEnvelopeV2(claimant, KAT.creatorRaw, ps, KAT.pairingId, sealed.envelope, sealed.nonce);
+  const sealed = await p.sealEnvelopeLegacyV2(creator, KAT.claimantRaw, ps, KAT.pairingId, { vrk: VRK });
+  const opened = await p.openEnvelopeLegacyV2(claimant, KAT.creatorRaw, ps, KAT.pairingId, sealed.envelope, sealed.nonce);
   assert.equal(opened.vrk, VRK);
 });
 
@@ -70,8 +70,8 @@ test("a substituted creator key fails the open (AAD and shared secret both bind 
   const creator = await fixed(KAT.creatorPriv, KAT.creatorRaw);
   const attacker = await p.newPairingKeyExchange();
   const ps = c.unhex(KAT.psHex);
-  const sealed = await p.sealEnvelopeV2(creator, KAT.claimantRaw, ps, KAT.pairingId, { vrk: VRK });
-  await assert.rejects(() => p.openEnvelopeV2(claimant, attacker.publicKey, ps, KAT.pairingId, sealed.envelope, sealed.nonce));
+  const sealed = await p.sealEnvelopeLegacyV2(creator, KAT.claimantRaw, ps, KAT.pairingId, { vrk: VRK });
+  await assert.rejects(() => p.openEnvelopeLegacyV2(claimant, attacker.publicKey, ps, KAT.pairingId, sealed.envelope, sealed.nonce));
 });
 
 test("an envelope sealed for one claimant does not open for another", async () => {
@@ -79,8 +79,8 @@ test("an envelope sealed for one claimant does not open for another", async () =
   const other = await p.newPairingKeyExchange();
   const ps = c.unhex(KAT.psHex);
   // Sealed for the fixed claimant; a different device holds a different key.
-  const sealed = await p.sealEnvelopeV2(creator, KAT.claimantRaw, ps, KAT.pairingId, { vrk: VRK });
-  await assert.rejects(() => p.openEnvelopeV2(other, KAT.creatorRaw, ps, KAT.pairingId, sealed.envelope, sealed.nonce));
+  const sealed = await p.sealEnvelopeLegacyV2(creator, KAT.claimantRaw, ps, KAT.pairingId, { vrk: VRK });
+  await assert.rejects(() => p.openEnvelopeLegacyV2(other, KAT.creatorRaw, ps, KAT.pairingId, sealed.envelope, sealed.nonce));
 });
 
 test("the pairing secret and both public keys alone do not open an envelope", async () => {
@@ -90,17 +90,17 @@ test("the pairing secret and both public keys alone do not open an envelope", as
   const creator = await fixed(KAT.creatorPriv, KAT.creatorRaw);
   const reader = await p.newPairingKeyExchange();
   const ps = c.unhex(KAT.psHex);
-  const sealed = await p.sealEnvelopeV2(creator, KAT.claimantRaw, ps, KAT.pairingId, { vrk: VRK });
-  await assert.rejects(() => p.openEnvelopeV2(reader, KAT.creatorRaw, ps, KAT.pairingId, sealed.envelope, sealed.nonce));
-  await assert.rejects(() => p.openEnvelopeV2(reader, KAT.claimantRaw, ps, KAT.pairingId, sealed.envelope, sealed.nonce));
+  const sealed = await p.sealEnvelopeLegacyV2(creator, KAT.claimantRaw, ps, KAT.pairingId, { vrk: VRK });
+  await assert.rejects(() => p.openEnvelopeLegacyV2(reader, KAT.creatorRaw, ps, KAT.pairingId, sealed.envelope, sealed.nonce));
+  await assert.rejects(() => p.openEnvelopeLegacyV2(reader, KAT.claimantRaw, ps, KAT.pairingId, sealed.envelope, sealed.nonce));
 });
 
 test("the wrong pairing secret fails the open", async () => {
   const claimant = await fixed(KAT.claimantPriv, KAT.claimantRaw);
   const creator = await fixed(KAT.creatorPriv, KAT.creatorRaw);
-  const sealed = await p.sealEnvelopeV2(creator, KAT.claimantRaw, c.unhex(KAT.psHex), KAT.pairingId, { vrk: VRK });
+  const sealed = await p.sealEnvelopeLegacyV2(creator, KAT.claimantRaw, c.unhex(KAT.psHex), KAT.pairingId, { vrk: VRK });
   const wrongPs = c.unhex("0b5c0102030405060708090a0b0c0dff");
-  await assert.rejects(() => p.openEnvelopeV2(claimant, KAT.creatorRaw, wrongPs, KAT.pairingId, sealed.envelope, sealed.nonce));
+  await assert.rejects(() => p.openEnvelopeLegacyV2(claimant, KAT.creatorRaw, wrongPs, KAT.pairingId, sealed.envelope, sealed.nonce));
 });
 
 test("the commitment and the match code are the known-answer vector's", async () => {

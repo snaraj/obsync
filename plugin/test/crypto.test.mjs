@@ -528,3 +528,19 @@ test("encryptChunk remembers the sid of exactly the body it made, and of nothing
   assert.equal(sealed.sid, createHash("sha256").update(sealed.ciphertext).digest("hex"));
   assert.equal(c.sealedSid(Uint8Array.from(sealed.ciphertext)), undefined, "a copy is not the body it made");
 });
+
+
+test("explicit legacy byte decrypt preserves authenticated bytes before text decoding", async () => {
+  const f = fixtures.manifest, key = bytes(d0.manifest_key);
+  assert.deepEqual(await c.decryptManifestBytes(key, f.file_id, f.content_version_id, bytes(f.nonce), bytes(f.ciphertext_hex)),
+    utf8(f.json), "legacy byte API must match fixed authenticated vector");
+  const raw = new Uint8Array([0xff, 0xc3, 0x28]), nonce = new Uint8Array(12).fill(19);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  cipher.setAAD(Buffer.concat([Buffer.from(f.file_id, "hex"), Buffer.from(f.content_version_id, "hex")]));
+  const packet = Buffer.concat([cipher.update(raw), cipher.final(), cipher.getAuthTag()]);
+  assert.deepEqual(await c.decryptManifestBytes(key, f.file_id, f.content_version_id, nonce, packet), raw,
+    "legacy byte API must not normalize invalid UTF8");
+  const changed = packet.slice(); changed[0] ^= 1;
+  await assert.rejects(c.decryptManifestBytes(key, f.file_id, f.content_version_id, nonce, changed),
+    "legacy byte API must authenticate before returning bytes");
+});

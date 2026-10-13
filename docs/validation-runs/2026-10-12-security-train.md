@@ -950,11 +950,20 @@ by the sandbox and is excluded; the authorized fixture run passes. Commands:
 
 The standalone AES-SIV module uses native WebCrypto CBC/CTR primitives and no
 new runtime dependency. Its 23 tests include published RFC 5297 and NIST CMAC
-vectors, boundary lengths, tag/mask refusal, input snapshots, budgets and
-unavailable RNG. The worker's 42 intended assertion mutations fail; an initial
+vectors, boundary lengths, tag/mask refusal, input snapshots and budgets.
+The original record incorrectly included unavailable RNG: independent F6
+review found that no committed test forced randomness failure or repetition.
+The worker's 42 intended assertion mutations fail; an initial
 snapshot mutation that failed outside its assertion was corrected and excluded.
 The coordinator independently removes CTR mask byte 8, observes the intended
 assertion failure, restores the source and passes all 23 tests.
+
+The integration follow-up adds the missing RNG regression. It forces throwing
+and repeated-zero `getRandomValues`, requires zero calls and repeats the RFC
+ciphertext/plaintext assertions for sealing and opening. All 24 tests pass
+with `node --test plugin/test/aes-siv.test.mjs`. Injecting an unused RNG call
+separately into each mode entry point fails by assertion; restored controls
+pass. This evidence belongs to the follow-up, not the earlier 23-test head.
 
 The coordinator runs `node plugin/test/aes-siv-evp.mjs <compiled-siv-reference>`
 against the committed, test-only OpenSSL EVP helper: 133 differential cases,
@@ -1002,3 +1011,255 @@ fixtures pass. Both full working-tree and outgoing-range scans are rerun after
 the repair. No product or test assertion changed after the composed battery;
 this is the full battery followed by a bounded scanner-configuration repair,
 not one successful `make check` invocation at the final snapshot.
+
+
+## Integrated suite-2 candidate: rotation, recovery and desktop readback
+
+Author validation of the composed working tree extending signed head
+`adfd2fd3e59e0930adec9a3d51b84b9125091b43`, on protected base `c2796b7a`.
+This section supersedes earlier statements that the suite-2 wrappers and live
+callers were unimplemented; their earlier test results retain their original
+scope. It is not an independent verdict or a released artifact.
+
+### Runtime changes and resulting-state checks
+
+Live setup, recovery, pairing, map, manifest, chunk, repair and history callers
+now use the strict suite-2 framing and locally derived generation. There is no
+live decoder fallback. Explicit legacy recovery authenticates its old account
+and map, obtains a stopped coordinator credential and stages a fresh-root
+upgrade. Ordinary recovery requires an existing account and literal
+`recover_only:true`; missing maps do not authorize initialization.
+
+The plugin's removal dialog offers access-only revocation or fresh-root
+rotation. The latter drains the engine, records its new independent root,
+prepares the server fence with separate owner-token authority, authenticates
+the full cutoff inventory, reseals and reads back every destination, and
+requires local reload plus complete-backup confirmation before commit.
+Retained devices explicitly re-pair; server membership never distributes the
+new root. One explicitly typed previous root is available only for read-only
+history. Missing or mismatched custody stops rather than loading an old revision.
+
+Composed testing found two runtime defects and repaired them:
+
+- A credential change could publish new in-memory identity before metadata-save
+  acknowledgement. The replacement remains private until save acknowledgement;
+  failed persistence leaves the former public identity and stops use. Native
+  storage API acknowledgement is not an atomic power-loss transaction.
+- A blank rotation coordinator skipped its own reseeded records as ordinary
+  device echoes. The receiver now authenticates an unheld own-device record and
+  accepts the explicit encrypted migration-origin case. Ordinary own echoes,
+  held versions, paused/departed scope and corrupt ciphertext keep their
+  existing behavior. The origin is the old 16-byte file ID and 32-byte version
+  ID, not a server-supplied plaintext hint. Seven focused cases pass.
+
+Lifecycle guards also prevent new rotation/re-pair entry points and delayed
+continuations from reading or changing unloaded plugin state. Engine/UI test
+fixtures were migrated through acknowledged current-format State admission;
+filesystem-confinement, note-byte, status and no-duplicate-write assertions
+were retained.
+
+### Composed local gates
+
+Commands use Node 26.10.0, npm 11.19.1, TypeScript 5.9.3 and the repository Rust
+toolchain. Native-helper and loopback checks run with those host capabilities;
+a default-sandbox refusal is not recorded as a product test failure or kill.
+
+| Command / gate | Observed result |
+| --- | --- |
+| `cargo fmt --all --check`; `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo test --workspace --locked` | 734 passed, one ignored; server 547 passed |
+| `RUST_COVERAGE_FLOOR=89 ./scripts/ci/coverage.sh` | 94.85% line coverage, floor 89% |
+| `cd plugin && node node_modules/typescript/bin/tsc -p tsconfig.json && node build.mjs` | 39 compiled modules; artifact below |
+| `cd plugin && node test/run.mjs --test-concurrency=4 --test-timeout=60000` | 2,489 passed, zero failed/cancelled/skipped; 188,897.886 ms; no fixture residue |
+| `python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'` | 922 passed, 207.425 s |
+| `python3 -B scripts/ci/test_cors_routes.py` | Four passed, including actual server/compiled-client CORS equality |
+| `cargo build --locked --release -p obsync-cli && python3 cli/check.py` | PASS; 207-command disposable native package journey |
+| `node --test dashboard/test/*.test.mjs` | 83 passed |
+| `helm lint chart`; `helm template smoke chart --kube-version v1.36.0`; `python3 -B scripts/ci/chart_pins.py all` | PASS |
+
+The subsequent single `make check` invocation completed successfully on the
+composed candidate, including the final slow-storage control and final E2EE
+fixture source. It passed 2,489 plugin tests, 21 E2EE flows/two controls
+(383 requests, 13,909 ms), the 922 contracts, and both pinned secret scans.
+The strict Python 3.12/linux-amd64 documentation build also passed: 160 files,
+8,462 anchors and zero origin refusals. The first attempted native-arm64 docs
+container correctly refused a different wheel hash; no dependency hash was
+changed. The task's container, downloaded image and generated site were removed.
+Release classification remains a separate failing gate while the owner's
+release placement and lockstep version step are unresolved.
+
+The final test-only slow-storage control in `reconnect.test.mjs` was added
+while the composed run was in progress; all three affected GUI/reconnect files
+also passed separately afterwards (112 tests). It holds a synthetic metadata
+read for 20 ms, then waits for the intended engine-start boundary instead of
+assuming three event-loop turns.
+
+Failed intermediate evidence is retained rather than folded into passing
+counts. The preceding full plugin run had 2,450 passes and 39 failures from
+legacy/missing-generation fixtures and an early status read; a symlink fixture
+also leaked its temporary directory before cleanup registration. The repaired
+fixtures retain their original substantive assertions and register cleanup
+before fallible setup. An earlier interrupted plugin run was incomplete.
+The first contract attempt had six failures: one new routing-token grammar
+and five capability failures from sandboxed loopback listeners under an
+unpinned Node. The corrected pinned native run above passes. A loaded-machine
+Rust run hit native-helper timeouts; the focused native retry and composed
+workspace pass are separate recorded evidence, not a silent timeout increase.
+
+### Author mutation and packaging controls
+
+- The coordinator's legacy/admission/UI audit records 21 intended assertion
+  kills: nine legacy-upgrade, eight enrollment and four removal-choice guards.
+- The coordinator's replay/native-backup audit records 12 intended assertion
+  kills: five echo/reseed boundaries and seven complete-backup UI/readback/
+  acknowledgement boundaries. Restored replay tests (seven) and driver
+  evidence tests (11) pass.
+- Eight lifecycle guard mutations fail at their intended assertion sites;
+  restored source hash is
+  `5b28b7eb8031a79fff719cc9755038cc3473ce2434033d7b2ecfbd87cf7e840d`.
+- Removing current-format status admission, complete-backup marker guidance,
+  or the delayed-load start wait kills the intended GUI assertions. An earlier
+  fixed-turn mutation survived on an unloaded machine; that survivor led to
+  the explicit delayed-storage control and is not counted as a kill.
+- Removing the CORS parser's `op` token fails its existing inventory assertion;
+  restored grammar and live route checks pass.
+- Reconstructing only the Docker plugin stage's seven COPY inputs builds 39
+  modules and passes the refusal-vocabulary test. Omitting either newly copied
+  `storage/mod.rs` or `storage/rotation.rs` fails at that exact missing oracle
+  input. These are packaging-failure controls, not assertion kills or a full
+  image-build result. Two existing dependency-pin contracts pass.
+- Forced setup failure after each of two symlink-fixture allocations leaves
+  zero directories with cleanup hooks and two without them. These are cleanup
+  controls, not security assertion kills; restored tests pass with no residue.
+
+Mutation setup failures and mismatched expected assertion sites were corrected
+and excluded. Sources were restored and passing controls rerun. These are
+author checks; the independent review remains a separate gate.
+
+### Actual desktop artifact
+
+Two fresh synthetic vaults ran concurrently in checksum-pinned Obsidian 1.13.7 /
+Electron 43.3.0. The driver used its real settings and dialogs for setup,
+complete-backup confirmation and both-screen pairing comparison. It passed
+12 journeys in 49.9 s, including all five redirect statuses for GET and POST
+with zero destination requests, note sync both ways, rename, nested/empty
+folders, co-typing, starved native index reconciliation and both app restarts.
+
+The exact bundle is 1,557,356 bytes:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `main.js` | `7d1ef7bd6df7f9baa1cc2eb9eb2c68fdd1f6f482a2d82b8ef03339a420cca6bb` |
+| `manifest.json` | `aae46364e30769a65b56cba53c65a89f104cd1cf5d5c5d6978bbedb3afb9eb42` |
+| `styles.css` | `796f28c630774dc80e00b8ba4c0d3811d524b1cd844fe36d0f9597c5ee0e82ce` |
+| Native driver | `a6d01afdb23d441d1dec64b22ccdb8a466b1fbed19413a284e7c764eb50b957e` |
+| Official 1.13.7 DMG | `05daa54f5e1a4458f75da29f8faaa17e8e37ae16998432537f674c626db99bce` |
+
+Reproduction uses `scripts/ci/obsidian-drive.mjs` with a disposable loopback
+server, 4 GiB journal/blob capacities, separate synthetic vault/user-data
+paths, `OBSYNC_E2E_SECRET_STORE=macos` and
+`OBSYNC_E2E_LAUNCH_ORDER=simultaneous`. Setup-token input is a private fixture
+file; no personal vault, installed app, OS credential or trust setting changes.
+
+Ten edits reached the peer disk at p50 1,012 ms, p95/max 1,015 ms. Each peer
+contributed 100 keystrokes over 20,079 ms; all keys were present in both editors
+and disks 705 ms after the last insertion, with no conflict copy. Both peers
+reported encrypted storage, non-plaintext representation and matching secret
+revision before and after restart; post-restart transfers took 1,007 ms each
+way. The storage backend name was unavailable. This local pass does not explain
+or erase the earlier hosted simultaneous-start custody refusal.
+
+Six [editor/disk receipts](../assets/security-suite2/cotype-a.json) preserve
+matching hashes and cropped synthetic screenshots for each peer at co-typing,
+restart-A and restart-B. The coordinator inspected all six images and checked
+PNG hashes against the receipts. The examples below show actual resulting
+editors; their fixture text is not itself evidence of key encryption.
+
+![Two-peer co-typing result on the first actual desktop](../assets/security-suite2/cotype-a.png)
+
+![Post-restart note received by the second actual desktop](../assets/security-suite2/restart-a-b.png)
+
+An earlier identical journey reached 12 steps but its optional raw recorder
+failed shutdown with `recorder_truncated`. It is not a complete traffic proof.
+The clean direct rerun above has no recorder and exited successfully after
+stopping both apps and the fixture server; complete wire/key inventory belongs
+to the separate required real-engine E2EE gate.
+
+Physical-phone execution, native rotation/legacy-history UI journeys, fresh
+hosted final-head gates, independent protocol/quantitative acceptance and
+owner-agreed release placement remain open. No overall security approval,
+Ready, publication, deployment or universal no-backdoor proof follows.
+
+
+### Real-engine rotation and legacy upgrade confidentiality
+
+The final `scripts/ci/e2ee.mjs` source hash is
+`8580748fa677491066dee2b884ccd566511f5e53b1e1978c4d37d3b2c35f6b83`.
+A complete run of `node scripts/ci/e2ee.mjs` passed 21 flows and two planted
+controls in 13,601 ms: 341 ordinary/rotation requests plus 41 explicit-legacy
+upgrade requests, with every request/response accounted for. Main storage had
+22 files and 148 content/key needles; the separate legacy fixture had ten files
+and 33 needles. Those counts belong to this run; asynchronous polling can add
+requests without adding flows.
+
+Rotation performs actual current-format seed/readback, reload and commit. The
+old root fails to decrypt a new manifest and chunk even when supplied their
+correct new public context and ciphertext; the new root succeeds. Access-only
+revocation deliberately retains the old-key decryption result. Old backup
+recovery refuses the new generation; recovery from the new backup succeeds.
+The explicit legacy path creates a released-format encrypted fixture, runs the
+real recovery helper and rotation client against an actual server, restarts
+local State, commits and verifies exact plaintext on a blank coordinator.
+No fake returning-device override is used. Captured wire bytes, stored files
+and client/server diagnostics are all scanned with actual derived SIV keys.
+Owner tokens are allowed only at setup/prepare/exact commit; recovery proofs
+are allowed only at setup. A misplaced proof in prepare or commit remains a hit.
+
+The complete expanded mutation command
+`python3 -B scripts/validation/e2ee_mutations.py` killed 104 controls and passed
+its restored baseline at harness hash
+`8fae00b71a1f2343a88a244f6ee3d922dfcec42cba0d5f1bf05da7446ef7a463`.
+A later fixture-only correction produced the final hash above; six affected
+controls then failed at their intended assertions and the restored 21-flow
+baseline passed (17,500 ms, 383 requests). The mutation runner itself is
+`8243d4f908b468693e225204ca3dd5f6eca4dfbbeed3595b1d0886bff4c5ec2d`.
+These are distinct source checkpoints, not 104 rerun claims at the final hash.
+
+Why the fixture changed: random recovery words can equal intentionally public
+protocol words. Controlled ordinary/legacy roots containing such a word
+reproduced scanner failure without a content leak. The harness now uses stated,
+independent synthetic root vectors for its initial vault and the one fresh-root
+draw in each stopped rotation-start path. It checks the exact RNG call sequence
+and restores the native function in `finally`; all 16-byte request nonces and
+operation IDs stay native. It neither retries until entropy passes nor filters
+scanner needles. Separate real-server runs retain native-root generation
+coverage. This fixture choice makes no claim about native entropy health.
+
+### Durable server floor and authorization
+
+The backend worker's 29 source mutations each failed by assertion; the strict
+occupied-account mode and owner-authorized commit controls were exercised with
+otherwise valid transitions. Parent workspace validation includes all 547
+current server tests. Paused writers carry their original grant: prepare and
+commit fences are checked under the serialized durable-write boundary, not
+only at request authentication. Snapshot ownership separates old history from
+current inventory, and catalog verification rejects missing or reused targets.
+
+Two actual old executables were built from protected base `c2796b7a` and the
+pre-floor `d3d5cd25` source plus its atomic-enrollment delta. After pruning the
+ordinary segment that originally carried the floor fact and placing a valid
+legacy fallback snapshot beside the new snapshots, both old `obsyncd check`
+processes exited 1 on unknown `format_floor`. Removing only the permanent
+`000000.log` marker from cloned copies made both old executables exit 0 and
+open that fallback. The current-reader floor/compaction/fallback tests remain
+in `crates/obsyncd/src/storage/tests/rotation.rs`; the actual-old-executable
+checks are recorded author probes, not a claim that CI builds old releases.
+
+The evidence JSON hashes are
+`44ee5fdad9380f21b319d9bc38b9793b7b82628373221c50e9bcbdc286997200`
+(two old-reader refusals),
+`778f4362ac0080e9f99d04494a5a9b9676005518149c48bd7b9f866d00208ca8`
+(marker-removal controls), and
+`a7b1b1e8532c8a060e3f84c2ae4b3e7a472b1bf4b05b3e85c2eb78469df49bcf`
+(29 assertion mutations). Independent review must still assess these controls
+and the complete client/server composition.

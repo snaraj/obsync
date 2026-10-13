@@ -36,6 +36,7 @@ const { Transport } = require("../build/transport.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const c = require("../build/crypto.js");
 const dm = require("../build/domainmap.js");
+const { encodeRecoveryBackup } = require("../build/recoveryBackup.js");
 
 const enc = (text) => new TextEncoder().encode(text);
 const tick = () => new Promise(setImmediate);
@@ -173,49 +174,39 @@ async function holdingVault() {
   return { server, k };
 }
 
-test("a phrase that opens nothing on this server is refused before it replaces the key (#140)", async (t) => {
+test("a staged backup cannot replace any paired key, even when it matches (#140)", async (t) => {
   const { server } = await holdingVault();
   const p = await plugin(t, { server });
-
-  await assert.rejects(() => p.instance.restoreVaultKey(OTHER_VRK), /These 24 words do not open the vault on this server/);
-  assert.equal(p.instance.state.data.vrk, KEYS.vrk, "the key on this device was not changed");
-  assert.equal(p.starts(), 0, "no engine started, so no second map was written");
-  assert.deepEqual(p.posts(), [], "and nothing was sent but reads");
-  assert.ok(p.logs.some((line) => /^vaultkey decision=refused reason=opens_nothing_here duration_ms=\d+$/.test(line)));
-
-  // The phrase this server's vault was sealed with is restored as before.
-  await p.instance.restoreVaultKey(KEYS.vrk);
-  assert.equal(p.instance.state.data.vrk, KEYS.vrk);
-  assert.equal(p.starts(), 1);
-  assert.ok(p.logs.some((line) => /^vaultkey decision=restored duration_ms=\d+$/.test(line)));
+  for (const root of [OTHER_VRK, KEYS.vrk]) {
+    await assert.rejects(() => p.instance.stageRecoveryBackup(encodeText(root)), error => error.reason === "pin_replacement");
+    assert.equal(p.instance.state.data.vrk, KEYS.vrk, "the held key was not changed");
+  }
+  assert.equal(p.starts(), 0); assert.deepEqual(server.requests, []);
 });
 
-test("any phrase is restored where there is no vault to strand (#140)", async (t) => {
-  // A server whose account holds nothing yet: the key starts the vault.
-  const empty = await plugin(t, { server: new FakeServer(), metadata: { vrk: null } });
-  await empty.instance.restoreVaultKey(OTHER_VRK);
-  assert.equal(empty.instance.state.data.vrk, OTHER_VRK);
-  assert.equal(empty.starts(), 1);
+const backupTexts = new Map();
+async function encodeTextFor(root) { const text = await encodeRecoveryBackup(c.unhex(root)); backupTexts.set(root, text); return text; }
+function encodeText(root) { return backupTexts.get(root); }
+await encodeTextFor(OTHER_VRK); await encodeTextFor(KEYS.vrk);
 
-  // A device with no credential has no server to ask, and asks nothing.
-  const { server } = await holdingVault();
-  const unpaired = await plugin(t, { server, metadata: { vrk: null, deviceId: null, deviceSecret: null } });
-  await unpaired.instance.restoreVaultKey(OTHER_VRK);
-  assert.equal(unpaired.instance.state.data.vrk, OTHER_VRK);
-  assert.deepEqual(server.requests, []);
+test("a restored backup remains detached on an empty or occupied server (#140)", async (t) => {
+  for (const server of [new FakeServer(), (await holdingVault()).server]) {
+    const p = await plugin(t, { server, metadata: { vrk: null, deviceId: null, deviceSecret: null } });
+    await p.instance.stageRecoveryBackup(encodeText(OTHER_VRK));
+    assert.equal(p.instance.state.data.vrk, null);
+    assert.equal(p.instance.state.stagedEnrollment2().root, OTHER_VRK);
+    assert.equal(p.instance.state.stagedEnrollment2().purpose, "recover");
+    assert.equal(p.starts(), 0); assert.deepEqual(server.requests, []);
+  }
 });
 
-test("a server holding only a vault's map still has a vault to strand, and one holding none has not (#140)", async (t) => {
-  const server = new FakeServer();
-  const p = await plugin(t, { server });
-  // Setup moves obsyncd's journal head with account and device frames before
-  // any version exists: a fresh account is not a vault yet.
-  server.seq = 2;
-  assert.equal(await p.instance.vaultKeyStrands(OTHER_VRK), false);
-  // The map a first start writes, through the feed like any version.
-  await dm.saveDomainMap(p.instance.transport, (await keys()).map, dm.defaultDomainMap(KEYS.domainId));
-  assert.equal(await p.instance.vaultKeyStrands(OTHER_VRK), true);
-  assert.equal(await p.instance.vaultKeyStrands(KEYS.vrk), false);
+test("new-key creation cannot replace a held key regardless of server contents (#140)", async (t) => {
+  for (const server of [new FakeServer(), (await holdingVault()).server]) {
+    const p = await plugin(t, { server });
+    await assert.rejects(() => p.instance.stageNewVaultKey(), error => error.reason === "pin_replacement");
+    assert.equal(p.instance.state.data.vrk, KEYS.vrk);
+    assert.equal(p.starts(), 0); assert.deepEqual(server.requests, []);
+  }
 });
 
 // ---- the key: Create, in the dialog ------------------------------------------
@@ -237,7 +228,7 @@ function vaultKeyDialog(t, { strands, answer = null }) {
   const obsidian = box.require("obsidian");
   const made = [];
   const add = function (build) { const component = new Component(); made.push(component); build(component); return this; };
-  Object.assign(obsidian.Setting.prototype, { setName() { return this; }, addTextArea: add, addButton: add });
+  Object.assign(obsidian.Setting.prototype, { setName() { return this; }, setDesc() { return this; }, addTextArea: add, addButton: add });
   const drawing = () => {
     const drawn = [];
     return { drawn, createEl: (tag, { text = "" } = {}) => { drawn.push(text); return {}; }, empty: () => {} };
@@ -262,9 +253,8 @@ function vaultKeyDialog(t, { strands, answer = null }) {
   const calls = [], logs = [];
   const plugin = {
     captureSession: () => ({ assertCurrent() {} }),
-    vaultKeyStrands: async (vrk) => { calls.push(`strands:${vrk}`); return strands; },
-    adoptVaultKey: async (vrk) => { calls.push(`adopt:${vrk}`); },
-    restoreVaultKey: async (vrk) => { calls.push(`restore:${vrk}`); },
+    stageNewVaultKey: async () => { calls.push("stage:new"); if (strands) throw new Error("A held key cannot be replaced by this action."); },
+    stageRecoveryBackup: async (text) => { calls.push(`stage:backup:${text}`); },
     log: (line) => logs.push(line),
   };
   plugin.notices = channel(box, plugin);
@@ -277,53 +267,28 @@ function vaultKeyDialog(t, { strands, answer = null }) {
   return { modal, made, button, opened, asked, calls, logs, notices: obsidian.notices, box };
 }
 
-test("Create a new vault key on a server that holds a vault asks first, and Cancel keeps the key (#140)", async (t) => {
-  const d = vaultKeyDialog(t, { strands: true, answer: "Cancel" });
+test("Create with a held key refuses without an override or showing a new backup (#140)", async (t) => {
+  const d = vaultKeyDialog(t, { strands: true });
   await d.button("Create a new vault key").click();
-  await tick();
-
-  assert.equal(d.asked.length, 1);
-  const [question] = d.asked;
-  assert.equal(question.title, "Create a new vault key?");
-  assert.match(question.text, /a new key cannot open it/);
-  assert.match(question.text, /Every device syncing that vault would stop receiving this device's changes/);
-  const [cancel, create] = question.buttons;
-  assert.equal(create.text, "Create a new key");
-  assert.equal(create.destructive, true);
-  assert.equal(create.focused, undefined);
-  assert.equal(cancel.text, "Cancel");
-  assert.equal(cancel.focused, true, "Cancel is the default");
-  assert.equal(d.calls.length, 1, "the key was only checked");
-  assert.match(d.calls[0], /^strands:[0-9a-f]{64}$/);
-  assert.deepEqual(d.logs, ["vaultkey decision=declined reason=strands_vault"]);
+  assert.deepEqual(d.calls, ["stage:new"]); assert.equal(d.asked.length, 0);
   assert.equal(d.opened.includes("RecoveryPhraseModal"), false);
+  assert.ok(d.notices.some(text => text.includes("cannot be replaced")));
 });
 
-test("confirming Create adopts exactly the key that was checked (#140)", async (t) => {
-  const d = vaultKeyDialog(t, { strands: true, answer: "Create a new key" });
-  await d.button("Create a new vault key").click();
-  await tick();
-  const vrk = d.calls[0].slice("strands:".length);
-  assert.deepEqual(d.calls, [`strands:${vrk}`, `adopt:${vrk}`]);
-  assert.ok(d.opened.includes("RecoveryPhraseModal"), "the new phrase is shown to be written down");
-});
-
-test("Create on a server with no vault asks nothing, and Restore goes through the check (#140)", async (t) => {
+test("a successfully staged new key shows its backup only after staging succeeds (#140)", async (t) => {
   const d = vaultKeyDialog(t, { strands: false });
   await d.button("Create a new vault key").click();
-  await tick();
-  assert.deepEqual(d.asked, []);
-  const vrk = d.calls[0].slice("strands:".length);
-  assert.deepEqual(d.calls, [`strands:${vrk}`, `adopt:${vrk}`]);
+  assert.deepEqual(d.calls, ["stage:new"]); assert.equal(d.asked.length, 0);
+  assert.ok(d.opened.includes("RecoveryPhraseModal"));
+});
 
-
-  const r = vaultKeyDialog(t, { strands: false });
-  const pairing = r.box.require(join(r.box.home, "build/pairing.js"));
-  const words = await pairing.recoveryPhrase(Uint8Array.from(Buffer.from(KEYS.vrk, "hex")));
-  r.made.find((component) => component.change !== undefined).change(words.join(" "));
-  await r.button("Restore").click();
-  assert.deepEqual(r.calls, [`restore:${KEYS.vrk}`], "a restored phrase is never adopted unchecked");
-  assert.ok(r.notices.includes("obsync: vault key restored."));
+test("Restore passes complete backup text to explicit staging and claims no live adoption (#140)", async (t) => {
+  const d = vaultKeyDialog(t, { strands: false });
+  d.made.find(component => component.change !== undefined).change(encodeText(KEYS.vrk));
+  await d.button("Stage current backup").click();
+  assert.deepEqual(d.calls, [`stage:backup:${encodeText(KEYS.vrk)}`]);
+  assert.ok(d.notices.some(text => text.includes("Recovery backup staged")));
+  assert.equal(d.notices.some(text => text.includes("vault key restored")), false);
 });
 
 // ---- pairing a second vault -----------------------------------------------------
@@ -360,7 +325,7 @@ test("a claimant counts the notes the server's vault does not hold, byte for byt
   copy.pass = (on) => { if (on) { open++; opened++; } else open--; };
   const syncable = copy.syncable.bind(copy);
   copy.syncable = async (path) => { inside.push(open > 0); return syncable(path); };
-  assert.equal(await p.instance.notesUnknownTo(KEYS.vrk), 0);
+  assert.equal(await p.instance.notesUnknownTo2(KEYS.vrk, (await keys()).generation, p.instance.transport), 0);
   assert.ok(inside.length === 2 && inside.every(Boolean), `every question inside the pass: ${JSON.stringify(inside)}`);
   assert.deepEqual([opened, open], [1, 0], "one pass, closed");
 
@@ -370,7 +335,7 @@ test("a claimant counts the notes the server's vault does not hold, byte for byt
   other.seed("Private/secret1.md", "private\n");
   other.seed("Notes/gone.md", "gone\n");
   p.instance.host = other;
-  assert.equal(await p.instance.notesUnknownTo(KEYS.vrk), 3);
+  assert.equal(await p.instance.notesUnknownTo2(KEYS.vrk, (await keys()).generation, p.instance.transport), 3);
 
   assert.deepEqual(p.posts(), [], "the survey only reads");
   assert.ok(p.logs.some((line) => /^pairing role=claimant decision=surveyed local=2 unknown=0 older=0 held=2 duration_ms=\d+$/.test(line)));
@@ -397,21 +362,21 @@ test("a note held at an earlier version of the server's is the vault's, and only
   away.seed("Notes/a.md", "alpha\n");
   away.seed("Notes/edited.md", "as this device last saw it\n");
   const p = await plugin(t, { server, host: away, metadata: { vrk: null } });
-  assert.equal(await p.instance.notesUnknownTo(KEYS.vrk), 0, "an earlier version of a held note is the vault's");
+  assert.equal(await p.instance.notesUnknownTo2(KEYS.vrk, (await keys()).generation, p.instance.transport), 0, "an earlier version of a held note is the vault's");
 
   // The same bytes under another name are a note the server's vault lacks.
   const elsewhere = new FakeHost();
   elsewhere.seed("Notes/a.md", "alpha\n");
   elsewhere.seed("Private/edited.md", "as this device last saw it\n");
   p.instance.host = elsewhere;
-  assert.equal(await p.instance.notesUnknownTo(KEYS.vrk), 1, "the note's own history, at its own path");
+  assert.equal(await p.instance.notesUnknownTo2(KEYS.vrk, (await keys()).generation, p.instance.transport), 1, "the note's own history, at its own path");
 
   // As long as an earlier version, but other bytes: not one of them.
   const other = new FakeHost();
   other.seed("Notes/a.md", "alpha\n");
   other.seed("Notes/edited.md", "as this device last saw IT\n");
   p.instance.host = other;
-  assert.equal(await p.instance.notesUnknownTo(KEYS.vrk), 1, "an earlier version's size alone is not its bytes");
+  assert.equal(await p.instance.notesUnknownTo2(KEYS.vrk, (await keys()).generation, p.instance.transport), 1, "an earlier version's size alone is not its bytes");
 
   assert.deepEqual(p.posts(), [], "the survey only reads");
   assert.ok(p.logs.some((line) => /^pairing role=claimant decision=surveyed local=2 unknown=0 older=1 held=2 duration_ms=\d+$/.test(line)));
@@ -424,41 +389,29 @@ test("a new vault key cannot take over a server that already holds a vault (#141
   const p = await plugin(t, { metadata: { vrk: null, deviceId: null, deviceSecret: null } });
   await p.instance.setUpAccount(SETUP_TOKEN, "obsync");
   assert.ok(p.notices.some((notice) =>
-    notice.includes("This server already holds a vault, and one server holds one vault") &&
-    notice.includes("Pair this device") && notice.includes("a different vault needs a server of its own")));
+    notice.includes("This server already holds a vault") &&
+    notice.includes("Pair from a syncing device") && notice.includes("new vault needs a separate server")));
   assert.equal(p.notices.some((notice) => notice.includes("already_set_up")), false, "not the raw server code");
-  assert.ok(p.logs.includes("setup decision=failed reason=already_set_up"));
+  assert.ok(p.logs.includes("setup decision=failed reason=recover_only_required"));
   assert.equal(p.instance.state.data.deviceId, null);
 });
 
-test("Setup on an older server explains already_set_up without exposing the raw code (#141)", async (t) => {
-  const server = new FakeServer();
-  const request = server.request;
+test("Setup refuses an older server before sending a setup token (#141)", async (t) => {
+  const server = new FakeServer(), request = server.request;
   let setupRequests = 0;
-  // Older servers refuse repeat setup even when the new client supplies
-  // recovery proof. Exercise that wire response through the real transport;
-  // the recovery_unavailable case above takes a different notice branch.
-  server.request = async (input) => {
-    if (new URL(input.url).pathname === "/v1/setup" && input.method === "POST") {
-      setupRequests++;
-      const body = JSON.parse(input.body);
-      assert.equal(body.setup_token, SETUP_TOKEN);
-      assert.match(body.recovery_proof, /^[0-9a-f]{64}$/);
-      return server.error(409, "already_set_up", "this server already holds an account");
+  server.request = async input => {
+    if (new URL(input.url).pathname === "/v1/setup") {
+      if (input.method === "POST") setupRequests++;
+      return server.json(200, { recover_only: true });
     }
     return request(input);
   };
-  const p = await plugin(t, { server, metadata: { deviceId: null, deviceSecret: null } });
+  const p = await plugin(t, { server, metadata: { vrk: null, deviceId: null, deviceSecret: null } });
   await p.instance.setUpAccount(SETUP_TOKEN, "obsync");
-  assert.equal(setupRequests, 1, "an explicit refusal is not retried");
-  assert.equal(p.notices.length, 1);
-  assert.match(p.notices[0], /This server already holds a vault, and one server holds one vault/);
-  assert.match(p.notices[0], /Pair this device/);
-  assert.match(p.notices[0], /restore its recovery phrase and use Setup or recover with the setup token/);
-  assert.match(p.notices[0], /a different vault needs a server of its own/);
-  assert.equal(p.notices[0].includes("already_set_up"), false);
-  assert.deepEqual(p.logs.filter((line) => !line.startsWith("notice ")), ["setup decision=failed reason=already_set_up"]);
+  assert.equal(setupRequests, 0, "capability downgrade refuses before a credential-bearing request");
+  assert.ok(p.notices.some(text => text.includes("Update it before setup or recovery")));
   assert.equal(p.instance.state.data.deviceId, null);
   assert.equal(p.instance.state.data.deviceSecret, null);
-  assert.equal(p.starts(), 0, "refused setup cannot start syncing");
+  assert.equal(p.instance.state.data.vrk, null);
+  assert.equal(p.starts(), 0);
 });

@@ -33,7 +33,7 @@ use crate::storage::types::{
 use crate::types::{AccountId, DeviceId, FileId, Seq, Sid, UnixMs, VersionId};
 
 #[cfg(test)]
-use crate::storage::{AppendPhase, Fault, RollbackPhase};
+use crate::storage::{AppendPhase, Fault, FloorPhase, RollbackPhase};
 #[cfg(test)]
 use std::sync::Mutex;
 
@@ -57,6 +57,29 @@ pub(crate) const NONCE_TMP: &str = "nonces.tmp";
 /// One journalled fact. Everything the server remembers is a sequence of these.
 #[derive(Clone, Debug)]
 pub(crate) enum Frame {
+    /// Owner-authorized immutable fence and source inventory.
+    RotationPrepare(super::rotation::RotationState),
+    /// One immutable catalog page was published.
+    RotationProgress(super::rotation::RotationState),
+    /// Recovery authority and all credential grants cut over together.
+    RotationCommit {
+        state: super::rotation::RotationState,
+        at: UnixMs,
+    },
+    /// Pending recovery replaces the coordinator and credential atomically.
+    RotationTransfer {
+        state: super::rotation::RotationState,
+        record: DeviceRecord,
+        wrapped: [u8; 32],
+    },
+    /// Permanent old-reader format barrier, not account authority.
+    FormatFloor,
+    /// A generation-scoped enrollment.
+    ScopedDevice {
+        record: DeviceRecord,
+        wrapped: [u8; 32],
+        generation: FileId,
+    },
     /// Setup ran, or the account's recovery changed: the whole account again.
     Account {
         account_id: AccountId,
@@ -74,6 +97,7 @@ pub(crate) enum Frame {
     /// Setup/recovery and active enrollment in ONE CRC-framed durable fact.
     /// Older readers refuse the unknown kind rather than applying half.
     Setup {
+        generation: Option<FileId>,
         account: AccountRecord,
         record: DeviceRecord,
         wrapped: [u8; 32],
@@ -154,6 +178,7 @@ struct Faulted {
 
 /// The journal volume: segments, snapshots, quarantine.
 pub(crate) struct Journal {
+    floor_ready: bool,
     root: PathBuf,
     segment: Option<File>,
     segment_no: u32,
@@ -325,6 +350,7 @@ impl Journal {
         let mut journal = Journal {
             root,
             segment: None,
+            floor_ready: false,
             segment_no: 0,
             segment_len: 0,
             other_bytes: 0,
@@ -343,7 +369,12 @@ impl Journal {
             #[cfg(test)]
             mid_snapshot: Mutex::new(None),
         };
-        journal.segment_no = journal.segments()?.last().copied().unwrap_or(1);
+        journal.validate_floor_marker()?;
+        journal.segment_no = journal
+            .segments()?
+            .into_iter()
+            .rfind(|n| *n != 0)
+            .unwrap_or(1);
         journal.measure_volume("open")?;
         Ok(journal)
     }
@@ -528,6 +559,102 @@ impl Journal {
     #[cfg(test)]
     pub(crate) fn fault_handle(&self) -> Arc<Mutex<Fault>> {
         Arc::clone(&self.fault)
+    }
+
+    fn floor_bytes() -> Vec<u8> {
+        let payload = Record {
+            seq: Seq(0),
+            account_id: None,
+            frame: Frame::FormatFloor,
+        }
+        .to_value()
+        .to_json()
+        .into_bytes();
+        let mut bytes = (payload.len() as u32).to_le_bytes().to_vec();
+        bytes.extend_from_slice(&crc32(&payload).to_le_bytes());
+        bytes.extend(payload);
+        bytes
+    }
+
+    /// Verify the reserved barrier BEFORE ordinary replay could truncate it.
+    pub(crate) fn validate_floor_marker(&self) -> Result<bool, StoreError> {
+        let path = self.segment_path(0);
+        let mut file = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        let expected = Self::floor_bytes();
+        if file.metadata()?.len() != expected.len() as u64 {
+            return Err(StoreError::Corrupt("invalid permanent format floor".into()));
+        }
+        let mut actual = vec![0; expected.len()];
+        file.read_exact(&mut actual)?;
+        if actual != expected {
+            return Err(StoreError::Corrupt("invalid permanent format floor".into()));
+        }
+        Ok(true)
+    }
+
+    /// Publish one immutable old-reader barrier, before acknowledging floor2.
+    pub(crate) fn ensure_floor_marker(&mut self) -> Result<(), StoreError> {
+        if self.validate_floor_marker()? {
+            if !self.floor_ready {
+                fsync_dir(&self.root.join("journal"))?;
+                self.floor_ready = true;
+            }
+            return Ok(());
+        }
+        let bytes = Self::floor_bytes();
+        let free = self.capacity.saturating_sub(self.tracked_bytes());
+        if free.saturating_sub(bytes.len() as u64) < self.watermark {
+            return Err(StoreError::JournalFull {
+                free,
+                watermark: self.watermark,
+            });
+        }
+        let temporary = self.root.join("journal").join("format-floor.tmp");
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(FILE_MODE)
+                .open(&temporary)?;
+            #[cfg(test)]
+            self.floor_fault(FloorPhase::Write)?;
+            file.write_all(&bytes)?;
+            #[cfg(test)]
+            self.floor_fault(FloorPhase::Sync)?;
+            file.sync_all()?;
+            #[cfg(test)]
+            self.floor_fault(FloorPhase::Publish)?;
+            fs::rename(&temporary, self.segment_path(0))?;
+            #[cfg(test)]
+            self.floor_fault(FloorPhase::DirSync)?;
+            fsync_dir(&self.root.join("journal"))?;
+            Ok::<(), StoreError>(())
+        })();
+        if result.is_err() && temporary.exists() {
+            let _ = fs::remove_file(&temporary);
+        }
+        self.measure_volume("format_floor")?;
+        if result.is_ok() {
+            self.floor_ready = true;
+        }
+        result
+    }
+
+    pub(crate) fn floor_ready(&self) -> bool {
+        self.floor_ready
+    }
+    #[cfg(test)]
+    fn floor_fault(&self, phase: FloorPhase) -> Result<(), StoreError> {
+        match *self.fault.lock().expect("fault lock") {
+            Fault::FloorMarkerErrno { code, at } if at == phase => {
+                Err(io::Error::from_raw_os_error(code).into())
+            }
+            _ => Ok(()),
+        }
     }
 
     fn segment_path(&self, number: u32) -> PathBuf {
@@ -779,6 +906,11 @@ impl Journal {
     }
 
     /// Open the next segment, fsyncing the directory that names it.
+    #[cfg(test)]
+    pub(crate) fn force_roll(&mut self) -> Result<(), StoreError> {
+        self.roll()
+    }
+
     fn roll(&mut self) -> Result<(), StoreError> {
         let existing = self.segments()?;
         let number = match existing.last() {
@@ -928,6 +1060,9 @@ impl Journal {
         let numbers = self.segments()?;
         for pair in numbers.windows(2) {
             let (number, next) = (pair[0], pair[1]);
+            if number == 0 {
+                continue;
+            }
             let next_first = match self.first_seq(next)? {
                 Some(seq) => seq,
                 None => continue,
@@ -1555,7 +1690,10 @@ fn version_value(version: &VersionRecord) -> Value {
         ("sids", list(&version.sids, |s| text(*s))),
         ("bytes", num(version.bytes)),
         ("ct", text(hex::encode(&version.manifest_ct))),
-        ("nonce", text(hex::encode(&version.manifest_nonce))),
+        match version.manifest_seal {
+            crate::storage::ManifestSeal::Legacy(nonce) => ("nonce", text(hex::encode(&nonce))),
+            crate::storage::ManifestSeal::Suite2 => ("seal_suite", num(2)),
+        },
         ("device", text(version.device_id)),
         ("ts", num(version.ts.0)),
         ("deleted", Value::Bool(version.deleted)),
@@ -1573,7 +1711,21 @@ fn version_from(value: &Value) -> Result<VersionRecord, StoreError> {
         bytes: field_num(value, "bytes")?,
         manifest_ct: hex::decode(field_str(value, "ct")?)
             .map_err(|_| StoreError::Corrupt("field ct is not hex".to_string()))?,
-        manifest_nonce: field_bytes::<12>(value, "nonce")?,
+        manifest_seal: match value.get("seal_suite") {
+            None => crate::storage::ManifestSeal::Legacy(field_bytes::<12>(value, "nonce")?),
+            Some(suite)
+                if suite.as_u64() == Some(2)
+                    && value.get("nonce").is_none()
+                    && hex::decode(field_str(value, "ct")?).is_ok_and(|ct| ct.len() >= 16) =>
+            {
+                crate::storage::ManifestSeal::Suite2
+            }
+            Some(_) => {
+                return Err(StoreError::Corrupt(
+                    "invalid manifest seal discriminator".into(),
+                ));
+            }
+        },
         device_id: field_id(value, "device")?,
         ts: UnixMs(field_num(value, "ts")?),
         deleted: field_bool(value, "deleted")?,
@@ -1726,6 +1878,30 @@ impl Record {
             pairs.push(("a", text(account)));
         }
         match &self.frame {
+            Frame::RotationPrepare(state) | Frame::RotationProgress(state) => {
+                pairs.push(("rotation", state.value()))
+            }
+            Frame::RotationCommit { state, at } => {
+                pairs.push(("rotation", state.value()));
+                pairs.push(("at", num(at.0)));
+            }
+            Frame::RotationTransfer {
+                state,
+                record,
+                wrapped,
+            } => {
+                pairs.push(("rotation", state.value()));
+                pairs.push(("device", device_value(record, wrapped)));
+            }
+            Frame::FormatFloor => pairs.push(("seal_suite", num(2))),
+            Frame::ScopedDevice {
+                record,
+                wrapped,
+                generation,
+            } => {
+                pairs.push(("device", device_value(record, wrapped)));
+                pairs.push(("generation", text(*generation)));
+            }
             Frame::Account {
                 account_id,
                 name,
@@ -1747,6 +1923,7 @@ impl Record {
                 ));
             }
             Frame::Setup {
+                generation,
                 account,
                 record,
                 wrapped,
@@ -1762,6 +1939,9 @@ impl Record {
                     ),
                 }
                 .to_value();
+                if let Some(generation) = generation {
+                    pairs.push(("generation", text(*generation)));
+                }
                 pairs.push(("account", account));
                 pairs.push(("device", device_value(record, wrapped)));
             }
@@ -1840,6 +2020,37 @@ impl Record {
             .and_then(|v| v.as_str())
             .and_then(|s| s.parse().ok());
         let frame = match field_str(&value, "t")? {
+            "rotation_prepare" => Frame::RotationPrepare(super::rotation::RotationState::parse(
+                field(&value, "rotation")?,
+            )?),
+            "rotation_progress" => Frame::RotationProgress(super::rotation::RotationState::parse(
+                field(&value, "rotation")?,
+            )?),
+            "rotation_commit" => Frame::RotationCommit {
+                state: super::rotation::RotationState::parse(field(&value, "rotation")?)?,
+                at: UnixMs(field_num(&value, "at")?),
+            },
+            "rotation_transfer" => {
+                let state = super::rotation::RotationState::parse(field(&value, "rotation")?)?;
+                let (record, wrapped) = device_from(field(&value, "device")?)?;
+                if record.device_id != state.coordinator || record.state != DeviceState::Active {
+                    return Err(StoreError::Corrupt("invalid coordinator transfer".into()));
+                }
+                Frame::RotationTransfer {
+                    state,
+                    record,
+                    wrapped,
+                }
+            }
+            "format_floor" if field_num(&value, "seal_suite")? == 2 => Frame::FormatFloor,
+            "scoped_device" => {
+                let (record, wrapped) = device_from(field(&value, "device")?)?;
+                Frame::ScopedDevice {
+                    record,
+                    wrapped,
+                    generation: field_id(&value, "generation")?,
+                }
+            }
             "account" => {
                 let account = account_from(&value)?;
                 super::account_frame(
@@ -1849,7 +2060,7 @@ impl Record {
                     account.recovery_cleared,
                 )
             }
-            "setup_enrolment" => {
+            "setup_enrolment" | "suite2_setup" => {
                 let nested = field(&value, "account")?;
                 // Parse exactly ONE account value; never recurse through the
                 // record decoder on an attacker-selected nested frame kind.
@@ -1872,7 +2083,17 @@ impl Record {
                         "setup enrollment context mismatch".into(),
                     ));
                 }
+                if (field_str(&value, "t")? == "suite2_setup") != value.get("generation").is_some()
+                {
+                    return Err(StoreError::Corrupt(
+                        "invalid setup floor discriminator".into(),
+                    ));
+                }
                 Frame::Setup {
+                    generation: value
+                        .get("generation")
+                        .map(|_| field_id(&value, "generation"))
+                        .transpose()?,
                     account,
                     record,
                     wrapped,
@@ -1935,7 +2156,19 @@ impl Frame {
     /// The wire name of this frame type (docs/storage.md, "Journal frames").
     pub(crate) const fn kind(&self) -> &'static str {
         match self {
-            Frame::Setup { .. } => "setup_enrolment",
+            Frame::RotationPrepare(_) => "rotation_prepare",
+            Frame::RotationProgress(_) => "rotation_progress",
+            Frame::RotationCommit { .. } => "rotation_commit",
+            Frame::RotationTransfer { .. } => "rotation_transfer",
+            Frame::FormatFloor => "format_floor",
+            Frame::ScopedDevice { .. } => "scoped_device",
+            Frame::Setup {
+                generation: Some(_),
+                ..
+            } => "suite2_setup",
+            Frame::Setup {
+                generation: None, ..
+            } => "setup_enrolment",
             Frame::Account { .. } => "account",
             Frame::Device { .. } => "device",
             Frame::DeviceUpdate { .. } => "device_update",
@@ -1973,6 +2206,10 @@ fn file_value(file_id: &FileId, entry: &FileEntry) -> Value {
         ("id", text(*file_id)),
         ("domain", text(entry.domain_id)),
         ("heads", list(&entry.heads, |h| text(*h))),
+        (
+            "generation",
+            entry.generation.map(text).unwrap_or(Value::Null),
+        ),
         ("versions", list(&entry.versions, |v| version_value(v))),
     ])
 }
@@ -2023,6 +2260,28 @@ fn snapshot_head(index: &Index) -> Value {
             .values()
             .map(|entry| {
                 let mut value = device_value(&entry.record, &entry.wrapped);
+                if let (Some(grant), Value::Object(fields)) = (
+                    index.authority.grants.get(&entry.record.device_id),
+                    &mut value,
+                ) {
+                    fields.push((
+                        "resume_id".into(),
+                        entry
+                            .resume_id
+                            .clone()
+                            .map(Value::Str)
+                            .unwrap_or(Value::Null),
+                    ));
+                    fields.push(("generation".into(), text(grant.generation)));
+                    fields.push((
+                        "operation".into(),
+                        grant
+                            .operation
+                            .clone()
+                            .map(Value::Str)
+                            .unwrap_or(Value::Null),
+                    ));
+                }
                 if let Value::Object(members) = &mut value {
                     members.push((
                         "history".to_string(),
@@ -2034,7 +2293,22 @@ fn snapshot_head(index: &Index) -> Value {
             .collect(),
     );
     json::obj(vec![
-        ("t", text("snapshot")),
+        (
+            "t",
+            text(if index.authority.floor2() {
+                "snapshot_v2"
+            } else {
+                "snapshot"
+            }),
+        ),
+        (
+            "authority",
+            if index.authority.floor2() {
+                index.authority.value()
+            } else {
+                Value::Null
+            },
+        ),
         ("s", num(index.seq.0)),
         ("account", account),
         ("devices", devices),
@@ -2089,6 +2363,10 @@ fn recovery(value: &Value) -> Result<Recovery, StoreError> {
 fn file_from(file: &Value) -> Result<(FileId, FileEntry), StoreError> {
     let heads: Vec<VersionId> = field_list(file, "heads", id_of)?;
     let entry = FileEntry {
+        generation: match file.get("generation") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(field_id(file, "generation")?),
+        },
         domain_id: field_id(file, "domain")?,
         conflicted: heads.len() > 1,
         heads,
@@ -2099,13 +2377,16 @@ fn file_from(file: &Value) -> Result<(FileId, FileEntry), StoreError> {
 
 /// A snapshot's index from its members other than `files`, and its files.
 fn index_from(value: &Value, files: BTreeMap<FileId, FileEntry>) -> Result<Index, StoreError> {
-    if field_str(value, "t")? != "snapshot" {
+    if !matches!(field_str(value, "t")?, "snapshot" | "snapshot_v2") {
         return Err(StoreError::Corrupt("not a snapshot frame".to_string()));
     }
     let mut index = Index {
         seq: Seq(field_num(value, "s")?),
         ..Index::default()
     };
+    if field_str(value, "t")? == "snapshot_v2" {
+        index.authority = super::rotation::Authority::parse(field(value, "authority")?)?;
+    }
     if let Some(account) = value.get("account").filter(|v| !v.is_null()) {
         let (recovery_verifier, recovery_registered, recovery_cleared) = recovery(account)?;
         index.account = Some(crate::storage::types::AccountRecord {
@@ -2124,6 +2405,21 @@ fn index_from(value: &Value, files: BTreeMap<FileId, FileEntry>) -> Result<Index
         .ok_or_else(|| StoreError::Corrupt("devices is not an array".to_string()))?
     {
         let (record, wrapped) = device_from(device)?;
+        if index.authority.floor2() {
+            let generation = field_id(device, "generation")?;
+            let operation = match device.get("operation") {
+                Some(Value::Null) => None,
+                Some(_) => Some(super::rotation::hex_id(device, "operation", 32)?),
+                None => return Err(StoreError::Corrupt("missing grant scope".into())),
+            };
+            index.authority.grants.insert(
+                record.device_id,
+                super::rotation::Grant {
+                    generation,
+                    operation,
+                },
+            );
+        }
         let history = match device.get("history").and_then(|v| v.as_array()) {
             Some(events) => events
                 .iter()
@@ -2135,6 +2431,10 @@ fn index_from(value: &Value, files: BTreeMap<FileId, FileEntry>) -> Result<Index
             record.device_id,
             DeviceEntry {
                 record,
+                resume_id: match device.get("resume_id") {
+                    None | Some(Value::Null) => None,
+                    Some(_) => Some(super::rotation::hex_id(device, "resume_id", 32)?),
+                },
                 wrapped,
                 seen: history.into(),
             },
@@ -2144,6 +2444,11 @@ fn index_from(value: &Value, files: BTreeMap<FileId, FileEntry>) -> Result<Index
         for version in &entry.versions {
             index.feed.push((version.seq, *file_id, version.version_id));
         }
+    }
+    if index.authority.floor2() && files.values().any(|f| f.generation.is_none()) {
+        return Err(StoreError::Corrupt(
+            "missing file generation ownership".into(),
+        ));
     }
     index.files = files;
     index.feed.sort_by_key(|(seq, _, _)| *seq);
@@ -2215,6 +2520,7 @@ mod tests {
         let setup = record(
             3,
             Frame::Setup {
+                generation: None,
                 account: AccountRecord {
                     account_id,
                     name: "sentinel".into(),
@@ -2283,14 +2589,17 @@ mod tests {
                 format!("\"id\":\"{}\"", AccountId::new([2; 16])),
             ),
         ] {
-            assert!(setup.contains(&old), "mutation must match {old}");
+            assert!(setup.contains(&old), "mutation fixture must match");
             // Nested seq is changed independently of the outer seq.
             let changed = if old.starts_with("\"s\"") {
                 setup.replacen(&old, &new, 2).replacen(&new, &old, 1)
             } else {
                 setup.replacen(&old, &new, 1)
             };
-            assert!(Record::decode(changed.as_bytes()).is_err(), "{old}");
+            assert!(
+                Record::decode(changed.as_bytes()).is_err(),
+                "mutated setup context must be refused"
+            );
         }
     }
 
@@ -2421,6 +2730,7 @@ mod tests {
                 recovery_cleared: Some(UnixMs(1_757_000_000_900)),
             },
             Frame::Setup {
+                generation: None,
                 account: AccountRecord {
                     account_id: device.account_id,
                     name: "setup sentinel".into(),

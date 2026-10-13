@@ -3,6 +3,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import { sandbox } from "./fake.mjs";
 
 const RAW = /\b(401|403|404|409|410)\b|unknown_pairing|pairing_expired|already_approved|OperationError|decrypt|AES|GCM|byte/;
@@ -35,13 +36,20 @@ async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", valu
   const row = (fields = {}) => ({ device_id: device, name: "iPhone 7KQ4", platform: "ios", app_version: "1.1.5",
     state: "active", revoked: false, last_sign_in: 1000, last_seen: 2000, ...fields });
   let reads = 0;
+  const { State } = box.require(join(box.home, "build/state.js")), crypto = box.require(join(box.home, "build/crypto.js"));
+  const generation = (await crypto.domainMapIds(await crypto.deriveDomainMapKey(crypto.unhex(VRK)))).fileId;
+  const secrets = new Map(), state = await State.open({ loadData: async () => null, saveData: async () => {} }, false,
+    { getSecret: id => secrets.get(id) ?? null, setSecret: (id, value) => secrets.set(id, value) });
+  await state.stageEnrollment2(VRK, "pair");
+  await state.adoptSuite2({ root: VRK, generation, deviceId: "11".repeat(16), deviceSecret: "22".repeat(32), purpose: "pair" });
+  state.data.notices = { ...state.data.notices, level: "needs-me", merges: "off" };
   const plugin = {
     // The quietest notices a person can choose: every word of pairing is still said.
-    state: { data: { vrk: VRK, notices: { level: "needs-me", merges: "off" } } },
+    state,
     log: (line) => logs.push(line),
     refreshDeviceNames: async () => { calls.push("names"); },
     transport: {
-      pairingApprove: async (id, envelope, nonce, ...rest) => { calls.push({ approve: { envelope, nonce, rest } }); return approve(); },
+      pairingApprove2: async (id, sealed, ...rest) => { calls.push({ approve: { ...sealed, rest } }); return approve(); },
       pairingReveal: async (id, key) => { calls.push({ reveal: key }); },
       pairingReject: async () => { calls.push("reject"); return { outcome: "ok", value: undefined }; },
       pairingStatus: async () => {
@@ -67,6 +75,7 @@ async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", valu
   // Every answer goes through the real notice channel onto the stub's toasts (`notices.ts`).
   plugin.notices = box.require(join(box.home, "build/main.js")).noticeChannel({ ...plugin, log: () => undefined });
   const modal = new PairCreateModal({}, plugin);
+  modal.creatorGeneration = generation;
   let closed = 0;
   modal.contentEl = { empty() {} };
   modal.close = () => { closed++; modal.onClose(); };
@@ -79,10 +88,10 @@ async function prompt(t, { statuses = [], approve = () => ({ outcome: "ok", valu
   t.after(() => { globalThis.window = previousWindow; });
   const claimant = { device_id: device, name: "iPhone 7KQ4", platform: "ios", app_version: "1.1.5",
     claimant_pub: claimantKex.publicKey,
-    vault: await pairing.sealPairingVault(secret, id, { name: "Plans <2026>", notes }) };
+    vault: await pairing.sealPairingVault2(secret, id, { name: "Plans <2026>", notes }) };
   const status = { setText: (text) => messages.push(text) };
   return {
-    modal, secret, id, device, claimant, kex, claimantKex, buttons, messages, calls, logs, notices, obsidian, pairing, ApiError, row, status,
+    modal, secret, id, device, claimant, kex, claimantKex, buttons, messages, calls, logs, notices, obsidian, pairing, generation, ApiError, row, status,
     closed: () => closed,
     /** The prompt for a claim, as `run` asks it once that claim is read. */
     ask: (asked = claimant) => modal.approve(id, secret, asked, status, kex),
@@ -155,13 +164,12 @@ test("a hostile platform word is shown as a device, never as a prototype member 
   }
 });
 
-test("absent vault details keep the approval prompt, with its code (#141, #152)", async t => {
+test("absent suite2 vault details refuse before reveal or an approval prompt", async t => {
   const r = await prompt(t); delete r.claimant.vault;
   await r.ask();
-  assert.match(r.messages[0], /iPhone 7KQ4.*iPhone/);
-  assert.match(r.messages[0], /the code \d{3} \d{3}\./);
-  assert.ok(!r.messages[0].includes("vault"));
-  assert.equal(r.buttons.length, 2);
+  assert.equal(r.buttons.length, 0);
+  assert.deepEqual(r.said(), ["reject"]);
+  assert.ok(!r.calls.some(call => call?.reveal || call?.approve));
 });
 
 test("a claimant holding another code's secret is refused before anyone is asked, in words (#153)", async t => {
@@ -215,8 +223,11 @@ test("the creator says paired only once the server reports the key collected (#1
   assert.equal(r.closed(), 1);
   assert.ok(r.logs.includes("pairing role=creator decision=paired polls=1"));
   // The envelope opens for the claimant's key under this creator's, and carries the vault key only.
-  const { envelope, nonce } = approvals[0].approve;
-  assert.deepEqual(await r.pairing.openEnvelopeV2(r.claimantKex, r.kex.publicKey, r.secret, r.id, envelope, nonce), { vrk: VRK });
+  const { envelope, seal_suite } = approvals[0].approve;
+  assert.equal(seal_suite, 2); assert.equal(Object.hasOwn(approvals[0].approve, "nonce"), false);
+  let opened;
+  await assert.doesNotReject(async () => { opened = await r.pairing.openEnvelope2(r.claimantKex, r.kex.publicKey, r.secret, r.id, { seal_suite: 2, envelope }); });
+  assert.deepEqual(opened, { v: 2, vrk: VRK, generation: r.generation });
 });
 
 test("a claim that is never collected is never announced as paired (#153)", async t => {
@@ -241,7 +252,7 @@ test("a claim that is never collected is never announced as paired (#153)", asyn
 test("a server that reports the key collected before any approval is not believed (#153)", async t => {
   const r = await prompt(t);
   let polls = 0;
-  r.modal.plugin.transport.pairingCreate = async () => ({ outcome: "ok", value: { pairing_id: r.id, enroll_token: "34".repeat(32), expires: 0 } });
+  r.modal.plugin.transport.pairingCreate2 = async () => ({ outcome: "ok", value: { pairing_id: r.id, enroll_token: "34".repeat(32), expires: 0 } });
   r.modal.plugin.transport.pairingStatus = async () => {
     polls++;
     if (polls === 1) return { state: "consumed", claimant: null };
@@ -317,7 +328,7 @@ test("behind the closed dialog the wait ends by itself: with the code's ten minu
 
 test("a refused approval is told in words, never as a server code (#154)", async t => {
   const r = await prompt(t);
-  r.modal.plugin.transport.pairingApprove = async () => { throw new r.ApiError(410, "pairing_expired", "the pairing has expired"); };
+  r.modal.plugin.transport.pairingApprove2 = async () => { throw new r.ApiError(410, "pairing_expired", "the pairing has expired"); };
   await r.ask();
   await r.press("Approve");
   await until(() => r.logs.includes("pairing role=creator decision=failed reason=pairing_expired"), "the refusal was logged");
@@ -335,9 +346,14 @@ test("a refused approval is told in words, never as a server code (#154)", async
  */
 async function ran(t, polls, { reveal = null } = {}) {
   const r = await prompt(t);
-  r.modal.plugin.transport.pairingCreate = async () => ({ outcome: "ok", value: { pairing_id: r.id, enroll_token: "34".repeat(32), expires: 0 } });
+  r.modal.plugin.transport.pairingCreate2 = async () => ({ outcome: "ok", value: { pairing_id: r.id, enroll_token: "34".repeat(32), expires: 0 } });
   let n = 0;
-  r.modal.plugin.transport.pairingStatus = async () => { r.calls.push("status"); return polls(++n, r); };
+  r.modal.plugin.transport.pairingStatus = async () => {
+    r.calls.push("status");
+    const code = texts.find(text => /^[A-Z2-7]{128}$/.test(text));
+    if (code) r.claimant.vault = await r.pairing.sealPairingVault2(r.pairing.decodePairingCode(code).pairingSecret, r.id, { name: "Plans <2026>", notes: 7 });
+    return polls(++n, r);
+  };
   if (reveal !== null) r.modal.plugin.transport.pairingReveal = async (id, key) => { r.calls.push({ reveal: key }); return reveal(r); };
   const texts = [];
   r.modal.contentEl = { empty() {}, createEl: (tag, options) => { if (options?.text) texts.push(options.text); return { remove() {}, setText: (text) => texts.push(text) }; } };
@@ -346,16 +362,13 @@ async function ran(t, polls, { reveal = null } = {}) {
   return { ...r, texts, ran: () => r.calls.map((call) => (call?.reveal ? "reveal" : call)) };
 }
 
-/** A claim as a 1.1.5 device sends it, without sealed vault details: a run makes its own secret. */
-const bare = ({ vault, ...claimant }) => claimant;
-
 test("a v2 code commits to the key the creator reveals once, after the claim it answers is fixed", async t => {
   let other = null;
   const r = await ran(t, async (n, r) => {
     if (n < 3) return { state: "open", claimant: null };
     // Any read after the claim would offer another key: none may be made.
     other ??= await r.pairing.newPairingKeyExchange();
-    return { state: "claimed", claimant: n === 3 ? bare(r.claimant) : { ...bare(r.claimant), claimant_pub: other.publicKey } };
+    return { state: "claimed", claimant: n === 3 ? r.claimant : { ...r.claimant, claimant_pub: other.publicKey } };
   });
   const code = r.texts.find((text) => /^[A-Z2-7]{128}$/.test(text));
   assert.ok(code, `a 128-character code: ${r.texts.join(" | ")}`);
@@ -371,13 +384,14 @@ test("a v2 code commits to the key the creator reveals once, after the claim it 
   // Approval seals for the claim it fixed, under the key it revealed, and sends no key of its own.
   await r.press("Approve");
   await until(() => r.calls.some((call) => call.approve), "the approval");
-  const { envelope, nonce, rest } = r.calls.find((call) => call.approve).approve;
+  const { envelope, seal_suite, rest } = r.calls.find((call) => call.approve).approve;
+  assert.equal(seal_suite, 2);
   assert.deepEqual(rest, [], "the key went out with the reveal, not with the envelope");
-  const opened = await r.pairing.openEnvelopeV2(r.claimantKex, revealed, parsed.pairingSecret, r.id, envelope, nonce);
+  const opened = await r.pairing.openEnvelope2(r.claimantKex, revealed, parsed.pairingSecret, r.id, { seal_suite: 2, envelope });
   assert.equal(opened.vrk, VRK);
   assert.ok(r.logs.includes("pairing role=creator decision=approved"));
   // Sealed for that claim's key: the key a later read offered opens nothing.
-  await assert.rejects(() => r.pairing.openEnvelopeV2(other, revealed, parsed.pairingSecret, r.id, envelope, nonce));
+  await assert.rejects(() => r.pairing.openEnvelope2(other, revealed, parsed.pairingSecret, r.id, { seal_suite: 2, envelope }));
 });
 
 test("a claim without a key is refused in words, rejected on the server, and this device's key never goes out", async t => {
@@ -424,7 +438,7 @@ test("a claim whose name or version no obsync server lets through is refused in 
 });
 
 test("a reveal the server refuses ends the pairing: no code to compare, nothing sealed, the claim refused, said in words", async t => {
-  const claimed = (n, r) => ({ state: "claimed", claimant: n === 1 ? bare(r.claimant) : { ...bare(r.claimant), name: "a second read" } });
+  const claimed = (n, r) => ({ state: "claimed", claimant: n === 1 ? r.claimant : { ...r.claimant, name: "a second read" } });
   // The control: the same run, its reveal answered, asks.
   const asked = await ran(t, claimed);
   assert.ok(asked.texts.at(-1).includes("Approve only if"), asked.texts.at(-1));
@@ -508,11 +522,11 @@ test("a failed device-list read decides nothing: it is logged once and the wait 
 
 test("a spoofed consumed and active heartbeat row is a server report, never key-possession proof", async t => {
   const r = await collected(t, (poll, row) => [row({ last_seen: 1000, last_heartbeat: 1000 })], paired);
-  const { envelope, nonce } = r.calls.find((call) => call.approve).approve;
+  const { envelope } = r.calls.find((call) => call.approve).approve;
   // A malicious server corrupts delivery but still reports collection and
   // a started sync. The intended recipient actually refuses that delivery.
   const corrupt = Buffer.from(envelope, "base64"); corrupt[corrupt.length - 1] ^= 1;
-  await assert.rejects(r.pairing.openEnvelopeV2(r.claimantKex, r.kex.publicKey, r.secret, r.id, corrupt.toString("base64"), nonce));
+  await assert.rejects(r.pairing.openEnvelope2(r.claimantKex, r.kex.publicKey, r.secret, r.id, { seal_suite: 2, envelope: corrupt.toString("base64") }));
   const notice = r.notices.find((line) => line.includes("is paired"));
   assert.equal(notice, 'obsync: the server reports "iPhone 7KQ4" is paired. Check that device to confirm its notes are syncing.');
   assert.ok(!notice.includes("holds the vault key"), notice);
@@ -528,7 +542,7 @@ async function opened(t, server, statuses = ["expired"]) {
   const r = await prompt(t, { server: typeof server === "function" ? null : server });
   if (typeof server === "function") r.modal.plugin.transport.pluginManifest = async () => { throw server(r.ApiError); };
   let created = 0;
-  r.modal.plugin.transport.pairingCreate = async () => { created++; return { outcome: "ok", value: { pairing_id: r.id, enroll_token: "34".repeat(32), expires: 0 } }; };
+  r.modal.plugin.transport.pairingCreate2 = async () => { created++; return { outcome: "ok", value: { pairing_id: r.id, enroll_token: "34".repeat(32), expires: 0 } }; };
   r.modal.plugin.transport.pairingStatus = async () => ({ state: statuses.shift() ?? "expired", claimant: null });
   const texts = [];
   r.modal.contentEl = { empty() {}, createEl: (tag, options) => { if (options?.text) texts.push(options.text); return { remove() {}, setText: (text) => texts.push(text) }; } };
@@ -563,4 +577,45 @@ test("an unreachable server is told as unreachable, never as too old", async t =
   assert.ok(!o.texts.some((text) => text.includes("older than 1.1.5")), o.texts.join(" | "));
   assert.ok(o.logs.includes("pairing role=creator decision=failed reason=unreachable"), o.logs.join(" | "));
   assert.equal(o.notices.length, 1, "one refusal, in words");
+});
+
+test("suite2 creator mixed/unknown details refuse before reveal or root sealing", async t => {
+  for (const patch of [{ seal_suite: 1 }, { seal_suite: 3 }, { nonce: "00".repeat(12) }]) {
+    const r = await prompt(t); await r.ask({ ...r.claimant, vault: { ...r.claimant.vault, ...patch } });
+    assert.equal(r.buttons.length, 0); assert.deepEqual(r.said(), ["reject"]);
+  }
+});
+
+test("suite2 creator generation changed after the invitation cannot approve its old claim", async t => {
+  const r = await prompt(t); await r.ask();
+  r.modal.creatorGeneration = "00".repeat(16);
+  await r.press("Approve"); await until(() => r.logs.some(line => line.includes("decision=failed")), "the changed-generation refusal");
+  assert.ok(!r.calls.some(call => call?.approve));
+  assert.ok(r.notices.some(text => text.includes("Make a new pairing code")));
+});
+
+test("suite2 creator cutover during native sealing refuses the stale root before approval HTTP", async t => {
+  const r = await prompt(t); await r.ask();
+  const subtle = crypto.subtle, original = subtle.encrypt.bind(subtle), descriptor = Object.getOwnPropertyDescriptor(subtle, "encrypt");
+  const require = createRequire(import.meta.url), c = require("../build/crypto.js"), { accountRecovery } = require("../build/accountRecovery.js");
+  let moved = false;
+  subtle.encrypt = async (...args) => {
+    const output = await original(...args);
+    if (!moved && args[0].name === "AES-CTR") {
+      moved = true;
+      const state = r.modal.plugin.state, nextRoot = "ef".repeat(32), nextGeneration = (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(nextRoot)))).fileId;
+      await state.stageRotation(nextRoot, { lineage: r.generation, operation: "23".repeat(16), oldGeneration: r.generation, newGeneration: nextGeneration,
+        targetDeviceId: null, recoveryVerifier: (await accountRecovery(nextRoot)).verifier });
+      await state.rotationPhase("prepare_unknown");
+      await state.markRotationPrepared({ cutoff: 0, inventoryHash: "11".repeat(32), inventoryHeads: 0 });
+      await state.rotationPhase("seeding");
+      await state.markRotationCommit({ catalogPages: 0, catalogHash: "22".repeat(32) });
+      await state.activateRotation();
+    }
+    return output;
+  };
+  t.after(() => { if (descriptor) Object.defineProperty(subtle, "encrypt", descriptor); else delete subtle.encrypt; });
+  await r.press("Approve"); await until(() => r.logs.some(line => /decision=(approved|failed)/.test(line)), "the post-seal current-root decision");
+  assert.equal(moved, true); assert.ok(!r.calls.some(call => call?.approve), "stale ciphertext never reaches approval HTTP");
+  assert.ok(r.notices.some(text => text.includes("Make a new pairing code")));
 });

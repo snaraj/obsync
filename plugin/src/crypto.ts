@@ -518,6 +518,17 @@ export async function encryptManifest(
   return { nonce, ciphertext };
 }
 
+export function decryptManifestBytes(
+  manifestKey: Bytes,
+  fileId: string,
+  versionId: string,
+  nonce: Bytes,
+  ciphertext: Bytes,
+): Promise<Bytes> {
+  return aesGcmDecrypt(manifestKey, nonce, ciphertext, manifestAad(fileId, versionId));
+}
+
+
 export async function decryptManifest(
   manifestKey: Bytes,
   fileId: string,
@@ -526,7 +537,7 @@ export async function decryptManifest(
   ciphertext: Bytes,
 ): Promise<string> {
   return fromUtf8(
-    await aesGcmDecrypt(manifestKey, nonce, ciphertext, manifestAad(fileId, versionId)),
+    await decryptManifestBytes(manifestKey, fileId, versionId, nonce, ciphertext),
   );
 }
 

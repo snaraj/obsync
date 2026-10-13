@@ -110,7 +110,7 @@ fn version(
         sids: sids.to_vec(),
         bytes: 1,
         manifest_ct: manifest,
-        manifest_nonce: [1u8; 12],
+        manifest_seal: crate::storage::ManifestSeal::Legacy([1u8; 12]),
         device_id: setup.device,
         deleted,
     }
@@ -1087,7 +1087,7 @@ fn a_journal_that_already_holds_more_heads_than_the_ceiling_replays_unchanged() 
                 sids: Vec::new(),
                 bytes: 1,
                 manifest_ct: manifest,
-                manifest_nonce: [1u8; 12],
+                manifest_seal: crate::storage::ManifestSeal::Legacy([1u8; 12]),
                 device_id: setup.device,
                 ts: UnixMs::now(),
                 deleted: false,
@@ -1909,7 +1909,7 @@ fn a_crash_mid_journal_costs_only_the_torn_frame() {
             sids: vec![sid],
             bytes: 1,
             manifest_ct: manifest,
-            manifest_nonce: [1u8; 12],
+            manifest_seal: crate::storage::ManifestSeal::Legacy([1u8; 12]),
             device_id: device,
             deleted: false,
         })
@@ -4501,6 +4501,7 @@ fn releasing_waiters_answers_a_long_poll_at_once_and_every_later_one() {
 
 fn atomic_setup(proof: Option<&str>, recover_only: bool) -> NewSetup {
     NewSetup {
+        generation: None,
         account_name: "atomic sentinel".into(),
         recovery_verifier: None,
         recovery_proof: proof.map(str::to_string),
@@ -4843,3 +4844,203 @@ fn atomic_setup_recovery_preserves_referenced_blob_usage_and_quota_after_restart
         );
     }
 }
+
+fn suite2_setup(store: &Store) -> SetupOutcome {
+    let mut input = atomic_setup(None, false);
+    input.generation = Some(file(0xb2));
+    input.recovery_verifier = Some(hex::encode(&sha256(&[0xa7; 32])));
+    store.setup_enrolment(input, UnixMs(9)).unwrap()
+}
+
+#[test]
+fn suite2_floor_setup_recovery_publication_and_snapshot_are_durable() {
+    let dir = TempDir::new("suite2-floor-durable");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    let enrolled = suite2_setup(&store);
+    let generation = file(0xb2);
+    assert_eq!(store.index().authority.generation, Some(generation));
+    assert_eq!(
+        store.index().authority.grants[&enrolled.device.device_id].generation,
+        generation
+    );
+    let account = enrolled.device.account_id;
+    let fid = file(0xa2);
+    let ct = vec![0x91; 32];
+    let vid = version_id_of(&fid, &[], &ct, &[]);
+    let mut v = NewVersion {
+        account_id: account,
+        file_id: fid,
+        domain_id: DOMAIN,
+        version_id: vid,
+        parents: vec![],
+        sids: vec![],
+        bytes: 0,
+        manifest_ct: ct,
+        manifest_seal: ManifestSeal::Legacy([0; 12]),
+        device_id: enrolled.device.device_id,
+        deleted: false,
+    };
+    assert!(matches!(
+        store.append_version(v.clone()),
+        Err(StoreError::AuthorityRefused("suite_required"))
+    ));
+    v.manifest_seal = ManifestSeal::Suite2;
+    store.append_version(v).unwrap();
+    assert_eq!(store.index().files[&fid].generation, Some(generation));
+    assert!(matches!(
+        store.setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), true), UnixMs(10)),
+        Err(StoreError::AuthorityRefused("suite_required"))
+    ));
+    let mut wrong = atomic_setup(Some(&"a7".repeat(32)), true);
+    wrong.generation = Some(file(0xb3));
+    assert!(matches!(
+        store.setup_enrolment(wrong, UnixMs(10)),
+        Err(StoreError::AuthorityRefused("generation_mismatch"))
+    ));
+    let mut input = atomic_setup(Some(&"a7".repeat(32)), true);
+    input.generation = Some(generation);
+    let recovered = store.setup_enrolment(input, UnixMs(10)).unwrap();
+    assert!(recovered.recovered);
+    store.snapshot().unwrap();
+    drop(store);
+    let restored = open(&cfg);
+    assert!(restored.index().authority.floor2());
+    assert_eq!(restored.index().files[&fid].generation, Some(generation));
+    assert_eq!(
+        restored.device_secret(&recovered.device.device_id),
+        Some([0x59; 32])
+    );
+    assert_eq!(
+        restored.file(&fid).unwrap().versions[0].manifest_seal,
+        ManifestSeal::Suite2
+    );
+    assert!(cfg.journal_dir.join("v1/journal/000000.log").exists());
+}
+
+#[test]
+fn suite2_floor_refuses_implicit_promotion_of_legacy_recovery() {
+    let dir = TempDir::new("suite2-migration-required");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    store.setup("legacy").unwrap();
+    store
+        .register_recovery(&hex::encode(&sha256(&[0xa7; 32])), UnixMs(7))
+        .unwrap();
+    let seq = store.head_seq();
+    let mut recovery = atomic_setup(Some(&"a7".repeat(32)), true);
+    recovery.generation = Some(file(0xb2));
+    assert!(matches!(
+        store.setup_enrolment(recovery, UnixMs(9)),
+        Err(StoreError::AuthorityRefused("migration_required"))
+    ));
+    assert_eq!(store.head_seq(), seq);
+    assert!(!store.index().authority.floor2());
+    assert!(store.devices().is_empty());
+    assert!(!cfg.journal_dir.join("v1/journal/000000.log").exists());
+}
+
+#[test]
+fn suite2_floor_marker_failures_keep_durable_authority_and_restart_completes_barrier() {
+    for phase in [
+        FloorPhase::Write,
+        FloorPhase::Sync,
+        FloorPhase::Publish,
+        FloorPhase::DirSync,
+    ] {
+        let dir = TempDir::new("suite2-floor-fault");
+        let cfg = config(&dir);
+        let store = open(&cfg);
+        store.set_fault(Fault::FloorMarkerErrno {
+            code: 28,
+            at: phase,
+        });
+        let mut input = atomic_setup(None, false);
+        input.generation = Some(file(0xb2));
+        input.recovery_verifier = Some(hex::encode(&sha256(&[0xa7; 32])));
+        assert!(store.setup_enrolment(input, UnixMs(9)).is_err());
+        assert!(
+            store.index().authority.floor2(),
+            "durable fact reflected, {phase:?}"
+        );
+        assert!(matches!(
+            store.setup_enrolment(atomic_setup(None, true), UnixMs(10)),
+            Err(StoreError::AuthorityRefused("suite_required"))
+        ));
+        assert!(
+            store.snapshot().is_err(),
+            "never compact before barrier, {phase:?}"
+        );
+        drop(store);
+        let restored = open(&cfg);
+        assert!(restored.index().authority.floor2());
+        assert!(restored.journal().floor_ready());
+        assert_eq!(restored.devices().len(), 1);
+        assert_eq!(
+            restored.account().unwrap().recovery_verifier,
+            Some(hex::encode(&sha256(&[0xa7; 32])))
+        );
+    }
+}
+
+#[test]
+fn suite2_floor_crash_after_first_fact_replays_before_creating_marker() {
+    let dir = TempDir::new("suite2-floor-fact-crash");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    store.set_fault(Fault::JournalCrashAfterSync);
+    let mut input = atomic_setup(None, false);
+    input.generation = Some(file(0xb2));
+    input.recovery_verifier = Some(hex::encode(&sha256(&[0xa7; 32])));
+    assert!(store.setup_enrolment(input, UnixMs(9)).is_err());
+    assert!(store.account().is_none());
+    assert!(!cfg.journal_dir.join("v1/journal/000000.log").exists());
+    drop(store);
+    let restored = open(&cfg);
+    assert!(restored.index().authority.floor2());
+    assert_eq!(restored.devices().len(), 1);
+    assert!(restored.journal().floor_ready());
+}
+
+#[test]
+fn suite2_floor_corrupt_or_ambiguous_marker_never_truncates_into_legacy() {
+    let dir = TempDir::new("suite2-floor-corrupt");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    suite2_setup(&store);
+    store.snapshot().unwrap();
+    drop(store);
+    let marker = cfg.journal_dir.join("v1/journal/000000.log");
+    let good = fs::read(&marker).unwrap();
+    for bad in [&good[..good.len() - 1], b"bad marker"] {
+        fs::write(&marker, bad).unwrap();
+        let log = Log::buffered(LogLevel::Debug);
+        let posture = Posture::enforce(&cfg, &log).unwrap();
+        assert!(matches!(
+            Store::open(&cfg, [7; 32], &posture, log),
+            Err(StoreError::Corrupt(_))
+        ));
+        assert_eq!(fs::read(&marker).unwrap(), bad, "no replay truncation");
+    }
+    fs::write(&marker, &good).unwrap();
+    // Keep the software barrier but remove every authority source: refuse,
+    // never infer that marker-only state authorizes a legacy account.
+    for name in ["journal/000001.log", "index"] {
+        let path = cfg.journal_dir.join("v1").join(name);
+        if path.is_dir() {
+            fs::remove_dir_all(&path).unwrap();
+            fs::create_dir(&path).unwrap();
+        } else {
+            fs::remove_file(path).unwrap();
+        }
+    }
+    let log = Log::buffered(LogLevel::Debug);
+    let posture = Posture::enforce(&cfg, &log).unwrap();
+    assert!(matches!(
+        Store::open(&cfg, [7; 32], &posture, log),
+        Err(StoreError::Corrupt(_))
+    ));
+    assert_eq!(fs::read(&marker).unwrap(), good);
+}
+
+mod rotation;

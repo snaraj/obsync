@@ -753,7 +753,8 @@ test("a note counted while its debounce was in flight stops counting when that d
   d.engine.context.forked.add(Q);
   d.engine.changed("Notes/q.md");
   const other = await foreign(r, N18, "Notes/n18.md", "another note\n");
-  await d.timers.run(0, () => r.state.data.lastSeq === other.seq);
+  // The cursor advances inside the page; its final status follows the turn.
+  await d.timers.run(0, () => r.state.data.lastSeq === other.seq && d.engine.pulls === 0 && d.engine.holder === null);
   assert.deepEqual(d.last(), { kind: "syncing", pending: 1 });
 
   await d.timers.run(1000, () => d.engine.pending.size === 0);

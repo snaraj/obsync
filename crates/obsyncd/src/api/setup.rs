@@ -67,21 +67,46 @@ pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
     // it rotates the token before arming recovery. No queued old-token request
     // can cross that boundary. Proof/reset validation is repeated under the
     // journal writer lock, not against a stale account read in this handler.
-    let outcome = app.store.setup_enrolment(
-        NewSetup {
-            account_name,
-            recovery_verifier: recovery,
-            recovery_proof: body
-                .get("recovery_proof")
-                .map(|p| p.as_str().unwrap_or("").to_string()),
-            recover_only,
-            device_name: enrolment.name,
-            platform: enrolment.platform,
-            app_version: enrolment.app_version,
-            secret,
-        },
-        now,
-    )?;
+    let input = NewSetup {
+        generation: setup_generation(&body)?,
+        account_name,
+        recovery_verifier: recovery,
+        recovery_proof: body
+            .get("recovery_proof")
+            .map(|p| p.as_str().unwrap_or("").to_string()),
+        recover_only,
+        device_name: enrolment.name,
+        platform: enrolment.platform,
+        app_version: enrolment.app_version,
+        secret,
+    };
+    let outcome = if let Some(rotation) = body.get("rotation") {
+        let fields = rotation
+            .as_object()
+            .ok_or_else(|| ApiError::bad_request("rotation must be an object"))?;
+        let resume_id = rotation
+            .get("resume_id")
+            .and_then(obsync_core::json::Value::as_str)
+            .filter(|s| {
+                s.len() == 32
+                    && s.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            .ok_or_else(|| ApiError::bad_request("invalid resume_id"))?
+            .to_string();
+        let intent_value = obsync_core::json::Value::Object(
+            fields
+                .iter()
+                .filter(|(k, _)| k != "resume_id")
+                .cloned()
+                .collect(),
+        );
+        let intent = crate::storage::rotation::RotationIntent::parse(&intent_value)
+            .map_err(|_| ApiError::bad_request("invalid rotation intent"))?;
+        app.store.resume_rotation(intent, resume_id, input, now)?
+    } else {
+        app.store.setup_enrolment(input, now)?
+    };
     let record = outcome.device;
     let account_id = record.account_id;
     let recovered = outcome.recovered;
@@ -96,6 +121,10 @@ pub fn create(app: &App, req: &mut Request) -> Result<Response, ApiError> {
             ],
         );
     }
+    let secret = app
+        .store
+        .device_secret(&record.device_id)
+        .ok_or_else(|| ApiError::new(403, "device_revoked", "enrollment credential was retired"))?;
     let secret = obsync_core::hex::encode(&secret);
     app.log.info(
         if recovered {
@@ -132,7 +161,11 @@ fn setup_fields(app: &App, parsed: &Parsed) -> Result<(String, Enrolment), ApiEr
         .ok_or_else(|| ApiError::bad_request("device must be an object"))?;
     // Validated before the account is created, so a malformed platform
     // cannot leave an account behind that no device can ever reach.
-    let enrolment = devices::enrolment_fields(device)?;
+    let mut enrolment = devices::enrolment_fields(device)?;
+    if device.get("seal_suite").is_some() {
+        return Err(ApiError::bad_request("seal_suite is top-level"));
+    }
+    enrolment.suite2 = devices::seal_suite(body)?;
 
     // The TOKEN first, and the account afterwards. Both refusals are
     // documented and both still happen; what changes is what an
@@ -153,6 +186,14 @@ fn setup_fields(app: &App, parsed: &Parsed) -> Result<(String, Enrolment), ApiEr
 /// `409 already_set_up` when no setup token is outstanding, and
 /// `401 bad_setup_token` when this one does not match.
 fn check_token(app: &App, token: &Credential) -> Result<(), ApiError> {
+    compare_token(app, token.as_str())
+}
+
+/// The same owner-token comparison after device HMAC verified its bounded body.
+pub(super) fn owner_token(app: &App, body: &obsync_core::json::Value) -> Result<(), ApiError> {
+    compare_token(app, render::field_str(body, "setup_token")?)
+}
+fn compare_token(app: &App, token: &str) -> Result<(), ApiError> {
     let expected = app
         .setup_token
         .as_deref()
@@ -161,7 +202,7 @@ fn check_token(app: &App, token: &Credential) -> Result<(), ApiError> {
     app.bodies
         .at_token_check
         .store(app.preauth_held(), std::sync::atomic::Ordering::SeqCst);
-    if !ct::eq(expected.as_bytes(), token.as_str().as_bytes()) {
+    if !ct::eq(expected.as_bytes(), token.as_bytes()) {
         app.log.warn(
             "setup_refused",
             &[("decision", Val::word("bad_setup_token"))],
@@ -175,11 +216,29 @@ fn check_token(app: &App, token: &Credential) -> Result<(), ApiError> {
     Ok(())
 }
 
+fn setup_generation(
+    body: &obsync_core::json::Value,
+) -> Result<Option<crate::types::FileId>, ApiError> {
+    match body.get("seal_suite") {
+        None if body.get("generation").is_none() => Ok(None),
+        Some(suite) if suite.as_u64() == Some(2) => Ok(Some(render::file_id(render::field_str(
+            body,
+            "generation",
+        )?)?)),
+        _ => Err(ApiError::bad_request(
+            "setup requires seal_suite:2 and generation, or neither for legacy migration",
+        )),
+    }
+}
+
 /// Public, state-independent discovery. It makes no suite-floor claim.
 pub fn capabilities() -> Response {
     Response::json(
         200,
-        &obj(vec![("recover_only", obsync_core::json::Value::Bool(true))]),
+        &obj(vec![
+            ("recover_only", obsync_core::json::Value::Bool(true)),
+            ("seal_suite", obsync_core::json::Value::Int(2)),
+        ]),
     )
 }
 
@@ -194,7 +253,14 @@ pub fn account(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Resp
         .account()
         .ok_or_else(|| ApiError::new(409, "not_set_up", "no account exists yet"))?;
     let device_count = app.store.working_device_count();
-    Ok(Response::json(200, &render::account(&record, device_count)))
+    let mut value = render::account(&record, device_count);
+    if let Some(generation) = app.store.current_generation()
+        && let obsync_core::json::Value::Object(fields) = &mut value
+    {
+        fields.push(("seal_suite".into(), obsync_core::json::Value::Int(2)));
+        fields.push(("generation".into(), s(&generation.to_string())));
+    }
+    Ok(Response::json(200, &value))
 }
 
 fn verifier_field(body: &obsync_core::json::Value, field: &str) -> Result<String, ApiError> {

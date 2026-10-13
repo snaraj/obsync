@@ -41,25 +41,22 @@
  * 8 MiB window beside it.
  */
 
-import type { SyncContext } from "./engine";
+import { sealScope, type SyncContext } from "./engine";
+import { encryptChunk2, openRecord, sealRecord } from "../seal2";
+import { readManifestSeal2 } from "../sealWire";
 import { GRAVES_MAX, type FileRecord as FileState } from "../state";
 import { CHUNK_MAX, chunkStream } from "../chunker";
 import {
   Bytes,
   base64,
   concat,
-  contentVersionId,
-  decryptManifest,
-  encryptChunk,
-  encryptFolderManifest,
-  encryptManifest,
   folderFileId,
   hex,
   randomBytes,
   sha256,
-  unbase64,
   unhex,
   versionId,
+  utf8,
 } from "../crypto";
 import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } from "../transport";
 import { SyncFolders, assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
@@ -90,6 +87,8 @@ export interface ManifestChunk {
 }
 
 export interface Manifest {
+  /** Authenticated old file (16 bytes) plus version (32 bytes), lowercase hex. */
+  migration_origin?: string;
   v: 1;
   path: string;
   size: number;
@@ -109,6 +108,7 @@ export interface Manifest {
 
 /** Encrypted coordination only; old plugins refuse v3 without touching a note. */
 export interface PauseManifest {
+  migration_origin?: string;
   v: 3;
   kind: "pause";
   path: string;
@@ -141,6 +141,7 @@ export interface PauseManifest {
  * folder byte-identical — see `encryptFolderManifest`.
  */
 export interface FolderManifest {
+  migration_origin?: string;
   v: 2;
   kind: "directory";
   path: string;
@@ -280,7 +281,7 @@ async function sendChunks(context: SyncContext, path: string, size: number, plan
       await Promise.allSettled(landing);
       throw new ApiError(0, "cancelled", "sync stopped on this device");
     }
-    const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
+    const { cid, sid, ciphertext } = await encryptChunk2(context.domainKey, sealScope(context), plaintext);
     plan.push({ sid, cid: hex(cid), len: plaintext.length });
     // A chunk a file repeats is asked about and sent once.
     if (asked.has(sid)) continue;
@@ -459,7 +460,7 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
           saved.length === plaintext.length && saved.every((byte, index) => byte === plaintext[index]);
       }
     }
-    const { cid, sid, ciphertext } = await encryptChunk(context.domainKey, plaintext);
+    const { cid, sid, ciphertext } = await encryptChunk2(context.domainKey, sealScope(context), plaintext);
     plan.push({ sid, cid: hex(cid), len: plaintext.length });
     plaintextHash = hex(await sha256(plaintext));
     single = ciphertext;
@@ -930,14 +931,8 @@ export async function postManifest(
   // the post: a rename, a tombstone and a folder record reach here without
   // the host's `syncable`, and any of them publishes that vault's changes.
   if (await context.host.inNestedVault(manifest.path)) throw new VaultPathError("nested_vault");
-  const binder = await contentVersionId(fileId, parents, sids);
-  const seal = manifest.v === 2 ? encryptFolderManifest : encryptManifest;
-  const { nonce, ciphertext } = await seal(
-    context.manifestKey,
-    fileId,
-    binder,
-    JSON.stringify(manifest),
-  );
+  const scope = sealScope(context);
+  const ciphertext = await sealRecord(context.manifestKey, 1, { ...scope, fileId, parents, sids }, utf8(JSON.stringify(manifest)));
   const id = await versionId(fileId, parents, ciphertext, sids);
   const post = {
     version_id: id,
@@ -949,7 +944,7 @@ export async function postManifest(
     // item 4). It is a random id; without the owner-only map it names no path.
     domain_id: context.domainId,
     manifest_ct: base64(ciphertext),
-    manifest_nonce: hex(nonce),
+    seal_suite: 2 as const,
     deleted: manifest.deleted,
     accept_existing: acceptExisting,
   };
@@ -1023,16 +1018,9 @@ async function sameOperation(
     const file = await context.transport.getFile(fileId);
     const version = file.versions.find((candidate) => candidate.version_id === answered);
     if (version === undefined) return false;
-    const binder = await contentVersionId(fileId, version.parents, version.sids);
-    const theirs = JSON.parse(
-      await decryptManifest(
-        context.manifestKey,
-        fileId,
-        binder,
-        unhex(version.manifest_nonce),
-        unbase64(version.manifest_ct),
-      ),
-    ) as Partial<Manifest | PauseManifest>;
+    const theirs = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await openRecord(
+      context.manifestKey, 1, { ...sealScope(context), fileId, parents: version.parents, sids: version.sids },
+      readManifestSeal2(version)))) as Partial<Manifest | PauseManifest>;
     return (
       theirs.path === manifest.path &&
       theirs.size === manifest.size &&

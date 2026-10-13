@@ -16,36 +16,34 @@ import { App, Modal, Setting, type TextComponent } from "obsidian";
 import type ObsyncPlugin from "../main";
 import type { LeaveChoice, LeaveRefusal } from "../main";
 import { RECOVERY_MISMATCH } from "../accountRecovery";
+import { encodeRecoveryBackup, parseRecoveryBackup } from "../recoveryBackup";
 import { formatBytes } from "../policy";
-import { KEYS_LOST } from "../state";
+import { KEYS_LOST, StateStorageError } from "../state";
 import { RECENT_MAX, titles, type NoticeKind } from "../notices";
 import { RemoteOnlyKind, remoteOnlyList, unwritableText } from "../sync/pull";
 import {
   PAIRING_WINDOW_MS,
-  PHRASE_WORDS,
   PairingKeyExchange,
   PairingVault,
   PendingClaim,
-  VaultEnvelope,
+  VaultEnvelope2,
+  checkedEnvelope2,
   decodePairingCode,
   encodePairingCode,
-  entropyFromPhrase,
   keptCommitment,
   keptOutcome,
   matchCodeV2,
   newPairingKeyExchange,
   newPairingSecret,
-  newVaultKey,
-  normalisePhrase,
-  openEnvelopeV2,
-  openPairingVault,
-  sealPairingVault,
+  openEnvelope2,
+  openPairingVault2,
+  sealPairingVault2,
   pairingCommitment,
   pairingLink,
   platformLabel,
   recoveryPhrase,
   refusalText,
-  sealEnvelopeV2,
+  sealEnvelope2,
   serverPairsV2,
 } from "../pairing";
 import { Bytes, hex, unhex } from "../crypto";
@@ -207,7 +205,7 @@ const CLAIM_ENDED: Record<string, string> = {
   unverified: "The other device's key does not match the code this device was given, so pairing stopped and nothing was shared. Someone may have changed it on the way: choose Reject on the other device, then make a new code there with Pair a new device and type it here.",
   declined: "Pairing cancelled: nothing was uploaded, and this device was removed from the server again.",
 };
-const STILL_LISTED = " obsync could not remove this device from the server again: revoke it from the other device's Devices list.";
+const STILL_LISTED = " The server may still list this device. obsync could not remove this device from the server again: revoke it from the other device's Devices list.";
 const V2_WAITING =
   "Waiting for your other device. When it asks you to approve this device, a code appears here: approve there only if both screens show the same code.";
 const CLAIMING = "Claiming the pairing…";
@@ -252,6 +250,7 @@ export class PairCreateModal extends Modal {
   private asking: string | null = null;
   /** Approved, and not yet seen collected or ended. */
   private collecting = false;
+  private creatorGeneration: string | null = null;
 
   constructor(
     app: App,
@@ -280,6 +279,8 @@ export class PairCreateModal extends Modal {
   private async run(): Promise<void> {
     const introEl = this.contentEl.createEl("p", { text: "Checking your obsync server…" });
     try {
+      const root = await this.activeEnvelope();
+      this.creatorGeneration = root.generation;
       // SAID EARLY (owner ruling, 2026-09-29). A server older than 1.1.5
       // drops the key exchange, so a code made through it could never pair a
       // 1.1.5 device: the two screens would only show different numbers. The
@@ -294,7 +295,7 @@ export class PairCreateModal extends Modal {
         return;
       }
       introEl.setText(PAIR_INTRO);
-      const pairing = value(await this.plugin.transport.pairingCreate(), "creating a pairing");
+      const pairing = value(await this.plugin.transport.pairingCreate2(), "creating a pairing");
       const secret = newPairingSecret();
       // THE KEY BEFORE THE CODE (review of PR #306): the code commits to this
       // device's key, which goes out only once a claim is fixed (`approve`).
@@ -340,6 +341,23 @@ export class PairCreateModal extends Modal {
     }
   }
 
+  private async activeEnvelope(): Promise<VaultEnvelope2> {
+    const state = this.plugin.state;
+    state.assertAvailable();
+    const pin = state.custody2();
+    if (!state.paired || pin?.phase !== "active" || pin.rotation !== null || pin.enrollment !== null || pin.initializeMap) throw new Error("This device has no ready current vault generation. Finish setup or migration before pairing another device.");
+    const envelope = await checkedEnvelope2({ v: 2, vrk: state.data.vrk, generation: pin.generation });
+    this.requireCurrentEnvelope(envelope);
+    return envelope;
+  }
+
+  private requireCurrentEnvelope(envelope: VaultEnvelope2): void {
+    const state = this.plugin.state, pin = state.custody2();
+    state.assertAvailable();
+    if (!state.paired || pin?.phase !== "active" || pin.rotation !== null || pin.enrollment !== null || pin.initializeMap ||
+      pin.generation !== envelope.generation || state.data.vrk !== envelope.vrk) throw new Error("The current vault generation changed. Make a new pairing code and compare both devices again.");
+  }
+
   /**
    * Ask about one claim: its name, what it is, when it arrived and the code
    * its own screen shows (issue #152). A claim whose sealed vault details do
@@ -357,16 +375,14 @@ export class PairCreateModal extends Modal {
     const asked = new Date();
     this.asking = pairingId;
     let vault: PairingVault | null = null;
-    if (claimant.vault !== undefined) {
-      try {
-        vault = await openPairingVault(secret, pairingId, claimant.vault);
-      } catch {
-        if (this.asking !== pairingId) return;
-        this.asking = null;
-        statusEl.setText(MISMATCH);
-        await this.refuse(pairingId, "code_mismatch", null);
-        return;
-      }
+    try {
+      vault = await openPairingVault2(secret, pairingId, claimant.vault);
+    } catch {
+      if (this.asking !== pairingId) return;
+      this.asking = null;
+      statusEl.setText(MISMATCH);
+      await this.refuse(pairingId, "code_mismatch", null);
+      return;
     }
     // ONE WAY ONLY (review of PR #306). A claim without a key is a device
     // before 1.1.5, or a key stripped on the way, and the two look the same:
@@ -433,13 +449,14 @@ export class PairCreateModal extends Modal {
     if (this.asking !== pairingId) return;
     this.asking = null;
     try {
-      const vrk = this.plugin.state.data.vrk;
-      if (!vrk) throw new Error("This device holds no vault key, so it cannot pair another. Restore its recovery phrase first.");
+      const envelope = await this.activeEnvelope();
+      if (envelope.generation !== this.creatorGeneration) throw new Error("The current vault generation changed. Make a new pairing code and compare both devices again.");
       // Under the ephemeral P-256 agreement with the key this device fixed and
       // compared (`approve` asks only about a claim that carries one), so a
       // captured code alone opens nothing.
-      const sealed = await sealEnvelopeV2(kex, claimant.claimant_pub as string, secret, pairingId, { vrk });
-      value(await this.plugin.transport.pairingApprove(pairingId, sealed.envelope, sealed.nonce), "approving the new device");
+      const sealed = await sealEnvelope2(kex, claimant.claimant_pub as string, secret, pairingId, envelope);
+      this.requireCurrentEnvelope(envelope);
+      value(await this.plugin.transport.pairingApprove2(pairingId, sealed), "approving the new device");
       this.plugin.log("pairing role=creator decision=approved");
       // DONE HERE ONCE THE APPROVAL LANDS (1.1.5): what is left is the new
       // device's to do, so this dialog closes, and the rest is watched
@@ -578,6 +595,7 @@ export interface Waiting {
    * `plugin.waiting`) but not a restart.
    */
   keyExchange: { kex: PairingKeyExchange; commitment: Bytes };
+  replacementGeneration: string | null;
 }
 
 /** Start waiting on a claim, collecting in the background. */
@@ -587,8 +605,9 @@ export function awaitApproval(
   claim: PendingClaim,
   show: (text: string) => void,
   keyExchange: Waiting["keyExchange"],
+  replacementGeneration: string | null = null,
 ): Waiting {
-  const waiting: Waiting = { claim, code: null, show, stop: false, done: Promise.resolve(false), background: false, keyExchange };
+  const waiting: Waiting = { claim, code: null, show, stop: false, done: Promise.resolve(false), background: false, keyExchange, replacementGeneration };
   plugin.waiting = waiting;
   waiting.done = collect(plugin, app, waiting);
   return waiting;
@@ -663,6 +682,7 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting): Promis
   let active = false;
   // Once the key is kept this device is paired, and nothing takes it back.
   let kept = false;
+  let replaced = false;
   // The creator key this claim holds to: revealed, checked against the
   // code's commitment, and from then on the only one it accepts.
   let creatorKey: string | null = null;
@@ -707,16 +727,31 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting): Promis
       // envelope is handed over exactly once, so a lost answer has spent it.
       active = true;
       const sealed = value(sent, "collecting the sealed vault key");
-      let envelope: VaultEnvelope;
+      let envelope: VaultEnvelope2;
       try {
         // Only under the key the code committed to: an envelope without one
         // is refused, never opened some weaker way.
-        envelope = await openEnvelopeV2(v2.kex, await holdCreator(sealed.creator_pub), secret, claim.pairingId, sealed.envelope, sealed.nonce);
+        envelope = await openEnvelope2(v2.kex, await holdCreator(sealed.creator_pub), secret, claim.pairingId, sealed);
       } catch (error) {
         throw error instanceof ClaimEnded ? error : new ClaimEnded("unopened");
       }
       assertCurrent();
       if (waiting.stop) throw new ClaimEnded("superseded");
+      // Only a rootless legacy stranded enrollment may be cleared here.
+      // Its ID is retained for the existing post-adoption revocation.
+      const stranded = waiting.replacementGeneration === null && state.data.vrk === null && state.custody2() === null ? state.data.deviceId : null;
+      if (stranded !== null) {
+        state.data.deviceId = null;
+        state.data.deviceSecret = null;
+        await state.save();
+        assertCurrent();
+      }
+      if (waiting.replacementGeneration !== null) {
+        await state.stageReplacementEnrollment2(envelope.vrk, "pair", waiting.replacementGeneration);
+        waiting.replacementGeneration = null;
+        replaced = true;
+      } else await state.stageEnrollment2(envelope.vrk, "pair");
+      assertCurrent();
       // BEFORE THE KEY IS KEPT, because a kept key starts the first sync,
       // and that sync publishes every note here to every device syncing
       // the vault (issue #141). A copy of the same vault holds nothing new
@@ -724,7 +759,7 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting): Promis
       // The approval has happened, and the dialog says so while it compares:
       // a phone with 6,069 files read "Waiting for approval" for 62 s (#236).
       waiting.show("Approved. Comparing the notes here with your server's vault before anything is sent. A large vault takes a minute.");
-      const unknown = await plugin.notesUnknownTo(envelope.vrk);
+      const unknown = await plugin.notesUnknownTo2(envelope.vrk, envelope.generation, transport);
       assertCurrent();
       if (unknown > 0 && !(await confirmFirst(
         app,
@@ -738,14 +773,10 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting): Promis
       }
       // A credential an older pairing left without a key is replaced here;
       // it is revoked once this one can sign for it.
-      const stranded = state.data.vrk === null ? state.data.deviceId : null;
-      state.data.deviceId = claim.deviceId;
-      state.data.deviceSecret = claim.deviceSecret;
       // Another vault's key is a phrase this device has not confirmed, as
       // `adoptVaultKey` has it (issue #170).
       if (state.data.vrk !== envelope.vrk) state.data.recoveryPhrase = "unconfirmed";
-      state.data.vrk = envelope.vrk;
-      await state.save();
+      await state.adoptSuite2({ root: envelope.vrk, generation: envelope.generation, deviceId: claim.deviceId, deviceSecret: claim.deviceSecret, purpose: "pair" });
       assertCurrent();
       kept = true;
       plugin.waiting = null;
@@ -753,6 +784,7 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting): Promis
         const retired = await transport.revokeDevice(stranded).catch(() => null);
         plugin.log(`pairing role=claimant decision=${retired?.outcome === "ok" ? "revoked" : "kept"} reason=stranded_enrolment`);
       }
+      if (replaced) plugin.finishReplacementPairing();
       await plugin.restartEngine();
       plugin.log(`pairing role=claimant decision=paired duration_ms=${Date.now() - started}`);
       tell(plugin, "this device is paired, and its first sync is running.");
@@ -769,7 +801,7 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting): Promis
     let stale = false;
     try { assertCurrent(); } catch { stale = true; }
     if (stale || kept) {
-      tell(plugin, refusalText(error), "error");
+      tell(plugin, refusalText(error) + (active && !kept && error instanceof StateStorageError ? STILL_LISTED : ""), "error");
       return kept;
     }
     let text = Object.hasOwn(CLAIM_ENDED, reason) ? CLAIM_ENDED[reason] as string : `${refusalText(error)} ${PAIR_AGAIN}`;
@@ -808,6 +840,7 @@ export class PairClaimModal extends Modal {
     private readonly plugin: ObsyncPlugin,
     code?: string,
     private readonly afterClose: () => void = () => undefined,
+    private replacementGeneration: string | null = null,
   ) {
     super(app);
     this.code = code ?? "";
@@ -869,7 +902,7 @@ export class PairClaimModal extends Modal {
     // sync against another server's records doubled the vault. Leaving first
     // clears all three; a pairing link opened here, even one this device
     // made, claims nothing.
-    const paired = alreadyPaired(this.plugin);
+    const paired = this.replacementGeneration === null ? alreadyPaired(this.plugin) : null;
     if (paired !== null) {
       this.plugin.log("pairing role=claimant decision=refused reason=already_paired");
       fail(this.plugin, new Error(paired));
@@ -895,7 +928,7 @@ export class PairClaimModal extends Modal {
       const { state, transport, assertCurrent } = this.plugin.captureSession();
       const parsed = decodePairingCode(this.code);
       const name = await this.plugin.nameThisDevice();
-      const vault = await sealPairingVault(parsed.pairingSecret, parsed.pairingId, {
+      const vault = await sealPairingVault2(parsed.pairingSecret, parsed.pairingId, {
         name: this.app.vault.getName(), notes: this.app.vault.getMarkdownFiles().length,
       });
       // A fresh key for this claim; the code's commitment (read out of band,
@@ -904,7 +937,7 @@ export class PairClaimModal extends Modal {
       assertCurrent();
       if (this.closed) return;
       const credential = value(
-        await transport.pairingClaim(parsed.pairingId, parsed.enrollToken, {
+        await transport.pairingClaim2(parsed.pairingId, parsed.enrollToken, {
           name,
           platform: this.plugin.platformName(),
           app_version: this.plugin.manifest.version,
@@ -928,7 +961,8 @@ export class PairClaimModal extends Modal {
         deviceSecret: credential.device_secret,
         serverUrl: state.data.serverUrl,
         claimedAt: Date.now(),
-      }, (text) => this.show(text), keyExchange);
+      }, (text) => this.show(text), keyExchange, this.replacementGeneration);
+      this.replacementGeneration = null;
       const done = this.waiting.done;
       if (this.closed) this.handOff();
       if (await done) this.close();
@@ -1184,7 +1218,7 @@ export class AccountSetupModal extends Modal {
   constructor(app: App, private readonly plugin: ObsyncPlugin) { super(app); }
   override onOpen(): void {
     this.setTitle("Set up or recover this account");
-    this.contentEl.createEl("p", { text: "Enter this server’s setup token. An existing account also requires the vault key retained on this device, or its restored 24-word recovery phrase. An empty server uses this vault’s key." });
+    this.contentEl.createEl("p", { text: "Enter this server’s setup token. To recover an existing vault, first stage its complete recovery backup. First setup creates a new vault on an empty server." });
     let token = "";
     const clear = secretText(new Setting(this.contentEl).setName("Setup token"), "Setup token", "", (value) => { token = value.trim(); });
     new Setting(this.contentEl)
@@ -1198,174 +1232,143 @@ export class AccountSetupModal extends Modal {
           if (this.plugin.state.data.deviceId !== null) this.close();
         });
       }));
+    if (this.plugin.state.stagedEnrollment2()?.purpose === "new") {
+      this.contentEl.createEl("p", { text: "If this device's first setup lost its response, recover that attempt using the same staged key. This action refuses an empty server and does not create a replacement vault." });
+      new Setting(this.contentEl).addButton(button => button.setButtonText("Recover interrupted first setup").onClick(() => {
+        const typed = token; token = "";
+        void this.plugin.setUpAccount(typed, "obsync", "recover-first-setup").then(() => {
+          clear();
+          if (this.plugin.state.data.deviceId !== null) this.close();
+        });
+      }));
+    }
   }
   override onClose(): void { this.contentEl.empty(); }
 }
 
-/** What a device that has not confirmed its 24 words is told, wherever it is told (issue #170). */
+/** The format marker is part of the backup, not optional display text. */
 export const RECOVERY_UNCONFIRMED =
-  "Not confirmed — Show and confirm. Write the 24 words down, away from this device, and type three of them back: without them and without a paired device this vault cannot be recovered.";
+  "Not confirmed — Show and confirm. Keep the complete recovery backup, including its format marker, away from this device.";
 
-/**
- * Show the recovery phrase and make the user prove they wrote it down: three
- * words, by position, before the dialog will close as confirmed. The phrase
- * is the only way back into a vault whose devices are all gone.
- *
- * THE DEVICE REMEMBERS THE ANSWER (issue #170). Passing the check records
- * it. Closing a dialog opened to confirm -- Escape, the cross, a tap outside
- * -- records a skip, which the next start mentions ONCE; Settings and Show
- * sync status say "not confirmed" until the check is passed. The check is
- * offered whenever this device has not passed it, however the dialog opened.
- */
 export class RecoveryPhraseModal extends Modal {
-  constructor(
-    app: App,
-    private readonly plugin: ObsyncPlugin,
-    private readonly confirmFirst: boolean,
-    private readonly afterClose: () => void = () => undefined,
-  ) {
-    super(app);
-  }
-
-  override onOpen(): void {
-    this.setTitle("Recovery phrase");
-    void this.render();
-  }
-
-  override onClose(): void {
-    this.contentEl.empty();
-    const data = this.plugin.state.data;
-    if (this.confirmFirst && data.vrk !== null && data.recoveryPhrase !== "confirmed") {
-      data.recoveryPhrase = "skipped";
-      this.plugin.log("phrase decision=skipped");
-      void this.plugin.state.save().catch(() => {});
-    }
-    this.afterClose();
-  }
-
-  private async render(): Promise<void> {
-    const vrk = this.plugin.state.data.vrk;
-    if (!vrk) {
-      this.contentEl.createEl("p", { text: "This device holds no vault key yet." });
-      return;
-    }
-    const words = await recoveryPhrase(unhex(vrk));
-    this.contentEl.createEl("p", {
-      text: "Write these 24 words down and keep them off this device. Anyone with them can read this vault; without them and without a paired device the vault cannot be recovered.",
-    });
-    // A numbered list, laid out by the stylesheet in two columns of twelve.
-    const list = this.contentEl.createEl("ol", { cls: "obsync-phrase" });
-    for (const word of words) list.createEl("li", { text: word });
-    if (!this.confirmFirst && this.plugin.state.data.recoveryPhrase === "confirmed") return;
-
-    const asked = [3, 11, 20];
-    const answers = new Map<number, string>();
-    for (const position of asked) {
-      new Setting(this.contentEl).setName(`Word ${position}`).addText((text) => {
-        literal(text.inputEl);
-        text.onChange((value) => answers.set(position, value.trim().toLowerCase()));
-      });
-    }
-    new Setting(this.contentEl).addButton((button) =>
-      button
-        .setButtonText("I have written it down")
-        .setCta()
-        .onClick(() => {
-          const wrong = asked.filter((position) => answers.get(position) !== words[position - 1]);
-          if (wrong.length > 0) {
-            tell(this.plugin, `word ${wrong.join(", ")} does not match; check the list again.`);
-            return;
-          }
-          this.plugin.state.data.recoveryPhrase = "confirmed";
-          this.plugin.log("phrase decision=confirmed");
-          void this.plugin.state.save().catch(() => {});
-          tell(this.plugin, "recovery phrase confirmed.");
-          this.close();
-        }),
-    );
-  }
-}
-
-/** Restore a vault key from its 24 words, or start a brand-new vault. */
-export class VaultKeyModal extends Modal {
-  private phrase = "";
   private opened: object | null = null;
-
-  constructor(
-    app: App,
-    private readonly plugin: ObsyncPlugin,
-  ) {
-    super(app);
-  }
+  private offered: { state: ObsyncPlugin["state"]; root: string; assertCurrent: () => void } | null = null;
+  constructor(app: App, private readonly plugin: ObsyncPlugin, private readonly confirmFirst: boolean,
+    private readonly afterClose: () => void = () => undefined) { super(app); }
 
   override onOpen(): void {
-    const opened = this.opened = {};
-    let session: ReturnType<ObsyncPlugin["captureSession"]>;
-    try { session = this.plugin.captureSession(); }
-    catch (error) { fail(this.plugin, error); return; }
-    const assertCurrent = (): void => {
-      session.assertCurrent();
-      if (this.opened !== opened) throw new Error("This vault-key dialog was closed. Open it again before restoring a key.");
-    };
-    this.setTitle("Vault key");
-    this.contentEl.createEl("p", {
-      text: "Start a new vault key on this device, or restore one from its 24-word recovery phrase. A new key means a new vault: existing devices will not read it.",
-    });
-    new Setting(this.contentEl).setName("Recovery phrase").addTextArea((text) => {
-      literal(text.inputEl);
-      text.setPlaceholder(`${PHRASE_WORDS} words, separated by spaces`).onChange((value) => {
-        this.phrase = value;
-      });
-    });
-    new Setting(this.contentEl)
-      .addButton((button) =>
-        button.setButtonText("Restore").onClick(async () => {
-          try {
-            assertCurrent();
-            const entropy = await entropyFromPhrase(normalisePhrase(this.phrase));
-            assertCurrent();
-            await this.plugin.restoreVaultKey(hex(entropy));
-            assertCurrent();
-            tell(this.plugin, "vault key restored.");
-            this.close();
-          } catch (error) {
-            fail(this.plugin, error);
-          }
-        }),
-      )
-      .addButton((button) =>
-        button.setButtonText("Create a new vault key").onClick(async () => {
-          try {
-            assertCurrent();
-            const vrk = hex(newVaultKey());
-            // A new key opens nothing the server holds: on a server with a
-            // vault it strands every other device (issue #140). Asked first.
-            if (await this.plugin.vaultKeyStrands(vrk) && !(await confirmFirst(
-              this.app,
-              "Create a new vault key?",
-              "The vault on this server was sealed with another key, and a new key cannot open it. Every device " +
-                "syncing that vault would stop receiving this device's changes, and this device would stop receiving " +
-                "theirs. To sync that vault, restore its 24 words or pair from a device that syncs it; a different " +
-                "vault needs a server of its own.",
-              "Create a new key",
-            ))) {
-              this.plugin.log("vaultkey decision=declined reason=strands_vault");
-              return;
-            }
-            assertCurrent();
-            await this.plugin.adoptVaultKey(vrk);
-            assertCurrent();
-            this.close();
-            new RecoveryPhraseModal(this.app, this.plugin, true).open();
-          } catch (error) { fail(this.plugin, error); }
-        }),
-      );
+    this.opened = {};
+    this.setTitle("Recovery backup");
+    void this.render().catch((error: unknown) => fail(this.plugin, error));
   }
 
   override onClose(): void {
     this.opened = null;
     this.contentEl.empty();
+    const offered = this.offered; this.offered = null;
+    if (this.confirmFirst && offered !== null) {
+      try {
+        offered.assertCurrent();
+        const { state, root } = offered;
+        if ((state.stagedEnrollment2()?.root ?? state.data.vrk) === root && state.data.recoveryPhrase !== "confirmed") {
+          state.data.recoveryPhrase = "skipped";
+          this.plugin.log("backup decision=skipped");
+          void state.save().catch((error: unknown) => fail(this.plugin, error));
+        }
+      } catch (error) { fail(this.plugin, error); }
+    }
+    this.afterClose();
   }
+
+  private async render(): Promise<void> {
+    const { state, assertCurrent } = this.plugin.captureSession();
+    const opened = this.opened;
+    const currentRoot = (): string | null => state.stagedEnrollment2()?.root ?? state.data.vrk;
+    const root = currentRoot();
+    if (root === null) { this.contentEl.createEl("p", { text: "This device holds no vault key yet." }); return; }
+    if (state.custody2() === null) {
+      this.contentEl.createEl("p", { text: "This is a legacy vault. Keep its 24 words for legacy history and the explicit encryption upgrade." });
+      const words = await recoveryPhrase(unhex(root));
+      assertCurrent();
+      if (this.opened !== opened) return;
+      this.contentEl.createEl("pre", { text: words.join(" ") });
+      return;
+    }
+    const backup = await encodeRecoveryBackup(unhex(root));
+    assertCurrent();
+    if (this.opened !== opened) return;
+    this.contentEl.createEl("p", { text: "Keep this complete backup, including obsync-recovery-v2, away from this device. Anyone holding it can read this vault. Its format marker is required for recovery." });
+    this.contentEl.createEl("pre", { text: backup });
+    if (!this.confirmFirst && state.data.recoveryPhrase === "confirmed") return;
+    this.offered = { state, root, assertCurrent };
+    let answer = "", saving = false;
+    new Setting(this.contentEl).setName("Read back your saved backup").addTextArea((text) => {
+      literal(text.inputEl); text.onChange((value) => { answer = value; });
+    });
+    new Setting(this.contentEl).addButton((button) => button.setButtonText("Confirm complete backup").setCta().onClick(async () => {
+      if (saving) return;
+      saving = true;
+      try {
+        assertCurrent();
+        const decoded = await parseRecoveryBackup(answer);
+        assertCurrent();
+        if (this.opened !== opened || currentRoot() !== root || hex(decoded) !== root) throw new Error("The saved backup does not match this vault. Keep and read back the complete backup shown here.");
+        state.data.recoveryPhrase = "confirmed";
+        await state.save();
+        assertCurrent();
+        this.plugin.log("backup decision=confirmed");
+        tell(this.plugin, "Complete recovery backup confirmed.");
+        this.close();
+      } catch (error) { fail(this.plugin, error); }
+      finally { saving = false; }
+    }));
+  }
+}
+
+/** Recovery interpretation is explicit; parsing and staging perform no network I/O. */
+export class VaultKeyModal extends Modal {
+  private phrase = "";
+  private opened: object | null = null;
+  constructor(app: App, private readonly plugin: ObsyncPlugin) { super(app); }
+
+  override onOpen(): void {
+    const opened = this.opened = {};
+    let session: ReturnType<ObsyncPlugin["captureSession"]>;
+    try { session = this.plugin.captureSession(); } catch (error) { fail(this.plugin, error); return; }
+    const assertCurrent = (): void => {
+      session.assertCurrent();
+      if (this.opened !== opened) throw new Error("This recovery dialog was closed. Open it again before staging a backup.");
+    };
+    this.setTitle("Vault recovery");
+    this.contentEl.createEl("p", { text: "Stage a complete recovery backup, or explicitly select older 24-word history. Staging does not contact the server or start sync. Use Setup or recover afterward for a current backup; older history requires the encryption upgrade." });
+    new Setting(this.contentEl).setName("Recovery backup").addTextArea((text) => {
+      literal(text.inputEl); text.setPlaceholder("obsync-recovery-v2 followed by 24 words").onChange((value) => { this.phrase = value; });
+    });
+    const stage = async (legacy: boolean): Promise<void> => {
+      try {
+        assertCurrent();
+        if (legacy) await this.plugin.stageLegacyHistoryBackup(this.phrase, assertCurrent);
+        else await this.plugin.stageRecoveryBackup(this.phrase, assertCurrent);
+        assertCurrent();
+        tell(this.plugin, legacy ? "Legacy history staged. Sync has not started." : "Recovery backup staged. Use Setup or recover to verify this vault on its server.");
+        this.close();
+      } catch (error) { fail(this.plugin, error); }
+    };
+    new Setting(this.contentEl)
+      .addButton((button) => button.setButtonText("Stage current backup").setCta().onClick(() => stage(false)))
+      .addButton((button) => button.setButtonText("Stage legacy history (24 words)").onClick(() => stage(true)));
+    new Setting(this.contentEl).setName("New vault").setDesc("Available only before this device holds a vault key or enrollment.")
+      .addButton((button) => button.setButtonText("Create a new vault key").onClick(async () => {
+        try {
+          assertCurrent();
+          await this.plugin.stageNewVaultKey(assertCurrent);
+          assertCurrent();
+          this.close();
+          new RecoveryPhraseModal(this.app, this.plugin, true).open();
+        } catch (error) { fail(this.plugin, error); }
+      }));
+  }
+  override onClose(): void { this.opened = null; this.contentEl.empty(); }
 }
 
 /**

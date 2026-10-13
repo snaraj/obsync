@@ -1,11 +1,15 @@
-# Device revocation: fresh-root re-enrollment proposal
+# Device revocation: fresh-root re-enrollment contract
 
-**Status: unimplemented proposal; delta independent review pending.**
-This is the revocation candidate for [audit #344](https://github.com/snaraj/obsync/issues/344). No security PASS,
+**Status: implemented candidate; integrated validation and independent review pending.**
+This is the revocation contract for [audit #344](https://github.com/snaraj/obsync/issues/344). No security PASS,
 shipping capability or release assignment follows from this document.
 This delta addresses findings 1, 2, 3 and 7 of the
 [independent checkpoint](https://github.com/snaraj/obsync/issues/344#issuecomment-6131002504);
-its mechanisms and acceptance cases below are specifications, not passing evidence.
+its acceptance cases below are requirements, not passing evidence. Runtime
+entry points are `RotationClient`, `rotationReseal`, the version-2 `State`
+custody transaction and the server's `api/rotation` and `storage/rotation`
+modules. [Run records](../validation-runs/2026-10-12-security-train.md) distinguish
+component, integrated and native observations.
 
 ## Choice and cost
 
@@ -63,7 +67,7 @@ already holds/sees this authentication material; it is not a content identity
 or protection from a malicious server bypassing its own authorization.
 
 Before stopping normal sync irreversibly, generating a new root or saving a
-rotation phase, read `GET /v1/account/rotation/capabilities` with existing
+rotation phase, read `GET /v1/rotation/capabilities` with existing
 device authentication. Require the explicit protocol version supporting owner
 authorization, stable cutoff inventory, paged catalog and atomic coordinator
 transfer; no inference from a general plugin/server version. Missing, malformed
@@ -92,7 +96,9 @@ L = existing lineage, otherwise G_old          // stable local lineage
 O = randomBytes(16)                            // one rotation operation
 ```
 
-Generate a fresh default content domain and fresh ordinary file IDs. Existing
+Derive a fresh default content domain and fresh ordinary file IDs from the
+independent new root, with the fixed rotation labels below so a retry reproduces
+the same destinations. Existing
 folder/conflict IDs and the map's domain ID derive under the new keys. Reuse
 the root/domain/map identity derivations and request signatures; use suite 2's
 separate sealing derivations and counted generation context. Fresh roots and
@@ -124,25 +130,20 @@ derivation. Seal with suite 2's SIV/context and explicit wire variant. No new
 comparison function or asymmetric identity scheme is needed. Compare the codes on
 the two actual device screens; never compare a server/dashboard rendering.
 
-For a rotated vault, the encrypted envelope plaintext is a new strict variant:
+The encrypted envelope plaintext is a strict suite-2 variant:
 
 ```
-{"v":2,"rotation":{"vrk":"<64hex>","lineage":"<32hex>",
- "operation":"<32hex>","previous_map":"<32hex>","current_map":"<32hex>"}}
+{"v":2,"vrk":"<64hex>","generation":"<32hex>"}
 ```
 
-There is deliberately no top-level `vrk`: today's `openEnvelopeV2` refuses
-this variant instead of adopting a key while dropping its generation pin.
-Updated parsing requires `v`, `rotation`, nested `vrk` and `current_map`, and
-rejects unknown fields, invalid hex and a `current_map` unequal to
-`domainMapKeys(vrk).fileId`. The three migration fields `lineage`, `operation`
-and `previous_map` are all present for this normal rotation, or all absent
-for enrollment from a phrase-only recovered root with no migration history.
-Their absence is explicit recovered-state bookkeeping, never permission to
-replace a client's existing pin without confirmation. Legacy `{vrk}` envelopes
-belong only to an explicitly selected old-generation operation. Updated live
-enrollment requires the strict suite-2 variant, including new accounts without
-migration history. A claimant shows “New vault generation;
+The literal suite-2 wire discriminant, absence of a legacy nonce and SIV
+framing prevent the old GCM reader from opening this variant. Updated parsing
+requires exactly `v`, `vrk` and `generation`, rejects unknown fields and invalid
+hex, and requires `generation` to equal `domainMapKeys(vrk).fileId`. Rotation
+operation and lineage are local transition bookkeeping, not pairing authority.
+Legacy envelopes belong only to an explicitly selected old-generation
+operation. Updated live enrollment requires suite 2, including new accounts
+without migration history. A claimant shows “New vault generation;
 pair from the device performing this rotation”, then explicitly accepts the
 authenticated context. A device already pinned to another generation requires
 the migration flow; an ordinary pair/setup reply cannot replace its pin.
@@ -174,21 +175,25 @@ malicious server; neither grants the new root.
 
 ## Local transaction and cutover
 
-Advance both secret-envelope and metadata versions so today's reader rejects
-them (`readEnvelope` and `State.open` currently require version 1). Extend
-this installation's owned secret envelope with one bounded rotation record:
+Both secret-envelope and metadata versions advance to 2 so the pre-transition
+reader rejects them. The installation's
+owned secret envelope carries one bounded rotation record:
 new root, fixed context, phase and its existing initiating credential. Keep
 one old root separately as **history-only**, not as an alternate sync
 credential; before another rotation, preserve older needed history with its
 phrase/ciphertext backup instead of growing an automatic root archive.
-Nonsecret metadata holds progress, new file-ID mapping, a dirty-edit queue and
-the pinned snapshot/catalog. No root, domain, manifest, map or chunk key enters `data.json`, server
+Nonsecret metadata holds the credential revision and generation/phase pin.
+The bounded encrypted record holds the prepared inventory and commit receipts;
+the client deterministically recomputes the seed mapping on resume. Local
+notes remain in place for ordinary reconciliation after activation; no new
+unbounded durable edit queue is introduced. No root, domain, manifest, map or chunk key enters `data.json`, server
 requests, dashboard, CLI, diagnostics or logs. Server API credentials retain
 their existing role and custody; they are not content keys.
 
 The local phases are `draft`, `prepare_unknown`, `prepared`, `seeding`,
-`commit_unknown`, `active` and `blocked`; only `draft` is reversible as described
-above. While prepare is applied or its outcome unknown, no reload, credential
+`commit_unknown` and `active`; only `draft` is reversible as described
+above. A refusal preserves its actual pending phase and displays its reason;
+there is no persisted `blocked` phase that could erase an uncertain outcome. While prepare is applied or its outcome unknown, no reload, credential
 revision fallback, missing map or retry may resume old-root encryption. Missing or
 inconsistent rotation/pin state stops sync; rotated metadata with a missing
 owned secret must not take today's fresh-copy/unpaired fallback. Preserve the
@@ -288,7 +293,7 @@ This changes version journal records, replay and snapshots; suite 2 separately
 changes the explicit version/pairing sealing fields and content encryption.
 An older server reader must refuse the
 new durable format, including compacted snapshots, rather than drop ownership
-or fence state. Old readers currently skip unfamiliar/corrupt snapshots, so a
+or fence state. Pre-transition readers skip unfamiliar/corrupt snapshots, so a
 snapshot field alone cannot establish that barrier. Reserve `000000.log` for
 one immutable CRC-framed `format_floor` marker. First durably append a floor-
 bearing fact with a new record kind; then publish the marker by file fsync,
@@ -348,10 +353,10 @@ limit. Phrase-only recovery need not reconstruct a chain of retirement catalogs.
 
 | Request | Durable semantics |
 | --- | --- |
-| `POST /v1/account/rotation` with the exact intent plus `setup_token` | Device HMAC **and separate owner token** required. Require the recorded current map to match `G_old` (or the permitted first-legacy bootstrap). In the serialized write pipeline, settle prior accepted batches, fence admissions, capture durable cutoff `C`/inventory `H`, then publish the prepare frame referencing that durable snapshot and any first-legacy ownership assignment. Revoke target/close its sessions and links in that same transition. Target must differ from coordinator. The current coordinator's same operation/exact intent returns the same cutoff/snapshot; changed or competing intent is `409 rotation_conflict`. No general recovery-verifier setter or disabled last-device hold. |
-| `GET /v1/account/rotation/{operation}` and its paged inventory | Current coordinator-only status and stable pages for the recorded cutoff. Settle lost responses; never recompute `H` from later staged writes. No content secret or API credential appears. |
-| `PUT /v1/account/rotation/{operation}/catalog/{page}` | Current coordinator-only immutable bounded pages linking opaque source heads in `H` to uploaded opaque destination heads. An identical retry is harmless; changed page or out-of-inventory source refuses. No path, key, cid or plaintext field. This is rotation bookkeeping, not a general catalog framework. |
-| `POST /v1/account/rotation/{operation}/commit` with exact intent, `C`, inventory/catalog commitments and `setup_token` | Device HMAC **and freshly entered owner token** required. Compare all fields to frozen intent and complete catalog. One fsynced transition changes current map/recovery verifier, retires every OTHER prior credential/closes its sessions/links, lifts only the current coordinator's staging fence and marks committed. Exact retry returns that result; it cannot substitute a verifier/target/catalog. |
+| `POST /v1/rotation/prepare` with the exact intent plus `setup_token` | Device HMAC **and separate owner token** required. Require the recorded current map to match `G_old` (or the permitted first-legacy bootstrap). In the serialized write pipeline, settle prior accepted batches, fence admissions, capture durable cutoff `C`/inventory `H`, then publish the prepare frame referencing that durable snapshot and any first-legacy ownership assignment. Revoke target/close its sessions and links in that same transition. Target must differ from coordinator. The current coordinator's same operation/exact intent returns the same cutoff/snapshot; changed or competing intent is `409 rotation_conflict`. No general recovery-verifier setter or disabled last-device hold. |
+| `GET /v1/rotation/{operation}` and its paged inventory | Current coordinator-only status and stable pages for the recorded cutoff. Settle lost responses; never recompute `H` from later staged writes. No content secret or API credential appears. |
+| `POST /v1/rotation/{operation}/catalog` | Current coordinator-only immutable bounded pages linking opaque source heads in `H` to uploaded opaque destination heads. An identical retry is harmless; changed page or out-of-inventory source refuses. No path, key, cid or plaintext field. This is rotation bookkeeping, not a general catalog framework. |
+| `POST /v1/rotation/{operation}/commit` with exact intent, `C`, inventory/catalog commitments and `setup_token` | Device HMAC **and freshly entered owner token** required. Compare all fields to frozen intent and complete catalog. One fsynced transition changes current map/recovery verifier, retires every OTHER prior credential/closes its sessions/links, lifts only the current coordinator's staging fence and marks committed. Exact retry returns that result; it cannot substitute a verifier/target/catalog. |
 
 The intent's `target` is an explicit device ID for removal, or explicit `null`
 for a standalone migration to suite 2. A non-null target must exist and differ
@@ -377,8 +382,11 @@ Catalog pages contain ordered tuples
 use bounded page sizes and deterministic compact JSON of lowercase fixed-size
 hex IDs. Hash each page with existing SHA-256; the completed commitment is
 SHA-256 of the ordered raw page hashes, bound to page count/operation/cutoff by
-the authenticated commit body. Stream this checksum rather than retaining all
-pages in memory; inability to finish is pending. Pages are consecutively numbered
+the authenticated commit body. Retain only the raw page hashes for this checksum, rather than all catalog
+pages; inability to finish is pending. The initial client bounds the complete
+inventory at 65,536 heads, whose canonical hash input is at most 6.5 MiB.
+A larger inventory explicitly refuses the operation; it is never truncated.
+This is a supported-operation limit, not a cryptographic lifetime bound. Pages are consecutively numbered
 from zero; source tuples are globally ordered, unique and exhaustive for `H`.
 Every frozen current head must have a mapping and every
 destination must exist under `G_new` ownership; an old-generation destination
@@ -532,5 +540,28 @@ not implementation or live proof.
 | Server `crates/obsyncd/src/api/setup.rs`: `check_token`/`create`; `api/auth.rs`, routing; `storage/{types,journal,index,mod}.rs` | Separate owner authority at prepare/commit; server-internal file ownership/grant scope in version journal records/replay/snapshots, legacy migration, durable cutoff/inventory, bounded catalog pages, exact-intent checks, atomic coordinator transfer and fault tests. API ciphertext/blob format remains; journal/snapshot format changes and public ID linkage are explicit. No content crypto on server. |
 | Plugin `ui/settings.ts`, `ui/modals.ts`; dashboard `app.js`/pure helpers; transport | Per-action choice, trusted-client/unavailable/pending language and operation responses. Current standalone CLI's catalog/args make device management unavailable; do not expand it here. |
 
-This file is the entire design artifact. It changes no runtime, release lock,
-shared plan or test result. Supporting acceptance remains the table above.
+This historical inventory explains the implementation boundary. Current entry
+points are listed at the start of this contract; the validation record, rather
+than this design table, records executed acceptance and remaining gaps.
+
+### Deterministic reseed representation
+
+The new default domain is the first 16 bytes of
+`HMAC-SHA256(K_map_new, utf8("obsync/seal-v2/rotation-domain"))`.
+An ordinary source file `F_old` maps to the first 16 bytes of
+`HMAC-SHA256(K_manifest_new, utf8("obsync/seal-v2/rotation-file\n") || F_old_raw)`.
+Folder and pause records use their existing identity functions with the new
+manifest key and remapped target. Refuse any collision between distinct source
+files and any unresolved keeper/target reference.
+
+Each non-map destination carries the authenticated encrypted field
+`migration_origin`, exactly 96 lowercase hex characters encoding the 16-byte
+source file ID followed by the 32-byte source head ID, and has an empty parent
+list. The explicit source identity also permits bounded read-only traversal of
+old history without guessing a file ID. This preserves distinct fork heads even when their user
+bytes and timestamps are identical, without inventing timestamps or modifying
+notes. Normal records may omit the field; any supplied value must be valid.
+A forked map or unsupported multi-domain map blocks the operation explicitly;
+the client never chooses one map head or silently omits a domain. The server
+rejects duplicate destination tuples in the exhaustive source-to-destination
+catalog. Its checks establish opaque membership, not plaintext correctness.

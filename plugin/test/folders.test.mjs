@@ -30,7 +30,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { FakeTimers, STEP_MS, pair, rig, sandbox, settled } from "./fake.mjs";
+import { openPublishedManifest, FakeTimers, STEP_MS, pair, rig, sandbox, settled } from "./fake.mjs";
 import { ManifestError, parseManifest } from "./fixtures/decoder-1.0.x.mjs";
 
 const require = createRequire(import.meta.url);
@@ -353,8 +353,9 @@ test("a folder kept because it was not empty can still be deleted here afterward
   assert.equal(await applyChange(context, created), "applied");
   // A note only this device has, so the folder cannot be removed here.
   host.seed("Shared/local-only.md", "not pushed yet", 2000);
+  const tombstone = await publishFolder(server, k, "Shared", { deleted: true, parents: [created.version_id] });
   assert.equal(
-    await applyChange(context, await publishFolder(server, k, "Shared", { deleted: true, parents: [created.version_id] })),
+    await applyChange(context, tombstone),
     "skipped",
   );
 
@@ -366,13 +367,31 @@ test("a folder kept because it was not empty can still be deleted here afterward
 
   // And the user's own deletion of it must still reach the other devices: a
   // suppression owed to an event that never came must not swallow this.
+  const folderFile = await folderId(k, "Shared"), beforeDelete = server.journal.length, receipts = [];
+  const request = transport.options.request;
+  transport.options.request = async sent => {
+    const answer = await request(sent);
+    if (sent.method === "POST" && new URL(sent.url).pathname === `/v1/files/${folderFile}/versions`)
+      receipts.push({ device: sent.headers["X-Obsync-Device"], signature: sent.headers["X-Obsync-Sig"], payload: JSON.parse(sent.body), status: answer.status, ack: JSON.parse(answer.text) });
+    return answer;
+  };
   host.files.delete("Shared/local-only.md");
   await host.trashFolder("Shared");
   engine.folderDeleted("Shared");
   await timers.run(STEP_MS, () => state.folderByPath("Shared") === undefined);
-  const mine = server.journal.filter((frame) => frame.deleted && frame.device_id === context.deviceId);
-  assert.equal(mine.length, 1, "this device's own folder deletion was swallowed");
-  assert.equal(mine[0].file_id, await folderId(k, "Shared"));
+  // Exact SIV duplicate: signed deletion reaches the server, which returns
+  // the existing immutable tombstone rather than changing its attribution.
+  assert.equal(receipts.length, 1, "this device's own folder deletion was swallowed");
+  const sent = receipts[0];
+  assert.equal(sent.device, context.deviceId, "folder deletion must use this device credential");
+  assert.match(sent.signature, /^[0-9a-f]{64}$/, "folder deletion must carry actual device signature");
+  assert.deepEqual(sent.payload, { version_id: tombstone.version_id, parents: tombstone.parents, sids: [], bytes: 0, domain_id: tombstone.domain_id, seal_suite: 2, manifest_ct: tombstone.manifest_ct, deleted: true, accept_existing: false }, "local delete must post exact authenticated immutable tombstone");
+  assert.equal(sent.status, 200, "exact tombstone duplicate must receive idempotent acknowledgement");
+  assert.equal(sent.ack.version_id, tombstone.version_id);
+  assert.deepEqual(server.files.get(folderFile).heads, [tombstone.version_id]);
+  assert.equal(server.journal.length, beforeDelete, "exact duplicate must create no redundant journal frame");
+  assert.equal(host.hasFolder("Shared"), false);
+  assert.equal(state.folderByPath("Shared"), undefined);
 });
 
 /** Apply a file, then its tombstone, and report which folders were asked about. */
@@ -616,11 +635,8 @@ test("a manifest version this build does not know is refused, and the feed moves
 async function manifestJson(server, keys, fileId) {
   const frame = server.journal.filter((entry) => entry.file_id === fileId).pop();
   assert.ok(frame, `nothing was published for ${fileId}`);
-  const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-  return c.decryptManifest(
-    keys.manifestKey, frame.file_id, binder,
-    Uint8Array.from(Buffer.from(frame.manifest_nonce, "hex")), c.unbase64(frame.manifest_ct),
-  );
+
+  return JSON.stringify(await openPublishedManifest(frame, keys.manifestKey));
 }
 
 test("every shipped 1.0.x decoder refuses this build's folder records, and still reads its files", async () => {

@@ -1,3 +1,4 @@
+import { withDistinctMtime } from "./seal2-fixture.mjs";
 /**
  * Two devices typing in one OPEN note at the same time (issue #135).
  *
@@ -25,6 +26,7 @@ import { createRequire } from "node:module";
 import { DEVICE_B, FakeHost, KEYS, SECRET_B, STEP_MS, fakeState, pair, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { EditorBusy, Unwritable, applyChange } = require("../build/sync/pull.js");
 const { pendingPublication, pushDelete, pushFile, sidDigest } = require("../build/sync/push.js");
 const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
@@ -1167,7 +1169,7 @@ test("an incoming version that holds the unsent save is taken, and a head withou
   old.host.seed(NOTE, "one\ntwo\nthree\n", 1000);
   const root = await pushFile(old.context, NOTE);
   const bytes = enc("ONE\ntwo\nthree\n");
-  const { cid, sid, ciphertext } = await encryptChunk(old.keys.domainKey, bytes);
+  const { cid, sid, ciphertext } = await seal2.encryptChunk2(old.keys.domainKey, { generation: old.context.generation, domainId: old.context.domainId }, bytes);
   old.server.chunks.set(sid, ciphertext);
   const legacy = await old.server.publishManifest({
     fileId: root.fileId, sids: [sid], parents: [root.versionId], deviceId: KEYS.deviceId, manifestKey: old.keys.manifestKey, bytes: bytes.length,
@@ -1832,6 +1834,8 @@ test("two devices settling the same overlap publish one shared conflict-copy ver
         if (attempts.length === 2) release();
         await joined;
       }
+      if (device === b && fileId !== base.fileId && version.parents.length === 0)
+        version = await withDistinctMtime(fileId, version, right.manifestKey, { generation: right.generation, domainId: right.domainId });
       return post(fileId, version);
     };
   }

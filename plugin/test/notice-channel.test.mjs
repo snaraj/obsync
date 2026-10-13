@@ -386,6 +386,14 @@ async function plugin(t, { data = null, cli, secrets = memorySecrets() } = {}) {
   instance.checkForUpdate = async () => {};
   instance.log = (line) => logs.push(line);
   t.after(() => instance.onunload());
+  if (stored.vrk && stored.deviceId && stored.deviceSecret) {
+    const identity = { root: stored.vrk, deviceId: stored.deviceId, deviceSecret: stored.deviceSecret };
+    stored = { ...stored, vrk: null, deviceId: null, deviceSecret: null };
+    const { State } = box.require(join(box.home, "build/state.js")), c = box.require(join(box.home, "build/crypto.js"));
+    const state = await State.open(instance, false, instance.app.secretStorage);
+    await state.stageEnrollment2(identity.root, "pair");
+    await state.adoptSuite2({ ...identity, generation: (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(identity.root)))).fileId, purpose: "pair" });
+  }
   await instance.onload();
   await instance.firstStart;
   const run = (id) => commands.find((command) => command.id === id).callback();

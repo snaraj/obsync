@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { FakeTimers, KEYS, rig, sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const { pushFile } = require("../build/sync/push.js");
 const { applyChange } = require("../build/sync/pull.js");
@@ -163,7 +164,7 @@ test("a resumed upload that is stopped reads no further than its next chunk (#18
   d.host.seed(VIDEO, bytes, 1000);
   const sealed = [];
   for await (const part of chunkStream({ size: bytes.length, read: async (at, length) => bytes.subarray(at, at + length) })) {
-    sealed.push(await c.encryptChunk(d.keys.domainKey, part));
+    sealed.push(await seal2.encryptChunk2(d.keys.domainKey, { generation: d.keys.generation, domainId: KEYS.domainId }, part));
   }
   assert.ok(sealed.length >= 4, `the fixture is many chunks (${sealed.length})`);
   // Everything but the last chunk landed before a restart: a resumed upload.
@@ -203,7 +204,7 @@ test("a stopped engine's download ends at its next batch and leaves nothing behi
   const parts = Array.from({ length: 9 }, (_, index) => noise(CHUNK_MIN, 0x5eed0000 + index));
   const chunks = [];
   for (const part of parts) {
-    const { cid, sid, ciphertext } = await c.encryptChunk(d.keys.domainKey, part);
+    const { cid, sid, ciphertext } = await seal2.encryptChunk2(d.keys.domainKey, { generation: d.keys.generation, domainId: KEYS.domainId }, part);
     d.server.chunks.set(sid, ciphertext);
     chunks.push({ sid, cid: c.hex(cid), len: part.length });
   }

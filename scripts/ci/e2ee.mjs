@@ -1,5 +1,7 @@
 // Real plugin crypto/transport/engine against the real server. Only the
 // Obsidian filesystem/secret-store boundary and periodic timers are faked.
+// The initial root and isolated ordinary/legacy rotation-root draws are synthetic
+// vectors; request nonces and operation IDs retain native entropy.
 // This is required regression evidence, not native-device acceptance.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -23,9 +25,16 @@ const pull = require("../../plugin/build/sync/pull.js");
 const dm = require("../../plugin/build/domainmap.js");
 const history = require("../../plugin/build/sync/history.js");
 const { publishPause } = require("../../plugin/build/sync/pause.js");
+const { enroll2 } = require("../../plugin/build/enrollment2.js");
+const backup = require("../../plugin/build/recoveryBackup.js");
+const seal2 = require("../../plugin/build/seal2.js");
+const { recoverLegacyUpgrade } = require("../../plugin/build/legacyUpgrade.js");
+const { RotationClient } = require("../../plugin/build/rotationClient.js");
+const { aesSivDecrypt } = require("../../plugin/build/aesSiv.js");
 const { accountRecovery } = require("../../plugin/build/accountRecovery.js");
 const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "obsync-e2ee-")));
 const started = Date.now(), live = new Set(), devices = [], flows = new Set(), controls = new Set();
+let aRotationOperation = null;
 let server, recorder, logs = "", sent = 0, received = 0, mutation = null, failure;
 const budget = 120000;
 const deadline = setTimeout(() => {
@@ -79,37 +88,46 @@ async function readback(probe, message) {
 }
 
 async function device(name) {
-  const { state, reload } = await fakeState();
+  const { state, reload } = await fakeState(false, false);
   state.data.deviceId = null;
   state.data.deviceSecret = null;
   state.data.vrk = null;
   state.data.serverUrl = `http://127.0.0.1:${recorder.port}`;
+  await state.save();
   const host = new FakeHost({ deviceName: name });
   host.clock = Date.now();
   const transport = new Transport({ request, serverUrl: () => state.data.serverUrl,
     device: () => state.data.deviceId ? { id: state.data.deviceId, secret: c.unhex(state.data.deviceSecret) } : null,
-    edgeHeaders: () => [], maxAttempts: 1, log: (line) => host.logs.push(line) });
+    edgeHeaders: () => [], sleep: delay, maxAttempts: 1, log: (line) => host.logs.push(line) });
   const engine = new SyncEngine({ state, transport, host, timers: new FakeTimers() });
   const d = { state, host, transport, engine, reload };
   devices.push(d);
   return d;
 }
 
-function credential(d, value) {
-  d.state.data.deviceId = value.device_id;
-  d.state.data.deviceSecret = value.device_secret;
+async function sivKey(base, context) {
+  return c.hkdf(base, c.utf8("obsync/seal-v2/siv"), await c.sha256(context), 64);
 }
 
-async function startServer() {
+async function chunkKeyInventory(domainKey, scope, cid) {
+  const scopeBytes = c.concat(c.unhex(scope.generation), c.unhex(scope.domainId));
+  const idKey = await c.hkdf(domainKey, c.utf8("obsync/seal-v2/chunk-id"), scopeBytes, 32);
+  const base = await c.hkdf(domainKey, c.utf8("obsync/seal-v2/chunk-base"), scopeBytes, 32);
+  const context = seal2.chunkContext(scope, cid);
+  return { idKey, base, key: await sivKey(base, context), context };
+}
+
+async function startServer(directory = root) {
+  let launchLogs = "";
   const env = { PATH: process.env.PATH, OBSYNC_LISTEN: "127.0.0.1:0", OBSYNC_EDGE: "none",
-    OBSYNC_BLOBS_DIR: path.join(root, "blobs"), OBSYNC_JOURNAL_DIR: path.join(root, "journal"),
+    OBSYNC_BLOBS_DIR: path.join(directory, "blobs"), OBSYNC_JOURNAL_DIR: path.join(directory, "journal"),
     OBSYNC_BLOBS_CAPACITY: "4GiB", OBSYNC_JOURNAL_CAPACITY: "4GiB",
     OBSYNC_DASHBOARD_DIR: path.resolve("dashboard"), OBSYNC_PLUGIN_DIR: path.resolve("plugin/dist") };
   server = spawn(binary, ["serve"], { env, stdio: ["ignore", "pipe", "pipe"] });
   server.on("error", () => {});
-  for (const stream of [server.stdout, server.stderr]) stream.on("data", (data) => { logs += data; });
+  for (const stream of [server.stdout, server.stderr]) stream.on("data", (data) => { logs += data; launchLogs += data; });
   for (let i = 0; i < 200; i++) {
-    const port = /event=serve_start[^\n]*addr=127\.0\.0\.1:(\d+)/.exec(logs)?.[1];
+    const port = /event=serve_start[^\n]*addr=127\.0\.0\.1:(\d+)/.exec(launchLogs)?.[1];
     if (port) return Number(port);
     assert.equal(server.exitCode, null, "fixture server exited before readiness");
     await delay(25);
@@ -174,7 +192,8 @@ async function positiveControl(name) {
 }
 
 function credentialNeedles(credentials) {
-  const hex = { setup: credentials.setup, proof: credentials.proof, enroll: credentials.enroll };
+  const hex = { setup: credentials.setup, proof: credentials.proof, nextProof: credentials.proofs.at(-1) };
+  if (credentials.enroll !== undefined) hex.enroll = credentials.enroll;
   for (const [i, value] of [...credentials.devices.values()].entries()) hex[`device_${i}`] = value;
   return buildNeedles({ hex });
 }
@@ -195,9 +214,9 @@ function credentialScan(conns, credentials) {
         const span = fields.find((entry) => entry.name === field && entry.value === expected);
         if (typeof expected === "string" && span) { spans.push(span); counts[field]++; }
       };
-      if (request && route === "POST /v1/setup") {
+      if (request && ["POST /v1/setup", "POST /v1/rotation/prepare", `POST /v1/rotation/${credentials.operation ?? aRotationOperation}/commit`].includes(route)) {
         allow("setup_token", credentials.setup);
-        allow("recovery_proof", credentials.proof);
+        if (route === "POST /v1/setup") for (const proof of credentials.proofs) allow("recovery_proof", proof);
       }
       if (request && route === `POST /v1/pairing/${credentials.pairing}/claim`) allow("enroll_token", credentials.enroll);
       if (!request && route === "POST /v1/pairing" && /^HTTP\/1\.[01] 201 /.test(message.head.line)) allow("enroll_token", credentials.enroll);
@@ -235,7 +254,7 @@ function credentialScan(conns, credentials) {
 // fixture exercises. This does not claim inventory of every production API.
 function ciphertextFields(route, body) {
   const fields = (value, names) => assert.deepEqual(Object.keys(value).sort(), names.split(" ").sort(), "ciphertext response clear-field allowlist");
-  const version = "version_id parents sids bytes manifest_ct manifest_nonce device_id ts deleted";
+  const version = "version_id parents sids bytes manifest_ct seal_suite device_id ts deleted";
   if (route === "/v1/changes") {
     fields(body, "seq head_seq changes");
     for (const row of body.changes) fields(row, `seq file_id domain_id ${version} heads conflicted`);
@@ -254,6 +273,106 @@ function recipientSnapshot(d) {
     folderRecords: structuredClone(d.state.data.folders), paused: structuredClone(d.state.data.paused) };
 }
 
+async function legacyUpgradeFlow() {
+  phase("legacy-upgrade");
+  const directory = path.join(root, "legacy"), capture = path.join(root, "legacy-capture");
+  const before = [sent, received], publicName = "QA-L", sourcePath = "SENTINEL-legacy-source.md";
+  const oldRoot = c.hex(Uint8Array.from({ length: 32 }, (_, i) => 0xa1 + i));
+  const port = await startServer(directory);
+  recorder = await startRecorder({ listen: "127.0.0.1:0", upstream: `127.0.0.1:${port}`, out: capture });
+  const old = await device("QA-L"), upgraded = await device("QA-U");
+  const token = fs.readFileSync(path.join(directory, "journal/v1/setup-token"), "utf8").trim();
+  const recovery = await accountRecovery(oldRoot);
+  const credential = ok(await old.transport.setup(token, publicName,
+    { name: "QA-L", platform: "linux", app_version: version }, { verifier: recovery.verifier }));
+  const oldTransport = old.transport.withCredential(credential, () => {});
+  const mapKeys = await dm.domainMapKeys(c.unhex(oldRoot)), domainId = "33".repeat(16), fileId = "44".repeat(16);
+  const domainKey = await c.deriveDomainKey(c.unhex(oldRoot), domainId), manifestKey = await c.deriveManifestKey(domainKey, domainId);
+  const legacySpec = { text: { source: sourcePath, content: marker }, hex: { vrk: oldRoot, domain: c.hex(domainKey), manifest: c.hex(manifestKey), map: c.hex(mapKeys.key) } };
+  // A synthetic released-format source fixture; live legacy sync never starts.
+  async function legacyPost(file, domain, key, entry, sids = [], bytes = 0) {
+    const sealed = await c.encryptManifest(key, file, await c.contentVersionId(file, [], sids), JSON.stringify(entry));
+    const id = await c.versionId(file, [], sealed.ciphertext, sids);
+    ok(await oldTransport.postVersion(file, { version_id: id, parents: [], sids, bytes, domain_id: domain,
+      manifest_ct: c.base64(sealed.ciphertext), manifest_nonce: c.hex(sealed.nonce), deleted: false }));
+  }
+  await legacyPost(mapKeys.fileId, mapKeys.domainId, mapKeys.key, dm.defaultDomainMap(domainId));
+  const plaintext = c.utf8(marker), chunk = await c.encryptChunk(domainKey, plaintext);
+  legacySpec.hex.chunk = c.hex(await c.hkdf(domainKey, c.utf8("obsync/v1/chunk"), chunk.cid, 32));
+  await oldTransport.putChunk(chunk.sid, chunk.ciphertext);
+  await legacyPost(fileId, domainId, manifestKey, { v: 1, path: sourcePath, domain: domainId,
+    size: plaintext.length, mtime: 1200, chunks: [{ cid: c.hex(chunk.cid), sid: chunk.sid, len: plaintext.length }],
+    sha256: c.hex(await c.sha256(plaintext)), deleted: false }, [chunk.sid], plaintext.length);
+  legacySpec.phrase = (await pairing.recoveryPhrase(c.unhex(oldRoot))).join(" ");
+  // Same fixture boundary as ordinary rotation: replace only its fresh root,
+  // with both engines stopped. All authentication and operation entropy is native.
+  const fixtureRoot = await c.sha256(c.utf8("obsync/e2ee/legacy-upgrade-fixture-independent-root/v2"));
+  const nativeEntropy = c.randomBytes, entropyCalls = [];
+  c.randomBytes = length => {
+    entropyCalls.push(length);
+    return length === 32 ? new Uint8Array(fixtureRoot) : nativeEntropy(length);
+  };
+  try {
+    await recoverLegacyUpgrade({ state: upgraded.state, transport: upgraded.transport, token, backup: legacySpec.phrase,
+      profile: { name: "QA-U", platform: "linux", app_version: version }, assertCurrent: () => {} });
+  } finally { c.randomBytes = nativeEntropy; }
+  assert.deepEqual(entropyCalls, [16, 16, 16, 16, 32, 16], "legacy fixture entropy call shape");
+  assert.notEqual(c.hex(fixtureRoot), oldRoot, "legacy fixture root is independent of its old vector");
+  assert.equal(upgraded.state.custody2().phase, "draft", "legacy recovery stages only a stopped fresh-root upgrade");
+  assert.equal(upgraded.state.custody2().rotation.fromSuite, 1, "legacy recovery authenticates its old source suite");
+  const operation = upgraded.state.custody2().rotation.intent.operation;
+  const client = new RotationClient(upgraded.state, upgraded.transport, () => {}, () => upgraded.engine.stopAndWait());
+  const nextRoot = upgraded.state.custody2().rotation.newRoot, nextBackup = await backup.encodeRecoveryBackup(c.unhex(nextRoot));
+  legacySpec.hex.current_root = nextRoot;
+  await client.prepare(token, nextBackup); await client.seed();
+  const restarted = await upgraded.reload();
+  const transport = new Transport({ request, serverUrl: () => restarted.data.serverUrl,
+    device: () => ({ id: restarted.data.deviceId, secret: c.unhex(restarted.data.deviceSecret) }),
+    edgeHeaders: () => [], sleep: delay, maxAttempts: 1, log: line => upgraded.host.logs.push(line) });
+  await new RotationClient(restarted, transport, () => {}, async () => {}).commit(token, nextBackup);
+  const account = await transport.account();
+  assert.equal(account.seal_suite, 2, "legacy upgrade activates suite2 authority");
+  assert.notEqual(account.generation, mapKeys.fileId, "legacy upgrade creates a fresh generation");
+  upgraded.state = restarted; upgraded.transport = transport;
+  upgraded.engine = new SyncEngine({ state: restarted, transport, host: upgraded.host, timers: new FakeTimers() });
+  await upgraded.engine.start(); await upgraded.engine.syncNow();
+  await readback(() => upgraded.host.text(sourcePath) === marker, "real legacy recovery-upgrade preserves authenticated source bytes");
+  const context = upgraded.engine.contextValue, nextMap = await dm.domainMapKeys(c.unhex(nextRoot)), feed = await transport.changes(0, 0);
+  legacySpec.hex.current_map = c.hex(nextMap.key); legacySpec.hex.current_domain = c.hex(context.domainKey); legacySpec.hex.current_manifest = c.hex(context.manifestKey);
+  assert.ok(feed.changes.every(row => row.seal_suite === 2 && !Object.hasOwn(row, "manifest_nonce")), "upgraded current feed contains only suite2 packets");
+  assert.ok(feed.changes.every(row => row.file_id !== fileId && row.file_id !== mapKeys.fileId), "legacy heads remain outside current feed");
+  for (const row of feed.changes) {
+    const map = row.file_id === nextMap.fileId;
+    const aad = seal2.recordContext(map ? 2 : 1, { generation: context.generation, domainId: row.domain_id, fileId: row.file_id, parents: row.parents, sids: row.sids });
+    const key = await sivKey(map ? nextMap.key : context.manifestKey, aad);
+    legacySpec.hex[`current_record_${row.seq}`] = c.hex(key);
+    await aesSivDecrypt(key, c.unbase64(row.manifest_ct), [aad]);
+    if (map) continue;
+    const manifest = await pull.decodeRecordManifest(context, row);
+    for (const item of manifest.chunks) {
+      const inventory = await chunkKeyInventory(context.domainKey, { generation: context.generation, domainId: context.domainId }, c.unhex(item.cid));
+      legacySpec.hex.current_chunk = c.hex(inventory.key); legacySpec.hex.current_chunk_base = c.hex(inventory.base); legacySpec.hex.current_chunk_id = c.hex(inventory.idKey);
+      await aesSivDecrypt(inventory.key, await transport.getChunk(item.sid), [inventory.context]);
+    }
+  }
+  await upgraded.engine.stopAndWait(); await stopServer(); await recorder.close(); recorder = null;
+  const needles = [...buildNeedles(legacySpec), ...buildNeedles({ phrase: nextBackup })], conns = readCapture(capture);
+  assert.equal(scan(conns, needles).decision, "pass", "legacy upgrade traffic scanner");
+  assert.equal(conns.reduce((n, conn) => n + conn.requests.length, 0), sent - before[0], "every legacy upgrade request reached capture");
+  assert.equal(received - before[1], sent - before[0], "every legacy upgrade request has a response");
+  const credentials = { setup: token, proof: recovery.proof, proofs: [recovery.proof], operation,
+    devices: new Map([[credential.device_id, credential.device_secret], [restarted.data.deviceId, restarted.data.deviceSecret]]) };
+  const auth = credentialScan(conns, credentials);
+  assert.equal(auth.report.decision, "pass", "legacy upgrade credential sink scanner");
+  assert.deepEqual(auth.counts, { setup_token: 4, recovery_proof: 1, enroll_token: 0, device_secret: 2 });
+  const diagnostics = [...needles, ...credentialNeedles(credentials)];
+  for (const file of [...files(path.join(directory, "blobs")), ...files(path.join(directory, "journal"))]) assertNoNeedles(fs.readFileSync(file), needles, "legacy_server_storage");
+  assertNoNeedles(Buffer.from(logs), diagnostics, "legacy_server_logs");
+  for (const d of [old, upgraded]) assertNoNeedles(Buffer.from(d.host.logs.join("\n")), diagnostics, "legacy_client_diagnostics");
+  console.log(`e2ee legacy=pass requests=${sent - before[0]} storage_files=${files(path.join(directory, "blobs")).length + files(path.join(directory, "journal")).length} needles=${needles.length}`);
+  flows.add("legacy-recovery-upgrade");
+}
+
 try {
   phase("start");
   await positiveControl("control-before");
@@ -261,14 +380,16 @@ try {
   const capture = path.join(root, "capture");
   recorder = await startRecorder({ listen: "127.0.0.1:0", upstream: `127.0.0.1:${port}`, out: capture });
   const a = await device("QA A"), b = await device("QA B");
-  a.state.data.vrk = secret;
   const token = fs.readFileSync(path.join(root, "journal/v1/setup-token"), "utf8").trim();
   const recovery = await accountRecovery(secret);
-  spec.phrase = (await pairing.recoveryPhrase(c.unhex(secret))).join(" ");
-  assert.equal(c.hex(await pairing.entropyFromPhrase(pairing.normalisePhrase(spec.phrase))), secret);
-  credential(a, ok(await a.transport.setup(token, "QA account", { name: "QA A", platform: "linux", app_version: version }, { verifier: recovery.verifier })));
+  spec.phrase = await backup.encodeRecoveryBackup(c.unhex(secret));
+  assert.equal(c.hex(await backup.parseRecoveryBackup(spec.phrase)), secret);
+  await a.state.stageEnrollment2(secret, "new");
+  await enroll2(a.state, a.transport, token, "QA account", { name: "QA A", platform: "linux", app_version: version }, () => {});
+  await a.engine.start();
+  const generation = (await dm.domainMapKeys(c.unhex(secret))).fileId;
   flows.add("setup");
-  const invitation = ok(await a.transport.pairingCreate());
+  const invitation = ok(await a.transport.pairingCreate2());
   const creator = await pairing.newPairingKeyExchange(), claimant = await pairing.newPairingKeyExchange();
   const ps = pairing.newPairingSecret();
   const commitment = await pairing.pairingCommitment(invitation.pairing_id, creator.publicKey);
@@ -276,19 +397,25 @@ try {
   spec.codes = [code]; spec.hex.pairing_secret = c.hex(ps);
   const vaultDetailsKey = await c.hkdf(ps, c.utf8("obsync/v1/pair-vault"), c.utf8(invitation.pairing_id), 32);
   spec.hex.pairing_vault_details = c.hex(vaultDetailsKey);
-  const vault = await pairing.sealPairingVault(ps, invitation.pairing_id, { name: vaultName, notes: 0 });
-  credential(b, ok(await b.transport.pairingClaim(invitation.pairing_id, invitation.enroll_token,
-    { name: "QA B", platform: "linux", app_version: version, claimant_pub: claimant.publicKey, vault })));
+  const vaultContext = seal2.pairingContext(5, { pairingId: invitation.pairing_id });
+  const vaultSivKey = await sivKey(vaultDetailsKey, vaultContext);
+  spec.hex.pairing_vault_siv = c.hex(vaultSivKey);
+  const vault = await pairing.sealPairingVault2(ps, invitation.pairing_id, { name: vaultName, notes: 0 });
+  const claimedCredential = ok(await b.transport.pairingClaim2(invitation.pairing_id, invitation.enroll_token,
+    { name: "QA B", platform: "linux", app_version: version, claimant_pub: claimant.publicKey, vault }));
+  const claimantTransport = b.transport.withCredential(claimedCredential, () => {});
   const claimed = await a.transport.pairingStatus(invitation.pairing_id);
   assert.equal(claimed.claimant.claimant_pub, claimant.publicKey);
-  const vaultHandle = await crypto.subtle.importKey("raw", vaultDetailsKey, { name: "AES-GCM" }, false, ["decrypt"]);
-  const vaultPlain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: c.unhex(claimed.claimant.vault.nonce),
-    additionalData: c.utf8(invitation.pairing_id), tagLength: 128 }, vaultHandle, c.unbase64(claimed.claimant.vault.envelope));
-  assert.deepEqual(JSON.parse(new TextDecoder().decode(vaultPlain)), { name: vaultName, notes: 0 },
+  assert.equal(claimed.claimant.vault.seal_suite, 2);
+  assert.equal(Object.hasOwn(claimed.claimant.vault, "nonce"), false);
+  assert.deepEqual(await pairing.openPairingVault2(ps, invitation.pairing_id, claimed.claimant.vault), { name: vaultName, notes: 0 },
     "inventoried vault-details key must open the actual paired vault details");
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(await aesSivDecrypt(vaultSivKey,
+    c.unbase64(claimed.claimant.vault.envelope), [vaultContext]))), { name: vaultName, notes: 0 },
+    "inventoried vault SIV key must open actual ciphertext");
   await a.transport.pairingReveal(invitation.pairing_id, creator.publicKey);
   let revealed;
-  await assert.rejects(b.transport.pairingEnvelope(invitation.pairing_id), (error) => {
+  await assert.rejects(claimantTransport.pairingEnvelope(invitation.pairing_id), (error) => {
     revealed = error.fields.creator_pub; return error.code === "not_approved";
   });
   assert.ok(await pairing.keptCommitment(commitment, invitation.pairing_id, revealed));
@@ -298,20 +425,29 @@ try {
   assert.equal(await pairing.keptCommitment(commitment, invitation.pairing_id, impostor.publicKey), false);
   const envelopeKey = await c.derivePairingV2Key(creator.pair, await c.importPairingPublicKey(pairing.checkedPublicKey(claimant.publicKey)), ps, invitation.pairing_id);
   spec.hex.pairing_envelope = c.hex(envelopeKey);
-  const envelope = await pairing.sealEnvelopeV2(creator, claimed.claimant.claimant_pub, ps, invitation.pairing_id, { vrk: secret });
-  ok(await a.transport.pairingApprove(invitation.pairing_id, envelope.envelope, envelope.nonce));
-  const collected = ok(await b.transport.pairingEnvelope(invitation.pairing_id));
-  const handle = await crypto.subtle.importKey("raw", envelopeKey, { name: "AES-GCM" }, false, ["decrypt"]);
-  const envelopePlain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: c.unhex(collected.nonce),
-    additionalData: c.concat(c.utf8(invitation.pairing_id), pairing.checkedPublicKey(claimant.publicKey), pairing.checkedPublicKey(creator.publicKey)), tagLength: 128 },
-    handle, c.unbase64(collected.envelope));
-  assert.equal(JSON.parse(new TextDecoder().decode(envelopePlain)).vrk, secret, "inventoried envelope key must open the actual envelope");
-  const opened = await pairing.openEnvelopeV2(claimant, collected.creator_pub, ps, invitation.pairing_id, collected.envelope, collected.nonce);
+  const envelopeContext = seal2.pairingContext(4, { pairingId: invitation.pairing_id,
+    claimantPublic: pairing.checkedPublicKey(claimant.publicKey), creatorPublic: pairing.checkedPublicKey(creator.publicKey) });
+  const envelopeSivKey = await sivKey(envelopeKey, envelopeContext);
+  spec.hex.pairing_envelope_siv = c.hex(envelopeSivKey);
+  const envelope = await pairing.sealEnvelope2(creator, claimed.claimant.claimant_pub, ps, invitation.pairing_id, { v: 2, vrk: secret, generation });
+  ok(await a.transport.pairingApprove2(invitation.pairing_id, envelope));
+  const collected = ok(await claimantTransport.pairingEnvelope(invitation.pairing_id));
+  assert.equal(collected.seal_suite, 2);
+  assert.equal(Object.hasOwn(collected, "nonce"), false);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(await aesSivDecrypt(envelopeSivKey,
+    c.unbase64(collected.envelope), [envelopeContext]))), { v: 2, vrk: secret, generation },
+    "inventoried envelope SIV key must open actual ciphertext");
+  const opened = await pairing.openEnvelope2(claimant, collected.creator_pub, ps, invitation.pairing_id, collected);
   assert.ok(opened.vrk === secret, "paired client received the device-held key");
-  b.state.data.vrk = opened.vrk;
-  assert.ok(b.state.data.vrk === secret, "recipient must keep the key delivered by pairing before sync");
+  assert.equal(opened.generation, generation, "pairing root must bind the locally derived generation");
+  await b.state.stageEnrollment2(opened.vrk, "pair");
+  assert.ok(await dm.loadDomainMap(claimantTransport, await dm.domainMapKeys(c.unhex(opened.vrk))) !== null,
+    "paired client must authenticate an existing map before adoption");
+  await b.state.adoptSuite2({ root: opened.vrk, generation: opened.generation,
+    deviceId: claimedCredential.device_id, deviceSecret: claimedCredential.device_secret, purpose: "pair" });
+  assert.ok((await b.reload()).data.vrk === secret, "recipient must keep the key delivered by pairing before sync");
   flows.add("pairing");
-  await a.engine.start(); await b.engine.start();
+  await b.engine.start();
   phase("sync");
   a.host.seed(filename, marker + "\n", Date.now());
   await a.engine.syncNow(); await b.engine.syncNow();
@@ -389,11 +525,10 @@ try {
   flows.add("pause-control");
   const recovered = await device("QA recovered");
   // Recovery begins with possession of the user's root key, unlike pairing.
-  recovered.state.data.vrk = secret;
-  const recoveredSetup = ok(await recovered.transport.setup(token, "QA account",
-    { name: "QA recovered", platform: "linux", app_version: version }, recovery));
+  await recovered.state.stageEnrollment2(c.hex(await backup.parseRecoveryBackup(spec.phrase)), "recover");
+  const recoveredSetup = await enroll2(recovered.state, recovered.transport, token, "QA account",
+    { name: "QA recovered", platform: "linux", app_version: version }, () => {});
   assert.equal(recoveredSetup.recovered, true);
-  credential(recovered, recoveredSetup);
   await recovered.engine.start(); await recovered.engine.syncNow();
   await readback(() => recovered.host.text(movedNote) === a.host.text(movedNote), "recovery retains client-side content decryption");
   flows.add("recovery");
@@ -413,12 +548,24 @@ try {
   // Inventory actual chunk keys from authenticated manifests, never from server guesses.
   const page = await a.transport.changes(0, 0);
   let chunks = 0, original, oldRecord, futureRecord;
-  for (const record of page.changes.filter((record) => record.file_id !== context.mapFileId)) {
+  for (const record of page.changes) {
+    const map = record.file_id === context.mapFileId;
+    const recordContext = seal2.recordContext(map ? 2 : 1, { generation, domainId: record.domain_id,
+      fileId: record.file_id, parents: record.parents, sids: record.sids });
+    const base = map ? (await dm.domainMapKeys(c.unhex(secret))).key : context.manifestKey;
+    const key = await sivKey(base, recordContext);
+    spec.hex[`record_siv_${record.seq}`] = c.hex(key);
+    await aesSivDecrypt(key, c.unbase64(record.manifest_ct), [recordContext]);
+    if (map) continue;
     const manifest = await pull.decodeRecordManifest(context, record);
     if (manifest.path === filename && !manifest.deleted && !original) { original = manifest; oldRecord = record; }
     if (manifest.path === future) futureRecord = record;
     for (const chunk of manifest.chunks || []) {
-      spec.hex[`chunk_${chunks++}`] = c.hex(await c.hkdf(context.domainKey, c.utf8("obsync/v1/chunk"), c.unhex(chunk.cid), 32));
+      const inventory = await chunkKeyInventory(context.domainKey, { generation, domainId: context.domainId }, c.unhex(chunk.cid));
+      spec.hex[`chunk_id_${chunks}`] = c.hex(inventory.idKey);
+      spec.hex[`chunk_base_${chunks}`] = c.hex(inventory.base);
+      spec.hex[`chunk_${chunks++}`] = c.hex(inventory.key);
+      await aesSivDecrypt(inventory.key, await a.transport.getChunk(chunk.sid), [inventory.context]);
     }
   }
   assert.ok(chunks >= 3, "chunk-key inventory must cover real writes");
@@ -472,7 +619,7 @@ try {
   const badPath = "SENTINEL-feed-corruption.md", siblingPath = "SENTINEL-feed-sibling.md";
   spec.text.badPath = badPath; spec.text.badText = "SENTINEL-feed-corrupt-content";
   spec.text.siblingPath = siblingPath; spec.text.siblingText = "SENTINEL-feed-sibling-content";
-  const badChunk = await c.encryptChunk(context.domainKey, c.utf8(spec.text.badText)), badSid = badChunk.sid;
+  const badChunk = await seal2.encryptChunk2(context.domainKey, { generation, domainId: context.domainId }, c.utf8(spec.text.badText)), badSid = badChunk.sid;
   let corruptions = 0;
   mutation = (input, _res, bytes) => {
     if (input.headers["X-Obsync-Device"] !== recovered.state.data.deviceId || !new URL(input.url).pathname.startsWith("/v1/chunks/")) return bytes;
@@ -492,7 +639,10 @@ try {
     assert.ok(badRecord && siblingRecord && badRecord.seq < siblingRecord.seq, "corrupted feed record must precede its honest sibling");
     for (const [label, record] of [["feed_bad_chunk", badRecord], ["feed_sibling_chunk", siblingRecord]]) {
       const manifest = await pull.decodeRecordManifest(context, record);
-      spec.hex[label] = c.hex(await c.hkdf(context.domainKey, c.utf8("obsync/v1/chunk"), c.unhex(manifest.chunks[0].cid), 32));
+      const inventory = await chunkKeyInventory(context.domainKey, { generation, domainId: context.domainId }, c.unhex(manifest.chunks[0].cid));
+      spec.hex[label] = c.hex(inventory.key);
+      spec.hex[`${label}_base`] = c.hex(inventory.base);
+      spec.hex[`${label}_id`] = c.hex(inventory.idKey);
     }
     assert.ok(corruptions > 0, "public feed must receive a damaged real chunk response");
     assert.equal(await recovered.host.stat(badPath), null, "corrupted public-feed bytes must not be applied");
@@ -549,9 +699,9 @@ try {
     const wrongDomain = await c.deriveDomainKey(c.unhex(apiSecret), context.domainId);
     const wrongManifest = await c.deriveManifestKey(wrongDomain, context.domainId);
     await assert.rejects(pull.decodeRecordManifest({ ...context, manifestKey: wrongManifest }, oldRecord), undefined, "API-only credentials cannot decrypt manifests");
-    await assert.rejects(c.decryptChunk(wrongDomain, c.unhex(originalChunk.cid), originalCiphertext), undefined, "API-only credentials cannot decrypt chunks");
+    await assert.rejects(seal2.decryptChunk2(wrongDomain, { generation, domainId: context.domainId }, c.unhex(originalChunk.cid), originalCiphertext), undefined, "API-only credentials cannot decrypt chunks");
   }
-  assert.equal(new TextDecoder().decode(await c.decryptChunk(context.domainKey, c.unhex(originalChunk.cid), originalCiphertext)), marker + "\n", "actual content key still decrypts after API-only refusals");
+  assert.equal(new TextDecoder().decode(await seal2.decryptChunk2(context.domainKey, { generation, domainId: context.domainId }, c.unhex(originalChunk.cid), originalCiphertext)), marker + "\n", "actual content key still decrypts after API-only refusals");
   flows.add("api-only-no-decryption");
   // Exercise the production receive path with hostile bytes at the HTTP
   // adapter boundary. The raw recording remains the real server's bytes.
@@ -596,12 +746,110 @@ try {
   } finally { mutation = null; }
   await assert.rejects(dm.loadDomainMap(a.transport, mapKeys), /domain map refused: conflicted/, "honest fork is still refused after replay");
   flows.add("domain-map-rollback-limit");
+  await dm.saveDomainMap(a.transport, mapKeys, honestMap, fork.heads);
+  phase("rotation");
+  const client = new RotationClient(a.state, a.transport, () => {}, () => a.engine.stopAndWait());
+  // Independent fixed synthetic root avoids accidental recovery-word overlap
+  // with public fixture names/errors. Actual native start is a separate probe.
+  // All device engines were stopped above. Request nonces and operation IDs
+  // remain native: replace ONLY the single root draw and restore immediately.
+  const fixtureRoot = await c.sha256(c.utf8("obsync/e2ee/rotation-fixture-independent-root/v2"));
+  const nativeEntropy = c.randomBytes, entropyCalls = [];
+  c.randomBytes = length => {
+    entropyCalls.push(length);
+    return length === 32 ? new Uint8Array(fixtureRoot) : nativeEntropy(length);
+  };
+  try { await client.start(b.state.data.deviceId); }
+  finally { c.randomBytes = nativeEntropy; }
+  assert.deepEqual(entropyCalls, [16, 16, 16, 32, 16], "rotation fixture entropy call shape");
+  assert.notEqual(c.hex(fixtureRoot), secret, "fixture rotation root is independent of the old vector");
+  aRotationOperation = a.state.custody2().rotation.intent.operation;
+  const nextRoot = a.state.custody2().rotation.newRoot;
+  const nextBackup = await backup.encodeRecoveryBackup(c.unhex(nextRoot));
+  spec.hex.rotated_root = nextRoot;
+  spec.text.rotated_backup = nextBackup;
+  await client.prepare(token, nextBackup);
+  await client.seed();
+  assert.equal(a.state.custody2().phase, "commit_unknown", "real reseed must persist commit receipt");
+  const restartedState = await a.reload();
+  const restartedTransport = new Transport({ request, serverUrl: () => restartedState.data.serverUrl,
+    device: () => ({ id: restartedState.data.deviceId, secret: c.unhex(restartedState.data.deviceSecret) }),
+    edgeHeaders: () => [], sleep: delay, maxAttempts: 1 });
+  const restartedClient = new RotationClient(restartedState, restartedTransport, () => {}, async () => {});
+  await restartedClient.commit(token, nextBackup);
+  assert.equal(restartedState.custody2().history.root, secret, "cutover retains the old root for explicit history only");
+  assert.equal(restartedState.data.vrk, nextRoot, "real commit adopts only the new root");
+  assert.deepEqual(restartedState.data.files, {}, "cutover resets old catalog before rediscovery");
+  a.state = restartedState; a.transport = restartedTransport;
+  a.engine = new SyncEngine({ state: restartedState, transport: restartedTransport, host: a.host, timers: new FakeTimers() });
+  await a.engine.start(); await a.engine.syncNow();
+  const beforeEdit = a.host.text(movedNote);
+  assert.equal(beforeEdit.includes(marker), true, "cutover preserves same-path original bytes");
+  const rotatedText = beforeEdit + "\nSENTINEL-post-rotation-edit";
+  spec.text.rotated_edit = "SENTINEL-post-rotation-edit";
+  a.host.seed(movedNote, rotatedText, Date.now() + 100);
+  await a.engine.syncNow();
+  const currentContext = a.engine.contextValue;
+  const currentFeed = await a.transport.changes(0, 0);
+  spec.hex.rotated_domain = c.hex(currentContext.domainKey);
+  spec.hex.rotated_manifest = c.hex(currentContext.manifestKey);
+  const nextMapKeys = await dm.domainMapKeys(c.unhex(nextRoot));
+  spec.hex.rotated_map = c.hex(nextMapKeys.key);
+  for (const row of currentFeed.changes) {
+    const map = row.file_id === nextMapKeys.fileId;
+    const recordContext = seal2.recordContext(map ? 2 : 1, { generation: currentContext.generation,
+      domainId: row.domain_id, fileId: row.file_id, parents: row.parents, sids: row.sids });
+    const key = await sivKey(map ? nextMapKeys.key : currentContext.manifestKey, recordContext);
+    spec.hex[`rotated_record_siv_${row.seq}`] = c.hex(key);
+    await aesSivDecrypt(key, c.unbase64(row.manifest_ct), [recordContext]);
+    if (map) continue;
+    const manifest = await pull.decodeRecordManifest(currentContext, row);
+    for (const [index, chunk] of (manifest.chunks ?? []).entries()) {
+      const inventory = await chunkKeyInventory(currentContext.domainKey,
+        { generation: currentContext.generation, domainId: currentContext.domainId }, c.unhex(chunk.cid));
+      spec.hex[`rotated_chunk_${row.seq}_${index}`] = c.hex(inventory.key);
+      spec.hex[`rotated_chunk_base_${row.seq}_${index}`] = c.hex(inventory.base);
+      spec.hex[`rotated_chunk_id_${row.seq}_${index}`] = c.hex(inventory.idKey);
+      await aesSivDecrypt(inventory.key, await a.transport.getChunk(chunk.sid), [inventory.context]);
+    }
+  }
+  const currentRecord = currentFeed.changes.filter(row => row.file_id === a.state.fileByPath(movedNote).fileId).at(-1);
+  assert.ok(currentRecord, "same-path post-cutover write must reach new generation");
+  const currentManifest = await pull.decodeRecordManifest(currentContext, currentRecord);
+  assert.equal(new TextDecoder().decode(await pull.assembleBytes(currentContext, currentManifest)), rotatedText,
+    "new generation authenticates post-cutover same-path content");
+  const removedDomainKey = await c.deriveDomainKey(c.unhex(secret), currentContext.domainId);
+  const removedManifestKey = await c.deriveManifestKey(removedDomainKey, currentContext.domainId);
+  await assert.rejects(seal2.openRecord(removedManifestKey, 1, { generation: currentContext.generation,
+    domainId: currentContext.domainId, fileId: currentRecord.file_id, parents: currentRecord.parents, sids: currentRecord.sids },
+    c.unbase64(currentRecord.manifest_ct)), undefined, "removed device old root cannot decrypt new-generation manifest");
+  const currentChunk = currentManifest.chunks[0];
+  const ciphertext = await a.transport.getChunk(currentChunk.sid);
+  await assert.rejects(seal2.decryptChunk2(removedDomainKey,
+    { generation: currentContext.generation, domainId: currentContext.domainId }, c.unhex(currentChunk.cid), ciphertext), undefined,
+    "removed device old root cannot decrypt new-generation chunk even with its ID");
+  await assert.rejects(recovered.transport.changes(0, 0), error => error.code === "device_revoked",
+    "cutover retires other old device credentials");
+  const fresh = await device("QA rotated recovery");
+  await fresh.state.stageEnrollment2(nextRoot, "recover");
+  const nextRecovery = await accountRecovery(nextRoot);
+  await enroll2(fresh.state, fresh.transport, token, "QA account", { name: "QA rotated recovery", platform: "linux", app_version: version }, () => {});
+  await fresh.engine.start(); await fresh.engine.syncNow();
+  await readback(() => fresh.host.text(movedNote) === rotatedText, "new backup recovery reads post-cutover same path");
+  await assert.rejects(fresh.transport.setup2(token, "QA account", { name: "QA old backup", platform: "linux", app_version: version },
+    { ...recovery, generation, recoverOnly: true }), error => error.code === "generation_mismatch",
+    "old backup cannot enroll into the new generation");
+  await a.engine.stopAndWait(); await fresh.engine.stopAndWait();
+  flows.add("rotation-future-no-decryption");
   await stopServer();
   await recorder.close(); recorder = null;
   await positiveControl("control-after");
-  const needles = buildNeedles(spec), conns = readCapture(capture), report = scan(conns, needles);
+  const originalNeedles = buildNeedles(spec), rotatedNeedles = buildNeedles({ phrase: nextBackup });
+  assert.ok(originalNeedles.some(needle => needle.label === "recovery:phrase"), "required needle absent: recovery:phrase");
+  assert.ok(rotatedNeedles.some(needle => needle.label === "recovery:phrase"), "required rotated recovery phrase needle");
+  const needles = [...originalNeedles, ...rotatedNeedles], conns = readCapture(capture), report = scan(conns, needles);
   for (const label of ["text:note", "text:filename", "text:folder", "text:vault", "text:attachment", "text:edit", "text:futureContent",
-    "key:vrk", "key:derived:domain-map", "key:domain", "key:manifest", "key:feed_bad_chunk", "key:feed_sibling_chunk", "key:pairing_secret", "key:pairing_envelope", "key:pairing_vault_details", "recovery:phrase", "pairing:code:0"]) {
+    "key:vrk", "key:derived:domain-map", "key:domain", "key:manifest", "key:feed_bad_chunk", "key:feed_sibling_chunk", "key:pairing_secret", "key:pairing_envelope", "key:pairing_vault_details", "key:pairing_envelope_siv", "key:pairing_vault_siv", "key:rotated_root", "key:rotated_domain", "key:rotated_manifest", "key:rotated_map", "recovery:phrase", "pairing:code:0"]) {
     assert.ok(needles.some((needle) => needle.label === label), `required needle absent: ${label}`);
   }
   assert.equal(report.decision, "pass", `traffic scan: ${JSON.stringify(report.errors)} ${report.hits.map((h) => h.label)}`);
@@ -619,11 +867,11 @@ try {
   }
   assert.deepEqual([...inventoried].sort(), ["changes", "file", "version"], "clear-field inventory must exercise all three read routes");
   assert.throws(() => ciphertextFields("/v1/changes", { seq: 0, head_seq: 0, changes: [], debug: "SENTINEL-unlisted-field" }), /clear-field allowlist/, "clear-field allowlist negative control");
-  const credentials = { setup: token, proof: recovery.proof, enroll: invitation.enroll_token, pairing: invitation.pairing_id,
+  const credentials = { setup: token, proof: recovery.proof, proofs: [recovery.proof, nextRecovery.proof], enroll: invitation.enroll_token, pairing: invitation.pairing_id,
     devices: new Map(devices.map((d) => [d.state.data.deviceId, d.state.data.deviceSecret])) };
   const auth = credentialScan(conns, credentials);
   assert.equal(auth.report.decision, "pass", `credential sink scan: ${JSON.stringify({ errors: auth.report.errors, hits: auth.report.hits })}`);
-  assert.deepEqual(auth.counts, { setup_token: 2, recovery_proof: 1, enroll_token: 2, device_secret: 3 });
+  assert.deepEqual(auth.counts, { setup_token: 6, recovery_proof: 4, enroll_token: 2, device_secret: 4 });
   const wrongSink = conns.map((conn) => ({ ...conn,
     requests: conn.requests.map((request) => ({ ...request, head: { ...request.head } })) }));
   wrongSink.errors = conns.errors;
@@ -632,6 +880,18 @@ try {
   assert.deepEqual(wrong.errors, []);
   assert.equal(wrong.decision, "fail", "a valid proof in an unrelated header must fail");
   assert.ok(wrong.hits.some((hit) => hit.label === "key:proof" && hit.where === "request"));
+  for (const route of ["POST /v1/rotation/prepare", `POST /v1/rotation/${aRotationOperation}/commit`]) {
+    const ownerConn = conns.find(conn => conn.requests[0]?.head.line.startsWith(`${route} `));
+    assert.ok(ownerConn, "rotation credential control must use an actual request");
+    const original = ownerConn.requests[0];
+    const body = Buffer.concat([original.body.subarray(0, 1), Buffer.from(`"recovery_proof":"${recovery.proof}",`), original.body.subarray(1)]);
+    const poisoned = { ...original, body, wire: Buffer.concat([original.wire.subarray(0, original.plainBodyOffset), body]) };
+    const wrongOwnerSink = [{ ...ownerConn, requests: [poisoned] }]; wrongOwnerSink.errors = [];
+    const refused = credentialScan(wrongOwnerSink, credentials).report;
+    assert.deepEqual(refused.errors, [], "owner credential control must retain parseable evidence");
+    assert.equal(refused.decision, "fail", "a recovery proof in an owner rotation request must fail");
+    assert.ok(refused.hits.some(hit => hit.label === "key:proof" && hit.where === "request"), "owner rotation must retain the unexpected proof hit");
+  }
   // Duplicate members must not erase the earlier credential before scanning.
   const setupConn = conns.find((conn) => conn.requests[0]?.head.line.startsWith("POST /v1/setup "));
   for (const field of ['"debug"', '"de\\u0062ug"']) {
@@ -657,10 +917,11 @@ try {
   for (const file of stored) assertNoNeedles(fs.readFileSync(file), needles, "server_storage");
   assertNoNeedles(Buffer.from(logs), diagnosticNeedles, "server_logs");
   for (const d of devices) assertNoNeedles(Buffer.from(d.host.logs.join("\n")), diagnosticNeedles, "client_diagnostics");
-  assert.deepEqual([...flows].sort(), ["api-only-no-decryption", "attachment", "create", "delete", "domain-map-refusal", "domain-map-rollback-limit", "edit", "folder-move", "history", "hostile-feed-progress", "hostile-receive", "pairing", "pause-control", "recovery", "rename", "restore-copy", "revocation-access-only", "setup", "tamper-refusal"], "required runtime flows");
+  await legacyUpgradeFlow();
+  assert.deepEqual([...flows].sort(), ["api-only-no-decryption", "attachment", "create", "delete", "domain-map-refusal", "domain-map-rollback-limit", "edit", "folder-move", "history", "hostile-feed-progress", "hostile-receive", "legacy-recovery-upgrade", "pairing", "pause-control", "recovery", "rename", "restore-copy", "revocation-access-only", "rotation-future-no-decryption", "setup", "tamper-refusal"], "required runtime flows");
   assert.deepEqual([...controls].sort(), ["control-after", "control-before"], "required scanner positive controls");
   assert.ok(Date.now() - started < budget, "fixture exceeded wall-clock budget");
-  console.log(`e2ee decision=pass flows=${flows.size} controls=${controls.size} requests=${requests} storage_files=${stored.length} needles=${needles.length} duration_ms=${Date.now() - started} budget_ms=${budget}`);
+  console.log(`e2ee decision=pass flows=${flows.size} controls=${controls.size} requests=${sent} main_requests=${requests} storage_files=${stored.length} needles=${needles.length} duration_ms=${Date.now() - started} budget_ms=${budget}`);
 } catch (error) {
   failure = error;
   throw error;

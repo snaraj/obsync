@@ -20,7 +20,7 @@ import test from "node:test";
 import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { KEYS, STEP_MS, memorySecrets, pair, sandbox, settled } from "./fake.mjs";
+import { KEYS, STEP_MS, keys, memorySecrets, openPublishedManifest, pair, sandbox, settled } from "./fake.mjs";
 import { PhoneVault } from "./phone.mjs";
 
 const require = createRequire(import.meta.url);
@@ -37,10 +37,7 @@ const CLASH = "RECASE SENTINEL: a hidden file that is not obsync's\n";
 async function sentPaths(server, manifestKey) {
   const out = [];
   for (const frame of server.journal) {
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const manifest = JSON.parse(await c.decryptManifest(
-      manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
-    ));
+    const manifest = await openPublishedManifest(frame, manifestKey, server.mapFileId);
     out.push({ path: manifest.path, deleted: frame.deleted, folder: manifest.v === 2, device: frame.device_id, size: manifest.size });
   }
   return out;
@@ -63,7 +60,11 @@ async function phone(t, r, fresh = false, id = PHONE, secret = PHONE_SECRET) {
     saveData: async (value) => { store.data = JSON.parse(JSON.stringify(value)); },
   }, true, store.secrets);
   if (fresh) {
-    Object.assign(state.data, { vrk: KEYS.vrk, deviceId: id, deviceSecret: secret, serverUrl: "https://sync.example.invalid" });
+    state.data.serverUrl = "https://sync.example.invalid";
+    await state.save();
+    await state.stageEnrollment2(KEYS.vrk, "pair");
+    await state.adoptSuite2({ root: KEYS.vrk, generation: (await keys()).generation,
+      deviceId: id, deviceSecret: secret, purpose: "pair" });
   }
   const logs = [];
   const notices = [];
@@ -145,6 +146,9 @@ async function seeded(t, notes, options) {
   await r.timers.run(STEP_MS, () => Object.keys(notes).every((path) => settled(r.a, path)));
   await r.b.engine.start();
   await r.timers.run(STEP_MS, () => Object.entries(notes).every(([path, text]) => r.vault.text(path) === text && settled(r.b, path)));
+  // A seeded fixture may be stopped next: receive records precede the page cursor/save.
+  await r.timers.run(STEP_MS, () => r.b.state.data.lastSeq === r.server.seq);
+  await r.b.state.save();
   r.ids = Object.fromEntries(Object.keys(notes).map((path) => [path, r.a.state.fileByPath(path).fileId]));
   return r;
 }
@@ -938,9 +942,11 @@ for (const folds of [true, false]) {
     // The phone's own next pass finds the note gone from its storage and says
     // so: the very deletion the desktop made, the same version, and still
     // nothing removed here.
-    await r.b.engine.reconcile();
-    await r.timers.run(STEP_MS, () => r.b.state.data.files["Gone/Box.md"] === undefined);
     const tombstone = r.server.journal.find((frame) => frame.file_id === id && frame.deleted);
+    await r.b.engine.reconcile();
+    // forgetPath precedes the custody save/log; await the completed push in the same budget.
+    await r.timers.run(STEP_MS, () => r.b.state.data.files["Gone/Box.md"] === undefined &&
+      r.b.logs.includes(`push path_class=tombstone decision=deleted version=${tombstone?.version_id}`));
     assert.ok(r.b.logs.includes(`push path_class=tombstone decision=deleted version=${tombstone?.version_id}`), story(r));
     assert.deepEqual(await phonePosts(r), [], story(r));
     assert.equal(r.vault.text("Gone/Box.md/Inside.md"), THEIRS, story(r));

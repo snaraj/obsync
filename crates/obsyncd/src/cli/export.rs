@@ -119,10 +119,12 @@ pub fn run(cfg: &Config, domain: &DomainId, out: &Path) -> Result<ExportReport, 
                     ("bytes", Value::Int(version.bytes as i64)),
                     ("deleted", Value::Bool(version.deleted)),
                     ("manifest_ct", Value::Str(hex::encode(&version.manifest_ct))),
-                    (
-                        "manifest_nonce",
-                        Value::Str(hex::encode(&version.manifest_nonce)),
-                    ),
+                    match version.manifest_seal {
+                        crate::storage::ManifestSeal::Legacy(nonce) => {
+                            ("manifest_nonce", Value::Str(hex::encode(&nonce)))
+                        }
+                        crate::storage::ManifestSeal::Suite2 => ("seal_suite", Value::Int(2)),
+                    },
                 ]));
             }
             entries.push(json::obj(vec![
@@ -254,7 +256,7 @@ mod tests {
                     sids: vec![sid],
                     bytes: body.len() as u64,
                     manifest_ct: manifest,
-                    manifest_nonce: [1u8; 12],
+                    manifest_seal: crate::storage::ManifestSeal::Legacy([1u8; 12]),
                     device_id: device,
                     deleted: false,
                 })

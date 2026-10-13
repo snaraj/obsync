@@ -18,6 +18,7 @@ const { SyncEngine, HEARTBEAT_MS, SCAN_MS } = require("../build/sync/engine.js")
 const { pushDelete, pushFile } = require("../build/sync/push.js");
 const { applyChange, assembleBytes, decodeRecordManifest, fetchRemoteOnly, remoteOnlyList, commonAncestor } = require("../build/sync/pull.js");
 const c = require("../build/crypto.js");
+const seal2 = require("../build/seal2.js");
 const dm = require("../build/domainmap.js");
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -45,14 +46,9 @@ function clearFields(json) {
 async function postedPaths(server, k) {
   const paths = [];
   for (const frame of server.journal) {
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const json = await c.decryptManifest(
-      k.manifestKey,
-      frame.file_id,
-      binder,
-      Uint8Array.from(Buffer.from(frame.manifest_nonce, "hex")),
-      c.unbase64(frame.manifest_ct),
-    );
+    const json = new TextDecoder("utf-8", { fatal: true }).decode(await seal2.openRecord(
+      k.manifestKey, 1, { generation: k.generation, domainId: KEYS.domainId, fileId: frame.file_id,
+        parents: frame.parents, sids: frame.sids }, c.unbase64(frame.manifest_ct)));
     paths.push(JSON.parse(json).path);
   }
   return paths;
@@ -114,7 +110,7 @@ test("a large file is chunked, and a resumed upload sends only what is missing",
   // Pretend a previous run uploaded the first chunk before dying.
   const { chunkStream, bytesSource } = require("../build/chunker.js");
   const first = (await chunkStream(bytesSource(data)).next()).value;
-  const sealed = await c.encryptChunk(context.domainKey, first);
+  const sealed = await seal2.encryptChunk2(context.domainKey, context, first);
   server.chunks.set(sealed.sid, sealed.ciphertext);
 
   await pushFile(context, "big.bin");
@@ -151,7 +147,7 @@ test("a pull refuses content whose plaintext hash does not match its manifest", 
   });
   // Swap the stored chunk for a different, correctly encrypted one: the
   // manifest's cid no longer matches, so the chunk must be refused.
-  const other = await c.encryptChunk(k.domainKey, enc("substituted bytes\n"));
+  const other = await seal2.encryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, enc("substituted bytes\n"));
   server.chunks.set(frame.sids[0], other.ciphertext);
   await assert.rejects(() => applyChange(context, frame), { name: "Unwritable", reason: "chunk_authentication" });
   assert.equal(host.files.has("Notes/Tampered.md"), false, "nothing unverified reached the vault");
@@ -160,7 +156,7 @@ test("a pull refuses content whose plaintext hash does not match its manifest", 
 test("a manifest that lies about its plaintext hash is refused before the write", async () => {
   const { host, server, context, keys: k } = await rig();
   const content = enc("honest bytes\n");
-  const { cid, sid, ciphertext } = await c.encryptChunk(k.domainKey, content);
+  const { cid, sid, ciphertext } = await seal2.encryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, content);
   server.chunks.set(sid, ciphertext);
   const frame = await server.publishManifest({
     fileId: "17".repeat(16),
@@ -268,7 +264,7 @@ test("a refused file is reported once, however many versions it sends", async ()
 test("a manifest whose fields are the wrong shape is refused before a chunk is fetched", async () => {
   const { host, server, context, keys: k } = await rig();
   const content = enc("honest bytes\n");
-  const { cid, sid, ciphertext } = await c.encryptChunk(k.domainKey, content);
+  const { cid, sid, ciphertext } = await seal2.encryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, content);
   server.chunks.set(sid, ciphertext);
   const frame = await server.publishManifest({
     fileId: "1a".repeat(16),
@@ -1282,7 +1278,7 @@ function engineOf({ host, server, state }, timers, extra = {}) {
 }
 
 test("a vault with no domain map gets one, and syncs under the domain it declares", async () => {
-  const rigged = await rig();
+  const rigged = await rig({ initializeMap: true });
   const { host, server, state, transport, keys: k } = rigged;
   // A vault nobody has synced yet: no map on the server at all.
   server.files.delete(k.map.fileId);

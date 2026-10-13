@@ -12,7 +12,7 @@ const { ApiError, Transport } = require("../build/transport.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const tick = () => new Promise(setImmediate);
 const unpaired = { deviceId: null, deviceSecret: null };
-async function plugin(t, { server = new FakeServer(), host = new FakeHost(), metadata = {} } = {}) {
+async function plugin(t, { server = new FakeServer(), host = new FakeHost(), metadata = {}, legacy = false, registered = true } = {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const obsidian = box.require("obsidian");
@@ -34,6 +34,21 @@ async function plugin(t, { server = new FakeServer(), host = new FakeHost(), met
   instance.checkForUpdate = async () => {};
   instance.startEngine = async () => { starts++; };
   instance.log = (line) => logs.push(line);
+  if (!legacy && stored.vrk !== null) {
+    const desired = structuredClone(stored), { State } = box.require(join(box.home, "build/state.js")), c = box.require(join(box.home, "build/crypto.js"));
+    stored = { ...desired, vrk: null, deviceId: null, deviceSecret: null };
+    const initial = await State.open(instance, false, instance.app.secretStorage);
+    await initial.stageEnrollment2(desired.vrk, "pair");
+    await initial.adoptSuite2({ root: desired.vrk, generation: (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(desired.vrk)))).fileId,
+      deviceId: desired.deviceId ?? KEYS.deviceId, deviceSecret: desired.deviceSecret ?? KEYS.deviceSecret, purpose: "pair" });
+    if (desired.deviceId === null) { initial.data.deviceId = null; initial.data.deviceSecret = null; await initial.save(); }
+  }
+  if (!legacy && server.claimed) {
+    const k = await keys(); await server.seedDomainMap(k.map, KEYS.domainId);
+    if (registered && !server.recoveryArmed && server.recoveryVerifier === null) {
+      server.recoveryVerifier = (await accountRecovery(KEYS.vrk)).verifier; server.recoveryAt = server.clock - RECOVERY_HOLD_MS;
+    }
+  }
   await instance.onload();
   instance.host = host;
   instance.transport = new BoxTransport({
@@ -66,14 +81,9 @@ test("recovery proof is domain separated from the vault key and the server retai
   assert.notEqual((await accountRecovery("ab".repeat(32))).proof, derived.proof);
 });
 
-test("an updated paired device registers recovery before its last credential leaves", async (t) => {
-  const r = await plugin(t);
-  const k = await keys();
-  await r.server.seedDomainMap(k.map, KEYS.domainId);
-  // Use the actual successful engine start, including automatic registration.
-  delete r.instance.startEngine;
-  t.after(async () => { await r.instance.engine?.stopAndWait(); });
-  await r.instance.startEngine();
+test("legacy registration protects the last credential; ordinary recovery requires explicit upgrade", async (t) => {
+  const r = await plugin(t, { legacy: true });
+  await r.instance.registerAccountRecovery();
   const derived = await accountRecovery(KEYS.vrk);
   assert.equal(r.server.recoveryVerifier, derived.verifier);
   const registration = r.server.requests.find((request) => request.target.endsWith("/v1/account/recovery"));
@@ -93,9 +103,9 @@ test("an updated paired device registers recovery before its last credential lea
   assert.equal(r.instance.state.data.deviceId, null);
   await r.instance.setServerUrl("https://sync.example.invalid");
   await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
-  assert.notEqual(r.instance.state.data.deviceId, KEYS.deviceId);
+  assert.equal(r.instance.state.data.deviceId, null);
   assert.equal(r.instance.state.data.vrk, KEYS.vrk);
-  assert.ok(r.notices.some((text) => text.includes("recovered your vault on this server")));
+  assert.ok(r.notices.some((text) => /older vault key.*explicit encryption upgrade/.test(text)));
 });
 
 test("forgotten credentials show recovery and reset metadata without touching notes, key or address", async (t) => {
@@ -134,7 +144,7 @@ test("setup recovers a forgotten enrollment with its retained key, without unins
   assert.notEqual(r.instance.state.data.deviceId, KEYS.deviceId);
   assert.equal(r.instance.forgottenDevice, false);
   assert.equal(r.instance.state.data.vrk, KEYS.vrk);
-  assert.ok(r.notices.some((text) => text.includes("recovered your vault on this server")));
+  assert.ok(r.notices.some((text) => text.includes("Recovered this vault's enrollment")));
 });
 
 test("a wrong token and a wrong vault key never enrol a recovery device", async (t) => {
@@ -145,7 +155,8 @@ test("a wrong token and a wrong vault key never enrol a recovery device", async 
     await r.instance.setUpAccount(reason === "token" ? "wrong-token" : SETUP_TOKEN, "obsync");
     assert.equal(server.devices.length, 1, reason);
     assert.equal(r.instance.state.data.deviceId, null, reason);
-    assert.equal(server.requests.length, 1, "no automatic retry");
+    assert.equal(server.requests.filter(request => request.method === "POST").length, 1, "no automatic enrollment retry");
+    assert.equal(server.requests.filter(request => request.method === "GET" && request.target === "/v1/setup").length, 1, "credential-free capability read");
   }
 });
 
@@ -161,9 +172,9 @@ test("an operator-cleared account re-enrols the restored key, which then carries
   assert.equal(server.recoveryVerifier, (await accountRecovery(KEYS.vrk)).verifier);
   assert.notEqual(server.recoveryAt, null);
   assert.equal(server.recoveryArmed, false);
-  assert.ok(r.notices.some((text) => text.includes("recovered your vault on this server")));
+  assert.ok(r.notices.some((text) => text.includes("Recovered this vault's enrollment")));
   // The request carried the proof, because the key was restored, not freshly made.
-  const setup = server.requests.find((request) => request.target.endsWith("/v1/setup"));
+  const setup = server.requests.find((request) => request.method === "POST" && request.target.endsWith("/v1/setup"));
   assert.ok(JSON.parse(setup.json).recovery_proof, "a restored key proves the vault");
 });
 
@@ -171,7 +182,7 @@ test("an account with no key that no one has reset refuses the restored key, and
   // An account set up before any key was registered, and never reset: the
   // server answers recovery_unavailable, as 1.1.4 did.
   const server = new FakeServer();
-  const r = await plugin(t, { server, metadata: { ...unpaired, vrk: KEYS.vrk } });
+  const r = await plugin(t, { server, registered: false, metadata: { ...unpaired, vrk: KEYS.vrk } });
   await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
   assert.equal(r.instance.state.data.deviceId, null);
   assert.equal(server.devices.length, 1, "no device was enrolled");
@@ -186,7 +197,7 @@ test("an account with no key that no one has reset refuses the restored key, and
 test("setup against a certificate this device does not trust says so, never 'the server refused this step'", async (t) => {
   const r = await plugin(t, { server: new FakeServer({ claimed: false }), metadata: { ...unpaired, vrk: null } });
   const { ApiError, CERT_UNTRUSTED } = r.box.require(join(r.box.home, "build/transport.js"));
-  r.instance.transport.setup = async () => { throw new ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID"); };
+  r.instance.transport.setup2 = async () => { throw new ApiError(0, "unreachable", "network=net::ERR_CERT_AUTHORITY_INVALID"); };
   await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
   assert.equal(r.instance.state.data.deviceId, null);
   assert.deepEqual(r.notices, [`obsync: ${CERT_UNTRUSTED}`]);
@@ -195,19 +206,19 @@ test("setup against a certificate this device does not trust says so, never 'the
 test("a lost first setup response retains its pre-request key for an explicit recovery attempt", async (t) => {
   const server = new FakeServer({ claimed: false });
   const r = await plugin(t, { server, metadata: { ...unpaired, vrk: null } });
-  const original = r.instance.transport.setup.bind(r.instance.transport);
-  r.instance.transport.setup = async (...args) => {
-    assert.ok(r.instance.state.data.vrk, "the key is durable before the server is asked");
+  const original = r.instance.transport.setup2.bind(r.instance.transport);
+  r.instance.transport.setup2 = async (...args) => {
+    assert.ok(r.instance.state.stagedEnrollment2()?.root, "the detached key is durable before the server is asked");
     await original(...args);
     return { outcome: "lost", status: 0, reason: "connection closed" };
   };
   await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
-  const retained = r.instance.state.data.vrk;
+  const retained = r.instance.state.stagedEnrollment2().root;
   assert.equal(r.instance.state.data.deviceId, null);
   assert.equal(server.devices.length, 1);
   assert.equal(server.recoveryVerifier, (await accountRecovery(retained)).verifier);
-  r.instance.transport.setup = original;
-  await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
+  r.instance.transport.setup2 = original;
+  await r.instance.setUpAccount(SETUP_TOKEN, "obsync", "recover-first-setup");
   assert.equal(r.instance.state.data.vrk, retained);
   assert.ok(r.instance.state.data.deviceId);
   assert.equal(server.devices.length, 2, "one new device only after an explicit second action");
@@ -222,10 +233,10 @@ test("a failed key save creates no server account", async (t) => {
 });
 
 test("double clicking setup does not mint two devices", async (t) => {
-  const r = await plugin(t, { server: new FakeServer({ claimed: false }), metadata: unpaired });
+  const r = await plugin(t, { server: new FakeServer({ claimed: false }), metadata: { ...unpaired, vrk: null } });
   await Promise.all([r.instance.setUpAccount(SETUP_TOKEN, "obsync"), r.instance.setUpAccount(SETUP_TOKEN, "obsync")]);
   assert.equal(r.server.devices.length, 1);
-  assert.equal(r.server.requests.filter((request) => request.target.endsWith("/v1/setup")).length, 1);
+  assert.equal(r.server.requests.filter((request) => request.method === "POST" && request.target.endsWith("/v1/setup")).length, 1);
 });
 
 test("the feed stops on a forgotten credential and never reports a reachable server as offline", { timeout: 5000 }, async (t) => {
@@ -270,16 +281,16 @@ test("only explicit device authentication refusals are classified as forgotten",
 
 
 test("a key changed while setup waits cannot adopt the old key's credential", async (t) => {
-  const r = await plugin(t, { server: new FakeServer({ claimed: false }), metadata: unpaired });
-  const setup = r.instance.transport.setup.bind(r.instance.transport);
-  r.instance.transport.setup = async (...args) => {
+  const r = await plugin(t, { server: new FakeServer({ claimed: false }), metadata: { ...unpaired, vrk: null } });
+  const setup = r.instance.transport.setup2.bind(r.instance.transport);
+  r.instance.transport.setup2 = async (...args) => {
     const response = await setup(...args);
     r.instance.state.data.vrk = "ab".repeat(32);
     return response;
   };
   await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
   assert.equal(r.instance.state.data.deviceId, null);
-  assert.ok(r.notices.some((text) => text.includes("response was not adopted")));
+  assert.ok(r.notices.some((text) => /staged vault changed|enrollment was not adopted/.test(text)));
 });
 
 test("revoking this device directly exposes recovery without restarting the plugin", async (t) => {
@@ -325,16 +336,15 @@ test("startup authentication refusal identifies a forgotten device without sched
 });
 
 
-test("an old server without recovery registration can still sync while its last-device safeguard remains", async (t) => {
-  const r = await plugin(t);
-  const k = await keys();
-  await r.server.seedDomainMap(k.map, KEYS.domainId);
+test("legacy registration refusal retains last-device protection; live sync requires upgrade", async (t) => {
+  const r = await plugin(t, { legacy: true });
   const { ApiError: BoxError } = r.box.require(join(r.box.home, "build/transport.js"));
   r.instance.transport.registerRecovery = async () => { throw new BoxError(404, "not_found", "old server"); };
+  await r.instance.registerAccountRecovery();
   delete r.instance.startEngine;
   t.after(async () => { await r.instance.engine?.stopAndWait(); });
   await r.instance.startEngine();
-  assert.equal(r.instance.engine.started, true);
+  assert.equal(r.instance.engine, null, "legacy main never starts a live engine");
   assert.equal(r.instance.forgottenDevice, false);
   assert.equal(r.server.recoveryVerifier, null);
   assert.ok(r.logs.includes("recovery decision=unavailable reason=not_found"));
@@ -345,8 +355,11 @@ test("a forgotten credential permits restoring the phrase before re-enrollment",
   const r = await plugin(t);
   r.server.secrets.clear();
   r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
-  await r.instance.restoreVaultKey("ab".repeat(32));
-  assert.equal(r.instance.state.data.vrk, "ab".repeat(32));
+  await r.instance.resetForgottenEnrollment();
+  const { encodeRecoveryBackup } = r.box.require(join(r.box.home, "build/recoveryBackup.js"));
+  await r.instance.stageRecoveryBackup(await encodeRecoveryBackup(Uint8Array.from(Buffer.from(KEYS.vrk, "hex"))));
+  assert.equal(r.instance.state.stagedEnrollment2().root, KEYS.vrk);
+  assert.equal(r.instance.state.data.vrk, KEYS.vrk);
   assert.equal(r.server.requests.length, 0, "an unusable old credential cannot gate phrase restoration");
 });
 
@@ -377,7 +390,7 @@ test("recovery reset waits for the old engine writer even after the engine refer
 });
 
 test("a vault-key change during proof derivation sends no stale proof", async (t) => {
-  const r = await plugin(t, { server: new FakeServer({ claimed: false }), metadata: unpaired });
+  const r = await plugin(t, { server: new FakeServer({ claimed: false }), metadata: { ...unpaired, vrk: null } });
   const recovery = r.box.require(join(r.box.home, "build/accountRecovery.js"));
   const original = recovery.accountRecovery;
   recovery.accountRecovery = async (vrk) => {
@@ -386,12 +399,12 @@ test("a vault-key change during proof derivation sends no stale proof", async (t
     return proof;
   };
   await r.instance.setUpAccount(SETUP_TOKEN, "obsync");
-  assert.equal(r.server.requests.length, 0);
+  assert.equal(r.server.requests.filter(request => request.method === "POST").length, 0, "changed local authority sends no proof");
   assert.equal(r.instance.state.data.deviceId, null);
 });
 
 test("a rejected recovery registration also exposes the forgotten-device action", async (t) => {
-  const r = await plugin(t);
+  const r = await plugin(t, { legacy: true });
   r.server.secrets.clear();
   await r.instance.registerAccountRecovery();
   assert.equal(r.instance.forgottenDevice, true);
@@ -407,7 +420,7 @@ test("a forgotten device can claim pairing only after its stale enrollment is cl
   modal.contentEl = { empty() {}, createEl: () => ({ setText() {} }) };
   modal.close = () => modal.onClose();
   let claims = 0;
-  r.instance.transport.pairingClaim = async () => {
+  r.instance.transport.pairingClaim2 = async () => {
     claims++;
     assert.equal(r.instance.state.data.deviceId, null);
     assert.equal(r.instance.state.data.lastSeq, 0);
@@ -426,7 +439,7 @@ test("a forgotten device can claim pairing only after its stale enrollment is cl
 });
 
 test("registration does not bind a proof after its vault key was replaced", async (t) => {
-  const r = await plugin(t);
+  const r = await plugin(t, { legacy: true });
   const recovery = r.box.require(join(r.box.home, "build/accountRecovery.js"));
   const original = recovery.accountRecovery;
   recovery.accountRecovery = async (vrk) => {
@@ -452,7 +465,7 @@ test("closing pairing while its forgotten identity resets prevents a claim", asy
     const reset = r.instance.resetForgottenEnrollment.bind(r.instance);
     r.instance.resetForgottenEnrollment = async () => { await reset(); modal.close(); };
     let claims = 0;
-    r.instance.transport.pairingClaim = async () => { claims++; throw new Error("unexpected claim"); };
+    r.instance.transport.pairingClaim2 = async () => { claims++; throw new Error("unexpected claim"); };
     await modal.claim();
     assert.deepEqual(r.notices, [], "a cancelled dialog must not report a validation error");
     assert.equal(claims, 0);
@@ -469,7 +482,7 @@ test("a setup token pasted with quotes and a line break sets up, under this devi
   const r = await plugin(t, { server, metadata: { ...unpaired, vrk: null } });
   await r.instance.setUpAccount(`“${SETUP_TOKEN.slice(0, 20)}\n  ${SETUP_TOKEN.slice(20)}” `, "obsync");
   assert.ok(r.instance.state.data.deviceId, r.notices.join(" | "));
-  const setup = JSON.parse(server.requests.find((request) => request.target === "/v1/setup").json);
+  const setup = JSON.parse(server.requests.find((request) => request.method === "POST" && request.target === "/v1/setup").json);
   assert.equal(setup.setup_token, SETUP_TOKEN);
   assert.match(setup.device.name, /^Mac [2-9A-HJKMNP-TV-Z]{4}$/, "never the bare platform");
   assert.equal(setup.device.name, r.instance.deviceName(), "the server holds the name this device shows");
@@ -485,13 +498,15 @@ test("a second computer's setup is told to pair instead, naming both commands, n
     assert.equal(r.instance.state.data.deviceId, null);
     const told = r.notices.join(" | ");
     assert.match(told, /already holds a vault.*Pair a new device.*Pair this device/, told);
+    assert.match(told, /complete recovery backup/, "the current suite2 backup is an explicit alternative");
     assert.ok(!RAW_CODE.test(told), told);
     assert.ok(!/recovery words|recovery phrase/.test(told), "a key made for this setup restored nothing");
-    // A freshly made key sends no proof, so an occupied server says pair or
-    // restore, whether or not it holds a verifier — never a new vault key.
-    assert.ok(r.logs.some((line) => /^setup decision=failed reason=already_set_up$/.test(line)));
-    const setup = r.server.requests.find((request) => request.target.endsWith("/v1/setup"));
-    assert.equal(JSON.parse(setup.json).recovery_proof, undefined, "a freshly made key proves nothing");
+    // Persisted new intent supplies only its own derived proof. The server
+    // refuses occupied authority instead of choosing a vault or recovery mode.
+    assert.ok(r.logs.some((line) => /^setup decision=failed reason=recover_only_required$/.test(line)));
+    const setup = r.server.requests.find((request) => request.method === "POST" && request.target.endsWith("/v1/setup"));
+    assert.equal(JSON.parse(setup.json).recover_only, false, "only persisted local new intent may initialize; the server must refuse occupied authority");
+    assert.ok(JSON.parse(setup.json).recovery_proof, "new authority derives its future recovery proof, without selecting the occupied account");
   }
 });
 
@@ -518,8 +533,8 @@ function recordDrawing(obsidian) {
   return { drawn, buttons };
 }
 
-for (const mobile of [false, true]) test(`a recovery key this device did not register is a security warning, said once and standing until its own registration succeeds (${mobile ? "mobile" : "desktop"}, 1.1.5)`, async (t) => {
-  const r = await plugin(t);
+for (const mobile of [false, true]) test(`a legacy recovery key this device did not register is a security warning, said once and standing until its own registration succeeds (${mobile ? "mobile" : "desktop"}, 1.1.5)`, async (t) => {
+  const r = await plugin(t, { legacy: true });
   const obsidian = r.box.require("obsidian");
   const platform = obsidian.Platform.isMobile;
   obsidian.Platform.isMobile = mobile;
@@ -603,7 +618,7 @@ for (const mobile of [false, true]) test(`a recovery key this device did not reg
 test("leaving ends the recovery-key warning with the pairing it was about (1.1.5)", async (t) => {
   const server = new FakeServer();
   server.addDevice("ab".repeat(16), "bc".repeat(32), "second");
-  const r = await plugin(t, { server });
+  const r = await plugin(t, { server, legacy: true });
   server.recoveryVerifier = "b6".repeat(32);
   await r.instance.registerAccountRecovery();
   assert.equal(r.instance.recoveryMismatch, true);
@@ -615,7 +630,7 @@ test("leaving ends the recovery-key warning with the pairing it was about (1.1.5
 });
 
 test("a mismatch answered after this device's credential ended says nothing (1.1.5, #233)", async (t) => {
-  const r = await plugin(t);
+  const r = await plugin(t, { legacy: true });
   const { ApiError: BoxError } = r.box.require(join(r.box.home, "build/transport.js"));
   r.instance.transport.registerRecovery = async () => {
     r.instance.state.data.deviceId = null;

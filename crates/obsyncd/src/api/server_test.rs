@@ -1855,7 +1855,7 @@ fn setup_runs_once_and_mints_the_first_device() {
         ))
         .send(h.addr);
     assert_eq!(again.status, 409);
-    assert_eq!(again.code(), "already_set_up");
+    assert_eq!(again.code(), "recover_only_required");
     assert_eq!(
         h.app.store.devices().len(),
         1,
@@ -5188,7 +5188,7 @@ fn a_wrong_setup_token_tells_a_claimed_server_from_an_unclaimed_one_to_nobody() 
         ))
         .send(h.addr);
     assert_eq!(right.status, 409);
-    assert_eq!(right.code(), "already_set_up");
+    assert_eq!(right.code(), "recover_only_required");
 }
 
 #[test]
@@ -6094,7 +6094,7 @@ fn setup_token_and_vault_proof_reenrol_after_the_last_device_leaves() {
     assert_eq!(revoked.status, 204, "{}", revoked.text());
     let recover = |token: &str, evidence: &str| {
         format!(
-            r#"{{"setup_token":"{token}","account_name":"must not rename","recovery_proof":"{evidence}","device":{{"name":"returned","platform":"ios","app_version":"1.1.3"}}}}"#
+            r#"{{"setup_token":"{token}","account_name":"must not rename","recover_only":true,"recovery_proof":"{evidence}","device":{{"name":"returned","platform":"ios","app_version":"1.1.3"}}}}"#
         )
     };
     assert_eq!(
@@ -6144,7 +6144,7 @@ fn setup_token_and_vault_proof_reenrol_after_the_last_device_leaves() {
 /// A setup-and-recover body for an existing account.
 fn reenrol_body(token: &str, evidence: &str) -> String {
     format!(
-        r#"{{"setup_token":"{token}","account_name":"must not rename","recovery_proof":"{evidence}","device":{{"name":"returned","platform":"macos","app_version":"1.1.5"}}}}"#
+        r#"{{"setup_token":"{token}","account_name":"must not rename","recover_only":true,"recovery_proof":"{evidence}","device":{{"name":"returned","platform":"macos","app_version":"1.1.5"}}}}"#
     )
 }
 
@@ -6385,7 +6385,10 @@ fn recover_only_discovery_is_public_and_state_independent() {
     let h = Harness::start("recover-only-capability");
     let before = Req::get("/v1/setup").send(h.addr);
     assert_eq!(before.status, 200);
-    assert_eq!(before.json().to_json(), r#"{"recover_only":true}"#);
+    assert_eq!(
+        before.json().to_json(),
+        r#"{"recover_only":true,"seal_suite":2}"#
+    );
     assert_eq!(before.header("access-control-allow-origin"), Some("*"));
     assert!(h.app.store.account().is_none());
     assert!(h.app.store.devices().is_empty());
@@ -6455,7 +6458,6 @@ fn recover_only_existing_proof_and_reply_bind_the_durable_device() {
         .send(h.addr);
     assert_eq!(register.status, 204);
     let body = reenrol_body(&h.token, &proof);
-    let body = format!("{}, \"recover_only\":true}}", &body[..body.len() - 1]);
     let result = Req::post("/v1/setup").body(&body).send(h.addr);
     assert_eq!(result.status, 201);
     let reply = result.json();
@@ -6498,6 +6500,640 @@ fn recover_only_existing_proof_and_reply_bind_the_durable_device() {
         assert_eq!(result.status, 403);
         assert_eq!(result.code(), "bad_recovery_proof");
         assert_eq!(h.app.store.head_seq(), seq);
+        assert_eq!(h.app.store.devices().len(), 2);
+    }
+}
+
+#[test]
+fn suite2_setup_proof_consistency_floor_generation_and_no_map_recovery() {
+    let h = Harness::start("suite2-setup-wire");
+    let proof = "a7".repeat(32);
+    let verifier = hex::encode(&sha256::sha256(&[0xa7; 32]));
+    let generation = "80".repeat(16);
+    let body = format!(
+        r#"{{"setup_token":"{}","account_name":"vault","seal_suite":2,"generation":"{generation}","recovery_verifier":"{verifier}","recovery_proof":"{proof}","recover_only":false,"device":{{"name":"new","platform":"macos","app_version":"1.1.7"}}}}"#,
+        h.token
+    );
+    let wrong = Req::post("/v1/setup")
+        .body(&body.replace(&proof, &"b8".repeat(32)))
+        .send(h.addr);
+    assert_eq!(wrong.status, 403);
+    assert!(h.app.store.account().is_none());
+    assert!(h.app.store.devices().is_empty());
+    let first = Req::post("/v1/setup").body(&body).send(h.addr);
+    assert_eq!(first.status, 201, "{}", first.text());
+    let first = Cred::from_json(&first.json());
+    let readback = Req::get("/v1/account").sign(&first, NOW).send(h.addr);
+    assert_eq!(readback.status, 200);
+    assert_eq!(
+        readback.json().get("seal_suite").and_then(Value::as_u64),
+        Some(2)
+    );
+    assert_eq!(
+        readback.json().get("generation").and_then(Value::as_str),
+        Some(generation.as_str())
+    );
+    // A manual lost-first-setup retry authenticates same root; server never
+    // decides whether this client may initialize a missing authenticated map.
+    assert!(h.app.store.file(&generation.parse().unwrap()).is_none());
+    for denied in [body.clone(), body.replace("\"recover_only\":false,", "")] {
+        let response = Req::post("/v1/setup").body(&denied).send(h.addr);
+        assert_eq!(response.code(), "recover_only_required");
+        assert_eq!(h.app.store.devices().len(), 1);
+    }
+    let body = body.replace("\"recover_only\":false", "\"recover_only\":true");
+    let recovered = Req::post("/v1/setup").body(&body).send(h.addr);
+    assert_eq!(recovered.status, 201, "{}", recovered.text());
+    assert_eq!(
+        recovered.json().get("recovered").and_then(Value::as_bool),
+        Some(true)
+    );
+    let count = h.app.store.devices().len();
+    for bad in [
+        body.replace(&generation, &"81".repeat(16)),
+        body.replace(&verifier, &"ff".repeat(32)),
+        body.replace("\"seal_suite\":2", "\"seal_suite\":\"2\""),
+        body.replace("\"seal_suite\":2", "\"seal_suite\":null"),
+    ] {
+        assert_ne!(Req::post("/v1/setup").body(&bad).send(h.addr).status, 201);
+        assert_eq!(h.app.store.devices().len(), count);
+    }
+    let legacy = Req::post("/v1/setup")
+        .body(&reenrol_body(&h.token, &proof))
+        .send(h.addr);
+    assert_eq!(legacy.code(), "suite_required");
+    assert_eq!(h.app.store.devices().len(), count);
+}
+
+#[test]
+fn rotation_wire_requires_owner_at_prepare_and_commit_and_exact_resume_intent() {
+    let h = Harness::start("rotation-authority-wire");
+    let first = h.setup_account();
+    let old = "80".repeat(16);
+    let new = "81".repeat(16);
+    let op = "ab".repeat(16);
+    let proof = "c7".repeat(32);
+    let verifier = hex::encode(&sha256::sha256(&[0xc7; 32]));
+    let intent = crate::storage::rotation::RotationIntent {
+        operation: op.clone(),
+        previous_map: old.parse().unwrap(),
+        current_map: new.parse().unwrap(),
+        target: None,
+        recovery_verifier: verifier.clone(),
+    };
+    let prepare = format!(
+        r#"{{"setup_token":"{}","intent":{}}}"#,
+        h.token,
+        intent.value().to_json()
+    );
+    let no_owner = Req::post("/v1/rotation/prepare")
+        .body(&prepare.replace(&h.token, "wrong-owner"))
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(no_owner.status, 401);
+    assert_eq!(h.app.store.current_generation(), None);
+    let caps = Req::get("/v1/rotation/capabilities")
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(caps.status, 200);
+    assert_eq!(
+        caps.json().get("rotation_protocol").and_then(Value::as_u64),
+        Some(1)
+    );
+    let accepted = Req::post("/v1/rotation/prepare")
+        .body(&prepare)
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(accepted.status, 200, "{}", accepted.text());
+    let state = accepted.json();
+    assert_eq!(
+        state.get("inventory_heads").and_then(Value::as_u64),
+        Some(0)
+    );
+    let page = Req::get(&format!("/v1/rotation/{op}/inventory?page=0"))
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(page.status, 200);
+    assert!(
+        page.json()
+            .get("heads")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // The operation is otherwise complete, so a stolen routine credential
+    // really could commit if the separate owner check were removed.
+    let ct = vec![0x91; 32];
+    let version = crate::storage::version_id_of(&intent.current_map, &[], &ct, &[]);
+    h.app
+        .store
+        .append_version(crate::storage::NewVersion {
+            account_id: h.app.store.account().unwrap().account_id,
+            file_id: intent.current_map,
+            domain_id: TEST_DOMAIN.parse().unwrap(),
+            version_id: version,
+            parents: vec![],
+            sids: vec![],
+            bytes: 0,
+            manifest_ct: ct,
+            manifest_seal: crate::storage::ManifestSeal::Suite2,
+            device_id: first.id.parse().unwrap(),
+            deleted: false,
+        })
+        .unwrap();
+    let commit = format!(
+        r#"{{"setup_token":"wrong-owner","intent":{},"cutoff":{},"inventory_hash":"{}","catalog_pages":0,"catalog_hash":"{}"}}"#,
+        intent.value().to_json(),
+        state.get("cutoff").unwrap().as_u64().unwrap(),
+        state.get("inventory_hash").unwrap().as_str().unwrap(),
+        state.get("catalog_hash").unwrap().as_str().unwrap()
+    );
+    let denied = Req::post(&format!("/v1/rotation/{op}/commit"))
+        .body(&commit)
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(denied.status, 401);
+    let mut rotation = intent.value();
+    if let Value::Object(fields) = &mut rotation {
+        fields.push(("resume_id".into(), Value::Str("01".repeat(16))));
+    }
+    let resume = format!(
+        r#"{{"setup_token":"{}","account_name":"vault","seal_suite":2,"generation":"{new}","recovery_verifier":"{verifier}","recovery_proof":"{proof}","recover_only":true,"device":{{"name":"resumer","platform":"macos","app_version":"1.1.7"}},"rotation":{}}}"#,
+        h.token,
+        rotation.to_json()
+    );
+    let wrong = resume.replace("\"target\":null", &format!("\"target\":\"{}\"", first.id));
+    assert_ne!(Req::post("/v1/setup").body(&wrong).send(h.addr).status, 201);
+    let result = Req::post("/v1/setup").body(&resume).send(h.addr);
+    assert_eq!(result.status, 201, "{}", result.text());
+    let resumed = Cred::from_json(&result.json());
+    let retry = Req::post("/v1/setup").body(&resume).send(h.addr);
+    assert_eq!(retry.status, 201);
+    let retried = Cred::from_json(&retry.json());
+    assert_eq!(retried.id, resumed.id);
+    assert_eq!(retried.secret, resumed.secret);
+    assert_eq!(
+        Req::get("/v1/account")
+            .sign(&first, NOW)
+            .send(h.addr)
+            .status,
+        403
+    );
+    let status = Req::get(&format!("/v1/rotation/{op}"))
+        .sign(&resumed, NOW)
+        .send(h.addr);
+    assert_eq!(status.status, 200);
+    assert_eq!(
+        status.json().get("coordinator").and_then(Value::as_str),
+        Some(resumed.id.as_str())
+    );
+}
+
+#[test]
+fn suite2_version_wire_discriminator_is_strict_and_legacy_read_remains_supported() {
+    let h = Harness::start("suite2-version-wire");
+    let first = h.setup_account();
+    let fid = "90".repeat(16);
+    let legacy = post_version(&h, &first, &fid, &[], &[], "bGVnYWN5LW1hbmlmZXN0LWJsb2I=");
+    assert_eq!(legacy.status, 201);
+    let i = crate::storage::rotation::RotationIntent {
+        operation: "ab".repeat(16),
+        previous_map: "80".repeat(16).parse().unwrap(),
+        current_map: "81".repeat(16).parse().unwrap(),
+        target: None,
+        recovery_verifier: hex::encode(&sha256::sha256(&[0xc7; 32])),
+    };
+    let prepare = format!(
+        r#"{{"setup_token":"{}","intent":{}}}"#,
+        h.token,
+        i.value().to_json()
+    );
+    assert_eq!(
+        Req::post("/v1/rotation/prepare")
+            .body(&prepare)
+            .sign(&first, NOW)
+            .send(h.addr)
+            .status,
+        200
+    );
+    let read = Req::get(&format!("/v1/files/{fid}"))
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(read.status, 200);
+    assert!(
+        read.json().get("versions").unwrap().as_array().unwrap()[0]
+            .get("manifest_nonce")
+            .is_some()
+    );
+    let fresh = "91".repeat(16);
+    let ct = vec![0x91; 32];
+    let id = crate::storage::version_id_of(&fresh.parse().unwrap(), &[], &ct, &[]).to_string();
+    let body = format!(
+        r#"{{"version_id":"{id}","parents":[],"sids":[],"bytes":0,"domain_id":"{TEST_DOMAIN}","manifest_ct":"{}","seal_suite":2,"deleted":false}}"#,
+        obsync_core::base64::encode(&ct)
+    );
+    for bad in [
+        body.replace("\"seal_suite\":2", "\"seal_suite\":\"2\""),
+        body.replace("\"seal_suite\":2", "\"seal_suite\":null"),
+        body.replace("\"seal_suite\":2", "\"seal_suite\":3"),
+        body.replace(
+            "\"seal_suite\":2",
+            "\"seal_suite\":2,\"manifest_nonce\":null",
+        ),
+        body.replace(
+            "\"seal_suite\":2",
+            "\"seal_suite\":2,\"manifest_nonce\":\"0123456789abcdef01234567\"",
+        ),
+    ] {
+        let refused = Req::post(&format!("/v1/files/{fresh}/versions"))
+            .body(&bad)
+            .sign(&first, NOW)
+            .send(h.addr);
+        assert_eq!(refused.status, 400, "{}", refused.text());
+        assert!(h.app.store.file(&fresh.parse().unwrap()).is_none());
+    }
+    let accepted = Req::post(&format!("/v1/files/{fresh}/versions"))
+        .body(&body)
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(accepted.status, 201, "{}", accepted.text());
+    let record = Req::get(&format!("/v1/files/{fresh}/versions/{id}"))
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(record.status, 200);
+    assert_eq!(
+        record.json().get("seal_suite").and_then(Value::as_u64),
+        Some(2)
+    );
+    assert!(record.json().get("manifest_nonce").is_none());
+    let downgraded = body.replace(
+        "\"seal_suite\":2",
+        "\"manifest_nonce\":\"0123456789abcdef01234567\"",
+    );
+    let refused = Req::post(&format!("/v1/files/{fresh}/versions"))
+        .body(&downgraded)
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(refused.code(), "suite_required");
+}
+
+#[test]
+fn suite2_floor_requires_top_level_suite_on_pairing_create_claim_and_approve() {
+    let h = Harness::start("suite2-enrollment-floor");
+    let verifier = hex::encode(&sha256::sha256(&[0xa7; 32]));
+    let body = format!(
+        r#"{{"setup_token":"{}","account_name":"vault","seal_suite":2,"generation":"{}","recovery_verifier":"{verifier}","device":{{"name":"new","platform":"macos","app_version":"1.1.7"}}}}"#,
+        h.token,
+        "80".repeat(16)
+    );
+    let first = Req::post("/v1/setup").body(&body).send(h.addr);
+    assert_eq!(first.status, 201);
+    let first = Cred::from_json(&first.json());
+    let denied = Req::post("/v1/pairing").sign(&first, NOW).send(h.addr);
+    assert_eq!(denied.code(), "suite_required");
+    let pairing = Req::post("/v1/pairing")
+        .body(r#"{"seal_suite":2}"#)
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(pairing.status, 201);
+    let pairing = pairing.json();
+    let op = pairing.get("pairing_id").and_then(Value::as_str).unwrap();
+    let token = pairing.get("enroll_token").and_then(Value::as_str).unwrap();
+    let claim = format!(
+        r#"{{"enroll_token":"{token}","name":"phone","platform":"ios","app_version":"1.1.7"}}"#
+    );
+    let count = h.app.store.devices().len();
+    let denied = Req::post(&format!("/v1/pairing/{op}/claim"))
+        .body(&claim)
+        .send(h.addr);
+    assert_eq!(denied.status, 400);
+    assert_eq!(h.app.store.devices().len(), count);
+    let missing_key = format!("{},\"seal_suite\":2}}", &claim[..claim.len() - 1]);
+    assert_eq!(
+        Req::post(&format!("/v1/pairing/{op}/claim"))
+            .body(&missing_key)
+            .send(h.addr)
+            .status,
+        400
+    );
+    assert_eq!(h.app.store.devices().len(), count);
+    let claim = format!(
+        "{},\"seal_suite\":2,\"claimant_pub\":\"{CLAIMANT_PUB}\"}}",
+        &claim[..claim.len() - 1]
+    );
+    let pending = Req::post(&format!("/v1/pairing/{op}/claim"))
+        .body(&claim)
+        .send(h.addr);
+    assert_eq!(pending.status, 201);
+    let pending = Cred::from_json(&pending.json());
+    let packet = obsync_core::base64::encode(&[0x91; 32]);
+    let approve = format!(r#"{{"envelope":"{packet}"}}"#);
+    let denied = Req::post(&format!("/v1/pairing/{op}/approve"))
+        .body(&approve)
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(denied.code(), "suite_required");
+    let approve = format!("{},\"seal_suite\":2}}", &approve[..approve.len() - 1]);
+    assert_eq!(
+        Req::post(&format!("/v1/pairing/{op}/approve"))
+            .body(&approve)
+            .sign(&first, NOW)
+            .send(h.addr)
+            .code(),
+        "not_revealed"
+    );
+    assert_eq!(
+        Req::post(&format!("/v1/pairing/{op}/reveal"))
+            .body(&format!(r#"{{"creator_pub":"{CREATOR_PUB}"}}"#))
+            .sign(&first, NOW)
+            .send(h.addr)
+            .status,
+        204
+    );
+    assert_eq!(
+        Req::post(&format!("/v1/pairing/{op}/approve"))
+            .body(&approve)
+            .sign(&first, NOW)
+            .send(h.addr)
+            .status,
+        204
+    );
+    let collected = Req::get(&format!("/v1/pairing/{op}/envelope"))
+        .sign(&pending, NOW)
+        .send(h.addr);
+    assert_eq!(collected.status, 200);
+    assert_eq!(
+        collected.json().get("seal_suite").and_then(Value::as_u64),
+        Some(2)
+    );
+    assert!(collected.json().get("nonce").is_none());
+    assert_eq!(
+        collected.json().get("envelope").and_then(Value::as_str),
+        Some(packet.as_str())
+    );
+    assert_eq!(
+        Req::get("/v1/account")
+            .sign(&pending, NOW)
+            .send(h.addr)
+            .json()
+            .get("seal_suite")
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+}
+
+#[test]
+fn rotation_current_generation_feed_and_listing_exclude_history_and_advance_empty_cursors() {
+    let h = Harness::start("rotation-scoped-discovery");
+    let first = h.setup_account();
+    let oldfiles = ["10".repeat(16), "11".repeat(16)];
+    let mut oldheads = vec![];
+    for f in &oldfiles {
+        let posted = post_version(&h, &first, f, &[], &[], "bGVnYWN5LW1hbmlmZXN0LWJsb2I=");
+        assert_eq!(posted.status, 201);
+        oldheads.push(
+            posted
+                .json()
+                .get("version_id")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string(),
+        );
+    }
+    let legacy = Req::get("/v1/changes?since=0&limit=100")
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(
+        legacy
+            .json()
+            .get("changes")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let i = crate::storage::rotation::RotationIntent {
+        operation: "ab".repeat(16),
+        previous_map: "80".repeat(16).parse().unwrap(),
+        current_map: "81".repeat(16).parse().unwrap(),
+        target: None,
+        recovery_verifier: hex::encode(&sha256::sha256(&[0xc7; 32])),
+    };
+    let prepare = format!(
+        r#"{{"setup_token":"{}","intent":{}}}"#,
+        h.token,
+        i.value().to_json()
+    );
+    assert_eq!(
+        Req::post("/v1/rotation/prepare")
+            .body(&prepare)
+            .sign(&first, NOW)
+            .send(h.addr)
+            .status,
+        200
+    );
+    let staging_scope = h.app.store.request_scope(first.id.parse().unwrap());
+    let destinations = ["90".repeat(16), "91".repeat(16)];
+    let mut entries = vec![];
+    for (n, f) in destinations
+        .iter()
+        .chain(std::iter::once(&i.current_map.to_string()))
+        .enumerate()
+    {
+        let fid = f.parse().unwrap();
+        let ct = vec![0x90 + n as u8; 32];
+        let version = crate::storage::version_id_of(&fid, &[], &ct, &[]);
+        h.app
+            .store
+            .append_version(crate::storage::NewVersion {
+                account_id: h.app.store.account().unwrap().account_id,
+                file_id: fid,
+                domain_id: TEST_DOMAIN.parse().unwrap(),
+                version_id: version,
+                parents: vec![],
+                sids: vec![],
+                bytes: 0,
+                manifest_ct: ct,
+                manifest_seal: crate::storage::ManifestSeal::Suite2,
+                device_id: first.id.parse().unwrap(),
+                deleted: false,
+            })
+            .unwrap();
+        if n < 2 {
+            entries.push((
+                oldfiles[n].parse().unwrap(),
+                oldheads[n].parse().unwrap(),
+                fid,
+                version,
+            ));
+        }
+    }
+    let catalog = Req::post(&format!("/v1/rotation/{}/catalog", i.operation))
+        .body(&format!(
+            r#"{{"page":0,"entries":{}}}"#,
+            crate::storage::rotation::catalog_value(&entries).to_json()
+        ))
+        .sign(&first, NOW)
+        .send(h.addr);
+    assert_eq!(catalog.status, 200, "{}", catalog.text());
+    let status = catalog.json();
+    let commit = format!(
+        r#"{{"setup_token":"{}","intent":{},"cutoff":{},"inventory_hash":"{}","catalog_pages":1,"catalog_hash":"{}"}}"#,
+        h.token,
+        i.value().to_json(),
+        status.get("cutoff").unwrap().as_u64().unwrap(),
+        status.get("inventory_hash").unwrap().as_str().unwrap(),
+        status.get("catalog_hash").unwrap().as_str().unwrap()
+    );
+    assert_eq!(
+        Req::post(&format!("/v1/rotation/{}/commit", i.operation))
+            .body(&commit)
+            .sign(&first, NOW)
+            .send(h.addr)
+            .status,
+        200
+    );
+    assert!(
+        h.app
+            .store
+            .changes_scoped(
+                first.id.parse().unwrap(),
+                &staging_scope,
+                crate::types::Seq(0),
+                1
+            )
+            .is_err()
+    );
+    let mut cursor = 0;
+    let mut seen = vec![];
+    let mut empty = 0;
+    for _ in 0..10 {
+        let result = Req::get(&format!("/v1/changes?since={cursor}&limit=1"))
+            .sign(&first, NOW)
+            .send(h.addr);
+        assert_eq!(result.status, 200);
+        let v = result.json();
+        let next = v.get("seq").and_then(Value::as_u64).unwrap();
+        let head = v.get("head_seq").and_then(Value::as_u64).unwrap();
+        let changes = v.get("changes").unwrap().as_array().unwrap();
+        if changes.is_empty() {
+            empty += 1;
+        }
+        for c in changes {
+            let f = c
+                .get("file_id")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string();
+            assert!(!oldfiles.contains(&f));
+            seen.push(f);
+        }
+        if next == head {
+            break;
+        }
+        assert!(next > cursor, "filtered feed cursor progressed");
+        cursor = next;
+    }
+    assert_eq!(empty, 2);
+    assert_eq!(seen.len(), 3);
+    let mut after = None::<String>;
+    let mut seen = vec![];
+    let mut empty = 0;
+    for _ in 0..10 {
+        let target = after
+            .as_ref()
+            .map(|a| format!("/v1/files?limit=1&after={a}"))
+            .unwrap_or("/v1/files?limit=1".into());
+        let result = Req::get(&target).sign(&first, NOW).send(h.addr);
+        assert_eq!(result.status, 200);
+        let v = result.json();
+        let files = v.get("files").unwrap().as_array().unwrap();
+        if files.is_empty() {
+            empty += 1;
+        }
+        for file in files {
+            let f = file
+                .get("file_id")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string();
+            assert!(!oldfiles.contains(&f));
+            seen.push(f);
+        }
+        let next = v.get("next").unwrap().as_str().map(str::to_string);
+        if next.is_none() {
+            break;
+        }
+        assert!(next > after, "filtered listing cursor progressed");
+        after = next;
+    }
+    assert_eq!(empty, 2);
+    assert_eq!(seen.len(), 3);
+    assert_eq!(
+        Req::get(&format!(
+            "/v1/files/{}/versions/{}",
+            oldfiles[0], oldheads[0]
+        ))
+        .sign(&first, NOW)
+        .send(h.addr)
+        .status,
+        200,
+        "explicit old history remains readable"
+    );
+}
+
+#[test]
+fn recover_only_existing_legacy_and_suite2_refuse_false_or_stripped_mode_without_mutation() {
+    for suite2 in [false, true] {
+        let h = Harness::start("recover-only-occupied-mode");
+        let proof = "a7".repeat(32);
+        let verifier = hex::encode(&sha256::sha256(&[0xa7; 32]));
+        let initial = if suite2 {
+            format!(
+                r#"{{"setup_token":"{}","account_name":"vault","seal_suite":2,"generation":"{}","recovery_verifier":"{verifier}","device":{{"name":"new","platform":"macos","app_version":"1.1.7"}}}}"#,
+                h.token,
+                "80".repeat(16)
+            )
+        } else {
+            setup_body(&h.token)
+        };
+        let created = Req::post("/v1/setup").body(&initial).send(h.addr);
+        assert_eq!(created.status, 201);
+        let first = Cred::from_json(&created.json());
+        if !suite2 {
+            assert_eq!(
+                Req::post("/v1/account/recovery")
+                    .body(&format!(r#"{{"recovery_verifier":"{verifier}"}}"#))
+                    .sign(&first, NOW)
+                    .send(h.addr)
+                    .status,
+                204
+            );
+        }
+        let mut valid = reenrol_body(&h.token, &proof);
+        if suite2 {
+            valid = format!(
+                "{},\"seal_suite\":2,\"generation\":\"{}\",\"recovery_verifier\":\"{verifier}\"}}",
+                &valid[..valid.len() - 1],
+                "80".repeat(16)
+            );
+        }
+        let seq = h.app.store.head_seq();
+        let account = h.app.store.account().unwrap();
+        for bad in [
+            valid.replace("\"recover_only\":true", "\"recover_only\":false"),
+            valid.replace("\"recover_only\":true,", ""),
+        ] {
+            let response = Req::post("/v1/setup").body(&bad).send(h.addr);
+            assert_eq!(response.status, 409);
+            assert_eq!(response.code(), "recover_only_required");
+            assert_eq!(h.app.store.head_seq(), seq);
+            assert_eq!(h.app.store.account().unwrap(), account);
+            assert_eq!(h.app.store.devices().len(), 1);
+        }
+        assert_eq!(Req::post("/v1/setup").body(&valid).send(h.addr).status, 201);
         assert_eq!(h.app.store.devices().len(), 2);
     }
 }

@@ -24,7 +24,8 @@ import { Policy, defaultPolicy } from "./policy";
 import { NOTICE_DEFAULTS, NoticeSettings, noticeSettings } from "./notices";
 import { caseOnly, isVaultPath } from "./vaultPath";
 import { parseSyncFolders } from "./syncScope";
-import { hex, isHex, randomBytes } from "./crypto";
+import { deriveDomainMapKey, domainMapIds, hex, isHex, randomBytes, unhex } from "./crypto";
+import { accountRecovery } from "./accountRecovery";
 
 /** The hidden name a re-case passes through, beside its entry (`main.ts`, `recase`). */
 export const RECASE_TEMP = /^\.obsync-recase-[0-9a-f]{16}(\.[^/]+)?$/;
@@ -394,10 +395,87 @@ function isHeader(value: unknown): value is { name: string; value: string } {
 type Credentials = Pick<ObsyncData, "vrk" | "deviceId" | "deviceSecret" | "edgeHeaders">;
 interface CredentialRevision extends Credentials { revision: number; serverUrl: string; }
 interface SecretEnvelope {
-  version: 1;
+  version: 1 | 2;
   installationId: string;
   current: CredentialRevision;
   previous: CredentialRevision | null;
+  custody?: Custody2;
+}
+
+export type RotationPhase = "draft" | "prepare_unknown" | "prepared" | "seeding" | "commit_unknown" | "active";
+export interface RotationIntent {
+  lineage: string; operation: string; oldGeneration: string; newGeneration: string;
+  targetDeviceId: string | null; recoveryVerifier: string;
+}
+export interface PreparedReceipt { cutoff: number; inventoryHash: string; inventoryHeads: number; }
+export interface CommitReceipt { catalogPages: number; catalogHash: string; }
+export interface RotationResume { id: string; profile: { name: string; platform: string; app_version: string }; }
+export interface Custody2 {
+  suite: 2; generation: string; phase: RotationPhase | "enrollment"; initializeMap: boolean;
+  enrollment: { root: string; purpose: "new" | "recover" | "pair" } | null;
+  rotation: { newRoot: string; intent: RotationIntent; fromSuite: 1 | 2; prepared: PreparedReceipt | null; commit: CommitReceipt | null; resume: RotationResume | null } | null;
+  history: { root: string; generation: string; suite: 1 | 2 } | null;
+}
+const PHASES: readonly string[] = ["draft", "prepare_unknown", "prepared", "seeding", "commit_unknown", "active", "enrollment"];
+function exact(value: unknown, fields: string[]): value is Record<string, unknown> {
+  return isRecord(value) && Object.keys(value).length === fields.length && fields.every(key => Object.hasOwn(value, key));
+}
+function hexField(value: unknown, size: number): value is string { return typeof value === "string" && isHex(value, size); }
+async function generation(root: unknown): Promise<string> {
+  if (!hexField(root, 32)) throw new StateStorageError("invalid_custody");
+  return (await domainMapIds(await deriveDomainMapKey(unhex(root)))).fileId;
+}
+function rotationProfile(value: unknown): RotationResume["profile"] {
+  if (!exact(value, ["name", "platform", "app_version"]) || !["ios", "ipados", "android", "macos", "windows", "linux"].includes(value["platform"] as string)) throw new StateStorageError("invalid_custody");
+  const text = (key: string, max: number): string => {
+    const item = value[key];
+    if (typeof item !== "string" || item.trim().length < 1 || item.trim().length > max || !/^[\x20-\x7e]+$/.test(item.trim())) throw new StateStorageError("invalid_custody");
+    return item.trim();
+  };
+  return { name: text("name", 64), platform: value["platform"] as string, app_version: text("app_version", 32) };
+}
+async function custody(value: unknown, data: Credentials): Promise<Custody2> {
+  if (!exact(value, ["suite", "generation", "phase", "initializeMap", "enrollment", "rotation", "history"]) || value["suite"] !== 2 || typeof value["initializeMap"] !== "boolean" ||
+    !hexField(value["generation"], 16) || !PHASES.includes(value["phase"] as string)) throw new StateStorageError("invalid_custody");
+  const enrollment = value["enrollment"], rootGeneration = data.vrk === null ? null : await generation(data.vrk), rotation = value["rotation"], history = value["history"];
+  if (history !== null && (!exact(history, ["root", "generation", "suite"]) || ![1, 2].includes(history["suite"] as number) || !hexField(history["generation"], 16) ||
+    await generation(history["root"]) !== history["generation"] || history["generation"] === rootGeneration)) throw new StateStorageError("invalid_custody");
+  if (enrollment !== null) {
+    if (!exact(enrollment, ["root", "purpose"]) || !["new", "recover", "pair"].includes(enrollment["purpose"] as string) ||
+      await generation(enrollment["root"]) !== value["generation"] || value["phase"] !== "enrollment" || rotation !== null ||
+      value["initializeMap"] !== (enrollment["purpose"] === "new") || (data.vrk !== null && data.vrk !== enrollment["root"]) ||
+      (enrollment["purpose"] === "new" && data.vrk !== null) ||
+      (data.deviceId !== null && !(enrollment["purpose"] === "pair" && data.vrk === null))) throw new StateStorageError("invalid_custody");
+  } else if (rotation === null) {
+    if (value["phase"] !== "active" || value["generation"] !== rootGeneration) throw new StateStorageError("invalid_custody");
+  } else {
+    if (!exact(rotation, ["newRoot", "intent", "fromSuite", "prepared", "commit", "resume"]) || ![1, 2].includes(rotation["fromSuite"] as number) ||
+      !exact(rotation["intent"], ["lineage", "operation", "oldGeneration", "newGeneration", "targetDeviceId", "recoveryVerifier"])) throw new StateStorageError("invalid_custody");
+    const prepared = rotation["prepared"], commit = rotation["commit"], phase = value["phase"];
+    const resume = rotation["resume"];
+    if (resume !== null && (!exact(resume, ["id", "profile"]) || !hexField(resume["id"], 16) || value["phase"] === "draft" ||
+      !exact(resume["profile"], ["name", "platform", "app_version"]) ||
+      Object.entries(rotationProfile(resume["profile"])).some(([key, item]) => (resume["profile"] as Record<string, unknown>)[key] !== item))) throw new StateStorageError("invalid_custody");
+    if ((["draft", "prepare_unknown"].includes(phase as string) ? prepared !== null :
+      !exact(prepared, ["cutoff", "inventoryHash", "inventoryHeads"]) || !Number.isSafeInteger(prepared["cutoff"]) || (prepared["cutoff"] as number) < 0 ||
+      !hexField(prepared["inventoryHash"], 32) || !Number.isSafeInteger(prepared["inventoryHeads"]) || (prepared["inventoryHeads"] as number) < 0 || (prepared["inventoryHeads"] as number) > 65536) ||
+      (phase !== "commit_unknown" ? commit !== null : !exact(commit, ["catalogPages", "catalogHash"]) || !hexField(commit["catalogHash"], 32) ||
+      !Number.isSafeInteger(commit["catalogPages"]) || !isRecord(prepared) ||
+      (prepared["inventoryHeads"] === 0 ? commit["catalogPages"] !== 0 :
+        (commit["catalogPages"] as number) < Math.ceil((prepared["inventoryHeads"] as number) / 256) || (commit["catalogPages"] as number) > (prepared["inventoryHeads"] as number)))) throw new StateStorageError("invalid_custody");
+    const intent = rotation["intent"];
+    if (!["lineage", "operation", "oldGeneration", "newGeneration"].every(key => hexField(intent[key], 16)) ||
+      !(intent["targetDeviceId"] === null || hexField(intent["targetDeviceId"], 16)) || !hexField(intent["recoveryVerifier"], 32) ||
+      intent["oldGeneration"] !== rootGeneration || intent["newGeneration"] !== value["generation"] ||
+      await generation(rotation["newRoot"]) !== value["generation"] || rootGeneration === value["generation"] ||
+      (await accountRecovery(rotation["newRoot"] as string)).verifier !== intent["recoveryVerifier"] ||
+      !["draft", "prepare_unknown", "prepared", "seeding", "commit_unknown"].includes(value["phase"] as string) ||
+      value["initializeMap"] || history !== null || data.deviceId === null || data.deviceSecret === null) throw new StateStorageError("invalid_custody");
+  }
+  return JSON.parse(JSON.stringify(value)) as Custody2;
+}
+function pin(value: Custody2): { suite: 2; generation: string; phase: Custody2["phase"] } {
+  return { suite: 2, generation: value.generation, phase: value.phase };
 }
 
 function credentials(loaded: Record<string, unknown>): Credentials {
@@ -432,9 +510,9 @@ function claimRef(installationId: string): string {
 
 function readEnvelope(raw: string, installationId: string): SecretEnvelope {
   const envelope: unknown = JSON.parse(raw);
-  const fields = ["version", "installationId", "current", "previous"];
+  const fields = isRecord(envelope) && envelope["version"] === 2 ? ["version", "installationId", "current", "previous", "custody"] : ["version", "installationId", "current", "previous"];
   if (!isRecord(envelope) || Object.keys(envelope).length !== fields.length ||
-    fields.some((key) => !Object.hasOwn(envelope, key)) || envelope["version"] !== 1 ||
+    fields.some((key) => !Object.hasOwn(envelope, key)) || ![1, 2].includes(envelope["version"] as number) ||
     envelope["installationId"] !== installationId) throw new StateStorageError("invalid_envelope");
   const record = (value: unknown): CredentialRevision => {
     const fields = ["revision", "serverUrl", "deviceId", "deviceSecret", "vrk", "edgeHeaders"];
@@ -445,8 +523,9 @@ function readEnvelope(raw: string, installationId: string): SecretEnvelope {
   };
   const current = record(envelope["current"]);
   const previous = envelope["previous"] === null ? null : record(envelope["previous"]);
-  if (previous !== null && previous.revision >= current.revision) throw new StateStorageError("invalid_envelope");
-  return { version: 1, installationId, current, previous };
+  if (previous !== null && (envelope["version"] === 2 || previous.revision >= current.revision)) throw new StateStorageError("invalid_envelope");
+  return { version: envelope["version"] as 1 | 2, installationId, current, previous,
+    ...(envelope["version"] === 2 ? { custody: envelope["custody"] as Custody2 } : {}) };
 }
 
 /**
@@ -738,6 +817,39 @@ export function dataLease(app: object, pluginId: string): Lease {
   return lease;
 }
 
+function resetSyncBookkeeping(data: ObsyncData): void {
+  data.lastSeq = 0;
+  data.files = {};
+  // FOLDER RECORDS GO WITH THE FILE RECORDS, for the same reason and one
+  // sharper. A folder's file id is `HMAC(K_m,d, …)` over its path, so it
+  // names nothing on a different server -- and `pushFolder` returns early
+  // when a record exists, so a record kept across a leave would tell this
+  // device that every folder it has is already published, and the new
+  // server would never receive one (#79 meeting #104).
+  data.folders = {};
+  // AND THE BOOKKEEPING ABOUT WORK IN FLIGHT WITH THEM. A retirement names
+  // a folder record this device no longer has, and a barrier is a record
+  // owed to a server this device has left: carried across a leave, the
+  // first would admit a stranger's folder record at a selected folder and
+  // the second would post a record for a vault the new server knows nothing
+  // about.
+  data.retiredRoots = {};
+  data.folderBarriers = [];
+  data.folderRemovals = {};
+  // And a parked record, which names a version on the server being left,
+  // and the feed mark and the graves, which name entries and versions there
+  // too: a mark carried to the next server would read its journal as a
+  // restored one.
+  data.parked = {};
+  data.paused = {};
+  data.departed = {};
+  data.replaying = null;
+  data.heldDeletions = [];
+  data.feedMark = null;
+  data.graves = {};
+  data.remoteOnly = {};
+}
+
 /**
  * The device's state with a coalescing, serialised writer.
  *
@@ -757,6 +869,12 @@ export class State {
   private flushing: Promise<void> | null = null;
   private failure: StateStorageError | null = null;
   private indexes: Indexes | null = null;
+  private currentCustody: Custody2 | null = null;
+  private nextCustody: Custody2 | null | undefined;
+  private changingCustody = false;
+  private resetOnActivation = false;
+  private replacementPatch: Partial<Credentials> | null = null;
+  private custodyAdmission: "replacement" | "resume" | "legacy-upgrade" | null = null;
 
   private constructor(
     private readonly store: Store,
@@ -824,21 +942,38 @@ export class State {
       catch (error) {
         throw new StateStorageError("invalid_sync_folders", error instanceof Error ? error.message : "Invalid saved folder selection; sync is stopped.");
       }
-      const versioned = ["storageVersion", "installationId", "credentialRef", "credentialRevision"]
+      const versioned = ["storageVersion", "installationId", "credentialRef", "credentialRevision", "sealPin"]
         .some((key) => Object.hasOwn(metadata, key));
       if (versioned) {
         const id = metadata["installationId"], revision = metadata["credentialRevision"];
-        if (metadata["storageVersion"] !== 1 || typeof id !== "string" ||
+        if (![1, 2].includes(metadata["storageVersion"] as number) || typeof id !== "string" ||
           typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1 ||
           typeof metadata["serverUrl"] !== "string" ||
-          ["vrk", "deviceSecret", "edgeHeaders"].some((key) => Object.hasOwn(metadata, key))) {
+          ["vrk", "deviceSecret", "edgeHeaders", "custody", "enrollment", "rotation", "history", "newRoot", "root"].some((key) => Object.hasOwn(metadata, key)) ||
+          (metadata["storageVersion"] === 1 && Object.hasOwn(metadata, "sealPin")) ||
+          (metadata["storageVersion"] === 2 && (!exact(metadata["sealPin"], ["suite", "generation", "phase"]) ||
+            metadata["sealPin"]["suite"] !== 2 || !hexField(metadata["sealPin"]["generation"], 16) || !PHASES.includes(metadata["sealPin"]["phase"] as string)))) {
           throw new StateStorageError("invalid_metadata");
         }
         const ref = secretRef(id);
         if (metadata["credentialRef"] !== ref) throw new StateStorageError("invalid_reference");
         const raw = secrets.getSecret(ref);
-        if (raw === null && held.holds(ref)) throw new StateStorageError("missing_secret");
+        if (raw === null && (metadata["storageVersion"] === 2 || held.holds(ref))) throw new StateStorageError("missing_secret");
         const envelope = raw === null ? null : readEnvelope(raw, id);
+        if (envelope !== null && envelope.version !== metadata["storageVersion"]) throw new StateStorageError("pin_mismatch");
+        if (metadata["storageVersion"] === 2) {
+          if (!envelope || envelope.current.revision !== revision || envelope.current.serverUrl !== metadata["serverUrl"] ||
+            envelope.current.deviceId !== metadata["deviceId"]) throw new StateStorageError("pin_mismatch");
+          const verifiedCustody = await custody(envelope.custody, envelope.current), marker = metadata["sealPin"];
+          if (!exact(marker, ["suite", "generation", "phase"]) || JSON.stringify(pin(verifiedCustody)) !== JSON.stringify({ suite: marker["suite"], generation: marker["generation"], phase: marker["phase"] })) throw new StateStorageError("pin_mismatch");
+          if (!isCurrent()) throw new StateStorageError("inactive_load");
+          if (lease.holder !== claim) throw new StateStorageError("superseded");
+          Object.assign(data, credentials({ ...envelope.current }));
+          state = new State(store, data, secrets, id, envelope.current, envelope, raw, onFailure, lease, claim);
+          state.currentCustody = verifiedCustody;
+          held.hold(ref);
+          return state;
+        }
         // A COPY, OR A FOLDER RENAMED OUTSIDE OBSIDIAN: never the device the
         // reference names, and never a stop with nothing to press. OR THE ONE
         // WRITE A CRASH LOSES (issue #230): the data file landed naming the
@@ -891,6 +1026,159 @@ export class State {
   /** Whether a metadata write is in flight: a wait that sends no request, named by a stalled feed (#276). */
   get saving(): boolean { return this.flushing !== null; }
 
+  /** Only acknowledged custody is exposed; this returns no mutable authority. */
+  custody2(): Custody2 | null { return this.currentCustody === null ? null : JSON.parse(JSON.stringify(this.currentCustody)) as Custody2; }
+
+  private async changeCustody(next: Custody2 | null, patch: Partial<Credentials> = {}, resetSync = false, admission?: "replacement" | "resume" | "legacy-upgrade"): Promise<void> {
+    this.assertAvailable(); this.assertHolder();
+    if (this.changingCustody) throw new StateStorageError("custody_busy");
+    this.changingCustody = true;
+    try {
+      const legacyIdentity = admission === "legacy-upgrade" ? JSON.stringify({ serverUrl: this.data.serverUrl, ...credentials({ ...this.data }) }) : null;
+      await this.settled(); this.assertAvailable();
+      const snapshot = { ...JSON.parse(JSON.stringify(this.data)) as ObsyncData, ...patch };
+      const verified = next === null ? null : await custody(next, credentials({ ...snapshot }));
+      this.assertHolder();
+      if (legacyIdentity !== null && (this.currentCustody !== null || legacyIdentity !== JSON.stringify({ serverUrl: this.data.serverUrl, ...credentials({ ...this.data }) }))) throw new StateStorageError("pin_replacement");
+      this.nextCustody = verified;
+      this.resetOnActivation = resetSync;
+      this.custodyAdmission = admission ?? null;
+      this.replacementPatch = { ...patch };
+      await this.save();
+    } finally { if (this.failure === null) { this.nextCustody = undefined; this.resetOnActivation = false; this.replacementPatch = null; this.custodyAdmission = null; } this.changingCustody = false; }
+  }
+
+  async adoptSuite2(input: { root: string; generation: string; deviceId: string; deviceSecret: string; purpose: "new" | "recover" | "pair" }): Promise<void> {
+    if (!exact(input, ["root", "generation", "deviceId", "deviceSecret", "purpose"]) || !["new", "recover", "pair"].includes(input.purpose) ||
+      !hexField(input.deviceId, 16) || !hexField(input.deviceSecret, 32) || this.currentCustody?.phase !== "enrollment" ||
+      this.currentCustody.enrollment?.root !== input.root || this.currentCustody.enrollment.purpose !== input.purpose || this.currentCustody.generation !== input.generation ||
+      (this.data.deviceId !== null && (this.data.deviceId !== input.deviceId || this.data.deviceSecret !== input.deviceSecret))) throw new StateStorageError("pin_replacement");
+    await this.changeCustody({ suite: 2, generation: input.generation, phase: "active", initializeMap: input.purpose === "new", enrollment: null, rotation: null, history: this.currentCustody.history },
+      { vrk: input.root, deviceId: input.deviceId, deviceSecret: input.deviceSecret });
+  }
+
+  async stageEnrollment2(root: string, purpose: "new" | "recover" | "pair"): Promise<void> {
+    const derived = await generation(root);
+    if (!["new", "recover", "pair"].includes(purpose) || this.paired || this.currentCustody?.rotation ||
+      (this.data.vrk !== null && (this.data.vrk !== root || purpose === "new")) ||
+      (this.currentCustody?.enrollment && (this.currentCustody.enrollment.root !== root || this.currentCustody.enrollment.purpose !== purpose))) throw new StateStorageError("pin_replacement");
+    await this.changeCustody({ suite: 2, generation: derived, phase: "enrollment", initializeMap: purpose === "new",
+      enrollment: { root, purpose }, rotation: null, history: this.currentCustody?.history ?? null });
+  }
+
+  stagedEnrollment2(): { root: string; purpose: "new" | "recover" | "pair"; generation: string } | null {
+    const current = this.custody2();
+    return current?.enrollment ? { ...current.enrollment, generation: current.generation } : null;
+  }
+
+  /** Explicit caller action after preserving the old complete backup and stopping its engine. */
+  async stageReplacementEnrollment2(newRoot: string, purpose: "pair", expectedOldGeneration: string): Promise<void> {
+    this.assertAvailable(); this.assertHolder();
+    const oldRoot = this.data.vrk, old = this.custody2();
+    if (purpose !== "pair" || !this.paired || old?.initializeMap || old?.history ||
+      (old !== null && (old.phase !== "active" || old.enrollment !== null || old.rotation !== null))) throw new StateStorageError("pin_replacement");
+    const oldGeneration = await generation(oldRoot), nextGeneration = await generation(newRoot);
+    if (oldGeneration !== expectedOldGeneration || nextGeneration === oldGeneration || this.data.vrk !== oldRoot ||
+      (old !== null && old.generation !== oldGeneration) || JSON.stringify(this.currentCustody) !== JSON.stringify(old)) throw new StateStorageError("pin_replacement");
+    await this.changeCustody({ suite: 2, generation: nextGeneration, phase: "enrollment", initializeMap: false,
+      enrollment: { root: newRoot, purpose }, rotation: null, history: { root: oldRoot!, generation: oldGeneration, suite: old === null ? 1 : 2 } },
+      { vrk: null, deviceId: null, deviceSecret: null }, true, "replacement");
+  }
+
+  /** After explicit legacy proof and authenticated old-map readback; never live suite-1 adoption. */
+  async stageLegacyUpgrade(oldRoot: string, newRoot: string, credential: { deviceId: string; deviceSecret: string }, intent: RotationIntent): Promise<void> {
+    this.assertAvailable(); this.assertHolder();
+    if (this.currentCustody !== null || this.data.deviceId !== null || this.data.deviceSecret !== null ||
+      (this.data.vrk !== null && this.data.vrk !== oldRoot) || !exact(credential, ["deviceId", "deviceSecret"]) ||
+      !hexField(credential.deviceId, 16) || !hexField(credential.deviceSecret, 32) ||
+      !exact(intent, ["lineage", "operation", "oldGeneration", "newGeneration", "targetDeviceId", "recoveryVerifier"]) || credential.deviceId === intent.targetDeviceId) throw new StateStorageError("pin_replacement");
+    const frozen = JSON.parse(JSON.stringify(intent)) as RotationIntent;
+    await this.changeCustody({ suite: 2, generation: frozen.newGeneration, phase: "draft", initializeMap: false, enrollment: null,
+      rotation: { newRoot, intent: frozen, fromSuite: 1, prepared: null, commit: null, resume: null }, history: null },
+      { vrk: oldRoot, deviceId: credential.deviceId, deviceSecret: credential.deviceSecret }, false, "legacy-upgrade");
+  }
+
+  async stageRotation(newRoot: string, intent: RotationIntent): Promise<void> {
+    if (!this.paired || this.currentCustody?.enrollment || this.currentCustody?.rotation || this.currentCustody?.history || this.currentCustody?.initializeMap) throw new StateStorageError("rotation_pending");
+    const frozen = JSON.parse(JSON.stringify(intent)) as RotationIntent;
+    await this.changeCustody({ suite: 2, generation: frozen.newGeneration, phase: "draft", initializeMap: false, enrollment: null,
+      rotation: { newRoot, intent: frozen, fromSuite: this.currentCustody === null ? 1 : 2, prepared: null, commit: null, resume: null }, history: null });
+  }
+
+  async rotationPhase(next: Exclude<RotationPhase, "active" | "draft">): Promise<void> {
+    const current = this.custody2();
+    const follows: Record<string, string> = { draft: "prepare_unknown", prepared: "seeding" };
+    if (!current?.rotation || follows[current.phase] !== next) throw new StateStorageError("invalid_rotation_phase");
+    await this.changeCustody({ ...current, phase: next });
+  }
+
+  async markRotationPrepared(receipt: PreparedReceipt): Promise<void> {
+    this.assertAvailable(); this.assertHolder();
+    receipt = JSON.parse(JSON.stringify(receipt)) as PreparedReceipt;
+    const current = this.custody2(), prior = current?.rotation?.prepared;
+    if (prior && exact(receipt, ["cutoff", "inventoryHash", "inventoryHeads"]) && prior.cutoff === receipt.cutoff && prior.inventoryHash === receipt.inventoryHash && prior.inventoryHeads === receipt.inventoryHeads) return;
+    if (current?.phase !== "prepare_unknown" || !current.rotation) throw new StateStorageError("invalid_rotation_phase");
+    await this.changeCustody({ ...current, phase: "prepared", rotation: { ...current.rotation, prepared: receipt } });
+  }
+
+  async markRotationCommit(receipt: CommitReceipt): Promise<void> {
+    this.assertAvailable(); this.assertHolder();
+    receipt = JSON.parse(JSON.stringify(receipt)) as CommitReceipt;
+    const current = this.custody2(), prior = current?.rotation?.commit;
+    if (prior && exact(receipt, ["catalogPages", "catalogHash"]) && prior.catalogPages === receipt.catalogPages && prior.catalogHash === receipt.catalogHash) return;
+    if (current?.phase !== "seeding" || !current.rotation) throw new StateStorageError("invalid_rotation_phase");
+    await this.changeCustody({ ...current, phase: "commit_unknown", rotation: { ...current.rotation, commit: receipt } });
+  }
+
+  async stageRotationResume(id: string, profile: RotationResume["profile"]): Promise<void> {
+    this.assertAvailable(); this.assertHolder();
+    const current = this.custody2(), normalized = rotationProfile(profile);
+    if (!hexField(id, 16) || !current?.rotation || current.phase === "draft") throw new StateStorageError("invalid_rotation_phase");
+    const next = { id, profile: normalized };
+    if (current.rotation.resume !== null) {
+      if (current.rotation.resume.id !== id || Object.entries(normalized).some(([key, item]) => current.rotation!.resume!.profile[key as keyof RotationResume["profile"]] !== item)) throw new StateStorageError("rotation_identity_changed");
+      return;
+    }
+    await this.changeCustody({ ...current, rotation: { ...current.rotation, resume: next } });
+  }
+
+  async adoptRotationCredential(operation: string, resumeId: string, credential: { deviceId: string; deviceSecret: string }): Promise<void> {
+    credential = { ...credential };
+    const current = this.custody2();
+    if (!exact(credential, ["deviceId", "deviceSecret"]) || !hexField(credential.deviceId, 16) || !hexField(credential.deviceSecret, 32) ||
+      !current?.rotation || current.phase === "draft" || current.phase === "prepare_unknown" || current.rotation.intent.operation !== operation ||
+      current.rotation.resume?.id !== resumeId || current.rotation.intent.targetDeviceId === credential.deviceId) throw new StateStorageError("rotation_identity_changed");
+    await this.changeCustody(current, credential, false, "resume");
+  }
+
+  async cancelRotationDraft(): Promise<void> {
+    const current = this.custody2();
+    if (current?.phase !== "draft" || !current.rotation) throw new StateStorageError("rotation_pending");
+    await this.changeCustody(current.rotation.fromSuite === 1 ? null : { suite: 2, generation: current.rotation.intent.oldGeneration, phase: "active", initializeMap: false, enrollment: null, rotation: null, history: null });
+  }
+
+  async activateRotation(): Promise<void> {
+    const current = this.custody2();
+    if (current?.phase !== "commit_unknown" || !current.rotation || this.data.vrk === null) throw new StateStorageError("invalid_rotation_phase");
+    await this.changeCustody({ suite: 2, generation: current.generation, phase: "active", initializeMap: false, enrollment: null, rotation: null,
+      history: { root: this.data.vrk, generation: current.rotation.intent.oldGeneration, suite: current.rotation.fromSuite } }, { vrk: current.rotation.newRoot }, true);
+  }
+
+  /** Caller first authenticates the current map; this can only consume authority. */
+  async finishMapInitialization(expectedGeneration: string): Promise<void> {
+    const current = this.custody2();
+    if (current?.phase !== "active" || !current.initializeMap || current.generation !== expectedGeneration) throw new StateStorageError("invalid_map_initialization");
+    await this.changeCustody({ ...current, initializeMap: false });
+  }
+
+  /** Caller explicitly confirms a separate old backup; this never chooses history for sync. */
+  async retireHistoryRoot(expectedGeneration: string): Promise<void> {
+    const current = this.custody2();
+    if (current?.phase !== "active" || current.initializeMap || current.rotation || current.enrollment ||
+      !current.history || current.history.generation !== expectedGeneration) throw new StateStorageError("invalid_history_retirement");
+    await this.changeCustody({ ...current, history: null });
+  }
+
   /** Refuse every write once a newer session has claimed the data file (`Lease`). */
   private assertHolder(): void {
     if (this.lease.holder !== this.claim) {
@@ -898,23 +1186,42 @@ export class State {
     }
   }
 
-  private async persist(snapshot: ObsyncData): Promise<void> {
+  private async persist(snapshot: ObsyncData, next = this.currentCustody): Promise<void> {
     this.assertHolder();
     if (typeof snapshot.serverUrl !== "string") throw new StateStorageError("invalid_server");
+    if (this.replacementPatch !== null) Object.assign(snapshot, this.replacementPatch);
+    if (this.resetOnActivation) resetSyncBookkeeping(snapshot);
     const { vrk, deviceSecret, edgeHeaders, ...bookkeeping } = snapshot;
     const verified = credentials({ vrk, deviceSecret, edgeHeaders, deviceId: snapshot.deviceId });
     const ref = secretRef(this.installationId);
-    if (this.secrets.getSecret(ref) !== this.serializedSecret) throw new StateStorageError("secret_changed");
     const payload = { serverUrl: snapshot.serverUrl, ...verified };
     const previousPayload = this.record === null ? null : { serverUrl: this.record.serverUrl, ...credentials({ ...this.record }) };
+    const verifiedCustody = next === null ? null : await custody(next, verified);
+    const replacing = this.custodyAdmission === "replacement" && this.replacementPatch !== null && verifiedCustody?.enrollment?.purpose === "pair" && verifiedCustody.history !== null &&
+      previousPayload?.vrk === verifiedCustody.history.root && previousPayload.deviceId !== null && previousPayload.deviceSecret !== null &&
+      payload.vrk === null && payload.deviceId === null && payload.deviceSecret === null && payload.serverUrl === previousPayload.serverUrl &&
+      JSON.stringify(payload.edgeHeaders) === JSON.stringify(previousPayload.edgeHeaders) && verifiedCustody.history.suite === (this.currentCustody === null ? 1 : 2);
+    const resuming = this.custodyAdmission === "resume" && verifiedCustody !== null && verifiedCustody.rotation !== null && verifiedCustody.rotation.resume !== null &&
+      JSON.stringify(verifiedCustody) === JSON.stringify(this.currentCustody) && payload.vrk === previousPayload?.vrk &&
+      payload.deviceId !== null && payload.deviceSecret !== null && payload.serverUrl === previousPayload?.serverUrl &&
+      JSON.stringify(payload.edgeHeaders) === JSON.stringify(previousPayload?.edgeHeaders);
+    const legacyUpgrade = this.custodyAdmission === "legacy-upgrade" && this.currentCustody === null && verifiedCustody?.phase === "draft" &&
+      verifiedCustody.rotation?.fromSuite === 1 && previousPayload !== null && previousPayload.deviceId === null && previousPayload.deviceSecret === null &&
+      (previousPayload.vrk === null || previousPayload.vrk === payload.vrk) && payload.deviceId !== null && payload.deviceSecret !== null &&
+      payload.serverUrl === previousPayload.serverUrl && JSON.stringify(payload.edgeHeaders) === JSON.stringify(previousPayload.edgeHeaders);
+    if ((verifiedCustody?.rotation || verifiedCustody?.enrollment) && JSON.stringify(payload) !== JSON.stringify(previousPayload) && !replacing && !resuming && !legacyUpgrade) throw new StateStorageError("rotation_identity_changed");
+    this.assertHolder();
+    if (this.secrets.getSecret(ref) !== this.serializedSecret) throw new StateStorageError("secret_changed");
     let selected: CredentialRevision;
-    if (this.record !== null && JSON.stringify(payload) === JSON.stringify(previousPayload)) {
+    if (this.record !== null && JSON.stringify(payload) === JSON.stringify(previousPayload) &&
+      JSON.stringify(verifiedCustody) === JSON.stringify(this.currentCustody)) {
       selected = this.record;
     } else {
       const revision = (this.envelope?.current.revision ?? 0) + 1;
       if (!Number.isSafeInteger(revision)) throw new StateStorageError("revision_exhausted");
       selected = { revision, ...payload };
-      const envelope: SecretEnvelope = { version: 1, installationId: this.installationId, current: selected, previous: this.record };
+      const envelope: SecretEnvelope = { version: verifiedCustody === null ? 1 : 2, installationId: this.installationId, current: selected,
+        previous: verifiedCustody === null ? this.record : null, ...(verifiedCustody === null ? {} : { custody: verifiedCustody }) };
       const serialized = JSON.stringify(envelope);
       try { this.secrets.setSecret(ref, serialized); }
       catch { throw new StateStorageError("secret_write_failed"); }
@@ -923,10 +1230,13 @@ export class State {
       this.serializedSecret = serialized;
     }
     try {
-      await (this.lease.writing = this.store.saveData({ ...bookkeeping, storageVersion: 1, installationId: this.installationId,
-        credentialRef: ref, credentialRevision: selected.revision }));
+      await (this.lease.writing = this.store.saveData({ ...bookkeeping, storageVersion: verifiedCustody === null ? 1 : 2, installationId: this.installationId,
+        credentialRef: ref, credentialRevision: selected.revision, ...(verifiedCustody === null ? {} : { sealPin: pin(verifiedCustody) }) }));
     } catch { throw new StateStorageError("metadata_write_failed"); }
+    if (this.replacementPatch !== null) Object.assign(this.data, this.replacementPatch);
+    if (this.resetOnActivation) { resetSyncBookkeeping(this.data); this.indexes = null; }
     this.record = selected;
+    this.currentCustody = verifiedCustody;
     this.copied = false;
     this.keysLost = null;
   }
@@ -939,7 +1249,7 @@ export class State {
       try {
         while (this.pending) {
           this.pending = false;
-          await this.persist(JSON.parse(JSON.stringify(this.data)) as ObsyncData);
+          await this.persist(JSON.parse(JSON.stringify(this.data)) as ObsyncData, this.nextCustody === undefined ? this.currentCustody : this.nextCustody);
         }
       } catch (error) {
         this.failure = error instanceof StateStorageError ? error : new StateStorageError("save_failed");
@@ -968,40 +1278,13 @@ export class State {
    */
   forgetPairing(): void {
     this.assertAvailable();
+    if (this.changingCustody || this.currentCustody?.rotation || this.currentCustody?.enrollment) throw new StateStorageError("rotation_pending");
     this.data.deviceId = null;
     this.data.deviceSecret = null;
     this.data.serverUrl = "";
     this.data.edgeHeaders = [];
-    this.data.lastSeq = 0;
-    this.data.files = {};
-    // FOLDER RECORDS GO WITH THE FILE RECORDS, for the same reason and one
-    // sharper. A folder's file id is `HMAC(K_m,d, …)` over its path, so it
-    // names nothing on a different server -- and `pushFolder` returns early
-    // when a record exists, so a record kept across a leave would tell this
-    // device that every folder it has is already published, and the new
-    // server would never receive one (#79 meeting #104).
-    this.data.folders = {};
-    // AND THE BOOKKEEPING ABOUT WORK IN FLIGHT WITH THEM. A retirement names
-    // a folder record this device no longer has, and a barrier is a record
-    // owed to a server this device has left: carried across a leave, the
-    // first would admit a stranger's folder record at a selected folder and
-    // the second would post a record for a vault the new server knows nothing
-    // about.
-    this.data.retiredRoots = {};
-    this.data.folderBarriers = [];
-    this.data.folderRemovals = {};
-    // And a parked record, which names a version on the server being left,
-    // and the feed mark and the graves, which name entries and versions there
-    // too: a mark carried to the next server would read its journal as a
-    // restored one.
-    this.data.parked = {};
-    this.data.paused = {};
-    this.data.departed = {};
-    this.data.replaying = null;
-    this.data.heldDeletions = [];
-    this.data.feedMark = null;
-    this.data.graves = {};
-    this.data.remoteOnly = {};
+    resetSyncBookkeeping(this.data);
+    this.indexes = null;
   }
 
   /**

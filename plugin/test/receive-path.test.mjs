@@ -26,9 +26,10 @@ import test from "node:test";
 import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { FakeHost, FakeServer, FakeTimers, KEYS, STEP_MS, keys, memorySecrets, rig, sandbox } from "./fake.mjs";
+import { openPublishedManifest, FakeHost, FakeServer, FakeTimers, KEYS, STEP_MS, keys, memorySecrets, rig, sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { State, parseData } = require("../build/state.js");
 const { Transport } = require("../build/transport.js");
 const { HOLD_MS, SAVE_COALESCE_MS, SCAN_MS, SyncEngine, WALK_MS } = require("../build/sync/engine.js");
@@ -80,7 +81,7 @@ async function publishTwoChunks(server, k, fileId, path, bytes) {
   const parts = [bytes.subarray(0, CHUNK_MAX), bytes.subarray(CHUNK_MAX)];
   const chunks = [];
   for (const part of parts) {
-    const sealed = await c.encryptChunk(k.domainKey, part);
+    const sealed = await seal2.encryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, part);
     server.chunks.set(sealed.sid, sealed.ciphertext);
     chunks.push({ sid: sealed.sid, cid: c.hex(sealed.cid), len: part.length });
   }
@@ -93,8 +94,10 @@ async function publishTwoChunks(server, k, fileId, path, bytes) {
 async function device(server, { isMobile = false, host = new FakeHost({ isMobile }), store = memoryStore() } = {}) {
   const state = await State.open(store, isMobile, store.secrets);
   if (state.data.deviceId === null) {
-    Object.assign(state.data, { vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid" });
+    state.data.serverUrl = "https://sync.example.invalid";
     await state.save();
+    await state.stageEnrollment2(KEYS.vrk, "pair");
+    await state.adoptSuite2({ root: KEYS.vrk, generation: (await keys()).generation, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
   }
   store.writes.length = 0;
   const transport = new Transport({
@@ -390,7 +393,7 @@ test("the last chunk of a file of many chunks is never taken from the page's pre
   const parts = [0, 1, 2].map((i) => new Uint8Array(3 << 20).fill(70 + i));
   const chunks = [];
   for (const part of [...parts, shared]) {
-    const sealed = await c.encryptChunk(k.domainKey, part);
+    const sealed = await seal2.encryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, part);
     server.chunks.set(sealed.sid, sealed.ciphertext);
     chunks.push({ sid: sealed.sid, cid: c.hex(sealed.cid), len: part.length });
   }
@@ -544,8 +547,8 @@ test("a copied vault publishes none of the notes the server holds, adopts an old
 
   const published = [];
   for (const frame of server.journal.filter((entry) => entry.device_id === KEYS.deviceId)) {
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const manifest = JSON.parse(await c.decryptManifest(k.manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct)));
+
+    const manifest = await openPublishedManifest(frame, k.manifestKey);
     if (manifest.v === 1) published.push(manifest.path);
   }
   assert.equal(published.filter((path) => path.startsWith("Notes/n")).length, 0, `the copied notes were published again: ${published}`);

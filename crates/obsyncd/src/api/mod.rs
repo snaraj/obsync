@@ -21,6 +21,7 @@ pub mod pairing;
 pub mod plugin;
 pub mod rand;
 pub mod render;
+pub mod rotation;
 pub mod setup;
 pub mod unverified;
 
@@ -311,6 +312,11 @@ impl From<StoreError> for ApiError {
             ref full if full.out_of_space() => {
                 ApiError::new(507, code, "the volume is out of space")
             }
+            StoreError::AuthorityRefused(_) => ApiError::new(
+                409,
+                code,
+                "the account generation, suite or rotation grant refuses this transition",
+            ),
             StoreError::Io(_) => ApiError::new(500, code, "the volume refused"),
             // Start-time only: a refused posture never opens a listener.
             StoreError::Locked => {
@@ -888,6 +894,12 @@ impl App {
             Route::Readyz => self.readyz(),
             Route::SetupCapabilities => Ok(setup::capabilities()),
             Route::Setup => setup::create(self, req),
+            Route::RotationCapabilities => rotation::capabilities(self, req, client),
+            Route::RotationPrepare => rotation::prepare(self, req, client),
+            Route::RotationStatus(op) => rotation::status(self, req, client, &op),
+            Route::RotationInventory(op) => rotation::inventory(self, req, client, &op),
+            Route::RotationCatalog(op) => rotation::catalog(self, req, client, &op),
+            Route::RotationCommit(op) => rotation::commit(self, req, client, &op),
             Route::Account => setup::account(self, req, client),
             Route::RecoveryRegister => setup::register_recovery(self, req, client),
             Route::PairingCreate => pairing::create(self, req, client),
@@ -1102,6 +1114,12 @@ fn demands_credential(route: &Route) -> bool {
         // proved a one-time link or the recovery token, and its only
         // refusal is the `401` excluded below.
         Route::Login
+        | Route::RotationCapabilities
+        | Route::RotationPrepare
+        | Route::RotationStatus(_)
+        | Route::RotationInventory(_)
+        | Route::RotationCatalog(_)
+        | Route::RotationCommit(_)
         | Route::Account
         | Route::RecoveryRegister
         | Route::PairingCreate
@@ -1212,6 +1230,13 @@ pub enum Route {
     SetupCapabilities,
     /// `POST /v1/setup`
     Setup,
+    /// Specific device-authenticated rotation routes.
+    RotationCapabilities,
+    RotationPrepare,
+    RotationStatus(String),
+    RotationInventory(String),
+    RotationCatalog(String),
+    RotationCommit(String),
     /// `GET /v1/account`
     Account,
     /// `POST /v1/account/recovery`
@@ -1298,6 +1323,26 @@ pub fn resolve(method: &str, path: &str) -> Option<(Route, &'static str)> {
 
         ("GET", ["v1", "setup"]) => (Route::SetupCapabilities, "/v1/setup"),
         ("POST", ["v1", "setup"]) => (Route::Setup, "/v1/setup"),
+        ("GET", ["v1", "rotation", "capabilities"]) => {
+            (Route::RotationCapabilities, "/v1/rotation/capabilities")
+        }
+        ("POST", ["v1", "rotation", "prepare"]) => (Route::RotationPrepare, "/v1/rotation/prepare"),
+        ("GET", ["v1", "rotation", op]) => (
+            Route::RotationStatus((*op).into()),
+            "/v1/rotation/{operation}",
+        ),
+        ("GET", ["v1", "rotation", op, "inventory"]) => (
+            Route::RotationInventory((*op).into()),
+            "/v1/rotation/{operation}/inventory",
+        ),
+        ("POST", ["v1", "rotation", op, "catalog"]) => (
+            Route::RotationCatalog((*op).into()),
+            "/v1/rotation/{operation}/catalog",
+        ),
+        ("POST", ["v1", "rotation", op, "commit"]) => (
+            Route::RotationCommit((*op).into()),
+            "/v1/rotation/{operation}/commit",
+        ),
         ("GET", ["v1", "account"]) => (Route::Account, "/v1/account"),
         ("POST", ["v1", "account", "recovery"]) => {
             (Route::RecoveryRegister, "/v1/account/recovery")

@@ -19,7 +19,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { FakeTimers, STEP_MS, pair, published, rig, settled } from "./fake.mjs";
+import { openPublishedManifest, FakeTimers, STEP_MS, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -52,10 +52,8 @@ const tombstones = async (server, manifestKey) => {
   const out = [];
   for (const frame of server.journal) {
     if (!frame.deleted) continue;
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const manifest = JSON.parse(await c.decryptManifest(
-      manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
-    ));
+
+    const manifest = await openPublishedManifest(frame, manifestKey);
     if (manifest.v !== 2) out.push(frame);
   }
   return out;

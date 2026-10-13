@@ -44,6 +44,7 @@ fn parent_set(parents: &[VersionId]) -> Vec<VersionId> {
 #[derive(Clone, Debug)]
 pub(crate) struct DeviceEntry {
     pub(crate) record: DeviceRecord,
+    pub(crate) resume_id: Option<String>,
     /// The device secret, one-time-padded under the server key. The plain
     /// secret is never stored (docs/architecture.md §3.6).
     pub(crate) wrapped: [u8; 32],
@@ -63,6 +64,7 @@ pub(crate) struct DeviceEntry {
 /// version again.
 #[derive(Clone, Debug)]
 pub(crate) struct FileEntry {
+    pub(crate) generation: Option<FileId>,
     pub(crate) domain_id: DomainId,
     pub(crate) heads: Vec<VersionId>,
     pub(crate) conflicted: bool,
@@ -83,6 +85,7 @@ pub(crate) struct ChunkMeta {
 /// Everything the server serves from memory.
 #[derive(Debug, Default)]
 pub(crate) struct Index {
+    pub(crate) authority: super::rotation::Authority,
     pub(crate) account: Option<AccountRecord>,
     pub(crate) devices: BTreeMap<DeviceId, DeviceEntry>,
     pub(crate) files: BTreeMap<FileId, FileEntry>,
@@ -106,6 +109,113 @@ impl Index {
             self.seq = record.seq;
         }
         match &record.frame {
+            Frame::RotationPrepare(state) => {
+                self.authority.generation = Some(state.intent.previous_map);
+                for entry in self.files.values_mut() {
+                    if entry.generation.is_none() {
+                        entry.generation = Some(state.intent.previous_map);
+                    }
+                }
+                for id in self.devices.keys() {
+                    self.authority
+                        .grants
+                        .entry(*id)
+                        .or_insert(super::rotation::Grant {
+                            generation: state.intent.previous_map,
+                            operation: None,
+                        });
+                }
+                self.authority.grants.insert(
+                    state.coordinator,
+                    super::rotation::Grant {
+                        generation: state.intent.current_map,
+                        operation: Some(state.intent.operation.clone()),
+                    },
+                );
+                if let Some(target) = state.intent.target
+                    && let Some(d) = self.devices.get_mut(&target)
+                {
+                    d.record.state = DeviceState::Revoked;
+                    d.wrapped = [0; 32];
+                }
+                self.authority.rotation = Some(state.clone());
+            }
+            Frame::RotationProgress(state) => self.authority.rotation = Some(state.clone()),
+            Frame::RotationCommit { state, at } => {
+                self.authority.generation = Some(state.intent.current_map);
+                if let Some(a) = self.account.as_mut() {
+                    a.recovery_verifier = Some(state.intent.recovery_verifier.clone());
+                    a.recovery_registered = Some(*at);
+                    a.recovery_cleared = None;
+                }
+                for (id, d) in &mut self.devices {
+                    if *id != state.coordinator {
+                        d.record.state = DeviceState::Revoked;
+                        d.wrapped = [0; 32];
+                    }
+                }
+                self.authority.grants.insert(
+                    state.coordinator,
+                    super::rotation::Grant {
+                        generation: state.intent.current_map,
+                        operation: None,
+                    },
+                );
+                self.authority.rotation = Some(state.clone());
+            }
+            Frame::RotationTransfer {
+                state,
+                record: device,
+                wrapped,
+            } => {
+                if let Some(prior) = self.authority.rotation.as_ref()
+                    && let Some(d) = self.devices.get_mut(&prior.coordinator)
+                {
+                    d.record.state = DeviceState::Revoked;
+                    d.wrapped = [0; 32];
+                }
+                self.authority.grants.insert(
+                    device.device_id,
+                    super::rotation::Grant {
+                        generation: state.intent.current_map,
+                        operation: Some(state.intent.operation.clone()),
+                    },
+                );
+                self.apply(&Record {
+                    seq: record.seq,
+                    account_id: record.account_id,
+                    frame: Frame::Device {
+                        record: device.clone(),
+                        wrapped: *wrapped,
+                    },
+                });
+                if let Some(entry) = self.devices.get_mut(&device.device_id) {
+                    entry.resume_id = state.resume_id.clone();
+                }
+                self.authority.rotation = Some(state.clone());
+            }
+            Frame::FormatFloor => {}
+            Frame::ScopedDevice {
+                record: device,
+                wrapped,
+                generation,
+            } => {
+                self.authority.grants.insert(
+                    device.device_id,
+                    super::rotation::Grant {
+                        generation: *generation,
+                        operation: None,
+                    },
+                );
+                self.apply(&Record {
+                    seq: record.seq,
+                    account_id: record.account_id,
+                    frame: Frame::Device {
+                        record: device.clone(),
+                        wrapped: *wrapped,
+                    },
+                });
+            }
             Frame::Account {
                 account_id,
                 name,
@@ -127,10 +237,21 @@ impl Index {
                 });
             }
             Frame::Setup {
+                generation,
                 account,
                 record: device,
                 wrapped,
             } => {
+                if let Some(generation) = generation {
+                    self.authority.generation = Some(*generation);
+                    self.authority.grants.insert(
+                        device.device_id,
+                        super::rotation::Grant {
+                            generation: *generation,
+                            operation: None,
+                        },
+                    );
+                }
                 // Called under the index guard: readers see both changes together.
                 self.apply(&Record {
                     seq: record.seq,
@@ -158,6 +279,7 @@ impl Index {
                 self.devices.insert(
                     device.device_id,
                     DeviceEntry {
+                        resume_id: None,
                         record: device.clone(),
                         wrapped: *wrapped,
                         seen: VecDeque::new(),
@@ -275,10 +397,16 @@ impl Index {
         // The first version of a file fixes its domain; every later version
         // repeats it, and `Store::append_version` refuses one that does not,
         // so replay never has to choose between two answers.
+        let generation = self
+            .authority
+            .grants
+            .get(&version.device_id)
+            .map(|g| g.generation);
         let entry = self
             .files
             .entry(version.file_id)
             .or_insert_with(|| FileEntry {
+                generation,
                 domain_id: version.domain_id,
                 heads: Vec::new(),
                 conflicted: false,
@@ -395,6 +523,7 @@ impl Index {
     /// and the second is rebuilt from the versions.
     pub(crate) fn snapshot_copy(&self) -> Index {
         Index {
+            authority: self.authority.clone(),
             account: self.account.clone(),
             devices: self.devices.clone(),
             files: self.files.clone(),
@@ -495,15 +624,27 @@ impl Index {
         after: Option<&FileId>,
         limit: usize,
     ) -> (Vec<FileSummary>, Option<FileId>) {
+        self.files_page_generation(after, limit, None)
+    }
+
+    pub(crate) fn files_page_generation(
+        &self,
+        after: Option<&FileId>,
+        limit: usize,
+        generation: Option<FileId>,
+    ) -> (Vec<FileSummary>, Option<FileId>) {
         let mut page: Vec<FileSummary> = Vec::new();
         let mut next = None;
+        let mut last = None;
         let start = after.map_or(Bound::Unbounded, |a| Bound::Excluded(*a));
-        for (file_id, entry) in self.files.range((start, Bound::Unbounded)) {
-            if page.len() == limit {
-                // The cursor is the last id INCLUDED, because `after` is
-                // exclusive: handing back the first excluded id would skip it.
-                next = page.last().map(|summary| summary.file_id);
+        for (scanned, (file_id, entry)) in self.files.range((start, Bound::Unbounded)).enumerate() {
+            if scanned == limit {
+                next = last;
                 break;
+            }
+            last = Some(*file_id);
+            if generation.is_some_and(|g| entry.generation != Some(g)) {
+                continue;
             }
             page.push(FileSummary {
                 file_id: *file_id,
@@ -518,6 +659,15 @@ impl Index {
 
     /// The change feed from `since`, exclusive.
     pub(crate) fn changes(&self, since: Seq, limit: usize) -> Result<Changes, StoreError> {
+        self.changes_generation(since, limit, None)
+    }
+
+    pub(crate) fn changes_generation(
+        &self,
+        since: Seq,
+        limit: usize,
+        generation: Option<FileId>,
+    ) -> Result<Changes, StoreError> {
         if since > self.seq {
             return Err(StoreError::SeqAhead {
                 requested: since,
@@ -529,11 +679,18 @@ impl Index {
         let mut truncated = window.len() > limit;
         let mut changes = Vec::new();
         let mut bytes = 0usize;
-        for (_, file_id, version_id) in window.iter().take(limit) {
+        let mut cursor = since;
+        for (seq, file_id, version_id) in window.iter().take(limit) {
             let Some(entry) = self.files.get(file_id) else {
+                cursor = *seq;
                 continue;
             };
+            if generation.is_some_and(|g| entry.generation != Some(g)) {
+                cursor = *seq;
+                continue;
+            }
             let Some(version) = entry.versions.iter().find(|v| v.version_id == *version_id) else {
+                cursor = *seq;
                 continue;
             };
             // The page stops at its byte budget, never before its first
@@ -545,6 +702,7 @@ impl Index {
                 break;
             }
             bytes += cost;
+            cursor = *seq;
             changes.push(Change {
                 version: (**version).clone(),
                 heads: entry.heads.clone(),
@@ -554,11 +712,7 @@ impl Index {
         // When the page covers everything, the cursor is the journal head, so
         // a client that only reads versions still skips the frames it will
         // never be shown rather than re-scanning them on every poll.
-        let seq = if truncated {
-            changes.last().map(|c| c.version.seq).unwrap_or(since)
-        } else {
-            self.seq
-        };
+        let seq = if truncated { cursor } else { self.seq };
         Ok(Changes {
             seq,
             head_seq: self.seq,

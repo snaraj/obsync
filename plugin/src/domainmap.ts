@@ -13,7 +13,7 @@
  * of it is a version with an empty sid list.
  *
  * WHAT THE SERVER SEES. Two random-looking 16-byte identifiers, a ciphertext,
- * and a nonce. Every path in the map is inside the ciphertext, encrypted
+ * and the suite number. Every path in the map is inside the ciphertext, encrypted
  * under `K_map`, which derives from `VRK` and from nothing any recipient will
  * ever hold (AGENTS.md requirement 6).
  *
@@ -28,18 +28,16 @@
 import {
   Bytes,
   base64,
-  contentVersionId,
-  decryptDomainMap,
   deriveDomainMapKey,
   domainMapIds,
-  encryptDomainMap,
   hex,
   isHex,
   randomBytes,
-  unbase64,
-  unhex,
   versionId,
+  utf8,
 } from "./crypto";
+import { openRecord, sealRecord } from "./seal2";
+import { readManifestSeal2 } from "./sealWire";
 import { ApiError, Patience, Transport } from "./transport";
 
 /** One domain and the paths it claims. A path with no slash is a whole file. */
@@ -174,8 +172,8 @@ export function serialiseDomainMap(map: DomainMap): string {
  * Read the vault's map, or `null` when no device has written one yet.
  *
  * More than one head means two devices wrote different maps concurrently.
- * There is no rule that says which is current, so this refuses: the derived
- * nonce (`encryptDomainMap`) already collapses two IDENTICAL writes into one
+ * There is no rule that says which is current, so this refuses: deterministic SIV
+ * already collapses two IDENTICAL writes into one
  * version, so a genuine fork is a disagreement, not a race.
  */
 export async function loadDomainMap(
@@ -194,16 +192,15 @@ export async function loadDomainMap(
   if (file.heads.length !== 1) throw new DomainMapError("conflicted");
   const head = file.versions.find((version) => version.version_id === file.heads[0]);
   if (!head) throw new DomainMapError("head_missing");
-  const binder = await contentVersionId(keys.fileId, head.parents, head.sids);
+  if (file.file_id !== keys.fileId || file.domain_id !== keys.domainId || !Array.isArray(head.sids) ||
+      head.sids.length !== 0 || head.bytes !== 0 || head.deleted !== false) {
+    throw new DomainMapError("binding");
+  }
   let json: string;
   try {
-    json = await decryptDomainMap(
-      keys.key,
-      keys.fileId,
-      binder,
-      unhex(head.manifest_nonce),
-      unbase64(head.manifest_ct),
-    );
+    const plaintext = await openRecord(keys.key, 2, { generation: keys.fileId, domainId: keys.domainId,
+      fileId: keys.fileId, parents: head.parents, sids: head.sids }, readManifestSeal2(head));
+    json = new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
   } catch {
     throw new DomainMapError("undecryptable");
   }
@@ -214,8 +211,8 @@ export async function loadDomainMap(
  * Write the map as a version of the reserved file. `parents` is the head it
  * replaces, or empty for a vault's first map.
  *
- * A version post is not repeatable in general, but THIS one is: the nonce is
- * derived from the map's bytes, so `id` is a function of the content and a
+ * A version post is not repeatable in general, but THIS one is: the SIV packet is
+ * deterministic for the context and map bytes, so `id` is a function of the content and a
  * second post of the same map is the same version, which the server answers
  * `200` as a no-op (`docs/protocol.md`). So a lost answer is settled by
  * sending it once more rather than by a read. A second loss stops the engine:
@@ -228,8 +225,8 @@ export async function saveDomainMap(
   parents: string[] = [],
 ): Promise<string> {
   const json = serialiseDomainMap(map);
-  const binder = await contentVersionId(keys.fileId, parents, []);
-  const { nonce, ciphertext } = await encryptDomainMap(keys.key, keys.fileId, binder, json);
+  const ciphertext = await sealRecord(keys.key, 2, { generation: keys.fileId, domainId: keys.domainId,
+    fileId: keys.fileId, parents, sids: [] }, utf8(json));
   const id = await versionId(keys.fileId, parents, ciphertext, []);
   const post = {
     version_id: id,
@@ -238,7 +235,7 @@ export async function saveDomainMap(
     bytes: 0,
     domain_id: keys.domainId,
     manifest_ct: base64(ciphertext),
-    manifest_nonce: hex(nonce),
+    seal_suite: 2 as const,
     deleted: false,
     // NEVER for the map. The server recognises "the same version at the same
     // position" by `(file_id, parent set, sids, deleted)` and never by the

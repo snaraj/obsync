@@ -44,6 +44,9 @@ import {
   generatePairingKeyPair,
   hex,
   hkdf,
+  isHex,
+  deriveDomainMapKey,
+  domainMapIds,
   importPairingPublicKey,
   PAIRING_PUBLIC_KEY_BYTES,
   randomBytes,
@@ -56,6 +59,8 @@ import {
 } from "./crypto";
 import { ApiError, EDGE_REQUIRED, certificateRefusal } from "./transport";
 import { WORDLIST } from "./wordlist";
+import { openPairing, sealPairing } from "./seal2";
+import { readPairingSeal2 } from "./sealWire";
 
 export const PAIRING_ID_BYTES = 16;
 export const ENROLL_TOKEN_BYTES = 32;
@@ -78,9 +83,11 @@ export interface PairingCode {
 }
 
 /** What a paired device seals for a new one. */
-export interface VaultEnvelope {
+export interface LegacyVaultEnvelope {
   vrk: string;
 }
+export interface VaultEnvelope2 { v: 2; vrk: string; generation: string }
+export interface PairingSeal2 { seal_suite: 2; envelope: string }
 
 /**
  * The pairing code: `base32(pairing_id || enroll_token || PS || commitment)`,
@@ -266,12 +273,12 @@ export async function newPairingKeyExchange(): Promise<PairingKeyExchange> {
  * keys bound as additional data. The creator calls this on approval, with its
  * own ephemeral pair and the claimant's public key it received.
  */
-export async function sealEnvelopeV2(
+export async function sealEnvelopeLegacyV2(
   ours: PairingKeyExchange,
   peerPublicKey: string,
   pairingSecret: Bytes,
   pairingId: string,
-  envelope: VaultEnvelope,
+  envelope: LegacyVaultEnvelope,
 ): Promise<{ envelope: string; nonce: string }> {
   const peerRaw = checkedPublicKey(peerPublicKey);
   const peer = await importPairingPublicKey(peerRaw);
@@ -295,14 +302,14 @@ export async function sealEnvelopeV2(
  * makes the AEAD tag fail, which the caller treats as a device that could not
  * be verified.
  */
-export async function openEnvelopeV2(
+export async function openEnvelopeLegacyV2(
   ours: PairingKeyExchange,
   peerPublicKey: string,
   pairingSecret: Bytes,
   pairingId: string,
   envelope: string,
   nonce: string,
-): Promise<VaultEnvelope> {
+): Promise<LegacyVaultEnvelope> {
   const peerRaw = checkedPublicKey(peerPublicKey);
   const peer = await importPairingPublicKey(peerRaw);
   const key = await derivePairingV2Key(ours.pair, peer, pairingSecret, pairingId);
@@ -315,7 +322,7 @@ export async function openEnvelopeV2(
       unbase64(envelope),
     ),
   );
-  const parsed = JSON.parse(new TextDecoder().decode(plaintext)) as VaultEnvelope;
+  const parsed = JSON.parse(new TextDecoder().decode(plaintext)) as LegacyVaultEnvelope;
   if (typeof parsed.vrk !== "string" || parsed.vrk.length !== VRK_BYTES * 2) {
     throw new Error("pairing: the envelope carries no vault key");
   }
@@ -356,7 +363,7 @@ async function vaultDetailsKey(secret: Bytes, id: string): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 
-export async function sealPairingVault(secret: Bytes, id: string, vault: PairingVault): Promise<SealedPairingVault> {
+export async function sealPairingVaultLegacy(secret: Bytes, id: string, vault: PairingVault): Promise<SealedPairingVault> {
   const nonce = randomBytes(12);
   const envelope = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv: nonce, additionalData: utf8(id), tagLength: 128 },
@@ -365,7 +372,7 @@ export async function sealPairingVault(secret: Bytes, id: string, vault: Pairing
   return { envelope: base64(new Uint8Array(envelope)), nonce: hex(nonce) };
 }
 
-export async function openPairingVault(secret: Bytes, id: string, sealed: SealedPairingVault): Promise<PairingVault> {
+export async function openPairingVaultLegacy(secret: Bytes, id: string, sealed: SealedPairingVault): Promise<PairingVault> {
   if (typeof sealed?.envelope !== "string" || sealed.envelope.length > 2048 ||
       typeof sealed.nonce !== "string" || !/^[0-9a-f]{24}$/.test(sealed.nonce)) {
     throw new Error("pairing: invalid sealed vault details; start pairing again");
@@ -375,6 +382,63 @@ export async function openPairingVault(secret: Bytes, id: string, sealed: Sealed
     await vaultDetailsKey(secret, id), unbase64(sealed.envelope),
   );
   return checkedVault(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext)));
+}
+
+function pairingSecretCopy(secret: Bytes): Bytes {
+  if (!(secret instanceof Uint8Array) || !(secret.buffer instanceof ArrayBuffer) || secret.length !== PAIRING_SECRET_BYTES) throw new Error("pairing: invalid secret");
+  return new Uint8Array(secret);
+}
+function checkedPairingId(id: string): void {
+  if (typeof id !== "string" || !isHex(id, PAIRING_ID_BYTES)) throw new Error("pairing: invalid pairing identity");
+}
+
+/** Only the current generation is enrolled; no history or alternate-root variant. */
+export async function checkedEnvelope2(value: unknown): Promise<VaultEnvelope2> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("pairing: invalid suite-2 vault envelope");
+  const record = value as Record<string, unknown>, fields = ["v", "vrk", "generation"];
+  const root = record["vrk"], generation = record["generation"];
+  if (Object.keys(record).length !== fields.length || fields.some(field => !Object.hasOwn(record, field)) || record["v"] !== 2 ||
+    typeof root !== "string" || !isHex(root, VRK_BYTES) || typeof generation !== "string" || !isHex(generation, 16) ||
+    (await domainMapIds(await deriveDomainMapKey(unhex(root)))).fileId !== generation) throw new Error("pairing: invalid suite-2 vault envelope");
+  return { v: 2, vrk: root, generation };
+}
+
+export async function sealEnvelope2(ours: PairingKeyExchange, peerPublicKey: string, secret: Bytes, id: string, envelope: VaultEnvelope2): Promise<PairingSeal2> {
+  checkedPairingId(id);
+  const ps = pairingSecretCopy(secret), peerRaw = checkedPublicKey(peerPublicKey), creatorRaw = checkedPublicKey(ours.publicKey), pair = { ...ours.pair };
+  const validated = await checkedEnvelope2(envelope), peer = await importPairingPublicKey(peerRaw);
+  const base = await derivePairingV2Key(pair, peer, ps, id);
+  const packet = await sealPairing(base, 4, { pairingId: id, claimantPublic: peerRaw, creatorPublic: creatorRaw }, utf8(JSON.stringify(validated)));
+  return { seal_suite: 2, envelope: base64(packet) };
+}
+
+export async function openEnvelope2(ours: PairingKeyExchange, peerPublicKey: string, secret: Bytes, id: string, sealed: unknown): Promise<VaultEnvelope2> {
+  checkedPairingId(id);
+  const packet = readPairingSeal2(sealed, "root"), ps = pairingSecretCopy(secret), peerRaw = checkedPublicKey(peerPublicKey), claimantRaw = checkedPublicKey(ours.publicKey), pair = { ...ours.pair };
+  const peer = await importPairingPublicKey(peerRaw), base = await derivePairingV2Key(pair, peer, ps, id);
+  const plaintext = await openPairing(base, 4, { pairingId: id, claimantPublic: claimantRaw, creatorPublic: peerRaw }, packet);
+  return checkedEnvelope2(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext)));
+}
+
+function checkedVault2(value: unknown): PairingVault {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 2 ||
+    !Object.hasOwn(value, "name") || !Object.hasOwn(value, "notes")) throw new Error("pairing: invalid vault details; start pairing again");
+  return checkedVault(value);
+}
+
+export async function sealPairingVault2(secret: Bytes, id: string, vault: PairingVault): Promise<PairingSeal2> {
+  checkedPairingId(id);
+  const ps = pairingSecretCopy(secret), plaintext = utf8(JSON.stringify(checkedVault2(vault)));
+  const base = await hkdf(ps, utf8(VAULT_LABEL), utf8(id), 32);
+  return { seal_suite: 2, envelope: base64(await sealPairing(base, 5, { pairingId: id }, plaintext)) };
+}
+
+export async function openPairingVault2(secret: Bytes, id: string, sealed: unknown): Promise<PairingVault> {
+  checkedPairingId(id);
+  const packet = readPairingSeal2(sealed, "details"), ps = pairingSecretCopy(secret);
+  const base = await hkdf(ps, utf8(VAULT_LABEL), utf8(id), 32);
+  const plaintext = await openPairing(base, 5, { pairingId: id }, packet);
+  return checkedVault2(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext)));
 }
 
 

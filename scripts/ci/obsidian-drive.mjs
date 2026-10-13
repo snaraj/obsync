@@ -173,7 +173,7 @@ const LABELS = {
   pairingCode: "Pairing code",
   pairButton: "Pair",
   approve: "Approve",
-  phraseDone: "I have written it down",
+  phraseDone: "Confirm complete backup",
   check: "Check",
   reached: "Reached your obsync server",
 };
@@ -221,22 +221,21 @@ function settingsShow(row) {
   return [...document.querySelectorAll(".mod-settings .setting-item-name")].some((e) => e.textContent.trim() === row);
 }
 
-/** The recovery-phrase dialog: read the words HERE, type back the ones asked. */
+/** Complete backup stays in its renderer, including the mandatory format marker. */
 function confirmPhrase(doneLabel) {
-  const modal = [...document.querySelectorAll(".modal")].find((m) => m.querySelector(".obsync-phrase"));
-  if (!modal) return false;
-  const words = [...modal.querySelectorAll(".obsync-phrase li")].map((li) => li.textContent.trim());
-  if (words.length !== 24) return false;
-  for (const row of modal.querySelectorAll(".setting-item")) {
-    const asked = /^Word (\d+)$/.exec(row.querySelector(".setting-item-name")?.textContent.trim() ?? "");
-    const input = row.querySelector("input");
-    if (!asked || !input) continue;
-    input.value = words[Number(asked[1]) - 1];
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  }
-  const done = [...modal.querySelectorAll("button")].find((b) => b.textContent.trim() === doneLabel);
-  if (!done) return false;
-  done.click();
+  const candidates = [...document.querySelectorAll(".modal")].flatMap(modal =>
+    [...modal.querySelectorAll("pre")].map(pre => ({ modal, text: pre.textContent.trim() }))
+      .filter(item => /^obsync-recovery-v2(?: [a-z]+){24}$/.test(item.text)));
+  if (candidates.length !== 1) return false;
+  const { modal, text } = candidates[0];
+  const rows = [...modal.querySelectorAll(".setting-item")].filter(row =>
+    row.querySelector(".setting-item-name")?.textContent.trim() === "Read back your saved backup");
+  const input = rows.length === 1 ? rows[0].querySelector("textarea") : null;
+  const done = [...modal.querySelectorAll("button")].filter(button => button.textContent.trim() === doneLabel);
+  if (!input || done.length !== 1) return false;
+  input.value = text;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  done[0].click();
   return true;
 }
 
@@ -601,6 +600,10 @@ async function main() {
     await until("a: the setup token field", () => a.anywhere(fillPlaceholder, LABELS.setupToken, token));
     await until(`a: ${LABELS.setupButton}`, () => a.anywhere(click, LABELS.setupButton));
     await until("a: the recovery phrase confirmed", () => a.anywhere(confirmPhrase, LABELS.phraseDone));
+    await until("a: complete backup confirmation acknowledged", () => inVault(a, (id) => {
+      const state = app.plugins.plugins[id]?.state;
+      return state?.data.recoveryPhrase === "confirmed" && state.custody2()?.phase === "active";
+    }, PLUGIN_ID));
     await until("a: paired after setup", () => paired(a));
     if (store) diagnose(a, "enrolled", await inVault(a, secretFacts));
     prove("first device: Server URL, setup token and the recovery-phrase check, through the plugin's own settings and dialog");

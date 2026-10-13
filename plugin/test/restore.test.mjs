@@ -23,9 +23,10 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { DEVICE_B, FakeTimers, KEYS, STEP_MS, pair, rig, settled } from "./fake.mjs";
+import { openPublishedManifest, DEVICE_B, FakeTimers, KEYS, STEP_MS, pair, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const c = require("../build/crypto.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const { probeFeed, recoverLost, seenBefore } = require("../build/sync/restore.js");
@@ -66,13 +67,11 @@ async function heads(server, k) {
     const file = server.files.get(fileId);
     for (const head of file.heads) {
       const version = file.versions.find((candidate) => candidate.version_id === head);
-      const binder = await c.contentVersionId(fileId, version.parents, version.sids);
-      const manifest = JSON.parse(await c.decryptManifest(
-        k.manifestKey, fileId, binder, c.unhex(version.manifest_nonce), c.unbase64(version.manifest_ct),
-      ));
+
+      const manifest = await openPublishedManifest({ ...version, file_id: fileId }, k.manifestKey);
       let text = "";
       for (const chunk of manifest.chunks) {
-        text += dec(await c.decryptChunk(k.domainKey, c.unhex(chunk.cid), server.chunks.get(chunk.sid)));
+        text += dec(await seal2.decryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, c.unhex(chunk.cid), server.chunks.get(chunk.sid)));
       }
       out.push({ fileId, path: manifest.path, deleted: manifest.deleted, folder: manifest.v === 2, text, forked: file.heads.length > 1 });
     }
@@ -189,8 +188,14 @@ test("a server restored from last night's backup gets the day's notes, rename an
   await recovered(timers, () => day.every((id) => soleHead(server, id) !== undefined) && soleHead(server, ids.n20)?.deleted === true &&
     soleHead(server, ids.old)?.deleted === true && soleHead(server, ids.n01)?.seq > backup && soleHead(server, ids.p1)?.seq > backup &&
     caughtUp(server, a));
+  const postsBeforeB = server.requests.filter(request => request.method === "POST" && request.target.endsWith("/versions")).length;
+  const idsBeforeB = [...server.files].map(([id, file]) => [id, file.versions.map(version => version.version_id)]);
   server.unreachable.delete(DEVICE_B);
   await recovered(timers, () => caughtUp(server, b) && caughtUp(server, a) && strays(server, b).length === 0);
+  // SIV restores the same immutable IDs. B already holds those versions,
+  // so its reconnect requires no redundant publication or resend notice.
+  assert.equal(server.requests.filter(request => request.method === "POST" && request.target.endsWith("/versions")).length, postsBeforeB, "second device must not republish already restored versions");
+  assert.deepEqual([...server.files].map(([id, file]) => [id, file.versions.map(version => version.version_id)]), idsBeforeB, "second device must preserve restored immutable versions");
   // The replay of the rebuilt journal skips what a device already processed
   // rather than receiving it again: yesterday is not applied over today.
   assert.ok([...a.host.logs, ...b.host.logs].some((line) => /^feed decision=skipped reason=seen_before_restore entries=[1-9]/.test(line)),
@@ -229,7 +234,8 @@ test("a server restored from last night's backup gets the day's notes, rename an
     // Bounded and said: one START and one SUMMARY per run, with the budget.
     assert.ok(device.host.logs.some((line) => /^restore decision=start verdict=restored reason=\w+ .*budget_requests=1000 budget_ms=600000$/.test(line)));
     assert.ok(device.host.logs.some((line) => /^restore decision=summary verdict=restored .*budget_requests=1000 duration_ms=\d+ budget_ms=600000$/.test(line)));
-    assert.equal(device.host.notices.filter((message) => RESTORED_NOTICE.test(message)).length, 1, "one notice per device");
+    assert.equal(device.host.notices.filter((message) => RESTORED_NOTICE.test(message)).length, device === a ? 1 : 0, "one notice only on the device actually resending");
+    if (device === b) assert.match(device.host.logs.find(line => line.startsWith("restore decision=summary")), / checked=0 resent=0 notes=0 renames=0 tombstones=0 folders=0 /, "second device must find its exact versions already restored");
   }
   // The first device re-sent the day: five notes, the edit, the rename, the
   // new folder, a note's deletion and a folder's.
@@ -421,7 +427,7 @@ test("a normal restart over history retention pruned sends one probe and publish
   // A real pushed record holds the digest of these bytes. Sync now verifies
   // it even when its metadata matches (#179), so an empty digest would now
   // model an unpushed local edit rather than a retention-pruned old version.
-  const hDigest = await sidDigest([(await c.encryptChunk(r.keys.domainKey, enc("H SENTINEL"))).sid]);
+  const hDigest = await sidDigest([(await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, enc("H SENTINEL"))).sid]);
   r.state.setFile("Notes/H.md", { fileId: H, versionId: "9f".repeat(32), mtime: 1000, size: 10, sha256: hDigest, ts: OLD });
 
   // Retention: each moved note keeps its ten newest versions.

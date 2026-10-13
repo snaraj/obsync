@@ -1213,7 +1213,9 @@ test("a note beside its name takes it at the next scan once this device's own us
   assert.equal(b.state.fileByPath(waiting).name, "Notes/Same.md", "the copy does not remember the name it waits for");
 
   b.host.remove("Notes/Same.md");
-  await timers.run(STEP_MS, () => b.state.fileByPath("Notes/Same.md")?.fileId === LOW).catch(() => undefined);
+  // relocate updates State before its awaited operation logs completion.
+  await timers.run(STEP_MS, () => b.state.fileByPath("Notes/Same.md")?.fileId === LOW &&
+    b.host.logs.includes(`scan path_class=file decision=renamed_from_beside file=${LOW} seq=${b.state.data.lastSeq}`)).catch(() => undefined);
 
   assert.equal(b.host.text("Notes/Same.md"), DRAFT, `the waiting note never took its name: ${story(server, a, b)}`);
   assert.ok(b.host.logs.includes(`scan path_class=file decision=renamed_from_beside file=${LOW} seq=${b.state.data.lastSeq}`),

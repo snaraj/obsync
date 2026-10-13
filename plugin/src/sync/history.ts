@@ -1,10 +1,14 @@
 /** Native retained-history reads and create-only recovery. No feed application. */
-import { hex, isHex, randomBytes, unbase64, versionId } from "../crypto";
+import { decryptChunk, deriveDomainKey, deriveManifestKey, hex, isHex, randomBytes, sha256, unbase64, unhex, versionId } from "../crypto";
+import { soleDomain } from "../domainmap";
+import { preflightRotationMap } from "../rotationReseal";
 import { admit, admissionReason } from "../policy";
 import { assertSyncPath, inSyncScope } from "../syncScope";
+import { readManifestSeal2 } from "../sealWire";
+import { decryptChunk2, openRecord } from "../seal2";
 import { ReadControl, VersionRecord } from "../transport";
-import { SyncContext, VaultStat } from "./engine";
-import { decryptRecordManifest, writeVerified } from "./pull";
+import { SyncContext, VaultStat, VaultWriter } from "./engine";
+import { bindManifestToRecord, decryptLegacyRecordManifest, decryptRecordManifest, parseManifest, writeVerified } from "./pull";
 import { Manifest } from "./push";
 
 /**
@@ -33,6 +37,8 @@ export const HISTORY_SEARCH_MS = 60_000;
 export class HistoryCancelled extends Error {
   constructor() { super("History operation cancelled."); }
 }
+
+class HistoryLimit extends Error {}
 
 /** Cancellation races only reads, never an already dispatched local publication. */
 export class HistoryOperation implements ReadControl {
@@ -70,18 +76,33 @@ function number(value: unknown): value is number { return typeof value === "numb
 function id(value: unknown, bytes: number): value is string { return typeof value === "string" && isHex(value, bytes); }
 function ids(value: unknown, max: number): boolean { return Array.isArray(value) && value.length <= max && value.every((v: unknown) => id(v, 32)); }
 
-/** Verify the exact immutable selection, not merely a manifest which decrypts. */
-export async function historyManifest(context: SyncContext, fileId: string, domainId: string, expected: string, value: unknown): Promise<Manifest> {
+/** Validate immutable selection independently of the explicitly selected decoder. */
+function selectedVersion(fileId: string, domainId: string, expected: string, value: unknown): VersionRecord {
   const r = object(value);
   if (!id(fileId, 16) || !id(domainId, 16) || !id(expected, 32) || r["version_id"] !== expected ||
       !ids(r["parents"], 64) || !ids(r["sids"], 65_536) || !number(r["bytes"]) || !number(r["ts"]) ||
-      !id(r["device_id"], 16) || typeof r["deleted"] !== "boolean" || !id(r["manifest_nonce"], 12) ||
+      !id(r["device_id"], 16) || typeof r["deleted"] !== "boolean" ||
       typeof r["manifest_ct"] !== "string" || r["manifest_ct"].length > 1024 * 1024) throw new Error("Invalid history version.");
-  const record = r as unknown as VersionRecord;
-  if (await versionId(fileId, record.parents, unbase64(record.manifest_ct), record.sids) !== expected) throw new Error("History version identity mismatch.");
+  return r as unknown as VersionRecord;
+}
+
+/** Suite-2 retained history; old records never trigger another decoder. */
+export async function historyManifest(context: SyncContext, fileId: string, domainId: string, expected: string, value: unknown): Promise<Manifest> {
+  const record = selectedVersion(fileId, domainId, expected, value);
+  let packet;
+  try { packet = readManifestSeal2(record); } catch { throw new Error("Invalid history version."); }
+  if (await versionId(fileId, record.parents, packet, record.sids) !== expected) throw new Error("History version identity mismatch.");
   const manifest = await decryptRecordManifest(context, { ...record, file_id: fileId, domain_id: domainId });
-  // Row descriptors are bounded too; such a path cannot be a local file on
-  // the supported platforms. Never hold unbounded display labels per row.
+  if (manifest.path.length > 4096) throw new Error("History path exceeds the display/path budget.");
+  return manifest;
+}
+
+/** Caller explicitly supplies the old-root context for history/reseed only. */
+export async function legacyHistoryManifest(context: SyncContext, fileId: string, domainId: string, expected: string, value: unknown): Promise<Manifest> {
+  const record = selectedVersion(fileId, domainId, expected, value);
+  if ("seal_suite" in record || !id(record.manifest_nonce, 12)) throw new Error("Invalid legacy history seal.");
+  if (await versionId(fileId, record.parents, unbase64(record.manifest_ct), record.sids) !== expected) throw new Error("History version identity mismatch.");
+  const manifest = await decryptLegacyRecordManifest(context, { ...record, file_id: fileId, domain_id: domainId });
   if (manifest.path.length > 4096) throw new Error("History path exceeds the display/path budget.");
   return manifest;
 }
@@ -102,6 +123,8 @@ export interface HistoryOrder {
   /** Newest first, which is where a deletion the user noticed almost always is. */
   newestFirst?: boolean;
   now?: () => number;
+  /** Explicit retained key only; never selected in response to a decrypt failure. */
+  previous?: { root: string; generation: string; suite: 1 | 2 };
 }
 
 /**
@@ -124,6 +147,11 @@ export class HistoryBrowser {
   private floor: number | null = null;
   private boundary: number | null = null;
   private readonly now: () => number;
+  private readonly previous: HistoryOrder["previous"];
+  private previousContext: SyncContext | null = null;
+  private sourceDone = false;
+  private readonly ancestry: [string, string][] = [];
+  private readonly visited = new Set<string>();
   readonly newestFirst: boolean;
   done = false;
   /** Journal records read since this browser opened. */
@@ -131,6 +159,7 @@ export class HistoryBrowser {
   constructor(readonly context: SyncContext, readonly operation: HistoryOperation, order: HistoryOrder = {}) {
     this.newestFirst = order.newestFirst ?? true;
     this.now = order.now ?? Date.now;
+    this.previous = order.previous === undefined ? undefined : { ...order.previous };
   }
 
   /** About how many records the journal holds: the head this device knows. */
@@ -180,10 +209,15 @@ export class HistoryBrowser {
       }
       const manifest = await historyManifest(this.context, record["file_id"], record["domain_id"], record["version_id"], record);
       this.operation.check();
+      if (this.previous) {
+        if (manifest.migration_origin !== undefined) this.enqueue(manifest.migration_origin.slice(0, 32), manifest.migration_origin.slice(32));
+        return;
+      }
       if (!manifest.path.toLowerCase().includes(filter.toLowerCase())) return;
       out.push({ fileId: record["file_id"], versionId: record["version_id"], domainId: record["domain_id"],
         path: manifest.path, size: manifest.size, deleted: manifest.deleted, ts: record["ts"] as number });
-    } catch {
+    } catch (error) {
+      if (error instanceof HistoryLimit) throw error;
       this.operation.check();
       counts.refused++;
       this.context.host.log("history path_class=manifest decision=refused");
@@ -223,12 +257,117 @@ export class HistoryBrowser {
       const { seq, changes } = await this.read(cursor, HISTORY_SCAN_RECORDS);
       for (const change of changes) if ((change["seq"] as number) < this.floor) window.push(change);
       cursor = seq;
-      if (changes.length === 0) break;
     }
     counts.scanned += window.length;
     this.floor = from + 1;
     this.done = from === 0;
     for (const record of window.reverse()) await this.take(record, filter, out, counts);
+  }
+
+  private enqueue(file: string, version: string): void {
+    if (!id(file, 16) || !id(version, 32)) throw new Error("Invalid previous-generation history pointer.");
+    const key = file + version;
+    if (this.visited.has(key)) return;
+    if (this.visited.size >= 65_536) throw new HistoryLimit("Previous-generation history exceeds this browser's 65,536-version limit.");
+    this.visited.add(key); this.ancestry.push([file, version]);
+  }
+
+  private async selectedContext(): Promise<SyncContext> {
+    this.operation.check();
+    if (!this.previous) return this.context;
+    if (this.previousContext) return this.previousContext;
+    const { transport } = this.context, control = this.operation;
+    const root = unhex(this.previous.root);
+    const { map } = await preflightRotationMap({
+      getFile: id => transport.historyFile(id, control),
+      getVersion: (file, version) => transport.historyVersion(file, version, control),
+      getChunk: sid => transport.getChunk(sid, control),
+      putChunk: async () => { throw new Error("History cannot publish remote data."); },
+    }, { ...this.previous, root });
+    control.check();
+    const domainId = soleDomain(map)!;
+    const domainKey = await deriveDomainKey(root, domainId), manifestKey = await deriveManifestKey(domainKey, domainId);
+    control.check();
+    this.previousContext = { ...this.context, domainId, domainKey, manifestKey,
+      generation: this.previous.generation, mapFileId: this.previous.generation };
+    return this.previousContext;
+  }
+
+  private async decodeSelection(context: SyncContext, file: string, version: string, record: unknown): Promise<Manifest> {
+    if (!this.previous) return historyManifest(context, file, context.domainId, version, record);
+    let manifest: Manifest;
+    if (this.previous.suite === 1) manifest = await legacyHistoryManifest(context, file, context.domainId, version, record);
+    else {
+      // Explicit retained-key decoder: it cannot satisfy live sealScope authority.
+      const selected = selectedVersion(file, context.domainId, version, record), packet = readManifestSeal2(selected);
+      if (await versionId(file, selected.parents, packet, selected.sids) !== version) throw new Error("History version identity mismatch.");
+      let json: string;
+      try { json = new TextDecoder("utf-8", { fatal: true }).decode(await openRecord(context.manifestKey, 1,
+        { generation: context.generation, domainId: context.domainId, fileId: file, parents: selected.parents, sids: selected.sids }, packet)); }
+      catch { throw new Error("History manifest authentication failed."); }
+      manifest = parseManifest(json);
+      bindManifestToRecord({ ...selected, domain_id: context.domainId }, manifest, context.domainId);
+    }
+    assertSyncPath(manifest.path, this.context.state.data.syncFolders);
+    if (manifest.path.length > 4096) throw new Error("History path exceeds the display/path budget.");
+    return manifest;
+  }
+
+  /** Re-authenticate the selected immutable version before any local writer opens. */
+  async readSelection(entry: HistoryEntry): Promise<Manifest> {
+    const context = await this.selectedContext();
+    if (!id(entry.fileId, 16) || !id(entry.versionId, 32) || entry.domainId !== context.domainId) throw new Error("Invalid history selection.");
+    const record = await context.transport.historyVersion(entry.fileId, entry.versionId, this.operation);
+    return this.decodeSelection(context, entry.fileId, entry.versionId, record);
+  }
+
+  async writeSelection(manifest: Manifest, writer: VaultWriter): Promise<void> {
+    const context = await this.selectedContext();
+    if (!this.previous) return writeVerified(context, manifest, writer, this.operation);
+    // Only the explicit retained key's declared suite; no error-driven fallback.
+    if (manifest.chunks.length > 1 && manifest.sha256 !== "") throw new Error("This retained version requires an unsupported whole-file digest check.");
+    for (const chunk of manifest.chunks) {
+      const packet = await context.transport.getChunk(chunk.sid, this.operation);
+      this.operation.check();
+      if (hex(await sha256(packet)) !== chunk.sid) throw new Error("History chunk identity mismatch.");
+      let plaintext;
+      try { plaintext = this.previous.suite === 1 ? await decryptChunk(context.domainKey, unhex(chunk.cid), packet)
+        : await decryptChunk2(context.domainKey, { generation: context.generation, domainId: context.domainId }, unhex(chunk.cid), packet); }
+      catch { throw new Error("History chunk authentication failed."); }
+      if (plaintext.length !== chunk.len || (manifest.chunks.length === 1 && manifest.sha256 !== "" &&
+          hex(await sha256(plaintext)) !== manifest.sha256)) throw new Error("History content mismatch.");
+      this.operation.check(); await writer.write(plaintext);
+    }
+  }
+
+  /** Discover authenticated migration pointers, then walk only their old ancestry. */
+  private async stepPrevious(filter: string, out: HistoryEntry[], counts: { scanned: number; refused: number }): Promise<void> {
+    if (this.ancestry.length === 0 && !this.sourceDone) {
+      this.done = false;
+      if (this.newestFirst) await this.stepDown("", [], counts); else await this.stepUp("", [], counts);
+      this.sourceDone = this.done;
+      this.done = this.sourceDone && this.ancestry.length === 0;
+      return;
+    }
+    const context = await this.selectedContext(), start = this.now();
+    let checked = 0;
+    while (this.ancestry.length > 0 && checked < HISTORY_SCAN_RECORDS && (checked === 0 || this.now() - start < HISTORY_SCAN_MS)) {
+      const [file, version] = this.ancestry[0]!;
+      try {
+        const record = selectedVersion(file, context.domainId, version, await context.transport.historyVersion(file, version, this.operation));
+        const manifest = await this.decodeSelection(context, file, version, record);
+        this.operation.check();
+        for (const parent of record.parents) this.enqueue(file, parent);
+        if (manifest.path.toLowerCase().includes(filter.toLowerCase())) out.push({ fileId: file, versionId: version,
+          domainId: context.domainId, path: manifest.path, size: manifest.size, deleted: manifest.deleted, ts: record.ts });
+      } catch (error) {
+        if (error instanceof HistoryLimit) throw error;
+        this.operation.check(); counts.refused++;
+        context.host.log("history path_class=previous_manifest decision=refused");
+      }
+      this.ancestry.shift(); checked++; counts.scanned++;
+    }
+    this.done = this.sourceDone && this.ancestry.length === 0;
   }
 
   /**
@@ -256,7 +395,8 @@ export class HistoryBrowser {
       // Restore is disabled. It runs on until it holds a version it can
       // restore, and lists those first.
       do {
-        if (this.newestFirst) await this.stepDown(filter, entries, counts);
+        if (this.previous) await this.stepPrevious(filter, entries, counts);
+        else if (this.newestFirst) await this.stepDown(filter, entries, counts);
         else await this.stepUp(filter, entries, counts);
       } while (entries.every((entry) => entry.deleted) && !this.done && budget > 0 && this.now() - started < budget);
       entries.sort((a, b) => Number(a.deleted) - Number(b.deleted));
@@ -323,9 +463,7 @@ export async function restoreCopy(browser: HistoryBrowser, entry: HistoryEntry):
   const started = Date.now();
   operation.check();
   assertSyncPath(entry.path, context.state.data.syncFolders);
-  if (!id(entry.fileId, 16) || !id(entry.versionId, 32) || entry.domainId !== context.domainId) throw new Error("Invalid history selection.");
-  const version = await context.transport.historyVersion(entry.fileId, entry.versionId, operation);
-  const manifest = await historyManifest(context, entry.fileId, entry.domainId, entry.versionId, version);
+  const manifest = await browser.readSelection(entry);
   operation.check();
   if (manifest.deleted || manifest.path !== entry.path) throw new Error("Select a retained content version, not a deletion marker.");
   let used = await inventory(context, operation);
@@ -350,7 +488,7 @@ export async function restoreCopy(browser: HistoryBrowser, entry: HistoryEntry):
     let published = false;
     let outcome: { stat: VaultStat } | { failure: unknown };
     try {
-      await writeVerified(context, manifest, writer, operation);
+      await browser.writeSelection(manifest, writer);
       used = await inventory(context, operation);
       guard();
       const stat = await writer.commit(manifest.mtime);

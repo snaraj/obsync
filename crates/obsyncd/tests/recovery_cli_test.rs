@@ -80,7 +80,7 @@ mod tests {
                 sids: vec![sid],
                 bytes: body.len() as u64,
                 manifest_ct: manifest.to_vec(),
-                manifest_nonce: [1; 12],
+                manifest_seal: obsyncd::storage::ManifestSeal::Legacy([1; 12]),
                 device_id: device,
                 deleted: false,
             })

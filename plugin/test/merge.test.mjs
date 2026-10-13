@@ -1,3 +1,4 @@
+import { withDistinctMtime } from "./seal2-fixture.mjs";
 /**
  * Two devices merging the same concurrent edit, and the storm that was (#110).
  *
@@ -11,7 +12,9 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { STEP_MS, pair, settled } from "./fake.mjs";
+import { createRequire } from "node:module";
+const seal2 = createRequire(import.meta.url)("../build/seal2.js");
+import { openPublishedManifest, STEP_MS, pair, settled } from "./fake.mjs";
 
 const BASE = "one\ntwo\nthree\n";
 /** Edits in DIFFERENT hunks, so the three-way merge is clean on both sides. */
@@ -293,7 +296,7 @@ for (const unavailable of [false, true]) test(`two typed keys both heads hold su
   // This device stands on the desktop's head, and the server lists ten versions and every head.
   const held = doc(x([0, 5], [8, 13], [16, 21]) + y([0, 5], [8, 13], [16, 17]));
   r.host.seed(NOTE, held, at += 1000);
-  const { sid } = await encryptChunk(r.keys.domainKey, new TextEncoder().encode(held));
+  const { sid } = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, new TextEncoder().encode(held));
   r.state.setFile(NOTE, { fileId: root.fileId, versionId: p1, mtime: at, size: new TextEncoder().encode(held).length, sha256: await sidDigest([sid]) });
   const getFile = r.transport.getFile.bind(r.transport);
   r.transport.getFile = async (...args) => {
@@ -362,7 +365,7 @@ test("two merges of one pair combine when one of the pair left the listing and t
   const merged = x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 19]);
   const own = await publish(merged, [phone, m2].sort());
   r.host.seed(NOTE, doc(merged), at += 1000);
-  const { sid } = await encryptChunk(r.keys.domainKey, new TextEncoder().encode(doc(merged)));
+  const { sid } = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, new TextEncoder().encode(doc(merged)));
   r.state.setFile(NOTE, { fileId: root.fileId, versionId: own, mtime: at, size: new TextEncoder().encode(doc(merged)).length, sha256: await sidDigest([sid]) });
   const getFile = r.transport.getFile.bind(r.transport);
   r.transport.getFile = async (...args) => {
@@ -421,7 +424,7 @@ for (const reason of ["read budget", "unavailable ancestor", "read budget while 
   const ours = doc(x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 19]));
   const own = await publish(x([0, 5], [8, 12]) + y([0, 5], [8, 13], [16, 19]), [phone, m2].sort());
   r.host.seed(NOTE, ours, at += 1000);
-  const { sid } = await c.encryptChunk(r.keys.domainKey, new TextEncoder().encode(ours));
+  const { sid } = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, new TextEncoder().encode(ours));
   r.state.setFile(NOTE, { fileId: root.fileId, versionId: own, mtime: at, size: new TextEncoder().encode(ours).length, sha256: await sidDigest([sid]) });
   const getFile = r.transport.getFile.bind(r.transport);
   r.transport.getFile = async (...args) => {
@@ -462,10 +465,10 @@ for (const reason of ["read budget", "unavailable ancestor", "read budget while 
   // And nothing published holds a mixture of the two.
   const texts = [];
   for (const frame of r.server.journal.slice(sent)) {
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const manifest = JSON.parse(await c.decryptManifest(r.keys.manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct)));
+
+    const manifest = await openPublishedManifest(frame, r.keys.manifestKey);
     const parts = [];
-    for (const chunk of manifest.chunks) parts.push(await c.decryptChunk(r.keys.domainKey, c.unhex(chunk.cid), r.server.chunks.get(chunk.sid)));
+    for (const chunk of manifest.chunks) parts.push(await seal2.decryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, c.unhex(chunk.cid), r.server.chunks.get(chunk.sid)));
     texts.push(parts.map((part) => new TextDecoder().decode(part)).join(""));
   }
   assert.ok(texts.length > 0, story());
@@ -506,7 +509,7 @@ for (const reason of ["read budget", "unavailable ancestor"]) test(`identical he
   const own = await publish(NOTE, TEXT, [chain, m2].sort());
   const desktop = await publish(MOVED, TEXT, [m1, m2].sort());
   r.host.seed(NOTE, TEXT, at += 1000);
-  const { sid } = await c.encryptChunk(r.keys.domainKey, new TextEncoder().encode(TEXT));
+  const { sid } = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, new TextEncoder().encode(TEXT));
   r.state.setFile(NOTE, { fileId: root.fileId, versionId: own, mtime: at, size: TEXT.length, sha256: await sidDigest([sid]) });
   const getFile = r.transport.getFile.bind(r.transport);
   r.transport.getFile = async (...args) => {
@@ -591,7 +594,7 @@ test("two typed keys both heads hold survive a criss-cross walked through ancest
   // It stands on the phone's head; the server lists ten versions and every head.
   const held = doc(history[14]);
   r.host.seed(NOTE, held, at += 1000);
-  const { sid } = await encryptChunk(r.keys.domainKey, new TextEncoder().encode(held));
+  const { sid } = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, new TextEncoder().encode(held));
   r.state.setFile(NOTE, { fileId: root.fileId, versionId: ids[14], mtime: at, size: new TextEncoder().encode(held).length, sha256: await sidDigest([sid]) });
   const getFile = r.transport.getFile.bind(r.transport);
   r.transport.getFile = async (...args) => {
@@ -930,8 +933,10 @@ for (const holder of ["smaller", "larger", "both"]) {
       // missing second post becomes an assertion, not a cancelled test.
       const timeout = setTimeout(release, 500);
       r.transport.postVersion = async (...args) => {
-        if (++posts === 2) release();
+        const ordinal = ++posts;
+        if (ordinal === 2) release();
         await joined;
+        if (ordinal === 2) args[1] = await withDistinctMtime(args[0], args[1], r.keys.manifestKey, { generation: r.context.generation, domainId: r.context.domainId });
         return post(...args);
       };
       try {
