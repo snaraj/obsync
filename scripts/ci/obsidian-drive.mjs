@@ -37,7 +37,8 @@
 //   OBSYNC_E2E_HOMES       "1" to give each instance its own HOME (Linux: its own NSS store)
 //   OBSYNC_E2E_NTFS        "1" to add the Windows filesystem journeys
 //   OBSYNC_E2E_SECRET_STORE  "gnome-keyring", "none" (Linux), "windows", or "macos": expected custody; both
-//                          instances are restarted after the journeys and must sync again
+//                          protected hosts restart and sync; none must refuse before enrollment
+//   OBSYNC_E2E_CUSTODY_PROBE  optional "unavailable": explicit disposable negative, never an available journey
 //   OBSYNC_E2E_CAPTURES    optional fresh directory for verified synthetic editor PNGs only
 //   OBSYNC_E2E_LAUNCHER    optional command each instance is started through, the
 //                          Obsidian executable as its first argument
@@ -46,7 +47,7 @@ import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { verifyNativeRedirects } from "./obsidian-redirect.mjs";
-import { secretFacts, assertCustody, pairingCodes, assertPairingCodes, captureEditor as captureVerifiedEditor, finishEvidence } from "./obsidian-evidence.mjs";
+import { secretFacts, assertCustody, verifyNativeCustodyRefusal, pairingCodes, assertPairingCodes, captureEditor as captureVerifiedEditor, finishEvidence } from "./obsidian-evidence.mjs";
 
 const PLUGIN_ID = "obsync-private-sync";
 const STEP_BUDGET_MS = 90_000;
@@ -568,7 +569,11 @@ async function main() {
   if (store === "macos" && process.platform !== "darwin") throw new Denied("macOS custody requires native macOS");
   const launchOrder = process.env.OBSYNC_E2E_LAUNCH_ORDER || "simultaneous";
   if (!["simultaneous", "serialized"].includes(launchOrder)) throw new Denied("OBSYNC_E2E_LAUNCH_ORDER must be simultaneous or serialized");
+  if (store === "none" && process.platform !== "linux") throw new Denied("No-keyring custody refusal requires native Linux");
+  const refusalProbe = process.env.OBSYNC_E2E_CUSTODY_PROBE || "";
+  if (refusalProbe && refusalProbe !== "unavailable") throw new Denied("OBSYNC_E2E_CUSTODY_PROBE must be unavailable");
   const captures = process.env.OBSYNC_E2E_CAPTURES;
+  if ((store === "none" || refusalProbe) && captures) throw new Denied("custody refusal cannot publish successful editor captures");
   if (captures) fs.mkdirSync(captures); // Refuse a pre-existing output, including a link.
   const token = fs.readFileSync(tokenFile, "utf8").trim();
   fs.rmSync(tokenFile, { force: true });
@@ -580,6 +585,12 @@ async function main() {
   const b = new Instance(work, "b", pluginDir);
   try {
     a.launch(binary, 19222, extra, homes);
+    if (store === "none" || refusalProbe) {
+      await verifyNativeCustodyRefusal(a, LABELS.trust, click, until, refusalProbe === "unavailable");
+      prove("declared unavailable native custody: visible refusal before activation writes, metadata or enrollment; reachable synthetic source received zero requests, no State/root adopted");
+      console.log(`obsidian-drive: SUMMARY steps=${proven} duration=${((Date.now() - started) / 1000).toFixed(1)}s decision=pass journey=custody_refusal`);
+      return;
+    }
     let version;
     if (launchOrder === "serialized") {
       version = await openVault(a);
@@ -604,7 +615,7 @@ async function main() {
       return state?.data.recoveryPhrase === "confirmed" && state.custody2()?.phase === "active";
     }, PLUGIN_ID));
     await until("a: paired after setup", () => paired(a));
-    if (store) diagnose(a, "enrolled", await inVault(a, secretFacts));
+    if (store) holds(a, await inVault(a, secretFacts, true, process.platform), store, "after enrollment");
     prove("first device: Server URL, setup token and the recovery-phrase check, through the plugin's own settings and dialog");
 
     // Second device: claim with the code the first one shows, then approve.
@@ -624,7 +635,7 @@ async function main() {
     assertPairingCodes(comparison);
     await until(`a: ${LABELS.approve} for the new device`, () => a.anywhere(click, LABELS.approve));
     await until("b: paired after approval", () => paired(b));
-    if (store) diagnose(b, "enrolled", await inVault(b, secretFacts));
+    if (store) holds(b, await inVault(b, secretFacts, true, process.platform), store, "after enrollment");
     prove("second device: the invitation typed into the second, both visible comparison codes matched before approval on the first");
 
     // Two-way notes, a rename, folders.
@@ -709,10 +720,10 @@ async function main() {
  * never assumed, in the case without a keyring.
  */
 const STORES = {
-  "gnome-keyring": { encrypted: true, backend: "gnome_libsecret", plain: false },
-  none: { encrypted: false, plain: true },
-  windows: { encrypted: true, plain: false },
-  macos: { encrypted: true, plain: false },
+  "gnome-keyring": { encrypted: true, backend: "gnome_libsecret" },
+  none: { unavailable: true },
+  windows: { encrypted: true },
+  macos: { encrypted: true },
 };
 const UNENCRYPTED = "Secrets are stored without encryption";
 
@@ -720,12 +731,14 @@ const UNENCRYPTED = "Secrets are stored without encryption";
 function diagnose(instance, phase, found) {
   const flag = (value) => typeof value === "boolean" ? value : null;
   console.log(`obsidian-drive: availability peer=${instance.name} phase=${phase} ${JSON.stringify({
-    encrypted: flag(found.encrypted), stored: flag(found.stored), plain: flag(found.plain), revisionMatches: flag(found.revisionMatches),
+    encrypted: flag(found.encrypted), outerEncrypted: flag(found.outerEncrypted), stored: flag(found.stored),
+    plain: flag(found.plain), wrapped: flag(found.wrapped), plainRoot: flag(found.plainRoot),
+    revisionMatches: flag(found.revisionMatches), pinMatches: flag(found.pinMatches), cleanupComplete: flag(found.cleanupComplete),
   })}`);
 }
 
 function holds(instance, found, store, when) {
-  diagnose(instance, when === "before the restart" ? "before_restart" : "after_restart", found);
+  diagnose(instance, when === "after enrollment" ? "enrolled" : when === "before the restart" ? "before_restart" : "after_restart", found);
   const want = STORES[store];
   try { assertCustody(found, want); }
   catch { throw new Denied(`${instance.name} ${when}: custody refused for ${store}: ${JSON.stringify(found)}`); }
@@ -738,7 +751,7 @@ function holds(instance, found, store, when) {
  * secret both.
  */
 async function restarted(a, b, { binary, extra, homes, store, launchOrder = "simultaneous" }) {
-  for (const instance of [a, b]) holds(instance, await inVault(instance, secretFacts), store, "before the restart");
+  for (const instance of [a, b]) holds(instance, await inVault(instance, secretFacts, true, process.platform), store, "before the restart");
   const evidence = { before: true, quit: false, paired: false, transferred: false, after: false };
   await Promise.all([a.halt(), b.halt()]);
   evidence.quit = true;
@@ -770,15 +783,12 @@ async function restarted(a, b, { binary, extra, homes, store, launchOrder = "sim
   }
   evidence.transferred = true;
   const [found] = await Promise.all([a, b].map(async (instance) => {
-    const seen = await inVault(instance, secretFacts);
+    const seen = await inVault(instance, secretFacts, true, process.platform);
     holds(instance, seen, store, "after the restart");
     return seen;
   }));
   const warned = [...(await a.all(notices)), ...(await b.all(notices))].flat().filter((line) => line.startsWith(UNENCRYPTED));
-  if (STORES[store].encrypted && warned.length) {
-    throw new Denied(`with an unlocked keyring Obsidian still says "${warned[0]}"`);
-  }
-  prove(`the keys with ${store}: backend ${found.backend}, encrypted=${found.encrypted}, stored as plain JSON=${found.plain}; `
+  prove(`the keys with ${store}: backend ${found.backend}, inner native-wrapped=${found.wrapped}, verified revision=${found.revisionMatches}, outer encrypted=${found.outerEncrypted}, outer JSON=${found.plain}; `
     + `both instances restarted, paired again from their secret storage, and notes crossed both ways in ${times.join("/")} ms; `
     + `after the restart Obsidian ${warned.length ? `says "${warned[0]}" (${warned.length} windows)` : "shows no warning about it"}`);
   evidence.after = true;

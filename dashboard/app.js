@@ -316,6 +316,7 @@ function deviceRow(row, index) {
   // Key rotation must run on a trusted client; selecting it sends nothing.
   const open = field(node, 'revoke-open');
   const confirm = field(node, 'confirm');
+  const confirmationText = field(node, 'confirm-text');
   const act = field(node, 'revoke-do');
   const choices = field(node, 'removal-choices');
   const strong = field(node, 'revoke-strong');
@@ -335,13 +336,13 @@ function deviceRow(row, index) {
     open.classList.remove('danger');
     act.textContent = 'Confirm forget';
   }
-  setText(field(node, 'confirm-text'), question);
+  setText(confirmationText, question);
   strong.addEventListener('click', () => {
     removal = 'rotate';
     strong.setAttribute('aria-pressed', 'true');
     access.setAttribute('aria-pressed', 'false');
     act.hidden = true;
-    setText(field(node, 'confirm-text'),
+    setText(confirmationText,
       `Key rotation for ${row.name} is unavailable here. Continue on a trusted Obsidian device to rotate keys. `
       + 'On a retained device, open obsync settings, find this device under Devices, choose Revoke, then Rotate key. '
       + 'No access has been revoked and no rotation has been started here.');
@@ -351,7 +352,7 @@ function deviceRow(row, index) {
     strong.setAttribute('aria-pressed', 'false');
     access.setAttribute('aria-pressed', 'true');
     act.hidden = false;
-    setText(field(node, 'confirm-text'),
+    setText(confirmationText,
       `Revoke server access only for ${row.name}? Its next server request fails and its dashboard sessions close. `
       + 'Keys are not rotated: a retained key can still decrypt later ciphertext encrypted with the same key if obtained. '
       + 'Pair it again from a trusted device to restore server access. The last active device cannot be revoked.');
@@ -369,7 +370,7 @@ function deviceRow(row, index) {
     strong.setAttribute('aria-pressed', 'false');
     access.setAttribute('aria-pressed', 'false');
     act.hidden = !row.revoked;
-    setText(field(node, 'confirm-text'), question);
+    setText(confirmationText, question);
     open.focus();
   });
   act.addEventListener('click', () => {

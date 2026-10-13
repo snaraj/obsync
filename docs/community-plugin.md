@@ -65,31 +65,36 @@ written, migrated and recovered is in
 Obsidian's own [storage guide](https://docs.obsidian.md/plugins/guides/secret-storage)
 describes the storage itself.
 
-That API does not report whether the host encrypted an entry. If native
-encryption is unavailable, Obsidian can accept and read back an entry while
-storing it unencrypted. This has been observed on macOS as well as Linux.
-Successful sync and credential readback do not prove encryption on disk;
-obsync cannot detect this host fallback through the public API. This is
-separate from the encryption of content sent to the sync server.
+**On desktop**, obsync encrypts its credential envelope with the operating
+system's encryption service before handing it to Obsidian. If protection is
+unavailable or unsupported, setup and sync stop before credentials are saved.
+There is no option to continue with unencrypted key storage. The integration
+uses a narrow private Obsidian interface; a host update that removes it will
+stop sync until compatibility is restored.
 
-**On Linux**, that storage is only as strong as your desktop's keyring, such as
-GNOME Keyring or KWallet. Without one, as on a minimal window manager or in a
-container, Obsidian still accepts the keys and keeps them unencrypted (seen
-with Obsidian 1.13.7), protected only by your home folder's permissions.
-Nothing warns you at setup; from its next start Obsidian shows a notice that
-secrets are stored without encryption. Obsidian does not tell plugins which
-storage it uses, so obsync cannot warn you itself:
+**On Linux**, run an unlocked supported desktop keyring, such as GNOME Keyring
+or KWallet. A minimal desktop or container without one cannot set up or sync.
 [On Linux, the keys may not be in a keyring](troubleshooting.md#on-linux-the-keys-may-not-be-in-a-keyring)
 says what to do.
 
-If the secret-storage API is missing, a read or write fails, or the owned entry
-does not match its metadata, sync stops with an error. The host's unencrypted
-fallback can still pass these checks. For a reported storage error:
+**On phones**, obsync continues to use Obsidian's native secret storage. The
+desktop wrapper does not establish how a phone stores its keys; physical-phone
+validation is separate. This local storage protection is also separate from
+the content encryption applied before sending anything to the sync server.
 
-1. Reload Obsidian.
-2. If it keeps happening, have your complete recovery backup or another syncing device
-   at hand, reinstall obsync, and pair this device again. Your notes stay in
-   the vault. Do not repeat server setup.
+If the secret-storage API is missing, a read or write fails, or the owned entry
+does not match its metadata, sync stops with an error. Migrating a prior
+desktop entry encrypts a new copy before clearing the old owned entry; old
+disk snapshots and backups are not securely erased. For a reported storage error:
+
+1. For unavailable desktop encryption, unlock the supported OS key store and
+   reload Obsidian. If the host interface is unsupported, use a supported host
+   version; reinstalling the plugin does not create an OS key store.
+2. For a missing or damaged credential entry, keep the existing vault intact.
+   Pair a fresh vault from another syncing device, or use verified recovery
+   with the complete recovery backup. Compare any unsynced local notes before
+   retiring the old vault. Reinstalling obsync does not repair a mismatched
+   credential record; do not reset the server account.
 
 A current-format installation stops if its metadata lacks the matching owned
 secret or generation pin; copying or renaming its vault does not reset that

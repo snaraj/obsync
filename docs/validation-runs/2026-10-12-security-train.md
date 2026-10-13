@@ -1662,3 +1662,238 @@ sandbox refused disposable loopback listeners; those are execution failures,
 not product or mutation results. With pinned Node 26.10.0 and loopback access,
 the restored complete suite passes **929 tests in 144.108 seconds**. This is
 the contract suite, not a complete runtime `make check` or native acceptance.
+
+Hosted PR-gate run **38346895570**, at `aaac434e`, confirms all 13 expected
+job names: five root jobs and eight `custody / ...` leaves, including both
+macOS launch orders. Security and chart pass. The application fails the
+unchanged version-consistency assertion because the root manifest is 1.1.8
+while the plugin package still says 1.1.7; the candidate aligns both private
+package locks without changing that assertion. Simultaneous macOS again
+records peer B with `encrypted=false`, `plain=true` and matching revision,
+then refuses before restart. Serialized macOS and Windows pass their bounded
+journeys. The aggregate fails as required. These are predecessor-runtime
+results and do not accept the new wrapper. The separate CodeQL aggregate
+reports the already scoped export-report logging alert; the required
+dispositions job passes its exact-source policy. No manual dismissal occurred.
+
+## Dashboard removal controls in native WebKit
+
+A disposable macOS WKWebView exercised the actual dashboard assets against
+the synthetic development server at 1280 and 390 CSS pixels. The first valid
+HTTPS run found a real defect: selecting either removal option updated the
+buttons but left the consequence text unchanged. The handlers queried a
+DocumentFragment after insertion had emptied it. They now retain the original
+text element, and the regression fixture deliberately drains the fragment
+before clicking strong removal, access-only removal and Cancel.
+
+All **88 dashboard tests** pass. Restoring the old lookup in each of the three
+handlers causes its intended assertion failure; restoring the fix passes.
+The coordinator independently restores the old lookup in a disposable tree,
+observes the regression assertion fail, restores the source, observes PASS
+and removes the tree. The actual fixed browser run makes 15 requests, including
+exactly one CSRF-accepted revoke and one archive at each viewport width. Choice,
+strong handoff and Cancel send zero mutations. All six original-resolution
+PNGs were inspected by the worker and coordinator: readable, unclipped and
+free of addresses, credentials, identifiers or personal content. The retained
+390-pixel controls below are desktop browser captures, not phone acceptance.
+
+![Removal choices with neither option selected](../assets/security-removal-chooser.png)
+
+![Strong removal directs the user to a trusted Obsidian device](../assets/security-removal-strong-handoff.png)
+
+![Access-only removal explains retained-key consequences before confirmation](../assets/security-removal-access-only.png)
+
+The browser uses a nonpersistent data store and a process-local ephemeral CA:
+exact host/port challenge matching, normal SSL hostname policy, CA-only anchors
+and successful `SecTrustEvaluateWithError` are required. Wrong-CA and wrong-host
+controls both refuse before any login request. No OS trust store, personal
+browser, cookie injection or CSP override is involved. The earlier HTTP fixture
+correctly failed to retain the Secure session cookie; an earlier owned Electron
+navigation stalled. Neither attempt is reported as a visual PASS. The TLS
+fixture also initially rejected explicit ECC parameters; its certificate
+factory was corrected to named P-256 without relaxing validation.
+
+The fixed dashboard source SHA-256 is
+`1ee312a18b9990d82e3d3ab15cedafa5e139c34dc74f8868a078d0f71642816a`.
+The reduced visual receipt SHA-256 is
+`0cf2fe3da6c560d15f0e32fea080a2fac2c6a2e1bf26035aede55b4c39ea2c1c`.
+Owned app/mock processes, runtime data, ephemeral keys, profiles and compiler
+artifacts were removed. The synthetic mock does not enforce last-device
+protection; this run proves the displayed choices and browser behavior, not
+that backend boundary, native Obsidian transport, E2EE or physical-phone sync.
+
+## Desktop wrapper integration and native startup finding
+
+The approved wrapper initially builds as 1.1.8 with bundle SHA-256
+`8230a6a1a4356ebd4bde4535a5f6434ea1eb3d0f189a319e6bee652560320f1b`.
+The coordinator independently removes native-availability admission, the
+legacy-authority cleanup comparison and the physical replacement-packet
+comparison in separate disposable mutations. Each fails its intended
+assertion; restored controls pass and the scratch tree is removed. An initial
+mutation-tree build omitted nested vendored API declarations; that setup
+failure is excluded from the three mutation kills.
+
+The first composed plugin run exposes 13 fixtures that still assume raw
+desktop storage or omit the required host adapter. The repaired fixtures
+preserve legacy-v1 positive copy behavior and explicitly require wrapped
+missing/torn custody to refuse without identity adoption or writes. A later
+run passes 2,503 of 2,505 tests, with one outdated desktop error-message
+expectation and one sandbox-denied loopback listener. The expected message is
+corrected without relaxing its no-recovery/no-engine assertions; the full gate
+is then run with the required loopback capability. These intermediate runs
+are not reported as a passing final gate.
+
+Actual Obsidian 1.14.4 reaches the disposable vault, workspace and Trust action,
+but the first simultaneous positive run refuses after 95.5 seconds at
+`a: the plugin loaded within 90s`, before setup or any custody acceptance.
+A separate diagnosis on the same frozen artifact records
+`secret_write_failed`, no adopted State, the fixed native capabilities present,
+and native encryption available. Capability observation happens only after
+the failed activation, preserving the original ordering. The official host
+source rejects secret IDs longer than 64 characters. The existing root
+reference is 55 characters; the candidate's added suffix makes it 65, and its
+claim 71. This concrete host constraint was absent from the synthetic store.
+The replacement will shorten only the deterministic owned-reference suffix
+and test the host limit; no encryption guard or startup requirement is waived.
+
+Both failed-run and diagnostic fixture processes and data are removed; the
+official read-only app lease remains with the coordinator for the corrected
+run. The obsolete phone-candidate archive is withdrawn. Diagnosis is not a
+positive native run, and this artifact has no desktop or phone acceptance.
+
+The replacement uses a 58-character root reference and a 64-character claim
+reference. The synthetic host now rejects invalid IDs on `setSecret`, exactly
+where the real host validates them; its getter remains an ordinary lookup.
+Restoring the oversized suffix reproduces native availability with one refused
+write attempt, zero accepted writes, zero metadata saves, no returned State
+and `secret_write_failed`. All 49 final custody mutations fail by their intended
+assertions; the restored ten-suite control passes 261 tests. Compilation errors
+and the earlier synthetic getter validation are excluded from that evidence.
+The coordinator independently passes the two focused storage suites (52 tests).
+
+The complete local gate passed on the obsolete `8230a6a1` artifact: 734 Rust
+tests including two doctests (one additional test ignored), 94.85% line coverage,
+2,505 plugin tests, 21 E2EE flows with two planted controls, four CORS tests,
+207 CLI commands, 88 dashboard tests, 929 contracts, chart checks and both secret
+scans. That success missed the real host's ID limit and is not final acceptance.
+The corrected composed source receives its own full gate.
+
+The corrected bundle SHA-256 is
+`d65049873919746d04ac43807d1d44ca17b1d385b15f46891cc67f226c1b1dc6`.
+Its first simultaneous positive run in actual Obsidian 1.14.4 / Electron 43.7.7
+passes all 12 steps in 52.1 seconds. Both peers independently verify native
+wrapped ciphertext, active identity/generation, matching revisions and complete
+owned-entry cleanup after enrollment, before restart and after restart. Both
+actual applications quit and restart with their original profiles; pairing
+persists and notes cross both ways in 1,007 ms each. Initial transfers take
+1,009 and 1,005 ms. Ten edits reach the other disk with p50 1,010 ms, p95/max
+1,276 ms. Six editor/disk receipts match. The redirect refusal controls, visible
+pairing-code comparison, rename, folders, co-typing and watcher recovery also
+pass. The observer now receives the caller's explicit platform and never calls
+the Linux backend interface on macOS or Windows. Its 32 JavaScript evidence and
+redirect controls pass in the coordinator's loopback-capable environment.
+
+This run uses a disposable loopback HTTP server and proves no TLS or phone
+property. All four owned app process groups, profiles and server data are
+removed. The unavailable-encryption negative, wrapped legacy/rotation journeys,
+hosted platform matrix and physical-phone run remain separate acceptance.
+
+On the corrected runtime, pinned `make check` exits zero uninterrupted:
+734 Rust tests including two doctests (one additional ignored), 94.85% line
+coverage, 2,508 plugin tests, 88 dashboard tests, 929 repository contracts,
+207 CLI commands, chart checks and both secret scans. The real-engine E2EE
+run passes 21 flows and two planted controls in 14,987 ms, observes 383
+requests and scans 22 main storage files for 148 content/key needles; its
+separate legacy leg observes 41 requests, ten files and 33 needles. The final
+build reproduces bundle `d6504987` exactly. The gate uses the platform-aware
+native observer before its subsequent metadata-observer repair; that repair
+receives separate affected verification and cannot inherit native acceptance.
+
+The native unavailable-control attempt fails before Trust at the observer's
+interface stage. A bounded fresh-profile diagnosis proves that raw renderer
+`require("obsidian")` is unavailable while public SecretStorage, the required
+native encryption methods and Fetch are present. No product refusal is inferred
+from that harness failure. A preceding private port preflight also refused a
+recently closed port before starting any fixture; its check is corrected to
+bind and listen with normal address reuse, still refusing an active listener.
+Both attempts and diagnosis retain reduced evidence; all owned runtime data
+and processes are removed.
+
+On the same `d6504987` bundle, the three-device strong-removal journey passes
+16 observations in 35.310 seconds. Prepared and catalog-pending custody remain
+native-wrapped with exact revision, scope and generation pins across two actual
+coordinator restarts, with its sync engine stopped until commit. Commit activates
+the new generation and confines the old root to suite-2 history. A retained peer
+explicitly re-pairs after comparing both visible codes and exchanges new notes
+byte-for-byte in both directions. The excluded device retains its old generation
+and old note bytes, receives `403 device_revoked` and obtains no future bytes.
+This proves the honest-server native journey; the direct-ciphertext old-root
+refusal is tested separately by the real-engine E2EE harness.
+
+The separate legacy journey passes six observations in 11.156 seconds. Thirteen
+checksum-pinned compiled production modules seed two actual suite-1 versions on
+a disposable server. Native UI recovery stages a stopped fresh-root draft,
+prepares and reseeds it, restarts at the catalog phase and commits. The active
+wrapped envelope matches its pins and completed cleanup; the old root is retained
+only as suite-1 history. The history UI restores the earlier 31-byte version as
+an exact sibling without changing the latest original. All five rotation and
+two legacy app process groups, profiles and server fixtures are removed.
+
+These two journeys use the existing source-pinned disposable native drivers
+described above, adapted only to decode the wrapped envelope and verify its
+representation. No screenshot visual-inspection claim follows from their
+structured observations. The normal 12-step journey's six images were checked
+against their byte receipts, rather than visually inspected anew; the changed
+dashboard controls have the separate inspected native WebKit captures above.
+
+The repaired negative observer follows the official host's actual
+`Plugin.saveData` dispatch to `vault.writePluginData`, limited to the exact
+owned plugin directory. Installation verifies that all three counter functions
+were actually assigned; ignored setters refuse instead of yielding false zero
+counts. The coordinator passes 32 JavaScript controls and both Python driver
+contracts. In actual Obsidian, the unchanged runtime then passes the explicit
+unavailable-service control in 3.7 seconds: visible refusal, no State/root,
+zero public secret writes, metadata writes or transport requests, unchanged
+owned metadata/blob bytes, and zero source requests after the separate native
+reachability control. The single owned app group and all fixture data are
+removed. This injected macOS refusal is not the hosted Linux no-keyring result.
+
+A separate private observer control first executes those unchanged zero-write
+assertions, then deliberately writes the same nonsecret fixture metadata through
+the native dispatch. The metadata counter increments from zero to one exactly;
+public secret writes and transport remain zero. The host preserves the JSON
+value but changes its formatting. This is an intentional fixture write after
+the refusal evidence, not a zero-total-write run or an unchanged-byte claim.
+The private two-line control is not part of the plugin or its production build.
+Its owned profile and app process are removed.
+
+Canonical arm64 container validation also passes on the frozen source:
+both server and full image builds, 11 image-smoke properties in 17 seconds,
+and all 16 Compose-smoke steps in three seconds using strict fixture TLS.
+The image's extracted plugin reproduces `d6504987` exactly. Its canonical
+plugin test inventory is 2,473 tests: 2,464 pass and nine platform-dependent
+cases skip, with zero failures; the Docker context's established exclusions
+make that inventory different from the complete host suite. The initial
+restricted port probe returned `EPERM`, rather than proving an occupied port.
+An authorized probe found the canonical ports free, and the final Compose run
+uses the unchanged script. No other listener is inspected or stopped.
+
+The native observer's final mutation batch evaluates 95 cases: 93 intended
+assertion failures and two surviving duplicate phase/generation comparisons
+already enforced by exact whole-custody equality. Those redundant comparisons
+are removed without changing the acceptance predicate. Focused removal of the
+remaining whole-equality, phase and generation bindings fails by assertion;
+restored controls pass. The coordinator passes the final 32 JavaScript tests,
+two Python driver contracts and 100 onboarding contracts. No full 95-case rerun
+is claimed after that equivalent simplification. The plugin bundle is unchanged;
+the native records pin the exact observers actually used, and the final
+unavailable-observer functions remain byte-identical to their native proof.
+
+The final native evidence index SHA-256 is
+`9d0f13b77fab920e53c68e0a42acd5210bccca8125a7b6e1cc3e9a7532a728be`.
+The container receipt SHA-256 is
+`69c63c24571a53c7ac871daff7de4d650f6e2a73780acf170bb797aa87670971`.
+Both task-owned images, container snapshot/tool scratch and 24 explicitly
+identified fixture resources are absent. Preexisting Caddy and ambiguous shared
+BuildKit cache are preserved; no global cleanup is claimed. Physical-phone
+acceptance, final hosted checks and exact-head independent approval remain open.

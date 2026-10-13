@@ -103,8 +103,19 @@ Numbered for citation, repo-scoped, none negotiable in code:
    source for the Rust CLI is `crates/obsync-cli/src/macos-acl.js`; it checks descriptor identity and every ACL
    result, changes no file or permission, and loads no downloaded executable.
    The CLI uses this same narrow reader for directory and runtime custody. The dashboard is hand-written HTML, CSS, and JavaScript with no framework and
-   no remote asset. Cryptography on the device uses the platform's built-in
-   WebCrypto; cryptography on the server is implemented in
+   no remote asset. Content cryptography on the device uses the platform's built-in
+   WebCrypto. The owner-approved desktop custody exception is the fixed
+   `app.secretStorage.adapter.safeStorage` bridge: only `isEncryptionAvailable`,
+   `encryptString`, `decryptString`, and Linux-only `getSelectedStorageBackend`,
+   plus the built-in `buffer` module to decode ciphertext. It encrypts obsync's
+   entire owned credential envelope before public SecretStorage receives it.
+   Missing or changed interfaces, unavailable encryption and unprotected or
+   unknown Linux backends refuse before secret persistence; there is no raw
+   fallback. No arbitrary IPC, secret inventory, native setter, downloaded
+   package or OS configuration change is included. This private Obsidian bridge
+   is a deliberate compatibility constraint, not a public API guarantee.
+   Mobile retains its public native SecretStorage path and separate physical
+   acceptance. Cryptography on the server is implemented in
    `crates/obsync-core` against published test vectors. The server FFI surface
    remains `crates/obsyncd/src/signal.rs` (SIGTERM/SIGINT delivery); the only
    other surfaces are the two approved CLI identity modules above. Every other

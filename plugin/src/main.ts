@@ -52,6 +52,7 @@
  * the vault's config folder.
  */
 
+import { desktopSecretStore } from "./desktopCustody";
 import { ItemView, MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder } from "obsidian";
 import type { App, CliData, CliFlag, CliFlags, CliHandler } from "obsidian";
 import { Bytes, bytesEqual, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
@@ -3827,7 +3828,7 @@ export default class ObsyncPlugin extends Plugin {
       await Promise.allSettled(settling);
       if (!this.isCurrent(generation)) return;
     }
-    const loading = this.stateLoad = State.open(this, Platform.isMobile, this.app.secretStorage, (error) => {
+    const loading = this.stateLoad = State.open(this, Platform.isMobile, Platform.isMobile ? this.app.secretStorage : desktopSecretStore(this.app.secretStorage, this.platformName()), (error) => {
       // A newer session of this plugin owns the data file (issue #181). This
       // one stops and says so in the log only: nothing failed here that the
       // user could fix, and the newer session is the one syncing.

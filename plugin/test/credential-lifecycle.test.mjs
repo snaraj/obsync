@@ -40,10 +40,26 @@ test("the real plugin sends through its fetch adapter, never Obsidian requestUrl
   r.obsidian.requestUrl = () => assert.fail("requestUrl fallback is forbidden");
   await r.instance.onload();
   t.after(() => r.instance.onunload());
+  assert.equal(r.metadata().storageVersion, 3, "desktop startup uses the native wrapper");
+  assert.match(r.instance.app.secretStorage.getSecret(r.metadata().credentialRef), /^obsync-native-custody-v1:/);
   await r.instance.transport.account();
   assert.equal(r.requests.length, 1);
   assert.equal(r.requests[0].url, "https://sync.example.invalid/v1/account");
   assert.equal(r.requests[0].headers["X-Obsync-Device"], KEYS.deviceId);
+});
+
+test("desktop encryption refusal occurs before the real plugin loads state or sends enrollment", async t => {
+  for (const available of [false, "true"]) {
+    const r = await fixture(t, identity()), native = r.instance.app.secretStorage.adapter.safeStorage;
+    let secretWrites = 0;
+    r.instance.app.secretStorage.setSecret = () => secretWrites++;
+    native.isEncryptionAvailable = () => available;
+    await assert.rejects(r.instance.onload(), reason("desktop_custody_unavailable"));
+    assert.equal(r.loads(), 0); assert.equal(secretWrites, 0); assert.equal(r.writes.length, 0);
+    assert.equal(r.starts(), 0); assert.equal(r.requests.length, 0); assert.deepEqual(r.metadata(), identity());
+    assert.ok(r.logs.includes("state decision=stopped reason=desktop_custody_unavailable"));
+    assert.ok(r.obsidian.notices.some(text => text.includes("operating-system encryption") && text.includes("Sync is stopped")));
+  }
 });
 
 test("unavailable native storage stops startup without writing metadata or starting requests", async (t) => {
@@ -330,7 +346,7 @@ test("new-key dialog handles a rejected save without showing recovery or an unha
   assert.equal(dialog.recoveryShown(), 0);
   assert.equal(dialog.closed(), 0);
   assert.equal(r.starts(), 0);
-  assert.ok(r.obsidian.notices.some((message) => message.startsWith("obsync: could not read or save this vault's sync credentials")));
+  assert.ok(r.obsidian.notices.some((message) => message.startsWith("obsync: could not complete this vault's encrypted credential storage")));
 });
 
 for (const cause of ["storage failure", "unload", "same-instance reload"]) {

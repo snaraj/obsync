@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { secretFacts, assertCustody, editorBounds, pairingCodes, assertPairingCodes } from "./obsidian-evidence.mjs";
+import { secretFacts, assertCustody, installCustodyRefusalProbe, custodyRefusalFacts, verifyNativeCustodyRefusal, editorBounds, pairingCodes, assertPairingCodes } from "./obsidian-evidence.mjs";
 
 test("pairing comparison reads visible role-specific prompts and refuses missing, ambiguous or mismatched codes", () => {
   const creator = "Approve only if the new device shows the code 123 456.";
@@ -34,59 +34,214 @@ test("pairing comparison reads visible role-specific prompts and refuses missing
   } finally { delete globalThis.document; }
 });
 
-const required = { encrypted: true, plain: false };
-const valid = { encrypted: true, plain: false, stored: true, revisionMatches: true };
+const required = { encrypted: true };
+const valid = { encrypted: true, outerEncrypted: true, backend: "none reported", plain: false,
+  stored: true, wrapped: true, plainRoot: false, revisionMatches: true, pinMatches: true, cleanupComplete: true };
 
-test("encrypted custody refuses empty, plaintext, unavailable and stale storage", () => {
+function custodyFixture() {
+  const id = "12".repeat(16), ref = `obsync-private-sync-v1-${id}-os`, prefix = "obsync-native-custody-v1:";
+  const packet = prefix + Buffer.from([1, 2, 3]).toString("base64");
+  const current = { revision: 7, serverUrl: "https://synthetic.invalid", deviceId: "34".repeat(16),
+    vrk: "56".repeat(32), deviceSecret: "78".repeat(32), edgeHeaders: [{ value: "NEVER_RETURN_THE_SYNTHETIC_SECRET" }] };
+  const custody = { suite: 2, phase: "active", generation: "90".repeat(16), enrollment: null, rotation: null, history: null };
+  const metadata = { storageVersion: 3, credentialFormat: "native-desktop-v1", credentialEnvelopeVersion: 2,
+    credentialCleanupPending: false, installationId: id, credentialRef: ref, credentialRevision: 7,
+    serverUrl: current.serverUrl, deviceId: current.deviceId, sealPin: { suite: 2, phase: "active", generation: custody.generation } };
+  const envelope = { version: 2, installationId: id, current, custody };
+  const entries = new Map([[ref, packet]]), calls = [];
+  const safe = { isEncryptionAvailable: () => true, decryptString(bytes) {
+    assert.equal(this, safe, "native decrypt retains actual receiver");
+    assert.ok(Buffer.isBuffer(bytes), "native decrypt uses the built-in Buffer");
+    assert.deepEqual([...bytes], [1, 2, 3], "native decrypt receives the actual packet");
+    calls.push("decrypt"); return JSON.stringify(envelope);
+  } };
+  const state = { paired: true, data: structuredClone(current), custody2: () => structuredClone(custody) };
+  const app = { loadLocalStorage: () => "opaque-outer-ciphertext", plugins: { plugins: {
+    "obsync-private-sync": { loadData: async () => metadata, state },
+  } }, secretStorage: { getSecret: key => { assert.ok(key.length <= 64, "actual host reference ceiling is 64 characters"); calls.push("get"); return entries.get(key) ?? null; },
+    isEncryptionAvailable: () => true, adapter: { safeStorage: safe } } };
+  return { app, metadata, envelope, state, entries, safe, calls, ref, packet };
+}
+
+test("native wrapped custody refuses raw roots, missing verification, stale pins and incomplete cleanup", () => {
   assertCustody(valid, required);
-  for (const key of Object.keys(valid)) {
-    assert.throws(() => assertCustody({ ...valid, [key]: !valid[key] }, required), /custody/);
+  for (const key of ["encrypted", "stored", "wrapped", "plainRoot", "revisionMatches", "pinMatches", "cleanupComplete"]) {
+    assert.throws(() => assertCustody({ ...valid, [key]: !valid[key] }, required), /custody/, key);
   }
+  assertCustody({ ...valid, plain: true, outerEncrypted: false }, required);
 });
 
-test("custody returns facts only, checks the persisted revision, and sanitizes malformed envelopes", async () => {
-  const sentinel = "NEVER_RETURN_THE_SYNTHETIC_SECRET";
-  let revision = 7, saved = 7, secret = JSON.stringify({ current: { revision: 7, key: sentinel } });
-  globalThis.app = {
-    loadLocalStorage: () => "encrypted-opaque-bytes",
-    plugins: { plugins: { "obsync-private-sync": { loadData: async () => ({ credentialRef: "test-ref", credentialRevision: revision }) } } },
-    secretStorage: {
-      getSecret: (ref) => { assert.equal(ref, "test-ref"); return secret; },
-      isEncryptionAvailable: () => true,
-    },
-  };
+test("custody independently decrypts wrapped native bytes and binds metadata, revision, authority and owned cleanup", async () => {
+  const { createRequire } = await import("node:module");
+  const oldRequire = globalThis.require; globalThis.require = createRequire(import.meta.url);
+  const r = custodyFixture(); globalThis.app = r.app;
   try {
-    const facts = await secretFacts();
-    assert.equal(facts.revisionMatches, true);
-    assert.equal(facts.backend, "none reported");
-    assert.equal(JSON.stringify(facts).includes(sentinel), false);
-    assert.equal(facts.plain, false);
-    app.secretStorage.adapter = { getSelectedStorageBackend: () => { throw new TypeError("not a function"); } };
-    const windows = await secretFacts();
-    assert.equal(windows.backend, "unavailable");
-    assertCustody(windows, required);
-    assert.throws(() => assertCustody(windows, { ...required, backend: "gnome_libsecret" }), /custody/);
-    app.secretStorage.isEncryptionAvailable = () => false;
-    const unencrypted = await secretFacts();
-    assert.throws(() => assertCustody(unencrypted, required), /custody/);
-    assert.equal(unencrypted.encrypted, false);
-    app.secretStorage.isEncryptionAvailable = () => true;
-    app.secretStorage.adapter.getSelectedStorageBackend = () => "gnome_libsecret";
-    assertCustody(await secretFacts(), { ...required, backend: "gnome_libsecret" });
-    for ([revision, saved] of [[7, 6], [0, 0], [-1, -1], [1.5, 1.5], ["7", "7"]]) {
-      secret = JSON.stringify({ current: { revision: saved } });
-      assert.equal((await secretFacts()).revisionMatches, false);
+    await assert.doesNotReject(() => secretFacts(true, "darwin"), "valid native packet must decrypt on the actual receiver");
+    r.calls.length = 0;
+    assert.deepEqual(await secretFacts(true, "darwin"), valid);
+    assert.deepEqual(r.calls, ["get", "decrypt", "get", "get", "get"]);
+    assert.equal(JSON.stringify(await secretFacts(true, "darwin")).includes("NEVER_RETURN_THE_SYNTHETIC_SECRET"), false);
+    r.app.loadLocalStorage = () => JSON.stringify({ [r.ref]: r.packet });
+    r.app.secretStorage.isEncryptionAvailable = () => false;
+    const wrappedOuterFallback = await secretFacts(true, "darwin");
+    assert.equal(wrappedOuterFallback.plain, true); assert.equal(wrappedOuterFallback.outerEncrypted, false);
+    assertCustody(wrappedOuterFallback, required); // Outer plaintext contains only inner native ciphertext.
+    r.app.loadLocalStorage = () => JSON.stringify({ [r.ref]: JSON.stringify(r.envelope) });
+    await assert.rejects(() => secretFacts(true, "darwin"), /could not be verified/, "plaintext outer owned entry cannot pass");
+    r.app.loadLocalStorage = () => "opaque-outer-ciphertext";
+    for (const [holder, key, value, field] of [
+      [r.metadata, "credentialRevision", 6, "revisionMatches"], [r.metadata, "credentialRevision", 0, "revisionMatches"],
+      [r.metadata, "serverUrl", "https://wrong.invalid", "revisionMatches"], [r.metadata, "deviceId", "ab".repeat(16), "revisionMatches"],
+      [r.envelope, "installationId", "cd".repeat(16), "revisionMatches"], [r.envelope, "version", 1, "revisionMatches"],
+      [r.state.data, "vrk", "ef".repeat(32), "pinMatches"], [r.state.data, "deviceSecret", "ef".repeat(32), "pinMatches"],
+      [r.state.data, "deviceId", "ef".repeat(16), "pinMatches"], [r.state.data, "serverUrl", "https://wrong.invalid", "pinMatches"],
+      [r.state.data, "edgeHeaders", [], "pinMatches"], [r.metadata.sealPin, "suite", 1, "pinMatches"],
+      [r.envelope.custody, "suite", 1, "pinMatches"], [r.envelope.custody, "enrollment", {}, "pinMatches"],
+      [r.envelope.custody, "rotation", {}, "pinMatches"],
+      [r.metadata.sealPin, "generation", "ef".repeat(16), "pinMatches"], [r.metadata.sealPin, "phase", "draft", "pinMatches"],
+      [r.state, "paired", false, "pinMatches"], [r.metadata, "credentialCleanupPending", true, "cleanupComplete"],
+    ]) {
+      const before = holder[key]; holder[key] = value;
+      assert.equal((await secretFacts(true, "darwin"))[field], false, `native custody must reject ${key} disagreement`);
+      holder[key] = before;
     }
-    secret = null;
-    assert.equal((await secretFacts()).revisionMatches, false);
-    secret = sentinel;
-    await assert.rejects(secretFacts, (error) => error.message === "credential envelope is not valid JSON");
-    app.loadLocalStorage = () => '{"secret":"synthetic"}';
-    secret = null;
-    assert.equal((await secretFacts()).plain, true);
-    app.loadLocalStorage = () => "";
-    assert.equal((await secretFacts()).stored, false);
-  } finally { delete globalThis.app; }
+    for (const revision of [0, -1, 0.5, "7"]) {
+      r.metadata.credentialRevision = r.envelope.current.revision = revision;
+      assert.equal((await secretFacts(true, "darwin")).revisionMatches, false, "native revision must be a positive safe integer");
+    }
+    r.metadata.credentialRevision = r.envelope.current.revision = 7;
+    const generation = r.metadata.sealPin.generation;
+    r.metadata.sealPin.generation = r.envelope.custody.generation = "invalid";
+    assert.equal((await secretFacts(true, "darwin")).pinMatches, false, "native generation must be exactly 16 bytes of lowercase hex");
+    r.metadata.sealPin.generation = r.envelope.custody.generation = generation;
+    const root = r.envelope.current.vrk, device = r.envelope.current.deviceId, secret = r.envelope.current.deviceSecret;
+    for (const key of ["vrk", "deviceId", "deviceSecret"]) {
+      r.envelope.current[key] = r.state.data[key] = "invalid";
+      if (key === "deviceId") r.metadata.deviceId = "invalid";
+      assert.equal((await secretFacts(true, "darwin")).pinMatches, false, `native ${key} must have its exact lowercase hex width`);
+      r.envelope.current.vrk = r.state.data.vrk = root;
+      r.envelope.current.deviceId = r.state.data.deviceId = r.metadata.deviceId = device;
+      r.envelope.current.deviceSecret = r.state.data.deviceSecret = secret;
+    }
+    const accepted = r.state.custody2;
+    r.state.custody2 = () => ({ ...structuredClone(r.envelope.custody), initializeMap: true });
+    assert.equal((await secretFacts(true, "darwin")).pinMatches, false, "whole acknowledged custody must match native plaintext");
+    r.state.custody2 = accepted;
+    const oldRef = r.ref.replace(/-os$/, "");
+    for (const ref of [oldRef, oldRef + "-claim"]) {
+      r.entries.set(ref, "NEVER_RETURN_THE_SYNTHETIC_SECRET");
+      const facts = await secretFacts(true, "darwin");
+      assert.equal(facts.cleanupComplete, false); assert.equal(facts.plainRoot, true);
+      assert.throws(() => assertCustody(facts, required), /custody/);
+      r.entries.delete(ref);
+    }
+    for (const secret of [null, JSON.stringify(r.envelope), "NEVER_RETURN_THE_SYNTHETIC_SECRET", "obsync-native-custody-v1:",
+      "obsync-native-custody-v1:AB==", "obsync-native-custody-v1:AQID\n", "A".repeat("obsync-native-custody-v1:".length) + "AQID"]) {
+      r.entries.set(r.ref, secret);
+      await assert.rejects(() => secretFacts(true, "darwin"), error => error.message === "native credential envelope could not be verified" &&
+        !Object.hasOwn(error, "cause"), "malformed stored text gets a fixed value-free failure");
+    }
+    r.entries.set(r.ref, r.packet);
+    for (const key of ["credentialFormat", "credentialEnvelopeVersion", "storageVersion", "installationId", "credentialRef"]) {
+      const before = r.metadata[key]; r.metadata[key] = "NEVER_RETURN_THE_SYNTHETIC_SECRET";
+      r.calls.length = 0;
+      await assert.rejects(() => secretFacts(true, "darwin"), /could not be verified/);
+      assert.deepEqual(r.calls, [], "invalid metadata never selects a native credential reference");
+      r.metadata[key] = before;
+    }
+    const installation = r.metadata.installationId;
+    r.metadata.installationId = r.envelope.installationId = "invalid";
+    r.metadata.credentialRef = "obsync-private-sync-v1-invalid-os";
+    r.entries.set(r.metadata.credentialRef, r.packet); r.calls.length = 0;
+    await assert.rejects(() => secretFacts(true, "darwin"), /could not be verified/);
+    assert.deepEqual(r.calls, [], "malformed installation cannot select even a coherent supplied native reference");
+    r.metadata.installationId = r.envelope.installationId = installation; r.metadata.credentialRef = r.ref;
+    r.safe.decryptString = () => { throw Error("NEVER_RETURN_THE_SYNTHETIC_SECRET"); };
+    await assert.rejects(() => secretFacts(true, "darwin"), error => error.message === "native credential envelope could not be verified" && !Object.hasOwn(error, "cause"));
+  } finally { delete globalThis.app; if (oldRequire === undefined) delete globalThis.require; else globalThis.require = oldRequire; }
+});
+
+test("native evidence bounds before decoding, native decrypt and JSON parsing, retaining canonical packets", async () => {
+  const { createRequire } = await import("node:module"), requireBuffer = createRequire(import.meta.url);
+  const oldRequire = globalThis.require, r = custodyFixture(); globalThis.app = r.app;
+  let decodes = 0, decrypts = 0;
+  globalThis.require = name => { assert.equal(name, "buffer"); return { Buffer: { from(...args) {
+    decodes++; return requireBuffer("buffer").Buffer.from(...args);
+  } } }; };
+  r.safe.decryptString = () => { decrypts++; return JSON.stringify(r.envelope); };
+  try {
+    r.entries.set(r.ref, "obsync-native-custody-v1:");
+    await assert.rejects(() => secretFacts(true, "darwin"), /could not be verified/);
+    assert.equal(decodes, 0, "empty packet refuses before decoder allocation");
+    r.entries.set(r.ref, "obsync-native-custody-v1:" + "A".repeat((16 << 20) * 2 + 4));
+    await assert.rejects(() => secretFacts(true, "darwin"), /could not be verified/);
+    assert.equal(decodes, 0, "encoded budget refuses before decoder allocation");
+    r.entries.set(r.ref, "obsync-native-custody-v1:" + Buffer.alloc((16 << 20) + 1).toString("base64"));
+    await assert.rejects(() => secretFacts(true, "darwin"), /could not be verified/, "decoded budget refuses a canonical oversized packet");
+    assert.equal(decrypts, 0, "decoded budget refuses before native decrypt");
+    r.entries.set(r.ref, r.packet);
+    r.safe.decryptString = () => new String(JSON.stringify(r.envelope));
+    await assert.rejects(() => secretFacts(true, "darwin"), /could not be verified/, "native plaintext must be an actual string");
+    r.safe.decryptString = () => JSON.stringify({ ...r.envelope, padding: "A".repeat(16 << 20) });
+    await assert.rejects(() => secretFacts(true, "darwin"), /could not be verified/, "plaintext budget refuses otherwise valid JSON");
+  } finally { delete globalThis.app; if (oldRequire === undefined) delete globalThis.require; else globalThis.require = oldRequire; }
+});
+
+test("native custody backend observation is Linux-only and unsupported caller platforms fail before credential access", async () => {
+  const { createRequire } = await import("node:module"); const oldRequire = globalThis.require;
+  globalThis.require = createRequire(import.meta.url);
+  const r = custodyFixture(); globalThis.app = r.app;
+  let positiveBackendReads = 0;
+  Object.defineProperty(r.safe, "getSelectedStorageBackend", { configurable: true, get() {
+    positiveBackendReads++; throw Error("Linux-only API");
+  } });
+  try {
+    for (const platform of ["darwin", "win32"]) {
+      await assert.doesNotReject(() => secretFacts(true, platform), "non-Linux native evidence must never use Linux backend API");
+      assertCustody(await secretFacts(true, platform), required);
+      assert.equal(positiveBackendReads, 0, "non-Linux positive evidence must not even read the Linux backend API");
+    }
+    r.calls.length = 0;
+    for (const platform of [undefined, "unknown", "NEVER_RETURN_THE_SYNTHETIC_SECRET"]) {
+      await assert.rejects(() => secretFacts(true, platform), error => error.message === "native custody evidence requires a declared desktop platform");
+      assert.deepEqual(r.calls, [], "unsupported native platform cannot select credentials");
+    }
+    Object.defineProperty(r.safe, "getSelectedStorageBackend", { configurable: true, value: () => "gnome_libsecret" });
+    assertCustody(await secretFacts(true, "linux"), { ...required, backend: "gnome_libsecret" });
+  } finally { delete globalThis.app; if (oldRequire === undefined) delete globalThis.require; else globalThis.require = oldRequire; }
+  for (const platform of ["darwin", "win32"]) {
+    const n = refusalRenderer(), page = await probePage(n); n.safe.isEncryptionAvailable = () => true;
+    let backendReads = 0;
+    Object.defineProperty(n.safe, "getSelectedStorageBackend", { get() { backendReads++; throw Error("Linux-only API"); } });
+    try {
+      await assert.doesNotReject(page.run(installCustodyRefusalProbe, "http://127.0.0.1:1", true, platform),
+        "non-Linux injected observer must not whitelist a Linux backend");
+      assert.equal(backendReads, 0, "non-Linux observer must not even read the Linux backend API");
+      assert.equal(n.safe.isEncryptionAvailable(), false);
+    } finally { if (n.window.obsyncCustodyRefusal) await page.run(() => window.obsyncCustodyRefusal.restore()); }
+  }
+  for (const platform of [undefined, "unknown"]) {
+    const n = refusalRenderer(), page = await probePage(n);
+    await assert.rejects(page.run(installCustodyRefusalProbe, "http://127.0.0.1:1", false, platform),
+      error => error.message === "native custody observer installation refused: platform",
+      "observer admission requires a declared actual native platform");
+    assert.equal(n.window.obsyncCustodyRefusal, undefined);
+  }
+  {
+    const n = refusalRenderer(), page = await probePage(n);
+    await assert.rejects(page.run(installCustodyRefusalProbe, "http://127.0.0.1:1", true, "darwin"),
+      error => error.message === "native custody observer installation refused: availability",
+      "injected unavailable control requires actual availability before injection");
+    assert.equal(n.window.obsyncCustodyRefusal, undefined);
+  }
+  for (const backend of ["basic_text", "unknown", undefined, "NEVER_RETURN_THE_SYNTHETIC_SECRET"]) {
+    const n = refusalRenderer(), page = await probePage(n); n.safe.isEncryptionAvailable = () => true;
+    n.safe.getSelectedStorageBackend = () => backend;
+    await assert.rejects(page.run(installCustodyRefusalProbe, "http://127.0.0.1:1", true, "linux"),
+      error => error.message === "native custody observer installation refused: availability",
+      "Linux injected positive control requires an actually protected backend");
+    assert.equal(n.window.obsyncCustodyRefusal, undefined);
+  }
 });
 
 test("early availability returns reduced facts without reading plugin metadata or credentials", async () => {
@@ -94,20 +249,207 @@ test("early availability returns reduced facts without reading plugin metadata o
   globalThis.app = {
     loadLocalStorage: () => '{"synthetic":"NEVER_RETURN_THE_SYNTHETIC_SECRET"}',
     plugins: { get plugins() { throw new Error("early metadata access forbidden"); } },
-    secretStorage: {
-      getSecret() { throw new Error("early credential access forbidden"); },
-      isEncryptionAvailable: () => available,
-    },
+    secretStorage: { getSecret() { throw new Error("early credential access forbidden"); },
+      isEncryptionAvailable: () => available, adapter: { safeStorage: { isEncryptionAvailable: () => available } } },
   };
   try {
-    const found = await secretFacts(false);
-    assert.deepEqual(found, { encrypted: false, backend: "none reported", stored: true, plain: true, revisionMatches: null });
+    const found = await secretFacts(false, "linux");
+    assert.deepEqual(found, { encrypted: false, outerEncrypted: false, backend: "none reported", stored: true,
+      plain: true, wrapped: false, plainRoot: null, revisionMatches: null, pinMatches: null, cleanupComplete: null });
     assert.ok(!JSON.stringify(found).includes("NEVER_RETURN"));
-    available = true;
-    assert.equal((await secretFacts(false)).encrypted, true);
-    delete app.secretStorage;
-    assert.equal((await secretFacts(false)).encrypted, null, "not yet exposed is unknown, never green");
+    available = true; assert.equal((await secretFacts(false, "linux")).encrypted, true);
+    app.secretStorage.adapter.safeStorage.getSelectedStorageBackend = () => "NEVER_RETURN_THE_SYNTHETIC_SECRET";
+    assert.equal((await secretFacts(false, "linux")).backend, "unrecognized");
+    app.secretStorage.adapter.safeStorage.isEncryptionAvailable = () => ({ value: "NEVER_RETURN_THE_SYNTHETIC_SECRET" });
+    assert.equal((await secretFacts(false, "linux")).encrypted, null);
+    assert.ok(!JSON.stringify(await secretFacts(false, "linux")).includes("NEVER_RETURN"));
   } finally { delete globalThis.app; }
+});
+
+function refusalRenderer() {
+  let blob = null, refusal = false, backup = false;
+  const actual = { set: 0, save: 0 }, safe = { isEncryptionAvailable: () => false, getSelectedStorageBackend: () => "basic_text",
+    encryptString() { assert.fail("negative probe must not encrypt root material"); }, decryptString() { assert.fail("negative probe must not decrypt credentials"); } };
+  class Plugin {
+    constructor() { this.manifest = { id: "obsync-private-sync", dir: ".obsidian/plugins/obsync-private-sync" }; }
+    saveData(data) { return app.vault.writePluginData(this.manifest.dir, data, { mtime: 1 }); }
+  }
+  const app = { vault: { configDir: ".obsidian", writePluginData() {
+    assert.equal(this, app.vault, "native metadata receiver is retained");
+    actual.save++; throw Error("synthetic failed save");
+  } }, workspace: { layoutReady: true }, plugins: { plugins: {} }, loadLocalStorage: () => blob,
+    secretStorage: { adapter: { safeStorage: safe }, setSecret() { actual.set++; throw Error("synthetic failed set"); } } };
+  const window = { app, fetch: globalThis.fetch };
+  const document = { querySelectorAll: selector => selector === "button" ? [{ textContent: "Trust" }]
+    : selector === ".notice" ? refusal ? [{ textContent: "obsync: cannot use operating-system encryption for this vault's sync credentials. Sync is stopped before enrollment or credential storage." }] : []
+    : selector === ".modal pre" && backup ? [{ textContent: "obsync-recovery-v2 synthetic" }] : [] };
+  return { app, window, document, safe, Plugin, actual, setBlob: value => { blob = value; },
+    refuse: value => { refusal = value; }, backup: value => { backup = value; } };
+}
+
+async function probePage(r) {
+  const vm = await import("node:vm");
+  const context = vm.createContext({ app: r.app, window: r.window, document: r.document, URL, AbortSignal,
+    fetch: (...args) => r.window.fetch(...args), require: () => { throw Error("MODULE_NOT_FOUND"); } });
+  return { run: async (fn, ...args) => {
+    context.args = args; return vm.runInContext(`(${fn})(...args)`, context);
+  } };
+}
+
+test("preactivation custody observer counts actual public boundaries and restores native methods, including declared unavailable injection", async () => {
+  const r = refusalRenderer(), page = await probePage(r), origin = "http://127.0.0.1:1";
+  const before = { set: r.app.secretStorage.setSecret, save: r.app.vault.writePluginData, fetch: r.window.fetch };
+  try {
+    await page.run(installCustodyRefusalProbe, origin, false, "linux");
+    try { r.app.secretStorage.setSecret("synthetic", "NEVER_RETURN_THE_SYNTHETIC_SECRET"); } catch {}
+    try { new r.Plugin().saveData({ synthetic: true }); } catch {}
+    try { r.app.vault.writePluginData(".obsidian/plugins/synthetic-other", { synthetic: true }); } catch {}
+    await r.window.fetch(origin + "/v1/setup").catch(() => {});
+    const facts = await page.run(custodyRefusalFacts);
+    assert.equal(facts.publicWrites, 1, "public-write observer counts BEFORE rejected native write");
+    assert.equal(facts.metadataWrites, 1, "metadata observer counts BEFORE rejected native save");
+    assert.equal(facts.transportRequests, 1, "source-origin request attempt is counted even when connection fails");
+    assert.equal(r.actual.set, 1); assert.equal(r.actual.save, 2, "unrelated plugin save delegates but is not counted");
+    assert.ok(!JSON.stringify(facts).includes("NEVER_RETURN"));
+    await page.run(() => window.obsyncCustodyRefusal.restore());
+    assert.equal(r.app.secretStorage.setSecret, before.set); assert.equal(r.app.vault.writePluginData, before.save);
+    for (const wrong of ["config", "method"]) {
+      if (wrong === "config") r.app.vault.configDir = ".synthetic-other";
+      else r.app.vault.writePluginData = undefined;
+      await assert.rejects(page.run(installCustodyRefusalProbe, origin, false, "linux"),
+        error => error.message === "native custody observer installation refused: interface",
+        "metadata observation must require the exact owned directory and native dispatch");
+      assert.equal(r.window.obsyncCustodyRefusal, undefined);
+      assert.equal(r.app.secretStorage.setSecret, before.set);
+      r.app.vault.configDir = ".obsidian"; r.app.vault.writePluginData = before.save;
+    }
+    for (const boundary of ["public", "metadata", "transport"]) {
+      const f = refusalRenderer(), ownPage = await probePage(f);
+      const [owner, key] = boundary === "public" ? [f.app.secretStorage, "setSecret"]
+        : boundary === "metadata" ? [f.app.vault, "writePluginData"] : [f.window, "fetch"];
+      const restored = [f.app.secretStorage.setSecret, f.app.vault.writePluginData, f.window.fetch];
+      const original = owner[key];
+      Object.defineProperty(owner, key, { configurable: true, get: () => original, set: () => {} });
+      await assert.rejects(ownPage.run(installCustodyRefusalProbe, origin, false, "linux"),
+        error => error.message === "native custody observer installation refused: install",
+        `${boundary} ignored native setter must refuse observer admission`);
+      assert.equal(f.window.obsyncCustodyRefusal, undefined, "failed observer leaves no accepted zero-counter probe");
+      assert.deepEqual([f.app.secretStorage.setSecret, f.app.vault.writePluginData, f.window.fetch], restored,
+        "failed installation restores all native observer methods");
+      assert.equal(owner[key], original, "ignored native setter retains its original method");
+    }
+    r.app.vault.writePluginData = async function () {
+      assert.equal(this, r.app.vault, "asynchronous native metadata receiver is retained");
+      throw Error("synthetic asynchronous save failure");
+    };
+    await page.run(installCustodyRefusalProbe, origin, false, "linux");
+    await assert.rejects(new r.Plugin().saveData({ synthetic: true }), /synthetic asynchronous save failure/);
+    assert.equal((await page.run(custodyRefusalFacts)).metadataWrites, 1,
+      "metadata observer counts BEFORE asynchronously rejected native save");
+    await page.run(() => window.obsyncCustodyRefusal.restore());
+    r.app.vault.writePluginData = before.save;
+    assert.equal(r.window.fetch, before.fetch); assert.equal(r.window.obsyncCustodyRefusal, undefined);
+    r.safe.isEncryptionAvailable = () => true;
+    const availability = r.safe.isEncryptionAvailable;
+    r.safe.getSelectedStorageBackend = () => "gnome_libsecret";
+    await page.run(installCustodyRefusalProbe, origin, true, "linux");
+    assert.equal(r.safe.isEncryptionAvailable(), false, "explicit injected probe actually reports false");
+    assert.equal((await page.run(custodyRefusalFacts)).unavailable, true);
+    await page.run(() => window.obsyncCustodyRefusal.restore());
+    assert.equal(r.safe.isEncryptionAvailable, availability, "injected native method is exactly restored");
+    r.app.plugins.plugins["obsync-private-sync"] = {};
+    await assert.rejects(page.run(installCustodyRefusalProbe, origin, false, "linux"), /native custody observer installation refused:/, "no blind plugin startup window");
+    delete r.app.plugins.plugins["obsync-private-sync"];
+    Object.defineProperty(r.safe, "isEncryptionAvailable", { configurable: false, writable: false, value: availability });
+    await assert.rejects(page.run(installCustodyRefusalProbe, origin, true, "linux"), /native custody observer installation refused:/,
+      "unsupported injection leaves no partial observer");
+    assert.equal(r.app.secretStorage.setSecret, before.set); assert.equal(r.app.vault.writePluginData, before.save);
+    assert.equal(r.window.fetch, before.fetch); assert.equal(r.window.obsyncCustodyRefusal, undefined);
+    assert.equal(r.safe.isEncryptionAvailable, availability);
+  } finally { if (r.window.obsyncCustodyRefusal) await page.run(() => window.obsyncCustodyRefusal.restore()); }
+});
+
+test("real loopback custody refusal requires native reachability, zero writes and requests, visible refusal and no adopted root", async () => {
+  const fs = await import("node:fs"), os = await import("node:os"), path = await import("node:path");
+  for (const fault of ["", "public", "metadata", "transport", "server", "state", "root", "blob", "disk", "available", "control-status", "control-arrival", "no-log", "no-visible", "oversize", "cleanup"]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "obsync-custody-probe-"));
+    const plugin = path.join(root, ".obsidian", "plugins", "obsync-private-sync"); fs.mkdirSync(plugin, { recursive: true });
+    const r = refusalRenderer(), page = await probePage(r), clicked = [];
+    let origin = "", logged = false;
+    const metadata = path.join(plugin, "data.json"), originalFetch = r.window.fetch;
+    if (fault === "transport") r.window.fetch = (...args) => args[0].endsWith("/v1/setup") ? Promise.reject(Error("synthetic pre-dispatch rejection")) : originalFetch(...args);
+    if (fault === "available") { r.safe.isEncryptionAvailable = () => true; r.safe.getSelectedStorageBackend = () => "gnome_libsecret"; }
+    const click = () => {};
+    const instance = { vault: root, main: async () => ({ run: async (fn, ...args) => {
+      if (fn.toString().includes("/__control")) {
+        origin = args[0];
+        if (fault === "control-arrival") return true;
+        if (fault === "control-status") { await page.run(fn, ...args); return false; }
+      }
+      if (fault === "cleanup" && fn.toString().includes("obsyncCustodyRefusal.restore")) return false;
+      return page.run(fn, ...args);
+    } }), pluginLog: () => logged ? ["obsync state decision=stopped reason=desktop_custody_unavailable"] : [],
+      anywhere: async (fn, label) => {
+        if (fn !== click) return page.run(fn, label);
+        clicked.push("trust"); logged = fault !== "no-log"; r.refuse(fault !== "no-visible");
+        if (fault === "public") try { r.app.secretStorage.setSecret("synthetic", "NEVER_RETURN_THE_SYNTHETIC_SECRET"); } catch {}
+        if (fault === "metadata") try { new r.Plugin().saveData({ root: "synthetic" }); } catch {}
+        if (fault === "transport") await r.window.fetch(origin + "/v1/setup").catch(() => {});
+        if (fault === "server") await globalThis.fetch(origin + "/v1/setup", { method: "POST", body: "synthetic" });
+        if (fault === "oversize") await assert.rejects(globalThis.fetch(origin + "/v1/setup", { method: "POST", body: "A".repeat(65537) }), /fetch failed/, "fixture discards and closes oversized bodies");
+        if (fault === "state") r.app.plugins.plugins["obsync-private-sync"] = { state: { data: { vrk: null }, custody2: () => null } };
+        if (fault === "root") r.backup(true);
+        if (fault === "blob") r.setBlob("synthetic-changed");
+        if (fault === "disk") fs.writeFileSync(metadata, '{"synthetic":"changed"}');
+        return true;
+      } };
+    try {
+      const operation = verifyNativeCustodyRefusal(instance, "Trust", click, async (_, probe) => {
+        const value = await probe(); if (!value) throw Error("synthetic refusal not ready"); return value;
+      });
+      if (fault) await assert.rejects(operation, /side effects|required evidence|control failed|refusal not ready|cleanup refused/, `custody probe refuses ${fault}`);
+      else assert.deepEqual(await operation, { refused: true, publicWrites: 0, metadataWrites: 0, transportRequests: 0,
+        sourceRequests: 0, enrollments: 0, rootAbsent: true, nativeControl: true, injected: false });
+      if (fault === "cleanup") await page.run(() => window.obsyncCustodyRefusal.restore());
+      assert.equal(r.window.obsyncCustodyRefusal, undefined, "observer removed after success/failure");
+      assert.equal(r.app.secretStorage.setSecret.name, "setSecret", "original actual public method restored");
+      if (origin) await assert.rejects(globalThis.fetch(origin + "/__control"), /fetch failed/, "negative fixture listening socket closes");
+      if (fault.startsWith("control-")) assert.deepEqual(clicked, [], "missing native reachability cannot activate plugin");
+    } finally {
+      if (r.window.obsyncCustodyRefusal) await page.run(() => window.obsyncCustodyRefusal.restore());
+      fs.rmSync(root, { recursive: true });
+    }
+  }
+});
+
+test("custody native evaluator arms a bounded watchdog and always restores hooks and closes the fixture", async () => {
+  const fs = await import("node:fs"), os = await import("node:os"), path = await import("node:path");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "obsync-custody-watchdog-"));
+  let unblock, enter; const entered = new Promise(resolve => { enter = resolve; });
+  const originalTimer = globalThis.setTimeout; let armed = false;
+  const r = refusalRenderer(), realPage = await probePage(r), metadataDir = path.join(root, ".obsidian", "plugins", "obsync-private-sync");
+  fs.mkdirSync(metadataDir, { recursive: true });
+  const instance = { vault: root, main: async () => ({ run(fn, ...args) {
+    if (fn.toString().includes("workspace")) { enter(); return new Promise(resolve => { unblock = resolve; }); }
+    return realPage.run(fn, ...args);
+  } }), anywhere: async () => { r.refuse(true); return true; }, pluginLog: () => ["obsync state decision=stopped reason=desktop_custody_unavailable"] };
+  globalThis.setTimeout = (callback, ms, ...args) => {
+    if (ms === 5000) { armed = true; return originalTimer(callback, 0, ...args); }
+    return originalTimer(callback, ms, ...args);
+  };
+  const observed = verifyNativeCustodyRefusal(instance, "Trust", () => {}, async (_, probe) => probe())
+    .then(value => ({ value }), error => ({ error }));
+  try {
+    await entered; await Promise.resolve();
+    assert.equal(armed, true, "native evaluator must arm its 5000ms watchdog");
+    assert.match((await observed).error?.message ?? "", /native custody evaluator exceeded 5000ms/,
+      "stalled native evaluator must refuse with its bounded failure");
+    assert.equal(r.window.obsyncCustodyRefusal, undefined);
+  } finally {
+    globalThis.setTimeout = originalTimer; unblock?.(true); await observed;
+    if (r.window.obsyncCustodyRefusal) await realPage.run(() => window.obsyncCustodyRefusal.restore());
+    fs.rmSync(root, { recursive: true });
+  }
 });
 
 test("workspace readiness does not initialize native secret storage before product setup", async () => {
@@ -300,7 +642,9 @@ test("the real driver requires matching prompts before approval and its restart 
       if (redirectFails) throw new Error("synthetic native redirect refusal");
     },
     setServer: async () => { assert.equal(redirectChecked, true, "native redirect check precedes enrollment"); enrollments++; },
-    secretFacts: secretFactsMarker, diagnose: (instance, phase, found) => { observed.push(instance.name + ":" + phase); assert.deepEqual(found, valid); },
+    secretFacts: secretFactsMarker, holds: (instance, found, store, when) => {
+      assert.equal(when, "after enrollment"); assertCustody(found, stores[store]); observed.push(instance.name + ":enrolled");
+    }, diagnose() {},
     until: async (_, probe) => {
       let last;
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -382,6 +726,39 @@ test("the real driver requires matching prompts before approval and its restart 
     assert.equal(localProcess.exitCode, undefined);
     assert.deepEqual(launches, ["launch-a", "ready-a", "launch-b", "ready-b"]);
     assert.deepEqual(observed, ["a:enrolled", "b:enrolled"]);
+    const savedCaptures = environment.OBSYNC_E2E_CAPTURES;
+    delete environment.OBSYNC_E2E_CAPTURES; delete environment.OBSYNC_E2E_LAUNCH_ORDER;
+    let refusalCalls = 0, failRefusal = false;
+    context.verifyNativeCustodyRefusal = async (instance, label, click, until, injected) => {
+      refusalCalls++; assert.equal(instance.name, "a"); assert.equal(injected, !!environment.OBSYNC_E2E_CUSTODY_PROBE);
+      if (failRefusal) throw Error("synthetic custody side effect");
+    };
+    const beforeRefusal = { enrollments, approvals, redirects };
+    environment.OBSYNC_E2E_SECRET_STORE = "none"; localProcess.platform = "linux";
+    launches.length = 0; localProcess.exitCode = undefined;
+    await vm.runInNewContext(`(${main})()`, context);
+    assert.equal(localProcess.exitCode, undefined, "declared Linuxnone refusal completes its dedicated evidence path");
+    assert.deepEqual(launches, ["launch-a"], "unavailable case does not quietly run the positive pairing journey");
+    assert.equal(refusalCalls, 1, "Linuxnone must execute actual native refusal verification");
+    assert.deepEqual({ enrollments, approvals, redirects }, beforeRefusal, "refusal has no enrollment or positive-path requests");
+    failRefusal = true; localProcess.exitCode = undefined;
+    await vm.runInNewContext(`(${main})()`, context);
+    assert.equal(localProcess.exitCode, 1, "custody side effects must fail actual negative orchestration");
+    assert.deepEqual({ enrollments, approvals, redirects }, beforeRefusal);
+    failRefusal = false;
+    environment.OBSYNC_E2E_SECRET_STORE = "macos"; environment.OBSYNC_E2E_CUSTODY_PROBE = "unavailable";
+    localProcess.platform = "darwin"; localProcess.exitCode = undefined;
+    await vm.runInNewContext(`(${main})()`, context);
+    assert.equal(refusalCalls, 3, "explicit injected control is separate from positive macOS journey");
+    assert.equal(localProcess.exitCode, undefined);
+    environment.OBSYNC_E2E_CUSTODY_PROBE = "unknown";
+    await assert.rejects(vm.runInNewContext(`(${main})()`, context), /OBSYNC_E2E_CUSTODY_PROBE must be/);
+    environment.OBSYNC_E2E_CUSTODY_PROBE = "unavailable"; environment.OBSYNC_E2E_CAPTURES = savedCaptures;
+    await assert.rejects(vm.runInNewContext(`(${main})()`, context), /cannot publish successful editor captures/);
+    delete environment.OBSYNC_E2E_CUSTODY_PROBE;
+    environment.OBSYNC_E2E_SECRET_STORE = "none";
+    await assert.rejects(vm.runInNewContext(`(${main})()`, context), /requires native Linux/);
+    environment.OBSYNC_E2E_SECRET_STORE = "macos";
     for (const mode of ["unknown", "toString", "constructor"]) {
       environment.OBSYNC_E2E_LAUNCH_ORDER = mode;
       const touches = preflightTouches;
@@ -416,6 +793,7 @@ test("actual restart checks custody before and after, waits for native exit, and
     });
     const context = {
       STORES: stores, Denied: Error, assertCustody, secretFacts: secretFactsMarker, diagnose() {},
+      process: { platform: store === "macos" ? "darwin" : "win32" },
       inVault: async (_, fn) => {
         if (fn !== secretFactsMarker) return true;
         facts++;
@@ -429,7 +807,7 @@ test("actual restart checks custody before and after, waits for native exit, and
     };
     const program = vm.runInNewContext(`${holds}\n(${restart})`, context);
     const promise = program(instance("a"), instance("b"), { binary: "test", extra: [], homes: false, store, launchOrder });
-    if (bad || failedHalt || failedTransfer || warning) {
+    if (bad || failedHalt || failedTransfer) {
       await assert.rejects(promise, /custody refused|native quit refused|transfer refused|still says/);
       if (bad === "before") assert.deepEqual(calls, [], "bad saved custody prevents restart");
       if (failedHalt) assert.equal(calls.some((line) => line.startsWith("launch-")), false);
@@ -450,6 +828,6 @@ test("actual restart checks custody before and after, waits for native exit, and
   await run({ store: "macos" });
   await run({ store: "macos", launchOrder: "serialized" });
   for (const bad of ["before", "after"]) {
-    for (const badField of ["encrypted", "plain", "revisionMatches"]) await run({ store: "macos", bad, badField });
+    for (const badField of ["encrypted", "wrapped", "plainRoot", "revisionMatches", "pinMatches", "cleanupComplete"]) await run({ store: "macos", bad, badField });
   }
 });

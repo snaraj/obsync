@@ -123,10 +123,11 @@ async function fixture(t, { devices = 1, isMobile = false, legacy = false } = {}
   logs.length = 0;
 
   return {
-    box, obsidian, instance, old, other, host, logs, seen,
+    box, obsidian, instance, old, other, host, logs, seen, secrets,
     state: () => instance.state.data,
     metadata: () => structuredClone(metadata),
-    envelope: () => secrets.getSecret(metadata.credentialRef),
+    rawEnvelope: () => secrets.getSecret(metadata.credentialRef),
+    envelope: () => box.require(join(box.home, "build/desktopCustody.js")).desktopSecretStore(secrets, instance.platformName()).desktopCustody.open(secrets.getSecret(metadata.credentialRef)),
     revokes: () => seen.filter((request) => request.target.endsWith("/revoke")),
     unpair: () => logs.filter((line) => line.startsWith("unpair ")),
     starts: () => starts,
@@ -188,7 +189,8 @@ test("leaving with another device revokes THIS device before anything local is c
 test("the credential this device gave up does not survive in the native store", async (t) => {
   const r = await fixture(t, { devices: 2 });
   const entry = r.envelope();
-  assert.ok(entry.includes(KEYS.deviceSecret), "the fixture really did hold the secret");
+  assert.ok(entry.includes(KEYS.deviceSecret), "the decrypted owned envelope really did hold the secret");
+  assert.equal(r.rawEnvelope().includes(KEYS.deviceSecret), false, "physical storage holds ciphertext only");
 
   await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
 
@@ -205,7 +207,7 @@ test("the credential this device gave up does not survive in the native store", 
   const reloaded = await State.open(
     { loadData: async () => r.metadata(), saveData: async () => {} },
     false,
-    { getSecret: () => after, setSecret: () => {} },
+    r.box.require(join(r.box.home, "build/desktopCustody.js")).desktopSecretStore(r.secrets, r.instance.platformName()),
   );
   assert.equal(reloaded.data.vrk, KEYS.vrk);
   assert.equal(reloaded.paired, false);

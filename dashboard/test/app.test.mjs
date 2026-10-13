@@ -246,6 +246,33 @@ test('access-only names retained-key consequences before and after its separate 
   assert.match(el('status').textContent, /The server reports that laptop's access is revoked.*This action does not rotate keys; a retained key can still decrypt later ciphertext encrypted with the same key if obtained\./);
 });
 
+test('removal explanations survive the template fragment being drained into the table', async () => {
+  const { net, row } = await devicesPage();
+  const open = row.field('revoke-open');
+  const strong = row.field('revoke-strong');
+  const access = row.field('revoke-access');
+  const cancel = row.field('revoke-cancel');
+  const text = row.field('confirm-text');
+  const act = row.field('revoke-do');
+  // A real DocumentFragment becomes empty on insertion. Its retained element
+  // references still work, but a new selector against that fragment finds nothing.
+  row.querySelector = () => null;
+  open.click();
+  strong.click();
+  assert.match(text.textContent, /unavailable here\. Continue on a trusted Obsidian device to rotate keys\./);
+  assert.match(text.textContent, /No access has been revoked and no rotation has been started here\./);
+  assert.equal(act.hidden, true);
+  access.click();
+  assert.match(text.textContent, /^Revoke server access only for laptop\?/);
+  assert.match(text.textContent, /retained key can still decrypt later ciphertext encrypted with the same key/);
+  assert.equal(act.hidden, false);
+  cancel.click();
+  assert.equal(text.textContent, 'Choose how to remove laptop. The last active device cannot be revoked.');
+  assert.equal(act.hidden, true);
+  await settle();
+  assert.deepEqual(net.calls.filter(call => call.method !== 'GET'), []);
+});
+
 test('access-only refuses without CSRF and preserves the server last-device refusal', async () => {
   for (const [options, expectedPosts, detail] of [
     [{ cookie: '' }, 0, 'This browser holds no CSRF cookie. Sign in again.'],

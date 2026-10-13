@@ -19,7 +19,7 @@ import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { KEYS, sandbox, statusItem } from "./fake.mjs";
+import { KEYS, memorySecrets, sandbox, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { State, StateStorageError } = require("../build/state.js");
@@ -172,7 +172,7 @@ function plugin(t, metadata, { localStorage = new Map(), secrets = new Map() } =
   instance.addSettingTab = (tab) => { tabs.push(tab); };
   instance.addStatusBarItem = () => { const bar = statusItem(); bars.push(bar); return bar; };
   instance.app = {
-    secretStorage: { getSecret: (id) => secrets.get(id) ?? null, setSecret: (id, value) => { secrets.set(id, value); } },
+    secretStorage: { adapter: memorySecrets().adapter, getSecret: (id) => secrets.get(id) ?? null, setSecret: (id, value) => { secrets.set(id, value); } },
     loadLocalStorage: (key) => localStorage.get(key) ?? null,
     saveLocalStorage: (key, value) => { localStorage.set(key, value); },
     vault: { adapter: {}, on: () => ({}) },
@@ -192,8 +192,8 @@ async function syncedPlugin(t) {
   return original;
 }
 
-test("the compiled plugin gives a copy its status bar and settings tab, says what happened once, and syncs nothing (#168)", async (t) => {
-  const original = await syncedPlugin(t);
+test("the compiled plugin gives a legacy metadata copy its status bar and settings tab, says what happened once, and syncs nothing (#168)", async (t) => {
+  const original = await synced();
   const copy = plugin(t, original.data());
   await copy.instance.onload();
   await tick();
@@ -211,8 +211,8 @@ test("the compiled plugin gives a copy its status bar and settings tab, says wha
   assert.deepEqual(copy.writes, []);
 });
 
-test("Settings offers a copy Pair this device and Start fresh, and Start fresh leaves an unpaired vault of its own (#168)", async (t) => {
-  const original = await syncedPlugin(t);
+test("Settings offers a legacy metadata copy Pair this device and Start fresh, and Start fresh leaves an unpaired vault of its own (#168)", async (t) => {
+  const original = await synced();
   const copy = plugin(t, original.data());
   await copy.instance.onload();
   const tab = copy.tabs[0];
@@ -260,8 +260,18 @@ test("a storage fault keeps the protective stop: no tab, no status bar, and word
   assert.deepEqual(faulted.bars, []);
   assert.equal(faulted.obsidian.notices.length, 1);
   const [notice] = faulted.obsidian.notices;
-  assert.match(notice, /^obsync: could not read or save this vault's sync credentials in Obsidian's secret storage\. Sync is stopped/);
+  assert.match(notice, /^obsync: could not complete this vault's encrypted credential storage\. Sync is stopped/);
   assert.equal(/missing_secret|Do not/.test(notice), false, notice);
   assert.ok(faulted.logs.includes("state decision=stopped reason=missing_secret"));
   assert.deepEqual(faulted.writes, []);
+});
+
+// Wrapped metadata is a strict floor: even a new vault id cannot borrow or reset its missing authority.
+test("a copied format3 vault refuses before settings, identity adoption or any write", async t => {
+  const original = await syncedPlugin(t), copy = plugin(t, original.data());
+  assert.equal(original.data().storageVersion, 3);
+  await assert.rejects(copy.instance.onload(), error => error.reason === "missing_secret");
+  assert.deepEqual(copy.tabs, []); assert.deepEqual(copy.bars, []); assert.deepEqual(copy.requests, []); assert.deepEqual(copy.writes, []);
+  assert.deepEqual(copy.data(), original.data()); assert.equal(copy.instance.state, undefined);
+  assert.ok(copy.logs.includes("state decision=stopped reason=missing_secret"));
 });

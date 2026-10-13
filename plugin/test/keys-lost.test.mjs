@@ -19,7 +19,7 @@ import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { KEYS, sandbox, statusItem } from "./fake.mjs";
+import { KEYS, memorySecrets, sandbox, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { State, StateStorageError, KEYS_LOST } = require("../build/state.js");
@@ -36,11 +36,11 @@ const loads = (opening) => opening.catch((error) => assert.fail(`loading stopped
  * is the disk catching up; `crash` is the process ending before it did.
  */
 function lazySecrets() {
-  const disk = new Map(), memory = new Map();
+  const disk = new Map(), memory = new Map(), sets = [];
   return {
-    disk,
+    disk, sets,
     getSecret: (id) => memory.has(id) ? memory.get(id) : disk.get(id) ?? null,
-    setSecret: (id, value) => { memory.set(id, value); },
+    setSecret: (id, value) => { sets.push(id); memory.set(id, value); },
     flush: () => { for (const [id, value] of memory) disk.set(id, value); memory.clear(); },
     crash: () => { memory.clear(); },
   };
@@ -195,6 +195,7 @@ test("the first save after a recovery takes an installation of its own, and a cr
 // ---- the compiled plugin ------------------------------------------------------
 
 function plugin(t, metadata, secrets, localStorage) {
+  secrets.adapter ??= memorySecrets().adapter;
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const obsidian = box.require("obsidian");
@@ -233,77 +234,41 @@ async function crashedPlugin(t) {
   await before.instance.state.save();
   secrets.crash();
   const after = plugin(t, before.data(), secrets, localStorage);
-  await loads(after.instance.onload());
+  const setCount = secrets.sets.length, oldBytes = new Map(secrets.disk);
+  await assert.rejects(after.instance.onload(), error => error.reason === "pin_mismatch");
+  assert.equal(secrets.sets.length, setCount, "the torn desktop state wrote no secret");
+  assert.deepEqual(secrets.disk, oldBytes);
   await tick();
-  return { ...after, secrets, localStorage, lost: before.data() };
+  return { ...after, secrets, localStorage, lost: before.data(), oldBytes };
 }
 
-/** Obsidian's `Setting`, recording what a row says and the buttons it draws. */
-function recordSettings(obsidian) {
-  const drawn = [], buttons = [];
-  Object.assign(obsidian.Setting.prototype, {
-    setName(value) { drawn.push(value); return this; },
-    setDesc(value) { drawn.push(value); return this; },
-    addButton(make) {
-      const button = { setButtonText(value) { button.text = value; return button; }, setCta() { return button; },
-        setDisabled(value) { button.disabled = value; return button; }, onClick(handler) { button.click = handler; return button; } };
-      buttons.push(button); make(button); return this;
-    },
-  });
-  return { drawn, buttons };
-}
-
-test("the compiled plugin says once what happened, logs both revisions, and signs nothing (#230)", async (t) => {
+test("the compiled desktop refuses a lost wrapped revision, says why once and signs nothing (#230)", async t => {
   const p = await crashedPlugin(t);
-  assert.equal(KEYS_LOST, "Obsidian closed while obsync was saving this device's keys, so it holds none. Pair this device again from a device that syncs; nothing was deleted.");
-  assert.deepEqual(p.obsidian.notices, [`obsync: ${KEYS_LOST} Pair this device is in obsync's settings, under This device.`]);
-  assert.deepEqual(p.logs.filter((line) => line.startsWith("state ")),
-    ["state decision=recovered reason=credential_behind data_revision=2 secret_revision=1"]);
-  assert.ok(!p.logs.some((line) => line.includes(KEYS.deviceId) || line.includes(p.lost.installationId)), "no id reaches the log");
-  assert.equal(p.tabs.length, 1, "the settings tab is there");
-  assert.equal(p.bars.length, 1, "and the status bar");
-  assert.equal(p.bars[0].label, "obsync: not paired");
-  assert.equal(p.instance.transport.options.device(), null, "nothing can sign as the lost credential, or the one before it");
-  assert.deepEqual(p.requests, []);
-  assert.deepEqual(p.writes, []);
+  assert.equal(p.data().storageVersion, 3);
+  assert.equal(p.obsidian.notices.length, 1);
+  assert.match(p.obsidian.notices[0], /encrypted credential storage.*Sync is stopped; local notes are unchanged/);
+  assert.ok(!p.obsidian.notices[0].includes("nothing was sent or changed"));
+  assert.deepEqual(p.logs.filter(line => line.startsWith("state ")), ["state decision=stopped reason=pin_mismatch"]);
+  assert.ok(!p.logs.some(line => line.includes(KEYS.deviceId) || line.includes(p.lost.installationId)));
+  assert.deepEqual(p.tabs, []); assert.deepEqual(p.bars, []);
+  assert.equal(p.instance.state, undefined, "no root or older credential was adopted");
+  assert.equal(p.instance.transport, undefined); assert.deepEqual(p.requests, []); assert.deepEqual(p.writes, []);
 });
 
-test("Settings and Show sync status say it where a copy is told, and offer Pair this device (#230)", async (t) => {
-  const p = await crashedPlugin(t);
-  const { drawn, buttons } = recordSettings(p.obsidian);
-  const pairing = () => p.tabs[0].getSettingDefinitions().flatMap((g) => g.items).find((item) => item.name === "Pairing");
-  assert.equal(pairing().desc, KEYS_LOST);
-  pairing().render(new p.obsidian.Setting({}));
-  assert.deepEqual(buttons.map((b) => [b.text, b.disabled]), [["Pair this device", undefined], ["Pair a new device", true]],
-    "Pair this device, and no Start fresh: this is the same vault on the same server");
-  // A pairing under way says so instead.
-  p.instance.waiting = { code: "123 456" };
-  assert.match(pairing().desc, /^Pairing: waiting for approval on the other device, whose prompt shows the code 123 456\.$/);
-  p.instance.waiting = null;
-
-  buttons.length = 0;
-  const opened = [];
-  p.obsidian.Modal.prototype.open = function () { opened.push(this.constructor.name); };
-  const { StatusModal } = p.box.require(join(p.box.home, "build/ui/modals.js"));
-  const element = () => ({ createEl: (tag, attributes = {}) => { drawn.push(attributes.text ?? tag); return element(); }, empty: () => { drawn.length = 0; } });
-  const modal = new StatusModal({}, p.instance);
-  Object.assign(modal, { contentEl: element(), setTitle: () => {}, close: () => { opened.push("closed"); modal.onClose(); } });
-  modal.onOpen();
-  const at = drawn.indexOf("What to do");
-  assert.deepEqual(drawn.slice(at, at + 2), ["What to do", KEYS_LOST]);
-  assert.equal(buttons.at(-1).text, "Pair this device");
-  buttons.at(-1).click();
-  assert.deepEqual(opened, ["closed", "PairClaimModal"]);
-
-  // The first save ends it: an ordinary unpaired device from then on.
-  await p.instance.state.save();
-  assert.match(pairing().desc, /^Not paired yet\./);
-  modal.onOpen();
-  assert.equal(drawn.includes(KEYS_LOST), false);
+test("reopening a torn wrapped revision remains stopped with prior bytes intact, never a keysLost fallback", async t => {
+  const p = await crashedPlugin(t), again = plugin(t, p.data(), p.secrets, p.localStorage), sets = p.secrets.sets.length;
+  await assert.rejects(again.instance.onload(), error => error.reason === "pin_mismatch");
+  assert.deepEqual(again.tabs, []); assert.deepEqual(again.bars, []); assert.deepEqual(again.requests, []); assert.deepEqual(again.writes, []);
+  assert.equal(again.instance.state, undefined); assert.deepEqual(again.data(), p.lost);
+  assert.equal(p.secrets.sets.length, sets); assert.deepEqual(p.secrets.disk, p.oldBytes);
+  assert.equal(again.obsidian.notices.length, 1); assert.match(again.obsidian.notices[0], /verified recovery or pairing flow in a fresh vault/);
 });
 
-test("a device a crash left with no keys pairs again, under an installation of its own (#230)", async (t) => {
-  const p = await crashedPlugin(t);
+test("a fresh vault explicitly pairs after a wrapped-revision failure while preserving the stopped vault bytes (#230)", async (t) => {
+  const stopped = await crashedPlugin(t), secrets = lazySecrets(), localStorage = new Map();
+  const fresh = plugin(t, null, secrets, localStorage); await fresh.instance.onload();
+  const p = { ...fresh, secrets, localStorage };
+  assert.equal(p.data().storageVersion, 3); assert.equal(p.instance.state.paired, false);
   const { instance, box } = p;
   const pairing = box.require(join(box.home, "build/pairing.js"));
   const { PairClaimModal } = box.require(join(box.home, "build/ui/modals.js"));
@@ -355,7 +320,7 @@ test("a device a crash left with no keys pairs again, under an installation of i
   assert.equal(state.paired, true);
   assert.equal(state.keysLost, null);
   assert.deepEqual([state.data.deviceId, state.data.deviceSecret, state.data.vrk], [claimed.device_id, claimed.device_secret, KEYS.vrk]);
-  assert.notEqual(p.data().installationId, p.lost.installationId);
-  assert.equal(JSON.parse(p.secrets.disk.get(p.lost.credentialRef)).current.revision, 1, "the entry before the crash is left as it was");
+  assert.notEqual(p.data().installationId, stopped.lost.installationId);
+  assert.deepEqual(stopped.secrets.disk, stopped.oldBytes, "the stopped vault's older wrapped authority was neither adopted nor erased");
   assert.deepEqual(restarted.obsidian.notices, []);
 });

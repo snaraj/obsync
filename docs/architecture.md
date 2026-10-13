@@ -16,7 +16,8 @@ Two programs and one contract between them:
   collection and integrity scrubbing in the background. It speaks plain
   HTTP/1.1 on one port and is always deployed behind a TLS terminator.
 - **The Obsidian plugin** — TypeScript compiled to one `main.js`, zero
-  runtime dependencies, WebCrypto for all cryptography. It watches the
+  runtime dependencies, WebCrypto for content cryptography and the OS service
+  for desktop credential custody. It watches the
   vault, chunks and encrypts changed files on the device, uploads what the
   server does not have, follows the server's change feed, and writes other
   devices' changes into the vault. It runs on every Obsidian platform.
@@ -436,10 +437,34 @@ it holds no `VRK`. Approval is always from a paired Obsidian instance.
 ### Device-local credential custody
 
 Obsidian 1.13.0 or newer is required; the vendored official API package is
-pinned at exactly that version, so the compiler refuses any newer member. The plugin uses only the public SecretStorage
-`getSecret` and `setSecret` operations for its exact owned entries. A validated,
-random installation ID determines their names. No secret inventory or
-other plugin installation is read or imported.
+pinned at exactly that version for the public API. Public SecretStorage
+`getSecret` and `setSecret` operate only on obsync's exact owned entries. A
+validated, random installation ID determines their names. No secret inventory
+or other plugin installation is read or imported.
+
+On desktop, a narrowly scoped adapter additionally uses the private
+`app.secretStorage.adapter.safeStorage` bridge. It requires exact-true native
+encryption availability and, on Linux, a recognized protected backend
+(`gnome_libsecret`, `kwallet`, `kwallet5` or `kwallet6`). Missing, changed or
+throwing interfaces and `basic_text` or unknown backends stop credential
+loading and persistence. Only `isEncryptionAvailable`, `encryptString`,
+`decryptString` and Linux's `getSelectedStorageBackend` are used, with the
+built-in `buffer` module for ciphertext decoding. There is no arbitrary IPC,
+native setter, downloaded package or system configuration change.
+
+The adapter encrypts the entire owned envelope before calling public
+`setSecret`. Encryption failure performs no public secret write; success
+passes only an `obsync-native-custody-v1:` prefix and canonical base64 native
+ciphertext. If Obsidian's outer storage layer subsequently falls back to
+plaintext, its input is already encrypted. Decryption retains the existing
+installation, revision, server, device and generation checks. New desktop
+metadata requires this representation; raw JSON is never a fallback. This
+private bridge is a compatibility constraint: an unsupported host fails closed.
+The native packet and decoded credential envelope each have a 16 MiB budget;
+this bounds local credential parsing and does not limit note or vault sizes.
+Mobile uses the public native SecretStorage path and requires its own physical
+device acceptance; the desktop wrapper does not establish a mobile encrypted-only
+API contract.
 
 The entry contains one versioned envelope with current and previous valid
 credential records: vault root key, device secret and optional edge headers,
@@ -448,15 +473,19 @@ Plugin `data.json` holds that reference and nonsecret bookkeeping. Loading
 selects only the record named by metadata with the matching server/device
 identity; malformed or mismatched data, and a missing entry this vault has
 held, stop loading instead of resetting identity or generating another key.
-A missing entry this vault never held -- a copied vault, or a folder renamed
+A missing legacy-v1 entry this vault never held -- a copied vault, or a folder renamed
 outside Obsidian, which Obsidian registers as a new vault id with empty
 secret storage -- loads as a device that never paired, never as the device
 the reference names, and nothing is written until the person pairs it or
-starts fresh. So does metadata exactly one revision past the entry's current
+starts fresh, provided no orphaned legacy claim remains. Historically, metadata exactly one revision past the entry's current
 record, which a desktop killed between the two writes leaves because its
 secret storage reaches disk after the data file: that device keeps its name
 and holds no credential, never one taken from an older record, until it pairs
-again. Which reference a vault last opened is kept in Obsidian's
+again. Desktop migration refuses that ambiguous revision instead, preserving
+the old bytes for recovery or pairing in a fresh vault. Missing credentials
+with a remaining legacy claim also refuse without writes. New wrapped desktop
+metadata always refuses missing or torn custody; it never adopts those legacy
+recovery shortcuts. Which reference a vault last opened is kept in Obsidian's
 per-vault local storage; it is not a secret. Key-only recovery and
 credential-only enrollment are preserved as incomplete states. A pairing
 claim waiting for its key is held in a second owned entry, beside the
@@ -467,8 +496,17 @@ key is kept or the claim ends, or once it is older than the pairing's ten
 minutes. A recovery phrase can restore a key; it does not authorize a
 pending device.
 
-Existing plaintext settings migrate by writing and reading back the owned
-entry before replacing metadata. Saves use detached snapshots and serialize
+Desktop migration validates the old envelope, writes and reads back a native
+encrypted replacement at a deterministic new owned reference, and acknowledges
+new metadata before clearing the exact previous owned credential and claim
+entries. A persisted cleanup marker resumes an interrupted cleanup; sync does
+not start until that cleanup completes. Failures before metadata acknowledgement
+preserve the old authoritative record. Old clients refuse the new metadata
+format. No inventory or unrelated entry is touched, and this does not erase
+previous filesystem snapshots or backups. Legacy plaintext plugin settings
+likewise migrate before their replacement metadata is acknowledged.
+
+Saves use detached snapshots and serialize
 concurrent requests. Bookkeeping-only saves do not rewrite secret bytes.
 Credential changes retain the previous valid record so failed metadata writes
 can reload the prior identity; if metadata actually reached storage despite
@@ -495,8 +533,10 @@ The public `setSecret` call is synchronous and documents no crash-durable
 transaction with `saveData`. Immediate readback is verification of the host
 API result, not proof of persistence across app or OS failure. Native app
 restart checks remain required on supported platforms. SecretStorage is
-vault-local and shared with other trusted plugins; this does not promise
-universal OS encryption or isolation from those plugins or the local OS.
+vault-local and shared with other trusted plugins. The desktop wrapper protects
+stored credential bytes through the OS service; it provides no isolation from
+the running OS or trusted plugins, and does not authenticate rollback or prove
+joint crash durability. It adds no server-side key or recovery bypass.
 See the [official storage guide](https://docs.obsidian.md/plugins/guides/secret-storage)
 and [API baseline](https://github.com/snaraj/obsync/blob/main/plugin/vendor/obsidian/README.md).
 

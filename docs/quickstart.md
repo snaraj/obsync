@@ -80,7 +80,8 @@ complete-backup readback and format marker replace those controls.
 ## Set up this computer (the first device)
 
 Use Obsidian 1.13.0 or newer on each device. Credentials and vault keys use
-Obsidian's native secret storage; unavailable storage stops setup and sync.
+Obsidian's native secret storage. Desktop encryption must be available before
+setup or sync can save credentials; Linux needs an unlocked supported keyring.
 
 1. In your vault, open Settings → Community plugins and allow community
    plugins. Select Browse and search for **Self Hosted Private Sync**.

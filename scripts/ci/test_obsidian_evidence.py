@@ -24,6 +24,10 @@ class ObsidianEvidence(unittest.TestCase):
         self.assertEqual(steps[0]['run'], 'scripts/ci/obsidian-host.sh "${GITHUB_WORKSPACE}/target/release/obsyncd"')
         self.assertFalse(job.get('continue-on-error', False))
         self.assertFalse(steps[0].get('continue-on-error', False))
+        for native in ('obsidian-linux', 'obsidian-macos', 'obsidian-windows'):
+            self.assertNotIn('OBSYNC_E2E_CUSTODY_PROBE', document['jobs'][native].get('env', {}))
+            for step in document['jobs'][native]['steps']:
+                self.assertNotIn('OBSYNC_E2E_CUSTODY_PROBE', step.get('env', {}))
 
     def test_reduced_custody_and_capture_refusals(self):
         result = subprocess.run(
@@ -32,5 +36,7 @@ class ObsidianEvidence(unittest.TestCase):
             capture_output=True, text=True, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("real loopback custody refusal requires native reachability", result.stdout,
+                      "pre-persistence native custody refusal controls must actually execute")
         self.assertIn("real loopback fixture proves ten redirect refusals", result.stdout,
                       "the native redirect refusal controls must actually execute")

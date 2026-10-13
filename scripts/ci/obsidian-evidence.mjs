@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import http from "node:http";
+import { once } from "node:events";
 import { createHash } from "node:crypto";
 
 /** Read only comparison codes from visible pairing dialogs, never invitation fields. */
@@ -23,45 +25,198 @@ export function assertPairingCodes({ creator, claimant }) {
 
 // Only reduced custody facts and a verified synthetic editor may leave a renderer.
 // These functions run inside Obsidian; never return credential values.
-export async function secretFacts(checkRevision = true) {
-  const raw = app.loadLocalStorage("secrets-encrypted");
+export async function secretFacts(checkRevision = true, platform) {
+  if (!["darwin", "win32", "linux"].includes(platform)) throw Error("native custody evidence requires a declared desktop platform");
+  let raw;
+  try { raw = app.loadLocalStorage("secrets-encrypted"); }
+  catch { throw new Error("native custody diagnostics unavailable"); }
   let plain = false;
   try { plain = typeof raw === "string" && typeof JSON.parse(raw) === "object"; } catch {}
-  // Test-only host implementation observation, not a public SecretStorage
-  // capability guarantee. Before credentials exist, observe once without
-  // loading plugin metadata or reading any credential value.
-  let metadata = null, envelope = null;
-  if (checkRevision) {
-    const plugin = app.plugins.plugins["obsync-private-sync"];
-    metadata = await plugin.loadData();
-    const secret = app.secretStorage.getSecret(metadata.credentialRef);
-    try { envelope = secret === null ? null : JSON.parse(secret); }
-    catch { throw new Error("credential envelope is not valid JSON"); }
-  }
-  // Obsidian exposes this wrapper on Windows, but Electron implements it
-  // only on Linux. Required Linux backends still refuse an unavailable name.
-  let backend = "none reported";
-  try { backend = app.secretStorage?.adapter?.getSelectedStorageBackend?.() ?? backend; }
-  catch { backend = "unavailable"; }
-  let encrypted = null;
-  if (checkRevision) encrypted = app.secretStorage.isEncryptionAvailable();
-  else {
-    try { encrypted = app.secretStorage?.isEncryptionAvailable?.() ?? null; } catch {}
-  }
-  return {
-    encrypted,
-    backend,
-    stored: typeof raw === "string" && raw.length > 0,
-    plain,
-    revisionMatches: checkRevision ? Number.isSafeInteger(metadata.credentialRevision)
-      && metadata.credentialRevision > 0 && metadata.credentialRevision === envelope?.current?.revision : null,
-  };
+  let safe;
+  try { safe = app.secretStorage?.adapter?.safeStorage; } catch {}
+  const flag = value => typeof value === "boolean" ? value : null;
+  let backend = "none reported", encrypted = null, outerEncrypted = null;
+  try {
+    const selected = platform === "linux" ? safe?.getSelectedStorageBackend?.() : undefined;
+    if (selected !== undefined) backend = ["gnome_libsecret", "kwallet", "kwallet5", "kwallet6", "basic_text", "unknown"].includes(selected)
+      ? selected : "unrecognized";
+  } catch { backend = "unavailable"; }
+  try { encrypted = flag(safe?.isEncryptionAvailable?.()); } catch {}
+  try { outerEncrypted = flag(app.secretStorage?.isEncryptionAvailable?.()); } catch {}
+  const facts = { encrypted, outerEncrypted, backend, stored: typeof raw === "string" && raw.length > 0,
+    plain, wrapped: false, plainRoot: null, revisionMatches: null, pinMatches: null, cleanupComplete: null };
+  if (!checkRevision) return facts; // No plugin metadata or credential read during this observation.
+  try {
+    const plugin = app.plugins.plugins["obsync-private-sync"], metadata = await plugin.loadData();
+    if (metadata.storageVersion !== 3 || metadata.credentialFormat !== "native-desktop-v1" ||
+        metadata.credentialEnvelopeVersion !== 2 || !/^[0-9a-f]{32}$/.test(metadata.installationId) ||
+        metadata.credentialRef !== `obsync-private-sync-v1-${metadata.installationId}-os`) throw Error();
+    const oldRef = `obsync-private-sync-v1-${metadata.installationId}`;
+    const stored = app.secretStorage.getSecret(metadata.credentialRef);
+    const prefix = "obsync-native-custody-v1:";
+    if (typeof stored !== "string" || !stored.startsWith(prefix)) throw Error();
+    const text = stored.slice(prefix.length);
+    if (!text || text.length > (16 << 20) * 2) throw Error();
+    const { Buffer } = require("buffer");
+    const bytes = Buffer.from(text, "base64");
+    if (bytes.length > (16 << 20) || bytes.toString("base64") !== text) throw Error();
+    const decoded = safe.decryptString(bytes);
+    if (typeof decoded !== "string" || new TextEncoder().encode(decoded).length > (16 << 20)) throw Error();
+    const envelope = JSON.parse(decoded), current = envelope.current, custody = envelope.custody;
+    const state = plugin.state, pin = metadata.sealPin, accepted = state?.custody2();
+    facts.wrapped = true;
+    // Inspect only the two deterministic old owned references, never enumerate secrets.
+    const retired = [app.secretStorage.getSecret(oldRef), app.secretStorage.getSecret(oldRef + "-claim")];
+    const claim = app.secretStorage.getSecret(metadata.credentialRef + "-claim");
+    facts.cleanupComplete = metadata.credentialCleanupPending === false && [...retired, claim].every(value => value === null || value === "");
+    facts.plainRoot = [stored, ...retired, claim].some(value => typeof value === "string" && value !== "" && !value.startsWith(prefix));
+    facts.revisionMatches = envelope.version === 2 && envelope.installationId === metadata.installationId &&
+      Number.isSafeInteger(metadata.credentialRevision) && metadata.credentialRevision > 0 &&
+      metadata.credentialRevision === current?.revision && metadata.serverUrl === current?.serverUrl &&
+      metadata.deviceId === current?.deviceId;
+    facts.pinMatches = /^[0-9a-f]{64}$/.test(current?.vrk) && /^[0-9a-f]{64}$/.test(current?.deviceSecret) &&
+      /^[0-9a-f]{32}$/.test(current?.deviceId) && /^[0-9a-f]{32}$/.test(pin?.generation) &&
+      pin?.suite === 2 && pin.phase === "active" && custody?.suite === 2 &&
+      custody.phase === "active" && custody.enrollment === null && custody.rotation === null && custody.generation === pin.generation &&
+      state.paired === true &&
+      state.data.vrk === current?.vrk && state.data.deviceId === current?.deviceId &&
+      state.data.deviceSecret === current?.deviceSecret && state.data.serverUrl === current?.serverUrl &&
+      JSON.stringify(state.data.edgeHeaders) === JSON.stringify(current?.edgeHeaders) &&
+      JSON.stringify(accepted) === JSON.stringify(custody);
+    // If the host outer layer is JSON, its exact owned entry must still be our wrapped packet.
+    if (plain && JSON.parse(raw)[metadata.credentialRef] !== stored) throw Error();
+    return facts;
+  } catch { throw new Error("native credential envelope could not be verified"); }
 }
 
 export function assertCustody(found, want) {
-  if (!found.stored || !found.revisionMatches
-      || Object.entries(want).some(([key, value]) => found[key] !== value)) {
-    throw new Error("credential custody does not match the required encrypted storage and revision");
+  if (!found.stored || !found.wrapped || found.plainRoot !== false || !found.revisionMatches ||
+      !found.pinMatches || !found.cleanupComplete ||
+      Object.entries(want).some(([key, value]) => found[key] !== value)) {
+    throw new Error("credential custody does not match the required native-wrapped storage and revision");
+  }
+}
+
+// Dedicated negative path only: before Trust, count actual native boundaries.
+// No secret values, request headers or bodies are retained or exported.
+export function installCustodyRefusalProbe(origin, injectUnavailable, platform) {
+  let restore = () => {}, injected = false, stage = "platform";
+  try {
+    if (!["darwin", "win32", "linux"].includes(platform)) throw Error();
+    stage = "activation";
+    if (window.obsyncCustodyRefusal || app.plugins.plugins["obsync-private-sync"]) throw Error();
+    stage = "interface";
+    const vault = app.vault, secret = app.secretStorage, safe = secret.adapter?.safeStorage;
+    if (vault?.configDir !== ".obsidian" || !safe || typeof safe.isEncryptionAvailable !== "function" || typeof safe.encryptString !== "function" ||
+        typeof safe.decryptString !== "function" || typeof secret.setSecret !== "function" ||
+        typeof vault?.writePluginData !== "function" || typeof window.fetch !== "function") throw Error();
+    stage = "availability";
+    let available = null, backend = "none reported";
+    try {
+      available = safe.isEncryptionAvailable();
+      if (platform === "linux") backend = safe.getSelectedStorageBackend?.() ?? backend;
+    } catch {}
+    if (injectUnavailable && (available !== true || (platform === "linux" &&
+      !["gnome_libsecret", "kwallet", "kwallet5", "kwallet6"].includes(backend)))) throw Error();
+    stage = "install";
+    const original = { set: secret.setSecret, save: vault.writePluginData, fetch: window.fetch,
+      availability: Object.getOwnPropertyDescriptor(safe, "isEncryptionAvailable") };
+    const seen = { publicWrites: 0, metadataWrites: 0, transportRequests: 0 };
+    const blob = app.loadLocalStorage("secrets-encrypted");
+    restore = () => {
+      secret.setSecret = original.set; vault.writePluginData = original.save; window.fetch = original.fetch;
+      if (injected) {
+        if (original.availability) Object.defineProperty(safe, "isEncryptionAvailable", original.availability);
+        else delete safe.isEncryptionAvailable;
+      }
+      delete window.obsyncCustodyRefusal; return true;
+    };
+    const observeSet = function (...args) { seen.publicWrites++; return original.set.apply(this, args); };
+    // Official Plugin.saveData dispatches to vault.writePluginData(manifest.dir, data, options).
+    const observeSave = function (...args) {
+      if (args[0] === ".obsidian/plugins/obsync-private-sync") seen.metadataWrites++;
+      return original.save.apply(this, args);
+    };
+    const observeFetch = function (...args) {
+      try { if (new URL(typeof args[0] === "string" || args[0] instanceof URL ? args[0] : args[0].url).origin === origin) seen.transportRequests++; } catch {}
+      return original.fetch.apply(this, args);
+    };
+    secret.setSecret = observeSet; vault.writePluginData = observeSave; window.fetch = observeFetch;
+    if (secret.setSecret !== observeSet || vault.writePluginData !== observeSave || window.fetch !== observeFetch) throw Error();
+    if (injectUnavailable) {
+      Object.defineProperty(safe, "isEncryptionAvailable", { configurable: true, value: () => false }); injected = true;
+    }
+    window.obsyncCustodyRefusal = { seen, blob, available, backend, platform, injected: injectUnavailable, restore };
+    return true;
+  } catch { restore(); throw Error(`native custody observer installation refused: ${stage}`); }
+}
+
+export function custodyRefusalFacts() {
+  const probe = window.obsyncCustodyRefusal;
+  if (!probe) throw Error("custody refusal observer missing");
+  const state = app.plugins.plugins["obsync-private-sync"]?.state;
+  const visible = [...document.querySelectorAll(".notice")].some(node => node.textContent.includes(
+    "cannot use operating-system encryption for this vault's sync credentials. Sync is stopped before enrollment or credential storage."));
+  return { ...probe.seen, unavailable: probe.injected || probe.available !== true ||
+    (probe.platform === "linux" && !["gnome_libsecret", "kwallet", "kwallet5", "kwallet6"].includes(probe.backend)), stateAbsent: state == null,
+    rootAbsent: state?.data?.vrk == null && state?.custody2?.() == null &&
+      ![...document.querySelectorAll(".modal pre")].some(node => node.textContent.trim().startsWith("obsync-recovery-v2 ")),
+    blobUnchanged: app.loadLocalStorage("secrets-encrypted") === probe.blob, visible };
+}
+
+/** Synthetic source-origin negative evidence; not real-server or TLS acceptance. */
+export async function verifyNativeCustodyRefusal(instance, trustLabel, click, until, injectUnavailable = false) {
+  const sockets = new Set();
+  let controls = 0, requests = 0, page, timer;
+  const server = http.createServer((req, res) => {
+    const control = req.url === "/__control" && req.method === "GET";
+    if (control) controls++; else requests++;
+    let received = 0;
+    req.on("data", bytes => { received += bytes.length; if (received > 65536) req.destroy(); });
+    req.resume();
+    res.writeHead(200, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
+    req.on("end", () => res.end('{"reachable":true}'));
+  });
+  server.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); socket.setTimeout(3000, () => socket.destroy()); });
+  const run = async (fn, ...args) => {
+    try { return await Promise.race([page.run(fn, ...args), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Error("native custody evaluator exceeded 5000ms")), 5000);
+    })]); } finally { clearTimeout(timer); }
+  };
+  const metadata = path.join(instance.vault, ".obsidian", "plugins", "obsync-private-sync", "data.json");
+  try {
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    fs.writeFileSync(metadata, JSON.stringify({ serverUrl: origin }));
+    const baseline = fs.readFileSync(metadata);
+    page = await instance.main();
+    await until("unavailable host workspace ready", () => run(() => !!(window.app && app.workspace?.layoutReady)));
+    await until("unavailable host waits for Trust before activation", () => instance.anywhere(label =>
+      [...document.querySelectorAll("button")].some(button => button.textContent.trim() === label), trustLabel));
+    const reachable = await run(async origin => (await fetch(origin + "/__control", {
+      credentials: "omit", signal: AbortSignal.timeout(3000) })).ok, origin);
+    if (reachable !== true || controls !== 1) throw Error("custody negative fixture native reachability control failed");
+    if (await run(installCustodyRefusalProbe, origin, injectUnavailable, process.platform) !== true) throw Error("custody observer was not installed");
+    await until("unavailable host trusts the plugin", () => instance.anywhere(click, trustLabel));
+    await until("visible pre-persistence custody refusal", async () =>
+      instance.pluginLog().some(line => /state decision=stopped reason=desktop_custody_unavailable(?:\s|$)/.test(line)) &&
+      (await run(custodyRefusalFacts)).visible);
+    const facts = await run(custodyRefusalFacts);
+    if (!facts.unavailable || !facts.visible || !facts.stateAbsent || !facts.rootAbsent || !facts.blobUnchanged ||
+        facts.publicWrites !== 0 || facts.metadataWrites !== 0 || facts.transportRequests !== 0 ||
+        requests !== 0 || !fs.readFileSync(metadata).equals(baseline)) {
+      throw Error("custody unavailable refusal had side effects or lacked its required evidence");
+    }
+    return { refused: true, publicWrites: 0, metadataWrites: 0, transportRequests: 0,
+      sourceRequests: 0, enrollments: 0, rootAbsent: true, nativeControl: true, injected: injectUnavailable };
+  } finally {
+    clearTimeout(timer);
+    try {
+      if (page && await run(() => window.obsyncCustodyRefusal ? window.obsyncCustodyRefusal.restore() : true) !== true) throw Error("custody observer cleanup refused");
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise(resolve => server.close(resolve));
+    }
   }
 }
 

@@ -23,7 +23,7 @@ system; it is not a device run, and only a record below is
 | iPhone | The runs below that name it; most recently [2026-10-08](2026-10-08-character-merge-117.md), seven sessions on the 1.1.7 candidate: paired, one defect shown to be Obsidian's, a co-typing defect found and fixed, and the background, relaunch, offline and leave journeys passed | Nothing: no CI job runs a phone |
 | iPad | Not yet recorded | Nothing |
 | Windows | [2026-09-27](2026-09-27-windows-11-vm.md): Windows 11 on ARM64 in a virtual machine, the 1.1.4 build; most recently [2026-09-30](2026-09-30-train-1.1.5.md), a 1.1.5 train build | `desktop-matrix.yml`, `obsidian-windows`: the same journeys, plus a case-only rename, the trash and a file another program holds open on NTFS; `plugin-tests` on Windows |
-| Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the same journeys with the official AppImage, the authority trusted in each instance's own NSS store, and a third instance without it refused |
+| Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the protected-keyring journey uses the official AppImage and trust scoped to each instance's NSS store; a third instance without CA trust refuses. Without a protected keyring, the separate leg requires visible refusal before credential writes or enrollment |
 | Android | [2026-09-27](2026-09-27-android-emulator.md): an Android 15 emulator, not a physical phone, the 1.1.4 build; most recently [2026-10-08](2026-10-08-character-merge-117.md), the same emulator typing at one place with a desktop on the 1.1.7 candidate | Nothing: no CI job runs a phone |
 
 `desktop-matrix.yml` runs on every PR and main push through the required

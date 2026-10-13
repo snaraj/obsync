@@ -205,16 +205,24 @@ One old root, explicitly labeled by suite, may be retained for history only;
 normal sync never tries it as an alternate current key.
 
 SecretStorage is shared with trusted plugins in the vault, not isolated from
-those plugins or the OS. Universal OS encryption and an atomic crash-durable
-transaction with plugin metadata are not documented API guarantees. Native
-app-restart persistence and physical-phone custody remain separate acceptance
-evidence. The plugin's fail-stopped pin detects mismatch; it cannot guarantee
-that host storage always encrypts its owned envelope.
-Native Obsidian 1.13.7 acceptance has also reproduced an unencrypted entry on
-macOS when native encryption was unavailable, despite successful public API
-readback. A preceding passing comparison did not resolve that host limitation.
-The strict native custody assertion remains enforced and the current candidate
-does not satisfy it for the failing simultaneous-launch case.
+those plugins or the OS. On desktop, obsync encrypts the entire owned envelope
+through the OS service before calling public SecretStorage. Unavailable or
+unsupported protection refuses before persistence; new desktop metadata
+requires native ciphertext and retains the existing identity and generation
+checks after decryption. The narrow private host bridge is a compatibility
+constraint, not a public API guarantee. Mobile retains its public native path
+and separate physical-phone acceptance.
+
+An atomic crash-durable transaction with plugin metadata is not a documented
+host guarantee. Native app-restart persistence remains separate acceptance
+evidence. The desktop wrapper does not provide a new content cipher, local
+rollback protection or secure erasure of earlier filesystem snapshots/backups.
+It addresses a reproduced Obsidian 1.13.7 macOS failure in which public API
+readback succeeded while the host stored a root-bearing envelope unencrypted;
+successful readback alone was insufficient.
+The strict native custody assertion remains enforced. The replacement passes
+the simultaneous-launch and restart journey on Obsidian 1.14.4; the required
+hosted platform matrix and physical-phone acceptance remain separate gates.
 
 Live recovery requires the complete `obsync-recovery-v2` prefixed backup,
 explicit supported recovery-only capability and an existing matching suite-2
@@ -292,12 +300,12 @@ claims. A backup format prefix does not prove freshness.
    Native support/latency, physical phones, aggregate quantitative bounds and
    independent protocol review remain distinct requirements. Unsupported native
    operations refuse rather than switching modes.
-8. On Linux, Obsidian's secret storage is only as private as the desktop's
-   keyring: without one it still keeps the vault key and device secret,
-   unencrypted (Obsidian 1.13.7, issue #217; from its next start Obsidian
-   shows a notice saying so), protected then by the home folder's
-   permissions alone. Obsidian's API does not say which storage it uses, so
-   the plugin cannot detect it; `docs/community-plugin.md` tells the user.
+8. On Linux, desktop key custody requires a recognized protected OS backend.
+   The native wrapper rejects missing protection, `basic_text` and unknown
+   backends. Host plaintext fallback therefore receives no raw obsync envelope.
+   A running OS or another trusted plugin can still request decryption, and
+   earlier unencrypted copies are not erased from backups. The operational
+   requirement is in `docs/community-plugin.md`.
 
 Fresh-root rotation protects only content sealed under the new root and only on
 transitioned devices. All retained devices must explicitly re-pair from the

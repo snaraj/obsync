@@ -34,6 +34,7 @@ export const RECASE_TEMP = /^\.obsync-recase-[0-9a-f]{16}(\.[^/]+)?$/;
 export interface SecretStore {
   getSecret(id: string): string | null;
   setSecret(id: string, value: string): void;
+  desktopCustody?: { assertAvailable(): void; seal(value: string): string; open(value: string): string };
 }
 
 /**
@@ -42,6 +43,8 @@ export interface SecretStore {
  * no longer forbid the one step that gets a vault whose saved credentials are
  * truly gone syncing again -- pairing it as a new device.
  */
+const DESKTOP_STORAGE_STOP = "obsync could not complete this vault's encrypted credential storage. Sync is stopped; local notes are unchanged. Saved credential or migration bytes may already have changed, so keep your complete recovery backup or another paired device available and reload Obsidian after its operating-system encryption service is available. A repeated refusal requires the verified recovery or pairing flow in a fresh vault, not a storage reset.";
+
 export class StateStorageError extends Error {
   constructor(readonly reason: string, message?: string) {
     super(message ?? "obsync could not read or save this vault's sync credentials in Obsidian's secret storage. Sync is stopped, and nothing was sent or changed. Reload Obsidian. If this keeps happening, have your complete recovery backup or another syncing device at hand, then reinstall obsync and pair this device again; your notes stay in this vault.");
@@ -874,6 +877,8 @@ export class State {
   private changingCustody = false;
   private resetOnActivation = false;
   private replacementPatch: Partial<Credentials> | null = null;
+  private wrapped = false;
+  private cleanupPending = false;
   private custodyAdmission: "replacement" | "resume" | "legacy-upgrade" | null = null;
 
   private constructor(
@@ -920,18 +925,22 @@ export class State {
     lease: Lease = { holder: null, writing: Promise.resolve() },
     held: Held = ALWAYS_HELD,
   ): Promise<State> {
-    let state: State;
+    let state: State | undefined;
     let migrate = false;
     const claim = lease.holder = {};
     const fresh = (data: ObsyncData): State => {
       const id = hex(randomBytes(16));
-      if (secrets.getSecret(secretRef(id)) !== null) throw new StateStorageError("reference_exists");
-      return new State(store, data, secrets, id, null, null, null, onFailure, lease, claim);
+      if (secrets.getSecret(secretRef(id) + (secrets.desktopCustody ? "-os" : "")) !== null) throw new StateStorageError("reference_exists");
+      const result = new State(store, data, secrets, id, null, null, null, onFailure, lease, claim);
+      result.wrapped = secrets.desktopCustody !== undefined;
+      return result;
     };
     try {
       if (!secrets || typeof secrets.getSecret !== "function" || typeof secrets.setSecret !== "function") {
         throw new StateStorageError("unavailable");
       }
+      if (isMobile && secrets.desktopCustody) throw new StateStorageError("invalid_desktop_envelope");
+      secrets.desktopCustody?.assertAvailable();
       await Promise.allSettled([lease.writing]);
       const loaded = await store.loadData();
       if (!isCurrent()) throw new StateStorageError("inactive_load");
@@ -942,26 +951,34 @@ export class State {
       catch (error) {
         throw new StateStorageError("invalid_sync_folders", error instanceof Error ? error.message : "Invalid saved folder selection; sync is stopped.");
       }
-      const versioned = ["storageVersion", "installationId", "credentialRef", "credentialRevision", "sealPin"]
+      const versioned = ["storageVersion", "installationId", "credentialRef", "credentialRevision", "sealPin", "credentialFormat", "credentialEnvelopeVersion", "credentialCleanupPending"]
         .some((key) => Object.hasOwn(metadata, key));
       if (versioned) {
+        const wrapped = metadata["storageVersion"] === 3;
+        const innerVersion = wrapped ? metadata["credentialEnvelopeVersion"] : metadata["storageVersion"];
+        if (wrapped && (isMobile || !secrets.desktopCustody || metadata["credentialFormat"] !== "native-desktop-v1" ||
+          typeof metadata["credentialCleanupPending"] !== "boolean")) throw new StateStorageError("invalid_desktop_envelope");
+        if (!wrapped && ["credentialFormat", "credentialEnvelopeVersion", "credentialCleanupPending"].some(key => Object.hasOwn(metadata, key))) throw new StateStorageError("invalid_metadata");
         const id = metadata["installationId"], revision = metadata["credentialRevision"];
-        if (![1, 2].includes(metadata["storageVersion"] as number) || typeof id !== "string" ||
+        if (![1, 2].includes(innerVersion as number) || typeof id !== "string" ||
           typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 1 ||
           typeof metadata["serverUrl"] !== "string" ||
           ["vrk", "deviceSecret", "edgeHeaders", "custody", "enrollment", "rotation", "history", "newRoot", "root"].some((key) => Object.hasOwn(metadata, key)) ||
-          (metadata["storageVersion"] === 1 && Object.hasOwn(metadata, "sealPin")) ||
-          (metadata["storageVersion"] === 2 && (!exact(metadata["sealPin"], ["suite", "generation", "phase"]) ||
+          (innerVersion === 1 && Object.hasOwn(metadata, "sealPin")) ||
+          (innerVersion === 2 && (!exact(metadata["sealPin"], ["suite", "generation", "phase"]) ||
             metadata["sealPin"]["suite"] !== 2 || !hexField(metadata["sealPin"]["generation"], 16) || !PHASES.includes(metadata["sealPin"]["phase"] as string)))) {
           throw new StateStorageError("invalid_metadata");
         }
-        const ref = secretRef(id);
+        const ref = secretRef(id) + (wrapped ? "-os" : "");
         if (metadata["credentialRef"] !== ref) throw new StateStorageError("invalid_reference");
         const raw = secrets.getSecret(ref);
-        if (raw === null && (metadata["storageVersion"] === 2 || held.holds(ref))) throw new StateStorageError("missing_secret");
-        const envelope = raw === null ? null : readEnvelope(raw, id);
-        if (envelope !== null && envelope.version !== metadata["storageVersion"]) throw new StateStorageError("pin_mismatch");
-        if (metadata["storageVersion"] === 2) {
+        const ambiguousLegacy = () => new StateStorageError("desktop_legacy_inconsistent",
+          "obsync found inconsistent saved legacy sync credentials. Sync is stopped and the saved bytes are unchanged. Keep your complete recovery backup or another paired device available, then recover in a fresh vault through the verified recovery or pairing flow; local notes stay here.");
+        if (!wrapped && secrets.desktopCustody && raw === null && secrets.getSecret(claimRef(id))) throw ambiguousLegacy();
+        if (raw === null && (wrapped || innerVersion === 2 || held.holds(ref))) throw new StateStorageError("missing_secret");
+        const envelope = raw === null ? null : readEnvelope(wrapped ? secrets.desktopCustody!.open(raw) : raw, id);
+        if (envelope !== null && envelope.version !== innerVersion) throw new StateStorageError("pin_mismatch");
+        if (innerVersion === 2) {
           if (!envelope || envelope.current.revision !== revision || envelope.current.serverUrl !== metadata["serverUrl"] ||
             envelope.current.deviceId !== metadata["deviceId"]) throw new StateStorageError("pin_mismatch");
           const verifiedCustody = await custody(envelope.custody, envelope.current), marker = metadata["sealPin"];
@@ -971,7 +988,11 @@ export class State {
           Object.assign(data, credentials({ ...envelope.current }));
           state = new State(store, data, secrets, id, envelope.current, envelope, raw, onFailure, lease, claim);
           state.currentCustody = verifiedCustody;
+          state.wrapped = wrapped;
+          state.cleanupPending = wrapped && metadata["credentialCleanupPending"] === true;
           held.hold(ref);
+          await state.finishDesktopMigration();
+          held.hold(state.reference());
           return state;
         }
         // A COPY, OR A FOLDER RENAMED OUTSIDE OBSIDIAN: never the device the
@@ -980,6 +1001,8 @@ export class State {
         // revision just past this installation's newest, and the secret entry
         // it follows was still on its way to disk. That credential is nowhere,
         // and none is guessed or taken from an older revision.
+        if (!wrapped && secrets.desktopCustody && envelope !== null && revision === envelope.current.revision + 1) throw ambiguousLegacy();
+        if (wrapped && (!envelope || revision === envelope.current.revision + 1)) throw new StateStorageError("pin_mismatch");
         if (envelope === null || revision === envelope.current.revision + 1) {
           state = fresh(data);
           const { serverUrl } = data;
@@ -997,6 +1020,8 @@ export class State {
           }
           Object.assign(data, credentials({ ...selected }));
           state = new State(store, data, secrets, id, selected, envelope, raw, onFailure, lease, claim);
+          state.wrapped = wrapped;
+          state.cleanupPending = wrapped && metadata["credentialCleanupPending"] === true;
           held.hold(ref);
         }
       } else {
@@ -1005,15 +1030,83 @@ export class State {
         migrate = true;
       }
     } catch (error) {
-      const failure = error instanceof StateStorageError ? error : new StateStorageError("load_failed");
-      onFailure(failure);
+      let failure = error instanceof StateStorageError ? error : new StateStorageError("load_failed");
+      if (secrets?.desktopCustody && failure.message.includes("nothing was sent or changed")) failure = new StateStorageError(failure.reason, DESKTOP_STORAGE_STOP);
+      if (state?.failure !== failure) onFailure(failure);
       throw failure;
     }
     if (migrate) {
       await state.save();
-      held.hold(secretRef(state.installationId));
+      held.hold(state.reference());
     }
+    await state.finishDesktopMigration();
+    if (secrets.desktopCustody) held.hold(state.reference());
     return state;
+  }
+
+  private storageFailure(error: unknown, fallback: string): StateStorageError {
+    const failure = error instanceof StateStorageError ? error : new StateStorageError(fallback);
+    return this.secrets.desktopCustody && failure.message.includes("nothing was sent or changed")
+      ? new StateStorageError(failure.reason, DESKTOP_STORAGE_STOP) : failure;
+  }
+
+  private reference(): string { return secretRef(this.installationId) + (this.wrapped ? "-os" : ""); }
+  private encode(value: string): string { return this.wrapped ? this.secrets.desktopCustody!.seal(value) : value; }
+
+  private async finishDesktopMigration(): Promise<void> {
+    if (!this.secrets.desktopCustody) return;
+    try {
+      this.assertHolder();
+      if (!this.wrapped) {
+        const oldRef = this.reference(), nextRef = oldRef + "-os";
+        if (!this.envelope || this.secrets.getSecret(oldRef) !== this.serializedSecret) throw new StateStorageError("secret_changed");
+        const next = this.secrets.desktopCustody.seal(JSON.stringify(this.envelope));
+        // A pre-ACK interruption may leave this exact owned candidate; never overwrite a different authority.
+        const prior = this.secrets.getSecret(nextRef);
+        if (prior !== null && this.secrets.desktopCustody.open(prior) !== JSON.stringify(this.envelope)) throw new StateStorageError("secret_changed");
+        const oldClaim = this.secrets.getSecret(claimRef(this.installationId));
+        if (oldClaim) {
+          const existingClaim = this.secrets.getSecret(nextRef + "-claim");
+          if (existingClaim !== null && this.secrets.desktopCustody.open(existingClaim) !== oldClaim) throw new StateStorageError("secret_changed");
+          const held = this.secrets.desktopCustody.seal(oldClaim);
+          this.secrets.setSecret(nextRef + "-claim", held);
+          if (this.secrets.getSecret(nextRef + "-claim") !== held) throw new StateStorageError("secret_readback_failed");
+        }
+        this.secrets.setSecret(nextRef, next);
+        if (this.secrets.getSecret(nextRef) !== next) throw new StateStorageError("secret_readback_failed");
+        this.wrapped = true; this.cleanupPending = true; this.serializedSecret = next;
+        await this.save();
+      }
+      const oldRef = secretRef(this.installationId), old = this.secrets.getSecret(oldRef);
+      const oldClaim = this.secrets.getSecret(claimRef(this.installationId));
+      if (!this.cleanupPending && (old || oldClaim)) throw new StateStorageError("desktop_cleanup_mismatch");
+      if (this.cleanupPending) {
+        this.assertHolder();
+        if (old) {
+          const prior = readEnvelope(old, this.installationId);
+          if (prior.version === 2) await custody(prior.custody, prior.current);
+          if (JSON.stringify(prior) !== JSON.stringify(this.envelope)) throw new StateStorageError("desktop_cleanup_mismatch");
+        }
+        if (oldClaim) {
+          const held = this.secrets.getSecret(this.reference() + "-claim");
+          if (!held || this.secrets.desktopCustody.open(held) !== oldClaim) throw new StateStorageError("desktop_cleanup_mismatch");
+        }
+        this.assertHolder();
+        if (this.secrets.getSecret(this.reference()) !== this.serializedSecret) throw new StateStorageError("secret_changed");
+        for (const ref of [secretRef(this.installationId), claimRef(this.installationId)]) {
+          this.secrets.setSecret(ref, "");
+          if (this.secrets.getSecret(ref) !== "") throw new StateStorageError("secret_readback_failed");
+        }
+        this.cleanupPending = false;
+        await this.save();
+      }
+    } catch (error) {
+      if (this.failure === null) {
+        this.failure = this.storageFailure(error, "desktop_migration_failed");
+        this.onFailure(this.failure);
+      }
+      throw this.failure;
+    }
   }
 
   assertAvailable(): void {
@@ -1193,7 +1286,7 @@ export class State {
     if (this.resetOnActivation) resetSyncBookkeeping(snapshot);
     const { vrk, deviceSecret, edgeHeaders, ...bookkeeping } = snapshot;
     const verified = credentials({ vrk, deviceSecret, edgeHeaders, deviceId: snapshot.deviceId });
-    const ref = secretRef(this.installationId);
+    const ref = this.reference();
     const payload = { serverUrl: snapshot.serverUrl, ...verified };
     const previousPayload = this.record === null ? null : { serverUrl: this.record.serverUrl, ...credentials({ ...this.record }) };
     const verifiedCustody = next === null ? null : await custody(next, verified);
@@ -1222,7 +1315,7 @@ export class State {
       selected = { revision, ...payload };
       const envelope: SecretEnvelope = { version: verifiedCustody === null ? 1 : 2, installationId: this.installationId, current: selected,
         previous: verifiedCustody === null ? this.record : null, ...(verifiedCustody === null ? {} : { custody: verifiedCustody }) };
-      const serialized = JSON.stringify(envelope);
+      const serialized = this.encode(JSON.stringify(envelope));
       try { this.secrets.setSecret(ref, serialized); }
       catch { throw new StateStorageError("secret_write_failed"); }
       if (this.secrets.getSecret(ref) !== serialized) throw new StateStorageError("secret_readback_failed");
@@ -1230,7 +1323,8 @@ export class State {
       this.serializedSecret = serialized;
     }
     try {
-      await (this.lease.writing = this.store.saveData({ ...bookkeeping, storageVersion: verifiedCustody === null ? 1 : 2, installationId: this.installationId,
+      await (this.lease.writing = this.store.saveData({ ...bookkeeping, storageVersion: this.wrapped ? 3 : verifiedCustody === null ? 1 : 2,
+        ...(this.wrapped ? { credentialFormat: "native-desktop-v1", credentialEnvelopeVersion: verifiedCustody === null ? 1 : 2, credentialCleanupPending: this.cleanupPending } : {}), installationId: this.installationId,
         credentialRef: ref, credentialRevision: selected.revision, ...(verifiedCustody === null ? {} : { sealPin: pin(verifiedCustody) }) }));
     } catch { throw new StateStorageError("metadata_write_failed"); }
     if (this.replacementPatch !== null) Object.assign(this.data, this.replacementPatch);
@@ -1252,7 +1346,7 @@ export class State {
           await this.persist(JSON.parse(JSON.stringify(this.data)) as ObsyncData, this.nextCustody === undefined ? this.currentCustody : this.nextCustody);
         }
       } catch (error) {
-        this.failure = error instanceof StateStorageError ? error : new StateStorageError("save_failed");
+        this.failure = this.storageFailure(error, "save_failed");
         this.pending = false;
         this.onFailure(this.failure);
         throw this.failure;
@@ -1314,10 +1408,10 @@ export class State {
       envelope.current.deviceId !== null || envelope.current.deviceSecret !== null) {
       throw new StateStorageError("credential_present");
     }
-    const ref = secretRef(this.installationId);
+    const ref = this.reference();
     if (this.secrets.getSecret(ref) !== this.serializedSecret) throw new StateStorageError("secret_changed");
     const collapsed: SecretEnvelope = { ...envelope, previous: null };
-    const serialized = JSON.stringify(collapsed);
+    const serialized = this.encode(JSON.stringify(collapsed));
     try { this.secrets.setSecret(ref, serialized); }
     catch { throw new StateStorageError("secret_write_failed"); }
     if (this.secrets.getSecret(ref) !== serialized) throw new StateStorageError("secret_readback_failed");
@@ -1328,8 +1422,8 @@ export class State {
   /** A pairing claim an obsync before 1.1.5 held for a restart, or `null` (`ObsyncPlugin.resumePairing`). */
   heldClaim(): string | null {
     try {
-      const raw = this.secrets.getSecret(claimRef(this.installationId));
-      return raw === "" ? null : raw;
+      const raw = this.secrets.getSecret(this.reference() + "-claim");
+      return raw === "" || raw === null ? null : this.wrapped ? this.secrets.desktopCustody!.open(raw) : raw;
     } catch {
       return null;
     }
@@ -1344,9 +1438,9 @@ export class State {
    */
   holdClaim(claim: string | null): boolean {
     if (this.failure !== null || this.lease.holder !== this.claim) return false;
-    const ref = claimRef(this.installationId);
-    const text = claim ?? "";
+    const ref = this.reference() + "-claim";
     try {
+      const text = claim === null ? "" : this.encode(claim);
       this.secrets.setSecret(ref, text);
       return this.secrets.getSecret(ref) === text;
     } catch {

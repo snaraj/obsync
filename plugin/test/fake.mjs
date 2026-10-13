@@ -10,7 +10,7 @@
  * No assertion library, no mock framework: `node:crypto` and plain objects.
  */
 
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -1474,9 +1474,25 @@ export const KEYS = {
 /** Test-only native store: exact get/set operations, no enumeration surface. */
 export function memorySecrets() {
   const held = new Map();
+  const validId = id => { if (typeof id !== "string" || id.length > 64 || !/^[a-z0-9-]+$/.test(id)) throw new Error("synthetic host refused secret ID"); };
+  // Synthetic unit host capability, never evidence for native OS encryption.
+  const key = Buffer.alloc(32, 37);
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    getSelectedStorageBackend: () => "gnome_libsecret",
+    encryptString(value) {
+      const iv = randomBytes(16), cipher = createCipheriv("aes-256-cbc", key, iv);
+      return Buffer.concat([iv, cipher.update(value, "utf8"), cipher.final()]);
+    },
+    decryptString(value) {
+      const cipher = createDecipheriv("aes-256-cbc", key, value.subarray(0, 16));
+      return Buffer.concat([cipher.update(value.subarray(16)), cipher.final()]).toString("utf8");
+    },
+  };
   return {
+    adapter: { safeStorage },
     getSecret: (id) => held.get(id) ?? null,
-    setSecret: (id, value) => { held.set(id, value); },
+    setSecret: (id, value) => { validId(id); held.set(id, value); },
   };
 }
 
