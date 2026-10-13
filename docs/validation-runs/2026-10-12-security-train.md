@@ -1185,10 +1185,43 @@ The clean direct rerun above has no recorder and exited successfully after
 stopping both apps and the fixture server; complete wire/key inventory belongs
 to the separate required real-engine E2EE gate.
 
-Physical-phone execution, native rotation/legacy-history UI journeys, fresh
-hosted final-head gates, independent protocol/quantitative acceptance and
-owner-agreed release placement remain open. No overall security approval,
-Ready, publication, deployment or universal no-backdoor proof follows.
+A subsequent native rotation probe passed 13 recorded observations on the
+same exact bundle and Obsidian/Electron versions. Two fresh actual instances
+completed initial setup and visible comparison-code pairing. Through the UI,
+the coordinator staged a different complete backup, prepared the transition,
+then quit and relaunched. Its encrypted rotation state and prepared receipt
+were byte-identical after reload, the metadata/secret revision matched and
+the sync engine remained stopped. After re-encryption and catalog readback,
+a second actual quit/relaunch preserved the pending commit in the same way.
+The UI required the complete new backup and owner token to commit. The peer
+then used explicit **Pair after rotation**, confirmed its old backup, compared
+both visible codes and acknowledged the coordinator's new generation. New
+notes and edits crossed both ways byte-for-byte; the old root remained only
+in the explicit history slot.
+
+This was the author probe `node /private/tmp/obsync-344-native-rotation/run.mjs`,
+using repository driver helpers and a disposable loopback server. The parent
+inspected its assertions and reduced receipts. Result SHA-256 is
+`beb02b3c06d855cffa32f90c30984c0746c9f285333581659ab5554ba70a81c2`;
+the reduced log is
+`dcaaf45f5eb9e8ae37083ff7176e6dea8520d2e25fcb100f0d8e4b6379edc32c`.
+Every custody observation required encryption available, non-plaintext storage,
+exact pins/revisions and secret-envelope equality. The backend name remained
+unavailable. The initial attempt stopped on a test closure's missing argument;
+it is retained as a harness failure, not a product failure or passing run.
+After the corrected fresh run, both apps and the server stopped and all owned
+profile, vault and credential data was removed. This was a target-null rotation
+of two retained desktops with small synthetic notes, not an excluded-third-device,
+crash, legacy-history-read or traffic/storage confidentiality experiment.
+
+Physical-phone execution, native legacy-history reads, fresh hosted final-head
+gates, independent protocol/quantitative acceptance and owner-agreed release
+placement remain open. Hosted simultaneous macOS startup at runtime commit
+`a6a3e74e1b070191b74303e5ce0d8fdb50288402` still fails the strict custody
+assertion while serialized startup passes; the local passes do not resolve it.
+The hosted security job at that commit passed its contracts before refusing
+the missing release step. No overall security approval, Ready, publication,
+deployment or universal no-backdoor proof follows.
 
 
 ### Real-engine rotation and legacy upgrade confidentiality
