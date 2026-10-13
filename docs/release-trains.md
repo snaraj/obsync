@@ -9,15 +9,24 @@ are applied on GitHub; they describe planned delivery, not completed acceptance.
 | --- | --- | --- |
 | [v1.1.6](https://github.com/snaraj/obsync/milestone/31) | Native Rust CLI discovery, contexts and verified installation | #255 |
 | [v1.1.7](https://github.com/snaraj/obsync/milestone/33) | First-sync writes, background performance, load-test regressions, measured pipeline/design work and CLI usability | #274, #277, #283, #319, #325, #329 |
-| [v1.1.8](https://github.com/snaraj/obsync/milestone/34) | Pairing confirmation and physical-phone blind-start/readback acceptance | #290, #314 |
-| [v1.1.9](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs and final integrated acceptance | #254, #256, #257, #258, #261, #262, #321 |
-| [v1.1.10](https://github.com/snaraj/obsync/milestone/32) | Deferred export, storage/deployment, backup/recovery and co-editing engine | #259, #260, #315, #317 |
+| [v1.1.8](https://github.com/snaraj/obsync/milestone/37) | End-to-end encryption assurance, strict recovery, client key custody and configurable device revocation | #344, #346 |
+| [v1.1.9](https://github.com/snaraj/obsync/milestone/34) | Pairing confirmation, physical-phone blind-start/readback, remaining concurrent-input timing and conflict-notice acceptance | #290, #314, #339, #340 |
+| [v1.1.10](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs and final integrated acceptance | #254, #256, #257, #258, #261, #262, #321 |
+| [v1.1.11](https://github.com/snaraj/obsync/milestone/32) | Deferred export, storage/deployment, backup/recovery and co-editing engine | #259, #260, #315, #317 |
+| [v1.1.12](https://github.com/snaraj/obsync/milestone/36) | Large-file limits, mobile streaming and measured device ceilings | #330, #331, #332 |
 
 #325 separates the immediate measurements, pipeline improvements, reviewed
 state/migration design and bounded experiments from #315's later engine. Its
 experimental engine code does not ship in 1.1.7. #319 moves out of the deferred
-bucket into 1.1.7. #254 and #262 close only after the integrated 1.1.9 management
-train's public artifact and live acceptance; the explicit 1.1.10 work stays open.
+bucket into 1.1.7. #254 and #262 close only after the integrated 1.1.10 management
+train's public artifact and live acceptance; the explicit 1.1.11 work stays open.
+
+Owner decision, 2026-10-12: ship the security train (#344, #346, PR #347)
+first as **v1.1.8**, and move the previously agreed v1.1.8–v1.1.11 trains
+forward one patch version. Their issue memberships remain unchanged; the
+pairing/phone train includes #339 and #340 from the owner's 2026-10-09 ruling.
+The large-files train (#330, #331, #332) was agreed on 2026-10-05. This ordering
+changes no acceptance requirement and does not assert that any train is ready.
 
 ## Composition and acceptance
 
@@ -31,12 +40,17 @@ The release order follows the table; no date or completed capability is promised
   independent context/install readback and verified public installation.
 - 1.1.7 requires measured before/after results, bounded-load regression proof,
   reviewed design and applicable desktop/phone sync evidence.
-- 1.1.8 requires pairing-state readback and physical-phone acceptance; emulator
+- 1.1.8 requires the security claim-to-evidence map, required confidentiality
+  regressions, encrypted local custody or pre-persistence refusal, native
+  desktop/physical-phone acceptance and exact-head independent approval.
+- 1.1.9 requires pairing-state readback and physical-phone acceptance; emulator
   rehearsal is supplemental evidence.
-- 1.1.9 requires the integrated CLI, native Obsidian and real MCP-host journeys,
+- 1.1.10 requires the integrated CLI, native Obsidian and real MCP-host journeys,
   applicable security/performance gates and exact public artifact proof.
-- 1.1.10 depends on the reviewed designs and retains every deferred security,
+- 1.1.11 depends on the reviewed designs and retains every deferred security,
   recovery, native-device, mixed-version and convergence requirement.
+- 1.1.12 requires measured size and watermark boundaries, mixed-version
+  refusals and real-phone evidence before raising advertised limits.
 
 Security, E2EE, durability and performance requirements remain unchanged.
 The owner added CLI help, diagnostics and XDG defaults (#329) during the
