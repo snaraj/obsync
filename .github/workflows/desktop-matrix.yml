@@ -178,7 +178,7 @@ jobs:
           docker cp "${container}:/out/obsyncd" "${RUNNER_TEMP}/obsyncd"
           docker rm --force "${container}" >/dev/null
       - name: Hand the binary to the Windows leg
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: obsyncd-linux-amd64
           path: ${{ runner.temp }}/obsyncd
@@ -224,7 +224,7 @@ jobs:
           OBSYNC_E2E_CAPTURES: ${{ runner.temp }}/obsync-editor-captures
         run: scripts/ci/obsidian-host.sh "${RUNNER_TEMP}/binary/obsyncd"
       - name: Retain verified synthetic editor captures
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-editor-captures
           path: ${{ runner.temp }}/obsync-editor-captures
