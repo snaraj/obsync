@@ -65,6 +65,13 @@ written, migrated and recovered is in
 Obsidian's own [storage guide](https://docs.obsidian.md/plugins/guides/secret-storage)
 describes the storage itself.
 
+That API does not report whether the host encrypted an entry. If native
+encryption is unavailable, Obsidian can accept and read back an entry while
+storing it unencrypted. This has been observed on macOS as well as Linux.
+Successful sync and credential readback do not prove encryption on disk;
+obsync cannot detect this host fallback through the public API. This is
+separate from the encryption of content sent to the sync server.
+
 **On Linux**, that storage is only as strong as your desktop's keyring, such as
 GNOME Keyring or KWallet. Without one, as on a minimal window manager or in a
 container, Obsidian still accepts the keys and keeps them unencrypted (seen
@@ -75,8 +82,9 @@ storage it uses, so obsync cannot warn you itself:
 [On Linux, the keys may not be in a keyring](troubleshooting.md#on-linux-the-keys-may-not-be-in-a-keyring)
 says what to do.
 
-If secret storage is unavailable or cannot be verified, sync stops with an
-error, and nothing is sent or changed. Then:
+If the secret-storage API is missing, a read or write fails, or the owned entry
+does not match its metadata, sync stops with an error. The host's unencrypted
+fallback can still pass these checks. For a reported storage error:
 
 1. Reload Obsidian.
 2. If it keeps happening, have your complete recovery backup or another syncing device

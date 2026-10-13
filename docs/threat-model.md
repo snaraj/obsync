@@ -210,6 +210,11 @@ transaction with plugin metadata are not documented API guarantees. Native
 app-restart persistence and physical-phone custody remain separate acceptance
 evidence. The plugin's fail-stopped pin detects mismatch; it cannot guarantee
 that host storage always encrypts its owned envelope.
+Native Obsidian 1.13.7 acceptance has also reproduced an unencrypted entry on
+macOS when native encryption was unavailable, despite successful public API
+readback. A preceding passing comparison did not resolve that host limitation.
+The strict native custody assertion remains enforced and the current candidate
+does not satisfy it for the failing simultaneous-launch case.
 
 Live recovery requires the complete `obsync-recovery-v2` prefixed backup,
 explicit supported recovery-only capability and an existing matching suite-2

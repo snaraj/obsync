@@ -1576,3 +1576,40 @@ the pinned evidence. No runtime source or bundle changed; the bundle remains
 These are focused deltas to the recorded complete local and hosted batteries,
 not another claimed full local gate or new physical-device run. No assertion
 was relaxed and no hosted rerun was used to erase an observed failure.
+
+At `83c3bbea2aa26e43ba44ce9e5ee055fddbcb6c19`, both repaired tests pass in
+the binary and Helm image builds. Binary job 115092028314 completes its
+deployment/proxy/restart journey; Helm job 115092028432 completes 13 steps,
+including the actual network-policy peer/sibling/stranger probes. Security
+job 115092027699 passes 925 contracts in 97.642 seconds, then refuses the
+unchanged artifact release step. These results close the two fixture failures,
+not the whole gate.
+
+The same head's simultaneous macOS job 115092028840 reproduces the native
+custody failure on the unchanged bundle: peer A reports `encrypted=false`,
+`stored=true`, `plain=true` and `revisionMatches=true` both after enrollment
+and before restart. Peer B reports encrypted, nonplaintext storage. Eleven
+native steps complete before the strict pre-restart custody assertion refuses
+the run. The earlier `bb290bcb` pass remains a bounded observation and does
+not establish remediation. No further launch-order permutations, credential
+changes, assertion relaxation or retry-to-green were performed. Reduced
+receipt digest: `d5dcffef5c52cd6601194f4df9fed4d990280f51f55fe347e9b3b8d426a7759d`.
+
+Source diagnosis confirms that the plugin stages its root-bearing owned
+SecretStorage envelope before enrollment and verifies public readback before
+metadata acknowledgment. The official pinned host adapter itself checks native
+availability during encryption and returns the original string when unavailable.
+Thus a successful public set/get cycle is consistent with the observed
+plaintext representation. The declared public API offers no encryption-status
+or encrypted-only write operation, so an encryption precondition cannot be
+implemented soundly with the present public storage API alone. No native error
+code or definitive cause was observed. Product instructions now state that
+host fallback is not confined to Linux. This is local-at-rest evidence, not
+evidence of plaintext content or content keys on the sync wire. An upstream
+report is prepared privately; no external submission or new custody mechanism
+has been authorized or implemented.
+
+The documentation correction passes all 100 onboarding and 24 community-release
+contracts, whitespace validation and both secret scans. It changes no runtime,
+test assertion, native launch order, API surface or version lock. Native custody
+remains an open acceptance requirement; the documentation does not waive it.
