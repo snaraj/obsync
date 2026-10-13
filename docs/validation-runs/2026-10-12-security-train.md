@@ -2067,4 +2067,44 @@ the legacy leg has 41 requests, ten files and 33 needles. Local chart checks
 first use installed Helm 4.3.0, then independently pass `make chart` again with
 official checksum-verified Helm 3.19.2, matching the CI version. The release
 server and plugin rebuild reproduce `3b4f94a7` and `d6504987` respectively.
-The updated container build and hosted replacement-head results are pending.
+The composed native linux/arm64 image build passes: Node 26.11.1/npm
+11.20.0 and the independent Rust 1.98.0 compiler assertions hold. Its plugin
+suite reports 2,464 passes and nine skips; all 11 image properties and 16
+Compose steps pass, including certificate-verified TLS. The owned builder,
+cache volume, images and smoke resources are removed; pre-existing container
+identities are unchanged. This local result does not claim linux/amd64
+execution or registry publication.
+
+At signed head `606ee7d610138fdfa07ac7399a18cb61d40727fb`, hosted
+[PR Gate run 38466340913](https://github.com/snaraj/obsync/actions/runs/38466340913)
+fails the protected-Linux job before its native custody journey begins.
+The failing plugin test starts a selected-folder case rename while the initial
+folder receipt is still outstanding. Its observed sequence-5 out-of-scope
+manifest is the device's own old-folder tombstone; it is not a dropped note
+content update. The other native jobs, container and k3d checks pass. Across
+the final PR check rollup, 44 checks pass, the aggregate and this job fail,
+the existing disposition-covered CodeQL wrapper fails, and documentation
+publication is skipped. Passing language analyses and dispositions do not
+turn the failed PR gate into a pass.
+
+The test-only repair holds the initial folder publication deliberately, proves
+that note records can arrive before its receipt, then releases it and waits
+for matching file identities, actual matching folder versions and both feed
+cursors before renaming. All original rename, identity, selection and diagnostic
+assertions remain. A postcondition explicitly requires the folder receipt.
+The coordinator independently passes all 52 case-rename tests and kills the
+wait-deletion mutant with that postcondition. The earlier worker's statement
+that removing the wait always reproduced sequence 5 was too strong: one parent
+run survived because publication raced ahead. That survivor is retained as a
+failed control, not credited as a kill. The worker separately removes the
+original selection-capture guard and the preserved note-identity assertion
+fails; runtime source is restored.
+
+The controlled ordering probe reproduces the own-folder diagnostic in three
+of three trials and preserves both notes' identities and bytes after receipts
+are released. The repaired complete local `make check` exits zero: 734 Rust
+tests, 94.85% coverage, 2,508 plugin tests, 207 CLI checks, 88 dashboard tests,
+930 contracts and both secret scans. Its E2EE run passes 21 flows and two
+planted controls in 14,076 ms, with 381 requests (340 main), 22 main storage
+files and 148 needles; the legacy leg retains 41 requests, ten files and 33
+needles. Hosted verification of this test-only replacement remains pending.

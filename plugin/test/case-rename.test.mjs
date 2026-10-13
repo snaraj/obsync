@@ -870,11 +870,40 @@ test("a case-only rename of a SELECTED folder publishes moves, not new notes", a
     isMobileB: false, caseSensitiveA: false, caseSensitiveB: false,
   });
   b.state.data.syncFolders = ["Team docs"];
+  // A note can land before its folder's initial receipt. Hold that post so
+  // the setup cannot mistake two note records for a completed initial sync.
+  let releaseFolder;
+  const folderGate = new Promise((resolve) => { releaseFolder = resolve; });
+  t.after(() => releaseFolder());
+  const post = a.transport.postVersion.bind(a.transport);
+  let folderHeld = false;
+  let folderPosted = false;
+  a.transport.postVersion = async (id, body) => {
+    if (!folderHeld && body.sids.length === 0 && !body.deleted) {
+      folderHeld = true;
+      await folderGate;
+      const receipt = await post(id, body);
+      folderPosted = true;
+      return receipt;
+    }
+    return post(id, body);
+  };
   a.host.write("Team docs/One.md", BODY, 1000);
   a.host.write("Team docs/Two.md", OTHER, 1000);
   await a.engine.start();
   await b.engine.start();
   await timers.run(STEP_MS, () => settled(b, "Team docs/One.md") && settled(b, "Team docs/Two.md"));
+  assert.equal(folderHeld, true, "the initial folder post never reached the hold");
+  assert.equal(folderPosted, false, "note records must not stand for the folder receipt");
+  releaseFolder();
+  await timers.run(STEP_MS, () => folderPosted &&
+    [a, b].every((device) => device.host.text("Team docs/One.md") === BODY &&
+      device.host.text("Team docs/Two.md") === OTHER &&
+      ["Team docs/One.md", "Team docs/Two.md"].every((path) => settled(device, path) &&
+        device.state.fileByPath(path).fileId === a.state.fileByPath(path)?.fileId) &&
+      device.state.folderByPath("Team docs")?.versionId === a.state.folderByPath("Team docs")?.versionId &&
+      device.state.folderByPath("Team docs") !== undefined && device.state.data.lastSeq === server.seq));
+  assert.equal(folderPosted, true, "the rename must follow the initial folder receipt");
   const ids = ["Team docs/One.md", "Team docs/Two.md"].map((path) => b.state.fileByPath(path).fileId);
 
   b.host.renameFolder("Team docs", "team docs");
