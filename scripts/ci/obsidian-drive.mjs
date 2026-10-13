@@ -47,7 +47,7 @@ import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { verifyNativeRedirects } from "./obsidian-redirect.mjs";
-import { secretFacts, assertCustody, verifyNativeCustodyRefusal, pairingCodes, assertPairingCodes, captureEditor as captureVerifiedEditor, finishEvidence } from "./obsidian-evidence.mjs";
+import { secretFacts, assertCustody, verifyNativeCustodyRefusal, verifyConcurrentNativeCustody, pairingCodes, assertPairingCodes, captureEditor as captureVerifiedEditor, finishEvidence } from "./obsidian-evidence.mjs";
 
 const PLUGIN_ID = "obsync-private-sync";
 const STEP_BUDGET_MS = 90_000;
@@ -598,6 +598,15 @@ async function main() {
       await openVault(b);
     } else {
       b.launch(binary, 19223, extra, homes);
+      if (store === "macos") {
+        const outcome = await verifyConcurrentNativeCustody(a, b, LABELS.trust, click, until, process.platform);
+        console.log(`obsidian-drive: concurrent custody ${JSON.stringify(outcome)}`);
+        if (outcome.refused === true) {
+          prove("actual unavailable concurrent native custody refused before persistence; separately counted controls passed (synthetic HTTP source only)");
+          console.log(`obsidian-drive: SUMMARY steps=${proven} duration=${((Date.now() - started) / 1000).toFixed(1)}s decision=pass journey=concurrent_native_refusal source=synthetic-http`);
+          return;
+        }
+      }
       [version] = await Promise.all([openVault(a), openVault(b)]);
     }
     prove(`two instances: Obsidian ${version.obsidian} on Electron ${version.electron}, own user-data directories, the vault trusted and the plugin loaded in each`);

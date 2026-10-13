@@ -108,14 +108,13 @@ export function installCustodyRefusalProbe(origin, injectUnavailable, platform) 
     stage = "interface";
     const vault = app.vault, secret = app.secretStorage, safe = secret.adapter?.safeStorage;
     if (vault?.configDir !== ".obsidian" || !safe || typeof safe.isEncryptionAvailable !== "function" || typeof safe.encryptString !== "function" ||
-        typeof safe.decryptString !== "function" || typeof secret.setSecret !== "function" ||
+        typeof safe.decryptString !== "function" || typeof secret.setSecret !== "function" || typeof secret.getSecret !== "function" ||
         typeof vault?.writePluginData !== "function" || typeof window.fetch !== "function") throw Error();
     stage = "availability";
     let available = null, backend = "none reported";
-    try {
-      available = safe.isEncryptionAvailable();
-      if (platform === "linux") backend = safe.getSelectedStorageBackend?.() ?? backend;
-    } catch {}
+    available = safe.isEncryptionAvailable();
+    if (typeof available !== "boolean") throw Error();
+    if (platform === "linux") backend = safe.getSelectedStorageBackend?.() ?? backend;
     if (injectUnavailable && (available !== true || (platform === "linux" &&
       !["gnome_libsecret", "kwallet", "kwallet5", "kwallet6"].includes(backend)))) throw Error();
     stage = "install";
@@ -215,7 +214,129 @@ export async function verifyNativeCustodyRefusal(instance, trustLabel, click, un
       if (page && await run(() => window.obsyncCustodyRefusal ? window.obsyncCustodyRefusal.restore() : true) !== true) throw Error("custody observer cleanup refused");
     } finally {
       for (const socket of sockets) socket.destroy();
-      await new Promise(resolve => server.close(resolve));
+      if (server.listening) await new Promise(resolve => server.close(resolve));
+    }
+  }
+}
+
+/** macOS simultaneous only: actual false may prove refusal; this source is synthetic HTTP. */
+export async function verifyConcurrentNativeCustody(a, b, trustLabel, click, until, platform) {
+  if (platform !== "darwin") throw Error("concurrent custody requires actual macOS");
+  const sockets = new Set(), peers = [];
+  let controls = 0, requests = 0;
+  const server = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/__control") controls++; else requests++;
+    let received = 0;
+    req.on("data", bytes => { received += bytes.length; if (received > 65536) req.destroy(); }); req.resume();
+    res.writeHead(200, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
+    req.on("end", () => res.end('{"reachable":true}'));
+  });
+  server.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); socket.setTimeout(3000, () => socket.destroy()); });
+  const run = async (peer, fn, ...args) => {
+    let timer;
+    try { return await Promise.race([peer.page.run(fn, ...args), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Error("concurrent custody evaluator exceeded 5000ms")), 5000);
+    })]); } finally { clearTimeout(timer); }
+  };
+  const ref = `obsync-private-sync-v1-${"0".repeat(32)}-os`, marker = "obsync-native-counter-control";
+  try {
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    for (const instance of [a, b]) {
+      const metadata = path.join(instance.vault, ".obsidian", "plugins", "obsync-private-sync", "data.json");
+      const peer = { instance, metadata, original: fs.existsSync(metadata) ? fs.readFileSync(metadata) : null, page: null };
+      peers.push(peer);
+      fs.writeFileSync(metadata, JSON.stringify({ serverUrl: origin })); peer.baseline = fs.readFileSync(metadata);
+      peer.page = await instance.main();
+      await until("concurrent custody workspace ready", () => run(peer, () => !!(window.app && app.workspace?.layoutReady)));
+      await until("concurrent custody waits for Trust", () => instance.anywhere(label =>
+        [...document.querySelectorAll("button")].some(button => button.textContent.trim() === label), trustLabel));
+      const reachable = await run(peer, async origin => (await fetch(origin + "/__control", {
+        credentials: "omit", signal: AbortSignal.timeout(3000) })).ok, origin);
+      if (reachable !== true || controls !== peers.length) throw Error("concurrent custody source reachability refused");
+      if (await run(peer, installCustodyRefusalProbe, origin, false, platform) !== true) throw Error("concurrent custody observer not installed");
+      peer.available = await run(peer, () => window.obsyncCustodyRefusal.available);
+      if (typeof peer.available !== "boolean") throw Error("concurrent custody requires actual boolean availability");
+    }
+    const availability = peers.map(peer => peer.available);
+    if (availability.every(value => value === true)) return { refused: false, availability };
+    const snapshots = [];
+    for (const peer of peers) {
+      if (peer.available === false) {
+        await until("actual unavailable peer trusts plugin", () => peer.instance.anywhere(click, trustLabel));
+        await until("actual unavailable peer visibly refuses custody", async () =>
+          peer.instance.pluginLog().some(line => /state decision=stopped reason=desktop_custody_unavailable(?:\s|$)/.test(line)) &&
+          (await run(peer, custodyRefusalFacts)).visible);
+      }
+      const facts = await run(peer, custodyRefusalFacts);
+      if ((peer.available === false && !facts.visible) || !facts.stateAbsent || !facts.rootAbsent ||
+          !facts.blobUnchanged || facts.publicWrites !== 0 || facts.metadataWrites !== 0 || facts.transportRequests !== 0 ||
+          requests !== 0 || !fs.readFileSync(peer.metadata).equals(peer.baseline)) throw Error("concurrent custody pre-control refusal evidence failed");
+      snapshots.push({ unavailable: peer.available === false, publicWrites: 0, metadataWrites: 0, transportRequests: 0,
+        rootAbsent: true, stateAbsent: true, blobUnchanged: true, metadataUnchanged: true });
+    }
+    // Intentional nonsecret controls happen AFTER the immutable zero-side-effect snapshot. Never reset counters.
+    for (const peer of peers) {
+      const empty = await run(peer, ref => {
+        const value = app.secretStorage.getSecret(ref); return value === null || value === "";
+      }, ref);
+      if (empty !== true) throw Error("owned control reference occupied");
+      peer.controlStarted = true;
+      await run(peer, (ref, marker) => {
+        app.secretStorage.setSecret(ref, marker);
+        if (app.secretStorage.getSecret(ref) !== marker) throw Error("native public-write control refused");
+      }, ref, marker);
+      await run(peer, origin => app.vault.writePluginData(".obsidian/plugins/obsync-private-sync", {
+        serverUrl: origin, obsyncNativeCounterControl: true,
+      }), origin);
+      if (JSON.parse(fs.readFileSync(peer.metadata, "utf8")).obsyncNativeCounterControl !== true) throw Error("native metadata control readback refused");
+      const reachable = await run(peer, async origin => (await fetch(origin + "/__observer-control", {
+        method: "POST", credentials: "omit", signal: AbortSignal.timeout(3000) })).ok, origin);
+      const counts = await run(peer, () => ({ ...window.obsyncCustodyRefusal.seen }));
+      if (reachable !== true || counts.publicWrites !== 1 || counts.metadataWrites !== 1 || counts.transportRequests !== 1 ||
+          requests !== peers.indexOf(peer) + 1) throw Error("native observer positive control counts refused");
+      await run(peer, async (ref, origin) => {
+        app.secretStorage.setSecret(ref, "");
+        if (app.secretStorage.getSecret(ref) != null && app.secretStorage.getSecret(ref) !== "") throw Error("native public control cleanup refused");
+        await app.vault.writePluginData(".obsidian/plugins/obsync-private-sync", { serverUrl: origin });
+      }, ref, origin);
+      const after = await run(peer, () => ({ ...window.obsyncCustodyRefusal.seen }));
+      const data = JSON.parse(fs.readFileSync(peer.metadata, "utf8"));
+      if (after.publicWrites !== 2 || after.metadataWrites !== 2 || after.transportRequests !== 1 || requests !== peers.indexOf(peer) + 1 ||
+          Object.keys(data).length !== 1 || data.serverUrl !== origin) throw Error("native observer control cleanup refused");
+    }
+    return { refused: true, availability, source: "synthetic-http", preControl: snapshots, sourceRequestsBeforeControls: 0,
+      controls: { publicWritesPerPeer: 1, metadataWritesPerPeer: 1, sourceRequestsPerPeer: 1,
+        cleanupPublicWritesPerPeer: 1, cleanupMetadataWritesPerPeer: 1 }, sourceRequestsAfterControls: requests };
+  } finally {
+    try {
+      const restored = await Promise.allSettled(peers.map(async peer => {
+        try {
+          if (peer.page && await run(peer, started => {
+            if (!window.obsyncCustodyRefusal) return true;
+            let cleared = true;
+            try {
+              const control = `obsync-private-sync-v1-${"0".repeat(32)}-os`;
+              if (started) {
+                const value = app.secretStorage.getSecret(control);
+                if (value === "obsync-native-counter-control") {
+                  app.secretStorage.setSecret(control, "");
+                  const remaining = app.secretStorage.getSecret(control);
+                  if (remaining !== null && remaining !== "") cleared = false;
+                } else if (value !== null && value !== "") cleared = false;
+              }
+            } catch { cleared = false; }
+            const restored = window.obsyncCustodyRefusal.restore();
+            return cleared && restored === true;
+          }, peer.controlStarted === true) !== true) throw Error("concurrent custody observer restoration refused");
+        } finally {
+          if (peer.original === null) fs.rmSync(peer.metadata, { force: true }); else fs.writeFileSync(peer.metadata, peer.original);
+        }
+      }));
+      if (restored.some(result => result.status !== "fulfilled")) throw Error("concurrent custody observer restoration refused");
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      if (server.listening) await new Promise(resolve => server.close(resolve));
     }
   }
 }

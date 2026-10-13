@@ -1897,3 +1897,130 @@ Both task-owned images, container snapshot/tool scratch and 24 explicitly
 identified fixture resources are absent. Preexisting Caddy and ambiguous shared
 BuildKit cache are preserved; no global cleanup is claimed. Physical-phone
 acceptance, final hosted checks and exact-head independent approval remain open.
+
+## Concurrent native capability and test failure containment
+
+At signed head `c00314b48a52ecf7affa09cace7e7750dbc024df`,
+[PR gate 38352858903](https://github.com/snaraj/obsync/actions/runs/38352858903)
+passes application, container, security, chart, both platform plugin suites,
+static-binary checks, Windows, protected Linux, actual Linux no-keyring refusal,
+and serialized macOS. Simultaneous macOS and the aggregate fail. The other nine
+workflows pass. The failed native instance displays
+`desktop_custody_unavailable` before enrollment and completes zero journey
+steps; its log has no direct capability snapshot or pre-Trust side-effect
+observer. Neither the precise unavailability cause nor zero writes can be
+inferred from that result. The CLI socket collision is an observation, not a
+proved cause. No rerun reclassifies that failed execution.
+
+The focused [independent assessment](https://github.com/snaraj/obsync/issues/344#issuecomment-6139345413)
+finds the desktop wrapping mechanism and dashboard consequence repair resolved,
+while retaining simultaneous acceptance, physical-phone and whole-head limits.
+It accepts the proposed capability distinction only with direct actual-false
+observation and complete no-write evidence. The test-only follow-up installs
+observers on both simultaneous macOS instances before either Trust action and
+requires one strict boolean native availability result from each. Missing,
+throwing or nonboolean interfaces deny. If both are available, observers and
+owned metadata are restored and the complete original positive journey runs;
+a later startup refusal remains failure. Every serialized run also retains
+that positive requirement.
+
+If either native capability is exactly false, only unavailable instances are
+activated. Each must visibly refuse with the fixed stop reason, no State/root,
+unchanged owned metadata/native blob and zero public writes, metadata writes,
+renderer source attempts and independent source requests. Available peers stay
+restricted and unpaired. After those zero-effect snapshots, separate nonsecret
+controls exercise actual public storage, native metadata dispatch and Fetch,
+with exact counter increments and readback. Cleanup has separate counts;
+occupied control references are preserved. This branch identifies itself as
+`concurrent_native_refusal` against a synthetic HTTP source and claims no
+pairing, restart, sync or TLS result. The pre-Trust read may affect lazy host
+initialization timing; it does not explain the earlier unobserved failure.
+
+The coordinator's fresh official Obsidian 1.13.7 / Electron 43.3.0 run uses
+DMG SHA-256 `05daa54f5e1a4458f75da29f8faaa17e8e37ae16998432537f674c626db99bce`,
+unchanged plugin `d6504987`, unchanged debug server `0671f116`, evidence helper
+`c33673a4759e44056e51dd88895a4d610fa0bb669037cd99941ce980997b2f96`,
+and driver `24c0b2bf3b0994ad1b5ea5fc7c560e4cb4725d8623550184d234816749bb17af`.
+Both actual capability observations are true, so all 12 positive steps run and
+pass in 52.3 seconds. Six native envelope observations match the protected
+format, revisions, generation and completed cleanup. Both applications restart;
+the post-restart notes cross in 1,008/1,010 ms. A separate explicit unavailable
+injection passes the existing one-step refusal journey in 1.2 seconds. These
+are loopback HTTP results; the actual-false simultaneous branch has synthetic
+fixture controls but no native actual-false result from this local run. Four
+positive-run and one negative-run app process groups and all runtime fixture
+data are absent. The reduced index SHA-256 is
+`26e1da9963dc7e886ffb65ffea94f9ebb343078539975e5e8fc9e3f810f614a9`.
+
+The same independent assessment reported a test hang after denied listener
+setup. Direct original/repaired helper probes preserve actual `EPERM` and exit
+in about 5 ms on pinned Node 26.10.0; they do not reproduce a hanging unbound
+`server.close`. Both helpers now explicitly avoid closing an unbound listener,
+but that guard is not claimed as the causal repair. The coordinator reproduces
+the full evidence-suite hang with bounded 12-second and eight-second probes.
+Its watchdog fixture waits for evaluator entry even when listener setup has
+already failed, so that entry promise can never settle. Racing entry against
+the observed terminal result repairs both watchdog fixtures. The final
+restricted evidence suite exits with the expected four networking failures in
+185 ms, without timeout; denied networking is never accepted as native PASS.
+The two empty watchdog directories from those interrupted parent probes are
+removed. Other unknown older scratch directories are preserved.
+
+With loopback permission the coordinator passes 35 JavaScript evidence and
+redirect tests and both Python driver contracts. Three independent parent
+mutations remove strict native-boolean admission, independent source-control
+counting and public control readback; all fail intended assertions, and the
+restored 19-test evidence suite passes. The mutation scratch is absent. The
+plugin and server runtime are unchanged. Final full-gate, hosted replacement
+head, phone and independent whole-head acceptance remain their own gates.
+
+Before the final cleanup-counter/test-fixture delta below, the complete local gate exits zero: 734 Rust tests including two
+doctests (one additional ignored), 94.85% line coverage, 2,508 plugin tests,
+207 CLI checks, 88 dashboard tests, 929 repository contracts and both secret
+scans. The E2EE run passes 21 flows and two planted controls in 13,792 ms,
+observing 384 requests (343 main), 22 main storage files and 148 needles;
+the separate legacy leg retains 41 requests, ten files and 33 needles.
+The build reproduces `d6504987` and `0671f116` exactly.
+
+Physical-phone acceptance is still unexecuted. The authorized device route
+cannot be controlled because the computer-use native service fails its
+connect/ping startup before app access; resetting that tool does not repair it.
+This is an automation failure, not evidence of a locked phone or plugin defect.
+No candidate installation, phone pairing or public test relay is claimed.
+The prepared disposable artifact remains separate from device acceptance.
+
+The final evidence helper is
+`8cff31f244dfbe5fecabbc58a493daea3536dbfbe1bf5ca78a52194dad03c5fd`,
+with unchanged driver `24c0b2bf` and final tests
+`d90ba1127eb6c2f90a05b656a28d994728f32f0415ffbc7e0395d7c88065e5d4`.
+An injected last-peer request during cleanup exposed a real oracle gap: the
+source request count was checked before cleanup and the returned total was
+hardcoded. The control failed before repair. The helper now checks the
+independent source total after each cleanup and returns the measured total.
+The final 35 JavaScript controls and both Python contracts pass; a restricted
+run of the preceding test-only revision exits in 193 ms with expected network
+failures and no timeout. This affected-suite validation follows the full gate;
+it is not a second full-gate claim.
+
+The concurrent observer's initial valid mutation batch has 43 assertion kills
+and seven survivors among 50 cases. Six survivors receive isolated causal
+controls; an availability predicate implied by the already captured strict
+boolean is removed as equivalent, with no kill credit. The finite follow-up
+has ten intended assertion kills, including the new final source count,
+exceptional cleanup and watchdog controls. A real-dispatched cleanup request
+was already caught by the independent server guard, so that intermediate
+transport-counter mutant survived; a blocked-before-dispatch request now
+isolates and kills the renderer attempt-count omission. Selector failures and
+an earlier faulty diagnostic batch receive no credit. No full 50-case rerun
+is claimed. Independently, the coordinator removes the final source-count
+guard and reproduces the intended `cleanup-server` assertion failure, then
+restores a passing control and removes the scratch directory.
+
+A second fresh native run uses this final helper with the identical pinned
+Obsidian 1.13.7 and runtime bytes: actual availability is `[true, true]`, all
+12 positive steps pass in 53.8 seconds, and all six custody observations match
+through restart. Post-restart notes cross in 1,008/1,003 ms. Four owned app
+groups, the server and driver are stopped, and runtime fixture data is absent.
+This remains actual positive acceptance; no native actual-false observation
+is inferred from it. The earlier 52.3-second receipt remains bound to its
+original helper hash.
