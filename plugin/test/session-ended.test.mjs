@@ -62,7 +62,11 @@ test("a reload while requests wait out their backoff: each old request ends at i
   a.host.makeFolder("Empty");
   await old.engine.start();
   await b.engine.start();
-  await timers.run(STEP_MS, () => settled(b, "Notes/One.md") && b.state.folderByPath("Empty") !== undefined);
+  await timers.run(STEP_MS, () => settled(a, "Notes/One.md") && settled(b, "Notes/One.md") &&
+    a.state.folderByPath("Empty")?.versionId && b.state.folderByPath("Empty")?.versionId &&
+    a.state.data.lastSeq === server.seq && b.state.data.lastSeq === server.seq);
+  await a.state.settled();
+  await new Promise(setImmediate); // Finish the setup save's receipt, not just its metadata write.
 
   // The server cannot be reached: an edit, a folder's removal and a new
   // folder's record each wait in their backoff.
@@ -78,6 +82,11 @@ test("a reload while requests wait out their backoff: each old request ends at i
   // The reload: the plugin's generation moves on, so its request function
   // refuses, and the old engine stops as `onunload` stops it. What the stop's
   // own signal ends says so at the stop, one line each.
+  // Metadata dispatched before reload still belongs to the current session.
+  // Drain it and its receipt before measuring only inactive-session work.
+  await a.state.settled();
+  await new Promise(setImmediate);
+  assert.equal(a.state.saving, false, "a pre-reload metadata write is still in flight");
   old.current = false;
   old.engine.stop();
   const mark = a.host.logs.length;

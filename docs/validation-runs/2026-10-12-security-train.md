@@ -2351,3 +2351,33 @@ both relay children and copied inputs absent, zero remaining owned process
 groups or holders, and no runtime, private material or lab manifest. The revoked
 synthetic phone fixture remains on the phone pending its ordinary Leave and
 cleanup; deleting the server does not clear the phone's local credential store.
+
+## Session-stop regression: already-dispatched metadata
+
+At `e1b87d1`, Compose amd64 job `115623864036` and Traefik job
+`115623864258` fail the image's plugin suite before their deployment journeys.
+Both reject a late `state decision=saved reason=coalesced` receipt. A held real
+metadata write reproduces this ordering: dispatch while the session is current,
+place the test's reload marker, then release the write. Three trials fail the
+unchanged log oracle. The controlled write has four records, versus one in the
+hosted log; it proves the scheduling class, not the original metadata snapshot
+or an unauthorized credential write.
+
+The fixture now waits for both peers' initial note, folder and feed cursor,
+then settles dispatched metadata and its receipt before measuring inactive
+session requests. Three controlled trials pass with this ordering. Every
+post-marker log, cancellation, request-count and once-only assertion remains.
+A separate real-engine test holds an already-dispatched coalesced save across
+`stopAndWait`: admission stops immediately, new work is not queued or published,
+and the drain cannot return or report idle before persistence finishes. The save
+receipt precedes quiescence and independently stored metadata retains the note.
+Previously admitted work may finish during a same-session drain; the distinct
+inactive-session test still refuses its next transport attempt.
+
+Worker validation passes 16 stop/session tests, 112 state/lifecycle tests and
+40 focused cases across 20 stability trials, half with `UV_THREADPOOL_SIZE=1`.
+Five production guard mutations and an injected late-receipt control fail by
+assertion. The coordinator independently passes 81 surrounding tests, then
+removes the compiled shutdown waits: the new held-write assertion fails. The
+compiled file is restored byte-for-byte. No production source, payload, timeout,
+log allowance, dependency pin or CodeQL disposition changes in this repair.
