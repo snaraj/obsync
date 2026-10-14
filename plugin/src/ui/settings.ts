@@ -255,11 +255,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private revokedShown = false;
   private readingDevices = false;
   /**
-   * WHICH SHOWING OF THE TAB A DEVICE LIST READ IS FOR (iPhone pass,
+   * WHICH SHOWING AND SERVER RECEIPT A DEVICE LIST READ IS FOR (iPhone pass,
    * 2026-09-26). A read can outlive the showing that asked -- on a phone its
    * deadline waits out the app's time in the background -- and the next
    * showing asked nothing of its own, so an outage's "not answering" stood
-   * minutes after sync had resumed. A read answers only its own showing.
+   * minutes after sync had resumed. A read answers only its own showing, before any subsequent list mutation.
    */
   private devicesShown = 0;
   /** Takes an outage's device list error back once the server answers again. */
@@ -1129,8 +1129,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     try {
       await this.plugin.revokeDevice(device.device_id);
       this.say(`${named} is revoked.`);
-      this.deviceList = null;
-      this.update();
+      this.devicesChanged();
     } catch (error) {
       this.say(`${named} was not revoked: ${message(error)}`);
     }
@@ -1158,12 +1157,22 @@ export class ObsyncSettingTab extends PluginSettingTab {
     };
   }
 
+  /** A successful mutation supersedes reads started before its server receipt. */
+  private devicesChanged(): void {
+    this.devicesShown++;
+    this.readingDevices = false;
+    this.deviceList = null;
+    this.deviceListError = null;
+    this.unwatchDevices?.();
+    this.unwatchDevices = null;
+    this.update();
+  }
+
   private async forget(device: DeviceRecord, named: string): Promise<void> {
     try {
       await this.plugin.forgetRevoked(device.device_id);
       this.say(`${named} is forgotten.`);
-      this.deviceList = null;
-      this.update();
+      this.devicesChanged();
     } catch (error) {
       this.say(`${named} was not forgotten: ${refusalText(error)}`);
     }

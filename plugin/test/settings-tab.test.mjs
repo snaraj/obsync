@@ -1487,3 +1487,82 @@ test("Notifications lists both settings with every value, a change goes to the p
   assert.deepEqual(s.calls, ["setNotices:{\"level\":\"everything\"}:settings", "setNotices:{\"merges\":\"off\"}:settings", "showRecent"],
     "a value the list does not hold changes nothing");
 });
+
+for (const inFlight of [false, true]) test(`blocking access refreshes the same showing after ${inFlight ? "an older held read" : "the completed initial read"}`, async t => {
+  const self = "cc".repeat(16), other = "aa".repeat(16);
+  let devices = [
+    { device_id: self, name: "Owner", platform: "macos", app_version: "1.1.8", last_seen: 0, revoked: false, state: "active" },
+    { device_id: other, name: "Phone", platform: "ios", app_version: "1.1.8", last_seen: 0, revoked: false, state: "active" },
+  ];
+  let release, reads = 0;
+  const held = new Promise(resolve => { release = resolve; });
+  const s = open(t, {
+    listDevices: async () => { reads++; const snapshot = structuredClone(devices); if (inFlight && reads === 2) await held; return snapshot; },
+    revokeDevice: async id => { assert.equal(id, other); s.calls.push(`revoke:${id}`); devices = devices.map(d => d.device_id === id ? { ...d, revoked: true, state: "revoked" } : d); },
+  });
+  s.plugin.state.data.deviceId = self; s.plugin.state.paired = true;
+  // This port draws again on update(), rather than only counting the call.
+  let drawn;
+  s.tab.update = () => { drawn = s.row("Device list").desc; s.render("Device list"); };
+  s.tab.update(); await tick();
+  assert.equal(drawn, "2 devices on this account.");
+  const revoke = s.button(s.render("Phone").made, "Revoke");
+  if (inFlight) { s.button(s.render("Device list").made, "Refresh").click(); assert.equal(reads, 2); }
+  questions(s, "Block access"); revoke.click(); await tick();
+  assert.equal(devices.filter(d => !d.revoked).length, 1, "the server action finished");
+  if (inFlight) release();
+  await tick();
+  assert.deepEqual(s.calls, [`revoke:${other}`]);
+  assert.equal(drawn, "1 device on this account, and 1 revoked.", "the displayed count must describe the completed revoke");
+  assert.deepEqual(s.shown("Devices"), ["Owner (this device)", "1 revoked device", "Device list"]);
+});
+
+for (const action of ["revoke", "forget"]) for (const oldFails of [false, true]) for (const newFails of [false, true]) {
+  test(`${action} receipt supersedes an older ${oldFails ? "failed" : "successful"} read while its ${newFails ? "failed" : "successful"} replacement is pending`, async t => {
+    const self = "cc".repeat(16), other = "aa".repeat(16);
+    let devices = [
+      { device_id: self, name: "Owner", platform: "macos", app_version: "1.1.8", last_seen: 0, revoked: false, state: "active" },
+      { device_id: other, name: "Phone", platform: "ios", app_version: "1.1.8", last_seen: 0, revoked: action === "forget", state: action === "forget" ? "revoked" : "active" },
+    ];
+    let releaseOld, releaseNew, reads = 0;
+    const oldRead = new Promise(resolve => { releaseOld = resolve; });
+    const newRead = new Promise(resolve => { releaseNew = resolve; });
+    const mutate = async id => {
+      assert.equal(id, other); s.calls.push(`${action}:${id}`);
+      devices = action === "forget" ? devices.filter(d => d.device_id !== id)
+        : devices.map(d => d.device_id === id ? { ...d, revoked: true, state: "revoked" } : d);
+    };
+    const s = open(t, {
+      listDevices: async () => {
+        const request = ++reads, snapshot = structuredClone(devices);
+        if (request === 2) { await oldRead; if (oldFails) throw new Error("OLD READ FAILURE"); }
+        if (request === 3) { await newRead; if (newFails) throw new Error("CURRENT READ FAILURE"); }
+        return snapshot;
+      },
+      revokeDevice: mutate, forgetRevoked: mutate,
+    });
+    s.plugin.state.data.deviceId = self; s.plugin.state.paired = true;
+    let drawn;
+    s.tab.update = () => { drawn = s.row("Device list").desc; s.render("Device list"); };
+    s.tab.update(); await tick();
+    if (action === "forget") s.button(s.render("1 revoked device").made, "Show").click();
+    const button = s.button(s.render(action === "forget" ? "Phone (revoked)" : "Phone").made, action === "forget" ? "Forget" : "Revoke");
+    s.button(s.render("Device list").made, "Refresh").click();
+    questions(s, action === "forget" ? "Forget" : "Block access"); button.click(); await tick();
+    assert.deepEqual(s.calls, [`${action}:${other}`], "exactly one authorized server mutation");
+    assert.equal(reads, 3, "the mutation must start its own replacement read");
+    assert.equal(drawn, "Reading the device list…");
+    releaseOld(); await tick();
+    // Other controls may redraw the tab while this fresh read still waits.
+    s.tab.update();
+    assert.equal(drawn, "Reading the device list…", "the old response/error cannot replace the new loading state");
+    assert.equal(reads, 3, "the old finalizer cannot clear the replacement's reading gate");
+    releaseNew(); await tick();
+    assert.equal(drawn, newFails ? "The device list is unavailable: CURRENT READ FAILURE"
+      : action === "forget" ? "1 device on this account." : "1 device on this account, and 1 revoked.");
+    assert.equal(reads, 3, "a failed replacement is reported without looping");
+    assert.ok(!drawn.includes("OLD READ FAILURE"));
+    if (!newFails) assert.deepEqual(s.shown("Devices"), action === "forget"
+      ? ["Owner (this device)", "Device list"] : ["Owner (this device)", "1 revoked device", "Device list"]);
+  });
+}

@@ -2258,3 +2258,96 @@ native macOS ACL reader; the nine context tests and complete gate pass with
 the required native capability. No assertion or custody control was relaxed.
 Hosted validation of the new test commit remains separate from these local
 results and from the ongoing physical-phone campaign.
+
+
+## Device-list refresh after a successful removal
+
+The physical-device campaign exposed an outdated count in a desktop settings
+probe after access revocation. A subsequent settled settings reopen displayed
+one active device and one revoked, consistent with an independent authenticated
+server read. The original native timing is unproven. A separate controlled
+regression does establish a defect: an older Refresh response can overwrite a
+successful revoke or forget, and its pending read can prevent the mutation from
+starting a replacement.
+
+The fix advances the existing device-list request generation after a successful
+server mutation, clears the old reading gate, cache, refusal and outage observer,
+and starts a fresh read through the ordinary settings redraw. Older successes,
+errors and finalizers cannot change that replacement. A current failure remains
+visible without a retry loop. Rename, transport, content keys and the server's
+revocation decision are unchanged.
+
+With the old implementation, all eight held-response regressions fail. The
+repaired focused set passes ten tests; five repeat trials pass 50 of 50. Running
+`node --test test/settings-tab.test.mjs test/rotation-ui.test.mjs test/devices.test.mjs` from `plugin/` passes 100 tests independently in both the
+worker and coordinator runs. Seven deliberate mutations fail by assertion:
+missing generation invalidation, missing reading reset, admitting an old success,
+admitting an old error, admitting an old finalizer, and omitting either revoke or
+forget invalidation. The initial old-success mutant survived until the test
+performed an ordinary redraw while the fresh response was held; the strengthened
+regression then detected it. The coordinator separately removes generation
+invalidation in the compiled module, observes assertion failures and restores
+that module byte-for-byte. These controlled races do not establish the ordering
+of the original native observation.
+
+An isolated native desktop run of bundle SHA-256
+`8fc80a7a9fbe03764c4e95000a1cc24ae7bf119f2c0b8fcc3a4f4d55a9d82153`
+uses ordinary settings controls after pairing two disposable desktops. Six
+settled display checkpoints match separate authenticated device-list reads:
+initial and Refresh show two devices; Block access and Refresh show one active
+and one revoked; Forget and Refresh show one device. No loaded product method
+was patched and no artificial response delay was introduced. An initial private
+helper failed on a duplicate local binding before any removal; correcting only
+that helper enabled the run. It is not counted as a product failure. The copied
+payload came from the dirty predecessor tree; matching rebuilt committed bytes
+is required before transferring this result to the new head. Identity-safe
+teardown proves zero remaining owned process groups or holders, and absent
+runtime, private material, lab manifest and copied inputs. The shared app lease
+and active phone campaign were untouched. No screenshot was taken.
+
+The complete composed `make check` exits zero: 734 Rust tests, 94.85% line
+coverage, 2,519 plugin tests, 207 CLI checks, 88 dashboard tests, 930 contracts,
+chart checks and both secret scans. The real-engine E2EE regression passes
+21 flows and two planted leak controls in 13,995 ms: 383 requests (342 main),
+22 main storage files and 148 needles. The legacy leg records 41 requests,
+ten files and 33 needles. This local gate and desktop result do not replace
+new-head hosted checks or physical-phone acceptance.
+
+## Physical iPhone checkpoint on the preceding runtime
+
+On 2026-10-13, a fresh disposable vault on physical iPhone Obsidian 1.14.5
+loaded plugin 1.1.8, paired after independently observed matching verification
+codes, and accepted the ordinary Pair and upload consent. A synthetic desktop
+note was independently opened on the phone. The phone's initial 42-byte note
+reached independently read desktop disk and editor after a normal desktop quit
+and restart. A new 64-byte note authored through the phone editor also reached
+matching desktop disk and editor bytes. Its SHA-256 was
+`cb85a5735f2bcb805cab2e0cb1955953265b96f96dc4c7881b41ed7f087153be`.
+No precise phone input-latency claim follows from the observation timestamps.
+
+The phone's delivered candidate carried plugin SHA-256
+`7c34f4abc5994707e9dddc19ac89b75396667f6599318bf496cfe41fda7901af`.
+This checkpoint predates the device-list refresh repair above and is not
+acceptance of that replacement bundle. The downloaded candidate archive was
+verified before delivery; independently exporting and hashing the installed
+phone asset remains incomplete.
+
+The desktop revocation chooser explained both choices; cancelling changed
+neither server device state nor custody. Block access then succeeded: an
+independent authenticated read counted one revoked peer and no active peer,
+and a settled desktop settings reopen showed the matching count. The phone's
+own refusal, retained-note check and explicit re-pairing remain incomplete.
+Normal phone app reopening retained the note, but an attempted App Switcher
+dismissal was not independently confirmed, so this is not a full restart result.
+Strong-rotation J13, fresh-recovery J11, independent phone persisted-file readback
+and final phone cleanup remain open. Mirroring subsequently required the owner's
+Mac authentication. The authorized temporary API has an enforced one-hour cap;
+that cap cannot be extended by this evidence record. Cropped test screenshots
+were deleted and are not included in this repository.
+
+
+The one-hour API lease expired normally. Final receipts independently prove
+both relay children and copied inputs absent, zero remaining owned process
+groups or holders, and no runtime, private material or lab manifest. The revoked
+synthetic phone fixture remains on the phone pending its ordinary Leave and
+cleanup; deleting the server does not clear the phone's local credential store.
