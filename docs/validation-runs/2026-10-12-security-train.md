@@ -2227,3 +2227,34 @@ holders and absence of runtime, private material and the lab manifest; 5,420
 private bytes were removed. The leased app image remains only while the broader
 device campaign needs it. Physical-phone acceptance and independent approval
 of the eventual final head remain open.
+
+## Session-stop regression: deterministic chunk cancellation
+
+At `5560494`, Generic paths run `38486796287`, binary job `115602267416`,
+failed in the Docker plugin suite before its native binary journey. The reload
+test rejected the intentional engine receipt
+`push path_class=file decision=cancelled reason=engine_stopped`, which the
+existing stop test requires. Both tests and the producing runtime were
+unchanged from the previous passing generic-binary head.
+
+The test now waits for an actual chunk PUT retry and three pending sleepers,
+requires exactly one such engine receipt, and permits only that exact literal.
+The existing request cardinality, unique termination, nonvacuous SessionEnded
+and unexpected-log assertions remain. There is no production or payload change.
+With the controlled chunk wait and old expectation, the test fails three of
+three trials. The repaired stop/reload suites pass 15 tests and all 20 focused
+stability trials, including ten with `UV_THREADPOOL_SIZE=1`. Removing session
+termination, removing abort, or injecting an unexpected failure each fails by
+assertion. The coordinator independently passes all 15 tests and kills removal
+of the compiled SessionEnded branches, then restores that module byte-for-byte.
+
+The complete composed `make check` exits zero with 734 Rust tests, 94.85%
+coverage, 2,509 plugin tests, 207 native CLI checks, 88 dashboard tests, 930
+contracts, chart checks and both secret scans. The real-engine E2EE test passes
+21 flows and two planted leak controls in 13,907 ms: 385 requests (344 main),
+22 main storage files and 148 needles; the legacy leg has 41 requests, ten
+files and 33 needles. An initial sandboxed gate could not invoke the fixed
+native macOS ACL reader; the nine context tests and complete gate pass with
+the required native capability. No assertion or custody control was relaxed.
+Hosted validation of the new test commit remains separate from these local
+results and from the ongoing physical-phone campaign.
