@@ -2381,3 +2381,92 @@ assertion. The coordinator independently passes 81 surrounding tests, then
 removes the compiled shutdown waits: the new held-write assertion fails. The
 compiled file is restored byte-for-byte. No production source, payload, timeout,
 log allowance, dependency pin or CodeQL disposition changes in this repair.
+
+## Selected-folder rename: publication and own-feed ordering
+
+At signed head `8ba548bcb7f11d40dfe59a496397a67b0ff27572`, all eight
+required checks pass, including the native custody jobs. Compose amd64 and
+Traefik also pass their previously failing image stages. The separate
+[Podman job](https://github.com/snaraj/obsync/actions/runs/38496301237/job/115632716584)
+fails during its image build, before native Podman validation: the selected-folder
+case-rename test records an out-of-scope diagnostic for its own old-folder
+tombstone. The ordinary CodeQL wrapper remains failed for the unchanged reviewed
+export disposition; both analyses and dispositions pass.
+
+This corrects the earlier setup-only diagnosis. With the initial folder receipt
+and both feed cursors fully settled, holding the sender's deletion response
+after server commit still reproduces the diagnostic in three of three trials.
+Its old folder record remains locally tracked, so the replay treats the deletion
+as owed. A second controlled schedule releases the response but holds metadata
+persistence: the folder record is gone, yet the engine has not registered the
+authored version. The ordinary-echo classification then checks the old path
+against the renamed selection before deciding whether it is a reseed. That
+schedule independently fails the unchanged diagnostic assertion. Neither result
+justifies weakening selection, case-twin admission or the replayed-deletion
+recovery behavior from issue #237.
+
+The repair adds 15 net production lines (+26/-11). Folder deletion uses the
+existing publication reservation through its metadata save; an own-feed deletion
+waits for that pending receipt before re-reading the local record. The existing
+replay/head/ancestry checks remain first. An exact locally acknowledged grave
+version then recognizes a completed deletion as an echo even while its metadata
+save is finishing. This classification applies no content and grants no new path
+admission. Decryption, binding, case-twin admission and selection checks are
+unchanged; there is no additional registry or bypass flag.
+
+Both held-response and held-metadata schedules now pass, retaining every original
+rename assertion. The latter requires the exact grave, an unregistered authored
+version and actual feed-cursor advancement before persistence is released. Two
+additional controls prove that a different reseed cannot be suppressed by an
+older grave and that a rejected folder deletion releases its reservation while
+preserving the live receipt for retry. The worker passes 219 surrounding tests
+and all 60 selected-schedule cases across 20 processes, half setting
+`UV_THREADPOOL_SIZE=1`. Removing the wait, reservation or exact grave check,
+broadening the grave match, and bypassing deletion recovery each fail by
+assertion. The coordinator independently passes 152 surrounding tests and the
+forced schedules, then kills wait removal and restores the compiled module
+byte-for-byte. Ten independent file/folder binding and scope probes retain their
+before/after outcomes, including refusal of altered domain, size and deletion
+fields and reseed admission only after selection widening.
+
+The composed `make check` exits zero: 734 Rust tests, 94.85% line coverage,
+2,524 plugin tests, 207 native CLI checks, 88 dashboard tests, 930 repository
+contracts, chart checks and both secret scans. Real-engine E2EE passes 21 flows
+and two planted controls in 13,768 ms, with 385 requests (344 main), 22 main
+storage files and 148 needles. Its legacy leg has 41 requests, ten files and
+33 needles. The rebuilt plugin is 1,572,611 bytes with SHA-256
+`a1127f8267f7934374321fe8946f455cc594e12701321f7a8221facfdf41aeb1`;
+the server, manifest and style bytes match the preceding checkpoint.
+
+Two isolated native desktop Obsidian instances also pass the selected-folder
+rename in both directions: `Team docs` to `team docs`, then back from the peer.
+Independent disk, explorer index, saved metadata and authenticated server-history
+reads retain both notes' bytes and IDs, follow the selected folder's spelling,
+and preserve the original history (one, then two, then three versions per note).
+Each peer has exactly one folder with the expected spelling, unchanged excluded
+local controls and an empty owned trash directory. The action used Obsidian's
+public `FileManager.renameFile`, without replacing a product method. The normal
+context-menu selector timed out before any rename, and the computer-use native
+connection was unavailable; this is native-API evidence, not a successful
+context-menu or physical-phone journey.
+
+The first native readback also exposed an overbroad private harness assertion:
+it classified three outgoing watcher guards during peer application as incoming
+manifest refusals. That failed receipt is retained. The corrected observer
+separates channels, reports those guards (one folder-create and two changes per
+receiving peer), and still rejects every incoming manifest out-of-scope refusal.
+No such incoming refusal is observed. Offline injected incoming refusals fail
+for each observation source, and removing the actual harness guard also fails.
+The product and repository test assertions are unchanged by this harness repair.
+
+Both native directions then pass a five-minute stability interval (300,160 ms
+and 300,072 ms, 30 independent reads each). The complete synthetic account's
+authenticated head fingerprint and the note/folder version sets remain
+unchanged. Process logs contain no plugin publication stream, so their
+publication deltas are explicitly unmeasured; the quiet-version result rests
+on authenticated history and head readback. Renderer diagnostic counts are
+observed separately. Normal application quit and owned-run teardown leave zero
+owned process groups or holders; the runtime, private data and manifest are
+verified absent. No screenshots were taken. The run began from dirty source
+on `8ba548bc`, bound to the exact bundle hash above; it is not described as a
+run begun from a later signed commit. Physical-phone acceptance remains open.

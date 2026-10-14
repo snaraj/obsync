@@ -874,16 +874,18 @@ export async function pushFolder(context: SyncContext, path: string, recreate = 
  * `judged` is the selection the removal was decided against (`postManifest`).
  */
 export async function pushFolderDelete(context: SyncContext, path: string, judged?: SyncFolders): Promise<string | null> {
-  assertVaultPath(path);
-  const record = context.state.folderByPath(path);
-  if (record === undefined) return null;
-  const parents = record.versionId !== "" ? [record.versionId] : [];
-  const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false, undefined, judged);
-  context.state.forgetFolder(path);
-  bury(context, record.fileId, ack.versionId, path, true);
-  await context.state.save();
-  context.host.log(`folder path_class=folder decision=published reason=deleted version=${ack.versionId}`);
-  return ack.versionId;
+  return serialPublication(context, path, async () => {
+    assertVaultPath(path);
+    const record = context.state.folderByPath(path);
+    if (record === undefined) return null;
+    const parents = record.versionId !== "" ? [record.versionId] : [];
+    const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false, undefined, judged);
+    context.state.forgetFolder(path);
+    bury(context, record.fileId, ack.versionId, path, true);
+    await context.state.save();
+    context.host.log(`folder path_class=folder decision=published reason=deleted version=${ack.versionId}`);
+    return ack.versionId;
+  });
 }
 
 /**

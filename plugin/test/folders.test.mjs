@@ -36,7 +36,7 @@ import { ManifestError, parseManifest } from "./fixtures/decoder-1.0.x.mjs";
 const require = createRequire(import.meta.url);
 const c = require("../build/crypto.js");
 const { applyChange } = require("../build/sync/pull.js");
-const { pushFile, pushFolder } = require("../build/sync/push.js");
+const { pushFile, pushFolder, pushFolderDelete, pendingPublication } = require("../build/sync/push.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 
 const DOMAIN = "0123456789abcdef0123456789abcdef";
@@ -800,4 +800,27 @@ test("the mobile host refuses to write a file where a folder stands", async (t) 
 
   assert.equal(files.has("Notes"), false, "a folder was overwritten with a file");
   assert.equal(folders.has("Notes"), true);
+});
+
+// A failed local deletion must release its publication slot without forgetting
+// the acknowledged live folder, so a later retry can complete normally.
+test("a rejected folder deletion releases its receipt slot and permits retry", async () => {
+  const r = await rig(), path = "Retry folder";
+  await r.host.createFolder(path);
+  await pushFolder(r.context, path);
+  const record = r.state.folderByPath(path);
+  const post = r.transport.postVersion.bind(r.transport), rejection = new Error("controlled folder rejection");
+  r.transport.postVersion = async () => { throw rejection; };
+  const deletion = pushFolderDelete(r.context, path);
+  assert.ok(pendingPublication(r.context, path), "the deletion must register before awaiting its post");
+  await assert.rejects(deletion, error => error === rejection);
+  assert.equal(pendingPublication(r.context, path), undefined);
+  assert.equal(r.state.folderByPath(path), record);
+  assert.equal(r.state.data.graves[record.fileId], undefined);
+  r.transport.postVersion = post;
+  const version = await pushFolderDelete(r.context, path);
+  assert.equal(pendingPublication(r.context, path), undefined);
+  assert.equal(r.state.folderByPath(path), undefined);
+  assert.equal(r.state.data.graves[record.fileId]?.versionId, version);
+  assert.equal(r.server.journal.filter(change => change.file_id === record.fileId && change.deleted).length, 1);
 });

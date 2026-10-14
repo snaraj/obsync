@@ -1286,6 +1286,15 @@ function refuse(context: SyncContext, change: ChangeRecord, reason: string): App
  */
 async function deletionOwed(context: SyncContext, change: ChangeRecord): Promise<boolean> {
   if (!change.deleted) return false;
+  const folderPath = Object.keys(context.state.data.folders)
+    .find(path => context.state.data.folders[path]?.fileId === change.file_id);
+  const pending = folderPath === undefined ? undefined : pendingPublication(context, folderPath);
+  if (pending !== undefined) {
+    context.host.log(`pull path_class=folder decision=waiting reason=deletion_receipt file=${change.file_id} seq=${change.seq}`);
+    await pending;
+    context.host.log(`pull path_class=folder decision=completed reason=deletion_receipt file=${change.file_id} seq=${change.seq}`);
+  }
+  // The local receipt may have forgotten the old folder while we waited.
   const path = context.state.pathByFileId(change.file_id);
   const held = path !== undefined
     ? context.state.fileByPath(path)
@@ -1331,7 +1340,11 @@ export async function applyChange(context: SyncContext, change: ChangeRecord, kn
       const path = context.state.pathByFileId(change.file_id);
       const held = path === undefined ? undefined : context.state.fileByPath(path);
       const folder = Object.values(context.state.data.folders).find(item => item.fileId === change.file_id);
-      if (authored || held?.versionId === change.version_id || folder?.versionId === change.version_id) return "echo";
+      // A local deletion receipt already covers this exact version, even
+      // while its metadata save is finishing. This grants no application.
+      const grave = context.state.data.graves[change.file_id];
+      if (authored || held?.versionId === change.version_id || folder?.versionId === change.version_id ||
+        grave?.versionId === change.version_id) return "echo";
       // Reseeding publishes every retained version as the coordinator. That
       // does not mean this device has its bytes: recovery may start blank,
       // and the selection may widen later. Authenticate the reseed pointer

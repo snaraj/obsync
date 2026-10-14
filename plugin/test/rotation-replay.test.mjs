@@ -14,7 +14,7 @@ async function fixture({ migrated = true, text = "recovered private bytes\n" } =
   if (migrated) manifest.migration_origin = "92".repeat(16) + "93".repeat(32);
   const change = await r.server.publishManifest({ fileId, manifest, sids: original.sids, parents: [],
     deviceId: KEYS.deviceId, manifestKey: r.keys.manifestKey, bytes: bytes.length });
-  return { ...r, path, bytes, change };
+  return { ...r, path, bytes, original, change };
 }
 
 for (const text of ["recovered private bytes\n", ""]) test(`a coordinator reads its authenticated reseed into a blank vault (${text.length} bytes)`, async () => {
@@ -74,4 +74,15 @@ test("paused and departed notes keep their guards when the coordinator sees a re
     assert.equal(await applyChange(r.context, r.change), "skipped", `${mode} must still prevent apply`);
     assert.equal(await r.host.stat(r.path), null);
   }
+});
+
+// A receipt for an earlier version cannot suppress authenticated incoming content.
+test("an older grave does not turn a different authenticated reseed into an echo", async () => {
+  const r = await fixture();
+  r.state.bury(r.change.file_id, { versionId: r.original.version_id, path: r.path, folder: false });
+  assert.notEqual(r.original.version_id, r.change.version_id);
+  assert.equal(await applyChange(r.context, r.change), "applied");
+  assert.deepEqual(await r.host.read(r.path), r.bytes);
+  assert.equal(r.state.fileByPath(r.path).versionId, r.change.version_id);
+  assert.equal(r.state.data.graves[r.change.file_id], undefined);
 });
