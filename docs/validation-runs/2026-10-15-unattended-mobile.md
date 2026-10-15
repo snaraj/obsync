@@ -32,7 +32,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All five full batches stopped on their first failed attempt;
+have passed**. All six full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -163,6 +163,24 @@ Permanent missing identity, malformed identity, unexpected enrollment state,
 late success, corrupted final bytes and incorrect editor content all refuse.
 This is driver validation pending a fresh complete native batch.
 
+Full batch 06, source and committed driver `769ffe3f413fabc4bc6247c5574c9d2a5bdb064c`,
+verified the installed official APK initially and rejected the untrusted TLS
+route. The pre-trust APK readback then failed exact hash equality, before any
+test CA was installed. That old readback retained neither observed hash nor
+byte count; its exact cause remains unclassified. The batch stopped and both
+controllers cleaned up, with zero owned groups and independently absent runtime,
+private fixture and manifest paths. The failed aggregate SHA-256 is
+`91f110b185472bbbb77d36ef4cbe609fa03e2dce7cc20b90f5ce3642d4238925`;
+the six-batch ledger SHA-256 is
+`95782a5a70e78f18b64306c4878a4c4ed943c225b5934ec42e0df3e25040f201`.
+
+The [ADB client source](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/client/commandline.cpp)
+shows that legacy `exec-out` returns success after copying its raw stream.
+The [daemon protocol](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/daemon/shell_service.cpp)
+does not separate stderr or transmit the remote exit code for that mode.
+Thus command completion alone cannot diagnose this hash mismatch. Exact pinned
+APK equality remains mandatory; no failed read may be retried into a pass.
+
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.
 The ordinary Restart search action redraws Search without issuing a query;
@@ -243,6 +261,20 @@ dispositions pass; the non-required CodeQL aggregate remains red for the
 reviewed covered alert. This does not override full batch 05's failure.
 
 ## Remaining gates
+
+The installed-APK probe now performs one ADB file pull into an owned private
+temporary directory. Independent device-side size and SHA-256 witnesses before
+and after must match the pulled file and the official APK pin; a changed path,
+partial transfer, command failure or mismatch refuses before trust installation.
+All operations share the original 30-second deadline, clamped to session expiry.
+Temporary APK copies are removed on both outcomes. Reduced receipts retain
+counts, hashes, stage and exit status without private paths or command output.
+Offline tests and deliberate broken controls cover these checks; the change
+does not establish a native pass or explain full batch 06's exact cause.
+The composed gate passes 121 Python tests, 118 Node tests and all 83 scripted
+mutation controls; both secret scans pass. At predecessor `769ffe3`, 46 hosted
+checks pass with the intended deployment skip and covered CodeQL aggregate
+failure; the required dispositions check passes.
 
 The small native path passed. Three consecutive fresh full runs still must
 include native restart/reboot,
