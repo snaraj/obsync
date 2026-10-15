@@ -31,7 +31,7 @@ FULL_PHASE_FACTS = {
         'faultClass': 'OWNED_ANDROID_ROUTE_OFFLINE', 'certificateValidation': 'NOT_TESTED_BY_ROUTE_GATE'},
     'access-repair': dict.fromkeys(('revokedTransportRefused', 'ordinaryLeavePreservedBytes', 'freshIndependentSas'), True) |
         {'oldRootDirectCipherPositive': 'REQUIRED_ORACLE_AFTER_ROTATION'},
-    'rotation-recovery': dict.fromkeys(('preparedRestart', 'commitUnknownRestart', 'normalQuitRequired', 'retainedHistory',
+    'rotation-recovery': dict.fromkeys(('wholeJournalUnchangedAcrossBothRestarts', 'preparedRestart', 'commitUnknownRestart', 'normalQuitRequired', 'retainedHistory',
         'detachedNativeCipherOracle', 'postrotationPhoneRestart', 'preexistingIndependentBytesAfterRotationRestart',
         'knownRetainedHistoryBytes', 'currentOriginalUnchanged'), True) | {'previousGenerationHistoryUi': 'RESTORE_COPY'},
     'selected-rename': dict.fromkeys(('ordinaryDesktopRename', 'ordinaryAndroidRename', 'noteIdentityAndBytesPreserved',

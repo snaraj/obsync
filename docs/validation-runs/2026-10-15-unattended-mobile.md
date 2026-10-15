@@ -32,7 +32,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. Both full batches stopped on their first failed attempt;
+have passed**. All three full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -79,6 +79,37 @@ ambiguous or mismatched targets still refuse. Failure receipts now retain safe
 list states and counts. A removed-refresh-witness mutation fails independently.
 This repairs the evidence gap without claiming the exact old failure's cause.
 
+Full batch 03, source and committed driver `b8354647337b3c4f916e7f927972335bdd4fef97`,
+passed the bounded refresh: zero active peer rows became one row matching the
+authenticated inventory in 67 ms. Rotation staging and preparation passed.
+The next checkpoint, `prepared-before-restart`, failed; its generic diagnostic
+does not identify the exact runtime refusal. Source inspection finds that the
+checkpoint calls the general file-list endpoint, which the server intentionally
+refuses while rotation is pending. Coordinator per-file reads and the exact
+rotation inventory remain available. The test must use those permitted reads
+without weakening inventory completeness, retained history, bytes or stopped-sync
+assertions. This is a source-supported driver diagnosis, not a claim that the
+failed receipt captured the API error.
+
+The repaired checkpoint records the complete server file inventory during the
+draft, binds the prepared inventory to its operation, coordinator, cutoff and
+head commitment, then reads every permitted source file. Before commit it also
+reads every destination derived by the exact bundled rotation planner from the
+separately saved UI backups; the detached planner cannot read or write chunks.
+Both pending restarts additionally require equality of the entire CRC-verified
+owned server journal, detecting writes to file IDs outside the queried set.
+Safe fixed stage/reason diagnostics replace the generic checkpoint refusal.
+These are driver changes awaiting a fresh native batch.
+
+The failed batch remains unchanged, SHA-256
+`e05230442c9a76a81bbc4f33eeadf2a01f808368fd40dfe73aeebe2e8253a49b`.
+Both controllers reported cleanup PASS, zero remaining owned process groups,
+and absent runtime, private fixture and manifest paths; those paths were checked
+independently. The three-batch reduced ledger SHA-256 is
+`bbc1ce52f36039de1b7a65680a512d8fe69a584876b87ec3984cd3b003373b40`.
+The 213.009-second quiet interval and earlier restart/offline/re-pairing checks
+are partial evidence only; three complete passes remain required.
+
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.
 The ordinary Restart search action redraws Search without issuing a query;
@@ -118,6 +149,28 @@ and both secret scans. Its output SHA-256 is
 `635e4bea2f0933ae5419b848c1239b7d0915976aee486d9948bcebf68a664e16`.
 These validate regression behavior and rejection controls; the native run above
 is separate evidence.
+
+The bounded review of the remaining recovery path also found an incorrect
+negative-test expectation: old and valid unrelated recovery roots derive a
+different generation, so the server refuses them with `generation_mismatch`
+before evaluating their recovery proof. That is distinct from a matching-generation
+bad proof. The corrected helper must require that exact refusal, unchanged
+local custody, no adopted credential, no recovered note bytes or indexed notes,
+and the independent parent's unchanged journal check. No native pass is claimed
+for this correction yet.
+
+The composed repair passes 107 Python tests and 114 Node tests, with no skips,
+plus all 59 scripted mutation controls and both secret scans. The whole-journal
+comparison additionally has a deliberate unseen-write mutation in its regression
+test. These are offline controls; they do not count as the three required native
+runs. The first composed check correctly refused its old positive receipt fixture,
+which lacked the newly mandatory whole-journal fact; that fixture was updated
+and both omission and false-value admission controls still refuse.
+
+At `b8354647`, all 46 successful hosted checks are terminal and the deployment
+check is intentionally skipped. The non-required CodeQL aggregate still reports
+the previously reviewed covered alert; required dispositions pass. These checks
+do not substitute for the failed full native batch.
 
 ## Remaining gates
 

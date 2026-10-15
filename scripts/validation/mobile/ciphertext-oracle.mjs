@@ -44,7 +44,8 @@ export function assertBundledModule(bundle, name, code) {
   const wrapped = `__modules[${JSON.stringify(name)}] = function (module, exports, require) {\n${code}};\n`;
   check(bundle.split(wrapped).length === 2, 'decoder_not_in_installed_bundle');
 }
-export function candidateCrypto(source, head, bundleSha256) {
+export function candidateCrypto(source, head, bundleSha256, rotationModules = false) {
+  check(typeof rotationModules === 'boolean', 'decoder_module_selection');
   source = resolve(source);
   const git = args => execFileSync('git', ['-C', source, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   check(realpathSync(source) === source && git(['rev-parse', 'HEAD']) === head && !git(['status', '--porcelain']), 'source_binding');
@@ -66,9 +67,10 @@ export function candidateCrypto(source, head, bundleSha256) {
     }
   }
   for (const name of ['./crypto', './seal2', './recoveryBackup', './domainmap', './sealWire']) bind(name);
+  if (rotationModules) for (const name of ['./rotationWire', './rotationReseal']) bind(name);
   const require = createRequire(pathToFileURL(join(build, 'crypto.js')));
   return { c: require('./crypto.js'), seal: require('./seal2.js'), backup: require('./recoveryBackup.js'),
-    dm: require('./domainmap.js'), wire: require('./sealWire.js'), decoderHash: digest(JSON.stringify(hashes)) };
+    dm: require('./domainmap.js'), wire: require('./sealWire.js'), ...(rotationModules ? { rotationWire: require('./rotationWire.js'), reseal: require('./rotationReseal.js') } : {}), decoderHash: digest(JSON.stringify(hashes)) };
 }
 export function recordContext(record) {
   return { generation: record.generation, domainId: record.domain_id, fileId: record.file_id, parents: record.parents, sids: record.sids };

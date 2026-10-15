@@ -4,11 +4,41 @@ No acceptance result is produced here. The caller additionally requires closed
 complete capture, the actual confidentiality scanner and both owners' cleanup.
 """
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
 import sys
 import time
+
+
+def pending_journal(run, source_head):
+    """Whole owned CRC-checked journal, including IDs absent from API queries."""
+    spec = importlib.util.spec_from_file_location('pending_rotation_journal', Path(__file__).with_name('mobile-journal.py'))
+    journal = importlib.util.module_from_spec(spec); spec.loader.exec_module(journal)
+    state = journal.SESSION.private_json(run / 'lab.json')
+    if (state.get('format') != 1 or state.get('run') != str(run) or state.get('source_dirty') is not False
+            or state.get('source_head') != source_head or time.time() >= state['expiresAtEpoch']):
+        raise ValueError('owned pending journal source refused')
+    server, holder = state['processes']['server'], state['holder']
+    def bound():
+        return (server['argv'] == [str(run / 'runtime/build/obsyncd'), 'serve']
+                and journal.COMMON.identity(server['pid']) == server['identity']
+                and journal.COMMON.identity(holder['pid']) == holder['identity'])
+    if not bound(): raise ValueError('owned pending journal process refused')
+    journal.SESSION.pin(run / 'runtime/build/obsyncd', state['artifacts']['obsyncd'])
+    snapshot = journal.read_segments(run / 'runtime/server/journal/v1/journal')
+    if not bound(): raise ValueError('owned pending journal process changed')
+    return {**snapshot, 'sourceHead': source_head, 'serverArtifactSha256': state['artifacts']['obsyncd'],
+            'serverIdentitySha256': hashlib.sha256(server['identity'].encode()).hexdigest()}
+
+
+def assert_pending_journal(before, after):
+    if (not isinstance(before, dict) or not before.get('segments') or before.get('frameCounts', {}).get('suite2_setup', 0) < 1
+            or not re.fullmatch('[a-f0-9]{40}', before.get('sourceHead', ''))
+            or any(not re.fullmatch('[a-f0-9]{64}', before.get(k, '')) for k in ('serverArtifactSha256', 'serverIdentitySha256'))
+            or before != after):
+        raise ValueError('pending restart changed whole verified journal')
 
 
 def launch_to_idle(require, launch, idle):
@@ -231,18 +261,25 @@ def run(api, args, c, desktop, android, lab, steps, phone, desk, tls, vault, cor
 
     # Persisted interruption at prepared and commit_unknown, without state edits.
     desk('stage-strong-key-rotation', 'rotate-stage')
+    native('rotation-draft-complete-inventory', 'native-checkpoint.mjs', 'rotation-draft', results=('OBSERVED',))
     desk('prepare-strong-key-rotation', 'prepare')
     def held_checkpoint(stage, label, previous=None):
         proof = native(stage, 'native-checkpoint.mjs', label, *([previous] if previous else []), results=('PASS',) if previous else ('OBSERVED',))
         require(proof.get('engineState') in ('ABSENT', 'STOPPED'), 'pending_rotation_engine_stopped')
-    held_checkpoint('prepared-before-restart', 'prepared-before')
+    held_checkpoint('prepared-before-restart', 'prepared-before', 'rotation-draft')
+    prepared_journal = pending_journal(desktop, c['sourceHead'])
     restart_desktop('prepared', 'prepared')
     held_checkpoint('prepared-after-restart', 'prepared-after', 'prepared-before')
+    assert_pending_journal(prepared_journal, pending_journal(desktop, c['sourceHead']))
+    save(desktop / 'evidence/pending-journal-prepared.json', {**prepared_journal, 'result': 'PASS', 'entireVerifiedJournalUnchanged': True})
     desk('resume-prepared-rotation', 'resume')
     desk('seed-current-generation', 'seed')
     held_checkpoint('commit-unknown-before-restart', 'commit-before')
+    commit_journal = pending_journal(desktop, c['sourceHead'])
     restart_desktop('commit-unknown', 'commit_unknown')
     held_checkpoint('commit-unknown-after-restart', 'commit-after', 'commit-before')
+    assert_pending_journal(commit_journal, pending_journal(desktop, c['sourceHead']))
+    save(desktop / 'evidence/pending-journal-commit.json', {**commit_journal, 'result': 'PASS', 'entireVerifiedJournalUnchanged': True})
     desk('resume-commit-unknown', 'resume')
     desk('commit-strong-key-rotation', 'commit')
     desk('close-committed-rotation-dialog', 'close-dialog')
@@ -289,7 +326,7 @@ def run(api, args, c, desktop, android, lab, steps, phone, desk, tls, vault, cor
     rotated_idle_ms = launch_to_idle(require, rotated_launch, rotated_idle)
     phone('rotated-phone-persisted-history', 'rotation-pair-status', {'expectedGenerationHash': new_status['generationHash'], 'expectedOldGenerationHash': old_status['generationHash']})
     both_bytes('rotation-restart'); metadata('rotation')
-    receipt('rotation-recovery', preparedRestart=True, commitUnknownRestart=True, normalQuitRequired=True, retainedHistory=True, detachedNativeCipherOracle=True,
+    receipt('rotation-recovery', wholeJournalUnchangedAcrossBothRestarts=True, preparedRestart=True, commitUnknownRestart=True, normalQuitRequired=True, retainedHistory=True, detachedNativeCipherOracle=True,
         postrotationPhoneRestart=True, postrotationLaunchToIdleMs=rotated_idle_ms, preexistingIndependentBytesAfterRotationRestart=True,
         previousGenerationHistoryUi='RESTORE_COPY', knownRetainedHistoryBytes=True, currentOriginalUnchanged=True)
 

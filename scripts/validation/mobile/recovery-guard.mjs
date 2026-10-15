@@ -6,6 +6,18 @@ import { execFileSync } from 'node:child_process';
 export function activeRecovery(value) {
   return value.paired===true && value.enrolling===false && value.phase==='active' && value.suite===2 && value.recoveryNotice===true;
 }
+export function recoveryRefusal(action) {
+  if(action==='setup-wrong-token')return {reason:'bad_setup_token',notice:'setup token'};
+  // Setup checks the root-derived generation before checking the recovery proof.
+  // pairing.refusalFor has no specific entry for this refusal; its visible text is the fallback.
+  if(action==='setup-refuse-old'||action==='setup-refuse-wrong')return {reason:'generation_mismatch',notice:"The server refused this step, so nothing changed. Try again; if it repeats, obsync's log names the reason."};
+  throw Error('fixed recovery refusal action required');
+}
+export function refusedRecovery(value) {
+  return value.enrolling===false && value.paired===false && value.deviceIdAbsent===true && value.deviceSecretAbsent===true &&
+    value.phase==='enrollment' && value.suite===2 && value.purpose==='recover' && value.engineStopped===true &&
+    value.visibleRefusal===true && value.contentAbsent===true;
+}
 export function validateExpectations(expected, sourceHead) {
   if(expected?.schema!==1 || expected.sourceHead!==sourceHead || !/^[a-f0-9]{64}$/.test(expected.generationHash) ||
       !Array.isArray(expected.notes) || expected.notes.length<2 || expected.notes.length>32) throw Error('explicit independent recovery expectations required');

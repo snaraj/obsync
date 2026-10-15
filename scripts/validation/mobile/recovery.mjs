@@ -4,11 +4,11 @@ import { join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { candidateCrypto } from './ciphertext-oracle.mjs';
 import { connect, sleep } from './cdp.mjs';
-import { recoveryManifest, validateExpectations, activeRecovery } from './recovery-guard.mjs';
+import { recoveryManifest, validateExpectations, activeRecovery, recoveryRefusal, refusedRecovery } from './recovery-guard.mjs';
 const [run, source, slot, command, kind = 'new'] = process.argv.slice(2);
 if (!['B','C','D'].includes(slot) || !['open','status','stage','setup-wrong-token','setup-refuse-old','setup-refuse-wrong','make-unrelated','setup-correct','readback','quit'].includes(command) || !['old','wrong','stripped','new','unrelated'].includes(kind)) throw Error('invalid recovery operator arguments');
 const state = await recoveryManifest(run,source,slot), runtime = join(state.run, 'runtime');
-let c;
+let c, stage=command, failureReason='owned_recovery_step_refused';
 function privateRead(name) {
   const path=join(runtime,name),st=lstatSync(path);
   if (!st.isFile()||st.isSymbolicLink()||st.uid!==process.getuid()||(st.mode&0o077)||st.nlink!==1||realpathSync(path)!==path) throw Error('private input custody');
@@ -35,23 +35,40 @@ const dom=`
 async function ui(body,params={}) {return c.evaluate(dom+body,{...params,version:state.pluginVersion});}
 async function settings() {await ui(`if(dialogs().length)throw Error('unexpected dialog');app.setting.open();app.setting.openTabById('obsync-private-sync');await wait(()=>pane()&&[...pane().querySelectorAll('.setting-item-name')].some(e=>e.textContent.trim()==='Recovery backup'),'settings');return true;`);}
 async function privateFingerprint() {return ui(`const bytes=new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify([p.state.data.deviceId,p.state.data.deviceSecret,p.state.data.vrk,p.state.custody2()]))));return [...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');`);}
+function negativeDiskSnapshot(notes) {
+  const metadata=join(state.devices[slot].vault,'.obsidian/plugins/obsync-private-sync/data.json'),info=lstatSync(metadata);
+  if(!info.isFile()||info.isSymbolicLink()||info.uid!==process.getuid()||info.nlink!==1||realpathSync(metadata)!==metadata)throw Error('owned recovery metadata required');
+  if(notes.some(note=>existsSync(join(state.devices[slot].vault,note.path))))throw Error('unexpected recovered disk content');
+  return createHash('sha256').update(readFileSync(metadata)).digest('hex');
+}
 async function setup(action) {
+  stage='setup-settings';failureReason='owned_recovery_settings_refused';
   await settings();
+  stage='setup-token';failureReason='owned_setup_token_refused';
   let token=privateRead('server/journal/v1/setup-token');if(!/^[a-f0-9]{64}$/.test(token))throw Error('owned token shape');
   if(action==='setup-wrong-token')token=(token[0]==='0'?'1':'0')+token.slice(1);
-  const before=await privateFingerprint(),reason=action==='setup-wrong-token'?'bad_setup_token':'bad_recovery_proof',baseline=c.consoleSummary.reasons[reason]??0;
+  const negative=action!=='setup-correct',expected=negative?JSON.parse(privateRead('../private/recovery-expectations.json')):null;
+  stage='setup-negative-before';failureReason='negative_recovery_baseline_refused';
+  if(negative)validateExpectations(expected,state.source_head);
+  const before=await privateFingerprint(),diskBefore=negative?negativeDiskSnapshot(expected.notes):null;
+  const refusal=negative?recoveryRefusal(action):null,baseline=negative?(c.consoleSummary.reasons[refusal.reason]??0):0;
+  stage='setup-submit';failureReason='ordinary_recovery_submit_refused';
   await ui(`const staged=p.state.stagedEnrollment2();if(p.state.paired||p.state.data.deviceId!==null||staged?.purpose!=='recover')throw Error('staged recovery without credential required');fillOwned(settingRow(pane(),'Setup or recover').querySelector('input'),P.token);press(settingRow(pane(),'Setup or recover'),'Set up or recover');return true;`,{token});
   if(action==='setup-correct') {
+    stage='setup-active';failureReason='recovery_active_deadline_or_refusal';
     await ui(`await wait(()=>{const pin=p.state.custody2();return (${activeRecovery.toString()})({paired:p.state.paired,enrolling:p.enrolling,phase:pin?.phase,suite:pin?.suite,recoveryNotice:notice('Recovered this vault')});},'recovery did not complete',60000);return true;`);
     record({result:'PASS',recoveredExistingAccount:true,activeSuite:2,oldDeviceApprovalUsed:false});
   } else {
+    stage='setup-authenticated-refusal';failureReason='expected_authenticated_refusal_absent';
     const end=Date.now()+45000;
-    while(Date.now()<end&&(c.consoleSummary.reasons[reason]??0)<=baseline)await sleep(100);
-    if((c.consoleSummary.reasons[reason]??0)<=baseline)throw Error('expected authenticated refusal absent');
+    while(Date.now()<end&&(c.consoleSummary.reasons[refusal.reason]??0)<=baseline)await sleep(100);
+    if((c.consoleSummary.reasons[refusal.reason]??0)<=baseline)throw Error('expected authenticated refusal absent');
+    stage='setup-negative-after';failureReason='negative_recovery_state_or_content_changed';
     const unchanged=before===await privateFingerprint();
-    const refused=await ui(`return !p.enrolling&&!p.state.paired&&p.state.data.deviceId===null&&p.state.data.deviceSecret===null&&notice(P.text);`,{text:action==='setup-wrong-token'?'setup token':'This backup does not match'});
-    if(!unchanged||!refused)throw Error('visible refusal or unchanged local custody absent');
-    record({result:'PASS',expectedRefusal:reason,visibleRefusal:true,noCredentialAdopted:true,localCustodyUnchanged:true,serverAccountUnchanged:'INDEPENDENT_PARENT_READ_REQUIRED'});
+    const refused=await ui(`const pin=p.state.custody2();return (${refusedRecovery.toString()})({enrolling:p.enrolling,paired:p.state.paired,deviceIdAbsent:p.state.data.deviceId===null,deviceSecretAbsent:p.state.data.deviceSecret===null,phase:pin?.phase,suite:pin?.suite,purpose:p.state.stagedEnrollment2()?.purpose,engineStopped:p.engine===null||p.engine?.started===false,visibleRefusal:notice(P.text),contentAbsent:P.notes.every(n=>app.vault.getAbstractFileByPath(n.path)===null&&p.state.fileByPath(n.path)===undefined)});`,{text:refusal.notice,notes:expected.notes});
+    const diskUnchanged=diskBefore===negativeDiskSnapshot(expected.notes);
+    if(!unchanged||!refused||!diskUnchanged)throw Error('visible refusal or unchanged local custody absent');
+    record({result:'PASS',expectedRefusal:refusal.reason,visibleRefusal:true,noCredentialAdopted:true,noActiveEnrollment:true,noContentMaterialized:true,persistedMetadataUnchanged:true,localCustodyUnchanged:true,serverAccountUnchanged:'INDEPENDENT_PARENT_READ_REQUIRED'});
   }
 }
 try {
@@ -135,6 +152,6 @@ try {
     }
   }
 } catch {
-  record({result:'FAIL',detail:'Owned recovery step refused or timed out; secret-bearing details withheld. Preserve the fixture and inspect before proceeding.'});
+  record({result:'FAIL',stage,firstFailure:failureReason,detail:'Owned recovery step refused or timed out; secret-bearing details withheld. Session controllers own cleanup.'});
   process.exitCode=1;
 } finally {c?.close();}

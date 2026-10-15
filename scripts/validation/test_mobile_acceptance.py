@@ -31,7 +31,7 @@ def phase_fixture():
             'faultClass':'OWNED_ANDROID_ROUTE_OFFLINE','certificateValidation':'NOT_TESTED_BY_ROUTE_GATE'},
         'access-repair': {'revokedTransportRefused':True,'oldRootDirectCipherPositive':'REQUIRED_ORACLE_AFTER_ROTATION',
             'ordinaryLeavePreservedBytes':True,'freshIndependentSas':True},
-        'rotation-recovery': {'preparedRestart':True,'commitUnknownRestart':True,'normalQuitRequired':True,'retainedHistory':True,
+        'rotation-recovery': {'wholeJournalUnchangedAcrossBothRestarts':True,'preparedRestart':True,'commitUnknownRestart':True,'normalQuitRequired':True,'retainedHistory':True,
             'detachedNativeCipherOracle':True,'postrotationPhoneRestart':True,'postrotationLaunchToIdleMs':2400,
             'preexistingIndependentBytesAfterRotationRestart':True,'previousGenerationHistoryUi':'RESTORE_COPY',
             'knownRetainedHistoryBytes':True,'currentOriginalUnchanged':True},
