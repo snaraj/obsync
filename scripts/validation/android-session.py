@@ -513,9 +513,9 @@ def execute(a):
                     signal.signal(sig, handler)
 
 
-def app_pid(state):
+def app_pid(state, timeout=30):
     try:
-        value=adb_command(state,['shell','pidof','md.obsidian']).strip()
+        value=adb_command(state,['shell','pidof','md.obsidian'],timeout=timeout).strip()
     except subprocess.CalledProcessError as error:
         if error.returncode==1: return None
         raise
@@ -540,20 +540,90 @@ def stopped_app(state):
     return old
 
 
+class HomeObservationError(RuntimeError):
+    def __init__(self, reason, diagnostic):
+        super().__init__(reason)
+        self.reason, self.diagnostic = reason, diagnostic
+
+
+def resumed_activity_counts(activities):
+    # Never retain task names, packages or raw dumpsys output. A null/malformed
+    # resumed field is not evidence that another Activity actually resumed.
+    lines=[line for line in activities.splitlines() if 'ResumedActivity' in line]
+    packages=[]
+    for line in lines:
+        match=re.search(r'\bActivityRecord\{[^}]*\bu[0-9]+\s+([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)/[A-Za-z0-9_.$]+(?:\s|\})',line)
+        if match:packages.append(match.group(1))
+    return {'resumedLineCount':len(lines),'resumedActivityCount':len(packages),
+            'obsidianResumedCount':sum(package=='md.obsidian' for package in packages),
+            'otherResumedCount':sum(package!='md.obsidian' for package in packages),
+            'obsidianMentioned':any('md.obsidian' in line for line in lines)}
+
+
+def background_after_one_home(state, clock=None, sleep=None):
+    clock=clock or time.monotonic;sleep=sleep or time.sleep
+    started=clock()
+    # This finite 30s observation remains within the full runner's existing
+    # 300s lifecycle phase and the controller's absolute ownership deadline.
+    budget=max(0,min(30,state['expiresAtEpoch']-time.time()))
+    deadline=started+budget
+    diagnostic={'stage':'observe_home_background','homeKeypressCount':0,'polls':0,
+                'deadlineMs':round(budget*1000),'elapsedMs':0,'before':None,'after':None,
+                'processPresent':False,'processRetained':False}
+    def fail(reason):
+        diagnostic['elapsedMs']=round((clock()-started)*1000)
+        raise HomeObservationError(reason,dict(diagnostic))
+    def remaining():
+        left=deadline-clock()
+        if left<=0:fail('home_background_deadline')
+        return left
+    def pid():
+        try:value=app_pid(state,timeout=remaining())
+        except HomeObservationError:raise
+        except subprocess.TimeoutExpired:fail('home_device_command_timeout')
+        except (OSError,subprocess.SubprocessError):fail('home_device_command_failed')
+        except RuntimeError:fail('home_invalid_application_pid')
+        diagnostic['processPresent']=value is not None
+        return value
+    def command(args):
+        try:return adb_command(state,args,timeout=remaining())
+        except HomeObservationError:raise
+        except subprocess.TimeoutExpired:fail('home_device_command_timeout')
+        except (OSError,subprocess.SubprocessError):fail('home_device_command_failed')
+    original=pid()
+    if original is None:fail('home_application_absent')
+    diagnostic['homeKeypressCount']=1
+    command(['shell','input','keyevent','KEYCODE_HOME'])
+    while True:
+        remaining()
+        matched=pid()==original
+        diagnostic['processRetained']=matched
+        if not matched:fail('home_application_process_changed')
+        counts=resumed_activity_counts(command(['shell','dumpsys','activity','activities']))
+        diagnostic['polls']+=1
+        if diagnostic['before'] is None:diagnostic['before']=counts
+        diagnostic['after']=counts
+        matched=pid()==original
+        diagnostic['processRetained']=matched
+        if not matched:fail('home_application_process_changed')
+        diagnostic['processRetained']=True
+        remaining()  # A late successful read cannot outrun the original budget.
+        if counts['otherResumedCount']>0 and not counts['obsidianMentioned']:
+            diagnostic['elapsedMs']=round((clock()-started)*1000)
+            return {'result':'BACKGROUNDED','applicationPid':original,'processRetained':True,**diagnostic}
+        sleep(min(.1,remaining()))
+
+
 def lifecycle(run, action, boot_seconds=240):
     state=live_state(run)
     if state.get('targetKind')=='usb' and action=='reboot':raise ValueError('physical device reboot needs separate explicit authorization and lifecycle support')
     check_reverse(state)
     if action=='home':
-        pid=app_pid(state)
-        if pid is None: raise RuntimeError('running owned Obsidian required')
-        adb_command(state,['shell','input','keyevent','KEYCODE_HOME'])
-        activities=adb_command(state,['shell','dumpsys','activity','activities'])
-        resumed=[line for line in activities.splitlines() if 'ResumedActivity' in line]
-        if not resumed or any('md.obsidian' in line for line in resumed):
-            raise RuntimeError('home did not prove Obsidian backgrounded')
-        if app_pid(state)!=pid: raise RuntimeError('Obsidian process changed while backgrounding')
-        proof={'result':'BACKGROUNDED','applicationPid':pid,'processRetained':True}
+        try:proof=background_after_one_home(state)
+        except HomeObservationError as error:
+            save(run/'evidence'/('android-home-failure-'+str(time.time_ns())+'.json'),
+                 {'result':'FAIL','sourceHead':state['sourceHead'],'reason':error.reason,**error.diagnostic})
+            raise
     elif action=='restart-app':
         boot=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id']).strip()
         if (run/'evidence/android-trust.json').exists():

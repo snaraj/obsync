@@ -660,8 +660,15 @@ async function editListed(t, options, arm = () => undefined, firstAttempt = null
   a.host.write("Notes/n.md", AFTER, 2000);
   // A syscall may finish after this wait spends its virtual advance budget.
   // Observe completed failure handling before driving the retry it arms.
-  if (firstAttempt !== null) await timers.run(STEP_MS, () => firstAttempt(r));
-  await timers.run(STEP_MS, () => r.text("Notes/n.md") === AFTER && r.state.fileByPath("Notes/n.md")?.mtime === 2000);
+  let landingStep = STEP_MS;
+  if (firstAttempt !== null) {
+    await timers.run(STEP_MS, () => firstAttempt(r));
+    // The observed parked receipt arms a 60000ms retry. Reach that timer once;
+    // then wait for I/O without walking virtual time past its original window.
+    timers.now += 60000;
+    landingStep = 0;
+  }
+  await timers.run(landingStep, () => r.text("Notes/n.md") === AFTER && r.state.fileByPath("Notes/n.md")?.mtime === 2000);
   // The host's native refresh deadline uses wall time. Do not advance the
   // simulated thirty-second scan past it while the real one-second reload is
   // still pending; wait for the pull receipt, not merely the written bytes.

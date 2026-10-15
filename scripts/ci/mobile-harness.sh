@@ -8,4 +8,5 @@ node scripts/validation/mobile/desktop-guard-mutations.mjs
 node scripts/validation/mobile/ciphertext-oracle-mutations.mjs
 node scripts/validation/mobile/native-confidentiality-scan-mutations.mjs
 python3 -B scripts/validation/recovery_refusal_mutations.py
+python3 -B scripts/validation/android-home-mutations.py
 python3 -B scripts/validation/mobile/native-checkpoint-mutations.py --node "$(command -v node)" --source "$OBSYNC_ORACLE_SOURCE"

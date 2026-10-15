@@ -134,6 +134,9 @@ test("a device enrolled as its bare platform gives the server the name it shows,
 
 test("a name another device gave this one becomes its own, and nothing is sent back (#152)", async () => {
   const r = await started({ ownName: "Office desktop" });
+  // Adoption assigns the name before awaiting persistence. The heartbeat read
+  // above may finish first; wait for adoption's post-save receipt as well.
+  await r.timers.run(1000, () => r.host.logs.includes("device decision=adopted reason=renamed_elsewhere"));
   assert.equal(r.server.requests.filter((request) => request.method === "PATCH").length, 0);
   assert.equal(r.state.data.deviceName, "Office desktop");
   assert.ok(r.host.logs.includes("device decision=adopted reason=renamed_elsewhere"));

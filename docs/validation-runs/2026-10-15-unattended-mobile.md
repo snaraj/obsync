@@ -32,7 +32,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All three full batches stopped on their first failed attempt;
+have passed**. All four full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -110,6 +110,34 @@ independently. The three-batch reduced ledger SHA-256 is
 The 213.009-second quiet interval and earlier restart/offline/re-pairing checks
 are partial evidence only; three complete passes remain required.
 
+Full batch 04, source and committed driver `93f3e05dd7d521fe0eaab07c8bab7112dcc6bbf6`,
+passed another 213.009-second interval without Android calls, ordinary desktop
+restart (775 ms), Android process restart (4,414 ms), and guest reboot with
+retained pairing and independent persisted-byte equality. It stopped at
+`android-home-before-offline`, before exercising the repaired rotation checkpoint.
+The helper sent one Home event and immediately sampled resumed activity; its
+failure did not retain activity counts. The exact runtime state is therefore
+unknown. Input dispatch alone does not establish the completed background
+transition. The replacement observes that transition within a fixed deadline,
+requires a positive non-Obsidian resumed activity and the same live Obsidian PID,
+and retains safe counts on failure. It never repeats Home or accepts absent
+activity as proof of backgrounding.
+
+Both controllers reported cleanup PASS with zero remaining owned process groups;
+their runtime, private fixture and manifest paths were independently confirmed
+absent. The failed aggregate SHA-256 is
+`253aa5320a17ffd15339e489b26dde69542abb1d59e84465dc526c28e3604f5d`;
+the four-batch reduced ledger SHA-256 is
+`b9375c1edb710028e42b5490acf893b65641110e7b93b7126e95c1075e01ec2a`.
+These observations do not turn any failed batch into a full pass.
+
+The Home repair passes the composed 113 Python and 114 Node harness tests,
+66 scripted mutation controls and both secret scans. Its controls require one
+Home event, passive foreground/null-to-background observation, same-process
+retention, a positive resumed activity, session-expiry clamping and refusal of
+a result received after the fixed deadline. These are offline checks; fresh
+native acceptance remains outstanding.
+
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.
 The ordinary Restart search action redraws Search without issuing a query;
@@ -171,6 +199,19 @@ At `b8354647`, all 46 successful hosted checks are terminal and the deployment
 check is intentionally skipped. The non-required CodeQL aggregate still reports
 the previously reviewed covered alert; required dispositions pass. These checks
 do not substitute for the failed full native batch.
+
+At `93f3e05`, the hosted macOS device-name test lacked the post-save adoption log,
+and the Windows transient-rename test exhausted its unchanged I/O deadline.
+Source inspection found an earlier device-name readiness predicate and slow
+stepping toward an already-recorded 60-second virtual retry. Both failures are
+retained; the hosted logs do not establish exact scheduling. Controlled delayed-save and slow-clock experiments
+reproduce the old failures and pass with the corrected test drivers. Adoption
+now waits for its post-save receipt; the rename test advances once to the
+observed retry and then waits for actual I/O without further virtual advance.
+The existing assertions and real-time deadlines remain in force. Neither fix
+changes the product or supplies a hosted pass; fresh hosted results are required.
+All 23 focused tests pass. Four broken-product controls still fail: missing
+adoption receipt, missing adopted name, disabled retry and late retry.
 
 ## Remaining gates
 

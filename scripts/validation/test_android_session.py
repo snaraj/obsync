@@ -266,6 +266,85 @@ class LifecycleAPIs(unittest.TestCase):
             self.assertIn(['reverse','tcp:18473','tcp:18473'],calls);self.assertIn(['reboot'],calls)
 
 
+class HomeObservation(unittest.TestCase):
+    FOREGROUND='mResumedActivity: ActivityRecord{abc u0 md.obsidian/.MainActivity t5}'
+    BACKGROUND='topResumedActivity=ActivityRecord{def u0 com.android.launcher/.Launcher t2}'
+    NULL='mResumedActivity: null'
+
+    def observe(self, activities, pids=None, expires=1030, fail_command=None, late_final_pid=False):
+        self.clock=0.;self.calls=[];self.timeouts=[];self.pid_reads=0;self.activity_reads=0
+        values=iter(pids) if pids else None
+        def adb(state,args,timeout=30,**kwargs):
+            self.calls.append(args);self.timeouts.append(timeout)
+            if fail_command and args==fail_command[0]:raise fail_command[1]
+            if args==['shell','pidof','md.obsidian']:
+                self.pid_reads+=1;value=next(values,'111') if values else '111'
+                if late_final_pid and self.pid_reads==3:self.clock+=31
+                if value is None:raise subprocess.CalledProcessError(1,['owned-adb'])
+                return value
+            if args==['shell','dumpsys','activity','activities']:
+                index=min(self.activity_reads,len(activities)-1);self.activity_reads+=1;return activities[index]
+            if args==['shell','input','keyevent','KEYCODE_HOME']:return ''
+            raise AssertionError('unexpected device command')
+        def sleep(seconds):self.clock+=seconds
+        with patch.object(M,'adb_command',side_effect=adb),patch.object(M.time,'time',return_value=1000):
+            return M.background_after_one_home({'expiresAtEpoch':expires},clock=lambda:self.clock,sleep=sleep)
+
+    def homes(self):return self.calls.count(['shell','input','keyevent','KEYCODE_HOME'])
+
+    def test_single_home_waits_passively_for_positive_background_and_same_pid(self):
+        proof=self.observe([self.FOREGROUND,self.NULL,self.BACKGROUND])
+        self.assertEqual(proof['result'],'BACKGROUNDED');self.assertEqual(proof['polls'],3)
+        self.assertEqual(self.homes(),1);self.assertEqual(proof['homeKeypressCount'],1)
+        self.assertEqual(proof['applicationPid'],111);self.assertTrue(proof['processRetained'])
+        self.assertEqual(proof['before']['obsidianResumedCount'],1);self.assertEqual(proof['after']['otherResumedCount'],1)
+        self.assertEqual(proof['elapsedMs'],200);self.assertTrue(all(0<value<=30 for value in self.timeouts))
+        self.assertNotIn('launcher',json.dumps(proof));self.assertNotIn('ActivityRecord',json.dumps(proof))
+
+    def test_absent_null_foreground_or_mixed_resumed_activity_never_proves_background(self):
+        for text in ['',self.NULL,'mResumedActivity: malformed',self.FOREGROUND,self.FOREGROUND+'\n'+self.BACKGROUND]:
+            with self.subTest(text=text),self.assertRaises(M.HomeObservationError) as result:self.observe([text])
+            self.assertEqual(result.exception.reason,'home_background_deadline');self.assertEqual(self.homes(),1)
+            self.assertEqual(result.exception.diagnostic['elapsedMs'],30000);self.assertGreater(result.exception.diagnostic['polls'],1)
+        self.assertEqual(M.resumed_activity_counts(self.NULL)['resumedActivityCount'],0)
+
+    def test_missing_or_changed_process_is_immediate_failure_without_retry(self):
+        for pids in [['111','222','111'],['111','111',None,'111']]:
+            with self.subTest(pids=pids),self.assertRaises(M.HomeObservationError) as result:self.observe([self.BACKGROUND],pids)
+            self.assertEqual(result.exception.reason,'home_application_process_changed');self.assertEqual(self.homes(),1)
+            self.assertFalse(result.exception.diagnostic['processRetained']);self.assertLessEqual(self.pid_reads,3)
+        with self.assertRaises(M.HomeObservationError) as result:self.observe([self.BACKGROUND],[None])
+        self.assertEqual(result.exception.reason,'home_application_absent');self.assertEqual(self.homes(),0)
+        for invalid in ['0','111 222','invalid']:
+            with self.assertRaises(M.HomeObservationError) as result:self.observe([self.BACKGROUND],[invalid])
+            self.assertEqual(result.exception.reason,'home_invalid_application_pid');self.assertEqual(self.homes(),0)
+
+    def test_session_expiry_and_late_success_cannot_extend_fixed_budget(self):
+        with self.assertRaises(M.HomeObservationError) as result:self.observe([self.NULL],expires=1000.25)
+        self.assertEqual(result.exception.diagnostic['elapsedMs'],250);self.assertEqual(self.homes(),1)
+        self.assertTrue(all(value<=.25 for value in self.timeouts))
+        with self.assertRaises(M.HomeObservationError) as result:self.observe([self.BACKGROUND],late_final_pid=True)
+        self.assertEqual(result.exception.reason,'home_background_deadline');self.assertEqual(self.homes(),1)
+
+    def test_command_errors_never_promote_private_stderr(self):
+        command=['shell','dumpsys','activity','activities']
+        for error,reason in [(subprocess.TimeoutExpired(['private-command'],1,stderr=b'private-value'),'home_device_command_timeout'),
+                             (subprocess.CalledProcessError(7,['private-command'],stderr=b'private-value'),'home_device_command_failed')]:
+            with self.assertRaises(M.HomeObservationError) as result:self.observe([self.BACKGROUND],fail_command=(command,error))
+            self.assertEqual(result.exception.reason,reason);self.assertNotIn('private',str(result.exception))
+            self.assertNotIn('private',json.dumps(result.exception.diagnostic));self.assertEqual(self.homes(),1)
+
+    def test_lifecycle_retains_constant_failure_receipt_with_counts(self):
+        with tempfile.TemporaryDirectory(prefix='obsync-home-proof-') as tmp:
+            run=Path(tmp);(run/'evidence').mkdir()
+            error=M.HomeObservationError('home_background_deadline',{'stage':'observe_home_background','homeKeypressCount':1,'polls':4,'before':{'resumedActivityCount':1},'after':{'resumedActivityCount':0}})
+            with patch.object(M,'live_state',return_value={'sourceHead':'a'*40}),patch.object(M,'check_reverse'),patch.object(M,'background_after_one_home',side_effect=error):
+                with self.assertRaises(M.HomeObservationError):M.lifecycle(run,'home')
+            files=list((run/'evidence').glob('android-home-failure-*.json'));self.assertEqual(len(files),1)
+            receipt=json.loads(files[0].read_text());self.assertEqual(receipt['result'],'FAIL');self.assertEqual(receipt['polls'],4)
+            self.assertEqual(receipt['reason'],'home_background_deadline');self.assertEqual(receipt['after']['resumedActivityCount'],0)
+
+
 class Diagnostics(unittest.TestCase):
     def test_startup_diagnostics_are_bounded_redacted_and_phase_scoped(self):
         with tempfile.TemporaryDirectory(prefix='obsync-diagnostic-test-') as tmp:
