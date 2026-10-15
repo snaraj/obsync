@@ -345,6 +345,41 @@ class HomeObservation(unittest.TestCase):
             self.assertEqual(receipt['reason'],'home_background_deadline');self.assertEqual(receipt['after']['resumedActivityCount'],0)
 
 
+class InitialApkGate(unittest.TestCase):
+    def test_actual_initial_install_block_requires_one_complete_shared_verification(self):
+        import textwrap
+        source=Path(M.__file__).read_text()
+        first=source.index("        stage = 'install'");last=source.index("        activity = adb_command",first)
+        block=compile(textwrap.dedent(source[first:last]),'actual-initial-apk-gate','exec')
+        official=b'official apk controller fixture';remote='/data/app/~~synthetic==/md.obsidian-owned==/base.apk'
+        for mode in ('correct','changed','failed-pull'):
+            with self.subTest(mode=mode),tempfile.TemporaryDirectory(prefix='obsync-initial-apk-gate-') as tmp:
+                run=Path(tmp).resolve();(run/'private').mkdir(mode=0o700);(run/'evidence').mkdir();calls=[]
+                content=b'other installed bytes' if mode=='changed' else official
+                def adb(state,args,timeout=30,**kwargs):
+                    calls.append(args)
+                    if args[0]=='install':return 'Success'
+                    if args[:3]==['shell','pm','path']:return 'package:'+remote
+                    if args[:5]==['shell','toybox','stat','-c','%s']:return str(len(content))
+                    if args[:3]==['shell','toybox','sha256sum']:return hashlib.sha256(content).hexdigest()+'  '+remote
+                    if args[:2]==['pull',remote]:
+                        Path(args[2]).write_bytes(content)
+                        if mode=='failed-pull':raise subprocess.CalledProcessError(9,['synthetic-pull'])
+                        return 'complete'
+                    raise AssertionError('no raw exec, app launch or other operation is allowed')
+                namespace={'APK':M.APK,'state':{'sourceHead':'a'*40,'expiresAtEpoch':10**12},'a':SimpleNamespace(run=run),
+                           'apk':run/'official.apk','proof':{'apkSha256':hashlib.sha256(official).hexdigest()},'adb_command':adb,'save':M.save}
+                if mode=='correct':exec(block,namespace)
+                else:
+                    reason='apk_official_pin_mismatch' if mode=='changed' else 'apk_device_command_failed'
+                    with self.assertRaisesRegex(M.APK.ApkReadbackError,reason):exec(block,namespace)
+                self.assertEqual(sum(call[:1]==['pull'] for call in calls),1)
+                proof=json.loads(next((run/'evidence').glob('android-apk-readback-*.json')).read_text())
+                self.assertEqual(proof['phase'],'initial-install');self.assertTrue(proof['temporaryRemoved'])
+                self.assertEqual(proof['result'],'VERIFIED' if mode=='correct' else 'FAIL')
+                self.assertEqual(list((run/'private').iterdir()),[])
+
+
 class Diagnostics(unittest.TestCase):
     def test_startup_diagnostics_are_bounded_redacted_and_phase_scoped(self):
         with tempfile.TemporaryDirectory(prefix='obsync-diagnostic-test-') as tmp:
@@ -381,7 +416,7 @@ class Diagnostics(unittest.TestCase):
 
 
 class Lifecycle(unittest.TestCase):
-    def exercise(self, journey_code, installed=b'fixture-apk', install='Success', timeout=False, prepare_failure=False):
+    def exercise(self, journey_code, installed=b'fixture-apk', install='Success', timeout=False, prepare_failure=False,pull_failure=False):
         with tempfile.TemporaryDirectory(prefix='obsync-lifecycle-test-') as tmp:
             root = Path(tmp).resolve(); sdk=root/'sdk'; run=root/'new-run'
             apk=root/'fixture.apk'; apk.write_bytes(b'fixture-apk')
@@ -403,8 +438,14 @@ class Lifecycle(unittest.TestCase):
                 self.assertEqual(state['environment']['ADB_MDNS'], '0')
                 if args[:3] == ['shell','getprop','sys.boot_completed']: return '1'
                 if args[:1] == ['install']: return install
-                if args[:3] == ['shell','pm','path']: return 'package:/data/app/synthetic/base.apk'
-                if args[:2] == ['exec-out','cat']: return installed
+                if args[:3] == ['shell','pm','path']: return 'package:/data/app/~~synthetic==/md.obsidian-owned==/base.apk'
+                if args[:5] == ['shell','toybox','stat','-c','%s']:return str(len(installed))
+                if args[:3] == ['shell','toybox','sha256sum']:return hashlib.sha256(installed).hexdigest()+'  /data/app/~~synthetic==/md.obsidian-owned==/base.apk'
+                if args[:1] == ['pull']:
+                    Path(args[2]).write_bytes(installed)
+                    if pull_failure:raise subprocess.CalledProcessError(7,['private adb args'],stderr=b'private transfer details')
+                    return 'pull completed'
+                if args[:2] == ['exec-out','cat']:raise AssertionError('initial APK must not use the raw exec stream')
                 if args[:3] == ['shell','cmd','package']: return 'md.obsidian/.MainActivity'
                 return ''
             with patch.object(M, 'validate', return_value=(apk,proof)), \
@@ -415,6 +456,7 @@ class Lifecycle(unittest.TestCase):
                 try: M.execute(a)
                 except Exception as error: failure=str(error)
                 else: failure=None
+            self.last_apk_proofs=[json.loads(path.read_text()) for path in (run/'evidence').glob('android-apk-readback-*.json')]
             receipt=json.loads((run/'evidence/result.json').read_text())
             diagnostic=run/'evidence/startup-diagnostics.json'
             self.assertEqual(diagnostic.exists(), bool(receipt['failure'] and receipt['failure']['stage'] in ('prepare','boot','install')))
@@ -428,6 +470,9 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(receipt['ownedGroupsRemaining'], 0)
         self.assertTrue(receipt['runtimeAbsent'] and receipt['privateAbsent'] and receipt['manifestAbsent'])
         self.assertIn(['shell','svc','wifi','disable'], calls)
+        self.assertEqual(sum(call[:1]==['pull'] for call in calls),1)
+        self.assertEqual(self.last_apk_proofs[0]['result'],'VERIFIED')
+        self.assertTrue(self.last_apk_proofs[0]['temporaryRemoved'])
 
     def test_prepare_failure_also_cleans_profile(self):
         receipt, failure, _=self.exercise('pass', prepare_failure=True)
@@ -445,7 +490,16 @@ class Lifecycle(unittest.TestCase):
 
     def test_success_install_text_cannot_hide_changed_installed_apk(self):
         receipt, failure, _=self.exercise('pass', installed=b'changed')
-        self.assertIn('installed APK differs', failure); self.assertEqual(receipt['result'], 'FAIL')
+        self.assertIn('apk_official_pin_mismatch', failure); self.assertEqual(receipt['result'], 'FAIL')
+
+    def test_failed_complete_pull_cannot_launch_app_or_retry_even_when_local_bytes_match(self):
+        receipt,failure,calls=self.exercise('pass',pull_failure=True)
+        self.assertEqual(receipt['result'],'FAIL');self.assertEqual(receipt['cleanup'],'PASS')
+        self.assertIn('apk_device_command_failed',failure);self.assertEqual(sum(call[:1]==['pull'] for call in calls),1)
+        self.assertFalse(any(call[:3]==['shell','am','start'] for call in calls))
+        proof=self.last_apk_proofs[0];self.assertEqual(proof['pullExitCode'],7);self.assertTrue(proof['temporaryRemoved'])
+        self.assertEqual(proof['local']['sha256'],proof['expectedSha256']);self.assertEqual(proof['result'],'FAIL')
+        self.assertNotIn('private transfer',json.dumps(proof))
 
     def test_install_exit_zero_with_failure_text_cannot_pass(self):
         receipt, failure, _=self.exercise('pass', install='Failure [INSTALL_FAILED]')

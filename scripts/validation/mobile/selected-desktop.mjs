@@ -3,8 +3,9 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { boundManifest, owned, privateRead, privateSave, digest } from './desktop-guard.mjs';
-import { connect, sleep } from './cdp.mjs';
+import { connect, targets, sleep } from './cdp.mjs';
 const [run, source, command, index] = process.argv.slice(2);
 let state, c, watchElapsed;
 const uiPrelude = `const p=app.plugins.plugins['obsync-private-sync'];if(!p?.state?.paired||p.state.custody2()?.phase!=='active'||p.state.data.serverUrl!==P.url)throw Error('owned active selected peer');
@@ -15,6 +16,42 @@ const uiPrelude = `const p=app.plugins.plugins['obsync-private-sync'];if(!p?.sta
  const pane=()=>{const ps=documents().flatMap(d=>[...d.querySelectorAll('.mod-settings .vertical-tab-content')]).filter(visible);if(ps.length>1)throw Error('selected settings pane identity');return ps[0]??null;};
  const row=name=>{const root=pane();if(!root)throw Error('selected settings pane identity');const rs=[...root.querySelectorAll('.setting-item')].filter(visible).filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);if(rs.length!==1)throw Error('selected setting identity');return rs[0];};`;
 const ui = (body, params={}) => c.evaluate(uiPrelude+body,params);
+async function selectedScope() {
+  const marker=randomUUID(),connections=[],deadline=Date.now()+30000;
+  let expired=false,saved=false;
+  // One original30s window, including discovery/actions and a reserved cleanup second.
+  const within=async(action,cleanup=false)=>{
+    const due=cleanup?deadline:deadline-1000,remaining=due-Date.now();
+    if(remaining<=0||expired&&!cleanup)throw Error('owned scope input deadline');
+    let timer;
+    try{const value=await Promise.race([action(),new Promise((_,reject)=>{timer=setTimeout(()=>{expired=true;for(const candidate of connections)candidate.close();reject(Error('owned scope input deadline'));},remaining);})]);if(Date.now()>=due){expired=true;throw Error('owned scope input deadline');}return value;}
+    finally{clearTimeout(timer);}
+  };
+  try {
+    await within(()=>ui(`app.setting.open();app.setting.openTabById('obsync-private-sync');await wait(()=>pane()&&row('Folder selection'),'folder settings',Math.max(0,P.deadline-Date.now()));const select=row('Folder selection').querySelector('select');const options=[...select.options].filter(o=>o.textContent.trim()==='Selected folders only');if(options.length!==1)throw Error('selected option changed');select.value=options[0].value;select.dispatchEvent(new select.ownerDocument.defaultView.Event('change',{bubbles:true}));const t=row('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected textarea absent');t.focus();t.select();return true;`,{deadline:deadline-1000}));
+    await within(()=>ui(`const root=pane();if(!root||root.hasAttribute('data-obsync-owned-scope'))throw Error('owned scope marker occupied');root.setAttribute('data-obsync-owned-scope',P.marker);return true;`,{marker}));
+    const matches=[];
+    const pages=await within(()=>targets(state,'A'));
+    if(!Array.isArray(pages)||pages.length<1||pages.length>8||new Set(pages.map(page=>page.id)).size!==pages.length)throw Error('bounded owned Settings pages required');
+    for(const page of pages) {
+      const candidate=await within(async()=>{const opened=await connect(state,'A',false,page.id);if(expired){opened.close();throw Error('owned scope input deadline');}connections.push(opened);return opened;});
+      const found=await within(()=>candidate.evaluate(`const roots=[...document.querySelectorAll('[data-obsync-owned-scope]')].filter(e=>e.getAttribute('data-obsync-owned-scope')===P.marker);if(roots.length>1)throw Error('scope target ambiguous');return roots.length===1&&roots[0].isConnected&&roots[0].matches('.mod-settings .vertical-tab-content');`,{marker},false));
+      if(found===true)matches.push(candidate);
+    }
+    if(matches.length!==1)throw Error('one process-owned Settings target required');
+    const input=matches[0];
+    const scoped=`const roots=[...document.querySelectorAll('[data-obsync-owned-scope]')].filter(e=>e.getAttribute('data-obsync-owned-scope')===P.marker);if(roots.length!==1||!roots[0].isConnected||!roots[0].matches('.mod-settings .vertical-tab-content'))throw Error('owned Settings target changed');const root=roots[0];const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;const row=name=>{const rows=[...root.querySelectorAll('.setting-item')].filter(visible).filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);if(rows.length!==1)throw Error('owned scope row identity');return rows[0];};`;
+    await within(()=>input.evaluate(scoped+`const t=row('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected textarea absent');t.focus();t.select();if(document.activeElement!==t)throw Error('owned selected input focus');return true;`,{marker},false));
+    await within(()=>input.insertText('Team docs'));
+    const point=await within(()=>input.evaluate(scoped+`if(row('Selected folders').querySelector('textarea').value!=='Team docs')throw Error('native selected text differs');const buttons=[...row('Save on this device').querySelectorAll('button')].filter(e=>visible(e)&&!e.disabled&&e.textContent.trim()==='Save');if(buttons.length!==1)throw Error('ordinary scope save identity');const b=buttons[0];b.scrollIntoView({block:'center'});const r=b.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);if(!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>=innerWidth||y>=innerHeight||!hit||(hit!==b&&!b.contains(hit)))throw Error('scope Save pointer target blocked');return {x,y};`,{marker},false));
+    await within(()=>input.mouseEvent('mousePressed',point.x,point.y));await within(()=>input.mouseEvent('mouseReleased',point.x,point.y));
+    await within(()=>ui(`await wait(()=>!p.changingScope&&JSON.stringify(p.state.data.syncFolders)===JSON.stringify(['Team docs']),'scope save',Math.max(0,P.deadline-Date.now()));return true;`,{deadline:deadline-1000}));
+    saved=true;
+  } finally {
+    try {await within(()=>c.evaluate(`const docs=[...new Set([document,app.setting?.modalEl?.ownerDocument].filter(d=>d&&!d.defaultView?.closed))];for(const d of docs)for(const e of d.querySelectorAll('[data-obsync-owned-scope]'))if(e.getAttribute('data-obsync-owned-scope')===P.marker)e.removeAttribute('data-obsync-owned-scope');if(P.close)app.setting.close();return true;`,{marker,close:saved}),true);}
+    finally {for(const candidate of connections)candidate.close();}
+  }
+}
 async function pointer(selector, text=null, button='left') {
   const point=await ui(`const e=one(P.selector,P.text);e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};`,{selector,text});
   await c.mouseEvent('mousePressed',point.x,point.y,button);
@@ -88,12 +125,7 @@ try {
   if(!['scope','rename','before','returned','watch-down','watch-up'].includes(command)||index!==undefined)throw Error('finite selected desktop command');
   state=boundManifest(run,source);c=await connect(state,'A');
   if(command==='scope'){
-    await ui(`app.setting.open();app.setting.openTabById('obsync-private-sync');await wait(()=>pane()&&row('Folder selection'),'folder settings');const select=row('Folder selection').querySelector('select');const options=[...select.options].filter(o=>o.textContent.trim()==='Selected folders only');if(options.length!==1)throw Error('selected option changed');select.value=options[0].value;select.dispatchEvent(new select.ownerDocument.defaultView.Event('change',{bubbles:true}));const t=row('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected textarea absent');t.focus();t.select();return true;`);
-    await c.insertText('Team docs');
-    await ui(`if(row('Selected folders').querySelector('textarea').value!=='Team docs')throw Error('native selected text differs');return true;`);
-    const point=await ui(`const buttons=[...row('Save on this device').querySelectorAll('button')].filter(e=>visible(e)&&!e.disabled&&e.textContent.trim()==='Save');if(buttons.length!==1)throw Error('ordinary scope save identity');buttons[0].scrollIntoView({block:'center'});const r=buttons[0].getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};`);
-    await c.mouseEvent('mousePressed',point.x,point.y);await c.mouseEvent('mouseReleased',point.x,point.y);
-    await ui(`await wait(()=>!p.changingScope&&JSON.stringify(p.state.data.syncFolders)===JSON.stringify(['Team docs']),'scope save');app.setting.close();return true;`);
+    await selectedScope();
   }else if(command==='rename'){
     const before=await snapshot('Team docs');privateSave(join(state.secrets,'selected-original.json'),JSON.stringify(before));
     await ui(`app.setting.close();const leaves=app.workspace.getLeavesOfType('file-explorer');if(leaves.length!==1)throw Error('one Files view required');await app.workspace.revealLeaf(leaves[0]);await wait(()=>{const e=document.querySelector('.nav-folder-title[data-path="Team docs"]');return e&&visible(e);},'visible selected folder');return true;`);

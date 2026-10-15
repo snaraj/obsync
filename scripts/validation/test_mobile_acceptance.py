@@ -158,6 +158,33 @@ class Admission(unittest.TestCase):
             changed = dict(proof); changed.pop(field)
             self.assertFalse(RUNNER.clean_controller(changed), field)
 
+    def test_controller_failure_names_installation_and_never_copies_diagnostics(self):
+        proof = {'result':'PASS','sourceHead':HEAD,'cleanup':'PASS','ownedGroupsRemaining':0,
+                 'runtimeAbsent':True,'privateAbsent':True,'manifestAbsent':True}
+        RUNNER.require_android_controller(proof,0,HEAD)
+        for change,code,expected in [({'result':'FAIL','failure':{'stage':'install','detail':'private value'}},1,'install'),
+                                    ({'result':'FAIL','failure':{'stage':'private value'}},1,'terminal'),
+                                    ({},1,'terminal'),({'cleanup':'FAIL'},0,'cleanup'),
+                                    ({'sourceHead':'b'*40},0,'source')]:
+            with self.subTest(expected=expected),self.assertRaises(RUNNER.StageFailure) as failure:
+                RUNNER.require_android_controller(proof|change,code,HEAD)
+            self.assertEqual(failure.exception.stage,'android_controller_'+expected)
+            self.assertEqual(failure.exception.failure_class,'UNCLASSIFIED')
+
+    def test_attempt_cleanup_requires_both_started_controllers(self):
+        clean = {'cleanup':'PASS','ownedGroupsRemaining':0,'runtimeAbsent':True,'privateAbsent':True,'manifestAbsent':True}
+        with tempfile.TemporaryDirectory(prefix='obsync-cleanup-admission-') as temporary:
+            android=Path(temporary).resolve()/'android'
+            self.assertEqual(RUNNER.attempt_cleanup(clean,android),'PASS')
+            (android/'evidence').mkdir(parents=True)
+            self.assertEqual(RUNNER.attempt_cleanup(clean,android),'UNKNOWN')
+            receipt=android/'evidence/result.json';RUNNER.save(receipt,clean)
+            self.assertEqual(RUNNER.attempt_cleanup(clean,android),'PASS')
+            for change in [{'cleanup':'FAIL'},{'ownedGroupsRemaining':1},{'runtimeAbsent':False}]:
+                receipt.write_text(json.dumps(clean|change))
+                self.assertEqual(RUNNER.attempt_cleanup(clean,android),'FAIL')
+            self.assertEqual(RUNNER.attempt_cleanup(clean|{'cleanup':'FAIL'},android),'FAIL')
+
     def test_first_failed_step_retained_and_generic_negative_stays_observed(self):
         with tempfile.TemporaryDirectory(prefix='obsync-runner-control-') as temporary:
             attempt = Path(temporary).resolve()

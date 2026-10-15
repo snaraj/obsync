@@ -17,6 +17,10 @@ import time
 import zipfile
 
 
+APK_SPEC = importlib.util.spec_from_file_location('android_apk',Path(__file__).with_name('android-apk.py'))
+APK = importlib.util.module_from_spec(APK_SPEC)
+APK_SPEC.loader.exec_module(APK)
+
 def digest(path):
     with open(path, 'rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -444,11 +448,7 @@ def execute(a):
         output = adb_command(state, ['install', str(apk)], timeout=90)
         if output.strip() != 'Success' and not output.rstrip().endswith('\nSuccess'):
             raise RuntimeError('APK install did not report Success')
-        package_paths = adb_command(state, ['shell', 'pm', 'path', 'md.obsidian']).splitlines()
-        if len(package_paths) != 1 or not package_paths[0].startswith('package:/data/app/'):
-            raise RuntimeError('unexpected installed Obsidian package layout')
-        installed = adb_command(state, ['exec-out', 'cat', package_paths[0][8:]], binary=True, timeout=60)
-        if hashlib.sha256(installed).hexdigest() != proof['apkSha256']:
+        if APK.apk_hash(state,a.run,proof['apkSha256'],'initial-install',adb_command,save)!=proof['apkSha256']:
             raise RuntimeError('installed APK differs from verified official bytes')
         activity = adb_command(state, ['shell', 'cmd', 'package', 'resolve-activity', '--brief', 'md.obsidian']).strip().splitlines()[-1]
         if not re.fullmatch(r'md\.obsidian/[\w.$]+', activity):

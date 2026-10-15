@@ -45,7 +45,7 @@ FULL_PHASE_BOUNDS = {
     'rotation-recovery': {'postrotationLaunchToIdleMs': (0, 120000)},
     'selected-rename': {'desktopOriginWatchMs': (300000, 14400000), 'androidOriginWatchMs': (300000, 14400000)},
 }
-CORE_HELPERS = ('mobile-acceptance.py', 'mobile-session.py', 'android-session.py', 'android-trust.py',
+CORE_HELPERS = ('mobile-acceptance.py', 'mobile-session.py', 'android-session.py', 'android-trust.py', 'android-apk.py',
                 'android-usb.py', 'mobile-trusted-tls.py', 'mobile-platform.py',
                 'android-tls-proof.py', 'android-journey.mjs', 'mobile-evidence.py', 'mobile-tls.mjs',
                 'mobile/setup.mjs', 'mobile/desktop.mjs', 'mobile/desktop-guard.mjs', 'mobile/cdp.mjs')
@@ -206,6 +206,25 @@ def clean_controller(receipt):
             and receipt.get('manifestAbsent') is True)
 
 
+def require_android_controller(proof, returncode, source_head):
+    require(proof.get('sourceHead') == source_head, 'android_controller_source')
+    if returncode != 0 or proof.get('result') != 'PASS':
+        failure = proof.get('failure')
+        stage = failure.get('stage') if isinstance(failure, dict) else None
+        # Copy only the controller's closed stage vocabulary, never diagnostics.
+        raise StageFailure('android_controller_' + (stage if stage in ('boot', 'install', 'journey') else 'terminal'))
+    require(clean_controller(proof), 'android_controller_cleanup')
+
+
+def attempt_cleanup(peer, android):
+    if not clean_controller(peer): return 'FAIL'
+    if android.exists():
+        receipt = android / 'evidence/result.json'
+        if not receipt.exists(): return 'UNKNOWN'
+        if not clean_controller(private_json(receipt)): return 'FAIL'
+    return 'PASS'
+
+
 def target_scope(c,mode,runs):
     a=c['android'];kind=a.get('targetKind','emulator')
     require(kind in ('emulator','usb'),'explicit_android_target_kind')
@@ -307,8 +326,7 @@ def desktop_child(args):
              'exceptionType': terminal.get('exceptionType'), 'detail': common.sanitized_diagnostic(terminal.get('detail', ''))})
         raise StageFailure('android_controller_preflight')
     proof = private_json(result_path)
-    require(result.returncode == 0 and proof.get('result') == 'PASS' and proof.get('sourceHead') == c['sourceHead']
-            and clean_controller(proof), 'android_controller_cleanup')
+    require_android_controller(proof, result.returncode, c['sourceHead'])
     quit_command = ([node, helper('mobile/recovery.mjs'), str(desktop), source, 'C', 'quit'] if args.mode == 'full' else
                     [node, helper('mobile/desktop.mjs'), str(desktop), 'quit', 'terminal-close', '--source', source])
     steps.run('terminal-ordinary-desktop-quit', quit_command, ('QUIT_REQUESTED',))
@@ -469,7 +487,7 @@ def outer(args):
             with (attempt / 'private/mobile-controller.log').open('xb') as log:
                 result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
             peer = private_json(attempt / 'desktop/evidence/peer-result.json')
-            cleanup = 'PASS' if clean_controller(peer) else 'FAIL'
+            cleanup = attempt_cleanup(peer, attempt / 'android')
             require(result.returncode == 0 and peer.get('sourceHead') == c['sourceHead']
                     and peer.get('result') == ('CORE_ONLY' if args.mode == 'core' else 'PASS') and clean_controller(peer), 'desktop_controller_cleanup')
             if args.mode == 'core':

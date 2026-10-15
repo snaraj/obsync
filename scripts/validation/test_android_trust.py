@@ -133,6 +133,7 @@ class ApkIntegrity(unittest.TestCase):
                     return hash_output if hash_output is not None else (('f'*64 if after_change and hash_count==2 else remote_hash or expected)+'  '+self.REMOTE)
                 raise AssertionError('unexpected remote operation')
             def adb(state,args,**kwargs):
+                if args[0]=='shell':return shell(state,*args[1:],**kwargs)
                 self.calls.append(args);self.timeouts.append(kwargs.get('timeout'));clock[0]+=pull_delay
                 if args[:2]!=['pull',self.REMOTE]:raise AssertionError('only one purpose-built pull is allowed')
                 path=Path(args[2]);self.temporary_paths.append(path)
@@ -151,8 +152,8 @@ class ApkIntegrity(unittest.TestCase):
 
     def test_only_exact_owned_base_apk_layout_can_reach_transfer(self):
         for value in ['package:/data/app/other/base.apk','package:'+self.REMOTE+';echo nope','package:'+self.REMOTE+'\npackage:'+self.REMOTE]:
-            with patch.object(M,'shell',return_value=value),self.assertRaisesRegex(M.ApkReadbackError,'apk_package_layout_refused'):M.apk_path({})
-        with patch.object(M,'shell',return_value='package:'+self.REMOTE):self.assertEqual(M.apk_path({}),self.REMOTE)
+            with patch.object(M.SESSION,'adb_command',return_value=value),self.assertRaisesRegex(M.ApkReadbackError,'apk_package_layout_refused'):M.apk_path({})
+        with patch.object(M.SESSION,'adb_command',return_value='package:'+self.REMOTE):self.assertEqual(M.apk_path({}),self.REMOTE)
 
     def test_one_pull_matches_remote_witnesses_and_official_pin_with_finally_cleanup(self):
         result=self.run_readback();proof=self.proofs[0]

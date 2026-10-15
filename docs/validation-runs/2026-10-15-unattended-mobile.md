@@ -32,7 +32,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All six full batches stopped on their first failed attempt;
+have passed**. All seven full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -180,6 +180,39 @@ The [daemon protocol](https://android.googlesource.com/platform/packages/modules
 does not separate stderr or transmit the remote exit code for that mode.
 Thus command completion alone cannot diagnose this hash mismatch. Exact pinned
 APK equality remains mandatory; no failed read may be retried into a pass.
+
+Full batch 07 at `7791dcd1b17252d8015aa91afccabf3bbe9a2d39` stopped during
+the initial installation's separate raw-stream APK readback, before the new
+trust-stage verifier ran. The controller receipt names `install` and an APK
+hash mismatch; its precise cause also remains unknown. Both controllers report
+cleanup PASS, zero owned process groups, and independently confirmed absent
+runtime/private/manifest paths. The original aggregate incorrectly calls this
+`android_controller_cleanup`; that receipt remains unchanged, SHA-256
+`40c778ba0ce962cf71de13daf080c26a34cb22d347db9cef6ad3ccb9527602b8`.
+The seven-batch ledger SHA-256 is
+`ece47771cc3cdbc5d5ae534faabdc2a2dbb8b11101f33f2b2ac6091ccebb36f6`.
+
+The corrected aggregate distinguishes a failed controller journey from failed
+cleanup, propagates only a closed vocabulary of failure stages, and requires
+both started controllers' cleanup evidence. Two regression tests and six
+deliberate broken guards verify these distinctions. The installer and trust
+probe share the strict file verifier rather than retaining two readback methods.
+This is a harness correction, not a successful native acceptance result.
+The shared-verifier composition passes 125 Python tests, 118 Node tests and
+all 84 scripted mutation controls, with no skips. Both secret scans pass.
+
+Source inspection found a separate selected-folder driver mismatch: Settings
+can reside in an owned secondary document, while its typing and Save pointer
+events were sent to the main vault target. The correction binds those native
+events to the page containing the exact owned Settings pane and removes the
+temporary DOM marker and connections afterward. Discovery and actions retain
+a bounded deadline. This finding concerns input routing, not sync behavior;
+the full native rename journey remains unproven.
+Parent verification includes the complete action in both window topologies and
+14 deliberately broken target/input/deadline/cleanup controls. It removes the
+marker before closing the Settings document. The final composition passes
+125 Python and 123 Node tests, all 84 scripted mutation controls and both
+secret scans; the pinned strict documentation and output-origin checks pass.
 
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.

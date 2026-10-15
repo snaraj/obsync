@@ -19,7 +19,7 @@ mutations=[
 ]
 with tempfile.TemporaryDirectory(prefix='obsync-home-mutations-') as tmp:
  work=Path(tmp)
- for name in ('android-session.py','test_android_session.py'):shutil.copyfile(root/name,work/name)
+ for name in ('android-session.py','android-apk.py','test_android_session.py'):shutil.copyfile(root/name,work/name)
  target=work/'android-session.py';baseline=target.read_text()
  def check():
   return subprocess.run([sys.executable,'-B','-m','unittest','test_android_session.HomeObservation'],cwd=work,
