@@ -32,7 +32,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All seven full batches stopped on their first failed attempt;
+have passed**. All eight full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -213,6 +213,49 @@ Parent verification includes the complete action in both window topologies and
 marker before closing the Settings document. The final composition passes
 125 Python and 123 Node tests, all 84 scripted mutation controls and both
 secret scans; the pinned strict documentation and output-origin checks pass.
+
+Full batch 08 at `e978150e43a1728f679fe2d47d1ec53e97f1cd00` passed both
+shared APK readbacks: 15,447,027 bytes matched the official hash, with initial
+readback in 546 ms and pre-trust readback in 553 ms. Pairing, consent and both
+persisted notes passed, followed by 213.003 seconds without Android calls,
+desktop/Android process restarts, guest reboot, offline recovery and access-only
+revocation/re-pairing. The parent independently rehashed all four core exports
+and all 12 post-restart/reboot exports.
+
+Prepared and commit-unknown rotation checkpoints passed before and after real
+desktop restarts, including whole-journal equality. Seeding and the explicit
+rotation commit passed. The new desktop note had matching editor/disk bytes;
+the revoked Android peer refused access and lacked the new note. Post-rotation
+ciphertext capture then failed after 363 ms with `owned_capture_refused`.
+That generic diagnostic does not identify the failed assertion. Source review
+finds an immediate idle/publication-identity requirement after a note action
+that proves local editor/disk bytes only; the run does not prove whether
+publication was pending or another capture guard refused. Direct old-key
+decryption rejection remains unmeasured in this run.
+
+Both controllers cleaned up, with zero owned process groups and independently
+absent runtime/private/manifest paths. The unchanged failed aggregate SHA-256
+is `1c2725d705577b078e5ade4efd101d94038aea430bb5adfb366d85fea44634eb`;
+the eight-batch ledger SHA-256 is
+`2870a167d0a1a4e20e5c59b4c508f3a736ba4d7ff39eb585aecfe10dd265a1b4`.
+
+The capture now observes publication for at most 30 seconds within its unchanged
+180-second total deadline. Only an absent local identity or ordinary syncing
+may wait; wrong generation, map, enrollment, malformed identity and product
+error states refuse immediately. Authenticated ciphertext reads begin only
+after readiness, and all before/after current-head, decryption and independent
+disk assertions remain. Fixed stage/reason values and boolean observations
+identify future refusals without recording raw exceptions or secrets.
+A controlled test of the real push code holds its acknowledgement after exact
+local bytes exist, reproduces the old refusal, then verifies zero authenticated
+reads until publication completes. Seven focused tests and all 20 deliberate
+broken controls pass. This offline reproduction does not identify full batch
+08's precise cause or establish a native acceptance pass.
+The composed harness passes 125 Python tests, 130 Node tests and all 104
+scripted mutation controls, with no skips; both secret scans pass. At
+`e978150`, 46 hosted checks pass and one deployment check is intentionally
+skipped. Required dispositions pass; the non-required CodeQL aggregate remains
+red for the existing covered alert.
 
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.

@@ -12,3 +12,4 @@ python3 -B scripts/validation/android-home-mutations.py
 python3 -B scripts/validation/android-trust-apk-mutations.py
 python3 -B scripts/validation/android-note-read-mutations.py --node "$(command -v node)"
 python3 -B scripts/validation/mobile/native-checkpoint-mutations.py --node "$(command -v node)" --source "$OBSYNC_ORACLE_SOURCE"
+python3 -B scripts/validation/mobile/native-ciphertext-capture-mutations.py --node "$(command -v node)" --source "$OBSYNC_ORACLE_SOURCE"
