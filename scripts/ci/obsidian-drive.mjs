@@ -46,6 +46,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { verifyNativeRedirects } from "./obsidian-redirect.mjs";
 import { secretFacts, assertCustody, verifyNativeCustodyRefusal, verifyConcurrentNativeCustody, pairingCodes, assertPairingCodes, captureEditor as captureVerifiedEditor, finishEvidence } from "./obsidian-evidence.mjs";
 
@@ -976,7 +977,9 @@ async function windowsJourneys(a, b) {
   prove(`NTFS: an edit to a note another process held open arrived ${ms} ms after the edit, once the lock was let go, nothing lost`);
 }
 
-main().catch((error) => {
+// Native acceptance reuses these ordinary controls without launching this CLI.
+export { click, fillSetting, fillPlaceholder, settingsShow, confirmPhrase, LABELS };
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) main().catch((error) => {
   console.error(`obsidian-drive: DENY ${scrub(error.message)}`);
   process.exitCode = 1;
 });

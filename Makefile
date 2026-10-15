@@ -3,7 +3,7 @@
 # canonical command below must also appear in .github/workflows/pr-gate.yml, so
 # "it passed locally" and "it passed in CI" cannot come to mean different
 # things.
-.PHONY: help check fmt lint test coverage plugin e2ee cli dashboard chart contracts secrets build image image-isolated release-check
+.PHONY: help check fmt lint test coverage plugin e2ee mobile-harness cli dashboard chart contracts secrets build image image-isolated release-check
 
 # Requirement 9's ratchet-only floor, set at the first measured value on the
 # composed bootstrap wave (89.80 %, 2026-09-07). The same number lives in
@@ -17,7 +17,7 @@ BASE ?= origin/main
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
 
-check: fmt lint test coverage plugin e2ee cli dashboard chart contracts secrets ## The full local gate
+check: fmt lint test coverage plugin e2ee mobile-harness cli dashboard chart contracts secrets ## The full local gate
 
 fmt: ## rustfmt check
 	cargo fmt --all --check
@@ -38,6 +38,9 @@ e2ee: plugin ## Real plugin/server confidentiality and tamper regression
 	cargo build --locked -p obsyncd
 	node scripts/ci/e2ee.mjs
 	python3 -B scripts/ci/test_cors_routes.py
+
+mobile-harness: plugin ## Offline mobile runner guards and broken controls (no device acceptance)
+	bash scripts/ci/mobile-harness.sh
 
 cli: ## Build and exercise the installed native management CLI
 	cargo build --locked --release -p obsync-cli

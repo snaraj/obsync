@@ -177,6 +177,8 @@ jobs:
           cargo build --locked -p obsyncd
           node scripts/ci/e2ee.mjs
           python3 -B scripts/ci/test_cors_routes.py
+      - name: Verify mobile acceptance harness guards and broken controls
+        run: bash scripts/ci/mobile-harness.sh
       - name: Build and test the offline CLI
         run: |
           cargo build --locked --release -p obsync-cli

@@ -83,6 +83,7 @@ CANONICAL=(
   'npm test'
   'cargo build --locked -p obsyncd'
   'node scripts/ci/e2ee.mjs'
+  'bash scripts/ci/mobile-harness.sh'
   'cargo build --locked --release -p obsync-cli'
   'python3 cli/check.py'
   'node --test dashboard/test/*.test.mjs'
@@ -101,7 +102,7 @@ CANONICAL=(
 # The prerequisite list `check` must carry. Stated here so a target silently
 # dropped from the chain -- which leaves `make check` green while running less
 # -- is a failure rather than a difference nobody notices.
-CHECK_PREREQUISITES='fmt lint test coverage plugin e2ee cli dashboard chart contracts secrets'
+CHECK_PREREQUISITES='fmt lint test coverage plugin e2ee mobile-harness cli dashboard chart contracts secrets'
 
 fail() {
   printf 'makefile-invariants: %s\n' "$1" >&2
