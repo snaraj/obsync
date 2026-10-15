@@ -170,9 +170,11 @@ test("a locked note is parked: every later change arrives, and the status names 
 
   // `chflags nouchg`: the next slow retry applies the newest version.
   lock.lift();
-  // A manual verification push can still be draining when retry releases the
-  // parked note. Wait for that work too, then assert the exact idle status.
-  const retried = (trigger) => () => !d.engine.draining && d.engine.queue.length === 0 && d.engine.active === 0 && r.host.logs.some((line) => line.startsWith(`feed decision=retried trigger=${trigger} released=1 `));
+  // A verification push or feed page can still be in flight after retry
+  // releases the parked note. Wait for all that work and the reported idle.
+  const retried = (trigger) => () => !d.engine.draining && d.engine.queue.length === 0 && d.engine.active === 0 &&
+    d.engine.pushing.size === 0 && d.engine.pulls === 0 && d.last()?.kind === "idle" &&
+    r.host.logs.some((line) => line.startsWith(`feed decision=retried trigger=${trigger} released=1 `));
   await d.timers.run(10000, retried("timer"));
   assert.equal(r.host.text("Notes/n17.md"), "n17 edited again on the other device\n");
   assert.deepEqual(r.state.data.parked, {}, "applied, so released");

@@ -3,6 +3,15 @@ import { readFileSync, writeFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
+// JSON is also embedded in JavaScript source. Keep HTML delimiters and Unicode
+// line separators escaped, preserving JSON's existing quote/backslash escapes.
+export function scriptJson(value) {
+  const json = JSON.stringify(value);
+  if (typeof json !== 'string') throw Error('CDP parameters must serialize as JSON');
+  const escapes = {'<':'\\u003C','>':'\\u003E','\u2028':'\\u2028','\u2029':'\\u2029'};
+  return json.replace(/[<>\u2028\u2029]/g, character => escapes[character]);
+}
+
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export function newConsoleSummary(windowStartedAtEpochMs = Date.now()) {
   return { errors: 0, warnings: 0, exceptions: 0, pluginLines: 0, reasons: {},
@@ -82,7 +91,7 @@ export async function connect(state, name, chooser = false, targetId = null) {
     });
   }
   async function evaluate(body, params = {}, checkVault = true) {
-    const prelude = `const P = ${JSON.stringify({ ...params, vault: device.vault, run: state.run, url: state.url })};
+    const prelude = `const P = ${scriptJson({ ...params, vault: device.vault, run: state.run, url: state.url })};
       const wait = async (read, stage, ms = 30000) => { const end = Date.now() + ms; while (Date.now() < end) { const value = await read(); if (value) return value; await new Promise(r => setTimeout(r, 100)); } throw Error(stage); };
       const button = label => [...document.querySelectorAll('button')].find(b => b.textContent.trim() === label);
       const row = name => [...document.querySelectorAll('.setting-item')].find(r => r.querySelector('.setting-item-name')?.textContent.trim() === name);

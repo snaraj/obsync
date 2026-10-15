@@ -7,7 +7,7 @@ release 1.1.8. This is an author validation record, not independent approval.
 
 Product source: `cb7b5ae4973ed7ba6d494865ed2ba4e7a4cac928`;
 protected base: `c2796b7a5b6abd38be23b4f93c6fb620ab7688c0`.
-The [runner guide](../../scripts/validation/MOBILE-ACCEPTANCE.md) describes the
+The [runner guide](https://github.com/snaraj/obsync/blob/2738e301f04bc2e8e5b1ecda2ec02e545706bb72/scripts/validation/MOBILE-ACCEPTANCE.md) describes the
 single command, private pinned inputs, finite journeys and cleanup. The product
 and driver checkouts are separate; the full runner requires committed driver
 blobs and rechecks them after execution.
@@ -32,7 +32,8 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. Earlier exploratory journeys are not counted as three fresh
+have passed**. The first full batch stopped on its first failed attempt;
+its remaining two attempts did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
 owned-process and runtime cleanup.
@@ -47,6 +48,16 @@ the runner did not shorten or suppress that response. Its aggregate
 `CORE_ONLY` receipt has SHA-256
 `5af996b2077a77859a3d5634d19b1e964a70a730c539f4de074c133bcf8fa5b2`.
 This validates the small automation path, not the full security journey set.
+
+Full batch 01 passed the 213.006-second no-interaction interval, desktop normal
+restart (779 ms to idle), Android process restart (5,299 ms to idle), guest
+reboot with retained pairing, and two-way offline recovery. It then failed at
+`access-repair-local-consent`: the runner observed active re-pairing and tried
+to read a local note identity before observing index readiness. The product
+adopts pairing before restarting its engine; the failed run does not establish
+whether that identity would subsequently appear. Both controllers cleaned up.
+The failed aggregate receipt remains unchanged, SHA-256
+`66625ca88ffb19ff5ca65a2bf4e33d5a1ad007743d2449892d72272ff94898b2`.
 
 | Attempts | First failure and diagnosis |
 | --- | --- |
@@ -94,7 +105,19 @@ behavior and hardware-backed custody remain unclaimed. Exact final-head hosted
 checks and independent adversarial approval also remain required before Ready;
 the owner alone merges.
 
-The existing red CodeQL aggregate is not an uncovered finding: the required
-`dispositions` job passed, and the reviewed `cli/export.rs` file hash exactly
-matches its existing disposition for ciphertext identifiers. No alert was
-manually dismissed or excluded from analysis.
+At head `2738e30`, hosted checks found four new uncovered JavaScript findings
+in test-driver string handling, a strict docs-link failure, and an asynchronous
+parked-note status assertion in the image test. Those failures require repair;
+local gate success does not override them. The existing ciphertext-identifier
+logging alert remains covered by its reviewed `cli/export.rs` file hash.
+No alert was manually dismissed or excluded from analysis.
+
+The follow-up waits for the re-paired local index only within the remaining
+original approval deadline; unexpected paths or wrong identities still fail
+immediately, and independent saved-byte checks remain required. The test-driver
+serializer now escapes JavaScript/HTML delimiters, and native XML text is decoded
+once. A deferred real feed write reproduces the parked-test race; its bounded
+wait now includes in-flight pulls and the observed idle state, with its deadline
+and final assertions unchanged. The never-idle control still fails. All 18
+focused parked tests and the pinned strict documentation build pass locally.
+Hosted reanalysis and a new complete native batch remain required.

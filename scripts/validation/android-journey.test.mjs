@@ -1,7 +1,7 @@
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { waitCandidateReadiness,waitScopeSave,waitPairingActivation,serverUrlCommitMatched,pointerWitnessMatches,androidExecPathArg,persistedByteFacts,freshTrustRoute, comparison, ordinaryControl, ownedVault, visibleComparisons, safeExceptionMessage, knownNotesMatch, selectAllText,nativeScreen,androidPathArg,externalFailure,nativeReadiness,waitNativeReadiness,syntheticNotePath,candidateLabelMatches,restoredSiblingPath,pointerTarget,waitPointerReadiness,waitOwnedPage } from './android-journey.mjs';
+import { waitKnownNotesIndex,waitCandidateReadiness,waitScopeSave,waitPairingActivation,serverUrlCommitMatched,pointerWitnessMatches,androidExecPathArg,persistedByteFacts,freshTrustRoute, comparison, ordinaryControl, ownedVault, visibleComparisons, safeExceptionMessage, knownNotesMatch, selectAllText,nativeScreen,androidPathArg,externalFailure,nativeReadiness,waitNativeReadiness,syntheticNotePath,candidateLabelMatches,restoredSiblingPath,pointerTarget,waitPointerReadiness,waitOwnedPage } from './android-journey.mjs';
 
 test('owned initial debugger waits for zero pages to become one and rejects multiples immediately',async()=>{
   let clock=0,reads=0;const facts={},page={type:'page',webSocketDebuggerUrl:'owned'};
@@ -200,4 +200,21 @@ test('saved scope retains30s outer budget with short reads and both independent 
   let clock=0;const budgets=[];const pass=await waitScopeSave(async budget=>{budgets.push(budget);return {changingScope:clock<100,policyMatches:true};},async ms=>{clock+=ms;},()=>clock);assert.equal(pass.ready,true);assert.equal(pass.deadlineMs,30000);assert.deepEqual(budgets,[5000,5000]);
   for(const state of [{changingScope:true,policyMatches:true},{changingScope:false,policyMatches:false}]){clock=0;const fail=await waitScopeSave(async budget=>{assert.ok(budget<=5000);return state;},async ms=>{clock+=ms;},()=>clock);assert.equal(fail.ready,false);assert.equal(fail.elapsedMs,30000);}
   clock=0;const late=await waitScopeSave(async()=>{clock=30001;return {changingScope:false,policyMatches:true};},async()=>{},()=>clock);assert.equal(late.ready,false);
+});
+
+test('known-note identity admission waits only for missing native IDs and cannot retry away mismatches',async()=>{
+  const row={path:'Known.md',fileIdHash:'b'.repeat(64)},snapshot=rows=>({rows,statusKind:'idle',waitingHandlePresent:false});let clock=0,reads=0;
+  const pass=await waitKnownNotesIndex(async budget=>{assert.ok(budget<=5000);return snapshot([{...row,fileIdHash:++reads===1?null:row.fileIdHash}]);},[row],async ms=>{clock+=ms;},()=>clock,300);
+  assert.equal(pass.readiness.ready,true);assert.equal(pass.readiness.before.missingIdentityCount,1);assert.equal(pass.readiness.after.missingIdentityCount,0);assert.deepEqual(pass.files,[row]);
+  clock=0;const absent=await waitKnownNotesIndex(async()=>snapshot([{...row,fileIdHash:null}]),[row],async ms=>{clock+=ms;},()=>clock,300);assert.equal(absent.readiness.ready,false);assert.equal(clock,300);
+  for(const bad of [{...row,fileIdHash:'f'.repeat(64)},{...row,path:'Unknown.md',fileIdHash:null}]){let pauses=0;await assert.rejects(waitKnownNotesIndex(async()=>snapshot([bad]),[row],async()=>{pauses++;},()=>0,300),/not independently known/);assert.equal(pauses,0);}
+  clock=0;reads=0;await assert.rejects(waitKnownNotesIndex(async()=>snapshot(++reads===1?[{...row,fileIdHash:null}]:[]),[row],async ms=>{clock+=ms;},()=>clock,300),/inventory changed/);
+  clock=0;const late=await waitKnownNotesIndex(async()=>{clock=301;return snapshot([row]);},[row],async()=>{},()=>clock,300);assert.equal(late.readiness.ready,false);
+});
+
+test('known-note readiness allows only prior-authenticated arrivals while preserving every original local path',async()=>{
+  const original={path:'Known.md',fileIdHash:'b'.repeat(64)},arrival={path:'Blocked-desktop.md',fileIdHash:'c'.repeat(64)},snapshot=rows=>({rows,statusKind:'idle',waitingHandlePresent:false});let clock=0,reads=0;
+  const allowed=await waitKnownNotesIndex(async()=>snapshot(++reads===1?[{...original,fileIdHash:null}]:[original,arrival]),[original,arrival],async ms=>{clock+=ms;},()=>clock,300);assert.equal(allowed.readiness.ready,true);assert.equal(allowed.readiness.before.localNoteCount,1);assert.equal(allowed.readiness.after.localNoteCount,2);
+  clock=0;reads=0;await assert.rejects(waitKnownNotesIndex(async()=>snapshot(++reads===1?[{...original,fileIdHash:null}]:[arrival]),[original,arrival],async ms=>{clock+=ms;},()=>clock,300),/inventory changed/);
+  clock=0;reads=0;await assert.rejects(waitKnownNotesIndex(async()=>snapshot(++reads===1?[{...original,fileIdHash:null}]:[original,{...arrival,path:'Unknown.md'}]),[original,arrival],async ms=>{clock+=ms;},()=>clock,300),/not independently known/);
 });
