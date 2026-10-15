@@ -218,3 +218,38 @@ test('known-note readiness allows only prior-authenticated arrivals while preser
   clock=0;reads=0;await assert.rejects(waitKnownNotesIndex(async()=>snapshot(++reads===1?[{...original,fileIdHash:null}]:[arrival]),[original,arrival],async ms=>{clock+=ms;},()=>clock,300),/inventory changed/);
   clock=0;reads=0;await assert.rejects(waitKnownNotesIndex(async()=>snapshot(++reads===1?[{...original,fileIdHash:null}]:[original,{...arrival,path:'Unknown.md'}]),[original,arrival],async ms=>{clock+=ms;},()=>clock,300),/not independently known/);
 });
+
+test('production history filter needs Restart search to render Search and Restart never runs the query',async()=>{
+  const source=(await import('node:fs')).readFileSync(new URL('../../plugin/src/ui/history.ts',import.meta.url),'utf8');
+  const body=name=>{const found=new RegExp('private '+name+'\\(\\): void \\{\\n([\\s\\S]*?)\\n  \\}').exec(source);assert.ok(found,'source history method '+name);return found[1];};
+  let buttons=[],filterChanged,opened=0,closed=0,queries=0;
+  class Setting{
+    setName(name){this.name=name;return this;}setDesc(){return this;}
+    addToggle(callback){callback({setValue(){return this;},setDisabled(){return this;},onChange(){return this;}});return this;}
+    addText(callback){const component={setValue(){return this;},setDisabled(){return this;},onChange:fn=>{if(this.name==='Filename contains')filterChanged=fn;return component;}};callback(component);return this;}
+    addButton(callback){const button={label:null,click:null,setButtonText(text){this.label=text;return this;},setDisabled(){return this;},onClick(fn){this.click=fn;return this;}};callback(button);buttons.push(button);return this;}
+  }
+  const view={closed:false,busy:false,previous:true,newestFirst:true,filter:'',rows:[],progress:'',message:'',browser:{done:false},
+    contentEl:{empty(){buttons=[];},createEl(){}},plugin:{state:{custody2:()=>({history:{suite:2}})},closeHistory(){closed++;},openHistory(){opened++;return {done:false};}},load(){queries++;}};
+  view.render=new Function('Setting','formatBytes','HISTORY_SCAN_RECORDS','HISTORY_SEARCH_MS',body('render')).bind(view,Setting,n=>n+' B',20,30000);
+  view.restart=new Function(body('restart')).bind(view);view.render();
+  assert.ok(buttons.some(b=>b.label==='Load next'));assert.equal(buttons.some(b=>b.label==='Search'),false);
+  filterChanged('Known.md');assert.equal(view.filter,'Known.md');assert.ok(buttons.some(b=>b.label==='Load next'));
+  buttons.find(b=>b.label==='Restart search').click();assert.equal(opened,1);assert.equal(closed,1);assert.equal(queries,0);assert.ok(buttons.some(b=>b.label==='Search'));
+  buttons.find(b=>b.label==='Search').click();assert.equal(queries,1);
+  // Execute the real compound driver's filtering/control actions against the
+  // production render fixture; deleting its Restart step must break this test.
+  const driver=(await import('node:fs')).readFileSync(new URL('./android-journey.mjs',import.meta.url),'utf8');
+  const first=driver.indexOf("        await step('filter_retained_filename'"),last=driver.indexOf("        await step('restore_unique_retained_content'",first);assert.ok(first>=0&&last>first);
+  const sequence=new Function('step','base','input','return (async()=>{'+driver.slice(first,last)+'})()');
+  const run=async omitRestart=>{
+    view.filter='';view.restart();opened=closed=queries=0;
+    await sequence(async(_name,command,data)=>{
+      if(command==='type'){filterChanged(data.text);return;}
+      assert.equal(command,'control');if(omitRestart&&data.expectedText==='Restart search')return;
+      const matches=buttons.filter(button=>button.label===data.expectedText);assert.equal(matches.length,1,'ordinary history control '+data.expectedText+' must exist');matches[0].click();
+    },{},{note:'Known.md'});
+  };
+  await run(false);assert.equal(opened,1);assert.equal(closed,1);assert.equal(queries,1);
+  await assert.rejects(run(true),/ordinary history control Search must exist/);
+});

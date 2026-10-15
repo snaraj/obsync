@@ -10,7 +10,10 @@ let state, c, watchElapsed;
 const uiPrelude = `const p=app.plugins.plugins['obsync-private-sync'];if(!p?.state?.paired||p.state.custody2()?.phase!=='active'||p.state.data.serverUrl!==P.url)throw Error('owned active selected peer');
  const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;
  const one=(selector,text=null)=>{const es=[...document.querySelectorAll(selector)].filter(visible).filter(e=>text===null||e.textContent.trim()===text);if(es.length!==1||es[0].disabled)throw Error('ordinary selected control identity');return es[0];};
- const row=name=>{const rs=[...document.querySelectorAll('.setting-item')].filter(visible).filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);if(rs.length!==1)throw Error('selected setting identity');return rs[0];};`;
+ // Settings can live in the manifest-bound app's separate owned document.
+ const documents=()=>[...new Set([document,app.setting.modalEl?.isConnected?app.setting.modalEl.ownerDocument:null].filter(d=>d&&!d.defaultView?.closed))];
+ const pane=()=>{const ps=documents().flatMap(d=>[...d.querySelectorAll('.mod-settings .vertical-tab-content')]).filter(visible);if(ps.length>1)throw Error('selected settings pane identity');return ps[0]??null;};
+ const row=name=>{const root=pane();if(!root)throw Error('selected settings pane identity');const rs=[...root.querySelectorAll('.setting-item')].filter(visible).filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);if(rs.length!==1)throw Error('selected setting identity');return rs[0];};`;
 const ui = (body, params={}) => c.evaluate(uiPrelude+body,params);
 async function pointer(selector, text=null, button='left') {
   const point=await ui(`const e=one(P.selector,P.text);e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};`,{selector,text});
@@ -85,7 +88,7 @@ try {
   if(!['scope','rename','before','returned','watch-down','watch-up'].includes(command)||index!==undefined)throw Error('finite selected desktop command');
   state=boundManifest(run,source);c=await connect(state,'A');
   if(command==='scope'){
-    await ui(`app.setting.open();app.setting.openTabById('obsync-private-sync');await wait(()=>row('Folder selection'),'folder settings');const select=row('Folder selection').querySelector('select');const options=[...select.options].filter(o=>o.textContent.trim()==='Selected folders only');if(options.length!==1)throw Error('selected option changed');select.value=options[0].value;select.dispatchEvent(new Event('change',{bubbles:true}));const t=row('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected textarea absent');t.focus();t.select();return true;`);
+    await ui(`app.setting.open();app.setting.openTabById('obsync-private-sync');await wait(()=>pane()&&row('Folder selection'),'folder settings');const select=row('Folder selection').querySelector('select');const options=[...select.options].filter(o=>o.textContent.trim()==='Selected folders only');if(options.length!==1)throw Error('selected option changed');select.value=options[0].value;select.dispatchEvent(new select.ownerDocument.defaultView.Event('change',{bubbles:true}));const t=row('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected textarea absent');t.focus();t.select();return true;`);
     await c.insertText('Team docs');
     await ui(`if(row('Selected folders').querySelector('textarea').value!=='Team docs')throw Error('native selected text differs');return true;`);
     const point=await ui(`const buttons=[...row('Save on this device').querySelectorAll('button')].filter(e=>visible(e)&&!e.disabled&&e.textContent.trim()==='Save');if(buttons.length!==1)throw Error('ordinary scope save identity');buttons[0].scrollIntoView({block:'center'});const r=buttons[0].getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};`);

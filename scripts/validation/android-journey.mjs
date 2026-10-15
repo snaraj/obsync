@@ -311,6 +311,7 @@ async function main(args) {
         await step('open_ordinary_history','history-open',base);
         await step('select_explicit_previous_generation','history-previous',base);
         await step('filter_retained_filename','type',{...base,selector:'.modal:not(.mod-settings) input[type="text"]',text:input.note,selectAll:true});
+        await step('restart_filtered_retained_search','control',{...base,selector:'.modal:not(.mod-settings) button',expectedText:'Restart search',action:'click'});
         await step('search_retained_history','control',{...base,selector:'.modal:not(.mod-settings) button',expectedText:'Search',action:'click'});
         await step('restore_unique_retained_content','history-pick',history);
         await step('independent_restored_history_bytes','history-readback',history);

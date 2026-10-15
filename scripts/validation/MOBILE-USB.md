@@ -16,7 +16,7 @@ official Obsidian acquisition/APK pin, a fresh disposable test-vault path, and
 a trusted HTTPS route to the same disposable server. No device, credential,
 certificate or infrastructure discovery is authorized by this assessment.
 
-The control boundary would be one task-owned private ADB server, fresh private
+The control boundary is one task-owned private ADB server, fresh private
 keys and an explicit `--one-device SERIAL` filter, with every command additionally
 using that server's `-P PORT -s SERIAL`. ADB documents this single-USB-device
 server filter and explicit serial selection. Avoid global `devices`, host-server
@@ -140,10 +140,7 @@ unimplemented; USB core cannot count toward three fresh full emulator runs or
 waive the physical acceptance gate. The test vault and its native custody are
 retained; app termination/host cleanup do not assert removal or key erasure.
 
-Without the Python TLS-material/hostname selection change, the current fresh
-session always generates a synthetic localhost certificate. The adapter cannot
-reuse it as trusted stock-phone HTTPS. An independently supplied existing TLS
-route could only be reused if it already satisfied this exact owned process,
-upstream and leaf binding; the current fresh wrapper provides no such hook.
-This proposal supplies that minimal selection hook, rather than adding another
-terminator, relay, certificate acquisition or DNS-management system.
+The implemented `trustedTls` selection supplies the explicit TLS materials to
+the same owned local session. Omitting it produces the emulator's synthetic
+localhost certificate, which cannot satisfy stock-phone trust. The runner does
+not acquire certificates or manage DNS, relays or tunnels.

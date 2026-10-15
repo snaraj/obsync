@@ -32,8 +32,8 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. The first full batch stopped on its first failed attempt;
-its remaining two attempts did not run. Earlier exploratory journeys are not counted as three fresh
+have passed**. Both full batches stopped on their first failed attempt;
+the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
 owned-process and runtime cleanup.
@@ -58,6 +58,35 @@ adopts pairing before restarting its engine; the failed run does not establish
 whether that identity would subsequently appear. Both controllers cleaned up.
 The failed aggregate receipt remains unchanged, SHA-256
 `66625ca88ffb19ff5ca65a2bf4e33d5a1ad007743d2449892d72272ff94898b2`.
+
+Full batch 02, source and committed driver `2b2fc8382c735699dbab73942463717b76e3f30b`,
+passed re-pairing, retained-note identities and independent bytes. Its 213.010-second
+idle period, desktop restart (1,037 ms), Android restart (5,075 ms), guest reboot,
+offline recovery and access-only revocation/re-pairing passed. It stopped before
+staging key rotation because the desktop helper did not observe exactly one
+active other-device row. The first-failure receipt did not retain that row count,
+so it alone cannot distinguish stale UI data, rendering readiness or a product
+failure. Cleanup passed and all owned runtime/private directories are absent.
+The unchanged failed aggregate SHA-256 is
+`476b1b78a307e265e5d1d565b12da5510d5ea703003df96872f3f0830945f172`.
+The two-batch reduced ledger SHA-256 is
+`83285f64170945a1f6f1e9f3b04e58027b031e6ea99c1e978664fb6d5fd57308`.
+
+The next driver uses one ordinary Refresh before target selection, witnesses the
+loading/completion transition, and compares the sole visible target with one
+authenticated inventory read inside the existing 30-second budget. Unknown,
+ambiguous or mismatched targets still refuse. Failure receipts now retain safe
+list states and counts. A removed-refresh-witness mutation fails independently.
+This repairs the evidence gap without claiming the exact old failure's cause.
+
+A source-level review also found a deterministic later history-control mismatch:
+typing the filename does not redraw the modal's initial Load next button.
+The ordinary Restart search action redraws Search without issuing a query;
+Search then performs the query. This is a driver correction, not a production
+change or native history-acceptance result. The selected-folder Settings lookup
+also uses the same live owned Settings document as the existing desktop helper;
+main-vault Files controls remain separately bound. Initial absent panes may
+become ready only inside the existing deadline; ambiguity still refuses.
 
 | Attempts | First failure and diagnosis |
 | --- | --- |
@@ -120,4 +149,9 @@ once. A deferred real feed write reproduces the parked-test race; its bounded
 wait now includes in-flight pulls and the observed idle state, with its deadline
 and final assertions unchanged. The never-idle control still fails. All 18
 focused parked tests and the pinned strict documentation build pass locally.
-Hosted reanalysis and a new complete native batch remain required.
+Hosted JavaScript/Rust analyses, required dispositions, strict docs and image
+checks pass at `2b2fc838`. All 46 successful checks are terminal; one deployment
+check is intentionally skipped. Required dispositions report one covered alert,
+zero uncovered alerts and zero drift. The CodeQL aggregate remains red for the previously
+reviewed logging alert. Full native acceptance and final-head checks remain
+required.

@@ -26,10 +26,10 @@ const privateSave = (name, value) => savePrivate(join(runtime, name), value);
 const pluginVersion = JSON.parse(readFileSync(join(state.run, 'runtime/build/plugin/manifest.json'))).version;
 const backupShape = /^obsync-recovery-v2(?: [a-z]+){24}$/;
 const oldName = 'phone-old-recovery-backup.txt', newName = 'phone-new-recovery-backup.txt', targetName = 'phone-desktop-target.json';
-let c, stage='connect';
+let c, stage='connect', revokeReadiness;
 function record(value) {
   const receipt = { schema: 1, at: new Date().toISOString(), sourceHead: state.source_head, sourceDirty: false, command,
-    action: { actor: 'desktop', method: ['status', 'snapshot'].includes(command) ? 'read-only-state' : 'ordinary-control' }, physicalPhone: 'NOT_RUN', ...value };
+    action: { actor: 'desktop', method: ['status', 'snapshot'].includes(command) ? 'read-only-state' : 'ordinary-control' }, physicalPhone: 'NOT_RUN', ...(revokeReadiness?{revokeReadiness}:{}), ...value };
   writeFileSync(join(state.run, 'evidence', `phone-desktop-${command}-${Date.now()}.json`), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
   console.log(JSON.stringify(receipt));
 }
@@ -74,17 +74,56 @@ async function closeDialog(title) {
   await ui(`const m=oneDialog(P.title);const bg=m.parentElement?.querySelector(':scope > .modal-bg');if(!bg||!visible(bg))throw Error('owned dialog background identity');bg.click();return true;`, { title });
   await ui(`await wait(()=>dialogs().length===0,'dialog did not close');return true;`);
 }
+async function freshRevokeTarget(deadline) {
+  const result=await ui(`
+    const end=P.deadline,started=Date.now(),reading='Reading the device list…';let observer;
+    const diagnostics={refreshPressed:false,refreshLoadingObserved:false,authenticatedActiveOtherCount:null,rowsMatchInventory:false};
+    const description=()=>settingRow(pane(),'Device list').querySelector('.setting-item-description')?.textContent.trim()??'';
+    const listState=()=>{try{const text=description();return text===reading?'READING':text.startsWith('The device list is unavailable:')?'UNAVAILABLE':listReady()?'READY':'OTHER';}catch{return 'MISSING';}};
+    const snapshot=()=>{let count=null;try{count=activeOthers().length;}catch{}return {listState:listState(),activeOtherRows:count};};
+    const fail=code=>{throw Error(code);};
+    const until=async read=>{while(Date.now()<end){const value=read();if(value)return value;if(listState()==='UNAVAILABLE')fail('refresh_failed');await new Promise(r=>setTimeout(r,50));}fail('refresh_deadline');};
+    try{
+      diagnostics.before=snapshot();if(Date.now()>=end)fail('refresh_deadline');
+      const root=pane()?.closest('.mod-settings');if(!root?.isConnected)fail('owned_settings_unavailable');
+      const loadingNode=n=>n.textContent?.trim()===reading||[...(n.querySelectorAll?.('.setting-item-description')??[])].some(e=>e.textContent?.trim()===reading);
+      const observed=records=>{if(listState()==='READING'||records.some(r=>r.oldValue?.trim()===reading||[...(r.addedNodes??[]),...(r.removedNodes??[])].some(loadingNode)))diagnostics.refreshLoadingObserved=true;};
+      observer=new root.ownerDocument.defaultView.MutationObserver(observed);
+      observer.observe(root,{subtree:true,childList:true,characterData:true,characterDataOldValue:true});
+      press(settingRow(pane(),'Device list'),'Refresh');diagnostics.refreshPressed=true;observed(observer.takeRecords());
+      await until(()=>diagnostics.refreshLoadingObserved&&listReady());
+      let timer;
+      const devices=await Promise.race([p.listDevices({interactive:true}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('inventory_deadline')),Math.max(0,end-Date.now()));})]).finally(()=>clearTimeout(timer));
+      if(!Array.isArray(devices)||devices.some(d=>!d||!/^[a-f0-9]{32}$/.test(d.device_id??'')))fail('inventory_shape');
+      const others=devices.filter(d=>d.device_id!==p.state.data.deviceId&&!d.revoked&&d.state!=='pending');diagnostics.authenticatedActiveOtherCount=others.length;
+      if(others.length!==1)fail('authenticated_target_not_sole');
+      const target=others[0];if(!['name','platform','app_version'].every(k=>typeof target[k]==='string'&&target[k].length>0&&target[k].length<=256))fail('inventory_shape');
+      const matches=row=>{const title=row.querySelector('.setting-item-name')?.textContent.trim(),desc=row.querySelector('.setting-item-description')?.textContent.trim()??'',prefix=target.platform+', plugin '+target.app_version;
+        return visible(row)&&(title===target.name||title===target.name+' · '+target.device_id.slice(0,8))&&(desc===prefix||desc.startsWith(prefix+', last seen '));};
+      await until(()=>{if(!listReady())return false;const rows=activeOthers();if(rows.length>1)fail('rendered_target_ambiguous');if(rows.length===1&&!matches(rows[0]))fail('rendered_target_mismatch');return rows.length===1;});
+      diagnostics.rowsMatchInventory=true;diagnostics.after=snapshot();diagnostics.elapsedMs=Date.now()-started;
+      if(Date.now()>end)fail('refresh_deadline');
+      const rowTitle=activeOthers()[0].querySelector('.setting-item-name').textContent.trim();
+      return {result:'READY',diagnostics,selected:{name:target.name,rowTitle}};
+    }catch(error){diagnostics.after=snapshot();diagnostics.elapsedMs=Date.now()-started;const known=['owned_settings_unavailable','refresh_failed','refresh_deadline','inventory_deadline','inventory_shape','authenticated_target_not_sole','rendered_target_ambiguous','rendered_target_mismatch'];return {result:'REFUSED',reason:known.includes(error.message)?error.message:'refresh_read_refused',diagnostics};}
+    finally{observer?.disconnect();}
+  `,{deadline});
+  revokeReadiness={...result.diagnostics,reason:result.reason??null};
+  if(result.result!=='READY')throw Error('fresh revoke list refused');
+  return result.selected;
+}
 async function openRevoke() {
+  const deadline=Date.now()+30000;
   stage='revoke-settings';
   await settings();
-  stage='revoke-sole-active-target';
-  const selected = await ui(`await wait(()=>listReady(),'device list');const rs=activeOthers();if(rs.length!==1)throw Error('sole active other device required');const name=rs[0].querySelector('.setting-item-name').textContent.trim().replace(/ · [a-f0-9]{8}$/,'');return {name};`);
+  stage='revoke-refresh-and-sole-active-target';
+  const selected=await freshRevokeTarget(deadline);
   if (existsSync(join(runtime, targetName))) {
     stage='revoke-recorded-target';
     if (JSON.parse(privateRead(targetName)).name !== selected.name) throw Error('selected phone name changed');
   } else privateSave(targetName, JSON.stringify(selected));
   stage='revoke-open-and-explanation';
-  await ui(`const rs=activeOthers();if(rs.length!==1||rs[0].querySelector('.setting-item-name').textContent.trim().replace(/ · [a-f0-9]{8}$/,'')!==P.name)throw Error('device list changed');press(rs[0],'Revoke');await wait(()=>dialogs().length===1,'revoke dialog');const m=dialogs()[0];if(!/^Revoke .+\\?$/.test(m.querySelector('.modal-title')?.textContent.trim()??''))throw Error('revoke dialog identity');const text=m.textContent;if(!text.includes('Revocation cannot erase data or keys already copied')||!text.includes('can decrypt future ciphertext if it obtains it elsewhere'))throw Error('revoke explanation missing');return true;`, selected);
+  await ui(`const rs=activeOthers();if(rs.length!==1||rs[0].querySelector('.setting-item-name').textContent.trim()!==P.rowTitle)throw Error('device list changed');press(rs[0],'Revoke');await wait(()=>dialogs().length===1,'revoke dialog');const m=dialogs()[0];if(!/^Revoke .+\\?$/.test(m.querySelector('.modal-title')?.textContent.trim()??''))throw Error('revoke dialog identity');const text=m.textContent;if(!text.includes('Revocation cannot erase data or keys already copied')||!text.includes('can decrypt future ciphertext if it obtains it elsewhere'))throw Error('revoke explanation missing');return true;`, selected);
 }
 async function backupFromDialog(title) {
   const text = await ui(`const m=oneDialog(P.title);const pre=await wait(()=>{const ps=[...m.querySelectorAll('pre')].filter(visible);return ps.length===1?ps[0]:null;},'complete backup not displayed');return pre.textContent.trim();`, { title });
