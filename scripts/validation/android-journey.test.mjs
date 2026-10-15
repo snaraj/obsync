@@ -1,7 +1,7 @@
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { waitKnownNotesIndex,waitCandidateReadiness,waitScopeSave,waitPairingActivation,serverUrlCommitMatched,pointerWitnessMatches,androidExecPathArg,persistedByteFacts,freshTrustRoute, comparison, ordinaryControl, ownedVault, visibleComparisons, safeExceptionMessage, knownNotesMatch, selectAllText,nativeScreen,androidPathArg,externalFailure,nativeReadiness,waitNativeReadiness,syntheticNotePath,candidateLabelMatches,restoredSiblingPath,pointerTarget,waitPointerReadiness,waitOwnedPage } from './android-journey.mjs';
+import { digest,noteIndexObservation,waitNoteReadiness,waitKnownNotesIndex,waitCandidateReadiness,waitScopeSave,waitPairingActivation,serverUrlCommitMatched,pointerWitnessMatches,androidExecPathArg,persistedByteFacts,freshTrustRoute, comparison, ordinaryControl, ownedVault, visibleComparisons, safeExceptionMessage, knownNotesMatch, selectAllText,nativeScreen,androidPathArg,externalFailure,nativeReadiness,waitNativeReadiness,syntheticNotePath,candidateLabelMatches,restoredSiblingPath,pointerTarget,waitPointerReadiness,waitOwnedPage } from './android-journey.mjs';
 
 test('owned initial debugger waits for zero pages to become one and rejects multiples immediately',async()=>{
   let clock=0,reads=0;const facts={},page={type:'page',webSocketDebuggerUrl:'owned'};
@@ -252,4 +252,63 @@ test('production history filter needs Restart search to render Search and Restar
   };
   await run(false);assert.equal(opened,1);assert.equal(closed,1);assert.equal(queries,1);
   await assert.rejects(run(true),/ordinary history control Search must exist/);
+});
+
+
+test('note readiness shares one existing deadline for disk and native index/identity without retrying invalid observations',async()=>{
+  const good={exactBytesMatched:true,nativeNotePresent:true,identityPresent:true,fileIdValid:true,stateValid:true};let clock=0,reads=0;
+  const facts={deadlineMs:300};const budgets=[];
+  await waitNoteReadiness(async budget=>{budgets.push(budget);return ++reads===1?{...good,identityPresent:false,fileIdValid:false}:good;},facts,true,async ms=>{clock+=ms;},()=>clock,300);
+  assert.equal(facts.ready,true);assert.equal(facts.polls,2);assert.equal(clock,100);assert.deepEqual(budgets,[300,200]);assert.equal(facts.before.identityPresent,false);assert.equal(facts.after.fileIdValid,true);
+  for(const missing of [{exactBytesMatched:false},{nativeNotePresent:false},{identityPresent:false,fileIdValid:false}]){
+    clock=0;const pending={deadlineMs:300};await waitNoteReadiness(async()=>({...good,...missing}),pending,true,async ms=>{clock+=ms;},()=>clock,300);assert.equal(pending.ready,false);assert.equal(clock,300);
+  }
+  for(const invalid of [{stateValid:false},{identityPresent:true,fileIdValid:false},{fileIdValid:undefined}]){
+    clock=0;const bad={};let pauses=0;await waitNoteReadiness(async()=>({...good,...invalid}),bad,true,async ms=>{pauses++;clock+=ms;},()=>clock,300);assert.equal(bad.refused,true);assert.equal(bad.polls,1);assert.equal(pauses,0);
+  }
+  clock=0;const optional={};await waitNoteReadiness(async()=>({...good,identityPresent:false,fileIdValid:false}),optional,false,async()=>{},()=>clock,300);assert.equal(optional.ready,true);
+  const reduced={};await waitNoteReadiness(async()=>({...good,stateValid:'private-unexpected-value'}),reduced,true,async()=>{},()=>0,300);assert.equal(reduced.refused,true);assert.equal(reduced.after.stateValid,null);assert.equal(JSON.stringify(reduced).includes('private-unexpected-value'),false);
+  clock=0;const late={};await waitNoteReadiness(async()=>{clock=301;return good;},late,true,async()=>{},()=>clock,300);assert.equal(late.ready,false);
+  clock=0;reads=0;const combined={};await waitNoteReadiness(async()=>++reads===1?{...good,exactBytesMatched:false}:++reads===3?{...good,identityPresent:false,fileIdValid:false}:good,combined,true,async ms=>{clock+=ms;},()=>clock,150);assert.equal(combined.ready,false);assert.equal(clock,150);
+});
+test('native note observation distinguishes absent IDs from malformed present records and respects only explicit optional identity',async()=>{
+  let record;const plugin={state:{paired:true,custody2:()=>({suite:2,phase:'active'}),fileByPath:()=>record},waiting:null};
+  const app={plugins:{plugins:{'obsync-private-sync':plugin}},vault:{getFileByPath:()=>({path:'Known.md'})}};
+  assert.deepEqual(noteIndexObservation(app,'Known.md',true),{nativeNotePresent:true,identityPresent:false,fileIdValid:false,stateValid:true});
+  assert.equal(noteIndexObservation(app,'Known.md',false).stateValid,true,'offline-but-paired active suite2 permits missing publication identity');
+  for(const fileId of ['',null,'invalid','A'.repeat(32)]){record={fileId};const seen=noteIndexObservation(app,'Known.md',true);assert.equal(seen.identityPresent,true);assert.equal(seen.fileIdValid,false);}
+  record={fileId:'a'.repeat(32)};assert.equal(noteIndexObservation(app,'Known.md',true).fileIdValid,true);
+  plugin.state.paired=false;plugin.state.custody2=()=>null;assert.equal(noteIndexObservation(app,'Known.md',true).stateValid,false);assert.equal(noteIndexObservation(app,'Known.md',false).stateValid,true);
+  plugin.waiting={};assert.equal(noteIndexObservation(app,'Known.md',false).stateValid,false);
+});
+
+test('actual note-read action waits for publication before editor and repeats independent bytes under the original deadline',async()=>{
+  const source=(await import('node:fs')).readFileSync(new URL('./android-journey.mjs',import.meta.url),'utf8');
+  const first=source.indexOf("      stage='wait_persisted_bytes_and_native_note_identity';"),last=source.indexOf("    } else if(command==='metadata-export')",first);assert.ok(first>0&&last>first);
+  const names=['input','ownedVault','syntheticNotePath','Buffer','Date','waitNoteReadiness','deviceBudget','androidPathArg','androidExecPathArg','persistedByteFacts','evaluate','noteIndexObservation','receipt','digest'];
+  const action=new Function(...names,'return (async()=>{let stage,noteReadiness,persistedNoteReadback;'+source.slice(first,last)+'})()');
+  const run=async({forever=false,badIdentity=false,badState=false,wrongFinalBytes=false,wrongEditor=false,lateEditor=false,initialBytesDelay=0}={})=>{
+    let clock=0,identityReads=0,adbReads=0,editorReads=0,receipts=[];const deadlines=[];
+    const deviceBudget=(budget,...argv)=>{assert.ok(budget>0&&budget<=15000-clock);if(argv[0]==='exec-out'){adbReads++;if(adbReads===1)clock+=initialBytesDelay;return Buffer.from(wrongFinalBytes&&adbReads>=3?'wrong bytes':'known bytes');}return Buffer.from('');};
+    const evaluate=async(body,params,_vault,budget)=>{assert.ok(budget>0&&budget<=15000-clock);deadlines.push(budget);if(body.includes('openFile')){editorReads++;if(lateEditor)clock+=15001;if(wrongEditor)throw Error('native editor bytes differ');return {editorMatches:true,fileIdPresent:true};}identityReads++;return {nativeNotePresent:true,identityPresent:badIdentity||!forever&&identityReads>=2,fileIdValid:!badIdentity&&!forever&&identityReads>=2,stateValid:!badState};};
+    const wait=(read,facts,expected,_pause,now,end)=>waitNoteReadiness(read,facts,expected,async ms=>{clock+=ms;},now,end);
+    try{await action({note:'Known.md',text:'known bytes'},()=>'/owned',syntheticNotePath,Buffer,{now:()=>clock},wait,deviceBudget,androidPathArg,androidExecPathArg,persistedByteFacts,evaluate,noteIndexObservation,value=>receipts.push(value),digest);}catch(error){error.observedClock=clock;error.editorReads=editorReads;throw error;}
+    return {clock,identityReads,adbReads,editorReads,receipts,deadlines};
+  };
+  const pass=await run();assert.equal(pass.identityReads,2);assert.equal(pass.adbReads,3);assert.equal(pass.editorReads,1);assert.equal(pass.clock,100);assert.equal(pass.receipts[0].result,'PASS');assert.equal(pass.receipts[0].noteReadiness.deadlineMs,15000);
+  for(const [options,reason]of [[{forever:true},/native note readiness deadline/],[{badIdentity:true},/native note identity or pairing state invalid/],[{badState:true},/native note identity or pairing state invalid/],[{wrongFinalBytes:true},/independent Android persisted bytes differ/],[{wrongEditor:true},/native editor bytes differ/],[{lateEditor:true},/native note readiness deadline/],[{initialBytesDelay:14950},/native note readiness deadline/]])await assert.rejects(run(options),error=>{assert.match(error.message,reason);if(options.forever||options.initialBytesDelay)assert.equal(error.observedClock,15000);if(options.forever||options.badIdentity||options.badState||options.initialBytesDelay)assert.equal(error.editorReads,0);return true;});
+});
+
+
+test('actual final native editor readback requires exact bytes and rechecks identity after the ordinary open',async()=>{
+  const source=(await import('node:fs')).readFileSync(new URL('./android-journey.mjs',import.meta.url),'utf8');
+  const start=source.indexOf("      stage='native_editor_and_identity_readback';",source.indexOf("command === 'note-read'"));
+  const body=/const observed = await evaluate\(`([\s\S]*?)`, \{ note: input.note/.exec(source.slice(start))?.[1];assert.ok(body);
+  const render=new Function('app','P','return (async()=>{'+body.replaceAll('${noteIndexObservation.toString()}',noteIndexObservation.toString())+'})()');
+  let fileId='a'.repeat(32),editorText='known bytes',opens=0,corruptAfterOpen=false;
+  const plugin={state:{paired:true,custody2:()=>({suite:2,phase:'active'}),fileByPath:()=>({fileId})},waiting:null};
+  const view={editor:{getValue:()=>editorText}},app={plugins:{plugins:{'obsync-private-sync':plugin}},vault:{getFileByPath:()=>({path:'Known.md'})},workspace:{getLeaf:()=>({async openFile(){opens++;if(corruptAfterOpen)fileId='invalid';}}),getMostRecentLeaf:()=>({view})}};
+  const P={note:'Known.md',text:'known bytes',expectIdentity:true};assert.deepEqual(await render(app,P),{editorMatches:true,fileIdPresent:true});assert.equal(opens,1);
+  editorText='wrong bytes';await assert.rejects(render(app,P),/native editor bytes differ/);
+  editorText='known bytes';corruptAfterOpen=true;await assert.rejects(render(app,P),/native note identity or pairing state invalid/);
 });

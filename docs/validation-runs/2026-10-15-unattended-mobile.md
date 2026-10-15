@@ -32,7 +32,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All four full batches stopped on their first failed attempt;
+have passed**. All five full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -138,6 +138,31 @@ retention, a positive resumed activity, session-expiry clamping and refusal of
 a result received after the fixed deadline. These are offline checks; fresh
 native acceptance remains outstanding.
 
+Full batch 05, source and committed driver `4b51b7a4ce89be91b075688b7f34b6ca06b35469`,
+passed Home observation, a 213.015-second no-interaction interval, desktop
+restart (1,071 ms), Android process restart (5,063 ms), guest reboot and
+independent saved-byte comparisons. After offline-route restoration, the
+desktop-created note arrived on Android. The next check found the exact 75
+persisted bytes and matching editor content for the Android-created note, but
+its single immediate sync-identity lookup was absent. It failed after 432 ms.
+The 15-second note-read deadline covered only persisted-byte arrival; the
+replacement must also observe native index/identity readiness within that same
+remaining deadline. This does not prove the missing identity would eventually
+appear or that the full offline journey passed.
+
+Both controllers cleaned up, with zero owned process groups and independently
+absent runtime, private fixture and manifest paths. The failed aggregate SHA-256
+is `d3c1e40c6902fb1d2ad0139f5fbdee9a10a48c93f28573a47638de241dcb2082`;
+the five-batch ledger SHA-256 is
+`1ed7e9db761a83d17ab43a85794575889b9ab4d7b6e7ea6b1938caf21586af35`.
+The composed note-read repair passes 113 Python tests, 118 Node tests and all
+76 scripted mutation controls, plus both secret scans. Its actual action-body
+controls require one shared deadline, no editor open before identity readiness,
+final independently retrieved bytes and unchanged editor/identity assertions.
+Permanent missing identity, malformed identity, unexpected enrollment state,
+late success, corrupted final bytes and incorrect editor content all refuse.
+This is driver validation pending a fresh complete native batch.
+
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.
 The ordinary Restart search action redraws Search without issuing a query;
@@ -212,6 +237,10 @@ The existing assertions and real-time deadlines remain in force. Neither fix
 changes the product or supplies a hosted pass; fresh hosted results are required.
 All 23 focused tests pass. Four broken-product controls still fail: missing
 adoption receipt, missing adopted name, disabled retry and late retry.
+The hosted follow-up at `4b51b7a4` completed with 46 successful checks and one
+intended deployment skip, including both repaired platform tests. Required
+dispositions pass; the non-required CodeQL aggregate remains red for the
+reviewed covered alert. This does not override full batch 05's failure.
 
 ## Remaining gates
 

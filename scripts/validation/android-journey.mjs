@@ -16,6 +16,20 @@ export async function waitCandidateReadiness(read,pause=ms=>new Promise(r=>setTi
 export async function waitScopeSave(read,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now,budget=30000){
   const started=now(),end=started+budget;let before,after,polls=0,ready=false;while(now()<end){after=await read(Math.min(5000,end-now()));before??=after;polls++;ready=now()<=end&&after.changingScope===false&&after.policyMatches===true;if(ready)break;if(now()<end)await pause(Math.min(100,end-now()));}return {before,after,polls,ready,deadlineMs:budget,elapsedMs:now()-started};
 }
+export function noteIndexObservation(app,note,expectIdentity){
+  const p=app.plugins?.plugins?.['obsync-private-sync'],pin=p?.state?.custody2(),paired=p?.state?.paired,r=p?.state?.fileByPath(note);
+  return {nativeNotePresent:!!app.vault.getFileByPath(note),identityPresent:r!==undefined&&r!==null,fileIdValid:/^[a-f0-9]{32}$/.test(r?.fileId??''),
+    stateValid:!!p?.state&&!p.waiting&&(paired===true?pin?.suite===2&&pin.phase==='active':expectIdentity===false&&paired===false&&pin===null)};
+}
+export async function waitNoteReadiness(read,facts,expectIdentity,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now,end=now()+15000){
+  const started=now();facts.polls=0;facts.ready=false;facts.refused=false;
+  while(now()<end){facts.polls++;const value=await read(Math.min(5000,end-now()));const observed={};for(const key of ['exactBytesMatched','nativeNotePresent','identityPresent','fileIdValid','stateValid'])observed[key]=typeof value[key]==='boolean'?value[key]:null;facts.before??=observed;facts.after=observed;facts.elapsedMs=now()-started;
+    facts.refused=Object.values(observed).some(v=>typeof v!=='boolean')||observed.stateValid!==true||observed.identityPresent&&observed.fileIdValid!==true;
+    if(facts.refused)break;
+    facts.ready=now()<=end&&observed.exactBytesMatched&&observed.nativeNotePresent&&(!expectIdentity||observed.fileIdValid);
+    if(facts.ready)break;if(now()<end)await pause(Math.min(100,end-now()));}
+  facts.elapsedMs=now()-started;return facts;
+}
 export async function waitKnownNotesIndex(read,expectedRows,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now,budget=20000){
   if(!Array.isArray(expectedRows)||!expectedRows.length||expectedRows.length>32)throw Error('known-note proof rows invalid');
   const expected=new Map();for(const row of expectedRows){if(typeof row.path!=='string'||expected.has(row.path)||!/^[a-f0-9]{64}$/.test(row.fileIdHash??''))throw Error('known-note proof rows invalid');expected.set(row.path,row.fileIdHash);}
@@ -189,16 +203,18 @@ async function main(args) {
       if (!record || execFileSync('ps', ['-p', String(record.pid), '-o', 'lstart=,command='], { encoding: 'utf8' }).trim() !== record.identity) throw Error('owned process identity changed');
     }
   }
-  function device(...argv) {
+  function device(...argv) { return deviceBudget(20000,...argv); }
+  function deviceBudget(budgetMs,...argv) {
+    if(!Number.isFinite(budgetMs)||budgetMs<=0)throw Error('native note readiness deadline');
     live();
-    return execFileSync(adb, ['-P', String(state.adbPort), '-s', state.serial, ...argv], { env: environment, timeout: Math.min(20000, Math.max(1, state.expiresAtEpoch * 1000 - Date.now())), maxBuffer: 16 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
+    return execFileSync(adb, ['-P', String(state.adbPort), '-s', state.serial, ...argv], { env: environment, timeout: Math.min(20000,budgetMs, Math.max(1, state.expiresAtEpoch * 1000 - Date.now())), maxBuffer: 16 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
   }
   const receipt = value => {
     const result = { at: new Date().toISOString(), command,evidenceClass:input.evidenceClass==='LOCAL_CONTROL_PROTOTYPE'?input.evidenceClass:undefined, platform: usb?'Android USB device':'Android emulator', physicalPhone:usb?'USB_JOURNEY_OBSERVED':'NOT_RUN',freshPhysicalEnvironment:usb?false:undefined, sourceHead: state.sourceHead, driverSha256: digest(readFileSync(new URL(import.meta.url))),connectReadiness,...value };
     writeFileSync(join(run, 'evidence', `android-journey-${command}-${Date.now()}.json`), JSON.stringify(result, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
     console.log(JSON.stringify(result));
   };
-  let forward, ws, next = 0, stage='connect_android_webview',nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,connectReadiness,persistedNoteReadback,controlReadiness,pointerWitness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness;
+  let forward, ws, next = 0, stage='connect_android_webview',nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,connectReadiness,persistedNoteReadback,controlReadiness,pointerWitness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,noteReadiness;
   const pending = new Map(), networkFailures = [], blockedReasons = [];
   async function send(method, params = {},budgetMs=30000) {
     live();
@@ -672,17 +688,22 @@ async function main(args) {
       if(!pairingReadiness.ready)throw Error('active pairing deadline');
       receipt({result:'PASS',ordinaryUploadConsentObserved:true,explicitPairAndUpload:true,actualTrustedConsentClick:true,consentModalDisappeared:pairingReadiness.after.consentVisibleCount===0,pointerReadiness,pointerWitness,pairingReadiness,method:'one witnessed trusted CDP pointer to ordinary Pair and upload',paired:true,suite:2,phase:'active',generationHash:input.expectedGenerationHash});
     } else if (command === 'note-read') {
-      stage='wait_independent_persisted_note_bytes';
+      stage='wait_persisted_bytes_and_native_note_identity';
       const vault = ownedVault(input.vaultPath);
       syntheticNotePath(input.note);if(typeof input.text !== 'string' || input.text.length > 65536) throw Error('bounded synthetic note required');
-      const expected=Buffer.from(input.text),end=Date.now()+15000;let bytes,polls=0,exists=false;
-      while(Date.now()<end){polls++;exists=false;try{device('shell','test','-f',androidPathArg(vault+'/'+input.note));exists=true;bytes=device('exec-out','cat',androidExecPathArg(vault+'/'+input.note));}catch(error){if(error.status!==1)throw error;}persistedNoteReadback={note:input.note,fileExists:exists,polls,...persistedByteFacts(expected,exists?bytes:undefined)};if(persistedNoteReadback.exactBytesMatched)break;await new Promise(wait=>setTimeout(wait,100));}
-      if(!exists||!bytes)throw Error('Android persisted note absent');
-      if (!bytes.equals(expected)) throw Error('independent Android persisted bytes differ');
+      const expected=Buffer.from(input.text),end=Date.now()+15000,expectIdentity=input.expectPaired!==false;let bytes,exists=false,polls=0;
+      noteReadiness={deadlineMs:15000};
+      const remaining=()=>{const value=end-Date.now();if(value<=0)throw Error('native note readiness deadline');return value;};
+      const persisted=()=>{polls++;exists=false;try{deviceBudget(remaining(),'shell','test','-f',androidPathArg(vault+'/'+input.note));exists=true;bytes=deviceBudget(remaining(),'exec-out','cat',androidExecPathArg(vault+'/'+input.note));}catch(error){if(error.status!==1)throw error;}persistedNoteReadback={note:input.note,fileExists:exists,polls,...persistedByteFacts(expected,exists?bytes:undefined)};return persistedNoteReadback.exactBytesMatched;};
+      await waitNoteReadiness(async()=>{const exactBytesMatched=persisted();const observed=await evaluate(`return (${noteIndexObservation.toString()})(app,P.note,P.expectIdentity);`,{note:input.note,expectIdentity},true,Math.min(5000,remaining()));return {exactBytesMatched,...observed};},noteReadiness,expectIdentity,undefined,Date.now,end);
+      if(noteReadiness.refused)throw Error('native note identity or pairing state invalid');
+      if(!noteReadiness.ready)throw Error('native note readiness deadline');
+      stage='final_independent_persisted_note_bytes';
+      if(!persisted())throw Error('independent Android persisted bytes differ');
       stage='native_editor_and_identity_readback';
-      const observed = await evaluate(`const f=app.vault.getFileByPath(P.note);if(!f)throw Error('native note index absent');await app.workspace.getLeaf(false).openFile(f);const view=app.workspace.getMostRecentLeaf().view;if(view.editor?.getValue()!==P.text)throw Error('native editor bytes differ');const r=app.plugins.plugins['obsync-private-sync'].state.fileByPath(P.note);return {editorMatches:true,fileIdPresent:/^[a-f0-9]{32}$/.test(r?.fileId??'')};`, { note: input.note, text: input.text });
-      if (!observed.fileIdPresent && input.expectPaired!==false) throw Error('sync file identity absent');
-      receipt({ result: 'PASS', independentAdbReadback: true, bytes: bytes.length, sha256: digest(bytes),persistedNoteReadback, ...observed });
+      const observed = await evaluate(`const snapshot=()=>(${noteIndexObservation.toString()})(app,P.note,P.expectIdentity);const check=()=>{const f=snapshot();if(!f.stateValid||!f.nativeNotePresent||f.identityPresent&&!f.fileIdValid||P.expectIdentity&&!f.fileIdValid)throw Error('native note identity or pairing state invalid');return f;};check();const f=app.vault.getFileByPath(P.note);await app.workspace.getLeaf(false).openFile(f);const view=app.workspace.getMostRecentLeaf().view;if(view.editor?.getValue()!==P.text)throw Error('native editor bytes differ');const final=check();return {editorMatches:true,fileIdPresent:final.fileIdValid};`, { note: input.note, text: input.text,expectIdentity },true,remaining());
+      if(Date.now()>end)throw Error('native note readiness deadline');
+      receipt({ result: 'PASS', independentAdbReadback: true, bytes: bytes.length, sha256: digest(bytes),persistedNoteReadback,noteReadiness, ...observed });
     } else if(command==='metadata-export'){
       stage='export_owned_metadata';
       if(!/^[a-z][a-z0-9-]{0,31}$/.test(input.phase??''))throw Error('explicit custody export phase required');
@@ -751,7 +772,7 @@ async function main(args) {
     } else throw Error('unknown bounded Android command');
   } catch(error) {
     const generated=new Set([...readFileSync(new URL(import.meta.url),'utf8').matchAll(/\bError\('([^']+)'\)/g)].map(m=>m[1]));
-    receipt({ result: 'FAIL',stage,failureClass:'AUTOMATION_OR_ORACLE_REFUSAL',exceptionType:error.name==='Error'?'Error':error.name==='TimeoutError'?'TimeoutError':'ExternalError',timeout:error.code==='ETIMEDOUT'||error.name==='TimeoutError'||generated.has(error.message)&&error.message.endsWith('deadline'),nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,pointerWitness,controlReadiness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,persistedNoteReadback,external:externalFailure(error),reason:generated.has(error.message)?error.message:'External operation failed; private details withheld.' });
+    receipt({ result: 'FAIL',stage,failureClass:'AUTOMATION_OR_ORACLE_REFUSAL',exceptionType:error.name==='Error'?'Error':error.name==='TimeoutError'?'TimeoutError':'ExternalError',timeout:error.code==='ETIMEDOUT'||error.name==='TimeoutError'||generated.has(error.message)&&error.message.endsWith('deadline'),nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,pointerWitness,controlReadiness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,persistedNoteReadback,noteReadiness,external:externalFailure(error),reason:generated.has(error.message)?error.message:'External operation failed; private details withheld.' });
     process.exitCode = 1;
   } finally {
     ws?.close();
