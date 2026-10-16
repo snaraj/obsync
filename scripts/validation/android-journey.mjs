@@ -284,12 +284,21 @@ async function main(args) {
     live();
     return execFileSync(adb, ['-P', String(state.adbPort), '-s', state.serial, ...argv], { env: environment, timeout: Math.min(20000,budgetMs, Math.max(1, state.expiresAtEpoch * 1000 - Date.now())), maxBuffer: 16 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
   }
+  function installProcessFacts() {
+    const facts={atEpochMs:Date.now()};
+    for(const [name,record] of [['holder',state.holder],['adb',state.processes.adb],['emulator',state.processes.emulator]]){
+      if(!record){facts[name]=usb&&name==='emulator'?'NOT_APPLICABLE':'NOT_RECORDED';continue;}
+      try{facts[name]=execFileSync('ps',['-p',String(record.pid),'-o','lstart=,command='],{encoding:'utf8',timeout:1000}).trim()===record.identity?'MATCH':'CHANGED';}
+      catch{facts[name]='UNAVAILABLE';}
+    }
+    return facts;
+  }
   const receipts=[];
   const receipt = value => {
     const result = { at: new Date().toISOString(), command,evidenceClass:input.evidenceClass==='LOCAL_CONTROL_PROTOTYPE'?input.evidenceClass:undefined, platform: usb?'Android USB device':'Android emulator', physicalPhone:usb?'USB_JOURNEY_OBSERVED':'NOT_RUN',freshPhysicalEnvironment:usb?false:undefined, sourceHead: state.sourceHead, driverSha256: digest(readFileSync(new URL(import.meta.url))),connectReadiness,...value };
     receipts.push(result);
   };
-  let forward, ws, next = 0, stage='connect_android_webview',nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,connectReadiness,persistedNoteReadback,controlReadiness,pointerWitness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,noteReadiness,replacementReadiness;
+  let forward, ws, next = 0, stage='connect_android_webview',nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,connectReadiness,persistedNoteReadback,controlReadiness,pointerWitness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,noteReadiness,replacementReadiness,installReadbacks;
   const pending = new Map(), networkFailures = [], blockedReasons = [];
   async function send(method, params = {},budgetMs=30000) {
     live();
@@ -675,7 +684,7 @@ async function main(args) {
       stage='install_wait_native_app_plugin_registry';await readyNativeStartup();
       stage='install_native_plugin_absent';
       await evaluate(`if(app.plugins.plugins['obsync-private-sync'])throw Error('disable plugin before installation');return true;`);
-      const destination = vault + '/.obsidian/plugins/obsync-private-sync', installed = {};
+      const destination = vault + '/.obsidian/plugins/obsync-private-sync', installed = {};installReadbacks=[];
       stage='install_destination_absent';
       try { device('shell', 'test', '!', '-e', destination); } catch { throw Error('fresh plugin destination required'); }
       stage='install_destination_mkdir';
@@ -683,15 +692,28 @@ async function main(args) {
       for (const name of ['main.js', 'manifest.json', 'styles.css']) {
         stage='install_asset_source_'+name.replace('.','_');
         const file = join(source, 'plugin/dist', name), stat = lstatSync(file), expected = preflight.pluginHashes[name];
-        if (!stat.isFile() || stat.isSymbolicLink() || !/^[a-f0-9]{64}$/.test(expected) || digest(readFileSync(file)) !== expected) throw Error('candidate bytes differ');
+        if (!stat.isFile() || stat.isSymbolicLink() || !/^[a-f0-9]{64}$/.test(expected)) throw Error('candidate bytes differ');
+        const sourceBytes=readFileSync(file);
+        if (digest(sourceBytes) !== expected) throw Error('candidate bytes differ');
         stage='install_asset_push_'+name.replace('.','_');
         device('push', file, destination + '/' + name);
         stage='install_asset_adb_readback_'+name.replace('.','_');
-        const actual = digest(device('exec-out', 'cat', destination + '/' + name));
-        if (actual !== expected) throw Error('independent installed bytes differ');
-        installed[name] = actual;
+        const readback={asset:name,method:'single-raw-exec-out-cat',before:installProcessFacts(),...persistedByteFacts(sourceBytes,undefined),readAttempts:1};installReadbacks.push(readback);
+        const observed=device('exec-out', 'cat', destination + '/' + name);
+        Object.assign(readback,persistedByteFacts(sourceBytes,observed),{after:installProcessFacts(),sourceStillPinned:digest(readFileSync(file))===expected});
+        if (!readback.exactBytesMatched) {
+          // Independent diagnostics only: this mismatch remains terminal even
+          // if remote storage matches. Never retry the raw read to get a pass.
+          const end=Date.now()+4000,remaining=()=>end-Date.now();
+          try{const bytes=deviceBudget(remaining(),'shell','toybox','stat','-c','%s',destination+'/'+name).toString().trim(),hash=deviceBudget(remaining(),'shell','toybox','sha256sum',destination+'/'+name).toString().trim().split(/\s+/);if(!/^\d+$/.test(bytes)||hash.length!==2||!/^[a-f0-9]{64}$/.test(hash[0])||hash[1]!==destination+'/'+name)throw Error('public asset witness invalid');readback.remoteStorage={bytes:Number(bytes),sha256:hash[0]};}catch(error){readback.remoteStorage={result:'UNAVAILABLE',...externalFailure(error)};}
+          if(Date.now()<end)try{const value=deviceBudget(remaining(),'get-state').toString().trim();readback.transportState=['device','offline','unknown'].includes(value)?value:'OTHER';}catch(error){readback.transportState='UNAVAILABLE';readback.transportFailure=externalFailure(error);}
+          if(Date.now()<end)try{const value=deviceBudget(remaining(),'shell','pidof','md.obsidian').toString().trim();readback.appPidMatches=/^\d+$/.test(value)&&Number(value)===connectReadiness?.appPid;}catch(error){readback.appPidMatches=null;readback.appPidFailure=externalFailure(error);}
+          throw Error('independent installed bytes differ');
+        }
+        if(!readback.sourceStillPinned)throw Error('candidate bytes differ');
+        installed[name] = readback.observedSha256;
       }
-      receipt({ result: 'PASS', installedAssetHashes: installed,startupReadiness,independentAdbReadback: true, metadataOrCredentialsSeeded: false });
+      receipt({ result: 'PASS', installedAssetHashes: installed,installReadbacks,startupReadiness,independentAdbReadback: true, metadataOrCredentialsSeeded: false });
     } else if (command === 'settings') {
       if (!['community-plugins', 'obsync-private-sync'].includes(input.tab)) throw Error('explicit owned plugin settings required');
       await evaluate(`app.setting.open();app.setting.openTabById(P.tab);return true;`, { tab: input.tab });
@@ -865,7 +887,7 @@ async function main(args) {
     } else throw Error('unknown bounded Android command');
   } catch(error) {
     const generated=new Set([...readFileSync(new URL(import.meta.url),'utf8').matchAll(/\bError\('([^']+)'\)/g)].map(m=>m[1]));
-    receipt({ result: 'FAIL',stage,failureClass:'AUTOMATION_OR_ORACLE_REFUSAL',exceptionType:error.name==='Error'?'Error':error.name==='TimeoutError'?'TimeoutError':'ExternalError',timeout:error.code==='ETIMEDOUT'||error.name==='TimeoutError'||generated.has(error.message)&&error.message.endsWith('deadline'),nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,pointerWitness,controlReadiness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,persistedNoteReadback,noteReadiness,replacementReadiness,external:externalFailure(error),reason:generated.has(error.message)?error.message:'External operation failed; private details withheld.' });
+    receipt({ result: 'FAIL',stage,failureClass:'AUTOMATION_OR_ORACLE_REFUSAL',exceptionType:error.name==='Error'?'Error':error.name==='TimeoutError'?'TimeoutError':'ExternalError',timeout:error.code==='ETIMEDOUT'||error.name==='TimeoutError'||generated.has(error.message)&&error.message.endsWith('deadline'),nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,pointerWitness,controlReadiness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,persistedNoteReadback,noteReadiness,replacementReadiness,installReadbacks,external:externalFailure(error),reason:generated.has(error.message)?error.message:'External operation failed; private details withheld.' });
     process.exitCode = 1;
   } finally {
     try {await releaseConnection();}

@@ -35,7 +35,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All fourteen full batches stopped on their first failed attempt;
+have passed**. All fifteen full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -552,6 +552,59 @@ The integrated mobile gate passes 125 Python tests, 157 Node tests and all
 controls above are additional. Both secret scans pass. The unchanged
 production artifacts reuse their previously recorded full canonical battery;
 the new full native batch remains necessary.
+
+Full batch 15 at `46cd573ffa065a2e04f0dbd1f6536b086c4df390` stopped during
+Android onboarding after 36,429 ms: the single independent ADB readback of
+installed `main.js` did not match its expected candidate hash. The retained
+receipt then records WebSocket close code 1006 and a failed forward removal.
+It does not retain the returned byte count/hash, so the precise cause remains
+unknown. Native startup had reported the correct vault, layout and plugin
+registries ready; pairing and every later acceptance phase did not run.
+This is an automation/oracle refusal, not proof of a product encryption defect
+or a successful installation. No second or third attempt ran.
+
+Both controllers subsequently reported cleanup PASS and zero owned groups;
+the parent independently verified absent runtime/private directories and the
+actual desktop and Android ownership manifests. The failed aggregate SHA-256
+is `ae6d375130cdcc4fd8bb9a2b4dbf813c04530f932d43f8555642b0af992370fd`.
+The fifteen-batch retained ledger has SHA-256
+`9caa4845704c702d49c60f6bcd3297f2c73edfe8aaa373f11f7b4b15f348e516`.
+The preceding native desktop repair and partial batch 14 assertions are
+separate evidence; they do not turn this failed fresh installation into a pass.
+The terminal hosted rollup at this head has 46 successful checks and one
+intended deployment skip. The existing covered CodeQL aggregate remains red;
+required dispositions pass. No new substantive review reply or final-head
+independent approval was present when this result was recorded.
+
+A single fresh Android installation-only diagnostic did not reproduce the
+mismatch. Independent readbacks matched all three candidate assets exactly:
+1,572,823 bytes for `main.js`, 387 for `manifest.json`, and 3,242 for
+`styles.css`. The owned holder, ADB and emulator identities matched before
+and after each read. The connection closed normally and its forward was
+removed. The controller reported cleanup PASS with zero owned groups, and
+the parent independently verified the actual runtime/private/manifest paths
+absent. The install receipt SHA-256 is
+`07cdd5c1c383c918fc353a9e21d4fd253589160e350c9598534043bcb0a7c7d2`;
+the controller result is
+`ca8194b92b1527ca884b38accb840066c29c24f12928bc137bfafd849d1e00d9`.
+Pairing and full acceptance did not run in this diagnostic. Batch 15's cause
+remains unknown; a successful isolated sample does not repair or erase it.
+
+The additive driver change now retains expected/observed sizes and hashes,
+source rechecks and bounded owned-process facts for each fixed public plugin
+asset. On the first mismatch it gathers one independently validated device
+size/hash witness and bounded connection facts, then still fails. A matching
+remote hash cannot rescue the failed read, and no read-until-match retry is
+allowed. Source shape checks still refuse symlinks before reading bytes.
+All 35 focused tests pass; ten deliberate broken controls fail, including
+accepted mismatches, remote-hash rescue, repeat reads, fabricated byte facts,
+changed sources, unvalidated witnesses and private diagnostic leaks. The
+parent replayed these controls against the integrated driver. No production
+or transport behavior changed, and the next full attempt must supply its own
+independent installation evidence.
+The integrated follow-up passes 125 Python tests, 159 Node tests and all
+149 existing scripted mutation controls with zero skips. The ten focused
+controls above are additional; both secret scans pass.
 
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.
