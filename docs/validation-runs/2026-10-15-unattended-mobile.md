@@ -34,14 +34,78 @@ trust change or production service is involved.
 
 ## Measured status
 
-At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All eighteen full batches stopped on their first failed attempt;
-the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
-acceptance runs. The first eighteen fresh runs remain failed in their original
-directories. Run 19 passed the core path; all nineteen report successful
-owned-process and runtime cleanup.
-Their reduced attempt ledger has SHA-256
+At this checkpoint, **one complete core run and one full attempt have passed**.
+The required three consecutive fresh full passes remain unproven. All first
+eighteen full batches stopped on their first failed attempt; batch 19 passed
+its first attempt and stopped on its second. Earlier exploratory journeys are not counted as three fresh
+acceptance runs. In the separate original core campaign, attempts 1–18 remain
+failed in their original directories and attempt 19 passed the core path.
+All nineteen core attempts report successful owned-process and runtime cleanup.
+That core campaign's reduced attempt ledger has SHA-256
 `9a0596c7191a86374e5489b3610bd55dfdec9e4c3bd10eac576d503599cd4ec5`.
+
+Full batch 19 used unchanged committed driver and candidate
+`85937cf1874ae55d85efae5ca1e3857a3942a9fa`. Its first attempt reached
+**FULL_PASS** in 1,214.359 seconds, including ordinary pairing/SAS/consent,
+213.007 seconds without Android calls, restart/reboot, offline recovery,
+access-only revocation/re-pairing, interrupted rotation and fresh recovery.
+The old key opened access-only ciphertext but rejected the rotated map,
+manifest and chunk; the current key opened the new ciphertext. Both selected
+rename directions and their 301,453/301,565 ms stability observations passed.
+The closed confidentiality scan examined 1,811 requests across 364 connections,
+759 files and 3,332,263 bytes, with zero unexpected hits or parse errors.
+Planted leaks in copied HTTP traffic, storage and logs were all detected.
+Both controllers reported zero remaining owned groups and cleanup PASS;
+runtime/private directories and ownership manifests were independently absent.
+
+The parent independently rehashed all 100 persisted-file exports and replayed
+the five selected-history snapshots plus actual fresh-C recovered bytes from
+45 retained inputs. The retained-file audit SHA-256 is
+`a58d4806727179603927983ae8a29d84dd46b0ac15cad6f37a12fa47323b5d94`;
+the first attempt's FULL_PASS receipt SHA-256 is
+`c84cb7efbd64da2a9dfd18892a6a451597a574ffed60b4b02bf2741d53702009`.
+Separate controls against copies of the earlier successful selected diagnostic
+accepted unchanged evidence and rejected same-length byte corruption and a
+missing server snapshot using the actual terminal admission function. Original
+evidence stayed unchanged and all control copies were removed.
+
+Batch 19's second attempt failed before pairing during the one installed-APK
+ADB pull in trust verification. All preceding namespace inventory checks
+completed; the preceding device-side size/hash matched the official APK
+(15,447,027 bytes). The pull exited 1 after 162 ms, without a retained local or
+after-transfer witness. The original exception wrapper discarded its stderr,
+so the underlying transfer cause is unknown. Both controller cleanups passed;
+the third attempt did not run. The aggregate remains FAIL, SHA-256
+`5ffa91c8c236b1a94ef5c9d6027e4d953cbe2a00a296c6c25b2d6f5d27f97074`.
+The nineteen-batch ledger SHA-256 is
+`24a8c6e9a2f12fc847c815d2b443cb2a94fa4caabd9489d16c3ef7e00a80ca2d`.
+
+The APK verifier now retains bounded error categories and output byte counts;
+the trust CLI preserves only allowlisted reason/stage values instead of
+redacting its own fixed reason as an identifier. It stores no raw paths,
+arguments or error text. One pull, the original 30-second shared deadline,
+exact before/after/local hashes and terminal failure remain unchanged.
+All 15 focused trust/APK tests and 18 deliberate mutation controls pass.
+The composed `make mobile-harness` battery passes 143 Python tests, 187 Node
+tests and 219 scripted mutation controls, with no skips; both secret scans
+pass. Its retained gate log SHA-256 is
+`b3c76049a196a0f8282deb36182481ab0c3c337e1df46d398e5d6254d2eb18c5`.
+This repairs observability, not the unknown transport cause.
+
+Four separate transfer diagnostics retain their outcomes. The first could not
+bind its private localhost fixture under the sandbox, before any device was
+created. The second read only 2,048 of 1,572,823 installed plugin bytes while
+the owned ADB log recorded a terminated connection; the host processes stayed
+alive, but the underlying disconnect cause remains unknown. The third failed
+before installation because this pinned emulator cannot combine kernel and
+logcat output on the same stdio backend. The fourth removed that conflicting
+diagnostic flag and completed all 100 scheduled, single-pull APK readbacks,
+plus four normal setup readbacks, with exact before/after/local official hashes.
+It did not reproduce or repair the original failure. No pairing or full
+acceptance is attributed to those diagnostic runs. Every created controller
+verified cleanup; all failed attempts remain unchanged. The fourth diagnostic's
+reduced record SHA-256 is
+`ff94c6af8fd4a7e271af90023874c41bc44680a96c080d773dd5d4ae70933530`.
 
 Full batch 18 used committed driver and rebuilt candidate
 `76a7116fdca25d3be4650b2ee92aa2df185413e1`. Ordinary pairing, two-way bytes,
@@ -1028,7 +1092,7 @@ mutation controls; both secret scans pass. At predecessor `769ffe3`, 46 hosted
 checks pass with the intended deployment skip and covered CodeQL aggregate
 failure; the required dispositions check passes.
 
-The small native path passed. Three consecutive fresh full runs still must
+The small native path and one full attempt passed. Three consecutive fresh full runs still must
 include native restart/reboot,
 background/offline recovery, revocation/re-pairing, interrupted rotation,
 old-key rejection against actual new ciphertext, recovery and selected-folder

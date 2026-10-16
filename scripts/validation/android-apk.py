@@ -14,8 +14,38 @@ import time
 
 APK_READBACK_MAX = 1024**3  # Installer artifact only; no vault/product size limit.
 
+APK_REASONS = frozenset(('apk_package_layout_refused','apk_remote_size_refused','apk_remote_hash_refused',
+    'apk_local_file_refused','apk_local_size_refused','apk_readback_deadline','apk_official_pin_refused',
+    'apk_private_root_refused','apk_package_path_changed','apk_remote_file_changed','apk_pull_integrity_mismatch',
+    'apk_official_pin_mismatch','apk_temporary_cleanup_failed','apk_device_command_timeout',
+    'apk_device_command_failed','apk_readback_refused'))
+APK_STAGES = frozenset(('validate_owned_private_root','resolve_official_apk','remote_apk_before',
+    'pull_official_apk','local_apk_integrity','remote_apk_after','verify_complete_apk_readback','verify_official_apk_pin'))
+
 class ApkReadbackError(ValueError):
-    pass
+    def __init__(self,reason,stage=None):
+        self.reason=reason if reason in APK_REASONS else 'apk_readback_refused'
+        self.stage=stage if stage in APK_STAGES else None
+        super().__init__(self.reason)
+
+
+def apk_command_failure(error):
+    # Only fixed marker classes and counts leave this function, never error text.
+    def encoded(value):
+        return value if isinstance(value,bytes) else value.encode('utf-8',errors='replace') if isinstance(value,str) else b''
+    stdout=encoded(getattr(error,'stdout',None));stderr=encoded(getattr(error,'stderr',None))
+    sample=(stderr[:2048]+b'\n'+stdout[:2048]).lower()
+    markers=(('permission_denied',(b'permission denied',b'access is denied')),
+             ('file_missing',(b'no such file or directory',b'cannot stat',b'failed to stat remote object')),
+             ('transport_unavailable',(b'device offline',b'device not found',b'no devices/emulators found',b'error: closed',b'connection reset',b'connection refused',b'broken pipe')),
+             ('protocol_error',(b'protocol fault',b'protocol error',b'unexpected id_done',b'msg.data.size too large',b'unexpected response from daemon')),
+             ('decompression_error',(b'decompress failed',)),
+             ('transfer_read_error',(b'failed to read copy response',)),
+             ('no_space',(b'no space left on device',)),
+             ('write_error',(b'cannot create',b'cannot write',b'failed to create',b'failed to write')))
+    if b'remote object' in sample and b'does not exist' in sample:category='file_missing'
+    else:category=next((name for name,needles in markers if any(marker in sample for marker in needles)),'OTHER')
+    return {'stdoutBytes':len(stdout),'stderrBytes':len(stderr),'errorClass':category}
 
 
 def apk_path(state,adb_command,timeout=30):
@@ -94,11 +124,13 @@ def apk_hash(state,run,expected,phase,adb_command,save):
         diagnostic.update(result='VERIFIED',sameOfficialApk=True,independentRemoteWitnesses=True)
     except Exception as error:
         reason=str(error) if isinstance(error,ApkReadbackError) else 'apk_device_command_timeout' if isinstance(error,subprocess.TimeoutExpired) else 'apk_device_command_failed' if isinstance(error,(subprocess.SubprocessError,OSError)) else 'apk_readback_refused'
+        if isinstance(error,(subprocess.CalledProcessError,subprocess.TimeoutExpired)):
+            diagnostic['commandFailure']=apk_command_failure(error)
         if isinstance(error,subprocess.CalledProcessError):
             diagnostic['commandExitCode']=error.returncode
             if stage=='pull_official_apk':diagnostic['pullExitCode']=error.returncode
         diagnostic.update(reason=reason,stage=stage,temporaryRemoved=temporary is None or not temporary.exists())
-        failure=ApkReadbackError(reason)
+        failure=ApkReadbackError(reason,stage)
     diagnostic['elapsedMs']=round((time.monotonic()-started)*1000)
     save(run/'evidence'/('android-apk-readback-'+str(time.time_ns())+'.json'),diagnostic)
     if failure is not None:raise failure

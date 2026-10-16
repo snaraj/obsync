@@ -226,6 +226,7 @@ if __name__=='__main__':
     try: main()
     except Exception as error:
         print(json.dumps({'result':'FAIL','exceptionType':type(error).__name__,
-              'detail':SESSION.sanitized_diagnostic(str(error))[:400],
+              'detail':error.reason if isinstance(error,ApkReadbackError) else SESSION.sanitized_diagnostic(str(error))[:400],
+              'apkStage':error.stage if isinstance(error,ApkReadbackError) else None,
               'stderr':SESSION.sanitized_diagnostic(getattr(error,'stderr',None) or '')[:2000]}),file=sys.stderr)
         sys.exit(1)

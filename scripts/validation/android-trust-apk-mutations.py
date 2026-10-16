@@ -9,6 +9,16 @@ import tempfile
 
 root=Path(__file__).resolve().parent
 mutations=[
+ ('failure_class',"else:category=next((name for name,needles in markers if any(marker in sample for marker in needles)),'OTHER')","else:category='OTHER'"),
+ ('stdout_count',"'stdoutBytes':len(stdout)","'stdoutBytes':0"),
+ ('stderr_count',"'stderrBytes':len(stderr)","'stderrBytes':0"),
+ ('bounded_stderr',"stderr[:2048]+b'\\n'+stdout[:2048]","stderr+b'\\n'+stdout[:2048]"),
+ ('bounded_stdout',"stderr[:2048]+b'\\n'+stdout[:2048]","stderr[:2048]+b'\\n'+stdout"),
+ ('allowlisted_reason',"self.reason=reason if reason in APK_REASONS else 'apk_readback_refused'","self.reason=reason"),
+ ('allowlisted_stage',"self.stage=stage if stage in APK_STAGES else None","self.stage=stage"),
+ ('preserved_failure_stage',"failure=ApkReadbackError(reason,stage)","failure=ApkReadbackError(reason)"),
+ ('cli_reason',"'detail':error.reason if isinstance(error,ApkReadbackError) else SESSION.sanitized_diagnostic(str(error))[:400]","'detail':SESSION.sanitized_diagnostic(str(error))[:400]"),
+ ('cli_stage',"'apkStage':error.stage if isinstance(error,ApkReadbackError) else None","'apkStage':None"),
  ('remote_before_after', "if before!=after:raise ApkReadbackError('apk_remote_file_changed')", 'if False:pass'),
  ('complete_host_bytes', "if local!=before:raise ApkReadbackError('apk_pull_integrity_mismatch')", 'if False:pass'),
  ('same_official_pin', "if local['sha256']!=expected:raise ApkReadbackError('apk_official_pin_mismatch')", 'if False:pass'),
@@ -28,7 +38,7 @@ with tempfile.TemporaryDirectory(prefix='obsync-trust-apk-mutations-') as tmp:
  if check()!=0:raise SystemExit('APK readback controls baseline must pass')
  killed=[]
  for name,old,new in mutations:
-  selected,original=(trust,trust_baseline) if name=='terminal_before_root' else (session,session_baseline) if name=='initial_complete_readback' else (target,baseline)
+  selected,original=(trust,trust_baseline) if name in ('terminal_before_root','cli_reason','cli_stage') else (session,session_baseline) if name=='initial_complete_readback' else (target,baseline)
   if original.count(old)!=1:raise SystemExit('mutation target mismatch: '+name)
   selected.write_text(original.replace(old,new))
   if check()==0:raise SystemExit('APK readback mutation survived: '+name)

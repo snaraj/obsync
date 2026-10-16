@@ -197,4 +197,45 @@ class ApkIntegrity(unittest.TestCase):
             self.assertEqual(proof['local']['bytes'],7);self.assertTrue(proof['temporaryRemoved']);self.assertNotIn('private',json.dumps(proof))
 
 
+    def test_exit1_without_local_file_retains_only_closed_bounded_command_diagnostics(self):
+        cases=[(b'Permission denied','permission_denied'),(b'No such file or directory','file_missing'),
+               (b'error: device offline','transport_unavailable'),(b'protocol fault','protocol_error'),
+               (b'No space left on device','no_space'),(b'failed to write','write_error'),
+               (b'cannot write file','write_error'),(b'cannot create file/directory','write_error'),
+               (b'failed to stat remote object','file_missing'),(b'remote object XXX does not exist','file_missing'),
+               (b'unexpected ID_DONE','protocol_error'),(b'msg.data.size too large','protocol_error'),
+               (b'unexpected response from daemon','protocol_error'),(b'decompress failed','decompression_error'),
+               (b'failed to read copy response: EOF','transfer_read_error'),(b'unrecognized failure','OTHER'),(b'x'*2049+b'Permission denied','OTHER')]
+        for marker,category in cases:
+            stdout=b'/private/OWNER-PATH token=FORBIDDEN-STDOUT'
+            stderr=marker+b' /data/app/OWNER-PRIVATE-PATH credential=FORBIDDEN-STDERR'
+            error=subprocess.CalledProcessError(1,['FORBIDDEN-ARGV'],output=stdout,stderr=stderr)
+            with self.subTest(category=category,marker=marker[:30]),self.assertRaisesRegex(M.ApkReadbackError,'apk_device_command_failed') as caught:
+                self.run_readback(body=None,pull_error=error)
+            proof=self.proofs[0];self.assertEqual(proof['result'],'FAIL');self.assertEqual(proof['stage'],'pull_official_apk')
+            self.assertEqual(proof['pullAttempts'],1);self.assertEqual(len(self.calls),1);self.assertEqual(proof['pullExitCode'],1)
+            self.assertIsNone(proof['local']);self.assertIsNone(proof['after']);self.assertTrue(proof['temporaryRemoved'])
+            self.assertEqual(proof['commandFailure'],{'stdoutBytes':len(stdout),'stderrBytes':len(stderr),'errorClass':category})
+            self.assertEqual(caught.exception.reason,'apk_device_command_failed');self.assertEqual(caught.exception.stage,'pull_official_apk')
+            for text in ['OWNER','FORBIDDEN','credential=','token=','Permission denied']:
+                self.assertNotIn(text,json.dumps(proof))
+        facts=M.SESSION.APK.apk_command_failure(subprocess.CalledProcessError(1,[],output='Permission denied /PRIVATE',stderr='UNKNOWN'))
+        self.assertEqual(facts['errorClass'],'permission_denied');self.assertEqual(facts['stdoutBytes'],len('Permission denied /PRIVATE'))
+        self.assertEqual(M.SESSION.APK.apk_command_failure(subprocess.CalledProcessError(1,[],output=b'x'*2049+b'Permission denied',stderr=b''))['errorClass'],'OTHER')
+
+    def test_actual_trust_cli_preserves_only_allowlisted_apk_reason_and_stage(self):
+        import ast,io,sys
+        source=Path(M.__file__).read_text();tree=ast.parse(source)
+        handler=tree.body[-1].body[0].handlers[0]
+        code=compile(ast.Module(body=handler.body,type_ignores=[]),M.__file__,'exec')
+        for error,reason,stage in [(M.ApkReadbackError('apk_device_command_failed','pull_official_apk'),'apk_device_command_failed','pull_official_apk'),
+                                   (M.ApkReadbackError('/PRIVATE token=FORBIDDEN','/PRIVATE'),'apk_readback_refused',None)]:
+            output=io.StringIO()
+            with patch.object(sys,'stderr',output),self.assertRaises(SystemExit) as caught:
+                exec(code,{'error':error,'ApkReadbackError':M.ApkReadbackError,'SESSION':M.SESSION,'json':json,'sys':sys})
+            self.assertEqual(caught.exception.code,1);value=json.loads(output.getvalue())
+            self.assertEqual(value['result'],'FAIL');self.assertEqual(value['detail'],reason);self.assertEqual(value['apkStage'],stage)
+            self.assertNotIn('PRIVATE',output.getvalue());self.assertNotIn('FORBIDDEN',output.getvalue())
+
+
 if __name__=='__main__':unittest.main()
