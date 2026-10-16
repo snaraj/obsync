@@ -48,6 +48,19 @@ def launch_to_idle(require, launch, idle):
     return observed - started
 
 
+def android_case_rename(require, proof):
+    """Admit the explicit two-action UI workflow, never a direct-rename claim."""
+    facts = {'result': 'PASS', 'workflow': 'TWO_ORDINARY_RENAMES', 'ordinaryRenameCount': 2,
+             'intermediateAbsent': True, 'originalAbsent': True, 'originalBaselinePreserved': True,
+             'finalFolder': 'Team docs', 'sharedBudgetMs': 180000, 'directSingleStepCaseRename': False,
+             'independentAdbDirectory': True, 'descendants': 2}
+    require(all(type(proof.get(k)) is type(v) and proof.get(k) == v for k, v in facts.items()),
+            'android_two_ordinary_renames_original_baseline')
+    elapsed = proof.get('elapsedMs')
+    require(type(elapsed) is int and 0 <= elapsed < 180000, 'android_two_renames_shared_180000ms')
+    return elapsed
+
+
 def run(api, args, c, desktop, android, lab, steps, phone, desk, tls, vault, core_notes, untrusted):
     require, save, private, helper = api.require, api.save, api.private_json, api.helper
     node, source, controller = c['node'], c['source'], api.load_controller()
@@ -333,7 +346,8 @@ def run(api, args, c, desktop, android, lab, steps, phone, desk, tls, vault, cor
         postrotationPhoneRestart=True, postrotationLaunchToIdleMs=rotated_idle_ms, preexistingIndependentBytesAfterRotationRestart=True,
         previousGenerationHistoryUi='RESTORE_COPY', knownRetainedHistoryBytes=True, currentOriginalUnchanged=True)
 
-    # Selected case-only rename: native user controls on each platform.
+    # Desktop direct recase; Android two explicit ordinary renames. The pinned
+    # official mobile UI refuses a direct recase on its shared filesystem.
     native('selected-folder-seed', 'selected-fixtures.mjs', 'seed', results=('PREPARED',))
     selected = [private(desktop / ('private/desktop/note-selected-' + name + '.json')) for name in ('one', 'two')]
     for i, note in enumerate(selected): phone_reads('selected-seed-read-' + str(i), note)
@@ -353,13 +367,16 @@ def run(api, args, c, desktop, android, lab, steps, phone, desk, tls, vault, cor
     down = native('selected-five-minute-watch-desktop-origin', 'selected-desktop.mjs', 'watch-down', timeout=420)
     require(down.get('watchMs', 0) >= 300000, 'desktop_origin_selected_watch')
     selected_boundary('android-boundary-after-desktop-origin-watch', 'team docs')
-    phone('android-ordinary-selected-rename-back', 'folder-rename', {'from': 'team docs', 'to': 'Team docs'})
+    rename_ms = android_case_rename(require, phone('android-ordinary-selected-rename-back',
+        'folder-case-rename', {'from': 'team docs', 'to': 'Team docs'}))
     native('desktop-passive-selected-rename-back', 'selected-desktop.mjs', 'returned')
     selected_boundary('android-boundary-after-android-rename', 'Team docs')
     up = native('selected-five-minute-watch-android-origin', 'selected-desktop.mjs', 'watch-up', timeout=420)
     require(up.get('watchMs', 0) >= 300000, 'android_origin_selected_watch')
     selected_boundary('android-boundary-after-android-origin-watch', 'Team docs')
     receipt('selected-rename', ordinaryDesktopRename=True, ordinaryAndroidRename=True, noteIdentityAndBytesPreserved=True,
+        androidRenameWorkflow='TWO_ORDINARY_RENAMES', androidOrdinaryRenameCount=2,
+        directAndroidCaseRename=False, androidIntermediateAbsent=True, androidRenameElapsedMs=rename_ms,
         priorHistoryAndAncestryPreserved=True, postConvergenceHeadsAndVersionsFrozen=True,
         excludedControlsCreatedAfterScope=True, desktopOriginWatchMs=down['watchMs'], androidOriginWatchMs=up['watchMs'], trashEmpty=True)
     metadata('selected')

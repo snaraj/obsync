@@ -36,6 +36,8 @@ def phase_fixture():
             'preexistingIndependentBytesAfterRotationRestart':True,'previousGenerationHistoryUi':'RESTORE_COPY',
             'knownRetainedHistoryBytes':True,'currentOriginalUnchanged':True},
         'selected-rename': {'ordinaryDesktopRename':True,'ordinaryAndroidRename':True,'noteIdentityAndBytesPreserved':True,
+            'androidRenameWorkflow':'TWO_ORDINARY_RENAMES','androidOrdinaryRenameCount':2,'directAndroidCaseRename':False,
+            'androidIntermediateAbsent':True,'androidRenameElapsedMs':8000,
             'priorHistoryAndAncestryPreserved':True,'postConvergenceHeadsAndVersionsFrozen':True,'excludedControlsCreatedAfterScope':True,
             'desktopOriginWatchMs':300000,'androidOriginWatchMs':300000,'trashEmpty':True},
         'fresh-recovery-J11': {'pairedPeersStopped':True,'freshDesktopB':True,'freshDesktopC':True,'oldBackupRefused':True,
@@ -45,6 +47,19 @@ def phase_fixture():
 
 
 class Admission(unittest.TestCase):
+    def test_android_case_workflow_requires_both_actions_original_bytes_and_remaining_budget(self):
+        proof = {'result':'PASS','workflow':'TWO_ORDINARY_RENAMES','ordinaryRenameCount':2,
+            'intermediateAbsent':True,'originalAbsent':True,'originalBaselinePreserved':True,'finalFolder':'Team docs',
+            'sharedBudgetMs':180000,'directSingleStepCaseRename':False,'independentAdbDirectory':True,
+            'descendants':2,'elapsedMs':8000}
+        self.assertEqual(FULL.android_case_rename(RUNNER.require, proof), 8000)
+        for key, value in proof.items():
+            for broken in ({k:v for k,v in proof.items() if k!=key},
+                           proof | {key:not value if type(value) is bool else True if type(value) is int else 'wrong'}):
+                with self.assertRaises(RUNNER.StageFailure, msg=key): FULL.android_case_rename(RUNNER.require, broken)
+        for elapsed in (-1,180000,180001):
+            with self.assertRaises(RUNNER.StageFailure): FULL.android_case_rename(RUNNER.require, proof | {'elapsedMs':elapsed})
+
     def test_launch_to_idle_uses_actual_launch_and_bounded_later_observation(self):
         self.assertEqual(FULL.launch_to_idle(RUNNER.require, {'launchStartedAtEpochMs': 1000}, {'idleObservedAtEpochMs': 1200}), 200)
         for launch, idle in [({}, {}), ({'launchStartedAtEpochMs': 1000}, {}),
@@ -121,13 +136,14 @@ class Admission(unittest.TestCase):
             for phase,facts in phase_fixture().items():
                 path=root/'evidence'/('full-'+phase+'.json');original=path.read_bytes()
                 for key,value in facts.items():
-                    for broken in ({k:v for k,v in facts.items() if k!=key}, facts|{key:False if type(value) is bool else True if type(value) is int else 'PASS'}):
+                    for broken in ({k:v for k,v in facts.items() if k!=key}, facts|{key:not value if type(value) is bool else True if type(value) is int else 'PASS'}):
                         path.write_text(json.dumps({'schema':1,'sourceHead':HEAD,'result':'PASS',**broken}))
                         with self.assertRaises(RUNNER.StageFailure,msg=phase+':'+key):RUNNER.full_journey_receipt(root,HEAD)
                     path.write_bytes(original)
             for phase,key,value in [('quiet','elapsedMs',212999),('restart','desktopLaunchToIdleMs',120001),
                 ('restart','androidLaunchToIdleMs',-1),('rotation-recovery','postrotationLaunchToIdleMs',120001),
-                ('selected-rename','desktopOriginWatchMs',299999),('selected-rename','androidOriginWatchMs',299999)]:
+                ('selected-rename','desktopOriginWatchMs',299999),('selected-rename','androidOriginWatchMs',299999),
+                ('selected-rename','androidRenameElapsedMs',180000)]:
                 path=root/'evidence'/('full-'+phase+'.json');original=path.read_bytes()
                 path.write_text(json.dumps({'schema':1,'sourceHead':HEAD,'result':'PASS',**(phase_fixture()[phase]|{key:value})}))
                 with self.assertRaises(RUNNER.StageFailure):RUNNER.full_journey_receipt(root,HEAD)

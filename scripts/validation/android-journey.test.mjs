@@ -1,7 +1,7 @@
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { digest,noteIndexObservation,waitNoteReadiness,waitKnownNotesIndex,waitCandidateReadiness,waitScopeSave,waitPairingActivation,serverUrlCommitMatched,pointerWitnessMatches,androidExecPathArg,persistedByteFacts,freshTrustRoute, comparison, ordinaryControl, ownedVault, visibleComparisons, safeExceptionMessage, knownNotesMatch, selectAllText,nativeScreen,androidPathArg,externalFailure,nativeReadiness,waitNativeReadiness,syntheticNotePath,candidateLabelMatches,restoredSiblingPath,pointerTarget,waitPointerReadiness,waitOwnedPage } from './android-journey.mjs';
+import { parseOwnedRootEntries,readOwnedRootEntries,digest,noteIndexObservation,waitNoteReadiness,waitKnownNotesIndex,waitCandidateReadiness,waitScopeSave,waitPairingActivation,serverUrlCommitMatched,pointerWitnessMatches,androidExecPathArg,persistedByteFacts,freshTrustRoute, comparison, ordinaryControl, ownedVault, visibleComparisons, safeExceptionMessage, knownNotesMatch, selectAllText,nativeScreen,androidPathArg,externalFailure,nativeReadiness,waitNativeReadiness,syntheticNotePath,candidateLabelMatches,restoredSiblingPath,pointerTarget,waitPointerReadiness,waitOwnedPage } from './android-journey.mjs';
 
 test('owned initial debugger waits for zero pages to become one and rejects multiples immediately',async()=>{
   let clock=0,reads=0;const facts={},page={type:'page',webSocketDebuggerUrl:'owned'};
@@ -343,4 +343,108 @@ test('install process diagnostics report only bounded role states and never proc
   const observe=new Function('execFileSync','state','usb','Date',source.slice(start,end)+';return installProcessFacts();');
   const facts=observe(probe,state,false,{now:()=>123});assert.deepEqual(facts,{atEpochMs:123,holder:'MATCH',adb:'CHANGED',emulator:'UNAVAILABLE'});assert.equal(JSON.stringify(facts).includes('private'),false);
   const usb=structuredClone(state);delete usb.processes.emulator;assert.equal(observe(probe,usb,true,{now:()=>123}).emulator,'NOT_APPLICABLE');assert.equal(observe(probe,usb,false,{now:()=>123}).emulator,'NOT_RECORDED');
+});
+
+test('owned root enumeration preserves exact entry bytes and requires complete bounded framing',()=>{
+  const vault='/storage/emulated/0/Documents/Obsync-Entries',marker='OBSYNC_ROOT_ENTRIES_COMPLETE';
+  const framed=names=>Buffer.from(names.map(n=>vault+'/'+n+'\0').join('')+marker+'\0');
+  assert.deepEqual(parseOwnedRootEntries(vault,framed(['Team docs','team docs','literal\\ name','é\nname'])),['Team docs','team docs','literal\\ name','é\nname']);
+  assert.deepEqual(parseOwnedRootEntries(vault,framed([])),[]);
+  const good=framed(['Team docs']);
+  const invalid=[Buffer.alloc(0),good.subarray(0,-1),Buffer.from(vault+'/Team docs\0'),Buffer.from(marker+'\0garbage\0'),Buffer.from('/foreign/Team docs\0'+marker+'\0'),Buffer.from(vault.replace('Entries','Foreign')+'/Team docs\0'+marker+'\0'),framed(['']),framed(['.']),framed(['..']),framed(['nested/entry']),framed(['Team docs','Team docs']),framed(Array.from({length:65},(_,i)=>'Entry'+i)),framed(['a'.repeat(65536)]),Buffer.concat([Buffer.from(vault+'/'),Buffer.from([0xff,0]),Buffer.from(marker+'\0')])];
+  for(const bytes of invalid)assert.throws(()=>parseOwnedRootEntries(vault,bytes));
+  assert.throws(()=>parseOwnedRootEntries('/foreign',good),/synthetic vault/);
+  let calls=0;
+  assert.deepEqual(readOwnedRootEntries((...argv)=>{calls++;assert.deepEqual(argv,['shell','-T',`find '${vault}' -mindepth 1 -maxdepth 1 -print0 && printf '${marker}\\000'`]);return good;},vault),['Team docs']);
+  assert.equal(calls,1);
+  assert.throws(()=>readOwnedRootEntries(()=>{throw Error('remote find failed');},vault),/remote find failed/);
+  assert.throws(()=>readOwnedRootEntries(()=>Buffer.from(vault+'/Team docs\0'),vault),/completion absent/,'entry-boundary truncation must not prove old-name absence');
+});
+
+test('actual folder snapshot and rename verification use complete exact entries and preserve independent descendant guards',async()=>{
+  const source=(await import('node:fs')).readFileSync(new URL('./android-journey.mjs',import.meta.url),'utf8');
+  const start=source.indexOf("      stage='independent_folder_and_descendant_bytes';"),end=source.indexOf("    }else if(['history-baseline'",start);assert.ok(start>0&&end>start);
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  const action=new AsyncFunction('command','input','state','evaluate','device','androidPathArg','androidExecPathArg','ownedVault','readOwnedRootEntries','digest','resolve','join','run','writeFileSync','privateJson','receipt','let stage;'+source.slice(start,end));
+  async function run(mode='exact',verify=false){
+    const vault='/storage/emulated/0/Documents/Obsync-Entries',folder=verify?'team docs':'Team docs',run='/owned/run',state={sourceHead:'a'.repeat(40)},contents={'One.md':Buffer.from('independent ONE\n'),'Two.md':Buffer.from('independent TWO\n')};let output,receipts=[],shellReads=0,catReads=0;
+    const files=Object.keys(contents).map((name,i)=>({path:folder+'/'+name,id:(i?'b':'a').repeat(32)}));
+    const before={sourceHead:state.sourceHead,folder:'Team docs',files:files.map(f=>({suffix:f.path.slice(folder.length+1),bytes:contents[f.path.split('/')[1]].length,sha256:digest(contents[f.path.split('/')[1]]),fileIdHash:digest(Buffer.from(f.id))}))};
+    if(mode==='changed-id')files[0].id='c'.repeat(32);
+    if(mode==='changed-byte')contents['One.md']=Buffer.from('changed bytes');
+    const input={vaultPath:vault,folder,output:run+'/private/folder-before-test.json',...(verify?{beforeSnapshot:run+'/private/folder-before-original.json',oldFolder:'Team docs'}:{})};
+    const device=(...argv)=>{assert.notEqual(argv[1],'ls','rendered listings must never be consumed');if(argv[0]==='shell'&&argv[1]==='-T'){shellReads++;assert.ok(argv[2].includes('-maxdepth 1 -print0 &&'));let names=mode==='wrong-case'?['TEAM DOCS']:[folder];if(mode==='old-present')names.push('Team docs');const entries=names.map(n=>vault+'/'+n+'\0').join('');return Buffer.from(entries+(mode==='partial'?'':'OBSYNC_ROOT_ENTRIES_COMPLETE\0'));}if(argv[0]==='exec-out'){catReads++;assert.equal(argv[1],'cat');return contents[argv[2].split('/').at(-1)];}assert.deepEqual(argv,['shell','test','-d',androidPathArg(vault+'/'+folder)]);return Buffer.alloc(0);};
+    await action(verify?'folder-verify':'folder-snapshot',input,state,async(body)=>body.includes('old folder remains indexed')?true:files,device,androidPathArg,androidExecPathArg,ownedVault,readOwnedRootEntries,digest,x=>x,(...parts)=>parts.join('/'),run,(_path,data)=>{output=JSON.parse(data);},()=>before,r=>receipts.push(r));
+    return {output,receipts,shellReads,catReads};
+  }
+  const snapshot=await run();assert.equal(snapshot.output.files.length,2);assert.equal(snapshot.catReads,2);assert.equal(snapshot.receipts[0].independentAdbBytes,true);
+  const renamed=await run('exact',true);assert.equal(renamed.shellReads,2);assert.equal(renamed.receipts[0].descendantIdentityAndBytesPreserved,true);
+  for(const [mode,reason] of [['wrong-case',/exact persisted folder case differs/],['partial',/completion absent/],['old-present',/old exact folder name remains persisted/],['changed-id',/renamed descendant identities or bytes differ/],['changed-byte',/renamed descendant identities or bytes differ/]])await assert.rejects(run(mode,true),reason);
+});
+
+test('actual folder freshness refuses exact existing files and incomplete absence, without consuming rendered ls',async()=>{
+  const source=(await import('node:fs')).readFileSync(new URL('./android-journey.mjs',import.meta.url),'utf8');
+  const guard=source.match(/        if\(readOwnedRootEntries\(device,base.vaultPath\)\.includes\(target\)\)throw Error\('fresh exact folder name required'\);/)?.[0];assert.ok(guard);
+  const check=new Function('readOwnedRootEntries','device','base','target',guard);
+  const vault='/storage/emulated/0/Documents/Obsync-Entries';
+  const device=names=>(...argv)=>{assert.equal(argv[0],'shell');assert.equal(argv[1],'-T');return Buffer.from(names.map(n=>vault+'/'+n+'\0').join('')+'OBSYNC_ROOT_ENTRIES_COMPLETE\0');};
+  assert.throws(()=>check(readOwnedRootEntries,device(['Team docs']),{vaultPath:vault},'Team docs'),/fresh exact folder name required/);
+  check(readOwnedRootEntries,device(['team docs']),{vaultPath:vault},'Team docs');
+  assert.throws(()=>check(readOwnedRootEntries,()=>Buffer.from(vault+'/other\0'),{vaultPath:vault},'Team docs'),/completion absent/);
+});
+
+test('actual selected boundaries require exact case, single folded entry and independent excluded bytes',async()=>{
+  const source=(await import('node:fs')).readFileSync(new URL('./android-journey.mjs',import.meta.url),'utf8');
+  const start=source.indexOf("      stage='verify_native_selected_folder_boundaries';"),end=source.indexOf("    }else if(command==='fixture-provision')",start);assert.ok(start>0&&end>start);
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  const action=new AsyncFunction('input','ownedVault','readOwnedRootEntries','device','androidExecPathArg','androidPathArg','evaluate','receipt','process','let stage;'+source.slice(start,end));
+  const vault='/storage/emulated/0/Documents/Obsync-Entries',text='independent outside bytes\n';
+  async function run(names,changedBytes=false,partial=false){let result;const process={};const input={vaultPath:vault,folder:'Team docs',outsideLocal:'Outside/Phone-sentinel.md',outsideAbsent:'Outside/Sentinel.md',outsideText:text};
+    const device=(...argv)=>{if(argv[0]==='exec-out')return Buffer.from(changedBytes?'wrong bytes':text);if(argv[1]==='-T')return Buffer.from(names.map(n=>vault+'/'+n+'\0').join('')+(partial?'':'OBSYNC_ROOT_ENTRIES_COMPLETE\0'));if(argv[1]?.startsWith('if test'))return Buffer.from('OBSYNC_TRASH_ABSENT\n');return Buffer.alloc(0);};
+    await action(input,ownedVault,readOwnedRootEntries,device,androidExecPathArg,androidPathArg,async()=>({savedPolicyMatched:true,folderIndexed:true,localOutsideIndexed:true,localOutsideUntracked:true,foreignOutsideIndexAbsent:true}),r=>{result=r;},process);return {result,code:process.exitCode};}
+  assert.equal((await run(['Team docs','Outside','.obsidian'])).result.result,'PASS');
+  for(const [names,changed] of [[['team docs'],false],[['Team docs','team docs'],false],[['Team docs'],true]]){const refused=await run(names,changed);assert.equal(refused.result.result,'FAIL');assert.equal(refused.code,1);}
+  await assert.rejects(run(['Team docs'],false,true),/completion absent/);
+});
+
+test('actual explicit case workflow requires two ordinary legs, fresh exact paths, original descendant baseline and one180s budget',async()=>{
+  const source=(await import('node:fs')).readFileSync(new URL('./android-journey.mjs',import.meta.url),'utf8');
+  assert.ok(source.includes("'folder-create','folder-rename','folder-case-rename','previous-history-restore'"));
+  const start=source.indexOf("        // Explicit two ordinary renames:"),end=source.indexOf("      }else if(command==='folder-create'",start);assert.ok(start>0&&end>start);
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  const action=new AsyncFunction('input','base','automaticAttempt','join','run','performance','readOwnedRootEntries','device','step','receipt','state','privateJson','Date','let stage;'+source.slice(start,end));
+  async function run(mode='exact',reverse=false){
+    let clock=0,root=[reverse?'team docs':'Team docs'],renameLegs=0,reads=0,verifiedOriginal=false,baseline,baselineReads=0,finalClockReads=0;const steps=[],receipts=[],notes=[{suffix:'One.md',sha256:'a'.repeat(64),fileIdHash:'b'.repeat(64)},{suffix:'Two.md',sha256:'c'.repeat(64),fileIdHash:'d'.repeat(64)}];
+    if(mode==='empty')notes.length=0;
+    const input={from:root[0],to:reverse?'Team docs':'team docs'},base={vaultPath:'/storage/emulated/0/Documents/Obsync-Entries'},original=root[0];
+    if(mode==='collision')root.push('Obsync-case-rename');if(mode==='wrong-source')root=['TEAM DOCS'];if(mode==='existing-final')root.push(input.to);if(mode==='invalid-endpoint')input.to='Other folder';
+    const read=()=>{reads++;if(mode==='late-initial-read')clock=180000;return [...root];};
+    const step=async(name,command,data)=>{
+      steps.push({name,command,data});clock+=mode==='fractional-clock'?100.1:100;
+      if(command==='folder-snapshot'){assert.equal(data.folder,original);baseline={path:data.output,files:structuredClone(notes)};}
+      else if(command==='folder-rename'){
+        renameLegs++;assert.ok(root.includes(data.from));assert.ok(!root.includes(data.to));
+        if(mode==='refusal')throw Error('ordinary UI refused');
+        if(mode==='skip-first'&&renameLegs===1||mode==='skip-second'&&renameLegs===2)return;
+        root=root.filter(n=>n!==data.from);root.push(mode==='wrong-final'&&renameLegs===2?'TEAM DOCS':data.to);
+        if(mode==='intermediate-left'&&renameLegs===2)root.push('Obsync-case-rename');
+        if(mode==='old-left'&&renameLegs===2)root.push(original);
+        if(mode==='changed-id'&&renameLegs===2)notes[0].fileIdHash='e'.repeat(64);
+        if(mode==='changed-byte'&&renameLegs===2)notes[0].sha256='e'.repeat(64);
+        if(mode==='expired-first'&&renameLegs===1)clock=180000;
+      }else if(command==='folder-verify'){
+        assert.equal(data.folder,input.to);assert.equal(data.oldFolder,original);assert.equal(data.beforeSnapshot,baseline.path);assert.deepEqual(notes,baseline.files);verifiedOriginal=true;
+        if(mode==='expired-final')clock=180000;
+      }else throw Error('unexpected action');
+    };
+    const state={sourceHead:'a'.repeat(40)};
+    const privateJson=path=>{baselineReads++;assert.equal(path,baseline.path);if(mode==='missing-baseline')throw Error('owned snapshot missing');const value={sourceHead:state.sourceHead,folder:original,files:structuredClone(baseline.files)};if(mode==='wrong-baseline-head')value.sourceHead='b'.repeat(40);if(mode==='wrong-baseline-folder')value.folder='Other';if(mode==='invalid-baseline-files')value.files='not an array';if(mode==='oversized-baseline-files')value.files=Array(33).fill({});if(mode==='changed-baseline'&&baselineReads===2)value.files=[];return value;};
+    try{await action(input,base,'test',(...parts)=>parts.join('/'),'/owned/run',{now:()=>mode==='expired-final-measurement'&&verifiedOriginal&&++finalClockReads>=2?180000:clock},read,()=>{throw Error('unexpected raw call');},step,r=>receipts.push(r),state,privateJson,{now:()=>{throw Error('wall clock must not drive local deadline');}});}
+    catch(error){error.steps=steps;error.renameLegs=renameLegs;error.receipts=receipts;error.clock=clock;throw error;}
+    return {steps,receipts,renameLegs,verifiedOriginal,reads,clock};
+  }
+  for(const reverse of [false,true]){let pass;await assert.doesNotReject(async()=>{pass=await run('exact',reverse);});assert.equal(pass.renameLegs,2);assert.equal(pass.verifiedOriginal,true);assert.equal(pass.reads,3);assert.deepEqual(pass.steps.map(s=>s.command),['folder-snapshot','folder-rename','folder-rename','folder-verify']);assert.equal(pass.receipts.length,1);assert.equal(pass.receipts[0].descendants,2);assert.equal(pass.receipts[0].ordinaryRenameCount,2);assert.equal(pass.receipts[0].directSingleStepCaseRename,false);assert.equal(pass.receipts[0].sharedBudgetMs,180000);assert.equal(pass.receipts[0].elapsedMs,400);assert.equal(pass.receipts[0].workflow,'TWO_ORDINARY_RENAMES');assert.equal(pass.receipts[0].finalFolder,reverse?'Team docs':'team docs');for(const field of ['originalBaselinePreserved','intermediateAbsent','originalAbsent'])assert.equal(pass.receipts[0][field],true);}
+  let empty;await assert.doesNotReject(async()=>{empty=await run('empty');});assert.equal(empty.verifiedOriginal,true);assert.equal(empty.receipts[0].descendants,0);
+  assert.equal((await run('fractional-clock')).receipts[0].elapsedMs,400);
+  for(const mode of ['missing-baseline','wrong-baseline-head','wrong-baseline-folder','invalid-baseline-files','oversized-baseline-files','changed-baseline','collision','wrong-source','existing-final','invalid-endpoint','skip-first','skip-second','intermediate-left','old-left','wrong-final','refusal','changed-id','changed-byte','late-initial-read','expired-first','expired-final','expired-final-measurement'])await assert.rejects(run(mode),error=>{assert.equal(error.receipts.length,0);if(['collision','wrong-source','existing-final','invalid-endpoint','late-initial-read'].includes(mode))assert.equal(error.steps.length,0);if(mode==='skip-first'||mode==='expired-first'||mode==='refusal')assert.equal(error.renameLegs,1);if(mode.startsWith('expired')||mode==='late-initial-read')assert.match(error.message,/ordinary folder case rename deadline/);return true;});
 });

@@ -187,6 +187,28 @@ export function ownedVault(path) {
   if (!/^\/storage\/emulated\/0\/Documents\/Obsync-[A-Za-z0-9-]+$/.test(path ?? '')) throw Error('explicit synthetic vault required');
   return path;
 }
+const ROOT_ENTRIES_COMPLETE='OBSYNC_ROOT_ENTRIES_COMPLETE';
+export function parseOwnedRootEntries(vault,bytes){
+  ownedVault(vault);
+  if(!Buffer.isBuffer(bytes)||!bytes.length||bytes.length>65536||bytes.at(-1)!==0)throw Error('bounded complete owned root entries required');
+  const text=bytes.toString('utf8');
+  if(!Buffer.from(text,'utf8').equals(bytes))throw Error('owned root entries UTF-8 differs');
+  const fields=text.split('\0');fields.pop();
+  if(fields.pop()!==ROOT_ENTRIES_COMPLETE)throw Error('owned root entries completion absent');
+  if(fields.length>64||new Set(fields).size!==fields.length)throw Error('bounded unique owned root entries required');
+  return fields.map(path=>{
+    if(!path.startsWith(vault+'/'))throw Error('foreign owned root entry');
+    const name=path.slice(vault.length+1);
+    if(!name||name==='.'||name==='..'||name.includes('/'))throw Error('immediate owned root entry required');
+    return name;
+  });
+}
+export function readOwnedRootEntries(device,vault){
+  // -T keeps shell-v2 status without PTY rendering. The end marker also detects
+  // a successful local exit after a stream truncated at an entry boundary.
+  const command=`find ${androidPathArg(ownedVault(vault))} -mindepth 1 -maxdepth 1 -print0 && printf '${ROOT_ENTRIES_COMPLETE}\\000'`;
+  return parseOwnedRootEntries(vault,device('shell','-T',command));
+}
 export function comparison(creator, claimant) {
   if (creator.length !== 1 || claimant.length !== 1 || !/^\d{3} \d{3}$/.test(creator[0]) || creator[0] !== claimant[0]) throw Error('independent visible comparison refused');
   return true;
@@ -349,7 +371,7 @@ async function main(args) {
     if(!startupReadiness.ready)throw Error('native app plugin registry readiness deadline');
   }
   try {
-    if(['onboard','note-create','pair-submit','rotation-pair-submit','folder-create','folder-rename','previous-history-restore'].includes(command)){
+    if(['onboard','note-create','pair-submit','rotation-pair-submit','folder-create','folder-rename','folder-case-rename','previous-history-restore'].includes(command)){
       let stepNumber=0;const automaticAttempt=Date.now().toString(36)+'-'+process.pid;
       async function step(name,subcommand,data){
         stage=name;
@@ -395,12 +417,37 @@ async function main(args) {
         await step('type_new_note','type',{...base,selector:'.cm-content',note:input.note,text:input.text});
         await step('independent_new_note_bytes','note-read',{...base,note:input.note,text:input.text,expectPaired:input.expectPaired});
         receipt({result:'PASS',stage:'native_note_created',ordinaryNewNoteAndTitle:true,nativeEditorInput:true,independentAdbReadback:true,bytes:Buffer.byteLength(input.text),sha256:digest(Buffer.from(input.text))});
+      }else if(command==='folder-case-rename'){
+        // Explicit two ordinary renames: mobile's native case-insensitive storage
+        // can reject a direct case-only destination while its adapter is sensitive.
+        if(!['Team docs','team docs'].includes(input.from)||!['Team docs','team docs'].includes(input.to)||input.from===input.to)throw Error('opposite selected folder case endpoints required');
+        const intermediate='Obsync-case-rename',started=performance.now(),end=started+180000;
+        const beforeSnapshot=join(run,'private',`folder-before-case-${automaticAttempt}.json`);
+        const remaining=()=>{if(performance.now()>=end)throw Error('ordinary folder case rename deadline');};
+        const boundedStep=async(name,subcommand,data)=>{remaining();await step(name,subcommand,data);remaining();};
+        const exactEntries=(name,expected,absent)=>{
+          stage=name;remaining();const names=readOwnedRootEntries(device,base.vaultPath);remaining();
+          if(names.filter(n=>n===expected).length!==1||absent.some(n=>names.includes(n)))throw Error('explicit folder case rename entries differ');
+        };
+        exactEntries('verify_original_and_fresh_intermediate',input.from,[intermediate,input.to]);
+        await boundedStep('snapshot_original_case_descendants','folder-snapshot',{...base,folder:input.from,output:beforeSnapshot});
+        const originalBaseline=privateJson(beforeSnapshot),baselineJson=JSON.stringify(originalBaseline);
+        if(originalBaseline.sourceHead!==state.sourceHead||originalBaseline.folder!==input.from||!Array.isArray(originalBaseline.files)||originalBaseline.files.length>32)throw Error('original folder case baseline differs');
+        await boundedStep('ordinary_case_rename_to_intermediate','folder-rename',{...base,from:input.from,to:intermediate});
+        exactEntries('verify_exact_case_intermediate',intermediate,[input.from,input.to]);
+        await boundedStep('ordinary_case_rename_to_final','folder-rename',{...base,from:intermediate,to:input.to});
+        exactEntries('verify_exact_case_final',input.to,[input.from,intermediate]);
+        await boundedStep('verify_original_case_descendants_at_final','folder-verify',{...base,folder:input.to,oldFolder:input.from,beforeSnapshot});
+        if(JSON.stringify(privateJson(beforeSnapshot))!==baselineJson)throw Error('original folder case baseline changed');
+        const descendants=originalBaseline.files.length;
+        const elapsedMs=Math.floor(performance.now()-started);if(elapsedMs>=180000)throw Error('ordinary folder case rename deadline');
+        receipt({result:'PASS',stage:'explicit_two_step_folder_case_rename_verified',folder:input.to,oldFolder:input.from,intermediate,workflow:'TWO_ORDINARY_RENAMES',ordinaryRenameCount:2,directSingleStepCaseRename:false,originalBaselinePreserved:true,intermediateAbsent:true,originalAbsent:true,finalFolder:input.to,independentAdbDirectory:true,sharedBudgetMs:180000,elapsedMs,descendants,method:'two ordinary Files renames through fixed fresh intermediate; original independent descendant baseline at final',syncClaim:false});
       }else if(command==='folder-create'||command==='folder-rename'){
         const valid=f=>typeof f==='string'&&/^[A-Za-z][A-Za-z0-9 -]{0,63}$/.test(f)&&f.trim()===f;
         const target=command==='folder-create'?input.folder:input.to;
         if(!valid(target)||(command==='folder-rename'&&(!valid(input.from)||input.from===target)))throw Error('explicit synthetic root folder required');
         const beforeSnapshot=join(run,'private',`folder-before-${automaticAttempt}.json`);
-        if(device('exec-out','ls','-1',base.vaultPath).toString().split('\n').includes(target))throw Error('fresh exact folder name required');
+        if(readOwnedRootEntries(device,base.vaultPath).includes(target))throw Error('fresh exact folder name required');
         await step('close_settings_for_folder','close-settings',base);
         await step('show_owned_files','show-files',base);
         if(command==='folder-create'){
@@ -544,7 +591,7 @@ async function main(args) {
       const folder=input.folder;
       const files=await evaluate(`const end=Date.now()+10000;while(Date.now()<end){const f=app.vault.getAbstractFileByPath(P.folder);if(f&&Array.isArray(f.children)){const files=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith(P.folder+'/'));if(files.length>32)throw Error('bounded synthetic folder required');const rows=files.map(f=>({path:f.path,id:app.plugins.plugins['obsync-private-sync'].state.fileByPath(f.path)?.fileId??null}));if(rows.every(r=>/^[a-f0-9]{32}$/.test(r.id??'')))return rows;}await new Promise(r=>setTimeout(r,100));}throw Error('native folder index deadline');`,{folder});
       device('shell','test','-d',androidPathArg(ownedVault(input.vaultPath)+'/'+folder));
-      if(!device('exec-out','ls','-1',input.vaultPath).toString().split('\n').includes(folder))throw Error('exact persisted folder case differs');
+      if(!readOwnedRootEntries(device,input.vaultPath).includes(folder))throw Error('exact persisted folder case differs');
       const rows=files.map(f=>{if(!f.path.startsWith(folder+'/')||!f.path.split('/').every(s=>/^[A-Za-z0-9][A-Za-z0-9 .-]*$/.test(s)))throw Error('unsafe synthetic descendant path');if(!/^[a-f0-9]{32}$/.test(f.id??''))throw Error('synced descendant identity required');const bytes=device('exec-out','cat',androidExecPathArg(input.vaultPath+'/'+f.path));return {suffix:f.path.slice(folder.length+1),bytes:bytes.length,sha256:digest(bytes),fileIdHash:digest(Buffer.from(f.id))};});
       if(command==='folder-snapshot'){
         if(resolve(input.output)!==join(run,'private',input.output.split('/').at(-1))||!/^folder-before-[A-Za-z0-9-]+\.json$/.test(input.output.split('/').at(-1)))throw Error('fixed private folder snapshot required');
@@ -552,7 +599,7 @@ async function main(args) {
       }else if(input.beforeSnapshot){
         const before=privateJson(input.beforeSnapshot);
         if(before.sourceHead!==state.sourceHead||before.folder!==input.oldFolder||!Array.isArray(before.files)||JSON.stringify([...before.files].sort((a,b)=>a.suffix.localeCompare(b.suffix)))!==JSON.stringify([...rows].sort((a,b)=>a.suffix.localeCompare(b.suffix))))throw Error('renamed descendant identities or bytes differ');
-        if(device('exec-out','ls','-1',input.vaultPath).toString().split('\n').includes(input.oldFolder))throw Error('old exact folder name remains persisted');
+        if(readOwnedRootEntries(device,input.vaultPath).includes(input.oldFolder))throw Error('old exact folder name remains persisted');
         await evaluate(`if(app.vault.getAbstractFileByPath(P.oldFolder))throw Error('old folder remains indexed');return true;`,{oldFolder:input.oldFolder});
       }
       receipt({result:'PASS',folder,descendants:rows.length,independentAdbBytes:true,descendantIdentityAndBytesPreserved:!!input.beforeSnapshot,syncClaim:false});
@@ -594,7 +641,7 @@ async function main(args) {
     }else if(command==='selected-boundaries'){
       stage='verify_native_selected_folder_boundaries';
       if(!['Team docs','team docs'].includes(input.folder)||input.outsideLocal!=='Outside/Phone-sentinel.md'||input.outsideAbsent!=='Outside/Sentinel.md'||typeof input.outsideText!=='string'||input.outsideText.length<16||input.outsideText.length>4096)throw Error('explicit selected boundary fixtures required');
-      const vault=ownedVault(input.vaultPath),names=device('exec-out','ls','-1',vault).toString().trim().split('\n');
+      const vault=ownedVault(input.vaultPath),names=readOwnedRootEntries(device,vault);
       const exactFolderCount=names.filter(n=>n.toLowerCase()==='team docs').length;
       const bytes=device('exec-out','cat',androidExecPathArg(vault+'/'+input.outsideLocal));
       let foreignAbsent=true;

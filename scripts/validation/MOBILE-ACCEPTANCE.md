@@ -75,7 +75,7 @@ the complete batch; never relabel a failed attempt or discard it as a retry.
 | Access-only revocation and re-pairing | Authenticated server refusal and absent new mobile bytes; explicit Leave and a fresh ordinary pairing; existing bytes retained |
 | Strong revocation | Actual post-rotation server ciphertext opens with the new UI backup and rejects the old key; access denial alone cannot pass |
 | Interrupted rotation and recovery | Persisted checkpoints before real restarts; ordinary resume/commit; fresh native recovery profiles and a valid unrelated backup refusal |
-| Selected-folder rename | Both rename directions; bytes, file identities, ancestry and selection boundaries; exact converged state remains stable for each required quiet window |
+| Selected-folder rename | Desktop direct case-only rename and Android two ordinary renames through a fresh intermediate name; original bytes, file identities, ancestry and selection boundaries; exact converged state remains stable for both five-minute quiet windows |
 | Content confidentiality | Closed bounded captures, server records/logs and native metadata checked by candidate scanners; deliberately planted leaks must be detected |
 | Evidence completeness | Missing/truncated/corrupted independent file exports and missing scanner evidence must fail; machine-readable cleanup and provenance receipts |
 
@@ -86,6 +86,17 @@ SecretStorage, bypass consent or disable certificate verification. Acceptance
 runs install the candidate unchanged and do not patch product behavior.
 Detached broken controls mutate copies of evidence;
 their results are separate from unmodified-product acceptance.
+
+The pinned Android application refuses a direct case-only Files rename on its
+shared filesystem. The Android-origin case journey therefore always performs
+two ordinary UI renames through the fresh name `Obsync-case-rename`; it does not
+try a direct rename and retry after failure. Both actions share the existing
+180-second limit. Exact directory entries must prove each intermediate state,
+and the final descendant bytes and identities must match the original snapshot.
+The intermediate and original names must both be absent at completion. The
+desktop-origin direct rename and both five-minute stability windows remain
+required. This proves that supported workflow and synchronization; it does not
+claim the official Android app supports a direct single-step case-only rename.
 
 ## Evidence and limits
 

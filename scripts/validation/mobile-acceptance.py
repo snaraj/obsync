@@ -35,7 +35,9 @@ FULL_PHASE_FACTS = {
         'detachedNativeCipherOracle', 'postrotationPhoneRestart', 'preexistingIndependentBytesAfterRotationRestart',
         'knownRetainedHistoryBytes', 'currentOriginalUnchanged'), True) | {'previousGenerationHistoryUi': 'RESTORE_COPY'},
     'selected-rename': dict.fromkeys(('ordinaryDesktopRename', 'ordinaryAndroidRename', 'noteIdentityAndBytesPreserved',
-        'priorHistoryAndAncestryPreserved', 'postConvergenceHeadsAndVersionsFrozen', 'excludedControlsCreatedAfterScope', 'trashEmpty'), True),
+        'priorHistoryAndAncestryPreserved', 'postConvergenceHeadsAndVersionsFrozen', 'excludedControlsCreatedAfterScope',
+        'androidIntermediateAbsent', 'trashEmpty'), True) | {'androidRenameWorkflow': 'TWO_ORDINARY_RENAMES',
+        'androidOrdinaryRenameCount': 2, 'directAndroidCaseRename': False},
     'fresh-recovery-J11': dict.fromkeys(('pairedPeersStopped', 'freshDesktopB', 'freshDesktopC', 'oldBackupRefused',
         'freshDesktopD', 'validUnrelatedBackupRefused', 'unrelatedBackupJournalUnchanged', 'wrongTokenJournalUnchanged', 'completeNewBackupRecovery'), True),
 }
@@ -43,7 +45,8 @@ FULL_PHASE_BOUNDS = {
     'quiet': {'elapsedMs': (213000, 14400000)},
     'restart': {'desktopLaunchToIdleMs': (0, 120000), 'androidLaunchToIdleMs': (0, 120000)},
     'rotation-recovery': {'postrotationLaunchToIdleMs': (0, 120000)},
-    'selected-rename': {'desktopOriginWatchMs': (300000, 14400000), 'androidOriginWatchMs': (300000, 14400000)},
+    'selected-rename': {'desktopOriginWatchMs': (300000, 14400000), 'androidOriginWatchMs': (300000, 14400000),
+                        'androidRenameElapsedMs': (0, 179999)},
 }
 CORE_HELPERS = ('mobile-acceptance.py', 'mobile-session.py', 'android-session.py', 'android-trust.py', 'android-apk.py',
                 'android-usb.py', 'mobile-trusted-tls.py', 'mobile-platform.py',

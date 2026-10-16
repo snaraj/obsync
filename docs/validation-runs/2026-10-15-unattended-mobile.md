@@ -35,7 +35,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All fifteen full batches stopped on their first failed attempt;
+have passed**. All sixteen full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -605,6 +605,111 @@ independent installation evidence.
 The integrated follow-up passes 125 Python tests, 159 Node tests and all
 149 existing scripted mutation controls with zero skips. The ten focused
 controls above are additional; both secret scans pass.
+
+Full batch 16 at `6c0ef69e3b3e562c54c595fbf9493cf467ef7da4` passed
+installation with exact sizes/hashes on one read per plugin asset, ordinary
+pairing/consent and two-way persisted bytes. It passed 213,010 ms with zero
+Android calls, desktop and Android process restarts, guest reboot, offline
+recovery, access-only revocation/re-pairing, interrupted rotation across real
+restarts, independent inventory checks, replacement pairing, previous-generation
+history restore and another Android restart. The post-rotation launch reached
+automatic idle in 5,056 ms. The parent independently rehashed 80 exported files.
+The detached crypto oracle opened old/access-only ciphertext with the old key
+and current ciphertext with the current key, and rejected the old key for the
+new map, manifest and chunk. These are partial native results, not full acceptance.
+
+Both peers saved the selected-folder policy and created their excluded controls.
+The first Android folder snapshot then failed after 292 ms with
+`exact persisted folder case differs`, before either rename. That receipt
+does not establish whether storage differs or the directory-entry observation
+is wrong. Neither five-minute rename stability window, fresh recovery nor the
+closed confidentiality scan ran. No second or third attempt ran.
+Both controllers reported cleanup PASS and zero owned groups; the parent
+independently verified their actual runtime/private/manifest paths absent.
+The original failed aggregate SHA-256 is
+`f1e90c4939a0d0935c99f756606deb8f8cd93e379c8557dc8b381d9f83ad68e8`;
+its driver manifest is
+`55b7680dc0417149ddaaee6b536f2ad711426a90eb45c93dab7dcd1d98ae8d49`.
+The sixteen-batch retained ledger has SHA-256
+`c54d1eabc47175c7d7625bda2167ea46fd04431c28f17603d7b5ea77636234a4`.
+At this head, all 46 successful hosted checks are terminal, with one intended
+deployment skip and the existing covered CodeQL aggregate failure. Required
+dispositions pass; hosted results do not override the native failure.
+
+A fresh Android-only diagnostic reproduced the exact refusal after ordinary
+Files creation of an empty `Team docs` folder. Its `ls` output was the 11-byte
+escaped display string `Team\ docs` followed by a newline, not the literal
+directory-entry name. The parent independently matched that exact byte string
+to the retained hash. A separate bounded NUL-delimited directory enumeration
+observed the exact literal folder once and no wrong-case entry. The diagnostic
+receipt SHA-256 is
+`cc5d16c3cfd7a8504356a652556a6f2032c7e1377aa3b3f2cb43b360c6a8724d`.
+Its original controller result remains FAIL, with cleanup PASS, zero groups
+and independently absent ownership/runtime/private paths. This establishes
+the listing-rendering defect; it does not prove synchronized descendants or
+the rename stability windows. No pairing ran in this diagnostic.
+
+The structural-reader repair passes 39 focused tests and 16 deliberately
+broken controls. The parent replay required each mutation to fail by assertion,
+then ran the integrated gate: 125 Python tests, 163 Node tests and all 149
+existing scripted mutations pass with zero skips. The reader uses no-PTY shell
+output with NUL-delimited immediate entries and an explicit final marker;
+entry-boundary truncation, malformed UTF-8, foreign/deep paths, duplicate
+entries and excessive output refuse. Exact case, freshness, old-name absence,
+selection boundaries and independent descendant byte/identity checks remain.
+
+The second fresh path-only diagnostic passed ordinary folder creation and its
+independent exact-entry verification, then failed the case-only rename with
+the old folder still present. A third fresh instrumented diagnostic proved
+exact replacement text and trusted Enter keydown/keyup on the expected inline
+field, with composition false. The inline field remained open with the fixed
+destination-already-exists error. Native existence checks returned true for
+both spellings, while the exact application index retained only the old name.
+The creation control closed normally using the same input and Enter path.
+The rename-input receipt SHA-256 is
+`c6958be0e301a8a4ec4b8ac3bc863b73818f819630dc36335182646ff687d20c`.
+Both failed diagnostics retain their original results and verified cleanup.
+
+This matches the pinned official mobile application's destination-exists
+guard with its case-insensitive flag unset and its mobile detection operation
+empty. The parent independently verified the APK and application-script hashes
+and those source anchors. No official application or production plugin code
+was changed. Single-step case-only rename through this pinned Android UI is
+not a passing claim. A separate fifth fresh diagnostic passed two explicit
+ordinary UI renames through `Obsync-case-rename` in 8.062 seconds, inside the
+original 180-second budget. Complete independent directory witnesses checked
+the intermediate and final names and absence of obsolete names. Its proof
+SHA-256 is `7b3d7acbd74b5210c32eff75623e639153d786cc45288876c7182aee30eb0220`.
+This empty, unpaired folder experiment does not prove synchronized descendants
+or full acceptance. The fourth diagnostic remains FAIL: its private witness
+compared a decoded string marker to bytes and stopped after the first successful
+ordinary rename. Corrected witness fixtures refused missing completion before
+the fifth fresh run. All five original results remain; the parent independently
+checked cleanup PASS, zero remaining owned groups and absence of their actual
+runtime, private and manifest paths. The cleanup receipt SHA-256 is
+`a93a249964ca1ad81a8bcfebf0d1b12b7ad7d644cba1eb9eb2aeedee6b34a555`.
+
+The composed runner now names this explicit two-action workflow, refuses an
+occupied intermediate, keeps the original descendant baseline across both
+actions and requires exact final-name and obsolete-name checks. It never falls
+back from a failed direct action. The original full-run requirement of two
+descendants, unchanged bytes and identities, selection boundaries, ancestry,
+180-second phone action limit and both five-minute stability windows remains.
+Desktop-origin case-only propagation continues to exercise the existing
+production recase path unchanged. A fresh full run is still required.
+
+The composed gate passes 126 Python and 164 JavaScript tests with zero skips,
+plus the existing 149 scripted mutations. The parent also killed 16 structural
+directory-reader, 26 workflow and seven admission mutants through assertions.
+Its review corrected the wrapper's missing descendant count and normalized
+monotonic fractional milliseconds to the aggregate's integer receipt contract
+before a full run. Empty diagnostics still emit zero; full acceptance requires
+two measured descendants. Both secret scans pass. The composed gate log SHA-256
+is `d8a2566840f7e096b3ffa7ca0f1b9bac8815dfc94ceff6c97e579c784ba33056`.
+One restricted admission-test invocation could not inspect its own subprocess
+group; it remains failed. The known process was independently absent, and the
+same tests passed with the required process visibility. This is an offline
+automation permission failure, not a native product result.
 
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.
