@@ -35,7 +35,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All ten full batches stopped on their first failed attempt;
+have passed**. All twelve full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -373,6 +373,58 @@ native CLI journey, dashboard, chart and repository contracts. The already
 completed plugin, E2EE, mobile-harness and secret targets were reused rather
 than rerun by the remaining-target command. This completes the local battery;
 fresh hosted checks and native acceptance still follow the signed checkpoint.
+
+Full batch 11 at `69e2858a128c6edb58541f74647d05a9cf6f4bd0` refused the
+private configuration's stale `main.js` pin before either device controller
+started. The parent had updated the build receipt but left the old top-level
+pin. The original aggregate remains FAIL with cleanup UNKNOWN and a missing
+receipt error; the retained controller log identifies the artifact mismatch.
+Independent path checks found no device runtime created. The configuration
+was corrected against both rebuilt copies, and the real configuration preflight
+then passed. This is an operator configuration error, not a product failure.
+The failed aggregate SHA-256 is
+`92e32ddaf9ecaa3aad93ea3812f19decaf4d93fed466c6f8574c517a12392582`.
+
+Full batch 12 on the same committed source/driver passed ordinary pairing,
+consent, two-way bytes, idle, restart/reboot, offline recovery, access-only
+revocation/re-pairing and both interrupted-rotation checkpoints. The actual
+new-generation map, manifest and chunk rejected the old key; old/access-only
+ciphertext still opened with the old key, and the new key opened current
+ciphertext. The parent independently rehashed all 34 exported note files.
+The run stopped at `independent-rotation-preinvite-known-notes`, whose child
+reported `rotation_checkpoint_provenance` after 342 ms. This remains FAIL;
+replacement pairing, history recovery, renames and the closed confidentiality
+scan did not run. Both controllers cleaned up, with zero owned groups and
+independently absent runtime/private/manifest paths. The failed aggregate
+SHA-256 is `1ff860b61880b80c308e7250762397ef400fdf94990759e1d7b080035bbd14f5`.
+
+The checkpoint writer hashes the exact saved JSON, including its final newline.
+The new inventory reader instead used a trimmed text read before checking that
+hash. This changes the bytes under comparison and rejects a valid persisted
+checkpoint. Pending rotation correctly carries the new generation; changing
+that generation binding would be an incorrect repair. The correction must
+read exact bytes while preserving ownership, size and provenance checks.
+
+The corrected reader passes the actual private-save/read serialization test;
+trimming at either the call site or reader and hashing trimmed bytes all fail.
+Separate production State/checkpoint execution confirms the pending generation
+is new while the credential root remains old until activation. Parent composition
+passes 125 Python and 148 JavaScript tests, all 145 scripted harness mutations
+and both secret scans. An initial sandboxed invocation could not inspect its
+owned processes; its failure log remains retained, and the owned leftover sleep
+was identified and removed before the successful run with required local access.
+
+The hosted Windows transient-rename test also failed at `69e2858`. A controlled
+initial filesystem rename refusal reproduces the same landing-wait timeout:
+the test mistook the recovered initial download's retry log for its current
+edit's retry. Scoping that observation to logs after the edit begins fixes the
+reproduction without changing production code or deadlines. All 16 affected
+tests pass, and four broken controls fail. The exact hosted scheduling remains
+unknown. That head has 44 successful checks, the Windows failure and dependent
+gate failure, one intended deployment skip and the covered CodeQL aggregate
+failure; required dispositions pass. Fresh hosted results remain required.
+The twelve-batch retained ledger SHA-256 is
+`b5a4d16907a4d0728b1852edf3926818a1aa317b0283b6f3edc681cd87d2071e`.
 
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.

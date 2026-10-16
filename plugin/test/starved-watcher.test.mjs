@@ -252,7 +252,7 @@ function obsidianIndex(root, obsidian, { insensitive = folds(root), api = true }
  * The receiving laptop: the real `ObsidianHost` and engine over a real vault
  * directory whose Obsidian index is `obsidianIndex`, enrolled on `server`.
  */
-async function receiver(t, { server, timers, a }, { iterate = true, ...options } = {}) {
+async function receiver(t, { server, timers, a }, { iterate = true, initialRenameRefusal = false, ...options } = {}) {
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-starved-"));
   t.after(() => {
@@ -297,6 +297,11 @@ async function receiver(t, { server, timers, a }, { iterate = true, ...options }
   plugin.deviceName = () => "receiver";
   plugin.registerEvent = () => undefined;
   const hooks = {};
+  if (initialRenameRefusal) hooks.beforeRename = async (_from, to) => {
+    if (!to.endsWith(`${nodePath.sep}n.md`)) return;
+    hooks.beforeRename = undefined;
+    throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+  };
   const promises = {
     ...fsPromises,
     rename: async (from, to) => {
@@ -641,6 +646,7 @@ function openEditor(r, path) {
 
 const BEFORE = "first line\nold words SENTINEL\n";
 const AFTER = "first line\nnew words SENTINEL, longer\n";
+const parkedRename = line => /^feed decision=parked reason=EPERM file=[0-9a-f]{32} parked=1 retry_ms=60000$/.test(line);
 
 /** A receiver holding `Notes/n.md` at `BEFORE`, listed as a person's notes are (the watcher reported it), then A's edit to it. */
 async function editListed(t, options, arm = () => undefined, firstAttempt = null) {
@@ -650,6 +656,10 @@ async function editListed(t, options, arm = () => undefined, firstAttempt = null
   await a.engine.start();
   const r = await receiver(t, devices, options);
   await r.engine.start();
+  if (options.initialRenameRefusal) {
+    await timers.run(STEP_MS, () => r.logs.some(parkedRename));
+    timers.now += 60000; // Complete the fixture's separately observed initial download retry.
+  }
   await timers.run(STEP_MS, () => settled(r, "Notes/n.md"));
   for (const path of ["Notes", "Notes/n.md"]) await r.adapter.late(path);
   await timers.run(STEP_MS);
@@ -668,7 +678,12 @@ async function editListed(t, options, arm = () => undefined, firstAttempt = null
     timers.now += 60000;
     landingStep = 0;
   }
-  await timers.run(landingStep, () => r.text("Notes/n.md") === AFTER && r.state.fileByPath("Notes/n.md")?.mtime === 2000);
+  try {
+    await timers.run(landingStep, () => r.text("Notes/n.md") === AFTER && r.state.fileByPath("Notes/n.md")?.mtime === 2000);
+  } catch (error) {
+    const next = Math.min(...timers.entries.map(entry => entry.due - timers.now));
+    throw new Error(`incoming edit did not land: virtual_ms=${timers.now} next_timer_ms=${next} ${story(r)}`, { cause: error });
+  }
   // The host's native refresh deadline uses wall time. Do not advance the
   // simulated thirty-second scan past it while the real one-second reload is
   // still pending; wait for the pull receipt, not merely the written bytes.
@@ -720,9 +735,11 @@ test("a listed open note reconciles once and preserves typing begun during the w
  * refresh logged and no unconfirmed refresh to explain it.
  */
 test("a rename the system refuses for a moment leaves the pane its bridge (#267)", async (t) => {
-  for (const typing of [false, true]) {
-    let refused = 0, waitedToCeiling = false;
-    const { r, view } = await editListed(t, {}, (r, timers) => {
+  for (const [typing, initialRenameRefusal] of [[false, false], [true, false], [false, true]]) {
+    let refused = 0, waitedToCeiling = false, editedLogStart = 0;
+    const { r, view } = await editListed(t, { initialRenameRefusal }, (r, timers) => {
+      if (initialRenameRefusal) assert.ok(r.logs.some(parkedRename), "fixture recovered a real earlier rename refusal");
+      editedLogStart = r.logs.length;
       const view = openEditor(r, "Notes/n.md");
       const waitAt = timers.now;
       r.hooks.beforeRename = async (_from, to) => {
@@ -736,7 +753,7 @@ test("a rename the system refuses for a moment leaves the pane its bridge (#267)
       };
       if (typing) r.hooks.afterRename = async (_from, to) => { if (to.endsWith(`${nodePath.sep}n.md`)) view.type("TYPED"); };
       return view;
-    }, (r) => r.logs.some(line => /^feed decision=parked reason=EPERM file=[0-9a-f]{32} parked=1 retry_ms=60000$/.test(line)));
+    }, (r) => r.logs.slice(editedLogStart).some(parkedRename));
     assert.equal(refused, 1, story(r));
     if (!typing) assert.equal(waitedToCeiling, true, "fixture observed the exhausted virtual advance window");
     assert.ok(r.logs.includes("host path_class=file decision=failed reason=write error=EPERM outcome=superseded"), story(r));

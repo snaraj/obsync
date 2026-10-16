@@ -10,6 +10,12 @@ import {connect} from './cdp.mjs';
 import {candidateCrypto,recordContext,OracleFailure} from './ciphertext-oracle.mjs';
 
 const check=(value,code)=>{if(!value)throw new OracleFailure(code);};
+// Receipt hashes cover the persisted bytes, including privateSave's newline.
+// privateRead trims textual values and therefore cannot verify this byte pin.
+export function checkpointBytes(path){
+  check(owned(path).size<=2097152,'rotation_checkpoint_bound');
+  return readFileSync(path);
+}
 export function rotationProofBinding(draftText,commitText,draftReceipt,commitReceipt,context){
   const draft=JSON.parse(draftText),commit=JSON.parse(commitText);
   for(const [name,proof,receipt,text,result]of [['rotation-draft',draft,draftReceipt,draftText,'OBSERVED'],['commit-after',commit,commitReceipt,commitText,'PASS']]){
@@ -46,8 +52,7 @@ try{
   let binding=null;
   if(options['rotation-proof']){
     const draftPath=join(state.secrets,'checkpoint-rotation-draft.json'),commitPath=join(state.secrets,'checkpoint-commit-after.json');
-    check(owned(draftPath).size<=2097152&&owned(commitPath).size<=2097152,'rotation_checkpoint_bound');
-    binding=rotationProofBinding(privateRead(draftPath),privateRead(commitPath),JSON.parse(privateRead(join(state.run,'evidence/native-checkpoint-rotation-draft.json'))),JSON.parse(privateRead(join(state.run,'evidence/native-checkpoint-commit-after.json'))),{sourceHead:state.source_head,generation:keys.fileId,decoderHash:api.decoderHash});
+    binding=rotationProofBinding(checkpointBytes(draftPath),checkpointBytes(commitPath),JSON.parse(privateRead(join(state.run,'evidence/native-checkpoint-rotation-draft.json'))),JSON.parse(privateRead(join(state.run,'evidence/native-checkpoint-commit-after.json'))),{sourceHead:state.source_head,generation:keys.fileId,decoderHash:api.decoderHash});
   }
   client=await connect(state,'A');
   const captured=await client.evaluate(`

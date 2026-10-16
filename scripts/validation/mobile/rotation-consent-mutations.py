@@ -5,6 +5,9 @@ from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--node',required=True);p.add_argument('--source',required=True);a=p.parse_args()
 root=Path(__file__).resolve().parent
 mutations=[
+ ('runtime_raw_checkpoint_inputs','known-notes-proof.mjs','rotationProofBinding(checkpointBytes(draftPath),checkpointBytes(commitPath),','rotationProofBinding(privateRead(draftPath),privateRead(commitPath),'),
+ ('raw_checkpoint_reader','known-notes-proof.mjs','return readFileSync(path);','return Buffer.from(privateRead(path));'),
+ ('trimmed_checkpoint_hash','known-notes-proof.mjs','receipt.checkpointSha256===digest(text)','receipt.checkpointSha256===digest(text.toString().trim())'),
  ('checkpoint_bytes','known-notes-proof.mjs','receipt.checkpointSha256===digest(text)','true'),
  ('checkpoint_source','known-notes-proof.mjs','receipt.sourceHead===context.sourceHead&&proof?.sourceHead===context.sourceHead','true'),
  ('checkpoint_result','known-notes-proof.mjs','receipt.result===result','true'),

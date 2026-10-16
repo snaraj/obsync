@@ -1,15 +1,16 @@
 // Offline current-generation proof/control fixtures, never native acceptance.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {readFileSync,mkdtempSync,realpathSync,rmSync,writeFileSync,mkdirSync} from 'node:fs';
+import {tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {join,resolve} from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {recordContext} from './ciphertext-oracle.mjs';
-import {rotationProofBinding,partitionRotationRecords} from './known-notes-proof.mjs';
-import {inventoryHeads,inventoryHash} from './native-checkpoint.mjs';
-import {digest} from './desktop-guard.mjs';
+import {rotationProofBinding,partitionRotationRecords,checkpointBytes} from './known-notes-proof.mjs';
+import {inventoryHeads,inventoryHash,readNativeCheckpoint} from './native-checkpoint.mjs';
+import {digest,privateRead,privateSave} from './desktop-guard.mjs';
 import {rotationPairObservation,waitRotationPair,waitPairConsentOutcome,knownNotesMatch} from '../android-journey.mjs';
 const hex=(c,n=32)=>c.repeat(n),equal=(a,b)=>assert.deepEqual(a,b);
 function fixture(){
@@ -121,4 +122,45 @@ test('actual replacement consent observation waits for old pairing and shares it
  clock=0;reads=0;const boundWait=(read,facts,replacement,_pause,now,end)=>waitPairConsentOutcome(read,facts,replacement,async ms=>{clock+=ms;},now??(()=>clock),end);
  const result=await action({now:()=>clock},{expectedGenerationHash:'new',expectedOldGenerationHash:'old'},boundWait,async(_body,params,_owned,budget)=>{assert.equal(params.old,'old');assert.ok(budget<=20000-clock);reads++;return reads===1?old:good();},rotationPairObservation);
  assert.equal(result.approvalOutcomeDeadline,20000);assert.equal(result.prior.paired,true);assert.equal(result.approvalReadiness.before.oldGenerationStillHeld,true);assert.equal(clock,100);assert.ok(code.includes('approvalOutcomeDeadline-Date.now()'));
+});
+
+test('persisted checkpoint byte pins include privateSave newline and refuse trimmed, changed, absent or malformed evidence',()=>{
+ const dir=realpathSync(mkdtempSync(join(tmpdir(),'obsync-checkpoint-byte-pin-')));
+ try{
+  const f=fixture(),draftPath=join(dir,'draft.json'),commitPath=join(dir,'commit.json');
+  privateSave(draftPath,JSON.stringify(f.draft));privateSave(commitPath,JSON.stringify(f.commit));
+  const draftBytes=checkpointBytes(draftPath),commitBytes=checkpointBytes(commitPath);assert.ok(Buffer.isBuffer(draftBytes));assert.equal(draftBytes.at(-1),10);assert.equal(commitBytes.at(-1),10);
+  const receipt=(label,result,bytes)=>({schema:1,label,result,sourceHead:f.context.sourceHead,checkpointSha256:digest(bytes),generationHash:digest(f.context.generation)});
+  const draftReceipt=receipt('rotation-draft','OBSERVED',draftBytes),commitReceipt=receipt('commit-after','PASS',commitBytes);
+  const binding=rotationProofBinding(draftBytes,commitBytes,draftReceipt,commitReceipt,f.context);assert.equal(binding.commit.generation,f.context.generation);assert.equal(binding.checkpointSha256,digest(commitBytes));
+  // Execute the actual producer load block, so replacing its raw input calls
+  // with the formerly trimmed privateRead recipe is itself a broken control.
+  mkdirSync(join(dir,'evidence'),{mode:0o700});
+  writeFileSync(join(dir,'checkpoint-rotation-draft.json'),draftBytes,{mode:0o600});writeFileSync(join(dir,'checkpoint-commit-after.json'),commitBytes,{mode:0o600});
+  privateSave(join(dir,'evidence/native-checkpoint-rotation-draft.json'),JSON.stringify(draftReceipt));privateSave(join(dir,'evidence/native-checkpoint-commit-after.json'),JSON.stringify(commitReceipt));
+  const code=readFileSync(new URL('./known-notes-proof.mjs',import.meta.url),'utf8'),first=code.indexOf('  let binding=null;'),last=code.indexOf("  client=await connect(state,'A');",first);assert.ok(first>0&&last>first);
+  const load=new Function('options','state','keys','api','join','rotationProofBinding','checkpointBytes','privateRead',code.slice(first,last)+'return binding;');
+  const observed=load({'rotation-proof':'commit-after'},{secrets:dir,run:dir,source_head:f.context.sourceHead},{fileId:f.context.generation},{decoderHash:f.context.decoderHash},join,rotationProofBinding,checkpointBytes,privateRead);assert.equal(observed.checkpointSha256,digest(commitBytes));
+
+  // Exact former runtime recipe: privateRead strips the serialized newline.
+  assert.throws(()=>rotationProofBinding(privateRead(draftPath),privateRead(commitPath),draftReceipt,commitReceipt,f.context),/rotation_checkpoint_provenance/);
+  for(const change of [bytes=>Buffer.concat([bytes,Buffer.from(' ')]),bytes=>bytes.subarray(0,bytes.length-1)])assert.throws(()=>rotationProofBinding(draftBytes,change(commitBytes),draftReceipt,commitReceipt,f.context),/rotation_checkpoint_provenance/);
+  assert.throws(()=>checkpointBytes(join(dir,'missing.json')));writeFileSync(commitPath,'malformed JSON\n',{mode:0o600});assert.throws(()=>rotationProofBinding(draftBytes,checkpointBytes(commitPath),draftReceipt,commitReceipt,f.context));
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('actual production State/checkpoint retain NEW pending generation while the credential root stays OLD until activation',async()=>{
+ const source=resolve(process.env.OBSYNC_ORACLE_SOURCE??fileURLToPath(new URL('../../../..',import.meta.url))),require=createRequire(join(source,'plugin/package.json'));
+ const {fakeState}=await import(pathToFileURL(join(source,'plugin/test/fake.mjs'))),{accountRecovery}=require('./build/accountRecovery.js'),c=require('./build/crypto.js'),dm=require('./build/domainmap.js');
+ const {state,reload}=await fakeState(),oldRoot=state.data.vrk,oldGeneration=state.custody2().generation,newRoot=c.hex(new Uint8Array(32).fill(22)),newGeneration=(await dm.domainMapKeys(c.unhex(newRoot))).fileId;
+ assert.notEqual(oldGeneration,newGeneration);assert.notEqual(oldRoot,newRoot);
+ const intent={lineage:hex('a'),operation:hex('b'),oldGeneration,newGeneration,targetDeviceId:hex('c'),recoveryVerifier:(await accountRecovery(newRoot)).verifier};
+ await state.stageRotation(newRoot,intent);
+ const assertPending=()=>{assert.equal(state.custody2().generation,newGeneration);assert.equal(state.custody2().rotation.intent.oldGeneration,oldGeneration);assert.equal(state.custody2().rotation.intent.newGeneration,newGeneration);assert.equal(state.data.vrk,oldRoot);};
+ assertPending();await state.rotationPhase('prepare_unknown');await state.markRotationPrepared({cutoff:42,inventoryHash:hex('8',64),inventoryHeads:3});assertPending();await state.rotationPhase('seeding');await state.markRotationCommit({catalogPages:1,catalogHash:hex('9',64)});assertPending();
+ const again=await reload();assert.equal(again.custody2().phase,'commit_unknown');assert.equal(again.custody2().generation,newGeneration);assert.equal(again.data.vrk,oldRoot);
+ const ids=[oldGeneration,hex('d'),hex('e')],files=ids.map(id=>({file_id:id,heads:[id+id],versions:[{version_id:id+id}]}));
+ const status={inventory_heads:3},app={plugins:{plugins:{'obsync-private-sync':{state:again,engine:null,currentStatus:()=>({kind:'idle'}),transport:{rotationStatus:async()=>status,rotationInventory:async()=>({heads:ids.map(id=>[id,id+id])}),getFile:async id=>files.find(file=>file.file_id===id)}}}}};
+ const observed=await readNativeCheckpoint(app,{url:again.data.serverUrl,pending:true,ids,notes:[]});assert.equal(observed.ok,true);assert.equal(observed.generation,newGeneration);assert.equal(digest(observed.generation),digest(newGeneration));assert.notEqual(digest(observed.generation),digest(oldGeneration));
+ await again.activateRotation();assert.equal(again.data.vrk,newRoot);assert.equal(again.custody2().generation,newGeneration);assert.equal(again.custody2().history.generation,oldGeneration);
 });
