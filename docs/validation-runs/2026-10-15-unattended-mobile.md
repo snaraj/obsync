@@ -35,7 +35,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All twelve full batches stopped on their first failed attempt;
+have passed**. All thirteen full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -353,11 +353,11 @@ custody phase, history and rejected-enrollment state without exporting secrets.
 
 A missing consent prompt is admissible only against independent server evidence
 prepared before the invitation. The new-generation proof authenticates the map,
-all included manifests/chunks and desktop bytes. It excludes only exact old IDs
-bound to the frozen rotation inventory and unchanged old heads/history, requires
-every deterministic new destination, and re-derives those destinations from
-authenticated metadata. Unpinned or foreign records cannot be silently skipped;
-the complete server head set must remain unchanged across the proof.
+all included manifests/chunks and desktop bytes. Previous IDs are bound to the
+frozen rotation inventory and unchanged old heads/history; every deterministic
+new destination is required and re-derived from authenticated metadata.
+Unpinned or foreign records cannot be silently skipped. The current head set
+and separately pinned previous histories must remain unchanged across the proof.
 
 Parent composition passes 125 Python and 146 Node harness tests and all 142
 scripted mutation controls, including 24 new consent/inventory controls.
@@ -425,6 +425,54 @@ gate failure, one intended deployment skip and the covered CodeQL aggregate
 failure; required dispositions pass. Fresh hosted results remain required.
 The twelve-batch retained ledger SHA-256 is
 `b5a4d16907a4d0728b1852edf3926818a1aa317b0283b6f3edc681cd87d2071e`.
+
+Full batch 13 at `94dab784938c9e3c38e70c8cc0c2442ed0c9ca65` passed the
+same earlier journeys, including a 213.000-second zero-Android-call interval
+and direct old-key rejection against new map/manifest/chunk ciphertext. Its
+inventory verifier stopped after 459 ms with the generic
+`owned_known_notes_inventory_refused`. A parent replay over the actual saved
+checkpoints passed byte/provenance binding using the checkpoints' own context;
+that diagnostic does not prove the later native reads. Source review finds a
+separate mismatch: the authenticated current-generation listing excludes old
+history IDs, while this verifier tried to derive old-source destinations from
+that listing. Explicit pinned old-ID reads and the current listing must be
+verified separately, preserving complete histories and current ciphertext checks.
+The original generic receipt cannot establish the exclusive runtime cause.
+
+Both controllers cleaned up, with zero owned groups and independently absent
+runtime/private/manifest paths; the parent rehashed 34 exported note files.
+The original failed aggregate SHA-256 is
+`a08f8b3f993872962dad695d9bb66cc390743bb729b9783bfc5957d000e95329`;
+the thirteen-batch ledger SHA-256 is
+`55350abd2bc84eb9de6f5aee74df0acf3f9fb47ca31bb669cc7152d5a53be9ca`.
+No second or third attempt ran. The hosted Windows test still failed at this
+head: its new diagnostics show another retry pending while the test stopped
+advancing virtual time after one retry. The first correction alone therefore
+does not establish a hosted pass; no CI rerun is counted as a repair.
+
+The corrected verifier now uses the scoped current listing and separately
+fetches only the previous IDs pinned by the frozen checkpoint. It checks the
+complete old heads/version sets before and after verification, requires every
+derived current destination, and authenticates and disk-compares every current
+note. An old ID appearing in the current listing refuses; nothing is silently
+filtered. A regression executes the actual verifier body with real candidate
+cryptography, persisted checkpoint bytes and a current-only page. It reproduces
+the old `plan_source_inventory` refusal and passes the corrected path. The
+existing real-server API test independently confirms the listing's scope.
+Safe stage and closed reason diagnostics replace the generic failure.
+
+The Windows fixture now advances only the receiver's registered retry timer
+after a fresh completed refusal, with a finite four-timer bound and the same
+ten-second wall deadline. Two controlled refusals reproduce the preceding
+one-shot-clock failure. All 16 affected tests pass; seven hostile controls
+fail, including stale/missing/wrong timers, unbounded retries, disabled product
+retry and lost editor protection. This changes no product behavior and does
+not explain the hosted operating-system refusal itself.
+
+Parent composition passes 125 Python tests, 150 Node tests, all 149 scripted
+mobile mutation controls and both secret scans. The actual-main regression
+and 31 consent/inventory mutants are included in that gate. These are offline
+results; a fresh native batch and fresh hosted Windows result remain required.
 
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.

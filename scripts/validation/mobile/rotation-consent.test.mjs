@@ -3,14 +3,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync,mkdtempSync,realpathSync,rmSync,writeFileSync,mkdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
-import {spawnSync} from 'node:child_process';
+import {spawnSync,execFileSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {join,resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {recordContext} from './ciphertext-oracle.mjs';
-import {rotationProofBinding,partitionRotationRecords,checkpointBytes} from './known-notes-proof.mjs';
-import {inventoryHeads,inventoryHash,readNativeCheckpoint} from './native-checkpoint.mjs';
-import {digest,privateRead,privateSave} from './desktop-guard.mjs';
+import {recordContext,candidateCrypto,OracleFailure} from './ciphertext-oracle.mjs';
+import {rotationProofBinding,partitionRotationRecords,checkpointBytes,readKnownInventory,knownNotesFailure,main} from './known-notes-proof.mjs';
+import {inventoryHeads,inventoryHash,readNativeCheckpoint,deriveCheckpointDestinations,checkpointRecords,CheckpointFailure} from './native-checkpoint.mjs';
+import {digest,privateRead,privateSave,owned} from './desktop-guard.mjs';
 import {rotationPairObservation,waitRotationPair,waitPairConsentOutcome,knownNotesMatch} from '../android-journey.mjs';
 const hex=(c,n=32)=>c.repeat(n),equal=(a,b)=>assert.deepEqual(a,b);
 function fixture(){
@@ -23,6 +23,8 @@ function fixture(){
  const commit={...structuredClone(draft),phase:'commit_unknown',rotation:{...structuredClone(draft.rotation),prepared,commit:commitReceipt},records:[...structuredClone(records),...destinations.map(([,id])=>({fileId:id,heads:[id+id],versions:[id+id]}))],destinations,rotationStatus:status,decoderHash:hex('8',64)};
  const context={sourceHead:draft.sourceHead,generation:hex('4'),decoderHash:commit.decoderHash},keys={fileId:hex('4'),domainId:hex('9')},domain=hex('f');
  const captured={files:commit.records.map(r=>({file_id:r.fileId,domain_id:records.some(old=>old.fileId===r.fileId)?hex('0'):r.fileId===keys.fileId?keys.domainId:domain,heads:r.heads,versions:r.versions.map(version_id=>({version_id}))}))};
+ captured.sourceFiles=captured.files.filter(f=>records.some(r=>r.fileId===f.file_id));
+ captured.files=captured.files.filter(f=>!records.some(r=>r.fileId===f.file_id));
  captured.records=captured.files.map(f=>({...f.versions[0],file_id:f.file_id,domain_id:f.domain_id}));
  const seal=()=>{
   const draftText=JSON.stringify(draft),commitText=JSON.stringify(commit);
@@ -40,18 +42,19 @@ test('replacement no-prompt partition authenticates both checkpoint receipts and
  }
  const s=f.seal();assert.throws(()=>rotationProofBinding(s.draftText,s.commitText,{},s.commitReceipt,f.context));assert.throws(()=>rotationProofBinding('not JSON',s.commitText,s.draftReceipt,s.commitReceipt,f.context));
 });
-test('only pinned unchanged old IDs are excluded; all destinations and every additional current-domain record remain required',()=>{
+test('scoped current discovery and separately pinned old inventory retain every required destination and source history',()=>{
  const f=fixture(),binding=f.bind();const partition=partitionRotationRecords(binding,f.captured,f.keys,f.domain,f.commit.destinations);
- equal(partition.records.map(r=>r.file_id),f.commit.destinations.map(r=>r[1]));assert.equal(partition.excludedPreviousFileCount,3);assert.equal(partition.rotationCheckpointSha256,digest(JSON.stringify(f.commit)));
+ equal(partition.records.map(r=>r.file_id),f.commit.destinations.map(r=>r[1]));assert.equal(partition.pinnedPreviousFileCount,3);assert.equal(partition.rotationCheckpointSha256,digest(JSON.stringify(f.commit)));
  for(const mutate of [
-  f=>{f.captured.files.pop();f.captured.records.pop();},
-  f=>f.captured.files[0].heads=[hex('b',64)],
-  f=>f.captured.files[0].versions.push({version_id:hex('b',64)}),
+  f=>{f.captured.files.pop();f.captured.records.pop();f.captured.files.push({file_id:hex('e'),domain_id:f.domain,heads:[hex('e',64)],versions:[{version_id:hex('e',64)}]});f.captured.records.push({file_id:hex('e'),domain_id:f.domain,version_id:hex('e',64)});},
+  f=>f.captured.sourceFiles[0].heads=[hex('b',64)],
+  f=>f.captured.sourceFiles[0].versions.push({version_id:hex('b',64)}),
   f=>f.captured.records.pop(),f=>f.captured.records.push(f.captured.records[0]),
   f=>{f.captured.files.push({file_id:hex('e'),domain_id:hex('0'),heads:[hex('e',64)],versions:[{version_id:hex('e',64)}]});f.captured.records.push({file_id:hex('e'),domain_id:hex('0'),version_id:hex('e',64)});},
   f=>f.captured.records.find(r=>r.file_id===f.keys.fileId).domain_id=hex('e')]){
   const x=fixture();mutate(x);assert.throws(()=>partitionRotationRecords(x.bind(),x.captured,x.keys,x.domain,x.commit.destinations));
  }
+ const oldListed=fixture(),oldFile=structuredClone(oldListed.captured.sourceFiles[0]);oldFile.domain_id=oldListed.domain;oldListed.captured.files.push(oldFile);oldListed.captured.records.push({...oldFile.versions[0],file_id:oldFile.file_id,domain_id:oldFile.domain_id});assert.throws(()=>partitionRotationRecords(oldListed.bind(),oldListed.captured,oldListed.keys,oldListed.domain,oldListed.commit.destinations),/rotation_source_in_current_listing/);
  const wrong=fixture();const plan=structuredClone(wrong.commit.destinations);plan[1][1]=hex('b');assert.throws(()=>partitionRotationRecords(wrong.bind(),wrong.captured,wrong.keys,wrong.domain,plan));
  const swapped=fixture(),different=structuredClone(swapped.commit.destinations);[different[1][1],different[2][1]]=[different[2][1],different[1][1]];assert.throws(()=>partitionRotationRecords(swapped.bind(),swapped.captured,swapped.keys,swapped.domain,different));
  const extra={file_id:hex('e'),domain_id:f.domain,heads:[hex('e',64)],versions:[{version_id:hex('e',64)}]};f.captured.files.push(extra);f.captured.records.push({...extra.versions[0],file_id:extra.file_id,domain_id:extra.domain_id});assert.equal(partitionRotationRecords(binding,f.captured,f.keys,f.domain,f.commit.destinations).records.length,4);
@@ -91,7 +94,7 @@ test('actual producer current-note loop must authenticate every included record/
  const base={file_id:hex('b'),domain_id:domainId,generation:keys.fileId,parents:[],sids:[chunk.sid],bytes:Buffer.byteLength(text),seal_suite:2,deleted:false};
  const ct=await api.seal.sealRecord(manifestKey,1,recordContext(base),api.c.utf8(JSON.stringify(entry)));base.manifest_ct=api.c.base64(ct);base.version_id=await api.c.versionId(base.file_id,base.parents,ct,base.sids);
  const code=readFileSync(new URL('./known-notes-proof.mjs',import.meta.url),'utf8');const first=code.indexOf('  for(const record of partition.records){'),last=code.indexOf('  check(files.length>0',first);assert.ok(first>0&&last>first);
- const AsyncFunction=Object.getPrototypeOf(async()=>{}).constructor,run=new AsyncFunction('partition','keys','api','domainId','manifestKey','domain','map','client','state','readFileSync','owned','check','digest','recordContext','join','const files=[],ciphertextHashes=[];'+code.slice(first,last)+'return files;');
+ const AsyncFunction=Object.getPrototypeOf(async()=>{}).constructor,run=new AsyncFunction('partition','keys','api','domainId','manifestKey','domain','map','client','state','readFileSync','owned','check','digest','recordContext','join','let stage;const files=[],ciphertextHashes=[];'+code.slice(first,last)+'return files;');
  const execute=async({record=base,body=chunk.ciphertext,disk=text}={})=>run({records:[record]},keys,api,domainId,manifestKey,domain,api.dm.defaultDomainMap(domainId),{evaluate:async()=>Array.from(body)},{devices:{A:{vault:'/synthetic'}}},()=>Buffer.from(disk),()=>{},(v,reason)=>{if(!v)throw Error(reason);},digest,recordContext,join);
  const files=await execute();assert.equal(files.length,1);equal(files[0],{path,sha256:digest(text),fileIdHash:digest(base.file_id)});
  for(const [options,reason] of [[{record:{...base,domain_id:hex('f')}},/current_domain_inventory/],[{record:{...base,version_id:hex('f',64)}},/manifest_version_hash/],[{record:{...base,manifest_ct:api.c.base64(new Uint8Array(ct.length))}},/manifest_version_hash/],[{body:new Uint8Array(chunk.ciphertext.length)},/chunk_hash/],[{disk:'wrong bytes'},/retained_disk_bytes/]])await assert.rejects(execute(options),reason);
@@ -100,14 +103,14 @@ test('actual producer current-note loop must authenticate every included record/
 test('actual proof partition wiring re-derives destinations from old metadata and preserves complete before/after head equality',async()=>{
  const code=readFileSync(new URL('./known-notes-proof.mjs',import.meta.url),'utf8'),first=code.indexOf('  if(binding){'),last=code.indexOf('  const files=[],ciphertextHashes=',first);assert.ok(first>0&&last>first);
  const AsyncFunction=Object.getPrototypeOf(async()=>{}).constructor;
- const run=new AsyncFunction('binding','api','privateRead','join','state','captured','inventoryHeads','deriveCheckpointDestinations','root','partitionRotationRecords','keys','domainId','let partition;'+code.slice(first,last)+'return partition;');
+ const run=new AsyncFunction('binding','api','privateRead','join','state','captured','inventoryHeads','deriveCheckpointDestinations','root','partitionRotationRecords','keys','domainId','let partition,stage;'+code.slice(first,last)+'return partition;');
  const f=fixture(),binding=f.bind(),oldRoot={synthetic:'old'},newRoot={synthetic:'new'};let derives=0;
- const partition=await run(binding,{backup:{parseRecoveryBackup:async text=>{assert.equal(text,'complete synthetic old backup');return oldRoot;}}},path=>{assert.equal(path,'/synthetic/phone-old-recovery-backup.txt');return 'complete synthetic old backup';},join,{secrets:'/synthetic'},f.captured,inventoryHeads,async(_api,draft,files,inventory,old,next)=>{derives++;assert.equal(draft,binding.draft);assert.equal(files,f.captured.files);equal(inventory,inventoryHeads(draft.records));assert.equal(old,oldRoot);assert.equal(next,newRoot);return f.commit.destinations;},newRoot,partitionRotationRecords,f.keys,f.domain);
- assert.equal(derives,1);assert.equal(partition.excludedPreviousFileCount,3);
- const after=code.slice(code.indexOf('  check(files.length>0'));const body=/await client.evaluate\(`([\s\S]*?)`,\{generation:keys.fileId,heads:captured.heads\}\);/.exec(after)?.[1];assert.ok(body);
+ const partition=await run(binding,{backup:{parseRecoveryBackup:async text=>{assert.equal(text,'complete synthetic old backup');return oldRoot;}}},path=>{assert.equal(path,'/synthetic/phone-old-recovery-backup.txt');return 'complete synthetic old backup';},join,{secrets:'/synthetic'},f.captured,inventoryHeads,async(_api,draft,files,inventory,old,next)=>{derives++;assert.equal(draft,binding.draft);assert.equal(files,f.captured.sourceFiles);equal(inventory,inventoryHeads(draft.records));assert.equal(old,oldRoot);assert.equal(next,newRoot);return f.commit.destinations;},newRoot,partitionRotationRecords,f.keys,f.domain);
+ assert.equal(derives,1);assert.equal(partition.pinnedPreviousFileCount,3);
+ const after=code.slice(code.indexOf('  check(files.length>0'));const body=/await client.evaluate\(`([\s\S]*?)`,\{generation:keys.fileId,heads:captured.heads,sourceRecords:binding\?\.draft.records\?\?\[\]\}\);/.exec(after)?.[1];assert.ok(body);
  const read=new AsyncFunction('app','P',body),files=f.captured.files.map(file=>({file_id:file.file_id,heads:file.heads})),heads=files.map(file=>[file.file_id,[...file.heads].sort()]).sort((a,b)=>a[0].localeCompare(b[0])),page={files,next:null};
  const app={plugins:{plugins:{'obsync-private-sync':{state:{custody2:()=>({generation:f.keys.fileId})},currentStatus:()=>({kind:'idle'}),transport:{listFiles:async()=>page}}}}};
- assert.equal(await read(app,{generation:f.keys.fileId,heads}),true);page.files=[...files,{file_id:hex('e'),heads:[hex('e',64)]}];await assert.rejects(read(app,{generation:f.keys.fileId,heads}),/inventory changed/);
+ assert.equal(await read(app,{generation:f.keys.fileId,heads,sourceRecords:[]}),true);page.files=[...files,{file_id:hex('e'),heads:[hex('e',64)]}];await assert.rejects(read(app,{generation:f.keys.fileId,heads,sourceRecords:[]}),/inventory changed/);
 });
 
 test('actual replacement consent observation waits for old pairing and shares its existing deadline with later index admission',async()=>{
@@ -138,8 +141,8 @@ test('persisted checkpoint byte pins include privateSave newline and refuse trim
   mkdirSync(join(dir,'evidence'),{mode:0o700});
   writeFileSync(join(dir,'checkpoint-rotation-draft.json'),draftBytes,{mode:0o600});writeFileSync(join(dir,'checkpoint-commit-after.json'),commitBytes,{mode:0o600});
   privateSave(join(dir,'evidence/native-checkpoint-rotation-draft.json'),JSON.stringify(draftReceipt));privateSave(join(dir,'evidence/native-checkpoint-commit-after.json'),JSON.stringify(commitReceipt));
-  const code=readFileSync(new URL('./known-notes-proof.mjs',import.meta.url),'utf8'),first=code.indexOf('  let binding=null;'),last=code.indexOf("  client=await connect(state,'A');",first);assert.ok(first>0&&last>first);
-  const load=new Function('options','state','keys','api','join','rotationProofBinding','checkpointBytes','privateRead',code.slice(first,last)+'return binding;');
+  const code=readFileSync(new URL('./known-notes-proof.mjs',import.meta.url),'utf8'),first=code.indexOf('  let binding=null;'),last=code.indexOf("  stage='connect_native'",first);assert.ok(first>0&&last>first);
+  const load=new Function('options','state','keys','api','join','rotationProofBinding','checkpointBytes','privateRead','let stage;'+code.slice(first,last)+'return binding;');
   const observed=load({'rotation-proof':'commit-after'},{secrets:dir,run:dir,source_head:f.context.sourceHead},{fileId:f.context.generation},{decoderHash:f.context.decoderHash},join,rotationProofBinding,checkpointBytes,privateRead);assert.equal(observed.checkpointSha256,digest(commitBytes));
 
   // Exact former runtime recipe: privateRead strips the serialized newline.
@@ -163,4 +166,48 @@ test('actual production State/checkpoint retain NEW pending generation while the
  const status={inventory_heads:3},app={plugins:{plugins:{'obsync-private-sync':{state:again,engine:null,currentStatus:()=>({kind:'idle'}),transport:{rotationStatus:async()=>status,rotationInventory:async()=>({heads:ids.map(id=>[id,id+id])}),getFile:async id=>files.find(file=>file.file_id===id)}}}}};
  const observed=await readNativeCheckpoint(app,{url:again.data.serverUrl,pending:true,ids,notes:[]});assert.equal(observed.ok,true);assert.equal(observed.generation,newGeneration);assert.equal(digest(observed.generation),digest(newGeneration));assert.notEqual(digest(observed.generation),digest(oldGeneration));
  await again.activateRotation();assert.equal(again.data.vrk,newRoot);assert.equal(again.custody2().generation,newGeneration);assert.equal(again.custody2().history.generation,oldGeneration);
+});
+
+test('actual known-notes main succeeds with current-only page plus separately pinned old reads and real candidate crypto',async()=>{
+ const source=resolve(process.env.OBSYNC_ORACLE_SOURCE??fileURLToPath(new URL('../../../..',import.meta.url))),head=execFileSync('git',['-C',source,'rev-parse','HEAD'],{encoding:'utf8'}).trim(),bundle=digest(readFileSync(join(source,'plugin/dist/main.js'))),api=candidateCrypto(source,head,bundle,true),{c,dm,seal}=api;
+ const dir=realpathSync(mkdtempSync(join(tmpdir(),'obsync-known-main-'))),secrets=join(dir,'private'),vault=join(dir,'vault');mkdirSync(secrets,{mode:0o700});mkdirSync(vault,{mode:0o700});mkdirSync(join(dir,'evidence'),{mode:0o700});
+ try{
+  const oldRoot=new Uint8Array(32).fill(11),newRoot=new Uint8Array(32).fill(22),oldKeys=await dm.domainMapKeys(oldRoot),keys=await dm.domainMapKeys(newRoot),oldDomain=hex('3'),newDomain=c.hex((await c.hmacSha256(keys.key,c.utf8('obsync/seal-v2/rotation-domain'))).subarray(0,16)),chunks=new Map();
+  const noteData=[{path:'One.md',text:'# Synthetic one\n',id:hex('4')},{path:'Two.md',text:'# Synthetic two\n',id:hex('5')}];
+  const make=async(root,mapKeys,domainId,note=null,id=mapKeys.fileId)=>{
+   let key=mapKeys.key,kind=2,plain=dm.defaultDomainMap(domainId),sids=[],bytes=0;
+   if(note){kind=1;const domain=await c.deriveDomainKey(root,domainId);key=await c.deriveManifestKey(domain,domainId);const chunk=await seal.encryptChunk2(domain,{generation:mapKeys.fileId,domainId},c.utf8(note.text));chunks.set(chunk.sid,chunk.ciphertext);sids=[chunk.sid];bytes=Buffer.byteLength(note.text);plain={v:1,path:note.path,domain:domainId,mtime:1,size:bytes,sha256:digest(note.text),chunks:[{sid:chunk.sid,cid:c.hex(chunk.cid),len:bytes}],deleted:false};}
+   const packet=await seal.sealRecord(key,kind,{generation:mapKeys.fileId,domainId:kind===2?mapKeys.domainId:domainId,fileId:id,parents:[],sids},c.utf8(JSON.stringify(plain)));
+   const record={version_id:await c.versionId(id,[],packet,sids),parents:[],sids,bytes,deleted:false,seal_suite:2,manifest_ct:c.base64(packet),device_id:hex('7'),ts:1};return {file_id:id,domain_id:kind===2?mapKeys.domainId:domainId,heads:[record.version_id],versions:[record]};
+  };
+  const sourceFiles=[await make(oldRoot,oldKeys,oldDomain),...await Promise.all(noteData.map(n=>make(oldRoot,oldKeys,oldDomain,n,n.id)))],records=checkpointRecords(sourceFiles),intent={operation:hex('a'),previous_map:oldKeys.fileId,current_map:keys.fileId,target:hex('b'),recovery_verifier:hex('c',64),seal_suite:2};
+  const draft={schema:1,sourceHead:head,phase:'draft',generation:keys.fileId,rotation:{intent,coordinator:hex('d'),fromSuite:2,prepared:null,commit:null},notes:noteData.map(n=>({path:n.path,fileId:n.id})),disk:noteData.map(n=>({path:n.path,sha256:digest(n.text)})),records,engineState:'ABSENT'},inventory=inventoryHeads(records);
+  const destinations=await deriveCheckpointDestinations(api,draft,sourceFiles,inventory,oldRoot,newRoot),destination=new Map(destinations);
+  const currentFiles=[await make(newRoot,keys,newDomain),...await Promise.all(noteData.map(n=>make(newRoot,keys,newDomain,n,destination.get(n.id))))];
+  // This is the API's scoped page, not a fake implementation of filtering.
+  // The production Rust API test separately proves old IDs are excluded here.
+  const page={next:null,files:currentFiles.map(f=>({file_id:f.file_id,heads:f.heads}))};
+  assert.ok(sourceFiles.every(f=>!page.files.some(row=>row.file_id===f.file_id)));
+  // Exact pre-fix call: current discovery cannot supply a frozen old source.
+  await assert.rejects(deriveCheckpointDestinations(api,draft,currentFiles,inventory,oldRoot,newRoot),e=>e instanceof CheckpointFailure&&e.reason==='plan_source_inventory');
+  const prepared={cutoff:42,inventoryHash:inventoryHash(inventory),inventoryHeads:inventory.length},status={intent,coordinator:hex('d'),cutoff:42,inventory_hash:prepared.inventoryHash,inventory_heads:inventory.length,catalog_pages:1,catalog_heads:inventory.length,catalog_last:inventory.at(-1),catalog_hash:hex('8',64),committed:false};
+  const commit={...draft,phase:'commit_unknown',rotation:{...draft.rotation,prepared,commit:{catalogPages:1,catalogHash:status.catalog_hash}},records:checkpointRecords([...sourceFiles,...currentFiles]),destinations,rotationStatus:status,decoderHash:api.decoderHash};
+  for(const [label,value,result]of [['rotation-draft',draft,'OBSERVED'],['commit-after',commit,'PASS']]){const path=join(secrets,'checkpoint-'+label+'.json');privateSave(path,JSON.stringify(value));privateSave(join(dir,'evidence/native-checkpoint-'+label+'.json'),JSON.stringify({schema:1,result,label,sourceHead:head,checkpointSha256:digest(readFileSync(path)),generationHash:digest(keys.fileId)}));}
+  privateSave(join(secrets,'phone-old-recovery-backup.txt'),await api.backup.encodeRecoveryBackup(oldRoot));privateSave(join(secrets,'phone-new-recovery-backup.txt'),await api.backup.encodeRecoveryBackup(newRoot));for(const note of noteData)writeFileSync(join(vault,note.path),note.text,{mode:0o600});
+  const oldIds=new Set(sourceFiles.map(f=>f.file_id)),gets=[],all=new Map([...sourceFiles,...currentFiles].map(f=>[f.file_id,f]));let lists=0,closed=0;
+  const app={plugins:{plugins:{'obsync-private-sync':{state:{paired:true,data:{serverUrl:'owned'},custody2:()=>({suite:2,phase:'active',generation:keys.fileId,rotation:null})},engine:{contextValue:{generation:keys.fileId}},currentStatus:()=>({kind:'idle'}),transport:{listFiles:async()=>{lists++;return page;},getFile:async id=>{gets.push(id);assert.ok(all.has(id));return all.get(id);},getChunk:async sid=>{assert.ok(chunks.has(sid));return chunks.get(sid);}}}}}};
+  const AsyncFunction=Object.getPrototypeOf(async()=>{}).constructor,client={evaluate:(body,params)=>new AsyncFunction('app','P',body)(app,{...params,url:'owned'}),close:()=>closed++},logs=[],proc={};
+  const state={secrets,run:dir,source_head:head,artifacts:{'plugin/main.js':bundle},devices:{A:{vault}}};
+  const deps={argv:[dir,'rotation-repair','--source',source,'--backup','new','--rotation-proof','commit-after'],check:(v,reason)=>{if(!v)throw new OracleFailure(reason);},boundManifest:(run,given)=>{assert.equal(run,dir);assert.equal(given,source);return state;},candidateCrypto:(given,sourceHead,pin,rotation)=>{assert.equal(given,source);assert.equal(sourceHead,head);assert.equal(pin,bundle);assert.equal(rotation,true);return api;},connect:async()=>client,join,resolve,existsSync:(await import('node:fs')).existsSync,readFileSync,writeFileSync,owned,privateRead,privateSave,digest,recordContext,checkpointBytes,rotationProofBinding,readKnownInventory,inventoryHeads,deriveCheckpointDestinations,partitionRotationRecords,knownNotesFailure,OracleFailure,process:proc,console:{log:line=>logs.push(JSON.parse(line))}};
+  const body=main.toString().slice(main.toString().indexOf('{')+1,-1),execute=new AsyncFunction(...Object.keys(deps),body);await execute(...Object.values(deps));
+  assert.equal(proc.exitCode,undefined,JSON.stringify(logs));assert.equal(logs.at(-1).result,'PASS');assert.equal(logs.at(-1).noteCount,2);assert.equal(logs.at(-1).pinnedPreviousFileCount,3);assert.equal(lists,2);assert.equal(closed,1);for(const id of oldIds)assert.equal(gets.filter(value=>value===id).length,2);
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('inventory failure diagnostics allow only fixed checkpoint reasons and never raw native exceptions',async()=>{
+ const good=knownNotesFailure(new CheckpointFailure('plan_source_inventory'),'destination_plan');assert.equal(good.stage,'destination_plan');assert.equal(good.checkpointReason,'plan_source_inventory');
+ assert.equal(knownNotesFailure(new CheckpointFailure('private arbitrary text'),'checkpoint_binding').checkpointReason,null);assert.equal(JSON.stringify(knownNotesFailure(Error('private error'),'account_inventory')).includes('private'),false);
+ const value=await readKnownInventory({plugins:{plugins:{}}},{generation:hex('1'),url:'owned',sourceIds:[]});assert.deepEqual(value,{ok:false,stage:'native_state',apiCode:null,apiStatus:null});
+ const p={state:{paired:true,data:{serverUrl:'owned'},custody2:()=>({suite:2,phase:'active',generation:hex('1'),rotation:null})},engine:{contextValue:{generation:hex('1')}},currentStatus:()=>({kind:'idle'}),transport:{listFiles:async()=>{throw Object.assign(Error('private native error'),{name:'ApiError',code:'private-code',status:403});}}};
+ const app={plugins:{plugins:{'obsync-private-sync':p}}},refusal=await readKnownInventory(app,{generation:hex('1'),url:'owned',sourceIds:[]});equal(refusal,{ok:false,stage:'current_listing',apiCode:null,apiStatus:403});assert.equal(JSON.stringify(refusal).includes('private'),false);
 });
