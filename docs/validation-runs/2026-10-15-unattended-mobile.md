@@ -185,6 +185,44 @@ expected the old parameterless connection signature; that result is retained.
 The extractor now selects the same unchanged evaluator with the new signature.
 Both secret scans pass. These are regression results, not three native passes.
 
+Diagnostics eight and nine retained their first failures. The eighth failed
+during its single installed-APK pull before guest trust installation; no stress
+cycle ran. Its ledger SHA-256 is
+`135b6fea3fede2f4c2a3f2ca57ecc5d1c711d51b52335463bc3893af24970ceb`.
+The ninth read back all three exact installed candidate files, then refused the
+fresh trust entry immediately after normal app restart. Its ledger SHA-256 is
+`df5322d4e29fe32f16d503c585d8c541bf2b08704c7e7d013a07c3c953b4d06a`.
+The ninth run's filtered host trace recorded EOF and header-read termination
+only after the original refusal, during cleanup. Those events do not establish
+an initiating transport failure. Both diagnostics verified cleanup; neither
+counts as native acceptance.
+
+An actual-source control reproduces a separate driver defect: the trust-entry
+evaluator's ordinary vault guard labels an absent startup vault as foreign
+before its existing readiness loop runs. The ninth native receipt did not
+distinguish absence from a different path, so its actual binding remains
+unknown. The repair waits for an absent binding within the same 20-second
+trust-entry deadline, starting before the first read. A present malformed or
+different path refuses immediately; no controls are inspected until the exact
+owned path is observed. Late completion refuses, the existing trust classifier
+is unchanged, and all later actions retain their strict vault guard. Scalar
+before/after observations make missing and foreign bindings distinguishable.
+Eight actual-generated-expression tests and eight assertion-killed mutations
+cover this repair. No production behavior or deadline changed.
+
+Diagnostic ten tested the official emulator's legacy ADB configuration with
+`VirtioVsockPipe` disabled. It failed the original boot-readiness deadline;
+ordinary onboarding, trust installation and stress were not reached. No positive
+classic-route witness was observed. This configuration is unusable in this
+pinned fixture; it neither explains nor repairs the earlier disconnects. The
+experiment also contained the trust-entry repair and reduced trace volume, so
+it supports no single-cause attribution. Both controller cleanups passed, zero
+owned groups remained, runtime/private/ownership paths were independently
+absent, and all 78 frozen inputs were unchanged. Its retained failed ledger
+SHA-256 is
+`3619dd8e423c3ec08b7f4f6c1d2c04687ff3535f676a04a4434c0183f97a5b70`.
+The legacy configuration is not part of the acceptance runner.
+
 Full batch 18 used committed driver and rebuilt candidate
 `76a7116fdca25d3be4650b2ee92aa2df185413e1`. Ordinary pairing, two-way bytes,
 the 213-second no-interaction interval, both process restarts, guest reboot,

@@ -17,4 +17,5 @@ python3 -B scripts/validation/android-scope-save-mutations.py --node "$(command 
 python3 -B scripts/validation/mobile/native-checkpoint-mutations.py --node "$(command -v node)" --source "$OBSYNC_ORACLE_SOURCE"
 python3 -B scripts/validation/mobile/native-ciphertext-capture-mutations.py --node "$(command -v node)" --source "$OBSYNC_ORACLE_SOURCE"
 python3 -B scripts/validation/android-cdp-lifecycle-mutations.py --node "$(command -v node)"
+python3 -B scripts/validation/android-fresh-trust-entry-mutations.py --node "$(command -v node)"
 python3 -B scripts/validation/mobile/rotation-consent-mutations.py --node "$(command -v node)" --source "$OBSYNC_ORACLE_SOURCE"

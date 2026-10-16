@@ -13,7 +13,7 @@ mutations=[
  ('one_close_only','if(socket.readyState!==2){','if(true){'),
  ('completed_close_required',"if(!facts.closeObserved||socket.readyState!==3||now()>=closeEnd)throw Error('owned CDP close deadline');",'void 0;'),
  ('close_cap','Math.min(end,started+2000)','Math.min(end,started+4000)'),
- ('total_release_budget','started+20000','started+40000'),
+ ('total_release_budget','end=Math.min(deadline,started+20000),closeEnd=','end=Math.min(deadline,started+40000),closeEnd='),
  ('remaining_forward_budget','await removeForward(remaining);','await removeForward(20000);'),
  ('late_forward_refusal',"if(now()>=end)failure??=Error('owned CDP release deadline');",'void 0;'),
  ('listeners_on_throw',"if(closeListener)socket.removeEventListener('close',closeListener);if(errorListener)socket.removeEventListener('error',errorListener);",'void 0;'),

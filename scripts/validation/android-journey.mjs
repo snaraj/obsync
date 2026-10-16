@@ -810,7 +810,27 @@ async function main(args) {
       receipt({ result: 'ACTION_COMPLETED', method: 'public Obsidian Settings open' });
     }else if(command==='community-trust-choice'){
       stage='classify_exact_fresh_native_trust_entry';
-      const entry=await evaluate(`const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;const read=()=>{const plugins=app.plugins,modals=[...document.querySelectorAll('.modal.mod-trust-folder')].filter(visible),modal=modals[0],buttons=modal?[...modal.querySelectorAll('button')].filter(visible):[];return {candidateManifest:plugins?.manifests?.['obsync-private-sync']?.id==='obsync-private-sync',candidateLoaded:!!plugins?.plugins?.['obsync-private-sync'],communityPluginsEnabled:plugins?.isEnabled?.()===true,trustModalCount:modals.length,trustTitleMatched:modal?.querySelector('.modal-title')?.textContent.trim()==='Do you trust the author of this vault?',trustButtons:buttons.filter(e=>e.textContent.trim()==='Trust author and enable plugins').length,restrictedButtons:buttons.filter(e=>e.textContent.trim()==='Browse vault in Restricted Mode').length,otherModalCount:[...document.querySelectorAll('.modal:not(.mod-settings):not(.mod-trust-folder)')].filter(visible).length,layoutReady:app.workspace?.layoutReady===true};};const before=read(),end=Date.now()+20000;let after=before,polls=1,route=(${freshTrustRoute.toString()})(after);while(!route&&Date.now()<end){await new Promise(r=>setTimeout(r,100));after=read();polls++;route=(${freshTrustRoute.toString()})(after);}return {before,after,polls,route};`);
+      const entry=await evaluate(`
+        const started=Date.now(),end=started+20000;
+        const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;
+        const read=()=>{
+          const app=window.app,path=app?.vault?.adapter?.basePath;
+          const binding={appPresent:!!app,adapterPresent:!!app?.vault?.adapter,pathPresent:path!==undefined&&path!==null&&path!=='',ownedVault:path===P.vaultPath};
+          if(binding.pathPresent&&typeof path!=='string')throw Error('native vault path malformed');
+          if(binding.pathPresent&&!binding.ownedVault)throw Error('foreign vault');
+          if(!binding.ownedVault)return binding;
+          const plugins=app.plugins,modals=[...document.querySelectorAll('.modal.mod-trust-folder')].filter(visible),modal=modals[0],buttons=modal?[...modal.querySelectorAll('button')].filter(visible):[];
+          return {...binding,candidateManifest:plugins?.manifests?.['obsync-private-sync']?.id==='obsync-private-sync',candidateLoaded:!!plugins?.plugins?.['obsync-private-sync'],communityPluginsEnabled:plugins?.isEnabled?.()===true,trustModalCount:modals.length,trustTitleMatched:modal?.querySelector('.modal-title')?.textContent.trim()==='Do you trust the author of this vault?',trustButtons:buttons.filter(e=>e.textContent.trim()==='Trust author and enable plugins').length,restrictedButtons:buttons.filter(e=>e.textContent.trim()==='Browse vault in Restricted Mode').length,otherModalCount:[...document.querySelectorAll('.modal:not(.mod-settings):not(.mod-trust-folder)')].filter(visible).length,layoutReady:app.workspace?.layoutReady===true};
+        };
+        const before=read();let after=before,polls=1,route=null;
+        for(;;){
+          route=after.ownedVault?(${freshTrustRoute.toString()})(after):null;
+          if(route||Date.now()>=end)break;
+          await new Promise(r=>setTimeout(r,Math.min(100,end-Date.now())));after=read();polls++;
+        }
+        const finished=Date.now();if(finished>end)route=null;
+        return {before,after,polls,route,deadlineMs:20000,elapsedMs:finished-started};
+      `,{vaultPath:ownedVault(input.vaultPath)},false);
       communityTrustReadiness={freshEntry:entry};
       if(!entry.route)throw Error('fresh native trust entry deadline');
       const prompt=entry.route==='INITIAL_TRUST_MODAL';
