@@ -4,11 +4,11 @@ import { join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { candidateCrypto } from './ciphertext-oracle.mjs';
 import { connect, sleep } from './cdp.mjs';
-import { recoveryManifest, validateExpectations, activeRecovery, recoveryRefusal, refusedRecovery } from './recovery-guard.mjs';
+import { recoveryManifest, validateExpectations, activeRecovery, recoveryRefusal, refusedRecovery, recoveryRefusalFacts, visibleRecoveryRefusal, recoveryReadbackExport } from './recovery-guard.mjs';
 const [run, source, slot, command, kind = 'new'] = process.argv.slice(2);
 if (!['B','C','D'].includes(slot) || !['open','status','stage','setup-wrong-token','setup-refuse-old','setup-refuse-wrong','make-unrelated','setup-correct','readback','quit'].includes(command) || !['old','wrong','stripped','new','unrelated'].includes(kind)) throw Error('invalid recovery operator arguments');
 const state = await recoveryManifest(run,source,slot), runtime = join(state.run, 'runtime');
-let c, stage=command, failureReason='owned_recovery_step_refused';
+let c, stage=command, failureReason='owned_recovery_step_refused',negativeReadiness;
 function privateRead(name) {
   const path=join(runtime,name),st=lstatSync(path);
   if (!st.isFile()||st.isSymbolicLink()||st.uid!==process.getuid()||(st.mode&0o077)||st.nlink!==1||realpathSync(path)!==path) throw Error('private input custody');
@@ -54,21 +54,37 @@ async function setup(action) {
   const refusal=negative?recoveryRefusal(action):null,baseline=negative?(c.consoleSummary.reasons[refusal.reason]??0):0;
   stage='setup-submit';failureReason='ordinary_recovery_submit_refused';
   await ui(`const staged=p.state.stagedEnrollment2();if(p.state.paired||p.state.data.deviceId!==null||staged?.purpose!=='recover')throw Error('staged recovery without credential required');fillOwned(settingRow(pane(),'Setup or recover').querySelector('input'),P.token);press(settingRow(pane(),'Setup or recover'),'Set up or recover');return true;`,{token});
+  const closeStatus=async remaining=>{
+    await ui(`const ds=dialogs();if(ds.length!==1||ds[0].querySelector('.modal-title')?.textContent.trim()!=='Recent sync activity')throw Error('owned recovery status identity');const bg=ds[0].parentElement?.querySelector(':scope > .modal-bg');if(!bg||!visible(bg))throw Error('owned recovery status background absent');bg.click();await wait(()=>dialogs().length===0,'owned recovery status closed',P.remaining);return true;`,{remaining:remaining()});remaining();
+  };
   if(action==='setup-correct') {
     stage='setup-active';failureReason='recovery_active_deadline_or_refusal';
-    await ui(`await wait(()=>{const pin=p.state.custody2();return (${activeRecovery.toString()})({paired:p.state.paired,enrolling:p.enrolling,phase:pin?.phase,suite:pin?.suite,recoveryNotice:notice('Recovered this vault')});},'recovery did not complete',60000);return true;`);
-    record({result:'PASS',recoveredExistingAccount:true,activeSuite:2,oldDeviceApprovalUsed:false});
+    const started=performance.now(),remaining=()=>{const ms=60000-(performance.now()-started);if(ms<=0)throw Error('active recovery observation deadline');return ms;};
+    // Custody readiness precedes opening Recent; final success still requires its rendered confirmation.
+    await ui(`await wait(()=>{const pin=p.state.custody2();return (${activeRecovery.toString()})({paired:p.state.paired,enrolling:p.enrolling,phase:pin?.phase,suite:pin?.suite,recoveryNotice:true});},'recovery did not complete',P.remaining);return true;`,{remaining:remaining()});remaining();
+    await ui(`if(dialogs().length)throw Error('unexpected recovery dialog');app.setting.close();if(app.commands.executeCommandById('obsync-private-sync:recent')===false)throw Error('ordinary recovery status command absent');await wait(()=>{const pin=p.state.custody2();return (${activeRecovery.toString()})({paired:p.state.paired,enrolling:p.enrolling,phase:pin?.phase,suite:pin?.suite,recoveryNotice:(${visibleRecoveryRefusal.toString()})(dialogs(),P.text,visible)});},'visible recovered enrollment in Recent',P.remaining);return true;`,{text:"Recovered this vault's enrollment. Starting encrypted sync.",remaining:remaining()});remaining();
+    await closeStatus(remaining);
+    record({result:'PASS',recoveredExistingAccount:true,activeSuite:2,oldDeviceApprovalUsed:false,visibleRecoveryNoticeSource:'RECENT_UI',activeReadiness:{budgetMs:60000,elapsedMs:60000-remaining()}});
   } else {
     stage='setup-authenticated-refusal';failureReason='expected_authenticated_refusal_absent';
-    const end=Date.now()+45000;
-    while(Date.now()<end&&(c.consoleSummary.reasons[refusal.reason]??0)<=baseline)await sleep(100);
+    const started=performance.now(),end=started+45000;
+    const remaining=()=>{const ms=end-performance.now();if(ms<=0)throw Error('negative recovery observation deadline');return ms;};
+    while(performance.now()<end&&(c.consoleSummary.reasons[refusal.reason]??0)<=baseline)await sleep(Math.min(100,remaining()));
     if((c.consoleSummary.reasons[refusal.reason]??0)<=baseline)throw Error('expected authenticated refusal absent');
     stage='setup-negative-after';failureReason='negative_recovery_state_or_content_changed';
-    const unchanged=before===await privateFingerprint();
-    const refused=await ui(`const pin=p.state.custody2();return (${refusedRecovery.toString()})({enrolling:p.enrolling,paired:p.state.paired,deviceIdAbsent:p.state.data.deviceId===null,deviceSecretAbsent:p.state.data.deviceSecret===null,phase:pin?.phase,suite:pin?.suite,purpose:p.state.stagedEnrollment2()?.purpose,engineStopped:p.engine===null||p.engine?.started===false,visibleRefusal:notice(P.text),contentAbsent:P.notes.every(n=>app.vault.getAbstractFileByPath(n.path)===null&&p.state.fileByPath(n.path)===undefined)});`,{text:refusal.notice,notes:expected.notes});
-    const diskUnchanged=diskBefore===negativeDiskSnapshot(expected.notes);
-    if(!unchanged||!refused||!diskUnchanged)throw Error('visible refusal or unchanged local custody absent');
-    record({result:'PASS',expectedRefusal:refusal.reason,visibleRefusal:true,noCredentialAdopted:true,noActiveEnrollment:true,noContentMaterialized:true,persistedMetadataUnchanged:true,localCustodyUnchanged:true,serverAccountUnchanged:'INDEPENDENT_PARENT_READ_REQUIRED'});
+    const sample=recent=>ui(`const pin=p.state.custody2();const value={enrolling:p.enrolling,paired:p.state.paired,deviceIdAbsent:p.state.data.deviceId===null,deviceSecretAbsent:p.state.data.deviceSecret===null,phase:pin?.phase,suite:pin?.suite,purpose:p.state.stagedEnrollment2()?.purpose,engineStopped:p.engine===null||p.engine?.started===false,visibleRefusal:P.recent?(${visibleRecoveryRefusal.toString()})(dialogs(),P.text,visible):notice(P.text),contentAbsent:P.notes.every(n=>app.vault.getAbstractFileByPath(n.path)===null&&p.state.fileByPath(n.path)===undefined)};return {refused:(${refusedRecovery.toString()})(value),facts:(${recoveryRefusalFacts.toString()})(value)};`,{text:refusal.notice,notes:expected.notes,recent});
+    const initial=await sample(false),unchanged=before===await privateFingerprint(),diskUnchanged=diskBefore===negativeDiskSnapshot(expected.notes);
+    negativeReadiness={budgetMs:45000,elapsedMs:performance.now()-started,expectedReasonObserved:true,initial:{...initial.facts,localCustodyUnchanged:unchanged,persistedMetadataUnchanged:diskUnchanged}};
+    if(!unchanged||!diskUnchanged||Object.entries(initial.facts).some(([key,value])=>key!=='visibleRefusal'&&value!==true))throw Error('visible refusal or unchanged local custody absent');
+    stage='setup-visible-Recent';failureReason='negative_recovery_visible_recent_absent';remaining();
+    try{await ui(`if(dialogs().length)throw Error('unexpected recovery dialog');app.setting.close();if(app.commands.executeCommandById('obsync-private-sync:recent')===false)throw Error('ordinary recovery status command absent');await wait(()=>(${visibleRecoveryRefusal.toString()})(dialogs(),P.text,visible),'visible recovery Recent refusal',P.remaining);return true;`,{text:refusal.notice,remaining:remaining()});remaining();}finally{negativeReadiness.elapsedMs=performance.now()-started;}
+    stage='setup-negative-after';failureReason='negative_recovery_state_or_content_changed';
+    const after=await sample(true),finalUnchanged=before===await privateFingerprint(),finalDiskUnchanged=diskBefore===negativeDiskSnapshot(expected.notes);
+    negativeReadiness.after={...after.facts,localCustodyUnchanged:finalUnchanged,persistedMetadataUnchanged:finalDiskUnchanged};negativeReadiness.elapsedMs=45000-remaining();
+    if(!finalUnchanged||!after.refused||!finalDiskUnchanged)throw Error('visible refusal or unchanged local custody absent');
+    stage='setup-close-owned-status';failureReason='owned_recovery_status_close_refused';
+    await closeStatus(remaining);negativeReadiness.elapsedMs=45000-remaining();
+    record({result:'PASS',expectedRefusal:refusal.reason,visibleRefusal:true,visibleRefusalSource:'RECENT_UI',negativeReadiness,noCredentialAdopted:true,noActiveEnrollment:true,noContentMaterialized:true,persistedMetadataUnchanged:true,localCustodyUnchanged:true,serverAccountUnchanged:'INDEPENDENT_PARENT_READ_REQUIRED'});
   }
 }
 try {
@@ -136,22 +152,26 @@ try {
       const expected=JSON.parse(privateRead('../private/recovery-expectations.json'));
       validateExpectations(expected,state.source_head);
       await ui(`const pin=p.state.custody2();const hash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pin?.generation??'')))].map(n=>n.toString(16).padStart(2,'0')).join('');if(pin?.suite!==2||hash!==P.generationHash)throw Error('wrong recovered generation');return true;`,{generationHash:expected.generationHash});
-      let count=0;const labels=new Set();
-      for(const note of expected.notes) {
-        if(!/^[A-Za-z0-9][A-Za-z0-9 -]{0,100}\.md$/.test(note.path)||!['retained','current'].includes(note.generation)||!/^[a-f0-9]{64}$/.test(note.sha256))throw Error('bounded synthetic note expectation required');
-        labels.add(note.generation);
-        const path=join(state.devices[slot].vault,note.path),end=Date.now()+60000;let matches=false;
-        while(Date.now()<end){if(existsSync(path)){const st=lstatSync(path);if(!st.isFile()||st.isSymbolicLink()||st.uid!==process.getuid()||st.nlink!==1||realpathSync(path)!==path)throw Error('recovered note custody');if(createHash('sha256').update(readFileSync(path)).digest('hex')===note.sha256){matches=true;break;}}await sleep(100);}
-        if(!matches)throw Error('recovered disk bytes did not match');count++;
-      }
-      if(labels.size!==2)throw Error('retained and current generation notes both required');
-      record({result:'PASS',independentlyReadRecoveredNotes:count,allRecordedSyntheticNoteHashesMatch:true});
+      if(slot!=='C')throw Error('fixed fresh C recovery readback required');
+      const exported=recoveryReadbackExport(state.run,state.source_head,expected);let complete=false,count=0;
+      try{
+        const labels=new Set();
+        for(const [index,note] of expected.notes.entries()) {
+          if(!/^[A-Za-z0-9][A-Za-z0-9 -]{0,100}\.md$/.test(note.path)||!['retained','current'].includes(note.generation)||!/^[a-f0-9]{64}$/.test(note.sha256))throw Error('bounded synthetic note expectation required');
+          labels.add(note.generation);
+          const path=join(state.devices[slot].vault,note.path),end=Date.now()+60000;let matches=false;
+          while(Date.now()<end){if(existsSync(path)){const st=lstatSync(path);if(!st.isFile()||st.isSymbolicLink()||st.uid!==process.getuid()||st.nlink!==1||realpathSync(path)!==path)throw Error('recovered note custody');const bytes=readFileSync(path);matches=exported.observe(index,bytes);if(matches)break;}await sleep(100);}
+          if(!matches)throw Error('recovered disk bytes did not match');count++;
+        }
+        if(labels.size!==2)throw Error('retained and current generation notes both required');complete=true;
+      }finally{exported.finish(complete);}
+      record({result:'PASS',independentlyReadRecoveredNotes:count,allRecordedSyntheticNoteHashesMatch:true,retainedByteEvidence:'evidence/recovery-C-readback/result.json'});
     } else if(command==='quit') {
       await ui(`setTimeout(()=>window.electron.remote.app.quit(),0);return true;`);
       record({result:'QUIT_REQUESTED',normalOwnedAppQuit:true,fixtureRetainedForSessionTeardown:true});
     }
   }
 } catch {
-  record({result:'FAIL',stage,firstFailure:failureReason,detail:'Owned recovery step refused or timed out; secret-bearing details withheld. Session controllers own cleanup.'});
+  record({result:'FAIL',stage,firstFailure:failureReason,negativeReadiness,detail:'Owned recovery step refused or timed out; secret-bearing details withheld. Session controllers own cleanup.'});
   process.exitCode=1;
 } finally {c?.close();}

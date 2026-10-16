@@ -1,5 +1,6 @@
 // Slot-aware extension for fresh B/C. A is never aliased to a recovery process.
-import { readFileSync } from 'node:fs';
+import { readFileSync,writeFileSync,mkdirSync,lstatSync,realpathSync } from 'node:fs';
+import {createHash} from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -7,7 +8,7 @@ export function activeRecovery(value) {
   return value.paired===true && value.enrolling===false && value.phase==='active' && value.suite===2 && value.recoveryNotice===true;
 }
 export function recoveryRefusal(action) {
-  if(action==='setup-wrong-token')return {reason:'bad_setup_token',notice:'setup token'};
+  if(action==='setup-wrong-token')return {reason:'bad_setup_token',notice:"This server did not accept that setup token. Check that it is this server's token (obsyncd setup-token prints it) and paste it again."};
   // Setup checks the root-derived generation before checking the recovery proof.
   // pairing.refusalFor has no specific entry for this refusal; its visible text is the fallback.
   if(action==='setup-refuse-old'||action==='setup-refuse-wrong')return {reason:'generation_mismatch',notice:"The server refused this step, so nothing changed. Try again; if it repeats, obsync's log names the reason."};
@@ -17,6 +18,15 @@ export function refusedRecovery(value) {
   return value.enrolling===false && value.paired===false && value.deviceIdAbsent===true && value.deviceSecretAbsent===true &&
     value.phase==='enrollment' && value.suite===2 && value.purpose==='recover' && value.engineStopped===true &&
     value.visibleRefusal===true && value.contentAbsent===true;
+}
+export function recoveryRefusalFacts(value) {
+  return {notEnrolling:value.enrolling===false,unpaired:value.paired===false,deviceIdAbsent:value.deviceIdAbsent===true,deviceSecretAbsent:value.deviceSecretAbsent===true,
+    enrollmentPhase:value.phase==='enrollment',suite2:value.suite===2,recoverPurpose:value.purpose==='recover',engineStopped:value.engineStopped===true,
+    visibleRefusal:value.visibleRefusal===true,contentAbsent:value.contentAbsent===true};
+}
+export function visibleRecoveryRefusal(modals,text,visible) {
+  const owned=modals.filter(m=>visible(m)&&m.querySelector('.modal-title')?.textContent.trim()==='Recent sync activity');
+  return owned.length===1&&[...owned[0].querySelectorAll('.setting-item-name')].some(e=>visible(e)&&e.textContent.trim()===text);
 }
 export function validateExpectations(expected, sourceHead) {
   if(expected?.schema!==1 || expected.sourceHead!==sourceHead || !/^[a-f0-9]{64}$/.test(expected.generationHash) ||
@@ -28,6 +38,36 @@ export function validateExpectations(expected, sourceHead) {
     paths.add(note.path);hashes.add(note.sha256);labels.add(note.generation);
   }
   if(labels.size!==2) throw Error('retained and current witnesses both required');
+}
+
+export function recoveryReadbackExport(run,sourceHead,expected) {
+  validateExpectations(expected,sourceHead);
+  const hash=bytes=>createHash('sha256').update(bytes).digest('hex'),folder=join(run,'evidence/recovery-C-readback');
+  if(realpathSync(run)!==run||realpathSync(join(run,'evidence'))!==join(run,'evidence'))throw Error('owned recovery evidence root required');
+  mkdirSync(folder,{mode:0o700});
+  const manifest={schema:1,sourceHead,generationHash:expected.generationHash,notes:expected.notes.map(n=>({path:n.path,sha256:n.sha256,generation:n.generation}))};
+  const bytes=Buffer.from(JSON.stringify(manifest,null,2)+'\n'),expectationsSha256=hash(bytes);
+  writeFileSync(join(folder,'expectations.json'),bytes,{mode:0o600,flag:'wx'});
+  const exports=[];let finished=false;
+  return {
+    observe(index,actual){
+      if(finished||!Number.isInteger(index)||index<0||index>=manifest.notes.length||index>exports.length||index<exports.length-1||!Buffer.isBuffer(actual)||actual.length>65536)throw Error('bounded ordered recovery byte export required');
+      const path=`evidence/recovery-C-readback/${index}-desktop.bin`,file=join(run,path),previous=exports[index];
+      if(previous){const st=lstatSync(file);if(!st.isFile()||st.isSymbolicLink()||st.uid!==process.getuid()||st.nlink!==1||(st.mode&0o077)||realpathSync(file)!==file||hash(readFileSync(file))!==previous.actualSha256)throw Error('owned recovery byte export changed');}
+      writeFileSync(file,actual,{mode:0o600,flag:previous?'w':'wx'});
+      const note=manifest.notes[index],actualSha256=hash(actual),exactHashMatched=actualSha256===note.sha256;
+      exports[index]={index,path,generation:note.generation,expectedSha256:note.sha256,actualSha256,bytes:actual.length,exactHashMatched};
+      return exactHashMatched;
+    },
+    finish(success){
+      if(finished)throw Error('recovery byte export already finished');finished=true;
+      const passed=success===true&&exports.length===manifest.notes.length&&exports.every(e=>e.exactHashMatched);
+      const result={schema:1,sourceHead,result:passed?'PASS':'FAIL',expectationsSha256,expectedCount:manifest.notes.length,exportedCount:exports.length,exports};
+      writeFileSync(join(folder,'result.json'),JSON.stringify(result,null,2)+'\n',{mode:0o600,flag:'wx'});
+      if(success&&!passed)throw Error('complete matching recovery byte exports required');
+      return result;
+    },
+  };
 }
 
 export function slotShape(state, run, slot) {

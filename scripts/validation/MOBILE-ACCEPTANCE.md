@@ -75,7 +75,7 @@ the complete batch; never relabel a failed attempt or discard it as a retry.
 | Access-only revocation and re-pairing | Authenticated server refusal and absent new mobile bytes; explicit Leave and a fresh ordinary pairing; existing bytes retained |
 | Strong revocation | Actual post-rotation server ciphertext opens with the new UI backup and rejects the old key; access denial alone cannot pass |
 | Interrupted rotation and recovery | Persisted checkpoints before real restarts; ordinary resume/commit; fresh native recovery profiles and a valid unrelated backup refusal |
-| Selected-folder rename | Desktop direct case-only rename and Android two ordinary renames through a fresh intermediate name; original bytes, file identities, ancestry and selection boundaries; exact converged state remains stable for both five-minute quiet windows |
+| Selected-folder rename | Desktop direct case-only rename and Android two ordinary renames through a fresh intermediate name; retained exports of both peers' bytes and server-history snapshots at seed, each convergence and each five-minute quiet endpoint; preserved identities, ancestry and selection boundaries |
 | Content confidentiality | Closed bounded captures, server records/logs and native metadata checked by candidate scanners; deliberately planted leaks must be detected |
 | Evidence completeness | Missing/truncated/corrupted independent file exports and missing scanner evidence must fail; machine-readable cleanup and provenance receipts |
 
@@ -107,6 +107,18 @@ data after proving process-group absence; cleanup failure prevents a pass and
 preserves ownership records. Treat local evidence as private until reviewed:
 temporary configuration and outer diagnostic files may contain local paths.
 Never commit raw traffic, recovery backups, invitations or credentials.
+
+Selected-folder evidence retains the expected fixture manifests before byte
+collection, including when comparison fails. A successful phase also binds all
+five byte-export sets and server snapshots by exact paths and hashes. Terminal
+admission reopens these files; missing evidence or matching empty files cannot
+pass. The snapshots retain the inputs needed to independently replay the
+identity, history/ancestry and quiet-state comparisons after runtime cleanup.
+Fresh recovery likewise retains its expected hashes and two actual recovered
+files, including partial failed exports. Recovery notices are verified in the
+ordinary full Recent view, where grouped toasts remain readable; authenticated
+refusals, unchanged custody and absence of recovered content remain separate
+requirements.
 
 The emulator uses Android's real WebView, filesystem/permissions and native
 credential-storage path. Its rooted userdebug image and temporary guest-only

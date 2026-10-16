@@ -131,6 +131,10 @@ def full_journey_receipt(run, source_head):
                 'full_phase_facts_' + phase)
         require(all(type(receipt.get(key)) is int and low <= receipt[key] <= high for key, (low, high) in FULL_PHASE_BOUNDS.get(phase, {}).items()),
                 'full_phase_bounds_' + phase)
+    spec = importlib.util.spec_from_file_location('retained_selected_full', helper('mobile-full.py'))
+    full = importlib.util.module_from_spec(spec); spec.loader.exec_module(full)
+    full.selected_evidence(run, source_head)
+    full.recovery_evidence(run, source_head)
     return proof
 
 

@@ -35,13 +35,94 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All sixteen full batches stopped on their first failed attempt;
+have passed**. All seventeen full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
 owned-process and runtime cleanup.
 Their reduced attempt ledger has SHA-256
 `9a0596c7191a86374e5489b3610bd55dfdec9e4c3bd10eac576d503599cd4ec5`.
+
+The latest full batch, 17, used committed driver and rebuilt candidate
+`4ff8ae2274a2a07a7b0591bf19276b30f3c2a32d`. It passed ordinary pairing,
+two-way bytes, a 213,003 ms interval without Android calls, desktop/Android
+process restarts, guest reboot, offline recovery, access-only revocation and
+re-pairing, interrupted rotation, direct old-key rejection against new
+map/manifest/chunk ciphertext, authenticated history restore and post-rotation
+restart. Both selected-folder rename directions passed with five-minute
+stability observations of 301,456 ms and 301,482 ms. The Android two-action
+rename took 6,699 ms and retained the two original descendant identities.
+Old-root and valid unrelated-root recovery refusals left the whole server
+journal unchanged.
+
+The run then failed at `recovery-c-setup-wrong-token`, after observing the
+authenticated `bad_setup_token` refusal. Its aggregate local-state/content
+postcondition failed, but the receipt does not identify which predicate failed;
+the cause remains unproven. Both controllers report cleanup PASS, zero owned
+groups, and independently verified absence of actual runtime/private paths.
+The parent rehashed 80 exported files. The original failed aggregate remains
+unchanged, SHA-256
+`75edd383fedb2017c73bed904469005c701f1afbfa749724565643b48104431a`.
+The seventeen-batch ledger has SHA-256
+`eb1896366e8f07800ebd7833ad2d4ac7e4701c07af4130132ccc2782637f537a`.
+
+Author inspection found a separate evidence-retention gap: selected-folder
+checks observed bytes and server histories, but did not retain their raw
+exports after cleanup. Their PASS receipts alone are insufficient retained
+acceptance evidence. The repaired driver exports both peers' bytes at seed,
+both convergences and both quiet endpoints, together with fixed fixture
+manifests and bounded server-history snapshots. Terminal admission requires
+the actual files and matching hashes, source, paths, identities and generation.
+Fixture manifests are saved before collection, so failed exports retain their
+expected-byte mapping too. Focused offline controls include an actual failed
+byte-helper export surviving private/runtime deletion. This repair does not
+retroactively supply missing evidence for batch 17.
+
+A focused native desktop reproduction used ordinary account creation, backup,
+local Leave, and invalid/stripped/valid backup staging. It reproduced the
+wrong-token check's failure: the authenticated refusal occurred, all custody,
+credential, engine, content and metadata predicates passed, but the expected
+toast was absent. The real notice channel recorded one folded confirmation.
+Opening Show sync status and reading its ordinary Recent view exposed the exact
+refusal, with all original predicates passing after 236.5 ms and one submission.
+This establishes a concrete toast-only oracle defect; it does not reconstruct
+the missing facts from batch 17 or count as fresh-C acceptance. The original
+failure and subsequent UI observation have respective SHA-256 values
+`bb5947c9ec27f7bc67399d8429b9d5570d0b21a9950e2b7f04e7fc584b090bcf` and
+`f7a58cd4e5cbdb8f4cdd3ea53c40a29c14f9a2cc3742fd25fbff5afde62ac158`.
+The driver repair opens the ordinary full Recent list for refused and successful
+recovery messages, avoiding the status summary's ten-entry limit. It waits for
+active custody before opening the successful-recovery view, then requires its
+exact rendered confirmation. Both outcomes preserve their original shared
+45/60-second deadlines and close only that owned modal before continuing.
+No request is resubmitted or custody/content check weakened. An enrolling/finally
+race was considered but was not observed in this reproduction. Two earlier
+diagnostic fixtures stopped before submission: one lacked a precise stage;
+the next correctly hit the sole-device Leave refusal before its explicit local
+choice was included. All three diagnostics remain recorded FAIL and have
+independently verified cleanup and absent runtime/private paths.
+
+Fresh-C readback now retains its source-bound expectations before collecting
+actual binary file contents. Partial or mismatched exports produce a retained
+FAIL result. Terminal admission independently reopens the two exported files,
+checks their nonempty bytes, exact hashes, generation tags and counts, and
+rejects missing evidence. The actual exporter-to-admission control passed after
+private/runtime deletion and rejected same-size corruption and deletion; its
+receipt SHA-256 is
+`a499004585643b6123355a8d820bbbd1b920d007768cc168433ae713d066d897`.
+This is an offline composition check, not a native recovery pass.
+
+The composed repair passes `scripts/ci/mobile-harness.sh`: 141 Python tests,
+172 Node tests and 182 scripted mutation controls, with no skipped tests.
+The log SHA-256 is
+`e3822345538be388e67e4fbfb44673cc28581934ffe083e7d86560c78622e568`.
+Both `make secrets` scans, with `BASE` set to the protected-base SHA above,
+pass; their log SHA-256 is
+`d8b6455f5794b25fb770a258bd8ccb499101b636cba509f2a0592fb31ffdedd2`.
+The preceding composed check failed because the isolated rename UI fixture
+lacked the new retention bindings. That failed log is retained; the fixture
+now supplies and checks those bindings, while separate filesystem tests verify
+actual retained evidence. These controls do not establish native acceptance.
 
 Run 19 completed in 212.446 seconds, with ordinary pairing and consent and
 two independently retrieved matching notes. Its terminal capture contains 48

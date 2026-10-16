@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 import sys
 import time
+import os
+import stat
 
 
 def pending_journal(run, source_head):
@@ -61,6 +63,106 @@ def android_case_rename(require, proof):
     return elapsed
 
 
+def selected_evidence(run, source_head, phase=None):
+    """Admit only the fixed retained selected exports; ancestry stays the JS oracle."""
+    def need(ok):
+        if not ok: raise ValueError('selected retained evidence refused')
+    def raw(relative, bound=2097152):
+        path = run / relative
+        info = path.lstat()
+        need(path.resolve() == path and stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+             and info.st_nlink == 1 and info.st_mode & 0o077 == 0 and 0 < info.st_size <= bound)
+        return path.read_bytes()
+    def read(relative):
+        return json.loads(raw(relative))
+    if phase is None: phase = read('evidence/full-selected-rename.json')
+    exports, snapshots = phase.get('retainedByteExports'), phase.get('retainedServerSnapshots')
+    labels = ('seed', 'down', 'down-quiet', 'up', 'up-quiet')
+    need(isinstance(exports, list) and [e.get('label') for e in exports] == ['selected-' + n for n in labels])
+    expected_hashes = None
+    for name, entry in zip(labels, exports):
+        root = 'evidence/independent-bytes-selected-' + name
+        need(entry.get('resultPath') == root + '/result.json' and entry.get('fixtureManifestPath') == root + '-fixtures.json')
+        fixture_raw, result_raw = raw(root + '-fixtures.json'), raw(root + '/result.json')
+        need(hashlib.sha256(fixture_raw).hexdigest() == entry.get('fixtureManifestSha256')
+             and hashlib.sha256(result_raw).hexdigest() == entry.get('resultSha256'))
+        fixtures, result = json.loads(fixture_raw), json.loads(result_raw)
+        folder = 'team docs' if name in ('down', 'down-quiet') else 'Team docs'
+        need(isinstance(fixtures, list) and len(fixtures) == 2 and [n.get('path') for n in fixtures] == [folder + '/One.md', folder + '/Two.md'])
+        need(result.get('schema') == 1 and result.get('result') == 'PASS' and result.get('sourceHead') == source_head
+             and result.get('fixtureManifestSha256') == entry['fixtureManifestSha256']
+             and result.get('expectedCount') == 2 and result.get('verifiedCount') == 2 and len(result.get('files', [])) == 2)
+        hashes = []
+        for i, fixture in enumerate(fixtures):
+            expected = fixture['text'].encode()
+            need(0 < len(expected) <= 65536)
+            digest = hashlib.sha256(expected).hexdigest(); hashes.append(digest)
+            row = result['files'][i]
+            need(row.get('fixtureIndex') == i and row.get('bytes') == len(expected)
+                 and all(row.get(k) == digest for k in ('expectedSha256', 'desktopSha256', 'androidSha256')))
+            need(raw(root + '/' + str(i) + '-android.bin', 65536) == expected
+                 and raw(root + '/' + str(i) + '-desktop.bin', 65536) == expected)
+        if expected_hashes is None: expected_hashes = hashes
+        need(hashes == expected_hashes)
+    roles = ('original', 'down', 'quiet-down', 'up', 'quiet-up')
+    need(isinstance(snapshots, list) and [s.get('label') for s in snapshots] == list(roles))
+    identity, generation = None, None
+    for label, command, entry in zip(roles, ('rename', 'before', 'watch-down', 'returned', 'watch-up'), snapshots):
+        relative = 'evidence/selected-snapshot-' + label + '.json'
+        need(entry.get('path') == relative)
+        data = raw(relative, 67108864)
+        need(len(data) == entry.get('bytes') and hashlib.sha256(data).hexdigest() == entry.get('sha256'))
+        emitted = read('evidence/selected-desktop-' + command + '.json')
+        need(emitted.get('result') == 'PASS' and emitted.get('sourceHead') == source_head and emitted.get('retainedSnapshots') == [entry])
+        snapshot = json.loads(data)
+        need(snapshot.get('schema') == 1 and snapshot.get('sourceHead') == source_head
+             and snapshot.get('folder') == ('team docs' if label in ('down', 'quiet-down') else 'Team docs')
+             and re.fullmatch('[a-f0-9]{32}', snapshot.get('generation', ''))
+             and isinstance(snapshot.get('records'), list) and 3 <= len(snapshot['records']) <= 64)
+        rows = snapshot.get('notes')
+        need(isinstance(rows, list) and len(rows) == 2 and [r.get('suffix') for r in rows] == ['One.md', 'Two.md']
+             and [r.get('sha256') for r in rows] == expected_hashes)
+        current = [(r.get('fileId'), r.get('sha256')) for r in rows]
+        need(all(re.fullmatch('[a-f0-9]{32}', r[0] or '') for r in current) and len(set(r[0] for r in current)) == 2)
+        if identity is None: identity, generation = current, snapshot['generation']
+        need(current == identity and snapshot['generation'] == generation)
+    return True
+
+
+def recovery_evidence(run, source_head):
+    """Fixed fresh-C byte exports remain independently readable after cleanup."""
+    def need(ok):
+        if not ok: raise ValueError('recovery retained evidence refused')
+    def raw(name, bound):
+        path = run / 'evidence/recovery-C-readback' / name
+        info = path.lstat()
+        need(path.resolve() == path and stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+             and info.st_nlink == 1 and info.st_mode & 0o077 == 0 and 0 < info.st_size <= bound)
+        return path.read_bytes()
+    manifest = raw('expectations.json', 1048576)
+    expected, result = json.loads(manifest), json.loads(raw('result.json', 1048576))
+    need(type(expected.get('schema')) is int and expected['schema'] == 1 and expected.get('sourceHead') == source_head
+         and re.fullmatch('[a-f0-9]{64}', expected.get('generationHash', '')))
+    notes = expected.get('notes')
+    need(isinstance(notes, list) and len(notes) == 2 and [n.get('generation') for n in notes] == ['retained', 'current']
+         and all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9 -]{0,100}\.md', n.get('path', ''))
+                 and re.fullmatch('[a-f0-9]{64}', n.get('sha256', '')) for n in notes)
+         and len({n['path'] for n in notes}) == 2 and len({n['sha256'] for n in notes}) == 2)
+    need(type(result.get('schema')) is int and result['schema'] == 1 and result.get('result') == 'PASS' and result.get('sourceHead') == source_head
+         and result.get('expectationsSha256') == hashlib.sha256(manifest).hexdigest()
+         and type(result.get('expectedCount')) is int and result['expectedCount'] == 2
+         and type(result.get('exportedCount')) is int and result['exportedCount'] == 2
+         and isinstance(result.get('exports'), list) and len(result['exports']) == 2)
+    for i, (note, entry) in enumerate(zip(notes, result['exports'])):
+        data = raw(str(i) + '-desktop.bin', 65536)
+        need(type(entry.get('index')) is int and entry['index'] == i
+             and entry.get('path') == 'evidence/recovery-C-readback/' + str(i) + '-desktop.bin'
+             and entry.get('generation') == note['generation'] and entry.get('expectedSha256') == note['sha256']
+             and entry.get('actualSha256') == note['sha256'] == hashlib.sha256(data).hexdigest()
+             and type(entry.get('bytes')) is int and entry['bytes'] == len(data) and entry.get('exactHashMatched') is True)
+    return True
+
+
 def run(api, args, c, desktop, android, lab, steps, phone, desk, tls, vault, core_notes, untrusted):
     require, save, private, helper = api.require, api.save, api.private_json, api.helper
     node, source, controller = c['node'], c['source'], api.load_controller()
@@ -86,14 +188,19 @@ def run(api, args, c, desktop, android, lab, steps, phone, desk, tls, vault, cor
         with target.open('xb') as stream: stream.write(original.read_bytes())
         target.chmod(0o600)
 
-    def both_bytes(label):
-        fixtures = android / ('private/full-fixtures-' + label + '.json'); save(fixtures, notes)
+    def both_bytes(label, fixture_list=None):
+        expected = notes if fixture_list is None else fixture_list
+        fixtures = desktop / ('evidence/independent-bytes-' + label + '-fixtures.json'); save(fixtures, expected)
         output = desktop / ('evidence/independent-bytes-' + label)
         proof = steps.run('independent-bytes-' + label, [sys.executable, '-B', helper('mobile-evidence.py'),
             '--controller', helper('android-session.py'), '--android-run', str(android), '--desktop-run', str(desktop),
             '--fixtures', str(fixtures), '--output', str(output), '--android-vault', vault])
-        require(proof.get('expectedCount') == len(notes) and proof.get('verifiedCount') == len(notes), 'all_independent_fixture_bytes', 'OUTCOME_MISMATCH')
+        require(proof.get('expectedCount') == len(expected) and proof.get('verifiedCount') == len(expected), 'all_independent_fixture_bytes', 'OUTCOME_MISMATCH')
+        require(proof.get('sourceHead') == c['sourceHead'] and proof.get('fixtureManifestSha256') == hashlib.sha256(fixtures.read_bytes()).hexdigest(), 'retained_fixture_binding')
         save(desktop / ('evidence/independent-bytes-' + label + '.json'), proof)
+        return {'label': label, 'resultPath': str((output / 'result.json').relative_to(desktop)),
+                'resultSha256': hashlib.sha256((output / 'result.json').read_bytes()).hexdigest(),
+                'fixtureManifestPath': str(fixtures.relative_to(desktop)), 'fixtureManifestSha256': proof['fixtureManifestSha256']}
 
     def note_from_phone(label, text, paired=True):
         note = {'path': 'Android-' + label + '.md', 'text': text}
@@ -351,30 +458,39 @@ def run(api, args, c, desktop, android, lab, steps, phone, desk, tls, vault, cor
     native('selected-folder-seed', 'selected-fixtures.mjs', 'seed', results=('PREPARED',))
     selected = [private(desktop / ('private/desktop/note-selected-' + name + '.json')) for name in ('one', 'two')]
     for i, note in enumerate(selected): phone_reads('selected-seed-read-' + str(i), note)
+    selected_exports = [both_bytes('selected-seed', selected)]
+    def selected_bytes(label, folder):
+        selected_exports.append(both_bytes('selected-' + label, [{**note, 'path': folder + '/' + note['path'].split('/')[-1]} for note in selected]))
+    snapshots = []
     native('desktop-save-selected-policy', 'selected-desktop.mjs', 'scope')
     phone('android-save-selected-policy', 'scope-selected', {'folders': ['Team docs']})
     native('desktop-fresh-excluded-control', 'selected-fixtures.mjs', 'outside', results=('OBSERVED',))
     phone('phone-fresh-excluded-control', 'fixture-provision', {'path': 'Outside/Phone-sentinel.md', 'text': '# Outside Android\n\nSynthetic excluded phone control.\n'})
     phone_before = android / 'private/folder-before-desktop-rename.json'
     require(phone('android-selected-before-desktop-rename', 'folder-snapshot', {'folder': 'Team docs', 'output': str(phone_before)}).get('descendants') == 2, 'exact_two_selected_descendants')
-    native('desktop-ordinary-selected-rename', 'selected-desktop.mjs', 'rename')
+    snapshots.extend(native('desktop-ordinary-selected-rename', 'selected-desktop.mjs', 'rename')['retainedSnapshots'])
     require(phone('android-passive-selected-rename', 'folder-verify', {'folder': 'team docs', 'oldFolder': 'Team docs', 'beforeSnapshot': str(phone_before)}).get('descendants') == 2, 'exact_two_passive_selected_descendants')
-    native('desktop-selected-stable-before', 'selected-desktop.mjs', 'before')
+    snapshots.extend(native('desktop-selected-stable-before', 'selected-desktop.mjs', 'before')['retainedSnapshots'])
+    selected_bytes('down', 'team docs')
     def selected_boundary(label, folder):
         phone(label, 'selected-boundaries', {'folder': folder, 'outsideLocal': 'Outside/Phone-sentinel.md',
             'outsideAbsent': 'Outside/Sentinel.md', 'outsideText': '# Outside Android\n\nSynthetic excluded phone control.\n'})
     selected_boundary('android-boundary-after-desktop-rename', 'team docs')
     down = native('selected-five-minute-watch-desktop-origin', 'selected-desktop.mjs', 'watch-down', timeout=420)
     require(down.get('watchMs', 0) >= 300000, 'desktop_origin_selected_watch')
+    snapshots.extend(down['retainedSnapshots']); selected_bytes('down-quiet', 'team docs')
     selected_boundary('android-boundary-after-desktop-origin-watch', 'team docs')
     rename_ms = android_case_rename(require, phone('android-ordinary-selected-rename-back',
         'folder-case-rename', {'from': 'team docs', 'to': 'Team docs'}))
-    native('desktop-passive-selected-rename-back', 'selected-desktop.mjs', 'returned')
+    snapshots.extend(native('desktop-passive-selected-rename-back', 'selected-desktop.mjs', 'returned')['retainedSnapshots'])
+    selected_bytes('up', 'Team docs')
     selected_boundary('android-boundary-after-android-rename', 'Team docs')
     up = native('selected-five-minute-watch-android-origin', 'selected-desktop.mjs', 'watch-up', timeout=420)
     require(up.get('watchMs', 0) >= 300000, 'android_origin_selected_watch')
+    snapshots.extend(up['retainedSnapshots']); selected_bytes('up-quiet', 'Team docs')
     selected_boundary('android-boundary-after-android-origin-watch', 'Team docs')
-    receipt('selected-rename', ordinaryDesktopRename=True, ordinaryAndroidRename=True, noteIdentityAndBytesPreserved=True,
+    selected_evidence(desktop, c['sourceHead'], {'retainedByteExports': selected_exports, 'retainedServerSnapshots': snapshots})
+    receipt('selected-rename', retainedByteExports=selected_exports, retainedServerSnapshots=snapshots, ordinaryDesktopRename=True, ordinaryAndroidRename=True, noteIdentityAndBytesPreserved=True,
         androidRenameWorkflow='TWO_ORDINARY_RENAMES', androidOrdinaryRenameCount=2,
         directAndroidCaseRename=False, androidIntermediateAbsent=True, androidRenameElapsedMs=rename_ms,
         priorHistoryAndAncestryPreserved=True, postConvergenceHeadsAndVersionsFrozen=True,

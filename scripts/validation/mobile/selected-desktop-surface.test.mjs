@@ -127,7 +127,7 @@ test('native text is independently observed before any Save input',async()=>{
 
 const renameStart=source.indexOf("    renameStage='snapshot-original';"),renameEnd=source.indexOf("  }else if(command==='before'){",renameStart);
 assert.ok(renameStart>=0&&renameEnd>renameStart,'complete ordinary rename action required');
-const renameAction=new AsyncFunction('ui','c','state','snapshot','privateSave','join','pointer','sleep','preservedRename','let renameStage;'+source.slice(renameStart,renameEnd)+';return renameStage;');
+const renameAction=new AsyncFunction('ui','c','state','snapshot','privateSave','join','pointer','sleep','preservedRename','retainedSnapshots','retainSelectedSnapshot','let renameStage;'+source.slice(renameStart,renameEnd)+';return renameStage;');
 const pointerStart=source.indexOf('async function pointer('),pointerEnd=source.indexOf('\nasync function exactBytes(',pointerStart);
 const nativePointer=new AsyncFunction('ui','c',source.slice(pointerStart,pointerEnd)+';return pointer;');
 async function renameScenario(mode='normal'){
@@ -144,7 +144,9 @@ async function renameScenario(mode='normal'){
   const c={async mouseEvent(type,x,y,button){calls.push([type,button]);if(type==='mouseReleased'&&button==='left'){clicked=true;focused=false;f.main.activeElement=mode==='foreign-active'?foreign:mode==='body-active'?f.main.body:tree;}},async keyEvent(type,key){calls.push([type,key]);if(type==='keyDown'&&key==='ArrowUp'&&clicked)up=true;if(type==='keyDown'&&key==='ArrowDown'&&up&&mode!=='missing-focus')focused=true;if(type==='keyDown'&&key==='F2'&&mode!=='no-rename-event'){assert.ok(focused);inline=true;title.isContentEditable=true;}if(type==='keyDown'&&key==='Enter'&&mode!=='commit-dropped')committed=title.textContent==='team docs';},async insertText(text){calls.push(['text',text]);if(f.main.activeElement===title&&mode!=='text-dropped')title.textContent=text;}};
   const pointer=await nativePointer(ui,c),snapshots=[];
   const snapshot=async folder=>{snapshots.push(folder);if(folder==='team docs')assert.ok(committed,'independent renamed snapshot must exist');return {folder};};
-  try{await renameAction(ui,c,{secrets:'owned-private'},snapshot,()=>{},(...p)=>p.join('/'),pointer,async()=>{},(before,after)=>{assert.equal(before.folder,'Team docs');assert.equal(after.folder,'team docs');});return {calls,clock,snapshots};}
+  // This fixture isolates UI delivery; selected-retention.test exercises real files.
+  const retained=[],retain=(run,label,value)=>{assert.equal(run,'owned-run');assert.equal(label,'original');assert.equal(value.folder,'Team docs');return {label};};
+  try{await renameAction(ui,c,{run:'owned-run',secrets:'owned-private'},snapshot,()=>{},(...p)=>p.join('/'),pointer,async()=>{},(before,after)=>{assert.equal(before.folder,'Team docs');assert.equal(after.folder,'team docs');},retained,retain);assert.deepEqual(retained,[{label:'original'}]);return {calls,clock,snapshots};}
   catch(error){return {calls,clock,snapshots,error};}
 }
 test('ordinary Files rename focuses the exact folder and uses trusted F2/text/Enter before independent snapshots',async()=>{

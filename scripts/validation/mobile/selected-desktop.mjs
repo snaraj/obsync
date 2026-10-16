@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { boundManifest, owned, privateRead, privateSave, digest } from './desktop-guard.mjs';
 import { connect, targets, sleep } from './cdp.mjs';
 const [run, source, command, index] = process.argv.slice(2);
-let state, c, watchElapsed, scopeStage=null, scopeDeadline=0, renameStage=null, renameFacts;
+let state, c, watchElapsed, retainedSnapshots=[], scopeStage=null, scopeDeadline=0, renameStage=null, renameFacts;
 const scopeFailureReasons=new Set(['owned scope input deadline','bounded owned Settings pages required','one process-owned Settings target required','lab UI step refused or timed out; no secret-bearing exception printed','CDP deadline','CDP disconnected']);
 const uiPrelude = `const p=app.plugins.plugins['obsync-private-sync'];if(!p?.state?.paired||p.state.custody2()?.phase!=='active'||p.state.data.serverUrl!==P.url)throw Error('owned active selected peer');
  const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;
@@ -110,6 +110,20 @@ function checkedSnapshot(snapshot){
       for(const version of record.versions)ancestry(record,version.id); // cycles fail even in equal snapshots
     }
 }
+export function retainSelectedSnapshot(run, label, value) {
+  if(!['original','down','up','quiet-down','quiet-up'].includes(label))throw Error('selected snapshot label');
+  checkedSnapshot(value);
+  if(value.schema!==1||!['Team docs','team docs'].includes(value.folder)||value.records.length<3||value.records.length>64)throw Error('selected snapshot bounds');
+  for(const record of value.records){
+    if(!/^[a-f0-9]{32}$/.test(record.fileId??'')||!Array.isArray(record.heads)||record.heads.length<1||record.heads.length>128||!Array.isArray(record.versions)||record.versions.length<1||record.versions.length>128||JSON.stringify(record).length>1048576||
+       record.heads.some(id=>!/^[a-f0-9]{64}$/.test(id)||!record.versions.some(v=>v.id===id))||new Set(record.heads).size!==record.heads.length||new Set(record.versions.map(v=>v.id)).size!==record.versions.length||
+       record.versions.some(v=>!/^[a-f0-9]{64}$/.test(v.id??'')||typeof v.deleted!=='boolean'||!Array.isArray(v.parents)||v.parents.length>128||v.parents.some(id=>!/^[a-f0-9]{64}$/.test(id))))throw Error('selected retained history bounds');
+  }
+  const bytes=Buffer.from(JSON.stringify(value)+'\n'),path=`evidence/selected-snapshot-${label}.json`;
+  owned(join(run,'evidence'),true);writeFileSync(join(run,path),bytes,{mode:0o600,flag:'wx'});
+  const actual=readFileSync(join(run,path));if(!actual.equals(bytes))throw Error('selected snapshot readback');
+  return {label,path,sha256:digest(actual),bytes:actual.length};
+}
 function ancestry(record,head){
   const found=new Set(),visiting=new Set();
   const visit=id=>{if(visiting.has(id))throw Error('selected ancestry cycle');if(found.has(id))return;const version=record.versions.find(v=>v.id===id);if(!version)throw Error('selected ancestry missing');visiting.add(id);for(const parent of version.parents)visit(parent);visiting.delete(id);found.add(id);};
@@ -141,7 +155,7 @@ try {
     await selectedScope();
   }else if(command==='rename'){
     renameStage='snapshot-original';
-    const before=await snapshot('Team docs');privateSave(join(state.secrets,'selected-original.json'),JSON.stringify(before));
+    const before=await snapshot('Team docs');retainedSnapshots.push(retainSelectedSnapshot(state.run,'original',before));privateSave(join(state.secrets,'selected-original.json'),JSON.stringify(before));
     renameStage='reveal-files-folder';
     await ui(`app.setting.close();const leaves=app.workspace.getLeavesOfType('file-explorer');if(leaves.length!==1)throw Error('one Files view required');await app.workspace.revealLeaf(leaves[0]);app.workspace.setActiveLeaf(leaves[0],{focus:true});await wait(()=>{const e=document.querySelector('.nav-folder-title[data-path="Team docs"]');return e&&visible(e);},'visible selected folder');return true;`);
     renameStage='focus-files-folder';
@@ -161,24 +175,26 @@ try {
     await sleep(500);const after=await snapshot('team docs');preservedRename(before,after);
   }else if(command==='before'){
     const current=await snapshot('team docs');preservedRename(JSON.parse(privateRead(join(state.secrets,'selected-original.json'))),current);
-    privateSave(join(state.secrets,'selected-before-return.json'),JSON.stringify(current));
+    privateSave(join(state.secrets,'selected-before-return.json'),JSON.stringify(current));retainedSnapshots.push(retainSelectedSnapshot(state.run,'down',current));
   }else if(command==='returned'){
     const end=Date.now()+60000;while(!readdirSync(state.devices.A.vault).includes('Team docs')){if(Date.now()>end)throw Error('passive selected case return');await sleep(100);}
     const current=await snapshot('Team docs');preservedRename(JSON.parse(privateRead(join(state.secrets,'selected-before-return.json'))),current);
-    privateSave(join(state.secrets,'selected-watch.json'),JSON.stringify(current));
+    privateSave(join(state.secrets,'selected-watch.json'),JSON.stringify(current));retainedSnapshots.push(retainSelectedSnapshot(state.run,'up',current));
   }else{
     const folder=command==='watch-down'?'team docs':'Team docs';
     const before=JSON.parse(privateRead(join(state.secrets,command==='watch-down'?'selected-before-return.json':'selected-watch.json'))),start=performance.now();
+    let finalSnapshot;
     for(let i=0;i<=10;i++){
       if(i)await sleep(30000);
-      const current=await snapshot(folder);unchangedQuiet(before,current);
+      const current=await snapshot(folder);unchangedQuiet(before,current);finalSnapshot=current;
     }
+    retainedSnapshots.push(retainSelectedSnapshot(state.run,command==='watch-down'?'quiet-down':'quiet-up',finalSnapshot));
     watchElapsed=Math.floor(performance.now()-start);if(watchElapsed<300000)throw Error('selected watch too short');
     const logs=c.consoleSummary;
     if(!Number.isFinite(logs.windowStartedAtEpochMs)||!['windowErrors','windowExceptions','incomingManifestScopeRefusals'].every(key=>Number.isInteger(logs[key])&&logs[key]>=0))throw Error('scoped selected log coverage absent');
     if(logs.windowExceptions||logs.windowErrors||logs.incomingManifestScopeRefusals)throw Error('selected incoming manifest or native console failure');
   }
-  const receipt={schema:1,result:'PASS',sourceHead:state.source_head,command,watchMs:watchElapsed,
+  const receipt={schema:1,result:'PASS',sourceHead:state.source_head,command,watchMs:watchElapsed,retainedSnapshots,
     ordinaryUiAction:command==='scope'||command==='rename',nativeTrustedInput:command==='scope'||command==='rename',
     independentDiskBytes:command!=='scope',selectedIdentityAndBytesPreserved:command!=='scope',priorHistoryAndAncestryPreserved:command!=='scope',
     historiesAndHeadsUnchanged:command.startsWith('watch-'),noteTombstonesAbsent:command!=='scope',

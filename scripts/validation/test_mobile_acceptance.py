@@ -128,6 +128,10 @@ class Admission(unittest.TestCase):
     def test_full_receipt_requires_every_independent_phase_file(self):
         with tempfile.TemporaryDirectory(prefix='obsync-full-admission-') as temporary:
             root = Path(temporary).resolve(); (root / 'evidence').mkdir(mode=0o700)
+            # This test isolates phase facts; retained selected admission is
+            # exercised with actual byte exports in test_mobile_selected_retention.
+            stub = root / 'selected-stub.py'; stub.write_text('def selected_evidence(run, source_head): return True\ndef recovery_evidence(run, source_head): return True\n')
+            selected_stub = patch.object(RUNNER, 'helper', return_value=str(stub)); selected_stub.start(); self.addCleanup(selected_stub.stop)
             main = {'schema': 1, 'sourceHead': HEAD, 'result': 'PASS', 'journeys': list(RUNNER.FULL_NATIVE_PHASES)}
             RUNNER.save(root / 'evidence/full-native-journeys.json', main)
             for phase in RUNNER.FULL_NATIVE_PHASES:
