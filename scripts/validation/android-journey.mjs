@@ -49,6 +49,35 @@ export async function pairingSnapshot(expected,comparisons){
   const hash=async s=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(s)))).map(v=>v.toString(16).padStart(2,'0')).join(''),kind=p.currentStatus().kind;
   return {paired:p.state.paired,suite:pin?.suite??null,phase:pin?.phase??null,generationMatched:pin?.phase==='active'&&pin.suite===2?await hash(pin.generation)===expected:null,consentVisibleCount:consent.length,claimantVisibleCount:claimants.length,comparisonVisibleCount:shown.claimant.length,waitingHandlePresent:!!p.waiting,statusKind:/^[a-z][a-z_-]{0,23}$/.test(kind)?kind:'OTHER',claimantUiStatus:last==='Claiming the pairing…'?'CLAIMING':last.startsWith('Waiting for approval')?'WAITING_APPROVAL':last.startsWith('Approved. Comparing')?'APPROVED_COMPARING':last?'OTHER_STATUS':'NONE'};
 }
+// Read-only terminal facts; no key, credential, invitation, code or free UI text.
+export async function rotationPairObservation(app, expected) {
+  const p=app?.plugins?.plugins?.['obsync-private-sync'],c=p?.state?.custody2();
+  const hash=async value=>typeof value==='string'?[...new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(value)))].map(b=>b.toString(16).padStart(2,'0')).join(''):null;
+  const visible=e=>e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0,modals=[...document.querySelectorAll('.modal:not(.mod-settings)')].filter(visible),titles=modals.map(m=>m.querySelector('.modal-title')?.textContent.trim());
+  const current=await hash(c?.generation),old=await hash(c?.history?.generation);
+  return {statePresent:!!p?.state,paired:p?.state?.paired===true,suite2:c?.suite===2,phase:['active','enrollment','draft','prepared','commit_unknown'].includes(c?.phase)?c.phase:c==null?'NONE':'OTHER',generationValid:/^[a-f0-9]{32}$/.test(c?.generation??''),currentGenerationMatched:current===expected.current,oldGenerationStillHeld:typeof expected.old==='string'&&current===expected.old,
+    historyPresent:!!c?.history,historySuite2:c?.history?.suite===2,historyGenerationMatched:typeof expected.old==='string'&&old===expected.old,enrollmentPresent:!!c?.enrollment,rotationPending:!!c?.rotation,forgottenDevice:p?.forgottenDevice===true,waitingHandlePresent:!!p?.waiting,
+    consentVisibleCount:titles.filter(t=>t==="Add this vault's notes to the server's vault?").length,claimantVisibleCount:titles.filter(t=>t==='Pair this device').length,otherModalCount:titles.filter(t=>!["Add this vault's notes to the server's vault?",'Pair this device'].includes(t)).length};
+}
+export async function waitPairConsentOutcome(read,facts,replacement,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now,end=now()+20000){
+  const started=now();Object.assign(facts,{polls:0,deadlineMs:Math.max(0,end-started),ready:false,refused:false});
+  while(now()<end){const after=await read(Math.min(5000,end-now()));facts.before??=after;facts.after=after;facts.polls++;facts.elapsedMs=now()-started;
+    facts.refused=after.consentVisibleCount>1||replacement&&after.paired&&!after.currentGenerationMatched&&!after.oldGenerationStillHeld;
+    facts.ready=!facts.refused&&now()<=end&&(after.consentVisibleCount===1||after.paired&&(!replacement||after.currentGenerationMatched));
+    if(facts.ready||facts.refused)break;if(now()<end)await pause(Math.min(100,end-now()));
+  }
+  facts.elapsedMs=now()-started;return facts;
+}
+export async function waitRotationPair(read,facts,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now,budget=20000){
+  const started=now(),end=started+budget;Object.assign(facts,{polls:0,deadlineMs:budget,ready:false,refused:false,transitions:[]});
+  while(now()<end){const after=await read(Math.min(5000,end-now()));facts.before??=after;facts.after=after;facts.polls++;facts.elapsedMs=now()-started;
+    if(!facts.transitions.length||JSON.stringify(facts.transitions.at(-1))!==JSON.stringify(after)){if(facts.transitions.length===16)facts.transitions.splice(1,1);facts.transitions.push(after);}
+    facts.refused=!after.statePresent||!after.generationValid||after.phase==='OTHER'||after.historyPresent&&(!after.historySuite2||!after.historyGenerationMatched)||!after.currentGenerationMatched&&!after.oldGenerationStillHeld;
+    facts.ready=!facts.refused&&now()<=end&&after.paired&&after.suite2&&after.phase==='active'&&after.currentGenerationMatched&&after.historyPresent&&after.historySuite2&&after.historyGenerationMatched;
+    if(facts.ready||facts.refused)break;if(now()<end)await pause(Math.min(100,end-now()));
+  }
+  facts.elapsedMs=now()-started;return facts;
+}
 export function serverUrlCommitMatched(f){return f?.nativeUrlMatches===true&&f?.savedMetadataUrlMatches===true&&f?.paired===false&&f?.nativeDeviceIdAbsent===true;}
 export function pointerWitnessMatches(w){return ['mousedown','mouseup','click'].every(type=>w?.[type]?.count===1&&w[type].trusted===true&&w[type].expectedTargetMatched===true);}
 export function persistedByteFacts(expected,observed){return {expectedBytes:expected.length,expectedSha256:digest(expected),observedBytes:observed?.length??null,observedSha256:observed?digest(observed):null,exactBytesMatched:!!observed&&observed.equals(expected)};}
@@ -260,7 +289,7 @@ async function main(args) {
     const result = { at: new Date().toISOString(), command,evidenceClass:input.evidenceClass==='LOCAL_CONTROL_PROTOTYPE'?input.evidenceClass:undefined, platform: usb?'Android USB device':'Android emulator', physicalPhone:usb?'USB_JOURNEY_OBSERVED':'NOT_RUN',freshPhysicalEnvironment:usb?false:undefined, sourceHead: state.sourceHead, driverSha256: digest(readFileSync(new URL(import.meta.url))),connectReadiness,...value };
     receipts.push(result);
   };
-  let forward, ws, next = 0, stage='connect_android_webview',nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,connectReadiness,persistedNoteReadback,controlReadiness,pointerWitness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,noteReadiness;
+  let forward, ws, next = 0, stage='connect_android_webview',nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,connectReadiness,persistedNoteReadback,controlReadiness,pointerWitness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,noteReadiness,replacementReadiness;
   const pending = new Map(), networkFailures = [], blockedReasons = [];
   async function send(method, params = {},budgetMs=30000) {
     live();
@@ -413,7 +442,7 @@ async function main(args) {
         await step('enter_fresh_invitation','type',{...base,selector:'.modal:not(.mod-settings) input',text:invitation});
         await step('submit_pairing_claim','control',{...base,selector:'.modal:not(.mod-settings) button',expectedText:'Pair',action:'click'});
         await step('independent_claimant_observation','pair-observe',base);
-        receipt({result:'OBSERVED',stage:'claimant_comparison_ready',independentClaimantObservation:true,creatorApproval:'REQUIRED',replacementPairing:command==='rotation-pair-submit',localUploadConsent:command==='rotation-pair-submit'?'REPLACEMENT_ENROLLMENT':'NOT_YET_GIVEN'});
+        receipt({result:'OBSERVED',stage:'claimant_comparison_ready',independentClaimantObservation:true,creatorApproval:'REQUIRED',replacementPairing:command==='rotation-pair-submit',localUploadConsent:'NOT_YET_OBSERVED'});
       }
       return;
     }
@@ -579,8 +608,11 @@ async function main(args) {
     }else if(command==='rotation-pair-status'){
       stage='verify_replacement_enrollment_and_history';
       if(!/^[a-f0-9]{64}$/.test(input.expectedGenerationHash??'')||!/^[a-f0-9]{64}$/.test(input.expectedOldGenerationHash??'')||input.expectedGenerationHash===input.expectedOldGenerationHash)throw Error('independent distinct rotation generation hashes required');
-      const outcome=await evaluate(`const hash=async x=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(x)))).map(v=>v.toString(16).padStart(2,'0')).join('');const end=Date.now()+20000;while(Date.now()<end){const p=app.plugins.plugins['obsync-private-sync'],c=p.state.custody2();if(p.state.paired&&c?.phase==='active'&&c.suite===2&&c.history&&c.history.suite===2){if(await hash(c.generation)!==P.current||await hash(c.history.generation)!==P.old)throw Error('replacement generation or retained history differs');return {paired:true,suite:2,phase:'active',historySuite:2,historyGenerationMatched:true,currentGenerationMatched:true};}await new Promise(r=>setTimeout(r,100));}throw Error('replacement enrollment deadline');`,{current:input.expectedGenerationHash,old:input.expectedOldGenerationHash});
-      receipt({result:'PASS',...outcome,readOnly:true});
+      replacementReadiness={polls:0,deadlineMs:20000};
+      await waitRotationPair(async budget=>await evaluate(`return await (${rotationPairObservation.toString()})(app,P);`,{current:input.expectedGenerationHash,old:input.expectedOldGenerationHash},true,budget),replacementReadiness);
+      if(replacementReadiness.refused)throw Error('replacement generation or retained history differs');
+      if(!replacementReadiness.ready)throw Error('replacement enrollment deadline');
+      receipt({result:'PASS',paired:true,suite:2,phase:'active',historySuite:2,historyGenerationMatched:true,currentGenerationMatched:true,replacementReadiness,readOnly:true});
     }else if(command==='new-tab'){
       await evaluate(`if(app.commands.executeCommandById('workspace:new-tab')===false)throw Error('public New tab command unavailable');return true;`);receipt({result:'ACTION_COMPLETED',method:'public Obsidian New tab command'});
     }else if(command==='close-settings'){
@@ -714,8 +746,13 @@ async function main(args) {
     } else if(command==='pair-consent'){
       stage='observe_and_accept_upload_consent';
       if(!/^[a-f0-9]{64}$/.test(input.expectedGenerationHash??''))throw Error('independent expected generation hash required');
+      if(input.expectedOldGenerationHash!==undefined&&(!/^[a-f0-9]{64}$/.test(input.expectedOldGenerationHash)||input.expectedOldGenerationHash===input.expectedGenerationHash))throw Error('independent distinct old generation hash required');
       const approvalOutcomeDeadline=Date.now()+20000;
-      const prior=await evaluate(`const end=Date.now()+20000;while(Date.now()<end){const p=app.plugins.plugins['obsync-private-sync'];const observed={paired:p.state.paired,consentVisible:[...document.querySelectorAll('.modal:not(.mod-settings)')].some(m=>m.getClientRects().length&&m.querySelector('.modal-title')?.textContent.trim()==="Add this vault's notes to the server's vault?")};if(observed.paired||observed.consentVisible)return observed;await new Promise(r=>setTimeout(r,100));}throw Error('creator approval outcome deadline');`);
+      pairingReadiness={approvalOutcome:{polls:0,deadlineMs:20000}};
+      await waitPairConsentOutcome(async budget=>await evaluate(`return await (${rotationPairObservation.toString()})(app,P);`,{current:input.expectedGenerationHash,old:input.expectedOldGenerationHash??null},true,budget),pairingReadiness.approvalOutcome,input.expectedOldGenerationHash!==undefined,undefined,undefined,approvalOutcomeDeadline);
+      if(pairingReadiness.approvalOutcome.refused)throw Error('native pairing generation or consent differs');
+      if(!pairingReadiness.approvalOutcome.ready)throw Error('creator approval outcome deadline');
+      const approvalReadiness=pairingReadiness.approvalOutcome,prior={paired:approvalReadiness.after.paired,consentVisible:approvalReadiness.after.consentVisibleCount===1};
       if(prior.paired){
         stage='verify_independent_known_notes_without_consent_prompt';
         if(prior.consentVisible||!input.knownNotesProof||!input.invitationFile)throw Error('independent prior known-note proof required');
@@ -726,10 +763,10 @@ async function main(args) {
         knownNotesIndexReadiness={...knownNotesIndexReadiness,...indexed.readiness};if(!knownNotesIndexReadiness.ready)throw Error('known note sync identity readiness deadline');const files=indexed.files;
         const local=[];for(const file of files){if(!/^[A-Za-z0-9 -]+(?:\/[A-Za-z0-9 -]+)*\.md$/.test(file.path))throw Error('synthetic Leave note path refused');local.push({...file,sha256:digest(device('exec-out','cat',androidExecPathArg(ownedVault(input.vaultPath)+'/'+file.path)))});}
         knownNotesMatch(proof,{sourceHead:state.sourceHead,generationHash:input.expectedGenerationHash,invitationTime:invitation.mtimeMs,now:Date.now()},local);
-        receipt({result:'PASS',consentNotRequiredKnownNotes:true,unknownLocalNoteCount:0,localNoteCount:local.length,knownNotesIndexReadiness,independentPriorKnownNotesProofSha256:digest(readFileSync(input.knownNotesProof)),sourceContract:'PairClaimModal asks only when notesUnknownTo2 > 0',explicitPairAndUpload:false,noConsentClick:true});return;
+        receipt({result:'PASS',consentNotRequiredKnownNotes:true,unknownLocalNoteCount:0,localNoteCount:local.length,knownNotesIndexReadiness,independentPriorKnownNotesProofSha256:digest(readFileSync(input.knownNotesProof)),approvalReadiness,sourceContract:'PairClaimModal asks only when notesUnknownTo2 > 0',explicitPairAndUpload:false,noConsentClick:true});return;
       }
       const before=await evaluate(`return await (${pairingSnapshot.toString()})(P.expected,(${visibleComparisons.toString()}));`,{expected:input.expectedGenerationHash});
-      pairingReadiness={beforeClick:before};
+      pairingReadiness={beforeClick:before,approvalOutcome:approvalReadiness};
       stage='wait_stable_exact_upload_consent_pointer';
       pointerReadiness=await evaluate(`const read=()=>{const p=app.plugins.plugins['obsync-private-sync'];if(p.state.paired)throw Error('unpaired consent state required');const ms=[...document.querySelectorAll('.modal:not(.mod-settings)')].filter(m=>m.getClientRects().length&&m.querySelector('.modal-title')?.textContent.trim()==="Add this vault's notes to the server's vault?");if(ms.length!==1)throw Error('sole upload consent required');const bs=[...ms[0].querySelectorAll('button')].filter(b=>b.textContent.trim()==='Pair and upload'&&!b.disabled&&b.getClientRects().length);if(bs.length!==1)throw Error('ordinary upload consent control required');return (${pointerObservation.toString()})(bs[0]);};return await (${waitPointerReadiness.toString()})(read,undefined,undefined,10000,200);`);
       if(!pointerReadiness.ready)throw Error('ordinary consent pointer settling deadline');
@@ -737,7 +774,7 @@ async function main(args) {
       stage='trusted_explicit_upload_consent_click';
       await trustedPointerClick({selector:'.modal:not(.mod-settings) button',expectedText:'Pair and upload',modalTitle:"Add this vault's notes to the server's vault?",point});
       stage='observe_active_native_pairing';
-      pairingReadiness={beforeClick:before,polls:0,deadlineMs:45000,startedAtEpochMs:Date.now()};
+      pairingReadiness={beforeClick:before,approvalOutcome:approvalReadiness,polls:0,deadlineMs:45000,startedAtEpochMs:Date.now()};
       const observations=await waitPairingActivation(async budget=>{const observed=await evaluate(`return await (${pairingSnapshot.toString()})(P.expected,(${visibleComparisons.toString()}));`,{expected:input.expectedGenerationHash},true,budget);pairingReadiness.after=observed;pairingReadiness.polls++;pairingReadiness.elapsedMs=Date.now()-pairingReadiness.startedAtEpochMs;return observed;});
       pairingReadiness={...pairingReadiness,...observations};
       if(pairingReadiness.refused)throw Error('native pairing generation differs');
@@ -828,7 +865,7 @@ async function main(args) {
     } else throw Error('unknown bounded Android command');
   } catch(error) {
     const generated=new Set([...readFileSync(new URL(import.meta.url),'utf8').matchAll(/\bError\('([^']+)'\)/g)].map(m=>m[1]));
-    receipt({ result: 'FAIL',stage,failureClass:'AUTOMATION_OR_ORACLE_REFUSAL',exceptionType:error.name==='Error'?'Error':error.name==='TimeoutError'?'TimeoutError':'ExternalError',timeout:error.code==='ETIMEDOUT'||error.name==='TimeoutError'||generated.has(error.message)&&error.message.endsWith('deadline'),nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,pointerWitness,controlReadiness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,persistedNoteReadback,noteReadiness,external:externalFailure(error),reason:generated.has(error.message)?error.message:'External operation failed; private details withheld.' });
+    receipt({ result: 'FAIL',stage,failureClass:'AUTOMATION_OR_ORACLE_REFUSAL',exceptionType:error.name==='Error'?'Error':error.name==='TimeoutError'?'TimeoutError':'ExternalError',timeout:error.code==='ETIMEDOUT'||error.name==='TimeoutError'||generated.has(error.message)&&error.message.endsWith('deadline'),nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,pointerWitness,controlReadiness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,persistedNoteReadback,noteReadiness,replacementReadiness,external:externalFailure(error),reason:generated.has(error.message)?error.message:'External operation failed; private details withheld.' });
     process.exitCode = 1;
   } finally {
     try {await releaseConnection();}

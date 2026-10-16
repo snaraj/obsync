@@ -292,10 +292,13 @@ def run(api, args, c, desktop, android, lab, steps, phone, desk, tls, vault, cor
     steps.run('detached-native-crypto-oracle', [node, helper('mobile/ciphertext-oracle.mjs'), str(desktop), '--source', source,
         '--baseline', 'before', '--access-only', 'access', '--current', 'rotated'], timeout=180)
     archive_pair('access')
+    steps.run('independent-rotation-preinvite-known-notes', [node, helper('mobile/known-notes-proof.mjs'), str(desktop), 'rotation-repair', '--source', source, '--backup', 'new', '--rotation-proof', 'commit-after'])
     desk('rotation-repair-new-invitation', 'pair-generate')
     phone('ordinary-pair-after-rotation', 'rotation-pair-submit', {'serverUrl': lab['mobileUrl'], 'invitationFile': str(invitation),
         'oldBackupFile': str(desktop / 'private/desktop/phone-old-recovery-backup.txt')}, ('OBSERVED',))
     compare_approve('rotation-repair')
+    phone('rotation-repair-local-consent', 'pair-consent', {'expectedGenerationHash': new_status['generationHash'], 'expectedOldGenerationHash': old_status['generationHash'], 'invitationFile': str(invitation),
+        'knownNotesProof': str(desktop / 'private/desktop/known-notes-rotation-repair.json')})
     phone('rotation-repair-retained-history', 'rotation-pair-status', {'expectedGenerationHash': new_status['generationHash'], 'expectedOldGenerationHash': old_status['generationHash']})
     phone_reads('rotated-desktop-note-received', rotated_note)
     notes.append({'path': rotated_note['path'], 'text': rotated_note['text']})

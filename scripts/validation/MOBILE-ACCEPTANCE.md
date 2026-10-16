@@ -82,8 +82,9 @@ the complete batch; never relabel a failed attempt or discard it as a retry.
 The driver uses scoped ADB for native permissions, lifecycle and independent
 file retrieval; guarded WebView/desktop CDP operates ordinary application
 controls. It does not seed enrollment, write receiving keys, replace native
-SecretStorage, bypass consent or disable certificate verification. Product
-files are unchanged. Detached broken controls mutate copies of evidence;
+SecretStorage, bypass consent or disable certificate verification. Acceptance
+runs install the candidate unchanged and do not patch product behavior.
+Detached broken controls mutate copies of evidence;
 their results are separate from unmodified-product acceptance.
 
 ## Evidence and limits

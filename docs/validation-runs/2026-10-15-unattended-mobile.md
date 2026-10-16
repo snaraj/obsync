@@ -5,14 +5,17 @@ release 1.1.8. This is an author validation record, not independent approval.
 
 ## Candidate and reproduction
 
-Product source: `cb7b5ae4973ed7ba6d494865ed2ba4e7a4cac928`;
+Original core-run product source: `cb7b5ae4973ed7ba6d494865ed2ba4e7a4cac928`;
 protected base: `c2796b7a5b6abd38be23b4f93c6fb620ab7688c0`.
 The [runner guide](https://github.com/snaraj/obsync/blob/2738e301f04bc2e8e5b1ecda2ec02e545706bb72/scripts/validation/MOBILE-ACCEPTANCE.md) describes the
 single command, private pinned inputs, finite journeys and cleanup. The product
 and driver checkouts are separate; the full runner requires committed driver
 blobs and rechecks them after execution.
 
-| Installed input | SHA-256 |
+These hashes describe the successful core run and full batches 01–10. The
+replacement-pairing fix below changes the plugin bundle and requires new runs.
+
+| Installed input in those runs | SHA-256 |
 | --- | --- |
 | Official Android Obsidian 1.13.4 APK | `80505ced8442fafb2d681ecd66645f7855a3ea8beadfa7230f8d003e1101ff8b` |
 | Candidate `main.js` | `a1127f8267f7934374321fe8946f455cc594e12701321f7a8221facfdf41aeb1` |
@@ -32,7 +35,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All nine full batches stopped on their first failed attempt;
+have passed**. All ten full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -281,6 +284,95 @@ on a disposable loopback fixture; 14 broken controls fail. These prove the
 driver lifecycle contract, not the cause of batch 09 or native acceptance.
 Parent composition passes 125 Python tests, 137 Node tests and all 118 scripted
 mutation controls, with no skips; both secret scans pass.
+
+Full batch 10 at `32789b8d5b7a35ee97b674ee61b0dc3840ba800d` passed ordinary
+installation, TLS rejection/acceptance controls, independent pairing-code
+comparison, consent and two-way persisted notes. Its 213.004-second interval
+contained zero Android calls. Desktop restart, Android process death/restart,
+guest reboot, offline recovery and access-only revocation/re-pairing passed.
+The parent independently rehashed 34 exported files from these phases.
+Both interrupted-rotation checkpoints and the explicit commit passed.
+
+Detached cryptography then opened actual native old and access-only ciphertext
+with the old key, and current ciphertext with the new key. The old key rejected
+the new map, manifest and content chunk. Tampering, wrong context and substituting
+the current key into the old-key rejection assertion all failed as required.
+This directly measures cryptographic revocation for the captured records;
+server access denial is not used as a substitute. It does not establish complete
+rotation acceptance or a general confidentiality result for the unfinished run.
+
+The batch stopped at `rotation-repair-retained-history` after 20.295 seconds.
+Fresh invitation, claimant submission, independently matched verification codes
+and creator approval had passed. The status-only check did not observe active
+replacement enrollment with both expected generations. Its connection opened
+in 5 ms and closed cleanly in 5 ms. The receipt did not capture modal or custody
+state, so the exact native cause remains unproven. Source inspection finds that
+replacement enrollment still requires the ordinary conditional upload consent,
+but this runner path omitted that step. Additional state diagnostics and the
+ordinary consent path are required before another fresh batch.
+
+Both controllers reported cleanup PASS with zero remaining owned groups, and
+the parent independently confirmed absent runtime/private/manifest paths.
+The unchanged failed aggregate SHA-256 is
+`73eb104a113d31fd964983fdd75fcfe99032f1e75b28ec2351b6d6b0aaf768b8`;
+the ten-batch ledger SHA-256 is
+`18840d9a9430261500c6ae337f20be2e6e580db5c57bca1ce385a1bb5a60cb54`.
+There is no attempt 02 or 03. Full recovery, retained-history restoration,
+selected-folder stability and closed-run confidentiality remain unproven.
+At this head, 46 hosted checks pass, deployment is intentionally skipped and
+required dispositions pass. The non-required CodeQL aggregate remains red for
+the existing covered export-logging alert.
+
+The replacement investigation separately reproduced a production defect using
+the actual plugin, persisted State, transport authentication refusal, claimant
+modal and authenticated envelope codecs. After a rejected credential, the
+claimant unconditionally reset its old enrollment; explicit replacement then
+could not stage the history key because that operation requires the old paired
+custody. The narrow fix skips this reset only for explicit replacement. Ordinary
+revoked-device pairing keeps its existing reset. No revoked credential is
+reauthorized, consent skipped or old engine restarted.
+
+The parent rebuilt the fix and passed 160 relevant tests. New cases cover
+replacement activation, consent acceptance/cancellation, persisted old-history
+reload and refusal before receiving an envelope. Removing the replacement guard
+fails the new regressions; disabling ordinary reset fails the existing ordinary
+re-pairing case. The parent's first focused invocation used the preceding
+compiled build and retained its expected regression failures; the rebuilt run
+passed. The new plugin SHA-256 is
+`babc5e9a94c56658a2ce173fb3fb632567ed5b23af67c425882de1ecfa241fef`;
+manifest and styles hashes remain unchanged. Native acceptance of this changed
+bundle is still required. This reproduction does not establish batch 10's
+precise native cause.
+
+The revised replacement runner explicitly observes the ordinary conditional
+upload-consent step after the independently compared approval. A phone still
+holding its old generation may wait only within the original 20-second approval
+deadline; an unrelated paired generation refuses. The subsequent local-index
+check receives only the remaining budget. Safe terminal facts identify consent,
+custody phase, history and rejected-enrollment state without exporting secrets.
+
+A missing consent prompt is admissible only against independent server evidence
+prepared before the invitation. The new-generation proof authenticates the map,
+all included manifests/chunks and desktop bytes. It excludes only exact old IDs
+bound to the frozen rotation inventory and unchanged old heads/history, requires
+every deterministic new destination, and re-derives those destinations from
+authenticated metadata. Unpinned or foreign records cannot be silently skipped;
+the complete server head set must remain unchanged across the proof.
+
+Parent composition passes 125 Python and 146 Node harness tests and all 142
+scripted mutation controls, including 24 new consent/inventory controls.
+The complete rebuilt plugin suite passes 2,527 tests. Real-server E2EE passes
+21 flows and both deliberately broken confidentiality controls, with 380 captured
+requests and 148 seeded needles; four CORS-route tests and both secret scans
+also pass. These checks precede a new native run; they do not retroactively
+change any failed acceptance result.
+
+The remaining canonical targets pass on the composed tree: formatting, lint,
+Rust suites, 94.85% Rust line coverage against 89%, the 207-command installed
+native CLI journey, dashboard, chart and repository contracts. The already
+completed plugin, E2EE, mobile-harness and secret targets were reused rather
+than rerun by the remaining-target command. This completes the local battery;
+fresh hosted checks and native acceptance still follow the signed checkpoint.
 
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.

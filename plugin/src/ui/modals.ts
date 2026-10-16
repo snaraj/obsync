@@ -914,7 +914,9 @@ export class PairClaimModal extends Modal {
       // Whatever an earlier claim showed goes first: its code belongs to a
       // pairing this one ends, and must not sit beside the next prompt.
       this.show(CLAIMING);
-      if (this.plugin.forgottenDevice) await this.plugin.resetForgottenEnrollment();
+      // Explicit replacement still needs the old paired custody to authenticate
+      // its generation and retain its history key before adopting the new one.
+      if (this.plugin.forgottenDevice && this.replacementGeneration === null) await this.plugin.resetForgottenEnrollment();
       await stopWaiting(this.plugin);
       if (this.closed) return;
       // BEFORE ANY REQUEST (issue #180): a vault inside a synced vault that

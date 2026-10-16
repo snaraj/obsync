@@ -438,6 +438,127 @@ test("a forgotten device can claim pairing only after its stale enrollment is cl
   assert.equal(r.instance.state.data.vrk, KEYS.vrk);
 });
 
+async function rejectedRotationClaim(t, { unknown = 0, answer = null, closedBeforeClaim = false, invalidCode = false } = {}) {
+  const r = await plugin(t), instance = r.instance;
+  const pairing = r.box.require(join(r.box.home, "build/pairing.js"));
+  const c = r.box.require(join(r.box.home, "build/crypto.js"));
+  const { encodeRecoveryBackup } = r.box.require(join(r.box.home, "build/recoveryBackup.js"));
+  const { PairClaimModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
+  const oldGeneration = instance.state.custody2().generation, nextRoot = "ab".repeat(32);
+  const nextGeneration = (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(nextRoot)))).fileId;
+  const pairingId = "12".repeat(16), token = "34".repeat(32), secret = new Uint8Array(16).fill(56);
+  const creator = await pairing.newPairingKeyExchange(), claimed = { device_id: "cd".repeat(16), device_secret: "ef".repeat(32) };
+  const code = pairing.encodePairingCode(pairingId, token, secret, await pairing.pairingCommitment(pairingId, creator.publicKey));
+  let modal, claimantKey, observed, finished = 0;
+  const questions = [], calls = [], resumed = [];
+  r.host.seed("Local.md", "LOCAL RETAINED NOTE", 1000);
+  const obsidian = r.box.require("obsidian"), { ConfirmModal } = r.box.require(join(r.box.home, "build/ui/modals.js"));
+  obsidian.Setting.prototype.addButton = function (build) {
+    const button = { setButtonText(value) { this.text = value; return this; }, setDestructive() { this.destructive = true; return this; }, onClick(fn) { this.click = fn; return this; } };
+    (this.el.buttons ??= []).push(button); build(button); return this;
+  };
+  ConfirmModal.prototype.open = function () {
+    this.contentEl = { buttons: [], empty() {}, createEl() {} };
+    this.setTitle = title => { this.title = title; }; this.close = () => this.onClose(); this.onOpen();
+    questions.push(this.title); calls.push("consent");
+    assert.equal(instance.state.paired, false, "consent precedes activation");
+    assert.equal(instance.state.data.deviceId, null);
+    assert.equal(instance.state.custody2().history.root, KEYS.vrk);
+    const button = this.contentEl.buttons.find(button => button.text === answer);
+    assert.ok(button, "a real consent answer is required"); button.click();
+  };
+  PairClaimModal.prototype.open = function () { modal = this; };
+  instance.transport.pairingClaim2 = async (_id, _token, info) => {
+    calls.push("claim"); claimantKey = info.claimant_pub;
+    observed = { paired: instance.state.paired, deviceId: instance.state.data.deviceId, custody: instance.state.custody2() };
+    return { outcome: "ok", value: claimed };
+  };
+  instance.transport.pairingEnvelope = async () => { calls.push("envelope"); return { outcome: "ok", value: {
+    ...(await pairing.sealEnvelope2(creator, claimantKey, secret, pairingId, { v: 2, vrk: nextRoot, generation: nextGeneration })), creator_pub: creator.publicKey,
+  } }; };
+  instance.transport.revokeDevice = async deviceId => { assert.equal(deviceId, claimed.device_id); calls.push("revoke-new-claim"); return { outcome: "ok", value: undefined }; };
+  instance.notesUnknownTo2 = async (root, generation) => {
+    assert.equal(root, nextRoot); assert.equal(generation, nextGeneration);
+    assert.equal(instance.state.paired, false); assert.equal(instance.state.data.deviceId, null);
+    assert.deepEqual(instance.state.custody2().history, { root: KEYS.vrk, generation: oldGeneration, suite: 2 });
+    calls.push("survey"); return unknown;
+  };
+  instance.restartEngine = async () => { finished++; };
+  r.server.secrets.clear();
+  delete instance.startEngine;
+  await instance.startEngine(); // Real transport authentication refusal reaches the production status handler.
+  assert.equal(instance.forgottenDevice, true); assert.equal(instance.state.paired, true);
+  assert.equal(instance.state.data.deviceId, KEYS.deviceId); assert.equal(instance.state.custody2().phase, "active");
+  assert.equal(instance.engine, null);
+  const start = instance.startEngine.bind(instance);
+  instance.startEngine = async () => {
+    if (instance.forgottenDevice) return start(); // Actual rejected-credential gate must keep old sync stopped.
+    assert.equal(instance.state.data.vrk, nextRoot, "only the newly adopted generation may restart");
+    assert.equal(instance.state.data.deviceId, claimed.device_id); resumed.push(nextRoot);
+  };
+  await instance.pairAfterRotation(await encodeRecoveryBackup(c.unhex(KEYS.vrk)), () => {});
+  assert.ok(modal instanceof PairClaimModal, "actual replacement entry opens the actual claimant dialog");
+  modal.code = invalidCode ? "incomplete code" : code;
+  modal.contentEl = { empty() {}, createEl: () => ({ setText() {} }) };
+  modal.close = () => modal.onClose();
+  const previous = globalThis.window;
+  globalThis.window = { ...previous, setTimeout: fn => { fn(); return 0; } };
+  try { if (closedBeforeClaim) modal.close(); await modal.claim(); await instance.waiting?.done; }
+  finally { globalThis.window = previous; }
+  assert.equal(r.host.text("Local.md"), "LOCAL RETAINED NOTE");
+  return { ...r, instance, oldGeneration, nextGeneration, nextRoot, observed, finished, claimed, questions, calls, resumed };
+}
+
+test("Pair after rotation preserves a rejected old enrollment until authenticated replacement stages history", async (t) => {
+  const { instance, observed, oldGeneration, nextRoot, claimed, finished, ...r } = await rejectedRotationClaim(t);
+  assert.equal(instance.state.paired, true, r.logs.join(" | "));
+  assert.equal(observed.paired, true, "the rejected old credential remains local until explicit replacement staging");
+  assert.equal(observed.deviceId, KEYS.deviceId);
+  assert.equal(observed.custody.generation, oldGeneration);
+  assert.equal(instance.state.data.vrk, nextRoot);
+  assert.equal(instance.state.data.deviceId, claimed.device_id);
+  assert.deepEqual(instance.state.custody2().history, { root: KEYS.vrk, generation: oldGeneration, suite: 2 });
+  assert.equal(instance.forgottenDevice, false);
+  assert.equal(instance.rotating, false);
+  assert.equal(finished, 1);
+});
+
+test("a rejected replacement still requires ordinary upload consent and retains old history on accept or cancel", async t => {
+  for (const answer of ["Pair and upload", "Cancel"]) {
+    const r = await rejectedRotationClaim(t, { unknown: 1, answer });
+    const pin = r.instance.state.custody2(), accepted = answer === "Pair and upload";
+    assert.deepEqual(r.questions, ["Add this vault's notes to the server's vault?"]);
+    assert.deepEqual(r.calls, ["claim", "envelope", "survey", "consent", ...(accepted ? [] : ["revoke-new-claim"])]);
+    assert.equal(r.observed.paired, true); assert.equal(r.observed.deviceId, KEYS.deviceId);
+    assert.deepEqual(pin.history, { root: KEYS.vrk, generation: r.oldGeneration, suite: 2 });
+    assert.equal(pin.phase, accepted ? "active" : "enrollment");
+    assert.equal(r.instance.state.paired, accepted);
+    assert.equal(r.instance.state.data.deviceId, accepted ? r.claimed.device_id : null);
+    assert.equal(r.instance.state.data.deviceSecret, accepted ? r.claimed.device_secret : null);
+    assert.equal(r.instance.state.data.vrk, accepted ? r.nextRoot : null);
+    assert.equal(r.instance.forgottenDevice, !accepted); assert.equal(r.instance.rotating, !accepted);
+    assert.equal(r.finished, accepted ? 1 : 0); assert.equal(r.instance.engine, null);
+    assert.deepEqual(r.resumed, accepted ? [r.nextRoot] : []);
+    const { State } = r.box.require(join(r.box.home, "build/state.js"));
+    const { desktopSecretStore } = r.box.require(join(r.box.home, "build/desktopCustody.js"));
+    const reopened = await State.open({ loadData: async () => r.metadata(), saveData: async () => assert.fail("unexpected recovery metadata write") }, false,
+      desktopSecretStore(r.instance.app.secretStorage, r.instance.platformName()));
+    assert.deepEqual(reopened.custody2().history, pin.history, "old history survives a real persisted-state reload");
+    assert.equal(reopened.custody2().phase, pin.phase);
+  }
+});
+
+test("closing or refusing a rejected replacement before its envelope preserves old authority without restarting it", async t => {
+  for (const options of [{ closedBeforeClaim: true }, { invalidCode: true }]) {
+    const r = await rejectedRotationClaim(t, options);
+    assert.deepEqual(r.calls, []); assert.equal(r.finished, 0);
+    assert.equal(r.instance.state.data.deviceId, KEYS.deviceId); assert.equal(r.instance.state.data.vrk, KEYS.vrk);
+    assert.equal(r.instance.state.custody2().phase, "active"); assert.equal(r.instance.state.custody2().history, null);
+    assert.equal(r.instance.forgottenDevice, true); assert.equal(r.instance.engine, null);
+    assert.deepEqual(r.posts(), [], "a rejected old credential is not re-authorized or used for an enrollment");
+  }
+});
+
 test("registration does not bind a proof after its vault key was replaced", async (t) => {
   const r = await plugin(t, { legacy: true });
   const recovery = r.box.require(join(r.box.home, "build/accountRecovery.js"));
