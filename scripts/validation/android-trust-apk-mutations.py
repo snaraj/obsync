@@ -30,7 +30,7 @@ mutations=[
 ]
 with tempfile.TemporaryDirectory(prefix='obsync-trust-apk-mutations-') as tmp:
  work=Path(tmp)
- for name in ('android-trust.py','android-session.py','android-apk.py','test_android_trust.py','test_android_session.py'):shutil.copyfile(root/name,work/name)
+ for name in ('android-trust.py','android-session.py','android-apk.py','emulator-tcp.py','test_android_trust.py','test_android_session.py'):shutil.copyfile(root/name,work/name)
  target=work/'android-apk.py';baseline=target.read_text();trust=work/'android-trust.py';trust_baseline=trust.read_text();session=work/'android-session.py';session_baseline=session.read_text()
  def check():
   return subprocess.run([sys.executable,'-B','-m','unittest','test_android_trust.ApkIntegrity','test_android_trust.Control','test_android_session.InitialApkGate'],cwd=work,

@@ -21,6 +21,23 @@ APK_SPEC = importlib.util.spec_from_file_location('android_apk',Path(__file__).w
 APK = importlib.util.module_from_spec(APK_SPEC)
 APK_SPEC.loader.exec_module(APK)
 
+TCP_SPEC=importlib.util.spec_from_file_location('owned_emulator_tcp',Path(__file__).with_name('emulator-tcp.py'))
+TCP=importlib.util.module_from_spec(TCP_SPEC);TCP_SPEC.loader.exec_module(TCP)
+
+def emulator_target(state):
+    mode=state.get('adbTransport','emulator')
+    if mode not in ('emulator','isolated-tcp') or mode!='isolated-tcp' and state.get('selectedTcpAdb') is not None:
+        raise ValueError('explicit emulator transport differs from binding')
+    return TCP.selected(state) if mode=='isolated-tcp' else state['serial']
+
+def bootstrap_command(state,args,timeout=3):
+    if state.get('selectedTcpAdb') is not None:raise ValueError('bootstrap target forbidden after TCP selection')
+    return TCP.command(state,adb_env(state),state['serial'],args,time.monotonic()+timeout)
+
+def reattach_tcp(state,run,end,phase):
+    if state.get('adbTransport')!='isolated-tcp':raise ValueError('isolated transport lifecycle required')
+    return TCP.reattach(state,run,adb_env(state),end,phase,save)
+
 def digest(path):
     with open(path, 'rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -222,6 +239,8 @@ def live_state(run):
         return state
     if state.get('targetKind') not in (None,'emulator') or not re.fullmatch('emulator-(555[468]|55[678][02468])', state['serial']):
         raise ValueError('owned emulator serial required')
+    emulator_target(state)
+    if state.get('adbTransport')=='isolated-tcp':TCP.listener(state,state['selectedTcpAdb']['hostPort'],time.monotonic()+3)
     return state
 
 
@@ -230,7 +249,7 @@ def adb_command(state, args, timeout=30, binary=False):
         raise ValueError('USB fixture forbids root/trust/app replacement or wipe, discovery, transport change, and reboot')
     # Every call is scoped, including discovery of this private server's devices.
     argv = [str(Path(state['sdk'])/'platform-tools/adb'), '-P', str(state['adbPort']),
-            '-s', state['serial'], *args]
+            '-s', state['serial'] if state.get('targetKind')=='usb' else emulator_target(state), *args]
     remaining = state['expiresAtEpoch'] - time.time()
     if remaining <= 0:
         raise TimeoutError('Android lifecycle deadline before device command')
@@ -375,6 +394,8 @@ class Owned:
 
 
 def execute(a):
+    isolated=getattr(a,'adb_transport','emulator')=='isolated-tcp'
+    if isolated and a.online:raise ValueError('isolated TCP mode does not support --online')
     apk, proof = validate(a)
     adb_port = free_port()
     controller_identity = identity(os.getpid())
@@ -384,7 +405,7 @@ def execute(a):
     started = time.time()
     state = {'format': 1, 'run': str(a.run.resolve()), 'sourceHead': a.source_head,
              'sdk': str(a.sdk), 'adbPort': adb_port, 'serial': f'emulator-{a.port}',
-             'processes': {}, 'expiresAtEpoch': started + a.seconds,
+             'processes': {}, 'adbTransport':getattr(a,'adb_transport','emulator'), 'expiresAtEpoch': started + a.seconds,
              'reversePorts': a.reverse, 'holder': {'pid': os.getpid(), 'identity': controller_identity},
              'environment': {'HOME': str(a.run/'runtime/user'), 'JAVA_HOME': str(a.java), 'ANDROID_USER_HOME': str(a.run/'runtime/user'),
                  'ANDROID_EMULATOR_HOME': str(a.run/'runtime/user'), 'ANDROID_AVD_HOME': str(a.run/'runtime/avds'),
@@ -422,15 +443,17 @@ def execute(a):
                             'obsync-no-usb', 'server', 'nodaemon'], env)
         owned.record('adb')  # require the server alive before any client can autostart
         adb_listener(owned, state)
+        route_argv=TCP.prepare(state)+['-debug','init'] if isolated else []
+        save(a.run/'android.json',state)
         emulator = owned.launch('emulator', [str(a.sdk/'emulator/emulator'), '-avd', 'obsync-acceptance',
-            '-port', str(a.port), '-no-audio', '-no-boot-anim', '-no-snapshot-load', '-no-snapshot-save',
+            '-port', str(a.port), *route_argv, '-no-audio', '-no-boot-anim', '-no-snapshot-load', '-no-snapshot-save',
             '-no-metrics', '-crash-report-mode', 'never', '-cores', '2', '-memory', '2048', '-gpu', a.gpu], env)
         boot_deadline = min(deadline, time.monotonic() + a.boot_seconds)
         while time.monotonic() < boot_deadline:
             owned.require_running('boot')
             try:
                 register_emulator(state, a.port + 1)
-                if adb_command(state, ['shell', 'getprop', 'sys.boot_completed'], timeout=3).strip() == '1':
+                if (bootstrap_command if isolated else adb_command)(state, ['shell', 'getprop', 'sys.boot_completed'], timeout=3).strip() == '1':
                     break
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 pass
@@ -438,7 +461,8 @@ def execute(a):
         else:
             raise TimeoutError('emulator boot deadline; try another explicit graphics mode in a fresh run')
         owned.record('emulator')  # record actual qemu identity after launcher exec
-        if not a.online:
+        if isolated:TCP.initial(state,a.run,env,boot_deadline,save,APK.apk_command_failure)
+        elif not a.online:
             adb_command(state, ['shell', 'svc', 'wifi', 'disable'])
             adb_command(state, ['shell', 'svc', 'data', 'disable'])
         for port in a.reverse:
@@ -456,13 +480,14 @@ def execute(a):
         adb_command(state, ['shell', 'am', 'start', '-W', '-n', activity])
         save(a.run/'evidence/android-ready.json', {'result': 'READY', 'freshProfile': True,
             'sourceHead': a.source_head, 'apkSha256': proof['apkSha256'], 'installedApkVerified': True,
+            'adbTransport':state['adbTransport'],'selectedAdbTarget':emulator_target(state),
             'graphicsMode': a.gpu, 'systemImage': a.system_image, 'expiresAtEpoch': state['expiresAtEpoch'],
             'facts': {name: adb_command(state, ['shell', 'getprop', name]).strip() for name in
                       ('ro.build.version.release', 'ro.build.version.sdk', 'ro.build.version.security_patch', 'ro.product.cpu.abi')},
             'physicalPhone': 'NOT_RUN', 'productAcceptance': 'NOT_RUN'})
         print(json.dumps({'result': 'READY', 'run': str(a.run)}), flush=True)
         stage = 'journey'
-        command_env = env | {'OBSYNC_ANDROID_RUN': str(a.run), 'OBSYNC_ANDROID_SERIAL': state['serial'],
+        command_env = env | {'OBSYNC_ANDROID_RUN': str(a.run), 'OBSYNC_ANDROID_SERIAL': emulator_target(state),
                              'OBSYNC_ANDROID_ADB_PORT': str(adb_port)}
         journey = owned.launch('journey', a.command, command_env)
         while exit_code(journey) is None:
@@ -656,10 +681,13 @@ def lifecycle(run, action, boot_seconds=240):
         while time.monotonic()<deadline:
             try:
                 register_emulator(state,int(state['serial'].split('-')[1])+1)
-                after=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id'],timeout=3).strip()
-                ready=adb_command(state,['shell','getprop','sys.boot_completed'],timeout=3).strip()
+                if state.get('adbTransport')=='isolated-tcp' and not reattach_tcp(state,run,deadline,'reboot'):
+                    time.sleep(.3);continue
+                after=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id'],timeout=TCP.remaining(deadline)).strip()
+                ready=adb_command(state,['shell','getprop','sys.boot_completed'],timeout=TCP.remaining(deadline)).strip()
+                TCP.remaining(deadline)
                 if after!=before and ready=='1': break
-            except (OSError,subprocess.SubprocessError): pass
+            except (OSError,subprocess.SubprocessError,TCP.ExpectedAttachmentPending): pass
             time.sleep(.3)
         else: raise TimeoutError('owned Android device reboot deadline')
         if app_pid(state) is not None:
@@ -696,6 +724,7 @@ def main():
         p.add_argument('--gpu', choices=('auto', 'software', 'host', 'swiftshader'), default='software')
         p.add_argument('--reverse', type=int, action='append', default=[])
         p.add_argument('--online', action='store_true')
+        p.add_argument('--adb-transport',choices=('emulator','isolated-tcp'),default='emulator')
         if action == 'run':
             p.add_argument('command', nargs=argparse.REMAINDER)
     for action in ('home','restart-app','reboot'):

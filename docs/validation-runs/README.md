@@ -35,6 +35,12 @@ cancelled or skipped leaf blocks the gate and publication.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-10-16 Android transport](2026-10-16-mobile-transport.md): 100 strict
+  installed-plugin/APK transfer cycles, retained transport failures and independent
+  evidence checks. Fresh full acceptance and physical-phone acceptance remain open.
+- [2026-10-15 unattended mobile](2026-10-15-unattended-mobile.md): ordinary
+  native pairing and two-way persisted bytes, full-journey attempts and retained
+  failures. Emulator results do not substitute for a physical phone.
 - [2026-10-12 security train](2026-10-12-security-train.md): expanded real
   plugin/server regressions, diagnostic and chunk-refusal repairs, and a native
   redirect-containment failure. Revocation design and final acceptance remain open.

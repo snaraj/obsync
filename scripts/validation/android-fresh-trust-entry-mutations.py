@@ -19,7 +19,7 @@ def main(argv=None):
   altered=source
   for needle,replacement in edits:assert altered.count(needle)==1,(name,needle,altered.count(needle));altered=altered.replace(needle,replacement)
   with tempfile.TemporaryDirectory(prefix='obsync-fresh-entry-mutant-') as tmp:
-   p=Path(tmp);(p/'mobile').mkdir();(p/'android-journey.mjs').write_text(altered.replace("from './mobile/cdp.mjs'",f"from '{(b/'mobile/cdp.mjs').as_uri()}'"));(p/'mobile/fresh-trust-entry.test.mjs').write_bytes((b/'mobile/fresh-trust-entry.test.mjs').read_bytes())
+   p=Path(tmp);(p/'mobile').mkdir();(p/'tcp-target.mjs').write_bytes((b/'tcp-target.mjs').read_bytes());(p/'android-journey.mjs').write_text(altered.replace("from './mobile/cdp.mjs'",f"from '{(b/'mobile/cdp.mjs').as_uri()}'"));(p/'mobile/fresh-trust-entry.test.mjs').write_bytes((b/'mobile/fresh-trust-entry.test.mjs').read_bytes())
    r=subprocess.run([args.node,'--test',str(p/'mobile/fresh-trust-entry.test.mjs')],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=10)
    assert r.returncode and ('ERR_ASSERTION' in r.stdout or 'AssertionError' in r.stdout),(name,r.stdout)
    results.append({'mutation':name,'assertionKilled':True})

@@ -39,7 +39,7 @@ mutations=[
 with tempfile.TemporaryDirectory(prefix='obsync-rotation-consent-') as tmp:
  work=Path(tmp)/'scripts/validation/mobile';work.mkdir(parents=True)
  for name in ('known-notes-proof.mjs','rotation-consent.test.mjs','desktop-guard.mjs','cdp.mjs','ciphertext-oracle.mjs','native-checkpoint.mjs'):shutil.copyfile(root/name,work/name)
- for name in ('android-journey.mjs','mobile-full.py'):shutil.copyfile(root.parent/name,work.parent/name)
+ for name in ('android-journey.mjs','mobile-full.py','tcp-target.mjs'):shutil.copyfile(root.parent/name,work.parent/name)
  baselines={name:(work/name).read_text() for name in {row[1] for row in mutations}}
  env=os.environ|{'OBSYNC_ORACLE_SOURCE':str(Path(a.source).resolve())}
  def check():return subprocess.run([a.node,'--test','--test-isolation=none',str(work/'rotation-consent.test.mjs')],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10).returncode

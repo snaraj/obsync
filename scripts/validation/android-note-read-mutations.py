@@ -25,7 +25,7 @@ mutations=[
 ]
 with tempfile.TemporaryDirectory(prefix='obsync-note-read-mutations-') as tmp:
  work=Path(tmp)/'scripts/validation';(work/'mobile').mkdir(parents=True)
- for name in ('android-journey.mjs','android-journey.test.mjs','mobile/cdp.mjs'):shutil.copyfile(root/name,work/name)
+ for name in ('android-journey.mjs','tcp-target.mjs','android-journey.test.mjs','mobile/cdp.mjs'):shutil.copyfile(root/name,work/name)
  history=Path(tmp)/'plugin/src/ui/history.ts';history.parent.mkdir(parents=True)
  shutil.copyfile(root.parent.parent/'plugin/src/ui/history.ts',history)
  target=work/'android-journey.mjs';baseline=target.read_text()

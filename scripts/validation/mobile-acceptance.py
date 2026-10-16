@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """One command for fresh owned mobile fixtures. Full acceptance fails closed."""
 import argparse
+import errno
+import socket
 import hashlib
 import importlib.util
 import json
@@ -51,7 +53,7 @@ FULL_PHASE_BOUNDS = {
 }
 CORE_HELPERS = ('mobile-acceptance.py', 'mobile-session.py', 'android-session.py', 'android-trust.py', 'android-apk.py',
                 'android-usb.py', 'mobile-trusted-tls.py', 'mobile-platform.py',
-                'android-tls-proof.py', 'android-journey.mjs', 'mobile-evidence.py', 'mobile-tls.mjs',
+                'android-tls-proof.py', 'android-journey.mjs','emulator-tcp.py','tcp-target.mjs', 'mobile-evidence.py', 'mobile-tls.mjs',
                 'mobile/setup.mjs', 'mobile/desktop.mjs', 'mobile/desktop-guard.mjs', 'mobile/cdp.mjs')
 FULL_HELPERS = ('mobile-full.py', 'mobile-platform.py', 'mobile-recovery.py', 'mobile-journal.py',
                 'mobile/native-checkpoint.mjs', 'mobile/native-readiness.mjs', 'mobile/selected-fixtures.mjs', 'mobile/selected-desktop.mjs',
@@ -118,6 +120,47 @@ def driver_inventory(mode, source):
 
 def recheck_drivers(mode, source, expected):
     require(driver_inventory(mode, source) == expected, 'driver_changed', 'AUTOMATION_FAILURE')
+
+
+def isolated_tcp_evidence(android, source_head, mode):
+    """Validate the finite route lifecycle using retained, source-bound witnesses."""
+    evidence=android/'evidence';initial_path=evidence/'owned-wifi-route-initial.json';initial=private_json(initial_path)
+    need=lambda value:require(value,'retained_isolated_tcp_route_evidence')
+    need(initial.get('schema')==1 and initial.get('sourceHead')==source_head and initial.get('result')=='OBSERVED'
+         and initial.get('sameGuestTcpBinding') is True and initial.get('wifiNotDisabledAfterBinding') is True
+         and initial.get('mobileDataGlobalSettingZero') is True and initial.get('connectAttempts')==1
+         and initial.get('ipv4RouteIsolation',{}).get('extraEgressRoutes')==0)
+    paths=list(evidence.glob('owned-tcp-adb-*.json'));ordered=[]
+    for path in paths:
+        match=re.fullmatch(r'owned-tcp-adb-(initial|root|reboot)-([0-9]+)\.json',path.name)
+        need(match is not None);ordered.append((int(match[2]),match[1],path))
+    ordered.sort();need([phase for _,phase,_ in ordered]==(['initial','root'] if mode=='core' else ['initial','root','reboot','root']))
+    prior=None;binding=None;refs={str(initial_path.relative_to(android)):sha(initial_path)}
+    for _,phase,path in ordered:
+        row=private_json(path);guest=row.get('guest');route=row.get('responseRouteProof',{});last=route.get('guestResponseRouteReadiness',{}).get('last',{})
+        need(row.get('schema')==1 and row.get('sourceHead')==source_head and row.get('phase')==phase
+             and row.get('loopbackListenerOwned') is True and row.get('sameGuestIndependentCommands') is True
+             and row.get('authConfigurationUnchanged') is True and row.get('originalRouteGuest')==guest==row.get('selectedRouteGuest')
+             and row.get('priorGuest')==prior and isinstance(guest,dict)
+             and re.fullmatch('[a-f0-9]{64}',guest.get('bootIdSha256','')) is not None
+             and type(guest.get('adbdPid')) is int and guest['adbdPid']>1 and str(guest.get('adbdStartTicks','')).isdecimal()
+             and type(route.get('adbdUid')) is int and route['adbdUid']>=0 and (phase!='root' or route['adbdUid']==0)
+             and route.get('guestResponseRouteReadiness',{}).get('ready') is True
+             and last.get('ready') is True and last.get('state')=='WLAN0_ROUTE' and last.get('uid')==route['adbdUid'])
+        current=(row.get('target'),row.get('originalSerial'),row.get('emulatorPid'))
+        need(isinstance(current[0],str) and re.fullmatch(r'127\.0\.0\.1:[0-9]{4,5}',current[0]) is not None
+             and isinstance(current[1],str) and re.fullmatch(r'emulator-(555[468]|55[678][02468])',current[1]) is not None
+             and type(current[2]) is int and current[2]>1 and (binding is None or current==binding))
+        if prior is not None:need((guest['bootIdSha256']!=prior['bootIdSha256'])==(phase=='reboot'))
+        else:
+            need(initial.get('originalRouteGuest')==guest==initial.get('selectedRouteGuest'))
+            options=initial.get('effectiveNetworkOptions',{});port=current[0].split(':')[1]
+            need(options.get('ready') is True and options.get('radioArgumentMatches')==options.get('wifiArgumentMatches')==1
+                 and options.get('expectedRadioArgument')=='user,id=mynet,restrict=on'
+                 and options.get('expectedWifiArgument')=='user,id=virtio-wifi,restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:'+port+'-10.0.2.16:5555')
+        prior=guest;binding=current;refs[str(path.relative_to(android))]=sha(path)
+    return {'schema':1,'sourceHead':source_head,'result':'PASS','adbTransport':'isolated-tcp',
+            'phaseSequence':[phase for _,phase,_ in ordered],'files':refs,'scope':'RETAINED_OWNED_TRANSPORT_PROVENANCE_ONLY'}
 
 
 def full_journey_receipt(run, source_head):
@@ -338,7 +381,8 @@ def desktop_child(args):
         command=[sys.executable,'-B',helper('android-usb.py'),'--config',str(usb_config),'--run',str(android),'--child',
                  sys.executable,'-B',str(Path(__file__).resolve()),'--android-child','--config',str(args.config),'--attempt',str(args.attempt),'--mode',args.mode]
     else:
-        command = [sys.executable, '-B', helper('android-session.py'), 'run', '--run', str(android), '--source', source,
+        require(a.get('adbTransport','isolated-tcp')=='isolated-tcp' and not a.get('online',False),'emulator_acceptance_requires_isolated_tcp','AUTOMATION_FAILURE')
+        command = [sys.executable, '-B', helper('android-session.py'), 'run','--adb-transport','isolated-tcp', '--run', str(android), '--source', source,
                    '--source-head', c['sourceHead'], '--sdk', a['sdk'], '--java', a['java'], '--assets', a['assets'],
                    '--system-image', a['systemImage'], '--gpu', a.get('gpu', 'software'), '--port', str(a.get('port', 5584)),
                    '--seconds', str(min(c.get('seconds', 7500) - 120, a.get('seconds', 7200))), '--reverse', str(c['tlsPort']),
@@ -357,6 +401,7 @@ def desktop_child(args):
         raise StageFailure('android_controller_preflight')
     proof = private_json(result_path)
     require_android_controller(proof, result.returncode, c['sourceHead'])
+    if a.get('targetKind')!='usb':save(args.attempt/'evidence/isolated-tcp-admission.json',isolated_tcp_evidence(android,c['sourceHead'],args.mode))
     quit_command = ([node, helper('mobile/recovery.mjs'), str(desktop), source, 'C', 'quit'] if args.mode == 'full' else
                     [node, helper('mobile/desktop.mjs'), str(desktop), 'quit', 'terminal-close', '--source', source])
     steps.run('terminal-ordinary-desktop-quit', quit_command, ('QUIT_REQUESTED',))
@@ -385,6 +430,7 @@ def android_child(args):
     require(state['sourceHead'] == c['sourceHead'], 'android_source_binding')
     require(state.get('targetKind','emulator')==c['android'].get('targetKind','emulator'),'android_target_binding')
     usb=state.get('targetKind')=='usb'
+    if not usb:require(state.get('adbTransport')=='isolated-tcp','acceptance_isolated_tcp_binding_required')
     vault = c['android']['vaultPath'] if usb else '/storage/emulated/0/Documents/Obsync-Core-' + args.attempt.name.replace('attempt-', '')
     count = 0
     def phone(stage, command, values, results=('PASS',), negative=False):
@@ -481,6 +527,35 @@ def android_child(args):
         'fullAcceptance': 'NOT_RUN' if args.mode == 'core' else 'PENDING_SCAN_AND_CLEANUP'}), flush=True)
 
 
+def fixed_port_preflight(config):
+    console=config['android'].get('port',5584)
+    checks=[('tls',config.get('tlsPort',18473))]+([] if config['android'].get('targetKind')=='usb' else [('emulator_console',console),('emulator_adb',console+1)])
+    require(all(type(port) is int and 1024<=port<=65535 for _,port in checks) and len({port for _,port in checks})==len(checks),'distinct_fixed_ports','AUTOMATION_FAILURE')
+    proof={'schema':1,'sourceHead':config['sourceHead'],'result':'PASS','bindAddress':'127.0.0.1','nativeFixtureStarted':False,'checks':[]};sockets=[]
+    try:
+        for role,port in checks:
+            sock=socket.socket();sockets.append(sock)
+            try:sock.bind(('127.0.0.1',port));status='AVAILABLE'
+            except OSError as error:status='ADDRESS_IN_USE' if error.errno==errno.EADDRINUSE else 'PERMISSION_DENIED' if error.errno in (errno.EACCES,errno.EPERM) else 'OS_ERROR'
+            proof['checks'].append({'role':role,'port':port,'status':status})
+            if status!='AVAILABLE':proof['result']='FAIL'
+    finally:
+        for sock in sockets:sock.close()
+    return proof
+
+def missing_peer_failure(attempt,returncode,source_head):
+    log=attempt/'private/mobile-controller.log'
+    info=log.lstat()
+    require(log.is_file() and not log.is_symlink() and info.st_uid==os.getuid() and info.st_nlink==1 and info.st_size<=65536,'missing_peer_log_custody')
+    child=final_json(log.read_text(errors='replace'))
+    kind=child.get('exceptionType');kind=kind if kind in ('OSError','ValueError','RuntimeError','TimeoutError','FileNotFoundError','PermissionError') else 'UNKNOWN'
+    detail=child.get('detail','');conflict=(kind=='OSError' and isinstance(detail,str) and re.fullmatch(r'\[Errno (?:48|98)\] Address already in use',detail) is not None)
+    absent=not any((attempt/name).exists() or (attempt/name).is_symlink() for name in ('desktop','android'))
+    proof={'schema':1,'sourceHead':source_head,'result':'FAIL','controllerExitCode':returncode,'childResult':child.get('result'),'exceptionType':kind,'errorClass':'ADDRESS_IN_USE' if conflict else 'OTHER','nativeFixtureState':'NOT_CREATED' if conflict and absent else 'UNKNOWN','secondaryMissingPeerReceipt':True,'retainedRawExceptionText':False}
+    save(attempt/'evidence/controller-before-peer-failure.json',proof)
+    stage='controller_preflight_address_in_use' if conflict else 'controller_failed_before_peer_'+kind
+    return StageFailure(stage,'AUTOMATION_FAILURE' if conflict else 'UNCLASSIFIED'), 'NOT_CREATED' if conflict and absent else 'UNKNOWN'
+
 def outer(args):
     c = private_json(args.config)
     require(re.fullmatch('[a-f0-9]{40}', c.get('sourceHead', '')) and isinstance(args.runs, int) and 1 <= args.runs <= 3, 'bounded_config')
@@ -498,6 +573,9 @@ def outer(args):
         return 2
     port = c['android'].get('port', 5584)
     if args.target_kind=='emulator':require(type(port) is int and 5554 <= port <= 5584 and port % 2 == 0, 'android_emulator_port_5554_to_5584_even', 'AUTOMATION_FAILURE')
+    preflight=fixed_port_preflight(c);save(out/'port-preflight.json',preflight)
+    for check in preflight['checks']:
+        require(check['status']=='AVAILABLE','fixed_port_'+check['role']+'_'+str(check['port'])+'_'+check['status'],'AUTOMATION_FAILURE')
     inventory = driver_inventory(args.mode, source)
     driver_head = subprocess.check_output(['git', '-C', str(HERE), 'rev-parse', 'HEAD'], text=True).strip()
     save(out / 'driver-manifest.json', {'schema': 1, 'sourceHead': c['sourceHead'], 'driverHead': driver_head, 'files': inventory})
@@ -517,8 +595,12 @@ def outer(args):
         try:
             with (attempt / 'private/mobile-controller.log').open('xb') as log:
                 result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
+            if not (attempt/'desktop/evidence/peer-result.json').exists():
+                error,cleanup=missing_peer_failure(attempt,result.returncode,c['sourceHead']);raise error
             peer = private_json(attempt / 'desktop/evidence/peer-result.json')
             cleanup = attempt_cleanup(peer, attempt / 'android')
+            if args.target_kind!='usb':
+                require(private_json(attempt/'evidence/isolated-tcp-admission.json')==isolated_tcp_evidence(attempt/'android',c['sourceHead'],args.mode),'terminal_isolated_tcp_evidence_changed')
             require(result.returncode == 0 and peer.get('sourceHead') == c['sourceHead']
                     and peer.get('result') == ('CORE_ONLY' if args.mode == 'core' else 'PASS') and clean_controller(peer), 'desktop_controller_cleanup')
             if args.mode == 'core':

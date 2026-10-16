@@ -22,7 +22,7 @@ mutants=[
 ]
 with tempfile.TemporaryDirectory(prefix='obsync-scope-save-controls-') as tmp:
  work=Path(tmp);(work/'mobile').mkdir()
- for name in ('android-journey.mjs','mobile/cdp.mjs','mobile/scope-save-witness.test.mjs','mobile/native-readiness-deadline.test.mjs'):shutil.copyfile(root/name,work/name)
+ for name in ('android-journey.mjs','tcp-target.mjs','mobile/cdp.mjs','mobile/scope-save-witness.test.mjs','mobile/native-readiness-deadline.test.mjs'):shutil.copyfile(root/name,work/name)
  target=work/'android-journey.mjs';source=target.read_text()
  def check():return subprocess.run([args.node,'--test',str(work/'mobile/scope-save-witness.test.mjs'),str(work/'mobile/native-readiness-deadline.test.mjs')],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=10)
  if check().returncode:raise RuntimeError('scope Save baseline failed')

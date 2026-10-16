@@ -24,6 +24,9 @@ def outer_fixture(module,wall_elapsed,monotonic_elapsed,child_failure=False):
     with tempfile.TemporaryDirectory(prefix='obsync-attempt-timing-') as tmp:
         root=Path(tmp).resolve();source=root/'source';source.mkdir();config=root/'config.json';out=root/'result'
         module.save(config,{'schema':1,'source':str(source),'sourceHead':HEAD,'seconds':600,'android':{'sourceHead':HEAD}})
+        # Port availability and route provenance have independent focused suites.
+        # This fixture exercises whole-attempt timing without host socket/device calls.
+        route_proof={'schema':1,'sourceHead':HEAD,'result':'PASS','scope':'OFFLINE_TIMING_FIXTURE'}
         args=SimpleNamespace(config=config,out=out,runs=1,mode='core');clocks={'wall':1000.,'mono':100.};marker_bytes=None
         def command(argv,**kwargs):
             nonlocal marker_bytes
@@ -31,6 +34,7 @@ def outer_fixture(module,wall_elapsed,monotonic_elapsed,child_failure=False):
             module.save(evidence/'peer-result.json',{'sourceHead':HEAD,'result':'FAIL' if child_failure else 'CORE_ONLY',
                 'cleanup':'PASS','ownedGroupsRemaining':0,'runtimeAbsent':True,'privateAbsent':True,'manifestAbsent':True})
             module.save(evidence/'core-result.json',{'result':'CORE_ONLY','fullAcceptance':'NOT_RUN'})
+            module.save(attempt/'evidence/isolated-tcp-admission.json',route_proof)
             if child_failure:
                 first=attempt/'evidence/first-failure.json';module.save(first,{'firstFailure':'synthetic_child_refusal','failureClass':'PRODUCT_REFUSAL'});marker_bytes=first.read_bytes()
             clocks['wall']+=wall_elapsed;clocks['mono']+=monotonic_elapsed
@@ -38,9 +42,14 @@ def outer_fixture(module,wall_elapsed,monotonic_elapsed,child_failure=False):
         def git(argv,**kwargs):return str(root/'common/.git')+'\n' if '--git-common-dir' in argv else HEAD+'\n'
         with patch.object(module.subprocess,'check_output',side_effect=git),patch.object(module.subprocess,'run',side_effect=command),\
              patch.object(module,'helper',return_value='/unused-offline-helper'),patch.object(module,'driver_inventory',return_value={}),\
+             patch.object(module,'fixed_port_preflight',return_value={'schema':1,'sourceHead':HEAD,'result':'PASS','checks':[{'role':'tls','port':18473,'status':'AVAILABLE'}]}) as preflight,\
+             patch.object(module,'isolated_tcp_evidence',return_value=route_proof) as route_evidence,\
+             patch.object(module.socket,'socket',side_effect=AssertionError('timing fixture must not bind host sockets')),\
              patch.object(module,'recheck_drivers'),patch.object(module.shutil,'disk_usage',return_value=SimpleNamespace(free=30*1024**3)),\
              patch.object(module.time,'time',side_effect=lambda:clocks['wall']),patch.object(module.time,'monotonic',side_effect=lambda:clocks['mono']),contextlib.redirect_stdout(io.StringIO()):
             code=module.outer(args)
+        preflight.assert_called_once()
+        route_evidence.assert_called_once_with(out/'attempt-01/android',HEAD,'core')
         row=json.loads((out/'attempt-01/evidence/attempt-result.json').read_text());result=json.loads((out/'result.json').read_text())
         path=out/'attempt-01/evidence/attempt-timing.json';proof=json.loads(path.read_text())
         assert row['hostTiming']==proof and row['hostTimingSha256']==hashlib.sha256(path.read_bytes()).hexdigest()

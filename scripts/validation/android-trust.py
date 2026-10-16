@@ -127,11 +127,15 @@ def install(run, ca, expected, before, reapply=False):
     # This restarts only adbd. No app, framework or zygote restart is performed.
     SESSION.adb_command(state,['root'])
     deadline=time.monotonic()+20
+    if state.get('adbTransport')=='isolated-tcp':deadline=min(deadline,time.monotonic()+max(0,state['expiresAtEpoch']-time.time()))
     while time.monotonic()<deadline:
         try:
             SESSION.register_emulator(state,int(state['serial'].split('-')[1])+1)
-            if shell(state,'id','-u')=='0': break
-        except (OSError,subprocess.SubprocessError): pass
+            attached=(SESSION.reattach_tcp(state,run,deadline,'root') if state.get('adbTransport')=='isolated-tcp' else shell(state,'id','-u',timeout=SESSION.TCP.remaining(deadline))=='0')
+            if attached:
+                SESSION.TCP.remaining(deadline)
+                break
+        except (OSError,subprocess.SubprocessError,SESSION.TCP.ExpectedAttachmentPending): pass
         time.sleep(.2)
     else: raise TimeoutError('owned userdebug adbd root deadline')
     for port in state['reversePorts']:

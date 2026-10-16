@@ -15,6 +15,16 @@ disposable environments. No public endpoint or manually operated phone screen
 is needed. This is emulator acceptance; it does not satisfy the repository's
 separate physical-phone requirement or establish iOS behavior.
 
+Emulator acceptance selects the owned isolated TCP ADB transport. The runner
+predeclares a loopback-only Wi-Fi forwarding endpoint and restricted network
+backends, verifies the actual process listener and guest identity, and requires
+that binding for every device command. Only the prescribed root and reboot
+transitions reattach. A failed read never switches transports or retries.
+Offline tests remove only the owned product route; the idle interval contains
+no Android keepalive. Framework provisioning retains its original 30-second
+command cap within the original boot deadline. Route, identity and lifecycle
+receipts must survive cleanup for terminal acceptance.
+
 ## Run
 
 Prepare the private pinned-input configuration described in
@@ -37,6 +47,10 @@ the clean candidate's private build receipt. Add this `android` object:
 The configuration and build receipt must be owned, single-link regular files
 with owner-only permissions (`0600`). The installer refuses a broadly readable
 receipt even when its hashes match.
+
+Choose an available `tlsPort` in the private configuration. Before provisioning,
+the runner checks that port and both fixed emulator ports; an existing listener
+is a failed preflight, never a reason to stop another service.
 
 [ANDROID.md](ANDROID.md) describes the official APK and SDK/archive pins.
 The runner verifies the installed inputs against those pins. It provisions a

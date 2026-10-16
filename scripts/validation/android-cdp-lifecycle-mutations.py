@@ -30,7 +30,7 @@ mutations=[
 ]
 with tempfile.TemporaryDirectory(prefix='obsync-cdp-mutations-') as tmp:
  work=Path(tmp)/'scripts/validation';(work/'mobile').mkdir(parents=True)
- for name in ('android-journey.mjs','mobile/cdp.mjs','mobile/android-cdp-lifecycle.test.mjs','mobile/android-connect.test.mjs'):shutil.copyfile(root/name,work/name)
+ for name in ('android-journey.mjs','tcp-target.mjs','mobile/cdp.mjs','mobile/android-cdp-lifecycle.test.mjs','mobile/android-connect.test.mjs'):shutil.copyfile(root/name,work/name)
  target=work/'android-journey.mjs';baseline=target.read_text()
  def check():
   return subprocess.run([a.node,'--test','--test-isolation=none',str(work/'mobile/android-cdp-lifecycle.test.mjs'),str(work/'mobile/android-connect.test.mjs')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10).returncode

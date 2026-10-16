@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import {emulatorTarget,verifyListener} from './tcp-target.mjs';
 import { scriptJson } from './mobile/cdp.mjs';
 
 export const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -322,6 +323,7 @@ async function main(args) {
   }else if(state.targetKind!==undefined&&state.targetKind!=='emulator'||!state.processes?.emulator||!state.processes?.adb||!/^emulator-(555[468]|55[678][02468])$/.test(state.serial))throw Error('owned emulator required');
   const adb = join(state.sdk, 'platform-tools/adb'), environment = usb ? {...state.environment} : { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ADB') && !key.startsWith('ANDROID_'))), ...state.environment };
   function live() {
+    if(!usb){emulatorTarget(state);if(state.adbTransport==='isolated-tcp')verifyListener(state,execFileSync('/usr/sbin/lsof',['-nP','-iTCP:'+state.selectedTcpAdb.hostPort,'-sTCP:LISTEN','-Fpn'],{encoding:'utf8',timeout:3000,maxBuffer:8192}));}
     if (Date.now() / 1000 >= state.expiresAtEpoch) throw Error('session expired');
     for (const record of [state.holder, ...Object.values(state.processes)]) {
       if (!record || execFileSync('ps', ['-p', String(record.pid), '-o', 'lstart=,command='], { encoding: 'utf8' }).trim() !== record.identity) throw Error('owned process identity changed');
@@ -331,7 +333,7 @@ async function main(args) {
   function deviceBudget(budgetMs,...argv) {
     if(!Number.isFinite(budgetMs)||budgetMs<=0)throw Error('native note readiness deadline');
     live();
-    return execFileSync(adb, ['-P', String(state.adbPort), '-s', state.serial, ...argv], { env: environment, timeout: Math.min(20000,budgetMs, Math.max(1, state.expiresAtEpoch * 1000 - Date.now())), maxBuffer: 16 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
+    return execFileSync(adb, ['-P', String(state.adbPort), '-s', usb?state.serial:emulatorTarget(state), ...argv], { env: environment, timeout: Math.min(20000,budgetMs, Math.max(1, state.expiresAtEpoch * 1000 - Date.now())), maxBuffer: 16 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
   }
   function installProcessFacts() {
     const facts={atEpochMs:Date.now()};

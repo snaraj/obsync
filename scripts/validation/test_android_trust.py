@@ -5,6 +5,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -66,9 +67,16 @@ class Control(unittest.TestCase):
                 adb.assert_not_called()
 
     def test_install_preserves_roots_apk_enforcement_and_never_restarts_apps(self):
+        self.install_and_reapply_case(False)
+
+    def test_isolated_tcp_install_and_reapply_preserve_preflight_apk_and_exact_root_attachment(self):
+        self.install_and_reapply_case(True)
+
+    def install_and_reapply_case(self, isolated):
         with tempfile.TemporaryDirectory(prefix='obsync-ca-install-') as tmp:
             run=Path(tmp);(run/'evidence').mkdir()
             state={'sourceHead':'a'*40,'serial':'emulator-5584','reversePorts':[18473]}
+            if isolated:state.update(adbTransport='isolated-tcp',expiresAtEpoch=time.time()+120)
             ready={'apkSha256':'b'*64}; ca={'sha256':'c'*64,'name':'1234abcd.0','notAfter':'synthetic'}
             original={'5678abcd.0':'d'*64}; expected=original|{ca['name']:ca['sha256']}
             target={'role':'md.obsidian','pid':321,'namespace':'mnt:[123]','startTicks':'77'}
@@ -84,8 +92,13 @@ class Control(unittest.TestCase):
                  patch.object(M,'untrusted_receipt',return_value='e'*64), patch.object(M,'apk_hash',return_value=ready['apkSha256']), \
                  patch.object(M,'shell',side_effect=shell), patch.object(M,'namespaces',return_value=[target]), \
                  patch.object(M,'inventory',side_effect=[original,expected]), patch.object(M.SESSION,'adb_command') as adb, \
-                 patch.object(M.SESSION,'register_emulator'), patch.object(M.SESSION,'check_reverse'):
+                 patch.object(M.SESSION,'register_emulator'), patch.object(M.SESSION,'check_reverse'), \
+                 patch.object(M.SESSION,'reattach_tcp',return_value=True) as attach:
                 proof=M.install(run,run/'ca.crt','c'*64,run/'before.json')
+            if isolated:
+                attach.assert_called_once();self.assertEqual(attach.call_args.args[:2],(state,run));self.assertEqual(attach.call_args.args[3],'root')
+                self.assertFalse(any(args==('id','-u') for args in commands))
+            else:attach.assert_not_called()
             self.assertEqual(proof['result'],'INSTALLED');self.assertTrue(proof['originalRootsPreserved'])
             self.assertFalse(proof['appRestarted']);self.assertFalse(proof['zygoteRestarted'])
             self.assertEqual(proof['selinux'],'Enforcing');self.assertEqual(proof['apkSha256'],ready['apkSha256'])
@@ -102,8 +115,12 @@ class Control(unittest.TestCase):
                  patch.object(M,'untrusted_receipt',return_value='e'*64),patch.object(M,'apk_hash',return_value=ready['apkSha256']), \
                  patch.object(M,'shell',side_effect=replay_shell),patch.object(M,'namespaces',return_value=[target]) as namespaces, \
                  patch.object(M,'inventory',side_effect=[original,expected]),patch.object(M.SESSION,'adb_command') as replay_adb, \
-                 patch.object(M.SESSION,'register_emulator'),patch.object(M.SESSION,'check_reverse'):
+                 patch.object(M.SESSION,'register_emulator'),patch.object(M.SESSION,'check_reverse'), \
+                 patch.object(M.SESSION,'reattach_tcp',return_value=True) as replay_attach:
                 replay=M.install(run,run/'ca.crt','c'*64,run/'before.json',reapply=True)
+            if isolated:replay_attach.assert_called_once();self.assertEqual(replay_attach.call_args.args[3],'root')
+            else:replay_attach.assert_not_called()
+            self.assertEqual(replay['apkSha256'],ready['apkSha256'])
             self.assertTrue(replay['reapplied']);self.assertEqual(replay['bootId'],'boot-two')
             self.assertEqual(namespaces.call_args.kwargs,{'require_app':False})
             self.assertFalse(any(call.args[1][0]=='push' for call in replay_adb.call_args_list))
