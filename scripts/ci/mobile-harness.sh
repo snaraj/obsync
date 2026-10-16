@@ -12,6 +12,8 @@ python3 -B scripts/validation/selected-retention-mutations.py --node "$(command 
 python3 -B scripts/validation/android-home-mutations.py
 python3 -B scripts/validation/android-trust-apk-mutations.py
 python3 -B scripts/validation/android-note-read-mutations.py --node "$(command -v node)"
+python3 -B scripts/validation/android-folder-observation-mutations.py --node "$(command -v node)"
+python3 -B scripts/validation/android-scope-save-mutations.py --node "$(command -v node)"
 python3 -B scripts/validation/mobile/native-checkpoint-mutations.py --node "$(command -v node)" --source "$OBSYNC_ORACLE_SOURCE"
 python3 -B scripts/validation/mobile/native-ciphertext-capture-mutations.py --node "$(command -v node)" --source "$OBSYNC_ORACLE_SOURCE"
 python3 -B scripts/validation/android-cdp-lifecycle-mutations.py --node "$(command -v node)"

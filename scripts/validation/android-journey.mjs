@@ -13,8 +13,35 @@ export function candidateControlRead(labelMatches){const visible=e=>!!e&&e.getBo
 export async function waitCandidateReadiness(read,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now,budget=20000){
   const first=read(),started=now(),end=started+budget;let current=first,polls=1;while(!current.ready&&!current.refused&&now()<end){await pause(Math.min(100,end-now()));current=read();polls++;}return {before:first.facts,after:current.facts,polls,ready:current.ready,deadlineMs:budget,elapsedMs:now()-started};
 }
-export async function waitScopeSave(read,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now,budget=30000){
-  const started=now(),end=started+budget;let before,after,polls=0,ready=false;while(now()<end){after=await read(Math.min(5000,end-now()));before??=after;polls++;ready=now()<=end&&after.changingScope===false&&after.policyMatches===true;if(ready)break;if(now()<end)await pause(Math.min(100,end-now()));}return {before,after,polls,ready,deadlineMs:budget,elapsedMs:now()-started};
+export async function waitScopeSave(read,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now,budget=30000,deadline){
+  const started=now(),end=deadline??started+budget;let before,after,polls=0,ready=false;while(now()<end){after=await read(Math.min(5000,end-now()));before??=after;polls++;ready=now()<=end&&after.changingScope===false&&after.policyMatches===true;if(ready)break;if(now()<end)await pause(Math.min(100,end-now()));}return {before,after,polls,ready,deadlineMs:budget,elapsedMs:now()-started};
+}
+export function scopeSaveObservation(app,document,folders){
+  const visible=e=>!!e&&e.getClientRects().length>0,p=app.plugins.plugins['obsync-private-sync'];
+  const rows=[...document.querySelectorAll('.setting-item')].filter(visible).filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()==='Selected folders');
+  const input=rows.length===1?rows[0].querySelector('textarea'):null;
+  const confirmation=[...document.querySelectorAll('.modal:not(.mod-settings)')].filter(visible).some(m=>['Cancel','Save anyway'].every(label=>[...m.querySelectorAll('button')].filter(visible).some(b=>b.textContent.trim()===label)));
+  const refused="That selection cannot be saved: each line must be a folder inside this vault, such as Notes or Projects/2026. Folders whose names start with a dot are hidden and never synced.";
+  return {changingScope:p.changingScope===true,policyMatches:JSON.stringify(p.state.data.syncFolders)===JSON.stringify(folders),exactFolderPresent:folders.every(path=>Array.isArray(app.vault.getAbstractFileByPath(path)?.children)),renderedDraftMatches:!!input&&input.value===folders.join('\n'),knownConfirmationModalVisible:confirmation,knownRefusalVisible:[...document.querySelectorAll('.notice')].filter(visible).some(n=>n.textContent.trim()===refused)};
+}
+export async function waitFolderIndex(app,folder,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now){
+  const started=now(),end=started+10000;let first=null,last=null,polls=0;
+  const result=(ready,rows,boundExceeded=false)=>({ready,rows,first,last,polls,elapsedMs:now()-started,deadlineMs:10000,boundExceeded});
+  while(now()<end){
+    const f=app.vault.getAbstractFileByPath(folder);let rows;
+    const facts={folderPresent:!!f,childrenArray:Array.isArray(f?.children),descendantCount:null,missingOrInvalidIdentityCount:null};
+    if(f&&Array.isArray(f.children)){
+      const files=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith(folder+'/'));
+      facts.descendantCount=Math.min(files.length,33);
+      if(files.length>32){first??=facts;last=facts;polls++;return result(false,undefined,true);}
+      rows=files.map(f=>({path:f.path,id:app.plugins.plugins['obsync-private-sync'].state.fileByPath(f.path)?.fileId??null}));
+      facts.missingOrInvalidIdentityCount=rows.filter(r=>!/^[a-f0-9]{32}$/.test(r.id??'')).length;
+    }
+    first??=facts;last=facts;polls++;
+    if(rows&&rows.every(r=>/^[a-f0-9]{32}$/.test(r.id??'')))return result(true,rows);
+    await pause(100);
+  }
+  return result(false);
 }
 export function noteIndexObservation(app,note,expectIdentity){
   const p=app.plugins?.plugins?.['obsync-private-sync'],pin=p?.state?.custody2(),paired=p?.state?.paired,r=p?.state?.fileByPath(note);
@@ -101,8 +128,8 @@ export function restoredSiblingPath(source,path){
   if(typeof path!=='string'||!path.startsWith(prefix))return false;
   const suffix=path.slice(prefix.length);return suffix.endsWith(').md')&&/^[a-f0-9]{32}$/.test(suffix.slice(0,-4));
 }
-export function pointerObservation(element){
-  element.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});
+export function pointerObservation(element,scroll=true){
+  if(scroll)element.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});
   const r=element.getBoundingClientRect(),doc=element.ownerDocument,view=doc.defaultView,v=view.visualViewport;
   const x=r.x+r.width/2,y=r.y+r.height/2,left=v?.offsetLeft??0,top=v?.offsetTop??0,width=v?.width??view.innerWidth,height=v?.height??view.innerHeight;
   const pointerViewportMatched=!!r.width&&!!r.height&&x>=left&&x<left+width&&y>=top&&y<top+height;
@@ -267,10 +294,10 @@ export function nativeReadiness(app,vaultPath){
   return {...facts,ready:Object.values(facts).every(v=>v===true)};
 }
 export async function waitNativeReadiness(read,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now,budget=20000){
-  const before=read(),end=now()+budget;let after=before,polls=1;
+  const started=now(),before=read(),end=started+budget;let after=before,polls=1;
   for(;;){
     if(after.vaultPresent&&!after.ownedVault)throw Error('foreign vault');
-    if(after.ready||now()>=end)return {before,after,polls,ready:after.ready};
+    if(after.ready||now()>=end)return {before,after,polls,ready:after.ready&&now()<=end};
     await pause(100);after=read();polls++;
   }
 }
@@ -320,7 +347,7 @@ async function main(args) {
     const result = { at: new Date().toISOString(), command,evidenceClass:input.evidenceClass==='LOCAL_CONTROL_PROTOTYPE'?input.evidenceClass:undefined, platform: usb?'Android USB device':'Android emulator', physicalPhone:usb?'USB_JOURNEY_OBSERVED':'NOT_RUN',freshPhysicalEnvironment:usb?false:undefined, sourceHead: state.sourceHead, driverSha256: digest(readFileSync(new URL(import.meta.url))),connectReadiness,...value };
     receipts.push(result);
   };
-  let forward, ws, next = 0, stage='connect_android_webview',nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,connectReadiness,persistedNoteReadback,controlReadiness,pointerWitness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,noteReadiness,replacementReadiness,installReadbacks;
+  let forward, ws, next = 0, stage='connect_android_webview',nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,connectReadiness,persistedNoteReadback,controlReadiness,pointerWitness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,noteReadiness,replacementReadiness,installReadbacks,folderIndexReadiness;
   const pending = new Map(), networkFailures = [], blockedReasons = [];
   async function send(method, params = {},budgetMs=30000) {
     live();
@@ -361,10 +388,11 @@ async function main(args) {
     await releaseOwnedConnection(socket,async budget=>{if(port)deviceBudget(budget,'forward','--remove',`tcp:${port}`);},connectReadiness,state.expiresAtEpoch*1000);
   }
   async function trustedPointerClick(spec,requireVault=true){
-    await evaluate(`const visible=e=>e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0,es=[...document.querySelectorAll(P.selector)].filter(visible).filter(e=>(P.text==null||e.textContent.trim()===P.text)&&(!P.modalTitle||e.closest('.modal')?.querySelector('.modal-title')?.textContent.trim()===P.modalTitle));if(es.length!==1)throw Error('ordinary control absent or ambiguous');const target=es[0],point=(${pointerTarget.toString()})(target,(${pointerObservation.toString()}));if(Math.abs(point.x-P.x)>1||Math.abs(point.y-P.y)>1)throw Error('ordinary control moved before trusted click');const events={},listeners={};for(const type of ['mousedown','mouseup','click']){events[type]={count:0,trusted:false,expectedTargetMatched:false};listeners[type]=e=>{const r=events[type];r.count++;r.trusted=e.isTrusted===true;r.expectedTargetMatched=e.composedPath().includes(target)||target.contains(e.target);};document.addEventListener(type,listeners[type],true);}window.obsyncJourneyPointer={events,listeners,target};return true;`,{selector:spec.selector,text:spec.expectedText,modalTitle:spec.modalTitle,x:spec.point.x,y:spec.point.y},requireVault);
-    await send('Input.dispatchMouseEvent',{type:'mousePressed',x:spec.point.x,y:spec.point.y,button:'left',clickCount:1});
-    await send('Input.dispatchMouseEvent',{type:'mouseReleased',x:spec.point.x,y:spec.point.y,button:'left',clickCount:1});
-    pointerWitness=await evaluate(`const w=window.obsyncJourneyPointer;if(!w)throw Error('ordinary pointer witness absent');for(const [type,listener]of Object.entries(w.listeners))document.removeEventListener(type,listener,true);const value={...w.events,expectedTargetConnectedAfter:w.target.isConnected};delete window.obsyncJourneyPointer;return value;`,{},requireVault);if(!pointerWitnessMatches(pointerWitness))throw Error('ordinary trusted click not delivered');
+    const budget=()=>{const remaining=spec.deadline===undefined?30000:Math.min(30000,spec.deadline-Date.now());if(remaining<=0)throw Error('saved selected scope deadline');return remaining;};
+    await evaluate(`const visible=e=>e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0,es=[...document.querySelectorAll(P.selector)].filter(visible).filter(e=>(P.text==null||e.textContent.trim()===P.text)&&(!P.modalTitle||e.closest('.modal')?.querySelector('.modal-title')?.textContent.trim()===P.modalTitle)&&(!P.settingRow||e.closest('.setting-item')?.querySelector('.setting-item-name')?.textContent.trim()===P.settingRow));if(es.length!==1)throw Error('ordinary control absent or ambiguous');const target=es[0],point=(${pointerTarget.toString()})(target,e=>(${pointerObservation.toString()})(e,P.scroll!==false));if(Math.abs(point.x-P.x)>1||Math.abs(point.y-P.y)>1)throw Error('ordinary control moved before trusted click');const events={},listeners={};for(const type of ['mousedown','mouseup','click']){events[type]={count:0,trusted:false,expectedTargetMatched:false};listeners[type]=e=>{const r=events[type];r.count++;r.trusted=e.isTrusted===true;r.expectedTargetMatched=e.composedPath().includes(target)||target.contains(e.target);};document.addEventListener(type,listeners[type],true);}window.obsyncJourneyPointer={events,listeners,target};return true;`,{selector:spec.selector,text:spec.expectedText,modalTitle:spec.modalTitle,settingRow:spec.settingRow,scroll:spec.scroll,x:spec.point.x,y:spec.point.y},requireVault,budget());
+    await send('Input.dispatchMouseEvent',{type:'mousePressed',x:spec.point.x,y:spec.point.y,button:'left',clickCount:1},budget());
+    await send('Input.dispatchMouseEvent',{type:'mouseReleased',x:spec.point.x,y:spec.point.y,button:'left',clickCount:1},budget());
+    pointerWitness=await evaluate(`const w=window.obsyncJourneyPointer;if(!w)throw Error('ordinary pointer witness absent');for(const [type,listener]of Object.entries(w.listeners))document.removeEventListener(type,listener,true);const value={...w.events,expectedTargetConnectedAfter:w.target.isConnected};delete window.obsyncJourneyPointer;return value;`,{},requireVault,budget());if(!pointerWitnessMatches(pointerWitness))throw Error('ordinary trusted click not delivered');
   }
   async function readyNativeStartup(){
     startupReadiness=await evaluate(`const read=()=>(${nativeReadiness.toString()})(window.app,P.vaultPath);return await (${waitNativeReadiness.toString()})(read);`,{vaultPath:input.vaultPath},false);
@@ -589,7 +617,10 @@ async function main(args) {
       stage='independent_folder_and_descendant_bytes';
       if(!/^[A-Za-z][A-Za-z0-9 -]{0,63}$/.test(input.folder??'')||input.folder.trim()!==input.folder)throw Error('explicit synthetic root folder required');
       const folder=input.folder;
-      const files=await evaluate(`const end=Date.now()+10000;while(Date.now()<end){const f=app.vault.getAbstractFileByPath(P.folder);if(f&&Array.isArray(f.children)){const files=app.vault.getMarkdownFiles().filter(f=>f.path.startsWith(P.folder+'/'));if(files.length>32)throw Error('bounded synthetic folder required');const rows=files.map(f=>({path:f.path,id:app.plugins.plugins['obsync-private-sync'].state.fileByPath(f.path)?.fileId??null}));if(rows.every(r=>/^[a-f0-9]{32}$/.test(r.id??'')))return rows;}await new Promise(r=>setTimeout(r,100));}throw Error('native folder index deadline');`,{folder});
+      const observed=await evaluate(`return await (${waitFolderIndex.toString()})(app,P.folder);`,{folder});
+      const {rows:files,...facts}=observed;folderIndexReadiness=facts;
+      if(observed.boundExceeded)throw Error('bounded synthetic folder required');
+      if(!observed.ready)throw Error('native folder index deadline');
       device('shell','test','-d',androidPathArg(ownedVault(input.vaultPath)+'/'+folder));
       if(!readOwnedRootEntries(device,input.vaultPath).includes(folder))throw Error('exact persisted folder case differs');
       const rows=files.map(f=>{if(!f.path.startsWith(folder+'/')||!f.path.split('/').every(s=>/^[A-Za-z0-9][A-Za-z0-9 .-]*$/.test(s)))throw Error('unsafe synthetic descendant path');if(!/^[a-f0-9]{32}$/.test(f.id??''))throw Error('synced descendant identity required');const bytes=device('exec-out','cat',androidExecPathArg(input.vaultPath+'/'+f.path));return {suffix:f.path.slice(folder.length+1),bytes:bytes.length,sha256:digest(bytes),fileIdHash:digest(Buffer.from(f.id))};});
@@ -602,7 +633,7 @@ async function main(args) {
         if(readOwnedRootEntries(device,input.vaultPath).includes(input.oldFolder))throw Error('old exact folder name remains persisted');
         await evaluate(`if(app.vault.getAbstractFileByPath(P.oldFolder))throw Error('old folder remains indexed');return true;`,{oldFolder:input.oldFolder});
       }
-      receipt({result:'PASS',folder,descendants:rows.length,independentAdbBytes:true,descendantIdentityAndBytesPreserved:!!input.beforeSnapshot,syncClaim:false});
+      receipt({result:'PASS',folder,descendants:rows.length,independentAdbBytes:true,descendantIdentityAndBytesPreserved:!!input.beforeSnapshot,syncClaim:false,folderIndexReadiness});
     }else if(['history-baseline','history-open','history-previous','history-pick','history-readback'].includes(command)){
       const historyDom=`const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;const ms=[...document.querySelectorAll('.modal:not(.mod-settings)')].filter(visible);if(ms.length!==1||ms[0].querySelector('.modal-title')?.textContent.trim()!=='Restore from history')throw Error('sole ordinary history modal required');const modal=ms[0];`;
       if(command==='history-baseline'){
@@ -915,14 +946,25 @@ async function main(args) {
       await evaluate(`app.setting.open();app.setting.openTabById('obsync-private-sync');return true;`);
       await evaluate(scopeDom+`const s=row('Folder selection').querySelector('select');const options=[...s.options].filter(o=>o.textContent.trim()==='Selected folders only');if(options.length!==1)throw Error('selected folder option changed');s.value=options[0].value;s.dispatchEvent(new s.ownerDocument.defaultView.Event('change',{bubbles:true}));const t=row('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected folder textarea unavailable');t.focus();window.obsyncJourneyScopeInput=null;document.addEventListener('beforeinput',e=>window.obsyncJourneyScopeInput=e.isTrusted,{capture:true,once:true});return true;`);
       await evaluate(`return (${selectAllText.toString()})();`);await send('Input.insertText',{text:input.folders.join('\n')});
-      const point=await evaluate(scopeDom+`if(row('Selected folders').querySelector('textarea').value!==P.text||window.obsyncJourneyScopeInput!==true)throw Error('native selected folder input differs');delete window.obsyncJourneyScopeInput;const bs=[...row('Save on this device').querySelectorAll('button')].filter(b=>b.textContent.trim()==='Save'&&!b.disabled&&b.getClientRects().length);if(bs.length!==1)throw Error('ordinary scope Save control required');return (${pointerTarget.toString()})(bs[0],(${pointerObservation.toString()}));`,{text:input.folders.join('\n')});
-      await send('Input.dispatchMouseEvent',{type:'mousePressed',x:point.x,y:point.y,button:'left',clickCount:1});await send('Input.dispatchMouseEvent',{type:'mouseReleased',x:point.x,y:point.y,button:'left',clickCount:1});
+      const scopeSaveStarted=Date.now(),scopeSaveDeadline=scopeSaveStarted+30000;
+      scopeSaveReadiness={ready:false,polls:0,deadlineMs:30000,startedAtEpochMs:scopeSaveStarted};
+      const scopeBudget=()=>{const remaining=scopeSaveDeadline-Date.now();if(remaining<=0)throw Error('saved selected scope deadline');return remaining;};
+      scopeSaveReadiness.before=scopeSaveReadiness.after=await evaluate(`return (${scopeSaveObservation.toString()})(app,document,P.folders);`,{folders:input.folders},true,scopeBudget());
+      try {
+      pointerReadiness=await evaluate(scopeDom+`if(row('Selected folders').querySelector('textarea').value!==P.text||window.obsyncJourneyScopeInput!==true)throw Error('native selected folder input differs');delete window.obsyncJourneyScopeInput;const save=()=>{const bs=[...row('Save on this device').querySelectorAll('button')].filter(b=>b.textContent.trim()==='Save'&&!b.disabled&&b.getClientRects().length);if(bs.length!==1)throw Error('ordinary scope Save control required');return bs[0];};const target=save();target.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});const read=()=>{if(save()!==target||!target.isConnected)throw Error('ordinary scope Save control changed');return (${pointerObservation.toString()})(target,false);};return await (${waitPointerReadiness.toString()})(read,undefined,undefined,P.budget,200);`,{text:input.folders.join('\n'),budget:Math.min(10000,scopeBudget())},true,scopeBudget());
+      if(!pointerReadiness.ready)throw Error('ordinary scope Save pointer readiness deadline');
+      const point={x:pointerReadiness.x,y:pointerReadiness.y};
+      stage='trusted_selected_scope_save_click';
+      await trustedPointerClick({selector:'.modal.mod-settings .setting-item button',expectedText:'Save',settingRow:'Save on this device',point,deadline:scopeSaveDeadline,scroll:false});
       stage='verify_saved_selected_folders';
-      scopeSaveReadiness={polls:0,deadlineMs:30000,startedAtEpochMs:Date.now()};
-      const saved=await waitScopeSave(async budget=>{const observed=await evaluate(`const p=app.plugins.plugins['obsync-private-sync'];return {changingScope:p.changingScope===true,policyMatches:JSON.stringify(p.state.data.syncFolders)===JSON.stringify(P.folders)};`,{folders:input.folders},true,budget);scopeSaveReadiness.after=observed;scopeSaveReadiness.polls++;return observed;});
-      scopeSaveReadiness={...scopeSaveReadiness,...saved};
+      const saved=await waitScopeSave(async budget=>{const observed=await evaluate(`return (${scopeSaveObservation.toString()})(app,document,P.folders);`,{folders:input.folders},true,budget);scopeSaveReadiness.after=observed;scopeSaveReadiness.polls++;return observed;},undefined,undefined,30000,scopeSaveDeadline);
+      scopeSaveReadiness={...scopeSaveReadiness,...saved,before:scopeSaveReadiness.before,elapsedMs:Date.now()-scopeSaveStarted};
       if(!scopeSaveReadiness.ready)throw Error('saved selected scope deadline');
-      receipt({result:'PASS',selectedFolders:input.folders,method:'ordinary select change, trusted textarea input and Save pointer',policyChangedThroughSettingsOnly:true,scopeSaveReadiness});
+      } catch(error) {
+        if(Date.now()<scopeSaveDeadline)try{scopeSaveReadiness.after=await evaluate(`return (${scopeSaveObservation.toString()})(app,document,P.folders);`,{folders:input.folders},true,Math.min(1000,scopeBudget()));}catch{}
+        scopeSaveReadiness.elapsedMs=Date.now()-scopeSaveStarted;throw error;
+      }
+      receipt({result:'PASS',selectedFolders:input.folders,method:'ordinary select change, trusted textarea input and one row-scoped witnessed Save click',policyChangedThroughSettingsOnly:true,pointerWitness,pointerReadiness,scopeSaveReadiness});
     } else if (command === 'status') {
       stage='read_only_pairing_status';
       if(input.requireIdle===true){stage='observe_automatic_idle_without_pairing_prompt';await evaluate(`const end=Date.now()+20000;while(Date.now()<end){const p=app.plugins.plugins['obsync-private-sync'];if(p?.state?.paired&&p.currentStatus().kind==='idle'&&![...document.querySelectorAll('.modal:not(.mod-settings)')].some(m=>m.getClientRects().length))return true;await new Promise(r=>setTimeout(r,100));}throw Error('automatic native idle deadline');`);}
@@ -934,7 +976,7 @@ async function main(args) {
     } else throw Error('unknown bounded Android command');
   } catch(error) {
     const generated=new Set([...readFileSync(new URL(import.meta.url),'utf8').matchAll(/\bError\('([^']+)'\)/g)].map(m=>m[1]));
-    receipt({ result: 'FAIL',stage,failureClass:'AUTOMATION_OR_ORACLE_REFUSAL',exceptionType:error.name==='Error'?'Error':error.name==='TimeoutError'?'TimeoutError':'ExternalError',timeout:error.code==='ETIMEDOUT'||error.name==='TimeoutError'||generated.has(error.message)&&error.message.endsWith('deadline'),nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,pointerWitness,controlReadiness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,persistedNoteReadback,noteReadiness,replacementReadiness,installReadbacks,external:externalFailure(error),reason:generated.has(error.message)?error.message:'External operation failed; private details withheld.' });
+    receipt({ result: 'FAIL',stage,failureClass:'AUTOMATION_OR_ORACLE_REFUSAL',exceptionType:error.name==='Error'?'Error':error.name==='TimeoutError'?'TimeoutError':'ExternalError',timeout:error.code==='ETIMEDOUT'||error.name==='TimeoutError'||generated.has(error.message)&&error.message.endsWith('deadline'),nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,pointerWitness,controlReadiness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,persistedNoteReadback,noteReadiness,replacementReadiness,installReadbacks,folderIndexReadiness,external:externalFailure(error),reason:generated.has(error.message)?error.message:'External operation failed; private details withheld.' });
     process.exitCode = 1;
   } finally {
     try {await releaseConnection();}

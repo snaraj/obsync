@@ -35,7 +35,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All seventeen full batches stopped on their first failed attempt;
+have passed**. All eighteen full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -43,7 +43,148 @@ owned-process and runtime cleanup.
 Their reduced attempt ledger has SHA-256
 `9a0596c7191a86374e5489b3610bd55dfdec9e4c3bd10eac576d503599cd4ec5`.
 
-The latest full batch, 17, used committed driver and rebuilt candidate
+Full batch 18 used committed driver and rebuilt candidate
+`76a7116fdca25d3be4650b2ee92aa2df185413e1`. Ordinary pairing, two-way bytes,
+the 213-second no-interaction interval, both process restarts, guest reboot,
+offline recovery, access-only revocation/re-pairing, interrupted rotation,
+direct old-key rejection of new map/manifest/chunk ciphertext, history restore
+and post-rotation restart passed before the selected-folder return failed.
+The first selected-folder direction and five-minute observation passed. The
+Android return's first intermediate rename passed; its second rename failed
+the unchanged ten-second native folder/index readiness check. The two-action
+step took 169,277 ms. That receipt cannot distinguish a missing native folder
+from missing descendant identities, so the cause remains unknown. Recovery-C,
+the second selected-folder stability window and closed confidentiality admission
+were not reached. The parent rehashed 92 retained exported files; both controller
+cleanups passed with zero owned groups and actual runtime/private paths absent.
+The original aggregate remains FAIL, SHA-256
+`fc497e7901aa014ce6efdebde59b0b339a431f481bd9e71b4231c034d56b664c`.
+The eighteen-batch ledger has SHA-256
+`83e230f1848e0c3c094fab9896d55ed000cc7b4573303bbbcf002017f41d7ae7`.
+
+Two bounded native diagnostics investigated idle behavior without changing
+power settings or deadlines. The first failed an asset readback, followed by
+ADB reporting the owned emulator offline; it remains FAIL. The second installed
+the exact candidate and renamed an empty folder through ordinary controls
+before and after 300,005 ms without device calls. The two-action times were
+7,525 ms and 5,462 ms. Android remained Awake and Obsidian visible/resumed;
+the default screen timeout was unchanged. This did not reproduce the slowdown
+and does not exercise synced descendants or establish host power-management
+behavior. Both diagnostics independently verified cleanup. Their reduced record
+has SHA-256
+`4ccdd152a1692ccdb3df1dfeaadb1e92ed5bf2514cf9261ff755853d763c295e`.
+
+The folder-index driver now retains first/last scalar observations of folder
+presence, children-array presence, descendant count and missing/invalid identity
+count. Its ten-second deadline, 100 ms polling, 32-descendant bound, readiness
+predicate and independent persisted-byte/identity assertions are unchanged.
+These facts diagnose future failures; they cannot reconstruct batch 18.
+An independent retained-file audit also rejected batch 18's missing final
+selected snapshot, confirming that partial evidence cannot supply acceptance.
+
+The composed diagnostic change passes 141 Python tests, 179 Node tests and
+194 scripted mutation controls, with no skips. The unchanged ten-second
+deadline and readiness predicate are among the deliberately broken controls.
+The gate log SHA-256 is
+`713d1b4be75c7c27f474ec1bd2a35bf33b3fb57ee96c09a6171fdfccf9b9c596`.
+An earlier sandboxed invocation failed because process inspection and loopback
+TLS binds were denied. Its failed log remains retained; the complete gate ran
+with those required local capabilities, and its recorded disposable children
+were independently confirmed absent.
+
+A separate fresh diagnostic reused ordinary core pairing and the actual
+selected-folder phase, without the unrelated security journeys. TLS controls,
+independent verification-code comparison, consent and two-way bytes passed.
+Both selected notes reached Android with matching independently exported bytes.
+The run then failed to save Android's selected-folder policy: the original
+30-second check observed neither a changing scope nor the expected saved policy.
+Its receipt verifies the typed input but has no pointer-delivery witness; it
+does not establish whether Save was missed, refused, or awaited confirmation.
+Neither rename nor either stability window was reached. All eight exported
+files were independently rehashed after verified cleanup. The failed diagnostic
+record has SHA-256
+`8a91063c3b394106ed16a2950be7d3b6b1b49deba6f4ff87379b25753a4beaa7`.
+
+The Save driver now reuses the existing trusted-click witness, restricted to
+the exact "Save on this device" setting row. A moved target, another Save
+button, an untrusted event or missing actual click refuses. One absolute
+30-second budget covers target observation, the single click and the unchanged
+saved-policy predicate. Safe first/last observations distinguish folder presence,
+the rendered draft, a known confirmation and a known refusal. No action is
+resubmitted. These controls address missing action evidence; they do not prove
+the cause of the earlier failed diagnostic.
+
+With both diagnostic repairs composed, the full offline harness gate passes
+141 Python tests, 184 Node tests and 202 scripted mutation controls, with no
+skips. Its log SHA-256 is
+`65543124fa3be9ff73d6107858c7d6ebe01955396ff991bb85649259670c270c`.
+
+The next fresh paired diagnostic established an action-driver failure at Save:
+one mousedown, mouseup and click were all trusted, but all three reached a
+different target from the intended button. The intended button remained
+connected, the exact folder existed and the rendered draft matched. No known
+confirmation or refusal was visible, and the policy remained unchanged. It
+stopped after 1,964 ms rather than repeating the click. The receipt does not
+record event geometry, so movement versus coordinate translation remains
+unresolved. Both cleanups passed and all eight exported byte buffers matched
+independent readback. Its failed diagnostic ledger has SHA-256
+`e8c93bc0185ad73120189b4a8f7dc202959fbbb5292e71d14400a1fc905c40f8`.
+The original batch-18 rename failure was not reached or explained by this run.
+
+A smaller fresh, unpaired native diagnostic reproduced the wrong-target click.
+The intended Save button moved down 236.95 CSS pixels between arming and the
+trusted mousedown. All three events reached the textarea at the original point;
+the visual viewport offsets stayed zero and its scale stayed one. Independent
+readback of the event receipt confirms target motion, rather than an observed
+coordinate-offset discrepancy. The underlying scroll or focus trigger is not
+established. The one click was not repeated, and the run remains FAIL. Cleanup
+passed with zero owned process groups and actual runtime/private paths absent.
+Its reduced ledger has SHA-256
+`1c8a0381eaa86345bb57191d414ac504f361078c0efa82ee52a80a2d7b325d79`.
+This diagnostic does not exercise pairing or explain the original rename failure.
+
+The driver repair scrolls Save into view once, observes its position and hit
+target without further scrolling until stable for 200 ms, then rechecks the
+target without scrolling before its single witnessed click. Movement restarts
+the stable interval; permanent motion or occlusion refuses. Observation, click
+and saved-policy verification remain inside the original absolute 30-second
+budget. Product behavior and all resulting-state assertions are unchanged.
+The composed offline gate passes 141 Python tests, 186 Node tests and 207
+scripted mutation controls, with no skips; log SHA-256
+`6111125ac55b148fa045beac876563585f37e1477fff1715d2218a5cc5cef7e9`.
+Removing settling, retaining a stale position after movement, repeating scrolls,
+omitting readiness or skipping the actual click all cause control failures.
+
+The first native diagnostic with that repair failed earlier, before candidate
+installation. The owned vault appeared, but official Obsidian's layout-ready
+flag remained false through the existing startup deadline (46 observations).
+The Save repair was not reached. The offline gate ran concurrently; resource
+interference is a hypothesis, not a demonstrated cause. The failed run and
+verified cleanup remain recorded, with reduced-ledger SHA-256
+`7195a9b9436c06b78176ad1ac6bf32c65ac91c38076851a3f5e76c87db41c38e`.
+
+The next fresh diagnostic ran without the offline gate and passed the small
+unpaired path. Save was stable for 278 ms, received exactly one trusted click
+on the intended button, and the saved policy matched within 1,956 ms. Independent
+receipt readback confirms unchanged button geometry through all three pointer
+events. Startup observations took 7,047 ms, 0 ms and 0 ms; the document was
+visible and focused, and Android reported Obsidian resumed and Awake. Cleanup
+passed with actual runtime/private paths absent. Its ledger SHA-256 is
+`17c5df7d238ed7e94f6d9f575eda405ca28427a657bdb9bbf6a69d1933601e2f`.
+This establishes the focused Save result, not the earlier startup cause,
+selected-folder synchronization or full acceptance.
+
+An actual-source boundary test separately showed that native readiness could
+accept a ready result at 20,001 ms under its 20-second limit. The deadline now
+starts before the first observation and rejects a late first or final result.
+The 20-second limit, 100 ms polling and foreign-vault refusal remain unchanged.
+Deliberately removing either time boundary fails the new regression control.
+The final composed offline gate passes 141 Python tests, 187 Node tests and
+209 scripted mutation controls, with zero skips. Its log SHA-256 is
+`f15107b161045cd045e9b053b2e6743b1ee087c215e281fc753e1b3d53f7bd56`.
+Both working-tree and outgoing-history secret scans pass.
+
+Full batch 17 used committed driver and rebuilt candidate
 `4ff8ae2274a2a07a7b0591bf19276b30f3c2a32d`. It passed ordinary pairing,
 two-way bytes, a 213,003 ms interval without Android calls, desktop/Android
 process restarts, guest reboot, offline recovery, access-only revocation and

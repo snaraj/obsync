@@ -63,6 +63,12 @@ produce aggregate acceptance. A failure stops the batch and remains in its
 original output. After a diagnosed fix, use a new output directory and repeat
 the complete batch; never relabel a failed attempt or discard it as a retry.
 
+`failureClass` identifies the observed refusal, not necessarily its root cause.
+`AUTOMATION_OR_ORACLE_REFUSAL` and `UNCLASSIFIED` require diagnosis from the
+action witnesses and independently retained state. A missing click witness or
+ambiguous timeout does not establish a product defect. Keep that uncertainty
+in the measured record until a controlled reproduction distinguishes it.
+
 ## What is measured
 
 | Former phone assertion | Replacement evidence |

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { parseOwnedRootEntries,readOwnedRootEntries,digest,noteIndexObservation,waitNoteReadiness,waitKnownNotesIndex,waitCandidateReadiness,waitScopeSave,waitPairingActivation,serverUrlCommitMatched,pointerWitnessMatches,androidExecPathArg,persistedByteFacts,freshTrustRoute, comparison, ordinaryControl, ownedVault, visibleComparisons, safeExceptionMessage, knownNotesMatch, selectAllText,nativeScreen,androidPathArg,externalFailure,nativeReadiness,waitNativeReadiness,syntheticNotePath,candidateLabelMatches,restoredSiblingPath,pointerTarget,waitPointerReadiness,waitOwnedPage } from './android-journey.mjs';
+import { parseOwnedRootEntries,readOwnedRootEntries,waitFolderIndex,digest,noteIndexObservation,waitNoteReadiness,waitKnownNotesIndex,waitCandidateReadiness,waitScopeSave,waitPairingActivation,serverUrlCommitMatched,pointerWitnessMatches,androidExecPathArg,persistedByteFacts,freshTrustRoute, comparison, ordinaryControl, ownedVault, visibleComparisons, safeExceptionMessage, knownNotesMatch, selectAllText,nativeScreen,androidPathArg,externalFailure,nativeReadiness,waitNativeReadiness,syntheticNotePath,candidateLabelMatches,restoredSiblingPath,pointerTarget,waitPointerReadiness,waitOwnedPage } from './android-journey.mjs';
 
 test('owned initial debugger waits for zero pages to become one and rejects multiples immediately',async()=>{
   let clock=0,reads=0;const facts={},page={type:'page',webSocketDebuggerUrl:'owned'};
@@ -365,7 +365,7 @@ test('actual folder snapshot and rename verification use complete exact entries 
   const source=(await import('node:fs')).readFileSync(new URL('./android-journey.mjs',import.meta.url),'utf8');
   const start=source.indexOf("      stage='independent_folder_and_descendant_bytes';"),end=source.indexOf("    }else if(['history-baseline'",start);assert.ok(start>0&&end>start);
   const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
-  const action=new AsyncFunction('command','input','state','evaluate','device','androidPathArg','androidExecPathArg','ownedVault','readOwnedRootEntries','digest','resolve','join','run','writeFileSync','privateJson','receipt','let stage;'+source.slice(start,end));
+  const action=new AsyncFunction('command','input','state','evaluate','device','androidPathArg','androidExecPathArg','ownedVault','readOwnedRootEntries','digest','resolve','join','run','writeFileSync','privateJson','receipt','waitFolderIndex','let stage,folderIndexReadiness;'+source.slice(start,end));
   async function run(mode='exact',verify=false){
     const vault='/storage/emulated/0/Documents/Obsync-Entries',folder=verify?'team docs':'Team docs',run='/owned/run',state={sourceHead:'a'.repeat(40)},contents={'One.md':Buffer.from('independent ONE\n'),'Two.md':Buffer.from('independent TWO\n')};let output,receipts=[],shellReads=0,catReads=0;
     const files=Object.keys(contents).map((name,i)=>({path:folder+'/'+name,id:(i?'b':'a').repeat(32)}));
@@ -374,7 +374,7 @@ test('actual folder snapshot and rename verification use complete exact entries 
     if(mode==='changed-byte')contents['One.md']=Buffer.from('changed bytes');
     const input={vaultPath:vault,folder,output:run+'/private/folder-before-test.json',...(verify?{beforeSnapshot:run+'/private/folder-before-original.json',oldFolder:'Team docs'}:{})};
     const device=(...argv)=>{assert.notEqual(argv[1],'ls','rendered listings must never be consumed');if(argv[0]==='shell'&&argv[1]==='-T'){shellReads++;assert.ok(argv[2].includes('-maxdepth 1 -print0 &&'));let names=mode==='wrong-case'?['TEAM DOCS']:[folder];if(mode==='old-present')names.push('Team docs');const entries=names.map(n=>vault+'/'+n+'\0').join('');return Buffer.from(entries+(mode==='partial'?'':'OBSYNC_ROOT_ENTRIES_COMPLETE\0'));}if(argv[0]==='exec-out'){catReads++;assert.equal(argv[1],'cat');return contents[argv[2].split('/').at(-1)];}assert.deepEqual(argv,['shell','test','-d',androidPathArg(vault+'/'+folder)]);return Buffer.alloc(0);};
-    await action(verify?'folder-verify':'folder-snapshot',input,state,async(body)=>body.includes('old folder remains indexed')?true:files,device,androidPathArg,androidExecPathArg,ownedVault,readOwnedRootEntries,digest,x=>x,(...parts)=>parts.join('/'),run,(_path,data)=>{output=JSON.parse(data);},()=>before,r=>receipts.push(r));
+    await action(verify?'folder-verify':'folder-snapshot',input,state,async(body)=>body.includes('old folder remains indexed')?true:waitFolderIndex({vault:{getAbstractFileByPath:()=>({children:[]}),getMarkdownFiles:()=>files},plugins:{plugins:{'obsync-private-sync':{state:{fileByPath:path=>({fileId:files.find(f=>f.path===path).id})}}}}},folder),device,androidPathArg,androidExecPathArg,ownedVault,readOwnedRootEntries,digest,x=>x,(...parts)=>parts.join('/'),run,(_path,data)=>{output=JSON.parse(data);},()=>before,r=>receipts.push(r),waitFolderIndex);
     return {output,receipts,shellReads,catReads};
   }
   const snapshot=await run();assert.equal(snapshot.output.files.length,2);assert.equal(snapshot.catReads,2);assert.equal(snapshot.receipts[0].independentAdbBytes,true);
