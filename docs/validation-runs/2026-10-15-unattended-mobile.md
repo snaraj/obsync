@@ -32,7 +32,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All eight full batches stopped on their first failed attempt;
+have passed**. All nine full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -256,6 +256,31 @@ scripted mutation controls, with no skips; both secret scans pass. At
 `e978150`, 46 hosted checks pass and one deployment check is intentionally
 skipped. Required dispositions pass; the non-required CodeQL aggregate remains
 red for the existing covered alert.
+
+Full batch 09 at `fb84546eda5ada2c4d155efaf5a91aaf5499bc36` stopped during
+onboarding before pairing. Installed plugin hashes passed, and the ordinary
+community-trust click was observed. The next read discovered the owned Android
+page in 82 ms but its WebSocket handshake hit the existing 15-second deadline.
+This is an automation connection failure; the receipt does not establish its
+cause, and no product acceptance or ciphertext-capture result follows.
+Both controllers verified cleanup; the parent independently confirmed absent
+runtime, private and manifest paths. The failed aggregate SHA-256 is
+`ec56d5cd5ba55fd19407b91fc1602b9ad5a3871593175172c2c7c924f1bde7ce`.
+The nine-batch ledger SHA-256 is
+`c18a0095dbd05bab2ef4944735f39cb3ab1dd5026f801e8dcabe70a36075580d`.
+
+Source review found that the driver requested WebSocket closure and immediately
+removed its ADB forward without observing closure. The revised driver waits
+for close completion before removing that owned transport and recording the
+step receipt. Its existing 20-second release budget includes a bounded
+two-second close wait; late removal, missing closure and cleanup errors refuse.
+The single 15-second handshake records open, error or early-close facts, with
+no added reconnect or retry. The existing startup path uses the same cleanup.
+Seven focused tests include an actual Node WebSocket and delayed close reply
+on a disposable loopback fixture; 14 broken controls fail. These prove the
+driver lifecycle contract, not the cause of batch 09 or native acceptance.
+Parent composition passes 125 Python tests, 137 Node tests and all 118 scripted
+mutation controls, with no skips; both secret scans pass.
 
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.

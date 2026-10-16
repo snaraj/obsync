@@ -102,6 +102,52 @@ export async function waitOwnedPage(read,diagnostic,pause=ms=>new Promise(r=>set
   }while(now()<end);
   throw Error('owned initial Android page readiness deadline');
 }
+// One connection attempt; page discovery is not a completed WebSocket upgrade.
+export async function waitOwnedSocketOpen(socket, diagnostic, deadline, now=Date.now) {
+  const started=now(),end=Math.min(deadline,started+15000);
+  const facts=diagnostic.handshake={budgetMs:Math.max(0,end-started),startedAtEpochMs:started,openEvents:0,errorEvents:0,closeEvents:0,readyStateBefore:socket.readyState};
+  let timer;
+  try {
+    await new Promise((resolve,reject)=>{
+      const finish=(error)=>{clearTimeout(timer);socket.removeEventListener('open',open);socket.removeEventListener('error',errorEvent);socket.removeEventListener('close',close);error?reject(error):resolve();};
+      const open=()=>{facts.openEvents++;finish(now()<end?null:Error('owned CDP handshake deadline'));};
+      const errorEvent=()=>{facts.errorEvents++;finish(Error('owned CDP unavailable'));};
+      const close=event=>{facts.closeEvents++;facts.closeCode=Number.isInteger(event.code)?event.code:null;facts.wasClean=event.wasClean===true;finish(Error('owned CDP closed before handshake'));};
+      socket.addEventListener('open',open);socket.addEventListener('error',errorEvent);socket.addEventListener('close',close);
+      timer=setTimeout(()=>finish(Error('owned CDP handshake deadline')),Math.max(1,end-now()));
+      if(socket.readyState===1)open();else if(socket.readyState===3)close({});
+    });
+  } finally {clearTimeout(timer);facts.elapsedMs=now()-started;facts.readyStateAfter=socket.readyState;}
+}
+// Complete closure before its owned ADB transport is removed. The whole release
+// (close plus scoped forward removal) retains the previous20s cleanup budget.
+export async function releaseOwnedConnection(socket, removeForward, diagnostic, deadline, now=Date.now) {
+  const started=now(),end=Math.min(deadline,started+20000),closeEnd=Math.min(end,started+2000);
+  const facts=diagnostic.release={budgetMs:Math.max(0,end-started),closeBudgetMs:Math.max(0,closeEnd-started),closeCalls:0,closeObserved:false,forwardRemoved:false,readyStateBefore:socket?.readyState??null};
+  let timer,failure,closeListener,errorListener;
+  try {
+    if(socket){
+      if(socket.readyState===3)facts.closeObserved=true;
+      else await new Promise((resolve,reject)=>{
+        const close=event=>{facts.closeObserved=true;facts.closeCode=Number.isInteger(event.code)?event.code:null;facts.wasClean=event.wasClean===true;clearTimeout(timer);socket.removeEventListener('close',close);socket.removeEventListener('error',ignore);resolve();};
+        const ignore=()=>{};
+        closeListener=close;errorListener=ignore;socket.addEventListener('close',close);socket.addEventListener('error',ignore);
+        timer=setTimeout(()=>{socket.removeEventListener('close',close);socket.removeEventListener('error',ignore);reject(Error('owned CDP close deadline'));},Math.max(1,closeEnd-now()));
+        if(socket.readyState!==2){facts.closeCalls++;socket.close();}
+      });
+      if(!facts.closeObserved||socket.readyState!==3||now()>=closeEnd)throw Error('owned CDP close deadline');
+    }
+  } catch(error){failure=error.message==='owned CDP close deadline'?Error('owned CDP close deadline'):Error('owned CDP close refused');}
+  finally {
+    clearTimeout(timer);if(closeListener)socket.removeEventListener('close',closeListener);if(errorListener)socket.removeEventListener('error',errorListener);facts.readyStateAfter=socket?.readyState??null;facts.closeElapsedMs=now()-started;
+    const remaining=end-now();
+    if(remaining<=0)failure??=Error('owned CDP release deadline');
+    else try {await removeForward(remaining);facts.forwardRemoved=true;if(now()>=end)failure??=Error('owned CDP release deadline');}
+    catch {failure??=Error('owned CDP forward removal refused');}
+    facts.elapsedMs=now()-started;
+  }
+  if(failure)throw failure;
+}
 export function externalFailure(error){
   const stderr=Buffer.isBuffer(error?.stderr)?error.stderr.toString():typeof error?.stderr==='string'?error.stderr:'';
   const classes=[['git_dubious_ownership',/dubious ownership/],['git_not_repository',/not a git repository/],['git_permission',/Permission denied/],['adb_offline',/device offline/],['adb_missing_device',/device .+ not found/],['adb_unauthorized',/unauthorized/],['file_missing',/No such file or directory/]];
@@ -209,10 +255,10 @@ async function main(args) {
     live();
     return execFileSync(adb, ['-P', String(state.adbPort), '-s', state.serial, ...argv], { env: environment, timeout: Math.min(20000,budgetMs, Math.max(1, state.expiresAtEpoch * 1000 - Date.now())), maxBuffer: 16 << 20, stdio: ['ignore', 'pipe', 'pipe'] });
   }
+  const receipts=[];
   const receipt = value => {
     const result = { at: new Date().toISOString(), command,evidenceClass:input.evidenceClass==='LOCAL_CONTROL_PROTOTYPE'?input.evidenceClass:undefined, platform: usb?'Android USB device':'Android emulator', physicalPhone:usb?'USB_JOURNEY_OBSERVED':'NOT_RUN',freshPhysicalEnvironment:usb?false:undefined, sourceHead: state.sourceHead, driverSha256: digest(readFileSync(new URL(import.meta.url))),connectReadiness,...value };
-    writeFileSync(join(run, 'evidence', `android-journey-${command}-${Date.now()}.json`), JSON.stringify(result, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-    console.log(JSON.stringify(result));
+    receipts.push(result);
   };
   let forward, ws, next = 0, stage='connect_android_webview',nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,connectReadiness,persistedNoteReadback,controlReadiness,pointerWitness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,noteReadiness;
   const pending = new Map(), networkFailures = [], blockedReasons = [];
@@ -237,12 +283,22 @@ async function main(args) {
     const page=await waitOwnedPage(async()=>{const response=await fetch(`http://127.0.0.1:${forward}/json/list`,{signal:AbortSignal.timeout(5000)});if(response.status!==200)throw Error('owned Android debugger page endpoint refused');return await response.json();},connectReadiness);
     const address = new URL(page.webSocketDebuggerUrl);
     if (address.protocol !== 'ws:' || !['localhost', '127.0.0.1'].includes(address.hostname) || Number(address.port) !== forward) throw Error('foreign debugger endpoint');
+    connectReadiness.targetIdSha256=digest(Buffer.from(String(page.id??'')));
+    connectReadiness.socketPathSha256=digest(Buffer.from(address.pathname));
+    stage='wait_owned_android_websocket';
     ws = new WebSocket(address);
-    await new Promise((yes,no)=>{const timer=setTimeout(()=>no(Error('owned CDP handshake deadline')),15000);ws.onopen=()=>{clearTimeout(timer);yes();};ws.onerror=()=>{clearTimeout(timer);no(Error('owned CDP unavailable'));};});
+    await waitOwnedSocketOpen(ws,connectReadiness,state.expiresAtEpoch*1000);
     connectReadiness.socketConnected=true;
+    ws.onerror=()=>{};
     ws.onmessage = event => { const answer = JSON.parse(event.data), request = pending.get(answer.id); if (answer.method === 'Network.loadingFailed') { networkFailures.push(answer.params.errorText); if(answer.params.blockedReason)blockedReasons.push(answer.params.blockedReason); } if (request) { clearTimeout(request.timer); pending.delete(answer.id); request.resolve(answer); } };
     ws.onclose = () => { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error('owned CDP closed')); } pending.clear(); };
     return Number(pid);
+  }
+  async function releaseConnection(){
+    const socket=ws,port=forward;ws=undefined;forward=undefined;
+    if(!socket&&!port)return;
+    connectReadiness??={};
+    await releaseOwnedConnection(socket,async budget=>{if(port)deviceBudget(budget,'forward','--remove',`tcp:${port}`);},connectReadiness,state.expiresAtEpoch*1000);
   }
   async function trustedPointerClick(spec,requireVault=true){
     await evaluate(`const visible=e=>e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0,es=[...document.querySelectorAll(P.selector)].filter(visible).filter(e=>(P.text==null||e.textContent.trim()===P.text)&&(!P.modalTitle||e.closest('.modal')?.querySelector('.modal-title')?.textContent.trim()===P.modalTitle));if(es.length!==1)throw Error('ordinary control absent or ambiguous');const target=es[0],point=(${pointerTarget.toString()})(target,(${pointerObservation.toString()}));if(Math.abs(point.x-P.x)>1||Math.abs(point.y-P.y)>1)throw Error('ordinary control moved before trusted click');const events={},listeners={};for(const type of ['mousedown','mouseup','click']){events[type]={count:0,trusted:false,expectedTargetMatched:false};listeners[type]=e=>{const r=events[type];r.count++;r.trusted=e.isTrusted===true;r.expectedTargetMatched=e.composedPath().includes(target)||target.contains(e.target);};document.addEventListener(type,listeners[type],true);}window.obsyncJourneyPointer={events,listeners,target};return true;`,{selector:spec.selector,text:spec.expectedText,modalTitle:spec.modalTitle,x:spec.point.x,y:spec.point.y},requireVault);
@@ -417,7 +473,7 @@ async function main(args) {
       while(Date.now()<end){
         try{appPid=await connect();break;}catch(error){
           const transient=error.name==='TimeoutError'||['one owned app process required','one owned Android page required'].includes(error.message)||['ECONNREFUSED','ECONNRESET','UND_ERR_SOCKET'].includes(error.cause?.code);
-          ws?.close();if(forward){device('forward','--remove',`tcp:${forward}`);forward=undefined;}
+          await releaseConnection();
           if(!transient)throw error;await new Promise(r=>setTimeout(r,250));
         }
       }
@@ -775,8 +831,13 @@ async function main(args) {
     receipt({ result: 'FAIL',stage,failureClass:'AUTOMATION_OR_ORACLE_REFUSAL',exceptionType:error.name==='Error'?'Error':error.name==='TimeoutError'?'TimeoutError':'ExternalError',timeout:error.code==='ETIMEDOUT'||error.name==='TimeoutError'||generated.has(error.message)&&error.message.endsWith('deadline'),nativeObservations,startupReadiness,enableReadiness,communityTrustReadiness,pointerReadiness,pointerWitness,controlReadiness,serverUrlReadiness,pairingReadiness,scopeSaveReadiness,knownNotesIndexReadiness,persistedNoteReadback,noteReadiness,external:externalFailure(error),reason:generated.has(error.message)?error.message:'External operation failed; private details withheld.' });
     process.exitCode = 1;
   } finally {
-    ws?.close();
-    if (forward) device('forward', '--remove', `tcp:${forward}`);
+    try {await releaseConnection();}
+    catch(error){receipt({result:'FAIL',stage:'release_owned_android_websocket',failureClass:'AUTOMATION_OR_ORACLE_REFUSAL',reason:['owned CDP close deadline','owned CDP close refused','owned CDP release deadline','owned CDP forward removal refused'].includes(error.message)?error.message:'owned CDP release refused'});process.exitCode=1;}
+    let stamp=Date.now();for(const result of receipts){
+      result.connectReadiness=connectReadiness;
+      writeFileSync(join(run,'evidence',`android-journey-${command}-${stamp++}.json`),JSON.stringify(result,null,2)+'\n',{mode:0o600,flag:'wx'});
+      console.log(JSON.stringify(result));
+    }
   }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main(process.argv.slice(2));
