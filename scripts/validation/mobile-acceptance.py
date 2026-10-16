@@ -15,6 +15,7 @@ import time
 from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parent
+HOST_TIMING_TOLERANCE_MS = 5000
 FULL_JOURNEYS = ('restart', 'background-offline', 'access-repair', 'rotation-recovery',
                  'selected-rename', 'fresh-recovery-J11', 'native-confidentiality')
 IMPLEMENTED_FULL_JOURNEYS = FULL_JOURNEYS
@@ -136,6 +137,26 @@ def full_journey_receipt(run, source_head):
     full.selected_evidence(run, source_head)
     full.recovery_evidence(run, source_head)
     return proof
+
+
+def attempt_timing(wall_started, monotonic_started, source_head):
+    wall = round((time.time() - wall_started) * 1000)
+    monotonic = round((time.monotonic() - monotonic_started) * 1000)
+    accepted = wall >= 0 and monotonic >= 0 and abs(wall - monotonic) <= HOST_TIMING_TOLERANCE_MS
+    return {'schema': 1, 'sourceHead': source_head, 'result': 'PASS' if accepted else 'FAIL',
+            'wallElapsedMs': wall, 'monotonicElapsedMs': monotonic, 'differenceMs': wall - monotonic,
+            'toleranceMs': HOST_TIMING_TOLERANCE_MS,
+            'uncertainty': 'NONE' if accepted else 'HOST_SUSPEND_OR_CLOCK_CHANGE'}
+
+
+def valid_attempt_timing(proof, source_head):
+    return (isinstance(proof, dict) and type(proof.get('schema')) is int and proof['schema'] == 1 and proof.get('sourceHead') == source_head
+            and proof.get('result') == 'PASS' and proof.get('uncertainty') == 'NONE'
+            and all(type(proof.get(k)) is int for k in ('wallElapsedMs', 'monotonicElapsedMs', 'differenceMs', 'toleranceMs'))
+            and proof['toleranceMs'] == HOST_TIMING_TOLERANCE_MS
+            and proof['wallElapsedMs'] >= 0 and proof['monotonicElapsedMs'] >= 0
+            and proof['differenceMs'] == proof['wallElapsedMs'] - proof['monotonicElapsedMs']
+            and abs(proof['differenceMs']) <= HOST_TIMING_TOLERANCE_MS)
 
 
 def load_controller():
@@ -262,8 +283,10 @@ def usb_configuration(c,desktop,lab):
 def summary(attempts, requested, mode, source_head, target_kind='emulator'):
     full = (target_kind=='emulator' and mode == 'full' and requested == 3 and len(attempts) == 3
             and len({a['attempt'] for a in attempts}) == 3
-            and all(a.get('result') == 'FULL_PASS' and a.get('cleanup') == 'PASS' for a in attempts))
-    core = (target_kind=='emulator' or requested==1) and mode == 'core' and len(attempts) == requested and all(a.get('result') == 'CORE_ONLY' and a.get('cleanup') == 'PASS' for a in attempts)
+            and all(a.get('result') == 'FULL_PASS' and a.get('cleanup') == 'PASS' and valid_attempt_timing(a.get('hostTiming'), source_head)
+                    and re.fullmatch('[a-f0-9]{64}', a.get('hostTimingSha256', '')) for a in attempts))
+    core = (target_kind=='emulator' or requested==1) and mode == 'core' and len(attempts) == requested and all(a.get('result') == 'CORE_ONLY' and a.get('cleanup') == 'PASS' and valid_attempt_timing(a.get('hostTiming'), source_head)
+                    and re.fullmatch('[a-f0-9]{64}', a.get('hostTimingSha256', '')) for a in attempts)
     first = next((row for row in attempts if row.get('result') == 'FAIL'), None)
     return {'schema': 1, 'sourceHead': source_head, 'result': 'PASS' if full else 'CORE_ONLY' if core else 'FAIL',
             'requestedRuns': requested, 'completedRuns': len(attempts), 'attempts': attempts,
@@ -490,6 +513,7 @@ def outer(args):
                    '--child', sys.executable, '-B', str(Path(__file__).resolve()), '--desktop-child', '--config', str(config),
                    '--attempt', str(attempt), '--mode', args.mode]
         failure, cleanup, failure_class = None, 'UNKNOWN', 'UNCLASSIFIED'
+        wall_started, monotonic_started = time.time(), time.monotonic()
         try:
             with (attempt / 'private/mobile-controller.log').open('xb') as log:
                 result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
@@ -512,8 +536,16 @@ def outer(args):
             if first.exists():
                 marker = private_json(first)
                 failure, failure_class = marker['firstFailure'], marker.get('failureClass', 'UNCLASSIFIED')
+        timing_path = attempt / 'evidence/attempt-timing.json'
+        save(timing_path, attempt_timing(wall_started, monotonic_started, c['sourceHead']))
+        timing = private_json(timing_path)
+        timing_refused = not valid_attempt_timing(timing, c['sourceHead'])
+        if timing_refused and failure is None:
+            failure, failure_class = 'host_timing_discontinuity', 'HOST_SUSPEND_OR_CLOCK_CHANGE'
         row = {'attempt': attempt.name, 'result': 'FAIL' if failure else 'CORE_ONLY' if args.mode == 'core' else 'FULL_PASS', 'cleanup': cleanup,
-               'firstFailure': failure, **({'failureClass': failure_class} if failure else {}), 'driverManifestSha256': sha(out / 'driver-manifest.json')}
+               'firstFailure': failure, **({'failureClass': failure_class} if failure else {}),
+               'hostTiming': timing, 'hostTimingSha256': sha(timing_path),
+               'timingRefusal': 'HOST_SUSPEND_OR_CLOCK_CHANGE' if timing_refused else None, 'driverManifestSha256': sha(out / 'driver-manifest.json')}
         save(attempt / 'evidence/attempt-result.json', row); attempts.append(row)
         if failure: break  # Never replace a failed fresh attempt with a retry.
     recheck_drivers(args.mode, source, inventory)

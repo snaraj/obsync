@@ -1,5 +1,14 @@
 # Unattended mobile acceptance
 
+Keep the host awake with the lid open throughout each attempt. The runner refuses
+an absolute difference greater than five seconds between whole-attempt wall and
+monotonic elapsed time (or either elapsed value becoming negative), retaining
+`HOST_SUSPEND_OR_CLOCK_CHANGE` without assigning a cause. Five seconds is a
+conservative allowance for clock-read scheduling and ordinary small wall-clock
+adjustments; this bounded detector does not exclude shorter interruptions or
+clock steps that cancel before the final observation. Existing journey deadlines
+and required quiet windows remain unchanged.
+
 Run the official Android Obsidian application, the exact candidate plugin,
 the real candidate server and an official native macOS Obsidian peer in
 disposable environments. No public endpoint or manually operated phone screen
@@ -42,10 +51,16 @@ actual clean checkout and installed bytes; an input hash alone is not publisher
 authenticity or a build attestation. Retain the build log and official application
 acquisition/digest evidence alongside the run.
 
+On macOS, wrap the command in `caffeinate -i` for its lifetime, as below.
+This prevents automatic idle sleep without changing host settings. Keep the lid
+open: it does not override clamshell or user-requested sleep. This host scheduling
+precaution leaves Android idle, background and lifecycle checks unchanged and
+is not a repair claim for earlier ADB or CDP failures.
+
 First validate the small path:
 
 ```sh
-python3 -B scripts/validation/mobile-acceptance.py \
+caffeinate -i python3 -B scripts/validation/mobile-acceptance.py \
   --config "$PRIVATE_CONFIG" --out "$ABSENT_RUN_DIRECTORY" --runs 1 --mode core
 ```
 
@@ -54,7 +69,7 @@ and two-way persisted-byte assertions. It explicitly does not claim full
 acceptance or a closed native confidentiality scan. Extend the same driver:
 
 ```sh
-python3 -B scripts/validation/mobile-acceptance.py \
+caffeinate -i python3 -B scripts/validation/mobile-acceptance.py \
   --config "$PRIVATE_CONFIG" --out "$ANOTHER_ABSENT_RUN_DIRECTORY" --runs 3 --mode full
 ```
 

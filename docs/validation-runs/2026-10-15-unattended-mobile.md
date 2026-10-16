@@ -92,7 +92,7 @@ pass. Its retained gate log SHA-256 is
 `b3c76049a196a0f8282deb36182481ab0c3c337e1df46d398e5d6254d2eb18c5`.
 This repairs observability, not the unknown transport cause.
 
-Four separate transfer diagnostics retain their outcomes. The first could not
+Five separate transfer diagnostics retain their outcomes. The first could not
 bind its private localhost fixture under the sandbox, before any device was
 created. The second read only 2,048 of 1,572,823 installed plugin bytes while
 the owned ADB log recorded a terminated connection; the host processes stayed
@@ -106,6 +106,42 @@ acceptance is attributed to those diagnostic runs. Every created controller
 verified cleanup; all failed attempts remain unchanged. The fourth diagnostic's
 reduced record SHA-256 is
 `ff94c6af8fd4a7e271af90023874c41bc44680a96c080d773dd5d4ae70933530`.
+
+The fifth diagnostic failed before installation on the first debugger HTTP
+read's unchanged five-second timeout. No stress cycles ran; the initial APK
+verification passed. The exact endpoint observer saw only the owned processes;
+no matching guest crash or offline marker established the cause. Both
+controllers verified cleanup. Its reduced record SHA-256 is
+`3ca7534cf4bc75890e6aa6a8470fed54e2bd230298b9510c46ed112443de192e`.
+
+Reduced host sleep/wake events independently explain two long wall-clock gaps
+in diagnostic four: its measured transfer durations used a clock that excludes
+host sleep. The 100 verified transfers remain byte-integrity observations, not
+proof of continuous execution or a transport repair. No matching sleep event
+occurred in the failure windows of diagnostics two or five. The correlation
+record SHA-256 is
+`238f41a8749ef7d109d57b0fb2f4d8c98f284ee5f3f3f11c174a0896ee261ad3`.
+
+The outer runner now retains source-bound wall and monotonic elapsed time from
+before controller launch through terminal admission and cleanup. A negative
+elapsed value or absolute difference greater than five seconds refuses the
+attempt as `HOST_SUSPEND_OR_CLOCK_CHANGE`. An earlier child failure and its
+original receipt remain intact; timing refusal is additional evidence. Both
+core and full summaries require the timing receipt. This bounded detector does
+not exclude shorter interruptions or cancelling clock adjustments. Five focused
+offline tests exercise actual outer admission, retained receipts, missing and
+inconsistent evidence, and a killed guard-removal mutant. Historical receipts
+are unchanged and receive no retroactive timing credit. The guide requires an
+awake host and uses a command-scoped idle-sleep assertion without changing host
+settings. Existing mobile quiet windows, lifecycle checks and deadlines remain
+unchanged. Neither this guard nor host-sleep evidence repairs the unexplained
+ADB and debugger failures.
+
+With this guard composed, the offline harness passes 148 Python tests,
+187 Node tests and the same 219 scripted mutation controls, with zero skips;
+the Python tests additionally kill the actual timing-guard removal. The full
+gate log SHA-256 is
+`8cfc57c610c486a192466ec072d92a14fa3ad5d03f8cff1775cbb0c90bff98f5`.
 
 Full batch 18 used committed driver and rebuilt candidate
 `76a7116fdca25d3be4650b2ee92aa2df185413e1`. Ordinary pairing, two-way bytes,

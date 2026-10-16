@@ -107,7 +107,8 @@ class Admission(unittest.TestCase):
             self.assertFalse(list(output.glob('attempt-*')))
 
     def test_three_core_runs_never_advertise_full_acceptance(self):
-        rows = [{'attempt': str(i), 'result': 'CORE_ONLY', 'cleanup': 'PASS'} for i in range(3)]
+        rows = [{'attempt': str(i), 'result': 'CORE_ONLY', 'cleanup': 'PASS',
+                 'hostTiming': {'schema':1,'sourceHead':HEAD,'result':'PASS','wallElapsedMs':1000,'monotonicElapsedMs':1000,'differenceMs':0,'toleranceMs':5000,'uncertainty':'NONE'}, 'hostTimingSha256': 'b'*64} for i in range(3)]
         result = RUNNER.summary(rows, 3, 'core', HEAD)
         self.assertEqual(result['result'], 'CORE_ONLY')
         self.assertEqual(result['fullAcceptance'], 'NOT_RUN')
@@ -117,7 +118,8 @@ class Admission(unittest.TestCase):
             self.assertEqual(RUNNER.summary(changed, 3, 'core', HEAD)['result'], 'FAIL')
 
     def test_full_three_requires_fresh_successful_clean_attempts(self):
-        rows = [{'attempt': str(i), 'result': 'FULL_PASS', 'cleanup': 'PASS'} for i in range(3)]
+        rows = [{'attempt': str(i), 'result': 'FULL_PASS', 'cleanup': 'PASS',
+                 'hostTiming': {'schema':1,'sourceHead':HEAD,'result':'PASS','wallElapsedMs':1000,'monotonicElapsedMs':1000,'differenceMs':0,'toleranceMs':5000,'uncertainty':'NONE'}, 'hostTimingSha256': 'b'*64} for i in range(3)]
         self.assertTrue(RUNNER.summary(rows, 3, 'full', HEAD)['threeFreshFullRunsPassed'])
         for field, value in [('result', 'CORE_ONLY'), ('cleanup', 'UNKNOWN'), ('attempt', '0')]:
             changed = [dict(row) for row in rows]; changed[1][field] = value
