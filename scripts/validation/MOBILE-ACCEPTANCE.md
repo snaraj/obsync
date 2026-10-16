@@ -34,6 +34,10 @@ the clean candidate's private build receipt. Add this `android` object:
 }
 ```
 
+The configuration and build receipt must be owned, single-link regular files
+with owner-only permissions (`0600`). The installer refuses a broadly readable
+receipt even when its hashes match.
+
 [ANDROID.md](ANDROID.md) describes the official APK and SDK/archive pins.
 The runner verifies the installed inputs against those pins. It provisions a
 new AVD, profiles, vaults, local server and private transport for each attempt;
@@ -83,6 +87,13 @@ the complete batch; never relabel a failed attempt or discard it as a retry.
 action witnesses and independently retained state. A missing click witness or
 ambiguous timeout does not establish a product defect. Keep that uncertainty
 in the measured record until a controlled reproduction distinguishes it.
+
+Vault startup makes one debugger connection attempt within its existing
+45-second deadline. Successful empty page-list responses may be observed until
+the page is ready; a failed ADB, HTTP or WebSocket operation is terminal.
+The first failed HTTP request remains in the evidence, with bounded status and
+timing facts. Cleanup has its separate existing budget and cannot turn that
+failure into a pass.
 
 ## What is measured
 

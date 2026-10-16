@@ -34,7 +34,7 @@ const begin=source.indexOf('      const observed=await evaluate(`return await ($
 const host=source.slice(begin,end);
 const executeHost=new AsyncFunction('evaluate','folder','waitFolderIndex',`let folderIndexReadiness;try{${host};return {files,folderIndexReadiness};}catch(error){return {reason:error.message,folderIndexReadiness};}`);
 function renderer(app,f){
- const start=source.indexOf('  async function evaluate(body, params = {}, requireVault = true,budgetMs=30000) {'),end=source.indexOf('\n  async function connect()',start);assert.ok(start>0&&end>start);
+ const start=source.indexOf('  async function evaluate(body, params = {}, requireVault = true,budgetMs=30000) {'),end=source.indexOf('\n  async function connect(',start);assert.ok(start>0&&end>start);
  const fn=new Function('send','scriptJson','ownedVault','input','safeExceptionMessage','readFileSync','moduleUrl',source.slice(start,end).replaceAll('import.meta.url','moduleUrl')+';return evaluate;');
  return fn(async(method,params,budget)=>{assert.equal(method,'Runtime.evaluate');assert.equal(params.timeout,25000);assert.equal(budget,30000);new Function(params.expression);const value=await new AsyncFunction('app','window','Date','setTimeout','return '+params.expression)(app,{app},{now:f.now},(callback,ms)=>{f.pause(ms);callback();});return {result:{result:{value}}};},scriptJson,()=>'/synthetic',{},()=>{throw Error('unexpected renderer failure');},readFileSync,import.meta.url);
 }

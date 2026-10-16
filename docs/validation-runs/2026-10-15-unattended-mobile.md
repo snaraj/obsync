@@ -143,6 +143,48 @@ the Python tests additionally kill the actual timing-guard removal. The full
 gate log SHA-256 is
 `8cfc57c610c486a192466ec072d92a14fa3ad5d03f8cff1775cbb0c90bff98f5`.
 
+On 2026-10-16, an actual-source offline reproduction found two additional
+runner defects at `cb6cb98`: vault startup could discard its first HTTP timeout
+and pass after reconnecting, and a connection returning after its 45-second
+deadline could pass. The repair makes one connection attempt, carries that
+absolute deadline through its existing operation budgets and checks completion
+before reading the native registry. Successful empty page-list observations
+remain allowed; failed operations are terminal. First/last HTTP observations
+retain bounded status, timing and error categories. Ordinary commands retain
+their existing per-stage budgets; registry readiness and cleanup retain their
+separate budgets. This repairs acceptance evidence, not the transport cause.
+
+Diagnostic six stopped before installation because the owned candidate build
+receipt had mode `0644`; the private-input guard correctly refused it. Its
+contents were unchanged when permissions were corrected to `0600`. The failure
+remains recorded, SHA-256
+`b9fbba17dde562207f400f92577d05a2ecba3caebf73a0cb6c001a0113d89264`.
+Both controllers verified cleanup and their runtime/private/ownership paths
+were independently absent. No transfer stress or pairing ran.
+
+With that input repaired, diagnostic seven completed 34 fixed transfer cycles
+while holding one WebView connection. Each cycle verified actual installed
+plugin bytes and one strict APK pull. Cycle 35 returned exit zero but zero of
+the expected 1,572,823 plugin bytes in 133 ms; it stopped immediately without a
+second read or APK pull. Host ADB reported a read failure and guest adbd reported
+a write failure followed by disconnection. The bounded evidence does not
+establish the initiating cause. All 17 debugger HTTP requests completed; that
+earlier timeout was not reproduced. Whole-attempt wall and monotonic durations
+both measured 168,023 ms. Both controllers verified cleanup, zero owned groups
+and absent runtime/private/ownership paths; all 46 bound inputs were unchanged.
+The failed diagnostic record SHA-256 is
+`a7959ed09ba7b24cec177483e22549ea2da776aa2a3b75b5902979049cc0d202`.
+Neither diagnostic counts as native acceptance or a transport repair.
+
+With the startup repair composed, `make mobile-harness` passes 148 Python
+tests, 193 Node tests and 227 scripted mutation controls, with zero skips.
+Its log SHA-256 is
+`15ba26aa3b6cf7b62480785c0c06e2910f36f82331077d0953aee0e75d97385c`.
+The preceding composed gate failed two source-extraction tests because they
+expected the old parameterless connection signature; that result is retained.
+The extractor now selects the same unchanged evaluator with the new signature.
+Both secret scans pass. These are regression results, not three native passes.
+
 Full batch 18 used committed driver and rebuilt candidate
 `76a7116fdca25d3be4650b2ee92aa2df185413e1`. Ordinary pairing, two-way bytes,
 the 213-second no-interaction interval, both process restarts, guest reboot,

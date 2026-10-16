@@ -34,27 +34,14 @@ test('missing close fails finitely while removing only its owned transport, and 
  const thrown=new Socket();thrown.readyState=1;thrown.close=()=>{throw Error('private synchronous socket exception');};let listenerBalance=0;const add=thrown.addEventListener.bind(thrown),remove=thrown.removeEventListener.bind(thrown);thrown.addEventListener=(...args)=>{listenerBalance++;return add(...args);};thrown.removeEventListener=(...args)=>{listenerBalance--;return remove(...args);};await assert.rejects(releaseOwnedConnection(thrown,async()=>{},{},Date.now()+20000),/owned CDP close refused/);assert.equal(listenerBalance,0);
  const removedFailure=new Socket();removedFailure.readyState=3;await assert.rejects(releaseOwnedConnection(removedFailure,async()=>{throw Error('private adb stderr');},{},Date.now()+20000),/forward removal refused/);
 });
-test('actual driver routes normal and existing startup-loop cleanup through the same observed release',()=>{
+test('actual driver routes normal cleanup through the same observed release',()=>{
  const source=readFileSync(new URL('../android-journey.mjs',import.meta.url),'utf8');
- const connectBody=source.slice(source.indexOf('  async function connect()'),source.indexOf('  async function releaseConnection()'));
- assert.ok(connectBody.includes("stage='wait_owned_android_websocket'"));assert.ok(connectBody.includes('await waitOwnedSocketOpen(ws,connectReadiness,state.expiresAtEpoch*1000)'));
- const retry=source.slice(source.indexOf("    if(command==='wait-vault'){"),source.indexOf("    if(command==='unpaired-server-ready'){"));
- assert.ok(retry.includes('await releaseConnection();'));assert.ok(!retry.includes('ws?.close()'));assert.ok(!retry.includes('owned CDP handshake deadline'));
  const cleanup=source.slice(source.lastIndexOf('  } finally {'));
  assert.ok(cleanup.indexOf('await releaseConnection();')<cleanup.indexOf('for(const result of receipts)'));
  const release=source.slice(source.indexOf('  async function releaseConnection()'),source.indexOf('  async function trustedPointerClick('));
  const execute=new Function('ws','forward','connectReadiness','releaseOwnedConnection','deviceBudget','state',`return (async()=>{${release};await releaseConnection();return {ws,forward};})()`);
  let closeComplete=false,removeCalls=0;const s=new Socket();s.readyState=1;s.onClose=()=>setTimeout(()=>{closeComplete=true;s.event('close');},5);
  return execute(s,1234,{},releaseOwnedConnection,(_budget,...args)=>{assert.equal(closeComplete,true);assert.deepEqual(args,['forward','--remove','tcp:1234']);removeCalls++;},{expiresAtEpoch:Date.now()/1000+30}).then(result=>{assert.equal(removeCalls,1);assert.equal(result.ws,undefined);assert.equal(result.forward,undefined);});
-});
-
-test('actual existing startup transient loop completes release before its next permitted observation',async()=>{
- const source=readFileSync(new URL('../android-journey.mjs',import.meta.url),'utf8'),first=source.indexOf("    if(command==='wait-vault'){"),last=source.indexOf("    if(command==='unpaired-server-ready'){",first);
- const block=source.slice(first,last);const AsyncFunction=Object.getPrototypeOf(async()=>{}).constructor;
- const execute=new AsyncFunction('command','Date','connect','releaseConnection','readyNativeStartup','receipt','setTimeout','let stage,appPid,startupReadiness;'+block);
- let tick=0,released=false,connections=0,releaseCalls=0,completed=0;
- await execute('wait-vault',{now:()=>tick},async()=>{connections++;if(connections===1)throw Error('one owned app process required');assert.equal(released,true);return 42;},async()=>{releaseCalls++;await new Promise(r=>setTimeout(r,5));released=true;},async()=>{},()=>completed++,(cb,ms)=>{tick+=ms;queueMicrotask(cb);});
- assert.equal(connections,2);assert.equal(releaseCalls,1);assert.equal(completed,1);
 });
 
 test('actual finally waits for release before persisting receipts, retaining a separate close failure',async()=>{

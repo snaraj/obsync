@@ -150,11 +150,11 @@ export async function waitPointerReadiness(read,pause=ms=>new Promise(r=>setTime
 export async function waitOwnedPage(read,diagnostic,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now,budget=20000){
   const started=now(),end=started+budget;Object.assign(diagnostic,{startedAtEpochMs:started,polls:0,ready:false});
   do{
-    const all=await read();if(!Array.isArray(all)||all.length>16)throw Error('owned Android debugger page list invalid');
+    const all=await read(Math.max(1,end-now()));if(!Array.isArray(all)||all.length>16)throw Error('owned Android debugger page list invalid');
     const pages=all.filter(p=>p.type==='page');diagnostic.polls++;diagnostic.beforePageCount??=pages.length;diagnostic.afterPageCount=pages.length;diagnostic.pageWaitMs=now()-started;diagnostic.observedAtEpochMs=now();
     if(pages.length>1)throw Error('multiple owned Android pages refused');
     if(pages.length===1&&now()<=end){diagnostic.ready=true;return pages[0];}
-    if(now()<end)await pause(100);
+    if(now()<end)await pause(Math.min(100,end-now()));
   }while(now()<end);
   throw Error('owned initial Android page readiness deadline');
 }
@@ -362,20 +362,38 @@ async function main(args) {
     if (answer.error || answer.result?.exceptionDetails){const allowed=new Set([...readFileSync(new URL(import.meta.url),'utf8').matchAll(/\bError\('([^']+)'\)/g)].map(m=>m[1]));throw Error(safeExceptionMessage(answer.result?.exceptionDetails?.exception?.description,allowed));}
     return answer.result?.result?.value;
   }
-  async function connect() {
-    const pid = device('shell', 'pidof', 'md.obsidian').toString().trim();
+  async function connect(deadline=state.expiresAtEpoch*1000) {
+    const started=Date.now(),end=Math.min(deadline,state.expiresAtEpoch*1000);
+    connectReadiness={connectionStartedAtEpochMs:started,connectionBudgetMs:Math.max(0,end-started),httpRequests:0};
+    const remaining=()=>{const value=end-Date.now();if(value<=0)throw Error('owned Android connection deadline');return value;};
+    stage='read_owned_android_app_pid';
+    const pid = deviceBudget(remaining(),'shell', 'pidof', 'md.obsidian').toString().trim();
     if (!/^\d+$/.test(pid)||Number(pid)<=1) throw Error('one owned app process required');
-    connectReadiness={appPid:Number(pid)};stage='wait_owned_initial_android_page';
-    forward = Number(device('forward', 'tcp:0', `localabstract:webview_devtools_remote_${pid}`).toString().trim());
-    const page=await waitOwnedPage(async()=>{const response=await fetch(`http://127.0.0.1:${forward}/json/list`,{signal:AbortSignal.timeout(5000)});if(response.status!==200)throw Error('owned Android debugger page endpoint refused');return await response.json();},connectReadiness);
+    connectReadiness.appPid=Number(pid);stage='wait_owned_initial_android_page';
+    forward = Number(deviceBudget(remaining(),'forward', 'tcp:0', `localabstract:webview_devtools_remote_${pid}`).toString().trim());
+    const page=await waitOwnedPage(async budget=>{
+      const request={number:++connectReadiness.httpRequests,startedAtEpochMs:Date.now(),headersReceived:false,bodyCompleted:false};
+      connectReadiness.firstHttpRequest??=request;connectReadiness.lastHttpRequest=request;
+      try{
+        const response=await fetch(`http://127.0.0.1:${forward}/json/list`,{signal:AbortSignal.timeout(Math.max(1,Math.floor(Math.min(5000,budget,remaining()))))});
+        request.headersReceived=true;request.status=response.status;remaining();
+        if(response.status!==200)throw Error('owned Android debugger page endpoint refused');
+        const value=await response.json();request.bodyCompleted=true;remaining();request.result='COMPLETE';return value;
+      }catch(error){
+        request.result='FAIL';request.errorName=['Error','TypeError','TimeoutError','AbortError','SyntaxError'].includes(error.name)?error.name:'OTHER';
+        request.errorCode=['ECONNREFUSED','ECONNRESET','UND_ERR_SOCKET','ETIMEDOUT','UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT'].includes(error.cause?.code)?error.cause.code:'OTHER';
+        connectReadiness.firstHttpFailure??=request;throw error;
+      }finally{request.elapsedMs=Date.now()-request.startedAtEpochMs;}
+    },connectReadiness,undefined,undefined,Math.min(20000,remaining()));
+    remaining();
     const address = new URL(page.webSocketDebuggerUrl);
     if (address.protocol !== 'ws:' || !['localhost', '127.0.0.1'].includes(address.hostname) || Number(address.port) !== forward) throw Error('foreign debugger endpoint');
     connectReadiness.targetIdSha256=digest(Buffer.from(String(page.id??'')));
     connectReadiness.socketPathSha256=digest(Buffer.from(address.pathname));
     stage='wait_owned_android_websocket';
     ws = new WebSocket(address);
-    await waitOwnedSocketOpen(ws,connectReadiness,state.expiresAtEpoch*1000);
-    connectReadiness.socketConnected=true;
+    await waitOwnedSocketOpen(ws,connectReadiness,end);
+    remaining();connectReadiness.socketConnected=true;connectReadiness.connectionElapsedMs=Date.now()-started;
     ws.onerror=()=>{};
     ws.onmessage = event => { const answer = JSON.parse(event.data), request = pending.get(answer.id); if (answer.method === 'Network.loadingFailed') { networkFailures.push(answer.params.errorText); if(answer.params.blockedReason)blockedReasons.push(answer.params.blockedReason); } if (request) { clearTimeout(request.timer); pending.delete(answer.id); request.resolve(answer); } };
     ws.onclose = () => { for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error('owned CDP closed')); } pending.clear(); };
@@ -583,14 +601,8 @@ async function main(args) {
     let appPid;
     if(command==='wait-vault'){
       stage='wait_owned_vault_webview';const end=Date.now()+45000;
-      while(Date.now()<end){
-        try{appPid=await connect();break;}catch(error){
-          const transient=error.name==='TimeoutError'||['one owned app process required','one owned Android page required'].includes(error.message)||['ECONNREFUSED','ECONNRESET','UND_ERR_SOCKET'].includes(error.cause?.code);
-          await releaseConnection();
-          if(!transient)throw error;await new Promise(r=>setTimeout(r,250));
-        }
-      }
-      if(!appPid)throw Error('owned vault WebView startup deadline');
+      appPid=await connect(end);
+      if(!appPid||Date.now()>=end)throw Error('owned vault WebView startup deadline');
       stage='wait_native_app_plugin_registry';await readyNativeStartup();
       receipt({result:'PASS',ownedVaultConfirmed:true,startupReadiness,method:'passive startup exact vault, ready layout, plugin registry and settings methods'});return;
     }else appPid=await connect();
