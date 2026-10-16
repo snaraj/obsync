@@ -7,17 +7,23 @@ import { randomUUID } from 'node:crypto';
 import { boundManifest, owned, privateRead, privateSave, digest } from './desktop-guard.mjs';
 import { connect, targets, sleep } from './cdp.mjs';
 const [run, source, command, index] = process.argv.slice(2);
-let state, c, watchElapsed;
+let state, c, watchElapsed, scopeStage=null, scopeDeadline=0, renameStage=null, renameFacts;
+const scopeFailureReasons=new Set(['owned scope input deadline','bounded owned Settings pages required','one process-owned Settings target required','lab UI step refused or timed out; no secret-bearing exception printed','CDP deadline','CDP disconnected']);
 const uiPrelude = `const p=app.plugins.plugins['obsync-private-sync'];if(!p?.state?.paired||p.state.custody2()?.phase!=='active'||p.state.data.serverUrl!==P.url)throw Error('owned active selected peer');
  const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;
  const one=(selector,text=null)=>{const es=[...document.querySelectorAll(selector)].filter(visible).filter(e=>text===null||e.textContent.trim()===text);if(es.length!==1||es[0].disabled)throw Error('ordinary selected control identity');return es[0];};
  // Settings can live in the manifest-bound app's separate owned document.
  const documents=()=>[...new Set([document,app.setting.modalEl?.isConnected?app.setting.modalEl.ownerDocument:null].filter(d=>d&&!d.defaultView?.closed))];
  const pane=()=>{const ps=documents().flatMap(d=>[...d.querySelectorAll('.mod-settings .vertical-tab-content')]).filter(visible);if(ps.length>1)throw Error('selected settings pane identity');return ps[0]??null;};
- const row=name=>{const root=pane();if(!root)throw Error('selected settings pane identity');const rs=[...root.querySelectorAll('.setting-item')].filter(visible).filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);if(rs.length!==1)throw Error('selected setting identity');return rs[0];};`;
-const ui = (body, params={}) => c.evaluate(uiPrelude+body,params);
+ const selectedRow=(name,optional=false)=>{const root=pane();if(!root)throw Error('selected settings pane identity');const rs=[...root.querySelectorAll('.setting-item')].filter(visible).filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);if(rs.length===0&&optional)return null;if(rs.length!==1)throw Error('selected setting identity');return rs[0];};`;
+const ui = async (body, params={}) => {
+  const value=await c.evaluate(uiPrelude+(['scope','rename'].includes(command)?`try{${body}}catch(error){const reasons={'selected setting identity':'ROW_IDENTITY','selected settings pane identity':'PANE_IDENTITY','selected option changed':'OPTION_IDENTITY','selected textarea absent':'TEXTAREA_UNAVAILABLE','owned selected input focus':'INPUT_FOCUS','native selected text differs':'TEXT_MISMATCH','scope Save pointer target blocked':'SAVE_BLOCKED','ordinary scope save identity':'SAVE_IDENTITY','one Files view required':'FILES_VIEW_IDENTITY','visible selected folder':'FILES_FOLDER_DEADLINE','ordinary folder context menu':'CONTEXT_MENU_DEADLINE','native inline folder rename':'INLINE_RENAME_DEADLINE','native folder title identity':'INLINE_TITLE_IDENTITY','folder title selection':'INLINE_TITLE_SELECTION','ordinary Files folder focus identity':'FILES_FOLDER_FOCUS','ordinary Files target focus':'FILES_TARGET_FOCUS','ordinary Files selection identity':'FILES_SELECTION_IDENTITY'};const count=selector=>Math.min(128,[...document.querySelectorAll(selector)].filter(visible).length);const facts={selectedFolderRows:count('.nav-folder-title[data-path="Team docs"]'),focusedFolderRows:count('.nav-folder-title.has-focus'),selectedTargetFocused:count('.nav-folder-title.has-focus[data-path="Team docs"]'),activeElementInFiles:document.activeElement?.closest?.('.workspace-leaf-content[data-type="file-explorer"]')?1:0,activeElementIsBody:document.activeElement===document.body?1:0,activeFilesLeaf:app.workspace.activeLeaf?.view?.getViewType?.()==='file-explorer'?1:0,inlineRenameRows:count('.nav-folder-title.is-being-renamed'),editableFolderTitles:count('.nav-folder-title-content[contenteditable="true"]'),menuItems:count('.menu-item-title'),renameThreeDots:Math.min(128,[...document.querySelectorAll('.menu-item-title')].filter(visible).filter(e=>e.textContent.trim()==='Rename...').length),renameUnicodeEllipsis:Math.min(128,[...document.querySelectorAll('.menu-item-title')].filter(visible).filter(e=>e.textContent.trim()==='Rename…').length)};return {ownedScopeRefusal:true,facts,reason:Object.hasOwn(reasons,error.message)?reasons[error.message]:error.name==='TypeError'?'RENDERER_TYPE_ERROR':'RENDERER_REFUSAL'};}`:body),params);
+  if(value?.ownedScopeRefusal===true){if(command==='rename')renameFacts=value.facts;throw Error((command==='scope'?'scope-renderer-':'selected-renderer-')+value.reason);}
+  return value;
+};
 async function selectedScope() {
   const marker=randomUUID(),connections=[],deadline=Date.now()+30000;
+  scopeDeadline=deadline;scopeStage='open-folder-controls';
   let expired=false,saved=false;
   // One original30s window, including discovery/actions and a reserved cleanup second.
   const within=async(action,cleanup=false)=>{
@@ -28,9 +34,11 @@ async function selectedScope() {
     finally{clearTimeout(timer);}
   };
   try {
-    await within(()=>ui(`app.setting.open();app.setting.openTabById('obsync-private-sync');await wait(()=>pane()&&row('Folder selection'),'folder settings',Math.max(0,P.deadline-Date.now()));const select=row('Folder selection').querySelector('select');const options=[...select.options].filter(o=>o.textContent.trim()==='Selected folders only');if(options.length!==1)throw Error('selected option changed');select.value=options[0].value;select.dispatchEvent(new select.ownerDocument.defaultView.Event('change',{bubbles:true}));const t=row('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected textarea absent');t.focus();t.select();return true;`,{deadline:deadline-1000}));
+    await within(()=>ui(`app.setting.open();app.setting.openTabById('obsync-private-sync');await wait(()=>pane()&&selectedRow('Folder selection',true),'folder settings',Math.max(0,P.deadline-Date.now()));const select=selectedRow('Folder selection').querySelector('select');const options=[...select.options].filter(o=>o.textContent.trim()==='Selected folders only');if(options.length!==1)throw Error('selected option changed');select.value=options[0].value;select.dispatchEvent(new select.ownerDocument.defaultView.Event('change',{bubbles:true}));const t=selectedRow('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected textarea absent');t.focus();t.select();return true;`,{deadline:deadline-1000}));
+    scopeStage='mark-owned-pane';
     await within(()=>ui(`const root=pane();if(!root||root.hasAttribute('data-obsync-owned-scope'))throw Error('owned scope marker occupied');root.setAttribute('data-obsync-owned-scope',P.marker);return true;`,{marker}));
     const matches=[];
+    scopeStage='discover-owned-target';
     const pages=await within(()=>targets(state,'A'));
     if(!Array.isArray(pages)||pages.length<1||pages.length>8||new Set(pages.map(page=>page.id)).size!==pages.length)throw Error('bounded owned Settings pages required');
     for(const page of pages) {
@@ -39,12 +47,17 @@ async function selectedScope() {
       if(found===true)matches.push(candidate);
     }
     if(matches.length!==1)throw Error('one process-owned Settings target required');
+    scopeStage='focus-owned-input';
     const input=matches[0];
-    const scoped=`const roots=[...document.querySelectorAll('[data-obsync-owned-scope]')].filter(e=>e.getAttribute('data-obsync-owned-scope')===P.marker);if(roots.length!==1||!roots[0].isConnected||!roots[0].matches('.mod-settings .vertical-tab-content'))throw Error('owned Settings target changed');const root=roots[0];const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;const row=name=>{const rows=[...root.querySelectorAll('.setting-item')].filter(visible).filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);if(rows.length!==1)throw Error('owned scope row identity');return rows[0];};`;
-    await within(()=>input.evaluate(scoped+`const t=row('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected textarea absent');t.focus();t.select();if(document.activeElement!==t)throw Error('owned selected input focus');return true;`,{marker},false));
+    const scoped=`const roots=[...document.querySelectorAll('[data-obsync-owned-scope]')].filter(e=>e.getAttribute('data-obsync-owned-scope')===P.marker);if(roots.length!==1||!roots[0].isConnected||!roots[0].matches('.mod-settings .vertical-tab-content'))throw Error('owned Settings target changed');const root=roots[0];const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;const selectedRow=name=>{const rows=[...root.querySelectorAll('.setting-item')].filter(visible).filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);if(rows.length!==1)throw Error('owned scope row identity');return rows[0];};`;
+    await within(()=>input.evaluate(scoped+`const t=selectedRow('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected textarea absent');t.focus();t.select();if(document.activeElement!==t)throw Error('owned selected input focus');return true;`,{marker},false));
+    scopeStage='native-selected-text';
     await within(()=>input.insertText('Team docs'));
-    const point=await within(()=>input.evaluate(scoped+`if(row('Selected folders').querySelector('textarea').value!=='Team docs')throw Error('native selected text differs');const buttons=[...row('Save on this device').querySelectorAll('button')].filter(e=>visible(e)&&!e.disabled&&e.textContent.trim()==='Save');if(buttons.length!==1)throw Error('ordinary scope save identity');const b=buttons[0];b.scrollIntoView({block:'center'});const r=b.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);if(!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>=innerWidth||y>=innerHeight||!hit||(hit!==b&&!b.contains(hit)))throw Error('scope Save pointer target blocked');return {x,y};`,{marker},false));
+    scopeStage='locate-native-save';
+    const point=await within(()=>input.evaluate(scoped+`if(selectedRow('Selected folders').querySelector('textarea').value!=='Team docs')throw Error('native selected text differs');const buttons=[...selectedRow('Save on this device').querySelectorAll('button')].filter(e=>visible(e)&&!e.disabled&&e.textContent.trim()==='Save');if(buttons.length!==1)throw Error('ordinary scope save identity');const b=buttons[0];b.scrollIntoView({block:'center'});const r=b.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);if(!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>=innerWidth||y>=innerHeight||!hit||(hit!==b&&!b.contains(hit)))throw Error('scope Save pointer target blocked');return {x,y};`,{marker},false));
+    scopeStage='native-save-click';
     await within(()=>input.mouseEvent('mousePressed',point.x,point.y));await within(()=>input.mouseEvent('mouseReleased',point.x,point.y));
+    scopeStage='verify-saved-policy';
     await within(()=>ui(`await wait(()=>!p.changingScope&&JSON.stringify(p.state.data.syncFolders)===JSON.stringify(['Team docs']),'scope save',Math.max(0,P.deadline-Date.now()));return true;`,{deadline:deadline-1000}));
     saved=true;
   } finally {
@@ -127,13 +140,24 @@ try {
   if(command==='scope'){
     await selectedScope();
   }else if(command==='rename'){
+    renameStage='snapshot-original';
     const before=await snapshot('Team docs');privateSave(join(state.secrets,'selected-original.json'),JSON.stringify(before));
-    await ui(`app.setting.close();const leaves=app.workspace.getLeavesOfType('file-explorer');if(leaves.length!==1)throw Error('one Files view required');await app.workspace.revealLeaf(leaves[0]);await wait(()=>{const e=document.querySelector('.nav-folder-title[data-path="Team docs"]');return e&&visible(e);},'visible selected folder');return true;`);
-    await pointer('.nav-folder-title[data-path="Team docs"]',null,'right');
-    await ui(`await wait(()=>[...document.querySelectorAll('.menu-item-title')].filter(visible).some(e=>e.textContent.trim()==='Rename...'),'ordinary folder context menu');return true;`);
-    await pointer('.menu-item-title','Rename...');
+    renameStage='reveal-files-folder';
+    await ui(`app.setting.close();const leaves=app.workspace.getLeavesOfType('file-explorer');if(leaves.length!==1)throw Error('one Files view required');await app.workspace.revealLeaf(leaves[0]);app.workspace.setActiveLeaf(leaves[0],{focus:true});await wait(()=>{const e=document.querySelector('.nav-folder-title[data-path="Team docs"]');return e&&visible(e);},'visible selected folder');return true;`);
+    renameStage='focus-files-folder';
+    await pointer('.nav-folder-title[data-path="Team docs"]');
+    // A plain folder click sets activeDom but clears keyboard focus. These
+    // ordinary tree keys return from the preceding Outside fixture to it.
+    await c.keyEvent('keyDown','ArrowUp','ArrowUp');await c.keyEvent('keyUp','ArrowUp','ArrowUp');
+    await c.keyEvent('keyDown','ArrowDown','ArrowDown');await c.keyEvent('keyUp','ArrowDown','ArrowDown');
+    await ui(`const focused=[...document.querySelectorAll('.nav-folder-title.has-focus')].filter(visible);if(focused.length!==1||focused[0].getAttribute('data-path')!=='Team docs')throw Error('ordinary Files folder focus identity');const files=focused[0].closest('.workspace-leaf-content[data-type="file-explorer"]'),leaves=app.workspace.getLeavesOfType('file-explorer');if(leaves.length!==1||app.workspace.activeLeaf!==leaves[0]||!files?.isConnected||leaves[0].view.containerEl!==files||!files.contains(focused[0])||(document.activeElement!==document.body&&!files.contains(document.activeElement)))throw Error('ordinary Files target focus');const selected=[...files.querySelectorAll('.nav-file-title.is-selected,.nav-folder-title.is-selected')].filter(visible);if(selected.length>1||selected.some(e=>e!==focused[0]))throw Error('ordinary Files selection identity');return true;`);
+    renameStage='native-files-rename-key';
+    await c.keyEvent('keyDown','F2','F2');await c.keyEvent('keyUp','F2','F2');
+    renameStage='select-inline-title';
     await ui(`const e=await wait(()=>document.querySelector('.nav-folder-title.is-being-renamed .nav-folder-title-content'),'native inline folder rename');if(!e.isContentEditable||e.textContent!=='Team docs')throw Error('native folder title identity');e.focus();const range=document.createRange(),s=document.getSelection();range.selectNodeContents(e);s.removeAllRanges();s.addRange(range);if(s.toString()!=='Team docs')throw Error('folder title selection');return true;`);
-    await c.insertText('team docs');await c.keyEvent('keyDown','Enter','Enter');await c.keyEvent('keyUp','Enter','Enter');
+    renameStage='native-inline-text';
+    await c.insertText('team docs');renameStage='commit-inline-rename';await c.keyEvent('keyDown','Enter','Enter');await c.keyEvent('keyUp','Enter','Enter');
+    renameStage='verify-renamed-history';
     await sleep(500);const after=await snapshot('team docs');preservedRename(before,after);
   }else if(command==='before'){
     const current=await snapshot('team docs');preservedRename(JSON.parse(privateRead(join(state.secrets,'selected-original.json'))),current);
@@ -161,7 +185,14 @@ try {
     logCoverage:command.startsWith('watch-')?'OBSERVED':'NOT_MEASURED',incomingManifestScopeRefusals:command.startsWith('watch-')?c.consoleSummary.incomingManifestScopeRefusals:undefined,
     excludedControlsPreserved:command!=='scope',trashEmpty:command!=='scope',physicalPhone:'NOT_RUN'};
   writeFileSync(join(state.run,'evidence',`selected-desktop-${command}.json`),JSON.stringify(receipt,null,2)+'\n',{mode:0o600,flag:'wx'});console.log(JSON.stringify(receipt));
-}catch{console.log(JSON.stringify({result:'FAIL',stage:'selected-desktop-'+command,detail:'Owned selected UI or independent boundary refused.'}));process.exitCode=1;}
+}catch(error){
+  let scopeFacts;
+  if(command==='scope'&&c&&Date.now()<scopeDeadline){
+    let timer;
+    try{scopeFacts=await Promise.race([c.evaluate(`const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;const documents=[...new Set([document,app.setting?.modalEl?.isConnected?app.setting.modalEl.ownerDocument:null].filter(d=>d&&!d.defaultView?.closed))];const panes=documents.flatMap(d=>[...d.querySelectorAll('.mod-settings .vertical-tab-content')]).filter(visible);const rows=panes.flatMap(p=>[...p.querySelectorAll('.setting-item')]).filter(visible);const named=name=>rows.filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);const areas=named('Selected folders').flatMap(r=>[...r.querySelectorAll('textarea')]);return {documents:documents.length,panes:panes.length,folderRows:named('Folder selection').length,selectedRows:named('Selected folders').length,selectedInputs:areas.length,disabledSelectedInputs:areas.filter(t=>t.disabled).length,saveRows:named('Save on this device').length};`),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('diagnostic deadline')),Math.min(500,scopeDeadline-Date.now()));})]);}catch{}finally{clearTimeout(timer);}
+    if(scopeFacts)scopeFacts=Object.fromEntries(Object.entries(scopeFacts).map(([key,value])=>[key,Number.isInteger(value)&&value>=0?Math.min(value,128):null]));
+  }
+  console.log(JSON.stringify({result:'FAIL',stage:'selected-desktop-'+command,...(command==='scope'?{scopeStage,scopeReason:scopeFailureReasons.has(error.message)||/^scope-renderer-(?:ROW_IDENTITY|PANE_IDENTITY|OPTION_IDENTITY|TEXTAREA_UNAVAILABLE|INPUT_FOCUS|TEXT_MISMATCH|SAVE_BLOCKED|SAVE_IDENTITY|RENDERER_TYPE_ERROR|RENDERER_REFUSAL)$/.test(error.message)?error.message:'OTHER_REFUSAL',scopeFacts}:{}),...(command==='rename'?{renameStage,renameReason:/^selected-renderer-(?:FILES_VIEW_IDENTITY|FILES_FOLDER_DEADLINE|CONTEXT_MENU_DEADLINE|INLINE_RENAME_DEADLINE|INLINE_TITLE_IDENTITY|INLINE_TITLE_SELECTION|FILES_FOLDER_FOCUS|FILES_TARGET_FOCUS|FILES_SELECTION_IDENTITY|RENDERER_TYPE_ERROR|RENDERER_REFUSAL)$/.test(error.message)?error.message:'OTHER_REFUSAL',renameFacts}:{}),detail:'Owned selected UI or independent boundary refused.'}));process.exitCode=1;}
 finally{c?.close();}
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)await main();

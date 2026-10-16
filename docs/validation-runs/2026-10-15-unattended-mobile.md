@@ -35,7 +35,7 @@ trust change or production service is involved.
 ## Measured status
 
 At this checkpoint, **one complete one-command core run and zero full runs
-have passed**. All thirteen full batches stopped on their first failed attempt;
+have passed**. All fourteen full batches stopped on their first failed attempt;
 the remaining two attempts in each batch did not run. Earlier exploratory journeys are not counted as three fresh
 acceptance runs. The first eighteen fresh runs remain failed in their original
 directories. Run 19 passed the core path; all nineteen report successful
@@ -473,6 +473,85 @@ Parent composition passes 125 Python tests, 150 Node tests, all 149 scripted
 mobile mutation controls and both secret scans. The actual-main regression
 and 31 consent/inventory mutants are included in that gate. These are offline
 results; a fresh native batch and fresh hosted Windows result remain required.
+
+Full batch 14 at `672a1217e0b88b2ccda1f22f3d2f1a8079e6a015` passed the
+corrected scoped inventory verifier, ordinary replacement pairing/consent,
+previous-generation history restore through the UI, and a post-rotation Android
+process restart with both generations retained. Independently retrieved bytes
+matched through all these phases; the parent rehashed 80 exported files.
+The post-rotation launch reached automatic idle in 4,700 ms. Earlier idle,
+restart/reboot, offline, revocation and interrupted-rotation assertions also
+passed, including direct old-key rejection against actual new ciphertext.
+
+The batch stopped at `desktop-save-selected-policy` after 295 ms. Its generic
+diagnostic does not identify the precise UI refusal. It did not run either
+five-minute rename stability window, fresh recovery or the closed capture scan.
+Both controllers reported cleanup PASS and zero owned groups; their runtime,
+private and manifest paths were independently absent. The original failed
+aggregate SHA-256 is
+`6ded2a70a7742382181538e69dfc13b299684e3d2a7f4ec0201e0257568ba999`.
+No second or third attempt ran. The repaired Windows plugin test passes on
+this head's hosted job. The terminal hosted rollup has 46 successful checks,
+one intended deployment skip and the existing covered CodeQL aggregate failure.
+Required dispositions and the gate pass. Hosted success does not replace the
+failed native batch. The fourteen-batch retained ledger has SHA-256
+`d4af050d3d85f6d03e5393b084736ae815a2f8e86e7ee778afdca1d749d8cb63`.
+
+An isolated fresh desktop reproduction then passed ordinary setup and fixture
+publication but reproduced the immediate scope-action failure. The driver
+declared `const row` in the same evaluation scope as the shared CDP prelude's
+existing declaration. This syntax error prevents the Settings action from
+running. The old action-body fixtures omitted that real prelude and therefore
+missed the composition defect. The isolated controller cleaned up completely;
+this diagnosis does not relabel batch 14 or satisfy the rename journeys.
+
+The scope repair passed native text entry and Save in two fresh desktop
+fixtures; a separate read of persisted plugin metadata confirmed the selected
+folder policy. Sixteen focused tests passed and nine deliberately broken
+controls failed. These diagnostic fixtures used the unchanged candidate
+product and the repaired action driver, not a full mobile acceptance run.
+The next isolated fixture passed scope Save and excluded-note creation, then
+the ordinary folder rename timed out after 30,457 ms. Its generic receipt
+does not distinguish the Files, context-menu and inline-rename waits. The
+following snapshot and both stability windows did not run. All five desktop
+diagnostic fixtures reported cleanup PASS, zero owned groups and absent
+runtime/private/manifest paths. Their controllers deliberately refused an
+overall acceptance result because no Android cleanup proof existed; only
+the named native actions and independent saved-policy observations passed.
+
+Subsequent isolated probes located the rename failure at the context-menu
+wait: the pinned official macOS app defaults to an Electron native menu,
+while the driver expected HTML menu items. The driver now uses Obsidian's
+ordinary Files keyboard navigation and F2 rename. It verifies the active
+owned Files view, the sole keyboard-focused target folder and absence of
+foreign input focus before sending F2. Two intermediate probes refused
+incorrect focus assumptions and remain failed. The official Files view uses
+its active-leaf key scope and may legitimately leave the DOM active element
+on the page body; the driver does not modify menu settings, tree internals or
+production behavior to satisfy its assertions.
+
+The ninth fresh desktop diagnostic passed scope Save, independent persisted
+policy readback, excluded-note creation, ordinary rename in 946 ms, and the
+following snapshot in 366 ms. Existing independent bytes, note identities,
+history/ancestry, selected boundaries and empty-trash assertions all passed.
+The parent independently verified cleanup PASS, zero owned groups and absent
+runtime/private/manifest paths for all nine diagnostic fixtures; the reduced
+cleanup ledger has SHA-256
+`6cfca59c9aced3ad7c18cb8b0f512ba2fbc854b2aa28fe2cfc8b2b3efcd7799d`.
+This is focused desktop evidence, not either five-minute stability window,
+Android rename acceptance or a completed full batch.
+The combined action regression passes 20 focused tests and kills 20 deliberate
+mutations, including shared-prelude collisions, missing settings rows, wrong
+active leaf/folder/selection, dropped focus and rename keys, dropped text and
+Enter, skipped policy readback, and leaked raw exception text. The parent
+replayed those controls against the integrated files. The regression compiles
+the actual renderer bodies with the actual shared CDP prelude, which the
+original fixtures omitted.
+The integrated mobile gate passes 125 Python tests, 157 Node tests and all
+149 existing scripted mutation controls, with no skipped tests. The 20 focused
+controls above are additional. Both secret scans pass. The unchanged
+production artifacts reuse their previously recorded full canonical battery;
+the new full native batch remains necessary.
 
 A source-level review also found a deterministic later history-control mismatch:
 typing the filename does not redraw the modal's initial Load next button.
