@@ -9,6 +9,7 @@ const { Transport, CHANGES_ANSWER_MAX, HISTORY_RESPONSE_BYTES } = require("../bu
 const { pushFile } = require("../build/sync/push.js");
 const { SyncEngine } = require("../build/sync/engine.js");
 const c = require("../build/crypto.js");
+const seal2 = require("../build/seal2.js");
 const enc = (text) => new TextEncoder().encode(text);
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 async function promptly(work) {
@@ -271,7 +272,7 @@ test("multi-chunk restore uses bounded verified batches and ordinary engine reco
   for (let i = 0; i < 5; i++) {
     const plaintext = new Uint8Array(2 << 20).fill(i);
     original.push(plaintext);
-    const { cid, sid, ciphertext } = await c.encryptChunk(r.keys.domainKey, plaintext);
+    const { cid, sid, ciphertext } = await seal2.encryptChunk2(r.keys.domainKey, r.context, plaintext);
     r.server.chunks.set(sid, ciphertext);
     chunks.push({ cid: c.hex(cid), sid, len: plaintext.length });
   }

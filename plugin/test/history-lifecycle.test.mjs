@@ -37,13 +37,14 @@ async function plugin(t) {
 
 function reloadHarness(r) {
   const { instance } = r;
-  let persisted = structuredClone(r.state.data), loads = 0, starts = 0;
-  r.state.save = async () => { persisted = structuredClone(r.state.data); };
-  instance.loadData = async () => { loads++; return structuredClone(persisted); };
-  instance.saveData = async (value) => { persisted = structuredClone(value); };
+  let loads = 0, starts = 0;
+  // Reopen the actual acknowledged metadata and its paired native secret,
+  // including the suite floor. Plain data alone is not a custody snapshot.
+  instance.loadData = async () => { loads++; return structuredClone(await r.state.store.loadData()); };
+  instance.saveData = value => r.state.store.saveData(value);
   instance.addCommand = instance.addSettingTab = instance.registerEvent = instance.registerObsidianProtocolHandler = () => {};
   instance.addStatusBarItem = () => statusItem();
-  instance.app = { secretStorage: memorySecrets(), vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
+  instance.app = { secretStorage: r.state.secrets, vault: { adapter: {}, on: () => ({}) }, workspace: { on: () => ({}), getLeavesOfType: () => [], onLayoutReady: (listed) => listed() } };
   instance.manifest = { version: "0.1.11" };
   instance.checkForUpdate = async () => {};
   // Use actual plugin onload/startEngine admission. The engine port keeps
@@ -158,7 +159,13 @@ test("scope save cancels a pending restore read without waiting for its network 
   const restore = r.instance.restoreHistory(r.instance.openHistory(), r.entry);
   const refused = assert.rejects(restore, /cancelled/);
   await issued.promise;
-  await promptly(r.instance.saveSyncFolders([]));
+  // Cancellation reaches the local save without waiting for the held HTTP.
+  // The suite-2 native custody save itself includes asynchronous HKDF work.
+  const saving = deferred(), save = r.state.save.bind(r.state);
+  r.state.save = () => { saving.resolve(); return save(); };
+  const changing = r.instance.saveSyncFolders([]);
+  await promptly(saving.promise);
+  await changing;
   await refused;
   assert.deepEqual(r.state.data.syncFolders, []);
   assert.equal(r.host.files.size, 0);

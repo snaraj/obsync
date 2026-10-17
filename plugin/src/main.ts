@@ -16,7 +16,7 @@
  * | Upload/download  | 4 concurrent chunks                          | 2 concurrent chunks                    |
  * | Per-file ceiling | unlimited                                    | 512 MiB, then remote-only              |
  * | Total budget     | unlimited                                    | 50 GiB, then remote-only               |
- * | Transport        | `requestUrl`, HTTP or HTTPS                  | `requestUrl`, HTTPS only               |
+ * | Transport        | browser fetch, HTTP or HTTPS                  | browser fetch, HTTPS only               |
  * | Crypto           | WebCrypto                                    | WebCrypto                              |
  *
  * A device with no Node filesystem (mobile, or a desktop adapter that does
@@ -52,11 +52,18 @@
  * the vault's config folder.
  */
 
-import { ItemView, MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder, requestUrl } from "obsidian";
+import { desktopSecretStore } from "./desktopCustody";
+import { ItemView, MarkdownView, Notice, Platform, Plugin, TAbstractFile, TFile, TFolder } from "obsidian";
 import type { App, CliData, CliFlag, CliFlags, CliHandler } from "obsidian";
-import { Bytes, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
+import { Bytes, bytesEqual, deriveDomainKey, deriveManifestKey, hex, randomBytes, sha256, unhex } from "./crypto";
+import { fetchHttp } from "./fetchHttp";
+import { enroll2 } from "./enrollment2";
+import { RotationClient } from "./rotationClient";
+import { resumeRotationCredential } from "./rotationRecovery";
+import { recoverLegacyUpgrade } from "./legacyUpgrade";
+import { parseLegacyRecoveryHistory, parseRecoveryBackup } from "./recoveryBackup";
 import { accountRecovery, FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "./accountRecovery";
-import { domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
+import { DomainMapError, domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
 import { EditorActivity, EDITOR_SAVE_MAX_CHARS, WORD_PAUSE_MS, type ReloadOutcome } from "./editorActivity";
@@ -78,7 +85,7 @@ import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, MoveResult, NOT_A
 import { EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, pastedToken, platformLabel, refusalFor, refusalText } from "./pairing";
-import { COPIED_VAULT, ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, serverUrlRefusal } from "./ui/settings";
+import { COPIED_VAULT, ObsyncSettingTab, SETUP_GUIDE_URL, normalizeServerUrl, pendingServerUrlRefusal, serverUrlRefusal } from "./ui/settings";
 import {
   LeaveServerModal, PairClaimModal, PairCreateModal, RecentModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, alreadyPaired,
 } from "./ui/modals";
@@ -715,8 +722,8 @@ const START_SETTLE_MS = 500;
 
 /**
  * A request sent once that a person is waiting on: `lost` when nothing has
- * answered within `INTERACTIVE_MS` (issue #157). `requestUrl` cannot be
- * withdrawn, so the request goes on and its late answer is discarded -- a
+ * answered within `INTERACTIVE_MS` (issue #157). Cancellation is logical,
+ * so the request goes on and its late answer is discarded -- a
  * revoke that lands afterwards has still done what the person asked.
  */
 function patiently<T>(sent: Promise<Sent<T>>, patience: Patience): Promise<Sent<T>> {
@@ -3770,6 +3777,8 @@ export default class ObsyncPlugin extends Plugin {
   /** A pairing claim waiting for its vault key (issue #153); it signs its own collection. */
   waiting: Waiting | null = null;
   private enrolling = false;
+  /** Detached legacy history input; never selected by ordinary enrollment or sync. */
+  private legacyRecoveryRoot: string | null = null;
   /** Invalidates continuations from an earlier load, including a load with no engine yet. */
   private lifecycle: object | null = {};
   private stateLoad: Promise<State | null> | null = null;
@@ -3782,6 +3791,9 @@ export default class ObsyncPlugin extends Plugin {
   private scopeCancel: AbortController | null = null;
   /** A leave is running: a second press, or a second dialog, is refused (S22). */
   private leaving = false;
+  private rotating = false;
+  private rotationRunning = false;
+  private rotationClient: RotationClient | null = null;
   private readonly manualFetches = new Set<Promise<string>>();
   /** The folder renames handled this turn, before and after: their entries' own reports are theirs (`registerVaultEvents`). */
   private renamedFolders: [string, string][] = [];
@@ -3816,7 +3828,7 @@ export default class ObsyncPlugin extends Plugin {
       await Promise.allSettled(settling);
       if (!this.isCurrent(generation)) return;
     }
-    const loading = this.stateLoad = State.open(this, Platform.isMobile, this.app.secretStorage, (error) => {
+    const loading = this.stateLoad = State.open(this, Platform.isMobile, Platform.isMobile ? this.app.secretStorage : desktopSecretStore(this.app.secretStorage, this.platformName()), (error) => {
       // A newer session of this plugin owns the data file (issue #181). This
       // one stops and says so in the log only: nothing failed here that the
       // user could fix, and the newer session is the one syncing.
@@ -3838,6 +3850,7 @@ export default class ObsyncPlugin extends Plugin {
     if (this.stateLoad === loading) this.stateLoad = null;
     if (!this.isCurrent(generation) || state === null) return;
     this.state = state;
+    this.rotating = state.custody2()?.rotation != null;
     // A reload of this instance keeps no question the old host asked.
     this.host?.closeQuestion();
     this.clock?.stop();
@@ -3849,7 +3862,7 @@ export default class ObsyncPlugin extends Plugin {
         state.assertAvailable();
         // Ends the call, never retried (`SessionEnded`, issue #272).
         if (!this.isCurrent(generation) || this.state !== state) throw new SessionEnded();
-        return requestUrl(request);
+        return fetchHttp(request);
       },
       serverUrl: () => state.data.serverUrl,
       device: () => this.credential(state),
@@ -3864,6 +3877,9 @@ export default class ObsyncPlugin extends Plugin {
       sleep: (ms) => new Promise((resolve) => timers.set(resolve, ms)),
     });
     this.transport = transport;
+    this.rotationClient = new RotationClient(state, transport, () => {
+      if (!this.isCurrent(generation) || this.state !== state) throw new SessionEnded();
+    }, () => this.quiesceForRotation());
     this.statusEl = this.addStatusBarItem();
     this.indicator.attach(this.statusEl);
     // The indicator is the way in: a click opens what it cannot say (#156).
@@ -3893,7 +3909,7 @@ export default class ObsyncPlugin extends Plugin {
       // 4); a click opens the settings that answer it.
       this.notices.show({
         kind: "question", open: () => this.openSettings(),
-        text: "your 24-word recovery phrase is not confirmed: without it and without a paired device this vault cannot " +
+        text: "your recovery backup is not confirmed: without it and without a paired device this vault cannot " +
           "be recovered. In obsync's settings, under Vault key, choose Show and confirm.",
       });
       void state.save().catch(() => {});
@@ -3923,7 +3939,7 @@ export default class ObsyncPlugin extends Plugin {
     });
     this.addCommand({
       id: "show-recovery-phrase",
-      name: "Show recovery phrase (obsync)",
+      name: "Show recovery backup (obsync)",
       callback: () => new RecoveryPhraseModal(this.app, this, false).open(),
     });
     this.addCommand({ id: "open-dashboard", name: "Open dashboard (obsync)", callback: () => void this.openDashboard() });
@@ -4387,13 +4403,15 @@ export default class ObsyncPlugin extends Plugin {
 
   /** Bind asynchronous enrollment/recovery work to the session that issued it. */
   captureSession(): { state: State; transport: Transport; assertCurrent: () => void } {
-    const generation = this.lifecycle, state = this.state, transport = this.transport;
+    const generation = this.lifecycle;
+    if (!this.isCurrent(generation)) throw new SessionEnded();
+    const state = this.state, transport = this.transport;
     const serverUrl = state.data.serverUrl;
     const assertCurrent = (): void => {
-      state.assertAvailable();
       if (!this.isCurrent(generation) || this.state !== state || this.transport !== transport || state.data.serverUrl !== serverUrl) {
         throw new Error("The previous plugin session is inactive. Its one-time response was not adopted; check the existing enrollment before trying again.");
       }
+      state.assertAvailable();
     };
     assertCurrent();
     return { state, transport, assertCurrent };
@@ -4428,7 +4446,11 @@ export default class ObsyncPlugin extends Plugin {
 
   private async startEngineOwned(): Promise<void> {
     const generation = this.lifecycle;
-    if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null) return;
+    if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null || this.rotating || this.state.custody2()?.rotation) return;
+    if (this.state.custody2() === null) {
+      this.setStatus({ kind: "error", message: "This vault needs the encryption upgrade. Open obsync settings, then Upgrade encryption. Local notes are unchanged." });
+      return;
+    }
     const started = Date.now();
     // STILL WANTED AFTER EVERY WAIT, NOT ONLY BEFORE THE FIRST (#233). A
     // leave, a folder change, a restore, a revoke or an unload that began
@@ -4439,7 +4461,7 @@ export default class ObsyncPlugin extends Plugin {
     // `engine` is still the one; one that is not goes no further, and says so
     // in one line. What it made, whoever superseded it has stopped.
     const wanted = (engine: SyncEngine | null): boolean =>
-      this.isCurrent(generation) && !this.changingScope && this.restoring === null && !this.leaving && this.engine === engine;
+      this.isCurrent(generation) && !this.changingScope && this.restoring === null && !this.leaving && !this.rotating && !this.state.custody2()?.rotation && this.engine === engine;
     const superseded = (): void => this.log(`engine decision=stopped reason=superseded duration_ms=${Date.now() - started}`);
     // Whoever asked for this start owns it: a reconnect still pending would
     // be a second engine, so its timer is taken here and its count carried,
@@ -4621,23 +4643,130 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   syncContext(): SyncContext | null {
-    return this.changingScope || this.restoring !== null ? null : this.engine?.context ?? null;
+    return this.lifecycle === null || this.changingScope || this.restoring !== null || this.rotating || this.state.custody2()?.rotation ? null : this.engine?.context ?? null;
+  }
+
+  private async quiesceForRotation(): Promise<void> {
+    if (this.leaving || this.changingScope || this.restoring !== null) throw new Error("Finish the current leave, folder change or restore first.");
+    this.rotating = true;
+    this.cancelReconnect(); this.cancelHistories();
+    await this.engine?.stopAndWait();
+    await Promise.allSettled([...this.starts, ...this.engineTeardowns, ...this.manualFetches]);
+    this.engine = null;
+  }
+
+  private async rotationAction(action: (client: RotationClient) => Promise<void>): Promise<void> {
+    if (this.rotationRunning) throw new Error("An encryption transition action is already running.");
+    const generation = this.lifecycle;
+    const { state, assertCurrent } = this.captureSession();
+    if (this.rotationClient === null) throw new Error("Reload obsync before changing encryption.");
+    this.rotationRunning = true;
+    try { await action(this.rotationClient); assertCurrent(); }
+    finally { this.rotationRunning = false; if (this.isCurrent(generation) && this.state === state) this.rotating = state.custody2()?.rotation != null; }
+    if (this.rotating) this.setStatus({ kind: "error", message: "Encryption transition pending. Sync is stopped. Resume it in obsync settings." });
+  }
+
+  startRotation(target: string | null): Promise<void> { return this.rotationAction(client => client.start(target)); }
+  prepareRotation(token: string, backup: string): Promise<void> { return this.rotationAction(client => client.prepare(pastedToken(token), backup)); }
+  seedRotation(progress: (done: number, total: number) => void): Promise<void> { return this.rotationAction(client => client.seed(progress)); }
+  async commitRotation(token: string, backup: string): Promise<void> {
+    await this.rotationAction(client => client.commit(pastedToken(token), backup));
+    await this.startEngine();
+  }
+
+  async cancelRotationDraft(): Promise<void> {
+    await this.rotationAction(client => client.cancelDraft());
+    await this.startEngine();
+  }
+
+  async recoverRotationAccess(token: string, backup: string): Promise<"resumed" | "lost"> {
+    let result: "resumed" | "lost" = "lost";
+    const { state, transport, assertCurrent } = this.captureSession();
+    await this.rotationAction(async () => {
+      result = await resumeRotationCredential({ state, transport, token: pastedToken(token), backup,
+        profile: { name: this.deviceName(), platform: this.platformName(), app_version: this.manifest.version },
+        assertCurrent, stopSync: () => this.quiesceForRotation() });
+    });
+    return result;
+  }
+
+  async recoverLegacyForUpgrade(token: string, backup: string, dialogCurrent: () => void): Promise<void> {
+    const { state, transport, assertCurrent } = this.captureSession();
+    await this.rotationAction(async () => {
+      dialogCurrent();
+      await this.quiesceForRotation();
+      await recoverLegacyUpgrade({ state, transport, token: pastedToken(token), backup,
+        profile: { name: this.deviceName(), platform: this.platformName(), app_version: this.manifest.version },
+        assertCurrent: () => { assertCurrent(); dialogCurrent(); } });
+      this.legacyRecoveryRoot = null;
+    });
+  }
+
+  /** Called only after the replacement pairing's durable adoption acknowledgement. */
+  finishReplacementPairing(): void {
+    if (this.lifecycle === null) throw new SessionEnded();
+    const custody = this.state.custody2();
+    if (!this.state.paired || custody?.phase !== "active" || custody.rotation || custody.enrollment) {
+      throw new Error("The replacement enrollment is not ready.");
+    }
+    this.rotating = false;
+    this.forgottenDevice = false;
+  }
+
+  /** The old key is retained for history only after authenticated replacement. */
+  async pairAfterRotation(backup: string, dialogCurrent: () => void): Promise<void> {
+    const generation = this.lifecycle;
+    const { state, assertCurrent } = this.captureSession();
+    const root = state.data.vrk, custody = state.custody2();
+    if (!state.paired || root === null || custody?.history || (custody !== null &&
+        (custody.phase !== "active" || custody.initializeMap))) throw new Error("Finish the pending encryption transition or retire the previous history key first.");
+    const saved = await (custody === null ? parseLegacyRecoveryHistory(backup) : parseRecoveryBackup(backup));
+    assertCurrent(); dialogCurrent();
+    if (!bytesEqual(saved, unhex(root)) || state.data.vrk !== root || JSON.stringify(state.custody2()) !== JSON.stringify(custody)) {
+      throw new Error("The complete old backup does not match this device's vault key.");
+    }
+    const old = await domainMapKeys(saved); assertCurrent(); dialogCurrent();
+    await this.quiesceForRotation();
+    try { assertCurrent(); dialogCurrent(); }
+    catch (error) { if (this.isCurrent(generation) && this.state === state) { this.rotating = state.custody2()?.rotation != null; void this.startEngine(); } throw error; }
+    new PairClaimModal(this.app, this, undefined, () => {
+      if (!this.isCurrent(generation) || this.state !== state) return;
+      this.rotating = state.custody2()?.rotation != null;
+      void this.startEngine();
+    }, old.fileId).open();
+  }
+
+  /** Explicitly remove one retained read-only key after complete-backup readback. */
+  async retireHistoryBackup(backup: string, dialogCurrent: () => void): Promise<void> {
+    const { state, assertCurrent } = this.captureSession();
+    const previous = state.custody2()?.history;
+    if (!previous) throw new Error("There is no previous-generation key on this device.");
+    const root = await (previous.suite === 1 ? parseLegacyRecoveryHistory(backup) : parseRecoveryBackup(backup));
+    assertCurrent(); dialogCurrent();
+    if (!bytesEqual(root, unhex(previous.root)) || JSON.stringify(state.custody2()?.history) !== JSON.stringify(previous)) {
+      throw new Error("The complete old backup does not match the retained history key.");
+    }
+    this.cancelHistories();
+    await state.retireHistoryRoot(previous.generation); assertCurrent();
   }
 
   private cancelHistories(): void {
     for (const browser of [...this.histories]) this.closeHistory(browser);
   }
 
-  openHistory(newestFirst = true): HistoryBrowser {
+  openHistory(newestFirst = true, previous = false): HistoryBrowser {
     const context = this.syncContext();
     if (!context) throw new Error("Start sync on this paired device before opening history.");
     const generation = this.lifecycle;
     const engine = this.engine;
     const { deviceId, vrk, serverUrl } = this.state.data;
+    const history = previous ? this.state.custody2()?.history : null;
+    if (previous && !history) throw new Error("This device has no previous-generation history key.");
     const operation: HistoryOperation = new HistoryOperation(() => this.isCurrent(generation) && this.engine === engine &&
       !this.changingScope && (this.restoring === null || this.restoring === operation) &&
-      this.state.data.deviceId === deviceId && this.state.data.vrk === vrk && this.state.data.serverUrl === serverUrl);
-    const browser = new HistoryBrowser(context, operation, { newestFirst });
+      this.state.data.deviceId === deviceId && this.state.data.vrk === vrk && this.state.data.serverUrl === serverUrl &&
+      (!previous || JSON.stringify(this.state.custody2()?.history) === JSON.stringify(history)));
+    const browser = new HistoryBrowser(context, operation, { newestFirst, ...(history ? { previous: history } : {}) });
     this.histories.add(browser);
     // The transport's manual read slot is held for as long as the dialog is
     // open, so the repair tick yields to it instead of colliding (#103).
@@ -5132,14 +5261,17 @@ export default class ObsyncPlugin extends Plugin {
    * (issue #194). Counted as unknown, it asked about notes the server holds
    * (the Android journey J10, 2026-09-27).
    */
-  async notesUnknownTo(vrk: string): Promise<number> {
+  async notesUnknownTo2(vrk: string, generation: string, transport: Transport): Promise<number> {
     const started = Date.now();
     const key = unhex(vrk);
-    const map = await loadDomainMap(this.transport, await domainMapKeys(key));
-    const domainId = map === null ? null : soleDomain(map);
-    const held = domainId === null
-      ? null
-      : await heldNotes(this.transport, await deriveManifestKey(await deriveDomainKey(key, domainId), domainId));
+    const keys = await domainMapKeys(key);
+    if (keys.fileId !== generation) throw new DomainMapError("generation_mismatch");
+    const map = await loadDomainMap(transport, keys);
+    if (map === null) throw new DomainMapError("missing_map");
+    const domainId = soleDomain(map);
+    if (domainId === null) throw new DomainMapError("unsupported_domains");
+    const held = await heldNotes(transport, await deriveManifestKey(await deriveDomainKey(key, domainId), domainId),
+      { generation, domainId });
     let local = 0;
     let unknown = 0;
     let older = 0;
@@ -5343,64 +5475,53 @@ export default class ObsyncPlugin extends Plugin {
    */
   async setServerUrl(value: string): Promise<void> {
     const url = normalizeServerUrl(value);
-    const refusal = serverUrlRefusal(url, this.isMobile);
-    if (refusal !== null) throw new Error(refusal);
+    const pendingRefusal = pendingServerUrlRefusal(this.state, url);
+    const refusal = serverUrlRefusal(url, this.isMobile) ?? pendingRefusal;
+    if (refusal !== null) {
+      if (refusal === pendingRefusal) this.log("settings decision=refused reason=enrollment_pending_server");
+      throw new Error(refusal);
+    }
     this.state.data.serverUrl = url;
     await this.state.save();
     this.wake("address");
   }
 
-  /**
-   * Adopt a vault key (new, or restored from a phrase) and start syncing.
-   *
-   * No domain is declared here: the engine reads the vault's domain map at
-   * every start and writes one for a vault that has none, so the domain a
-   * path belongs to has exactly one source (`docs/architecture.md` 5.1).
-   */
-  async adoptVaultKey(vrk: string, phrase: ObsyncData["recoveryPhrase"] = "unconfirmed"): Promise<void> {
+  /** Local staging only: no request, credential adoption or engine start. */
+  async stageNewVaultKey(dialogCurrent: () => void = () => undefined): Promise<void> {
     const { state, assertCurrent } = this.captureSession();
-    // A different key is a phrase this device has not confirmed; restoring
-    // one from its 24 words is the confirmation (issue #170).
-    if (state.data.vrk !== vrk || phrase === "confirmed") state.data.recoveryPhrase = phrase;
-    state.data.vrk = vrk;
-    await state.save();
-    assertCurrent();
-    await this.startEngine();
+    dialogCurrent();
+    await state.stageEnrollment2(hex(newVaultKey()), "new");
+    assertCurrent(); dialogCurrent();
+    state.data.recoveryPhrase = "unconfirmed";
+    await state.save(); assertCurrent();
   }
 
-  /**
-   * Would `vrk` leave this device outside the vault its server holds (issue
-   * #140)? A map lives at a file id derived from its key, so a new key or
-   * another vault's phrase finds none, and the engine would write a second
-   * map into the same account: every other device then meets records it
-   * cannot open. Only a device with a credential can ask, and only a server
-   * holding records has a vault to strand.
-   */
-  async vaultKeyStrands(vrk: string): Promise<boolean> {
-    const { state, transport } = this.captureSession();
-    if (state.data.deviceId === null || this.forgottenDevice) return false;
-    if ((await loadDomainMap(transport, await domainMapKeys(unhex(vrk)))) !== null) return false;
-    // Versions, not the journal head: account and device frames move the
-    // head of a server that holds no vault yet.
-    return (await transport.changes(0, 0, 1)).changes.length > 0;
+  /** A complete prefixed backup selects only the live suite-2 interpretation. */
+  async stageRecoveryBackup(text: string, dialogCurrent: () => void = () => undefined): Promise<void> {
+    const { state, assertCurrent } = this.captureSession();
+    dialogCurrent();
+    const root = await parseRecoveryBackup(text);
+    assertCurrent(); dialogCurrent();
+    await state.stageEnrollment2(hex(root), "recover");
+    assertCurrent(); dialogCurrent();
+    state.data.recoveryPhrase = "confirmed";
+    await state.save(); assertCurrent();
   }
 
-  /** Restore a key from its phrase, never one that opens nothing on this server (issue #140). */
-  async restoreVaultKey(vrk: string): Promise<void> {
-    const started = Date.now();
-    const strands = await this.vaultKeyStrands(vrk);
-    this.log(`vaultkey decision=${strands ? "refused reason=opens_nothing_here" : "restored"} duration_ms=${Date.now() - started}`);
-    if (strands) {
-      throw new Error("These 24 words do not open the vault on this server: nothing there was sealed with them. The key on this device was not changed.");
-    }
-    await this.adoptVaultKey(vrk, "confirmed");
+  /** Explicit old-format input remains detached until the migration action. */
+  async stageLegacyHistoryBackup(text: string, dialogCurrent: () => void = () => undefined): Promise<void> {
+    const { assertCurrent } = this.captureSession();
+    dialogCurrent();
+    const root = await parseLegacyRecoveryHistory(text);
+    assertCurrent(); dialogCurrent();
+    this.legacyRecoveryRoot = hex(root);
   }
 
   /**
    * First-time setup: the token the server writes privately at first boot
    * creates the account and enrols this device.
    */
-  async setUpAccount(setupToken: string, accountName: string): Promise<void> {
+  async setUpAccount(setupToken: string, accountName: string, action: "enroll" | "recover-first-setup" = "enroll"): Promise<void> {
     if (this.enrolling) return;
     this.enrolling = true;
     let freshKey = false;
@@ -5417,74 +5538,44 @@ export default class ObsyncPlugin extends Plugin {
         this.notices.show({ kind: "confirm", text: nested });
         return;
       }
-      // Persist the key BEFORE a one-time request can create its account. A
-      // lost answer then leaves the proof needed for an explicit recovery.
-      // The name's tag rides that save, or the credential's, so the server
-      // is told the name this device keeps (issue #152).
       const name = this.deviceName();
-      freshKey = state.data.vrk === null;
-      if (freshKey) {
-        state.data.vrk = hex(newVaultKey());
-        state.data.recoveryPhrase = "unconfirmed";
-        await state.save();
-      }
-      const vrk = state.data.vrk as string;
-      const recovery = await accountRecovery(vrk);
-      assertCurrent();
-      if (state.data.vrk !== vrk) throw new Error("The vault key changed during setup; try again with the current key.");
-      // A key made for THIS setup recovers nothing, so it sends no proof: an
-      // occupied server then says to pair or restore, rather than establishing
-      // a second vault key over the one it holds (#141, #154). A key restored
-      // from the phrase sends its proof, which re-enrols an existing account,
-      // including one an operator has cleared (`docs/recovery.md`).
-      const enrolled = await transport.setup(pastedToken(setupToken), accountName, {
-        name,
-        platform: this.platformName(),
-        app_version: this.manifest.version,
-      }, freshKey ? { verifier: recovery.verifier } : recovery);
-      assertCurrent();
-      if (state.data.vrk !== vrk) throw new Error("The vault key changed while the server answered; this response was not adopted. Restore the intended phrase and recover explicitly.");
-      // Setup is not repeatable and the credential it mints exists nowhere
-      // else: a lost answer means this device may have been enrolled with a
-      // secret it never received. There is nothing to read back without a
-      // credential, so say exactly that. An explicit new attempt can recover
-      // with the persisted key and token; no request is automatically retried.
-      if (enrolled.outcome === "lost") throw new Error(lostMessage("creating the account", enrolled));
-      const result = enrolled.value;
-      state.data.deviceId = result.device_id;
-      state.data.deviceSecret = result.device_secret;
-      await state.save();
-      assertCurrent();
-      this.notices.show({
-        kind: "confirm",
-        text: result.recovered ? "recovered your vault on this server; this device syncs with it again." : "set up your server's vault; this device syncs with it.",
-      });
-      if (freshKey) {
-        await this.startEngine();
+      let staged = state.stagedEnrollment2();
+      if (staged === null) {
+        if (action === "recover-first-setup") throw new Error("There is no staged first setup on this device to recover.");
+        if (state.data.vrk !== null && state.custody2()?.phase === "active") {
+          await state.stageEnrollment2(state.data.vrk, "recover");
+        } else if (state.data.vrk !== null || this.legacyRecoveryRoot !== null) {
+          throw new Error("This device holds an older vault key. Use the explicit encryption upgrade before syncing it.");
+        } else {
+          await state.stageEnrollment2(hex(newVaultKey()), "new");
+        }
         assertCurrent();
-        new RecoveryPhraseModal(this.app, this, true).open();
-      } else {
-        await this.startEngine();
+        staged = state.stagedEnrollment2();
       }
+      freshKey = staged?.purpose === "new";
+      const result = await enroll2(state, transport, pastedToken(setupToken), accountName, {
+        name, platform: this.platformName(), app_version: this.manifest.version,
+      }, assertCurrent, action);
+      assertCurrent();
+      this.notices.show({ kind: "confirm", text: result.recovered
+        ? "Recovered this vault's enrollment. Starting encrypted sync."
+        : "Created this vault's enrollment. Starting encrypted sync." });
+      await this.startEngine();
+      assertCurrent();
+      if (freshKey) new RecoveryPhraseModal(this.app, this, true).open();
     } catch (error) {
       const code = error instanceof ApiError ? error.code : "local_or_lost";
       this.log(`setup decision=failed reason=${code}`);
-      // One server holds one vault (#141). A device whose key was made for
-      // this setup is a SECOND device whatever the server said about
-      // recovery, and pairing is its way in (#154). Only a key restored from
-      // the phrase is told about recovery.
-      const pairHere = "pair this device from one that syncs it (Pair a new device there, then Pair this device here)";
-      const text = !(error instanceof ApiError)
-        ? refusalText(error)
-        : freshKey && ["already_set_up", "recovery_unavailable", "bad_recovery_proof"].includes(code)
-          ? refusalFor("already_set_up")
-          : code === "already_set_up"
-            ? `This server already holds a vault, and one server holds one vault. If this is that vault, ${pairHere}, or restore its recovery phrase and use Setup or recover with the setup token; a different vault needs a server of its own.`
+      const text = !(error instanceof ApiError) ? refusalText(error)
+        : freshKey && ["already_set_up", "recover_only_required", "recovery_unavailable", "bad_recovery_proof"].includes(code)
+          ? "This server already holds a vault. Pair from a syncing device: choose Pair a new device there, then paste its code here with Pair this device. You can also stage this vault's complete recovery backup. A new vault needs a separate server."
+          : code === "migration_required"
+            ? "This vault uses the older encryption format. Use the explicit encryption upgrade with its legacy key."
             : code === "recovery_unavailable"
-              ? `This server holds a vault with no recovery key registered, so these words cannot re-enrol this device on their own: ${pairHere}, or ask whoever runs the server to reset its recovery key and send you the new setup token (server 1.1.5 or later); a different vault needs a server of its own.`
-              : code === "bad_recovery_proof"
-                ? `These recovery words do not open this server’s vault, and no device was enrolled. Restore its correct 24-word phrase, or ${pairHere}; a different vault needs a server of its own.`
-                : refusalText(error);
+              ? "This server has no recovery verifier for the vault. On a syncing device choose Pair a new device, then paste its code here with Pair this device. Or ask the server operator to reset its recovery key registration using obsyncd recovery reset, then use the new setup token with this vault's complete backup. Retrying the old token alone cannot recover it."
+            : code === "bad_recovery_proof" || code === "recovery_mismatch"
+              ? "This backup does not match the vault on this server. No credential was adopted. Use its complete recovery backup or pair from a syncing device."
+              : refusalText(error);
       this.notices.show({ kind: "confirm", text });
     } finally {
       this.enrolling = false;
@@ -5493,6 +5584,8 @@ export default class ObsyncPlugin extends Plugin {
 
   /** Register once a successful engine start has opened this vault's map. */
   async registerAccountRecovery(): Promise<void> {
+    // Suite 2 registers its verifier atomically during setup or rotation.
+    if (this.state.custody2() !== null) return;
     const deviceId = this.state.data.deviceId;
     try {
       const { state, transport, assertCurrent } = this.captureSession();

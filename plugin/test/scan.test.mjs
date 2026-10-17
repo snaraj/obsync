@@ -33,7 +33,7 @@ import { createRequire } from "node:module";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
-import { FakeTimers, KEYS, diskWatchdog, rig, sandbox, until } from "./fake.mjs";
+import { openPublishedManifest, FakeTimers, KEYS, diskWatchdog, rig, sandbox, until } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
@@ -65,10 +65,8 @@ function engineOf({ host, server, state }, timers) {
 async function postedPaths(server, k) {
   const paths = [];
   for (const frame of server.journal) {
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const manifest = JSON.parse(await c.decryptManifest(
-      k.manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
-    ));
+
+    const manifest = await openPublishedManifest(frame, k.manifestKey);
     paths.push({ path: manifest.path, deleted: manifest.deleted, fileId: frame.file_id, folder: manifest.v === 2 });
   }
   return paths;

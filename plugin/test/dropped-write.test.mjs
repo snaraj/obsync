@@ -14,9 +14,10 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { DEVICE_B, FakeTimers, KEYS, STEP_MS, pair, rig } from "./fake.mjs";
+import { openPublishedManifest, DEVICE_B, FakeTimers, KEYS, STEP_MS, pair, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { SyncEngine, LARGE_APPLY_BYTES } = require("../build/sync/engine.js");
 const { Transport } = require("../build/transport.js");
 const { decodeRecordManifest } = require("../build/sync/pull.js");
@@ -41,10 +42,8 @@ async function emptied(r, before) {
     // DECRYPTED, NOT ADMITTED: every note frame is read whatever its path, and
     // a renamed selected folder's own tombstone -- which names a folder outside
     // the selection that followed it (issue #240) -- is no receiver's question.
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const manifest = JSON.parse(await c.decryptManifest(
-      r.keys.manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
-    ));
+
+    const manifest = await openPublishedManifest(frame, r.keys.manifestKey);
     if (manifest.v === 1 && (manifest.deleted || manifest.size === 0)) empty.push({ path: manifest.path, fileId: frame.file_id, deleted: !!manifest.deleted });
   }
   return empty;
@@ -148,7 +147,7 @@ test("a larger head sent to the download lane keeps the empty file unsent", asyn
   const bytes = new Uint8Array(LARGE_APPLY_BYTES + 1).fill(73);
   const chunks = [];
   for await (const plaintext of chunkStream(bytesSource(bytes))) {
-    const part = await c.encryptChunk(r.keys.domainKey, plaintext);
+    const part = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, plaintext);
     r.server.chunks.set(part.sid, part.ciphertext);
     chunks.push({ sid: part.sid, cid: c.hex(part.cid), len: plaintext.length });
   }

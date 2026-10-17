@@ -223,12 +223,12 @@ test("a note deleted with many others is found by the content it can restore, li
   const heads = [];
   for (const [i, path] of notes.entries()) {
     heads.push(await r.server.publish({
-      fileId: String(i + 10).repeat(16), path, bytes: enc(`CONTENT ${path}`), mtime: 1000 + i,
+      fileId: (i + 10).toString(16).padStart(32, "0"), path, bytes: enc(`CONTENT ${path}`), mtime: 1000 + i,
       domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
     }));
   }
   for (const [i, path] of notes.entries()) {
-    await r.server.publishTombstone({ fileId: String(i + 10).repeat(16), path, manifestKey: r.keys.manifestKey, parents: [heads[i].version_id] });
+    await r.server.publishTombstone({ fileId: (i + 10).toString(16).padStart(32, "0"), path, manifestKey: r.keys.manifestKey, parents: [heads[i].version_id] });
   }
   r.state.data.lastSeq = r.server.seq;
 

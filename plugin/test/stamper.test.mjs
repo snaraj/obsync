@@ -22,6 +22,7 @@ import { createRequire } from "node:module";
 import { DEVICE_B, STEP_MS, pair, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { parseData } = require("../build/state.js");
 const { SCAN_MS, SyncEngine } = require("../build/sync/engine.js");
 const { ANSWER_MS, EditorBusy, answerOf, applyChange } = require("../build/sync/pull.js");
@@ -674,7 +675,7 @@ for (const reverseResume of [false, true]) test(`a published answer and its newe
   const { decryptChunk, unhex } = require("../build/crypto.js");
   const history = await Promise.all(copy.versions.map(async (version) => {
     const manifest = await decryptRecordManifest(b.engine.need(), { ...version, file_id: copyId, domain_id: copy.domain_id });
-    const parts = await Promise.all(manifest.chunks.map(async (chunk) => decryptChunk(rig.keys.domainKey, unhex(chunk.cid), await b.transport.getChunk(chunk.sid))));
+    const parts = await Promise.all(manifest.chunks.map(async (chunk) => seal2.decryptChunk2(rig.keys.domainKey, { generation: b.engine.need().generation, domainId: b.engine.need().domainId }, unhex(chunk.cid), await b.transport.getChunk(chunk.sid))));
     return new TextDecoder().decode(Buffer.concat(parts));
   }));
   assert.ok(history.includes(oldText), "the older published answer must remain in the one copy's history");

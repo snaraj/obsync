@@ -121,7 +121,7 @@ pub(crate) fn version_record(
         sids: Vec::new(),
         bytes: 0,
         manifest_ct: b"sentinel-ciphertext".to_vec(),
-        manifest_nonce: [7u8; 12],
+        manifest_seal: crate::storage::ManifestSeal::Legacy([7u8; 12]),
         device_id: DeviceId::new([0xa1; 16]),
         ts: UnixMs(1_757_000_000_000 + seq.0),
         deleted: false,

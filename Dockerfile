@@ -16,18 +16,24 @@
 # is the immutable build input and the tag states the Node version a reader
 # should expect from those bytes.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/node:26.10.0-trixie-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1 AS plugin
+FROM --platform=$BUILDPLATFORM docker.io/library/node:26.11.1-trixie-slim@sha256:193fe51b64e77981119c98c2002c9e32a70e2f006fb4d25068ce0558998917f0 AS plugin
 WORKDIR /src/plugin
 COPY plugin/package.json plugin/package-lock.json ./
 # The tag and digest select Node; these checks also prove the npm bundled by
 # that image is the separately reviewed package-manager pin. `--ignore-scripts`
 # is not optional: it is the difference between installing a compiler and
 # executing arbitrary install hooks (requirement 5).
-RUN test "$(node --version)" = "v26.10.0" && \
-    test "$(npm --version)" = "11.19.1" && \
+RUN test "$(node --version)" = "v26.11.1" && \
+    test "$(npm --version)" = "11.20.0" && \
     npm ci --ignore-scripts --no-audit --no-fund
 COPY plugin/ ./
 COPY manifest.json /src/manifest.json
+# Transport tests inventory the server refusal vocabulary. These are test
+# inputs only; the bundle stage below exports only the three plugin assets.
+COPY crates/obsyncd/src/api/ /src/crates/obsyncd/src/api/
+COPY crates/obsyncd/src/storage/types.rs /src/crates/obsyncd/src/storage/types.rs
+COPY crates/obsyncd/src/storage/mod.rs /src/crates/obsyncd/src/storage/mod.rs
+COPY crates/obsyncd/src/storage/rotation.rs /src/crates/obsyncd/src/storage/rotation.rs
 RUN npm run build && npm test
 
 # ---------------------------------------------------------------------------
@@ -51,11 +57,11 @@ COPY --from=plugin /src/plugin/dist/styles.css /styles.css
 # server -- test once natively, then cross-compile one fully static binary.
 #
 # The digest was resolved with:
-#   docker buildx imagetools inspect docker.io/library/rust:1.98.1-slim-trixie
-# The index digest was independently rechecked on 2026-10-06 for PR #336.
+#   docker buildx imagetools inspect docker.io/library/rust:1.99.0-slim-trixie
+# The index digest was independently rechecked on 2026-10-13.
 # The compiler below remains selected by rust-toolchain.toml.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.98.1-slim-trixie@sha256:4cd829461bd5c4d511c32e269da9cb8929223b666519d8004e35fc8d1d771ab7 AS server
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.99.0-slim-trixie@sha256:2752b332db73fdbb7dc576f06c82ed1f312005784ef913d7e04a28f5f55dc581 AS server
 ARG TARGETARCH
 ENV CARGO_TERM_COLOR=never
 WORKDIR /src

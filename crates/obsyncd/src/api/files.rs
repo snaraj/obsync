@@ -79,14 +79,32 @@ pub fn post_version(
     }
     let manifest_ct = base64::decode(manifest_ct_b64)
         .map_err(|_| ApiError::bad_request("manifest_ct must be base64"))?;
-    let manifest_nonce_hex = render::field_str(&body, "manifest_nonce")?;
-    if !super::is_hex(manifest_nonce_hex, 24) {
-        return Err(ApiError::bad_request(
-            "manifest_nonce must be 24 hex characters",
-        ));
-    }
-    let manifest_nonce = obsync_core::hex::decode_array::<12>(manifest_nonce_hex)
-        .map_err(|_| ApiError::bad_request("manifest_nonce must be 24 hex characters"))?;
+    let manifest_seal = match body.get("seal_suite") {
+        None => {
+            let nonce = render::field_str(&body, "manifest_nonce")?;
+            if !super::is_hex(nonce, 24) {
+                return Err(ApiError::bad_request(
+                    "manifest_nonce must be 24 hex characters",
+                ));
+            }
+            crate::storage::ManifestSeal::Legacy(
+                obsync_core::hex::decode_array::<12>(nonce)
+                    .map_err(|_| ApiError::bad_request("invalid manifest nonce"))?,
+            )
+        }
+        Some(suite)
+            if suite.as_u64() == Some(2)
+                && body.get("manifest_nonce").is_none()
+                && manifest_ct.len() >= 16 =>
+        {
+            crate::storage::ManifestSeal::Suite2
+        }
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "suite2 requires seal_suite:2, tag||ciphertext, and no manifest_nonce",
+            ));
+        }
+    };
 
     if deleted && !sids.is_empty() {
         return Err(ApiError::bad_request("a tombstone carries no sids"));
@@ -101,14 +119,16 @@ pub fn post_version(
         sids,
         bytes,
         manifest_ct,
-        manifest_nonce,
+        manifest_seal,
         deleted,
         device_id: authed.id,
     };
     // The edit event rides the version's own fsync; a post answered with a
     // version the store already held writes neither.
     let edit = auth::seen_event(app, client, SeenKind::Edit);
-    let outcome = app.store.post_version(new, accept_existing, edit)?;
+    let outcome = app
+        .store
+        .post_version_scoped(new, accept_existing, edit, authed.scope)?;
     let status = if outcome.decision.wrote() { 201 } else { 200 };
     Ok(Response::json(
         status,
@@ -187,7 +207,7 @@ pub fn get_version(
 pub fn page(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Response, ApiError> {
     let after = req.query_param("after").map(str::to_string);
     let limit = req.query_param("limit").map(str::to_string);
-    auth::device(app, req, client)?;
+    let caller = auth::device(app, req, client)?;
 
     let after = match after.as_deref() {
         Some(v) => Some(render::file_id(v)?),
@@ -201,7 +221,9 @@ pub fn page(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Respons
     }
     .clamp(1, super::CHANGES_MAX_LIMIT);
 
-    let (files, next) = app.store.files_page(after.as_ref(), limit as usize);
+    let (files, next) =
+        app.store
+            .files_page_scoped(caller.id, &caller.scope, after.as_ref(), limit as usize)?;
     let next = match next {
         Some(id) => s(&id.to_string()),
         None => Value::Null,

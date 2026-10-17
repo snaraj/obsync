@@ -77,7 +77,7 @@ away.
 
 > [!IMPORTANT]
 > - It syncs to a server **you** run: no hosted service, no account elsewhere.
-> - Back up your vault first; keep the 24-word recovery phrase off the device that made it.
+> - Back up your vault first; keep the complete recovery backup, including its format marker and all 24 words, off the device that made it.
 > - Never run it alongside another sync (Obsidian Sync, a cloud folder, another plugin) on one vault.
 > - Young software: read the [`CHANGELOG.md`](CHANGELOG.md) entry for your version, update every device, and know what each [validation run](docs/validation-runs/) covered.
 
@@ -115,7 +115,7 @@ so your firewall decides who reaches it. Compose refuses to start until you have
 **3. Read the setup token.** At first boot the server mints a setup token and
 writes it to its journal volume, mode 0600, never logged. It creates your
 account once and remains the dashboard's recovery sign-in. Guard it like the
-recovery phrase. Ask the running server for it, in any shell, PowerShell and
+recovery backup. Ask the running server for it, in any shell, PowerShell and
 Command Prompt included:
 
 ```sh

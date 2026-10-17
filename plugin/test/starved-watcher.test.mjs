@@ -252,7 +252,7 @@ function obsidianIndex(root, obsidian, { insensitive = folds(root), api = true }
  * The receiving laptop: the real `ObsidianHost` and engine over a real vault
  * directory whose Obsidian index is `obsidianIndex`, enrolled on `server`.
  */
-async function receiver(t, { server, timers, a }, { iterate = true, ...options } = {}) {
+async function receiver(t, { server, timers, a }, { iterate = true, initialRenameRefusal = false, ...options } = {}) {
   const box = sandbox();
   const root = mkdtempSync(join(tmpdir(), "obsync-starved-"));
   t.after(() => {
@@ -263,7 +263,12 @@ async function receiver(t, { server, timers, a }, { iterate = true, ...options }
   const { State } = box.require(join(box.home, "build/state.js"));
   let stored = null;
   const state = await State.open({ loadData: async () => stored, saveData: async (value) => { stored = JSON.parse(JSON.stringify(value)); } }, false, memorySecrets());
-  Object.assign(state.data, { vrk: KEYS.vrk, deviceId: RECEIVER, deviceSecret: RECEIVER_SECRET, serverUrl: "https://sync.example.invalid" });
+  state.data.serverUrl = "https://sync.example.invalid";
+  await state.save();
+  const c = box.require(join(box.home, "build/crypto.js"));
+  await state.stageEnrollment2(KEYS.vrk, "pair");
+  await state.adoptSuite2({ root: KEYS.vrk, generation: (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(KEYS.vrk)))).fileId,
+    deviceId: RECEIVER, deviceSecret: RECEIVER_SECRET, purpose: "pair" });
   const logs = [];
   const { Transport } = box.require(join(box.home, "build/transport.js"));
   const transport = new Transport({
@@ -292,6 +297,11 @@ async function receiver(t, { server, timers, a }, { iterate = true, ...options }
   plugin.deviceName = () => "receiver";
   plugin.registerEvent = () => undefined;
   const hooks = {};
+  if (initialRenameRefusal) hooks.beforeRename = async (_from, to) => {
+    if (!to.endsWith(`${nodePath.sep}n.md`)) return;
+    hooks.beforeRename = undefined;
+    throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+  };
   const promises = {
     ...fsPromises,
     rename: async (from, to) => {
@@ -636,24 +646,66 @@ function openEditor(r, path) {
 
 const BEFORE = "first line\nold words SENTINEL\n";
 const AFTER = "first line\nnew words SENTINEL, longer\n";
+const parkedRename = line => /^feed decision=parked reason=EPERM file=[0-9a-f]{32} parked=1 retry_ms=\d+$/.test(line);
+
+/** Drive only the receiver's registered retry after a fresh completed refusal. */
+function renameRetryClock(r, timers, logStart) {
+  const driven = new Set();
+  return () => {
+    const receipts = r.logs.slice(logStart).filter(parkedRename);
+    logStart = r.logs.length;
+    if (receipts.length === 0) return;
+    const retry = timers.entries.find(entry => entry.handle === r.engine.parkHandle);
+    assert.ok(retry, "completed rename refusal must own a registered retry timer");
+    assert.ok(!driven.has(retry.handle) && driven.size < 4, "rename retry clock exhausted its four owned timers");
+    const delay = Number(receipts.at(-1).match(/retry_ms=(\d+)$/)[1]);
+    assert.ok(delay >= 60000 && delay <= 1800000 && retry.due <= timers.now + delay, "rename retry timer must match the completed refusal");
+    driven.add(retry.handle);
+    timers.now = Math.max(timers.now, retry.due);
+  };
+}
 
 /** A receiver holding `Notes/n.md` at `BEFORE`, listed as a person's notes are (the watcher reported it), then A's edit to it. */
-async function editListed(t, options, arm = () => undefined) {
+async function editListed(t, options, arm = () => undefined, firstAttempt = null) {
   const devices = await pair(t);
   const { timers, a } = devices;
   a.host.write("Notes/n.md", BEFORE, 1000);
   await a.engine.start();
   const r = await receiver(t, devices, options);
   await r.engine.start();
+  if (options.initialRenameRefusal) {
+    await timers.run(STEP_MS, () => r.logs.some(parkedRename));
+    timers.now += 60000; // Complete the fixture's separately observed initial download retry.
+  }
   await timers.run(STEP_MS, () => settled(r, "Notes/n.md"));
   for (const path of ["Notes", "Notes/n.md"]) await r.adapter.late(path);
   await timers.run(STEP_MS);
-  const view = arm(r);
+  const view = arm(r, timers);
   const calls = r.adapter.calls.length;
   const applied = () => r.logs.filter((line) => line.startsWith("pull path_class=file") && line.includes("decision=applied")).length;
   const before = applied();
+  const advanceRetry = renameRetryClock(r, timers, r.logs.length);
   a.host.write("Notes/n.md", AFTER, 2000);
-  await timers.run(STEP_MS, () => r.text("Notes/n.md") === AFTER && r.state.fileByPath("Notes/n.md")?.mtime === 2000);
+  // A syscall may finish after this wait spends its virtual advance budget.
+  // Observe completed failure handling before driving the retry it arms.
+  let landingStep = STEP_MS;
+  if (firstAttempt !== null) {
+    await timers.run(STEP_MS, () => firstAttempt(r));
+    // Real I/O may refuse again (notably on Windows). Advance only a retry
+    // owned by a fresh completed refusal, without spending time while I/O runs.
+    landingStep = 0;
+  }
+  try {
+    await timers.run(landingStep, () => {
+      if (r.text("Notes/n.md") === AFTER && r.state.fileByPath("Notes/n.md")?.mtime === 2000) return true;
+      if (firstAttempt !== null) advanceRetry();
+      return false;
+    });
+  } catch (error) {
+    const next = Math.min(...timers.entries.map(entry => entry.due - timers.now));
+    const retry = timers.entries.find(entry => entry.handle === r.engine.parkHandle);
+    throw new Error(`incoming edit did not land: virtual_ms=${timers.now} next_timer_ms=${next} park_retry_ms=${retry ? retry.due - timers.now : "absent"} ${story(r)}`, { cause: error });
+  }
   // The host's native refresh deadline uses wall time. Do not advance the
   // simulated thirty-second scan past it while the real one-second reload is
   // still pending; wait for the pull receipt, not merely the written bytes.
@@ -705,19 +757,27 @@ test("a listed open note reconciles once and preserves typing begun during the w
  * refresh logged and no unconfirmed refresh to explain it.
  */
 test("a rename the system refuses for a moment leaves the pane its bridge (#267)", async (t) => {
-  for (const typing of [false, true]) {
-    let refused = 0;
-    const { r, view } = await editListed(t, {}, (r) => {
+  for (const [typing, initialRenameRefusal, refusals] of [[false, false, 1], [true, false, 1], [false, true, 1], [false, false, 2]]) {
+    let refused = 0, waitedToCeiling = false, editedLogStart = 0;
+    const { r, view } = await editListed(t, { initialRenameRefusal }, (r, timers) => {
+      if (initialRenameRefusal) assert.ok(r.logs.some(parkedRename), "fixture recovered a real earlier rename refusal");
+      editedLogStart = r.logs.length;
       const view = openEditor(r, "Notes/n.md");
+      const waitAt = timers.now;
       r.hooks.beforeRename = async (_from, to) => {
-        if (refused > 0 || !to.endsWith(`${nodePath.sep}n.md`)) return;
+        if (refused >= refusals || !to.endsWith(`${nodePath.sep}n.md`)) return;
+        // Hold the first syscall to the wait's existing 1800-step ceiling.
+        // Its retry is armed only AFTER that I/O rejects, not before it.
+        if (!typing && refused === 0) await new Promise(resolve => timers.set(resolve, Math.max(0, waitAt + 1800 * STEP_MS - timers.now)));
+        waitedToCeiling = timers.now >= waitAt + 1800 * STEP_MS;
         refused++;
         throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
       };
       if (typing) r.hooks.afterRename = async (_from, to) => { if (to.endsWith(`${nodePath.sep}n.md`)) view.type("TYPED"); };
       return view;
-    });
-    assert.equal(refused, 1, story(r));
+    }, (r) => r.logs.slice(editedLogStart).some(parkedRename));
+    assert.equal(refused, refusals, story(r));
+    if (!typing) assert.equal(waitedToCeiling, true, "fixture observed the exhausted virtual advance window");
     assert.ok(r.logs.includes("host path_class=file decision=failed reason=write error=EPERM outcome=superseded"), story(r));
     assert.ok(r.logs.some((line) => line.startsWith("editor decision=reload_released outcome=superseded ")), story(r));
     assert.ok(r.logs.includes("host path_class=file decision=editor_refreshed views=1"), story(r));

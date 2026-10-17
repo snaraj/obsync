@@ -120,7 +120,8 @@ command that installs it.
 On your computer, follow the [Quickstart](quickstart.md) to install the plugin,
 set **Server URL** to your name (with `:8443` if you moved the port), and run
 **Setup or recover** with the server's setup token. That device creates the
-vault key and shows you the recovery phrase.
+vault key and shows the complete recovery backup. Keep its `obsync-recovery-v2`
+marker together with all 24 words.
 
 ## Add the phone
 

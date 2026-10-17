@@ -26,9 +26,10 @@ import test from "node:test";
 import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { FakeHost, FakeServer, FakeTimers, KEYS, STEP_MS, keys, memorySecrets, rig, sandbox } from "./fake.mjs";
+import { openPublishedManifest, FakeHost, FakeServer, FakeTimers, KEYS, STEP_MS, keys, memorySecrets, rig, sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { State, parseData } = require("../build/state.js");
 const { Transport } = require("../build/transport.js");
 const { HOLD_MS, SAVE_COALESCE_MS, SCAN_MS, SyncEngine, WALK_MS } = require("../build/sync/engine.js");
@@ -80,7 +81,7 @@ async function publishTwoChunks(server, k, fileId, path, bytes) {
   const parts = [bytes.subarray(0, CHUNK_MAX), bytes.subarray(CHUNK_MAX)];
   const chunks = [];
   for (const part of parts) {
-    const sealed = await c.encryptChunk(k.domainKey, part);
+    const sealed = await seal2.encryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, part);
     server.chunks.set(sealed.sid, sealed.ciphertext);
     chunks.push({ sid: sealed.sid, cid: c.hex(sealed.cid), len: part.length });
   }
@@ -93,8 +94,10 @@ async function publishTwoChunks(server, k, fileId, path, bytes) {
 async function device(server, { isMobile = false, host = new FakeHost({ isMobile }), store = memoryStore() } = {}) {
   const state = await State.open(store, isMobile, store.secrets);
   if (state.data.deviceId === null) {
-    Object.assign(state.data, { vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid" });
+    state.data.serverUrl = "https://sync.example.invalid";
     await state.save();
+    await state.stageEnrollment2(KEYS.vrk, "pair");
+    await state.adoptSuite2({ root: KEYS.vrk, generation: (await keys()).generation, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
   }
   store.writes.length = 0;
   const transport = new Transport({
@@ -366,11 +369,18 @@ test("a prefetched chunk that does not decrypt is never written, and the note la
   server.chunks.set(sid, bad);
   const d = await device(server);
   await d.engine.start();
-  await d.timers.run(STEP_MS, () => d.state.fileByPath(pathOf(5)) !== undefined && d.host.logs.some((line) => line.startsWith("feed decision=retry")));
+  await d.timers.run(STEP_MS, () => d.state.fileByPath(pathOf(9)) !== undefined && d.state.data.lastSeq >= server.seq);
   assert.equal(d.host.text(pathOf(6)), null, "unverified bytes reached the vault");
   assert.equal(d.state.fileByPath(pathOf(6)), undefined);
+  assert.deepEqual(d.state.data.parked[fileIdOf(6)], { path: pathOf(6), reason: "chunk_authentication" });
+  assert.ok(d.host.logs.some((line) => line.startsWith("feed decision=parked reason=chunk_authentication")));
+  assert.ok(d.host.said.some((notice) => notice.text.startsWith("Cannot download ") && notice.text.includes("failed its integrity check")), "the person must see why this file is waiting, without blaming their disk");
+  await d.timers.run(0, () => d.store.writes.some((write) => write.parked[fileIdOf(6)]?.reason === "chunk_authentication"));
+  const reopened = await State.open(d.store, false, d.store.secrets);
+  assert.deepEqual(reopened.data.parked[fileIdOf(6)], d.state.data.parked[fileIdOf(6)], "the retry must survive a state reload");
   server.chunks.set(sid, good);
-  await d.timers.run(STEP_MS, () => d.state.fileByPath(pathOf(9)) !== undefined);
+  await d.engine.syncNow();
+  await d.timers.run(STEP_MS, () => d.state.fileByPath(pathOf(6)) !== undefined && d.state.data.parked[fileIdOf(6)] === undefined);
   for (let i = 0; i < 10; i++) assert.equal(d.host.text(pathOf(i)), textOf(i));
   await stopped(d, server);
 });
@@ -383,7 +393,7 @@ test("the last chunk of a file of many chunks is never taken from the page's pre
   const parts = [0, 1, 2].map((i) => new Uint8Array(3 << 20).fill(70 + i));
   const chunks = [];
   for (const part of [...parts, shared]) {
-    const sealed = await c.encryptChunk(k.domainKey, part);
+    const sealed = await seal2.encryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, part);
     server.chunks.set(sealed.sid, sealed.ciphertext);
     chunks.push({ sid: sealed.sid, cid: c.hex(sealed.cid), len: part.length });
   }
@@ -537,8 +547,8 @@ test("a copied vault publishes none of the notes the server holds, adopts an old
 
   const published = [];
   for (const frame of server.journal.filter((entry) => entry.device_id === KEYS.deviceId)) {
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const manifest = JSON.parse(await c.decryptManifest(k.manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct)));
+
+    const manifest = await openPublishedManifest(frame, k.manifestKey);
     if (manifest.v === 1) published.push(manifest.path);
   }
   assert.equal(published.filter((path) => path.startsWith("Notes/n")).length, 0, `the copied notes were published again: ${published}`);
@@ -568,9 +578,15 @@ test("a note held for a feed that never catches up goes out when the hold's limi
   const host = new FakeHost();
   host.seed(pathOf(0), "the copy here differs\n", 1757000000000);
   const request = server.request;
-  let reads = 0;
-  // The walk at start reads the feed to its end, two pages; every read after it fails.
-  server.request = async (asked) => (asked.url.includes("/v1/changes?") && ++reads > 2 ? server.error(500, "internal") : request(asked));
+  let initialFeedComplete = false;
+  // Startup can publish a folder between pages: fail only after the walk's terminal empty page.
+  server.request = async (asked) => {
+    const feed = asked.url.includes("/v1/changes?");
+    if (feed && initialFeedComplete) return server.error(500, "internal");
+    const response = await request(asked);
+    if (feed && response.status === 200 && JSON.parse(response.text).changes.length === 0) initialFeedComplete = true;
+    return response;
+  };
   const d = await device(server, { host });
   await d.engine.start();
   await d.timers.run(STEP_MS, () => host.logs.some((line) => line.startsWith("reconcile decision=holding")));

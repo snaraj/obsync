@@ -1520,10 +1520,10 @@ class TheLiveSettingsObserver(unittest.TestCase):
 
 
 class TheRequiredCheckSetMatchesTheWorkflows(unittest.TestCase):
-    """The ruleset contexts and the publisher's job inventory are one fact."""
+    """Required root checks and reusable leaves all bind publication."""
 
     def test_every_expected_main_job_is_a_required_check(self):
-        for job in contract.EXPECTED_MAIN_JOBS:
+        for job in contract.EXPECTED_GATE_JOBS:
             with self.subTest(job=job):
                 self.assertIn(job, contract.REQUIRED_STATUS_CHECKS)
 
@@ -1535,14 +1535,30 @@ class TheRequiredCheckSetMatchesTheWorkflows(unittest.TestCase):
     def test_the_required_set_names_nothing_else(self):
         self.assertEqual(
             set(contract.REQUIRED_STATUS_CHECKS),
-            set(contract.EXPECTED_MAIN_JOBS) | set(contract.EXPECTED_CODEQL_JOBS),
+            set(contract.EXPECTED_GATE_JOBS) | set(contract.EXPECTED_CODEQL_JOBS),
         )
 
     def test_the_expected_main_jobs_are_the_workflow_jobs(self):
         # The publisher authorizes against this inventory, so a job renamed or
         # added in pr-gate.yml without updating the contract must fail HERE
         # rather than at the next release.
-        self.assertEqual(set(workflow("pr-gate.yml")["jobs"]), set(contract.EXPECTED_MAIN_JOBS))
+        self.assertEqual(set(workflow("pr-gate.yml")["jobs"]) - {"custody"},
+                         set(contract.EXPECTED_GATE_JOBS))
+        rendered = set(contract.EXPECTED_GATE_JOBS)
+        for job_id, job in workflow("desktop-matrix.yml")["jobs"].items():
+            matrix = job.get("strategy", {}).get("matrix", {})
+            self.assertLessEqual(len(matrix), 1, "desktop inventory needs a single-axis matrix")
+            if matrix:
+                axis, values = next(iter(matrix.items()))
+                self.assertIsInstance(values, list)
+                for value in values:
+                    name = job.get("name", f"{job_id} ({value})")
+                    name = name.replace("${{ matrix." + axis + " }}", value)
+                    rendered.add("custody / " + name)
+            else:
+                rendered.add("custody / " + job.get("name", job_id))
+        self.assertEqual(rendered, set(contract.EXPECTED_MAIN_JOBS))
+        self.assertEqual(set(contract.EXPECTED_MAIN_JOBS.values()), {"success"})
 
     def test_the_codeql_matrix_names_the_expected_jobs(self):
         matrix = workflow("codeql.yml")["jobs"]["analyze"]["strategy"]["matrix"]["include"]
@@ -1562,6 +1578,91 @@ class TheRequiredCheckSetMatchesTheWorkflows(unittest.TestCase):
             set(contract.EXPECTED_CODEQL_JOBS),
             set(contract.EXPECTED_CODEQL_MATRIX_JOBS) | jobs,
         )
+
+
+class TheDesktopCustodyIsARequiredGateJob(unittest.TestCase):
+    def test_custody_calls_this_commits_desktop_workflow_without_bypass(self):
+        gate = workflow("pr-gate.yml")
+        self.assertEqual(set(gate["on"]), {"pull_request", "push", "workflow_dispatch"})
+        self.assertEqual(gate["on"]["push"]["branches"], ["main"])
+        self.assertIn("custody", gate["jobs"], "custody must be declared")
+        self.assertEqual(gate["jobs"]["custody"], {
+            "name": "custody", "uses": "./.github/workflows/desktop-matrix.yml",
+            "permissions": {"contents": "read"},
+        }, "custody must call the exact-commit workflow without skips or extra authority")
+        desktop = workflow("desktop-matrix.yml")
+        self.assertEqual(set(desktop["on"]), {"workflow_call", "workflow_dispatch", "schedule"})
+        self.assertIsNone(desktop["on"]["workflow_call"], "custody has no bypass inputs or secrets")
+        self.assertEqual(desktop["permissions"], {})
+        self.assertNotEqual(gate["concurrency"]["group"], desktop["concurrency"]["group"])
+        self.assertEqual(set(desktop["jobs"]), {
+            "obsidian-linux", "obsidian-macos", "static-binary", "obsidian-windows", "plugin-tests",
+        })
+        for job in desktop["jobs"].values():
+            self.assertNotIn("if", job)
+            self.assertNotIn("continue-on-error", job)
+            self.assertEqual(job["permissions"], {"contents": "read"})
+
+    def test_each_native_entry_runs_and_keeps_its_custody_mode(self):
+        jobs = workflow("desktop-matrix.yml")["jobs"]
+        self.assertEqual(jobs["obsidian-linux"]["strategy"]["matrix"]["keyring"], ["none", "gnome-keyring"])
+        self.assertEqual(jobs["obsidian-linux"]["env"]["OBSYNC_E2E_KEYRING"], "${{ matrix.keyring }}")
+        for job_id, command, mode in (
+            ("obsidian-linux", 'scripts/ci/proxy-e2e.sh "obsync-desktop-e2e:${GITHUB_SHA}" caddy --then scripts/ci/obsidian-e2e.sh', None),
+            ("obsidian-macos", 'scripts/ci/obsidian-host.sh "${GITHUB_WORKSPACE}/target/release/obsyncd"', "macos"),
+            ("obsidian-windows", 'scripts/ci/obsidian-host.sh "${RUNNER_TEMP}/binary/obsyncd"', "windows"),
+        ):
+            with self.subTest(job=job_id):
+                job = jobs[job_id]
+                native = [step for step in job["steps"] if "scripts/ci/obsidian-" in step.get("run", "")]
+                self.assertEqual(len(native), 1, "exactly one native journey must execute")
+                step, = native
+                self.assertEqual(step["run"], command, "native command must not be neutralized")
+                self.assertNotIn("if", step)
+                self.assertNotIn("continue-on-error", step)
+                for key in ("OBSYNC_E2E_SECRET_STORE", "OBSYNC_E2E_KEYRING"):
+                    self.assertNotIn(key, step.get("env", {}))
+                if mode:
+                    self.assertEqual(job["env"]["OBSYNC_E2E_SECRET_STORE"], mode)
+
+    def test_actual_aggregate_shell_refuses_each_unsuccessful_dependency(self):
+        gate = workflow("pr-gate.yml")["jobs"]["gate"]
+        self.assertEqual(gate.get("if"), "always()")
+        step, = gate["steps"]
+        self.assertNotIn("if", step)
+        self.assertNotIn("continue-on-error", step)
+        variables = {}
+        for job in gate["needs"]:
+            expression = "${{ needs." + job + ".result }}"
+            names = [name for name, value in step["env"].items() if value == expression]
+            self.assertEqual(len(names), 1)
+            variables[job] = names[0]
+        self.assertIn("custody", variables, "aggregate must consume custody result")
+        env = {"PATH": "/usr/bin:/bin", **{name: "success" for name in variables.values()}}
+        def execute(values):
+            return subprocess.run(["/bin/bash", "-c", step["run"]], env=values,
+                                  capture_output=True, text=True, timeout=5).returncode
+        self.assertEqual(execute(env), 0, "all-success aggregate must pass")
+        for job, name in variables.items():
+            for result in ("failure", "cancelled", "skipped", ""):
+                with self.subTest(job=job, result=result):
+                    self.assertNotEqual(execute({**env, name: result}), 0,
+                                        "aggregate must refuse every non-success result")
+            missing = dict(env); del missing[name]
+            self.assertNotEqual(execute(missing), 0, "aggregate must refuse missing result")
+
+    def test_publisher_refuses_each_missing_or_unsuccessful_custody_leaf(self):
+        for job in contract.EXPECTED_CUSTODY_JOBS:
+            for result in (None, "failure", "cancelled", "skipped"):
+                with self.subTest(job=job, result=result):
+                    inventory = dict(contract.EXPECTED_MAIN_JOBS)
+                    if result is None:
+                        del inventory[job]
+                    else:
+                        inventory[job] = result
+                    with self.assertRaises(contract.ContractError):
+                        contract.validate_main_jobs_record(jobs_record(inventory),
+                            expected_run_id=42, expected_source_sha="a" * 40)
 
 
 class TheImageBuildIsARequiredGateJob(unittest.TestCase):

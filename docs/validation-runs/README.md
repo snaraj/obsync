@@ -23,17 +23,31 @@ system; it is not a device run, and only a record below is
 | iPhone | The runs below that name it; most recently [2026-10-08](2026-10-08-character-merge-117.md), seven sessions on the 1.1.7 candidate: paired, one defect shown to be Obsidian's, a co-typing defect found and fixed, and the background, relaunch, offline and leave journeys passed | Nothing: no CI job runs a phone |
 | iPad | Not yet recorded | Nothing |
 | Windows | [2026-09-27](2026-09-27-windows-11-vm.md): Windows 11 on ARM64 in a virtual machine, the 1.1.4 build; most recently [2026-09-30](2026-09-30-train-1.1.5.md), a 1.1.5 train build | `desktop-matrix.yml`, `obsidian-windows`: the same journeys, plus a case-only rename, the trash and a file another program holds open on NTFS; `plugin-tests` on Windows |
-| Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the same journeys with the official AppImage, the authority trusted in each instance's own NSS store, and a third instance without it refused |
+| Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the protected-keyring journey uses the official AppImage and trust scoped to each instance's NSS store; a third instance without CA trust refuses. Without a protected keyring, the separate leg requires visible refusal before credential writes or enrollment |
 | Android | [2026-09-27](2026-09-27-android-emulator.md): an Android 15 emulator, not a physical phone, the 1.1.4 build; most recently [2026-10-08](2026-10-08-character-merge-117.md), the same emulator typing at one place with a desktop on the 1.1.7 candidate | Nothing: no CI job runs a phone |
 
-`desktop-matrix.yml` runs nightly and on pull requests that change the plugin
-or its harnesses; a red leg there is a finding to read.
+`desktop-matrix.yml` runs on every PR and main push through the required
+aggregate gate, and separately nightly or by manual dispatch. A failed,
+cancelled or skipped leaf blocks the gate and publication.
 
 ## The runs
 
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-10-16 Android transport](2026-10-16-mobile-transport.md): 100 strict
+  installed-plugin/APK transfer cycles, retained transport failures and independent
+  evidence checks. Fresh full acceptance and physical-phone acceptance remain open.
+- [2026-10-15 unattended mobile](2026-10-15-unattended-mobile.md): ordinary
+  native pairing and two-way persisted bytes, full-journey attempts and retained
+  failures. Emulator results do not substitute for a physical phone.
+- [2026-10-12 security train](2026-10-12-security-train.md): expanded real
+  plugin/server regressions, diagnostic and chunk-refusal repairs, and a native
+  redirect-containment failure. Revocation design and final acceptance remain open.
+- [2026-10-10 E2EE regression](2026-10-10-e2ee-regression.md): real plugin/server
+  confidentiality and tamper regression, fail-closed observer mutation checks,
+  and two disposable native desktop instances. Explicitly incomplete whole-system
+  and physical-phone assurance.
 - [2026-10-08 character merge](2026-10-08-character-merge-117.md): two
   desktops, and a desktop with an Android emulator, typing at one place on the
   1.1.7 candidate. Six defects found and fixed in turn; the final build keeps

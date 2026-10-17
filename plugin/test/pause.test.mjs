@@ -82,7 +82,14 @@ test("announcing a hold is idempotent across repeated writes and an engine resta
 test("an unreadable pause position is not treated as a missing position", async () => {
   const r = await rig();
   r.transport.getFile = async () => { throw new ApiError(503, "unreachable", "try later"); };
-  await assert.rejects(publishPause(r.context, TARGET, NOTE, true), /try later/);
+  await assert.rejects(publishPause(r.context, TARGET, NOTE, true), (error) => {
+    assert.ok(error instanceof ApiError);
+    assert.equal(error.status, 503);
+    assert.equal(error.code, "unreachable");
+    assert.equal(error.detail, "try later", "the caller still receives the reason");
+    assert.equal(error.message, "503 unreachable", "the diagnostic carries no server free text");
+    return true;
+  });
   assert.equal(r.server.journal.filter((entry) => entry.bytes > 0).length, 0);
 });
 

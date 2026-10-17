@@ -12,7 +12,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createHash, createHmac } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { sandbox } from "./fake.mjs";
@@ -262,6 +262,81 @@ test("a 4xx is a decision: it is reported and never retried", async () => {
   );
   assert.equal(sent.length, 1);
   assert.equal(logged.some((line) => line.includes("decision=refused") && line.includes("code=missing_chunks")), true);
+});
+
+test("browser-forbidden, portable-policy and duplicate custom headers refuse before any send", async () => {
+  const names = ["Accept-Charset", "Accept-Encoding", "Access-Control-Request-Headers", "Access-Control-Request-Method", "Connection", "Cookie", "Cookie2", "Date", "DNT", "Expect", "Keep-Alive", "Origin", "Referer", "Set-Cookie", "TE", "Trailer", "Transfer-Encoding", "Upgrade", "Via", "Proxy-Authorization", "Sec-Fixture", "User-Agent", "X-HTTP-Method", "X-HTTP-Method-Override", "X-Method-Override", "*"];
+  for (const name of names) {
+    const r = harness([], { edgeHeaders: [{ name, value: "NEVER_PRINT_SYNTHETIC_CREDENTIAL" }] });
+    await assert.rejects(r.transport.account(), error => error.message.includes(name) && !error.message.includes("NEVER_PRINT"));
+    assert.equal(r.sent.length, 0, name);
+    assert.ok(r.logged.every(line => !line.includes("NEVER_PRINT")), name);
+  }
+  for (const name of ["X-Service-Id", "x-service-id"]) {
+    const r = harness([], { edgeHeaders: [{ name: "X-Service-Id", value: "first" }, { name, value: "NEVER_PRINT_DUPLICATE" }] });
+    await assert.rejects(r.transport.account(), error => error.message.includes(name) && !error.message.includes("NEVER_PRINT"));
+    assert.equal(r.sent.length, 0);
+  }
+});
+
+test("custom header preflight budgets refuse locally and permit their exact boundaries", async () => {
+  const list = (count, length = 6) => Array.from({ length: count }, (_, i) => ({ name: `X-${String(i).padStart(3, "0")}`.padEnd(length, "a"), value: "sentinel" }));
+  for (const edgeHeaders of [list(60), list(1, 129), list(32, 128)]) {
+    const r = harness([], { edgeHeaders });
+    await assert.rejects(r.transport.account(), /Too many custom request headers, or their names are too long/);
+    assert.equal(r.sent.length, 0);
+  }
+  // Count 59 reserves all five protocol fields; length 128 is inclusive.
+  // 28*125 + 4*124 = 3996 name bytes + 32 commas + 68 protocol bytes = 4096.
+  for (const edgeHeaders of [list(59), list(1, 128), list(32, 124).map((h, i) => ({ ...h, name: h.name + (i < 28 ? "a" : "") }))]) {
+    const r = harness([{ status: 200, text: "{}" }], { edgeHeaders });
+    await r.transport.account();
+    assert.equal(r.sent.length, 1);
+  }
+});
+
+test("server refusal codes cannot inject paths, key-shaped text or extra log lines", async () => {
+  for (const code of ["Notes/LOG PATH SENTINEL.md", "f".repeat(64), "bad_signature\nKEY SENTINEL", "unknown_sentinel"]) {
+    const text = JSON.stringify({ error: code, detail: "DETAIL SENTINEL" });
+    const r = harness([{ status: 403, text }]);
+    await assert.rejects(() => r.transport.account(), (error) => error.code === "not_obsync" && error.message === "403 not_obsync");
+    assert.equal(r.sent.length, 1, "a settled refusal is never retried");
+    assert.equal(r.logged.length, 1);
+    assert.ok(r.logged[0].includes("decision=refused code=not_obsync"), r.logged[0]);
+    assert.ok(!r.logged.some((line) => line.includes(code) || line.includes("DETAIL SENTINEL") || line.includes("\n")), r.logged.join(" | "));
+
+    const failing = harness([{ status: 500, text }], { maxAttempts: 1 });
+    await assert.rejects(() => failing.transport.account(), (error) => error.code === "unreachable" && !error.answered);
+    assert.ok(!failing.logged.some((line) => line.includes(code)), failing.logged.join(" | "));
+  }
+  const control = harness([{ status: 403, text: JSON.stringify({ error: "device_revoked" }) }]);
+  await assert.rejects(() => control.transport.account(), (error) => error.code === "device_revoked");
+  assert.ok(control.logged[0].includes("code=device_revoked"));
+});
+
+test("every server refusal code stays usable through the closed client vocabulary", async () => {
+  // The compatibility oracle is the server's declarations, not a copy of
+  // the client's list. A new server code needs a deliberate client entry.
+  const folder = new URL("../../crates/obsyncd/src/api/", import.meta.url);
+  const sources = readdirSync(folder).filter((name) => name.endsWith(".rs") && !name.endsWith("_test.rs"))
+    .map((name) => readFileSync(new URL(name, folder), "utf8")).join("\n");
+  const codes = new Set(Array.from(sources.matchAll(/(?:ApiError|Self)::new\(\s*\d+,\s*"([a-z0-9_]+)"/g), (match) => match[1]));
+  const storage = readFileSync(new URL("../../crates/obsyncd/src/storage/types.rs", import.meta.url), "utf8")
+    .split("pub fn code(&self)")[1].split("#[cfg(test)]")[0];
+  for (const match of storage.matchAll(/(?:=>|return)\s*"([a-z0-9_]+)"/g)) codes.add(match[1]);
+  // Scoped authority refusals carry a literal code through the StoreError
+  // variant, so its type-level match alone cannot enumerate these routes.
+  for (const file of ["mod.rs", "rotation.rs"]) {
+    const source = readFileSync(new URL(`../../crates/obsyncd/src/storage/${file}`, import.meta.url), "utf8");
+    for (const match of source.matchAll(/StoreError::AuthorityRefused\(\s*"([a-z0-9_]+)"\s*\)/g)) codes.add(match[1]);
+  }
+  assert.ok(codes.has("rotation_pending") && codes.has("resume_superseded"), "the variable-bearing authority codes must be inventoried");
+  assert.ok(codes.size >= 70, "the server vocabulary extraction must not be empty or partial");
+  for (const code of codes) {
+    const r = harness([{ status: 400, text: JSON.stringify({ error: code, detail: "REFUSAL SENTINEL" }) }]);
+    await assert.rejects(() => r.transport.account(), (error) => error.code === code && error.detail === "REFUSAL SENTINEL", code);
+    assert.ok(r.logged[0].includes(`code=${code} `), code);
+  }
 });
 
 test("an answer without obsync's shape is its own refusal: something in front of the server gave it (#155)", async () => {
@@ -644,15 +719,34 @@ const INTERNAL = [
   "timed",
   // And the signing handle a leave drops (#197), which reaches no route.
   "forgetDevice",
+  "withCredential",
 ];
 const READ_CONTROL = { check() {}, wait: (work) => work };
+const ROTATION_INTENT = { operation: "ab".repeat(16), previous_map: "ac".repeat(16), current_map: "ad".repeat(16),
+  target: null, recovery_verifier: "ae".repeat(32), seal_suite: 2 };
+const ROTATION_STATUS = { intent: ROTATION_INTENT, coordinator: DEVICE_ID, cutoff: 1, inventory_hash: SID,
+  inventory_heads: 1, catalog_pages: 0, catalog_heads: 0, catalog_last: null, committed: false, resume_id: null, catalog_hash: SID };
 
 /** Every route-emitting method, arguments that make it emit, and its verdict. */
 const CALLS = [
+  ["setupCapabilities2", [], true],
+  ["setup2", ["token", "account", INFO, { verifier: SID, proof: SID, generation: FILE_ID, recoverOnly: true }], false],
+  ["setupRotationResume", ["token", INFO, { verifier: ROTATION_INTENT.recovery_verifier, proof: SID, generation: ROTATION_INTENT.current_map,
+    intent: ROTATION_INTENT, resumeId: "ef".repeat(16) }], false],
+  ["recoverLegacyForUpgrade", ["token", INFO, { verifier: SID, proof: SID }], false],
+  ["rotationCapabilities2", [], true],
+  ["rotationStatus", [ROTATION_INTENT, DEVICE_ID], true],
+  ["prepareRotation", [ROTATION_INTENT, DEVICE_ID, "token"], false],
+  ["rotationInventory", [ROTATION_STATUS, 0], true],
+  ["rotationCatalog", [ROTATION_INTENT, DEVICE_ID, 0, [[FILE_ID, SID, FILE_ID, SID]]], false],
+  ["commitRotation", [ROTATION_STATUS, "token"], false],
   ["setup", ["token", "account", INFO], false],
   ["account", [], true],
   ["registerRecovery", ["11".repeat(32)], false],
   ["pairingCreate", [], false],
+  ["pairingCreate2", [], false],
+  ["pairingClaim2", [PAIRING_ID, "11".repeat(32), { ...INFO, claimant_pub: "test", vault: { seal_suite: 2, envelope: "AAAA" } }], false],
+  ["pairingApprove2", [PAIRING_ID, { seal_suite: 2, envelope: "AAAA" }], false],
   ["pairingClaim", [PAIRING_ID, "11".repeat(32), INFO], false],
   ["pairingStatus", [PAIRING_ID], true],
   ["pairingReveal", [PAIRING_ID, "BB".repeat(43)], true],
@@ -675,6 +769,7 @@ const CALLS = [
   ["changes", [7, 0], true],
   ["historyChanges", [7, READ_CONTROL], true, true],
   ["historyVersion", [FILE_ID, SID, READ_CONTROL], true, true],
+  ["historyFile", [FILE_ID, READ_CONTROL], true, true],
   ["dashboardLoginLink", [], false],
   ["pluginManifest", [], true],
 ];
@@ -687,10 +782,19 @@ function always(status, text) {
   const transport = new Transport({
     request: async (request) => {
       sent.push(request);
+      let body = text;
+      if (status === 200) {
+        const url = new URL(request.url);
+        if (url.pathname === "/v1/setup" && request.method === "GET") body = JSON.stringify({ recover_only: true, seal_suite: 2 });
+        if (url.pathname === "/v1/rotation/capabilities") body = JSON.stringify({ rotation_protocol: 1, seal_suite: 2 });
+        else if (url.pathname.includes("/rotation/")) body = JSON.stringify(url.pathname.endsWith("/inventory")
+          ? { operation: ROTATION_INTENT.operation, cutoff: 1, inventory_hash: SID, inventory_heads: 1, page: 0, heads: [[FILE_ID, SID]] }
+          : ROTATION_STATUS);
+      }
       return {
         status,
         headers: { "content-type": 'multipart/mixed; boundary="b"' },
-        text,
+        text: body,
         arrayBuffer: part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength),
       };
     },
@@ -698,7 +802,9 @@ function always(status, text) {
     device: () => ({ id: DEVICE_ID, secret: Uint8Array.from(Buffer.from(DEVICE_SECRET_HEX, "hex")) }),
     edgeHeaders: () => [],
     now: () => 1757200000000,
-    sleep: async () => undefined,
+    // This route test has a fixed clock: deadlines never fire, while retry
+    // backoffs settle. Timing behavior has its own wall-clock tests below.
+    sleep: (ms) => ms === 10000 ? new Promise(() => {}) : Promise.resolve(),
     maxAttempts: 2,
   });
   return { transport, sent };

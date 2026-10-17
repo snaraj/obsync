@@ -5,6 +5,30 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.8 - Unreleased
+
+### Security
+
+- Encrypt new sync content with context-bound AES-SIV and reject mixed-format
+  or downgraded live messages. Existing vaults require the explicit encryption
+  upgrade before using the new format.
+- Offer access-only device removal or a fresh vault key with complete
+  re-encryption, a new recovery backup and explicit re-pairing of retained
+  devices. Old keys cannot decrypt new-generation content after that transition.
+- Require explicit recovery intent for existing accounts and preserve staged
+  credentials until authenticated account and encrypted-map readback succeed.
+- Refuse redirects before forwarding sync credentials, reject damaged content
+  before applying it, and require matching visible pairing codes before approval.
+- Run real plugin/server confidentiality and hostile-server regressions in the
+  required gate, with planted leaks that prove the scanner can refuse exposure.
+
+### Changed
+
+- Update the Node build runtime/image to 26.11.1 and the Rust builder image
+  to 1.99.0 while retaining the independent Rust 1.98.0 compiler pin.
+- Update CodeQL actions to 4.38.3, setup-node to 7.1.0, upload-artifact to
+  7.0.2 and download-artifact to 8.0.2, with immutable action/image pins.
+
 ## 1.1.7 - Unreleased
 
 ### Fixed

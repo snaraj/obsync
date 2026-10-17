@@ -1,11 +1,10 @@
 /**
  * The wire client for `docs/protocol.md` v1.
  *
- * Every call goes through Obsidian's `requestUrl` (injected as `request`),
- * which is the only HTTP surface available on all platforms: mobile
- * WebViews cannot `fetch` a cross-origin host, and `requestUrl` also frees
- * the request from CORS. `throw: false` is set on every call so a 4xx is
- * data, not an exception, and every refusal can be logged with its code.
+ * Every call uses browser fetch (injected as `request`) with redirect refusal
+ * selected before sending and no platform fallback. Cross-origin servers and
+ * authenticating edges must permit credential-free CORS preflight. A 4xx is
+ * returned as data so every refusal can be logged with its code.
  *
  * SIGNING IS NOT OPTIONAL. Every attempt signs whenever the endpoint is a
  * device endpoint, and the endpoint decides, not a setting (AGENTS.md requirement
@@ -59,6 +58,9 @@ import { CHUNK_CIPHERTEXT_MAX } from "./chunker";
 import { EdgeHeader } from "./state";
 import { Policy } from "./policy";
 import { errorText } from "./vaultPath";
+import type { ManifestSeal, PairingSeal } from "./sealWire";
+import { checkedCatalog, readRotationInventory, readRotationIntent, readRotationStatus, type CatalogEntry, type RotationInventory,
+  type RotationStatus, type RotationWireIntent } from "./rotationWire";
 
 /** Device-local policy uses camelCase; the existing v1 API uses snake_case. */
 function policyBody(policy: Policy): { per_file_max_bytes: number; total_budget_bytes: number } {
@@ -82,7 +84,7 @@ export interface HttpResponse {
 
 export type RequestFn = (request: HttpRequest) => Promise<HttpResponse>;
 
-/** A manual read can be cancelled logically; requestUrl itself cannot abort. */
+/** A manual read can be cancelled logically; this adapter does not abort the send. */
 export interface ReadControl {
   check(): void;
   wait<T>(work: Promise<T>): Promise<T>;
@@ -129,7 +131,9 @@ export class ApiError extends Error {
     /** The refusal's other body fields, such as the `creator_pub` a pairing wait carries. */
     readonly fields: Readonly<Record<string, unknown>> = {},
   ) {
-    super(`${status} ${code}: ${detail}`);
+    // Generic downstream diagnostics log Error.message. Free-text server
+    // detail remains available to explicit consumers, never to that sink.
+    super(`${status} ${code}`);
     this.name = "ApiError";
   }
 }
@@ -218,6 +222,13 @@ const SID = "[0-9a-f]{64}";
  * table nobody reads.
  */
 export const ROUTES: readonly Route[] = [
+  { method: "GET", path: /^\/v1\/setup$/, idempotent: true },
+  { method: "GET", path: /^\/v1\/rotation\/capabilities$/, idempotent: true },
+  { method: "GET", path: new RegExp(`^/v1/rotation/${ID}$`), idempotent: true },
+  { method: "GET", path: new RegExp(`^/v1/rotation/${ID}/inventory$`), idempotent: true },
+  { method: "POST", path: /^\/v1\/rotation\/prepare$/, idempotent: false },
+  { method: "POST", path: new RegExp(`^/v1/rotation/${ID}/catalog$`), idempotent: false },
+  { method: "POST", path: new RegExp(`^/v1/rotation/${ID}/commit$`), idempotent: false },
   { method: "GET", path: /^\/v1\/account$/, idempotent: true },
   { method: "GET", path: /^\/v1\/devices$/, idempotent: true },
   { method: "GET", path: /^\/v1\/changes$/, idempotent: true },
@@ -280,7 +291,7 @@ export interface TransportOptions {
 }
 
 /**
- * HOW LONG ONE ATTEMPT MAY GO UNANSWERED (#195). `requestUrl` has no timeout
+ * HOW LONG ONE ATTEMPT MAY GO UNANSWERED (#195). The adapter has no deadline
  * of its own, and a connection that died under a sleeping laptop or a network
  * change can leave an attempt waiting far longer than any answer takes. Past
  * its deadline an attempt counts as unanswered: a repeatable route signs
@@ -325,8 +336,8 @@ export class SessionEnded extends Error {
  * it throws `unreachable` like any other call that ran out.
  *
  * `signal` ends the call: a retry asleep in its backoff rejects at once, and
- * an attempt in flight is abandoned -- `requestUrl` cannot be aborted, so its
- * late answer is discarded -- with `ApiError(0, "cancelled")`. Either way one
+ * an attempt in flight is abandoned -- the adapter preserves logical
+ * cancellation, so its late answer is discarded -- with `ApiError(0, "cancelled")`. Either way one
  * line is logged. A route that must not be repeated takes no patience: its one
  * attempt is the whole call already.
  */
@@ -345,7 +356,7 @@ export interface Patience {
 export const INTERACTIVE_MS = 10000;
 export const INTERACTIVE_ATTEMPTS = 2;
 
-export interface ChangeRecord {
+interface ChangeFields {
   seq: number;
   file_id: string;
   /**
@@ -358,21 +369,20 @@ export interface ChangeRecord {
   parents: string[];
   sids: string[];
   bytes: number;
-  manifest_ct: string;
-  manifest_nonce: string;
   device_id: string;
   ts: number;
   deleted: boolean;
   heads: string[];
   conflicted: boolean;
 }
+export type ChangeRecord = ChangeFields & ManifestSeal;
 
 /** One version as `GET /v1/files/{id}` renders it: no file id, no feed seq,
  * no domain, no head or conflict flags. Those live on the file object around
  * it, which is why a version cannot be spread into a `ChangeRecord` without
  * adding them -- the domain above all, because the pull path binds the
  * manifest to it. */
-export type VersionRecord = Omit<ChangeRecord, "seq" | "file_id" | "domain_id" | "heads" | "conflicted">;
+export type VersionRecord = Omit<ChangeFields, "seq" | "file_id" | "domain_id" | "heads" | "conflicted"> & ManifestSeal;
 
 export interface FileRecord {
   file_id: string;
@@ -394,7 +404,7 @@ export interface ChangesPage {
   changes: ChangeRecord[];
 }
 
-export interface VersionPost {
+interface VersionPostFields {
   version_id: string;
   parents: string[];
   sids: string[];
@@ -407,8 +417,6 @@ export interface VersionPost {
    * later version that names a different one.
    */
   domain_id: string;
-  manifest_ct: string;
-  manifest_nonce: string;
   deleted: boolean;
   /**
    * This device's promise to store the `version_id` the answer names, so the
@@ -422,6 +430,7 @@ export interface VersionPost {
    */
   accept_existing: boolean;
 }
+export type VersionPost = VersionPostFields & ManifestSeal;
 
 /**
  * What the plugin reads of a version acknowledgement. The response also
@@ -485,7 +494,7 @@ export interface PairingCreated {
 }
 
 export interface PairingClaimant {
-  vault?: { envelope: string; nonce: string };
+  vault?: PairingSeal;
   /** The claimant's ephemeral P-256 public key (v2 pairing), raw base64url. */
   claimant_pub?: string;
   device_id: string;
@@ -504,12 +513,14 @@ export interface PairingCredential {
   device_secret: string;
 }
 
-export interface PairingEnvelope {
-  envelope: string;
-  nonce: string;
+export interface Enrollment2 extends PairingCredential { account_id: string; recovered?: boolean }
+export interface DeviceProfile { name: string; platform: string; app_version: string }
+export type PairingSeal2 = Extract<PairingSeal, { seal_suite: 2 }>;
+
+export type PairingEnvelope = PairingSeal & {
   /** The creator's ephemeral P-256 public key (v2 pairing), raw base64url. */
   creator_pub?: string;
-}
+};
 
 /** Only the field the plugin reads; the served hashes are the Install page's. */
 export interface PluginManifest {
@@ -578,8 +589,8 @@ type CallOptions = Patience & {
 /**
  * THE LARGEST ANSWER A ROUTE MAY BRING (#202, security item 10).
  *
- * `requestUrl` hands this client a whole answer or nothing: no cap here can
- * stop a broken or hostile terminator making the platform read a body. What a
+ * The adapter buffers each answer before these checks: no cap here stops
+ * a broken or hostile terminator making the platform read a body. What a
  * cap does stop is this client parsing, decoding, copying and keeping it --
  * the part that is this code's -- and it turns such an answer into a named
  * refusal instead of a stall. Each is at least the largest answer the route
@@ -651,8 +662,25 @@ type Attempt =
   | { kind: "settled"; response: HttpResponse }
   | { kind: "unsettled"; status: number; reason: string; answered: boolean };
 
-/** An obsync refusal code (`StoreError::code`): what makes a 5xx the server's own answer. */
-const OBSYNC_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+/** ApiError and StoreError::code's wire vocabulary. Server text is never a log code. */
+const OBSYNC_CODES: ReadonlySet<string> = new Set([
+  "already_approved", "already_claimed", "already_revealed", "already_set_up", "bad_json", "bad_login_token",
+  "bad_recovery_proof", "bad_request", "bad_setup_token", "bad_signature", "batch_too_large", "body_incomplete",
+  "body_too_large", "corrupt", "csrf_failed", "device_not_pending", "device_not_revoked", "device_pending",
+  "device_revoked", "domain_mismatch", "edge_required", "envelope_consumed", "io_error", "journal_faulted",
+  "journal_full", "journal_locked", "journal_unverified", "last_device", "length_mismatch", "length_required",
+  "missing_auth", "missing_chunks", "no_randomness", "no_session", "nonce_cache_full", "nonce_log_faulted",
+  "nonce_log_unavailable", "nonce_share_full", "not_approved", "not_claimant", "not_claimed", "not_creator",
+  "not_found", "not_ready", "not_set_up", "own_device", "pairing_expired", "plugin_unavailable", "preauth_budget_full",
+  "quota_exceeded", "range_not_satisfiable", "recovery_mismatch", "recovery_too_new", "recovery_unavailable",
+  "replayed_nonce", "route_not_found", "seq_ahead", "sid_mismatch", "slow_body", "stale_timestamp", "storage_full", "too_many_heads",
+  "unknown_chunk", "unknown_device", "unknown_domain", "unknown_file", "unknown_pairing", "unknown_version",
+  "unsafe_posture", "version_id_mismatch", "volume_full",
+  "recover_only_required", "rotation_pending", "suite_required", "migration_required", "generation_mismatch",
+  "recovery_verifier_required", "rotation_conflict", "rotation_committed", "floor_activation_pending",
+  "bad_inventory_page", "bad_catalog_page", "catalog_conflict", "rotation_incomplete", "bad_resume_id",
+  "resume_superseded", "grant_changed", "not_revealed",
+]);
 
 /** The attempts and the wall clock one call may spend (`Patience`). */
 interface Budget {
@@ -680,6 +708,30 @@ export const HEADER_VALUE = /^[\t\x20-\x7e]*$/;
 export function ownHeader(name: string): boolean {
   const lower = name.toLowerCase();
   return lower === "content-type" || lower === "content-length" || lower === "host" || lower.startsWith("x-obsync-");
+}
+
+/** Browser-controlled headers cannot carry configured edge credentials. */
+const BROWSER_HEADERS: ReadonlySet<string> = new Set([
+  "accept-charset", "accept-encoding", "access-control-request-headers", "access-control-request-method",
+  "connection", "content-length", "cookie", "cookie2", "date", "dnt", "expect", "host", "keep-alive",
+  "origin", "referer", "set-cookie", "te", "trailer", "transfer-encoding", "upgrade", "via",
+  // Portability policy: method overrides depend on their values in Fetch;
+  // User-Agent is no longer standard-forbidden but browsers may replace it.
+  "x-http-method", "x-http-method-override", "x-method-override", "user-agent",
+  // An ACAH response containing this token would grant a wildcard.
+  "*",
+]);
+
+export function browserHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return BROWSER_HEADERS.has(lower) || lower.startsWith("proxy-") || lower.startsWith("sec-");
+}
+
+/** Same bounded preflight names as the server; reserve all five protocol names. */
+export function customHeaderBudget(names: readonly string[]): boolean {
+  // content-type,x-obsync-device,x-obsync-ts,x-obsync-nonce,x-obsync-sig = 68 bytes.
+  return names.length + 5 <= 64 && names.every((name) => name.length <= 128)
+    && 68 + names.length + names.reduce((total, name) => total + name.length, 0) <= 4096;
 }
 
 export class Transport {
@@ -731,6 +783,23 @@ export class Transport {
     this.maxAttempts = options.maxAttempts ?? 8;
   }
 
+  /** A received credential can prove itself before durable local adoption. */
+  withCredential(credential: PairingCredential, assertCurrent: () => void): Transport {
+    if (typeof credential.device_id !== "string" || typeof credential.device_secret !== "string" ||
+        !/^[0-9a-f]{32}$/.test(credential.device_id) || !/^[0-9a-f]{64}$/.test(credential.device_secret)) {
+      throw new Error("enrollment credential refused");
+    }
+    const id = credential.device_id, secret = unhex(credential.device_secret);
+    const serverUrl = this.options.serverUrl();
+    const headers = this.options.edgeHeaders().map((header) => ({ ...header }));
+    return new Transport({ ...this.options,
+      serverUrl: () => { assertCurrent(); return serverUrl; },
+      device: () => { assertCurrent(); return { id, secret }; },
+      edgeHeaders: () => headers.map((header) => ({ ...header })),
+      reachable: undefined,
+    });
+  }
+
   /** This device gave up its credential: the handle it signed with goes too. */
   forgetDevice(): void {
     this.signing = null;
@@ -771,17 +840,25 @@ export class Transport {
       headers["X-Obsync-Device"] = device.id;
       digest = options.digest ?? await bodyHash(body);
     }
-    for (const header of this.options.edgeHeaders()) {
+    const edgeHeaders = this.options.edgeHeaders();
+    const customNames = new Set<string>();
+    for (const header of edgeHeaders) {
       // AN EDGE HEADER NEVER REPLACES ONE OBSYNC SETS, and one the platform
       // would drop without a word -- Obsidian's desktop request layer did,
       // for a name pasted with its `-H` -- is refused by name before anything
       // is sent (issue #183). Settings refuses both at entry; this holds for
       // a list saved before it did.
-      if (ownHeader(header.name) || !HEADER_NAME.test(header.name) || !HEADER_VALUE.test(header.value)) {
+      if (ownHeader(header.name) || browserHeader(header.name) || customNames.has(header.name.toLowerCase())
+          || !HEADER_NAME.test(header.name) || !HEADER_VALUE.test(header.value)) {
         this.log(`http ${target} decision=refused reason=edge_header`);
         throw new Error(`The custom request header "${header.name}" cannot be sent as written, so obsync sent nothing. Correct it in obsync's settings, under Custom request headers.`);
       }
+      customNames.add(header.name.toLowerCase());
       headers[header.name] = header.value;
+    }
+    if (!customHeaderBudget(edgeHeaders.map((header) => header.name))) {
+      this.log(`http ${target} decision=refused reason=edge_header_budget`);
+      throw new Error("Too many custom request headers, or their names are too long, so obsync sent nothing. Remove unused headers in obsync’s settings, under Custom request headers.");
     }
     const deadlineMs = attemptMs(target, (options.binary?.length ?? 0) + (options.bulk === true ? options.cap ?? 0 : 0));
     return { headers, body, bodyText, digest, device, deadlineMs };
@@ -839,7 +916,7 @@ export class Transport {
       const code = response.status < 500 || response.status === 507 ? null : parseError(response.text).code;
       outcome = code === null || RESTART_CODES.has(code)
         ? { kind: "settled", response }
-        : code !== NOT_OBSYNC && OBSYNC_CODE.test(code)
+        : code !== NOT_OBSYNC
           ? { kind: "unsettled", status: response.status, reason: `status=${response.status} code=${code}`, answered: true }
           : { kind: "unsettled", status: response.status, reason: `status=${response.status}`, answered: false };
     } catch (error) {
@@ -1023,7 +1100,7 @@ export class Transport {
   /**
    * Long polls sent and not yet over (#297): the one the feed waits on, every
    * one a caller stopped waiting for, and every one past its deadline until
-   * the platform lets go of it. `requestUrl` cannot withdraw a request, so
+   * the platform lets go of it. The adapter does not withdraw requests, so
    * each keeps its connection to the end of the server's wait, and one sent
    * again for the same url waits behind it on a desktop (#288). An answered
    * poll counts until its attempt has reported it (`reachable`), so a wake
@@ -1155,6 +1232,10 @@ export class Transport {
     return decode<unknown>(await this.readOnce(`/v1/files/${fileId}/versions/${versionId}`, control, HISTORY_RESPONSE_BYTES));
   }
 
+  async historyFile(fileId: string, control: ReadControl): Promise<unknown> {
+    return decode<unknown>(await this.readOnce(`/v1/files/${fileId}`, control, FILE_ANSWER_MAX));
+  }
+
   /** The same, for a route that must not be repeated. */
   private async once<T>(method: string, target: string, options: CallOptions): Promise<Sent<T>> {
     const sent = await this.send(method, target, options);
@@ -1162,6 +1243,75 @@ export class Transport {
   }
 
   // --- setup and account -------------------------------------------------
+
+  async rotationCapabilities2(): Promise<void> {
+    const value = await this.json<unknown>("GET", "/v1/rotation/capabilities", { auth: "device", interactive: true });
+    if (value === null || typeof value !== "object" || Array.isArray(value) ||
+        !Object.hasOwn(value, "rotation_protocol") || !Object.hasOwn(value, "seal_suite") ||
+        (value as Record<string, unknown>)["rotation_protocol"] !== 1 || (value as Record<string, unknown>)["seal_suite"] !== 2) {
+      throw new Error("This server does not support the required encryption upgrade. Update it before rotating the vault key.");
+    }
+  }
+
+  async rotationStatus(intent: RotationWireIntent, coordinator: string): Promise<RotationStatus> {
+    return readRotationStatus(await this.json("GET", `/v1/rotation/${intent.operation}`, { auth: "device", interactive: true }), intent, coordinator);
+  }
+
+  async prepareRotation(intent: RotationWireIntent, coordinator: string, token: string): Promise<Sent<RotationStatus>> {
+    const sent = await this.once("POST", "/v1/rotation/prepare", { auth: "device", json: { setup_token: token, intent } });
+    return sent.outcome === "lost" ? sent : { outcome: "ok", value: readRotationStatus(sent.value, intent, coordinator) };
+  }
+
+  async rotationInventory(status: RotationStatus, page: number): Promise<RotationInventory> {
+    if (!Number.isSafeInteger(page) || page < 0) throw new Error("rotation page refused");
+    const value = await this.json("GET", `/v1/rotation/${status.intent.operation}/inventory?page=${page}`, { auth: "device", interactive: true });
+    return readRotationInventory(value, status, page);
+  }
+
+  async rotationCatalog(intent: RotationWireIntent, coordinator: string, page: number, entries: readonly CatalogEntry[]): Promise<Sent<RotationStatus>> {
+    if (!Number.isSafeInteger(page) || page < 0) throw new Error("rotation page refused");
+    const sent = await this.once("POST", `/v1/rotation/${intent.operation}/catalog`, { auth: "device", json: { page, entries: checkedCatalog(entries) } });
+    return sent.outcome === "lost" ? sent : { outcome: "ok", value: readRotationStatus(sent.value, intent, coordinator) };
+  }
+
+  async commitRotation(status: RotationStatus, token: string): Promise<Sent<RotationStatus>> {
+    const sent = await this.once("POST", `/v1/rotation/${status.intent.operation}/commit`, { auth: "device", json: {
+      setup_token: token, intent: status.intent, cutoff: status.cutoff, inventory_hash: status.inventory_hash,
+      catalog_pages: status.catalog_pages, catalog_hash: status.catalog_hash,
+    } });
+    return sent.outcome === "lost" ? sent : { outcome: "ok", value: readRotationStatus(sent.value, status.intent, status.coordinator) };
+  }
+
+  async setupCapabilities2(): Promise<void> {
+    const value = await this.json<unknown>("GET", "/v1/setup", { auth: "none", interactive: true });
+    if (value === null || typeof value !== "object" || Array.isArray(value) ||
+        !Object.hasOwn(value, "recover_only") || !Object.hasOwn(value, "seal_suite") ||
+        (value as Record<string, unknown>)["recover_only"] !== true ||
+        (value as Record<string, unknown>)["seal_suite"] !== 2) {
+      throw new Error("This server does not support the required encrypted vault format. Update it before setup or recovery.");
+    }
+  }
+
+  setupRotationResume(setupToken: string, device: DeviceProfile,
+    recovery: { verifier: string; proof: string; generation: string; intent: RotationWireIntent; resumeId: string }): Promise<Sent<Enrollment2>> {
+    const intent = readRotationIntent(recovery.intent);
+    if (!/^[0-9a-f]{32}$/.test(recovery.resumeId) || !/^[0-9a-f]{64}$/.test(recovery.proof) ||
+      recovery.generation !== intent.current_map || recovery.verifier !== intent.recovery_verifier) throw new Error("rotation recovery request refused");
+    return this.once("POST", "/v1/setup", { auth: "none", json: {
+      setup_token: setupToken, account_name: device.name, device, seal_suite: 2,
+      generation: recovery.generation, recover_only: true, recovery_verifier: recovery.verifier,
+      recovery_proof: recovery.proof, rotation: { ...intent, resume_id: recovery.resumeId },
+    } });
+  }
+
+  setup2(setupToken: string, accountName: string, device: DeviceProfile,
+    recovery: { verifier: string; proof: string; generation: string; recoverOnly: boolean }): Promise<Sent<Enrollment2>> {
+    return this.once("POST", "/v1/setup", { auth: "none", json: {
+      setup_token: setupToken, account_name: accountName, device, seal_suite: 2,
+      generation: recovery.generation, recover_only: recovery.recoverOnly,
+      recovery_verifier: recovery.verifier, recovery_proof: recovery.proof,
+    } });
+  }
 
   /**
    * First boot: the one-time setup token creates the account AND enrols this
@@ -1189,15 +1339,39 @@ export class Transport {
     });
   }
 
+  /** One explicit old-vault recovery for immediate upgrade, never first setup. */
+  recoverLegacyForUpgrade(setupToken: string, device: DeviceProfile,
+    recovery: { verifier: string; proof: string }): Promise<Sent<Enrollment2>> {
+    return this.once("POST", "/v1/setup", { auth: "none", json: {
+      setup_token: setupToken, account_name: device.name, device, recover_only: true,
+      recovery_verifier: recovery.verifier, recovery_proof: recovery.proof,
+    } });
+  }
+
   registerRecovery(verifier: string): Promise<Sent<void>> {
     return this.once("POST", "/v1/account/recovery", { auth: "device", json: { recovery_verifier: verifier } });
   }
 
-  account(patience: Patience = {}): Promise<{ account_id: string; name: string; used_bytes: number; quota_bytes: number; device_count: number }> {
+  account(patience: Patience = {}): Promise<{ account_id: string; name: string; used_bytes: number; quota_bytes: number; device_count: number; seal_suite?: 2; generation?: string }> {
     return this.json("GET", "/v1/account", { auth: "device", ...patience });
   }
 
   // --- pairing -----------------------------------------------------------
+
+  pairingCreate2(): Promise<Sent<PairingCreated>> {
+    return this.once("POST", "/v1/pairing", { auth: "device", json: { seal_suite: 2 } });
+  }
+
+  pairingClaim2(pairingId: string, enrollToken: string,
+    info: DeviceProfile & { vault: PairingSeal2; claimant_pub: string }): Promise<Sent<PairingCredential>> {
+    return this.once("POST", `/v1/pairing/${pairingId}/claim`, { auth: "none",
+      json: { ...info, enroll_token: enrollToken, seal_suite: 2 } });
+  }
+
+  pairingApprove2(pairingId: string, sealed: PairingSeal2): Promise<Sent<void>> {
+    return this.once("POST", `/v1/pairing/${pairingId}/approve`, { auth: "device",
+      json: { envelope: sealed.envelope, seal_suite: 2 } });
+  }
 
   pairingCreate(): Promise<Sent<PairingCreated>> {
     return this.once("POST", "/v1/pairing", { auth: "device", json: {} });
@@ -1206,7 +1380,7 @@ export class Transport {
   pairingClaim(
     pairingId: string,
     enrollToken: string,
-    info: { name: string; platform: string; app_version: string; vault?: { envelope: string; nonce: string }; claimant_pub?: string },
+    info: { name: string; platform: string; app_version: string; vault?: PairingSeal; claimant_pub?: string },
   ): Promise<Sent<PairingCredential>> {
     return this.once("POST", `/v1/pairing/${pairingId}/claim`, {
       auth: "none",
@@ -1609,7 +1783,7 @@ function decode<T>(response: HttpResponse): T {
 function parseError(text: string): { code: string; detail: string; fields: Record<string, unknown> } {
   try {
     const parsed: unknown = JSON.parse(text);
-    if (typeof parsed === "object" && parsed !== null && typeof (parsed as Record<string, unknown>)["error"] === "string") {
+    if (typeof parsed === "object" && parsed !== null && OBSYNC_CODES.has((parsed as Record<string, unknown>)["error"] as string)) {
       const { error, detail, ...fields } = parsed as Record<string, unknown>;
       return { code: error as string, detail: typeof detail === "string" ? detail : "", fields };
     }

@@ -51,6 +51,7 @@ function session(device, server, timers) {
 const ENDED = /^http (GET|POST|PUT) \S+ decision=ended reason=session_inactive$/;
 
 const CANCELLED = /^http (GET|POST|PUT) \S+ decision=cancelled phase=\w+ attempts=\d+ duration_ms=\d+$/;
+const STOPPED_PUSH = "push path_class=file decision=cancelled reason=engine_stopped";
 
 test("a reload while requests wait out their backoff: each old request ends at its next attempt, one line, and the old session says nothing else", async (t) => {
   const { server, timers, a, b } = await pair(t, "immediate", { isMobileB: false });
@@ -61,7 +62,11 @@ test("a reload while requests wait out their backoff: each old request ends at i
   a.host.makeFolder("Empty");
   await old.engine.start();
   await b.engine.start();
-  await timers.run(STEP_MS, () => settled(b, "Notes/One.md") && b.state.folderByPath("Empty") !== undefined);
+  await timers.run(STEP_MS, () => settled(a, "Notes/One.md") && settled(b, "Notes/One.md") &&
+    a.state.folderByPath("Empty")?.versionId && b.state.folderByPath("Empty")?.versionId &&
+    a.state.data.lastSeq === server.seq && b.state.data.lastSeq === server.seq);
+  await a.state.settled();
+  await new Promise(setImmediate); // Finish the setup save's receipt, not just its metadata write.
 
   // The server cannot be reached: an edit, a folder's removal and a new
   // folder's record each wait in their backoff.
@@ -69,12 +74,19 @@ test("a reload while requests wait out their backoff: each old request ends at i
   a.host.write("Notes/One.md", "ONE SENTINEL\nedited while the server is down\n", 2000);
   a.host.removeFolder("Empty");
   a.host.makeFolder("Made while down");
-  await timers.run(STEP_MS, () => old.transport.sleepers.size >= 3);
+  // A pending chunk makes its engine-level cancellation receipt observable.
+  await timers.run(STEP_MS, () => old.transport.sleepers.size >= 3 &&
+    a.host.logs.some((line) => /^http PUT \S+ .*decision=retry attempt=1 /.test(line)));
   assert.ok(a.host.logs.some((line) => /decision=retry attempt=1 /.test(line)), "nothing was retrying, so this proves nothing");
 
   // The reload: the plugin's generation moves on, so its request function
   // refuses, and the old engine stops as `onunload` stops it. What the stop's
   // own signal ends says so at the stop, one line each.
+  // Metadata dispatched before reload still belongs to the current session.
+  // Drain it and its receipt before measuring only inactive-session work.
+  await a.state.settled();
+  await new Promise(setImmediate);
+  assert.equal(a.state.saving, false, "a pre-reload metadata write is still in flight");
   old.current = false;
   old.engine.stop();
   const mark = a.host.logs.length;
@@ -89,7 +101,9 @@ test("a reload while requests wait out their backoff: each old request ends at i
   // records since #274) is the stop, not a request: once at most.
   const saved = after.filter((line) => /^state decision=saved reason=stop /.test(line));
   assert.ok(saved.length <= 1, `the stop saved more than once: ${told}`);
-  for (const line of after) assert.ok(ENDED.test(line) || CANCELLED.test(line) || saved.includes(line), told);
+  // The engine reports its interrupted push once, alongside the HTTP receipt.
+  assert.equal(after.filter((line) => line === STOPPED_PUSH).length, 1, `the pending push did not cancel once: ${told}`);
+  for (const line of after) assert.ok(ENDED.test(line) || CANCELLED.test(line) || line === STOPPED_PUSH || saved.includes(line), told);
   const targets = after.map((line) => line.split(" ").slice(0, 3).join(" "));
   assert.equal(new Set(targets).size, targets.length, `a request said it ended twice: ${told}`);
   const ended = after.filter((line) => ENDED.test(line));

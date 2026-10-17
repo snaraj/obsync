@@ -10,6 +10,7 @@ export class HistoryModal extends Modal {
   private closed = false;
   private filter = "";
   private newestFirst = true;
+  private previous = false;
   private rows: HistoryEntry[] = [];
   private message = "";
   private progress = "";
@@ -28,7 +29,7 @@ export class HistoryModal extends Modal {
     this.rows = [];
     this.progress = "";
     try {
-      this.browser = this.plugin.openHistory(this.newestFirst);
+      this.browser = this.plugin.openHistory(this.newestFirst, this.previous);
       this.message = this.filter === ""
         ? "Select Load next to browse retained versions."
         : "Select Search to step through retained versions until the first match.";
@@ -44,11 +45,14 @@ export class HistoryModal extends Modal {
     const el = this.contentEl;
     el.empty();
     el.createEl("p", { text: "Restore a retained version as a new sibling file. Current files and their history stay unchanged. Deleted notes appear through their retained content versions." });
-    el.createEl("p", { text: `${this.newestFirst ? "Newest first" : "Oldest first"}, within this device's selected folders. Each step checks at most ${HISTORY_SCAN_RECORDS} versions for up to 5 seconds, plus the current request. With a filename filter, steps run by themselves until the first match or ${Math.round(HISTORY_SEARCH_MS / 1000)} seconds; Close stops at the end of the current step.` });
+    el.createEl("p", { text: `${this.previous ? "Previous generation: retained migrated heads and their ancestors" : this.newestFirst ? "Newest first" : "Oldest first"}, within this device's selected folders. Each step checks at most ${HISTORY_SCAN_RECORDS} versions for up to 5 seconds, plus the current request. With a filename filter, steps run by themselves until the first match or ${Math.round(HISTORY_SEARCH_MS / 1000)} seconds; Close stops at the end of the current step.` });
+    if (this.plugin.state.custody2()?.history) new Setting(el).setName("Previous generation")
+      .setDesc("Uses the separately retained old key. Availability depends on retained migration records and old history; this never changes the live sync key.")
+      .addToggle(toggle => toggle.setValue(this.previous).setDisabled(this.busy).onChange(value => { this.previous = value; this.restart(); }));
     new Setting(el).setName("Filename contains").addText((text) => text.setValue(this.filter).setDisabled(this.busy).onChange((value) => { this.filter = value.slice(0, 512); }))
       .addButton((button) => button.setButtonText("Restart search").setDisabled(this.busy).onClick(() => this.restart()));
     new Setting(el).setName("Oldest first").setDesc("Off by default: a note you have just noticed missing is almost always recent.")
-      .addToggle((toggle) => toggle.setValue(!this.newestFirst).setDisabled(this.busy).onChange((value) => { this.newestFirst = !value; this.restart(); }));
+      .addToggle((toggle) => toggle.setValue(!this.newestFirst).setDisabled(this.busy || this.previous).onChange((value) => { this.newestFirst = !value; this.restart(); }));
     el.createEl("p", { text: this.message });
     if (this.progress !== "") el.createEl("p", { text: this.progress });
     for (const entry of this.rows) {

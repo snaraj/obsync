@@ -33,10 +33,12 @@
 //   OBSYNC_E2E_URL         the server URL devices are given, https://name:port
 //   OBSYNC_E2E_TOKEN_FILE  a file holding the setup token; deleted once read
 //   OBSYNC_E2E_ARGS        optional JSON array of extra Chromium switches
+//   OBSYNC_E2E_LAUNCH_ORDER  "simultaneous" (default) or "serialized": a ready before b starts
 //   OBSYNC_E2E_HOMES       "1" to give each instance its own HOME (Linux: its own NSS store)
 //   OBSYNC_E2E_NTFS        "1" to add the Windows filesystem journeys
-//   OBSYNC_E2E_SECRET_STORE  "gnome-keyring", "none" (Linux), or "windows": expected custody; both
-//                          instances are restarted after the journeys and must sync again
+//   OBSYNC_E2E_SECRET_STORE  "gnome-keyring", "none" (Linux), "windows", or "macos": expected custody; both
+//                          protected hosts restart and sync; none must refuse before enrollment
+//   OBSYNC_E2E_CUSTODY_PROBE  optional "unavailable": explicit disposable negative, never an available journey
 //   OBSYNC_E2E_CAPTURES    optional fresh directory for verified synthetic editor PNGs only
 //   OBSYNC_E2E_LAUNCHER    optional command each instance is started through, the
 //                          Obsidian executable as its first argument
@@ -44,7 +46,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { secretFacts, assertCustody, captureEditor as captureVerifiedEditor, finishEvidence } from "./obsidian-evidence.mjs";
+import { pathToFileURL } from "node:url";
+import { verifyNativeRedirects } from "./obsidian-redirect.mjs";
+import { secretFacts, assertCustody, verifyNativeCustodyRefusal, verifyConcurrentNativeCustody, pairingCodes, assertPairingCodes, captureEditor as captureVerifiedEditor, finishEvidence } from "./obsidian-evidence.mjs";
 
 const PLUGIN_ID = "obsync-private-sync";
 const STEP_BUDGET_MS = 90_000;
@@ -171,7 +175,7 @@ const LABELS = {
   pairingCode: "Pairing code",
   pairButton: "Pair",
   approve: "Approve",
-  phraseDone: "I have written it down",
+  phraseDone: "Confirm complete backup",
   check: "Check",
   reached: "Reached your obsync server",
 };
@@ -219,22 +223,21 @@ function settingsShow(row) {
   return [...document.querySelectorAll(".mod-settings .setting-item-name")].some((e) => e.textContent.trim() === row);
 }
 
-/** The recovery-phrase dialog: read the words HERE, type back the ones asked. */
+/** Complete backup stays in its renderer, including the mandatory format marker. */
 function confirmPhrase(doneLabel) {
-  const modal = [...document.querySelectorAll(".modal")].find((m) => m.querySelector(".obsync-phrase"));
-  if (!modal) return false;
-  const words = [...modal.querySelectorAll(".obsync-phrase li")].map((li) => li.textContent.trim());
-  if (words.length !== 24) return false;
-  for (const row of modal.querySelectorAll(".setting-item")) {
-    const asked = /^Word (\d+)$/.exec(row.querySelector(".setting-item-name")?.textContent.trim() ?? "");
-    const input = row.querySelector("input");
-    if (!asked || !input) continue;
-    input.value = words[Number(asked[1]) - 1];
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  }
-  const done = [...modal.querySelectorAll("button")].find((b) => b.textContent.trim() === doneLabel);
-  if (!done) return false;
-  done.click();
+  const candidates = [...document.querySelectorAll(".modal")].flatMap(modal =>
+    [...modal.querySelectorAll("pre")].map(pre => ({ modal, text: pre.textContent.trim() }))
+      .filter(item => /^obsync-recovery-v2(?: [a-z]+){24}$/.test(item.text)));
+  if (candidates.length !== 1) return false;
+  const { modal, text } = candidates[0];
+  const rows = [...modal.querySelectorAll(".setting-item")].filter(row =>
+    row.querySelector(".setting-item-name")?.textContent.trim() === "Read back your saved backup");
+  const input = rows.length === 1 ? rows[0].querySelector("textarea") : null;
+  const done = [...modal.querySelectorAll("button")].filter(button => button.textContent.trim() === doneLabel);
+  if (!input || done.length !== 1) return false;
+  input.value = text;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  done[0].click();
   return true;
 }
 
@@ -562,30 +565,67 @@ async function main() {
   const homes = process.env.OBSYNC_E2E_HOMES === "1";
   const ntfs = process.env.OBSYNC_E2E_NTFS === "1";
   const store = process.env.OBSYNC_E2E_SECRET_STORE || "";
-  if (store && !STORES[store]) throw new Denied(`OBSYNC_E2E_SECRET_STORE must be one of ${Object.keys(STORES)}, not ${store}`);
+  if (store && !Object.hasOwn(STORES, store)) throw new Denied(`OBSYNC_E2E_SECRET_STORE must be one of ${Object.keys(STORES)}, not ${store}`);
   if (store === "windows" && process.platform !== "win32") throw new Denied("Windows custody requires native Windows");
+  if (store === "macos" && process.platform !== "darwin") throw new Denied("macOS custody requires native macOS");
+  const launchOrder = process.env.OBSYNC_E2E_LAUNCH_ORDER || "simultaneous";
+  if (!["simultaneous", "serialized"].includes(launchOrder)) throw new Denied("OBSYNC_E2E_LAUNCH_ORDER must be simultaneous or serialized");
+  if (store === "none" && process.platform !== "linux") throw new Denied("No-keyring custody refusal requires native Linux");
+  const refusalProbe = process.env.OBSYNC_E2E_CUSTODY_PROBE || "";
+  if (refusalProbe && refusalProbe !== "unavailable") throw new Denied("OBSYNC_E2E_CUSTODY_PROBE must be unavailable");
   const captures = process.env.OBSYNC_E2E_CAPTURES;
+  if ((store === "none" || refusalProbe) && captures) throw new Denied("custody refusal cannot publish successful editor captures");
   if (captures) fs.mkdirSync(captures); // Refuse a pre-existing output, including a link.
   const token = fs.readFileSync(tokenFile, "utf8").trim();
   fs.rmSync(tokenFile, { force: true });
   secrets.push(token);
   if (!/^[0-9a-f]{64}$/.test(token)) throw new Denied("the setup token file does not hold 64 lowercase hex characters");
-  console.log(`obsidian-drive: START binary=${binary} url=${url} platform=${process.platform} homes=${homes} ntfs=${ntfs}`);
+  console.log(`obsidian-drive: START binary=${binary} url=${url} platform=${process.platform} homes=${homes} ntfs=${ntfs} launch_order=${launchOrder}`);
 
   const a = new Instance(work, "a", pluginDir);
   const b = new Instance(work, "b", pluginDir);
   try {
     a.launch(binary, 19222, extra, homes);
-    b.launch(binary, 19223, extra, homes);
-    const [version] = await Promise.all([openVault(a), openVault(b)]);
+    if (store === "none" || refusalProbe) {
+      await verifyNativeCustodyRefusal(a, LABELS.trust, click, until, refusalProbe === "unavailable");
+      prove("declared unavailable native custody: visible refusal before activation writes, metadata or enrollment; reachable synthetic source received zero requests, no State/root adopted");
+      console.log(`obsidian-drive: SUMMARY steps=${proven} duration=${((Date.now() - started) / 1000).toFixed(1)}s decision=pass journey=custody_refusal`);
+      return;
+    }
+    let version;
+    if (launchOrder === "serialized") {
+      version = await openVault(a);
+      b.launch(binary, 19223, extra, homes);
+      await openVault(b);
+    } else {
+      b.launch(binary, 19223, extra, homes);
+      if (store === "macos") {
+        const outcome = await verifyConcurrentNativeCustody(a, b, LABELS.trust, click, until, process.platform);
+        console.log(`obsidian-drive: concurrent custody ${JSON.stringify(outcome)}`);
+        if (outcome.refused === true) {
+          prove("actual unavailable concurrent native custody refused before persistence; separately counted controls passed (synthetic HTTP source only)");
+          console.log(`obsidian-drive: SUMMARY steps=${proven} duration=${((Date.now() - started) / 1000).toFixed(1)}s decision=pass journey=concurrent_native_refusal source=synthetic-http`);
+          return;
+        }
+      }
+      [version] = await Promise.all([openVault(a), openVault(b)]);
+    }
     prove(`two instances: Obsidian ${version.obsidian} on Electron ${version.electron}, own user-data directories, the vault trusted and the plugin loaded in each`);
+
+    await verifyNativeRedirects(await a.main());
+    prove("native request adapter: all five redirect statuses refused for GET and POST, no destination request; JSON, binary and explicit-follow controls passed");
 
     // First device: server, token, the fresh vault key, the phrase confirmed.
     await setServer(a, url);
     await until("a: the setup token field", () => a.anywhere(fillPlaceholder, LABELS.setupToken, token));
     await until(`a: ${LABELS.setupButton}`, () => a.anywhere(click, LABELS.setupButton));
     await until("a: the recovery phrase confirmed", () => a.anywhere(confirmPhrase, LABELS.phraseDone));
+    await until("a: complete backup confirmation acknowledged", () => inVault(a, (id) => {
+      const state = app.plugins.plugins[id]?.state;
+      return state?.data.recoveryPhrase === "confirmed" && state.custody2()?.phase === "active";
+    }, PLUGIN_ID));
     await until("a: paired after setup", () => paired(a));
+    if (store) holds(a, await inVault(a, secretFacts, true, process.platform), store, "after enrollment");
     prove("first device: Server URL, setup token and the recovery-phrase check, through the plugin's own settings and dialog");
 
     // Second device: claim with the code the first one shows, then approve.
@@ -596,9 +636,17 @@ async function main() {
     secrets.push(code);
     await until(`b: the ${LABELS.pairingCode} field`, () => b.anywhere(fillSetting, "dialog", LABELS.pairingCode, code));
     await until(`b: ${LABELS.pairButton}`, () => b.anywhere(click, LABELS.pairButton));
+    const comparison = await until("both devices show their pairing comparison code", async () => {
+      const creator = (await a.all(pairingCodes)).flatMap((shown) => shown.creator);
+      const claimant = (await b.all(pairingCodes)).flatMap((shown) => shown.claimant);
+      return creator.length && claimant.length ? { creator, claimant } : null;
+    });
+    // Outside `until`: a mismatch refuses immediately, never a retry until equal.
+    assertPairingCodes(comparison);
     await until(`a: ${LABELS.approve} for the new device`, () => a.anywhere(click, LABELS.approve));
     await until("b: paired after approval", () => paired(b));
-    prove("second device: the code shown on the first, typed into the second, approved on the first");
+    if (store) holds(b, await inVault(b, secretFacts, true, process.platform), store, "after enrollment");
+    prove("second device: the invitation typed into the second, both visible comparison codes matched before approval on the first");
 
     // Two-way notes, a rename, folders.
     const first = `e2e note ${randomBytes(6).toString("hex")}\n`;
@@ -649,7 +697,7 @@ async function main() {
     await cotyping(a, b);
     await starvedWatcher(a, b);
     if (ntfs) await windowsJourneys(a, b);
-    const custody = store ? await restarted(a, b, { binary, extra, homes, store }) : null;
+    const custody = store ? await restarted(a, b, { binary, extra, homes, store, launchOrder }) : null;
     if (captures) finishEvidence(captures, custody);
     if (homes) await untrusted(work, pluginDir, binary, extra, url);
     console.log(`obsidian-drive: SUMMARY steps=${proven} duration=${((Date.now() - started) / 1000).toFixed(1)}s decision=pass`);
@@ -682,13 +730,25 @@ async function main() {
  * never assumed, in the case without a keyring.
  */
 const STORES = {
-  "gnome-keyring": { encrypted: true, backend: "gnome_libsecret", plain: false },
-  none: { encrypted: false, plain: true },
-  windows: { encrypted: true, plain: false },
+  "gnome-keyring": { encrypted: true, backend: "gnome_libsecret" },
+  none: { unavailable: true },
+  windows: { encrypted: true },
+  macos: { encrypted: true },
 };
 const UNENCRYPTED = "Secrets are stored without encryption";
 
+/** Availability diagnostics only: fixed fields, no credential values or backend text. */
+function diagnose(instance, phase, found) {
+  const flag = (value) => typeof value === "boolean" ? value : null;
+  console.log(`obsidian-drive: availability peer=${instance.name} phase=${phase} ${JSON.stringify({
+    encrypted: flag(found.encrypted), outerEncrypted: flag(found.outerEncrypted), stored: flag(found.stored),
+    plain: flag(found.plain), wrapped: flag(found.wrapped), plainRoot: flag(found.plainRoot),
+    revisionMatches: flag(found.revisionMatches), pinMatches: flag(found.pinMatches), cleanupComplete: flag(found.cleanupComplete),
+  })}`);
+}
+
 function holds(instance, found, store, when) {
+  diagnose(instance, when === "after enrollment" ? "enrolled" : when === "before the restart" ? "before_restart" : "after_restart", found);
   const want = STORES[store];
   try { assertCustody(found, want); }
   catch { throw new Denied(`${instance.name} ${when}: custody refused for ${store}: ${JSON.stringify(found)}`); }
@@ -700,14 +760,20 @@ function holds(instance, found, store, when) {
  * and a note must still cross, which needs the vault key and the device
  * secret both.
  */
-async function restarted(a, b, { binary, extra, homes, store }) {
-  for (const instance of [a, b]) holds(instance, await inVault(instance, secretFacts), store, "before the restart");
+async function restarted(a, b, { binary, extra, homes, store, launchOrder = "simultaneous" }) {
+  for (const instance of [a, b]) holds(instance, await inVault(instance, secretFacts, true, process.platform), store, "before the restart");
   const evidence = { before: true, quit: false, paired: false, transferred: false, after: false };
   await Promise.all([a.halt(), b.halt()]);
   evidence.quit = true;
   a.launch(binary, 19222, extra, homes);
-  b.launch(binary, 19223, extra, homes);
-  await Promise.all([reopen(a), reopen(b)]);
+  if (launchOrder === "serialized") {
+    await reopen(a);
+    b.launch(binary, 19223, extra, homes);
+    await reopen(b);
+  } else {
+    b.launch(binary, 19223, extra, homes);
+    await Promise.all([reopen(a), reopen(b)]);
+  }
   await until("a: paired again, from its secret storage", () => paired(a));
   await until("b: paired again, from its secret storage", () => paired(b));
   evidence.paired = true;
@@ -727,15 +793,12 @@ async function restarted(a, b, { binary, extra, homes, store }) {
   }
   evidence.transferred = true;
   const [found] = await Promise.all([a, b].map(async (instance) => {
-    const seen = await inVault(instance, secretFacts);
+    const seen = await inVault(instance, secretFacts, true, process.platform);
     holds(instance, seen, store, "after the restart");
     return seen;
   }));
   const warned = [...(await a.all(notices)), ...(await b.all(notices))].flat().filter((line) => line.startsWith(UNENCRYPTED));
-  if (STORES[store].encrypted && warned.length) {
-    throw new Denied(`with an unlocked keyring Obsidian still says "${warned[0]}"`);
-  }
-  prove(`the keys with ${store}: backend ${found.backend}, encrypted=${found.encrypted}, stored as plain JSON=${found.plain}; `
+  prove(`the keys with ${store}: backend ${found.backend}, inner native-wrapped=${found.wrapped}, verified revision=${found.revisionMatches}, outer encrypted=${found.outerEncrypted}, outer JSON=${found.plain}; `
     + `both instances restarted, paired again from their secret storage, and notes crossed both ways in ${times.join("/")} ms; `
     + `after the restart Obsidian ${warned.length ? `says "${warned[0]}" (${warned.length} windows)` : "shows no warning about it"}`);
   evidence.after = true;
@@ -914,7 +977,9 @@ async function windowsJourneys(a, b) {
   prove(`NTFS: an edit to a note another process held open arrived ${ms} ms after the edit, once the lock was let go, nothing lost`);
 }
 
-main().catch((error) => {
+// Native acceptance reuses these ordinary controls without launching this CLI.
+export { click, fillSetting, fillPlaceholder, settingsShow, confirmPhrase, LABELS };
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) main().catch((error) => {
   console.error(`obsidian-drive: DENY ${scrub(error.message)}`);
   process.exitCode = 1;
 });

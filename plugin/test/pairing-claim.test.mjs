@@ -38,6 +38,7 @@ const heldClaims = (result) => result.held.filter((value) => value !== null);
 async function claimant(t, response, {
   onWait = () => {}, beforeKeySave = async () => {}, beforeClaim = async () => {},
   unknown = 0, answer = null, data = {}, root = null, revoke = () => ({ outcome: "ok", value: undefined }),
+  replacementGeneration = null, initialSuite = 1, surveyError = null, onSurvey = () => {}, beforeStageSave = async () => {}, beforeLegacyClear = async () => {},
   code = null, waits = 3, onRestart = () => {}, field = null, prelude = () => {},
 } = {}) {
   const box = sandbox();
@@ -73,41 +74,70 @@ async function claimant(t, response, {
   const creator = await pairing.newPairingKeyExchange();
   const attacker = await pairing.newPairingKeyExchange();
   const honest = pairing.encodePairingCode(id, token, secret, await pairing.pairingCommitment(id, creator.publicKey));
-  const calls = [], saves = [], logs = [], held = [], shown = [], claims = [], surveyed = [];
+  const calls = [], saves = [], stages = [], logs = [], held = [], shown = [], claims = [], surveyed = [], replacementFinished = [];
   const waiting = (key) => new ApiError(409, "not_approved", "approval pending", false, key === undefined ? {} : { creator_pub: key });
   const sealFor = async (by, ps = secret) =>
-    ({ ...(await pairing.sealEnvelopeV2(by, claims[0].claimant_pub, ps, id, { vrk: KEYS.vrk })), creator_pub: by.publicKey });
+    ({ ...(await pairing.sealEnvelope2(by, claims[0].claimant_pub, ps, id, { v: 2, vrk: KEYS.vrk, generation: await generationOf(KEYS.vrk) })), creator_pub: by.publicKey });
   let restarted = 0, waited = 0;
-  const state = { data: { vrk: null, deviceId: null, deviceSecret: null, deviceName: null, deviceTag: "7KQ4", serverUrl: "https://sync.example.invalid", ...data },
-    // `State.paired`, over the same three fields.
-    get paired() { return this.data.vrk !== null && this.data.deviceId !== null && this.data.deviceSecret !== null; },
-    assertAvailable() {}, save: async () => {
-      const snapshot = { ...state.data };
-      if (snapshot.vrk !== null && snapshot.vrk !== data.vrk) await beforeKeySave({ saves, plugin, restartCalls: () => restarted });
-      saves.push(snapshot);
+  const { State } = box.require(join(box.home, "build/state.js"));
+  const crypto = box.require(join(box.home, "build/crypto.js"));
+  const generationOf = async root => (await crypto.domainMapIds(await crypto.deriveDomainMapKey(crypto.unhex(root)))).fileId;
+  let state, metadata;
+  const secrets = memorySecrets();
+  const stateStore = {
+    loadData: async () => ({ vrk: null, deviceId: null, deviceSecret: null, deviceName: null, deviceTag: "7KQ4", serverUrl: "https://sync.example.invalid", ...data, ...(initialSuite === 2 ? { vrk: null, deviceId: null, deviceSecret: null } : {}) }),
+    saveData: async value => {
+      if (state) {
+        const snapshot = structuredClone(state.data);
+        // The native envelope is written before metadata ACK; public State remains old.
+        const candidate = JSON.parse(secrets.getSecret(value.credentialRef)).current;
+        for (const field of ["vrk", "deviceId", "deviceSecret"]) snapshot[field] = candidate[field];
+        if (value.sealPin?.phase === "enrollment") await beforeStageSave({ state, value });
+        if (value.storageVersion === 1 && data.vrk === null && data.deviceId && snapshot.deviceId === null) await beforeLegacyClear();
+        if (snapshot.vrk !== null && snapshot.vrk !== data.vrk) await beforeKeySave({ saves, plugin, restartCalls: () => restarted });
+        if (value.sealPin?.phase === "enrollment") stages.push({ metadata: structuredClone(value), root: state.stagedEnrollment2()?.root ?? null });
+        else saves.push(snapshot);
+      }
+      metadata = structuredClone(value);
     },
-    heldClaim: () => held.at(-1) ?? null,
-    holdClaim: (value) => { held.push(value); return true; } };
+  };
+  const loaded = await State.open(stateStore, false, secrets);
+  if (initialSuite === 2) {
+    await loaded.stageEnrollment2(data.vrk, "pair");
+    await loaded.adoptSuite2({ root: data.vrk, generation: await generationOf(data.vrk), deviceId: data.deviceId, deviceSecret: data.deviceSecret, purpose: "pair" });
+  }
+  state = loaded;
+  state.heldClaim = () => held.at(-1) ?? null;
+  state.holdClaim = value => { held.push(value); return true; };
   const Plugin = box.require(join(box.home, "build/main.js")).default;
   const plugin = Object.assign(new Plugin(), {
     state,
     manifest: { version: "1.1.5" }, platformName: () => "ios",
     log: (line) => logs.push(line),
-    notesUnknownTo: async (vrk) => {
+    notesUnknownTo2: async (vrk, generation, transport) => {
+      assert.equal(generation, await generationOf(KEYS.vrk)); assert.equal(transport, plugin.transport);
       assert.equal(vrk, KEYS.vrk, "the survey reads the vault with the key the envelope carried");
       calls.push("survey");
+      assert.equal(state.custody2().phase, "enrollment", "root is retained before the authenticated map/survey");
+      assert.equal(state.paired, false, "no live enrollment before readback");
+      if (replacementGeneration !== null) assert.equal(plugin.waiting.replacementGeneration, null, "replacement intent is consumed after durable staging");
+      onSurvey(state);
+      if (surveyError) throw surveyError;
       // What the dialog says while the survey runs.
       surveyed.push(shown.at(-1));
       return unknown;
     },
+    finishReplacementPairing: () => { assert.equal(state.custody2().phase, "active"); replacementFinished.push("finished"); plugin.rotating = false; },
     restartEngine: async () => {
+      if (replacementGeneration !== null) assert.equal(plugin.rotating, false, "explicit adoption ends rotation pause before engine restart");
+      else assert.deepEqual(replacementFinished, [], "ordinary pairing must not clear an explicit replacement pause");
       restarted++;
       assert.equal(saves.at(-1)?.vrk, KEYS.vrk, "the approved key must already be persisted");
       onRestart();
     },
     transport: {
-      pairingClaim: async (pairingId, enrollToken, info) => {
-        assert.deepEqual(await pairing.openPairingVault(secret, id, info.vault), { name: "Pairing test vault", notes: 2 });
+      pairingClaim2: async (pairingId, enrollToken, info) => {
+        assert.deepEqual(await pairing.openPairingVault2(secret, id, info.vault), { name: "Pairing test vault", notes: 2 });
         assert.ok(!JSON.stringify(info).includes("Pairing test vault"), "the server receives ciphertext only");
         assert.equal(pairingId, id); assert.equal(enrollToken, token);
         claims.push(info);
@@ -134,7 +164,8 @@ async function claimant(t, response, {
   const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
   plugin.host = new ObsidianHost(plugin, root === null ? null : { fs: { promises: fsPromises }, path: nodePath, base: root });
   const pasted = typeof code === "function" ? code(honest, pairing) : code ?? honest;
-  const modal = new PairClaimModal({ vault: { getName: () => "Pairing test vault", getMarkdownFiles: () => [1, 2] } }, plugin, pasted);
+  if (replacementGeneration !== null) plugin.rotating = true;
+  const modal = new PairClaimModal({ vault: { getName: () => "Pairing test vault", getMarkdownFiles: () => [1, 2] } }, plugin, pasted, undefined, replacementGeneration);
   modal.contentEl = { createEl: () => ({ setText: (text) => shown.push(text) }), empty: () => {} };
   modal.close = () => modal.onClose();
   // The Pairing code field `onOpen` draws, where a test asks about it.
@@ -156,7 +187,8 @@ async function claimant(t, response, {
   await modal.claim();
   // A claim handed to the background finishes there.
   await plugin.waiting?.done;
-  return { calls, saves, logs, notices, restarted, asked, held, shown, claims, surveyed, plugin, pairing, modal, creator, attacker,
+  return { calls, saves, stages, metadata, rootRetained: JSON.parse(secrets.getSecret(metadata.credentialRef)).custody?.enrollment?.root === KEYS.vrk,
+    logs, notices, restarted, asked, held, shown, claims, surveyed, replacementFinished, plugin, pairing, modal, creator, attacker,
     state: state.data, current: plugin.state.data };
 }
 
@@ -255,7 +287,9 @@ test("sync stays stopped while the approved key save is pending", async (t) => {
       throw new Error("claim finished before entering the key save");
     })]);
     before = observation.restartCalls();
-    assert.equal(observation.saves.length, 0, "nothing is persisted before the key and credential together");
+    assert.equal(observation.plugin.state.data.vrk, null, "root remains detached until metadata ACK");
+    assert.equal(observation.plugin.state.data.deviceId, null, "claim credential remains detached until metadata ACK");
+    assert.equal(observation.saves.length, 0, "no active root/credential adoption is acknowledged before the save");
   } finally {
     release();
   }
@@ -265,14 +299,17 @@ test("sync stays stopped while the approved key save is pending", async (t) => {
   assert.equal(result.saves.at(-1).vrk, KEYS.vrk);
 });
 
-test("a rejected approved-key save never starts sync, and takes the collected device back (#153)", async (t) => {
+test("a rejected approved-key save stays stopped and reports unconfirmed cleanup without bypassing storage refusal", async (t) => {
   const result = await claimant(t, approved, {
     beforeKeySave: async () => { throw new Error("fixture key save failed"); },
   });
   assert.equal(result.restarted, 0);
   assert.equal(result.saves.length, 0);
-  assert.deepEqual(result.calls, ["claim", "envelope", "survey", "revoke"], "collection activated it, so it is revoked");
-  assert.ok(result.notices.some((notice) => notice.includes("fixture key save failed")));
+  assert.deepEqual(result.calls, ["claim", "envelope", "survey"], "storage refusal prevents every later request");
+  assert.equal(result.plugin.state.paired, false);
+  assert.throws(() => result.plugin.state.assertAvailable());
+  assert.ok(result.notices.some((notice) => notice.includes("could not read or save")));
+  assert.ok(result.notices.some((notice) => notice.includes("may still list")));
   assert.ok(!result.notices.some((notice) => notice.includes("this device is paired, and its first sync is running")));
 });
 
@@ -556,9 +593,17 @@ test("a vault holding notes the server's vault does not know is asked before its
   assert.equal(cancel.text, "Cancel");
   assert.equal(cancel.focused, true);
   assert.equal(result.restarted, 0, "no sync started, so nothing was uploaded");
-  assert.deepEqual(result.saves, [], "the other vault's key and its credential were never kept");
+  assert.deepEqual(result.saves, [], "no active root or credential was adopted");
   assert.ok(result.logs.includes("pairing role=claimant decision=declined unknown=3"));
   assert.ok(result.notices.some((notice) => notice.includes("nothing was uploaded")));
+  assert.equal(result.rootRetained, true, "the trusted enrollment survives explicit upload refusal");
+  const before = structuredClone(result.plugin.state.data), custody = result.plugin.state.custody2();
+  const notice = result.notices.find(text => text.includes("Pairing cancelled"));
+  assert.ok(notice.includes("trusted key is still saved") && notice.includes("same Server URL") && notice.includes("fresh vault"), notice);
+  await assert.rejects(result.plugin.setServerUrl("https://different.example.invalid"), /Server URL was not changed/);
+  assert.deepEqual(result.plugin.state.data, before);
+  assert.deepEqual(result.plugin.state.custody2(), custody);
+  assert.doesNotThrow(() => result.plugin.state.assertAvailable(), "an origin refusal must not latch a storage failure");
 });
 
 test("one note the server's vault does not have is one note, and it is uploaded (iPhone pass, 2026-09-26)", async (t) => {
@@ -628,12 +673,15 @@ test("an enrolled device whose key never arrived pairs again, and its stranded c
   assert.ok(result.logs.includes("pairing role=claimant decision=revoked reason=stranded_enrolment"));
 });
 
-test("a key from another vault is a phrase this device has not confirmed; the same key keeps its confirmation (#170)", async (t) => {
+test("ordinary pairing refuses replacing a held root; the same root preserves phrase confirmation", async (t) => {
   // A phrase restored for one vault, then a pairing into another: the words
   // this device confirmed are not the new vault's.
   const other = await claimant(t, approved, { data: { vrk: "99".repeat(32), recoveryPhrase: "confirmed" } });
-  assert.equal(other.saves.at(-1).vrk, KEYS.vrk);
-  assert.equal(other.saves.at(-1).recoveryPhrase, "unconfirmed");
+  assert.equal(other.plugin.state.data.vrk, "99".repeat(32));
+  assert.equal(other.plugin.state.data.recoveryPhrase, "confirmed");
+  assert.equal(other.saves.length, 0);
+  assert.equal(other.stages.length, 0);
+  assert.equal(other.restarted, 0);
   const same = await claimant(t, approved, { data: { vrk: KEYS.vrk, recoveryPhrase: "confirmed" } });
   assert.equal(same.saves.at(-1).vrk, KEYS.vrk);
   assert.equal(same.saves.at(-1).recoveryPhrase, "confirmed");
@@ -729,4 +777,62 @@ test("only a waiting claim signs as itself; otherwise the stored credential does
   assert.equal(Buffer.from(plugin.credential(state).secret).toString("hex"), KEYS.deviceSecret);
   plugin.waiting = null;
   assert.equal(plugin.credential({ data: { deviceId: null, deviceSecret: null } }), null);
+});
+
+test("suite2 claimant missing-map/readback failure retains detached root and never adopts or starts sync", async t => {
+  const r = await claimant(t, approved, { surveyError: new Error("synthetic current map missing") });
+  assert.equal(r.restarted, 0); assert.equal(r.saves.length, 0); assert.equal(r.current.vrk, null);
+  assert.equal(r.plugin.state.custody2()?.phase, "enrollment"); assert.equal(r.rootRetained, true);
+  assert.deepEqual(r.calls, ["claim", "envelope", "survey", "revoke"]);
+  assert.equal(r.metadata.storageVersion, 2); assert.equal(Object.hasOwn(r.metadata, "vrk"), false);
+});
+
+test("suite2 claimant staging failure stops before map/readback or cleanup HTTP and retains written secret root", async t => {
+  const r = await claimant(t, approved, { beforeStageSave: async () => { throw new Error("synthetic disk full"); } });
+  assert.deepEqual(r.calls, ["claim", "envelope"]); assert.equal(r.restarted, 0); assert.equal(r.saves.length, 0);
+  assert.equal(r.rootRetained, true); assert.equal(r.plugin.state.paired, false); assert.throws(() => r.plugin.state.assertAvailable());
+  assert.ok(r.notices.some(text => text.includes("may still list")));
+});
+
+test("suite2 rootless legacy clear failure neither stages nor adopts a new root", async t => {
+  const r = await claimant(t, approved, { data: { vrk: null, deviceId: "99".repeat(16), deviceSecret: "88".repeat(32) },
+    beforeLegacyClear: async () => { throw new Error("synthetic clear failed"); } });
+  assert.deepEqual(r.calls, ["claim", "envelope"]); assert.equal(r.restarted, 0); assert.equal(r.stages.length, 0); assert.equal(r.rootRetained, false);
+  assert.throws(() => r.plugin.state.assertAvailable());
+});
+
+test("explicit replacement claimant retires only the expected legacy/suite2 generation before map readback", async t => {
+  const oldRoot = "aa".repeat(32), c = createRequire(import.meta.url)("../build/crypto.js");
+  const oldGeneration = (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(oldRoot)))).fileId;
+  for (const initialSuite of [1, 2]) {
+    const r = await claimant(t, approved, { replacementGeneration: oldGeneration, initialSuite,
+      data: { vrk: oldRoot, deviceId: "55".repeat(16), deviceSecret: "66".repeat(32), files: { "Notes/old.md": { fileId: "77".repeat(16), versionId: "88".repeat(32), size: 4, mtime: 1, sha256: "" } } },
+      onSurvey: state => {
+        assert.deepEqual(state.custody2().history, { root: oldRoot, generation: oldGeneration, suite: initialSuite });
+        assert.equal(state.data.deviceId, null); assert.deepEqual(state.data.files, {});
+      } });
+    assert.deepEqual(r.calls, ["claim", "envelope", "survey"]); assert.equal(r.restarted, 1);
+    assert.deepEqual(r.replacementFinished, ["finished"]); assert.equal(r.plugin.state.custody2().history.suite, initialSuite);
+    assert.equal(r.current.vrk, KEYS.vrk); assert.equal(r.current.deviceId, KEYS.deviceId); assert.equal(r.plugin.state.custody2().initializeMap, false);
+    assert.equal(r.modal.replacementGeneration, null); assert.deepEqual(r.current.files, {});
+  }
+});
+
+test("explicit replacement wrong generation never surveys/adopts, while ordinary held-root pairing still refuses", async t => {
+  const oldRoot = "aa".repeat(32), data = { vrk: oldRoot, deviceId: "55".repeat(16), deviceSecret: "66".repeat(32) };
+  const wrong = await claimant(t, approved, { replacementGeneration: "00".repeat(16), data });
+  assert.deepEqual(wrong.calls, ["claim", "envelope", "revoke"]); assert.equal(wrong.restarted, 0);
+  assert.equal(wrong.current.vrk, oldRoot); assert.equal(wrong.current.deviceId, data.deviceId); assert.deepEqual(wrong.stages, []);
+  const ordinary = await claimant(t, approved, { data }); assert.deepEqual(ordinary.calls, []); assert.equal(ordinary.current.vrk, oldRoot);
+  const held = await claimant(t, approved, { data: { vrk: oldRoot } });
+  assert.deepEqual(held.calls, ["claim", "envelope", "revoke"]); assert.equal(held.restarted, 0); assert.equal(held.current.vrk, oldRoot);
+});
+
+test("explicit replacement staging refusal preserves old authority and never resumes or sends cleanup HTTP", async t => {
+  const oldRoot = "aa".repeat(32), c = createRequire(import.meta.url)("../build/crypto.js");
+  const oldGeneration = (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(oldRoot)))).fileId;
+  const r = await claimant(t, approved, { replacementGeneration: oldGeneration, data: { vrk: oldRoot, deviceId: "55".repeat(16), deviceSecret: "66".repeat(32) },
+    beforeStageSave: async () => { throw new Error("synthetic replacement disk full"); } });
+  assert.deepEqual(r.calls, ["claim", "envelope"]); assert.equal(r.current.vrk, oldRoot); assert.equal(r.current.deviceId, "55".repeat(16));
+  assert.equal(r.restarted, 0); assert.deepEqual(r.replacementFinished, []); assert.equal(r.rootRetained, true); assert.throws(() => r.plugin.state.assertAvailable());
 });

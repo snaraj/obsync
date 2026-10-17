@@ -1,10 +1,11 @@
 /** Restore missing ciphertext from a remembered local version, without posting a version. */
 import { CHUNK_MAX, readFully } from "../chunker";
-import { encryptChunk, hex, isHex, sha256 } from "../crypto";
+import { hex, isHex, sha256 } from "../crypto";
 import { FileRecord } from "../state";
 import { ApiError } from "../transport";
 import { assertSyncPath, inSyncScope } from "../syncScope";
-import { SyncContext } from "./engine";
+import { sealScope, type SyncContext } from "./engine";
+import { encryptChunk2 } from "../seal2";
 import { HistoryCancelled, HistoryOperation, historyManifest } from "./history";
 import { Manifest, sidDigest } from "./push";
 import { ManifestError } from "./pull";
@@ -278,7 +279,7 @@ export class ChunkRepair {
         this.candidate = null;
         return { kind: "unresolved", reason: "source_changed" };
       }
-      const sealed = await encryptChunk(this.context.domainKey, plaintext);
+      const sealed = await encryptChunk2(this.context.domainKey, sealScope(this.context), plaintext);
       this.check(path, record);
       if (plaintext.length !== chunk.len || hex(sealed.cid) !== chunk.cid || sealed.sid !== chunk.sid) {
         this.candidate = null;

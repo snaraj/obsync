@@ -10,7 +10,7 @@
  * No assertion library, no mock framework: `node:crypto` and plain objects.
  */
 
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const c = require("../build/crypto.js");
+const seal2 = require("../build/seal2.js");
 const dm = require("../build/domainmap.js");
 const vp = require("../build/vaultPath.js");
 const notes = require("../build/notices.js");
@@ -238,7 +239,11 @@ module.exports = {
     // Where `visibilitychange` is raised; a test that fires it installs its own window.
     document: { visibilityState: "visible", addEventListener: () => undefined, removeEventListener: () => undefined },
   };
-  return { home, require: createRequire(join(home, "x.js")) };
+  const localRequire = createRequire(join(home, "x.js"));
+  // Native plugin tests replace their copied adapter, never global fetch or
+  // another sandbox's requests. The real adapter has its own network tests.
+  localRequire(join(home, "build/fetchHttp.js")).fetchHttp = async () => ({ status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) });
+  return { home, require: localRequire };
 }
 
 const enc = (text) => new TextEncoder().encode(text);
@@ -763,6 +768,8 @@ export class FakeServer {
       },
     ];
     this.claimed = claimed;
+    this.sealSuite = claimed ? 1 : null;
+    this.generation = null;
     this.recoveryVerifier = null;
     /** When `recoveryVerifier` was registered, on `clock`; `null` for a key from before 1.1.5. */
     this.recoveryAt = null;
@@ -890,12 +897,16 @@ export class FakeServer {
     // is answered before the signature check. The token is compared FIRST,
     // exactly as obsyncd does, so a caller without it learns nothing about
     // whether this server is claimed (`docs/protocol.md`, setup).
+    if (path === "/v1/setup" && request.method === "GET") return this.json(200, { recover_only: true, seal_suite: 2 });
     if (path === "/v1/setup" && request.method === "POST") {
       const body = json();
       if (body.setup_token !== SETUP_TOKEN) return this.error(401, "bad_setup_token", "that is not this server's setup token");
       if (body.recovery_verifier !== undefined && !/^[0-9a-f]{64}$/.test(body.recovery_verifier)) return this.error(400, "bad_request");
       const recovered = this.claimed;
       if (recovered) {
+        if (body.recover_only !== true) return this.error(409, "recover_only_required");
+        if (this.sealSuite === 2 && (body.seal_suite !== 2 || body.generation !== this.generation)) return this.error(409, "migration_required");
+        if (this.sealSuite === 1 && body.seal_suite === 2) return this.error(409, "migration_required");
         if (body.recovery_proof === undefined) return this.error(409, "already_set_up", "this server already holds an account");
         // No key and no reset since: the token alone recovers nothing (1.1.4's answer).
         if (this.recoveryVerifier === null && !this.recoveryArmed) {
@@ -915,8 +926,13 @@ export class FakeServer {
           return this.error(403, "bad_recovery_proof", "these recovery words do not prove this vault");
         }
       } else {
+        if (body.recover_only === true) return this.error(409, "not_set_up");
+        if (body.seal_suite === 2 && (!/^[0-9a-f]{32}$/.test(body.generation) || body.recovery_verifier === undefined ||
+            createHash("sha256").update(Buffer.from(body.recovery_proof ?? "", "hex")).digest("hex") !== body.recovery_verifier)) return this.error(400, "bad_request");
         this.recoveryVerifier = body.recovery_verifier ?? null;
         this.recoveryAt = this.recoveryVerifier === null ? null : this.clock;
+        this.sealSuite = body.seal_suite === 2 ? 2 : 1;
+        this.generation = body.seal_suite === 2 ? body.generation : null;
       }
       this.claimed = true;
       const id = recovered ? (++this.recoveries).toString(16).padStart(32, "0") : SETUP_DEVICE;
@@ -954,7 +970,8 @@ export class FakeServer {
     // obsyncd counts the devices that can sync, not every record (#268).
     if (path === "/v1/account" && request.method === "GET") {
       const device_count = this.devices.filter((device) => !device.revoked).length;
-      return this.json(200, { account_id: "a".repeat(32), name: "obsync", used_bytes: 0, quota_bytes: null, device_count });
+      return this.json(200, { account_id: "a".repeat(32), name: "obsync", used_bytes: 0, quota_bytes: null, device_count,
+        ...(this.sealSuite === 2 ? { seal_suite: 2, generation: this.generation } : {}) });
     }
 
     const devicePatch = /^\/v1\/devices\/([0-9a-f]{32})$/.exec(path);
@@ -1190,10 +1207,9 @@ export class FakeServer {
     const out = new Set();
     for (const frame of this.journal) {
       if (frame.file_id === this.mapFileId) continue;
-      const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-      const manifest = JSON.parse(await c.decryptManifest(
-        manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
-      ));
+      const manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await seal2.openRecord(
+        manifestKey, 1, { generation: this.mapFileId, domainId: KEYS.domainId, fileId: frame.file_id,
+          parents: frame.parents, sids: frame.sids }, c.unbase64(frame.manifest_ct))));
       if (manifest.v !== 2) out.add(frame.file_id);
     }
     return [...out];
@@ -1201,11 +1217,12 @@ export class FakeServer {
 
   async seedDomainMap(mapKeys, domainId) {
     this.mapFileId = mapKeys.fileId;
+    this.sealSuite = 2; this.generation = mapKeys.fileId;
     const map = dm.defaultDomainMap(domainId);
     const json = dm.serialiseDomainMap(map);
-    const binder = await c.contentVersionId(mapKeys.fileId, [], []);
-    const sealed = await c.encryptDomainMap(mapKeys.key, mapKeys.fileId, binder, json);
-    const versionId = await c.versionId(mapKeys.fileId, [], sealed.ciphertext, []);
+    const ciphertext = await seal2.sealRecord(mapKeys.key, 2, { generation: mapKeys.fileId, domainId: mapKeys.domainId,
+      fileId: mapKeys.fileId, parents: [], sids: [] }, c.utf8(json));
+    const versionId = await c.versionId(mapKeys.fileId, [], ciphertext, []);
     this.files.set(mapKeys.fileId, {
       heads: [versionId],
       domain_id: mapKeys.domainId,
@@ -1215,8 +1232,8 @@ export class FakeServer {
           parents: [],
           sids: [],
           bytes: 0,
-          manifest_ct: c.base64(sealed.ciphertext),
-          manifest_nonce: c.hex(sealed.nonce),
+          manifest_ct: c.base64(ciphertext),
+          seal_suite: 2,
           domain_id: mapKeys.domainId,
           deleted: false,
           device_id: "ffffffffffffffffffffffffffffffff",
@@ -1263,7 +1280,7 @@ export class FakeServer {
 
   /** Land a version authored by another device, as the feed would deliver it. */
   async publish({ fileId, path, bytes, mtime, domainKey, manifestKey, parents = [], deviceId = "ffffffffffffffffffffffffffffffff" }) {
-    const { cid, sid, ciphertext } = await c.encryptChunk(domainKey, bytes);
+    const { cid, sid, ciphertext } = await seal2.encryptChunk2(domainKey, { generation: this.mapFileId ?? (await keys()).generation, domainId: KEYS.domainId }, bytes);
     this.chunks.set(sid, ciphertext);
     const manifest = {
       v: 1,
@@ -1310,10 +1327,10 @@ export class FakeServer {
     domainId = manifest.domain,
     deleted = manifest.deleted,
   }) {
-    const binder = await c.contentVersionId(fileId, parents, sids);
-    const sealed = await c.encryptManifest(manifestKey, fileId, binder, JSON.stringify(manifest));
-    const manifestCt = c.base64(sealed.ciphertext);
-    const versionId = await c.versionId(fileId, parents, sealed.ciphertext, sids);
+    const ciphertext = await seal2.sealRecord(manifestKey, 1, { generation: this.mapFileId ?? (await keys()).generation,
+      domainId: KEYS.domainId, fileId, parents, sids }, c.utf8(JSON.stringify(manifest)));
+    const manifestCt = c.base64(ciphertext);
+    const versionId = await c.versionId(fileId, parents, ciphertext, sids);
     const file = this.files.get(fileId) ?? { heads: [], versions: [], domain_id: domainId };
     this.files.set(fileId, file);
     file.heads = [...file.heads.filter((head) => !parents.includes(head)), versionId];
@@ -1323,7 +1340,7 @@ export class FakeServer {
       sids,
       bytes,
       manifest_ct: manifestCt,
-      manifest_nonce: c.hex(sealed.nonce),
+      seal_suite: 2,
       domain_id: domainId,
       deleted,
       device_id: deviceId,
@@ -1457,14 +1474,31 @@ export const KEYS = {
 /** Test-only native store: exact get/set operations, no enumeration surface. */
 export function memorySecrets() {
   const held = new Map();
+  const validId = id => { if (typeof id !== "string" || id.length > 64 || !/^[a-z0-9-]+$/.test(id)) throw new Error("synthetic host refused secret ID"); };
+  // Synthetic unit host capability, never evidence for native OS encryption.
+  const key = Buffer.alloc(32, 37);
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    getSelectedStorageBackend: () => "gnome_libsecret",
+    encryptString(value) {
+      const iv = randomBytes(16), cipher = createCipheriv("aes-256-cbc", key, iv);
+      return Buffer.concat([iv, cipher.update(value, "utf8"), cipher.final()]);
+    },
+    decryptString(value) {
+      const cipher = createDecipheriv("aes-256-cbc", key, value.subarray(0, 16));
+      return Buffer.concat([cipher.update(value.subarray(16)), cipher.final()]).toString("utf8");
+    },
+  };
   return {
+    adapter: { safeStorage },
     getSecret: (id) => held.get(id) ?? null,
-    setSecret: (id, value) => { held.set(id, value); },
+    setSecret: (id, value) => { validId(id); held.set(id, value); },
   };
 }
 
 /** A `State` over in-memory metadata and a test-only native secret store. */
-export async function fakeState(isMobile = false) {
+export async function fakeState(isMobile = false, suite2 = true, purpose = "pair",
+  credential = { deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret }) {
   const { State } = require("../build/state.js");
   let stored = null;
   let written = false;
@@ -1477,10 +1511,17 @@ export async function fakeState(isMobile = false) {
   };
   const secrets = memorySecrets();
   const state = await State.open(store, isMobile, secrets);
-  state.data.vrk = KEYS.vrk;
-  state.data.deviceId = KEYS.deviceId;
-  state.data.deviceSecret = KEYS.deviceSecret;
   state.data.serverUrl = "https://sync.example.invalid";
+  if (suite2) {
+    await state.save();
+    await state.stageEnrollment2(KEYS.vrk, purpose);
+    await state.adoptSuite2({ root: KEYS.vrk, generation: (await keys()).generation,
+      ...credential, purpose });
+  } else {
+    state.data.vrk = KEYS.vrk;
+    state.data.deviceId = credential.deviceId;
+    state.data.deviceSecret = credential.deviceSecret;
+  }
   // Callers observe writes made by their operation, after fixture setup.
   written = false;
   // `reload` is the next start of the plugin over the SAME stored metadata:
@@ -1493,11 +1534,11 @@ export async function fakeState(isMobile = false) {
  * every engine-level test starts from. It lives here rather than in a test
  * file because more than one suite drives the same rig.
  */
-export async function rig({ isMobile = false, policy, caseSensitive = true } = {}) {
+export async function rig({ isMobile = false, policy, caseSensitive = true, initializeMap = false } = {}) {
   const { Transport } = require("../build/transport.js");
   const host = new FakeHost({ isMobile, caseSensitive });
   const server = new FakeServer();
-  const { state, saved, reload } = await fakeState(isMobile);
+  const { state, saved, reload } = await fakeState(isMobile, true, initializeMap ? "new" : "pair");
   if (policy) state.data.policy = policy;
   const transport = new Transport({
     request: server.request,
@@ -1521,6 +1562,7 @@ export async function rig({ isMobile = false, policy, caseSensitive = true } = {
     manifestKey: k.manifestKey,
     domainId: KEYS.domainId,
     mapFileId: k.map.fileId,
+    generation: k.generation,
     deviceId: KEYS.deviceId,
     concurrency: isMobile ? 2 : 4,
     authored: new Set(),
@@ -1544,12 +1586,22 @@ export async function rig({ isMobile = false, policy, caseSensitive = true } = {
 export async function keys() {
   const vrk = Uint8Array.from(Buffer.from(KEYS.vrk, "hex"));
   const domainKey = await c.deriveDomainKey(vrk, KEYS.domainId);
+  const map = await dm.domainMapKeys(vrk);
   return {
     domainKey,
+    generation: map.fileId,
     // Per domain, not vault-wide (`docs/architecture.md` 5.1 item 2).
     manifestKey: await c.deriveManifestKey(domainKey, KEYS.domainId),
-    map: await dm.domainMapKeys(vrk),
+    map,
   };
+}
+
+/** Inspect an actual suite-2 publication; never fall back to a legacy decoder. */
+export async function openPublishedManifest(record, manifestKey, generation, domainId = KEYS.domainId) {
+  const { readManifestSeal2 } = require("../build/sealWire.js");
+  const bytes = await seal2.openRecord(manifestKey, 1, { generation: generation ?? (await keys()).generation,
+    domainId, fileId: record.file_id, parents: record.parents, sids: record.sids }, readManifestSeal2(record));
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
 /**
@@ -1567,18 +1619,10 @@ export async function published(server, fileId, manifestKey) {
   if (file === undefined) return [];
   const manifests = [];
   for (const version of [...file.versions].reverse()) {
-    const binder = await c.contentVersionId(fileId, version.parents, version.sids);
-    manifests.push(
-      JSON.parse(
-        await c.decryptManifest(
-          manifestKey,
-          fileId,
-          binder,
-          c.unhex(version.manifest_nonce),
-          c.unbase64(version.manifest_ct),
-        ),
-      ),
-    );
+    manifests.push(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await seal2.openRecord(
+      manifestKey, 1, { generation: server.mapFileId ?? (await keys()).generation, domainId: KEYS.domainId,
+        fileId, parents: version.parents, sids: version.sids }, c.unbase64(version.manifest_ct)))));
+
   }
   return manifests;
 }
@@ -1817,9 +1861,7 @@ async function device(box, server, timers, { id, secret, name, delivery, isMobil
   const { SyncEngine } = require("../build/sync/engine.js");
   const obsidian = box.require("obsidian");
   const host = new EventVault({ delivery, obsidian, isMobile, deviceName: name, caseSensitive });
-  const { state, reload } = await fakeState(isMobile);
-  state.data.deviceId = id;
-  state.data.deviceSecret = secret;
+  const { state, reload } = await fakeState(isMobile, true, "pair", { deviceId: id, deviceSecret: secret });
   const transport = new Transport({
     request: server.request,
     serverUrl: () => state.data.serverUrl,

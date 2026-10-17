@@ -12,8 +12,6 @@ pub mod recovery;
 pub mod serve;
 pub mod setup_token;
 
-use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use crate::config::Config;
@@ -29,7 +27,8 @@ Usage:
   obsyncd setup-token    print the standing setup token, and nothing else
   obsyncd recovery reset plan|apply [--output human|json]
                          show, then clear, the account's recovery key
-  obsyncd export --domain <32hex> --key-file <file|-> --out <dir>
+  obsyncd export --domain <32hex> --out <dir>
+                         export ciphertext only; no content key is accepted
   obsyncd version
 
 Configuration is environment only; docs/architecture.md lists every variable.";
@@ -71,16 +70,11 @@ pub fn run(args: &[String]) -> i32 {
                 2
             }
         },
-        Some("export") => match ExportArgs::parse(&args[1..], std::io::stdin().lock()) {
-            Ok(a) => {
-                if a.key_on_argv {
-                    eprintln!("{ARGV_KEY_WARNING}");
-                }
-                with_config(|cfg| {
-                    let log = Log::new(cfg.log_level);
-                    report(export::run(&cfg, &a.domain, &a.key, &a.out), "export", &log)
-                })
-            }
+        Some("export") => match ExportArgs::parse(&args[1..]) {
+            Ok(a) => with_config(|cfg| {
+                let log = Log::new(cfg.log_level);
+                report(export::run(&cfg, &a.domain, &a.out), "export", &log)
+            }),
             Err(e) => {
                 eprintln!("obsyncd export: {e}\n{USAGE}");
                 2
@@ -171,100 +165,52 @@ fn word_class(arg: &str) -> &'static str {
     }
 }
 
-/// What `export` prints when the key arrived as `--key <hex>`: one line, on
-/// standard error, before anything else runs.
-pub const ARGV_KEY_WARNING: &str = "obsyncd export: warning: --key leaves the domain key in the \
-     process list and the shell history; pass it with --key-file <file> (mode 0600) or \
-     --key-file - (standard input) instead";
-
-/// `export --domain <hex> --key-file <file|-> --out <dir>`.
+/// Ciphertext export has no content-key input, including files and stdin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExportArgs {
-    /// Which domain to reconstruct.
+    /// Which domain's ciphertext to export.
     pub domain: DomainId,
-    /// The operator-supplied domain key. Never logged, never stored.
-    pub key: [u8; 32],
-    /// Where the plaintext is written.
+    /// Where the encrypted records are written.
     pub out: PathBuf,
-    /// Whether the key came as `--key <hex>`, where `/proc/<pid>/cmdline`
-    /// and shell history keep it. Still accepted, and warned about.
-    pub key_on_argv: bool,
 }
 
 impl ExportArgs {
-    /// Parse the flags in any order. The key comes from `--key-file`: a file
-    /// only its owner can read, or `-` for standard input.
+    /// Parse the two flags in any order without reading content keys.
     ///
     /// # Errors
-    /// A human message naming the first flag that is missing or malformed.
-    pub fn parse(args: &[String], stdin: impl Read) -> Result<Self, String> {
+    /// A fixed message for missing, duplicate, unknown or malformed flags.
+    /// Never echo arguments: an obsolete caller may have supplied a key.
+    pub fn parse(args: &[String]) -> Result<Self, String> {
         let mut domain = None;
-        let mut key = None;
-        let mut key_file = None;
         let mut out = None;
         let mut i = 0;
         while i < args.len() {
+            let flag = args[i].as_str();
+            if matches!(flag, "--key" | "--key-file") {
+                return Err("content keys are refused; export writes ciphertext only".into());
+            }
+            if !matches!(flag, "--domain" | "--out") {
+                return Err("unknown export flag".into());
+            }
             let value = args
                 .get(i + 1)
-                .ok_or_else(|| format!("{} needs a value", args[i]))?;
-            match args[i].as_str() {
-                "--domain" => domain = Some(value.clone()),
-                "--key" => key = Some(value.clone()),
-                "--key-file" => key_file = Some(value.clone()),
-                "--out" => out = Some(PathBuf::from(value)),
-                other => return Err(format!("unknown flag {other:?}")),
+                .filter(|value| !value.is_empty() && !value.starts_with("--"))
+                .ok_or("export flag needs a value")?;
+            match flag {
+                "--domain" if domain.is_none() => domain = Some(value),
+                "--out" if out.is_none() => out = Some(PathBuf::from(value)),
+                _ => return Err("duplicate export flag".into()),
             }
             i += 2;
         }
-        let domain = domain.ok_or("--domain is required")?;
-        let key_on_argv = key.is_some();
-        let key = match (key, key_file) {
-            (Some(_), Some(_)) => return Err("give the key once: --key-file or --key".into()),
-            (Some(hex), None) => hex,
-            (None, Some(path)) => read_key(&path, stdin)?,
-            (None, None) => return Err("--key-file is required".into()),
-        };
-        let out = out.ok_or("--out is required")?;
         Ok(Self {
             domain: domain
+                .ok_or("--domain is required")?
                 .parse()
-                .map_err(|_| "--domain must be 32 hex characters".to_string())?,
-            key: obsync_core::hex::decode_array::<32>(key.trim())
-                .map_err(|_| "the key must be 64 hex characters".to_string())?,
-            out,
-            key_on_argv,
+                .map_err(|_| "--domain must be 32 hex characters")?,
+            out: out.ok_or("--out is required")?,
         })
     }
-}
-
-/// The key's text, from standard input (`-`) or from a regular file that
-/// nobody but its owner can read. The mode is read off the handle that is
-/// then read, never off the name, and a key that anyone else can read is
-/// refused before a byte of it is. Neither error names the path.
-fn read_key(path: &str, stdin: impl Read) -> Result<String, String> {
-    /// Far more than 64 hex characters and a newline, and no more than that.
-    const MAX_KEY_TEXT: u64 = 256;
-    let unreadable = |_| "--key-file: the key could not be read".to_string();
-    let mut text = String::new();
-    if path == "-" {
-        stdin
-            .take(MAX_KEY_TEXT)
-            .read_to_string(&mut text)
-            .map_err(unreadable)?;
-        return Ok(text);
-    }
-    let file = std::fs::File::open(path).map_err(unreadable)?;
-    let meta = file.metadata().map_err(unreadable)?;
-    if !meta.is_file() {
-        return Err("--key-file must be a regular file".into());
-    }
-    if meta.permissions().mode() & 0o077 != 0 {
-        return Err("--key-file must be readable by its owner alone (chmod 600)".into());
-    }
-    file.take(MAX_KEY_TEXT)
-        .read_to_string(&mut text)
-        .map_err(unreadable)?;
-    Ok(text)
 }
 
 /// Scaffolding the subcommand tests share: one configuration on a temp
@@ -435,149 +381,73 @@ mod tests {
         }
     }
 
-    /// Nothing on standard input.
-    const NO_INPUT: &[u8] = b"";
-
     #[test]
-    fn export_arguments_parse_in_any_order() {
-        let a = ExportArgs::parse(
-            &args(&[
-                "--out",
-                "/tmp/out",
-                "--key-file",
-                "-",
-                "--domain",
-                &"cd".repeat(16),
-            ]),
-            format!("{}\n", "ab".repeat(32)).as_bytes(),
-        )
-        .expect("parses");
+    fn export_arguments_parse_without_a_key_in_any_order() {
+        let a = ExportArgs::parse(&args(&["--out", "/tmp/out", "--domain", &"cd".repeat(16)]))
+            .expect("ciphertext export needs no content key");
         assert_eq!(a.out, PathBuf::from("/tmp/out"));
-        assert_eq!(a.key, [0xabu8; 32], "read off standard input");
-        assert!(!a.key_on_argv);
+        assert_eq!(a.domain.to_string(), "cd".repeat(16));
     }
 
-    /// Security item 5: the key comes from a file only its owner can read,
-    /// never from a file anyone else can, and never from a name that is not
-    /// a regular file. The mode is the handle's, read before the key is.
     #[test]
-    fn export_reads_the_key_from_a_file_only_its_owner_can_read() {
-        let dir = crate::storage::testutil::TempDir::new("export-key-file");
-        let path = dir.path().join("domain.key");
-        std::fs::write(&path, format!("{}\n", "ef".repeat(32))).expect("key file");
-        let flags = |file: &str| {
-            args(&[
-                "--domain",
-                &"cd".repeat(16),
-                "--key-file",
-                file,
-                "--out",
-                "/tmp/out",
-            ])
-        };
-        let file = path.display().to_string();
-        for (mode, readable) in [(0o600, true), (0o400, true), (0o640, false), (0o604, false)] {
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("mode");
-            let parsed = ExportArgs::parse(&flags(&file), NO_INPUT);
-            if readable {
-                let a = parsed.expect("an owner-only key file is read");
-                assert_eq!(a.key, [0xefu8; 32]);
-                assert!(!a.key_on_argv);
-            } else {
+    fn export_refuses_key_inputs_without_echoing_or_reading_them() {
+        for flag in ["--key", "--key-file"] {
+            for value in ["SENTINEL-content-key", "-", "/nonexistent/private-key"] {
+                let failure = ExportArgs::parse(&args(&[flag, value]))
+                    .expect_err("server interfaces never accept content keys");
                 assert_eq!(
-                    parsed.expect_err("a key others can read is refused"),
-                    "--key-file must be readable by its owner alone (chmod 600)",
-                    "mode {mode:o}"
+                    failure,
+                    "content keys are refused; export writes ciphertext only"
                 );
-            }
-        }
-        let e = ExportArgs::parse(&flags(&dir.path().display().to_string()), NO_INPUT)
-            .expect_err("a directory is not a key file");
-        assert_eq!(e, "--key-file must be a regular file");
-    }
-
-    /// The command-line form stays (removing it is the owner's decision) and
-    /// is marked, so the dispatch prints its one-line warning.
-    #[test]
-    fn a_key_on_the_command_line_still_parses_and_is_warned_about() {
-        let a = ExportArgs::parse(
-            &args(&[
-                "--domain",
-                &"cd".repeat(16),
-                "--key",
-                &"ab".repeat(32),
-                "--out",
-                "/tmp/out",
-            ]),
-            NO_INPUT,
-        )
-        .expect("parses");
-        assert!(a.key_on_argv);
-        assert!(!ARGV_KEY_WARNING.contains('\n'), "one line");
-        assert!(ARGV_KEY_WARNING.contains("--key-file"));
-        assert!(
-            ExportArgs::parse(
-                &args(&[
+                assert!(!failure.contains(value));
+                let invocation = args(&[
                     "--domain",
                     &"cd".repeat(16),
-                    "--key",
-                    &"ab".repeat(32),
-                    "--key-file",
-                    "-",
                     "--out",
                     "/tmp/out",
-                ]),
-                NO_INPUT,
-            )
-            .is_err(),
-            "the key is given once"
+                    flag,
+                    value,
+                ]);
+                ExportArgs::parse(&invocation)
+                    .expect_err("server interfaces never accept content keys");
+            }
+            assert!(ExportArgs::parse(&args(&[flag])).is_err());
+        }
+        assert_eq!(
+            ExportArgs::parse(&args(&["SENTINEL-private-value"])).expect_err("unknown input"),
+            "unknown export flag"
         );
+        assert!(!USAGE.contains("--key"));
     }
 
     #[test]
     fn export_arguments_refuse_what_is_missing_or_malformed() {
-        assert!(
-            ExportArgs::parse(&args(&["--out", "/tmp"]), NO_INPUT).is_err(),
-            "no domain or key"
-        );
-        assert!(
-            ExportArgs::parse(
-                &args(&["--domain", &"cd".repeat(16), "--out", "/tmp"]),
-                NO_INPUT
-            )
-            .is_err(),
-            "no key at all"
-        );
-        assert!(
-            ExportArgs::parse(&args(&["--domain"]), NO_INPUT).is_err(),
-            "value missing"
-        );
-        assert!(
-            ExportArgs::parse(
-                &args(&["--domain", "zz", "--key", &"ab".repeat(32), "--out", "/tmp"]),
-                NO_INPUT
-            )
-            .is_err(),
-            "domain is not hex"
-        );
-        assert!(
-            ExportArgs::parse(
-                &args(&[
-                    "--domain",
-                    &"cd".repeat(16),
-                    "--key-file",
-                    "-",
-                    "--out",
-                    "/tmp"
-                ]),
-                &b"ab\n"[..]
-            )
-            .is_err(),
-            "key is the wrong length"
-        );
-        assert!(
-            ExportArgs::parse(&args(&["--nope", "1"]), NO_INPUT).is_err(),
-            "unknown flag"
-        );
+        for flags in [
+            args(&[]),
+            args(&["--out", "/tmp"]),
+            args(&["--domain"]),
+            args(&["--domain", "zz", "--out", "/tmp"]),
+            args(&["--domain", &"cd".repeat(16)]),
+            args(&["--domain", &"cd".repeat(16), "--out", ""]),
+            args(&[
+                "--out",
+                "/tmp",
+                "--out",
+                "/tmp/other",
+                "--domain",
+                &"cd".repeat(16),
+            ]),
+            args(&[
+                "--domain",
+                &"cd".repeat(16),
+                "--domain",
+                &"ef".repeat(16),
+                "--out",
+                "/tmp",
+            ]),
+            args(&["--nope", "1"]),
+        ] {
+            assert!(ExportArgs::parse(&flags).is_err());
+        }
     }
 }

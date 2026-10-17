@@ -1,0 +1,214 @@
+// Native settings/Files controls. Read-only identities and independent disk
+// bytes prove the result; only actual Obsidian user controls perform renames.
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { boundManifest, owned, privateRead, privateSave, digest } from './desktop-guard.mjs';
+import { connect, targets, sleep } from './cdp.mjs';
+const [run, source, command, index] = process.argv.slice(2);
+let state, c, watchElapsed, retainedSnapshots=[], scopeStage=null, scopeDeadline=0, renameStage=null, renameFacts;
+const scopeFailureReasons=new Set(['owned scope input deadline','bounded owned Settings pages required','one process-owned Settings target required','lab UI step refused or timed out; no secret-bearing exception printed','CDP deadline','CDP disconnected']);
+const uiPrelude = `const p=app.plugins.plugins['obsync-private-sync'];if(!p?.state?.paired||p.state.custody2()?.phase!=='active'||p.state.data.serverUrl!==P.url)throw Error('owned active selected peer');
+ const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;
+ const one=(selector,text=null)=>{const es=[...document.querySelectorAll(selector)].filter(visible).filter(e=>text===null||e.textContent.trim()===text);if(es.length!==1||es[0].disabled)throw Error('ordinary selected control identity');return es[0];};
+ // Settings can live in the manifest-bound app's separate owned document.
+ const documents=()=>[...new Set([document,app.setting.modalEl?.isConnected?app.setting.modalEl.ownerDocument:null].filter(d=>d&&!d.defaultView?.closed))];
+ const pane=()=>{const ps=documents().flatMap(d=>[...d.querySelectorAll('.mod-settings .vertical-tab-content')]).filter(visible);if(ps.length>1)throw Error('selected settings pane identity');return ps[0]??null;};
+ const selectedRow=(name,optional=false)=>{const root=pane();if(!root)throw Error('selected settings pane identity');const rs=[...root.querySelectorAll('.setting-item')].filter(visible).filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);if(rs.length===0&&optional)return null;if(rs.length!==1)throw Error('selected setting identity');return rs[0];};`;
+const ui = async (body, params={}) => {
+  const value=await c.evaluate(uiPrelude+(['scope','rename'].includes(command)?`try{${body}}catch(error){const reasons={'selected setting identity':'ROW_IDENTITY','selected settings pane identity':'PANE_IDENTITY','selected option changed':'OPTION_IDENTITY','selected textarea absent':'TEXTAREA_UNAVAILABLE','owned selected input focus':'INPUT_FOCUS','native selected text differs':'TEXT_MISMATCH','scope Save pointer target blocked':'SAVE_BLOCKED','ordinary scope save identity':'SAVE_IDENTITY','one Files view required':'FILES_VIEW_IDENTITY','visible selected folder':'FILES_FOLDER_DEADLINE','ordinary folder context menu':'CONTEXT_MENU_DEADLINE','native inline folder rename':'INLINE_RENAME_DEADLINE','native folder title identity':'INLINE_TITLE_IDENTITY','folder title selection':'INLINE_TITLE_SELECTION','ordinary Files folder focus identity':'FILES_FOLDER_FOCUS','ordinary Files target focus':'FILES_TARGET_FOCUS','ordinary Files selection identity':'FILES_SELECTION_IDENTITY'};const count=selector=>Math.min(128,[...document.querySelectorAll(selector)].filter(visible).length);const facts={selectedFolderRows:count('.nav-folder-title[data-path="Team docs"]'),focusedFolderRows:count('.nav-folder-title.has-focus'),selectedTargetFocused:count('.nav-folder-title.has-focus[data-path="Team docs"]'),activeElementInFiles:document.activeElement?.closest?.('.workspace-leaf-content[data-type="file-explorer"]')?1:0,activeElementIsBody:document.activeElement===document.body?1:0,activeFilesLeaf:app.workspace.activeLeaf?.view?.getViewType?.()==='file-explorer'?1:0,inlineRenameRows:count('.nav-folder-title.is-being-renamed'),editableFolderTitles:count('.nav-folder-title-content[contenteditable="true"]'),menuItems:count('.menu-item-title'),renameThreeDots:Math.min(128,[...document.querySelectorAll('.menu-item-title')].filter(visible).filter(e=>e.textContent.trim()==='Rename...').length),renameUnicodeEllipsis:Math.min(128,[...document.querySelectorAll('.menu-item-title')].filter(visible).filter(e=>e.textContent.trim()==='Rename…').length)};return {ownedScopeRefusal:true,facts,reason:Object.hasOwn(reasons,error.message)?reasons[error.message]:error.name==='TypeError'?'RENDERER_TYPE_ERROR':'RENDERER_REFUSAL'};}`:body),params);
+  if(value?.ownedScopeRefusal===true){if(command==='rename')renameFacts=value.facts;throw Error((command==='scope'?'scope-renderer-':'selected-renderer-')+value.reason);}
+  return value;
+};
+async function selectedScope() {
+  const marker=randomUUID(),connections=[],deadline=Date.now()+30000;
+  scopeDeadline=deadline;scopeStage='open-folder-controls';
+  let expired=false,saved=false;
+  // One original30s window, including discovery/actions and a reserved cleanup second.
+  const within=async(action,cleanup=false)=>{
+    const due=cleanup?deadline:deadline-1000,remaining=due-Date.now();
+    if(remaining<=0||expired&&!cleanup)throw Error('owned scope input deadline');
+    let timer;
+    try{const value=await Promise.race([action(),new Promise((_,reject)=>{timer=setTimeout(()=>{expired=true;for(const candidate of connections)candidate.close();reject(Error('owned scope input deadline'));},remaining);})]);if(Date.now()>=due){expired=true;throw Error('owned scope input deadline');}return value;}
+    finally{clearTimeout(timer);}
+  };
+  try {
+    await within(()=>ui(`app.setting.open();app.setting.openTabById('obsync-private-sync');await wait(()=>pane()&&selectedRow('Folder selection',true),'folder settings',Math.max(0,P.deadline-Date.now()));const select=selectedRow('Folder selection').querySelector('select');const options=[...select.options].filter(o=>o.textContent.trim()==='Selected folders only');if(options.length!==1)throw Error('selected option changed');select.value=options[0].value;select.dispatchEvent(new select.ownerDocument.defaultView.Event('change',{bubbles:true}));const t=selectedRow('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected textarea absent');t.focus();t.select();return true;`,{deadline:deadline-1000}));
+    scopeStage='mark-owned-pane';
+    await within(()=>ui(`const root=pane();if(!root||root.hasAttribute('data-obsync-owned-scope'))throw Error('owned scope marker occupied');root.setAttribute('data-obsync-owned-scope',P.marker);return true;`,{marker}));
+    const matches=[];
+    scopeStage='discover-owned-target';
+    const pages=await within(()=>targets(state,'A'));
+    if(!Array.isArray(pages)||pages.length<1||pages.length>8||new Set(pages.map(page=>page.id)).size!==pages.length)throw Error('bounded owned Settings pages required');
+    for(const page of pages) {
+      const candidate=await within(async()=>{const opened=await connect(state,'A',false,page.id);if(expired){opened.close();throw Error('owned scope input deadline');}connections.push(opened);return opened;});
+      const found=await within(()=>candidate.evaluate(`const roots=[...document.querySelectorAll('[data-obsync-owned-scope]')].filter(e=>e.getAttribute('data-obsync-owned-scope')===P.marker);if(roots.length>1)throw Error('scope target ambiguous');return roots.length===1&&roots[0].isConnected&&roots[0].matches('.mod-settings .vertical-tab-content');`,{marker},false));
+      if(found===true)matches.push(candidate);
+    }
+    if(matches.length!==1)throw Error('one process-owned Settings target required');
+    scopeStage='focus-owned-input';
+    const input=matches[0];
+    const scoped=`const roots=[...document.querySelectorAll('[data-obsync-owned-scope]')].filter(e=>e.getAttribute('data-obsync-owned-scope')===P.marker);if(roots.length!==1||!roots[0].isConnected||!roots[0].matches('.mod-settings .vertical-tab-content'))throw Error('owned Settings target changed');const root=roots[0];const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;const selectedRow=name=>{const rows=[...root.querySelectorAll('.setting-item')].filter(visible).filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);if(rows.length!==1)throw Error('owned scope row identity');return rows[0];};`;
+    await within(()=>input.evaluate(scoped+`const t=selectedRow('Selected folders').querySelector('textarea');if(!t||t.disabled)throw Error('selected textarea absent');t.focus();t.select();if(document.activeElement!==t)throw Error('owned selected input focus');return true;`,{marker},false));
+    scopeStage='native-selected-text';
+    await within(()=>input.insertText('Team docs'));
+    scopeStage='locate-native-save';
+    const point=await within(()=>input.evaluate(scoped+`if(selectedRow('Selected folders').querySelector('textarea').value!=='Team docs')throw Error('native selected text differs');const buttons=[...selectedRow('Save on this device').querySelectorAll('button')].filter(e=>visible(e)&&!e.disabled&&e.textContent.trim()==='Save');if(buttons.length!==1)throw Error('ordinary scope save identity');const b=buttons[0];b.scrollIntoView({block:'center'});const r=b.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y);if(!Number.isFinite(x)||!Number.isFinite(y)||x<0||y<0||x>=innerWidth||y>=innerHeight||!hit||(hit!==b&&!b.contains(hit)))throw Error('scope Save pointer target blocked');return {x,y};`,{marker},false));
+    scopeStage='native-save-click';
+    await within(()=>input.mouseEvent('mousePressed',point.x,point.y));await within(()=>input.mouseEvent('mouseReleased',point.x,point.y));
+    scopeStage='verify-saved-policy';
+    await within(()=>ui(`await wait(()=>!p.changingScope&&JSON.stringify(p.state.data.syncFolders)===JSON.stringify(['Team docs']),'scope save',Math.max(0,P.deadline-Date.now()));return true;`,{deadline:deadline-1000}));
+    saved=true;
+  } finally {
+    try {await within(()=>c.evaluate(`const docs=[...new Set([document,app.setting?.modalEl?.ownerDocument].filter(d=>d&&!d.defaultView?.closed))];for(const d of docs)for(const e of d.querySelectorAll('[data-obsync-owned-scope]'))if(e.getAttribute('data-obsync-owned-scope')===P.marker)e.removeAttribute('data-obsync-owned-scope');if(P.close)app.setting.close();return true;`,{marker,close:saved}),true);}
+    finally {for(const candidate of connections)candidate.close();}
+  }
+}
+async function pointer(selector, text=null, button='left') {
+  const point=await ui(`const e=one(P.selector,P.text);e.scrollIntoView({block:'center'});const r=e.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};`,{selector,text});
+  await c.mouseEvent('mousePressed',point.x,point.y,button);
+  await c.mouseEvent('mouseReleased',point.x,point.y,button);
+}
+async function exactBytes(folder) {
+  const names=readdirSync(state.devices.A.vault);
+  if(names.filter(n=>n.toLowerCase()==='team docs').length!==1||!names.includes(folder))throw Error('exact selected folder case');
+  const notes=['one','two'].map(label=>JSON.parse(privateRead(join(state.secrets,`note-selected-${label}.json`))));
+  for(const note of notes){const path=join(state.devices.A.vault,folder,note.path.split('/').at(-1));owned(path,false,false);if(readFileSync(path,'utf8')!==note.text)throw Error('selected descendant disk bytes');}
+  const local=JSON.parse(privateRead(join(state.secrets,'note-selected-outside.json'))),path=join(state.devices.A.vault,local.path);
+  owned(path,false,false);if(readFileSync(path,'utf8')!==local.text)throw Error('local excluded bytes changed');
+  if(existsSync(join(state.devices.A.vault,'Outside/Phone-sentinel.md')))throw Error('foreign excluded file received');
+  const trash=join(state.devices.A.vault,'.trash');if(existsSync(trash)){owned(trash,true,false);if(readdirSync(trash).length)throw Error('owned trash nonempty');}
+  return notes.map(n=>({suffix:n.path.split('/').at(-1),sha256:digest(n.text)}));
+}
+async function snapshot(folder) {
+  const disk=await exactBytes(folder);
+  const value=await ui(`await wait(()=>!p.changingScope&&JSON.stringify(p.state.data.syncFolders)===JSON.stringify([P.folder])&&p.currentStatus().kind==='idle','selected idle policy',60000);
+    if(app.vault.getAbstractFileByPath('Outside/Phone-sentinel.md')||p.state.fileByPath('Outside/Sentinel.md'))throw Error('excluded boundary indexed or tracked');
+    const notes=[];for(const expected of P.disk){const r=p.state.fileByPath(P.folder+'/'+expected.suffix);if(!/^[a-f0-9]{32}$/.test(r?.fileId??'')||!/^[a-f0-9]{64}$/.test(r?.versionId??''))throw Error('selected identity absent');notes.push({...expected,fileId:r.fileId,versionId:r.versionId});}
+    const page=await p.transport.listFiles(null,{interactive:true});if(page.next!==null||page.files.length<3||page.files.length>64)throw Error('selected bounded complete inventory');
+    const records=[];for(const f of page.files){const file=await p.transport.getFile(f.file_id,{interactive:true});if(file.versions.length>128||JSON.stringify(file).length>1048576)throw Error('selected history budget');records.push({fileId:f.file_id,heads:[...file.heads].sort(),versions:file.versions.map(v=>({id:v.version_id,parents:[...v.parents].sort(),deleted:v.deleted})).sort((a,b)=>a.id.localeCompare(b.id))});}
+    records.sort((a,b)=>a.fileId.localeCompare(b.fileId));return {generation:p.state.custody2().generation,notes,records};`,{folder,disk});
+  await exactBytes(folder);return {schema:1,sourceHead:state.source_head,folder,...value};
+}
+function checkedSnapshot(snapshot){
+    if(!/^[a-f0-9]{40}$/.test(snapshot.sourceHead??'')||!/^[a-f0-9]{32}$/.test(snapshot.generation??'')||
+       !Array.isArray(snapshot.notes)||snapshot.notes.length!==2||new Set(snapshot.notes.map(n=>n.fileId)).size!==2||
+       JSON.stringify(snapshot.notes.map(n=>n.suffix).sort())!==JSON.stringify(['One.md','Two.md'])||!Array.isArray(snapshot.records)||
+       new Set(snapshot.records.map(r=>r.fileId)).size!==snapshot.records.length)throw Error('selected snapshot incomplete');
+    for(const note of snapshot.notes){
+      if(!/^[a-f0-9]{64}$/.test(note.sha256??'')||!/^[a-f0-9]{32}$/.test(note.fileId??'')||!/^[a-f0-9]{64}$/.test(note.versionId??''))throw Error('selected note binding invalid');
+      const records=snapshot.records.filter(r=>r.fileId===note.fileId);
+      const record=records[0];
+      if(records.length!==1||JSON.stringify(record.heads)!==JSON.stringify([note.versionId])||!Array.isArray(record.versions)||
+         record.versions.length<1||record.versions.length>128||new Set(record.versions.map(v=>v.id)).size!==record.versions.length||
+         !record.versions.some(v=>v.id===note.versionId))throw Error('selected history absent');
+      for(const version of record.versions){
+        if(!/^[a-f0-9]{64}$/.test(version.id??'')||version.deleted!==false||!Array.isArray(version.parents)||version.parents.length>128||
+           new Set(version.parents).size!==version.parents.length||version.parents.some(id=>!/^[a-f0-9]{64}$/.test(id)||!record.versions.some(v=>v.id===id)))throw Error('selected note tombstone or incomplete ancestry');
+      }
+      for(const version of record.versions)ancestry(record,version.id); // cycles fail even in equal snapshots
+    }
+}
+export function retainSelectedSnapshot(run, label, value) {
+  if(!['original','down','up','quiet-down','quiet-up'].includes(label))throw Error('selected snapshot label');
+  checkedSnapshot(value);
+  if(value.schema!==1||!['Team docs','team docs'].includes(value.folder)||value.records.length<3||value.records.length>64)throw Error('selected snapshot bounds');
+  for(const record of value.records){
+    if(!/^[a-f0-9]{32}$/.test(record.fileId??'')||!Array.isArray(record.heads)||record.heads.length<1||record.heads.length>128||!Array.isArray(record.versions)||record.versions.length<1||record.versions.length>128||JSON.stringify(record).length>1048576||
+       record.heads.some(id=>!/^[a-f0-9]{64}$/.test(id)||!record.versions.some(v=>v.id===id))||new Set(record.heads).size!==record.heads.length||new Set(record.versions.map(v=>v.id)).size!==record.versions.length||
+       record.versions.some(v=>!/^[a-f0-9]{64}$/.test(v.id??'')||typeof v.deleted!=='boolean'||!Array.isArray(v.parents)||v.parents.length>128||v.parents.some(id=>!/^[a-f0-9]{64}$/.test(id))))throw Error('selected retained history bounds');
+  }
+  const bytes=Buffer.from(JSON.stringify(value)+'\n'),path=`evidence/selected-snapshot-${label}.json`;
+  owned(join(run,'evidence'),true);writeFileSync(join(run,path),bytes,{mode:0o600,flag:'wx'});
+  const actual=readFileSync(join(run,path));if(!actual.equals(bytes))throw Error('selected snapshot readback');
+  return {label,path,sha256:digest(actual),bytes:actual.length};
+}
+function ancestry(record,head){
+  const found=new Set(),visiting=new Set();
+  const visit=id=>{if(visiting.has(id))throw Error('selected ancestry cycle');if(found.has(id))return;const version=record.versions.find(v=>v.id===id);if(!version)throw Error('selected ancestry missing');visiting.add(id);for(const parent of version.parents)visit(parent);visiting.delete(id);found.add(id);};
+  visit(head);return found;
+}
+export function preservedRename(before,after){
+  checkedSnapshot(before);checkedSnapshot(after);
+  const identities=s=>s.notes.map(({suffix,fileId,sha256})=>({suffix,fileId,sha256}));
+  if(before.sourceHead!==after.sourceHead||before.generation!==after.generation||JSON.stringify(identities(before))!==JSON.stringify(identities(after)))throw Error('selected note identities or bytes changed');
+  for(const note of before.notes){
+    const old=before.records.find(r=>r.fileId===note.fileId),current=after.records.find(r=>r.fileId===note.fileId),head=after.notes.find(n=>n.fileId===note.fileId).versionId;
+    if(before.folder!==after.folder&&note.versionId===head)throw Error('renamed path manifest was not published');
+    const reachable=ancestry(current,head);
+    if(!reachable.has(note.versionId))throw Error('rename lost prior head ancestry');
+    for(const version of old.versions){if(JSON.stringify(current.versions.find(v=>v.id===version.id))!==JSON.stringify(version))throw Error('rename lost or changed prior history');}
+    for(const version of current.versions){if(!old.versions.some(v=>v.id===version.id)&&!reachable.has(version.id))throw Error('rename added detached history');}
+  }
+}
+export function unchangedQuiet(before,after){
+  checkedSnapshot(before);checkedSnapshot(after);
+  if(before.sourceHead!==after.sourceHead||before.generation!==after.generation||before.folder!==after.folder||
+     JSON.stringify(before.notes)!==JSON.stringify(after.notes)||JSON.stringify(before.records)!==JSON.stringify(after.records))throw Error('quiet server heads or histories changed');
+}
+async function main(){
+try {
+  if(!['scope','rename','before','returned','watch-down','watch-up'].includes(command)||index!==undefined)throw Error('finite selected desktop command');
+  state=boundManifest(run,source);c=await connect(state,'A');
+  if(command==='scope'){
+    await selectedScope();
+  }else if(command==='rename'){
+    renameStage='snapshot-original';
+    const before=await snapshot('Team docs');retainedSnapshots.push(retainSelectedSnapshot(state.run,'original',before));privateSave(join(state.secrets,'selected-original.json'),JSON.stringify(before));
+    renameStage='reveal-files-folder';
+    await ui(`app.setting.close();const leaves=app.workspace.getLeavesOfType('file-explorer');if(leaves.length!==1)throw Error('one Files view required');await app.workspace.revealLeaf(leaves[0]);app.workspace.setActiveLeaf(leaves[0],{focus:true});await wait(()=>{const e=document.querySelector('.nav-folder-title[data-path="Team docs"]');return e&&visible(e);},'visible selected folder');return true;`);
+    renameStage='focus-files-folder';
+    await pointer('.nav-folder-title[data-path="Team docs"]');
+    // A plain folder click sets activeDom but clears keyboard focus. These
+    // ordinary tree keys return from the preceding Outside fixture to it.
+    await c.keyEvent('keyDown','ArrowUp','ArrowUp');await c.keyEvent('keyUp','ArrowUp','ArrowUp');
+    await c.keyEvent('keyDown','ArrowDown','ArrowDown');await c.keyEvent('keyUp','ArrowDown','ArrowDown');
+    await ui(`const focused=[...document.querySelectorAll('.nav-folder-title.has-focus')].filter(visible);if(focused.length!==1||focused[0].getAttribute('data-path')!=='Team docs')throw Error('ordinary Files folder focus identity');const files=focused[0].closest('.workspace-leaf-content[data-type="file-explorer"]'),leaves=app.workspace.getLeavesOfType('file-explorer');if(leaves.length!==1||app.workspace.activeLeaf!==leaves[0]||!files?.isConnected||leaves[0].view.containerEl!==files||!files.contains(focused[0])||(document.activeElement!==document.body&&!files.contains(document.activeElement)))throw Error('ordinary Files target focus');const selected=[...files.querySelectorAll('.nav-file-title.is-selected,.nav-folder-title.is-selected')].filter(visible);if(selected.length>1||selected.some(e=>e!==focused[0]))throw Error('ordinary Files selection identity');return true;`);
+    renameStage='native-files-rename-key';
+    await c.keyEvent('keyDown','F2','F2');await c.keyEvent('keyUp','F2','F2');
+    renameStage='select-inline-title';
+    await ui(`const e=await wait(()=>document.querySelector('.nav-folder-title.is-being-renamed .nav-folder-title-content'),'native inline folder rename');if(!e.isContentEditable||e.textContent!=='Team docs')throw Error('native folder title identity');e.focus();const range=document.createRange(),s=document.getSelection();range.selectNodeContents(e);s.removeAllRanges();s.addRange(range);if(s.toString()!=='Team docs')throw Error('folder title selection');return true;`);
+    renameStage='native-inline-text';
+    await c.insertText('team docs');renameStage='commit-inline-rename';await c.keyEvent('keyDown','Enter','Enter');await c.keyEvent('keyUp','Enter','Enter');
+    renameStage='verify-renamed-history';
+    await sleep(500);const after=await snapshot('team docs');preservedRename(before,after);
+  }else if(command==='before'){
+    const current=await snapshot('team docs');preservedRename(JSON.parse(privateRead(join(state.secrets,'selected-original.json'))),current);
+    privateSave(join(state.secrets,'selected-before-return.json'),JSON.stringify(current));retainedSnapshots.push(retainSelectedSnapshot(state.run,'down',current));
+  }else if(command==='returned'){
+    const end=Date.now()+60000;while(!readdirSync(state.devices.A.vault).includes('Team docs')){if(Date.now()>end)throw Error('passive selected case return');await sleep(100);}
+    const current=await snapshot('Team docs');preservedRename(JSON.parse(privateRead(join(state.secrets,'selected-before-return.json'))),current);
+    privateSave(join(state.secrets,'selected-watch.json'),JSON.stringify(current));retainedSnapshots.push(retainSelectedSnapshot(state.run,'up',current));
+  }else{
+    const folder=command==='watch-down'?'team docs':'Team docs';
+    const before=JSON.parse(privateRead(join(state.secrets,command==='watch-down'?'selected-before-return.json':'selected-watch.json'))),start=performance.now();
+    let finalSnapshot;
+    for(let i=0;i<=10;i++){
+      if(i)await sleep(30000);
+      const current=await snapshot(folder);unchangedQuiet(before,current);finalSnapshot=current;
+    }
+    retainedSnapshots.push(retainSelectedSnapshot(state.run,command==='watch-down'?'quiet-down':'quiet-up',finalSnapshot));
+    watchElapsed=Math.floor(performance.now()-start);if(watchElapsed<300000)throw Error('selected watch too short');
+    const logs=c.consoleSummary;
+    if(!Number.isFinite(logs.windowStartedAtEpochMs)||!['windowErrors','windowExceptions','incomingManifestScopeRefusals'].every(key=>Number.isInteger(logs[key])&&logs[key]>=0))throw Error('scoped selected log coverage absent');
+    if(logs.windowExceptions||logs.windowErrors||logs.incomingManifestScopeRefusals)throw Error('selected incoming manifest or native console failure');
+  }
+  const receipt={schema:1,result:'PASS',sourceHead:state.source_head,command,watchMs:watchElapsed,retainedSnapshots,
+    ordinaryUiAction:command==='scope'||command==='rename',nativeTrustedInput:command==='scope'||command==='rename',
+    independentDiskBytes:command!=='scope',selectedIdentityAndBytesPreserved:command!=='scope',priorHistoryAndAncestryPreserved:command!=='scope',
+    historiesAndHeadsUnchanged:command.startsWith('watch-'),noteTombstonesAbsent:command!=='scope',
+    logCoverage:command.startsWith('watch-')?'OBSERVED':'NOT_MEASURED',incomingManifestScopeRefusals:command.startsWith('watch-')?c.consoleSummary.incomingManifestScopeRefusals:undefined,
+    excludedControlsPreserved:command!=='scope',trashEmpty:command!=='scope',physicalPhone:'NOT_RUN'};
+  writeFileSync(join(state.run,'evidence',`selected-desktop-${command}.json`),JSON.stringify(receipt,null,2)+'\n',{mode:0o600,flag:'wx'});console.log(JSON.stringify(receipt));
+}catch(error){
+  let scopeFacts;
+  if(command==='scope'&&c&&Date.now()<scopeDeadline){
+    let timer;
+    try{scopeFacts=await Promise.race([c.evaluate(`const visible=e=>!!e&&e.getBoundingClientRect().width>0&&e.getBoundingClientRect().height>0;const documents=[...new Set([document,app.setting?.modalEl?.isConnected?app.setting.modalEl.ownerDocument:null].filter(d=>d&&!d.defaultView?.closed))];const panes=documents.flatMap(d=>[...d.querySelectorAll('.mod-settings .vertical-tab-content')]).filter(visible);const rows=panes.flatMap(p=>[...p.querySelectorAll('.setting-item')]).filter(visible);const named=name=>rows.filter(r=>r.querySelector('.setting-item-name')?.textContent.trim()===name);const areas=named('Selected folders').flatMap(r=>[...r.querySelectorAll('textarea')]);return {documents:documents.length,panes:panes.length,folderRows:named('Folder selection').length,selectedRows:named('Selected folders').length,selectedInputs:areas.length,disabledSelectedInputs:areas.filter(t=>t.disabled).length,saveRows:named('Save on this device').length};`),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('diagnostic deadline')),Math.min(500,scopeDeadline-Date.now()));})]);}catch{}finally{clearTimeout(timer);}
+    if(scopeFacts)scopeFacts=Object.fromEntries(Object.entries(scopeFacts).map(([key,value])=>[key,Number.isInteger(value)&&value>=0?Math.min(value,128):null]));
+  }
+  console.log(JSON.stringify({result:'FAIL',stage:'selected-desktop-'+command,...(command==='scope'?{scopeStage,scopeReason:scopeFailureReasons.has(error.message)||/^scope-renderer-(?:ROW_IDENTITY|PANE_IDENTITY|OPTION_IDENTITY|TEXTAREA_UNAVAILABLE|INPUT_FOCUS|TEXT_MISMATCH|SAVE_BLOCKED|SAVE_IDENTITY|RENDERER_TYPE_ERROR|RENDERER_REFUSAL)$/.test(error.message)?error.message:'OTHER_REFUSAL',scopeFacts}:{}),...(command==='rename'?{renameStage,renameReason:/^selected-renderer-(?:FILES_VIEW_IDENTITY|FILES_FOLDER_DEADLINE|CONTEXT_MENU_DEADLINE|INLINE_RENAME_DEADLINE|INLINE_TITLE_IDENTITY|INLINE_TITLE_SELECTION|FILES_FOLDER_FOCUS|FILES_TARGET_FOCUS|FILES_SELECTION_IDENTITY|RENDERER_TYPE_ERROR|RENDERER_REFUSAL)$/.test(error.message)?error.message:'OTHER_REFUSAL',renameFacts}:{}),detail:'Owned selected UI or independent boundary refused.'}));process.exitCode=1;}
+finally{c?.close();}
+}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)await main();

@@ -14,6 +14,7 @@ const { applyChange } = require("../build/sync/pull.js");
 const { historyManifest } = require("../build/sync/history.js");
 const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
 const c = require("../build/crypto.js");
+const seal2 = require("../build/seal2.js");
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 const turn = () => new Promise((resolve) => setImmediate(resolve));
 /**
@@ -102,7 +103,7 @@ async function repeated(count, len = CHUNK_MIN, isMobile = false) {
   const r = await rig({ isMobile });
   r.path = "Notes/repeated.bin";
   const bytes = new Uint8Array(len).fill(83);
-  const sealed = await c.encryptChunk(r.keys.domainKey, bytes);
+  const sealed = await seal2.encryptChunk2(r.keys.domainKey, r.context, bytes);
   const chunks = Array.from({ length: count }, () => ({ sid: sealed.sid, cid: c.hex(sealed.cid), len }));
   const size = count * len;
   const manifest = { v: 1, path: r.path, size, mtime: 1000, domain: r.context.domainId,
@@ -130,7 +131,7 @@ test("unchanged remembered file repairs the post-quarantine inventory gap; peer 
   r.server.chunks.delete(r.sid);
   const before = structuredClone(r.state.data), journal = structuredClone(r.server.journal);
   const result = await new ChunkRepair(r.context).step();
-  assert.deepEqual(result, { kind: "repaired", bytes: 25 });
+  assert.deepEqual(result, { kind: "repaired", bytes: 25 }, "repair must regenerate the original suite2 chunk");
   assert.deepEqual(r.server.chunks.get(r.sid), r.ciphertext);
   assert.deepEqual(r.state.data, before);
   assert.deepEqual(r.server.journal, journal);
@@ -728,11 +729,11 @@ test("a recorded version a restored server no longer holds is re-sent, never a c
   const file = r.server.files.get(fileId);
   assert.equal(file.heads.length, 1);
   const head = file.versions.find((version) => version.version_id === file.heads[0]);
-  const manifest = JSON.parse(await c.decryptManifest(r.keys.manifestKey, fileId,
-    await c.contentVersionId(fileId, head.parents, head.sids), c.unhex(head.manifest_nonce), c.unbase64(head.manifest_ct)));
+  const manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await seal2.openRecord(r.keys.manifestKey, 1,
+    { ...r.context, fileId, parents: head.parents, sids: head.sids }, c.unbase64(head.manifest_ct))));
   assert.equal(manifest.path, path);
   assert.equal(manifest.deleted, false);
-  assert.equal(new TextDecoder().decode(await c.decryptChunk(r.keys.domainKey, c.unhex(manifest.chunks[0].cid),
+  assert.equal(new TextDecoder().decode(await seal2.decryptChunk2(r.keys.domainKey, r.context, c.unhex(manifest.chunks[0].cid),
     r.server.chunks.get(manifest.chunks[0].sid))), "REPAIR PLAINTEXT SENTINEL");
   assert.equal(r.host.notices.filter((notice) => /your server went back to an earlier state, so this device sent 1 change of its own again\./.test(notice)).length, 1);
   engine.stop(); r.server.releaseFeed(); await engine.stopAndWait();

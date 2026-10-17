@@ -151,12 +151,13 @@ const DEVICE = {
   history: [],
 };
 
-async function devicesPage() {
+async function devicesPage({ cookie = COOKIE, revoke = reply(204) } = {}) {
   const opened = await open({
     hash: '#devices',
+    cookie,
     routes: {
       [`GET ${ADMIN}/devices`]: reply(200, { devices: [DEVICE] }),
-      [`POST ${ADMIN}/devices/dev-1/revoke`]: reply(204),
+      [`POST ${ADMIN}/devices/dev-1/revoke`]: revoke,
     },
   });
   const row = opened.document.clonesOf('tpl-device')[0];
@@ -164,13 +165,19 @@ async function devicesPage() {
   return { ...opened, row };
 }
 
-test('revoking asks first: Revoke opens the confirmation and sends nothing', async () => {
+test('removal opens both choices with no selection and sends nothing', async () => {
   const { net, row } = await devicesPage();
   row.field('revoke-open').click();
   await settle();
 
   assert.equal(row.field('confirm').hidden, false, 'the confirmation is showing');
   assert.equal(row.field('revoke-open').hidden, true, 'and the button that opened it is not');
+  assert.equal(row.field('removal-choices').hidden, false);
+  assert.equal(row.field('revoke-do').hidden, true, 'no access-only confirmation before choosing');
+  assert.equal(row.field('revoke-strong').getAttribute('aria-pressed'), 'false');
+  assert.equal(row.field('revoke-access').getAttribute('aria-pressed'), 'false');
+  row.field('revoke-do').click(); // Direct event delivery cannot bypass explicit selection.
+  await settle();
   assert.deepEqual(
     net.of('POST', `${ADMIN}/devices/dev-1/revoke`),
     [],
@@ -178,9 +185,10 @@ test('revoking asks first: Revoke opens the confirmation and sends nothing', asy
   );
 });
 
-test('Cancel closes the confirmation and sends nothing; Revoke device sends exactly one POST', async () => {
+test('Cancel clears the choice and sends nothing; explicit access-only confirmation sends exactly one POST', async () => {
   const { net, row } = await devicesPage();
   row.field('revoke-open').click();
+  row.field('revoke-access').click();
   row.field('revoke-cancel').click();
   await settle();
   assert.equal(row.field('confirm').hidden, true, 'cancelling closes it');
@@ -189,9 +197,99 @@ test('Cancel closes the confirmation and sends nothing; Revoke device sends exac
   row.field('revoke-open').click();
   row.field('revoke-do').click();
   await settle();
+  assert.deepEqual(net.of('POST', `${ADMIN}/devices/dev-1/revoke`), [], 'cancel does not retain a weak default');
+  row.field('revoke-access').click();
+  row.field('revoke-do').click();
+  await settle();
   const posts = net.of('POST', `${ADMIN}/devices/dev-1/revoke`);
   assert.equal(posts.length, 1, `confirming revokes once, not ${posts.length} times`);
   assert.equal(posts[0].headers['X-Obsync-Csrf'], CSRF);
+});
+
+test('strong removal is an unavailable trusted-client handoff, including after access-only selection', async () => {
+  const { el, net, row } = await devicesPage();
+  row.field('revoke-open').click();
+  row.field('revoke-access').click();
+  row.field('revoke-strong').click();
+  assert.equal(row.field('revoke-strong').getAttribute('aria-pressed'), 'true');
+  assert.equal(row.field('revoke-access').getAttribute('aria-pressed'), 'false');
+  assert.equal(row.field('revoke-do').hidden, true);
+  assert.match(row.field('confirm-text').textContent, /unavailable here\. Continue on a trusted Obsidian device to rotate keys\./);
+  assert.match(row.field('confirm-text').textContent, /On a retained device.*obsync settings.*Devices, choose Revoke, then Rotate key\./);
+  assert.match(row.field('confirm-text').textContent, /No access has been revoked and no rotation has been started here\./);
+  row.field('revoke-do').click(); // A queued/stale access-only event after switching must also refuse.
+  await settle();
+  assert.deepEqual(net.calls.filter((call) => call.method !== 'GET'), [], 'handoff sends no mutation of any kind');
+  assert.equal(net.calls.length, 1, 'only the original list read; no server operation is created');
+  assert.equal(el('status').textContent, '', 'no completed or pending server work is claimed');
+  assert.equal(row.field('confirm').hidden, false, 'the selected instructions remain visible');
+});
+
+test('access-only names retained-key consequences before and after its separate confirmation', async () => {
+  const { el, net, row } = await devicesPage();
+  row.field('revoke-open').click();
+  row.field('revoke-strong').click();
+  row.field('revoke-access').click();
+  assert.equal(row.field('revoke-strong').getAttribute('aria-pressed'), 'false');
+  assert.equal(row.field('revoke-access').getAttribute('aria-pressed'), 'true');
+  assert.equal(row.field('revoke-do').hidden, false);
+  assert.match(row.field('confirm-text').textContent, /^Revoke server access only for laptop\?/);
+  assert.match(row.field('confirm-text').textContent, /Keys are not rotated: a retained key can still decrypt later ciphertext encrypted with the same key if obtained\./);
+  assert.match(row.field('confirm-text').textContent, /last active device cannot be revoked/);
+  assert.deepEqual(net.calls.filter((call) => call.method !== 'GET'), [], 'choosing access-only still requires confirmation');
+  row.field('revoke-do').click();
+  await settle();
+  const posts = net.of('POST', `${ADMIN}/devices/dev-1/revoke`);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].body, undefined, 'no content key, backup or new protocol body');
+  assert.equal(posts[0].headers['X-Obsync-Csrf'], CSRF);
+  assert.match(el('status').textContent, /The server reports that laptop's access is revoked.*This action does not rotate keys; a retained key can still decrypt later ciphertext encrypted with the same key if obtained\./);
+});
+
+test('removal explanations survive the template fragment being drained into the table', async () => {
+  const { net, row } = await devicesPage();
+  const open = row.field('revoke-open');
+  const strong = row.field('revoke-strong');
+  const access = row.field('revoke-access');
+  const cancel = row.field('revoke-cancel');
+  const text = row.field('confirm-text');
+  const act = row.field('revoke-do');
+  // A real DocumentFragment becomes empty on insertion. Its retained element
+  // references still work, but a new selector against that fragment finds nothing.
+  row.querySelector = () => null;
+  open.click();
+  strong.click();
+  assert.match(text.textContent, /unavailable here\. Continue on a trusted Obsidian device to rotate keys\./);
+  assert.match(text.textContent, /No access has been revoked and no rotation has been started here\./);
+  assert.equal(act.hidden, true);
+  access.click();
+  assert.match(text.textContent, /^Revoke server access only for laptop\?/);
+  assert.match(text.textContent, /retained key can still decrypt later ciphertext encrypted with the same key/);
+  assert.equal(act.hidden, false);
+  cancel.click();
+  assert.equal(text.textContent, 'Choose how to remove laptop. The last active device cannot be revoked.');
+  assert.equal(act.hidden, true);
+  await settle();
+  assert.deepEqual(net.calls.filter(call => call.method !== 'GET'), []);
+});
+
+test('access-only refuses without CSRF and preserves the server last-device refusal', async () => {
+  for (const [options, expectedPosts, detail] of [
+    [{ cookie: '' }, 0, 'This browser holds no CSRF cookie. Sign in again.'],
+    [{ revoke: reply(409, { error: 'last_device', detail: 'The last active device cannot be revoked.' }) }, 1,
+      'The last active device cannot be revoked.'],
+  ]) {
+    const { el, net, row } = await devicesPage(options);
+    row.field('revoke-open').click();
+    row.field('revoke-access').click();
+    row.field('revoke-do').click();
+    await settle();
+    assert.equal(net.of('POST', `${ADMIN}/devices/dev-1/revoke`).length, expectedPosts);
+    assert.equal(el('banner').hidden, false);
+    assert.equal(el('banner-text').textContent, detail);
+    assert.equal(el('status').textContent, '', 'a refusal never claims removal');
+    assert.equal(net.of('GET', `${ADMIN}/devices`).length, 1, 'no successful-removal reload');
+  }
 });
 
 /* ---- a device still pairing (issue #152) --------------------------------- */
@@ -286,9 +384,11 @@ test('a forgotten device is on neither body, and the page says how many are not 
 test('Forget on a revoked device asks first, then archives once with the CSRF header, and says so (#247)', async () => {
   const { net, el, document } = await foldPage([DEVICE, REVOKED(1)]);
   const [laptop, old] = document.clonesOf('tpl-device');
-  assert.equal(laptop.field('revoke-open').textContent, '', 'a working device keeps Revoke as index.html has it');
+  assert.equal(laptop.field('revoke-open').textContent, '', 'a working device keeps Remove device as index.html has it');
   assert.equal(old.field('revoke-open').textContent, 'Forget');
   assert.equal(old.field('revoke-do').textContent, 'Confirm forget');
+  assert.equal(old.field('removal-choices').hidden, true);
+  assert.equal(old.field('revoke-do').hidden, false);
   assert.equal(old.field('confirm-text').textContent, 'Forget old 1? It leaves this list for good. It already cannot sync, '
     + 'and the server goes on refusing it for that reason: its record stays, so the versions it wrote keep its name. '
     + 'Pair it again to bring it back.');

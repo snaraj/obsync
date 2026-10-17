@@ -40,14 +40,22 @@ import { formatBytes, parseBytes, type Policy } from "../policy";
 import { platformLabel } from "../pairing";
 import { parseSyncFolders } from "../syncScope";
 import { refusalStatus, refusalText } from "../sync/engine";
-import { KEYS_LOST, type EdgeHeader } from "../state";
+import { KEYS_LOST, type EdgeHeader, type State } from "../state";
 import { LEVELS, MERGES, count } from "../notices";
-import { HEADER_NAME, ownHeader, type DeviceRecord } from "../transport";
+import { HEADER_NAME, ownHeader, browserHeader, customHeaderBudget, type DeviceRecord } from "../transport";
 import { VaultPathError } from "../vaultPath";
 import { ConfirmModal, LeaveServerModal, PairClaimModal, PairCreateModal, RECOVERY_UNCONFIRMED, RecoveryPhraseModal, VaultKeyModal, confirmFirst, literal, secretText } from "./modals";
+import { LegacyUpgradeModal, PreviousKeyModal, RevokeModal, RotationModal } from "./rotation";
 
 /** The dashboard's label for the one account a server holds. */
 export const ACCOUNT_NAME = "obsync";
+
+/** Refuse before editing identity or dispatching a storage transaction. */
+export function pendingServerUrlRefusal(state: State, url: string): string | null {
+  return url !== state.data.serverUrl && state.custody2()?.enrollment
+    ? "Setup, recovery or pairing is unfinished for this server. Server URL was not changed. Finish it at the same address. For a different server, use a fresh vault; your local notes stay here."
+    : null;
+}
 
 /** What a copied vault, or one whose folder was renamed outside Obsidian, is told (issue #168). */
 /** The devices that sync, then those that do not, each counted for what it is. */
@@ -161,6 +169,7 @@ function character(char: string): string {
  */
 export function parseEdgeHeaders(text: string): { headers: EdgeHeader[]; trimmed: string[] } | { refusal: string; reason: string } {
   const headers: EdgeHeader[] = [];
+  const names = new Set<string>();
   const trimmed: string[] = [];
   const lines = text.split(/\r?\n/);
   for (const [index, typed] of lines.entries()) {
@@ -200,8 +209,12 @@ export function parseEdgeHeaders(text: string): { headers: EdgeHeader[]; trimmed
       return { refusal: `${where}: a header name cannot contain ${shown}. ${HEADER_FORM}`, reason: "bad_name" };
     }
     if (ownHeader(name)) return { refusal: `${where}: obsync sets ${name} itself, so it cannot be a custom request header. Remove that line.`, reason: "own_header" };
+    if (browserHeader(name)) return { refusal: `${where}: obsync cannot send ${name} as a custom request header. Remove that line.`, reason: "browser_header" };
+    if (names.has(name.toLowerCase())) return { refusal: `${where}: ${name} repeats a header name. Keep only one line for it.`, reason: "duplicate_header" };
     if (value === "") return { refusal: `${where} has no value after the colon. ${HEADER_FORM}`, reason: "no_value" };
+    names.add(name.toLowerCase());
     headers.push({ name, value });
+    if (!customHeaderBudget(headers.map((header) => header.name))) return { refusal: "Too many custom request headers, or their names are too long. Remove unused headers.", reason: "header_budget" };
   }
   return { headers, trimmed };
 }
@@ -242,11 +255,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private revokedShown = false;
   private readingDevices = false;
   /**
-   * WHICH SHOWING OF THE TAB A DEVICE LIST READ IS FOR (iPhone pass,
+   * WHICH SHOWING AND SERVER RECEIPT A DEVICE LIST READ IS FOR (iPhone pass,
    * 2026-09-26). A read can outlive the showing that asked -- on a phone its
    * deadline waits out the app's time in the background -- and the next
    * showing asked nothing of its own, so an outage's "not answering" stood
-   * minutes after sync had resumed. A read answers only its own showing.
+   * minutes after sync had resumed. A read answers only its own showing, before any subsequent list mutation.
    */
   private devicesShown = 0;
   /** Takes an outage's device list error back once the server answers again. */
@@ -410,9 +423,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
     if (this.draftUrl === null) return;
     const url = normalizeServerUrl(this.draftUrl);
     this.draftUrl = null;
-    const refusal = serverUrlRefusal(url, this.plugin.isMobile);
+    const pendingRefusal = pendingServerUrlRefusal(this.plugin.state, url);
+    const refusal = serverUrlRefusal(url, this.plugin.isMobile) ?? pendingRefusal;
     this.refusedUrl = refusal;
     if (refusal !== null) {
+      if (refusal === pendingRefusal) this.plugin.log("settings decision=refused reason=enrollment_pending_server");
       this.say(refusal);
       return;
     }
@@ -812,7 +827,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private setup(): Row {
     return {
       name: "Setup or recover",
-      desc: "Paste the setup token your server wrote at first boot. For an empty server, it creates the account. For an existing account with no syncing device, restore this vault’s 24-word recovery phrase first, then use the token to re-enrol. A retained vault key works too. If the server has no recovery key for this vault, whoever runs it resets its recovery first and gives you the new token. Keep both the token and phrase private.",
+      desc: "Paste the setup token your server wrote at first boot. For an empty server, it creates the account. For an existing account with no syncing device, stage this vault’s complete recovery backup, including its format marker, first, then use the token to re-enrol. A retained vault key works too. If the server has no recovery key for this vault, whoever runs it resets its recovery first and gives you the new token. Keep both the token and backup private.",
       visible: () => this.plugin.state.data.deviceId === null || this.plugin.forgottenDevice,
       render: (setting) => {
         secretText(setting, "Setup token", this.draftToken, (value) => { this.draftToken = value.trim(); });
@@ -1100,12 +1115,8 @@ export class ObsyncSettingTab extends PluginSettingTab {
     } else {
       row.render = (setting) => {
         setting.addButton((button) => button.setButtonText("Revoke").setDestructive().onClick(() => {
-          new ConfirmModal(
-            this.app,
-            `Revoke ${named}?`,
-            self
-              ? "This device will stop syncing immediately. To return, pair from another syncing device, or recover with the setup token and this vault’s key after recovery has been registered. Keep the setup token and 24-word phrase before revoking the last device. The vault key stays in this vault's secret storage."
-              : `${named} will stop syncing immediately. Files already on it stay readable there; it cannot write, delete or read anything new.`,
+          new RevokeModal(
+            this.app, this.plugin, device.device_id, named,
             () => { void this.revoke(device, named); },
           ).open();
         }));
@@ -1118,8 +1129,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
     try {
       await this.plugin.revokeDevice(device.device_id);
       this.say(`${named} is revoked.`);
-      this.deviceList = null;
-      this.update();
+      this.devicesChanged();
     } catch (error) {
       this.say(`${named} was not revoked: ${message(error)}`);
     }
@@ -1147,12 +1157,22 @@ export class ObsyncSettingTab extends PluginSettingTab {
     };
   }
 
+  /** A successful mutation supersedes reads started before its server receipt. */
+  private devicesChanged(): void {
+    this.devicesShown++;
+    this.readingDevices = false;
+    this.deviceList = null;
+    this.deviceListError = null;
+    this.unwatchDevices?.();
+    this.unwatchDevices = null;
+    this.update();
+  }
+
   private async forget(device: DeviceRecord, named: string): Promise<void> {
     try {
       await this.plugin.forgetRevoked(device.device_id);
       this.say(`${named} is forgotten.`);
-      this.deviceList = null;
-      this.update();
+      this.devicesChanged();
     } catch (error) {
       this.say(`${named} was not forgotten: ${refusalText(error)}`);
     }
@@ -1164,11 +1184,11 @@ export class ObsyncSettingTab extends PluginSettingTab {
   private recoveryPhrase(): Row {
     const unconfirmed = (): boolean => this.plugin.state.data.vrk !== null && this.plugin.state.data.recoveryPhrase !== "confirmed";
     return {
-      name: "Recovery phrase",
+      name: "Recovery backup",
       desc: () => this.plugin.state.data.vrk === null
         ? "This device holds no vault key. Pair with a device that has one, or restore the phrase."
         : unconfirmed() ? RECOVERY_UNCONFIRMED
-          : "24 words that are the vault key. Anyone holding them can read this vault; without them and without a paired device the vault cannot be recovered.",
+          : "Keep the complete backup, including its format marker. Anyone holding it can read this vault; without it and without a paired device the vault cannot be recovered.",
       render: (setting) => {
         setting
           .addButton((button) => {
@@ -1179,6 +1199,16 @@ export class ObsyncSettingTab extends PluginSettingTab {
             if (unconfirmed()) button.setCta();
           })
           .addButton((button) => button.setButtonText("Restore or create").onClick(() => { new VaultKeyModal(this.app, this.plugin).open(); }));
+        if (this.plugin.state.paired) setting.addButton(button => button
+          .setButtonText(this.plugin.state.custody2()?.rotation ? "Resume encryption transition" : this.plugin.state.custody2() === null ? "Upgrade encryption" : "Rotate vault key")
+          .onClick(() => { new RotationModal(this.app, this.plugin).open(); }));
+        if (!this.plugin.state.paired && this.plugin.state.custody2() === null) setting.addButton(button => button
+          .setButtonText("Recover legacy vault for upgrade")
+          .onClick(() => { new LegacyUpgradeModal(this.app, this.plugin).open(); }));
+        if (this.plugin.state.paired) setting.addButton(button => button.setButtonText("Pair after rotation")
+          .onClick(() => { new PreviousKeyModal(this.app, this.plugin, "replace").open(); }));
+        if (this.plugin.state.custody2()?.history) setting.addButton(button => button.setButtonText("Remove previous history key")
+          .onClick(() => { new PreviousKeyModal(this.app, this.plugin, "retire").open(); }));
       },
     };
   }

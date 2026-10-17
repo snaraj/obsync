@@ -28,6 +28,7 @@ import {
   readdirSync,
   renameSync,
   rmdirSync,
+  rmSync,
   statSync,
   symlinkSync,
   unlinkSync,
@@ -122,6 +123,7 @@ async function vault({ fs: injected } = {}) {
     domainKey: k.domainKey,
     manifestKey: k.manifestKey,
     domainId: KEYS.domainId,
+    generation: k.generation,
     mapFileId: k.map.fileId,
     deviceId: KEYS.deviceId,
     concurrency: 4,
@@ -327,8 +329,9 @@ test("the reviewer's case: a parent swapped inside the open writes nothing outsi
   assert.ok(refusals(logs).length === 1, logs.join(" | "));
 });
 
-test("a parent swapped for a different real directory is refused by identity alone", async () => {
+test("a parent swapped for a different real directory is refused by identity alone", async (t) => {
   const other = mkdtempSync(join(tmpdir(), "obsync-other-"));
+  t.after(() => rmSync(other, { recursive: true, force: true }));
   let swapper = null;
   const wrote = [];
   const { root, logs, context, publish, applyChange } = await vault({
@@ -350,8 +353,9 @@ test("a parent swapped for a different real directory is refused by identity alo
   );
 });
 
-test("a parent swapped inside a read is refused before a byte is returned", async () => {
+test("a parent swapped inside a read is refused before a byte is returned", async (t) => {
   const other = mkdtempSync(join(tmpdir(), "obsync-other-"));
+  t.after(() => rmSync(other, { recursive: true, force: true }));
   let swapper = null;
   const { root, host } = await vault({
     fs: {

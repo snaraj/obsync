@@ -121,14 +121,12 @@ export class VaultPathError extends Error {
   }
 }
 
-/** A path as the operating system gives one: `/…`, `C:\…` or `C:/…`, `\\server\…`. */
-const ABSOLUTE = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/;
-/** Such a path quoted in a message, as Node words a failed call. */
-const QUOTED_ABSOLUTE = /'(?:\/|[A-Za-z]:[\\/]|\\\\)[^']*'/g;
+/** Quoted operands in a host diagnostic can be relative paths too. */
+const QUOTED_OPERAND = /'[^']*'/g;
 
 /**
  * An error's own words for a LOG LINE, with the paths it names cut out (issue
- * #266). A filesystem error names the ABSOLUTE path it failed on -- in its
+ * #266). A filesystem error names the path it failed on -- in its
  * `path` and `dest` and in its message -- so a line carrying its message named
  * the person's home and vault folders in every log they share, where every
  * other line keeps paths out. The code, the call and the reason stay.
@@ -137,9 +135,19 @@ export function errorText(error: unknown): string {
   let text = error instanceof Error ? error.message : String(error);
   const named = error as { path?: unknown; dest?: unknown } | null | undefined;
   for (const path of [named?.path, named?.dest]) {
-    if (typeof path === "string" && ABSOLUTE.test(path)) text = text.split(path).join("<path>");
+    if (typeof path === "string" && path !== "") text = text.split(path).join("<path>");
   }
-  return text.replace(QUOTED_ABSOLUTE, "'<path>'");
+  // Adapter errors may carry only a message, unlike Node's path properties.
+  // Consume the entire filesystem operand: an apostrophe inside its name
+  // must not make the rest of that name look like diagnostic text.
+  text = text.replace(/^([A-Z_]+: .*?, (?:rename|copyfile|link|symlink) )['"].* -> .*$/s, "$1'<path>' -> '<path>'")
+    .replace(/^([A-Z_]+: .*?, (?:open|unlink|rmdir|mkdir|stat|lstat|scandir|access|readlink) )['"].*$/s, "$1'<path>'")
+    .replace(QUOTED_OPERAND, "'<path>'").replace(/^(File not found: ).*$/s, "$1<path>");
+  // An error is one diagnostic row even if the host includes control text.
+  return Array.from(text, (char) => {
+    const code = char.codePointAt(0) ?? 0;
+    return code < 0x20 || code === 0x7f ? "<control>" : char;
+  }).join("");
 }
 
 /** The reason `value` is not a canonical relative vault path, or `null`. */

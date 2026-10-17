@@ -65,7 +65,7 @@ pub fn put(
     // other than `401`, which is a refusal that has to be classified as a
     // credentialed one to be logged truthfully. `auth::device_chunk` takes
     // the sid as the body hash and re-checks its shape itself.
-    auth::device_chunk(app, req, client, sid_hex)?;
+    let caller = auth::device_chunk(app, req, client, sid_hex)?;
     let sid = render::sid(sid_hex)?;
     let account = app.account_id()?;
 
@@ -95,7 +95,14 @@ pub fn put(
         body: &mut req.body,
         slow: false,
     };
-    let outcome = app.store.put_chunk(&account, &sid, declared, &mut upload);
+    let outcome = app.store.put_chunk_scoped(
+        caller.id,
+        caller.scope,
+        &account,
+        &sid,
+        declared,
+        &mut upload,
+    );
     // A REFUSED CHUNK IS READ TO ITS END BEFORE THE REFUSAL (#304). The
     // watermark and the quota refuse before the store reads a byte, and an
     // answer sent over the unread upload was followed by a close that reset a

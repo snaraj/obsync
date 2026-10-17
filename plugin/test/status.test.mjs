@@ -674,12 +674,18 @@ test("a push that gives up while a pass compares the vault is still work after t
   await stopped(r);
 });
 
-test("a note a pass queues again while its push is in flight reads one file, never two, and the queued push sends what changed meanwhile (#296)", async () => {
+test("a note a pass queues again while its push is in flight reads one file, never two, and the queued push sends what changed meanwhile (#296)", async (t) => {
   const r = await started();
   await r.timers.run(STEP_MS, () => r.server.feedWaiters.length === 1);
+  // Isolate outgoing queue/push work: an arriving own-publication page is
+  // separately counted work, so keep this already-owned long poll pending.
+  const polls = r.server.feedWaiters.splice(0);
+  assert.equal(polls.length, 1, "the fixture owns the existing long poll");
+  const releasePoll = () => { r.server.feedWaiters.push(...polls.splice(0)); r.server.releaseFeed(); };
   // The note's chunk upload is held on the wire until the test lets it go.
   let release;
   const held = new Promise((resolve) => { release = resolve; });
+  t.after(() => { r.engine.stop(); release(); releasePoll(); });
   const request = r.transport.options.request;
   const puts = refuse(r, (sent) => sent.method === "PUT", async (sent) => { await held; return request(sent); });
   const from = r.statuses.length;
@@ -698,6 +704,7 @@ test("a note a pass queues again while its push is in flight reads one file, nev
   await r.timers.run(STEP_MS, () => r.last()?.kind === "idle");
   assert.equal(r.state.fileByPath("Held.md")?.size, edited.length, "idle before the change made during the push was sent");
   assert.deepEqual(r.statuses.slice(from).filter((status) => status.kind === "syncing" && status.pending > 1), [], "one note counted twice");
+  releasePoll();
   await stopped(r);
 });
 

@@ -1,11 +1,11 @@
 /**
  * Device cryptography, checked three ways:
  *
- * 1. Against `fixtures/crypto.json`, the frozen cross-implementation vectors
- *    the Rust core must reproduce byte for byte.
- * 2. Against Node's `node:crypto` as an INDEPENDENT oracle — a different
- *    implementation of SHA-256, HMAC, HKDF and AES-256-GCM than the WebCrypto
- *    the plugin uses, so agreement is evidence rather than a tautology.
+ * 1. Against `fixtures/crypto.json`, frozen generated vectors. Rust core
+ *    reproduces its shared hashing/encoding fields; it does not perform AES.
+ * 2. Against Node's `node:crypto` API for separate byte-composition checks.
+ *    WebCrypto and this API may share the native cipher implementation;
+ *    their agreement does not prove independent AES implementations.
  * 3. Against the RFC 4648 encoding vectors.
  *
  * Node's built-in modules only: no assertion library, no mock framework.
@@ -208,8 +208,8 @@ test("the domain map's nonce is derived, so identical writes collide instead of 
   assert.equal(c.hex(again.nonce), m.nonce, "the same map sealed twice is the same bytes");
   assert.equal(c.hex(again.ciphertext), m.ciphertext_hex);
 
-  // A different plaintext, or a different binder, moves the nonce: the key
-  // and nonce repeat only for a message identical in BOTH.
+  // These different plaintext/binder samples move the nonce. This is not a
+  // proof of uniqueness for every input or a lifetime collision bound.
   const other = await c.encryptDomainMap(mapKey, m.file_id, m.content_version_id, `${m.json} `);
   assert.notEqual(c.hex(other.nonce), m.nonce);
   const binder = await c.contentVersionId(m.file_id, [fixtures.manifest.parents[0]], []);
@@ -527,4 +527,20 @@ test("encryptChunk remembers the sid of exactly the body it made, and of nothing
   assert.equal(c.sealedSid(sealed.ciphertext), sealed.sid);
   assert.equal(sealed.sid, createHash("sha256").update(sealed.ciphertext).digest("hex"));
   assert.equal(c.sealedSid(Uint8Array.from(sealed.ciphertext)), undefined, "a copy is not the body it made");
+});
+
+
+test("explicit legacy byte decrypt preserves authenticated bytes before text decoding", async () => {
+  const f = fixtures.manifest, key = bytes(d0.manifest_key);
+  assert.deepEqual(await c.decryptManifestBytes(key, f.file_id, f.content_version_id, bytes(f.nonce), bytes(f.ciphertext_hex)),
+    utf8(f.json), "legacy byte API must match fixed authenticated vector");
+  const raw = new Uint8Array([0xff, 0xc3, 0x28]), nonce = new Uint8Array(12).fill(19);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  cipher.setAAD(Buffer.concat([Buffer.from(f.file_id, "hex"), Buffer.from(f.content_version_id, "hex")]));
+  const packet = Buffer.concat([cipher.update(raw), cipher.final(), cipher.getAuthTag()]);
+  assert.deepEqual(await c.decryptManifestBytes(key, f.file_id, f.content_version_id, nonce, packet), raw,
+    "legacy byte API must not normalize invalid UTF8");
+  const changed = packet.slice(); changed[0] ^= 1;
+  await assert.rejects(c.decryptManifestBytes(key, f.file_id, f.content_version_id, nonce, changed),
+    "legacy byte API must authenticate before returning bytes");
 });
