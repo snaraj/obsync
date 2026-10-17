@@ -1,4 +1,5 @@
 """Behavioral negative controls; no SDK, emulator, USB or credentials needed."""
+import ast
 import copy
 import hashlib
 import importlib.util
@@ -111,6 +112,17 @@ class Assets(unittest.TestCase):
 
 
 class Control(unittest.TestCase):
+    def test_actual_emulator_launch_is_headless_and_preserves_explicit_options(self):
+        tree=ast.parse(Path(M.__file__).read_text())
+        execute=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='execute')
+        launch=next(n for n in ast.walk(execute) if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='emulator' for t in n.targets))
+        route=['-feature','-WiFiPacketStream','-network-user-mode-options','restrict=on','-wifi-user-mode-options','restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:12346-10.0.2.16:5555','-debug','init']
+        env={'HOME':'/owned/private'};calls=[]
+        scope={'a':SimpleNamespace(sdk=Path('/owned/sdk'),port=5584,gpu='software'),'route_argv':route,'env':env,'owned':SimpleNamespace(launch=lambda *args:calls.append(args))}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[launch],type_ignores=[])),'actual-owned-emulator-launch','exec'),scope)
+        self.assertEqual(len(calls),1);self.assertEqual(calls[0][0],'emulator');self.assertIs(calls[0][2],env)
+        self.assertEqual(calls[0][1],['/owned/sdk/emulator/emulator','-avd','obsync-acceptance','-port','5584',*route,'-no-window','-no-audio','-no-boot-anim','-no-snapshot-load','-no-snapshot-save','-no-metrics','-crash-report-mode','never','-cores','2','-memory','2048','-gpu','software'])
+
     def test_env_removes_host_android_settings(self):
         with patch.dict(os.environ, {'ADBHOST':'personal', 'ADB_VENDOR_KEYS':'personal', 'ANDROID_USER_HOME':'personal'}):
             env = M.adb_env({'environment': {'ADB_USB':'0', 'ADB_VENDOR_KEYS':'owned'}})

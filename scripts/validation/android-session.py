@@ -447,7 +447,7 @@ def execute(a):
         route_argv=TCP.prepare(state)+['-debug','init'] if isolated else []
         save(a.run/'android.json',state)
         emulator = owned.launch('emulator', [str(a.sdk/'emulator/emulator'), '-avd', 'obsync-acceptance',
-            '-port', str(a.port), *route_argv, '-no-audio', '-no-boot-anim', '-no-snapshot-load', '-no-snapshot-save',
+            '-port', str(a.port), *route_argv, '-no-window', '-no-audio', '-no-boot-anim', '-no-snapshot-load', '-no-snapshot-save',
             '-no-metrics', '-crash-report-mode', 'never', '-cores', '2', '-memory', '2048', '-gpu', a.gpu], env)
         boot_deadline = min(deadline, time.monotonic() + a.boot_seconds)
         while time.monotonic() < boot_deadline:

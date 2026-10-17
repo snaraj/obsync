@@ -619,9 +619,11 @@ for (const [destination, what] of [["Journal", "renamed"], ["Archive/Notes", "mo
     const { server, timers, a, b, ids, keys } = await selectedFolder(t);
 
     a.host.renameFolder("Notes", destination);
-    await timers.run(STEP_MS, landed(server, () => Object.entries(NOTES).every(([name, body]) =>
+    // Retiring the folder is expected; only a NOTE tombstone can end this wait early.
+    await timers.run(STEP_MS, () => tombstonesFor(server, Object.values(ids)).length > 0 ||
+      Object.entries(NOTES).every(([name, body]) =>
       b.host.text(`${destination}/${name}`) === body && settled(a, `${destination}/${name}`) &&
-      settled(b, `${destination}/${name}`))));
+      settled(b, `${destination}/${name}`)));
     await timers.run(STEP_MS);
 
     assert.deepEqual(tombstonesFor(server, Object.values(ids)), [], `moving a selected folder tombstoned a note: ${story(server, a, b)}`);

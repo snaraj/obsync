@@ -336,7 +336,8 @@ test("a read-only folder parks only its own notes, and Sync now applies them onc
   const readOnly = refuse(r.host, (path) => path.startsWith("Projects/Beta/"), "EACCES", "open");
   await foreign(r, B3, "Projects/Beta/b3.md", "b3, made in the read-only folder\n");
   const n19 = await foreign(r, N19, "Notes/n19.md", "n19, in a folder that is fine\n");
-  await d.timers.run(1000, () => r.host.text("Notes/n19.md") !== null && r.state.data.lastSeq === n19.seq);
+  // The feed is already awake; do not age its backoff while awaiting real crypto.
+  await d.timers.run(0, () => r.host.text("Notes/n19.md") !== null && r.state.data.lastSeq === n19.seq);
 
   assert.equal(r.host.text("Projects/Beta/b3.md"), null);
   assert.deepEqual(r.state.data.parked, { [B3]: { path: "Projects/Beta/b3.md", reason: "EACCES" } });
@@ -347,7 +348,13 @@ test("a read-only folder parks only its own notes, and Sync now applies them onc
 
   // Nothing is retried inside the first minute.
   const attempts = readOnly.attempts.length;
-  await d.timers.run(1000);
+  assert.equal(attempts, 1, "the page did not immediately retry its refusal");
+  const retry = d.timers.entries.find((entry) => entry.handle === d.engine.parkHandle);
+  assert.ok(retry, "the parked record owns a retry timer");
+  assert.equal(retry.due - d.timers.now, MINUTE, "the first retry waits one full minute");
+  d.timers.now = retry.due - 1;
+  await d.timers.run(0);
+  assert.ok(d.timers.now < retry.due, "the negative interval stays before the retry deadline");
   assert.equal(readOnly.attempts.length, attempts, "a parked record is not retried in a loop");
 
   readOnly.lift();
@@ -489,7 +496,7 @@ test("several parked files: the status counts them, one pass retries them all, a
   const full = refuse(r.host, (path) => path.startsWith("Attachments/"), "ENOSPC", "write");
   const one = await foreign(r, BIG, "Attachments/one.bin", "the first attachment that does not fit\n");
   const two = await foreign(r, VICTIM, "Attachments/two.bin", "the second attachment that does not fit\n");
-  await d.timers.run(1000, () => r.state.data.lastSeq === two.seq);
+  await d.timers.run(0, () => r.state.data.lastSeq === two.seq);
   assert.deepEqual(Object.keys(r.state.data.parked), [BIG, VICTIM]);
   assert.deepEqual(d.last(), {
     kind: "error",
@@ -500,7 +507,21 @@ test("several parked files: the status counts them, one pass retries them all, a
   // ONE schedule for the set: both files at 1, 3 and 7 minutes, never a
   // timer per park.
   const parkedAt = d.timers.now;
-  await d.timers.run(5000, () => d.timers.now >= parkedAt + 10 * MINUTE);
+  const completed = () => r.host.logs.filter((line) => line.startsWith("feed decision=retried trigger=timer ")).length;
+  const before = completed();
+  let passes = 0;
+  // Time is frozen while a retry is awaiting real crypto or disk. Advance
+  // only its actual timer after the previous pass has finished both files.
+  await d.timers.run(0, () => {
+    if (completed() - before < passes) return false;
+    const retry = d.timers.entries.find((entry) => entry.handle === d.engine.parkHandle);
+    assert.ok(retry, "the parked set owns one retry timer");
+    assert.equal(retry.due, parkedAt + [1, 3, 7, 15][passes] * MINUTE, "the shared retry doubles its delay");
+    if (passes < 3) { d.timers.now = retry.due; passes++; return false; }
+    d.timers.now = parkedAt + 10 * MINUTE;
+    return true;
+  });
+  assert.equal(passes, 3, "the one-, three- and seven-minute retries completed");
   assert.equal(fetches(r, one) + fetches(r, two), 8, `fetched ${fetches(r, one)} + ${fetches(r, two)} times in ten minutes`);
 
   // The server out of reach: the pass stops at the first file and asks again later.

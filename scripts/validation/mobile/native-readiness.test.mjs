@@ -47,8 +47,12 @@ test('a hung owned CDP connection cannot extend the actual launch deadline',()=>
     writeFileSync(join(dir,'native-readiness.mjs'),readFileSync(fileURLToPath(moduleUrl)));
     writeFileSync(join(dir,'desktop-guard.mjs'),`export const boundManifest=()=>({source_head:'a'.repeat(40),secrets:'/synthetic-private',run:'/synthetic-run'});export const privateRead=()=>JSON.stringify({phase:'prepared',fingerprint:'c'.repeat(64)});`);
     writeFileSync(join(dir,'cdp.mjs'),`export const connect=()=>new Promise(()=>{});export const sleep=ms=>new Promise(r=>setTimeout(r,ms));`);
-    const started=Date.now(),launch=started-119500;
-    const result=spawnSync(process.execPath,[join(dir,'native-readiness.mjs'),'/unused','/unused','prepared-restart',expected.generationHash,expected.credentialHash,String(launch)],{encoding:'utf8',timeout:5000});
+    // Start the synthetic epoch at the helper's first clock read, so host child
+    // startup scheduling cannot consume this test's remaining500ms. Time then
+    // advances with a real monotonic clock and the hung connection remains real.
+    writeFileSync(join(dir,'clock.mjs'),`let first;Date.now=()=>{const current=performance.now();first??=current;return 120500+Math.floor(current-first);};`);
+    const started=Date.now(),launch=1000;
+    const result=spawnSync(process.execPath,['--import',join(dir,'clock.mjs'),join(dir,'native-readiness.mjs'),'/unused','/unused','prepared-restart',expected.generationHash,expected.credentialHash,String(launch)],{encoding:'utf8',timeout:5000});
     assert.equal(result.status,1);const proof=JSON.parse(result.stdout.trim());
     assert.equal(proof.firstFailure,'pending native startup deadline');assert.equal(proof.stage,'connect-owned-vault');
     assert.ok(Date.now()-started<3000,'must refuse before a CDP default deadline');

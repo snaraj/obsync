@@ -147,14 +147,36 @@ def isolated_tcp_evidence(android, source_head, mode):
              and row.get('priorGuest')==prior and isinstance(guest,dict)
              and re.fullmatch('[a-f0-9]{64}',guest.get('bootIdSha256','')) is not None
              and type(guest.get('adbdPid')) is int and guest['adbdPid']>1 and str(guest.get('adbdStartTicks','')).isdecimal()
-             and type(route.get('adbdUid')) is int and route['adbdUid']>=0 and (phase!='root' or route['adbdUid']==0)
-             and route.get('guestResponseRouteReadiness',{}).get('ready') is True
-             and last.get('ready') is True and last.get('state')=='WLAN0_ROUTE' and last.get('uid')==route['adbdUid'])
+             and type(route.get('adbdUid')) is int and route['adbdUid']>=0 and (phase!='root' or route['adbdUid']==0))
         current=(row.get('target'),row.get('originalSerial'),row.get('emulatorPid'))
         need(isinstance(current[0],str) and re.fullmatch(r'127\.0\.0\.1:[0-9]{4,5}',current[0]) is not None
              and isinstance(current[1],str) and re.fullmatch(r'emulator-(555[468]|55[678][02468])',current[1]) is not None
              and type(current[2]) is int and current[2]>1 and (binding is None or current==binding))
-        if phase=='reboot':reboot_prior=prior;reboot_guest=guest;reboot_route=route
+        if phase=='reboot':
+            incoming=route.get('incomingResponse',{});listener=route.get('listener',{});port=int(current[0].split(':')[1])
+            need(route.get('method')=='INCOMING_TCP_SAME_GUEST'
+                 and route.get('connectResponse') in ('connected to '+current[0],'already connected to '+current[0])
+                 and incoming.get('guest')==guest and type(incoming.get('adbdUid')) is int and incoming['adbdUid']==route['adbdUid']
+                 and incoming.get('framing')=='COMPLETE_GUEST_AND_BOUND_UID'
+                 and type(incoming.get('stdoutBytes')) is int and 128<=incoming['stdoutBytes']<=16384
+                 and isinstance(incoming.get('stdoutSha256'),str) and re.fullmatch('[a-f0-9]{64}',incoming['stdoutSha256']) is not None
+                 and route.get('wifiBackend')=={'hostPort':port,'radioOptions':'restrict=on','wifiOptions':f'restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:{port}-10.0.2.16:5555'}
+                 and listener.get('pid')==current[2] and listener.get('address')==current[0]
+                 and all(listener.get(k) is True for k in ('ready','onlyExpectedPid','onlyExpectedLoopbackAddress'))
+                 and all(type(listener.get(k)) is int and listener[k]==1 for k in ('processRecords','descriptorRecords','addressRecords'))
+                 and type(listener.get('unknownFields')) is int and listener['unknownFields']==0)
+            for name in ('originalBootCompleted','selectedBootCompleted'):
+                boot=route.get(name,{})
+                need(boot.get('valueClass')=='ONE' and type(boot.get('stdoutBytes')) is int and boot['stdoutBytes']==1
+                     and boot.get('stdoutSha256')==hashlib.sha256(b'1').hexdigest())
+            need(route.get('phaseDeadlineMet') is True and route.get('connectCapMs')==12000
+                 and type(route.get('connectElapsedMs')) is int and 0<=route['connectElapsedMs']<12000
+                 and type(route.get('remainingPhaseBudgetBeforeConnectMs')) is int and route['connectElapsedMs']<=route['remainingPhaseBudgetBeforeConnectMs']<=240000
+                 and type(route.get('remainingPhaseBudgetBeforeSaveMs')) is int and 0<route['remainingPhaseBudgetBeforeSaveMs']<=route['remainingPhaseBudgetBeforeConnectMs'])
+            reboot_prior=prior;reboot_guest=guest;reboot_route=route
+        else:
+            need(route.get('guestResponseRouteReadiness',{}).get('ready') is True
+                 and last.get('ready') is True and last.get('state')=='WLAN0_ROUTE' and last.get('uid')==route['adbdUid'])
         if prior is not None:need((guest['bootIdSha256']!=prior['bootIdSha256'])==(phase=='reboot'))
         else:
             need(initial.get('originalRouteGuest')==guest==initial.get('selectedRouteGuest'))

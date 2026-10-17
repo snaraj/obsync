@@ -30,7 +30,7 @@ def observation_mutations(b):
  ]
  for name,old,new in changes:
   assert source.count(old)==1,name;module=types.ModuleType('observation_helper_mutant');module.__file__=str(b/'emulator-tcp.py');exec(compile(source.replace(old,new,1),module.__file__,'exec'),module.__dict__);out=io.StringIO()
-  with patch.object(observed,'T',module),patch.object(observed.S,'TCP',module):r=unittest.TextTestRunner(stream=out).run(unittest.TestSuite([observed.Observation('test_transport_failure_class_and_route_step_are_retained_without_error_text')]))
+  with patch.object(observed,'T',module),patch.object(observed.S,'TCP',module):r=unittest.TextTestRunner(stream=out).run(unittest.TestSuite([observed.Observation('test_transport_failure_class_and_incoming_step_are_retained_without_error_text')]))
   assert len(r.failures)==1 and not r.errors,(name,out.getvalue());results.append({'mutation':name,'assertionKilled':True})
  return results
 
@@ -55,6 +55,29 @@ def wifi_restore_mutations(b):
  case=load(b/'test_android_tcp_evidence.py','retained_wifi_omission_control');out=io.StringIO()
  with patch.object(case,'M',module):result=unittest.TextTestRunner(stream=out).run(unittest.TestSuite([case.Retained('test_full_requires_bound_single_wifi_restoration_after_cleanup')]))
  assert len(result.failures)==1 and not result.errors,out.getvalue();results.append({'mutation':'wifi-required-retained-witness-omitted','assertionKilled':True})
+ return results
+
+def incoming_reboot_mutations(b):
+ # Actual incoming frame and retained admission controls, all native boundaries mocked.
+ kernel=load(b/'test_android_tcp_route.py','incoming_reboot_mutation_cases')
+ retained=load(b/'test_android_tcp_evidence.py','incoming_retained_mutation_cases');results=[]
+ changes=[
+  ('runtime_partial_frame_admitted', 'emulator-tcp.py', "if len(lines)!=6 or lines[-1]!=b'OBSYNC_INCOMING_GUEST_COMPLETE\\n':raise ValueError('incoming_guest_framing')", "if False:raise ValueError('incoming_guest_framing')", 'test_partial_frame_uid_parse_guest_change_bad_response_or_late_command_never_binds'),
+  ('runtime_mixed_uid_admitted', 'emulator-tcp.py', "if len(matches)!=1 or len(set(matches[0]))!=1:raise ValueError('adbd_uid_unknown')", "if len(matches)!=1:raise ValueError('adbd_uid_unknown')", 'test_partial_frame_uid_parse_guest_change_bad_response_or_late_command_never_binds'),
+  ('runtime_foreign_guest_admitted', 'emulator-tcp.py', "if original!=current or (phase=='root' and current['bootIdSha256']!=prior['bootIdSha256']):raise ValueError('expected lifecycle TCP guest differs')", "if phase=='root' and current['bootIdSha256']!=prior['bootIdSha256']:raise ValueError('expected lifecycle TCP guest differs')", 'test_partial_frame_uid_parse_guest_change_bad_response_or_late_command_never_binds'),
+  ('runtime_missing_connect_response_admitted', 'emulator-tcp.py', "if phase=='reboot' and response not in ('connected to '+target,'already connected to '+target):raise ValueError('reboot connect response missing')", "if False:raise ValueError('reboot connect response missing')", 'test_partial_frame_uid_parse_guest_change_bad_response_or_late_command_never_binds'),
+  ('false_reboot_mark_zero_prerequisite_restored', 'emulator-tcp.py', "if phase=='root':response_route_ready(state,env,state['serial'],original,end,route_proof,read=route_read)", "if phase in ('root','reboot'):response_route_ready(state,env,state['serial'],original,end,route_proof,read=route_read)", 'test_actual_incoming_frame_replaces_only_reboot_mark_zero_prerequisite'),
+  ('retained_response_omitted', 'mobile-acceptance.py', "and route.get('connectResponse') in ('connected to '+current[0],'already connected to '+current[0])", '', 'test_reboot_requires_actual_frame_uid_listener_boot_and_deadline_after_cleanup'),
+  ('retained_uid_unbound', 'mobile-acceptance.py', "and incoming['adbdUid']==route['adbdUid']", '', 'test_reboot_requires_actual_frame_uid_listener_boot_and_deadline_after_cleanup'),
+  ('retained_listener_owner_unbound', 'mobile-acceptance.py', "listener.get('pid')==current[2] and listener.get('address')==current[0]", "listener.get('address')==current[0]", 'test_reboot_requires_actual_frame_uid_listener_boot_and_deadline_after_cleanup'),
+  ('retained_selected_boot_proof_omitted', 'mobile-acceptance.py', "for name in ('originalBootCompleted','selectedBootCompleted'):", "for name in ('originalBootCompleted',):", 'test_reboot_requires_actual_frame_uid_listener_boot_and_deadline_after_cleanup'),
+  ('retained_deadline_flag_omitted', 'mobile-acceptance.py', "route.get('phaseDeadlineMet') is True and route.get('connectCapMs')==12000", "route.get('connectCapMs')==12000", 'test_reboot_requires_actual_frame_uid_listener_boot_and_deadline_after_cleanup'),
+ ]
+ for name,file,old,new,method in changes:
+  source=(b/file).read_text();assert source.count(old)==1,(name,source.count(old));module=types.ModuleType('incoming_reboot_mutant');module.__file__=str(b/file);exec(compile(source.replace(old,new,1),module.__file__,'exec'),module.__dict__);out=io.StringIO()
+  case,binding,cls=(kernel,'T',kernel.IncomingReboot) if file=='emulator-tcp.py' else (retained,'M',retained.Retained)
+  with patch.object(case,binding,module):r=unittest.TextTestRunner(stream=out).run(unittest.TestSuite([cls(method)]))
+  assert r.failures and not r.errors,(name,out.getvalue());results.append({'mutation':name,'assertionKilled':True})
  return results
 
 def main(argv=None):
@@ -84,7 +107,7 @@ def main(argv=None):
  kernel=load(b/'test_android_tcp_route.py','early_data_route_cases');source=(b/'emulator-tcp.py').read_text();old="if not proof['mobileDataZeroBeforeWifiRouting']:";assert source.count(old)==1
  with tempfile.TemporaryDirectory(prefix='obsync-early-data-') as tmp:
   root=Path(tmp);path=root/'emulator-tcp.py';path.write_text(source.replace(old,'if False:',1));out=io.StringIO()
-  with patch.object(kernel,'T',types.SimpleNamespace(__file__=str(path))):r=unittest.TextTestRunner(stream=out).run(unittest.TestSuite([kernel.KernelRoute('test_actual_early_data_block_refuses_nonzero_or_failed_command_before_wifi')]))
+  with patch.object(kernel,'T',types.SimpleNamespace(__file__=str(path),wait_phone_service=kernel.T.wait_phone_service)):r=unittest.TextTestRunner(stream=out).run(unittest.TestSuite([kernel.KernelRoute('test_actual_early_data_block_refuses_nonzero_or_failed_command_before_wifi')]))
  assert len(r.failures)==1 and not r.errors,out.getvalue();results.append({'mutation':'early-data-zero-before-wifi-required','assertionKilled':True})
  # The actual root deadline assignments must retain the session TTL boundary.
  with tempfile.TemporaryDirectory(prefix='obsync-tcp-root-deadline-') as tmp:
@@ -122,7 +145,7 @@ def main(argv=None):
   if binding=='S':module.TCP=reboot.T
   with patch.object(case,binding,module):r=unittest.TextTestRunner(stream=out).run(unittest.TestSuite([cls(method)]))
   assert len(r.failures)==1 and not r.errors,(name,out.getvalue());results.append({'mutation':name,'assertionKilled':True})
- results.extend(observation_mutations(b));results.extend(wifi_restore_mutations(b))
+ results.extend(observation_mutations(b));results.extend(wifi_restore_mutations(b));results.extend(incoming_reboot_mutations(b))
  print(json.dumps({'result':'PASS','count':len(results),'mutations':results}));return 0
 
 if __name__=='__main__':raise SystemExit(main())

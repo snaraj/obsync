@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import https from 'node:https';
 import {EventEmitter} from 'node:events';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,renameSync,chmodSync,rmSync,realpathSync,symlinkSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,renameSync,chmodSync,lstatSync,rmSync,realpathSync,symlinkSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
@@ -73,6 +73,7 @@ test('world-readable, symlink, unexpected fields and wrong source refuse before 
     try{
       const value={schema:1,requestId:'bad-1',action:'drain',...(kind==='shape'?{extra:true}:{})};
       writeFileSync(input,JSON.stringify(value),{mode:kind==='mode'?0o644:0o600});
+      if(kind==='mode'){chmodSync(input,0o644);assert.equal(lstatSync(input).mode&0o777,0o644);}
       if(kind==='symlink'){renameSync(input,input+'.original');symlinkSync(input+'.original',input);}
       if(kind==='source')writeFileSync(join(run,'lab.json'),JSON.stringify({source_head:'wrong'}));
       await assert.rejects(routeRequests(run,{async drain(){mutated=true;},resume(){mutated=true;}})());

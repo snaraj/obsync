@@ -280,8 +280,262 @@ No acceptance route check, product behavior or failed receipt is removed.
 
 The portable transport is integrated into the existing acceptance runner, with
 no production change. Retained admission requires the expected initial, root and
-reboot identities, actual routes and exact source bindings after both cleanups.
+reboot identities and exact source bindings after both cleanups. Initial and
+root attachment retain their unmarked route checks; the reboot-only correction
+below requires the actual incoming response bound to the new guest instead.
 Root reattachment requires UID 0 and is bounded by both its original 20 seconds
 and the remaining session lifetime. Three consecutive fresh full acceptance
 passes on the committed integration remain required. The physical-phone gate,
 final hosted checks and independent exact-head approval also remain open.
+
+## Full TCP batches 05 and 06
+
+Both launches bind source and driver to `9d6d51a94d84c99fbb84dfe2e350b9942a706c41`.
+Batch 05 refused its top-level configuration's mode `0644` before creating any
+native fixture. The preparation error is retained; its task-owned configuration
+was tightened to `0600` without changing bytes before the separate batch 06.
+
+Batch 06 failed at Android guest reboot after 240.554 seconds; the complete
+attempt took 641.233 seconds. Its remaining two attempts did not run. Pairing,
+independent code comparison, consent, two-way persisted bytes, a 213.003-second
+no-interaction interval, desktop relaunch and Android process restart passed.
+A changed original-guest boot identity, completed boot and unlocked user were
+observed. The single Wi-Fi restoration request completed in 799 ms. Later
+original-route identity and route reads timed out; valid route replies reported
+`NO_ROUTE`. Selected TCP connection was never attempted. The records do not
+prove permanent channel loss or establish the underlying cause.
+
+The unchanged three-pass auditor refused the aggregate. A separate failure
+audit verified 58 input pins, 37 committed helpers, 162 retained references,
+four official-APK readbacks and 12 independently exported persisted files.
+Both controllers reported cleanup. Parent checks found all nine captured PIDs,
+seven scoped listeners and six owned runtime paths absent. Hosted checks at
+this head independently passed all eight required contexts; native full
+acceptance remains unproven.
+
+| Batch 06 retained artifact | SHA-256 |
+| --- | --- |
+| Failed aggregate | `e131bea37fada3e3fe8174cd3ca095c04eb3f878cb86ebefc07d6fd52e1c15c3` |
+| Frozen audit inputs | `bcfe8b4999f53e1830a4af739b47d5163f7dac872e1e62b634a890e0ed4abc58` |
+| Three-run audit refusal | `d43d9f0ccff6015627680f8212dcaa8d63eb2195cc4bc35dec8c94c635088604` |
+| Independent failure audit | `40ed6716826749323e438034bfabf5c51b9446bee453e210966d434a896309af` |
+| Parent terminal cleanup | `a5406d0ad61228d4e7fd7681bb2e6035d4019bed928adcd6c1b3859d18ad8b57` |
+
+A separate reboot-channel diagnostic failed before its journey: the initial
+`svc data disable` returned exit 20, with the retained error
+`cmd: Can't find service: phone`. Boot-completed reporting took 115.153 seconds;
+the controller ended at 126.844 seconds. No TCP connection, APK installation,
+root transition or reboot comparison ran. This proves that boot completion alone
+did not establish the required Binder-service readiness. Controller cleanup and
+parent checks of three recorded PIDs, four listeners and three runtime paths
+passed. The independent record hash is
+`d17940d7b6cf3a7f2532fc0205701133224c78130ce586878d9c0802e884ca9a`.
+
+The next private diagnostic added a bounded read-only `service check phone`
+precondition, but failed at the unchanged initial boot deadline before reaching
+that check. Its controller took 253.447 seconds including cleanup. The retained
+startup tail contains two `Failed to make display surface context current: 12299`
+and two `Failed to bind to post worker context` errors. Those errors were absent
+from the preceding diagnostic's comparable retained tail. The two launches used
+the same image, software graphics, effective QEMU configuration and byte-identical
+official asset proof. This difference does not establish the boot timeout's cause.
+Neither diagnostic exercises the plugin or supplies acceptance evidence.
+
+Controller cleanup passed. Independent parent checks found both captured PIDs,
+four scoped listeners and three runtime paths absent, with receipt SHA-256
+`c93febfc29115b52e1b758e43f370d1380bc641428dbfd426287d228de1eecf8`.
+The QEMU PID was not recorded before the failed boot; for that process the
+controller's process-group receipt and listener absence remain separate evidence.
+The independent diagnostic audit verified all 18 current pins and referenced
+prior evidence; its SHA-256 is
+`56488eb16092735de530c1e9b6aa2008b318bd4543070111fc52c8ba87795f51`.
+
+The following diagnostic changed only the emulator's host-window option to
+the official `-no-window` mode. The same pinned SDK archive supplied and verified
+its headless backend. Android reported boot completion in 198.264 seconds, but
+the required `phone` service remained missing in all 64 exact replies before the
+unchanged initial boot deadline. No data-disable command, Wi-Fi enable, TCP
+connection, APK installation or reboot comparison ran. The controller failed
+after 255.872 seconds including cleanup. The readiness guard therefore refused
+the missing prerequisite; this is not proof of successful provisioning.
+
+The initial-readiness receipt SHA-256 is
+`42fab8dae35ff54065a76c366d465f1cae846efe51dcd258f36d746bf67fc6dc`.
+Controller cleanup passed; parent checks found four captured PIDs, four listeners
+and three runtime paths absent, recorded as
+`d649fd9dbc90cb0cf1796c2c6fe3f1712c7142964d16a36fcbb95a6224cbe95e`.
+Contemporaneous host-load observations are retained privately as a possible
+confounder, not an established cause or permission to extend deadlines.
+The previous display-context errors were not observed in
+this run's retained startup tail. Neither observation establishes a causal fix.
+The independent audit, including the headless binary's exact match to its pinned
+official archive member and every prior input reference, has SHA-256
+`f6f2b169446555b007fdd7e5145dd35f46c3e76895940e76f318a09df204e0db`.
+
+A separately frozen phone-startup diagnostic then observed the first exact
+`Service phone: found` reply in 109 ms after a 65.118-second boot. It stopped
+immediately as designed: zero snapshot reads, data-disable commands, TCP
+connections, APK installation or plugin journeys. Its result is
+**NOT_REPRODUCED**, not a passing acceptance run or an explanation of the prior
+missing service. The original controller records the expected
+`FAIL/ControlledStop`; cleanup passed after 79.097 seconds total. Parent checks
+confirmed three captured PIDs, four listeners and three runtime paths absent.
+The independent audit verifies 16 current input pins, the prior diagnostic's
+pins and failure receipts, and all ten retained evidence references. Its SHA-256
+is `8337f5f61a20092a8038e9e56dd42ad5eabda31c7af509ae4aef7cc67972e821`.
+
+The next frozen reboot diagnostic reached the comparison. Both the original
+guest channel and the selected TCP channel returned complete frames for the
+same new boot, `adbd` process identity and UID 2000. Both unmarked route lookups
+reported `NO_ROUTE`, while the single actual TCP connection succeeded in
+5.842 seconds. The owned loopback listener and original deadline were verified.
+This is a direct counterexample to requiring that synthetic route lookup before
+an incoming reboot connection; it does not establish the cause of every earlier
+timeout. A nonzero socket mark was also observed, without attributing causality.
+
+The root preparation plus reboot journey took 96.296 seconds; the whole
+controller took 306.827 seconds including setup and cleanup. The official APK
+was independently retrieved and verified. The diagnostic deliberately stopped
+before saving the selected binding or running product journeys. It supplies
+no mobile acceptance credit. The supported correction is limited to the reboot
+prerequisite: require the actual complete TCP response, matching new guest and
+UID, completed boot, owned listener and original deadline. Initial and root
+route guards remain unchanged.
+
+The independent audit verified 20 current input pins, 40 prior input pins,
+five prior receipts and 18 retained evidence references. Its SHA-256 is
+`c9a18e6dd82f8f87cd08b510b37638b771ffdd6d6158435459470981e37f5749`.
+Controller cleanup passed. Parent checks confirmed all three recorded PIDs,
+four listeners and three runtime paths absent; the receipt SHA-256 is
+`d7a54b16e7a56ba9ff2fe37d8e3f4a4d66936dae3f0c7e94e1ece3600d16c8d5`.
+
+## Regression failures and controlled repairs
+
+The next `make mobile-harness` stopped in its unchanged plugin prerequisite:
+2,524 of 2,527 tests passed. The failed log is retained with SHA-256
+`febe3c331e95acafb492f8f203d52a75d9baf9f9dfb2834e02ded5d4b5ad97e7`.
+Focused controlled experiments established three test failure modes; the
+original run did not record enough scheduling facts to attribute each failure
+conclusively:
+
+- The newly refused page test counted an independent `editor_retry` during
+  the page's asynchronous save tail. It now counts only retries owned by the
+  exclusive page turn, retaining the immediate-retry refusal assertion.
+- The parked-note test advanced through a legitimate one-minute retry while
+  asserting that no retry happened. It now freezes time during feed completion,
+  requires the full-minute timer and tests immediately before its deadline.
+- The drain-save test exhausted its bounded fake-clock advances while a real
+  file read was pending. A later timer then lay beyond the frozen clock. This
+  test now advances only actual pending watcher timers within its original
+  ten-second budgets; its final two-second check still advances no virtual time.
+
+All three repaired focused scenarios passed. A delayed actual file read through
+1,900 idle rounds also passed. Removing the page refusal guard, shortening the
+parked backoff and removing the drain's post-save rescheduling each failed by
+assertion. Production code and the shared fake-timer implementation are unchanged.
+
+The separate offline harness initially refused a dirty source binding. Selecting
+the existing clean candidate exposed two hostile-permission fixtures affected by
+`umask 077`: requested `0644` and `0755` modes became private. Explicit fixture
+`chmod` plus readback now proves the intended unsafe state. The two test files
+pass under both `022` and `077`; removing the TLS permission check still fails
+by assertion. These changes do not relax the actual permission checks.
+
+After those repairs, 221 Python and 204 JavaScript harness tests passed with zero
+skips. The final mutation adapter needed the new phone-readiness helper in its
+test namespace; its missing attribute was retained as an error, not counted as
+a killed mutant. The corrected adapter assertion-killed all 40 controls. Combined
+with the preceding successful mutation stages, all 275 existing scripted controls
+passed. The logs have SHA-256
+`e5f341311ffa1395f2ce6734431f68b11fe7dc8d3fb450b4ecc2af90effec871`
+and `bf73c1c5510f1af8e9ca83316997415a330a18ec991d0787557d4df4f222916c`.
+Seven additional focused startup mutations and the permission-guard mutation
+were assertion-killed. These are offline results, not mobile acceptance.
+
+The next full plugin run passed 2,526 of 2,527 tests, including the three
+repairs above, but refused a restored-file test's attribution: a periodic scan
+had queued the change. Its retained log SHA-256 is
+`164d49f681a7b65244a5c55ad98854f35c2e92a8ff2e6993172e8f1072902a0f`.
+A controlled delay of the actual file read reproduced the same assertion while
+the original test advanced past the 30-second scan timer. The repaired test
+fires its actual deletion debounce, then freezes virtual time while the read
+and encryption finish. It retains the scan-count assertion and original
+ten-second outcome deadline, and additionally proves the outcome precedes the
+scan deadline. Baseline and delayed-read controls passed. Removing the actual
+present-file publication path still timed out with one version and zero scans.
+This establishes the controlled failure mechanism; the original failed run did
+not retain its exact scheduling trace. Its failure remains recorded.
+
+A subsequent plugin run passed 2,522 of 2,527 tests. One failure was an explicit
+sandbox denial of the real localhost redirect listener; it requires host test
+access, not a product change. Controlled asynchronous barriers then showed two
+fixture defects: the parked-files test reached ten virtual minutes before its
+retry completed, and both selected-folder rename cases stopped on a legitimate
+folder tombstone before the notes moved. The repairs wait for those actual
+outcomes within the existing ten-second budgets. The retry test also checks the
+exact one-, three-, seven- and fifteen-minute schedule. Renames still refuse any
+note tombstone and retain every byte, identity and selection assertion.
+
+The same run's concurrent-edit case ended with equal bytes but two heads and a
+closing-storm refusal. Its unchanged focused replay passed. The editor fixture
+omitted the real host's trusted-input revision: a controlled eight-round closing
+test without that revision reproduces the breaker refusal, while the model with
+it permits actual typing and still refuses untyped and conflicting-name loops.
+The fixture now changes its revision only on explicit nonempty typing; a new
+test rejects revisions caused by saving, external writes or empty input. This
+supports correcting the host model, but does not prove the exact scheduling
+cause of the original failure. Product mutations removing the input reset,
+exponential retry backoff and folder fanout each fail by assertion. The failed
+full-run log hash is
+`37d906d09c5ea821b75021ce51afc411184ea147e61fbaad23cab4b8dceff724`;
+the controlled-proposal manifest hash is
+`d14d1d97a1e89f5ccfbbc508f46fc929cdc48e3d197afc591436732574374a8e`.
+
+The first new offline-harness invocation also lacked host access, so scoped
+process checks and localhost listeners refused. Two reboot-observation fixtures
+additionally needed the new framed incoming-response evidence. Those fixtures
+were corrected; the command/cleanup guards remain unchanged. A separate host
+run passed all 225 Python tests and 203 of 204 JavaScript tests. Its remaining
+failure was a test-generated startup receipt with only 500 ms left: child
+startup consumed that budget before the intended hanging-CDP check. Injecting a
+600 ms startup delay reproduced the refusal. The test now starts its synthetic
+epoch at the helper's first clock read, then advances with real monotonic time;
+the actual hanging connection, remaining 500 ms timer and outer limits remain.
+Five focused tests and six controls pass, including refusal when the timeout is
+removed or reset. No production startup deadline changed.
+
+The combined regression receipt has SHA-256
+`c6c5c5dcf554f218cccc1b84abcbb142a76a52d8a03a02052ccf387e1bf52533`.
+Strict pinned documentation checks passed over 162 files and 8,612 anchors;
+both secret scans passed. The failed sandbox run's 21 recorded process groups
+were later independently absent without sending a signal. The documentation
+output was removed after owner/path checks. These records establish cleanup
+and offline evidence only; they do not supply a fresh native acceptance pass.
+
+With those fixture corrections, the complete `scripts/ci/mobile-harness.sh`
+passed in 141.491 seconds: 225 Python tests, 204 JavaScript tests, zero skips
+and all 285 scripted mutation controls. Its log SHA-256 is
+`0ecc702315959a9cd5a8106e3fcbcd21000ef619bcb17a0e5ceef7b329ce7726`.
+The ten added reboot controls reject incomplete responses, mixed UIDs, foreign
+guests, missing connection results, missing retained evidence and lost deadlines;
+they also catch restoring the disproven reboot route prerequisite.
+
+The next full plugin run passed 2,527 of 2,528 tests, with zero skips. Its
+remaining outgoing-status test observed `pending: 2`; the retained log hash is
+`82276062f7f967a5bfa196217409adbf69894fb1b4c853c326759eb7fd737abc`.
+A controlled delayed POST acknowledgement reproduced one outgoing file plus
+one arriving own-publication record. The engine deliberately counts incoming
+records separately; this did not demonstrate duplicate outgoing queue/push
+counting. The test now holds its existing long poll during the outgoing-work
+assertions and releases it on both success and failure. Both count assertions,
+the changed-byte outcome and all deadlines remain unchanged. Baseline and
+delayed-ack controls pass. Removing the follow-up push fails the changed-byte
+assertion; removing outgoing deduplication fails the original count assertion.
+The proposal manifest hash is
+`8f2d807dfa35e926412e67d55c0f2e7974f7067caa8538124b53b7e4ecf953ca`.
+The failed full run remains FAIL; focused repair evidence does not turn it into
+a passing full run. Fresh hosted validation is required at the repaired head.
+
+The complete repaired status test file passed all 36 tests with zero skips in
+19.241 seconds. Its log SHA-256 is
+`f8a0c230e5ae885d5bb552f88f34d5d0a96cf8d4613f9f01902a2c50628389c7`.

@@ -57,13 +57,10 @@ class Restore(unittest.TestCase):
    self.assertEqual(command.call_count,1)
   def late(*a,**k):clock[0]=116;return ''
   with patch.object(T.time,'monotonic',side_effect=lambda:clock[0]),patch.object(T.subprocess,'check_output',side_effect=late),self.assertRaises(TimeoutError):T.command(state,{},state['serial'],args,115,cap=30)
- def test_unchanged_root_and_reboot_route_guards_still_follow_one_restoration(self):
-  state=fixture();state['selectedTcpAdb']={'hostPort':12346,'guest':PRIOR};new={**PRIOR,'bootIdSha256':'b'*64};context={};events=[];facts=[]
-  def cmd(st,env,target,args,end,**kw):
-   events.append(tuple(args));return 'RUNNING_UNLOCKED' if args[-1]=='0' else '' if args[-1]=='open' else '1'
-  def route(*a,**k):events.append(('route-proof',));raise TimeoutError('route not restored')
-  with patch.object(T,'selected',return_value='127.0.0.1:12346'),patch.object(T,'listener'),patch.object(T,'guest',return_value=new),patch.object(T,'command',side_effect=cmd),patch.object(T,'remaining',return_value=1),patch.object(T,'response_route_ready',side_effect=route),patch.object(T,'connect') as connect:
-   with self.assertRaises(TimeoutError):T.reattach(state,P,{},240,'reboot',lambda *a:None,facts.append,S.APK.apk_command_failure,context)
-   connect.assert_not_called()
-  self.assertEqual(context['restoration']['requestCount'],1);self.assertEqual(facts[0]['stage'],'reboot_wifi_restoration_request');self.assertEqual(events.count(('route-proof',)),1)
+ def test_root_still_requires_original_response_route_before_connect(self):
+  state=fixture();state['selectedTcpAdb']={'hostPort':12346,'guest':PRIOR};events=[]
+  def route(*a,**k):events.append('root-route');raise TimeoutError('root route missing')
+  with patch.object(T,'selected',return_value='127.0.0.1:12346'),patch.object(T,'listener'),patch.object(T,'guest',return_value=PRIOR),patch.object(T,'response_route_ready',side_effect=route),patch.object(T,'connect') as connect,patch.object(T,'incoming_guest') as incoming:
+   with self.assertRaises(TimeoutError):T.reattach(state,P,{},240,'root',lambda *a:None)
+  self.assertEqual(events,['root-route']);connect.assert_not_called();incoming.assert_not_called()
 if __name__=='__main__':unittest.main()

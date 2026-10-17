@@ -28,8 +28,13 @@ through the selected TCP route. Request completion alone is not reboot proof.
 The disposable fixture also verifies its known synthetic Wi-Fi network before
 testing and makes one prescribed reconnect request after Android user 0 unlocks.
 That request shares the unchanged 240-second reboot deadline and cannot be
-resubmitted after failure. Its response is not connection proof: the actual
-adbd-UID route and matching original/selected new-boot identities must pass.
+resubmitted after failure. Its response is not connection proof: reboot admission requires an actual framed
+TCP exchange with all four adbd UID fields equal, matching the independently
+cached original new-boot identity (boot ID, adbd PID and process start), and
+selected-transport boot completion. The observed loopback listener must belong
+to the same emulator and port as the initial restricted Wi-Fi backend. Initial
+attachment and root transitions retain their adbd-UID mark-zero route checks;
+that outgoing lookup is not the readiness predicate for incoming ADB at reboot.
 This measures explicit fixture network restoration, not automatic Wi-Fi
 reconnection. Full acceptance requires the source-bound restoration witness
 to survive cleanup alongside the separate reboot and byte evidence.
@@ -40,10 +45,20 @@ receipts must survive cleanup for terminal acceptance.
 
 On a reboot failure, `owned-reboot-reattachment-observation.json` retains bounded
 first/last stage facts and classified command failures. It distinguishes guest
-startup, response-route readiness and selected-TCP reconnection. These diagnostic
+startup, known-network restoration and the framed selected-TCP exchange. These diagnostic
 facts cannot substitute for the successful lifecycle and persisted-byte proofs.
 
 ## Run
+
+Use the Python 3.15 interpreter recorded for these native runs. Required APIs
+include `hashlib.file_digest` (introduced in Python 3.11); that API minimum does
+not establish validation of other interpreter/platform combinations. Select the
+interpreter explicitly:
+
+```sh
+PYTHON=/absolute/path/to/python3.15
+"$PYTHON" --version
+```
 
 Prepare the private pinned-input configuration described in
 [MOBILE-SESSION.md](MOBILE-SESSION.md), plus `candidateBuildReceipt` pointing to
@@ -64,7 +79,21 @@ the clean candidate's private build receipt. Add this `android` object:
 
 The configuration and build receipt must be owned, single-link regular files
 with owner-only permissions (`0600`). The installer refuses a broadly readable
-receipt even when its hashes match.
+receipt even when its hashes match. Set `BUILD_RECEIPT` to the path named by
+`candidateBuildReceipt`. Before creating either JSON file, run:
+
+```sh
+umask 077
+```
+
+After writing or regenerating both files, enforce their modes explicitly:
+
+```sh
+chmod 600 "$PRIVATE_CONFIG" "$BUILD_RECEIPT"
+```
+
+Changing the umask does not repair an existing `0644` file. These commands do not
+replace the required ownership, single-link and real-path checks.
 
 Choose an available `tlsPort` in the private configuration. Before provisioning,
 the runner checks that port and both fixed emulator ports; an existing listener
@@ -96,7 +125,7 @@ is not a repair claim for earlier ADB or CDP failures.
 First validate the small path:
 
 ```sh
-caffeinate -i python3 -B scripts/validation/mobile-acceptance.py \
+caffeinate -i "$PYTHON" -B scripts/validation/mobile-acceptance.py \
   --config "$PRIVATE_CONFIG" --out "$ABSENT_RUN_DIRECTORY" --runs 1 --mode core
 ```
 
@@ -105,7 +134,7 @@ and two-way persisted-byte assertions. It explicitly does not claim full
 acceptance or a closed native confidentiality scan. Extend the same driver:
 
 ```sh
-caffeinate -i python3 -B scripts/validation/mobile-acceptance.py \
+caffeinate -i "$PYTHON" -B scripts/validation/mobile-acceptance.py \
   --config "$PRIVATE_CONFIG" --out "$ANOTHER_ABSENT_RUN_DIRECTORY" --runs 3 --mode full
 ```
 

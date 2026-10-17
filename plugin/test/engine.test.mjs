@@ -1100,13 +1100,26 @@ test("a note queued while the drain saves its records is still sent (#313)", asy
     if (release !== null || !exiting) return save();
     return new Promise((resolve, reject) => { release = () => save().then(resolve, reject); });
   };
+  // Advance only a timer this watcher actually owns. While stat/crypto runs,
+  // freeze virtual time instead of spending its advance limit on promises.
+  const watcherUntil = (condition) => {
+    const deadline = performance.now() + 10000;
+    return timers.run(0, () => {
+      assert.ok(performance.now() < deadline, "the watcher outcome exceeded its 10-second budget");
+      if (condition()) return true;
+      const handles = new Set([...engine.pending.values()].map((pending) => pending.handle));
+      const next = Math.min(...timers.entries.filter((entry) => handles.has(entry.handle)).map((entry) => entry.due));
+      if (Number.isFinite(next)) timers.now = Math.max(timers.now, next);
+      return false;
+    }, 10000);
+  };
   host.seed("First.md", "the first note", 3000);
   engine.changed("First.md");
-  await timers.run(1000, () => release !== null);
+  await watcherUntil(() => release !== null);
   assert.notEqual(release, null, "the drain never saved its records");
   host.seed("Second.md", "made while the save ran", 3100);
   engine.changed("Second.md");
-  await timers.run(1000, () => engine.queue.includes("Second.md"));
+  await watcherUntil(() => engine.queue.includes("Second.md"));
   assert.equal(engine.queue.includes("Second.md"), true, "the second note never reached the queue");
 
   release();
@@ -1695,7 +1708,7 @@ test("a deletion refused because the file came back is published as the change i
   });
   host.seed("Notes/Back.md", "the first text\n", 1000);
   await engine.start();
-  await timers.run(1000, () => state.fileByPath("Notes/Back.md") !== undefined);
+  await timers.run(0, () => state.fileByPath("Notes/Back.md") !== undefined);
   const first = state.fileByPath("Notes/Back.md").versionId;
   // BY FILE ID, not by position. From 1.1.0 the folder holding this note is
   // published as a record of its own (#104), so the note's versions are no
@@ -1728,8 +1741,16 @@ test("a deletion refused because the file came back is published as the change i
   // A server frame is visible before its local record is saved. Wait for
   // the record asserted below too; otherwise WebCrypto scheduling can make
   // an unrelated mutation look like a deletion-republication failure.
-  await timers.run(1000, () => posted().length === 2 &&
+  const deletion = timers.entries.find((entry) => entry.handle === engine.vanishHandle);
+  const scan = timers.entries.find((entry) => entry.handle === engine.scanHandle);
+  assert.ok(deletion && scan, "the deletion debounce and periodic scan each own a timer");
+  assert.ok(deletion.due < scan.due, "the deletion can run before the periodic scan");
+  // Fire the actual delete debounce, then let stat/crypto finish without
+  // advancing into the independent periodic scan whose work must not prove this.
+  timers.now = deletion.due;
+  await timers.run(0, () => posted().length === 2 &&
     state.fileByPath("Notes/Back.md")?.versionId === posted()[1].version_id);
+  assert.ok(timers.now < scan.due, "the outcome arrived before the periodic scan deadline");
   assert.ok(returned, "the test never reached the window it exists for");
   assert.equal(queuedByScan(), scansBefore,
     "the periodic scan published this change, so nothing here proves the refusal was republished");

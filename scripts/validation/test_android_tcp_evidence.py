@@ -1,5 +1,5 @@
 """Retained route provenance is required after private/runtime cleanup."""
-import copy,importlib.util,tempfile,unittest
+import copy,hashlib,importlib.util,tempfile,unittest
 from pathlib import Path
 B=Path(__file__).parent
 spec=importlib.util.spec_from_file_location('tcp_retained',B/'mobile-acceptance.py');M=importlib.util.module_from_spec(spec);spec.loader.exec_module(M)
@@ -13,6 +13,12 @@ class Retained(unittest.TestCase):
    if phase=='reboot':facts={**facts,'bootIdSha256':'b'*64,'adbdPid':201}
    elif phase=='root':facts={**facts,'adbdPid':facts['adbdPid']+1}
    row={'schema':1,'sourceHead':HEAD,'phase':phase,'guest':facts,'originalRouteGuest':facts,'selectedRouteGuest':facts,'priorGuest':prior,'target':'127.0.0.1:12346','originalSerial':'emulator-5584','emulatorPid':777,'loopbackListenerOwned':True,'sameGuestIndependentCommands':True,'authConfigurationUnchanged':True,'responseRouteProof':{'adbdUid':0,'guestResponseRouteReadiness':{'ready':True,'last':{'ready':True,'state':'WLAN0_ROUTE','uid':0}}}}
+   if phase=='reboot':
+    row['responseRouteProof']={'method':'INCOMING_TCP_SAME_GUEST','adbdUid':2000,'connectResponse':'connected to 127.0.0.1:12346','connectCapMs':12000,'connectElapsedMs':100,'remainingPhaseBudgetBeforeConnectMs':200000,'phaseDeadlineMet':True,'remainingPhaseBudgetBeforeSaveMs':199000,
+     'incomingResponse':{'guest':facts,'adbdUid':2000,'stdoutBytes':200,'stdoutSha256':'c'*64,'framing':'COMPLETE_GUEST_AND_BOUND_UID'},
+     'listener':{'pid':777,'address':'127.0.0.1:12346','ready':True,'onlyExpectedPid':True,'onlyExpectedLoopbackAddress':True,'processRecords':1,'descriptorRecords':1,'addressRecords':1,'unknownFields':0},
+     'wifiBackend':{'hostPort':12346,'radioOptions':'restrict=on','wifiOptions':'restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:12346-10.0.2.16:5555'},
+     'originalBootCompleted':{'valueClass':'ONE','stdoutBytes':1,'stdoutSha256':hashlib.sha256(b'1').hexdigest()},'selectedBootCompleted':{'valueClass':'ONE','stdoutBytes':1,'stdoutSha256':hashlib.sha256(b'1').hexdigest()}}
    path=e/f'owned-tcp-adb-{phase}-{n+1}.json';M.save(path,row);rows.append((path,row));prior=facts
   if mode=='full':
    M.save(e/'owned-tcp-reboot-request.json',{'schema':1,'sourceHead':HEAD,'result':'PASS','scope':'REBOOT_REQUEST_NOT_REBOOT_PROOF','method':'BOUND_ORIGINAL_EMULATOR_AFTER_SCOPED_TCP_DISCONNECT','requestCount':1,'disconnectCount':1,'selectedTransportRemoved':True,'requestExitCode':0,'stdoutBytes':0,'stderrBytes':0,'requestElapsedMs':100,'requestCapMs':30000,'remainingPhaseBudgetBeforeRequestMs':239000,'originalSerial':'emulator-5584','selectedTcpTarget':'127.0.0.1:12346','emulatorPid':777,'matchedRetainedGuest':True,'originalRouteGuest':rows[2][1]['priorGuest'],'selectedRouteGuest':rows[2][1]['priorGuest']})
@@ -79,4 +85,18 @@ class Retained(unittest.TestCase):
    run=Path(d).resolve();_,rows=self.fixture(run,'core');before=M.isolated_tcp_evidence(run,HEAD,'core');p,row=rows[-1];p.unlink();M.save(p,row|{'additionalSafeFact':True});after=M.isolated_tcp_evidence(run,HEAD,'core');self.assertNotEqual(before,after)
    source=(B/'mobile-acceptance.py').read_text();self.assertIn("require(private_json(attempt/'evidence/isolated-tcp-admission.json')==isolated_tcp_evidence",source)
    self.assertIn("save(args.attempt/'evidence/isolated-tcp-admission.json',isolated_tcp_evidence",source)
+ def test_reboot_requires_actual_frame_uid_listener_boot_and_deadline_after_cleanup(self):
+  changes=[('method','MARK_ZERO_ONLY'),('connectResponse',None),('incomingResponse',{}),('incomingResponse.adbdUid',0),('incomingResponse.guest',{}),('incomingResponse.stdoutBytes',0),('incomingResponse.stdoutSha256',None),('incomingResponse.framing','PARTIAL'),('listener.pid',778),('listener.address','0.0.0.0:12346'),('listener.ready',False),('listener.onlyExpectedPid',False),('listener.descriptorRecords',2),('wifiBackend',{}),('originalBootCompleted',{}),('selectedBootCompleted.valueClass','ZERO'),('selectedBootCompleted.stdoutSha256','a'*64),('phaseDeadlineMet',False),('connectElapsedMs',12000),('remainingPhaseBudgetBeforeConnectMs',50),('remainingPhaseBudgetBeforeSaveMs',0)]
+  with tempfile.TemporaryDirectory() as d:
+   run=Path(d).resolve();_,rows=self.fixture(run,'full');path,row=rows[2];original=copy.deepcopy(row);observation=run/'evidence/owned-reboot-reattachment-observation.json';base=M.private_json(observation)
+   for field,value in changes:
+    changed=copy.deepcopy(original);dest=changed['responseRouteProof'];parts=field.split('.')
+    for part in parts[:-1]:dest=dest[part]
+    dest[parts[-1]]=value;path.unlink();M.save(path,changed)
+    # Bind the mutated proof in both retained locations, so rejection tests
+    # the required fact rather than a trivial cross-receipt mismatch.
+    capture=copy.deepcopy(base);capture['stages']['attached']['last']['routeProof']=changed['responseRouteProof'];observation.unlink();M.save(observation,capture)
+    with self.subTest(field=field),self.assertRaises(M.StageFailure):M.isolated_tcp_evidence(run,HEAD,'full')
+   path.unlink();M.save(path,original);observation.unlink();M.save(observation,base);self.assertEqual(M.isolated_tcp_evidence(run,HEAD,'full')['result'],'PASS')
+
 if __name__=='__main__':unittest.main()

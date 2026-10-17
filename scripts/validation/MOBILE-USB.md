@@ -64,10 +64,15 @@ or secret entries, or revoke unrelated debugging authorizations. Prove test
 credential removal/fixture cleanup and retain any unresolved step as UNKNOWN.
 
 
+Select the recorded Python 3.15 interpreter and use the private-file creation
+recipe in [the acceptance guide](MOBILE-ACCEPTANCE.md#run). The standalone USB
+configuration must also be an owned, single-link real file with mode `0600`;
+after creating or regenerating it, run `chmod 600 "$PRIVATE_USB_JSON"`.
+
 The adapter CLI is:
 
 ```text
-python3 -B android-usb.py --config PRIVATE_USB_JSON --run FRESH_EXTERNAL_RUN --child SAME_RUNNER_CHILD ARG...
+"$PYTHON" -B android-usb.py --config PRIVATE_USB_JSON --run FRESH_EXTERNAL_RUN --child SAME_RUNNER_CHILD ARG...
 ```
 
 Private schema 1 configuration:
@@ -81,8 +86,8 @@ desktop session's exact live TLS process, upstream server and listener port.
 The endpoint's presented leaf must equal the owned certificate and pass strict
 host system trust; WebView acceptance is independently required. These checks
 run before any USB access. The session's current generated synthetic certificate
-cannot pass: the parent must integrate explicit owner-supplied trusted TLS
-materials/route at its existing TLS boundary. This adapter does not obtain,
+cannot pass. Supply explicit owner-authorized TLS materials through the existing
+`trustedTls` configuration described below. This adapter does not obtain,
 copy or discover certificate private keys.
 
 The owner authorizes the fresh private ADB key outside code. The adapter reads
@@ -106,7 +111,7 @@ device cleanup result; host `cleanup: PASS` cannot stand in for it.
 The existing command dispatches the conditional USB core path:
 
 ```text
-python3 -B scripts/validation/mobile-acceptance.py --config PRIVATE_CONFIG --out FRESH_EXTERNAL_OUTPUT --mode core --runs 1
+"$PYTHON" -B scripts/validation/mobile-acceptance.py --config PRIVATE_CONFIG --out FRESH_EXTERNAL_OUTPUT --mode core --runs 1
 ```
 
 Retain the existing server/build/official Mac app/Node pins and add these fields

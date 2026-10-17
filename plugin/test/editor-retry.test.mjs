@@ -144,7 +144,8 @@ test("a newly refused page record keeps its timer instead of immediately retryin
     inPage = true;
     try { return await applyPage(...args); } finally { inPage = false; }
   };
-  r.engine.retryOne = async (...args) => { if (inPage) retries++; return retryOne(...args); };
+  // The async page also has a save tail: only its exclusive turn owns a page retry.
+  r.engine.retryOne = async (...args) => { if (inPage && r.engine.holder?.label === "page") retries++; return retryOne(...args); };
   const latest = await r.server.publish({ fileId: r.base.fileId, path: NOTE, bytes: enc("BASE latest"), mtime: 5000,
     parents: [r.incoming.version_id], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey });
   await r.timers.run(STEP_MS, () => r.state.data.lastSeq >= latest.seq);

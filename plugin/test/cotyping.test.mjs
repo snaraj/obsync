@@ -62,6 +62,8 @@ class OpenEditor {
   constructor(device, timers, place) {
     this.host = device.host;
     this.place = place;
+    this.revision = {};
+    this.host.editorRevision = (path) => path === NOTE ? this.revision : undefined;
     this.loaded = this.host.text(NOTE);
     this.unsaved = "";
     this.merged = 0;
@@ -81,7 +83,7 @@ class OpenEditor {
   }
 
   type(text) {
-    if (text !== "") this.host.inputAt.set(NOTE, this.host.clock);
+    if (text !== "") { this.host.inputAt.set(NOTE, this.host.clock); this.revision = {}; }
     this.unsaved += text;
     this.show();
   }
@@ -2031,4 +2033,13 @@ test("a note deleted here and edited elsewhere before the deletion is sent comes
   assert.equal(await pushDelete(r.context, NOTE), null, "a deletion was sent for a note that is back");
   assert.deepEqual(r.server.files.get(created.fileId).heads, [edit.version_id], "the file forked on the server");
   assert.ok(!r.server.journal.some((frame) => frame.deleted));
+});
+
+test("the open-editor fixture attributes revisions only to explicit typing",async(t)=>{
+ const {a,timers}=await pair(t);a.host.write(NOTE,"base",1000);const editor=new OpenEditor(a,timers,atEnd);
+ const initial=a.host.editorRevision(NOTE);editor.type("");assert.equal(a.host.editorRevision(NOTE),initial);
+ editor.type("x");const typed=a.host.editorRevision(NOTE);assert.notEqual(typed,initial);
+ editor.save();assert.equal(a.host.editorRevision(NOTE),typed);
+ a.host.write(NOTE,"external",2000);editor.external();assert.equal(a.host.editorRevision(NOTE),typed);
+ assert.equal(a.host.editorRevision("Other.md"),undefined);
 });

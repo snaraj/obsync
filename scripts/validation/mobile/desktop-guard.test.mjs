@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, chmodSync, symlinkSync, linkSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, chmodSync, lstatSync, symlinkSync, linkSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 const { assertAndroidObservation, owned, privateRead, privateSave, contained } = await import(process.env.OBSYNC_DESKTOP_GUARD_MODULE ?? './desktop-guard.mjs');
@@ -39,6 +39,8 @@ test('private files are owned, exclusive, nonlinked and mode 0600', t => {
   symlinkSync(file, join(root, 'link')); assert.throws(() => privateRead(join(root, 'link')));
   linkSync(file, join(root, 'hardlink')); assert.throws(() => privateRead(file));
   const publicDir = join(root, 'public'); mkdirSync(publicDir, { mode: 0o755 });
+  chmodSync(publicDir, 0o755); // The caller's umask must not make the hostile fixture private.
+  assert.equal(lstatSync(publicDir).mode & 0o777, 0o755);
   assert.throws(() => owned(publicDir, true));
   assert.throws(() => privateSave(join(publicDir, 'secret'), 'value'));
 });

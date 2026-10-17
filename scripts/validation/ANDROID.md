@@ -24,8 +24,20 @@ There must be 20 GiB free. Console port 5584 is the default; select an unused
 even port in 5554–5584 explicitly if needed. The default image is installed
 `system-images;android-35;google_apis;arm64-v8a`, hardware profile `pixel_8`.
 The bounded budget is 1–86,400 seconds, independent of any public tunnel.
-Software rendering is explicit and recorded; a boot failure requires a new
-run and an explicit alternate mode, never an invisible retry/upgraded PASS.
+The controller uses the official [`-no-window` option](https://developer.android.com/studio/run/emulator-commandline)
+to disable the host window; the SDK selects its packaged headless backend.
+The same official SDK archive verification covers that backend. Software
+rendering remains explicit and recorded. Retain a failed boot and diagnose it
+before changing the next run; never retry invisibly or upgrade it to PASS. This launch
+mode does not establish the cause of any earlier rendering or boot failure.
+
+Before initial isolated-TCP data disable, the controller checks only the required
+`phone` Binder service. Exact `Service phone: not found` replies may poll within
+the original boot deadline using metadata calls capped at three seconds. Only
+exact `Service phone: found` permits the single existing disable command;
+unknown output, command failure or deadline expiry is terminal. This readiness
+precondition does not retry a failed disable or weaken later route/isolation
+proofs. `owned-wifi-route-initial.json` retains its bounded observations.
 
 `ASSETS` is a private JSON record of independently acquired pins:
 
@@ -86,7 +98,8 @@ python3 -B scripts/validation/android-session.py adb \
 
 The real Obsidian APK is installed unchanged and the installed APK bytes are
 read back independently. Its launch activity is resolved from the installed
-package. Onboarding, native file-access/trust prompts and ordinary UI pairing
+package and the controller starts that activity before the journey. Onboarding,
+native file-access/trust prompts and ordinary UI pairing
 belong to the journey command. Never seed pairing state, authentication,
 VRK material, native secret storage or trust exceptions. Copy only hash-verified
 candidate plugin artifacts to a synthetic vault. Do not dump paired page text,

@@ -50,6 +50,16 @@ def identity(data):
  if len(fields)<20 or not fields[19].isdecimal():raise ValueError('adbd_start_invalid')
  return {'bootIdSha256':sha(lines[0].encode()),'adbdPid':int(lines[1]),'adbdStartTicks':fields[19]}
 
+INCOMING_GUEST_SCRIPT=GUEST_SCRIPT+"""grep '^Uid:' "/proc/$pid/status"
+printf 'OBSYNC_INCOMING_GUEST_COMPLETE\\n'
+"""
+
+def incoming_guest(state,env,target,end):
+ raw=command(state,env,target,['shell','sh','-c',shlex.quote(INCOMING_GUEST_SCRIPT)],end,binary=True)
+ lines=raw.splitlines(keepends=True)
+ if len(lines)!=6 or lines[-1]!=b'OBSYNC_INCOMING_GUEST_COMPLETE\n':raise ValueError('incoming_guest_framing')
+ return {'guest':identity(b''.join(lines[:4])),'adbdUid':adbd_uid(lines[4]),'stdoutBytes':len(raw),'stdoutSha256':sha(raw),'framing':'COMPLETE_GUEST_AND_BOUND_UID'}
+
 def network(addresses,routes,listeners):
  if any(len(value)>16384 for value in (addresses,routes,listeners)):raise ValueError('network_observation_budget')
  result={'addresses':[],'routes':[],'tcp5555Listeners':[]}
@@ -203,11 +213,27 @@ def connect(state,env,target,end,expected_transition=False):
  result=command(state,env,None,['connect',target],end,cap=12)
  if expected_transition and result in (f"failed to connect to '{target}': Connection refused",'failed to connect to '+target):raise ExpectedAttachmentPending('expected owned TCP restart not ready')
  if result not in ('connected to '+target,'already connected to '+target):raise ValueError('owned TCP connect not confirmed')
+ return result
 
 def save_binding(state,run,port,facts,phase,save,original,route_proof=None):
  q=state['processes']['emulator'];old=state.get('selectedTcpAdb');binding={'schema':1,'target':f'127.0.0.1:{port}','hostPort':port,'guestPort':5555,'emulatorSerial':state['serial'],'emulatorPid':q['pid'],'emulatorIdentity':q['identity'],'guest':facts}
  state['selectedTcpAdb']=binding;save(run/'android.json',state)
  save(run/'evidence'/f'owned-tcp-adb-{phase}-{time.time_ns()}.json',{'schema':1,'sourceHead':state['sourceHead'],'evidenceClass':'DIAGNOSTIC_ONLY','phase':phase,'target':binding['target'],'originalSerial':state['serial'],'guest':facts,'originalRouteGuest':original,'selectedRouteGuest':facts,'priorGuest':old['guest'] if old else None,'emulatorPid':q['pid'],'loopbackListenerOwned':True,'sameGuestIndependentCommands':True,'authConfigurationUnchanged':True,'adbAuthPosture':'PREEXISTING_USERDEBUG_UNCHANGED_NOT_RSA_AUTH_PROOF','responseRouteProof':route_proof})
+
+def phone_service_state(raw):
+ if raw==b'Service phone: found\n':return 'FOUND'
+ if raw==b'Service phone: not found\n':return 'MISSING'
+ raise ValueError('phone_service_check_unknown')
+
+def wait_phone_service(read,end,proof,now=time.monotonic,pause=time.sleep):
+ facts={'method':'READ_ONLY_SERVICE_CHECK_PHONE','polls':0,'first':None,'last':None,'ready':False,'perCallCapMs':3000,'deadline':'EXISTING_INITIAL_BOOT_DEADLINE'};proof['phoneServiceReadiness']=facts
+ while now()<end:
+  value=phone_service_state(read());facts['polls']+=1;facts['last']=value
+  if facts['first'] is None:facts['first']=value
+  if now()>=end:raise TimeoutError('phone_service_readiness_deadline')
+  if value=='FOUND':facts['ready']=True;return
+  pause(min(.3,end-now()))
+ raise TimeoutError('phone_service_readiness_deadline')
 
 def initial(state,run,env,end,save,failure_classifier=None):
  if state.get('selectedTcpAdb') is not None:raise ValueError('TCP selection already performed')
@@ -230,6 +256,7 @@ def initial(state,run,env,end,save,failure_classifier=None):
   if not proof['effectiveNetworkOptions']['ready']:raise ValueError('effective restricted backends not observed')
   data_value=observe('observe_mobile_data_before_provisioning',state['serial'],['shell','settings','get','global','mobile_data'],cap=30);proof['dataBeforeProvisioningZero']=data_value=='0';proof['dataBeforeProvisioningValueClass']={'0':'ZERO','1':'ONE','null':'NULL','':'EMPTY'}.get(data_value,'OTHER')
   observe('prescribed_owned_guest_data_setting',state['serial'],['shell','settings','put','global','mobile_data','0'],cap=30)
+  wait_phone_service(lambda:observe('required_phone_service_readiness',state['serial'],['shell','service','check','phone'],binary=True),end,proof)
   observe('prescribed_data_disable_before_wifi_routing',state['serial'],['shell','svc','data','disable'],cap=30)
   data_value=observe('verify_mobile_data_before_wifi_routing',state['serial'],['shell','settings','get','global','mobile_data'],cap=30);proof['mobileDataZeroBeforeWifiRouting']=data_value=='0';proof['dataBeforeWifiRoutingValueClass']={'0':'ZERO','1':'ONE','null':'NULL','':'EMPTY'}.get(data_value,'OTHER')
   if not proof['mobileDataZeroBeforeWifiRouting']:raise ValueError('owned early data disable not observed')
@@ -309,7 +336,7 @@ def reattach(state,run,env,end,phase,save,observe=None,failure_classifier=None,r
  try:
   if phase not in ('root','reboot'):raise ValueError('only expected lifecycle attachment allowed')
   target=selected(state);port=state['selectedTcpAdb']['hostPort'];prior=state['selectedTcpAdb']['guest']
-  facts['stage']='owned_listener';listener(state,port,end)
+  facts['stage']='owned_listener';owned_listener=listener(state,port,end)
   facts['stage']='original_guest_identity';original=guest(state,env,state['serial'],end);facts['originalGuest']=original
   if phase=='reboot' and original['bootIdSha256']==prior['bootIdSha256']:facts['pendingReason']='ORIGINAL_BOOT_UNCHANGED';return False
   facts['stage']='original_boot_completed'
@@ -319,9 +346,19 @@ def reattach(state,run,env,end,phase,save,observe=None,failure_classifier=None,r
   if phase=='reboot' and not restore_known_wifi_once(state,env,end,prior,restoration_context,facts,failure_classifier):return False
   route_proof={};facts['routeProof']=route_proof
   def route_read(stage,args):facts['stage']=stage;return command(state,env,state['serial'],args,end,binary=True)
-  response_route_ready(state,env,state['serial'],original,end,route_proof,read=route_read)
-  facts['stage']='selected_tcp_connect';connect(state,env,target,end,expected_transition=True)
-  facts['stage']='selected_guest_identity';current=guest(state,env,target,end);facts['selectedGuest']=current
+  if phase=='root':response_route_ready(state,env,state['serial'],original,end,route_proof,read=route_read)
+  else:
+   setup=state.get('ownedWifiTcpSetup',{})
+   if setup!={'hostPort':port,'radioOptions':'restrict=on','wifiOptions':f'restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:{port}-10.0.2.16:5555'}:raise ValueError('reboot Wi-Fi backend binding changed')
+   route_proof.update(method='INCOMING_TCP_SAME_GUEST',listener=owned_listener,wifiBackend=setup.copy(),connectCapMs=12000,remainingPhaseBudgetBeforeConnectMs=int((end-time.monotonic())*1000))
+  facts['stage']='selected_tcp_connect';connect_start=time.monotonic();response=connect(state,env,target,end,expected_transition=True);connect_elapsed=int((time.monotonic()-connect_start)*1000)
+  if phase=='reboot' and response not in ('connected to '+target,'already connected to '+target):raise ValueError('reboot connect response missing')
+  facts['stage']='selected_guest_identity'
+  if phase=='reboot':
+   exchange=incoming_guest(state,env,target,end);current=exchange['guest']
+   route_proof.update(connectResponse=response,connectElapsedMs=connect_elapsed,incomingResponse=exchange,adbdUid=exchange['adbdUid'])
+  else:current=guest(state,env,target,end)
+  facts['selectedGuest']=current
   if original!=current or (phase=='root' and current['bootIdSha256']!=prior['bootIdSha256']):raise ValueError('expected lifecycle TCP guest differs')
   if phase=='reboot' and current['bootIdSha256']==prior['bootIdSha256']:facts['pendingReason']='SELECTED_BOOT_UNCHANGED';return False
   facts['stage']='selected_boot_completed'
@@ -331,6 +368,7 @@ def reattach(state,run,env,end,phase,save,observe=None,failure_classifier=None,r
   facts['stage']='root_uid'
   if phase=='root' and command(state,env,target,['shell','id','-u'],end)!='0':facts['pendingReason']='ROOT_UID_NOT_ZERO';return False
   facts['stage']='save_binding';remaining(end)
+  if phase=='reboot':route_proof.update(originalBootCompleted=facts['originalBootCompleted'],selectedBootCompleted=facts['selectedBootCompleted'],phaseDeadlineMet=True,remainingPhaseBudgetBeforeSaveMs=int((end-time.monotonic())*1000))
   save_binding(state,run,port,current,phase,save,original,route_proof);remaining(end)
   facts.update(stage='attached',result='ATTACHED');return True
  except BaseException as error:
