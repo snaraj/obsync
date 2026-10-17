@@ -539,3 +539,109 @@ a passing full run. Fresh hosted validation is required at the repaired head.
 The complete repaired status test file passed all 36 tests with zero skips in
 19.241 seconds. Its log SHA-256 is
 `f8a0c230e5ae885d5bb552f88f34d5d0a96cf8d4613f9f01902a2c50628389c7`.
+
+At signed head `1e0cd0e649171c40f3b618b27334383ad13090d5`, the next fresh
+three-run batch stopped on its first attempt after 352.025 seconds. Android
+installed the official app and completed the ordinary storage-permission
+controls, but its newly created vault did not reach public
+`workspace.layoutReady` within the unchanged twenty-second readiness budget.
+After 122 observations the exact vault, plugin registry and settings methods
+were present; the layout was still not ready. Candidate installation and
+pairing had not begun. This is an automation or host-app readiness refusal,
+not evidence of a candidate encryption defect. Its exact cause is unproven.
+The remaining two attempts did not run; no retry replaced this failure.
+
+The aggregate FAIL hash is
+`4eecadc5d00e96130f9a0731870feeba87db2b241d56ca7ad25edeae6e5345a6`.
+Both controllers report cleanup PASS. The independent parent check found all
+eight recorded processes, six ports and six runtime/manifest paths absent,
+without sending any signal; its receipt hash is
+`67542e11d5cb3d8dd9045157d74fbecf9cc6625400afa6a575682b4920a3a8d1`.
+Wall and monotonic timing differed by one millisecond. The result does not
+establish any of the full mobile journeys.
+
+The frozen full auditor refused this batch for `three_full_terminal_passes`.
+A separate retained-failure audit verified all 58 input pins, 37 committed
+helpers and 37 retained evidence references without changing that predicate.
+Its hash is
+`e1e8c7d74a7d271bba5f4fff6af8993b9a4c9347e50e6979b03c0e22146733fb`.
+
+Hosted validation at the same head passed the application job: 2,519 plugin
+tests passed and nine case-folding filesystem cases were skipped on Linux;
+225 Python and 204 JavaScript mobile-harness tests passed. The Windows plugin
+job passed all 2,528 tests with zero skips. The application and Windows log
+hashes are respectively
+`8a0e115afb4eeb9087822068db28d7c73dbaa085829ac5b9d8f03ea27ec5106c`
+and `d26a89d6ff8312f6ef6f0a3a5a4ba721fe86ffdf04fe702f054437520bf09594`.
+The required disposition check passes: raw CodeQL alert 143 is covered by the
+existing `export.rs` source-hash disposition, whose hash still matches. No
+alert was manually dismissed. Protected-main open-alert inventory is empty.
+
+The [current hosted PR Gate](https://github.com/snaraj/obsync/actions/runs/38997155784)
+then completed successfully, including all native custody jobs. Its macOS plugin
+job also passed all 2,528 tests with zero skips; that log hash is
+`67a8308b7d8dee09204f2262818a0e3ff57501de7cb0090983f102a203046142`.
+These hosted results do not supply the missing Android acceptance passes.
+
+The next Android-only layout diagnostic never reached the app. Initial boot
+observed the expected WLAN address, response route for adbd UID 2000 and owned
+loopback listener. Its single twelve-second-capped ADB connection returned a
+generic failed-to-connect response after 10.108 seconds. Reconstructing that
+exact bounded response matches both its retained 36-byte length and SHA-256;
+it does not identify a missing listener, authentication problem or route change.
+The diagnostic remains FAIL after 117.701 seconds, with layout readiness
+NOT_REACHED and no plugin or server activity. No second connection was tried.
+The route evidence hash is
+`ad5a67d614fdb81b996f6435b5124e4b140f2fda53acef99043eca67d8f43f1d`.
+Controller cleanup passed; the parent independently verified three recorded
+processes, four ports and three runtime/manifest paths absent. That cleanup
+receipt hash is
+`3918ac728d1d1ef9e28dc5bbc6400c2fbde000c8a87d6cd5014f98f3afba3ab3`.
+
+A second frozen diagnostic retained the same controller, transport, Android
+driver and layout observer. Its only addition classified the original single
+connection response and would take at most four bounded read-only guest
+observations after a failed connection, within the original boot deadline.
+All 17 input pins verified. The connection succeeded on its first attempt, so
+those failure observations did not run. Ordinary onboarding then reached a ready
+layout after 31 polls within the unchanged twenty-second budget. The document
+was visible and focused, its loader disappeared, and no runtime exception or
+console error was observed during the instrumented interval.
+
+Neither previous failure reproduced. This result supports no route, graphics
+or layout fix. Instrumentation before the original readiness read adds bounded
+overhead, so the result is not an unmodified acceptance run. The controlled stop
+occurred before candidate installation, pairing or server use. Parent elapsed
+time was 130.3 seconds; the controller reported cleanup PASS and the parent
+verified its two captured child PIDs, four ports and three runtime/state paths
+absent. The manifest, layout observation, independent retained-evidence audit
+and parent cleanup hashes are respectively:
+
+- `d74754037655fd9bd66613a4ceb9eafff52ada50861034542f7b4e3106296e17`
+- `cdf2dcdedfa20496a1bcdf657ca3f37b61ade06e647f4434667bc53d5f761ea0`
+- `f8d6b6f327aa90f8de86fb0bc5fac7aa2007f1869eeeff8f68858f6bff8bfba6`
+- `e416a8a169ce88320c6f8e453f3b407fb9bc33da570d9c081d74345c66be60dc`
+
+The resulting harness change repairs missing failure evidence only. The original
+readiness predicate and wait function are byte-for-byte unchanged. An initial
+connection refusal now retains its closed response class. A failed native-layout
+check takes one read-only layout/loader/focus/visibility snapshot, capped at
+three seconds within the remaining session budget. Later readiness or failed
+diagnostics cannot change the original failure. There is no extra observation
+on successful startup and no new connection attempt.
+
+The first offline verification invocation incorrectly selected the dirty working
+tree as the crypto oracle's source. Its clean-source guard refused; the log
+remains FAIL with SHA-256
+`24ec2a3a855328c0094265b4d418f6bb42003cd68289f640accb1834f86fa72b`.
+With `OBSYNC_ORACLE_SOURCE` set to the clean candidate at `1e0cd0e`, the full
+`scripts/ci/mobile-harness.sh` passed 225 Python tests, 206 JavaScript tests and
+all 285 scripted mutation controls, with zero skips. That log SHA-256 is
+`ba8b41d2b0e3ebfe2c850bae01d88c0d8a7b0230e61bd71a014f2b0bcec98bb3`.
+Four additional author mutations detected omitted connection evidence, swallowed
+readiness failure, ignored remaining budget and raw page text in diagnostics.
+Three failed assertions; the missing connection field failed its required-field
+lookup. Their receipt SHA-256 is
+`bb43209890a86ce02582d84e50c477c6df6ea7b9211af8f4a36ae1ba110eb110`.
+Strict pinned documentation and origin checks passed; their disposable container,
+site output, private configuration and newly pulled image were removed.

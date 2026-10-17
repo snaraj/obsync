@@ -43,6 +43,13 @@ class Route(unittest.TestCase):
    provision=[c for c in calls if c[1] in (['shell','settings','put','global','mobile_data','0'],['shell','svc','data','disable'])];self.assertEqual(provision,[('emulator-5584',['shell','settings','put','global','mobile_data','0'],30),('emulator-5584',['shell','svc','data','disable'],30)]);self.assertLess(calls.index(provision[1]),calls.index(('emulator-5584',['shell','svc','wifi','enable'],30)));self.assertTrue(saved[-1][1]['mobileDataGlobalSettingZero']);self.assertEqual(saved[-1][1]['ipv4RouteIsolation']['verifiedDiscardRoutes'],1)
    self.assertFalse(any('redir' in c[1] or c[1][-1:] == ['disable'] and 'wifi' in c[1] for c in calls));self.assertEqual(saved[-1][1]['result'],'OBSERVED');self.assertEqual(next(x['commandCapMs'] for x in saved[-1][1]['commands'] if x['stage']=='single_standard_tcp_connect'),12000);self.assertEqual(next(x['commandCapMs'] for x in saved[-1][1]['commands'] if x['stage']=='enable_only_owned_guest_wifi_once'),30000)
    s.pop('selectedTcpAdb');calls.clear();saved.clear()
+   for response,expected in [('failed to connect to 127.0.0.1:12346','FAILED_GENERIC'),("failed to connect to '127.0.0.1:12346': Connection refused",'CONNECTION_REFUSED'),('PRIVATE_VALUE','OTHER')]:
+    calls.clear();saved.clear()
+    def unconfirmed(st,env,target,args,end,cap=3,binary=False):
+     value=cmd(st,env,target,args,end,cap,binary);return response if args==['connect','127.0.0.1:12346'] else value
+    with patch.object(T,'guest',return_value=FACT),patch.object(T,'command',side_effect=unconfirmed),patch.object(T,'listener',return_value={'pid':777}),self.assertRaisesRegex(ValueError,'owned TCP connect not confirmed'):T.initial(s,run,{},time.monotonic()+10,lambda p,v:saved.append((p,v)))
+    proof=saved[-1][1];self.assertEqual(proof['connectResponse'],expected);self.assertEqual(proof['result'],'FAIL');self.assertEqual(proof['connectAttempts'],1);self.assertNotIn('selectedTcpAdb',s);self.assertEqual(sum(args[:1]==['connect'] for _,args,_ in calls),1);self.assertNotIn('PRIVATE_VALUE',json.dumps(proof))
+   calls.clear();saved.clear()
    for which in ('data','route'):
     def wrong(st,env,target,args,end,cap=3,binary=False):
      value=cmd(st,env,target,args,end,cap,binary)

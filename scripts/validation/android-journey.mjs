@@ -294,6 +294,10 @@ export function nativeReadiness(app,vaultPath){
   const facts={vaultPresent:!!app?.vault?.adapter,ownedVault:app?.vault?.adapter?.basePath===vaultPath,layoutReady:app?.workspace?.layoutReady===true,pluginRegistryPresent:!!app?.plugins?.plugins&&typeof app.plugins.plugins==='object',manifestRegistryPresent:!!app?.plugins?.manifests&&typeof app.plugins.manifests==='object',normalPluginSettingsAvailable:typeof app?.setting?.open==='function'&&typeof app?.setting?.openTabById==='function'};
   return {...facts,ready:Object.values(facts).every(v=>v===true)};
 }
+export function nativeStartupFailureObservation(app,document,vaultPath){
+  const count=selector=>Math.min(16,[...document.querySelectorAll(selector)].filter(e=>e.getClientRects().length>0).length),layout=app?.workspace?.layoutReady;
+  return {vaultBinding:!app?.vault?.adapter?'ABSENT':app.vault.adapter.basePath===vaultPath?'OWNED':'FOREIGN',workspacePresent:!!app?.workspace,layoutReadyValueClass:layout===true?'TRUE':layout===false?'FALSE':layout===undefined?'ABSENT':'OTHER',onLayoutReadyFunction:typeof app?.workspace?.onLayoutReady==='function',visibility:['visible','hidden','prerender'].includes(document.visibilityState)?document.visibilityState:'OTHER',documentReadyState:['loading','interactive','complete'].includes(document.readyState)?document.readyState:'OTHER',documentHasFocus:document.hasFocus(),loaderVisibleCount:count('.progress-bar-container'),bodyInProgress:document.body?.classList.contains('in-progress')===true,trustModalVisibleCount:count('.modal.mod-trust-folder'),modalVisibleCount:count('.modal')};
+}
 export async function waitNativeReadiness(read,pause=ms=>new Promise(r=>setTimeout(r,ms)),now=Date.now,budget=20000){
   const started=now(),before=read(),end=started+budget;let after=before,polls=1;
   for(;;){
@@ -416,7 +420,13 @@ async function main(args) {
   }
   async function readyNativeStartup(){
     startupReadiness=await evaluate(`const read=()=>(${nativeReadiness.toString()})(window.app,P.vaultPath);return await (${waitNativeReadiness.toString()})(read);`,{vaultPath:input.vaultPath},false);
-    if(!startupReadiness.ready)throw Error('native app plugin registry readiness deadline');
+    if(!startupReadiness.ready){
+      const budget=Math.max(0,Math.min(3000,state.expiresAtEpoch*1000-Date.now()));
+      const observation={scope:'AFTER_ORIGINAL_READINESS_FAILURE_ONLY',commandBudgetMs:budget,result:'NO_REMAINING_BUDGET'};
+      if(budget>0)try{observation.facts=await evaluate(`return (${nativeStartupFailureObservation.toString()})(window.app,document,P.vaultPath);`,{vaultPath:input.vaultPath},false,budget);observation.result='OBSERVED';}catch{observation.result='UNKNOWN';}
+      startupReadiness.failureObservation=observation;
+      throw Error('native app plugin registry readiness deadline');
+    }
   }
   try {
     if(['onboard','note-create','pair-submit','rotation-pair-submit','folder-create','folder-rename','folder-case-rename','previous-history-restore'].includes(command)){

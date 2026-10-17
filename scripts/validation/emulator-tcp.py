@@ -268,8 +268,8 @@ def initial(state,run,env,end,save,failure_classifier=None):
   proof['stage']='listener';proof['listener']=listener(state,port,end);target=f'127.0.0.1:{port}'
   proof['remainingBootBudgetBeforeConnectMs']=int((end-time.monotonic())*1000);proof['connectAttempts']=1
   response=observe('single_standard_tcp_connect',None,['connect',target],cap=12)
+  proof['connectResponse']={'connected to '+target:'CONNECTED','already connected to '+target:'ALREADY_CONNECTED','failed to connect to '+target:'FAILED_GENERIC',f"failed to connect to '{target}': Connection refused":'CONNECTION_REFUSED'}.get(response,'OTHER')
   if response not in ('connected to '+target,'already connected to '+target):raise ValueError('owned TCP connect not confirmed')
-  proof['connectResponse']='CONNECTED' if response.startswith('connected to ') else 'ALREADY_CONNECTED'
   after=guest(state,env,target,end);proof['selectedRouteGuest']=after
   if before!=after:raise ValueError('redirected TCP guest differs from bootstrap')
   proof['initialSyntheticWifi']=known_synthetic_wifi(observe('verify_known_synthetic_wifi_before_reboot',target,['shell','cmd','wifi','status']).encode())

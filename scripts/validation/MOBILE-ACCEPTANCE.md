@@ -156,6 +156,13 @@ The first failed HTTP request remains in the evidence, with bounded status and
 timing facts. Cleanup has its separate existing budget and cannot turn that
 failure into a pass.
 
+If the twenty-second native-layout check fails, its receipt includes one
+bounded, read-only snapshot of layout, loader, focus and visibility state.
+This observation runs only after the original failure, for at most three
+seconds within the remaining session budget. Even a later ready layout leaves
+the attempt failed. Initial emulator connection refusals retain a closed
+response class alongside the original response length and hash.
+
 ## What is measured
 
 | Former phone assertion | Replacement evidence |

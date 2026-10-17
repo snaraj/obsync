@@ -1,7 +1,8 @@
 import test from 'node:test';
+import {readFileSync} from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { parseOwnedRootEntries,readOwnedRootEntries,waitFolderIndex,digest,noteIndexObservation,waitNoteReadiness,waitKnownNotesIndex,waitCandidateReadiness,waitScopeSave,waitPairingActivation,serverUrlCommitMatched,pointerWitnessMatches,androidExecPathArg,persistedByteFacts,freshTrustRoute, comparison, ordinaryControl, ownedVault, visibleComparisons, safeExceptionMessage, knownNotesMatch, selectAllText,nativeScreen,androidPathArg,externalFailure,nativeReadiness,waitNativeReadiness,syntheticNotePath,candidateLabelMatches,restoredSiblingPath,pointerTarget,waitPointerReadiness,waitOwnedPage } from './android-journey.mjs';
+import { parseOwnedRootEntries,readOwnedRootEntries,waitFolderIndex,digest,noteIndexObservation,waitNoteReadiness,waitKnownNotesIndex,waitCandidateReadiness,waitScopeSave,waitPairingActivation,serverUrlCommitMatched,pointerWitnessMatches,androidExecPathArg,persistedByteFacts,freshTrustRoute, comparison, ordinaryControl, ownedVault, visibleComparisons, safeExceptionMessage, knownNotesMatch, selectAllText,nativeScreen,androidPathArg,externalFailure,nativeReadiness,waitNativeReadiness,nativeStartupFailureObservation,syntheticNotePath,candidateLabelMatches,restoredSiblingPath,pointerTarget,waitPointerReadiness,waitOwnedPage } from './android-journey.mjs';
 
 test('owned initial debugger waits for zero pages to become one and rejects multiples immediately',async()=>{
   let clock=0,reads=0;const facts={},page={type:'page',webSocketDebuggerUrl:'owned'};
@@ -447,4 +448,19 @@ test('actual explicit case workflow requires two ordinary legs, fresh exact path
   let empty;await assert.doesNotReject(async()=>{empty=await run('empty');});assert.equal(empty.verifiedOriginal,true);assert.equal(empty.receipts[0].descendants,0);
   assert.equal((await run('fractional-clock')).receipts[0].elapsedMs,400);
   for(const mode of ['missing-baseline','wrong-baseline-head','wrong-baseline-folder','invalid-baseline-files','oversized-baseline-files','changed-baseline','collision','wrong-source','existing-final','invalid-endpoint','skip-first','skip-second','intermediate-left','old-left','wrong-final','refusal','changed-id','changed-byte','late-initial-read','expired-first','expired-final','expired-final-measurement'])await assert.rejects(run(mode),error=>{assert.equal(error.receipts.length,0);if(['collision','wrong-source','existing-final','invalid-endpoint','late-initial-read'].includes(mode))assert.equal(error.steps.length,0);if(mode==='skip-first'||mode==='expired-first'||mode==='refusal')assert.equal(error.renameLegs,1);if(mode.startsWith('expired')||mode==='late-initial-read')assert.match(error.message,/ordinary folder case rename deadline/);return true;});
+});
+
+test('failure-only startup facts have closed values and bounded counts without page text',()=>{
+  const document={visibilityState:'hidden',readyState:'complete',hasFocus:()=>false,body:{classList:{contains:()=>true}},querySelectorAll:()=>Array.from({length:20},()=>({getClientRects:()=>[1],textContent:'PRIVATE_VALUE'}))};
+  const app={vault:{adapter:{basePath:'/owned'}},workspace:{layoutReady:false,onLayoutReady(){}},privateValue:'PRIVATE_VALUE'},f=nativeStartupFailureObservation(app,document,'/owned');
+  assert.equal(f.layoutReadyValueClass,'FALSE');assert.equal(f.vaultBinding,'OWNED');assert.equal(f.loaderVisibleCount,16);assert.equal(f.visibility,'hidden');assert.equal(JSON.stringify(f).includes('PRIVATE_VALUE'),false);assert.equal(nativeStartupFailureObservation({},document,'/owned').layoutReadyValueClass,'ABSENT');
+});
+test('actual original startup refusal survives one clipped observation, later-ready facts and observation failure',async()=>{
+  const source=readFileSync(new URL('./android-journey.mjs',import.meta.url),'utf8'),start=source.indexOf('  async function readyNativeStartup(){'),end=source.indexOf('\n  try {',start);
+  const run=new Function('evaluate','state','Date','nativeReadiness','waitNativeReadiness','nativeStartupFailureObservation','input','let startupReadiness;'+source.slice(start,end)+';return (async()=>{let error;try{await readyNativeStartup();}catch(e){error=e.message;}return {startupReadiness,error};})()');
+  for(const [ready,throws,expires,expectedCalls,budget] of [[true,false,10,1,0],[false,false,10,2,3000],[false,true,10,2,3000],[false,false,1.5,2,500],[false,false,1,1,0]]){
+    const calls=[];const evaluate=async(...args)=>{calls.push(args);if(calls.length===1)return {ready};if(throws)throw Error('PRIVATE_VALUE');return {layoutReadyValueClass:'TRUE'};};
+    const r=await run(evaluate,{expiresAtEpoch:expires},{now:()=>1000},nativeReadiness,waitNativeReadiness,nativeStartupFailureObservation,{vaultPath:'/owned'});assert.equal(calls.length,expectedCalls);assert.equal(r.startupReadiness.ready,ready);assert.equal(JSON.stringify(r).includes('PRIVATE_VALUE'),false);
+    if(ready){assert.equal(r.error,undefined);assert.equal(r.startupReadiness.failureObservation,undefined);}else{assert.equal(r.error,'native app plugin registry readiness deadline');const f=r.startupReadiness.failureObservation;assert.equal(f.commandBudgetMs,budget);assert.equal(f.scope,'AFTER_ORIGINAL_READINESS_FAILURE_ONLY');assert.equal(f.result,budget===0?'NO_REMAINING_BUDGET':throws?'UNKNOWN':'OBSERVED');if(budget>0)assert.equal(calls[1][3],budget);}
+  }
 });
