@@ -20,6 +20,15 @@ export function backupInventory(paths) {
   need(Array.isArray(paths) && JSON.stringify(paths) === JSON.stringify(expected), 'complete_backup_inventory');
   return paths;
 }
+export function recoveryBackupNeedles(observer, roots, backups, c) {
+  need(roots.length === 3 && backups.length === 3, 'complete_backup_needles');
+  return roots.flatMap((root, i) => {
+    need(/^obsync-recovery-v2(?: [a-z]+){24}$/.test(backups[i]), 'canonical_backup');
+    return observer.buildNeedles({ hex: { vrk: c.hex(root) }, phrase: backups[i],
+      text: { mnemonic: backups[i].slice('obsync-recovery-v2 '.length) } })
+      .map(needle => needle.label === 'text:mnemonic' ? { ...needle, label: 'recovery:mnemonic' } : needle);
+  });
+}
 export function sourceOpaqueScanner(source) {
   const file = readFileSync(join(source, 'scripts/ci/e2ee.mjs'), 'utf8');
   const snippet = /function assertNoNeedles\(bytes, needles, surface\) \{[\s\S]*?\n\}/.exec(file)?.[0];
@@ -125,7 +134,7 @@ async function inventory(api, observer, run, inputs) {
   }
   let needles = observer.buildNeedles({ text, codes });
   const rootMaps = await Promise.all(roots.map(root => dm.domainMapKeys(root)));
-  for (const [i, root] of roots.entries()) needles.push(...observer.buildNeedles({ hex: { vrk: c.hex(root) }, phrase: backups[i] }));
+  needles.push(...recoveryBackupNeedles(observer, roots, backups, c));
   const siv = async (base, context) => c.hkdf(base, c.utf8('obsync/seal-v2/siv'), await c.sha256(context), 64);
   const usedRoots = new Set();
   for (const [i, capture] of captures.entries()) {
@@ -154,9 +163,104 @@ async function inventory(api, observer, run, inputs) {
   const metadataNeedles = needles.filter(n => !n.label.startsWith('text:'));
   need(needles.length > 10 && metadataNeedles.length > 5 && needles.some(n => n.label === 'key:vrk') && needles.some(n => n.label === 'key:derived:domain-map'), 'needle_inventory_empty');
   return { needles, metadataNeedles, diagnosticNeedles: needles, metadata,
-    rootHex: c.hex(roots[0]), notePath: notes[0].path, counts: { notes: notes.length, backups: backups.length, nativeCaptures: captures.length,
+    rootHex: c.hex(roots[0]), notePath: notes[0].path, counts: { notes: notes.length, backups: backups.length, canonicalMnemonics: needles.filter(n => n.label === 'recovery:mnemonic').length, nativeCaptures: captures.length,
       pairingCodes: codes.length, metadataExports: metadata.length, contentNeedles: needles.length } };
 }
+// A failure receipt is a projection, never a copy of scanner-controlled strings.
+const ERROR_CODES = new Set(['capture_inventory', 'capture_receipt', 'capture_termination', 'capture_incomplete', 'capture_empty',
+  'capture_byte_count', 'capture_exchange_count', 'capture_read', 'capture_unverified', 'needles_empty', 'needles_invalid',
+  'scan_budget', 'scan_decode_budget', 'public_template_source', 'http_ambiguous_length', 'http_body_truncated', 'http_bodyless_framing',
+  'http_chunk_header', 'http_chunk_size', 'http_chunk_trailer', 'http_chunk_truncated', 'http_content_encoding',
+  'http_content_length', 'http_decompression', 'http_duplicate_framing', 'http_header', 'http_header_reserved',
+  'http_header_truncated', 'http_json', 'http_json_duplicate', 'http_start_line', 'http_target_encoding', 'http_transfer_encoding']);
+const errorCode = value => ERROR_CODES.has(value) ? value : 'UNKNOWN';
+const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+function hitClass(hit) {
+  const label = typeof hit?.label === 'string' ? hit.label : '', indexes = [];
+  let labelClass = 'UNKNOWN', match;
+  if (label === 'recovery:phrase') labelClass = 'RECOVERY_PHRASE';
+  else if (label === 'recovery:mnemonic') labelClass = 'RECOVERY_MNEMONIC';
+  else if (label.startsWith('recovery:word:')) {
+    labelClass = 'RECOVERY_WORD';
+    if ((match = /^recovery:word:([0-9]{1,4})$/.exec(label)) && +match[1] <= 4095) indexes.push(+match[1]);
+  } else if ((match = /^(text:(path|note)_|pairing:code:)([0-9]{1,4})$/.exec(label)) && +match[3] <= 4095) {
+    labelClass = match[1] === 'pairing:code:' ? 'PAIRING_CODE' : match[2] === 'path' ? 'NOTE_PATH' : 'NOTE_TEXT'; indexes.push(+match[3]);
+  } else if (['key:vrk', 'key:derived:domain-map', 'key:derived:domain', 'key:derived:manifest'].includes(label)) labelClass = 'CONTENT_KEY';
+  else if ((match = /^key:(domain|manifest|map_siv|manifest_siv|chunk_id|chunk_base|chunk_siv)_([0-9]{1,4})(?:_([0-9]{1,4}))?$/.exec(label)) &&
+    match.slice(2).every(value => value === undefined || +value <= 4095)) {
+    labelClass = 'CONTENT_KEY'; indexes.push(...match.slice(2).filter(value => value !== undefined).map(Number));
+  }
+  return { labelClass, indexes, direction: hit?.where === 'request' ? 'REQUEST' : hit?.where === 'response' ? 'RESPONSE' : 'UNKNOWN' };
+}
+function redactedFindings(report, hitLimit = 128) {
+  const hits = Array.isArray(report?.hits) ? report.hits : [], errors = Array.isArray(report?.errors) ? report.errors : [];
+  return { hitsPresent: hits.length > 0, errorsPresent: errors.length > 0, unexpectedHits: hits.length, parseErrors: errors.length,
+    hitDetails: hits.slice(0, hitLimit).map(hitClass), hitDetailsOmitted: Math.max(0, hits.length - hitLimit),
+    errorCodes: errors.slice(0, 64).map(errorCode), errorDetailsOmitted: Math.max(0, errors.length - 64),
+    structuralExceptions: Array.isArray(report?.skipped) ? report.skipped.length : null };
+}
+function messageDiagnostics(observer, traffic, needles, deadline) {
+  const connections = traffic.connections, totalMessages = connections.reduce((n, c) => n + c.requests.length + c.responses.length, 0);
+  const result = { method: 'FAILURE_ONLY_MESSAGE_RESCAN', primaryHitOrigin: 'NOT_RECONSTRUCTED', status: 'COMPLETE', totalMessages, messagesInspected: 0,
+    matchingMessages: 0, matchingMessagesOmitted: 0, messagesNotInspected: totalMessages, rows: [] };
+  outer: for (const [connectionIndex, connection] of connections.entries()) {
+    for (const [direction, messages] of [['request', connection.requests], ['response', connection.responses]]) {
+      for (const [messageIndex, message] of messages.entries()) {
+        if (Date.now() >= deadline) { result.status = 'TIME_BUDGET'; break outer; }
+        if (result.messagesInspected >= 4096) { result.status = 'MESSAGE_CAP'; break outer; }
+        const pairedRequestIndex = direction === 'response' && /^HTTP\/1\.[01] [2-5][0-9]{2}(?: |$)/.test(message.head?.line ?? '') ?
+          connection.responses.slice(0, messageIndex).filter(m => /^HTTP\/1\.[01] [2-5][0-9]{2}(?: |$)/.test(m.head?.line ?? '')).length : null;
+        const pairedRequest = pairedRequestIndex === null ? undefined : connection.requests[pairedRequestIndex];
+        const isolated = [{ raw: Buffer.isBuffer(message.wire) ? { [direction]: message.wire } : {},
+          requests: direction === 'request' ? [message] : pairedRequest ? [pairedRequest] : [], responses: direction === 'response' ? [message] : [] }];
+        isolated.errors = [];
+        let report;
+        try { report = observer.scan(isolated, needles); }
+        catch { result.status = 'SCANNER_ERROR'; break outer; }
+        if (Date.now() >= deadline) { result.status = 'TIME_BUDGET'; break outer; }
+        if (!report || !Array.isArray(report.errors) || !Array.isArray(report.hits)) { result.status = 'SCANNER_ERROR'; break outer; }
+        result.messagesInspected++;
+        if (report.decision === 'pass' && report.errors.length === 0 && report.hits.length === 0) continue;
+        result.matchingMessages++;
+        if (result.rows.length >= 32) continue;
+        const content = message.head?.['content-type'], type = typeof content === 'string' ? content.split(';', 1)[0].trim().toLowerCase() : '';
+        const status = direction === 'response' ? /^HTTP\/1\.[01] ([1-5][0-9]{2})(?: |$)/.exec(message.head?.line ?? '') : null;
+        result.rows.push({ connectionIndex, messageIndex, direction: direction.toUpperCase(),
+          pairedRequestIndex: pairedRequest ? pairedRequestIndex : null, findingsScope: direction === 'response' ? 'EXCHANGE_CANDIDATE' : 'MESSAGE_CANDIDATE',
+          messageAttribution: 'NOT_RECONSTRUCTED',
+          status: status ? +status[1] : null, bodyBytes: Buffer.isBuffer(message.body) ? message.body.length : null,
+          contentType: !content ? 'ABSENT' : type === 'application/json' ? 'JSON' : type === 'application/octet-stream' ? 'BINARY' :
+            ['text/plain', 'text/html'].includes(type) ? 'TEXT' : 'OTHER', ...redactedFindings(report, 8) });
+      }
+    }
+  }
+  result.messagesNotInspected = totalMessages - result.messagesInspected;
+  result.matchingMessagesOmitted = result.matchingMessages - result.rows.length;
+  result.localization = result.matchingMessages > 0 ? 'MESSAGE_MATCHES' : 'NOT_LOCALIZED';
+  return result;
+}
+export function requireNativeTraffic(run, report, binding, traffic, needles, observer, deadline) {
+  if (report?.decision === 'pass' && Array.isArray(report.errors) && report.errors.length === 0 && Array.isArray(report.hits) && report.hits.length === 0) return;
+  const findings = redactedFindings(report), failure = new ScanFailure('native_traffic_leak_or_parse');
+  failure.failureClass = findings.hitsPresent ? 'CONFIDENTIALITY_SCAN_FAILURE' : findings.errorsPresent &&
+    Array.isArray(report.errors) && report.errors.length <= 64 && report.errors.every(code => ERROR_CODES.has(code)) ? 'EVIDENCE_PARSE_FAILURE' : 'UNCLASSIFIED';
+  failure.failureEvidence = { status: 'WRITE_FAILED' };
+  try {
+    const hash = (value, size) => typeof value === 'string' && new RegExp(`^[a-f0-9]{${size}}$`).test(value) ? value : null;
+    const receipt = { schema: 1, result: 'FAIL', origin: 'native-confidentiality-failure', firstFailure: failure.code,
+      failureClass: failure.failureClass, sourceHead: hash(binding.sourceHead, 40), bundleSha256: hash(binding.bundleSha256, 64),
+      observerSha256: hash(binding.observerSha256, 64), captureManifestSha256: hash(binding.captureManifestSha256, 64),
+      scannerSha256: digest(readFileSync(fileURLToPath(import.meta.url))), ...findings,
+      trafficConnections: count(traffic.connections.length), trafficRequests: count(traffic.connections.reduce((n, c) => n + c.requests.length, 0)),
+      trafficBytes: count(traffic.bytes), messageDiagnostics: messageDiagnostics(observer, traffic, needles, deadline) };
+    const path = join(run, 'evidence/native-confidentiality-failure.json'); owned(join(run, 'evidence'), true);
+    const bytes = JSON.stringify(receipt, null, 2) + '\n'; writeFileSync(path, bytes, { mode: 0o600, flag: 'wx' });
+    owned(path); need(readFileSync(path, 'utf8') === bytes, 'failure_evidence_readback');
+    failure.failureEvidence = { status: 'RECORDED', path: 'evidence/native-confidentiality-failure.json', sha256: digest(bytes) };
+  } catch { /* The original scan refusal is never replaced by a diagnostic failure. */ }
+  throw failure;
+}
+
 async function main() {
   const [runArg, flag, sourceArg, ...rest] = process.argv.slice(2), run = resolve(runArg), source = resolve(sourceArg);
   need(flag === '--source' && rest.length === 0, 'arguments');
@@ -172,7 +276,7 @@ async function main() {
   const counter = { files: 0, bytes: 0 }, traffic = verifiedTraffic(run, manifest, observer, counter); budget();
   const secrets = await inventory(api, observer, run, inputs); budget();
   const report = observer.scan(traffic.connections, secrets.needles);
-  need(report.decision === 'pass' && report.errors.length === 0 && report.hits.length === 0, 'native_traffic_leak_or_parse'); budget();
+  requireNativeTraffic(run, report, { sourceHead: lab.source_head, bundleSha256: lab.artifacts['plugin/main.js'], observerSha256, captureManifestSha256 }, traffic, secrets.needles, observer, started + 60000); budget();
   const stored = [...tree(join(run, 'runtime/server/blobs'), counter), ...tree(join(run, 'runtime/server/journal'), counter)];
   need(stored.length > 3 && stored.some(file => file.bytes.length > 0), 'server_storage_unexercised');
   for (const file of stored) { opaque.scan(file.bytes, secrets.diagnosticNeedles, 'server_storage'); budget(); }
@@ -207,5 +311,6 @@ async function main() {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { await main(); } catch (error) { console.log(JSON.stringify({ schema: 1, result: 'FAIL',
     coverage: error instanceof ScanFailure && error.code === 'server_logs_unknown' ? 'UNKNOWN' : 'FAILED',
-    firstFailure: error instanceof ScanFailure ? error.code : 'native_confidentiality_refused' })); process.exitCode = 1; }
+    firstFailure: error instanceof ScanFailure ? error.code : 'native_confidentiality_refused',
+    ...(error instanceof ScanFailure && error.code === 'native_traffic_leak_or_parse' ? { failureClass: error.failureClass, failureEvidence: error.failureEvidence } : {}) })); process.exitCode = 1; }
 }

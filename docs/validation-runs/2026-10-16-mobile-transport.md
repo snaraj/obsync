@@ -768,3 +768,88 @@ and all 285 scripted mutation controls, zero skips. The command remained
 unchanged candidate. Its complete log SHA-256 is
 `5f1ffe5ff571ee71ae72b936a830f580d318d183b1dac5c83c7d271f21dce98b`. These are harness checks; native acceptance
 requires a new fresh full batch and is not inferred from them.
+
+At signed head `94e49bcfabc2faa69661b301483467ab5c172e34`, the next full
+batch completed all 169 native journey steps, then failed the final closed
+confidentiality scan. Attempt one remains FAIL; attempts two and three were
+not run. Its aggregate SHA-256 is
+`479cc0fc9c7fbadb7b69614b2a546f7e1ad478b096bdb0caf0e3b476c515bc47`.
+The run lasted 1,258.623 monotonic seconds, including the 213-second interval
+without Android calls. The guest reboot completed in 23.508 seconds; its
+retained readiness observations showed association and the expected address
+before the selected connection, within the unchanged deadline.
+
+The independent partial audit verified 58 frozen inputs, 37 committed helpers,
+627 retained references, 100 device exports and two fresh-recovery exports.
+It re-executed the selected-folder identity, ancestry and five-minute stability
+assertions, and checked three ciphertext/outcome bindings. These are partial
+journey results, not a completed confidentiality or full acceptance verdict.
+The closed recorder had 378 naturally completed connections and no recorder
+errors. The scanner then refused `native_traffic_leak_or_parse`; it saved
+neither its hit count nor its parser errors before throwing. The capture and
+secret inputs were removed during required cleanup. Consequently this evidence
+cannot distinguish a leak from a parser refusal, and cannot establish zero hits.
+Server-storage and planted-control scanning had not yet been reached.
+
+The unchanged three-pass auditor refused this batch. Independent cleanup
+verified 14 recorded processes, ten ports and six runtime/manifest paths absent.
+The reduced terminal audit SHA-256 is
+`6e08a716782452f21ac4121f94b583147fbb911d284be52c66786b97a0ed72fa`;
+the independent cleanup receipt SHA-256 is
+`5d4701b27e7c69a2aa28672237d24f70a7f454499d45c610589935bcff62c1cf`.
+
+The [exact-head hosted PR Gate](https://github.com/snaraj/obsync/actions/runs/39001779599)
+passed all 13 jobs. Rust passed 734 tests with one ignored measurement and
+94.84% line coverage. Linux passed 2,519 plugin tests with nine filesystem-specific
+skips; macOS and Windows each passed all 2,528 without skips. The offline mobile
+harness passed 228 Python tests, 206 JavaScript tests and 285 mutation controls.
+These results do not replace the failed native scan, the three-run requirement,
+physical-phone acceptance or independent final-head review.
+
+A separate source-bound synthetic scanner diagnostic reproduced two defects.
+An identical public setup `generation_mismatch` refusal passed with one valid
+backup and failed with a valid backup containing the word `account`; only the
+individual-word needle matched. The complete backup, mnemonic and root were
+absent from the capture. The server's fixed public detail contains that word.
+This proves a seed-sensitive false positive, not the cause of the deleted
+native capture's failure. The diagnostic SHA-256 is
+`5b7efbaa297d04098465aa306055cfdccb2923afe248a60ef48f5770fdb3d136`.
+It also reproduced a missing-needle case: a candidate-valid 24-word mnemonic
+whose words were all shorter than seven letters escaped detection when sent
+without the backup prefix. Explicitly adding the complete mnemonic detected
+the planted leak. Existing root and complete-backup controls still failed.
+That diagnostic SHA-256 is
+`afcf487911981864c2c9ac5c752adb67d4cb4a224bc78153512e255a4779956f`.
+
+The repair narrows individual-word matching only for the byte-exact public
+setup refusal, bound to the candidate server source, the paired setup request
+and its final 409 response. Changed source, route, status, body, extra fields,
+headers and encoded values remain refused or scanned. Complete backup,
+canonical mnemonic, content and key needles remain active. Canonical mnemonics
+retain a recovery classification so Android metadata scanning includes them.
+
+A refused native scan now saves bounded categories, counts, source/capture
+hashes and failure-only message diagnostics before cleanup. It records no raw
+needle, recovery word, request target, header, body or error text. A diagnostic
+write failure, cap, timeout or unlocalized match cannot rescue acceptance;
+message candidates are explicitly not an attribution of the original hit.
+The scoped integration review found no blocking composition issue. Native
+acceptance of these repairs requires a new batch; the earlier failure remains
+unclassified.
+
+The first full local gate for this repair failed an unchanged permission-fixture
+assertion. The invocation's restrictive `077` umask prevented its requested
+`0644` file from being created permissively, so no repair log was expected.
+A controlled run of that exact unchanged test failed under `077` and passed
+under `022`. The next full gate uses the normal `022` test umask, with its log
+created separately as `0600`; no product or test assertion was weakened.
+
+That invocation passed 734 Rust tests (one ignored measurement), 94.85% Rust
+line coverage, all 2,528 plugin tests without skips, and the real-server E2EE
+check with 21 flows and two planted leak controls. It then stopped in mutation
+setup: the mnemonic diagnostic selector matched two source locations after
+composition. This was an invalid mutation, not a killed control. Narrowing it
+to the intended diagnostic branch left the tested behavior unchanged.
+The complete offline harness then passed 228 Python tests, 220 JavaScript tests
+and all 310 scripted mutation controls, zero skips. The remaining canonical
+gate stages were run separately; the interrupted full invocation stays FAIL.

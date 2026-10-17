@@ -180,6 +180,100 @@ class ObserverScanner(unittest.TestCase):
         self.assertEqual(out["decision"], "fail", out)
         self.assertTrue(any(h["label"] == "recovery:word:1" for h in out["hits"]), out)
 
+    def _public_setup_refusal(self, target="/v1/setup", status=409, method="POST", body=None, content_type="application/json", header=b"", request_prefix=b"", response_prefix=b""):
+        detail = "the account generation, suite or rotation grant refuses this transition"
+        body = body if body is not None else json.dumps({"error": "generation_mismatch", "detail": detail}, separators=(",", ":")).encode()
+        content = (f"Content-Type: {content_type}\r\n".encode() if content_type else b"")
+        response = f"HTTP/1.1 {status} Refused\r\n".encode() + content + header + f"Content-Length: {len(body)}\r\n\r\n".encode() + body
+        cap = _capture(self.tmp, request_prefix + _message(method, target, b"{}"), response_prefix + response)
+        return cap, detail, body
+
+    def test_exact_source_bound_public_setup_detail_is_not_a_recovery_word_leak(self):
+        cap, _, _ = self._public_setup_refusal()
+        out = _scan(cap, {"phrase": "abandon ability account"})
+        self.assertEqual(out["decision"], "pass", out)
+        self.assertEqual(out["errors"], [])
+        self.assertEqual(out["hits"], [])
+
+    def test_public_detail_exception_is_exact_and_all_other_values_are_scanned(self):
+        _, detail, body = self._public_setup_refusal()
+        import gzip
+        variants = [
+            {"status": 200}, {"status": 403}, {"target": "/v1/setup?x=1"}, {"target": "/v1/setup/"}, {"target": "/v1/%73etup"}, {"target": "/v1/other"}, {"method": "GET"},
+            {"content_type": "text/plain"}, {"content_type": ""}, {"content_type": "application/json; charset=utf-8"},
+            {"body": body.replace(b'generation_mismatch', b'other_code')},
+            {"body": body.replace(b'account', b'account extra')}, {"body": body.replace(b'account', b'\\u0061ccount')},
+            {"body": b' ' + body}, {"body": body[:-1] + b',"extra":"account"}'},
+            {"body": body[:-1] + b',"detail":"account"}'},
+            {"body": json.dumps({"detail": detail, "error": "generation_mismatch"}, separators=(",", ":")).encode()},
+            {"body": json.dumps({"error": "generation_mismatch", "other": detail}).encode()},
+            {"body": json.dumps({"error": "generation_mismatch", "detail": {"nested": detail}}).encode()},
+            {"body": json.dumps({"error": "generation_mismatch", "detail": base64.b64encode(detail.encode()).decode()}).encode()},
+            {"header": b"X-Test: account\r\n"},
+            {"body": gzip.compress(body), "header": b"Content-Encoding: gzip\r\n"},
+        ]
+        for options in variants:
+            with self.subTest(options=options):
+                cap, _, _ = self._public_setup_refusal(**options)
+                out = _scan(cap, {"phrase": "abandon ability account"})
+                self.assertEqual(out["decision"], "fail", out)
+                self.assertTrue(out["errors"] or any(h["label"] == "recovery:word:2" for h in out["hits"]), out)
+
+    def test_public_detail_never_exempts_full_phrase_content_or_high_entropy_needles(self):
+        cap, detail, _ = self._public_setup_refusal()
+        # A full non-word needle equal to the public text still hits unchanged views.
+        out = _scan(cap, {"text": {"content": detail}})
+        self.assertEqual(out["decision"], "fail", out)
+        self.assertTrue(any(h["label"] == "text:content" for h in out["hits"]))
+        for value, needles, label in [
+            ("abandon ability account", {"phrase": "abandon ability account"}, "recovery:phrase"),
+            ("obsync-recovery-v2 abandon ability account", {"text": {"backup": "obsync-recovery-v2 abandon ability account"}}, "text:backup"),
+            (VRK_HEX, self.key_needles, "key:vrk"),
+            (SENTINEL, self.text_needles, "text:note"),
+        ]:
+            with self.subTest(label=label):
+                cap, _, _ = self._public_setup_refusal(body=json.dumps({"error": "generation_mismatch", "detail": value}).encode())
+                out = _scan(cap, needles)
+                self.assertEqual(out["decision"], "fail", out)
+                self.assertTrue(any(h["label"] == label for h in out["hits"]), out)
+
+    def test_informational_responses_do_not_shift_the_public_detail_request_binding(self):
+        interim = b"HTTP/1.1 100 Continue\r\n\r\n"
+        for first, second, expected in [("/v1/setup", "/v1/other", "pass"), ("/v1/other", "/v1/setup", "fail")]:
+            cap, _, _ = self._public_setup_refusal(target=first, response_prefix=interim)
+            with open(os.path.join(cap, "c1.up"), "ab") as handle:
+                handle.write(_message("POST", second, b"{}"))
+            with open(os.path.join(cap, "c1.down"), "ab") as handle:
+                handle.write(_message_response())
+            _seal(cap)
+            out = _scan(cap, {"phrase": "abandon ability account"})
+            self.assertEqual(out["errors"], [], out)
+            self.assertEqual(out["decision"], expected, out)
+
+    def test_public_detail_refuses_changed_or_missing_candidate_source(self):
+        global OBSERVER
+        cap, _, _ = self._public_setup_refusal()
+        original = OBSERVER
+        with tempfile.TemporaryDirectory(dir=self.tmp) as root:
+            script = os.path.join(root, "scripts", "ci", "observer.mjs")
+            os.makedirs(os.path.dirname(script))
+            shutil.copyfile(original, script)
+            source = os.path.join(root, "crates", "obsyncd", "src", "api", "mod.rs")
+            os.makedirs(os.path.dirname(source))
+            try:
+                OBSERVER = os.path.realpath(script)
+                for changed in (None, "// changed candidate source\n"):
+                    if changed is not None:
+                        with open(os.path.join(HERE, "..", "..", "crates", "obsyncd", "src", "api", "mod.rs")) as handle:
+                            text = handle.read()
+                        with open(source, "w") as handle:
+                            handle.write(text + changed)
+                    out = _scan(cap, {"phrase": "abandon ability account"})
+                    self.assertEqual(out["decision"], "fail", out)
+                    self.assertEqual(out["errors"], ["public_template_source"], out)
+            finally:
+                OBSERVER = original
+
     def test_the_visibility_inventory_names_the_route_and_headers(self):
         cap = _capture(self.tmp, _message("POST", "/v1/files/" + "a" * 32 + "/versions", b"{}"))
         out = _scan(cap, {"text": {"note": SENTINEL}})

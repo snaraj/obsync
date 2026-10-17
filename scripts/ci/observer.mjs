@@ -24,15 +24,16 @@
 // off disposable test devices; PASS requires complete evidence and zero unexpected hits. It also lists what IS visible, so the
 // threat model can be held to exactly that. Needle values are never printed.
 // Individual recovery words of at least seven letters are searched in values,
-// including a value that repeats a protocol field name. Structural names are
-// excluded only from that per-word scan; the full phrase is searched everywhere.
+// including a value that repeats a protocol field name. Only structural names
+// and one exact source-bound public refusal detail are excluded from that
+// per-word heuristic; full phrases and content/key needles scan every value.
 //
 // usage:
 //   node observer.mjs record --listen 127.0.0.1:18802 --upstream 127.0.0.1:18801 --out <dir>
 //   node observer.mjs scan   --capture <dir> --needles <0600 json> [--json]
 // Needles file: {"text":{label:value,...}, "hex":{label:hex,...},
 //                "phrase":"24 words", "codes":[code,...]}
-import { hkdfSync } from "node:crypto";
+import { createHash, hkdfSync } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
@@ -480,13 +481,33 @@ function walkJson(value, out, depth, valuesOnly = false, budget = { nodes: 0 }) 
   }
 }
 
+// This one public refusal is independent of recovery entropy. Its detail may
+// coincide with a BIP39 word; never exempt that word in any other value.
+const SETUP_GENERATION_DETAIL = "the account generation, suite or rotation grant refuses this transition";
+function publicSetupDetail(message, request, value, text) {
+  if (!/^POST \/v1\/setup HTTP\/1\.[01]$/.test(request?.head.line || "") ||
+      Number(message.head.line.split(" ")[1]) !== 409 || message.head["content-type"] !== "application/json" ||
+      message.head["content-encoding"] !== undefined || message.head["transfer-encoding"] !== undefined ||
+      !value || Array.isArray(value) || text !== JSON.stringify({ error: "generation_mismatch", detail: SETUP_GENERATION_DETAIL })) return false;
+  // Resolve only the candidate's fixed source, not a caller-supplied template.
+  try {
+    const file = new URL("../../crates/obsyncd/src/api/mod.rs", import.meta.url);
+    if (fs.statSync(file).size > 1024 * 1024) refuse("public_template_source");
+    const source = fs.readFileSync(file, "utf8");
+    if (createHash("sha256").update(source).digest("hex") !== "11c6b6ab39d2c02ccbc7bc9faa445f1a40d85fb43cfd3542f487eb1c8ede5d28") refuse("public_template_source");
+    const arms = [...source.matchAll(/StoreError::AuthorityRefused\(_\) => ApiError::new\(\s*409,\s*code,\s*"([^"\r\n]+)",\s*\)/g)];
+    if (arms.length !== 1 || arms[0][1] !== SETUP_GENERATION_DETAIL) refuse("public_template_source");
+  } catch { refuse("public_template_source"); }
+  return true;
+}
+
 /**
  * Every searchable string of one message: the wire bytes verbatim (as
  * latin1, so any byte sequence -- UTF-8, UTF-16, raw key bytes -- is found by
  * substring), the percent-decoded request target, and every JSON string in
  * the body with each decodable one taken a level deeper.
  */
-function viewsOf(message, isRequest, valuesOnly = false) {
+function viewsOf(message, isRequest, valuesOnly = false, pairedRequest) {
   const views = [];
   // The whole header block (every name AND value) plus the body, as latin1 so
   // any byte sequence in transit is found by substring.
@@ -516,7 +537,8 @@ function viewsOf(message, isRequest, valuesOnly = false) {
     return views;
   }
   const collected = [];
-  walkJson(value, collected, 0, valuesOnly);
+  const publicDetail = valuesOnly && !isRequest && publicSetupDetail(message, pairedRequest, value, text);
+  walkJson(publicDetail ? { error: value.error } : value, collected, 0, valuesOnly);
   views.push(...collected);
   return views;
 }
@@ -595,10 +617,10 @@ export function scan(conns, allNeedles) {
     }
   };
 
-  const message = (m, request) => {
+  const message = (m, request, pairedRequest) => {
     try {
       check(viewsOf(m, request), request ? "request" : "response");
-      check(viewsOf(m, request, true), request ? "request" : "response", words);
+      check(viewsOf(m, request, true, pairedRequest), request ? "request" : "response", words);
     } catch (error) { errors.push(error.message); }
   };
   for (const conn of conns) {
@@ -621,7 +643,9 @@ export function scan(conns, allNeedles) {
       } catch { /* */ }
       message(req, true);
     }
+    let responseIndex = 0;
     for (const res of conn.responses) {
+      const pairedRequest = Number(res.head.line.split(" ")[1]) >= 200 ? conn.requests[responseIndex++] : undefined;
       for (const k of Object.keys(res.head)) if (k !== "line" && k !== "raw") responseHeaders.add(k);
       try {
         const body = JSON.parse(res.body.toString("utf8"));
@@ -633,7 +657,7 @@ export function scan(conns, allNeedles) {
           }
         }
       } catch { /* */ }
-      message(res, false);
+      message(res, false, pairedRequest);
     }
   }
   return {
@@ -694,7 +718,7 @@ async function cli() {
       process.stdout.write(`observer scan: ${conns.length} connections, ${requests} requests, ${responses} responses, ${needles.length} needles in ${needles.reduce((n, x) => n + x.forms.length + x.raws.length, 0)} encodings\n`);
       process.stdout.write(`observer scan: DECISION ${decision === "pass" ? "PASS (complete capture; zero unexpected hits)" : `FAIL (${hits.length} hit(s); ${errors.join(",")})`}\n`);
       for (const h of hits) process.stdout.write(`observer scan:   HIT ${h.label} in a ${h.where}\n`);
-      if (skipped.length) process.stdout.write(`observer scan: ${skipped.length} structural recovery-word exception(s), with all values still searched: ${skipped.join(", ")}\n`);
+      if (skipped.length) process.stdout.write(`observer scan: ${skipped.length} structural recovery-word exception(s), with content/key views still searched: ${skipped.join(", ")}\n`);
       process.stdout.write("observer scan: VISIBLE to the hop:\n");
       process.stdout.write(`  routes: ${(visible.routes || []).join(", ")}\n`);
       process.stdout.write(`  request headers: ${(visible.requestHeaders || []).join(", ")}\n`);

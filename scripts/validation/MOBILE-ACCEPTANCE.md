@@ -152,6 +152,17 @@ action witnesses and independently retained state. A missing click witness or
 ambiguous timeout does not establish a product defect. Keep that uncertainty
 in the measured record until a controlled reproduction distinguishes it.
 
+A refused closed confidentiality scan retains
+`native-confidentiality-failure.json` before cleanup. It contains bounded counts,
+closed error and needle categories, and numeric message locations when available;
+it never includes captured values, recovery words, keys or raw error strings.
+Diagnostic truncation or an unlocalized match remains explicit. Diagnostics
+cannot turn the original refusal into a pass. Complete recovery backups and
+their canonical 24-word mnemonics are both scanned, alongside content and keys.
+An individual word in the exact source-bound public setup-generation refusal
+is protocol text; the same word elsewhere and all complete secret needles
+remain subject to scanning.
+
 Vault startup makes one debugger connection attempt within its existing
 45-second deadline. Successful empty page-list responses may be observed until
 the page is ready; a failed ADB, HTTP or WebSocket operation is terminal.
