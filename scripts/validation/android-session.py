@@ -89,6 +89,35 @@ def startup_diagnostics(run, stage, error):
     return True
 
 
+def install_failure(run, state, apk_sha256, error, started):
+    # Failure evidence only. Never export raw output, argv, paths or exception text.
+    def stream(value):
+        if value is None: return {'capture': 'NONE', 'observedLength': 0, 'lengthUnit': 'UNKNOWN'}
+        if not isinstance(value, (bytes, str)): return {'capture': 'UNKNOWN_TYPE'}
+        prefix = value[:8192]
+        if isinstance(prefix, str): prefix = prefix.encode('utf-8', errors='replace')
+        truncated = len(value) > 8192 or len(prefix) > 8192
+        prefix = prefix[:8192]
+        banners = [name for name, marker in (('STREAMED', b'Performing Streamed Install'),
+            ('PUSH', b'Performing Push Install'), ('INCREMENTAL', b'Performing Incremental Install')) if marker in prefix]
+        reports = re.findall(rb'copy_to_file\(\) finished with success after ([0-9]{1,12}) bytes', prefix)
+        return {'capture': 'BOUNDED_PREFIX', 'observedLength': len(value), 'lengthUnit': 'BYTES' if isinstance(value, bytes) else 'UNICODE_CODEPOINTS',
+            'prefixBytes': len(prefix), 'prefixSha256': hashlib.sha256(prefix).hexdigest(), 'prefixCapBytes': 8192, 'truncated': truncated,
+            'bannerClass': banners[0] if len(banners) == 1 else 'MULTIPLE' if banners else 'NOT_OBSERVED',
+            'copyBeginObserved': bool(re.search(rb'copy_to_file\([0-9]{1,10} -> [0-9]{1,10}\)', prefix)),
+            'localEofObserved': b'copy_to_file() : read 0 bytes; exiting' in prefix,
+            'localReportedBytes': int(reports[0]) if len(reports) == 1 else None}
+    timed_out = isinstance(error, subprocess.TimeoutExpired)
+    save(run/'evidence/android-install-failure.json', {'schema': 1, 'sourceHead': state['sourceHead'], 'apkSha256': apk_sha256,
+        'result': 'FAIL', 'stage': 'DIRECT_DEFAULT_ADB_INSTALL', 'attempts': 1, 'requestedCapMs': 90000,
+        'elapsedMs': round((time.monotonic()-started)*1000), 'traceScope': 'INSTALL_CLIENT_ONLY_ADB_CATEGORY',
+        'failureClass': 'AUTOMATION_INSTALL_TIMEOUT' if timed_out else 'UNCLASSIFIED',
+        'exceptionClass': 'SUBPROCESS_TIMEOUT' if timed_out else 'NONZERO_EXIT' if isinstance(error, subprocess.CalledProcessError) else 'OS_ERROR' if isinstance(error, OSError) else 'OTHER_ERROR',
+        'stdout': stream(getattr(error, 'output', None)), 'stderr': stream(getattr(error, 'stderr', None)),
+        'phaseMeaning': 'OBSERVED_MARKERS_ONLY', 'localCounterProvesGuestConsumption': False, 'rawOutputExported': False})
+    return True
+
+
 def free_port():
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
@@ -253,7 +282,9 @@ def adb_command(state, args, timeout=30, binary=False):
     remaining = state['expiresAtEpoch'] - time.time()
     if remaining <= 0:
         raise TimeoutError('Android lifecycle deadline before device command')
-    return subprocess.check_output(argv, env=adb_env(state), text=not binary,
+    command_env = adb_env(state)
+    if args[:1] == ['install']: command_env['ADB_TRACE'] = 'adb'
+    return subprocess.check_output(argv, env=command_env, text=not binary,
                                    stderr=subprocess.PIPE, timeout=min(timeout, remaining))
 
 
@@ -416,6 +447,7 @@ def execute(a):
                  'ADB_MDNS_AUTO_CONNECT': '', 'ADB_VENDOR_KEYS': str(a.run/'runtime/user/adbkey')}}
     owned = Owned(a.run, state)
     stage, result, failure = 'prepare', 'FAIL', None
+    install_command_error = None
     deadline = time.monotonic() + a.seconds
     previous_handlers = {}
 
@@ -470,7 +502,14 @@ def execute(a):
             adb_command(state, ['reverse', f'tcp:{port}', f'tcp:{port}'])
         check_reverse(state)
         stage = 'install'
-        output = adb_command(state, ['install', str(apk)], timeout=90)
+        install_started = time.monotonic()
+        try:
+            output = adb_command(state, ['install', str(apk)], timeout=90)
+        except (OSError, subprocess.SubprocessError) as error:
+            try:
+                if install_failure(a.run,state,proof['apkSha256'],error,install_started): install_command_error = error
+            except Exception: pass  # Preserve the original failure; missing receipt has no classification.
+            raise
         if output.strip() != 'Success' and not output.rstrip().endswith('\nSuccess'):
             raise RuntimeError('APK install did not report Success')
         if APK.apk_hash(state,a.run,proof['apkSha256'],'initial-install',adb_command,save)!=proof['apkSha256']:
@@ -503,6 +542,8 @@ def execute(a):
         result = 'PASS'
     except BaseException as error:
         failure = {'stage': stage, 'exceptionType': type(error).__name__, 'detail': sanitized_diagnostic(str(error))[:400]}
+        if error is install_command_error and isinstance(error, subprocess.TimeoutExpired):
+            failure['failureClass'] = 'AUTOMATION_INSTALL_TIMEOUT'
         if created and (a.run/'evidence').is_dir():
             startup_diagnostics(a.run, stage, error)
         raise

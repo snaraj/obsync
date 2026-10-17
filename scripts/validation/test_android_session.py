@@ -380,7 +380,7 @@ class InitialApkGate(unittest.TestCase):
                         return 'complete'
                     raise AssertionError('no raw exec, app launch or other operation is allowed')
                 namespace={'APK':M.APK,'state':{'sourceHead':'a'*40,'expiresAtEpoch':10**12},'a':SimpleNamespace(run=run),
-                           'apk':run/'official.apk','proof':{'apkSha256':hashlib.sha256(official).hexdigest()},'adb_command':adb,'save':M.save}
+                           'apk':run/'official.apk','proof':{'apkSha256':hashlib.sha256(official).hexdigest()},'adb_command':adb,'save':M.save,'time':M.time,'subprocess':subprocess,'install_failure':M.install_failure}
                 if mode=='correct':exec(block,namespace)
                 else:
                     reason='apk_official_pin_mismatch' if mode=='changed' else 'apk_device_command_failed'
@@ -390,6 +390,69 @@ class InitialApkGate(unittest.TestCase):
                 self.assertEqual(proof['phase'],'initial-install');self.assertTrue(proof['temporaryRemoved'])
                 self.assertEqual(proof['result'],'VERIFIED' if mode=='correct' else 'FAIL')
                 self.assertEqual(list((run/'private').iterdir()),[])
+
+
+class InstallFailure(unittest.TestCase):
+    def block(self):
+        import textwrap
+        source=Path(M.__file__).read_text();first=source.index("        stage = 'install'");last=source.index("        activity = adb_command",first)
+        return compile(textwrap.dedent(source[first:last]),'actual-direct-install','exec')
+
+    def classification(self, namespace, error):
+        tree=ast.parse(Path(M.__file__).read_text());execute=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='execute')
+        condition=next((n for n in ast.walk(execute) if isinstance(n,ast.If) and any(isinstance(child,ast.Assign) and ast.unparse(child.targets[0])=="failure['failureClass']" for child in n.body)),None)
+        self.assertIsNotNone(condition)
+        context={'failure':{},'error':error,'install_command_error':namespace['install_command_error'],'subprocess':subprocess}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[condition],type_ignores=[])),'actual-install-classification','exec'),context)
+        return context['failure'].get('failureClass','UNCLASSIFIED')
+
+    def test_actual_call_timeout_preserves_failure_even_with_success_output_and_no_retry(self):
+        for kind in ('timeout','nonzero','other-subprocess','os-error','readback','missing-receipt','receipt-write-failure','receipt-runtime-failure'):
+            with self.subTest(kind=kind),tempfile.TemporaryDirectory() as tmp:
+                run=Path(tmp);(run/'evidence').mkdir();error=subprocess.TimeoutExpired(['private-path'],90,output=b'Performing Streamed Install\nPRIVATE-OUTPUT\nSuccess\n',stderr=b'copy_to_file(7 -> 8)\ncopy_to_file() : read 0 bytes; exiting\ncopy_to_file() finished with success after 15447027 bytes\nPRIVATE-STDERR')
+                if kind=='nonzero':error=subprocess.CalledProcessError(3,['private-path'],output=b'Success\nPRIVATE-OUTPUT',stderr=b'PRIVATE-STDERR')
+                if kind=='other-subprocess':error=subprocess.SubprocessError('private-other-error')
+                if kind=='os-error':error=OSError('private-os-error')
+                command=lambda *args,**kwargs: 'Success' if kind=='readback' else (_ for _ in ()).throw(error)
+                call=SimpleNamespace(apk_hash=unittest.mock.Mock(side_effect=error))
+                helper=(lambda *args:False) if kind=='missing-receipt' else (lambda *args:(_ for _ in ()).throw(OSError('private-error'))) if kind=='receipt-write-failure' else (lambda *args:(_ for _ in ()).throw(RuntimeError('private-runtime-error'))) if kind=='receipt-runtime-failure' else M.install_failure
+                namespace={'a':SimpleNamespace(run=run),'state':{'sourceHead':'a'*40},'apk':Path('/private/official.apk'),'proof':{'apkSha256':'b'*64},'adb_command':unittest.mock.Mock(side_effect=command),'APK':call,'time':M.time,'subprocess':subprocess,'save':M.save,'install_failure':helper,'install_command_error':None}
+                caught=None
+                try:exec(self.block(),namespace)
+                except Exception as actual:caught=actual
+                self.assertIs(caught,error);self.assertEqual(call.apk_hash.call_count,1 if kind=='readback' else 0);namespace['adb_command'].assert_called_once_with(namespace['state'],['install','/private/official.apk'],timeout=90)
+                expected='AUTOMATION_INSTALL_TIMEOUT' if kind=='timeout' else 'UNCLASSIFIED'
+                self.assertEqual(self.classification(namespace,error),expected)
+                path=run/'evidence/android-install-failure.json'
+                self.assertEqual(path.exists(),kind in ('timeout','nonzero','other-subprocess','os-error'))
+                if path.exists():
+                    raw=path.read_text();receipt=json.loads(raw);self.assertEqual(receipt['result'],'FAIL');self.assertEqual(receipt['requestedCapMs'],90000);self.assertEqual(receipt['attempts'],1)
+                    self.assertEqual(receipt['sourceHead'],'a'*40);self.assertEqual(receipt['apkSha256'],'b'*64);self.assertEqual(receipt['failureClass'],expected)
+                    self.assertNotIn('PRIVATE-',raw);self.assertNotIn('private-path',raw);self.assertFalse(receipt['localCounterProvesGuestConsumption'])
+                    if kind=='other-subprocess':self.assertEqual(receipt['exceptionClass'],'OTHER_ERROR')
+                    if kind=='os-error':self.assertEqual(receipt['exceptionClass'],'OS_ERROR')
+                    if kind=='timeout':
+                        self.assertEqual(receipt['stdout']['bannerClass'],'STREAMED');self.assertTrue(receipt['stderr']['copyBeginObserved']);self.assertTrue(receipt['stderr']['localEofObserved']);self.assertEqual(receipt['stderr']['localReportedBytes'],15447027)
+
+    def test_output_hashes_and_classification_are_bounded_and_honest_about_text_units(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run=Path(tmp);(run/'evidence').mkdir();error=subprocess.TimeoutExpired([],90,output=b'x'*8192+b'Performing Push Install PRIVATE-AFTER-CAP',stderr='é'*9000)
+            with patch.object(M.time,'monotonic',return_value=92):M.install_failure(run,{'sourceHead':'a'*40},'b'*64,error,2)
+            receipt=json.loads((run/'evidence/android-install-failure.json').read_text());stdout,stderr=receipt['stdout'],receipt['stderr']
+            self.assertEqual(receipt['elapsedMs'],90000);self.assertEqual(stdout['observedLength'],len(error.output));self.assertEqual(stdout['lengthUnit'],'BYTES');self.assertTrue(stdout['truncated']);self.assertEqual(stdout['prefixBytes'],8192);self.assertEqual(stdout['prefixSha256'],hashlib.sha256(b'x'*8192).hexdigest());self.assertEqual(stdout['bannerClass'],'NOT_OBSERVED')
+            self.assertEqual(stderr['observedLength'],9000);self.assertEqual(stderr['lengthUnit'],'UNICODE_CODEPOINTS');self.assertTrue(stderr['truncated']);self.assertEqual(stderr['prefixBytes'],8192);self.assertEqual(stderr['prefixSha256'],hashlib.sha256(('é'*4096).encode()).hexdigest())
+
+    def test_trace_is_install_client_only_and_usb_denial_precedes_trace(self):
+        state={'sdk':'/synthetic/sdk','serial':'emulator-5584','adbPort':12345,'expiresAtEpoch':10**12,'environment':{'ADB_USB':'0'}}
+        before=copy.deepcopy(state)
+        with patch.dict(os.environ,{'ADB_TRACE':'auth,packets,rwx,sync'}),patch.object(M.subprocess,'check_output',return_value='Success') as command:
+            M.adb_command(state,['install','/synthetic/official.apk'],timeout=90)
+            M.adb_command(state,['shell','getprop','sys.boot_completed'])
+        self.assertEqual(command.call_args_list[0].args[0],['/synthetic/sdk/platform-tools/adb','-P','12345','-s','emulator-5584','install','/synthetic/official.apk'])
+        self.assertEqual(command.call_args_list[0].kwargs['timeout'],90);self.assertEqual(command.call_args_list[0].kwargs['env']['ADB_TRACE'],'adb');self.assertNotIn('ADB_TRACE',command.call_args_list[1].kwargs['env']);self.assertEqual(state,before)
+        with patch.object(M,'adb_env') as env,patch.object(M.subprocess,'check_output') as command:
+            with self.assertRaisesRegex(ValueError,'USB fixture forbids'):M.adb_command(state|{'targetKind':'usb'},['install','/synthetic/official.apk'])
+            env.assert_not_called();command.assert_not_called()
 
 
 class Diagnostics(unittest.TestCase):

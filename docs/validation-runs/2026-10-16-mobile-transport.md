@@ -853,3 +853,31 @@ to the intended diagnostic branch left the tested behavior unchanged.
 The complete offline harness then passed 228 Python tests, 220 JavaScript tests
 and all 310 scripted mutation controls, zero skips. The remaining canonical
 gate stages were run separately; the interrupted full invocation stays FAIL.
+
+At signed head `317b32c1cc3359c620c9c3677acd047f0e79b7f1`, the next batch
+failed before pairing: the unchanged official APK installation exceeded its
+90-second limit. Attempts two and three were not run. The batch aggregate
+SHA-256 is `d73c42817ffe59c63710b53127ea5fed20bafff27ae103d490330527b8396918`.
+The three-pass auditor refused acceptance; independent cleanup verified eight
+recorded processes, seven ports and six paths absent. The timeout identifies
+an automation stage, but the missing stdout prevents attributing its cause.
+
+Two separate installation diagnostics passed without retrying an install.
+The Android-only fixture installed in 7.235 seconds; a fresh fixture including
+the ordinary desktop enrollment and local TLS route installed in 5.043 seconds.
+Both independently verified the installed APK. The latter retained bounded
+client trace facts: local copying reported all 15,447,027 APK bytes by
+623 milliseconds, which does not independently prove guest consumption.
+It completed ordinary desktop shutdown and natural recorder closure.
+Independent cleanup verified eight processes, eight ports and six paths absent.
+The diagnostic manifest, result and cleanup SHA-256 values are respectively:
+
+- `fcd4c4b839163cf5aa88a2c92a62fc5dc250ce6be8a39052acf64820df3ad7b3`
+- `d092e46574da690eb10263b68cedeb1cfc2e758c748611d189a8aa3b3b5ab8af`
+- `afde9ab9b3556419fe7c6d62377ee14e6435ab3d03d36a2a6307d840a7afc17e`
+
+These diagnostics do not explain the earlier timeout or count as acceptance.
+Its cause remains unknown. The
+[hosted PR Gate for this head](https://github.com/snaraj/obsync/actions/runs/39005068038)
+passed all 13 jobs; native acceptance, physical-phone evidence and final-head
+independent review remain separate gates.

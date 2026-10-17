@@ -47,6 +47,13 @@ def phase_fixture():
 
 
 class Admission(unittest.TestCase):
+    def test_only_direct_install_timeout_provenance_has_install_timeout_class(self):
+        base={'sourceHead':HEAD,'result':'FAIL','failure':{'stage':'install','exceptionType':'TimeoutExpired','failureClass':'AUTOMATION_INSTALL_TIMEOUT'}}
+        for change in ({},{'stage':'journey'},{'exceptionType':'CalledProcessError'},{'exceptionType':'TimeoutError'},{'failureClass':'UNCLASSIFIED'},{'failureClass':None}):
+            proof=base|{'failure':base['failure']|change}
+            with self.subTest(change=change),self.assertRaises(RUNNER.StageFailure) as caught:RUNNER.require_android_controller(proof,1,HEAD)
+            self.assertEqual(caught.exception.failure_class,'UNCLASSIFIED' if change else 'AUTOMATION_INSTALL_TIMEOUT')
+
     def test_android_case_workflow_requires_both_actions_original_bytes_and_remaining_budget(self):
         proof = {'result':'PASS','workflow':'TWO_ORDINARY_RENAMES','ordinaryRenameCount':2,
             'intermediateAbsent':True,'originalAbsent':True,'originalBaselinePreserved':True,'finalFolder':'Team docs',

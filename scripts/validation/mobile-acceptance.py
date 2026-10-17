@@ -368,7 +368,9 @@ def require_android_controller(proof, returncode, source_head):
         failure = proof.get('failure')
         stage = failure.get('stage') if isinstance(failure, dict) else None
         # Copy only the controller's closed stage vocabulary, never diagnostics.
-        raise StageFailure('android_controller_' + (stage if stage in ('boot', 'install', 'journey') else 'terminal'))
+        timeout = stage=='install' and failure.get('exceptionType')=='TimeoutExpired' and failure.get('failureClass')=='AUTOMATION_INSTALL_TIMEOUT'
+        raise StageFailure('android_controller_' + (stage if stage in ('boot', 'install', 'journey') else 'terminal'),
+                           'AUTOMATION_INSTALL_TIMEOUT' if timeout else 'UNCLASSIFIED')
     require(clean_controller(proof), 'android_controller_cleanup')
 
 

@@ -152,6 +152,14 @@ action witnesses and independently retained state. A missing click witness or
 ambiguous timeout does not establish a product defect. Keep that uncertainty
 in the measured record until a controlled reproduction distinguishes it.
 
+A failed default APK install retains `android-install-failure.json` with
+bounded output hashes, closed client-copy markers and the elapsed time.
+Only that install client enables ADB's `adb` trace category. No packet,
+authentication or raw trace output is exported. `AUTOMATION_INSTALL_TIMEOUT`
+names the timed-out command; its cause remains unknown. A local copy counter
+does not prove guest consumption, and partial `Success` output cannot rescue
+a timeout. Installation mode, the 90-second cap and the single attempt remain.
+
 A refused closed confidentiality scan retains
 `native-confidentiality-failure.json` before cleanup. It contains bounded counts,
 closed error and needle categories, and numeric message locations when available;
