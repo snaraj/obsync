@@ -61,6 +61,7 @@ def main(argv=None):
  parser=argparse.ArgumentParser();parser.add_argument('--node',required=True);args=parser.parse_args(argv);b=Path(__file__).parent;results=[]
  routes=load(b/'test_android_tcp.py','route_mutation_cases');budget=load(b/'test_android_tcp_budget.py','budget_mutation_cases');retained=load(b/'test_android_tcp_evidence.py','retained_mutation_cases');deadlines=load(b/'test_android_tcp_deadlines.py','deadline_mutation_cases')
  cases=[
+  ('early-data-selected-route-only',budget,'T','emulator-tcp.py'," and state.get('selectedTcpAdb') is None and tuple(args) in"," and tuple(args) in",budget.Budget,'test_early_data_original_target_requires_isolated_unselected_and_exact_argv'),
   ('network-policy-refusal',routes,'T','emulator-tcp.py',"if not proof['mobileDataGlobalSettingZero'] or proof['ipv4RouteIsolation']['extraEgressRoutes']:",'if False:',routes.Route,'test_initial_uses_verified_wifi_backend_and_one_standard_connect_with_independent_routes'),
   ('effective-backends',routes,'T','emulator-tcp.py',"if not proof['effectiveNetworkOptions']['ready']:raise ValueError('effective restricted backends not observed')","if False:raise ValueError('effective restricted backends not observed')",routes.Route,'test_initial_uses_verified_wifi_backend_and_one_standard_connect_with_independent_routes'),
   ('different-guest',routes,'T','emulator-tcp.py','if before!=after:','if False:',routes.Route,'test_initial_uses_verified_wifi_backend_and_one_standard_connect_with_independent_routes'),
@@ -79,6 +80,12 @@ def main(argv=None):
   source=(b/file).read_text();assert source.count(old)==1,(name,source.count(old));module=types.ModuleType('owned_tcp_mutant');module.__file__=str(b/file);exec(compile(source.replace(old,new,1),str(b/file),'exec'),module.__dict__);out=io.StringIO()
   with patch.object(case,binding,module):r=unittest.TextTestRunner(stream=out).run(unittest.TestSuite([cls(method)]))
   assert len(r.failures)==1 and not r.errors,(name,out.getvalue());results.append({'mutation':name,'assertionKilled':True})
+ # The actual extracted initial block must refuse nonzero readback before Wi-Fi.
+ kernel=load(b/'test_android_tcp_route.py','early_data_route_cases');source=(b/'emulator-tcp.py').read_text();old="if not proof['mobileDataZeroBeforeWifiRouting']:";assert source.count(old)==1
+ with tempfile.TemporaryDirectory(prefix='obsync-early-data-') as tmp:
+  root=Path(tmp);path=root/'emulator-tcp.py';path.write_text(source.replace(old,'if False:',1));out=io.StringIO()
+  with patch.object(kernel,'T',types.SimpleNamespace(__file__=str(path))):r=unittest.TextTestRunner(stream=out).run(unittest.TestSuite([kernel.KernelRoute('test_actual_early_data_block_refuses_nonzero_or_failed_command_before_wifi')]))
+ assert len(r.failures)==1 and not r.errors,out.getvalue();results.append({'mutation':'early-data-zero-before-wifi-required','assertionKilled':True})
  # The actual root deadline assignments must retain the session TTL boundary.
  with tempfile.TemporaryDirectory(prefix='obsync-tcp-root-deadline-') as tmp:
   root=Path(tmp);source=(b/'android-trust.py').read_text();old="    if state.get('adbTransport')=='isolated-tcp':deadline=min(deadline,time.monotonic()+max(0,state['expiresAtEpoch']-time.time()))\n";assert source.count(old)==1;(root/'android-trust.py').write_text(source.replace(old,''));out=io.StringIO()

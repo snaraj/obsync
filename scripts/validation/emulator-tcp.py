@@ -20,7 +20,8 @@ def command(state,env,target,args,end,cap=3,binary=False):
  if cap not in (3,12,30) or (cap==12 and (target is not None or len(args)!=2 or args[0]!='connect' or not re.fullmatch(r'127\.0\.0\.1:[0-9]{4,5}',args[1]))):raise ValueError('connect-only command budget required')
  if cap==30:
   expected=state['serial'] if tuple(args) in (('shell','svc','wifi','enable'),('shell','cmd','wifi','connect-network','AndroidWifi','open')) else f"127.0.0.1:{state.get('ownedWifiTcpSetup',{}).get('hostPort')}"
-  if binary or tuple(args) not in FRAMEWORK_PROVISIONING or target!=expected:raise ValueError('owned framework provisioning budget required')
+  early_data=state.get('adbTransport')=='isolated-tcp' and state.get('selectedTcpAdb') is None and tuple(args) in (('shell','settings','get','global','mobile_data'),('shell','settings','put','global','mobile_data','0'),('shell','svc','data','disable')) and target==state['serial']
+  if binary or tuple(args) not in FRAMEWORK_PROVISIONING or target!=expected and not early_data:raise ValueError('owned framework provisioning budget required')
  operation_end=min(end,time.monotonic()+cap)
  argv=[str(Path(state['sdk'])/'platform-tools/adb'),'-P',str(state['adbPort'])]
  if target is not None:argv+=['-s',target]
@@ -227,6 +228,11 @@ def initial(state,run,env,end,save,failure_classifier=None):
   if not stat.S_ISREG(info.st_mode) or log.is_symlink() or info.st_uid!=os.getuid() or info.st_size>16*1024*1024:raise ValueError('owned init log custody')
   proof['effectiveNetworkOptions']=effective_network_options(log.read_bytes(),'user,id=mynet,restrict=on','user,id=virtio-wifi,'+setup['wifiOptions'])
   if not proof['effectiveNetworkOptions']['ready']:raise ValueError('effective restricted backends not observed')
+  data_value=observe('observe_mobile_data_before_provisioning',state['serial'],['shell','settings','get','global','mobile_data'],cap=30);proof['dataBeforeProvisioningZero']=data_value=='0';proof['dataBeforeProvisioningValueClass']={'0':'ZERO','1':'ONE','null':'NULL','':'EMPTY'}.get(data_value,'OTHER')
+  observe('prescribed_owned_guest_data_setting',state['serial'],['shell','settings','put','global','mobile_data','0'],cap=30)
+  observe('prescribed_data_disable_before_wifi_routing',state['serial'],['shell','svc','data','disable'],cap=30)
+  data_value=observe('verify_mobile_data_before_wifi_routing',state['serial'],['shell','settings','get','global','mobile_data'],cap=30);proof['mobileDataZeroBeforeWifiRouting']=data_value=='0';proof['dataBeforeWifiRoutingValueClass']={'0':'ZERO','1':'ONE','null':'NULL','':'EMPTY'}.get(data_value,'OTHER')
+  if not proof['mobileDataZeroBeforeWifiRouting']:raise ValueError('owned early data disable not observed')
   observe('enable_only_owned_guest_wifi_once',state['serial'],['shell','svc','wifi','enable'],cap=30);proof['wifiEnableCount']=1
   def addresses():return network(observe('guest_ipv4_readiness',state['serial'],['shell','ip','-o','-4','addr','show']).encode(),b'',b'')['addresses']
   proof['guestAddresses']=wait_guest_addresses(addresses,addresses(),end,proof)
@@ -242,11 +248,8 @@ def initial(state,run,env,end,save,failure_classifier=None):
   proof['initialSyntheticWifi']=known_synthetic_wifi(observe('verify_known_synthetic_wifi_before_reboot',target,['shell','cmd','wifi','status']).encode())
   if not proof['initialSyntheticWifi']['exactKnownNetworkConnected']:raise ValueError('initial known synthetic Wi-Fi not established')
   state['rebootWifiRestoration']={'method':WIFI_RESTORATION_METHOD,'sourceHead':state['sourceHead'],'initialBootIdSha256':after['bootIdSha256'],'initialKnownNetworkConnected':True}
-  proof['dataBeforeProvisioningZero']=observe('observe_mobile_data_before_provisioning',target,['shell','settings','get','global','mobile_data'],cap=30)=='0'
   proof['dummyProofPrivilege']='USERDEBUG_SU_READONLY_CHILD_SELINUX_PERMISSIVE_NOT_STOCK_SHELL'
   proof['dummyInterface']=dummy_link(observe('verify_dummy_link_kind',target,['shell','/system/xbin/su','0','/system/bin/ip','-d','link','show','dev','dummy0']).encode())
-  observe('prescribed_owned_guest_data_setting',target,['shell','settings','put','global','mobile_data','0'],cap=30)
-  observe('prescribed_data_disable_after_tcp_binding',target,['shell','svc','data','disable'],cap=30)
   proof['mobileDataGlobalSettingZero']=observe('verify_mobile_data_disabled',target,['shell','settings','get','global','mobile_data'],cap=30)=='0'
   proof['ipv4RouteIsolation']=egress_routes(observe('verify_no_extra_ipv4_egress_routes',target,['shell','ip','-4','route','show','table','all']).encode(),proof['dummyInterface'])
   if not proof['mobileDataGlobalSettingZero'] or proof['ipv4RouteIsolation']['extraEgressRoutes']:raise ValueError('unexpected data or egress route')

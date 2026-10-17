@@ -8,9 +8,9 @@ class KernelRoute(unittest.TestCase):
   with tempfile.TemporaryDirectory() as d:
    run=Path(d);(run/'private').mkdir();s=state(run);s['ownedWifiTcpSetup']={'hostPort':12346,'radioOptions':'restrict=on','wifiOptions':'restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:12346-10.0.2.16:5555'}
    (run/'private/emulator.log').write_text('argv[01] = "user,id=mynet,restrict=on"\nargv[02] = "user,id=virtio-wifi,'+s['ownedWifiTcpSetup']['wifiOptions']+'"\n')
-   frame=b'10.0.2.2 from 10.0.2.16 dev wlan0 table wlan0 uid 2000\n    cache\n\nOBSYNC_ROUTE_EXIT=0\nOBSYNC_ROUTE_DONE\n';calls=[];saved=[]
+   frame=b'10.0.2.2 from 10.0.2.16 dev wlan0 table wlan0 uid 2000\n    cache\n\nOBSYNC_ROUTE_EXIT=0\nOBSYNC_ROUTE_DONE\n';calls=[];saved=[];data_reads=[0]
    def execute(argv,**kwargs):
-    args=argv[5:] if argv[3]=='-s' else argv[3:];calls.append((args,kwargs['text']))
+    args=argv[5:] if argv[3]=='-s' else argv[3:];calls.append((args,kwargs['text'],argv[4] if argv[3]=='-s' else None))
     if args==['shell','cat','/proc/101/status']:self.assertFalse(kwargs['text']);return b'Name:\tadbd\nUid:\t2000\t2000\t2000\t2000\n'
     if args[:3]==['shell','sh','-c']:
      script=shlex.split(args[3]);self.assertEqual(len(script),1);self.assertIn('uid 2000 mark 0',script[0]);self.assertFalse(kwargs['text']);return frame
@@ -19,12 +19,26 @@ class KernelRoute(unittest.TestCase):
     if args==['shell','ip','-o','-4','addr','show']:return '5: wlan0 inet 10.0.2.16/24 scope global wlan0\n'
     if args==['connect','127.0.0.1:12346']:return 'connected to 127.0.0.1:12346\n'
     if args==['shell','/system/xbin/su','0','/system/bin/ip','-d','link','show','dev','dummy0']:return '3: dummy0: <UP>\n    dummy addrgenmode eui64\n'
-    if args==['shell','settings','get','global','mobile_data']:return '0\n'
+    if args==['shell','settings','get','global','mobile_data']:data_reads[0]+=1;return '1\n' if data_reads[0]==1 else '0\n'
     if args==['shell','ip','-4','route','show','table','all']:return 'default dev dummy0 table 1003 proto static scope link\n'
     return ''
    with patch.object(T.subprocess,'check_output',side_effect=execute),patch.object(T,'guest',side_effect=[FACT,FACT]),patch.object(T,'listener',return_value={'pid':777}):T.initial(s,run,{},time.monotonic()+10,lambda p,v:saved.append((p,v)),S.APK.apk_command_failure)
    proof=saved[-1][1];self.assertEqual(proof['adbdUid'],2000);self.assertTrue(proof['guestResponseRouteReadiness']['ready']);self.assertEqual(proof['dummyProofPrivilege'],'USERDEBUG_SU_READONLY_CHILD_SELINUX_PERMISSIVE_NOT_STOCK_SHELL')
+   self.assertEqual([row[0] for row in calls[:5]],[['shell','settings','get','global','mobile_data'],['shell','settings','put','global','mobile_data','0'],['shell','svc','data','disable'],['shell','settings','get','global','mobile_data'],['shell','svc','wifi','enable']]);self.assertTrue(all(row[2]=='emulator-5584' for row in calls[:5]));self.assertEqual(proof['dataBeforeProvisioningValueClass'],'ONE');self.assertEqual(proof['dataBeforeWifiRoutingValueClass'],'ZERO');self.assertTrue(proof['mobileDataGlobalSettingZero'])
    query=next(x for x in proof['commands'] if x['stage']=='guest_response_route_readiness');self.assertEqual(query['stdoutBytes'],len(frame));self.assertEqual(query['stdoutSha256'],hashlib.sha256(frame).hexdigest());self.assertEqual(sum(x[0][:1]==['connect'] for x in calls),1)
+ def test_actual_early_data_block_refuses_nonzero_or_failed_command_before_wifi(self):
+  tree=ast.parse(Path(T.__file__).read_text());fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='initial');body=next(n for n in fn.body if isinstance(n,ast.Try)).body
+  start=next(i for i,n in enumerate(body) if isinstance(n,ast.Assign) and ast.unparse(n.targets[0])=='data_value');end=next(i for i,n in enumerate(body[start:],start) if isinstance(n,ast.Expr) and 'enable_only_owned_guest_wifi_once' in ast.unparse(n))
+  code=compile(ast.fix_missing_locations(ast.Module(body=body[start:end],type_ignores=[])),'actual-early-data-block','exec')
+  for failed in (False,True):
+   calls=[]
+   def observe(stage,target,argv,cap):
+    calls.append((stage,target,argv,cap))
+    if failed and argv==['shell','settings','put','global','mobile_data','0']:raise subprocess.TimeoutExpired('fixed',30)
+    return '1' if argv==['shell','settings','get','global','mobile_data'] else ''
+   scope={'proof':{},'observe':observe,'state':{'serial':'emulator-5584'}}
+   with self.assertRaises(subprocess.TimeoutExpired if failed else ValueError):exec(code,scope)
+   self.assertEqual(sum(row[2]==['shell','settings','put','global','mobile_data','0'] for row in calls),1);self.assertTrue(all(row[1]=='emulator-5584' and row[3]==30 for row in calls))
  def test_each_response_route_call_resamples_uid_and_failed_command_never_retries(self):
   s=state(Path('/owned'))
   for uid in (2000,0):

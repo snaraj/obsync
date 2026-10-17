@@ -210,6 +210,72 @@ pairing retention, trust restoration, persisted bytes and every later journey.
 | Independent audit | `8ccfdad45df4b90da2e8c3f952d6828bb9489378b0cadf95a29648b67a137d97` |
 | Parent process/listener cleanup | `76a74026cba6aee14f1f90249e76ae93555186fdcf9e43119e40875520207e32` |
 
+## Full TCP batch 04
+
+The next three-run batch used exact source and driver head
+`268d851b0287d31bc808c0c92997be3351d42410`. Attempt 01 completed every full
+journey in 1,307.856 seconds. Attempt 02 failed during initial Android network
+setup; attempt 03 did not run. The aggregate remains **FAIL** and the unchanged
+three-pass auditor correctly refused it.
+
+The separate scoped audit verified attempt 01's 100 Android/desktop exports
+and two fresh-recovery exports against expected bytes, selected identities,
+ancestry and both five-minute stability windows. There are 169 distinct step
+numbers and 172 step JSON files; the first three numbers each have two receipts.
+The 213.010-second idle interval involved no Android calls. Desktop restart,
+Android process death, device reboot, offline recovery, both revocation modes,
+interrupted rotation and explicit re-pairing, fresh recovery and selected-folder
+renames passed. Old keys opened baseline and access-only ciphertext but failed
+to decrypt the new generation's map, manifest and chunk; the current key opened
+current ciphertext. All 374 captured connections closed naturally. Scanning
+covered 1,833 requests, 779 files and 3,389,672 bytes, with no unexpected hits or
+parse errors; the deliberate leak controls were detected.
+
+Attempt 02 obtained the expected Wi-Fi address. Its unmarked, actual-adbd-UID
+route predicate nevertheless failed throughout 588 observations. No TCP
+connection was attempted and APK installation was not reached. This proves a
+failed setup predicate, not failed incoming TCP connectivity or a product
+failure. The cause remains unknown. Both controllers reported cleanup; the
+parent confirmed 14 captured PIDs, nine listeners and 12 runtime/state paths
+absent. Attempt 02's QEMU PID was not captured before state removal; for that
+process, only controller cleanup and fixed-listener absence were independently
+available. The original failed aggregate and audit refusals remain unchanged.
+
+| Batch 04 retained artifact | SHA-256 |
+| --- | --- |
+| Failed aggregate | `f1a0e5902eff69064881a22f65597a6f62dd975e8b73bd2894e9acd639c5cc2b` |
+| Frozen driver inventory | `a3e6e944a4c4dcbbc9e34bde1afa469f23ae3841461b93acf1644edffc1c60c3` |
+| Three-run audit refusal | `16323530119f5b7ccbb2dc6cddc62d952ccbe4cf1e526918d82fa845ba0490bf` |
+| Scoped attempt audit | `1eedbc82e3c0b4b37be3d7126e66a6c3e46fcd15aaa3f97d22c7cac44db5493f` |
+| Parent terminal cleanup | `f98387b3bc98c1f9894c536c19e4d466eba7c551d85338f19efe308462db6ff6` |
+
+Two separate setup diagnostics followed. Early-data diagnostic 01 moved the
+existing cellular-disable operations before Wi-Fi readiness, using the original
+owned emulator connection. It observed the setting change from one to zero,
+then one Wi-Fi enable, the unchanged route check and one TCP connection with
+matching guest identities. The selected-connection zero readback, dummy-route
+and egress checks passed. The official installed APK matched its 15,447,027
+expected bytes. Setup and cleanup completed in 55.983 seconds. The frozen-input
+manifest hash is `62ac7dcbde22713b46aa0b72089d25c9230f4ad417f51f2383277913c448ec7b`;
+the independent audit hash is
+`7dd377dc97f4968532047cb017b820856cf1878df2cbee2cf562eb4f5300e3e4`.
+This supports the revised setup order, not a causal explanation of batch 04.
+
+Incoming-flow diagnostic 01 separately sampled the unmarked route immediately
+before and after the existing one-connection, same-guest exchange. The route
+changed from `NO_ROUTE` to `WLAN0_ROUTE`; the result is **inconclusive** about
+whether the unmarked-route prerequisite is necessary. Setup and cleanup passed
+in 51.665 seconds, with the official APK independently retrieved and verified.
+Its frozen-input manifest hash is
+`9fe0be0e346cc504845d1079c67ca881baccb0cfc17fb6126ce9f87b64064bcc`.
+This private diagnostic is not integrated into acceptance. Neither diagnostic
+ran the plugin journeys or earns full-acceptance credit.
+
+The portable change moves the existing cellular-disable operations before the
+route prerequisite and verifies zero there. It keeps the original selected-route
+zero/egress checks, sole initial TCP connection and all command/phase deadlines.
+No acceptance route check, product behavior or failed receipt is removed.
+
 ## Acceptance boundary
 
 The portable transport is integrated into the existing acceptance runner, with
