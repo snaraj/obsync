@@ -11,8 +11,8 @@ class Budget(unittest.TestCase):
   def output(*args,**kwargs):caps.append(kwargs['timeout']);return '0\n'
   with patch.object(T.time,'monotonic',return_value=0),patch.object(T.subprocess,'check_output',side_effect=output):
    for argv in T.FRAMEWORK_PROVISIONING:
-    target=s['serial'] if argv==('shell','svc','wifi','enable') else '127.0.0.1:12346';T.command(s,{},target,list(argv),100,cap=30)
-  self.assertEqual(caps,[30]*4)
+    target=s['serial'] if argv in (('shell','svc','wifi','enable'),('shell','cmd','wifi','connect-network','AndroidWifi','open')) else '127.0.0.1:12346';T.command(s,{},target,list(argv),100,cap=30)
+  self.assertEqual(caps,[30]*5)
   for argv,target,binary in [(['shell','settings','put','global','mobile_data','1'],'127.0.0.1:12346',False),(['shell','settings','get','secure','mobile_data'],'127.0.0.1:12346',False),(['shell','svc','wifi','disable'],s['serial'],False),(['shell','svc','data','enable'],'127.0.0.1:12346',False),(['shell','cat','/proc/101/status'],s['serial'],False),(['connect','127.0.0.1:12346'],None,False),(['shell','settings','get','global','mobile_data'],'127.0.0.1:12347',False),(['shell','settings','get','global','mobile_data'],'127.0.0.1:12346',True)]:
    with patch.object(T.subprocess,'check_output') as child,self.assertRaises(ValueError):T.command(s,{},target,argv,time.monotonic()+100,cap=30,binary=binary)
    child.assert_not_called()

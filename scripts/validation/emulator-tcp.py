@@ -9,6 +9,7 @@ def remaining(end):
 
 FRAMEWORK_PROVISIONING={
  ('shell','svc','wifi','enable'),
+ ('shell','cmd','wifi','connect-network','AndroidWifi','open'),
  ('shell','settings','get','global','mobile_data'),
  ('shell','settings','put','global','mobile_data','0'),
  ('shell','svc','data','disable'),
@@ -18,7 +19,7 @@ def command(state,env,target,args,end,cap=3,binary=False):
  remaining(end)
  if cap not in (3,12,30) or (cap==12 and (target is not None or len(args)!=2 or args[0]!='connect' or not re.fullmatch(r'127\.0\.0\.1:[0-9]{4,5}',args[1]))):raise ValueError('connect-only command budget required')
  if cap==30:
-  expected=state['serial'] if tuple(args)==('shell','svc','wifi','enable') else f"127.0.0.1:{state.get('ownedWifiTcpSetup',{}).get('hostPort')}"
+  expected=state['serial'] if tuple(args) in (('shell','svc','wifi','enable'),('shell','cmd','wifi','connect-network','AndroidWifi','open')) else f"127.0.0.1:{state.get('ownedWifiTcpSetup',{}).get('hostPort')}"
   if binary or tuple(args) not in FRAMEWORK_PROVISIONING or target!=expected:raise ValueError('owned framework provisioning budget required')
  operation_end=min(end,time.monotonic()+cap)
  argv=[str(Path(state['sdk'])/'platform-tools/adb'),'-P',str(state['adbPort'])]
@@ -238,6 +239,9 @@ def initial(state,run,env,end,save,failure_classifier=None):
   proof['connectResponse']='CONNECTED' if response.startswith('connected to ') else 'ALREADY_CONNECTED'
   after=guest(state,env,target,end);proof['selectedRouteGuest']=after
   if before!=after:raise ValueError('redirected TCP guest differs from bootstrap')
+  proof['initialSyntheticWifi']=known_synthetic_wifi(observe('verify_known_synthetic_wifi_before_reboot',target,['shell','cmd','wifi','status']).encode())
+  if not proof['initialSyntheticWifi']['exactKnownNetworkConnected']:raise ValueError('initial known synthetic Wi-Fi not established')
+  state['rebootWifiRestoration']={'method':WIFI_RESTORATION_METHOD,'sourceHead':state['sourceHead'],'initialBootIdSha256':after['bootIdSha256'],'initialKnownNetworkConnected':True}
   proof['dataBeforeProvisioningZero']=observe('observe_mobile_data_before_provisioning',target,['shell','settings','get','global','mobile_data'],cap=30)=='0'
   proof['dummyProofPrivilege']='USERDEBUG_SU_READONLY_CHILD_SELINUX_PERMISSIVE_NOT_STOCK_SHELL'
   proof['dummyInterface']=dummy_link(observe('verify_dummy_link_kind',target,['shell','/system/xbin/su','0','/system/bin/ip','-d','link','show','dev','dummy0']).encode())
@@ -254,20 +258,126 @@ def initial(state,run,env,end,save,failure_classifier=None):
   raise
  finally:save(run/'evidence/owned-wifi-route-initial.json',proof)
 
-def reattach(state,run,env,end,phase,save):
- if phase not in ('root','reboot'):raise ValueError('only expected lifecycle attachment allowed')
- target=selected(state);port=state['selectedTcpAdb']['hostPort'];prior=state['selectedTcpAdb']['guest'];listener(state,port,end)
- original=guest(state,env,state['serial'],end)
- if phase=='reboot' and original['bootIdSha256']==prior['bootIdSha256']:return False
- if phase=='reboot' and command(state,env,state['serial'],['shell','getprop','sys.boot_completed'],end)!='1':return False
- route_proof={};response_route_ready(state,env,state['serial'],original,end,route_proof)
- connect(state,env,target,end,expected_transition=True)
- current=guest(state,env,target,end)
- if original!=current or (phase=='root' and current['bootIdSha256']!=prior['bootIdSha256']):raise ValueError('expected lifecycle TCP guest differs')
- if phase=='reboot' and current['bootIdSha256']==prior['bootIdSha256']:return False
- if phase=='reboot' and command(state,env,target,['shell','getprop','sys.boot_completed'],end)!='1':return False
- if phase=='root' and command(state,env,target,['shell','id','-u'],end)!='0':return False
+WIFI_RESTORATION_METHOD='ONE_KNOWN_SYNTHETIC_WIFI_CONNECT_AFTER_USER_UNLOCK'
+
+def known_synthetic_wifi(raw):
+ if len(raw)>16384:raise ValueError('wifi_status_budget')
+ lines=raw.decode('utf-8',errors='strict').splitlines()
+ enabled=lines.count('Wifi is enabled');disabled=lines.count('Wifi is disabled')
+ connected=[line for line in lines if line.startswith('Wifi is connected to ')]
+ known=connected in (['Wifi is connected to "AndroidWifi"'],['Wifi is connected to AndroidWifi'])
+ return {'enabled':enabled==1 and disabled==0,'connectedRowCount':len(connected),'exactKnownNetworkConnected':enabled==1 and disabled==0 and known,'ssidValueExported':False}
+
+def restore_known_wifi_once(state,env,end,prior,context,facts,failure_classifier):
+ facts['stage']='reboot_wifi_restoration_declaration'
+ declaration=state.get('rebootWifiRestoration',{})
+ if declaration!={'method':WIFI_RESTORATION_METHOD,'sourceHead':state['sourceHead'],'initialBootIdSha256':prior['bootIdSha256'],'initialKnownNetworkConnected':True}:raise ValueError('predeclared initial synthetic Wi-Fi proof required')
+ if context is None:raise ValueError('shared reboot restoration context required')
+ proof=context.setdefault('restoration',{'method':WIFI_RESTORATION_METHOD,'sourceHead':state['sourceHead'],'initialBootIdSha256':declaration['initialBootIdSha256'],'priorBootIdSha256':prior['bootIdSha256'],'requestCount':0,'requestCapMs':30000,'result':'WAITING_FOR_USER_UNLOCK'})
+ facts['wifiRestoration']=json.loads(json.dumps(proof))
+ if proof['requestCount']:
+  if proof['result']!='REQUEST_COMPLETED':raise ValueError('prior Wi-Fi restoration request failed')
+  return True
+ facts['stage']='wait_for_user0_unlock'
+ try:
+  value=command(state,env,state['serial'],['shell','am','get-started-user-state','0'],end)
+  known=('BOOTING','RUNNING_LOCKED','RUNNING_UNLOCKING','RUNNING_UNLOCKED','STOPPING','SHUTDOWN')
+  if value not in known:raise ValueError('user0 state unclassified')
+  proof['userState']=value
+  if value!='RUNNING_UNLOCKED':facts['pendingReason']='USER0_NOT_UNLOCKED';return False
+  facts['stage']='reboot_wifi_restoration_request';proof.update(requestCount=1,result='REQUEST_STARTED',startedAtEpochMs=round(time.time()*1000),remainingPhaseBudgetBeforeRequestMs=int((end-time.monotonic())*1000));started=time.monotonic()
+  try:response=command(state,env,state['serial'],['shell','cmd','wifi','connect-network','AndroidWifi','open'],end,cap=30)
+  finally:proof['requestElapsedMs']=round((time.monotonic()-started)*1000)
+  proof['responseClass']={'':'EMPTY','Connection initiated':'INITIATED','Connection failed':'REFUSED'}.get(response,'OTHER')
+  if proof['responseClass'] not in ('EMPTY','INITIATED'):raise ValueError('known synthetic Wi-Fi request refused')
+  remaining(end);proof['result']='REQUEST_COMPLETED';proof['connectionEstablishedByResponse']=False
+  return True
+ except Exception as error:
+  proof.update(result='FAILED',failureStage=facts['stage'],exceptionType=type(error).__name__ if isinstance(error,(OSError,subprocess.SubprocessError,ValueError,TimeoutError)) else 'UNCLASSIFIED')
+  if failure_classifier is not None and isinstance(error,(subprocess.CalledProcessError,subprocess.TimeoutExpired)):proof['commandFailure']=failure_classifier(error)
+  # The existing expected-attachment loop catches subprocess errors. A failed
+  # prescribed Wi-Fi command must instead remain terminal and never resubmit.
+  raise ValueError('prescribed Wi-Fi restoration failed') from error
+ finally:facts['wifiRestoration']=json.loads(json.dumps(proof))
+
+def reattach(state,run,env,end,phase,save,observe=None,failure_classifier=None,restoration_context=None):
+ facts={'stage':'binding_validation','result':'PENDING','startedAtEpochMs':round(time.time()*1000),'priorGuest':state.get('selectedTcpAdb',{}).get('guest')};started=time.monotonic()
+ def boot_value(value):return {'valueClass':'ONE' if value=='1' else 'ZERO' if value=='0' else 'EMPTY' if value=='' else 'OTHER','stdoutBytes':len(value.encode()),'stdoutSha256':sha(value.encode())}
+ try:
+  if phase not in ('root','reboot'):raise ValueError('only expected lifecycle attachment allowed')
+  target=selected(state);port=state['selectedTcpAdb']['hostPort'];prior=state['selectedTcpAdb']['guest']
+  facts['stage']='owned_listener';listener(state,port,end)
+  facts['stage']='original_guest_identity';original=guest(state,env,state['serial'],end);facts['originalGuest']=original
+  if phase=='reboot' and original['bootIdSha256']==prior['bootIdSha256']:facts['pendingReason']='ORIGINAL_BOOT_UNCHANGED';return False
+  facts['stage']='original_boot_completed'
+  if phase=='reboot':
+   value=command(state,env,state['serial'],['shell','getprop','sys.boot_completed'],end);facts['originalBootCompleted']=boot_value(value)
+   if value!='1':facts['pendingReason']='ORIGINAL_BOOT_NOT_COMPLETED';return False
+  if phase=='reboot' and not restore_known_wifi_once(state,env,end,prior,restoration_context,facts,failure_classifier):return False
+  route_proof={};facts['routeProof']=route_proof
+  def route_read(stage,args):facts['stage']=stage;return command(state,env,state['serial'],args,end,binary=True)
+  response_route_ready(state,env,state['serial'],original,end,route_proof,read=route_read)
+  facts['stage']='selected_tcp_connect';connect(state,env,target,end,expected_transition=True)
+  facts['stage']='selected_guest_identity';current=guest(state,env,target,end);facts['selectedGuest']=current
+  if original!=current or (phase=='root' and current['bootIdSha256']!=prior['bootIdSha256']):raise ValueError('expected lifecycle TCP guest differs')
+  if phase=='reboot' and current['bootIdSha256']==prior['bootIdSha256']:facts['pendingReason']='SELECTED_BOOT_UNCHANGED';return False
+  facts['stage']='selected_boot_completed'
+  if phase=='reboot':
+   value=command(state,env,target,['shell','getprop','sys.boot_completed'],end);facts['selectedBootCompleted']=boot_value(value)
+   if value!='1':facts['pendingReason']='SELECTED_BOOT_NOT_COMPLETED';return False
+  facts['stage']='root_uid'
+  if phase=='root' and command(state,env,target,['shell','id','-u'],end)!='0':facts['pendingReason']='ROOT_UID_NOT_ZERO';return False
+  facts['stage']='save_binding';remaining(end)
+  save_binding(state,run,port,current,phase,save,original,route_proof);remaining(end)
+  facts.update(stage='attached',result='ATTACHED');return True
+ except BaseException as error:
+  facts.update(result='ERROR',exceptionType=type(error).__name__ if isinstance(error,(OSError,subprocess.SubprocessError,ValueError,TimeoutError,ExpectedAttachmentPending)) else 'UNCLASSIFIED')
+  if isinstance(error,(subprocess.CalledProcessError,subprocess.TimeoutExpired)) and failure_classifier is not None:facts['commandFailure']=failure_classifier(error)
+  raise
+ finally:
+  facts['elapsedMs']=round((time.monotonic()-started)*1000)
+  if observe is not None:observe(facts)
+
+REBOOT_REQUEST_METHOD='BOUND_ORIGINAL_EMULATOR_AFTER_SCOPED_TCP_DISCONNECT'
+
+def request_reboot(state,run,env,end,save,require_owned):
+ """One predeclared lifecycle request; failed commands never select another route."""
+ started=time.monotonic();proof={'schema':1,'sourceHead':state['sourceHead'],'result':'FAIL','scope':'REBOOT_REQUEST_NOT_REBOOT_PROOF','method':REBOOT_REQUEST_METHOD,'stage':'declaration','requestCount':0,'disconnectCount':0,'requestCapMs':30000,'startedAtEpochMs':round(time.time()*1000)}
+ try:
+  remaining(end)
+  if state.get('adbTransport')!='isolated-tcp' or state.get('rebootRequestMethod')!=REBOOT_REQUEST_METHOD:raise ValueError('explicit owned reboot request method required')
+  target=selected(state);proof.update(originalSerial=state['serial'],selectedTcpTarget=target,emulatorPid=state['processes']['emulator']['pid'])
+  def owned():
+   fresh=require_owned()
+   if any(fresh.get(key)!=state.get(key) for key in ('sourceHead','serial','adbTransport','rebootRequestMethod','selectedTcpAdb')) or fresh['processes']['emulator']!=state['processes']['emulator']:raise ValueError('reboot ownership changed')
+   remaining(end)
+  owned();listener(state,state['selectedTcpAdb']['hostPort'],end)
+  proof['stage']='independent_guest_binding';original=guest(state,env,state['serial'],end);tcp=guest(state,env,target,end)
+  if original!=tcp or tcp!=state['selectedTcpAdb']['guest']:raise ValueError('reboot request guest differs')
+  proof.update(originalRouteGuest=original,selectedRouteGuest=tcp,matchedRetainedGuest=True)
+  proof['stage']='scoped_tcp_disconnect';proof['disconnectCount']=1
+  if command(state,env,None,['disconnect',target],end)!='disconnected '+target:raise ValueError('scoped disconnect not confirmed')
+  proof['stage']='scoped_tcp_transport_removed'
+  if command(state,env,target,['wait-for-disconnect'],end)!='':raise ValueError('scoped transport removal not confirmed')
+  proof['selectedTransportRemoved']=True
+  owned();listener(state,state['selectedTcpAdb']['hostPort'],end)
+  if guest(state,env,state['serial'],end)!=original:raise ValueError('reboot request original guest changed')
+  owned()
+  proof['stage']='original_emulator_reboot_request';remaining(end);request_end=min(end,time.monotonic()+30);proof['remainingPhaseBudgetBeforeRequestMs']=round((end-time.monotonic())*1000);proof['requestCount']=1;request_started=time.monotonic()
+  argv=[str(Path(state['sdk'])/'platform-tools/adb'),'-P',str(state['adbPort']),'-s',state['serial'],'reboot']
+  try:
+   result=subprocess.run(argv,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=True,timeout=max(.001,request_end-time.monotonic()))
+   remaining(request_end);proof.update(requestExitCode=result.returncode,stdoutBytes=len(result.stdout),stderrBytes=len(result.stderr))
+   if result.stdout or result.stderr:raise ValueError('unexpected reboot request response')
+  finally:proof['requestElapsedMs']=int((time.monotonic()-request_started)*1000)
+  proof.update(result='PASS',stage='request_completed')
+ except BaseException as error:
+  proof['failure']={'stage':proof['stage'],'exceptionType':type(error).__name__ if isinstance(error,(OSError,subprocess.SubprocessError,ValueError,TimeoutError)) else 'UNCLASSIFIED'}
+  if isinstance(error,subprocess.CalledProcessError):proof['requestExitCode']=error.returncode
+  if isinstance(error,(subprocess.CalledProcessError,subprocess.TimeoutExpired)):
+   proof['failure'].update(stdoutBytes=len(error.output or b''),stderrBytes=len(error.stderr or b''))
+  raise
+ finally:
+  proof['elapsedMs']=round((time.monotonic()-started)*1000);save(run/'evidence/owned-tcp-reboot-request.json',proof)
  remaining(end)
- save_binding(state,run,port,current,phase,save,original,route_proof)
- remaining(end)
- return True
+ return proof

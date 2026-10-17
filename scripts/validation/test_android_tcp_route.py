@@ -15,6 +15,7 @@ class KernelRoute(unittest.TestCase):
     if args[:3]==['shell','sh','-c']:
      script=shlex.split(args[3]);self.assertEqual(len(script),1);self.assertIn('uid 2000 mark 0',script[0]);self.assertFalse(kwargs['text']);return frame
     self.assertTrue(kwargs['text'])
+    if args==['shell','cmd','wifi','status']:return 'Wifi is enabled\nWifi is connected to "AndroidWifi"\n'
     if args==['shell','ip','-o','-4','addr','show']:return '5: wlan0 inet 10.0.2.16/24 scope global wlan0\n'
     if args==['connect','127.0.0.1:12346']:return 'connected to 127.0.0.1:12346\n'
     if args==['shell','/system/xbin/su','0','/system/bin/ip','-d','link','show','dev','dummy0']:return '3: dummy0: <UP>\n    dummy addrgenmode eui64\n'

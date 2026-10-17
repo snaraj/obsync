@@ -6,7 +6,15 @@ spec=importlib.util.spec_from_file_location('tcp_control',B/'emulator-tcp.py');T
 spec=importlib.util.spec_from_file_location('session_control',B/'android-session.py');S=importlib.util.module_from_spec(spec);spec.loader.exec_module(S)
 FACT={'bootIdSha256':'a'*64,'adbdPid':101,'adbdStartTicks':'1234'}
 def state(run):return {'adbTransport':'isolated-tcp','serial':'emulator-5584','sdk':'/owned/sdk','adbPort':12345,'expiresAtEpoch':time.time()+100,'sourceHead':'a'*40,'processes':{'emulator':{'pid':777,'identity':'owned qemu'}},'environment':{'HOME':str(run/'runtime/user'),'ANDROID_EMULATOR_HOME':str(run/'runtime/user')}}
-def bind(s):T.save_binding(s,Path('/unused'),12346,FACT,'initial',lambda *a:None,FACT)
+def bind(s):
+ T.save_binding(s,Path('/unused'),12346,FACT,'initial',lambda *a:None,FACT)
+ s['rebootWifiRestoration']={'method':T.WIFI_RESTORATION_METHOD,'sourceHead':s['sourceHead'],'initialBootIdSha256':FACT['bootIdSha256'],'initialKnownNetworkConnected':True}
+def lifecycle_command(values):
+ values=iter(values)
+ def call(st,env,target,args,end,**kw):
+  return 'RUNNING_UNLOCKED' if args==['shell','am','get-started-user-state','0'] else '' if args==['shell','cmd','wifi','connect-network','AndroidWifi','open'] else next(values)
+ return call
+
 class Route(unittest.TestCase):
  def setUp(self):
   def routed(*args,**kwargs):
@@ -24,7 +32,7 @@ class Route(unittest.TestCase):
    self.assertEqual(argv,['-feature','-WiFiPacketStream','-network-user-mode-options','restrict=on','-wifi-user-mode-options','restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:12346-10.0.2.16:5555'])
    (run/'private/emulator.log').write_text('argv[01] = "user,id=mynet,restrict=on"\nargv[02] = "user,id=virtio-wifi,'+s['ownedWifiTcpSetup']['wifiOptions']+'"\n')
    def cmd(st,env,target,args,end,cap=3):
-    calls.append((target,args,cap));return '5: wlan0    inet 10.0.2.16/24 brd 10.0.2.255 scope global wlan0' if args==['shell','ip','-o','-4','addr','show'] else 'connected to 127.0.0.1:12346' if args==['connect','127.0.0.1:12346'] else '3: dummy0: <UP>\n    dummy addrgenmode eui64\n' if args==['shell','/system/xbin/su','0','/system/bin/ip','-d','link','show','dev','dummy0'] else '0' if args==['shell','settings','get','global','mobile_data'] else 'default dev dummy0 table 1003 proto static scope link\n' if args==['shell','ip','-4','route','show','table','all'] else ''
+    calls.append((target,args,cap));return 'Wifi is enabled\nWifi is connected to \"AndroidWifi\"' if args==['shell','cmd','wifi','status'] else '5: wlan0    inet 10.0.2.16/24 brd 10.0.2.255 scope global wlan0' if args==['shell','ip','-o','-4','addr','show'] else 'connected to 127.0.0.1:12346' if args==['connect','127.0.0.1:12346'] else '3: dummy0: <UP>\n    dummy addrgenmode eui64\n' if args==['shell','/system/xbin/su','0','/system/bin/ip','-d','link','show','dev','dummy0'] else '0' if args==['shell','settings','get','global','mobile_data'] else 'default dev dummy0 table 1003 proto static scope link\n' if args==['shell','ip','-4','route','show','table','all'] else ''
    with patch.object(T,'guest',side_effect=[FACT,FACT]) as guest,patch.object(T,'command',side_effect=cmd),patch.object(T,'listener',return_value={'pid':777}):T.initial(s,run,{},time.monotonic()+10,lambda p,v:saved.append((p,v)))
    self.assertEqual([c.args[2] for c in guest.call_args_list],['emulator-5584','127.0.0.1:12346']);self.assertEqual(s['serial'],'emulator-5584');self.assertEqual(T.selected(s),'127.0.0.1:12346')
    self.assertEqual(calls[0],('emulator-5584',['shell','svc','wifi','enable'],30));self.assertEqual([c for c in calls if c[1][:1]==['connect']],[(None,['connect','127.0.0.1:12346'],12)])
@@ -88,16 +96,16 @@ class Route(unittest.TestCase):
   with patch.object(T,'listener'),patch.object(T,'connect'),patch.object(T,'guest',side_effect=[new,new]),patch.object(T,'command',return_value='1'):self.assertFalse(T.reattach(s,Path('/owned'),{},time.monotonic()+10,'root',lambda *a:None))
   with patch.object(T,'listener'),patch.object(T,'connect'),patch.object(T,'guest',side_effect=[new,new]):self.assertFalse(T.reattach(s,Path('/owned'),{},time.monotonic()+10,'reboot',lambda *a:None))
   reboot={**new,'bootIdSha256':'b'*64}
-  with patch.object(T,'listener'),patch.object(T,'connect'),patch.object(T,'guest',side_effect=[reboot,reboot]),patch.object(T,'command',return_value='1'):self.assertTrue(T.reattach(s,Path('/owned'),{},time.monotonic()+10,'reboot',lambda *a:None))
+  with patch.object(T,'listener'),patch.object(T,'connect'),patch.object(T,'guest',side_effect=[reboot,reboot]),patch.object(T,'command',side_effect=lifecycle_command(['1','1'])):self.assertTrue(T.reattach(s,Path('/owned'),{},time.monotonic()+10,'reboot',lambda *a:None,restoration_context={}))
   with patch.object(T,'listener'),patch.object(T,'connect'),patch.object(T,'guest',side_effect=[reboot,{**reboot,'adbdPid':999}]),patch.object(T,'command',return_value='0'),self.assertRaises(ValueError):T.reattach(s,Path('/owned'),{},time.monotonic()+10,'root',lambda *a:None)
   with self.assertRaises(ValueError):T.reattach(s,Path('/owned'),{},time.monotonic()+10,'runtime',lambda *a:None)
   with patch.object(T,'listener'),patch.object(T,'connect'),patch.object(T,'guest',side_effect=[reboot,new]),self.assertRaises(ValueError):T.reattach(s,Path('/owned'),{},time.monotonic()+10,'root',lambda *a:None)
  def test_reboot_two_polls_does_not_commit_new_boot_until_boot_complete(self):
-  s=state(Path('/owned'));bind(s);new={**FACT,'bootIdSha256':'b'*64,'adbdPid':102,'adbdStartTicks':'2222'};saved=[]
-  with patch.object(T,'listener'),patch.object(T,'connect'),patch.object(T,'guest',side_effect=[new,new,new]),patch.object(T,'command',side_effect=['0','1','1']) as command:
-   self.assertFalse(T.reattach(s,Path('/owned'),{},time.monotonic()+10,'reboot',lambda *args:saved.append(args)));self.assertEqual(s['selectedTcpAdb']['guest'],FACT);self.assertEqual(saved,[])
-   self.assertTrue(T.reattach(s,Path('/owned'),{},time.monotonic()+10,'reboot',lambda *args:saved.append(args)));self.assertEqual(s['selectedTcpAdb']['guest'],new);self.assertEqual(len(saved),2)
-  self.assertEqual([c.args[3] for c in command.call_args_list],[['shell','getprop','sys.boot_completed']]*3)
+  s=state(Path('/owned'));bind(s);new={**FACT,'bootIdSha256':'b'*64,'adbdPid':102,'adbdStartTicks':'2222'};saved=[];context={}
+  with patch.object(T,'listener'),patch.object(T,'connect'),patch.object(T,'guest',side_effect=[new,new,new,new]),patch.object(T,'command',side_effect=lifecycle_command(['1','0','1','1'])) as command:
+   self.assertFalse(T.reattach(s,Path('/owned'),{},time.monotonic()+10,'reboot',lambda *args:saved.append(args),restoration_context=context));self.assertEqual(s['selectedTcpAdb']['guest'],FACT);self.assertEqual(saved,[])
+   self.assertTrue(T.reattach(s,Path('/owned'),{},time.monotonic()+10,'reboot',lambda *args:saved.append(args),restoration_context=context));self.assertEqual(s['selectedTcpAdb']['guest'],new);self.assertEqual(len(saved),2)
+  self.assertEqual([c.args[3] for c in command.call_args_list if c.args[3]==['shell','getprop','sys.boot_completed']],[['shell','getprop','sys.boot_completed']]*4);self.assertEqual(sum(c.args[3]==['shell','cmd','wifi','connect-network','AndroidWifi','open'] for c in command.call_args_list),1)
  def test_unprepared_route_refuses_before_log_or_commands(self):
   s=state(Path('/owned'))
   with patch.object(T,'command') as command,patch.object(Path,'lstat',side_effect=AssertionError('no unrelated file read')),self.assertRaisesRegex(ValueError,'predeclared'):T.initial(s,Path('/owned'),{},time.monotonic()+10,lambda *a:None)

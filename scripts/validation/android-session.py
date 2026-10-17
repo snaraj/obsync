@@ -34,9 +34,9 @@ def bootstrap_command(state,args,timeout=3):
     if state.get('selectedTcpAdb') is not None:raise ValueError('bootstrap target forbidden after TCP selection')
     return TCP.command(state,adb_env(state),state['serial'],args,time.monotonic()+timeout)
 
-def reattach_tcp(state,run,end,phase):
+def reattach_tcp(state,run,end,phase,observe=None,restoration_context=None):
     if state.get('adbTransport')!='isolated-tcp':raise ValueError('isolated transport lifecycle required')
-    return TCP.reattach(state,run,adb_env(state),end,phase,save)
+    return TCP.reattach(state,run,adb_env(state),end,phase,save,observe,APK.apk_command_failure,restoration_context)
 
 def digest(path):
     with open(path, 'rb') as stream:
@@ -267,10 +267,10 @@ def register_emulator(state, port):
         # command independently proves that the exact serial became usable.
 
 
-def check_reverse(state):
+def check_reverse(state,timeout=None):
     if not state['reversePorts']:
         return
-    lines = adb_command(state, ['reverse', '--list']).splitlines()
+    lines = adb_command(state, ['reverse', '--list'],**({} if timeout is None else {'timeout':timeout})).splitlines()
     for port in state['reversePorts']:
         pair = [f'tcp:{port}', f'tcp:{port}']
         if not any(line.split()[-2:] == pair for line in lines):
@@ -406,6 +406,7 @@ def execute(a):
     state = {'format': 1, 'run': str(a.run.resolve()), 'sourceHead': a.source_head,
              'sdk': str(a.sdk), 'adbPort': adb_port, 'serial': f'emulator-{a.port}',
              'processes': {}, 'adbTransport':getattr(a,'adb_transport','emulator'), 'expiresAtEpoch': started + a.seconds,
+             **({'rebootRequestMethod':TCP.REBOOT_REQUEST_METHOD} if isolated else {}),
              'reversePorts': a.reverse, 'holder': {'pid': os.getpid(), 'identity': controller_identity},
              'environment': {'HOME': str(a.run/'runtime/user'), 'JAVA_HOME': str(a.java), 'ANDROID_USER_HOME': str(a.run/'runtime/user'),
                  'ANDROID_EMULATOR_HOME': str(a.run/'runtime/user'), 'ANDROID_AVD_HOME': str(a.run/'runtime/avds'),
@@ -549,19 +550,31 @@ def app_pid(state, timeout=30):
     return int(value)
 
 
-def devtools_present(state,pid):
-    text=adb_command(state,['shell','cat','/proc/net/unix'])
+def devtools_present(state,pid,timeout=30):
+    text=adb_command(state,['shell','cat','/proc/net/unix'],timeout=timeout)
     return any(line.split()[-1:]==[f'@webview_devtools_remote_{pid}'] for line in text.splitlines())
 
 
-def stopped_app(state):
-    old=app_pid(state)
-    adb_command(state,['shell','am','force-stop','md.obsidian'])
-    deadline=time.monotonic()+10
-    while app_pid(state) is not None or (old and devtools_present(state,old)):
-        if time.monotonic()>=deadline:
-            raise TimeoutError('old Obsidian process/devtools socket absence deadline')
-        time.sleep(.1)
+def stopped_app(state,end=None):
+    if end is None:
+        old=app_pid(state)
+        adb_command(state,['shell','am','force-stop','md.obsidian'])
+        deadline=time.monotonic()+10
+        while app_pid(state) is not None or (old and devtools_present(state,old)):
+            if time.monotonic()>=deadline:
+                raise TimeoutError('old Obsidian process/devtools socket absence deadline')
+            time.sleep(.1)
+        return old
+    def budget():
+        value=end-time.monotonic()
+        if value<=0:raise TimeoutError('owned reboot preparation deadline')
+        return min(30,value)
+    old=app_pid(state,timeout=budget())
+    adb_command(state,['shell','am','force-stop','md.obsidian'],timeout=budget())
+    end=min(end,time.monotonic()+10)
+    while app_pid(state,timeout=budget()) is not None or (old and devtools_present(state,old,timeout=budget())):
+        budget();time.sleep(min(.1,budget()))
+    budget()
     return old
 
 
@@ -673,38 +686,80 @@ def lifecycle(run, action, boot_seconds=240):
                'launchStartedAtEpochMs':launch_started}
     elif action=='reboot':
         if not 1<=boot_seconds<=900: raise ValueError('boot deadline must be 1..900 seconds')
-        old=stopped_app(state)  # preserve Android stopped-package flag through reboot
-        before=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id']).strip()
-        adb_command(state,['reboot'])
-        deadline=min(time.monotonic()+boot_seconds,time.monotonic()+max(0,state['expiresAtEpoch']-time.time()))
-        after=None
-        while time.monotonic()<deadline:
-            try:
-                register_emulator(state,int(state['serial'].split('-')[1])+1)
-                if state.get('adbTransport')=='isolated-tcp' and not reattach_tcp(state,run,deadline,'reboot'):
-                    time.sleep(.3);continue
-                after=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id'],timeout=TCP.remaining(deadline)).strip()
-                ready=adb_command(state,['shell','getprop','sys.boot_completed'],timeout=TCP.remaining(deadline)).strip()
-                TCP.remaining(deadline)
-                if after!=before and ready=='1': break
-            except (OSError,subprocess.SubprocessError,TCP.ExpectedAttachmentPending): pass
-            time.sleep(.3)
-        else: raise TimeoutError('owned Android device reboot deadline')
-        if app_pid(state) is not None:
+        isolated=state.get('adbTransport')=='isolated-tcp'
+        if isolated:
+            deadline=min(time.monotonic()+boot_seconds,time.monotonic()+max(0,state['expiresAtEpoch']-time.time()))
+            old=stopped_app(state,end=deadline)
+            before=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id'],timeout=TCP.remaining(deadline)).strip()
+            TCP.request_reboot(state,run,adb_env(state),deadline,save,lambda:live_state(run))
+        else:
+            old=stopped_app(state)  # preserve Android stopped-package flag through reboot
+            before=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id']).strip()
+            adb_command(state,['reboot'])
+            deadline=min(time.monotonic()+boot_seconds,time.monotonic()+max(0,state['expiresAtEpoch']-time.time()))
+        observation={'schema':1,'sourceHead':state['sourceHead'],'evidenceClass':'DIAGNOSTIC_ONLY','phase':'reboot','counts':{},'stages':{},'terminal':'NOT_REACHED','priorGuest':state.get('selectedTcpAdb',{}).get('guest')}
+        def record(facts):
+            stage=facts['stage'];row=observation['stages'].setdefault(stage,{'count':0,'first':facts,'last':facts});row['count']+=1;row['last']=facts
+            key=facts['result'];observation['counts'][key]=observation['counts'].get(key,0)+1
+        after=None;failed=False;restoration_context={}
+        try:
+            while time.monotonic()<deadline:
+                try:
+                    started=time.monotonic()
+                    try:
+                        register_emulator(state,int(state['serial'].split('-')[1])+1)
+                        record({'stage':'register_original_emulator','result':'COMPLETE','elapsedMs':round((time.monotonic()-started)*1000)})
+                    except (OSError,subprocess.SubprocessError) as error:
+                        record({'stage':'register_original_emulator','result':'ERROR','exceptionType':type(error).__name__,'elapsedMs':round((time.monotonic()-started)*1000),**({'commandFailure':APK.apk_command_failure(error)} if isinstance(error,(subprocess.CalledProcessError,subprocess.TimeoutExpired)) else {})})
+                        raise
+                    if state.get('adbTransport')=='isolated-tcp' and not reattach_tcp(state,run,deadline,'reboot',record,restoration_context):
+                        time.sleep(.3);continue
+                    final_stage='selected_final_boot_identity'
+                    try:
+                        after=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id'],timeout=TCP.remaining(deadline)).strip()
+                        final_stage='selected_final_boot_completed'
+                        ready=adb_command(state,['shell','getprop','sys.boot_completed'],timeout=TCP.remaining(deadline)).strip()
+                        TCP.remaining(deadline)
+                        record({'stage':'selected_final_boot_proof','result':'COMPLETE','bootIdSha256':hashlib.sha256(after.encode()).hexdigest(),'bootChanged':after!=before,'bootCompleted':ready=='1'})
+                    except (OSError,subprocess.SubprocessError) as error:
+                        record({'stage':final_stage,'result':'ERROR','exceptionType':type(error).__name__,**({'commandFailure':APK.apk_command_failure(error)} if isinstance(error,(subprocess.CalledProcessError,subprocess.TimeoutExpired)) else {})})
+                        raise
+                    if after!=before and ready=='1': break
+                except (OSError,subprocess.SubprocessError,TCP.ExpectedAttachmentPending): pass
+                time.sleep(.3)
+            else: raise TimeoutError('owned Android device reboot deadline')
+            observation['terminal']='REATTACHED'
+        except BaseException as error:
+            failed=True;observation['terminal']='FAILED';observation['exceptionType']=type(error).__name__
+            raise
+        finally:
+            if isolated:
+                try:save(run/'evidence/owned-reboot-reattachment-observation.json',observation)
+                except Exception:
+                    if not failed:raise
+        def tail_budget():
+            if not isolated:return {}
+            value=deadline-time.monotonic()
+            if value<=0:raise TimeoutError('owned Android reboot verification deadline')
+            return {'timeout':min(30,value)}
+        if app_pid(state,**tail_budget()) is not None:
             raise RuntimeError('Obsidian unexpectedly running before post-reboot trust restoration')
-        mappings=adb_command(state,['reverse','--list'])
+        mappings=adb_command(state,['reverse','--list'],**tail_budget())
         had_reverse=all(any(line.split()[-2:]==[f'tcp:{p}',f'tcp:{p}'] for line in mappings.splitlines()) for p in state['reversePorts'])
         for port in state['reversePorts']:
-            adb_command(state,['reverse',f'tcp:{port}',f'tcp:{port}'])
-        check_reverse(state)
+            adb_command(state,['reverse',f'tcp:{port}',f'tcp:{port}'],**tail_budget())
+        check_reverse(state,**tail_budget())
+        if isolated:TCP.remaining(deadline)
         proof={'result':'REBOOTED','oldPid':old,'oldBootId':before,'newBootId':after,
                'actualGuestReboot':True,'reverseMappingsSurvived':had_reverse,'reverseMappingsRestored':True,
+               **({'rebootRequestMethod':TCP.REBOOT_REQUEST_METHOD,'rebootRequestWitness':'evidence/owned-tcp-reboot-request.json'} if isolated else {}),
                'applicationStopped':True,'trustReapplyRequired':(run/'evidence/android-trust.json').exists(),
                'nextStep':'android-trust.py reapply with original pinned CA and pretrust receipt, then restart-app',
                'physicalDeviceReboot':'NOT_RUN'}
     else: raise ValueError('unknown owned Android lifecycle action')
     proof.update(sourceHead=state['sourceHead'],atEpoch=time.time())
     save(run/'evidence'/('android-'+action+'-'+str(time.time_ns())+'.json'),proof)
+    if action=='reboot' and state.get('adbTransport')=='isolated-tcp':TCP.remaining(deadline)
     return proof
 
 

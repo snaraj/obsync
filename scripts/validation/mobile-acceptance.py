@@ -129,13 +129,16 @@ def isolated_tcp_evidence(android, source_head, mode):
     need(initial.get('schema')==1 and initial.get('sourceHead')==source_head and initial.get('result')=='OBSERVED'
          and initial.get('sameGuestTcpBinding') is True and initial.get('wifiNotDisabledAfterBinding') is True
          and initial.get('mobileDataGlobalSettingZero') is True and initial.get('connectAttempts')==1
-         and initial.get('ipv4RouteIsolation',{}).get('extraEgressRoutes')==0)
+         and initial.get('ipv4RouteIsolation',{}).get('extraEgressRoutes')==0
+         and initial.get('initialSyntheticWifi',{}).get('exactKnownNetworkConnected') is True
+         and initial.get('initialSyntheticWifi',{}).get('enabled') is True
+         and initial.get('initialSyntheticWifi',{}).get('connectedRowCount')==1)
     paths=list(evidence.glob('owned-tcp-adb-*.json'));ordered=[]
     for path in paths:
         match=re.fullmatch(r'owned-tcp-adb-(initial|root|reboot)-([0-9]+)\.json',path.name)
         need(match is not None);ordered.append((int(match[2]),match[1],path))
     ordered.sort();need([phase for _,phase,_ in ordered]==(['initial','root'] if mode=='core' else ['initial','root','reboot','root']))
-    prior=None;binding=None;refs={str(initial_path.relative_to(android)):sha(initial_path)}
+    prior=None;binding=None;reboot_prior=None;reboot_guest=None;reboot_route=None;refs={str(initial_path.relative_to(android)):sha(initial_path)}
     for _,phase,path in ordered:
         row=private_json(path);guest=row.get('guest');route=row.get('responseRouteProof',{});last=route.get('guestResponseRouteReadiness',{}).get('last',{})
         need(row.get('schema')==1 and row.get('sourceHead')==source_head and row.get('phase')==phase
@@ -151,6 +154,7 @@ def isolated_tcp_evidence(android, source_head, mode):
         need(isinstance(current[0],str) and re.fullmatch(r'127\.0\.0\.1:[0-9]{4,5}',current[0]) is not None
              and isinstance(current[1],str) and re.fullmatch(r'emulator-(555[468]|55[678][02468])',current[1]) is not None
              and type(current[2]) is int and current[2]>1 and (binding is None or current==binding))
+        if phase=='reboot':reboot_prior=prior;reboot_guest=guest;reboot_route=route
         if prior is not None:need((guest['bootIdSha256']!=prior['bootIdSha256'])==(phase=='reboot'))
         else:
             need(initial.get('originalRouteGuest')==guest==initial.get('selectedRouteGuest'))
@@ -159,6 +163,36 @@ def isolated_tcp_evidence(android, source_head, mode):
                  and options.get('expectedRadioArgument')=='user,id=mynet,restrict=on'
                  and options.get('expectedWifiArgument')=='user,id=virtio-wifi,restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:'+port+'-10.0.2.16:5555')
         prior=guest;binding=current;refs[str(path.relative_to(android))]=sha(path)
+    if mode=='full':
+        path=evidence/'owned-tcp-reboot-request.json';need(path.is_file());request=private_json(path)
+        need(request.get('schema')==1 and request.get('sourceHead')==source_head and request.get('result')=='PASS'
+             and request.get('scope')=='REBOOT_REQUEST_NOT_REBOOT_PROOF'
+             and request.get('method')=='BOUND_ORIGINAL_EMULATOR_AFTER_SCOPED_TCP_DISCONNECT'
+             and request.get('requestCount')==request.get('disconnectCount')==1 and request.get('selectedTransportRemoved') is True
+             and request.get('requestExitCode')==0 and request.get('stdoutBytes')==request.get('stderrBytes')==0
+             and type(request.get('requestElapsedMs')) is int and 0<=request['requestElapsedMs']<30000
+             and request.get('requestCapMs')==30000 and type(request.get('remainingPhaseBudgetBeforeRequestMs')) is int
+             and request['requestElapsedMs']<=request['remainingPhaseBudgetBeforeRequestMs']<=240000
+             and request.get('originalSerial')==binding[1] and request.get('selectedTcpTarget')==binding[0]
+             and request.get('emulatorPid')==binding[2] and request.get('matchedRetainedGuest') is True
+             and request.get('originalRouteGuest')==request.get('selectedRouteGuest')==reboot_prior)
+        refs[str(path.relative_to(android))]=sha(path)
+        path=evidence/'owned-reboot-reattachment-observation.json';need(path.is_file());observation=private_json(path)
+        attached=observation.get('stages',{}).get('attached',{});last=attached.get('last',{});restoration=last.get('wifiRestoration',{})
+        need(observation.get('schema')==1 and observation.get('sourceHead')==source_head and observation.get('phase')=='reboot'
+             and observation.get('terminal')=='REATTACHED' and observation.get('priorGuest')==reboot_prior
+             and attached.get('count')==1 and last.get('result')=='ATTACHED' and last.get('priorGuest')==reboot_prior
+             and last.get('originalGuest')==last.get('selectedGuest')==reboot_guest and last.get('routeProof')==reboot_route)
+        need(restoration.get('method')=='ONE_KNOWN_SYNTHETIC_WIFI_CONNECT_AFTER_USER_UNLOCK'
+             and restoration.get('sourceHead')==source_head and restoration.get('result')=='REQUEST_COMPLETED'
+             and restoration.get('requestCount')==1 and restoration.get('userState')=='RUNNING_UNLOCKED'
+             and restoration.get('initialBootIdSha256')==initial['originalRouteGuest']['bootIdSha256']
+             and restoration.get('priorBootIdSha256')==reboot_prior['bootIdSha256']
+             and restoration.get('responseClass') in ('EMPTY','INITIATED') and restoration.get('connectionEstablishedByResponse') is False
+             and restoration.get('requestCapMs')==30000 and type(restoration.get('requestElapsedMs')) is int
+             and 0<=restoration['requestElapsedMs']<30000 and type(restoration.get('remainingPhaseBudgetBeforeRequestMs')) is int
+             and restoration['requestElapsedMs']<=restoration['remainingPhaseBudgetBeforeRequestMs']<=240000)
+        refs[str(path.relative_to(android))]=sha(path)
     return {'schema':1,'sourceHead':source_head,'result':'PASS','adbTransport':'isolated-tcp',
             'phaseSequence':[phase for _,phase,_ in ordered],'files':refs,'scope':'RETAINED_OWNED_TRANSPORT_PROVENANCE_ONLY'}
 

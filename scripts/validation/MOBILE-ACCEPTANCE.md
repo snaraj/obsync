@@ -18,12 +18,30 @@ separate physical-phone requirement or establish iOS behavior.
 Emulator acceptance selects the owned isolated TCP ADB transport. The runner
 predeclares a loopback-only Wi-Fi forwarding endpoint and restricted network
 backends, verifies the actual process listener and guest identity, and requires
-that binding for every device command. Only the prescribed root and reboot
-transitions reattach. A failed read never switches transports or retries.
+that binding for product commands and byte readback. Only the prescribed root
+and reboot transitions reattach. A failed read never switches transports or
+retries. Reboot uses one predeclared request through the original owned emulator
+serial, after independently matching both guest identities and disconnecting
+only the selected TCP transport. The request must exit successfully within
+30 seconds; timeout is failure. New boot identity and readiness are then verified
+through the selected TCP route. Request completion alone is not reboot proof.
+The disposable fixture also verifies its known synthetic Wi-Fi network before
+testing and makes one prescribed reconnect request after Android user 0 unlocks.
+That request shares the unchanged 240-second reboot deadline and cannot be
+resubmitted after failure. Its response is not connection proof: the actual
+adbd-UID route and matching original/selected new-boot identities must pass.
+This measures explicit fixture network restoration, not automatic Wi-Fi
+reconnection. Full acceptance requires the source-bound restoration witness
+to survive cleanup alongside the separate reboot and byte evidence.
 Offline tests remove only the owned product route; the idle interval contains
 no Android keepalive. Framework provisioning retains its original 30-second
 command cap within the original boot deadline. Route, identity and lifecycle
 receipts must survive cleanup for terminal acceptance.
+
+On a reboot failure, `owned-reboot-reattachment-observation.json` retains bounded
+first/last stage facts and classified command failures. It distinguishes guest
+startup, response-route readiness and selected-TCP reconnection. These diagnostic
+facts cannot substitute for the successful lifecycle and persisted-byte proofs.
 
 ## Run
 

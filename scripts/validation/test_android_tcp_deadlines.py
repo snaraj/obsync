@@ -1,5 +1,5 @@
 """Actual caller loops only; no processes, devices or clocks are changed."""
-import ast,subprocess,time,unittest
+import ast,hashlib,subprocess,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
 B=Path(__file__).parent
@@ -23,7 +23,7 @@ def run_loop(phase,late=None):
   return 'new' if args[-1]=='/proc/sys/kernel/random/boot_id' else '1'
  def shell(*args):calls.append('unexpected redundant uid read');clock[0]=end+.001;return '0'
  pending=type('Pending',(Exception,),{});tcp=SimpleNamespace(remaining=remaining,ExpectedAttachmentPending=pending);session=SimpleNamespace(register_emulator=lambda *args:None,reattach_tcp=attach,TCP=tcp)
- scope={'time':SimpleNamespace(monotonic=lambda:clock[0],sleep=lambda _:None),'deadline':end,'state':{'serial':'emulator-5584','adbTransport':'isolated-tcp'},'run':Path('/not-used'),'SESSION':session,'TCP':tcp,'shell':shell,'subprocess':subprocess,'register_emulator':lambda *args:None,'reattach_tcp':attach,'adb_command':adb,'before':'old','after':None}
+ scope={'time':SimpleNamespace(monotonic=lambda:clock[0],sleep=lambda _:None),'deadline':end,'state':{'serial':'emulator-5584','adbTransport':'isolated-tcp'},'run':Path('/not-used'),'SESSION':session,'TCP':tcp,'shell':shell,'subprocess':subprocess,'register_emulator':lambda *args:None,'reattach_tcp':attach,'adb_command':adb,'before':'old','after':None,'restoration_context':{},'record':lambda facts:None,'hashlib':hashlib}
  node=actual_loop('android-trust.py' if phase=='root' else 'android-session.py',phase)
  exec(compile(ast.fix_missing_locations(ast.Module(body=[node],type_ignores=[])),phase,'exec'),scope)
  return calls,clock[0],end

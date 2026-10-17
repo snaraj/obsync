@@ -79,6 +79,137 @@ This is a finite IPv4 two-endpoint test, not a general network or IPv6 proof.
 A fixed read-only route query used the userdebug image's permitted privileged
 child; it does not establish stock-device shell behavior.
 
+## First full batch on the committed TCP integration
+
+Source and drivers were pinned to `34ca2466e2a645c351712557f85ca9256458d179`.
+Two earlier launch failures remain separate: TCP batch 01 refused an occupied
+TLS port before creating fixtures; the unrelated service was left untouched.
+TCP batch 02 failed before Android creation because the launch process's PATH
+omitted the system directory containing `lsof`. Its controller cleaned up. The
+next launch selected a free port and included the standard system directories;
+neither original result was rewritten.
+
+TCP batch 03 failed on its first attempt at step 039: the single selected-TCP
+`adb reboot` command exceeded its unchanged 30-second cap. It failed before
+reboot observation or reattachment, so whether the guest rebooted is unknown.
+Attempts two and three did not run. No timeout was counted as success.
+
+The completed prefix includes ordinary installation, both negative certificate
+checks, independent verification-code comparison, approval and separate upload
+consent, two-way persisted bytes, 213.003 seconds with zero Android calls,
+desktop Quit/relaunch and Android process restart. The independent partial
+audit checked 37 committed driver inputs, 39 prefix receipts and 12 actual file
+exports. Pairing generation and credential hashes survived the app restart.
+Later reboot, offline, revocation, rotation, recovery, rename and final closed
+confidentiality checks did not complete. Original runtime receipts establish
+the verification-code comparison and quiet-history equality; the partial
+audit does not claim to repeat those observations after cleanup.
+
+Both controllers reported cleanup. The parent separately verified the recorded
+ADB, emulator, desktop and TLS processes, owned listeners and runtime paths
+absent. The failure is in the automation control path; its exact cause remains
+unknown. This is partial evidence, not full acceptance.
+
+| Retained artifact | SHA-256 |
+| --- | --- |
+| TCP batch 02 failed result | `9c2e29ffed6e1043989cefaaa42e8ffa054504cb04bd6a3be6fc9d71ff86bfa6` |
+| TCP batch 03 failed result | `34320de8dc69a912a71b2e5e8bf6377d4fffe2858db819860618fa282041f106` |
+| Original reboot failure log | `6ce1490010d3ff4a692540e9171f9aa3a903caa715987619b2250810c9608e93` |
+| Independent partial audit | `02662536ffbf869e129f17880083f160783d5c16d970c932b61bde37038ab77d` |
+
+The subsequent reboot-only diagnostic 01 used a separately frozen private
+driver proposal against clean product source `34ca246`. Its six-input manifest
+hash is `692d93980ab89b1fa29fef41ca18a1b94f22e8b0bf1980456b530adc4d89aa7e`.
+After matching both guest identities, one scoped TCP disconnect/removal and
+one original-emulator reboot request completed with exit zero in 372 ms.
+However, no new-boot/TCP-reattachment proof was obtained: the original 240-second
+deadline failed after 240.366 seconds. The diagnostic remains FAIL, with guest
+reboot and root cause unestablished. Controller cleanup and separate parent
+PID/listener absence checks passed. Its independent audit hash is
+`b9d08025e2697dda464880498336c8d6811f8b1290e0ed8cb8bb22bc8ff69557`.
+This isolated control test did not install the candidate plugin or test pairing,
+native key custody, persisted notes or the full acceptance journeys.
+
+Reboot-only diagnostic 02 retained bounded stage observations under the same
+240-second deadline. The single original-route request returned successfully in
+324 ms. Independent guest identity changed, and `sys.boot_completed` reached
+`1`: the guest did reboot. Reattachment then failed at the response-route check
+for the actual adbd UID (2000). It completed 605 framed observations without
+admitting a usable WLAN route; the retained first and last classifications are
+both `NO_ROUTE`. Intermediate classifications are not individually retained.
+No selected-TCP connection was attempted. The diagnostic failed after 240.361
+seconds; why the post-boot route was missing remains unestablished by this run.
+Its six frozen input pins and cleanup were independently checked. This is
+automation diagnosis, with no plugin, pairing or full-acceptance credit.
+
+| Diagnostic 02 retained artifact | SHA-256 |
+| --- | --- |
+| Frozen input manifest | `e20fec70aa461c245e65bccc8c55bfe0e471eb8174a68f6d3e1fe2208c2a5d07` |
+| Independent audit | `bf715b166c5e6d68e307aed0cf54e1093062ed48dd014128c0d45e923bc9d760` |
+| Parent process/listener cleanup | `8ca843e63fa2aaca9a69c49cd13e95abf1c5b43ea9deeea7beaf2e33dd80d2e7` |
+
+Diagnostic 03 added one read-only network snapshot at the first non-ready
+post-boot route. That snapshot took 286 ms: Wi-Fi was enabled but disconnected,
+with no WLAN IPv4 address or route, while user 0 was still unlocking. The link
+detail query was permission-denied and remains unobserved. These are early
+snapshot facts, not observations of the terminal state or the cause of
+disconnection. Reboot and completed startup were observed, but no usable route
+was admitted in 612 readiness observations. The diagnostic remains FAIL at
+240.351 seconds; no selected-TCP reconnection or product acceptance follows.
+All six frozen inputs and controller/parent cleanup were independently checked.
+
+| Diagnostic 03 retained artifact | SHA-256 |
+| --- | --- |
+| Frozen input manifest | `8b5bed184615cbb277ae286200c31d35ce6a7b0c96e4a5caf9e841f708cb4f56` |
+| Independent audit | `0459f91edc0917e8d2a458959a1c687dcbcec47c9c486cc52350dbab7efa26ad` |
+| Parent process/listener cleanup | `23548f077cc0cfb31c1dd02f62f651abb272e32a31a6b4dbf18aa0601de9ea05` |
+
+Diagnostic 04 tested one predeclared reconnect to the verified synthetic Wi-Fi
+network after user 0 reached `RUNNING_UNLOCKED`. The request completed in 169 ms;
+its empty response was not treated as connection proof. The independent route
+observer then admitted the expected WLAN route after seven observations. One
+selected-TCP connection attempt remained pending. A subsequent route observer
+never admitted readiness in 589 observations; its retained first and last
+classifications were `NO_ROUTE`. The 14.799-second first reattachment duration
+includes several operations, not just the TCP command. No new selected-guest
+identity or attachment receipt was obtained. Why the route became unavailable
+remains unknown: the early network snapshot preceded the ready route and cannot
+establish the later failure's cause. The run remains FAIL at 240.396 seconds.
+
+All six frozen input pins, the single official-APK readback and controller
+cleanup were independently checked. The parent also verified exact owned PIDs,
+listeners and runtime paths absent. This private control experiment provides no
+plugin or acceptance credit; its reconnect proposal is not yet integrated.
+
+| Diagnostic 04 retained artifact | SHA-256 |
+| --- | --- |
+| Frozen input manifest | `42e1eeb6de84707e09f2b404a27de65ccf327ff6443f8cf50ea44818c7ed6160` |
+| Independent audit | `8cc8e67fb7c6e99be2d2fb00a37b9f37bb159e6a7c0d6fffb101a3bc0aed033a` |
+| Parent process/listener cleanup | `4808fa390c5101ccfc9a3ba068818ad30736f2b75e166f1ed92e972e3dc632bb` |
+
+Diagnostic 05 added bounded read-only observations at connection failure and
+after the phase, without changing the request, retry behavior or deadlines.
+It passed the reboot control path in 33.108 seconds: one post-unlock Wi-Fi
+request completed in 106 ms, the actual UID route became ready after 12
+observations, and the original and selected transports independently identified
+the same new boot with completed startup. The final selected-route boot check,
+stopped-application check and reverse mappings passed. The failure collectors
+were not reached. Controller cleanup completed at 100.284 seconds; separate
+parent PID, listener and runtime absence checks passed.
+
+This establishes one successful control path, not the cause of diagnostic 04's
+failure, repeatability or product acceptance. Diagnostic 04 remains FAIL and
+unexplained. The portable integration includes the fixed initial-network proof,
+one post-unlock request and mandatory retained witness; the private diagnostic
+snapshot/log collectors are excluded. The next full batch must still prove
+pairing retention, trust restoration, persisted bytes and every later journey.
+
+| Diagnostic 05 retained artifact | SHA-256 |
+| --- | --- |
+| Frozen input manifest | `d22e4171b950eaafd3a4a783c4d96fc88ecb87e5bd1a464dba50e0a1bbb1b910` |
+| Independent audit | `8ccfdad45df4b90da2e8c3f952d6828bb9489378b0cadf95a29648b67a137d97` |
+| Parent process/listener cleanup | `76a74026cba6aee14f1f90249e76ae93555186fdcf9e43119e40875520207e32` |
+
 ## Acceptance boundary
 
 The portable transport is integrated into the existing acceptance runner, with
