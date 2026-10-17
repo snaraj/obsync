@@ -28,8 +28,11 @@ through the selected TCP route. Request completion alone is not reboot proof.
 The disposable fixture also verifies its known synthetic Wi-Fi network before
 testing and makes one prescribed reconnect request after Android user 0 unlocks.
 That request shares the unchanged 240-second reboot deadline and cannot be
-resubmitted after failure. Its response is not connection proof: reboot admission requires an actual framed
-TCP exchange with all four adbd UID fields equal, matching the independently
+resubmitted after failure. Before connecting, bounded read-only observations must
+show the same new guest and UID, known Wi-Fi association and configured WLAN
+address within that original deadline. Only missing association or address may
+be polled; failed or malformed reads are terminal. Its response is not connection
+proof: reboot admission requires an actual framed TCP exchange with all four adbd UID fields equal, matching the independently
 cached original new-boot identity (boot ID, adbd PID and process start), and
 selected-transport boot completion. The observed loopback listener must belong
 to the same emulator and port as the initial restricted Wi-Fi backend. Initial

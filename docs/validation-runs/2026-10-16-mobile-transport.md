@@ -645,3 +645,126 @@ lookup. Their receipt SHA-256 is
 `bb43209890a86ce02582d84e50c477c6df6ea7b9211af8f4a36ae1ba110eb110`.
 Strict pinned documentation and origin checks passed; their disposable container,
 site output, private configuration and newly pulled image were removed.
+
+At signed head `e7917c79e66f698e391ad9999030bfb86d24f119`, the next fresh
+full batch failed on attempt one after 638.055 seconds. Ordinary installation,
+independently compared pairing codes, consent and two-way byte exports passed.
+The quiet interval measured 213.010 seconds with no Android calls. Desktop
+Quit/relaunch reached automatic idle in 1.020 seconds; Android process restart
+reached it in 4.600 seconds. Twelve independently exported files matched their
+nonempty expected bytes. These are partial results; attempts two and three
+were not run.
+
+The guest-reboot step failed after 240.286 seconds within its existing deadline
+and command scheduling. The original route observed a changed boot identity,
+completed boot and unlocked user 0. The one prescribed Wi-Fi restoration request
+completed in 73 milliseconds. The first selected TCP connection stage reported
+`ExpectedAttachmentPending`; the following 469 observations failed at selected
+guest identity. Their first and last failures classified an unavailable
+transport, with zero stdout and twenty stderr bytes. Each such iteration had
+passed `connect()` again; its response text was not retained before the failing
+guest read. The single failed connection-stage count is therefore not evidence
+of only one connection command. Counts and first/last samples do not establish
+every intermediate exception or the initiating cause. No complete incoming
+frame or new selected binding was proved. The recorded failure classification
+remains `UNCLASSIFIED`; no product encryption failure is inferred.
+
+The aggregate FAIL SHA-256 is
+`4d3b7d901a8145ac183c1f8e0703ae97c2ee9c7b0f7de3072bf2f64d6911d5f9`.
+The unchanged full auditor refused `three_full_terminal_passes`; its receipt hash
+is `592aff9888df8a407f64297b116a814396a4e7737875c7ff7590c785aeb8cfd1`.
+A separate scoped audit verified 58 frozen inputs, 37 committed helpers and
+166 retained evidence references. That receipt hash is
+`9c659c949d58be6b05735ed36e1b80cc9992423c016a070e2232a7fe18492f40`.
+Both controllers reported cleanup PASS with no remaining owned process groups.
+The parent independently confirmed nine recorded processes, seven ports and six
+runtime/manifest paths absent, without signaling or removing anything. Its
+receipt hash is
+`538f51f49e097a85513f576806d6c7f4474decf837f111212f3d7481860e0f77`.
+
+The [exact-head hosted PR Gate](https://github.com/snaraj/obsync/actions/runs/38999714998)
+passed all twelve jobs, including every native custody job. Linux passed 2,519
+plugin tests with nine filesystem-specific skips; macOS and Windows each passed
+all 2,528 with zero skips. The hosted mobile harness passed 225 Python tests and
+206 JavaScript tests. Retained application, macOS and Windows log hashes are,
+respectively:
+
+- `579593e9af0ec0cce81bef84c2405a64488c8bd0694813434ed583ab7ff990f3`
+- `0b27504b2dcf731d53db1f6516a489a2a0af1a5bc56a995d19228659b96b9405`
+- `1ec00af30cfab94f3f3584649462a1542c4d672a96f4b73979e4f823e6f77964`
+
+Hosted success does not replace the missing three consecutive full mobile runs,
+physical-phone acceptance or independent final-head adversarial approval.
+
+A frozen standalone reboot diagnostic then observed the network setup boundary.
+It retained the exact candidate controller, TCP and APK helpers, installed and
+verified official Obsidian, made one root transition, and used the existing
+reboot/new-guest/boot-complete/user-unlock checks. It did not reproduce prior
+pairing, the quiet interval, plugin installation or CA mounts. After the one
+Wi-Fi restoration request, the first guest sample had no WLAN address and the
+following Wi-Fi sample showed no association. The single TCP connection then
+succeeded in 5.935 seconds. A complete incoming response from the same new guest
+and UID took 115 milliseconds; selected boot completion was also observed.
+Later samples showed the expected WLAN address and known-network association.
+
+These non-atomic observations establish that a request can complete before the
+fixture's network prerequisites are ready. The successful connection does not
+prove that the readiness gap caused the previous failure, or that waiting for
+those prerequisites is sufficient to fix it. The diagnostic saved no binding
+and grants no product acceptance credit. Seven read-only/connection commands
+and one listener check stayed within their nominal 33-second combined caps,
+clipped to the existing 240-second reboot and 600-second session deadlines.
+The controller completed in 79.945 seconds and cleaned up. Independent checks
+found three recorded processes, four listeners and three runtime paths absent.
+The frozen manifest, comparison, independent audit and independent cleanup
+SHA-256 values are respectively:
+
+- `8b7310a0debf64147c41e984806ac7406bb352052b7f33d0882eb3df5b75072d`
+- `2ba580467f9cbd9fd5fdd738127ac022bdd0880bf35988a4f8145a4e4a869755`
+- `b095267f2902e3153970759bbb5f421757693d5dda3776f767b7d00858c4d57c`
+- `11bcf9a15aa8199c7d512b83b3c8f55d05f74e2b8328d455e2b23b338283b405`
+
+The scoped harness repair waits for the observed setup prerequisites before
+attempting the reboot connection: the original route must still identify the
+same new guest and adbd UID, report the known synthetic Wi-Fi association, and
+show the configured WLAN IPv4 address. Missing association or address may be
+polled at the existing cadence; unknown, malformed, failed or late observations
+are terminal. Every read keeps its three-second cap within the unchanged
+absolute reboot deadline. The initial/root route predicates, actual incoming
+same-guest response and completed-boot checks remain required. No connection
+retry, route fallback, product change or deadline extension is introduced.
+
+The retained evidence includes bounded first/last observations, source and guest
+bindings, byte counts and hashes, and monotonic timestamps proving readiness
+preceded connection within the same deadline. Admission refuses a missing or
+inconsistent witness. The closed connection response is recorded before the
+selected guest read, so a subsequent failure cannot erase that stage result.
+This is a fixture precondition repair supported by the diagnostic, not a claim
+that the full acceptance failure has been resolved. Focused verification passed
+69 tests; three author controls caught omission of the readiness guard, its
+post-read deadline check and the required retained witness. The mutation receipt
+SHA-256 is
+`eace5a9eefa6f6d76407b8446fe3e138e64ae6402e4e6d2cae06a4f78da62f26`.
+
+The first full offline invocation for this repair remains FAIL, log SHA-256
+`99bef5c0892705a90ac4932ba2968bfae5c0f38294e44ec705bc2ce354740a74`. Its 228 Python and 206 JavaScript tests passed,
+but the foreign-guest mutation survived: the fixture returned the altered
+guest frame on both the original readiness route and selected incoming route.
+The earlier guard therefore masked the later guard under test. The fixture
+was corrected to keep the original observation valid and alter only the selected
+response; no runtime guard or refusal expectation was removed.
+The selected mixed-UID fixture also retains the expected first UID while varying
+another UID field, isolating the all-four-fields guard from the later route-UID
+binding. The response-membership mutation keeps string type checking so it
+cannot be counted as killed by an unrelated attribute error; an unrecognized
+string and aligned cross-receipt class exercise membership directly. The null
+response refusal remains covered. All 50 focused TCP mutations then failed
+assertions, without test errors. The test-only correction manifest SHA-256 is
+`dfb8bd472d8b82b39db839cbfe891650848c041e0e5c1e19e098935b4a3ece06`.
+
+The corrected full offline suite passed 228 Python tests, 206 JavaScript tests
+and all 285 scripted mutation controls, zero skips. The command remained
+`scripts/ci/mobile-harness.sh`, with `OBSYNC_ORACLE_SOURCE` pointing at the clean
+unchanged candidate. Its complete log SHA-256 is
+`5f1ffe5ff571ee71ae72b936a830f580d318d183b1dac5c83c7d271f21dce98b`. These are harness checks; native acceptance
+requires a new fresh full batch and is not inferred from them.

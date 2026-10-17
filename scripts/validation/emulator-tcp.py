@@ -209,8 +209,9 @@ def selected(state):
 
 class ExpectedAttachmentPending(Exception):pass
 
-def connect(state,env,target,end,expected_transition=False):
+def connect(state,env,target,end,expected_transition=False,observe=None):
  result=command(state,env,None,['connect',target],end,cap=12)
+ if observe is not None:observe(result)
  if expected_transition and result in (f"failed to connect to '{target}': Connection refused",'failed to connect to '+target):raise ExpectedAttachmentPending('expected owned TCP restart not ready')
  if result not in ('connected to '+target,'already connected to '+target):raise ValueError('owned TCP connect not confirmed')
  return result
@@ -330,6 +331,29 @@ def restore_known_wifi_once(state,env,end,prior,context,facts,failure_classifier
   raise ValueError('prescribed Wi-Fi restoration failed') from error
  finally:facts['wifiRestoration']=json.loads(json.dumps(proof))
 
+def wait_reboot_wifi_ready(state,env,end,original,proof,failure_classifier):
+ facts={'method':'READ_ONLY_KNOWN_WIFI_AND_WLAN_IPV4','sourceHead':state['sourceHead'],'originalSerial':state['serial'],'guest':original.copy(),'perCallCapMs':3000,'deadline':'EXISTING_REBOOT_PHASE','polls':0,'first':None,'last':None,'ready':False,'result':'WAITING','phaseDeadlineMonotonicMs':int(end*1000)};proof['wifiReadiness']=facts;started=time.monotonic()
+ try:
+  while True:
+   remaining(end)
+   frame=incoming_guest(state,env,state['serial'],end)
+   if frame['guest']!=original or facts['first'] is not None and frame['adbdUid']!=facts['first']['guestFrame']['adbdUid']:raise ValueError('reboot Wi-Fi guest or UID changed')
+   wifi_raw=command(state,env,state['serial'],['shell','cmd','wifi','status'],end,binary=True);lines=wifi_raw.decode('utf-8',errors='strict').splitlines();wifi=known_synthetic_wifi(wifi_raw)
+   if lines.count('Wifi is enabled')+lines.count('Wifi is disabled')!=1 or wifi['connectedRowCount']>1 or wifi['connectedRowCount']==1 and not wifi['exactKnownNetworkConnected']:raise ValueError('reboot Wi-Fi status unclassified or foreign')
+   address_raw=command(state,env,state['serial'],['shell','ip','-o','-4','addr','show','dev','wlan0'],end,binary=True);addresses=network(address_raw,b'',b'')['addresses']
+   if len(addresses)>1 or len(address_raw.splitlines())!=len(addresses) or any(row!={'interface':'wlan0','address':'10.0.2.16/24'} for row in addresses):raise ValueError('reboot Wi-Fi address differs')
+   sample={'observedAtMonotonicMs':int(time.monotonic()*1000),'guestFrame':frame,'wifi':wifi|{'stdoutBytes':len(wifi_raw),'stdoutSha256':sha(wifi_raw)},'ipv4':{'addresses':addresses,'stdoutBytes':len(address_raw),'stdoutSha256':sha(address_raw)},'ready':wifi['exactKnownNetworkConnected'] and addresses==[{'interface':'wlan0','address':'10.0.2.16/24'}]}
+   facts['polls']+=1;facts['first']=facts['first'] or sample;facts['last']=sample;facts['elapsedMs']=round((time.monotonic()-started)*1000)
+   remaining(end)
+   if sample['ready']:
+    facts.update(ready=True,result='READY',remainingPhaseBudgetMs=int((end-time.monotonic())*1000),finishedAtMonotonicMs=int(time.monotonic()*1000));return facts
+   time.sleep(min(.3,max(0,end-time.monotonic())))
+ except Exception as error:
+  facts.update(result='FAILED',exceptionType=type(error).__name__ if isinstance(error,(OSError,subprocess.SubprocessError,ValueError,TimeoutError)) else 'UNCLASSIFIED')
+  if failure_classifier is not None and isinstance(error,(subprocess.CalledProcessError,subprocess.TimeoutExpired)):facts['commandFailure']=failure_classifier(error)
+  # Unknown/failed reads are terminal; only observed missing readiness can poll.
+  raise ValueError('prescribed reboot Wi-Fi readiness failed') from error
+
 def reattach(state,run,env,end,phase,save,observe=None,failure_classifier=None,restoration_context=None):
  facts={'stage':'binding_validation','result':'PENDING','startedAtEpochMs':round(time.time()*1000),'priorGuest':state.get('selectedTcpAdb',{}).get('guest')};started=time.monotonic()
  def boot_value(value):return {'valueClass':'ONE' if value=='1' else 'ZERO' if value=='0' else 'EMPTY' if value=='' else 'OTHER','stdoutBytes':len(value.encode()),'stdoutSha256':sha(value.encode())}
@@ -350,12 +374,18 @@ def reattach(state,run,env,end,phase,save,observe=None,failure_classifier=None,r
   else:
    setup=state.get('ownedWifiTcpSetup',{})
    if setup!={'hostPort':port,'radioOptions':'restrict=on','wifiOptions':f'restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:{port}-10.0.2.16:5555'}:raise ValueError('reboot Wi-Fi backend binding changed')
+   facts['stage']='reboot_wifi_readiness';wait_reboot_wifi_ready(state,env,end,original,route_proof,failure_classifier)
    route_proof.update(method='INCOMING_TCP_SAME_GUEST',listener=owned_listener,wifiBackend=setup.copy(),connectCapMs=12000,remainingPhaseBudgetBeforeConnectMs=int((end-time.monotonic())*1000))
-  facts['stage']='selected_tcp_connect';connect_start=time.monotonic();response=connect(state,env,target,end,expected_transition=True);connect_elapsed=int((time.monotonic()-connect_start)*1000)
+  facts['stage']='selected_tcp_connect';connect_start=time.monotonic()
+  if phase=='reboot':route_proof['connectStartedAtMonotonicMs']=int(connect_start*1000)
+  def retain_connect(value):
+   facts['connectResponseClass']={'connected to '+target:'CONNECTED','already connected to '+target:'ALREADY_CONNECTED','failed to connect to '+target:'FAILED_GENERIC',f"failed to connect to '{target}': Connection refused":'CONNECTION_REFUSED'}.get(value,'OTHER')
+  response=connect(state,env,target,end,expected_transition=True,observe=retain_connect);connect_elapsed=int((time.monotonic()-connect_start)*1000)
   if phase=='reboot' and response not in ('connected to '+target,'already connected to '+target):raise ValueError('reboot connect response missing')
   facts['stage']='selected_guest_identity'
   if phase=='reboot':
    exchange=incoming_guest(state,env,target,end);current=exchange['guest']
+   if exchange['adbdUid']!=route_proof['wifiReadiness']['last']['guestFrame']['adbdUid']:raise ValueError('reboot Wi-Fi and incoming adbd UID differ')
    route_proof.update(connectResponse=response,connectElapsedMs=connect_elapsed,incomingResponse=exchange,adbdUid=exchange['adbdUid'])
   else:current=guest(state,env,target,end)
   facts['selectedGuest']=current

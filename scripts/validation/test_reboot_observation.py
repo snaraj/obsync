@@ -23,13 +23,18 @@ def helper(kind):
   if args==['shell','am','get-started-user-state','0']:return 'RUNNING_UNLOCKED'
   if args==['shell','cmd','wifi','connect-network','AndroidWifi','open']:return ''
   if args==['shell','getprop','sys.boot_completed']:return '0' if kind=='boot-incomplete' else '1'
-  assert target=='127.0.0.1:12346' and args[:3]==['shell','sh','-c'] and kw.get('binary') is True and 'OBSYNC_INCOMING_GUEST_COMPLETE' in args[3]
-  if kind=='incoming-timeout':raise subprocess.TimeoutExpired('incoming',3,output=b'',stderr=b'PRIVATE_SENTINEL')
+  if args==['shell','cmd','wifi','status']:return b'Wifi is enabled\nWifi is connected to "AndroidWifi"\n'
+  if args==['shell','ip','-o','-4','addr','show','dev','wlan0']:return b'5: wlan0 inet 10.0.2.16/24 scope global wlan0\n'
+  assert target in ('127.0.0.1:12346',st['serial']) and args[:3]==['shell','sh','-c'] and kw.get('binary') is True and 'OBSYNC_INCOMING_GUEST_COMPLETE' in args[3]
+  if kind=='incoming-timeout' and target=='127.0.0.1:12346':raise subprocess.TimeoutExpired('incoming',3,output=b'',stderr=b'PRIVATE_SENTINEL')
   return FRAME
  def route(*args,**kw):raise AssertionError('reboot must use the actual incoming exchange')
  def connect(*args,**kw):
   events.append(('connect',))
-  if kind=='connect-pending':raise T.ExpectedAttachmentPending('PRIVATE_SENTINEL')
+  if kind=='connect-pending':
+   if kw.get('observe'):kw['observe']('failed to connect to 127.0.0.1:12346')
+   raise T.ExpectedAttachmentPending('PRIVATE_SENTINEL')
+  if kw.get('observe'):kw['observe']('connected to 127.0.0.1:12346')
   return 'connected to 127.0.0.1:12346'
  with ExitStack() as stack:
   stack.enter_context(patch.object(T.time,'monotonic',return_value=0))

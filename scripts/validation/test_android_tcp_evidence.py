@@ -1,6 +1,7 @@
 """Retained route provenance is required after private/runtime cleanup."""
 import copy,hashlib,importlib.util,tempfile,unittest
 from pathlib import Path
+from test_android_tcp import wifi_ready_fixture
 B=Path(__file__).parent
 spec=importlib.util.spec_from_file_location('tcp_retained',B/'mobile-acceptance.py');M=importlib.util.module_from_spec(spec);spec.loader.exec_module(M)
 HEAD='a'*40
@@ -19,12 +20,13 @@ class Retained(unittest.TestCase):
      'listener':{'pid':777,'address':'127.0.0.1:12346','ready':True,'onlyExpectedPid':True,'onlyExpectedLoopbackAddress':True,'processRecords':1,'descriptorRecords':1,'addressRecords':1,'unknownFields':0},
      'wifiBackend':{'hostPort':12346,'radioOptions':'restrict=on','wifiOptions':'restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:12346-10.0.2.16:5555'},
      'originalBootCompleted':{'valueClass':'ONE','stdoutBytes':1,'stdoutSha256':hashlib.sha256(b'1').hexdigest()},'selectedBootCompleted':{'valueClass':'ONE','stdoutBytes':1,'stdoutSha256':hashlib.sha256(b'1').hexdigest()}}
+   if phase=='reboot':row['responseRouteProof'].update(wifiReadiness=wifi_ready_fixture(facts,HEAD),connectStartedAtMonotonicMs=1000)
    path=e/f'owned-tcp-adb-{phase}-{n+1}.json';M.save(path,row);rows.append((path,row));prior=facts
   if mode=='full':
    M.save(e/'owned-tcp-reboot-request.json',{'schema':1,'sourceHead':HEAD,'result':'PASS','scope':'REBOOT_REQUEST_NOT_REBOOT_PROOF','method':'BOUND_ORIGINAL_EMULATOR_AFTER_SCOPED_TCP_DISCONNECT','requestCount':1,'disconnectCount':1,'selectedTransportRemoved':True,'requestExitCode':0,'stdoutBytes':0,'stderrBytes':0,'requestElapsedMs':100,'requestCapMs':30000,'remainingPhaseBudgetBeforeRequestMs':239000,'originalSerial':'emulator-5584','selectedTcpTarget':'127.0.0.1:12346','emulatorPid':777,'matchedRetainedGuest':True,'originalRouteGuest':rows[2][1]['priorGuest'],'selectedRouteGuest':rows[2][1]['priorGuest']})
   if mode=='full':
    reboot=rows[2][1];restoration={'method':'ONE_KNOWN_SYNTHETIC_WIFI_CONNECT_AFTER_USER_UNLOCK','sourceHead':HEAD,'result':'REQUEST_COMPLETED','requestCount':1,'userState':'RUNNING_UNLOCKED','initialBootIdSha256':initial['originalRouteGuest']['bootIdSha256'],'priorBootIdSha256':reboot['priorGuest']['bootIdSha256'],'responseClass':'EMPTY','connectionEstablishedByResponse':False,'requestCapMs':30000,'requestElapsedMs':100,'remainingPhaseBudgetBeforeRequestMs':230000}
-   last={'result':'ATTACHED','priorGuest':reboot['priorGuest'],'originalGuest':reboot['guest'],'selectedGuest':reboot['guest'],'routeProof':reboot['responseRouteProof'],'wifiRestoration':restoration}
+   last={'result':'ATTACHED','priorGuest':reboot['priorGuest'],'originalGuest':reboot['guest'],'selectedGuest':reboot['guest'],'routeProof':reboot['responseRouteProof'],'connectResponseClass':'CONNECTED','wifiRestoration':restoration}
    M.save(e/'owned-reboot-reattachment-observation.json',{'schema':1,'sourceHead':HEAD,'phase':'reboot','terminal':'REATTACHED','priorGuest':reboot['priorGuest'],'stages':{'attached':{'count':1,'first':last,'last':last}}})
   return initial,rows
  def test_core_and_full_admit_only_persisted_expected_phase_sequence(self):
@@ -86,7 +88,7 @@ class Retained(unittest.TestCase):
    source=(B/'mobile-acceptance.py').read_text();self.assertIn("require(private_json(attempt/'evidence/isolated-tcp-admission.json')==isolated_tcp_evidence",source)
    self.assertIn("save(args.attempt/'evidence/isolated-tcp-admission.json',isolated_tcp_evidence",source)
  def test_reboot_requires_actual_frame_uid_listener_boot_and_deadline_after_cleanup(self):
-  changes=[('method','MARK_ZERO_ONLY'),('connectResponse',None),('incomingResponse',{}),('incomingResponse.adbdUid',0),('incomingResponse.guest',{}),('incomingResponse.stdoutBytes',0),('incomingResponse.stdoutSha256',None),('incomingResponse.framing','PARTIAL'),('listener.pid',778),('listener.address','0.0.0.0:12346'),('listener.ready',False),('listener.onlyExpectedPid',False),('listener.descriptorRecords',2),('wifiBackend',{}),('originalBootCompleted',{}),('selectedBootCompleted.valueClass','ZERO'),('selectedBootCompleted.stdoutSha256','a'*64),('phaseDeadlineMet',False),('connectElapsedMs',12000),('remainingPhaseBudgetBeforeConnectMs',50),('remainingPhaseBudgetBeforeSaveMs',0)]
+  changes=[('wifiReadiness',{}),('wifiReadiness.sourceHead','b'*40),('wifiReadiness.originalSerial','emulator-5586'),('wifiReadiness.ready',False),('wifiReadiness.last.ready',False),('wifiReadiness.last.ipv4.addresses',[]),('wifiReadiness.last.guestFrame.guest',{}),('wifiReadiness.first.guestFrame.guest',{}),('wifiReadiness.first.observedAtMonotonicMs',1001),('wifiReadiness.finishedAtMonotonicMs',1001),('wifiReadiness.phaseDeadlineMonotonicMs',1000),('connectStartedAtMonotonicMs',999),('method','MARK_ZERO_ONLY'),('connectResponse',None),('connectResponse','unrecognized response'),('incomingResponse',{}),('incomingResponse.adbdUid',0),('incomingResponse.guest',{}),('incomingResponse.stdoutBytes',0),('incomingResponse.stdoutSha256',None),('incomingResponse.framing','PARTIAL'),('listener.pid',778),('listener.address','0.0.0.0:12346'),('listener.ready',False),('listener.onlyExpectedPid',False),('listener.descriptorRecords',2),('wifiBackend',{}),('originalBootCompleted',{}),('selectedBootCompleted.valueClass','ZERO'),('selectedBootCompleted.stdoutSha256','a'*64),('phaseDeadlineMet',False),('connectElapsedMs',12000),('remainingPhaseBudgetBeforeConnectMs',50),('remainingPhaseBudgetBeforeSaveMs',0)]
   with tempfile.TemporaryDirectory() as d:
    run=Path(d).resolve();_,rows=self.fixture(run,'full');path,row=rows[2];original=copy.deepcopy(row);observation=run/'evidence/owned-reboot-reattachment-observation.json';base=M.private_json(observation)
    for field,value in changes:
@@ -95,7 +97,9 @@ class Retained(unittest.TestCase):
     dest[parts[-1]]=value;path.unlink();M.save(path,changed)
     # Bind the mutated proof in both retained locations, so rejection tests
     # the required fact rather than a trivial cross-receipt mismatch.
-    capture=copy.deepcopy(base);capture['stages']['attached']['last']['routeProof']=changed['responseRouteProof'];observation.unlink();M.save(observation,capture)
+    capture=copy.deepcopy(base);capture['stages']['attached']['last']['routeProof']=changed['responseRouteProof']
+    if field=='connectResponse' and value=='unrecognized response':capture['stages']['attached']['last']['connectResponseClass']='ALREADY_CONNECTED'
+    observation.unlink();M.save(observation,capture)
     with self.subTest(field=field),self.assertRaises(M.StageFailure):M.isolated_tcp_evidence(run,HEAD,'full')
    path.unlink();M.save(path,original);observation.unlink();M.save(observation,base);self.assertEqual(M.isolated_tcp_evidence(run,HEAD,'full')['result'],'PASS')
 

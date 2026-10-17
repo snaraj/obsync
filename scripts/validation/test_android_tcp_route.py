@@ -129,9 +129,13 @@ class IncomingReboot(unittest.TestCase):
     if bad_connect:raise subprocess.CalledProcessError(1,argv,stderr=b'connection refused')
     return 'connected to 127.0.0.1:12346'
    if args[:3]==['shell','sh','-c']:
-    self.assertEqual(target,'127.0.0.1:12346');self.assertFalse(kw['text']);self.assertIn('OBSYNC_INCOMING_GUEST_COMPLETE',args[3]);self.assertNotIn('mark 0',args[3])
+    self.assertIn(target,('127.0.0.1:12346',s['serial']));self.assertFalse(kw['text']);self.assertIn('OBSYNC_INCOMING_GUEST_COMPLETE',args[3]);self.assertNotIn('mark 0',args[3])
+    # Keep readiness valid; malformed, foreign and late controls target selected TCP only.
+    if target==s['serial']:return self.frame()
     if late:clock[0]=11
     return raw
+   if args==['shell','cmd','wifi','status']:return b'Wifi is enabled\nWifi is connected to "AndroidWifi"\n'
+   if args==['shell','ip','-o','-4','addr','show','dev','wlan0']:return b'5: wlan0 inet 10.0.2.16/24 scope global wlan0\n'
    if args==['shell','getprop','sys.boot_completed']:return '1'
    if args==['shell','am','get-started-user-state','0']:return 'RUNNING_UNLOCKED'
    self.assertEqual(args,['shell','cmd','wifi','connect-network','AndroidWifi','open']);self.assertEqual(target,s['serial']);return ''
@@ -145,12 +149,15 @@ class IncomingReboot(unittest.TestCase):
  def test_actual_incoming_frame_replaces_only_reboot_mark_zero_prerequisite(self):
   s,before,calls,saved,observed,error,result=self.exercise();self.assertIsNone(error);self.assertTrue(result);proof=saved[-1][1]['responseRouteProof']
   self.assertEqual(proof['method'],'INCOMING_TCP_SAME_GUEST');self.assertEqual(proof['adbdUid'],2000);self.assertEqual(proof['incomingResponse']['stdoutBytes'],len(self.frame()));self.assertEqual(proof['incomingResponse']['stdoutSha256'],hashlib.sha256(self.frame()).hexdigest());self.assertEqual(proof['incomingResponse']['guest'],s['selectedTcpAdb']['guest']);self.assertTrue(proof['phaseDeadlineMet'])
-  self.assertEqual(sum(args[:1]==['connect'] for _,args in calls),1);self.assertEqual(sum(args[:3]==['shell','sh','-c'] for _,args in calls),1);self.assertEqual(sum(args[-3:]==['connect-network','AndroidWifi','open'] for _,args in calls),1);self.assertEqual(observed[-1]['result'],'ATTACHED')
+  self.assertEqual(sum(args[:1]==['connect'] for _,args in calls),1);self.assertEqual(sum(args[:3]==['shell','sh','-c'] for _,args in calls),2);self.assertEqual(sum(args[-3:]==['connect-network','AndroidWifi','open'] for _,args in calls),1);self.assertEqual(observed[-1]['result'],'ATTACHED')
   self.assertEqual(proof['listener']['pid'],777);self.assertEqual(proof['listener']['address'],'127.0.0.1:12346');self.assertNotIn('guestResponseRouteReadiness',proof)
  def test_partial_frame_uid_parse_guest_change_bad_response_or_late_command_never_binds(self):
   raw=self.frame()
-  for options in [{'raw':raw[:-1]},{'raw':raw.replace(b'Uid:\t2000\t2000\t2000\t2000',b'Uid:\t0\t2000\t2000\t2000')},{'raw':raw.replace(b'bbbbbbbb-bbbb',b'cccccccc-bbbb')},{'raw':raw.replace(b'736\n',b'999\n')},{'bad_connect':True},{'missing_response':True},{'late':True}]:
+  for options in [{'raw':raw[:-1]},{'raw':raw.replace(b'Uid:\t2000\t2000\t2000\t2000',b'Uid:\t2000\t0\t2000\t2000')},{'raw':raw.replace(b'bbbbbbbb-bbbb',b'cccccccc-bbbb')},{'raw':raw.replace(b'736\n',b'999\n')},{'bad_connect':True},{'missing_response':True},{'late':True}]:
    s,before,calls,saved,observed,error,result=self.exercise(**options);self.assertIsNotNone(error,options);self.assertIsNone(result);self.assertEqual(s,before);self.assertEqual(saved,[]);self.assertEqual(observed[-1]['result'],'ERROR');self.assertLessEqual(sum(args[:1]==['connect'] for _,args in calls),1)
+   if 'raw' in options or options.get('late'):
+    self.assertEqual(sum(target=='127.0.0.1:12346' and args[:3]==['shell','sh','-c'] for target,args in calls),1)
+    self.assertEqual(sum(target==before['serial'] and args[:3]==['shell','sh','-c'] for target,args in calls),1)
  def test_foreign_listener_refuses_before_any_guest_command(self):
   s,before,calls,saved,observed,error,result=self.exercise(bad_listener=True);self.assertIsInstance(error,ValueError);self.assertEqual(calls,[]);self.assertEqual(saved,[]);self.assertEqual(s,before)
 

@@ -165,6 +165,34 @@ def isolated_tcp_evidence(android, source_head, mode):
                  and all(listener.get(k) is True for k in ('ready','onlyExpectedPid','onlyExpectedLoopbackAddress'))
                  and all(type(listener.get(k)) is int and listener[k]==1 for k in ('processRecords','descriptorRecords','addressRecords'))
                  and type(listener.get('unknownFields')) is int and listener['unknownFields']==0)
+            ready=route.get('wifiReadiness',{});first=ready.get('first',{});final=ready.get('last',{});frame=final.get('guestFrame',{});wifi=final.get('wifi',{});ipv4=final.get('ipv4',{})
+            need(ready.get('method')=='READ_ONLY_KNOWN_WIFI_AND_WLAN_IPV4' and ready.get('sourceHead')==source_head
+                 and ready.get('originalSerial')==current[1] and ready.get('guest')==guest and ready.get('perCallCapMs')==3000
+                 and ready.get('deadline')=='EXISTING_REBOOT_PHASE' and ready.get('ready') is True and ready.get('result')=='READY'
+                 and type(ready.get('polls')) is int and 1<=ready['polls']<=801 and type(ready.get('elapsedMs')) is int and 0<=ready['elapsedMs']<240000
+                 and final.get('ready') is True and frame.get('guest')==guest and type(frame.get('adbdUid')) is int and frame['adbdUid']==route['adbdUid']
+                 and frame.get('framing')=='COMPLETE_GUEST_AND_BOUND_UID' and type(frame.get('stdoutBytes')) is int and 128<=frame['stdoutBytes']<=16384
+                 and re.fullmatch('[a-f0-9]{64}',frame.get('stdoutSha256','')) is not None
+                 and wifi.get('enabled') is True and wifi.get('exactKnownNetworkConnected') is True and wifi.get('connectedRowCount')==1
+                 and ipv4.get('addresses')==[{'interface':'wlan0','address':'10.0.2.16/24'}])
+            for sample in (first,final):
+                f=sample.get('guestFrame',{});w=sample.get('wifi',{});a=sample.get('ipv4',{})
+                need(f.get('guest')==guest and type(f.get('adbdUid')) is int and f['adbdUid']==route['adbdUid']
+                     and f.get('framing')=='COMPLETE_GUEST_AND_BOUND_UID' and type(f.get('stdoutBytes')) is int and 128<=f['stdoutBytes']<=16384
+                     and re.fullmatch('[a-f0-9]{64}',f.get('stdoutSha256','')) is not None
+                     and type(w.get('enabled')) is bool and type(w.get('exactKnownNetworkConnected')) is bool
+                     and type(w.get('connectedRowCount')) is int and w['connectedRowCount'] in (0,1) and w.get('ssidValueExported') is False
+                     and (w['connectedRowCount']==1)==w['exactKnownNetworkConnected'] and (not w['exactKnownNetworkConnected'] or w['enabled'])
+                     and a.get('addresses') in ([],[{'interface':'wlan0','address':'10.0.2.16/24'}])
+                     and type(sample.get('ready')) is bool and sample['ready']==(w['exactKnownNetworkConnected'] and bool(a['addresses'])))
+                for native in (w,a):need(type(native.get('stdoutBytes')) is int and 0<=native['stdoutBytes']<=16384 and re.fullmatch('[a-f0-9]{64}',native.get('stdoutSha256','')) is not None)
+                need(w['stdoutBytes']>0 and (not a['addresses'] or a['stdoutBytes']>0))
+            times=[first.get('observedAtMonotonicMs'),final.get('observedAtMonotonicMs'),ready.get('finishedAtMonotonicMs'),route.get('connectStartedAtMonotonicMs'),ready.get('phaseDeadlineMonotonicMs')]
+            need(all(type(value) is int and value>=0 for value in times) and times[0]<=times[1]<=times[2]<=times[3]<times[4]
+                 and type(ready.get('remainingPhaseBudgetMs')) is int and 0<ready['remainingPhaseBudgetMs']<=240000
+                 and times[4]-times[2]-1<=ready['remainingPhaseBudgetMs']<=times[4]-times[2]+1
+                 and 0<times[4]-times[0]<=240000 and times[1]-times[0]<=ready['elapsedMs']+1
+                 and times[3]+route.get('connectElapsedMs',240000)<times[4])
             for name in ('originalBootCompleted','selectedBootCompleted'):
                 boot=route.get(name,{})
                 need(boot.get('valueClass')=='ONE' and type(boot.get('stdoutBytes')) is int and boot['stdoutBytes']==1
@@ -204,7 +232,8 @@ def isolated_tcp_evidence(android, source_head, mode):
         need(observation.get('schema')==1 and observation.get('sourceHead')==source_head and observation.get('phase')=='reboot'
              and observation.get('terminal')=='REATTACHED' and observation.get('priorGuest')==reboot_prior
              and attached.get('count')==1 and last.get('result')=='ATTACHED' and last.get('priorGuest')==reboot_prior
-             and last.get('originalGuest')==last.get('selectedGuest')==reboot_guest and last.get('routeProof')==reboot_route)
+             and last.get('originalGuest')==last.get('selectedGuest')==reboot_guest and last.get('routeProof')==reboot_route
+             and last.get('connectResponseClass')==('CONNECTED' if reboot_route.get('connectResponse','').startswith('connected to ') else 'ALREADY_CONNECTED'))
         need(restoration.get('method')=='ONE_KNOWN_SYNTHETIC_WIFI_CONNECT_AFTER_USER_UNLOCK'
              and restoration.get('sourceHead')==source_head and restoration.get('result')=='REQUEST_COMPLETED'
              and restoration.get('requestCount')==1 and restoration.get('userState')=='RUNNING_UNLOCKED'

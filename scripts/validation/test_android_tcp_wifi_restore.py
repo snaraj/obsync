@@ -58,9 +58,46 @@ class Restore(unittest.TestCase):
   def late(*a,**k):clock[0]=116;return ''
   with patch.object(T.time,'monotonic',side_effect=lambda:clock[0]),patch.object(T.subprocess,'check_output',side_effect=late),self.assertRaises(TimeoutError):T.command(state,{},state['serial'],args,115,cap=30)
  def test_root_still_requires_original_response_route_before_connect(self):
-  state=fixture();state['selectedTcpAdb']={'hostPort':12346,'guest':PRIOR};events=[]
+  state=fixture();state['processes']={'emulator':{'pid':777,'identity':'owned qemu'}};state['selectedTcpAdb']={'hostPort':12346,'guest':PRIOR};events=[]
   def route(*a,**k):events.append('root-route');raise TimeoutError('root route missing')
   with patch.object(T,'selected',return_value='127.0.0.1:12346'),patch.object(T,'listener'),patch.object(T,'guest',return_value=PRIOR),patch.object(T,'response_route_ready',side_effect=route),patch.object(T,'connect') as connect,patch.object(T,'incoming_guest') as incoming:
    with self.assertRaises(TimeoutError):T.reattach(state,P,{},240,'root',lambda *a:None)
   self.assertEqual(events,['root-route']);connect.assert_not_called();incoming.assert_not_called()
+class Ready(unittest.TestCase):
+ def exercise(self,ready_at=2,broken=None,end=1):
+  state=fixture();state['processes']={'emulator':{'pid':777,'identity':'owned qemu'}};state['selectedTcpAdb']={'hostPort':12346,'guest':PRIOR};state['ownedWifiTcpSetup']={'hostPort':12346,'radioOptions':'restrict=on','wifiOptions':'restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:12346-10.0.2.16:5555'}
+  original=PRIOR|{'bootIdSha256':'b'*64,'adbdPid':201};clock=[0.];polls=[0];calls=[];saved=[];observed=[];error=None
+  frame={'guest':original,'adbdUid':2000,'stdoutBytes':200,'stdoutSha256':'c'*64,'framing':'COMPLETE_GUEST_AND_BOUND_UID'}
+  def incoming(st,env,target,deadline):
+   if target==state['serial']:return frame|({'guest':PRIOR} if broken=='guest' else {})
+   self.assertTrue(any(args[0]=='connect' for _,args in calls));return frame
+  def command(st,env,target,args,deadline,**kwargs):
+   self.assertEqual(deadline,end);calls.append((target,args))
+   if args==['shell','getprop','sys.boot_completed']:return '1'
+   if args[0]=='connect':return 'failed to connect to 127.0.0.1:12346' if broken=='connect' else 'connected to 127.0.0.1:12346'
+   self.assertEqual(target,state['serial']);self.assertEqual(kwargs,{'binary':True})
+   if args==['shell','cmd','wifi','status']:
+    polls[0]+=1
+    if broken=='read':raise subprocess.TimeoutExpired('fixed',3,stderr=b'PRIVATE_SENTINEL')
+    if broken=='late':clock[0]=end+.1
+    if broken=='unknown':return b'PRIVATE_SENTINEL'
+    return b'Wifi is enabled\n'+(b'Wifi is connected to "AndroidWifi"\n' if ready_at and polls[0]>=ready_at else b'')
+   self.assertEqual(args,['shell','ip','-o','-4','addr','show','dev','wlan0'])
+   if broken=='address':return b'PRIVATE_SENTINEL'
+   return b'5: wlan0 inet 10.0.2.16/24 scope global wlan0\n' if ready_at and polls[0]>=ready_at else b''
+  with patch.object(T,'selected',return_value='127.0.0.1:12346'),patch.object(T,'listener',return_value={'pid':777}),patch.object(T,'guest',return_value=original),patch.object(T,'restore_known_wifi_once',return_value=True),patch.object(T,'incoming_guest',side_effect=incoming),patch.object(T,'command',side_effect=command),patch.object(T.time,'monotonic',side_effect=lambda:clock[0]),patch.object(T.time,'sleep',side_effect=lambda value:clock.__setitem__(0,clock[0]+value)):
+   try:T.reattach(state,P,{},end,'reboot',lambda p,v:saved.append(copy.deepcopy(v)),observed.append,S.APK.apk_command_failure,{})
+   except Exception as caught:error=caught
+  return calls,saved,observed,error,clock[0],polls[0]
+ def test_deferred_association_and_ipv4_precede_only_connect_with_bound_witness(self):
+  calls,saved,observed,error,clock,polls=self.exercise();self.assertIsNone(error);self.assertEqual(polls,2);self.assertEqual(sum(args[0]=='connect' for _,args in calls),1)
+  p=saved[-1]['responseRouteProof'];r=p['wifiReadiness'];self.assertFalse(r['first']['ready']);self.assertTrue(r['last']['ready']);self.assertEqual(r['polls'],2);self.assertLessEqual(r['last']['observedAtMonotonicMs'],r['finishedAtMonotonicMs']);self.assertLessEqual(r['finishedAtMonotonicMs'],p['connectStartedAtMonotonicMs']);self.assertLess(p['connectStartedAtMonotonicMs'],r['phaseDeadlineMonotonicMs']);self.assertEqual(observed[-1]['connectResponseClass'],'CONNECTED')
+ def test_never_ready_unknown_wrong_guest_failed_or_late_reads_cannot_connect(self):
+  for ready,broken,end in [(None,None,.5),(1,'guest',1),(1,'unknown',1),(1,'address',1),(1,'read',1),(1,'late',1)]:
+   calls,saved,observed,error,clock,polls=self.exercise(ready,broken,end);self.assertIsInstance(error,ValueError);self.assertEqual(saved,[]);self.assertFalse(any(args[0]=='connect' for _,args in calls));self.assertEqual(observed[-1]['stage'],'reboot_wifi_readiness');self.assertNotIn('PRIVATE_SENTINEL',json.dumps(observed))
+   if ready is None:self.assertEqual(clock,end)
+   if broken in ('read','unknown'):self.assertEqual(polls,1)
+ def test_failed_connect_class_is_retained_before_any_selected_frame(self):
+  calls,saved,observed,error,clock,polls=self.exercise(1,'connect');self.assertIsInstance(error,T.ExpectedAttachmentPending);self.assertEqual(saved,[]);self.assertEqual(observed[-1]['connectResponseClass'],'FAILED_GENERIC');self.assertEqual(sum(args[0]=='connect' for _,args in calls),1)
+
 if __name__=='__main__':unittest.main()

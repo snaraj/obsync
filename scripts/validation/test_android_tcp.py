@@ -10,6 +10,11 @@ def bind(s):
  T.save_binding(s,Path('/unused'),12346,FACT,'initial',lambda *a:None,FACT)
  s['ownedWifiTcpSetup']={'hostPort':12346,'radioOptions':'restrict=on','wifiOptions':'restrict=on,dhcpstart=10.0.2.16,hostfwd=tcp:127.0.0.1:12346-10.0.2.16:5555'}
  s['rebootWifiRestoration']={'method':T.WIFI_RESTORATION_METHOD,'sourceHead':s['sourceHead'],'initialBootIdSha256':FACT['bootIdSha256'],'initialKnownNetworkConnected':True}
+def wifi_ready_fixture(guest,source='a'*40):
+ frame={'guest':copy.deepcopy(guest),'adbdUid':2000,'stdoutBytes':200,'stdoutSha256':'c'*64,'framing':'COMPLETE_GUEST_AND_BOUND_UID'}
+ sample={'observedAtMonotonicMs':1000,'guestFrame':frame,'wifi':{'enabled':True,'connectedRowCount':1,'exactKnownNetworkConnected':True,'ssidValueExported':False,'stdoutBytes':100,'stdoutSha256':'d'*64},'ipv4':{'addresses':[{'interface':'wlan0','address':'10.0.2.16/24'}],'stdoutBytes':75,'stdoutSha256':'e'*64},'ready':True}
+ return {'method':'READ_ONLY_KNOWN_WIFI_AND_WLAN_IPV4','sourceHead':source,'originalSerial':'emulator-5584','guest':copy.deepcopy(guest),'perCallCapMs':3000,'deadline':'EXISTING_REBOOT_PHASE','polls':1,'first':copy.deepcopy(sample),'last':sample,'ready':True,'result':'READY','elapsedMs':1000,'remainingPhaseBudgetMs':200000,'finishedAtMonotonicMs':1000,'phaseDeadlineMonotonicMs':201000}
+
 def lifecycle_command(values):
  values=iter(values)
  def call(st,env,target,args,end,**kw):
@@ -22,6 +27,7 @@ class Route(unittest.TestCase):
    proof=args[5];proof.update(adbdUid=0,guestResponseRouteReadiness={'ready':True,'last':{'ready':True,'state':'WLAN0_ROUTE','uid':0}})
   self.route_patch=patch.object(T,'response_route_ready',side_effect=routed);self.route_patch.start();self.addCleanup(self.route_patch.stop)
   self.incoming_patch=patch.object(T,'incoming_guest',side_effect=lambda *a:{'guest':T.guest(*a),'adbdUid':2000,'stdoutBytes':200,'stdoutSha256':'c'*64,'framing':'COMPLETE_GUEST_AND_BOUND_UID'});self.incoming_patch.start();self.addCleanup(self.incoming_patch.stop)
+  self.ready_patch=patch.object(T,'wait_reboot_wifi_ready',side_effect=lambda st,env,end,guest,proof,clas:proof.update(wifiReadiness=wifi_ready_fixture(guest,st['sourceHead'])));self.ready_patch.start();self.addCleanup(self.ready_patch.stop)
  def test_initial_uses_verified_wifi_backend_and_one_standard_connect_with_independent_routes(self):
   with tempfile.TemporaryDirectory() as d:
    run=Path(d).resolve();(run/'private').mkdir();s=state(run);calls=[];saved=[]
