@@ -3,12 +3,12 @@ import { readFileSync, writeFileSync, lstatSync, realpathSync, existsSync } from
 import { join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { candidateCrypto } from './ciphertext-oracle.mjs';
-import { connect, sleep } from './cdp.mjs';
-import { recoveryManifest, validateExpectations, activeRecovery, recoveryRefusal, refusedRecovery, recoveryRefusalFacts, visibleRecoveryRefusal, recoveryReadbackExport } from './recovery-guard.mjs';
+import { connect, sleep, targets } from './cdp.mjs';
+import { recoveryManifest, validateExpectations, activeRecovery, recoveryRefusal, refusedRecovery, recoveryRefusalFacts, visibleRecoveryRefusal, recoveryReadbackExport, recoveryChooserTarget, recoveryChooserFacts, initializedRecoveryChooser } from './recovery-guard.mjs';
 const [run, source, slot, command, kind = 'new'] = process.argv.slice(2);
 if (!['B','C','D'].includes(slot) || !['open','status','stage','setup-wrong-token','setup-refuse-old','setup-refuse-wrong','make-unrelated','setup-correct','readback','quit'].includes(command) || !['old','wrong','stripped','new','unrelated'].includes(kind)) throw Error('invalid recovery operator arguments');
 const state = await recoveryManifest(run,source,slot), runtime = join(state.run, 'runtime');
-let c, stage=command, failureReason='owned_recovery_step_refused',negativeReadiness;
+let c, stage=command, failureReason='owned_recovery_step_refused',negativeReadiness,openReadiness,openDeadlineTimer,openStartedAt;
 function privateRead(name) {
   const path=join(runtime,name),st=lstatSync(path);
   if (!st.isFile()||st.isSymbolicLink()||st.uid!==process.getuid()||(st.mode&0o077)||st.nlink!==1||realpathSync(path)!==path) throw Error('private input custody');
@@ -87,26 +87,81 @@ async function setup(action) {
     record({result:'PASS',expectedRefusal:refusal.reason,visibleRefusal:true,visibleRefusalSource:'RECENT_UI',negativeReadiness,noCredentialAdopted:true,noActiveEnrollment:true,noContentMaterialized:true,persistedMetadataUnchanged:true,localCustodyUnchanged:true,serverAccountUnchanged:'INDEPENDENT_PARENT_READ_REQUIRED'});
   }
 }
+// Closed failure-only startup facts; no exception text, paths or DOM content.
+function openErrorClass(error) {
+  try {
+    if(error?.name==='TimeoutError'||error?.name==='AbortError')return 'HTTP_TIMEOUT';
+    const codes={'device process identity changed':'PROCESS_IDENTITY','unowned device':'OWNERSHIP',
+      'recorded vault has no main window':'BOUND_VAULT_ABSENT','lab window not ready':'PAGE_ABSENT',
+      'foreign CDP address':'FOREIGN_CDP','CDP connection failed':'CDP_CONNECT','CDP disconnected':'CDP_DISCONNECTED',
+      'CDP deadline':'CDP_DEADLINE','lab UI step refused or timed out; no secret-bearing exception printed':'UI_EVALUATION',
+      'fresh owned vault/plugin not ready':'PLUGIN_NOT_READY','fresh owned recovery open deadline':'OPEN_DEADLINE',
+      'chooser target observation invalid':'CHOOSER_OBSERVATION','chooser target ambiguous':'CHOOSER_AMBIGUOUS',
+      'chooser target identity':'CHOOSER_IDENTITY','chooser renderer observation invalid':'CHOOSER_OBSERVATION',
+      'chooser renderer identity':'CHOOSER_IDENTITY','chooser identity changed before dispatch':'CHOOSER_IDENTITY'};
+    return Object.hasOwn(codes,error?.message)?codes[error.message]:'UNKNOWN';
+  }catch{return 'UNKNOWN';}
+}
+function observeOpenError(facts,stage,error) {
+  const value={stage,errorClass:openErrorClass(error)};
+  facts.errorCount++;facts.errors[value.errorClass]=(facts.errors[value.errorClass]??0)+1;
+  facts.firstError??=value;facts.lastError=value;
+}
 try {
   if(command==='open') {
-    c=await connect(state,slot,true);
-    // Same fixed owned-vault open path as existing journeys.mjs; no discovery.
-    try {await c.evaluate(`require('electron').ipcRenderer.sendSync('vault-open',P.vault,false);return true;`,{},false);}catch{/* Opening can replace the owned chooser target; resulting vault is checked below. */}
-    c.close();c=null;
-    const until=Date.now()+45000;let trusted=false;
-    while(Date.now()<until) {
-      try {
-        c=await connect(state,slot);
-        trusted=await c.evaluate(`const bs=[...document.querySelectorAll('button')].filter(b=>b.textContent.trim()==='Trust author and enable plugins'&&!b.disabled&&b.getBoundingClientRect().width>0);if(bs.length>1)throw Error('author trust ambiguous');if(bs.length===1)bs[0].click();return !!app.plugins.plugins['obsync-private-sync']?.state;`);
-        if(trusted)break;
-      }catch{}
-      c?.close();c=null;await sleep(200);
+    openReadiness={budgetMs:45000,pollMs:200,initialDispatch:'NOT_STARTED',polls:0,boundVaultObservations:0,trustChoiceObservations:0,trustClickObservations:0,pluginReadyObserved:false,detachedCheckCompleted:false,settingsCheckCompleted:false,serverUrlCheckCompleted:false,errorCount:0,errors:{},firstError:null,lastError:null};
+    openStartedAt=performance.now();const until=openStartedAt+45000;
+    const remaining=()=>{const ms=until-performance.now();if(ms<=0)throw Error('fresh owned recovery open deadline');return ms;};
+    // Opening admission budget; not whole-CLI wall time or cancellation of guest evaluation.
+    openDeadlineTimer=setTimeout(()=>{
+      try{stage='open-deadline';openReadiness.elapsedMs=Math.max(0,performance.now()-openStartedAt);observeOpenError(openReadiness,stage,Error('fresh owned recovery open deadline'));
+        record({result:'FAIL',stage,firstFailure:failureReason,openReadiness,detail:'Owned recovery open deadline; guest evaluation cancellation is not asserted.'});}
+      finally{try{c?.close();}finally{process.exit(1);}}
+    },45000);
+    openReadiness.chooserPolls=0;openReadiness.initializedChooserObserved=false;openReadiness.dispatchAttempts=0;
+    stage='open-chooser-readiness';
+    while(true) {
+      remaining();openReadiness.chooserPolls++;
+      const target=recoveryChooserTarget(await targets(state,slot));remaining();
+      if(target) {
+        c=await connect(state,slot,true,target.id);remaining();
+        const facts=await c.evaluate(`return (${recoveryChooserFacts.toString()})();`,{},false);remaining();
+        const ready=initializedRecoveryChooser(facts);
+        if(!facts.exactUrl)throw Error('chooser renderer identity');
+        openReadiness.lastChooser=facts;
+        if(ready){openReadiness.initializedChooserObserved=true;openReadiness.chooserTargetIdSha256=createHash('sha256').update(target.id).digest('hex');break;}
+        c.close();c=null;
+      }
+      await sleep(Math.min(200,remaining()));
     }
+    // Exactly one existing vault-open call, in the admitted initialized chooser.
+    stage='open-vault-dispatch';remaining();openReadiness.initialDispatch='STARTED';openReadiness.dispatchAttempts++;
+    let dispatchReturned=false,dispatchResult;
+    try {dispatchResult=await c.evaluate(`if(!(${initializedRecoveryChooser.toString()})((${recoveryChooserFacts.toString()})()))return false;require('electron').ipcRenderer.sendSync('vault-open',P.vault,false);return true;`,{},false);dispatchReturned=true;openReadiness.initialDispatch='COMPLETED';}catch(error){openReadiness.initialDispatch='REFUSED_OR_TARGET_REPLACED';observeOpenError(openReadiness,stage,error);/* Preserve existing navigation/target-replacement handling; never redispatch. */}
+    remaining();if(dispatchReturned&&dispatchResult!==true)throw Error('chooser identity changed before dispatch');
+    c.close();c=null;
+    let trusted=false;
+    while(performance.now()<until) {
+      openReadiness.polls++;stage='open-bound-vault-observation';
+      try {
+        c=await connect(state,slot);remaining();openReadiness.boundVaultObservations++;stage='open-trust-plugin-observation';
+        const observation=await c.evaluate(`const bs=[...document.querySelectorAll('button')].filter(b=>b.textContent.trim()==='Trust author and enable plugins'&&!b.disabled&&b.getBoundingClientRect().width>0);if(bs.length>1)throw Error('author trust ambiguous');if(bs.length===1)bs[0].click();return {pluginReady:!!app.plugins.plugins['obsync-private-sync']?.state,trustChoiceObserved:bs.length===1,trustClickObserved:bs.length===1};`);
+        remaining();trusted=observation.pluginReady;openReadiness.pluginReadyObserved||=trusted;
+        if(observation.trustChoiceObserved)openReadiness.trustChoiceObservations++;
+        if(observation.trustClickObserved)openReadiness.trustClickObservations++;
+        if(trusted)break;
+      }catch(error){observeOpenError(openReadiness,stage,error);}
+      remaining();c?.close();c=null;await sleep(Math.min(200,remaining()));
+    }
+    remaining();stage='open-plugin-readiness';
     if(!trusted)throw Error('fresh owned vault/plugin not ready');
+    stage='open-detached-state';
     await ui(`if(p.state.paired||p.state.data.deviceId!==null||p.state.data.deviceSecret!==null||p.state.custody2()!==null||p.state.data.vrk!==null)throw Error('fresh detached vault required');return true;`);
-    await settings();
+    remaining();openReadiness.detachedCheckCompleted=true;stage='open-settings';
+    await settings();remaining();openReadiness.settingsCheckCompleted=true;stage='open-server-url';
     await ui(`fillOwned(settingRow(pane(),'Server URL').querySelector('input'),P.url);await wait(()=>p.state.data.serverUrl===P.url,'server URL not adopted');return true;`);
-    record({result:'READY',freshDetachedVault:true,usesExistingApi:true});
+    openReadiness.elapsedMs=45000-remaining();openReadiness.serverUrlCheckCompleted=true;
+    record({result:'READY',freshDetachedVault:true,usesExistingApi:true,openReadiness});remaining(); // Synchronous receipt/console I/O cannot turn an over-budget CLI into success.
   } else {
     c=await connect(state,slot);
     await ui(`if(p.state.data.serverUrl!==P.url)throw Error('owned API endpoint changed');return true;`);
@@ -171,7 +226,8 @@ try {
       record({result:'QUIT_REQUESTED',normalOwnedAppQuit:true,fixtureRetainedForSessionTeardown:true});
     }
   }
-} catch {
-  record({result:'FAIL',stage,firstFailure:failureReason,negativeReadiness,detail:'Owned recovery step refused or timed out; secret-bearing details withheld. Session controllers own cleanup.'});
+} catch(error) {
+  if(openReadiness){openReadiness.elapsedMs=Math.max(0,performance.now()-openStartedAt);observeOpenError(openReadiness,stage,error);}
+  record({result:'FAIL',stage,firstFailure:failureReason,negativeReadiness,openReadiness,detail:'Owned recovery step refused or timed out; secret-bearing details withheld. Session controllers own cleanup.'});
   process.exitCode=1;
-} finally {c?.close();}
+} finally {clearTimeout(openDeadlineTimer);c?.close();}

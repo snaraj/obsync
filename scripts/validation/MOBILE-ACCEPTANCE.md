@@ -160,6 +160,22 @@ names the timed-out command; its cause remains unknown. A local copy counter
 does not prove guest consumption, and partial `Success` output cannot rescue
 a timeout. Installation mode, the 90-second cap and the single attempt remain.
 
+A fresh recovery-vault open first requires one process-bound chooser at
+`app://obsidian.md/starter.html`, an interactive or complete document, exactly
+one `.starter-screen-inner`, and callable Electron IPC. It rechecks that
+initialized context before its single vault-open dispatch. Exact owned-vault,
+plugin, detached-custody, settings and server-URL checks still follow.
+
+One monotonic 45-second opening admission budget starts before the first
+chooser observation and includes the final receipt write and deadline check.
+An asynchronous watchdog refuses pending work when the event loop can run;
+it cannot interrupt synchronous I/O or cancel guest evaluation. This is not a
+whole-CLI wall-clock deadline; the existing 120-second process cap remains.
+Both success and failure receipts retain bounded `openReadiness` facts:
+initialization, dispatch and completed-check observations, counts and fixed
+error classes. They contain no raw exceptions or DOM text and cannot rescue
+a refusal. Readiness polls retain a requested pause of up to 200 milliseconds.
+
 A refused closed confidentiality scan retains
 `native-confidentiality-failure.json` before cleanup. It contains bounded counts,
 closed error and needle categories, and numeric message locations when available;

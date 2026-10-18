@@ -4,7 +4,7 @@ import {readFileSync,writeFileSync,mkdtempSync,mkdirSync,rmSync,lstatSync,realpa
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
-const {recoveryRefusal,refusedRecovery,validateExpectations,activeRecovery,recoveryRefusalFacts,visibleRecoveryRefusal,recoveryReadbackExport}=await import(process.env.OBSYNC_RECOVERY_GUARD_MODULE??new URL('./recovery-guard.mjs',import.meta.url).href);
+const {recoveryRefusal,refusedRecovery,validateExpectations,activeRecovery,recoveryRefusalFacts,visibleRecoveryRefusal,recoveryReadbackExport,recoveryChooserTarget,recoveryChooserFacts,initializedRecoveryChooser}=await import(process.env.OBSYNC_RECOVERY_GUARD_MODULE??new URL('./recovery-guard.mjs',import.meta.url).href);
 const source=readFileSync(process.env.OBSYNC_RECOVERY_SOURCE??new URL('./recovery.mjs',import.meta.url),'utf8');
 const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
 const cdpSource=readFileSync(new URL('./cdp.mjs',import.meta.url),'utf8');
@@ -138,4 +138,44 @@ test('fixed recovery exporter refuses incomplete PASS, changed prior bytes, over
    writeFileSync(join(root,'evidence/recovery-C-readback/0-desktop.bin'),'changed outside exporter');assert.throws(()=>exporter.observe(0,Buffer.from('next')),/export changed/);
    assert.throws(()=>exporter.finish(true),/complete matching/);assert.ok(existsSync(join(root,'evidence/recovery-C-readback/result.json')),'failed result must persist');assert.equal(JSON.parse(readFileSync(join(root,'evidence/recovery-C-readback/result.json'))).result,'FAIL');assert.throws(()=>exporter.finish(false),/already finished/);
  }finally{rmSync(root,{recursive:true,force:true});}
+});
+
+const openStart=source.indexOf("  if(command==='open') {"),openEnd=source.indexOf('\n  } else {',openStart);
+const openBody=source.slice(openStart,openEnd)+'\n  }';
+const observationHelpers=source.slice(source.indexOf('function openErrorClass(error) {'),source.indexOf('\ntry {',source.indexOf('function openErrorClass(error) {')));
+const openCatch=source.slice(source.lastIndexOf('\n} catch(error) {'));
+const runOpen=new AsyncFunction('connect','ui','settings','state','slot','sleep','Date','record','process','targets','performance','setTimeout','clearTimeout','createHash','recoveryChooserTarget','recoveryChooserFacts','initializedRecoveryChooser',`let c,stage='open',failureReason='owned_recovery_step_refused',negativeReadiness,openReadiness,openDeadlineTimer,openStartedAt;const command='open';${observationHelpers}\ntry {${openBody}${openCatch};return {exitCode:process.exitCode,stage,openReadiness};`);
+async function openScenario(mode='ready'){
+  const model={now:0,dispatches:0,connections:0,trustClicks:0,uiCalls:0,settingsCalls:0,polls:[],records:[],timers:new Map()},process={exitCode:0,exit(){throw Error('unexpected synthetic watchdog exit');}};
+  const button={textContent:'Trust author and enable plugins',disabled:false,getBoundingClientRect:()=>({width:30}),click(){model.trustClicks++;}};
+  const app={plugins:{plugins:{'obsync-private-sync':{state:{}}}}},document={readyState:'complete',querySelectorAll:selector=>selector==='.starter-screen-inner'?[{}]:[button]},location={href:'app://obsidian.md/starter.html'};
+  const c={close(){},async evaluate(body){new Function('return(async()=>{'+prelude+body+'})()');if(body.includes('recoveryChooserFacts')){const value=await new AsyncFunction('app','document','location','require','P',body)(app,document,location,()=>({ipcRenderer:{sendSync(){model.dispatches++;return true;}}}),{vault:'/owned'});if(body.includes("sendSync('vault-open'")&&mode==='dispatch-replaced')throw Error('CDP disconnected');return value;}return new AsyncFunction('app','document',body)(app,document);}};
+  const connect=async(_state,_slot,chooser=false)=>{model.connections++;if(chooser){if(mode==='chooser-error')throw Error('CDP connection failed');return c;}if(mode==='missing-vault')throw Error('recorded vault has no main window');if(mode==='unknown-error')throw Error('PRIVATE-EXCEPTION-TEXT');if(mode==='error-getter')throw {get message(){throw Error('PRIVATE-GETTER');}};if(mode==='plugin-pending')app.plugins.plugins={};return c;};
+  const ui=async()=>{model.uiCalls++;if(mode==='detached-error'&&model.uiCalls===1)throw Error('PRIVATE-DETACHED-STATE');if(mode==='server-url-error'&&model.uiCalls===2)throw Error('lab UI step refused or timed out; no secret-bearing exception printed');};
+  const settings=async()=>{model.settingsCalls++;if(mode==='settings-error')throw Error('lab UI step refused or timed out; no secret-bearing exception printed');};
+  const record=value=>{model.records.push(JSON.parse(JSON.stringify(value)));if(mode==='record-error')throw Error('PRIVATE-RECEIPT-ERROR');};
+  try{const outcome=await runOpen(connect,ui,settings,{},{},async ms=>{model.polls.push(ms);model.now+=ms;},{now:()=>model.now},record,process,async()=>[{id:'synthetic-chooser',url:location.href}],{now:()=>model.now},(callback,ms)=>{model.timers.set(1,{callback,ms});return 1;},id=>model.timers.delete(id),createHash,recoveryChooserTarget,recoveryChooserFacts,initializedRecoveryChooser);assert.equal(model.timers.size,0,'opening timer cleared');return {model,outcome};}
+  catch(error){return {model,outcome:{exitCode:1,recordFailure:true,errorClass:typeof error}};}
+}
+test('fresh open observations preserve one dispatch,45s/200ms loop and strict readiness refusal',async()=>{
+  const {model,outcome}=await openScenario('missing-vault');assert.equal(outcome.exitCode,1);assert.equal(model.dispatches,1);
+  assert.equal(model.now,45000);assert.equal(model.polls.length,225);assert.ok(model.polls.every(ms=>ms===200));
+  const row=model.records[0];assert.ok(row.openReadiness);assert.equal(row.result,'FAIL');assert.equal(row.stage,'open-bound-vault-observation');assert.equal(row.firstFailure,'owned_recovery_step_refused');
+  assert.equal(row.openReadiness.boundVaultObservations,0);assert.equal(row.openReadiness.polls,225);assert.equal(row.openReadiness.initialDispatch,'COMPLETED');
+  assert.equal(row.openReadiness.firstError.errorClass,'BOUND_VAULT_ABSENT');assert.equal(row.openReadiness.lastError.errorClass,'OPEN_DEADLINE');
+});
+test('fresh open observations distinguish plugin waiting from exact owned-vault observations',async()=>{
+  const {model,outcome}=await openScenario('plugin-pending');assert.equal(outcome.exitCode,1);const f=model.records[0].openReadiness;
+  assert.equal(f.boundVaultObservations,225);assert.equal(f.trustChoiceObservations,225);assert.equal(f.trustClickObservations,225);assert.equal(f.pluginReadyObserved,false);assert.equal(model.dispatches,1);
+});
+test('fresh open success preserves original facts and requires closed chooser readiness evidence',async()=>{
+  for(const mode of ['ready','dispatch-replaced']){const {model,outcome}=await openScenario(mode);assert.equal(outcome.exitCode,0);assert.equal(model.dispatches,1);assert.equal(model.trustClicks,1);assert.equal(model.records.length,1);const {openReadiness,...original}=model.records[0];assert.deepEqual(original,{result:'READY',freshDetachedVault:true,usesExistingApi:true});assert.ok(openReadiness);assert.equal(openReadiness.initializedChooserObserved,true);assert.equal(openReadiness.dispatchAttempts,1);assert.equal(openReadiness.elapsedMs,0);assert.equal(openReadiness.chooserTargetIdSha256,createHash('sha256').update('synthetic-chooser').digest('hex'));}
+});
+test('fresh open post-readiness refusal remains failure with precise bounded completed-check facts',async()=>{
+  for(const [mode,stage,detached,settings] of [['detached-error','open-detached-state',false,false],['settings-error','open-settings',true,false],['server-url-error','open-server-url',true,true]]){
+    const {model,outcome}=await openScenario(mode);assert.equal(outcome.exitCode,1);const row=model.records[0];assert.equal(row.result,'FAIL');assert.equal(row.stage,stage);assert.equal(row.openReadiness.pluginReadyObserved,true);assert.equal(row.openReadiness.detachedCheckCompleted,detached);assert.equal(row.openReadiness.settingsCheckCompleted,settings);assert.equal(row.openReadiness.serverUrlCheckCompleted,false);assert.equal(model.dispatches,1);
+  }
+});
+test('startup failure projection never retains arbitrary exception strings and cannot rescue failure',async()=>{
+  for(const mode of ['unknown-error','error-getter','chooser-error','record-error']){const {model,outcome}=await openScenario(mode);assert.equal(outcome.exitCode,1);const text=JSON.stringify(model.records);assert.ok(!text.includes('PRIVATE-'));if(mode==='unknown-error'||mode==='error-getter')assert.equal(model.records[0].openReadiness.firstError.errorClass,'UNKNOWN');if(mode==='chooser-error')assert.equal(model.dispatches,0);}
 });

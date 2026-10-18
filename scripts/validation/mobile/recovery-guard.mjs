@@ -4,6 +4,26 @@ import {createHash} from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
+// The pinned official starter creates this inner element only after awaited initialization.
+export function recoveryChooserTarget(pages) {
+  if(!Array.isArray(pages)||pages.some(p=>!p||typeof p.id!=='string'||!p.id||p.id.length>128||typeof p.url!=='string'))throw Error('chooser target observation invalid');
+  const exact=pages.filter(p=>p.url==='app://obsidian.md/starter.html');
+  if(exact.length>1)throw Error('chooser target ambiguous');
+  if(exact.length===1)return exact[0];
+  if(pages.some(p=>p.url!==''&&p.url!=='about:blank'))throw Error('chooser target identity');
+  return null; // Only a known early empty/blank target may wait for initialization.
+}
+export function recoveryChooserFacts() {
+  const ipc=typeof require==='function'?require('electron')?.ipcRenderer:null;
+  return {exactUrl:location.href==='app://obsidian.md/starter.html',documentReady:['interactive','complete'].includes(document.readyState),
+    starterInnerCount:document.querySelectorAll('.starter-screen-inner').length,callableIpc:typeof ipc?.sendSync==='function'};
+}
+export function initializedRecoveryChooser(value) {
+  if(!value||Object.keys(value).sort().join(',')!=='callableIpc,documentReady,exactUrl,starterInnerCount'||
+    !['exactUrl','documentReady','callableIpc'].every(k=>typeof value[k]==='boolean')||!Number.isInteger(value.starterInnerCount)||value.starterInnerCount<0||value.starterInnerCount>1)throw Error('chooser renderer observation invalid');
+  return value.exactUrl&&value.documentReady&&value.starterInnerCount===1&&value.callableIpc;
+}
+
 export function activeRecovery(value) {
   return value.paired===true && value.enrolling===false && value.phase==='active' && value.suite===2 && value.recoveryNotice===true;
 }

@@ -881,3 +881,135 @@ Its cause remains unknown. The
 [hosted PR Gate for this head](https://github.com/snaraj/obsync/actions/runs/39005068038)
 passed all 13 jobs; native acceptance, physical-phone evidence and final-head
 independent review remain separate gates.
+
+At signed head `79ebe97c7ea79e52369e82d5b5f6ab1a29eb2c14`, the next
+three-attempt batch stopped after its second attempt. Attempt one was
+FULL_PASS; attempt two failed at `recovery-d-open`; attempt three was NOT_RUN.
+The batch remains FAIL, with aggregate SHA-256
+`dfad21b3cc5492067c333ceb211fc2aee09e779441468e46229f758ad0c73aed`.
+Its frozen input manifest SHA-256 is
+`5e4ecbd01e92ec1a074d50d49a91d902f27286dec699c7e4534ab2d6edde648e`.
+
+Attempt one completed all 169 native journey steps in 1,289.301 monotonic
+seconds. It included ordinary pairing and consent, a 213-second interval
+without Android calls, process restarts, guest reboot, offline recovery,
+both revocation modes, interrupted rotation, both five-minute selected-folder
+stability windows, and fresh recovery. Its final confidentiality scan covered
+three backups and all three canonical mnemonics, with zero unexpected hits or
+parse errors. Planted traffic, server-storage and server-log leaks were detected.
+The author-side retained-evidence audit verified 100 device exports and two
+fresh-recovery exports. This is one complete emulator pass, not the required
+three consecutive passes or physical-phone acceptance.
+
+Attempt two lasted 1,297.443 monotonic seconds. Fresh desktop D provisioning
+succeeded, but opening its vault failed after 45.653 seconds, before any
+recovery backup was submitted. The retained helper reports only a generic
+owned-step refusal. It cannot distinguish initial dispatch, target selection,
+trust/plugin readiness or later settings failure; the cause remains UNKNOWN.
+Its 100 device exports, selected-folder ancestry and quiet endpoints, and three
+ciphertext bindings remain scoped evidence. Both attempts retained old-key
+rejection of current map, manifest and chunk ciphertext, current-key success,
+and successful old-key baseline/access-only controls. Fresh-C recovery and the
+final confidentiality scan were not reached in attempt two.
+
+The unchanged three-pass auditor refused acceptance, receipt SHA-256
+`e74af0cf94104a51d65e17780ab982ef8e6ddd098b53eefa5fa7adc396af15e7`.
+A separate partial audit hash-binds 1,211 retained files without promoting the
+batch; its SHA-256 is
+`77d70c99d887eb5288c2a7bc2018b0ef94226db92ce257b35b90dd0699481a10`.
+Independent terminal checks verified 27 recorded processes, 18 listeners and
+18 task paths absent. Six of those paths belong to the unrun third attempt.
+Both executed controllers reported cleanup PASS and zero remaining groups.
+The independent cleanup receipt SHA-256 is
+`ffee6b6730f7df985365485f43dbdf83b66bd52035176b8f69f3d32d64a9453e`.
+
+The [hosted PR Gate at this head](https://github.com/snaraj/obsync/actions/runs/39080708532)
+passed all 13 jobs, including all 935 repository contracts. The local contract
+invocation's unchanged release-audit subprocess timeout remains a failed
+invocation; the hosted pass is a separate result. Of all PR checks, 46 passed,
+one deployment was skipped and the nonrequired CodeQL aggregate remained red
+for a covered alert; the required dispositions check passed. No manual alert
+dismissal was performed. Neither these checks nor the partial audit closes
+the three-pass, physical-phone or final-head review gate.
+
+A separate opening diagnostic used the same clean candidate, actual official
+Android application, ordinary desktop enrollment, and the unchanged session
+owners. Its first attempt failed before either recovery vault opened: an
+uppercase label in the diagnostic wrapper violated the desktop operator's
+lowercase argument contract. That failure remains retained. Independent
+cleanup verified seven recorded processes, eight ports and seven paths absent.
+
+After correcting only that argument and using a fresh environment, B opened
+in 1.416 seconds and D in 1.280 seconds. All three desktop processes quit
+naturally with exit code zero. The private wrapper deliberately stopped its
+parent with a distinct nonzero result after recording diagnostic completion;
+the original controller's FAIL was not relabelled as product acceptance.
+An independent audit verified all 89 frozen inputs and the terminal sequence;
+fresh cleanup checks found nine processes, ten ports and seven paths absent.
+The diagnostic result, retained audit and cleanup SHA-256 values are:
+
+- `4cda6ca113febe740c09720a6dca32d8965aa10386b3c74db5b1c6ed7b76af96`
+- `276c8fabf32ab64e8d1657d33a9f9e058410c7d0d4cb99347aa0df0dea683c0c`
+- `146f91442a827332675c9e707bd0d5473044f2b04e8312c0e13f08ee54445eb7`
+
+This reduced fixture did not execute the preceding paired Android workload,
+rotation or recovery submission. It therefore establishes that the isolated
+open sequence can succeed, not the cause or repair of the full-batch timeout.
+
+The installed official startup source registers the vault-open handler before
+creating the ordinary chooser. The bundled `obsidian.asar` SHA-256 is
+`a52a7daf1e2460bae03de80f2816604bd16a56cd374fbe5ce8d1a9ef5604059d`.
+The chooser's inner DOM appears only after its renderer initialization. The
+previous first-page selection did not require that initialized context;
+this identifies a missing readiness check, not proof of the batch timeout's
+cause.
+
+The driver now requires the exact process-bound chooser URL, initialized
+inner DOM and callable IPC before one vault-open dispatch, and rechecks them
+in that dispatch evaluation. A shared monotonic 45-second opening admission
+budget begins before chooser selection, covers the later strict recovery
+readiness checks and refuses a late final receipt write. The asynchronous
+watchdog does not claim to interrupt synchronous work or cancel guest
+execution; the existing 120-second outer process cap remains. Success and
+failure retain bounded readiness facts without raw DOM or exception text.
+Nine focused controls and 14 source mutations exercised this guard; these
+offline results do not count as native acceptance or explain the earlier
+failure. The separately frozen B/D diagnostic retains its own outcome.
+
+The guarded diagnostic then repeated the fresh B/D sequence on the same clean
+candidate with 94 frozen inputs. Both processes opened successfully: B in
+1.952 seconds and D in 1.359 seconds; their measured opening admission times
+were 1.447 and 0.949 seconds. Both retained the exact initialized chooser,
+one completed dispatch and all strict detached/plugin/settings/URL checks.
+All three desktops quit naturally with exit code zero. The deliberate child
+exit remains diagnostic-only; no pairing, recovery submission or full-run
+acceptance is inferred. The result, independent retained audit and independent
+cleanup SHA-256 values are respectively:
+
+- `e205f3eefe646d756c86bf0ab51f9af790591f85cbc4d165e66fcc887eea3bb7`
+- `9d599ada64ec49a3375d2e60b6395117d5235195215d03ce091f85391b70a0ba`
+- `5d6b7ee70ee0e3234e95c0b82261af45e5e13b76dd00ab1bd998b3ea039389e2`
+
+The independent cleanup check found nine recorded processes, ten listeners
+and seven task paths absent. Native READY receipts were rehashed; private
+child logs had already been removed, so their recorded step hashes could not
+be rechecked. The earlier full-batch timeout remains unexplained. The new
+check addresses the separately reproduced missing prerequisite without
+extending a deadline, redispatching or changing the product.
+
+The first combined test invocation after this change failed four of 23 tests:
+older synthetic open adapters lacked the new chooser and monotonic-clock
+inputs. Updating those adapters preserves the one-dispatch, 45-second,
+225-poll refusal assertions and requires the new bounded success evidence.
+The corrected focused run passed all 23 tests and all 43 recovery mutation
+controls, including the 14 chooser controls now in the regular harness.
+That failed invocation remains retained; it is not counted as a passing run.
+
+The complete offline command `bash scripts/ci/mobile-harness.sh` then passed
+232 Python tests, 232 JavaScript tests and all 329 scripted mutation controls,
+with zero skips. Its log SHA-256 is
+`64d0f9f17d720b478197b86d6fcb90b630423bd2f01780edf2f0eee5ba82f3c9`.
+An earlier observation-only invocation failed because the sandbox denied its
+local sockets and process queries; a separately authorized invocation passed.
+Neither result is a native acceptance run. The physical-phone gate, three
+consecutive full emulator passes and final exact-head review remain open.
