@@ -146,6 +146,10 @@ produce aggregate acceptance. A failure stops the batch and remains in its
 original output. After a diagnosed fix, use a new output directory and repeat
 the complete batch; never relabel a failed attempt or discard it as a retry.
 
+The [2026-10-17 measured record](../../docs/validation-runs/2026-10-17-unattended-mobile-acceptance.md)
+retains three full emulator passes at its exact source/driver head; physical-phone
+acceptance and independent review remain separate.
+
 `failureClass` identifies the observed refusal, not necessarily its root cause.
 `AUTOMATION_OR_ORACLE_REFUSAL` and `UNCLASSIFIED` require diagnosis from the
 action witnesses and independently retained state. A missing click witness or

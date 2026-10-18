@@ -1011,5 +1011,7 @@ with zero skips. Its log SHA-256 is
 `64d0f9f17d720b478197b86d6fcb90b630423bd2f01780edf2f0eee5ba82f3c9`.
 An earlier observation-only invocation failed because the sandbox denied its
 local sockets and process queries; a separately authorized invocation passed.
-Neither result is a native acceptance run. The physical-phone gate, three
-consecutive full emulator passes and final exact-head review remain open.
+Neither offline result is a native acceptance run. The later
+[three-pass emulator record](2026-10-17-unattended-mobile-acceptance.md) reports
+the measured result separately; physical-phone acceptance and final exact-head
+independent review remain open.
