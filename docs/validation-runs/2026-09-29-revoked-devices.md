@@ -6,8 +6,8 @@ server and disposable vaults. None of the user's own vaults or devices took part
 ## Why this shape
 
 The shape was chosen against user voice, not taste: 17 data points from
-Syncthing, Nextcloud, Plex, Microsoft, Apple, Dropbox and 1Password forums and
-issue trackers, of which 12 ask for a per-row "forget"/"remove", 4 for devices
+the forums and issue trackers of file-sync, home-cloud, media-server,
+operating-system and password-manager products, of which 12 ask for a per-row "forget"/"remove", 4 for devices
 to expire on their own, 1 for inactive devices to be hidden, and 1 for a kept
 audit history. None asked for revoked devices to stay in the one list. So the
 fold answers the 1 and the 12 get **Forget**, which — because 1 asked for the
