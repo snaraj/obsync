@@ -32,6 +32,7 @@ mod gc;
 mod index;
 mod journal;
 pub mod posture;
+pub mod rotation;
 mod scrub;
 pub mod types;
 
@@ -65,8 +66,9 @@ pub use self::index::FILE_MAX_HEADS;
 pub use self::posture::{Decision, Outcome, PathClass, Posture};
 pub use self::types::{
     AccountRecord, AppendDecision, AppendOutcome, Change, Changes, DevicePolicy, DeviceRecord,
-    DeviceState, FileRecord, FileSummary, GcSummary, NewDevice, NewVersion, PutOutcome,
-    ScrubSummary, SeenEvent, SeenKind, StoreError, VersionRecord, VolumeStatus,
+    DeviceState, FileRecord, FileSummary, GcSummary, ManifestSeal, NewDevice, NewSetup, NewVersion,
+    PutOutcome, ScrubSummary, SeenEvent, SeenKind, SetupOutcome, StoreError, VersionRecord,
+    VolumeStatus,
 };
 
 /// The domain separator device secrets rest under
@@ -83,6 +85,7 @@ const GROUP_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 /// One version post waiting for the journal.
 struct Queued {
+    scope: Option<rotation::Grant>,
     v: NewVersion,
     accept_existing: bool,
     edit: Option<SeenEvent>,
@@ -166,6 +169,8 @@ pub(crate) enum Fault {
     /// No crash point armed.
     #[default]
     None,
+    /// Fail an owned format-marker operation after the floor fact is durable.
+    FloorMarkerErrno { code: i32, at: FloorPhase },
     /// Die after the chunk body is written, before it is fsynced.
     ChunkBeforeFsync,
     /// Die after the chunk is fsynced, before it is renamed into place.
@@ -214,6 +219,16 @@ pub(crate) enum Fault {
     /// Force a pre-existing quarantine temporary name, testing exclusive
     /// creation and cleanup ownership without depending on random collisions.
     QuarantineTempCollision,
+}
+
+/// The four owned format barrier phases; testing only.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FloorPhase {
+    Write,
+    Sync,
+    Publish,
+    DirSync,
 }
 
 /// Which half of a journal append a fault surfaces in.
@@ -389,6 +404,15 @@ impl Store {
         let from_snapshot = snapshot.is_some();
         let (mut index, snapshot_bytes) = snapshot.unwrap_or_default();
         let replay = journal.replay(index.seq, &mut |record| index.apply(record))?;
+        let marker = journal.validate_floor_marker()?;
+        if marker && !index.authority.floor2() {
+            return Err(StoreError::Corrupt(
+                "ambiguous permanent floor without account authority".into(),
+            ));
+        }
+        if index.authority.floor2() {
+            journal.ensure_floor_marker()?;
+        }
         let (chunks, strays) = blobs.scan()?;
         let chunk_count = chunks.len() as u64;
         for (sid, len, first_seen) in chunks {
@@ -418,7 +442,7 @@ impl Store {
             );
         }
 
-        Ok(Store {
+        let store = Store {
             cfg: cfg.clone(),
             server_key,
             log,
@@ -446,7 +470,12 @@ impl Store {
             before_scrub_summary: Mutex::new(None),
             #[cfg(test)]
             before_gc_unlink: Mutex::new(None),
-        })
+        };
+        let rotation = store.index().authority.rotation.clone();
+        if let Some(rotation) = rotation {
+            store.verify_rotation_files(&rotation)?;
+        }
+        Ok(store)
     }
 
     /// The logger this store was opened with.
@@ -546,9 +575,34 @@ impl Store {
         declared_len: u64,
         body: &mut dyn Read,
     ) -> Result<PutOutcome, StoreError> {
+        self.put_chunk_by(None, None, account, sid, declared_len, body)
+    }
+
+    /// HTTP caller's late publication is serialized with credential retirement.
+    pub fn put_chunk_scoped(
+        &self,
+        device: DeviceId,
+        scope: Option<rotation::Grant>,
+        account: &AccountId,
+        sid: &Sid,
+        declared_len: u64,
+        body: &mut dyn Read,
+    ) -> Result<PutOutcome, StoreError> {
+        self.put_chunk_by(Some(device), scope, account, sid, declared_len, body)
+    }
+
+    fn put_chunk_by(
+        &self,
+        device: Option<DeviceId>,
+        scope: Option<rotation::Grant>,
+        account: &AccountId,
+        sid: &Sid,
+        declared_len: u64,
+        body: &mut dyn Read,
+    ) -> Result<PutOutcome, StoreError> {
         let timed = self.log.timed("chunk_put");
         let mut fields = vec![("sid", Val::sid(sid)), ("bytes", Val::bytes(declared_len))];
-        match self.put_chunk_inner(account, sid, declared_len, body) {
+        match self.put_chunk_inner(device, scope, account, sid, declared_len, body) {
             Ok(outcome) => {
                 fields.push((
                     "decision",
@@ -571,6 +625,8 @@ impl Store {
 
     fn put_chunk_inner(
         &self,
+        device: Option<DeviceId>,
+        scope: Option<rotation::Grant>,
         account: &AccountId,
         sid: &Sid,
         declared_len: u64,
@@ -588,6 +644,7 @@ impl Store {
                 match self.blobs.open_chunk(sid) {
                     Ok(_) => {
                         self.blobs.drain(sid, declared_len, body)?;
+                        let _writer = self.chunk_writer(device, &scope)?;
                         return Ok(PutOutcome::Existed);
                     }
                     Err(StoreError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -629,9 +686,11 @@ impl Store {
                 bytes: declared_len,
             }
         };
-        let written = self.blobs.write(sid, declared_len, body);
+        let written = self.blobs.write_admitted(sid, declared_len, body, || {
+            self.chunk_writer(device, &scope)
+        });
         self.prove(&self.blobs_proof, written.as_ref().map(|_| ()));
-        written?;
+        let _writer = written?;
         reservation.count(*sid, UnixMs::now());
         Ok(PutOutcome::Created)
     }
@@ -644,7 +703,8 @@ impl Store {
     /// recomputation before anything else is trusted, so a client cannot name
     /// a version whose content it did not supply.
     pub fn append_version(&self, v: NewVersion) -> Result<AppendOutcome, StoreError> {
-        self.append(v, false, None)
+        let scope = self.request_scope(v.device_id);
+        self.append(v, false, None, scope)
     }
 
     /// A device's version post: the version, and the `edit` activity event
@@ -661,7 +721,8 @@ impl Store {
         accept_existing: bool,
         edit: SeenEvent,
     ) -> Result<AppendOutcome, StoreError> {
-        self.append(v, accept_existing, Some(edit))
+        let scope = self.request_scope(v.device_id);
+        self.append(v, accept_existing, Some(edit), scope)
     }
 
     /// The same, for a caller that will store the version id the answer
@@ -676,7 +737,18 @@ impl Store {
     /// would remember a version this store never held and reconcile its
     /// next edit against nothing.
     pub fn append_version_idempotent(&self, v: NewVersion) -> Result<AppendOutcome, StoreError> {
-        self.append(v, true, None)
+        let scope = self.request_scope(v.device_id);
+        self.append(v, true, None, scope)
+    }
+
+    pub fn post_version_scoped(
+        &self,
+        v: NewVersion,
+        accept_existing: bool,
+        edit: SeenEvent,
+        scope: Option<rotation::Grant>,
+    ) -> Result<AppendOutcome, StoreError> {
+        self.append(v, accept_existing, Some(edit), scope)
     }
 
     fn append(
@@ -684,6 +756,7 @@ impl Store {
         v: NewVersion,
         accept_existing: bool,
         edit: Option<SeenEvent>,
+        scope: Option<rotation::Grant>,
     ) -> Result<AppendOutcome, StoreError> {
         let timed = self.log.timed("version_append");
         let mut fields = vec![
@@ -693,7 +766,7 @@ impl Store {
             ("bytes", Val::bytes(v.bytes)),
             ("chunks", Val::count(v.sids.len() as u64)),
         ];
-        let (answer, batch) = self.append_grouped(v, accept_existing, edit);
+        let (answer, batch) = self.append_grouped(v, accept_existing, edit, scope);
         match answer {
             Ok(outcome) => {
                 fields.push(("seq", Val::seq(outcome.seq)));
@@ -749,6 +822,7 @@ impl Store {
         v: NewVersion,
         accept_existing: bool,
         edit: Option<SeenEvent>,
+        scope: Option<rotation::Grant>,
     ) -> Answer {
         let expected = version_id_of(&v.file_id, &v.parents, &v.manifest_ct, &v.sids);
         if expected != v.version_id {
@@ -756,6 +830,7 @@ impl Store {
             return (Err(StoreError::VersionIdMismatch { expected, actual }), 0);
         }
         let ticket = self.versions().enqueue(Queued {
+            scope,
             v,
             accept_existing,
             edit,
@@ -795,6 +870,13 @@ impl Store {
         let mut answers = Vec::with_capacity(batch.len());
         let mut writers = Vec::new();
         for (ticket, post) in batch {
+            if index.authority.grants.get(&post.v.device_id) != post.scope.as_ref() {
+                answers.push((
+                    ticket,
+                    (Err(StoreError::AuthorityRefused("grant_changed")), 0),
+                ));
+                continue;
+            }
             match Self::check_version(&index, &post.v, post.accept_existing) {
                 Ok(None) => writers.push((ticket, post)),
                 Ok(Some(held)) => answers.push((ticket, (Ok(held), 0))),
@@ -855,7 +937,7 @@ impl Store {
                     sids: v.sids.clone(),
                     bytes: v.bytes,
                     manifest_ct: v.manifest_ct.clone(),
-                    manifest_nonce: v.manifest_nonce,
+                    manifest_seal: v.manifest_seal,
                     device_id: v.device_id,
                     ts: now,
                     deleted: v.deleted,
@@ -922,6 +1004,35 @@ impl Store {
             DeviceState::Active => {}
             DeviceState::Pending => return Err(StoreError::DevicePending),
             DeviceState::Revoked => return Err(StoreError::DeviceRevoked),
+        }
+        if index.authority.floor2() {
+            if v.manifest_seal != ManifestSeal::Suite2 {
+                return Err(StoreError::AuthorityRefused("suite_required"));
+            }
+            let grant = index
+                .authority
+                .grants
+                .get(&v.device_id)
+                .ok_or(StoreError::AuthorityRefused("generation_mismatch"))?;
+            if let Some(rotation) = index.authority.pending() {
+                if rotation.coordinator != v.device_id
+                    || grant.operation.as_deref() != Some(&rotation.intent.operation)
+                    || grant.generation != rotation.intent.current_map
+                {
+                    return Err(StoreError::AuthorityRefused("rotation_pending"));
+                }
+            } else if grant.generation != index.authority.generation.unwrap()
+                || grant.operation.is_some()
+            {
+                return Err(StoreError::AuthorityRefused("generation_mismatch"));
+            }
+            if index
+                .files
+                .get(&v.file_id)
+                .is_some_and(|f| f.generation != Some(grant.generation))
+            {
+                return Err(StoreError::AuthorityRefused("generation_mismatch"));
+            }
         }
         // A file never changes domain (`docs/architecture.md` 5.1 item 4).
         // Allowing it would let one version move a file into or out of a
@@ -1060,6 +1171,128 @@ impl Store {
 
     // -- account and devices ----------------------------------------------
 
+    /// Create/recover an account and enroll an active device atomically.
+    /// Validation and publication share the journal lock, including reset-arm
+    /// consumption. One frame is required: a batch can replay a torn prefix.
+    pub fn setup_enrolment(&self, d: NewSetup, now: UnixMs) -> Result<SetupOutcome, StoreError> {
+        let mut journal = self.journal();
+        let index = self.index();
+        let recovered = index.account.is_some();
+        if recovered && !d.recover_only {
+            return Err(StoreError::AuthorityRefused("recover_only_required"));
+        }
+        if index.authority.pending().is_some() {
+            return Err(StoreError::AuthorityRefused("rotation_pending"));
+        }
+        if index.authority.floor2() && d.generation.is_none() {
+            return Err(StoreError::AuthorityRefused("suite_required"));
+        }
+        if recovered && !index.authority.floor2() && d.generation.is_some() {
+            return Err(StoreError::AuthorityRefused("migration_required"));
+        }
+        if let Some(generation) = d.generation {
+            if index.authority.generation.is_some_and(|g| g != generation) {
+                return Err(StoreError::AuthorityRefused("generation_mismatch"));
+            }
+            if !recovered && d.recovery_verifier.is_none() {
+                return Err(StoreError::AuthorityRefused("recovery_verifier_required"));
+            }
+        }
+        if let Some(proof) = d
+            .recovery_proof
+            .as_deref()
+            .filter(|_| !recovered || d.recovery_verifier.is_some())
+        {
+            if proof.len() != 64
+                || !proof
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return Err(StoreError::BadRecoveryProof);
+            }
+            let derived = hex::encode(&obsync_core::sha256::sha256(
+                &hex::decode(proof).map_err(|_| StoreError::BadRecoveryProof)?,
+            ));
+            if d.recovery_verifier
+                .as_ref()
+                .is_some_and(|v| !obsync_core::ct::eq(v.as_bytes(), derived.as_bytes()))
+            {
+                return Err(StoreError::BadRecoveryProof);
+            }
+        }
+        let mut armed_at = None;
+        let account = if let Some(mut account) = index.account.clone() {
+            let proof = d
+                .recovery_proof
+                .as_deref()
+                .ok_or(StoreError::AlreadySetUp)?;
+            if account.recovery_verifier.is_none() && account.recovery_cleared.is_none() {
+                return Err(StoreError::RecoveryUnavailable);
+            }
+            let bytes = if proof.len() == 64
+                && proof
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                hex::decode(proof).ok()
+            } else {
+                None
+            }
+            .ok_or(StoreError::BadRecoveryProof)?;
+            let derived = hex::encode(&obsync_core::sha256::sha256(&bytes));
+            if let Some(expected) = &account.recovery_verifier {
+                if !obsync_core::ct::eq(derived.as_bytes(), expected.as_bytes()) {
+                    return Err(StoreError::BadRecoveryProof);
+                }
+            } else {
+                armed_at = account.recovery_cleared;
+                account.recovery_verifier = Some(derived);
+                account.recovery_registered = Some(now);
+                account.recovery_cleared = None;
+            }
+            account
+        } else {
+            if d.recover_only {
+                return Err(StoreError::NotSetUp);
+            }
+            AccountRecord {
+                account_id: AccountId::new(random_bytes::<16>()?),
+                name: d.account_name,
+                created: now,
+                quota_bytes: None,
+                recovery_registered: d.recovery_verifier.as_ref().map(|_| now),
+                recovery_verifier: d.recovery_verifier,
+                recovery_cleared: None,
+                used_bytes: 0,
+            }
+        };
+        let record = new_device_record(
+            NewDevice {
+                account_id: account.account_id,
+                name: d.device_name,
+                platform: d.platform,
+                app_version: d.app_version,
+                secret: d.secret,
+                state: DeviceState::Active,
+            },
+            now,
+        )?;
+        let wrapped = self.wrap(record.device_id.as_bytes(), &d.secret);
+        self.commit(&mut journal, index, |_| {
+            vec![Frame::Setup {
+                generation: d.generation,
+                account,
+                record: record.clone(),
+                wrapped,
+            }]
+        })?;
+        Ok(SetupOutcome {
+            device: record,
+            recovered,
+            armed_at,
+        })
+    }
+
     /// Create the one account. Valid once (docs/protocol.md, `/v1/setup`).
     pub fn setup(&self, name: &str) -> Result<AccountId, StoreError> {
         self.setup_with_recovery(name, None, UnixMs::now())
@@ -1109,6 +1342,9 @@ impl Store {
         let mut journal = self.journal();
         let index = self.index();
         let account = index.account.clone().ok_or(StoreError::NotSetUp)?;
+        if index.authority.pending().is_some() {
+            return Err(StoreError::AuthorityRefused("rotation_pending"));
+        }
         if let Some(existing) = &account.recovery_verifier {
             return Ok(obsync_core::ct::eq(
                 existing.as_bytes(),
@@ -1161,43 +1397,52 @@ impl Store {
 
     /// Pair a device. The secret is wrapped before it reaches the journal.
     pub fn create_device(&self, d: NewDevice) -> Result<DeviceRecord, StoreError> {
+        self.create_device_scoped(d, false)
+    }
+
+    pub fn create_device_scoped(
+        &self,
+        d: NewDevice,
+        suite2: bool,
+    ) -> Result<DeviceRecord, StoreError> {
         let mut journal = self.journal();
         let index = self.index();
         match index.account_id() {
             Some(id) if id == d.account_id => {}
             _ => return Err(StoreError::NotSetUp),
         }
-        let device_id = DeviceId::new(random_bytes::<16>()?);
-        let record = DeviceRecord {
-            device_id,
-            account_id: d.account_id,
-            name: d.name,
-            platform: d.platform,
-            app_version: d.app_version,
-            created: UnixMs::now(),
-            last_seen: None,
-            last_sign_in: None,
-            last_edit: None,
-            last_heartbeat: None,
-            address: None,
-            country: None,
-            policy: DevicePolicy::default(),
-            state: d.state,
-            archived: false,
-        };
-        let wrapped = self.wrap(device_id.as_bytes(), &d.secret);
+        if index.authority.pending().is_some() {
+            return Err(StoreError::AuthorityRefused("rotation_pending"));
+        }
+        if index.authority.floor2() && !suite2 {
+            return Err(StoreError::AuthorityRefused("suite_required"));
+        }
+        let generation = index.authority.generation;
+        let state = d.state;
+        let secret = d.secret;
+        let record = new_device_record(d, UnixMs::now())?;
+        let device_id = record.device_id;
+        let wrapped = self.wrap(device_id.as_bytes(), &secret);
         let stored = record.clone();
         self.commit(&mut journal, index, |_| {
-            vec![Frame::Device {
-                record: stored,
-                wrapped,
+            vec![if let Some(generation) = generation {
+                Frame::ScopedDevice {
+                    record: stored,
+                    wrapped,
+                    generation,
+                }
+            } else {
+                Frame::Device {
+                    record: stored,
+                    wrapped,
+                }
             }]
         })?;
         self.log.info(
             "device_created",
             &[
                 ("device", Val::device(&device_id)),
-                ("state", Val::word(d.state.as_word())),
+                ("state", Val::word(state.as_word())),
             ],
         );
         Ok(record)
@@ -1279,6 +1524,16 @@ impl Store {
     pub fn activate_device(&self, id: &DeviceId) -> Result<(), StoreError> {
         let mut journal = self.journal();
         let index = self.index();
+        if index.authority.pending().is_some() {
+            return Err(StoreError::AuthorityRefused("rotation_pending"));
+        }
+        if index.authority.floor2()
+            && !index.authority.grants.get(id).is_some_and(|g| {
+                Some(g.generation) == index.authority.generation && g.operation.is_none()
+            })
+        {
+            return Err(StoreError::AuthorityRefused("suite_required"));
+        }
         let state = index
             .devices
             .get(id)
@@ -1889,9 +2144,21 @@ impl Store {
             let index = self.index();
             (index.snapshot_copy(), self.grown.load(Ordering::SeqCst))
         };
-        let slot = self.journal().admit_snapshot();
+        let slot = {
+            let mut journal = self.journal();
+            if self.index().authority.floor2() && !journal.floor_ready() {
+                return Err(StoreError::AuthorityRefused("floor_activation_pending"));
+            }
+            journal.admit_snapshot()
+        };
         let written = slot.write(&copy);
-        let bytes = self.journal().finish_snapshot(copy.seq, written)?;
+        let mut journal = self.journal();
+        let written = if self.index().authority.floor2() && !journal.floor_ready() {
+            Err(StoreError::AuthorityRefused("floor_activation_pending"))
+        } else {
+            written
+        };
+        let bytes = journal.finish_snapshot(copy.seq, written)?;
         self.grown.fetch_sub(covered, Ordering::SeqCst);
         self.snapshot_bytes.store(bytes, Ordering::SeqCst);
         started.summary(
@@ -2125,15 +2392,35 @@ impl Store {
                 frame,
             })
             .collect();
+        let needs_floor = index.authority.floor2()
+            || records.iter().any(|r| {
+                matches!(
+                    r.frame,
+                    Frame::Setup {
+                        generation: Some(_),
+                        ..
+                    } | Frame::RotationPrepare(_)
+                )
+            });
         drop(index);
         let written = journal.append_all(&records);
         self.prove(&self.journal_proof, written.as_ref().map(|_| ()));
         let bytes = written?;
+        // The first floor-bearing NEW kind is already durable. Complete the
+        // old-reader barrier before publication/ack. If it fails, still reflect
+        // durable authority so this live process cannot reopen legacy writes.
+        let barrier = if needs_floor {
+            journal.ensure_floor_marker()
+        } else {
+            Ok(())
+        };
+        self.prove(&self.journal_proof, barrier.as_ref().map(|_| ()));
         let mut index = self.index();
         for record in &records {
             index.apply(record);
         }
         self.grown.fetch_add(bytes, Ordering::SeqCst);
+        barrier?;
         Ok(first)
     }
 }
@@ -2318,4 +2605,25 @@ impl Store {
     fn wrapped_secret(&self, id: &DeviceId) -> Option<[u8; 32]> {
         self.index().devices.get(id).map(|entry| entry.wrapped)
     }
+}
+
+fn new_device_record(d: NewDevice, now: UnixMs) -> Result<DeviceRecord, StoreError> {
+    let device_id = DeviceId::new(random_bytes::<16>()?);
+    Ok(DeviceRecord {
+        device_id,
+        account_id: d.account_id,
+        name: d.name,
+        platform: d.platform,
+        app_version: d.app_version,
+        created: now,
+        last_seen: None,
+        last_sign_in: None,
+        last_edit: None,
+        last_heartbeat: None,
+        address: None,
+        country: None,
+        policy: DevicePolicy::default(),
+        state: d.state,
+        archived: false,
+    })
 }

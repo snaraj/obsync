@@ -1,3 +1,4 @@
+import { withDistinctMtime } from "./seal2-fixture.mjs";
 /**
  * Two devices typing in one OPEN note at the same time (issue #135).
  *
@@ -25,6 +26,7 @@ import { createRequire } from "node:module";
 import { DEVICE_B, FakeHost, KEYS, SECRET_B, STEP_MS, fakeState, pair, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { EditorBusy, Unwritable, applyChange } = require("../build/sync/pull.js");
 const { pendingPublication, pushDelete, pushFile, sidDigest } = require("../build/sync/push.js");
 const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
@@ -60,6 +62,8 @@ class OpenEditor {
   constructor(device, timers, place) {
     this.host = device.host;
     this.place = place;
+    this.revision = {};
+    this.host.editorRevision = (path) => path === NOTE ? this.revision : undefined;
     this.loaded = this.host.text(NOTE);
     this.unsaved = "";
     this.merged = 0;
@@ -79,7 +83,7 @@ class OpenEditor {
   }
 
   type(text) {
-    if (text !== "") this.host.inputAt.set(NOTE, this.host.clock);
+    if (text !== "") { this.host.inputAt.set(NOTE, this.host.clock); this.revision = {}; }
     this.unsaved += text;
     this.show();
   }
@@ -1167,7 +1171,7 @@ test("an incoming version that holds the unsent save is taken, and a head withou
   old.host.seed(NOTE, "one\ntwo\nthree\n", 1000);
   const root = await pushFile(old.context, NOTE);
   const bytes = enc("ONE\ntwo\nthree\n");
-  const { cid, sid, ciphertext } = await encryptChunk(old.keys.domainKey, bytes);
+  const { cid, sid, ciphertext } = await seal2.encryptChunk2(old.keys.domainKey, { generation: old.context.generation, domainId: old.context.domainId }, bytes);
   old.server.chunks.set(sid, ciphertext);
   const legacy = await old.server.publishManifest({
     fileId: root.fileId, sids: [sid], parents: [root.versionId], deviceId: KEYS.deviceId, manifestKey: old.keys.manifestKey, bytes: bytes.length,
@@ -1832,6 +1836,8 @@ test("two devices settling the same overlap publish one shared conflict-copy ver
         if (attempts.length === 2) release();
         await joined;
       }
+      if (device === b && fileId !== base.fileId && version.parents.length === 0)
+        version = await withDistinctMtime(fileId, version, right.manifestKey, { generation: right.generation, domainId: right.domainId });
       return post(fileId, version);
     };
   }
@@ -2027,4 +2033,13 @@ test("a note deleted here and edited elsewhere before the deletion is sent comes
   assert.equal(await pushDelete(r.context, NOTE), null, "a deletion was sent for a note that is back");
   assert.deepEqual(r.server.files.get(created.fileId).heads, [edit.version_id], "the file forked on the server");
   assert.ok(!r.server.journal.some((frame) => frame.deleted));
+});
+
+test("the open-editor fixture attributes revisions only to explicit typing",async(t)=>{
+ const {a,timers}=await pair(t);a.host.write(NOTE,"base",1000);const editor=new OpenEditor(a,timers,atEnd);
+ const initial=a.host.editorRevision(NOTE);editor.type("");assert.equal(a.host.editorRevision(NOTE),initial);
+ editor.type("x");const typed=a.host.editorRevision(NOTE);assert.notEqual(typed,initial);
+ editor.save();assert.equal(a.host.editorRevision(NOTE),typed);
+ a.host.write(NOTE,"external",2000);editor.external();assert.equal(a.host.editorRevision(NOTE),typed);
+ assert.equal(a.host.editorRevision("Other.md"),undefined);
 });

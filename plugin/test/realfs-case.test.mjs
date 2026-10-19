@@ -303,7 +303,7 @@ for (const { onDisk, incoming } of directions) {
     await folderRecord(r, onDisk, { deleted: true, parents: [created.version_id] });
     await folderRecord(r, incoming);
     await movedNote(r, one, `${incoming}/One.md`, ONE, 1000);
-    await movedNote(r, two, `${incoming}/Two.md`, TWO, 1000);
+    const lastMove = await movedNote(r, two, `${incoming}/Two.md`, TWO, 1000);
 
     const timers = new FakeTimers();
     const engine = new SyncEngine({
@@ -317,7 +317,8 @@ for (const { onDisk, incoming } of directions) {
     await engine.start();
     await timers.run(STEP_MS, () =>
       r.state.pathByFileId(one.fileId) === `${incoming}/One.md` &&
-      r.state.pathByFileId(two.fileId) === `${incoming}/Two.md`);
+      r.state.pathByFileId(two.fileId) === `${incoming}/Two.md` &&
+      r.state.data.lastSeq >= lastMove.seq && engine.pulls === 0 && engine.holder === null);
 
     // THE DIRECTORY ENTRY ITSELF, which is the whole repair: `readdir` is the
     // filesystem's own answer, not the record's and not the manifest's.

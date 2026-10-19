@@ -3,6 +3,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 import { rig } from "./fake.mjs";
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { assembleMergeInputs } = require("../build/sync/pull.js");
 const { CHUNK_MAX } = require("../build/chunker.js");
 const { ApiError } = require("../build/transport.js");
@@ -14,7 +15,7 @@ async function fixture() {
   const manifests = [];
   for (const value of ["base", "peer", "mine"]) {
     const bytes = new TextEncoder().encode(value);
-    const chunk = await encryptChunk(r.keys.domainKey, bytes);
+    const chunk = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, bytes);
     r.server.chunks.set(chunk.sid, chunk.ciphertext);
     manifests.push({v:1,path:"Notes/Typing.md",size:bytes.length,mtime:1000,
       domain:r.keys.domainId,chunks:[{sid:chunk.sid,cid:hex(chunk.cid),len:bytes.length}],
@@ -75,7 +76,7 @@ for (const kind of ["missing", "ciphertext", "cid", "length"]) test(`a batch's $
   };
   let singles = 0;
   r.transport.getChunk = () => { singles++; throw Error("invalid body retried"); };
-  await assert.rejects(assembleMergeInputs(r.context, r.manifests), error => kind === "missing" ? error.code === "unknown_chunk" : kind === "length" ? error.reason === "chunk_len_actual" : error.name === "OperationError");
+  await assert.rejects(assembleMergeInputs(r.context, r.manifests), error => kind === "missing" ? error.code === "unknown_chunk" : kind === "length" ? error.reason === "chunk_len_actual" : error.name === "ManifestError" && error.reason === "chunk_authentication");
   assert.equal(singles,0);
   assert.equal(r.host.files.size,0);
 });

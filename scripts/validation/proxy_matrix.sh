@@ -71,7 +71,7 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
   -keyout "${tls}/tls.key" -out "${scratch}/leaf.csr" -subj "/CN=${HOST}" >/dev/null 2>&1 \
   || deny 'openssl could not make the leaf request'
-printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "${HOST}" > "${scratch}/leaf.ext"
+printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n' "${HOST}" > "${scratch}/leaf.ext"
 openssl x509 -req -in "${scratch}/leaf.csr" -CA "${scratch}/ca.crt" -CAkey "${scratch}/ca.key" \
   -CAcreateserial -days 1 -extfile "${scratch}/leaf.ext" -out "${tls}/tls.crt" >/dev/null 2>&1 \
   || deny 'openssl could not sign the leaf'
@@ -106,6 +106,11 @@ for proxy in "${proxies[@]}"; do
     --address 127.0.0.1 --cacert "${scratch}/ca.crt" --state "${state}" >>"${scratch}/flow.log" 2>&1 \
     || deny "${proxy}: the verify phase failed: $(tail -5 "${scratch}/flow.log" | tr '\n' ' ')"
   prove "${proxy}: enrol, pair, a 2 MiB push and pull, the four refusals, and verify all ran through it"
+
+  python3 -B "${root}/scripts/ci/api_flow.py" cors --host "${HOST}" --port "${PORT}" \
+    --address 127.0.0.1 --cacert "${scratch}/ca.crt" --state "${state}" \
+    || deny "${proxy}: the plugin CORS contract failed through the proxy"
+  prove "${proxy}: anonymous preflight and authenticated plugin success/refusal carry no ambient credential grant"
 
   # What the proxy saw this host's connection come from: the network's
   # gateway, where the published port lands.

@@ -25,16 +25,21 @@ pub fn feed(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Respons
     // `files::page` already has: a `400` answered to an unauthenticated
     // caller is a refusal on a credentialed route that nothing proved, and
     // three query parameters were three free ways to make one.
-    auth::device(app, req, client)?;
+    let caller = auth::device(app, req, client)?;
     let since = number(req, "since", 0, u64::MAX)?;
     let wait = number(req, "wait", 0, CHANGES_MAX_WAIT_SECS)?;
     let limit = number(req, "limit", CHANGES_MAX_LIMIT, CHANGES_MAX_LIMIT)?.max(1);
 
-    let mut changes = app.store.changes(Seq(since), limit as usize)?;
-    if changes.changes.is_empty() && wait > 0 {
+    let mut changes =
         app.store
-            .wait_for_change(Seq(since), Duration::from_secs(wait));
-        changes = app.store.changes(Seq(since), limit as usize)?;
+            .changes_scoped(caller.id, &caller.scope, Seq(since), limit as usize)?;
+    if changes.changes.is_empty() && Seq(since) == changes.head_seq && wait > 0 {
+        let cursor = changes.seq;
+        app.store
+            .wait_for_change(changes.seq, Duration::from_secs(wait));
+        changes = app
+            .store
+            .changes_scoped(caller.id, &caller.scope, cursor, limit as usize)?;
     }
 
     Ok(Response::json(

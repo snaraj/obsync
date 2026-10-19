@@ -312,44 +312,78 @@ function deviceRow(row, index) {
     toggle.setAttribute('aria-expanded', String(opening));
   });
 
-  // One confirmation, asked before anything is sent: Revoke for a working
-  // device, Forget for a revoked one (#247).
+  // No removal default: the dashboard can revoke server access only.
+  // Key rotation must run on a trusted client; selecting it sends nothing.
   const open = field(node, 'revoke-open');
   const confirm = field(node, 'confirm');
+  const confirmationText = field(node, 'confirm-text');
   const act = field(node, 'revoke-do');
+  const choices = field(node, 'removal-choices');
+  const strong = field(node, 'revoke-strong');
+  const access = field(node, 'revoke-access');
+  let removal = null;
+  strong.setAttribute('aria-pressed', 'false');
+  access.setAttribute('aria-pressed', 'false');
+  choices.hidden = row.revoked;
+  act.hidden = !row.revoked;
+  const question = row.revoked
+    ? `Forget ${row.name}? It leaves this list for good. It already cannot sync, and the server goes on `
+      + 'refusing it for that reason: its record stays, so the versions it wrote keep its name. '
+      + 'Pair it again to bring it back.'
+    : `Choose how to remove ${row.name}. The last active device cannot be revoked.`;
   if (row.revoked) {
     open.textContent = 'Forget';
     open.classList.remove('danger');
     act.textContent = 'Confirm forget';
   }
-  setText(
-    field(node, 'confirm-text'),
-    row.revoked
-      ? `Forget ${row.name}? It leaves this list for good. It already cannot sync, and the server goes on `
-        + 'refusing it for that reason: its record stays, so the versions it wrote keep its name. '
-        + 'Pair it again to bring it back.'
-      : `Revoke ${row.name}? It stops syncing at once, its dashboard links and sessions end with it, `
-        + 'and pairing it again from another device is the only way back. '
-        + 'The last active device cannot be revoked.',
-  );
+  setText(confirmationText, question);
+  strong.addEventListener('click', () => {
+    removal = 'rotate';
+    strong.setAttribute('aria-pressed', 'true');
+    access.setAttribute('aria-pressed', 'false');
+    act.hidden = true;
+    setText(confirmationText,
+      `Key rotation for ${row.name} is unavailable here. Continue on a trusted Obsidian device to rotate keys. `
+      + 'On a retained device, open obsync settings, find this device under Devices, choose Revoke, then Rotate key. '
+      + 'No access has been revoked and no rotation has been started here.');
+  });
+  access.addEventListener('click', () => {
+    removal = 'server-only';
+    strong.setAttribute('aria-pressed', 'false');
+    access.setAttribute('aria-pressed', 'true');
+    act.hidden = false;
+    setText(confirmationText,
+      `Revoke server access only for ${row.name}? Its next server request fails and its dashboard sessions close. `
+      + 'Keys are not rotated: a retained key can still decrypt later ciphertext encrypted with the same key if obtained. '
+      + 'Pair it again from a trusted device to restore server access. The last active device cannot be revoked.');
+    act.focus();
+  });
   open.addEventListener('click', () => {
     open.hidden = true;
     confirm.hidden = false;
-    act.focus();
+    (row.revoked ? act : strong).focus();
   });
   field(node, 'revoke-cancel').addEventListener('click', () => {
     confirm.hidden = true;
     open.hidden = false;
+    removal = null;
+    strong.setAttribute('aria-pressed', 'false');
+    access.setAttribute('aria-pressed', 'false');
+    act.hidden = !row.revoked;
+    setText(confirmationText, question);
     open.focus();
   });
   act.addEventListener('click', () => {
+    // Also fence a stale confirmation event after changing the selection.
+    if (!row.revoked && removal !== 'server-only') return;
     guard(async () => {
       if (row.revoked) {
         await request('POST', `${ADMIN}/devices/${encodeURIComponent(row.id)}/archive`);
         say(`${row.name} is forgotten.`);
       } else {
         await request('POST', `${ADMIN}/devices/${encodeURIComponent(row.id)}/revoke`);
-        say(`${row.name} is revoked. Its next request fails, and its dashboard sessions are closed.`);
+        say(`The server reports that ${row.name}'s access is revoked and its dashboard sessions are closed. This action does not rotate keys; `
+          + 'a retained key can still decrypt later ciphertext encrypted with the same key if obtained.');
       }
       await loadDevices();
     });

@@ -105,6 +105,29 @@ pub struct Claimant {
     pub claimant_pub: Option<String>,
 }
 
+/// Only an opaque packet variant; the server never opens either seal.
+#[derive(Clone, Debug)]
+pub enum PairingSeal {
+    Legacy { envelope: String, nonce: String },
+    Suite2 { envelope: String },
+}
+impl PairingSeal {
+    fn suite2(&self) -> bool {
+        matches!(self, Self::Suite2 { .. })
+    }
+    fn value(&self) -> Value {
+        match self {
+            Self::Legacy { envelope, nonce } => {
+                obj(vec![("envelope", s(envelope)), ("nonce", s(nonce))])
+            }
+            Self::Suite2 { envelope } => obj(vec![
+                ("envelope", s(envelope)),
+                ("seal_suite", Value::Int(2)),
+            ]),
+        }
+    }
+}
+
 /// One pairing.
 #[derive(Clone, Debug)]
 pub struct Pairing {
@@ -120,7 +143,9 @@ pub struct Pairing {
     /// The claiming device, once one has claimed.
     pub claimant: Option<Claimant>,
     /// The key envelope and its nonce, held for exactly one fetch.
-    pub envelope: Option<(String, String)>,
+    pub envelope: Option<PairingSeal>,
+    /// Frozen packet capability declared when this pairing was created.
+    pub suite2: bool,
     /// The creator's ephemeral P-256 public key for pairing v2, revealed after
     /// the claim and before approval ([`PairingTable::reveal`]), and returned
     /// verbatim to the claimant while it waits and with the envelope. `None`
@@ -151,10 +176,21 @@ impl PairingTable {
 
     /// Open a pairing. Returns the expiry in unix seconds.
     pub fn create(&mut self, id: &str, creator: DeviceId, token: &str, now: u64) -> u64 {
+        self.create_scoped(id, creator, token, now, false)
+    }
+    pub fn create_scoped(
+        &mut self,
+        id: &str,
+        creator: DeviceId,
+        token: &str,
+        now: u64,
+        suite2: bool,
+    ) -> u64 {
         let expires = now + PAIRING_TTL_SECS;
         self.entries.insert(
             id.to_string(),
             Pairing {
+                suite2,
                 creator,
                 enroll_token: token.to_string(),
                 expires,
@@ -371,6 +407,23 @@ impl PairingTable {
         nonce: &str,
         now: u64,
     ) -> Result<DeviceId, ApiError> {
+        self.approve_sealed(
+            id,
+            actor,
+            PairingSeal::Legacy {
+                envelope: envelope.into(),
+                nonce: nonce.into(),
+            },
+            now,
+        )
+    }
+    pub fn approve_sealed(
+        &mut self,
+        id: &str,
+        actor: &DeviceId,
+        seal: PairingSeal,
+        now: u64,
+    ) -> Result<DeviceId, ApiError> {
         let p = self.entries.get_mut(id).ok_or_else(unknown)?;
         if &p.creator != actor {
             return Err(not_creator());
@@ -388,7 +441,20 @@ impl PairingTable {
             .as_ref()
             .expect("a claimed pairing has one")
             .device_id;
-        p.envelope = Some((envelope.to_string(), nonce.to_string()));
+        if p.suite2 != seal.suite2() {
+            return Err(ApiError::bad_request("pairing packet capability mismatch"));
+        }
+        if p.suite2
+            && (p.creator_pub.is_none()
+                || p.claimant.as_ref().is_none_or(|c| c.claimant_pub.is_none()))
+        {
+            return Err(ApiError::new(
+                409,
+                "not_revealed",
+                "suite2 pairing must reveal the creator key before approval",
+            ));
+        }
+        p.envelope = Some(seal);
         p.state = State::Approved;
         Ok(claimant)
     }
@@ -441,6 +507,7 @@ impl PairingTable {
     /// # Errors
     /// `404 unknown_pairing`, `403 not_claimant`, `409 not_approved`,
     /// `410 envelope_consumed`, `410 pairing_expired`, or `activate`'s own.
+    #[cfg(test)]
     pub fn take_envelope(
         &mut self,
         id: &str,
@@ -448,6 +515,22 @@ impl PairingTable {
         now: u64,
         activate: impl FnOnce() -> Result<(), ApiError>,
     ) -> Result<(String, String, Option<String>), ApiError> {
+        let (seal, creator) = self.take_seal(id, actor, now, activate)?;
+        match seal {
+            PairingSeal::Legacy { envelope, nonce } => Ok((envelope, nonce, creator)),
+            PairingSeal::Suite2 { .. } => {
+                Err(ApiError::bad_request("legacy collector cannot read suite2"))
+            }
+        }
+    }
+
+    pub fn take_seal(
+        &mut self,
+        id: &str,
+        actor: &DeviceId,
+        now: u64,
+        activate: impl FnOnce() -> Result<(), ApiError>,
+    ) -> Result<(PairingSeal, Option<String>), ApiError> {
         let p = self.entries.get_mut(id).ok_or_else(unknown)?;
         let is_claimant = p.claimant.as_ref().is_some_and(|c| &c.device_id == actor);
         if !is_claimant {
@@ -476,10 +559,10 @@ impl PairingTable {
             });
         }
         activate()?;
-        let (envelope, nonce) = p.envelope.take().ok_or_else(consumed)?;
+        let seal = p.envelope.take().ok_or_else(consumed)?;
         let creator_pub = p.creator_pub.take();
         p.state = State::Consumed;
-        Ok((envelope, nonce, creator_pub))
+        Ok((seal, creator_pub))
     }
 }
 
@@ -509,6 +592,20 @@ fn already_approved() -> ApiError {
 /// The device-authentication refusals, or `500 no_randomness`.
 pub fn create(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Response, ApiError> {
     let authed = auth::device(app, req, client)?;
+    let body = if authed.body.is_empty() {
+        obsync_core::json::Value::Object(vec![])
+    } else {
+        render::parse_json(&authed.body)?
+    };
+    let suite2 = devices::seal_suite(&body)?;
+    app.store.check_enrollment(suite2)?;
+    if suite2 && app.store.current_generation().is_none() {
+        return Err(ApiError::new(
+            409,
+            "migration_required",
+            "suite2 pairing requires an activated suite2 generation",
+        ));
+    }
     let id = token(16)?;
     let enroll = token(32)?;
     let now = app.clock.unix_secs();
@@ -516,7 +613,7 @@ pub fn create(app: &App, req: &mut Request, client: &ClientInfo) -> Result<Respo
         .pairings
         .lock()
         .expect("pairings")
-        .create(&id, authed.id, &enroll, now);
+        .create_scoped(&id, authed.id, &enroll, now, suite2);
     Ok(Response::json(
         201,
         &obj(vec![
@@ -551,10 +648,16 @@ pub fn claim(
             let parsed = held.json()?;
             let enroll = parsed.credential("enroll_token")?;
             let enrolment = devices::enrolment_fields(parsed.value())?;
-            let vault = vault_details(parsed.value())?;
+            let vault = vault_details_scoped(parsed.value(), enrolment.suite2)?;
             let claimant_pub = public_key_field(parsed.value(), "claimant_pub")?;
             let pairings = app.pairings.lock().expect("pairings");
             pairings.begin_claim(id, &enroll, now)?;
+            let expected = pairings.entries.get(id).ok_or_else(unknown)?.suite2;
+            if expected != enrolment.suite2 || (expected && claimant_pub.is_none()) {
+                return Err(ApiError::bad_request(
+                    "pairing capability or claimant key mismatch",
+                ));
+            }
             Ok((enrolment, vault, claimant_pub, pairings))
         })?;
     let (name, platform, app_version) = (
@@ -588,30 +691,53 @@ pub fn claim(
 }
 
 // Validate before claiming or enrolling, so a refused payload spends nothing.
+#[cfg(test)]
 fn vault_details(body: &Value) -> Result<Option<Value>, ApiError> {
+    vault_details_scoped(body, false)
+}
+fn vault_details_scoped(body: &Value, suite2: bool) -> Result<Option<Value>, ApiError> {
     let Some(vault) = body.get("vault") else {
         return Ok(None);
     };
-    let envelope = render::field_str(vault, "envelope")?;
-    let nonce = render::field_str(vault, "nonce")?;
-    if envelope.len() > 2048
-        || !super::is_hex(nonce, 24)
-        || !obsync_core::base64::decode(envelope).is_ok_and(|bytes| bytes.len() >= 16)
-    {
-        return Err(ApiError::bad_request("invalid sealed vault details"));
+    Ok(Some(read_seal(vault, suite2, 2048)?.value()))
+}
+fn read_seal(value: &Value, suite2: bool, max: usize) -> Result<PairingSeal, ApiError> {
+    let envelope = render::field_str(value, "envelope")?;
+    if envelope.is_empty() || envelope.len() > max {
+        return Err(ApiError::bad_request("invalid sealed packet length"));
     }
-    Ok(Some(obj(vec![
-        ("envelope", s(envelope)),
-        ("nonce", s(nonce)),
-    ])))
+    if suite2 {
+        if value.as_object().is_none_or(|f| f.len() != 2)
+            || value.get("seal_suite").and_then(Value::as_u64) != Some(2)
+            || value.get("nonce").is_some()
+            || !obsync_core::base64::decode(envelope).is_ok_and(|b| b.len() >= 16)
+        {
+            return Err(ApiError::bad_request(
+                "suite2 packet requires literal2 and no nonce",
+            ));
+        }
+        Ok(PairingSeal::Suite2 {
+            envelope: envelope.into(),
+        })
+    } else {
+        if value.get("seal_suite").is_some() {
+            return Err(ApiError::bad_request(
+                "legacy packet cannot declare seal_suite",
+            ));
+        }
+        let nonce = render::field_str(value, "nonce")?;
+        if !super::is_hex(nonce, 24)
+            || (max == 2048 && !obsync_core::base64::decode(envelope).is_ok_and(|b| b.len() >= 16))
+        {
+            return Err(ApiError::bad_request("invalid legacy sealed packet"));
+        }
+        Ok(PairingSeal::Legacy {
+            envelope: envelope.into(),
+            nonce: nonce.into(),
+        })
+    }
 }
 
-/// Validate an optional ephemeral public-key field (pairing v2) without doing
-/// any elliptic-curve mathematics: the server holds and returns it verbatim
-/// and never computes on it (requirement 5, std-only). A raw-uncompressed
-/// P-256 point is 65 bytes beginning `0x04`; its base64url is 87 characters.
-/// Anything else is a `400`, and the field is bounded so an unverified claim
-/// body cannot smuggle a large value past the pre-authentication budget.
 fn public_key_field(body: &Value, name: &str) -> Result<Option<String>, ApiError> {
     let Some(v) = body.get(name) else {
         return Ok(None);
@@ -733,22 +859,15 @@ pub fn approve(
 ) -> Result<Response, ApiError> {
     let authed = auth::device(app, req, client)?;
     let body = render::parse_json(&authed.body)?;
-    let envelope = render::field_str(&body, "envelope")?;
-    let nonce = render::field_str(&body, "nonce")?;
-    if envelope.is_empty() || envelope.len() > 8192 {
-        return Err(ApiError::bad_request(
-            "envelope must be 1..8192 characters of base64",
-        ));
-    }
-    if !super::is_hex(nonce, 24) {
-        return Err(ApiError::bad_request("nonce must be 24 hex characters"));
-    }
+    let suite2 = devices::seal_suite(&body)?;
+    app.store.check_enrollment(suite2)?;
+    let seal = read_seal(&body, suite2, 8192)?;
     let now = app.clock.unix_secs();
     let claimant = app
         .pairings
         .lock()
         .expect("pairings")
-        .approve(id, &authed.id, envelope, nonce, now)?;
+        .approve_sealed(id, &authed.id, seal, now)?;
     // Approval grants nothing yet: the claimant becomes active when it
     // collects the envelope, inside the ten minutes (`envelope` below).
     app.log.info(
@@ -831,11 +950,11 @@ pub fn envelope(
 ) -> Result<Response, ApiError> {
     let authed = auth::device_claimant(app, req, client)?;
     let now = app.clock.unix_secs();
-    let (envelope, nonce, creator_pub) =
+    let (seal, creator_pub) =
         app.pairings
             .lock()
             .expect("pairings")
-            .take_envelope(id, &authed.id, now, || {
+            .take_seal(id, &authed.id, now, || {
                 Ok(app.store.activate_device(&authed.id)?)
             })?;
     app.log.info(
@@ -845,11 +964,13 @@ pub fn envelope(
             ("decision", Val::word("activated")),
         ],
     );
-    let mut fields = vec![("envelope", s(&envelope)), ("nonce", s(&nonce))];
+    let Value::Object(mut fields) = seal.value() else {
+        unreachable!("sealed packet is an object")
+    };
     if let Some(key) = creator_pub {
-        fields.push(("creator_pub", s(&key)));
+        fields.push(("creator_pub".into(), s(&key)));
     }
-    Ok(Response::json(200, &obj(fields)))
+    Ok(Response::json(200, &Value::Object(fields)))
 }
 
 fn token(bytes: usize) -> Result<String, ApiError> {
@@ -922,6 +1043,135 @@ mod tests {
                 .get("name")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn suite2_packet_parser_refuses_stripped_mixed_and_malformed_variants() {
+        let envelope = obsync_core::base64::encode(&[0x91; 32]);
+        let valid = obj(vec![("envelope", s(&envelope)), ("seal_suite", n(2))]);
+        assert_eq!(read_seal(&valid, true, 2048).unwrap().value(), valid);
+        assert!(read_seal(&valid, false, 2048).is_err());
+        for bad in [
+            obj(vec![("envelope", s(&envelope))]),
+            obj(vec![("envelope", s(&envelope)), ("seal_suite", n(1))]),
+            obj(vec![("envelope", s(&envelope)), ("seal_suite", s("2"))]),
+            obj(vec![
+                ("envelope", s(&envelope)),
+                ("seal_suite", Value::Null),
+            ]),
+            obj(vec![
+                ("envelope", s(&envelope)),
+                ("seal_suite", n(2)),
+                ("nonce", Value::Null),
+            ]),
+            obj(vec![
+                ("envelope", s(&envelope)),
+                ("seal_suite", n(2)),
+                ("nonce", s(&"ab".repeat(12))),
+            ]),
+            obj(vec![
+                ("envelope", s(&envelope)),
+                ("seal_suite", n(2)),
+                ("name", s("clear")),
+            ]),
+            obj(vec![("envelope", s("!")), ("seal_suite", n(2))]),
+            obj(vec![
+                ("envelope", s(&obsync_core::base64::encode(&[0; 15]))),
+                ("seal_suite", n(2)),
+            ]),
+            obj(vec![
+                ("envelope", s(&"A".repeat(2052))),
+                ("seal_suite", n(2)),
+            ]),
+        ] {
+            assert!(
+                read_seal(&bad, true, 2048).is_err(),
+                "invalid suite2 packet accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn suite2_approval_requires_session_capability_and_both_revealed_keys() {
+        for suite2 in [false, true] {
+            let mut t = PairingTable::new();
+            let creator = dev(1);
+            t.create_scoped("p1", creator, "tok", NOW, suite2);
+            t.finish_claim(
+                "p1",
+                Claimant {
+                    device_id: dev(2),
+                    name: "n".into(),
+                    platform: "ios".into(),
+                    app_version: "0".into(),
+                    vault: None,
+                    claimant_pub: None,
+                },
+            );
+            let seal = PairingSeal::Suite2 {
+                envelope: "opaque".into(),
+            };
+            if !suite2 {
+                assert_eq!(
+                    t.approve_sealed("p1", &creator, seal, NOW)
+                        .unwrap_err()
+                        .status,
+                    400
+                );
+                assert_eq!(t.entries["p1"].state, State::Claimed);
+                continue;
+            }
+            assert_eq!(
+                t.approve("p1", &creator, "opaque", &"ab".repeat(12), NOW)
+                    .unwrap_err()
+                    .status,
+                400
+            );
+            assert_eq!(
+                t.approve_sealed("p1", &creator, seal.clone(), NOW)
+                    .unwrap_err()
+                    .code,
+                "not_revealed"
+            );
+            t.entries
+                .get_mut("p1")
+                .unwrap()
+                .claimant
+                .as_mut()
+                .unwrap()
+                .claimant_pub = Some(PUBKEY.into());
+            assert_eq!(
+                t.approve_sealed("p1", &creator, seal.clone(), NOW)
+                    .unwrap_err()
+                    .code,
+                "not_revealed"
+            );
+            t.entries
+                .get_mut("p1")
+                .unwrap()
+                .claimant
+                .as_mut()
+                .unwrap()
+                .claimant_pub = None;
+            t.reveal("p1", &creator, PUBKEY, NOW).unwrap();
+            assert_eq!(
+                t.approve_sealed("p1", &creator, seal.clone(), NOW)
+                    .unwrap_err()
+                    .code,
+                "not_revealed"
+            );
+            t.entries
+                .get_mut("p1")
+                .unwrap()
+                .claimant
+                .as_mut()
+                .unwrap()
+                .claimant_pub = Some(PUBKEY.into());
+            t.approve_sealed("p1", &creator, seal.clone(), NOW).unwrap();
+            let (taken, key) = t.take_seal("p1", &dev(2), NOW, || Ok(())).unwrap();
+            assert_eq!(taken.value(), seal.value());
+            assert_eq!(key.as_deref(), Some(PUBKEY));
+        }
     }
 
     /// A raw-uncompressed P-256 point (65 bytes, `0x04` prefix) as base64url.

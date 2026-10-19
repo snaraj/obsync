@@ -39,6 +39,8 @@ pub struct Enrolment {
     pub platform: String,
     /// The plugin version the device reports.
     pub app_version: String,
+    /// Top-level declaration from this enrollment body.
+    pub suite2: bool,
 }
 
 /// Mint a device secret, create the device in `state`, and hand back its
@@ -63,15 +65,27 @@ pub fn enrol(
     let mut secret = [0u8; 32];
     rand::fill(&mut secret)
         .map_err(|_| ApiError::new(500, "no_randomness", "the system CSPRNG is unavailable"))?;
-    let record = app.store.create_device(NewDevice {
-        account_id,
-        name: e.name,
-        platform: e.platform,
-        app_version: e.app_version,
-        secret,
-        state,
-    })?;
+    let record = app.store.create_device_scoped(
+        NewDevice {
+            account_id,
+            name: e.name,
+            platform: e.platform,
+            app_version: e.app_version,
+            secret,
+            state,
+        },
+        e.suite2,
+    )?;
     Ok((record, hex::encode(&secret)))
+}
+
+/// Absent means legacy; a present suite must be literal2, never a fallback.
+pub(super) fn seal_suite(body: &Value) -> Result<bool, ApiError> {
+    match body.get("seal_suite") {
+        None => Ok(false),
+        Some(s) if s.as_u64() == Some(2) => Ok(true),
+        Some(_) => Err(ApiError::bad_request("unsupported seal_suite")),
+    }
 }
 
 /// The platforms a device may declare (`docs/protocol.md`, "Pairing").
@@ -97,6 +111,7 @@ pub fn enrolment_fields(body: &Value) -> Result<Enrolment, ApiError> {
         name,
         platform,
         app_version,
+        suite2: seal_suite(body)?,
     })
 }
 

@@ -51,7 +51,7 @@ test("native history modal renders retained/deleted content, respects busy contr
   const pending = new Promise((done) => { resolve = done; });
   let closed = 0, restored, loadCalls = 0;
   const browser = { done: false, newestFirst: true, next: async () => { loadCalls++; return pending; } };
-  const plugin = { openHistory: () => browser, closeHistory: () => { closed++; },
+  const plugin = { state: { custody2: () => null }, openHistory: () => browser, closeHistory: () => { closed++; },
     restoreHistory: async (_browser, entry) => { restored = entry; return { path: "Notes/copy.md", syncRequested: false }; } };
   plugin.notices = channel(box, plugin);
   const modal = new HistoryModal({}, plugin);
@@ -92,7 +92,7 @@ test("closing a loading modal cancels its session and a late page cannot repopul
   let resolve;
   const pending = new Promise((done) => { resolve = done; });
   let closed = 0;
-  const modal = new HistoryModal({}, { openHistory: () => ({ done: false, newestFirst: true, next: () => pending }), closeHistory: () => { closed++; } });
+  const modal = new HistoryModal({}, { state: { custody2: () => null }, openHistory: () => ({ done: false, newestFirst: true, next: () => pending }), closeHistory: () => { closed++; } });
   modal.contentEl = new Element();
   modal.onOpen();
   const loading = modal.load();

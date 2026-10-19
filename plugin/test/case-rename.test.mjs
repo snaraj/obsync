@@ -19,7 +19,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { FakeTimers, STEP_MS, pair, published, rig, settled } from "./fake.mjs";
+import { openPublishedManifest, FakeTimers, STEP_MS, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -52,10 +52,8 @@ const tombstones = async (server, manifestKey) => {
   const out = [];
   for (const frame of server.journal) {
     if (!frame.deleted) continue;
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const manifest = JSON.parse(await c.decryptManifest(
-      manifestKey, frame.file_id, binder, c.unhex(frame.manifest_nonce), c.unbase64(frame.manifest_ct),
-    ));
+
+    const manifest = await openPublishedManifest(frame, manifestKey);
     if (manifest.v !== 2) out.push(frame);
   }
   return out;
@@ -867,19 +865,98 @@ test("the startup scan drops the ghost record, publishes nothing, and disarms th
  * folder. The selection is captured once, in the handler, before either half
  * runs (`main.ts`).
  */
-test("a case-only rename of a SELECTED folder publishes moves, not new notes", async (t) => {
+for (const schedule of ["ordinary", "held acknowledgement", "held metadata"]) test(
+  "a case-only rename of a SELECTED folder publishes moves, not new notes" + (schedule === "ordinary" ? "" : ` (${schedule})`), async (t) => {
   const { server, timers, a, b, keys } = await pair(t, "immediate", {
     isMobileB: false, caseSensitiveA: false, caseSensitiveB: false,
   });
   b.state.data.syncFolders = ["Team docs"];
+  // A note can land before its folder's initial receipt. Hold that post so
+  // the setup cannot mistake two note records for a completed initial sync.
+  let releaseFolder;
+  const folderGate = new Promise((resolve) => { releaseFolder = resolve; });
+  t.after(() => releaseFolder());
+  const post = a.transport.postVersion.bind(a.transport);
+  let folderHeld = false;
+  let folderPosted = false;
+  a.transport.postVersion = async (id, body) => {
+    if (!folderHeld && body.sids.length === 0 && !body.deleted) {
+      folderHeld = true;
+      await folderGate;
+      const receipt = await post(id, body);
+      folderPosted = true;
+      return receipt;
+    }
+    return post(id, body);
+  };
   a.host.write("Team docs/One.md", BODY, 1000);
   a.host.write("Team docs/Two.md", OTHER, 1000);
+  let deletedFolderId;
+  let release = () => undefined, releaseEcho = () => undefined, held = false, echoHeld = false;
+  const gate = new Promise(resolve => { release = resolve; });
+  const echoGate = new Promise(resolve => { releaseEcho = resolve; });
+  t.after(() => { release(); releaseEcho(); });
+  if (schedule === "held acknowledgement") {
+    const postB = b.transport.postVersion.bind(b.transport);
+    b.transport.postVersion = async (id, body) => {
+      const receipt = await postB(id, body);
+      if (id === deletedFolderId && body.sids.length === 0 && body.deleted && !held) { held = true; await gate; }
+      return receipt;
+    };
+  } else if (schedule === "held metadata") {
+    const save = b.state.store.saveData, changes = b.transport.changes.bind(b.transport);
+    b.transport.changes = async (...args) => {
+      const page = await changes(...args);
+      if (page.changes.some(change => change.file_id === deletedFolderId && change.deleted)) { echoHeld = true; await echoGate; }
+      return page;
+    };
+    b.state.store.saveData = async value => {
+      if (!held && value.folders["Team docs"] === undefined && value.folderRemovals["Team docs"] !== undefined) {
+        held = true; await gate;
+      }
+      return save(value);
+    };
+  }
   await a.engine.start();
   await b.engine.start();
   await timers.run(STEP_MS, () => settled(b, "Team docs/One.md") && settled(b, "Team docs/Two.md"));
+  assert.equal(folderHeld, true, "the initial folder post never reached the hold");
+  assert.equal(folderPosted, false, "note records must not stand for the folder receipt");
+  releaseFolder();
+  await timers.run(STEP_MS, () => folderPosted &&
+    [a, b].every((device) => device.host.text("Team docs/One.md") === BODY &&
+      device.host.text("Team docs/Two.md") === OTHER &&
+      ["Team docs/One.md", "Team docs/Two.md"].every((path) => settled(device, path) &&
+        device.state.fileByPath(path).fileId === a.state.fileByPath(path)?.fileId) &&
+      device.state.folderByPath("Team docs")?.versionId === a.state.folderByPath("Team docs")?.versionId &&
+      device.state.folderByPath("Team docs") !== undefined && device.state.data.lastSeq === server.seq));
+  assert.equal(folderPosted, true, "the rename must follow the initial folder receipt");
   const ids = ["Team docs/One.md", "Team docs/Two.md"].map((path) => b.state.fileByPath(path).fileId);
 
+  deletedFolderId = b.state.folderByPath("Team docs").fileId;
   b.host.renameFolder("Team docs", "team docs");
+  if (schedule === "held acknowledgement") {
+    await until(() => b.host.logs.some(line => line.includes("reason=deletion_receipt")) ||
+      b.host.logs.some(line => line.includes("reason=outside_sync_scope")), "the own deletion never reached its receipt boundary");
+    assert.equal(held, true);
+    assert.equal(b.state.folderByPath("Team docs") !== undefined, true);
+    assert.ok(b.host.logs.some(line => line.includes("decision=waiting reason=deletion_receipt")));
+    assert.equal(b.host.logs.some(line => line.includes("decision=completed reason=deletion_receipt")), false);
+    release();
+  } else if (schedule === "held metadata") {
+    await timers.run(STEP_MS, () => held && echoHeld);
+    assert.equal(held, true); assert.equal(echoHeld, true);
+    assert.equal(b.state.folderByPath("Team docs"), undefined);
+    const tombstone = server.journal.find(frame => frame.file_id === deletedFolderId && frame.deleted);
+    assert.ok(tombstone);
+    assert.equal(b.state.data.graves[deletedFolderId]?.versionId, tombstone.version_id);
+    assert.equal(b.engine.contextValue.authored.has(tombstone.version_id), false);
+    releaseEcho();
+    await timers.run(STEP_MS, () => b.state.data.lastSeq >= tombstone.seq);
+    assert.ok(b.state.data.lastSeq >= tombstone.seq, "the own echo must settle while metadata is held");
+    assert.equal(b.host.logs.some(line => line.includes("reason=outside_sync_scope")), false);
+    release();
+  }
   await timers.run(SCAN_MS);
   await timers.run(SCAN_MS);
 

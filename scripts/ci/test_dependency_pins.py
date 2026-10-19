@@ -32,6 +32,7 @@ class NodeToolchainPins(unittest.TestCase):
         )
         self.assertEqual(len(node_images), 1)
         self.assertEqual(node_images[0][0], f"{node}-trixie-slim")
+        self.assertEqual(node_images[0][1], "0d1e33586362bb9e608c4e751e7a9e7edb55c9ac11461ed5666af696cc461dd4")
         self.assertIn(f'test "$(node --version)" = "v{node}"', dockerfile)
         self.assertIn(f'test "$(npm --version)" = "{npm}"', dockerfile)
 
@@ -40,8 +41,23 @@ class NodeToolchainPins(unittest.TestCase):
         self.assertEqual(workflow.count(f'test "$(node --version)" = "v{node}"'), 1)
         self.assertEqual(workflow.count(f'test "$(npm --version)" = "{npm}"'), 1)
 
+        desktop = (ROOT / ".github/workflows/desktop-matrix.yml").read_text()
+        self.assertEqual(re.findall(r"node-version: '([^']+)'", desktop), [node] * 4)
+        self.assertEqual(desktop.count(f'test "$(node --version)" = "v{node}"'), 1)
+
         ci_map = (ROOT / "docs/ci-map.md").read_text()
         self.assertIn(f"Node {node} / npm {npm}", ci_map)
+
+
+class RustBuildImagePins(unittest.TestCase):
+    def test_updated_substrate_still_selects_the_pinned_compiler(self):
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        self.assertIn("docker.io/library/rust:1.99.0-slim-trixie@sha256:"
+                      "2752b332db73fdbb7dc576f06c82ed1f312005784ef913d7e04a28f5f55dc581 AS server", dockerfile)
+        toolchain = (ROOT / "rust-toolchain.toml").read_text()
+        self.assertIn('channel = "1.98.0"', toolchain)
+        self.assertIn('rustup toolchain install;', dockerfile)
+        self.assertIn('test "$(rustc --version | awk \'{print $2}\')" = "1.98.0";', dockerfile)
 
 
 class CodeqlActionPins(unittest.TestCase):
@@ -54,7 +70,8 @@ class CodeqlActionPins(unittest.TestCase):
         )
         self.assertEqual({role for role, _, _ in pins}, {"init", "analyze"})
         self.assertEqual(len(pins), 2)
-        self.assertEqual(len({(sha, version) for _, sha, version in pins}), 1)
+        self.assertEqual({(sha, version) for _, sha, version in pins},
+                         {("6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee", "v4.39.0")})
 
 
 if __name__ == "__main__":

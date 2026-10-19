@@ -17,7 +17,7 @@ nothing here depends on them.
    commits carry the noreply identity per "Commit identity mechanics"; the
    pinned toolchain is `rust-toolchain.toml` (Rust 1.98.0, components
    `rustfmt`, `clippy`, `llvm-tools`) and `plugin/package.json` (Node
-   26.10.0, npm 11.19.1, one exact `typescript` devDependency). The gate
+   26.12.0, npm 11.20.0, one exact `typescript` devDependency). The gate
    verifies these exactly.
 4. Survey live state yourself: `gh issue list`, `gh pr list`, including the
    open-agent-PR count against the PR budget below.
@@ -103,8 +103,19 @@ Numbered for citation, repo-scoped, none negotiable in code:
    source for the Rust CLI is `crates/obsync-cli/src/macos-acl.js`; it checks descriptor identity and every ACL
    result, changes no file or permission, and loads no downloaded executable.
    The CLI uses this same narrow reader for directory and runtime custody. The dashboard is hand-written HTML, CSS, and JavaScript with no framework and
-   no remote asset. Cryptography on the device uses the platform's built-in
-   WebCrypto; cryptography on the server is implemented in
+   no remote asset. Content cryptography on the device uses the platform's built-in
+   WebCrypto. The owner-approved desktop custody exception is the fixed
+   `app.secretStorage.adapter.safeStorage` bridge: only `isEncryptionAvailable`,
+   `encryptString`, `decryptString`, and Linux-only `getSelectedStorageBackend`,
+   plus the built-in `buffer` module to decode ciphertext. It encrypts obsync's
+   entire owned credential envelope before public SecretStorage receives it.
+   Missing or changed interfaces, unavailable encryption and unprotected or
+   unknown Linux backends refuse before secret persistence; there is no raw
+   fallback. No arbitrary IPC, secret inventory, native setter, downloaded
+   package or OS configuration change is included. This private Obsidian bridge
+   is a deliberate compatibility constraint, not a public API guarantee.
+   Mobile retains its public native SecretStorage path and separate physical
+   acceptance. Cryptography on the server is implemented in
    `crates/obsync-core` against published test vectors. The server FFI surface
    remains `crates/obsyncd/src/signal.rs` (SIGTERM/SIGINT delivery); the only
    other surfaces are the two approved CLI identity modules above. Every other
@@ -118,8 +129,12 @@ Numbered for citation, repo-scoped, none negotiable in code:
    domain key, a chunk key, a plaintext chunk, or a clear file path to the
    server. The server never decrypts content and cannot: it holds no key
    material for it. Path names travel only inside encrypted manifests.
-   `TestBlindServer` in `crates/obsyncd` pins that no handler, log line, or
-   journal frame carries a field named or shaped like a key or a path.
+   `no_field_is_named_or_shaped_like_a_key_or_a_path` in
+   `crates/obsyncd/src/doctrine_test.rs` checks selected field-name patterns in
+   server source. It is a source guard, not a runtime confidentiality proof.
+   The required `scripts/ci/e2ee.mjs` run exercises the real plugin engine
+   and server, scans captured traffic and server storage/logs for seeded
+   content and content keys, and requires planted leak controls to fail.
 7. **Truthful serving contract, TLS outside the process.** The server
    listens on plain HTTP, port 8080 by default, and is always deployed behind
    a TLS terminator (a reverse proxy the owner trusts on the reference
@@ -191,8 +206,10 @@ names live only in `chart/values.yaml` defaults and `docs/`. In
 `cloudflare` mode the server requires the edge's connecting-address and
 request-id headers on every request and refuses requests that lack them;
 in `none` mode it trusts only `OBSYNC_TRUSTED_PROXY_CIDRS` for forwarded
-addresses. `TestProviderNeutrality` pins zero provider names under
-`crates/` and `plugin/src/`.
+addresses. `no_provider_name_outside_the_edge_setting` in `doctrine_test.rs`
+checks source exceptions for the edge setting. Provider-specific header
+constants are confined to `crates/obsyncd/src/api/edge.rs`; the adapter is an
+explicit boundary, not a claim that the source contains no provider strings.
 
 ## Testing doctrine
 
@@ -211,8 +228,14 @@ addresses. `TestProviderNeutrality` pins zero provider names under
   timing. Every case names the refusal it expects.
 - Plugin tests run under `node --test` against Node's built-in WebCrypto
   and a hand-written fake of the Obsidian `Vault`/`DataAdapter` surface.
-  Encrypt/decrypt round-trips are cross-checked against fixtures produced
-  by the Rust core so the two implementations agree on every byte.
+  Crypto fixtures are produced by WebCrypto, alongside published primitive
+  vectors; a round-trip using one implementation is not independent proof of
+  that implementation. The Rust primitive vectors have their own tests.
+- `make e2ee` builds the actual plugin and server and runs their transport,
+  pairing and sync paths together. The vault and timers are in-memory host
+  adapters; this required CI regression does not replace native desktop or
+  phone acceptance. Empty/incomplete captures, an empty needle set, parser
+  failures and scanner-budget exhaustion must refuse PASS.
 - Tests are stdlib-only with hand-written fakes; no assertion libraries,
   no mock frameworks. Fixture text is sentinel-only.
 - Every test removes what it creates, on failure too: a plugin test's temp

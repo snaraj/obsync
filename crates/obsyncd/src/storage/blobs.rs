@@ -239,12 +239,18 @@ impl Blobs {
     ///
     /// Refuses before anything is published: a body that does not hash to
     /// `sid`, or whose length is not `declared_len`, leaves no file behind.
-    pub(crate) fn write(
+    #[cfg(test)]
+    fn write(&self, sid: &Sid, declared_len: u64, body: &mut dyn Read) -> Result<(), StoreError> {
+        self.write_admitted(sid, declared_len, body, || Ok(()))
+    }
+
+    pub(crate) fn write_admitted<P>(
         &self,
         sid: &Sid,
         declared_len: u64,
         body: &mut dyn Read,
-    ) -> Result<(), StoreError> {
+        admit: impl FnOnce() -> Result<P, StoreError>,
+    ) -> Result<P, StoreError> {
         let tmp = self.root.join("v1/tmp").join(tmp_name());
         let mut file = create(&tmp)?;
         // A volume that fills during the stream refuses at a write. The temp
@@ -276,13 +282,22 @@ impl Blobs {
         self.tripped(Fault::ChunkBeforeRename)?;
         #[cfg(test)]
         self.errno_at(BlobPhase::Rename)?;
+        // Admission is serialized with the generation fence only AFTER the
+        // untrusted stream has finished. Hold its writer through publication.
+        let permit = match admit() {
+            Ok(permit) => permit,
+            Err(error) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(error);
+            }
+        };
         // A refused publish keeps the temp too: it is what tells the next
         // start a fan-out name may not be durable (`Blobs::start`).
         self.publish(&self.root, &tmp, &Blobs::chunk_path(&self.root, sid))?;
         for mirror in &self.mirrors {
             self.mirror_copy(mirror, sid)?;
         }
-        Ok(())
+        Ok(permit)
     }
 
     /// Read a body the store already holds, verifying it and keeping nothing.

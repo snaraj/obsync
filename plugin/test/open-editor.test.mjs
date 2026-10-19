@@ -33,9 +33,10 @@ import test from "node:test";
 import { rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { STEP_MS, pair, rig, sandbox, settled } from "./fake.mjs";
+import { openPublishedManifest, KEYS, STEP_MS, pair, rig, sandbox, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const c = require("../build/crypto.js");
 const { EDITING_WINDOW_MS, applyChange } = require("../build/sync/pull.js");
 const { pushFile } = require("../build/sync/push.js");
@@ -54,18 +55,12 @@ async function versions(server, k) {
   const out = [];
   for (const frame of server.journal) {
     if (frame.file_id === k.map.fileId) continue;
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const manifest = JSON.parse(await c.decryptManifest(
-      k.manifestKey,
-      frame.file_id,
-      binder,
-      c.unhex(frame.manifest_nonce),
-      c.unbase64(frame.manifest_ct),
-    ));
+
+    const manifest = await openPublishedManifest(frame, k.manifestKey);
     if (manifest.v === 2) continue;
     const parts = [];
     for (const chunk of manifest.chunks) {
-      parts.push(await c.decryptChunk(k.domainKey, c.unhex(chunk.cid), server.chunks.get(chunk.sid)));
+      parts.push(await seal2.decryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, c.unhex(chunk.cid), server.chunks.get(chunk.sid)));
     }
     const text = manifest.deleted ? null : parts.map((part) => new TextDecoder().decode(part)).join("");
     out.push({ fileId: frame.file_id, versionId: frame.version_id, parents: frame.parents, deleted: manifest.deleted, text });
@@ -131,7 +126,8 @@ test("the push queue remembers only the publications the window can still read",
   const publish = async (path, text, at) => {
     a.host.clock = at;
     a.host.write(path, text, at);
-    await timers.run(STEP_MS, () => a.state.fileByPath(path)?.mtime === at);
+    // The record precedes the acknowledged publication's window update.
+    await timers.run(STEP_MS, () => a.state.fileByPath(path)?.mtime === at && a.engine.context.pushedAt.get(path) === at);
   };
   await publish("Notes/kept typing.md", "one\n", T0);
   await publish("Notes/left alone.md", "one\n", T0 + 1);

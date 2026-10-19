@@ -18,7 +18,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { FakeTimers, KEYS, rig } from "./fake.mjs";
+import { openPublishedManifest, FakeTimers, KEYS, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
@@ -208,11 +208,8 @@ test("a rename abandoned mid-read still publishes as a rename, not as new conten
   assert.equal(state.fileByPath("Notes/New.md").fileId, fileId, "the same file id moved");
   const paths = [];
   for (const frame of server.journal) {
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    paths.push(JSON.parse(await c.decryptManifest(
-      k.manifestKey, frame.file_id, binder,
-      Uint8Array.from(Buffer.from(frame.manifest_nonce, "hex")), c.unbase64(frame.manifest_ct),
-    )).path);
+
+    paths.push((await openPublishedManifest(frame, k.manifestKey)).path);
   }
   assert.ok(paths.includes("Notes/New.md"), `the new name was published: ${paths.join(", ")}`);
 });

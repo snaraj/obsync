@@ -441,8 +441,9 @@ async function chunkKeyAndNonce(domainKey: Bytes, cid: Bytes): Promise<{ key: By
 
 /**
  * Deterministic chunk encryption, `docs/architecture.md` 3.2. Identical
- * plaintext in the same domain yields an identical `sid` on every device, so
- * the server deduplicates without learning anything about the plaintext.
+ * plaintext in the same domain yields an identical `sid` on every device.
+ * The server observes equality and ciphertext length, but receives neither
+ * the plaintext nor the key that opens it.
  *
  * `cid` is returned because it is REQUIRED to decrypt: `K_c` derives from it
  * and it cannot be recomputed from the ciphertext. It is recorded per chunk
@@ -517,6 +518,17 @@ export async function encryptManifest(
   return { nonce, ciphertext };
 }
 
+export function decryptManifestBytes(
+  manifestKey: Bytes,
+  fileId: string,
+  versionId: string,
+  nonce: Bytes,
+  ciphertext: Bytes,
+): Promise<Bytes> {
+  return aesGcmDecrypt(manifestKey, nonce, ciphertext, manifestAad(fileId, versionId));
+}
+
+
 export async function decryptManifest(
   manifestKey: Bytes,
   fileId: string,
@@ -525,7 +537,7 @@ export async function decryptManifest(
   ciphertext: Bytes,
 ): Promise<string> {
   return fromUtf8(
-    await aesGcmDecrypt(manifestKey, nonce, ciphertext, manifestAad(fileId, versionId)),
+    await decryptManifestBytes(manifestKey, fileId, versionId, nonce, ciphertext),
   );
 }
 
@@ -537,10 +549,10 @@ export async function decryptManifest(
  * SHA-256(aad || plaintext))[0..12]`. Two devices that write the same map at
  * the same moment then produce the same bytes and the same version id and
  * collide harmlessly, exactly as two devices producing the same chunk do
- * (`encryptChunk`). Deriving from the AAD as well as the plaintext is what
- * keeps that safe: a key and nonce repeat only for a message identical in
- * both, and two different messages under one key and nonce would leak the
- * GCM authentication key.
+ * (`encryptChunk`). Identical AAD and plaintext repeat deterministically.
+ * Distinct inputs can still collide in the truncated 96-bit nonce; safety
+ * depends on the primitive assumptions and aggregate key lifetime, not an
+ * absolute uniqueness guarantee. See docs/security/e09-key-nonce-inventory.md.
  */
 async function sealDerivedNonce(
   key: Bytes,
@@ -576,13 +588,11 @@ export function encryptDomainMap(
  * second device published it, for no content difference at all.
  *
  * The key is the domain's manifest key, shared with the randomly-nonced file
- * manifests, and that costs nothing: a nonce derived by HKDF from
- * `SHA-256(aad || plaintext)` is a pseudorandom 96-bit value, so the chance
- * that it meets a file manifest's random nonce is the chance two random
- * nonces meet. It repeats only for a message identical in BOTH the AAD and
- * the plaintext — the same message, whose ciphertext was already identical —
- * which is the one repeat AES-GCM does not mind (`encryptChunk` rests on the
- * same property).
+ * manifests. Under the PRF/randomness assumptions, derived and random
+ * nonces share one 96-bit collision budget across all devices and restarts.
+ * Identical AAD/plaintext repeats are deterministic; distinct inputs can
+ * collide. Current code does not enforce an aggregate lifetime limit.
+ * See docs/security/e09-key-nonce-inventory.md for the conditional bound.
  */
 export function encryptFolderManifest(
   manifestKey: Bytes,

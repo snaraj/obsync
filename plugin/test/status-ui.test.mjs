@@ -17,7 +17,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { KEYS, memorySecrets, sandbox, statusItem } from "./fake.mjs";
+import { KEYS, keys, memorySecrets, sandbox, statusItem } from "./fake.mjs";
 
 const settle = async () => { for (let i = 0; i < 3; i++) await new Promise(setImmediate); };
 
@@ -173,8 +173,9 @@ async function plugin(t, { mobile = false, view = null, data = null } = {}) {
   instance.onload = async () => { await load(); await instance.firstStart; };
   const commands = [], hooks = new Map(), item = statusItem();
   const views = { active: view };
-  instance.loadData = async () => data ?? ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid", edgeHeaders: [] });
-  instance.saveData = async () => {};
+  let metadata = data ?? { serverUrl: "https://sync.example.invalid", edgeHeaders: [] };
+  instance.loadData = async () => structuredClone(metadata);
+  instance.saveData = async (value) => { metadata = structuredClone(value); };
   instance.addCommand = (command) => commands.push(command);
   instance.addSettingTab = instance.registerObsidianProtocolHandler = () => {};
   instance.registerEvent = () => {};
@@ -187,6 +188,14 @@ async function plugin(t, { mobile = false, view = null, data = null } = {}) {
   instance.checkForUpdate = async () => {};
   instance.log = () => {};
   t.after(() => instance.onunload());
+  if (data === null) {
+    // Exercise successful UI paths with real acknowledged current-format authority.
+    const { State } = b.require(join(b.home, "build/state.js"));
+    const state = await State.open(instance, mobile, instance.app.secretStorage);
+    await state.stageEnrollment2(KEYS.vrk, "pair");
+    await state.adoptSuite2({ root: KEYS.vrk, generation: (await keys()).generation,
+      deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
+  }
   await instance.onload();
   return { ...b, instance, commands, hooks, item, views, ApiError, sending: (count) => { sent = count; }, verifying: (found) => { verified = found; } };
 }

@@ -378,6 +378,17 @@ export interface VaultHost {
   hurry?(busy: boolean, reason: "work" | "calm" | "stop" | "unanswered"): void;
 }
 
+/** A captured context may never outlive its authenticated live suite pin. */
+export function sealScope(context: SyncContext): { generation: string; domainId: string } {
+  const custody = context.state.custody2();
+  if (custody?.phase !== "active" || custody.enrollment !== null || custody.rotation !== null ||
+      custody.generation !== context.generation) {
+    context.host.log("engine decision=refused reason=suite2_authority");
+    throw new Error("engine: suite2 authority required");
+  }
+  return { generation: context.generation, domainId: context.domainId };
+}
+
 export interface SyncContext {
   readonly state: State;
   readonly transport: Transport;
@@ -386,6 +397,8 @@ export interface SyncContext {
   /** The manifest key of THIS domain, `HKDF(K_d, "obsync/v1/manifest", id)`. */
   readonly manifestKey: Bytes;
   readonly domainId: string;
+  /** Root-derived authenticated suite-2 generation. */
+  readonly generation: string;
   /** The reserved file id the owner-only domain map occupies, never a vault file. */
   readonly mapFileId: string;
   readonly deviceId: string;
@@ -1139,13 +1152,19 @@ export class SyncEngine {
     const host = this.options.host;
     const existing = await loadDomainMap(this.options.transport, keys, { signal });
     if (existing) {
+      if (this.options.state.custody2()?.initializeMap) await this.options.state.finishMapInitialization(keys.fileId);
       host.log(`domainmap decision=loaded domains=${existing.domains.length}`);
       return existing;
     }
+    const custody = this.options.state.custody2();
+    if (!custody?.initializeMap || custody.generation !== keys.fileId) throw new DomainMapError("missing");
     const created = defaultDomainMap();
     await saveDomainMap(this.options.transport, keys, created);
+    const verified = await loadDomainMap(this.options.transport, keys, { signal });
+    if (verified === null || JSON.stringify(verified) !== JSON.stringify(created)) throw new DomainMapError("unwritten");
+    await this.options.state.finishMapInitialization(keys.fileId);
     host.log("domainmap decision=created domains=1");
-    return created;
+    return verified;
   }
 
   /** Derive the keys and open the loops. Requires a paired, keyed device. */
@@ -1155,8 +1174,6 @@ export class SyncEngine {
     // restart in place keeps the State a load would have dropped it from, so
     // the start drops it here, and this run's first pass, a new engine's,
     // walks the feed again and judges each such file afresh.
-    const dropped = this.options.state.data.dropped;
-    for (const [path, mark] of Object.entries(dropped)) if (mark === UNVERIFIED_LANDING) delete dropped[path];
     const halt = this.halt = new AbortController();
     // A start its stop cut short -- the map read of a restart against a server
     // that is gone -- ends quietly, as one stopped between two steps does.
@@ -1176,8 +1193,14 @@ export class SyncEngine {
     const vrk = state.data.vrk;
     const deviceId = state.data.deviceId;
     if (vrk === null || deviceId === null) throw new Error("engine: this device is not paired");
+    const custody = state.custody2();
+    if (custody?.phase !== "active" || custody.enrollment !== null || custody.rotation !== null) {
+      host.log("engine decision=refused reason=suite2_authority");
+      throw new Error("engine: suite2 authority required");
+    }
     const key = unhex(vrk);
     const mapKeys = await domainMapKeys(key);
+    if (custody.generation !== mapKeys.fileId) throw new Error("engine: suite2 generation mismatch");
     const map = await this.openMap(mapKeys, signal);
     const domainId = soleDomain(map);
     if (domainId === null) {
@@ -1192,6 +1215,11 @@ export class SyncEngine {
     }
     const domainKey = await deriveDomainKey(key, domainId);
     const manifestKey = await deriveManifestKey(domainKey, domainId);
+    const current = state.custody2();
+    if (current?.phase !== "active" || current.enrollment !== null || current.rotation !== null ||
+        current.generation !== mapKeys.fileId || state.data.vrk !== vrk) throw new Error("engine: suite2 authority changed");
+    const dropped = this.options.state.data.dropped;
+    for (const [path, mark] of Object.entries(dropped)) if (mark === UNVERIFIED_LANDING) delete dropped[path];
     if (this.cancelled) return;
     const deviceNames = new Map<string, string>();
     this.contextValue = {
@@ -1202,6 +1230,7 @@ export class SyncEngine {
       manifestKey,
       domainId,
       mapFileId: mapKeys.fileId,
+      generation: mapKeys.fileId,
       deviceId,
       concurrency: host.isMobile ? 2 : 4,
       authored: new Set<string>(),
@@ -1459,6 +1488,7 @@ export class SyncEngine {
 
   private need(): SyncContext {
     if (!this.contextValue) throw new Error("engine: not started");
+    sealScope(this.contextValue);
     return this.contextValue;
   }
 
@@ -4779,7 +4809,7 @@ export class SyncEngine {
     const started = context.now();
     const since = context.state.data.lastSeq;
     try {
-      return { notes: await heldNotes(context.transport, context.manifestKey, since), since, started };
+      return { notes: await heldNotes(context.transport, context.manifestKey, sealScope(context), since), since, started };
     } catch (error) {
       context.host.log(
         `reconcile decision=held_failed reason=${error instanceof ApiError ? error.code : "error"} since=${since} ` +

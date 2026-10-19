@@ -178,7 +178,8 @@ test("the only active device cannot be revoked, and the server's reason is surfa
       assert.ok(error instanceof ApiError, "the refusal keeps its status and code");
       assert.equal(error.status, 409);
       assert.equal(error.code, "last_device", "obsyncd's own code, not a stub's invention");
-      assert.match(error.message, /the only active device cannot be revoked; pair another first/);
+      assert.equal(error.message, "409 last_device", "the diagnostic carries no server free text");
+      assert.match(error.detail, /the only active device cannot be revoked; pair another first/);
       return true;
     },
   );

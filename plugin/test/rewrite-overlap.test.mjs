@@ -4,6 +4,7 @@ import test from "node:test";
 import { createRequire } from "node:module";
 import { rig } from "./fake.mjs";
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { applyChange } = require("../build/sync/pull.js");
 const { pushFile } = require("../build/sync/push.js");
 const { pauseId } = require("../build/sync/pause.js");
@@ -14,7 +15,7 @@ const OURS = "stamp: ours\n\nABCDEFGH\n\nend\n";
 
 async function peer(r, text, parents, answer) {
   const bytes = new TextEncoder().encode(text);
-  const { cid, sid, ciphertext } = await c.encryptChunk(r.keys.domainKey, bytes);
+  const { cid, sid, ciphertext } = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, bytes);
   r.server.chunks.set(sid, ciphertext);
   const manifest = { v: 1, path: NOTE, domain: r.context.domainId, size: bytes.length, mtime: r.host.clock,
     chunks: [{ sid, cid: c.hex(cid), len: bytes.length }], sha256: c.hex(await c.sha256(bytes)), deleted: false };
@@ -261,7 +262,7 @@ test("background Resume preserves its latest snapshot before adopting the single
   const file = r.server.files.get(id);
   const texts = await Promise.all(file.versions.map(async (version) => {
     const manifest = await decryptRecordManifest(r.context, { ...version, file_id: id, domain_id: file.domain_id });
-    const bytes = await Promise.all(manifest.chunks.map((chunk) => c.decryptChunk(r.keys.domainKey, c.unhex(chunk.cid), r.server.chunks.get(chunk.sid))));
+    const bytes = await Promise.all(manifest.chunks.map((chunk) => seal2.decryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, c.unhex(chunk.cid), r.server.chunks.get(chunk.sid))));
     return new TextDecoder().decode(Buffer.concat(bytes));
   }));
   assert.deepEqual(new Set(texts), new Set([OURS, HELD]), "both the recorded and latest held bytes stay in history");
@@ -285,7 +286,7 @@ for (const mode of ["deleted", "moved", "large"]) test(`the ${mode} peer head ca
   if (mode === "moved") manifest.path = "Notes/elsewhere.md";
   if (mode === "large") {
     const bytes = new Uint8Array(8 * 1024 * 1024), tail = new Uint8Array([10]);
-    const first = await c.encryptChunk(r.keys.domainKey, bytes), last = await c.encryptChunk(r.keys.domainKey, tail);
+    const first = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, bytes), last = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, tail);
     for (const chunk of [first, last]) r.server.chunks.set(chunk.sid, chunk.ciphertext);
     manifest.chunks = [{ sid: first.sid, cid: c.hex(first.cid), len: bytes.length }, { sid: last.sid, cid: c.hex(last.cid), len: 1 }];
     manifest.size = bytes.length + 1;

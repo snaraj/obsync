@@ -41,9 +41,10 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import nodePath, { basename, join } from "node:path";
-import { DEVICE_B, STEP_MS, pair, rig, sandbox, settled } from "./fake.mjs";
+import { openPublishedManifest, KEYS, DEVICE_B, STEP_MS, pair, rig, sandbox, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const c = require("../build/crypto.js");
 const { applyChange } = require("../build/sync/pull.js");
 const { pushFile } = require("../build/sync/push.js");
@@ -98,18 +99,12 @@ const copies = (host) => [...host.files.keys()].filter((path) => path.includes("
 async function published(server, k) {
   const out = [];
   for (const frame of server.journal) {
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const json = await c.decryptManifest(
-      k.manifestKey,
-      frame.file_id,
-      binder,
-      c.unhex(frame.manifest_nonce),
-      c.unbase64(frame.manifest_ct),
-    );
+
+    const json = JSON.stringify(await openPublishedManifest(frame, k.manifestKey));
     const manifest = JSON.parse(json);
     const parts = [];
     for (const chunk of manifest.chunks) {
-      parts.push(await c.decryptChunk(k.domainKey, c.unhex(chunk.cid), server.chunks.get(chunk.sid)));
+      parts.push(await seal2.decryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, c.unhex(chunk.cid), server.chunks.get(chunk.sid)));
     }
     out.push({ path: manifest.path, text: parts.map((part) => new TextDecoder().decode(part)).join("") });
   }
@@ -912,7 +907,7 @@ test("a multi-chunk version never reads the file occupying its copy name", async
   // bound to its record, and still multi-chunk.
   const first = new Uint8Array(8 << 20).fill(7);
   const last = new Uint8Array(64).fill(9);
-  const sealed = [await c.encryptChunk(r.keys.domainKey, first), await c.encryptChunk(r.keys.domainKey, last)];
+  const sealed = [await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, first), await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, last)];
   for (const chunk of sealed) r.server.chunks.set(chunk.sid, chunk.ciphertext);
   const size = first.length + last.length;
   const manifest = {

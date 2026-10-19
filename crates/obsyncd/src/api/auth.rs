@@ -595,6 +595,8 @@ pub struct Authed {
     pub device: DeviceRecord,
     /// The device id it authenticated as.
     pub id: DeviceId,
+    /// Captured before the body; publication must compare this exact grant.
+    pub scope: Option<crate::storage::rotation::Grant>,
     /// Where the request came from.
     pub client: ClientInfo,
     /// The request body, buffered for every endpoint but a chunk upload,
@@ -719,6 +721,7 @@ fn authenticate(
         return Err(ApiError::new(403, "device_revoked", "device is revoked"));
     }
     let secret = app.store.device_secret(&id).ok_or_else(bad)?;
+    let scope = app.store.request_scope(id);
 
     let now = app.clock.unix_secs();
     if now.abs_diff(ts) > CLOCK_SKEW_SECS {
@@ -779,6 +782,11 @@ fn authenticate(
         ));
     }
 
+    if record.active() {
+        app.store.check_request_scope(id, &scope)?;
+        app.store.authorize_request(id, &method, &req.path)?;
+    }
+
     // A sign-in is an ACTIVE device's first authenticated request. A pending
     // device polling for its envelope has not signed in to anything.
     if record.active() {
@@ -787,6 +795,7 @@ fn authenticate(
     Ok(Authed {
         device: record,
         id,
+        scope,
         client: client.clone(),
         body,
     })

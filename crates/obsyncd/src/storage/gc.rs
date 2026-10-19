@@ -51,13 +51,23 @@ pub(crate) fn plan(index: &Index, cfg: &StorageConfig, now: UnixMs) -> Plan {
                 .iter()
                 .find(|v| v.version_id == entry.heads[0])
                 .is_some_and(|v| v.deleted && v.ts.0 < horizon);
-        if buried {
+        let frozen = index
+            .authority
+            .pending()
+            .is_some_and(|r| entry.generation == Some(r.intent.previous_map));
+        let staging = index
+            .authority
+            .pending()
+            .is_some_and(|r| entry.generation == Some(r.intent.current_map));
+        if buried && !frozen && !staging {
             pruned.extend(entry.versions.iter().map(|v| (*file_id, v.version_id)));
             continue;
         }
         let newest_from = entry.versions.len().saturating_sub(keep_versions);
         for (position, version) in entry.versions.iter().enumerate() {
-            let keep = position >= newest_from
+            let keep = staging
+                || (frozen && entry.heads.contains(&version.version_id))
+                || position >= newest_from
                 || version.ts.0 >= horizon
                 || entry.heads.contains(&version.version_id);
             if keep {

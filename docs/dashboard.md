@@ -75,7 +75,7 @@ authenticate WebAuthn credentials.
 | Page | What is on it |
 | --- | --- |
 | **Overview** | the account with how many devices can sync (revoked ones are on **Devices**, not in this figure), version and file counts, storage per volume with its class name, sync activity as versions per hour over the last 24 hours, and the last scrub and garbage-collection summaries |
-| **Devices** | every device by name, platform, app version, first paired, last sign-in, last seen, last edit, connecting address and country — and the revoke button |
+| **Devices** | every device by name, platform, app version, first paired, last sign-in, last seen, last edit, connecting address and country — and the device-removal choices |
 | **Pairing** | the pairing instructions; codes themselves are minted on a device, never here |
 | **Storage** | usage against the declared capacity, the free-space watermark, retention, scrub state and rate, and the quarantine list |
 | **Install** | the Community Plugins install steps, the updates path, the certificate requirement, and the plugin version this server is serving |
@@ -103,31 +103,44 @@ display quirk ([Storage and durability](storage.md)).
 
 ## How to revoke a device
 
-Revoking is the one destructive action the dashboard offers, and it is the
-answer to a lost or stolen device.
+Device removal offers two choices. **Revoke access and rotate keys
+(Recommended)** protects future updates with a fresh key, and must be
+completed on a trusted Obsidian device. **Revoke server access only** blocks
+the credential while leaving the vault key unchanged.
 
 1. Open **Devices** and find the device by the name you gave it when you
    approved it.
-2. Select **Revoke**. Nothing is revoked yet: that button only reveals the
-   confirmation, which asks "Revoke <name>? Its next request fails."
-3. Select **Confirm revoke**. THIS is the click that sends
-   `POST /v1/admin/devices/{id}/revoke`. **Cancel** beside it closes the
-   confirmation and sends nothing.
-4. Watch it land before you walk away. The dashboard says "<name> is revoked.
-   Its next request fails." and reloads the list, where that device now carries
-   a **revoked** tag. No notice, an error, or a row without the tag means the
-   device is still authorized and the step has to be repeated — a request that
-   did not arrive revokes nothing.
-5. The device keeps whatever it already downloaded. Revoking ends its access
-   to the server; it does not reach into the device and delete files, and it
-   does not re-encrypt the vault under a new key.
+2. Select **Remove device**. Both choices appear; neither is selected and
+   nothing is sent. **Cancel** closes the choices and clears the selection.
+3. For strong removal, select **Revoke access and rotate keys (Recommended)**.
+   The dashboard says key rotation is unavailable here: **Continue on a trusted
+   Obsidian device to rotate keys**. On a retained device, open obsync settings,
+   find the device under **Devices**, select **Revoke**, then **Rotate key**.
+   The dashboard sends no removal request, starts no pending rotation and
+   never asks for a key or recovery backup. The plugin guides you through a new
+   complete backup, re-encryption and restart; every retained device must pair
+   again afterward. Keep both backups if you need old retained history.
+4. To block only server access, explicitly select **Revoke server access only**
+   and read the consequence: a device retaining its key can still decrypt later
+   ciphertext encrypted with that same key if it obtains it elsewhere. Select
+   **Confirm server access only** to send `POST /v1/admin/devices/{id}/revoke`.
+   Selecting the choice alone or switching to the strong handoff sends nothing.
+   The last active device cannot be revoked through this action.
+5. The dashboard reports the server's response, says this action does not rotate
+   keys, and reloads the list with a **revoked** tag. An error is a refusal, not
+   completed removal. Explicitly pair the device again from a trusted device to
+   restore server access.
+
+Both choices leave previously downloaded notes and copied keys on the removed
+device. Rotation protects future updates after the trusted client completes
+the transition; it cannot erase old plaintext or make old history unreadable.
 
 ## How to forget a revoked device
 
 A device that has been revoked stays in the list, refused, until it is
 forgotten. The **Devices** page counts those on one row — **N revoked
 devices** — and **Show** opens them; each carries **Forget** in place of
-**Revoke**.
+**Remove device**.
 
 1. Select **Show** beside the count, and find the device.
 2. Select **Forget**. As with revoking, nothing has happened yet: that button
@@ -144,20 +157,19 @@ devices** — and **Show** opens them; each carries **Forget** in place of
 5. If that device was yours, pair it again from a device that still syncs. Its
    notes are still in its vault.
 
-You can also revoke from the **Devices** list in the plugin's own settings tab,
-on any paired device, without opening the dashboard at all. It confirms the
-same way: **Revoke** there opens a dialog whose own **Revoke** button is what
-sends the request, and **Cancel** closes it having sent nothing.
+You can also remove a device from **Devices** in the plugin's settings.
+**Revoke** opens the choice between **Rotate key** and **Block access**. Rotation
+must run on a different retained device; blocking server access retains the
+same-key consequence explained above.
 
 If the device that is gone was your LAST one, revoking is not the problem to
 solve — getting back in is. [Recovery](recovery.md) is that page.
 
 > **Capture slot** — `docs/captures/09-dashboard-revoke.png`: the revoke
-> confirmation for one device, its name and address redacted.
+> choices and access-only confirmation for one device, its name and address redacted.
 
-Those four captures do not exist yet: no recorded run so far
-([`docs/validation-runs/`](validation-runs/README.md)) exercised the
-dashboard's device list or its revoke button. They are taken on a synthetic
+Those capture slots require a recorded run of the current dashboard
+([`docs/validation-runs/`](validation-runs/README.md)). They are taken on a synthetic
 vault against a throwaway server, and they obey the same redaction rules as
 every other capture in this repository — no address, no device identifier, no credential
 of any kind ([the screenshot conventions](captures/README.md)).

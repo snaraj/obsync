@@ -390,10 +390,14 @@
     <td data-label="Budget" class="num" data-f="budget"></td>
     <td data-label="Actions"><span class="actions">
       <button type="button" class="ghost" data-f="history-toggle" aria-expanded="false">History</button>
-      <button type="button" class="danger" data-f="revoke-open">Revoke</button>
+      <button type="button" class="danger" data-f="revoke-open">Remove device</button>
       <span class="confirm" data-f="confirm" hidden>
+        <span class="actions" data-f="removal-choices">
+          <button type="button" class="ghost" data-f="revoke-strong" aria-pressed="false">Revoke access and rotate keys (Recommended)</button>
+          <button type="button" class="danger" data-f="revoke-access" aria-pressed="false">Revoke server access only</button>
+        </span>
         <span data-f="confirm-text"></span>
-        <button type="button" class="danger" data-f="revoke-do">Confirm revoke</button>
+        <button type="button" class="danger" data-f="revoke-do" hidden>Confirm server access only</button>
         <button type="button" class="ghost" data-f="revoke-cancel">Cancel</button>
       </span>
     </span></td>

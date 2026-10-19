@@ -26,6 +26,7 @@ import { createRequire } from "node:module";
 import { FakeTimers, STEP_MS, pair, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { SyncEngine, FEED_STALL_MS, LARGE_APPLY_BYTES, SCAN_STALL_MS, STOP_WAIT_MS, SYNC_NOW_FEED_MS } = require("../build/sync/engine.js");
 const { bytesSource, chunkStream } = require("../build/chunker.js");
 const c = require("../build/crypto.js");
@@ -139,7 +140,7 @@ test("a page whose record in hand never finishes, with the download lane waiting
   const bytes = new Uint8Array(LARGE_APPLY_BYTES + 1).fill(73);
   const chunks = [];
   for await (const plaintext of chunkStream(bytesSource(bytes))) {
-    const part = await c.encryptChunk(r.keys.domainKey, plaintext);
+    const part = await seal2.encryptChunk2(r.keys.domainKey, { generation: r.context.generation, domainId: r.context.domainId }, plaintext);
     r.server.chunks.set(part.sid, part.ciphertext);
     chunks.push({ sid: part.sid, cid: c.hex(part.cid), len: plaintext.length });
   }

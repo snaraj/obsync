@@ -20,6 +20,7 @@ import { FakeServer, KEYS, keys } from "./fake.mjs";
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
 const c = require("../build/crypto.js");
+const seal2 = require("../build/seal2.js");
 const dm = require("../build/domainmap.js");
 
 /** A path long enough that finding it in ciphertext by chance is not a risk. */
@@ -145,24 +146,16 @@ test("a map round-trips through the server and the server sees no path", async (
   // …and the claim is not vacuous: the path really is in there, under a key
   // that derives from VRK and from nothing a recipient will ever hold.
   const head = stored.versions[0];
-  const binder = await c.contentVersionId(k.map.fileId, head.parents, head.sids);
-  const json = await c.decryptDomainMap(
-    k.map.key,
-    k.map.fileId,
-    binder,
-    c.unhex(head.manifest_nonce),
-    c.unbase64(head.manifest_ct),
-  );
+  const mapContext = { generation: k.generation, domainId: k.map.domainId, fileId: k.map.fileId, parents: head.parents, sids: [] };
+  const json = new TextDecoder("utf-8", { fatal: true }).decode(await seal2.openRecord(k.map.key, 2, mapContext, c.unbase64(head.manifest_ct)));
   assert.equal(json.includes(SHARED), true);
   assert.deepEqual(JSON.parse(json), map);
+  assert.equal(head.seal_suite, 2, "map wire suite must be explicit");
+  assert.equal(Object.hasOwn(head, "manifest_nonce"), false, "map wire carries no legacy nonce");
 
   // No domain key opens it, and the map key opens no domain's manifests.
-  await assert.rejects(() =>
-    c.decryptDomainMap(k.domainKey, k.map.fileId, binder, c.unhex(head.manifest_nonce), c.unbase64(head.manifest_ct)),
-  );
-  await assert.rejects(() =>
-    c.decryptManifest(k.manifestKey, k.map.fileId, binder, c.unhex(head.manifest_nonce), c.unbase64(head.manifest_ct)),
-  );
+  await assert.rejects(() => seal2.openRecord(k.domainKey, 2, mapContext, c.unbase64(head.manifest_ct)));
+  await assert.rejects(() => seal2.openRecord(k.manifestKey, 1, mapContext, c.unbase64(head.manifest_ct)));
 });
 
 test("a map that cannot be read unambiguously stops the device", async () => {
