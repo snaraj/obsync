@@ -723,33 +723,36 @@ device is lost. The server never has it and cannot give it back.
 
 ## On Linux, the keys may not be in a keyring
 
-**What you see.** On a Linux desktop with no keyring running, such as a
-minimal window manager or a container, setup and pairing work as they do
-anywhere else. From the next time Obsidian starts, it shows a notice that
-stays until you dismiss it: "Secrets are stored without encryption because no secret store is available on this system."
+**What you see.** On a Linux desktop with no protected keyring running, such
+as a minimal window manager or a container, obsync stops before setup or sync
+can save credentials. It reports that desktop encryption is unavailable.
 
 **Why it happens.** obsync keeps the vault key and this device's secret in
 Obsidian's secret storage
 ([Where your keys are kept](community-plugin.md#where-your-keys-are-kept)).
-On Linux that storage relies on the desktop's keyring, such as GNOME Keyring
-or KWallet. Without one, Obsidian still accepts the keys and keeps them
-unencrypted in its own storage in your home folder (seen with Obsidian
-1.13.7), protected only by that folder's permissions. Obsidian does not tell
-plugins which storage it uses, so obsync cannot tell you which case you are
-in; Obsidian's notice is the sign.
+On Linux the OS encryption service relies on the desktop's keyring, such as
+GNOME Keyring or KWallet. Obsidian itself can accept unencrypted entries when
+that service is unavailable. obsync encrypts its envelope before handing it
+to Obsidian and refuses an unavailable, unprotected or unknown backend. There
+is no unencrypted fallback or setting to bypass that refusal.
 
 **How to fix it.**
 
 1. Before you set up or pair a Linux device, run a desktop that provides a
    keyring, or install GNOME Keyring or KWallet and have it unlocked when you
    sign in.
-2. On a device that already syncs, use **Leave this server**, then pair it
-   again while the keyring runs, so the keys are written again. Have your
-   recovery phrase or another syncing device at hand.
-3. If this device cannot run a keyring, keep its home folder private:
-   full-disk encryption, and no other person or untrusted program with access
-   to your account. Whoever can read Obsidian's files there may be able to
-   read the vault key.
+2. Reload Obsidian after unlocking the keyring. Existing valid credentials
+   migrate to the encrypted format; do not repeat server setup or leave the
+   server just to retry this check. Keep your complete recovery backup or
+   another syncing device available.
+3. If this device cannot provide a supported protected backend, use another
+   device for sync. A private home directory or full-disk encryption does not
+   substitute for the required key-store operation.
+
+On macOS or Windows, the same refusal can indicate an unavailable OS service
+or a host version whose private encryption interface has changed. Restore
+that service or use a supported host version; reinstalling obsync alone does
+not restore an unavailable OS key store.
 
 <a id="device_revoked"></a>
 
@@ -1218,7 +1221,7 @@ is in the obsync log line.
 | `not_obsync` | a proxy, access policy or sign-in page answered instead of obsync | check the Server URL, and the custom request headers in obsync settings |
 | `io_error` (HTTP 500) | a volume refused a read or a write; the device retries it, keeps a refused change to send again, and a read that keeps failing reads "Changes from your server could not be read" | the server's own log line names the volume and the I/O error |
 | `journal_faulted` or `nonce_log_faulted` (HTTP 503) | a write to the journal volume failed and could not be taken back, so the server takes nothing until it restarts | [The server needs a restart](#the-server-needs-a-restart) |
-| a credential-storage failure | Obsidian's secret storage is unavailable or unverified | reload Obsidian; if it keeps happening, reinstall obsync and pair this device again, with the recovery phrase or another syncing device at hand ([Where your keys are kept](community-plugin.md#where-your-keys-are-kept)); do not repeat server setup |
+| a credential-storage failure | Obsidian's secret storage is unavailable or unverified | restore supported OS encryption and reload for an availability error; for missing or damaged credentials, preserve this vault and pair or recover in a fresh one, following [Where your keys are kept](community-plugin.md#where-your-keys-are-kept); do not reset the server account |
 
 ## Changes from your server could not be read
 
@@ -1264,6 +1267,12 @@ side failed: find this device's `GET /v1/changes` lines.
 
 ## A copied or renamed vault says it is a copy
 
+This section describes older storage formats. Current-format installations
+stop if copied metadata has no matching owned secret or generation pin; they
+do not automatically reset that identity. Keep the original vault and complete
+recovery backup. Pair a fresh installation in a new vault; do not remove a pin
+or edit credential records to bypass the refusal.
+
 **What you see.** In obsync's settings: "This vault is a copy, or its folder
 was renamed. It will not sync as the original. Pair it as a new device, or
 start fresh." Up to 1.1.3 the plugin failed to load instead, with "Credential
@@ -1290,6 +1299,12 @@ untouched.
 ![This device on a copied vault: Pairing reads This vault is a copy, or its folder was renamed. It will not sync as the original. Pair it as a new device, or start fresh. Pair this device and Start fresh beside it](assets/settings-copied-vault.png)
 
 ## Obsidian closed while obsync was saving this device's keys
+
+The unpaired fallback below applies to older storage formats. Current-format
+installations require the metadata revision and generation pin to match the
+owned secret exactly. A mismatch stops sync. Preserve the vault and complete
+recovery backup, and use a fresh installation for pairing or recovery rather
+than changing those records.
 
 **What you see.** Once as Obsidian starts, then beside **Pairing** in obsync's
 settings and in **Show sync status**: "Obsidian closed while obsync was saving

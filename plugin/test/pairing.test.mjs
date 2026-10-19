@@ -267,9 +267,9 @@ test("the envelope opens only with the right pairing secret and id", async () =>
   // The vault key is the whole envelope: which paths live in which domain
   // comes from the synced map, which this key is exactly what unlocks.
   const envelope = { vrk: "00".repeat(32) };
-  const sealed = await pairing.sealEnvelopeV2(creator, claimant.publicKey, secret, PAIRING_ID, envelope);
+  const sealed = await pairing.sealEnvelopeLegacyV2(creator, claimant.publicKey, secret, PAIRING_ID, envelope);
   assert.equal(sealed.nonce.length, 24);
-  const open = (ps, id) => pairing.openEnvelopeV2(claimant, creator.publicKey, ps, id, sealed.envelope, sealed.nonce);
+  const open = (ps, id) => pairing.openEnvelopeLegacyV2(claimant, creator.publicKey, ps, id, sealed.envelope, sealed.nonce);
   assert.deepEqual(await open(secret, PAIRING_ID), envelope);
   await assert.rejects(() => open(pairing.newPairingSecret(), PAIRING_ID));
   await assert.rejects(() => open(secret, "00000000000000000000000000000000"));
@@ -278,9 +278,9 @@ test("the envelope opens only with the right pairing secret and id", async () =>
 test("an envelope without a vault key is refused", async () => {
   const secret = pairing.newPairingSecret();
   const [creator, claimant] = [await pairing.newPairingKeyExchange(), await pairing.newPairingKeyExchange()];
-  const sealed = await pairing.sealEnvelopeV2(creator, claimant.publicKey, secret, PAIRING_ID, {});
+  const sealed = await pairing.sealEnvelopeLegacyV2(creator, claimant.publicKey, secret, PAIRING_ID, {});
   await assert.rejects(
-    () => pairing.openEnvelopeV2(claimant, creator.publicKey, secret, PAIRING_ID, sealed.envelope, sealed.nonce),
+    () => pairing.openEnvelopeLegacyV2(claimant, creator.publicKey, secret, PAIRING_ID, sealed.envelope, sealed.nonce),
     /no vault key/,
   );
 });
@@ -362,40 +362,42 @@ test("checksum rejection is not a coincidence of one key", async () => {
 test("sealed claimant vault details bind the pairing and use a separate key (#141)", async () => {
   const secret = pairing.newPairingSecret();
   const details = { name: "Research & <plans>", notes: 123 };
-  const sealed = await pairing.sealPairingVault(secret, PAIRING_ID, details);
-  assert.deepEqual(await pairing.openPairingVault(secret, PAIRING_ID, sealed), details);
+  const sealed = await pairing.sealPairingVaultLegacy(secret, PAIRING_ID, details);
+  let opened; await assert.doesNotReject(async () => { opened = await pairing.openPairingVaultLegacy(secret, PAIRING_ID, sealed); });
+  assert.deepEqual(opened, details);
   assert.ok(!JSON.stringify(sealed).includes(details.name));
-  assert.notEqual((await pairing.sealPairingVault(secret, PAIRING_ID, details)).nonce, sealed.nonce);
-  await assert.rejects(() => pairing.openPairingVault(pairing.newPairingSecret(), PAIRING_ID, sealed));
-  await assert.rejects(() => pairing.openPairingVault(secret, "00".repeat(16), sealed));
+  assert.notEqual((await pairing.sealPairingVaultLegacy(secret, PAIRING_ID, details)).nonce, sealed.nonce);
+  await assert.rejects(() => pairing.openPairingVaultLegacy(pairing.newPairingSecret(), PAIRING_ID, sealed));
+  await assert.rejects(() => pairing.openPairingVaultLegacy(secret, "00".repeat(16), sealed));
   const key = await crypto.subtle.importKey("raw", await c.hkdf(secret, c.utf8("obsync/v1/pair-vault"), c.utf8(PAIRING_ID), 32), "AES-GCM", false, ["decrypt"]);
-  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: c.unhex(sealed.nonce), additionalData: c.utf8(PAIRING_ID) }, key, c.unbase64(sealed.envelope));
+  let plain;
+  await assert.doesNotReject(async () => { plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: c.unhex(sealed.nonce), additionalData: c.utf8(PAIRING_ID) }, key, c.unbase64(sealed.envelope)); });
   assert.deepEqual(JSON.parse(new TextDecoder().decode(plain)), details);
   const damaged = c.unbase64(sealed.envelope); damaged[0] ^= 1;
-  await assert.rejects(() => pairing.openPairingVault(secret, PAIRING_ID, { ...sealed, envelope: c.base64(damaged) }));
+  await assert.rejects(() => pairing.openPairingVaultLegacy(secret, PAIRING_ID, { ...sealed, envelope: c.base64(damaged) }));
 });
 
 test("claimant vault validation bounds names, counts and sealed wire data (#141)", async () => {
   const secret = pairing.newPairingSecret();
   for (const value of [null, {}, { name: "", notes: 0 }, { name: "a".repeat(257), notes: 0 }, { name: "a\n", notes: 0 },
     { name: "a\u202e", notes: 0 }, { name: 7, notes: 0 }, { name: "a", notes: -1 }, { name: "a", notes: 0.5 }, { name: "a", notes: 2 ** 53 }]) {
-    await assert.rejects(() => pairing.sealPairingVault(secret, PAIRING_ID, value), /invalid vault details/);
+    await assert.rejects(() => pairing.sealPairingVaultLegacy(secret, PAIRING_ID, value), /invalid vault details/);
   }
   // Each edge of the refused characters, and the neighbour just outside it.
   for (const char of ["\u0000", "\u001f", "\u007f", "\u202a", "\u2066", "\u2069"]) {
-    await assert.rejects(() => pairing.sealPairingVault(secret, PAIRING_ID, { name: `a${char}b`, notes: 0 }), /invalid vault details/, JSON.stringify(char));
+    await assert.rejects(() => pairing.sealPairingVaultLegacy(secret, PAIRING_ID, { name: `a${char}b`, notes: 0 }), /invalid vault details/, JSON.stringify(char));
   }
   const shown = "a ~\u2029\u202f\u2065\u2070\u{1F600}";
-  assert.equal((await pairing.openPairingVault(secret, PAIRING_ID, await pairing.sealPairingVault(secret, PAIRING_ID, { name: shown, notes: 0 }))).name, shown);
-  const sealed = await pairing.sealPairingVault(secret, PAIRING_ID, { name: "a".repeat(256), notes: 0 });
-  assert.equal((await pairing.openPairingVault(secret, PAIRING_ID, sealed)).name.length, 256);
+  assert.equal((await pairing.openPairingVaultLegacy(secret, PAIRING_ID, await pairing.sealPairingVaultLegacy(secret, PAIRING_ID, { name: shown, notes: 0 }))).name, shown);
+  const sealed = await pairing.sealPairingVaultLegacy(secret, PAIRING_ID, { name: "a".repeat(256), notes: 0 });
+  assert.equal((await pairing.openPairingVaultLegacy(secret, PAIRING_ID, sealed)).name.length, 256);
   for (const value of [null, {}, { ...sealed, envelope: 12 }, { ...sealed, envelope: "A".repeat(2049) }, { ...sealed, nonce: "00" }, { ...sealed, nonce: "Z".repeat(24) }]) {
-    await assert.rejects(() => pairing.openPairingVault(secret, PAIRING_ID, value), /invalid sealed vault details/);
+    await assert.rejects(() => pairing.openPairingVaultLegacy(secret, PAIRING_ID, value), /invalid sealed vault details/);
   }
   // A hostile claimant can encrypt malformed metadata correctly; authenticity is not validity.
   const key = await crypto.subtle.importKey("raw", await c.hkdf(secret, c.utf8("obsync/v1/pair-vault"), c.utf8(PAIRING_ID), 32), "AES-GCM", false, ["encrypt"]);
   for (const text of ['null', '{"name":"","notes":0}', '{"name":"a","notes":-1}']) {
     const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv: c.unhex(sealed.nonce), additionalData: c.utf8(PAIRING_ID) }, key, c.utf8(text));
-    await assert.rejects(() => pairing.openPairingVault(secret, PAIRING_ID, { ...sealed, envelope: c.base64(new Uint8Array(encrypted)) }), /invalid vault details/);
+    await assert.rejects(() => pairing.openPairingVaultLegacy(secret, PAIRING_ID, { ...sealed, envelope: c.base64(new Uint8Array(encrypted)) }), /invalid vault details/);
   }
 });

@@ -73,7 +73,7 @@ VERDICTS = {
     "api::pairing::tests::a_revealed_creator_pub_rides_the_wait_and_the_envelope": (
         "the creator's alone", "one key per pairing"),
     "api::pairing::tests::a_swept_pairing_tells_its_creator_how_it_ended": ("stranger",),
-    "cli::tests::export_reads_the_key_from_a_file_only_its_owner_can_read": ("a key others can read is refused",),
+    "cli::tests::export_refuses_key_inputs_without_echoing_or_reading_them": ("server interfaces never accept content keys",),
     "storage::blobs::tests::a_cut_upload_keeps_its_temp_until_a_start_repairs_its_fan_out": (
         "the first start after the cut",),
     "storage::journal::tests::a_snapshot_is_read_a_file_at_a_time_to_the_index_it_was_written_from": ("canonical",),

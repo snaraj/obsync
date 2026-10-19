@@ -15,9 +15,10 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { KEYS, rig } from "./fake.mjs";
+import { openPublishedManifest, KEYS, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
+const seal2 = require("../build/seal2.js");
 const { applyChange, fetchRemoteOnly, bindManifestToRecord } = require("../build/sync/pull.js");
 const { pushDelete, pushFile } = require("../build/sync/push.js");
 const { CHUNK_MAX, CHUNK_MIN } = require("../build/chunker.js");
@@ -127,7 +128,7 @@ test("the reviewer's case: a manifest that under-declares its size walks through
   });
   // The chunk is real and correctly encrypted: only the manifest lies, and it
   // lies about the one number every ceiling is measured against.
-  const { cid, sid: only, ciphertext } = await c.encryptChunk(k.domainKey, payload);
+  const { cid, sid: only, ciphertext } = await seal2.encryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, payload);
   server.chunks.set(only, ciphertext);
   const frame = await server.publishManifest({
     fileId,
@@ -387,7 +388,7 @@ test("a chunk that decrypts to a different length than it declared is refused", 
   const fileId = "2f".repeat(16);
   const { host, server, state, context, keys: k } = await rig();
   const payload = enc("eleven-byte");
-  const { cid, sid: only, ciphertext } = await c.encryptChunk(k.domainKey, payload);
+  const { cid, sid: only, ciphertext } = await seal2.encryptChunk2(k.domainKey, { generation: k.generation, domainId: KEYS.domainId }, payload);
   server.chunks.set(only, ciphertext);
   // Consistent on every field the record can see: only the BYTES disagree,
   // and only once they have been fetched and decrypted.
@@ -505,14 +506,8 @@ test("what an honest device posts is exactly what its manifest says", async () =
 
   assert.ok(server.journal.length >= 6, `every push landed a version: ${server.journal.length}`);
   for (const frame of server.journal) {
-    const binder = await c.contentVersionId(frame.file_id, frame.parents, frame.sids);
-    const json = await c.decryptManifest(
-      k.manifestKey,
-      frame.file_id,
-      binder,
-      Uint8Array.from(Buffer.from(frame.manifest_nonce, "hex")),
-      c.unbase64(frame.manifest_ct),
-    );
+
+    const json = JSON.stringify(await openPublishedManifest(frame, k.manifestKey));
     const posted = JSON.parse(json);
     // The claim: the binding never trips on honest traffic, empty files and
     // tombstones and 12 MiB archives included.

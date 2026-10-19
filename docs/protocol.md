@@ -52,9 +52,46 @@ Pairing claim and envelope fetch are the only device endpoints with their own
 rules (below). Admin endpoints use the dashboard session cookie plus
 `X-Obsync-Csrf`.
 
-In `OBSYNC_EDGE=cloudflare` mode every request must also carry the edge's
+In `OBSYNC_EDGE=cloudflare` mode application requests must also carry the edge's
 connecting-address and request-id headers, once each, from a peer inside
 `OBSYNC_TRUSTED_PROXY_CIDRS`, or it is refused with `421 edge_required`.
+Health checks and the stateless CORS preflight below are exceptions; neither
+grants device or dashboard authority.
+
+## Browser transport and CORS
+
+The plugin selects Fetch `redirect: "error"`, `credentials: "omit"`,
+`mode: "cors"`, `cache: "no-store"` and `referrerPolicy: "no-referrer"` before
+sending. Every redirect refuses, including same-origin redirects. There is no
+fallback to a transport that follows redirects. Fetch does not distinguish
+redirect, CORS, TLS and network failure to the client; a one-shot request may
+still have applied at the original origin and retains its lost-response rules.
+
+`OPTIONS` accepts only a method/path in the plugin's closed route set, including
+the device-authenticated `POST /v1/dashboard/login-link`. Dashboard cookie/admin
+routes, assets and health endpoints receive no CORS grant. Valid preflight has
+one nonempty Origin, one supported method, and at most one header-name list.
+Names must be unique HTTP tokens, at most 64 names, 128 bytes each and 4,096
+list bytes; browser-controlled names/prefixes and `*` refuse. The response is
+empty 204 with allow-origin `*`, that method, the explicit normalized requested
+names, max-age 0 and Vary for Origin/method/header selection. It neither checks
+credentials nor consumes device nonces or changes storage. Malformed preflight
+is 400; an excluded route/method is 404. Neither refusal grants CORS.
+
+Actual allowlisted responses, including application errors, carry allow-origin
+`*`; their existing authentication and body limits still apply. No response
+grants ambient credentials or exposes extra headers, including `X-Obsync-Seq`.
+Parser refusals outside the application can remain generic Fetch failures.
+
+Upgrade the server before the client. An authenticating proxy must answer or
+pass credential-free OPTIONS without a redirect/login challenge, preserve CORS
+on application errors, and authenticate the actual request. This does not make
+the actual sync API public. Old clients can use the upgraded server; a new
+client against a server/edge without CORS visibly fails and never falls back.
+Configured cookies, browser-controlled headers, method overrides, User-Agent
+and duplicate names are refused in settings and before sending. Explicit
+Authorization and supported custom edge headers remain available. Physical
+phone and deployment-specific proxy/certificate acceptance remain required.
 
 ## Idempotence
 
@@ -72,6 +109,7 @@ answers the same.
 | --- | --- | --- |
 | `GET /livez`, `GET /readyz` | yes | reads |
 | `GET /v1/account` | yes | read |
+| `GET /v1/setup` | yes | public state-independent recovery capability |
 | `POST /v1/setup` | **no** | creates or recovers the account and mints a credential |
 | `POST /v1/account/recovery` | **no** | explicit registration acknowledgement; a lost response is surfaced |
 | `POST /v1/pairing` | **no** | mints a pairing and an enroll token |
@@ -111,19 +149,76 @@ and a test asserts every route it emits appears there.
   re-surveyed by this probe, so a fixed volume answers `200` again without any
   write.
 
+## Current sealing suite and legacy reads
+
+Current live setup, pairing and sync use literal `seal_suite:2`: RFC 5297
+AES-SIV-CMAC-512, with two AES-256 halves implemented through platform WebCrypto
+AES-CBC/AES-CTR. The packet is the 16-byte synthetic IV followed by ciphertext;
+there is no encryption nonce field. The client authenticates the complete tag
+before returning plaintext. This is an implemented format description, not an
+independent security verdict, native-phone acceptance or unlimited-key-lifetime
+claim; the conditional bounds and acceptance limits are in
+[the E09 contract](security/e09-key-nonce-inventory.md#chosen-replacement-rfc-5297-aes-siv-with-one-migration).
+
+For context `T`, the 64-byte SIV key is
+`HKDF-SHA256(B, utf8("obsync/seal-v2/siv"), SHA256(T), 64)`; the sole SIV AD
+component is the full `T`, not its digest. Its prefix is ASCII `obsync/seal/2`
+plus NUL, followed by a one-byte kind. IDs below decode from lowercase hex;
+`U32` is unsigned big-endian. Parents are unique and bytewise sorted (at most
+64); SIDs retain order and repeats (at most 65,536).
+
+| Kind | Bytes after prefix and kind | Base secret `B` |
+| --- | --- | --- |
+| 1: manifest, including folder/control/tombstone | `G || D || F || U32(parent_count) || parents || U32(sid_count) || sids` | domain manifest key |
+| 2: map | same counted layout; `F=G`, no SIDs, locally derived map domain | root-derived map key |
+| 3: chunk | `G || D || CID` | separately derived chunk cipher base |
+| 4: pairing root | `pairing_id || claimant_public_65 || creator_public_65` | existing ECDH/PS pairing key |
+| 5: pairing details | `pairing_id` | separate PS/details key |
+
+Generation `G`, domain `D`, file `F` and pairing IDs are 16 bytes; parents,
+SIDs and CID are 32 bytes. For chunks, derive the identifier key and cipher
+base separately from the domain key with labels `obsync/seal-v2/chunk-id` and
+`obsync/seal-v2/chunk-base`, salt equal to the UTF-8 label and info `G || D`.
+`CID=HMAC-SHA256(K_id,plaintext)` stays inside encrypted metadata;
+`SID=SHA256(packet)` is public. Opening authenticates SIV and recomputes CID.
+Identical input/context repeats deterministically, revealing equality;
+processed-block and aggregate key-lifetime bounds still apply.
+
+Legacy suite 1 is AES-GCM with `manifest_nonce` or pairing `nonce` and no
+suite-2 discriminant. It belongs only to explicitly selected legacy history or
+migration. A suite-2 pin refuses absent, mixed or unknown suite fields before
+opening; an authentication failure never triggers another decoder or root.
+The wire version hash is unchanged; its flattened parent/SID preimage is not
+used as the suite-2 security context. Counted context independently binds their
+partition, order and record kind. Request HMAC nonces remain separate and unchanged.
+
 ## Setup and account
 
+- `GET /v1/setup` is public and state independent: `200 {"recover_only":true,"seal_suite":2}`.
+  It discloses no account/device/verifier state. A recovery-only caller must
+  require explicit support; absent or unknown capability never permits a
+  fallback to generic creation. The literal suite advertises supported framing,
+  not the account's current floor or trustworthy server behavior.
 - `POST /v1/setup` (no device auth; the token is the credential)
   `{"setup_token":"…","account_name":"…","device":{"name":"…","platform":
-  "…","app_version":"…"}}` → `201 {"account_id":"…","device_id":"<32hex>",
-  "device_secret":"<64hex>"}`: creates the account and enrols the first
-  device in one step, since pairing requires a paired device. Without recovery
-  proof, `409 already_set_up` afterwards; `401 bad_setup_token` otherwise. The
-  token is compared FIRST, so both refusals are reachable only in that
-  order: a caller holding the token learns the account exists, and a caller
-  without it learns nothing about whether the server is claimed.
-- First setup may include `recovery_verifier:<64hex>`, committed in the same
-  durable account frame. Existing accounts may be re-entered through the same
+  "…","app_version":"…"},"seal_suite":2,"generation":"<32hex>",
+  "recover_only":false,"recovery_verifier":"<64hex>","recovery_proof":"<64hex>"}`
+  → `201 {"account_id":"…","device_id":"<32hex>","device_secret":"<64hex>"}`:
+  creates the suite-2 account and enrols the first device in one step, since
+  pairing requires a paired device. `401 bad_setup_token` refuses a wrong token.
+  The token is compared FIRST: a caller without it learns nothing about whether
+  the server is claimed; a token holder still needs the required account mode,
+  suite/generation and recovery proof.
+- Optional `recover_only` must be a JSON boolean. True requires an existing
+  account (`409 not_set_up` with no mutation if absent). An existing account
+  requires literal true (`409 recover_only_required` otherwise); absent/false
+  are creation authority only for an absent account. An alternative `mode`
+  field is refused. Account authority and
+  active-device enrollment publish together in one fsynced journal frame;
+  a refusal cannot consume the reset arm while failing to enroll. A lost reply
+  may leave the entire transaction durable; the route remains non-repeatable.
+- Current first setup requires its root-derived proof and verifier, committed
+  in that same durable enrollment frame. Existing accounts may be re-entered through the same
   `POST /v1/setup` with the setup token and `recovery_proof:<64hex>`; the response
   also has `recovered:true`. The proof is 32 bytes from
   `HKDF-SHA-256(VRK, salt=utf8("obsync/v1/account-recovery"), info="", L=32)`.
@@ -140,22 +235,29 @@ and a test asserts every route it emits appears there.
   verifier registered after the reset spends the arm, by this route or by a
   device's `POST /v1/account/recovery`, and a later recovery is proved against
   it. No device-authenticated request can clear a verifier or arm this.
-  A valid recovery enrolls a new active device on the same account, without
+  Current recovery requires `seal_suite:2`, its locally derived `generation`
+  and literal `recover_only:true`. A legacy account requires explicit legacy
+  recovery immediately followed by encryption upgrade; it never starts live
+  legacy sync. A valid recovery enrolls a new active device on the same account,
+  without
   renaming it, replacing content or reviving revoked credentials. It is never
   auto-retried. A server before 1.1.5 answers `409 recovery_unavailable`
   instead of re-enrolling.
 - `POST /v1/account/recovery` (device auth)
-  `{"recovery_verifier":"<64hex>"}` → `204`. Register once after the client has
-  successfully opened its vault. Repeating the same verifier is harmless;
+  `{"recovery_verifier":"<64hex>"}` → `204`. This is the explicit legacy
+  registration path; suite-2 startup does not send it because setup or rotation
+  commits the verifier with authority. Repeating the same verifier is harmless;
   `409 recovery_mismatch` refuses replacement. Invalid shape is `400` before
   storage changes. The verifier survives journal replay and snapshots but is
   omitted from account responses. Old accounts without the field remain
   readable and retain their last-device safeguard. Since 1.1.5 the server
   also records when the verifier was registered, and nothing but the
-  operator's offline `obsyncd recovery reset apply` removes a verifier; no
-  route does.
+  operator's offline `obsyncd recovery reset apply` clears a verifier. Strong
+  rotation commit is the explicit owner-token-authorized replacement path;
+  there is no routine device-authenticated replacement setter.
 - `GET /v1/account` (device auth) → `{"account_id","name","created",
-  "quota_bytes","used_bytes","device_count"}`. `device_count` is how many
+  "quota_bytes","used_bytes","device_count","seal_suite":2,"generation":"<32hex>"}`
+  for a suite-2 account; legacy accounts omit the last two fields. `device_count` is how many
   devices can sync: the active ones and those still pairing. A revoked
   device, archived or not, stays a record and is not counted. A server
   before 1.1.5 counted every record, revoked ones included; the field kept
@@ -163,29 +265,48 @@ and a test asserts every route it emits appears there.
   the devices that can sync is what that sentence means. The dashboard's
   overview carries the same `account` object.
 
+### Recovery backup and local admission
+
+Canonical current backup text is `obsync-recovery-v2`, one space, and 24
+lowercase English BIP39 words separated by spaces. Input accepts ASCII space,
+tab, CR and LF as separators/outer whitespace, at most 512 bytes before trimming,
+and requires the exact prefix, case, word count, checksum and end of input.
+A missing/unknown prefix never selects a legacy decoder. Bare legacy words
+require the explicit history/upgrade action and never start ordinary sync.
+
+The plugin durably stages a new root and its local `new` purpose before the
+first setup request. Only that persisted purpose grants initial-map creation;
+recovery and pairing require an authenticated existing map before adoption.
+Neither a server's `recovered:false` nor a missing map grants creation authority.
+The suite/generation pin is in the owned native secret envelope with a matching
+nonsecret marker. V2 load requires the exact secret revision: no previous,
+revision-plus-one, copied-installation or missing-secret fallback. Torn saves
+remain stopped and preserve the bytes. Old readers refuse both v2 containers.
+A lost one-time reply remains unknown; explicit same-root first-setup recovery
+requires persisted local intent. The prefix and a server readback do not prove
+that a backup is the newest one.
+
 ## Pairing
 
-Since 1.1.3, a claim may include `vault: {"envelope":"<base64>","nonce":"<24hex>"}`.
-It seals UTF-8 JSON `{"name":"<vault name>","notes":<Markdown note count>}` with
-AES-256-GCM, a random 12-byte nonce, and the pairing ID as additional data.
-The key is `HKDF(PS, "obsync/v1/pair-vault", pairing_id)` (32 bytes), distinct
-from the vault-key envelope key. Names are 1–256 JavaScript string units with
-no control or bidi formatting characters; counts are nonnegative safe integers.
-The server accepts only a valid base64 envelope of at most 2048 characters
-and at least 16 decoded bytes, plus a 24-character hexadecimal nonce. It
-validates before enrolling, retains only those two fields in the in-memory
-pairing, and returns them inside `claimant.vault` to the creator alone.
-No clear vault name or note count reaches storage or logs. The approving device
-must authenticate and validate present details before offering approval.
-Absent details preserve pairing with older clients or servers; an old server
-ignores the optional field, so its approval prompt cannot name the new vault.
+Current live claims require `vault:{"seal_suite":2,"envelope":"<base64 SIV packet>"}`.
+It seals exact UTF-8 JSON `{"name":"<vault name>","notes":<Markdown note count>}`
+with kind 5 above, under the existing separate
+`HKDF(PS, utf8("obsync/v1/pair-vault"), utf8(pairing_id), 32)` base.
+Names are 1–256 JavaScript string units with no control or bidi formatting
+characters; counts are nonnegative safe integers. The encoded field is at most
+2048 characters and contains at least the 16-byte SIV. The server retains only
+the sealed variant and returns it inside `claimant.vault` to the creator.
+No clear vault name or note count reaches storage or logs. Before reveal or
+approval, the live creator requires and authenticates the details; missing,
+stripped, mixed or unknown framing refuses. Legacy optional GCM details are
+historical format only, with no live compatibility fallback.
 
-
-- `POST /v1/pairing` (device auth) → `201 {"pairing_id":"<32hex>",
+- `POST /v1/pairing` (device auth), body `{"seal_suite":2}` → `201 {"pairing_id":"<32hex>",
   "enroll_token":"<64hex>","expires":<unix_s>}`.
 - `POST /v1/pairing/{id}/claim` (no device auth; body carries the token)
   `{"enroll_token":"…","name":"…","platform":"ios|ipados|android|macos|
-  windows|linux","app_version":"…"}` → `201 {"device_id":"<32hex>",
+  windows|linux","app_version":"…","seal_suite":2,"claimant_pub":"<87 base64url>",
+  "vault":{"seal_suite":2,"envelope":"<base64>"}}` → `201 {"device_id":"<32hex>",
   "device_secret":"<64hex>"}`. `404 unknown_pairing`, `410 pairing_expired`,
   `409 already_claimed`. The device is created in state `pending`: it holds a
   credential, but every device-authenticated route refuses it until it
@@ -208,7 +329,7 @@ ignores the optional field, so its approval prompt cannot name the new vault.
   for a key other than the one already revealed; the same key again answers
   `204` again.
 - `POST /v1/pairing/{id}/approve` (device auth, creator only)
-  `{"envelope":"<base64 AES-GCM ciphertext>","nonce":"<24hex>"}` → `204`.
+  `{"seal_suite":2,"envelope":"<base64 SIV packet>"}` → `204`.
   Approval activates nothing by itself (1.1.4; earlier servers activated the
   claimant here).
 - `POST /v1/pairing/{id}/reject` (device auth, creator only) → `204`; the
@@ -225,7 +346,7 @@ ignores the optional field, so its approval prompt cannot name the new vault.
 - `GET /v1/pairing/{id}/envelope` (device auth, claimant only) →
   `409 not_approved` until the creator approves (the claimant polls this),
   carrying `"creator_pub"` beside `"error"` once the creator revealed it;
-  then `{"envelope","nonce","creator_pub"?}` exactly once; `410
+  then `{"seal_suite":2,"envelope","creator_pub"}` exactly once; `410
   envelope_consumed` afterwards, and `410 pairing_expired` once the ten
   minutes have passed. Collecting it moves the device to state `active`: the
   activation is journaled before the envelope is answered, and a refused
@@ -272,12 +393,17 @@ role.
   input, because the server chooses those and could choose one after reading
   the creator's key. A substituted key then agrees by chance alone, one in a
   million per attempt, and each attempt costs the person a new code.
-- **Seal.** `K = HKDF-SHA-256(ikm = ECDH(claimant, creator), salt = PS,
-  info = "obsync/v2/pair" || pairing_id)`; the envelope is AES-256-GCM over
-  `{"vrk":…}` with a random 12-byte nonce and additional data `pairing_id ||
-  claimant_pub || creator_pub` (the raw keys), so it cannot be replayed into
-  another pairing or opened against a substituted key. A copy of the code and
-  a record of every request open nothing.
+- **Seal.** The existing 32-byte base is
+  `HKDF-SHA-256(ECDH(claimant,creator), PS, "obsync/v2/pair" || pairing_id)`.
+  Apply suite 2's kind-4 context/KDF/SIV to exact JSON
+  `{"v":2,"vrk":"<64hex>","generation":"<32hex>"}`. The receiver validates
+  exact fields and derives the generation from the root before staging it.
+  Both role-ordered public keys and the pairing ID are authenticated; another
+  pairing or substituted key cannot open it. A code plus recorded traffic
+  does not supply the ECDH secret. Before active adoption, the claimant must
+  authenticate the existing map under this staged root. Ordinary pairing cannot
+  replace a different held root: explicit generation retirement first preserves
+  one history-only root and requires local confirmation.
 - **What is refused.** A claim without `claimant_pub` (a device before 1.1.5,
   or a key stripped on the way: the two look the same) is rejected on the
   creator, which says to update the new device; a claim whose name or
@@ -295,31 +421,13 @@ role.
   with one sentence: update the obsync server to 1.1.5 or later, then pair.
   The version is unauthenticated, and that is safe here: a forged answer can
   only cause the refusal, or reach a server that cannot complete the reveal.
-- **Paired means kept.** Collection (`consumed`) proves only that the envelope
-  left the server: a claimant that cannot open it, or whose person cancels,
-  revokes itself. So the creator says "paired" only once the claimant's row in
-  `GET /v1/devices` is `active` and shows the sync a kept key starts:
-  - A `last_heartbeat` at all (server 1.1.5, issue #290) proves it. Only a
-    started sync sends a heartbeat: never the claim, never the survey. A
-    pending device's heartbeat is refused, and the row is minted for this
-    claim.
-  - Otherwise, `last_seen` after `last_sign_in`. The sign-in is the
-    claimant's first request after collection, reading the server's vault
-    before it keeps the key.
-
-  Seen events are stamped in whole seconds, so a heartbeat in the second of
-  the sign-in leaves `last_seen` equal to `last_sign_in`. That is why the
-  heartbeat's own field decides, whatever second it shares.
-
-  A row that is revoked or gone reads "did not keep the vault key"; neither
-  within ten minutes reads "not confirmed".
-
-  **Skew.**
-  - A 1.1.4 server is refused before any code is made.
-  - A server that does not list `last_heartbeat` (a 1.1.5 build before #290)
-    is read by the comparison alone. A same-second start there waits out the
-    ten minutes and reads "not confirmed", never "paired" early.
-  - A client that does not read the field sees what it saw before.
+- **Server-reported completion.** `consumed`, an `active` device row and a
+  heartbeat or `last_seen` after sign-in are server reports of progress on an
+  honest server. They are not proof that the claimant opened or retained the
+  root against a malicious server. Creator notices attribute success/failure
+  to those reports and direct the person to the actual recipient to confirm
+  sync. Revoked/missing rows and a ten-minute timeout likewise report failure
+  or lack of confirmation, not cryptographic proof of key erasure.
 
 ## Devices
 
@@ -360,12 +468,60 @@ retain the account-wide authority described below.
 - `POST /v1/devices/heartbeat` `{"app_version","policy"}` → `204`; updates
   `last_seen` and the reported policy. Sent on start and hourly.
 
+## Fresh-root rotation and access-only revocation
+
+`POST /v1/devices/{id}/revoke` only changes honest-server access; it does not
+rotate content keys. The separate strong action uses a fresh root, complete
+current-head reseed and explicit pairing of every retained device. It never
+silently falls back to access-only removal; access-only is an explicit choice
+for that invocation rather than a saved weak default. The old root remains history-only;
+unsynced local bytes remain available. Protection starts on each device only
+after its acknowledged new pin. An offline old holder can still write/read in
+its old scope through a colluding server, but cannot derive the replacement root.
+See [the transition contract](security/device-revocation.md) for commitment
+encoding and the independent acceptance requirements.
+
+All rotation routes use device HMAC authentication. Capability discovery
+`GET /v1/rotation/capabilities` requires literal
+`{"rotation_protocol":1,"seal_suite":2}`. The frozen wire intent is exactly
+`{operation,previous_map,current_map,target,recovery_verifier,seal_suite:2}`,
+with explicit `target:null` for migration without one singled-out device.
+Prepare and commit additionally require the owner-supplied setup token, held
+in memory for that action rather than persisted as routine coordinator authority.
+
+| Route | Request / result |
+| --- | --- |
+| `POST /v1/rotation/prepare` | `{setup_token,intent}`; freezes cutoff and ordered current-head inventory, fences ordinary writes/enrollment |
+| `GET /v1/rotation/{operation}` | status binds exact intent, coordinator, cutoff, inventory hash/count, catalog pages/count/last/hash, resume ID and committed flag |
+| `GET /v1/rotation/{operation}/inventory?page=n` | fixed pages of up to 256 `[source_file,source_version]` heads, bounded to 65,536 total |
+| `POST /v1/rotation/{operation}/catalog` | `{page,entries}`; each entry is `[source_file,source_version,destination_file,destination_version]`, up to 256 |
+| `POST /v1/rotation/{operation}/commit` | `{setup_token,intent,cutoff,inventory_hash,catalog_pages,catalog_hash}`; atomically switches floor/verifier and retires prior credentials |
+
+The coordinator authenticates every source and destination record, records
+prepared and catalog receipts durably before commit, and compares them after
+restart or a lost reply. Status alone cannot replace those retained receipts.
+Local phases preserve uncertainty (`prepare_unknown`, `commit_unknown`); they
+never resume old live sync automatically. New pin/root and reset sync bookkeeping
+become public together only after the local save ACK. At most one old history
+root is retained, with its explicit suite; retiring it requires confirmation that
+its backup was preserved, not automatic erasure.
+
+Pending coordinator credential loss has one explicit recovery path:
+`POST /v1/setup` with suite 2, `recover_only:true`, the new backup proof and the
+exact intent plus `resume_id`. The client persists that ID and exact device
+profile before sending, authenticates resulting status with detached credentials,
+and compares retained receipts before adoption; already-committed or substituted
+status refuses this pending-only path. An exact retry reuses the grant;
+a superseded ID refuses. No current-map or ordinary-setup fallback substitutes
+for missing custody. Lost legacy recovery before staging can leave an orphan
+server grant; it supplies no live legacy engine or automatic adoption.
+
 ## Chunks
 
 - `POST /v1/chunks/exists` `{"sids":["<64hex>",…]}` (≤ 4096) → `{"missing":
   ["<64hex>",…]}`.
 - `PUT /v1/chunks/{sid}` body = raw ciphertext, `Content-Length` required,
-  ≤ 8 MiB + 16 bytes (8 MiB plaintext plus the AES-GCM tag); larger
+  ≤ 8 MiB + 16 bytes (8 MiB plaintext plus the 16-byte SIV); larger
   declarations receive `413 body_too_large` before body storage. The server hashes while streaming to a temp file and refuses
   with `422 sid_mismatch` if `SHA-256(body) ≠ sid`, `507 volume_full` below
   the watermark, `507 storage_full` when the filesystem itself has no room
@@ -393,7 +549,7 @@ retain the account-wide authority described below.
 - `POST /v1/files/{file_id}/versions`
   `{"version_id":"<64hex>","parents":["<64hex>",…],"sids":["<64hex>",…],
   "bytes":<n>,"domain_id":"<32hex>","manifest_ct":"<base64>",
-  "manifest_nonce":"<24hex>","deleted":false,"accept_existing":false}` →
+  "seal_suite":2,"deleted":false,"accept_existing":false}` →
   `201 {"seq":<n>,"version_id":"<64hex>",
   "heads":["<64hex>",…],"conflicted":false}`. `version_id` in the answer is
   the version the store holds for this post: the posted id, except on the one
@@ -408,10 +564,12 @@ retain the account-wide authority described below.
   version whose acceptance would leave a 65th is refused with `409
   too_many_heads` and nothing already stored changes. Posting an
   existing `version_id` is a `200` no-op.
-- **One position, one version.** Two devices that resolve the same conflict
-  to the same bytes post the same parents and the same chunks under two
-  version ids, because the id covers the encrypted manifest and its nonce;
-  the file forks and closing it costs another version. A post carrying
+- **One position, one version.** Two devices can post the same parents and
+  chunks under different version IDs when their manifest bytes differ (as
+  legacy randomized GCM also did for identical plaintext). Current suite-2
+  identical plaintext/context yields one deterministic packet and version ID;
+  different packets can still fork the file and require a closing version.
+  A post carrying
   `"accept_existing":true` whose `(file_id, parents as a set, sids in order,
   deleted)` equals a version the store already holds is answered `200` with
   THAT version's `seq` and `version_id`, and no frame is written. The same
@@ -425,10 +583,10 @@ retain the account-wide authority described below.
   do not merge: every device that settles the fork posts the same closing
   version and the same first version of one conflict copy, under a file id
   derived from the fork (`docs/architecture.md` 3.4.1), and the server keeps
-  one of each. No server change.
+  one of each. The semantic deduplication rule is unchanged by suite-2 framing.
 - `GET /v1/files/{file_id}` → `{"file_id","domain_id","heads":[…],
   "conflicted","versions":[{"version_id","parents","sids","bytes",
-  "manifest_ct","manifest_nonce","device_id","ts","deleted"}]}` newest
+  "manifest_ct","seal_suite":2,"device_id","ts","deleted"}]}` newest
   first, capped at `OBSYNC_RETENTION_VERSIONS` plus every head, and at
   450 MiB of JSON ("Limits and headers"). The domain
   is stated once on the file, because every version of a file is in it.
@@ -451,7 +609,8 @@ A failed publication retains the local file and warns truthfully; a successful
 settlement adds no deletion notice. Replaying the historical tombstone against
 its live descendant changes nothing. This uses the existing version graph and
 v1 manifest, so older servers accept it and older clients read the kept note
-normally; they may still create a new unresolved deletion fork themselves.
+normally in that historical suite. Current suite-2 writes require an upgraded
+server and current generation; older live clients are refused after activation.
 
 
 A **retirement** (plugin 1.1.3) is a tombstone for a file id that duplicates
@@ -466,7 +625,8 @@ ignores the field and applies an ordinary deletion. **No server change.**
 A folder is one more version on this same endpoint, with no chunks. The
 server has no folder concept and needs none: `sids` is empty and `bytes` is
 `0`, which it already accepts for a tombstone, and the manifest — which it
-cannot read — says the rest. **No server change; a 1.0.x server serves this.**
+cannot read — says the rest. The plaintext schema predates suite 2;
+current sealed publication requires the suite-2 floor.
 
 Inside `manifest_ct`:
 
@@ -484,7 +644,7 @@ Inside `manifest_ct`:
 There is no `mtime`: a folder has no content to be newer than, and leaving it
 out is what makes the manifest two devices produce for one folder identical
 (`docs/architecture.md` 3.4.1). With the file id derived from the path and the
-nonce derived from the message, two devices publishing the same folder produce
+deterministic suite-2 packet, two devices publishing the same folder produce
 the same `version_id`, so the second post is the `200` no-op this document
 already specifies for a version the server holds.
 
@@ -668,8 +828,8 @@ publishes new control versions. The existing server API needs no change.
 Plugins before 1.1.3 reject `v: 3` as an unknown manifest version and advance
 the feed. Because the control has its own file id, rejection cannot overwrite,
 delete or replace the actual note or its history. Mixed versions keep syncing
-ordinary notes, but all devices must update for a shared hold to stop the
-rewrite storm. The unchanged 1.1.1 client is exercised by
+ordinary notes only within the historical legacy suite. Current suite-2
+activation refuses old live clients; explicit old-history reading remains separate. The unchanged 1.1.1 client is exercised by
 `plugin/test/legacy-pause-check.mjs` against a control followed by a normal
 note; the receipt records refusal, application and an advanced feed cursor.
 
@@ -678,7 +838,7 @@ note; the receipt records refusal, application and an advanced feed cursor.
 - `GET /v1/changes?since=<seq>&wait=<seconds ≤ 55>&limit=<n ≤ 1000>` →
   `{"seq":<last_included>,"head_seq":<journal_head>,"changes":[{"seq",
   "file_id","domain_id","version_id","parents","sids","bytes","manifest_ct",
-  "manifest_nonce","device_id","ts","deleted","heads","conflicted"}]}`. A
+  "seal_suite":2,"device_id","ts","deleted","heads","conflicted"}]}`. A
   feed entry arrives without its file, so it carries its own `domain_id`.
   With `wait`, the server holds the request until a new version lands or the
   wait elapses, then returns whatever exists (possibly an empty list).

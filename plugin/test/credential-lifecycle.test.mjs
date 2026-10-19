@@ -13,7 +13,7 @@ async function fixture(t, initial = null) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
   const obsidian = box.require("obsidian"), requests = [], logs = [], statuses = [];
-  obsidian.requestUrl = async (request) => { requests.push(request); return { status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }; };
+  box.require(join(box.home, "build/fetchHttp.js")).fetchHttp = async (request) => { requests.push(request); return { status: 200, headers: {}, text: "{}", arrayBuffer: new ArrayBuffer(0) }; };
   const Plugin = box.require(join(box.home, "build/main.js")).default;
   const instance = new Plugin();
   let metadata = structuredClone(initial), loads = 0, starts = 0;
@@ -34,6 +34,33 @@ async function fixture(t, initial = null) {
 
 const identity = () => ({ vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret,
   serverUrl: "https://sync.example.invalid", edgeHeaders: [] });
+
+test("the real plugin sends through its fetch adapter, never Obsidian requestUrl", async t => {
+  const r = await fixture(t, identity());
+  r.obsidian.requestUrl = () => assert.fail("requestUrl fallback is forbidden");
+  await r.instance.onload();
+  t.after(() => r.instance.onunload());
+  assert.equal(r.metadata().storageVersion, 3, "desktop startup uses the native wrapper");
+  assert.match(r.instance.app.secretStorage.getSecret(r.metadata().credentialRef), /^obsync-native-custody-v1:/);
+  await r.instance.transport.account();
+  assert.equal(r.requests.length, 1);
+  assert.equal(r.requests[0].url, "https://sync.example.invalid/v1/account");
+  assert.equal(r.requests[0].headers["X-Obsync-Device"], KEYS.deviceId);
+});
+
+test("desktop encryption refusal occurs before the real plugin loads state or sends enrollment", async t => {
+  for (const available of [false, "true"]) {
+    const r = await fixture(t, identity()), native = r.instance.app.secretStorage.adapter.safeStorage;
+    let secretWrites = 0;
+    r.instance.app.secretStorage.setSecret = () => secretWrites++;
+    native.isEncryptionAvailable = () => available;
+    await assert.rejects(r.instance.onload(), reason("desktop_custody_unavailable"));
+    assert.equal(r.loads(), 0); assert.equal(secretWrites, 0); assert.equal(r.writes.length, 0);
+    assert.equal(r.starts(), 0); assert.equal(r.requests.length, 0); assert.deepEqual(r.metadata(), identity());
+    assert.ok(r.logs.includes("state decision=stopped reason=desktop_custody_unavailable"));
+    assert.ok(r.obsidian.notices.some(text => text.includes("operating-system encryption") && text.includes("Sync is stopped")));
+  }
+});
 
 test("unavailable native storage stops startup without writing metadata or starting requests", async (t) => {
   const r = await fixture(t, identity());
@@ -96,14 +123,17 @@ test("a call of a session a reload replaced ends at its first attempt with one l
 
 for (const stage of ["response", "save"]) {
   test(`setup's superseded ${stage} completion leaves replacement identity untouched`, async (t) => {
-    const r = await fixture(t, { ...identity(), deviceId: null, deviceSecret: null });
+    const r = await fixture(t);
     await r.instance.onload();
+    await r.instance.stageNewVaultKey();
     const entered = deferred(), released = deferred(), original = r.instance.state;
     const replacement = { data: { deviceId: "replacement", vrk: "replacement" }, save: () => assert.fail("replacement save") };
-    r.instance.transport.setup = async () => {
+    r.instance.transport.setupCapabilities2 = async () => ({ seal_suite: 2, recover_only: true });
+    r.instance.transport.setup2 = async () => {
       if (stage === "response") { entered.resolve(); await released.promise; }
-      return { outcome: "ok", value: { device_id: KEYS.deviceId, device_secret: KEYS.deviceSecret } };
+      return { outcome: "ok", value: { account_id: "ab".repeat(16), device_id: KEYS.deviceId, device_secret: KEYS.deviceSecret } };
     };
+    r.instance.transport.withCredential = () => ({ account: async () => ({ account_id: "ab".repeat(16), seal_suite: 2, generation: original.stagedEnrollment2().generation }) });
     if (stage === "save") r.hooks.save = async () => { entered.resolve(); await released.promise; };
     const settingUp = r.instance.setUpAccount("local setup sentinel", "Local account");
     await entered.promise;
@@ -133,7 +163,7 @@ test("key adoption never restarts after a rejected save or superseded save compl
     await r.instance.onload();
     const entered = deferred(), released = deferred();
     r.hooks.save = async () => { entered.resolve(); await released.promise; if (failure) throw new Error("fixture failure"); };
-    const adopting = r.instance.adoptVaultKey(KEYS.vrk);
+    const adopting = r.instance.stageNewVaultKey();
     const refused = assert.rejects(adopting, failure ? reason("metadata_write_failed") : /inactive/);
     await entered.promise;
     const replacement = { data: { vrk: "replacement" }, save: () => assert.fail("replacement save") };
@@ -220,6 +250,7 @@ function vaultKeyDialog(r, derive) {
   let closed = 0, generated = 0, recoveryShown = 0;
   class Setting {
     setName() { return this; }
+    setDesc() { return this; }
     addTextArea(callback) {
       const area = { setPlaceholder: () => area, onChange: () => area, inputEl: { setAttribute() {} } };
       callback(area); return this;
@@ -227,6 +258,7 @@ function vaultKeyDialog(r, derive) {
     addButton(callback) {
       let label;
       const button = { setButtonText: (value) => { label = value; return button; },
+        setCta: () => button,
         onClick: (handler) => { handlers.set(label, handler); return button; } };
       callback(button); return this;
     }
@@ -242,6 +274,7 @@ function vaultKeyDialog(r, derive) {
   modal.contentEl = { createEl() {}, empty() {} };
   modal.close = () => { closed++; modal.onClose(); };
   modal.onOpen();
+  modal.phrase = `obsync-recovery-v2 ${"abandon ".repeat(23)}art`;
   return { modal, handlers, closed: () => closed, generated: () => generated, recoveryShown: () => recoveryShown };
 }
 
@@ -250,17 +283,18 @@ test("a current recovery dialog persists its derived key before reporting succes
   await r.instance.onload();
   const entered = deferred(), release = deferred();
   const dialog = vaultKeyDialog(r, async () => { entered.resolve(); await release.promise; return new Uint8Array(32).fill(83); });
-  const restoring = dialog.handlers.get("Restore")();
+  const restoring = dialog.handlers.get("Stage current backup")();
   await entered.promise;
   assert.equal(r.instance.state.data.vrk, null);
   assert.equal(r.starts(), 0);
   release.resolve();
   await restoring;
-  assert.equal(r.instance.state.data.vrk, "53".repeat(32));
+  assert.equal(r.instance.state.data.vrk, null);
+  assert.equal(r.instance.state.stagedEnrollment2().root, "53".repeat(32));
   assert.equal(r.metadata().credentialRevision, 2);
-  assert.equal(r.starts(), 1);
+  assert.equal(r.starts(), 0);
   assert.equal(dialog.closed(), 1);
-  assert.ok(r.obsidian.notices.includes("obsync: vault key restored."));
+  assert.ok(r.obsidian.notices.includes("obsync: Recovery backup staged. Use Setup or recover to verify this vault on its server."));
 });
 
 for (const cancellation of ["reload", "close"]) {
@@ -269,7 +303,7 @@ for (const cancellation of ["reload", "close"]) {
     await r.instance.onload();
     const entered = deferred(), release = deferred();
     const dialog = vaultKeyDialog(r, async () => { entered.resolve(); await release.promise; return new Uint8Array(32).fill(83); });
-    const restoring = dialog.handlers.get("Restore")();
+    const restoring = dialog.handlers.get("Stage current backup")();
     await entered.promise;
     if (cancellation === "reload") await r.instance.onload();
     else dialog.modal.close();
@@ -284,7 +318,7 @@ for (const cancellation of ["reload", "close"]) {
   });
 }
 
-for (const action of ["Restore", "Create a new vault key"]) {
+for (const action of ["Stage current backup", "Create a new vault key"]) {
   test(`an open dialog from a prior load refuses ${action} before deriving or generating a key`, async (t) => {
     const r = await fixture(t);
     await r.instance.onload();
@@ -312,7 +346,7 @@ test("new-key dialog handles a rejected save without showing recovery or an unha
   assert.equal(dialog.recoveryShown(), 0);
   assert.equal(dialog.closed(), 0);
   assert.equal(r.starts(), 0);
-  assert.ok(r.obsidian.notices.some((message) => message.startsWith("obsync: could not read or save this vault's sync credentials")));
+  assert.ok(r.obsidian.notices.some((message) => message.startsWith("obsync: could not complete this vault's encrypted credential storage")));
 });
 
 for (const cause of ["storage failure", "unload", "same-instance reload"]) {
@@ -362,14 +396,15 @@ test("a current new-key dialog persists the key before showing its recovery phra
   const dialog = vaultKeyDialog(r, async () => assert.fail("no phrase derivation for a new key"));
   await dialog.handlers.get("Create a new vault key")();
   assert.equal(dialog.generated(), 1);
-  assert.equal(r.instance.state.data.vrk, "53".repeat(32));
+  assert.equal(r.instance.state.data.vrk, null);
+  assert.equal(r.instance.state.stagedEnrollment2().root, "53".repeat(32));
   assert.equal(r.metadata().credentialRevision, 2);
-  assert.equal(r.starts(), 1);
+  assert.equal(r.starts(), 0);
   assert.equal(dialog.closed(), 1);
   assert.equal(dialog.recoveryShown(), 1);
 });
 
-for (const action of ["Restore", "Create a new vault key"]) {
+for (const action of ["Stage current backup", "Create a new vault key"]) {
   test(`closing during the ${action} save retains its dispatched write without late dialog success`, async (t) => {
     const r = await fixture(t);
     await r.instance.onload();
@@ -381,7 +416,8 @@ for (const action of ["Restore", "Create a new vault key"]) {
     dialog.modal.close();
     release.resolve();
     await applying;
-    assert.equal(r.instance.state.data.vrk, "53".repeat(32), "an already-dispatched write is not undone by closing a dialog");
+    assert.equal(r.instance.state.data.vrk, null);
+    assert.equal(r.instance.state.stagedEnrollment2().root, "53".repeat(32), "an already-dispatched staging write is not undone by closing a dialog");
     assert.equal(r.metadata().credentialRevision, 2);
     assert.equal(dialog.closed(), 1, "the old callback must not close a later dialog");
     assert.equal(dialog.recoveryShown(), 0);
@@ -391,8 +427,14 @@ for (const action of ["Restore", "Create a new vault key"]) {
 }
 
 test("an active startup failure retains its drain before a replacement load", async (t) => {
-  const r = await fixture(t, identity());
+  const r = await fixture(t);
   await r.instance.onload();
+  const { state } = r.instance;
+  await state.stageEnrollment2(KEYS.vrk, "pair");
+  await state.adoptSuite2({ root: KEYS.vrk, generation: state.stagedEnrollment2().generation,
+    deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
+  state.data.serverUrl = identity().serverUrl;
+  await state.save();
   const Plugin = r.box.require(join(r.box.home, "build/main.js")).default;
   const Engine = r.box.require(join(r.box.home, "build/sync/engine.js")).SyncEngine;
   const release = deferred();
@@ -415,4 +457,75 @@ test("an active startup failure retains its drain before a replacement load", as
   assert.equal(r.loads(), loads + 1);
   assert.ok(r.instance.engine);
   assert.equal(r.instance.engineTeardowns.size, 0);
+});
+
+async function liveSuite2(t) {
+  const r = await fixture(t);
+  await r.instance.onload();
+  const state = r.instance.state;
+  await state.stageEnrollment2(KEYS.vrk, "pair");
+  await state.adoptSuite2({ root: KEYS.vrk, generation: state.stagedEnrollment2().generation,
+    deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
+  const { encodeRecoveryBackup } = r.box.require(join(r.box.home, "build/recoveryBackup.js"));
+  r.backup = await encodeRecoveryBackup(Uint8Array.from(Buffer.from(KEYS.vrk, "hex")));
+  return r;
+}
+
+test("replacement entry confirms old backup before stopping sync and pins the pairing to that generation", async t => {
+  const r = await liveSuite2(t), modals = r.box.require(join(r.box.home, "build/ui/modals.js"));
+  let stopped = 0, opened;
+  r.instance.engine = { stopAndWait: async () => { stopped++; } };
+  modals.PairClaimModal = class { constructor(...args) { this.args = args; } open() { opened = this.args; } };
+  await assert.rejects(() => r.instance.pairAfterRotation("bad backup", () => {}));
+  assert.equal(stopped, 0); assert.equal(opened, undefined);
+  await assert.rejects(() => r.instance.pairAfterRotation(r.backup, () => { throw new Error("dialog closed"); }), /dialog closed/);
+  assert.equal(stopped, 0);
+  await r.instance.pairAfterRotation(r.backup, () => {});
+  assert.equal(stopped, 1); assert.equal(r.instance.rotating, true);
+  assert.equal(opened[4], r.instance.state.custody2().generation);
+  assert.equal(r.instance.state.data.vrk, KEYS.vrk, "entry does not replace the held key");
+  opened[3]();
+  assert.equal(r.instance.rotating, false); assert.equal(r.starts(), 1, "cancel may resume only the unchanged active generation");
+  assert.equal(r.requests.length, 0);
+});
+
+test("replacement completion cannot clear the sync stop before durable active enrollment", async t => {
+  const r = await fixture(t); await r.instance.onload(); r.instance.rotating = true;
+  assert.throws(() => r.instance.finishReplacementPairing(), /not ready/);
+  assert.equal(r.instance.rotating, true);
+  await r.instance.state.stageEnrollment2(KEYS.vrk, "pair");
+  assert.throws(() => r.instance.finishReplacementPairing(), /not ready/);
+  const staged = r.instance.state.stagedEnrollment2();
+  await r.instance.state.adoptSuite2({ root: staged.root, generation: staged.generation, deviceId: KEYS.deviceId,
+    deviceSecret: KEYS.deviceSecret, purpose: "pair" });
+  r.instance.forgottenDevice = true;
+  r.instance.finishReplacementPairing();
+  assert.equal(r.instance.rotating, false); assert.equal(r.instance.forgottenDevice, false);
+});
+
+test("history key retirement requires exact old backup and retains the current live root", async t => {
+  const r = await liveSuite2(t), state = r.instance.state, oldG = state.custody2().generation;
+  await state.stageReplacementEnrollment2("72".repeat(32), "pair", oldG);
+  const staged = state.stagedEnrollment2();
+  await state.adoptSuite2({ root: staged.root, generation: staged.generation, deviceId: KEYS.deviceId,
+    deviceSecret: KEYS.deviceSecret, purpose: "pair" });
+  const before = structuredClone(state.data);
+  await assert.rejects(() => r.instance.retireHistoryBackup("bad backup", () => {}));
+  assert.equal(state.custody2().history.root, KEYS.vrk);
+  await assert.rejects(() => r.instance.retireHistoryBackup(r.backup, () => { throw new Error("dialog closed"); }), /dialog closed/);
+  assert.equal(state.custody2().history.root, KEYS.vrk);
+  await r.instance.retireHistoryBackup(r.backup, () => {});
+  assert.equal(state.custody2().history, null);
+  assert.deepEqual(state.data, before);
+  assert.equal(r.requests.length, 0);
+});
+
+test("a second rotation action cannot release the first action's engine stop", async t => {
+  const r = await liveSuite2(t), entered = deferred(), release = deferred();
+  r.instance.rotationClient = { start: async () => { r.instance.rotating = true; entered.resolve(); await release.promise; } };
+  const first = r.instance.startRotation(null); await entered.promise;
+  await assert.rejects(() => r.instance.startRotation(null), /already running/);
+  assert.equal(r.instance.rotationRunning, true); assert.equal(r.instance.rotating, true);
+  release.resolve(); await first;
+  assert.equal(r.instance.rotationRunning, false);
 });

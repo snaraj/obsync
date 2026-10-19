@@ -10,7 +10,7 @@ import test from "node:test";
 import { readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { sandbox } from "./fake.mjs";
+import { KEYS, memorySecrets, sandbox } from "./fake.mjs";
 
 const tick = () => new Promise(setImmediate);
 
@@ -60,6 +60,8 @@ function stubPlugin(overrides = {}) {
       paired: false,
       save: async () => { calls.push("state.save"); },
       localBytes: () => 0,
+      custody2: () => null,
+      stagedEnrollment2: () => null,
     },
     transport: { account: async () => ({ name: "obsync", device_count: 1 }) },
     forgottenDevice: false,
@@ -119,6 +121,34 @@ function open(t, overrides) {
   const button = (list, text) => { const found = list.find((c) => c.kind === "button" && c.text === text); assert.ok(found, `button ${text}`); return found; };
   return { box, obsidian, plugin, calls, settings, tab, rows, row, shown, render, button, made, vault, updates: () => updates };
 }
+
+test("pending setup/recovery/pairing refuses both endpoint edit paths before storage and keeps its pin available", async t => {
+  for (const purpose of ["new", "recover", "pair"]) {
+    const s = open(t), { State } = s.box.require(join(s.box.home, "build/state.js"));
+    let metadata = { serverUrl: "https://same.example.invalid" }, writes = 0;
+    const secrets = memorySecrets();
+    const state = await State.open({ loadData: async () => metadata, saveData: async value => { metadata = structuredClone(value); writes++; } }, false, secrets);
+    s.plugin.state = state;
+    const field = s.render("Server URL").made.find(c => c.kind === "text");
+    await state.stageEnrollment2(KEYS.vrk, purpose);
+    const before = structuredClone(state.data), pin = state.custody2(), saved = structuredClone(metadata);
+    const envelope = secrets.getSecret(metadata.credentialRef), written = writes;
+    field.commit("different.example.invalid"); // The field predates the pending enrollment.
+    await tick();
+    const Plugin = s.box.require(join(s.box.home, "build/main.js")).default;
+    await assert.rejects(Plugin.prototype.setServerUrl.call(s.plugin, "https://another.example.invalid"), /Server URL was not changed/);
+    assert.equal(writes, written, "neither refusal dispatched a storage write");
+    assert.deepEqual(state.data, before); assert.deepEqual(metadata, saved); assert.deepEqual(state.custody2(), pin);
+    assert.equal(secrets.getSecret(metadata.credentialRef), envelope);
+    assert.doesNotThrow(() => state.assertAvailable(), "pending custody remains usable after both refusals");
+    assert.ok(s.obsidian.notices.some(text => text.includes("same address") && text.includes("fresh vault")));
+    assert.equal(s.plugin.logs.filter(line => line === "settings decision=refused reason=enrollment_pending_server").length, 2);
+    assert.equal(s.calls.filter(call => call === "wake:address").length, 0);
+    await assert.doesNotReject(Plugin.prototype.setServerUrl.call(s.plugin, "same.example.invalid"));
+    assert.deepEqual(state.custody2(), pin); assert.doesNotThrow(() => state.assertAvailable());
+    assert.equal(state.data.serverUrl, before.serverUrl, "normalization of the same endpoint stays permitted");
+  }
+});
 
 test("the tab keeps the id and name Obsidian gives it, before and after every draft is used", async (t) => {
   // Obsidian sets `id` and `name` on the tab in its constructor and reads
@@ -370,6 +400,40 @@ test("a header that cannot be sent is refused as it is entered, naming the line 
     assert.deepEqual(s.calls, [], "a refusal saves nothing");
     assert.ok(s.plugin.logs.includes(`edge decision=refused reason=${reason}`), s.plugin.logs.join("\n"));
   }
+});
+
+test("browser header policy and case-insensitive duplicates refuse visible edits without exposing values", t => {
+  for (const name of ["Cookie", "Cookie2", "Connection", "Origin", "Referer", "Accept-Encoding", "Proxy-Authorization", "Sec-Fixture", "User-Agent", "X-HTTP-Method", "X-HTTP-Method-Override", "X-Method-Override", "*"]) {
+    const s = open(t); s.plugin.state.data.edgeHeaders = [{ name: "X-Before", value: "kept" }];
+    s.render("Custom request headers").made.find(c => c.kind === "textarea").commit(`${name}: NEVER_PRINT_SYNTHETIC_SECRET`);
+    assert.deepEqual(s.plugin.state.data.edgeHeaders, [{ name: "X-Before", value: "kept" }]);
+    assert.deepEqual(s.calls, []);
+    assert.equal(s.obsidian.notices.at(-1), `obsync: custom request headers were not saved: line 1: obsync cannot send ${name} as a custom request header. Remove that line.`);
+    assert.ok(!s.obsidian.notices.join(" ").includes("NEVER_PRINT"));
+  }
+  for (const name of ["X-Service-Id", "x-service-id"]) {
+    const s = open(t);
+    s.render("Custom request headers").made.find(c => c.kind === "textarea").commit(`X-Service-Id: first\n${name}: NEVER_PRINT_DUPLICATE`);
+    assert.deepEqual(s.plugin.state.data.edgeHeaders, []);
+    assert.deepEqual(s.calls, []);
+    assert.ok(s.obsidian.notices.at(-1).includes("repeats a header name"));
+    assert.ok(!s.obsidian.notices.at(-1).includes("NEVER_PRINT"));
+  }
+});
+
+test("settings enforce preflight name budgets while preserving ordinary configured credentials", t => {
+  const list = (count, length = 6) => Array.from({ length: count }, (_, i) => `X-${String(i).padStart(3, "0")}`.padEnd(length, "a") + ": sentinel").join("\n");
+  for (const typed of [list(60), list(1, 129), list(32, 128)]) {
+    const s = open(t);
+    s.render("Custom request headers").made.find(c => c.kind === "textarea").commit(typed);
+    assert.deepEqual(s.calls, []);
+    assert.ok(s.obsidian.notices.at(-1).includes("Too many custom request headers, or their names are too long"));
+  }
+  const s = open(t);
+  const expected = [{ name: "Authorization", value: "Bearer sentinel" }, { name: "X-Service-Secret", value: "opaque" }, { name: "CF-Access-Client-Id", value: "id" }, { name: "CF-Access-Client-Secret", value: "secret" }];
+  s.render("Custom request headers").made.find(c => c.kind === "textarea").commit(expected.map(h => `${h.name}: ${h.value}`).join("\n"));
+  assert.deepEqual(s.plugin.state.data.edgeHeaders, expected);
+  assert.deepEqual(s.calls, ["state.save"]);
 });
 
 test("edge headers typed and left behind are adopted when Settings closes, and a refused draft is not kept (#183)", (t) => {
@@ -1370,16 +1434,16 @@ test("closing a completed pairing redraws settings for the new identity", async 
   assert.equal(s.row("Device list").desc, "Reading the device list…");
 });
 
-test("the Recovery phrase row reads Not confirmed with a Show and confirm button until the words are confirmed (#170)", (t) => {
+test("the Recovery backup row reads Not confirmed with a Show and confirm button until the words are confirmed (#170)", (t) => {
   const s = open(t);
   const { RECOVERY_UNCONFIRMED } = s.box.require(join(s.box.home, "build/ui/modals.js"));
   const opened = [];
   s.obsidian.Modal.prototype.open = function () { opened.push(this); };
-  const show = () => s.render("Recovery phrase").made.find((c) => c.text === "Show" || c.text === "Show and confirm");
+  const show = () => s.render("Recovery backup").made.find((c) => c.text === "Show" || c.text === "Show and confirm");
   s.plugin.state.data.vrk = "00".repeat(32);
   for (const state of [undefined, "unconfirmed", "skipped"]) {
     s.plugin.state.data.recoveryPhrase = state;
-    assert.equal(s.row("Recovery phrase").desc, RECOVERY_UNCONFIRMED, String(state));
+    assert.equal(s.row("Recovery backup").desc, RECOVERY_UNCONFIRMED, String(state));
     assert.match(RECOVERY_UNCONFIRMED, /^Not confirmed — Show and confirm\. /);
     const button = show();
     assert.deepEqual([button.text, button.cta, button.disabled], ["Show and confirm", true, false], String(state));
@@ -1392,7 +1456,8 @@ test("the Recovery phrase row reads Not confirmed with a Show and confirm button
     assert.equal(s.updates(), before + 1, "closing it redraws the row");
   }
   s.plugin.state.data.recoveryPhrase = "confirmed";
-  assert.match(s.row("Recovery phrase").desc, /^24 words that are the vault key\./);
+  assert.match(s.row("Recovery backup").desc, /^Keep the complete backup, including its format marker\./);
+  assert.match(s.row("Recovery backup").desc, /without it and without a paired device the vault cannot be recovered\./);
   assert.deepEqual([show().text, show().cta], ["Show", undefined]);
   opened.length = 0;
   show().click();
@@ -1400,7 +1465,7 @@ test("the Recovery phrase row reads Not confirmed with a Show and confirm button
 
   s.plugin.state.data.vrk = null;
   s.plugin.state.data.recoveryPhrase = undefined;
-  assert.match(s.row("Recovery phrase").desc, /^This device holds no vault key\./, "no key, nothing to confirm");
+  assert.match(s.row("Recovery backup").desc, /^This device holds no vault key\./, "no key, nothing to confirm");
   assert.deepEqual([show().text, show().disabled], ["Show", true]);
 });
 
@@ -1422,3 +1487,82 @@ test("Notifications lists both settings with every value, a change goes to the p
   assert.deepEqual(s.calls, ["setNotices:{\"level\":\"everything\"}:settings", "setNotices:{\"merges\":\"off\"}:settings", "showRecent"],
     "a value the list does not hold changes nothing");
 });
+
+for (const inFlight of [false, true]) test(`blocking access refreshes the same showing after ${inFlight ? "an older held read" : "the completed initial read"}`, async t => {
+  const self = "cc".repeat(16), other = "aa".repeat(16);
+  let devices = [
+    { device_id: self, name: "Owner", platform: "macos", app_version: "1.1.8", last_seen: 0, revoked: false, state: "active" },
+    { device_id: other, name: "Phone", platform: "ios", app_version: "1.1.8", last_seen: 0, revoked: false, state: "active" },
+  ];
+  let release, reads = 0;
+  const held = new Promise(resolve => { release = resolve; });
+  const s = open(t, {
+    listDevices: async () => { reads++; const snapshot = structuredClone(devices); if (inFlight && reads === 2) await held; return snapshot; },
+    revokeDevice: async id => { assert.equal(id, other); s.calls.push(`revoke:${id}`); devices = devices.map(d => d.device_id === id ? { ...d, revoked: true, state: "revoked" } : d); },
+  });
+  s.plugin.state.data.deviceId = self; s.plugin.state.paired = true;
+  // This port draws again on update(), rather than only counting the call.
+  let drawn;
+  s.tab.update = () => { drawn = s.row("Device list").desc; s.render("Device list"); };
+  s.tab.update(); await tick();
+  assert.equal(drawn, "2 devices on this account.");
+  const revoke = s.button(s.render("Phone").made, "Revoke");
+  if (inFlight) { s.button(s.render("Device list").made, "Refresh").click(); assert.equal(reads, 2); }
+  questions(s, "Block access"); revoke.click(); await tick();
+  assert.equal(devices.filter(d => !d.revoked).length, 1, "the server action finished");
+  if (inFlight) release();
+  await tick();
+  assert.deepEqual(s.calls, [`revoke:${other}`]);
+  assert.equal(drawn, "1 device on this account, and 1 revoked.", "the displayed count must describe the completed revoke");
+  assert.deepEqual(s.shown("Devices"), ["Owner (this device)", "1 revoked device", "Device list"]);
+});
+
+for (const action of ["revoke", "forget"]) for (const oldFails of [false, true]) for (const newFails of [false, true]) {
+  test(`${action} receipt supersedes an older ${oldFails ? "failed" : "successful"} read while its ${newFails ? "failed" : "successful"} replacement is pending`, async t => {
+    const self = "cc".repeat(16), other = "aa".repeat(16);
+    let devices = [
+      { device_id: self, name: "Owner", platform: "macos", app_version: "1.1.8", last_seen: 0, revoked: false, state: "active" },
+      { device_id: other, name: "Phone", platform: "ios", app_version: "1.1.8", last_seen: 0, revoked: action === "forget", state: action === "forget" ? "revoked" : "active" },
+    ];
+    let releaseOld, releaseNew, reads = 0;
+    const oldRead = new Promise(resolve => { releaseOld = resolve; });
+    const newRead = new Promise(resolve => { releaseNew = resolve; });
+    const mutate = async id => {
+      assert.equal(id, other); s.calls.push(`${action}:${id}`);
+      devices = action === "forget" ? devices.filter(d => d.device_id !== id)
+        : devices.map(d => d.device_id === id ? { ...d, revoked: true, state: "revoked" } : d);
+    };
+    const s = open(t, {
+      listDevices: async () => {
+        const request = ++reads, snapshot = structuredClone(devices);
+        if (request === 2) { await oldRead; if (oldFails) throw new Error("OLD READ FAILURE"); }
+        if (request === 3) { await newRead; if (newFails) throw new Error("CURRENT READ FAILURE"); }
+        return snapshot;
+      },
+      revokeDevice: mutate, forgetRevoked: mutate,
+    });
+    s.plugin.state.data.deviceId = self; s.plugin.state.paired = true;
+    let drawn;
+    s.tab.update = () => { drawn = s.row("Device list").desc; s.render("Device list"); };
+    s.tab.update(); await tick();
+    if (action === "forget") s.button(s.render("1 revoked device").made, "Show").click();
+    const button = s.button(s.render(action === "forget" ? "Phone (revoked)" : "Phone").made, action === "forget" ? "Forget" : "Revoke");
+    s.button(s.render("Device list").made, "Refresh").click();
+    questions(s, action === "forget" ? "Forget" : "Block access"); button.click(); await tick();
+    assert.deepEqual(s.calls, [`${action}:${other}`], "exactly one authorized server mutation");
+    assert.equal(reads, 3, "the mutation must start its own replacement read");
+    assert.equal(drawn, "Reading the device list…");
+    releaseOld(); await tick();
+    // Other controls may redraw the tab while this fresh read still waits.
+    s.tab.update();
+    assert.equal(drawn, "Reading the device list…", "the old response/error cannot replace the new loading state");
+    assert.equal(reads, 3, "the old finalizer cannot clear the replacement's reading gate");
+    releaseNew(); await tick();
+    assert.equal(drawn, newFails ? "The device list is unavailable: CURRENT READ FAILURE"
+      : action === "forget" ? "1 device on this account." : "1 device on this account, and 1 revoked.");
+    assert.equal(reads, 3, "a failed replacement is reported without looping");
+    assert.ok(!drawn.includes("OLD READ FAILURE"));
+    if (!newFails) assert.deepEqual(s.shown("Devices"), action === "forget"
+      ? ["Owner (this device)", "Device list"] : ["Owner (this device)", "1 revoked device", "Device list"]);
+  });
+}

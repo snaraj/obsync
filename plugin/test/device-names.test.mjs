@@ -121,6 +121,7 @@ test("a refresh after pairing or renaming reads the names at once (#164)", async
 
 test("a device enrolled as its bare platform gives the server the name it shows, once (#152)", async () => {
   const r = await started({ ownName: "linux" });
+  await r.timers.run(1000, () => r.host.logs.includes("device decision=renamed reason=legacy_default"));
   const patches = r.server.requests.filter((request) => request.method === "PATCH");
   assert.equal(patches.length, 1);
   assert.deepEqual(JSON.parse(patches[0].json), { name: "test-device" });
@@ -133,6 +134,9 @@ test("a device enrolled as its bare platform gives the server the name it shows,
 
 test("a name another device gave this one becomes its own, and nothing is sent back (#152)", async () => {
   const r = await started({ ownName: "Office desktop" });
+  // Adoption assigns the name before awaiting persistence. The heartbeat read
+  // above may finish first; wait for adoption's post-save receipt as well.
+  await r.timers.run(1000, () => r.host.logs.includes("device decision=adopted reason=renamed_elsewhere"));
   assert.equal(r.server.requests.filter((request) => request.method === "PATCH").length, 0);
   assert.equal(r.state.data.deviceName, "Office desktop");
   assert.ok(r.host.logs.includes("device decision=adopted reason=renamed_elsewhere"));

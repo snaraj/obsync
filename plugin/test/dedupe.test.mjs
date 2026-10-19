@@ -1,3 +1,4 @@
+import { withDistinctMtime } from "./seal2-fixture.mjs";
 /**
  * One position, one version: the device half of issue #114.
  *
@@ -22,7 +23,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { DEVICE_B, FakeTimers, KEYS, STEP_MS, keys as vaultKeys, pair, published, rig, settled } from "./fake.mjs";
+import { openPublishedManifest, DEVICE_B, FakeTimers, KEYS, STEP_MS, keys as vaultKeys, pair, published, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyChange } = require("../build/sync/pull.js");
@@ -56,6 +57,7 @@ test("a post the server already holds is recorded under the id it answers with",
   // And now the honest #114 shape: same parents, same sids, same path.
   const parents = [first.versionId];
   r.state.setFile(NOTE, { ...r.state.fileByPath(NOTE), versionId: parents[0], sha256: "" });
+  r.host.seed(NOTE, MINE, 2001); // Different authenticated mtime, same position and chunks.
   const twin = await pushFile(r.context, NOTE);
 
   assert.equal(r.server.deduplicated.length, 1, "the twin was written as a second version");
@@ -135,7 +137,7 @@ test("a publish under an adopted file id that dedupes is adoption, and renames n
     fileId: THEIRS, path: NOTE, bytes: enc(EDITED), mtime: 5000,
     parents: [frame.version_id], domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey,
   });
-  r.host.seed(NOTE, EDITED, 5000);
+  r.host.seed(NOTE, EDITED, 5001); // Same content/position, distinct authenticated manifest.
 
   const outcome = await pushFile(r.context, NOTE);
 
@@ -211,6 +213,10 @@ test("two engines that merge one note identically end on ONE version", async (t)
           for (const open of held) open();
         }
         await gate;
+      }
+      if (device === b && version.parents.length === 2) {
+        const context = device.engine.need();
+        version = await withDistinctMtime(fileId, version, context.manifestKey, { generation: context.generation, domainId: context.domainId });
       }
       return postVersion(fileId, version);
     };
@@ -296,9 +302,8 @@ test("two different domain maps from one parent are two versions", async () => {
 async function assertRecordedPath(r, path) {
   const local = r.context.state.fileByPath(path);
   const version = r.server.files.get(local.fileId).versions.find(v => v.version_id === local.versionId);
-  const binder = await c.contentVersionId(local.fileId, version.parents, version.sids);
-  const manifest = JSON.parse(await c.decryptManifest(r.keys.manifestKey, local.fileId, binder,
-    c.unhex(version.manifest_nonce), c.unbase64(version.manifest_ct)));
+
+  const manifest = await openPublishedManifest({ ...version, file_id: local.fileId }, r.keys.manifestKey);
   // The numbers a failure needs ride the assertion, not the gate's stdout: a
   // print in a passing test is noise in every run that will ever pass.
   assert.equal(

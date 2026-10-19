@@ -13,8 +13,8 @@ control. You can reach it away from home through your own VPN or HTTPS front
 end. Cloudflare is one optional route. [Run the server](server.md) explains
 those choices, including who you trust to handle the connection.
 
-Keep a separate backup of your vault and store your recovery phrase somewhere
-safe. Sync carries changes between devices, including unwanted changes made
+Keep a separate vault-folder backup and store your complete recovery backup
+somewhere safe. Sync carries changes between devices, including unwanted changes made
 by a compromised device; encryption alone cannot protect that device from
 malware or replace a backup. [Recovery](recovery.md) explains what obsync can
 restore, and [Obsidian's backup guide](https://obsidian.md/help/backup) explains
@@ -44,17 +44,19 @@ recover. All five assume your own server is already running.
 
    ![The plugin settings tab scrolled to the folder selection, Pairing, and the First-time setup token field](captures/02-first-time-setup.png)
 
-3. **Keep the recovery phrase.** Setup generates the vault key on this device
-   and shows a 24-word phrase once: write it down and keep it somewhere other
-   than this device, because the server holds ciphertext only and cannot
-   recover a vault for you.
+3. **Keep the complete recovery backup.** Setup generates the key on this
+   device and shows obsync-recovery-v2 followed by 24 words. Save the whole
+   text away from this device, then paste it into **Read back your saved backup**
+   and select **Confirm complete backup**. The format marker is required;
+   the server holds ciphertext only and cannot recover a vault for you.
 
    ![The recovery-phrase dialog shown after first-time setup, its words obscured](captures/03-recovery-phrase.png)
 
 4. **Pair a second device with a one-time code.** Run **Pair a new device** on
    the first device, enter the code it shows on the second within ten minutes,
-   and approve the device by name — the vault key travels encrypted under a
-   pairing secret the server never sees.
+   compare the six-digit codes on both actual screens, then approve on the
+   first device. A name alone is not identity proof. The key travels encrypted
+   under the devices' exchange; check that a note actually syncs on the recipient.
 
    ![The Pair a new device dialog on the first device, its one-time code obscured](captures/04-pair-a-new-device.png)
 
@@ -71,12 +73,15 @@ device run recorded in the validation runs for 2026-09-14.
 Capture provenance: the first four screenshots record the original
 installation journey. The fifth shows the two-way edit check on the 1.1.3
 candidate. The validation records identify newer recovery screens and the
-exact builds tested; the sections below describe the current controls.
+exact builds tested; the sections below describe the current controls. Older
+captures show word-only recovery and three-word confirmation; the current
+complete-backup readback and format marker replace those controls.
 
 ## Set up this computer (the first device)
 
 Use Obsidian 1.13.0 or newer on each device. Credentials and vault keys use
-Obsidian's native secret storage; unavailable storage stops setup and sync.
+Obsidian's native secret storage. Desktop encryption must be available before
+setup or sync can save credentials; Linux needs an unlocked supported keyring.
 
 1. In your vault, open Settings → Community plugins and allow community
    plugins. Select Browse and search for **Self Hosted Private Sync**.
@@ -89,6 +94,13 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
    line as `Name: value`. Trying it on one computer? A desktop also accepts
    plain `http://127.0.0.1:8080` for a server on that same machine; Obsidian
    on iOS and Android refuses plain HTTP.
+
+   Use the final server URL: the plugin refuses redirects. Upgrade the server
+   before this client. An authenticating proxy must allow credential-free CORS
+   preflight and preserve the server's CORS responses while protecting actual
+   requests. [Proxy and header requirements](protocol.md#browser-transport-and-cors)
+   explain the compatibility boundary; unsupported custom headers are refused
+   in settings.
 
    ![The plugin's settings tab: the Server URL field holding a demo host name, the Custom request headers box, and the Connection row with its Check and Open dashboard buttons](assets/settings-server.png)
 
@@ -112,13 +124,13 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
 
    ![The This device section on a new device: Pairing reads Not paired yet, and Setup or recover holds the masked Setup token field beside Set up or recover](assets/settings-new-device.png)
 
-6. It then shows the **recovery phrase**, 24 words, and asks for three of
-   them to check you wrote them down. Write it down and keep it off this
-   machine: without any paired device and without this phrase, the vault
-   cannot be recovered, by design. The server never sees the key.
-   [Recovery](recovery.md) is what the phrase does and does not get you back.
-   If you closed the dialog without the check,
-   [write the phrase down now](troubleshooting.md#you-closed-the-recovery-phrase-without-checking-it).
+6. The **Recovery backup** dialog shows `obsync-recovery-v2` and 24 words.
+   Save the complete text off this machine, paste it into **Read back your saved
+   backup**, then select **Confirm complete backup**. Without a paired device
+   or this complete backup, the vault cannot be recovered. The server never
+   sees the key. If you closed the dialog, use settings → **Vault key → Recovery
+   backup → Show and confirm**. [Recovery](recovery.md) explains current and
+   explicit legacy recovery; bare old words are not a current backup.
 
    ![The recovery phrase dialog: 24 numbered words, every one hidden here, and three answer fields for words 3, 11 and 20, empty](assets/recovery-check.png)
 
@@ -128,6 +140,21 @@ Obsidian's native secret storage; unavailable storage stops setup and sync.
 If a storage error appears instead, reload Obsidian. If it comes back, follow
 [Where your keys are kept](community-plugin.md#where-your-keys-are-kept); do
 not repeat server setup.
+
+## Existing vaults and key changes
+
+To recover a current vault, stage its complete prefixed backup with **Recovery
+backup → Restore or create → Stage current backup**, then use **Setup or recover**
+with the server token. Bare legacy words require **Recover legacy vault for
+upgrade**; an enrolled legacy device uses **Upgrade encryption**. Neither path
+silently starts old-format sync or creates an account over an existing vault.
+
+For a lost device, plugin **Devices → Revoke** offers **Rotate key** or **Block
+access**. Blocking only changes honest-server access; the retained key can still
+open future ciphertext obtained elsewhere. Rotation requires a new complete
+backup, re-encryption and restart/commit, then every retained device must use
+**Pair after rotation** and compare codes again. Keep the old backup for old
+read-only history. [Recovery](recovery.md) gives the steps and pending-state limits.
 
 ## Prepare an Android phone
 
@@ -228,7 +255,8 @@ server with its own certificate authority, see
    closed while it waits, obsync shows its code in a notice and pairing still
    finishes once you approve within the code's ten minutes; if Obsidian
    restarts on the phone, or the ten minutes pass, pair again with a new
-   code.
+   code. The creator's completion notice reports server activity; confirm sync
+   on the phone itself.
 
    ![Pair a new device on the computer: Approve "Android ASXT" (Android, obsync 1.1.4)? Approve only if the new device shows the code 791 131. It will sync vault "lab-android" (23 notes). Approve and Reject below](assets/pair-approve-phone.png)
 

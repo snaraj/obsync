@@ -1,0 +1,258 @@
+"""Synthetic-CA safety and orchestration tests; no device actions."""
+import importlib.util
+import json
+from pathlib import Path
+import shlex
+import subprocess
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+
+SPEC=importlib.util.spec_from_file_location('android_trust',Path(__file__).with_name('android-trust.py'))
+M=importlib.util.module_from_spec(SPEC);SPEC.loader.exec_module(M)
+
+
+class Certificates(unittest.TestCase):
+    def test_actual_one_day_ca_pin_and_old_subject_hash(self):
+        with tempfile.TemporaryDirectory(prefix='obsync-ca-test-') as tmp:
+            root=Path(tmp); ca=root/'ca.crt'
+            subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1',
+                '-keyout',str(root/'synthetic.key'),'-out',str(ca),'-subj','/CN=Disposable Android Test',
+                '-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign'],
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,check=True)
+            proof=M.cert_info(ca,M.SESSION.digest(ca))
+            self.assertRegex(proof['name'],r'^[0-9a-f]{8}\.0$')
+            with self.assertRaisesRegex(ValueError,'SHA-256 mismatch'): M.cert_info(ca,'0'*64)
+            real=subprocess.check_output
+            def dates(argv,**kwargs):
+                if '-startdate' in argv: return 'notBefore=Oct 15 00:00:00 2026 GMT\nnotAfter=Oct 18 00:00:00 2026 GMT\n'
+                return real(argv,**kwargs)
+            with patch.object(M.subprocess,'check_output',side_effect=dates):
+                with self.assertRaisesRegex(ValueError,'one-day lifetime'): M.cert_info(ca,M.SESSION.digest(ca))
+
+    def test_pretrust_receipt_requires_actual_rejection_and_exact_source(self):
+        with tempfile.TemporaryDirectory(prefix='obsync-ca-proof-') as tmp:
+            path=Path(tmp)/'proof.json'
+            proof={'result':'PASS','untrustedRejected':True,'sourceHead':'a'*40}
+            path.write_text(json.dumps(proof)); self.assertEqual(M.untrusted_receipt(path,'a'*40),M.SESSION.digest(path))
+            for change in ({'result':'READY'},{'untrustedRejected':False},{'sourceHead':'b'*40}):
+                path.write_text(json.dumps(proof|change))
+                with self.assertRaisesRegex(ValueError,'untrusted WebView rejection'): M.untrusted_receipt(path,'a'*40)
+
+
+class Control(unittest.TestCase):
+    def test_inventory_quotes_remote_script_and_rejects_empty_or_bad_entries(self):
+        row='a'*64+' '+M.STORE+'/1234abcd.0\n'
+        with patch.object(M,'shell',return_value=row) as call:
+            self.assertEqual(M.inventory({},321),{'1234abcd.0':'a'*64})
+        self.assertEqual(call.call_args.args,({},'toybox','nsenter','-t','321','-m','--','sh','-c',shlex.quote('sha256sum '+M.STORE+'/*')))
+        for text in ('',row+row,'not-a-hash '+M.STORE+'/1234abcd.0'):
+            with patch.object(M,'shell',return_value=text), self.assertRaises(ValueError): M.inventory({})
+
+    def test_pretrust_failure_occurs_before_root_or_push(self):
+        state={'sourceHead':'a'*40};ready={}
+        with tempfile.TemporaryDirectory(prefix='obsync-ca-gate-') as tmp:
+            path=Path(tmp)/'proof.json';path.write_text('{}')
+            with patch.object(M,'preflight',return_value=(state,ready)), patch.object(M,'cert_info',return_value={}), \
+                 patch.object(M.SESSION,'adb_command') as adb:
+                with self.assertRaisesRegex(ValueError,'untrusted WebView rejection'): M.install(Path(tmp),path,'a'*64,path)
+                adb.assert_not_called()
+
+    def test_apk_refusal_is_terminal_before_root_or_push(self):
+        with tempfile.TemporaryDirectory(prefix='obsync-apk-root-gate-') as tmp:
+            run=Path(tmp);(run/'evidence').mkdir()
+            with patch.object(M,'preflight',return_value=({'sourceHead':'a'*40}, {'apkSha256':'b'*64})),patch.object(M,'cert_info',return_value={}),patch.object(M,'untrusted_receipt',return_value='c'*64),patch.object(M,'apk_hash',side_effect=M.ApkReadbackError('apk_pull_integrity_mismatch')),patch.object(M.SESSION,'adb_command',side_effect=AssertionError('no root or fallback after failure')) as adb:
+                with self.assertRaisesRegex(M.ApkReadbackError,'apk_pull_integrity_mismatch'):M.install(run,run/'ca.crt','d'*64,run/'before.json')
+                adb.assert_not_called()
+
+    def test_install_preserves_roots_apk_enforcement_and_never_restarts_apps(self):
+        self.install_and_reapply_case(False)
+
+    def test_isolated_tcp_install_and_reapply_preserve_preflight_apk_and_exact_root_attachment(self):
+        self.install_and_reapply_case(True)
+
+    def install_and_reapply_case(self, isolated):
+        with tempfile.TemporaryDirectory(prefix='obsync-ca-install-') as tmp:
+            run=Path(tmp);(run/'evidence').mkdir()
+            state={'sourceHead':'a'*40,'serial':'emulator-5584','reversePorts':[18473]}
+            if isolated:state.update(adbTransport='isolated-tcp',expiresAtEpoch=time.time()+120)
+            ready={'apkSha256':'b'*64}; ca={'sha256':'c'*64,'name':'1234abcd.0','notAfter':'synthetic'}
+            original={'5678abcd.0':'d'*64}; expected=original|{ca['name']:ca['sha256']}
+            target={'role':'md.obsidian','pid':321,'namespace':'mnt:[123]','startTicks':'77'}
+            commands=[]
+            def shell(state,*args,**kwargs):
+                commands.append(args)
+                if args==('id','-u'): return '0'
+                if args==('getenforce',): return 'Enforcing'
+                if args==('cat','/proc/sys/kernel/random/boot_id'):return 'boot-two'
+                if args[0]=='cat':return '321 (synthetic) '+' '.join(['0']*19+['77'])
+                return ''
+            with patch.object(M,'preflight',return_value=(state,ready)), patch.object(M,'cert_info',return_value=ca), \
+                 patch.object(M,'untrusted_receipt',return_value='e'*64), patch.object(M,'apk_hash',return_value=ready['apkSha256']), \
+                 patch.object(M,'shell',side_effect=shell), patch.object(M,'namespaces',return_value=[target]), \
+                 patch.object(M,'inventory',side_effect=[original,expected]), patch.object(M.SESSION,'adb_command') as adb, \
+                 patch.object(M.SESSION,'register_emulator'), patch.object(M.SESSION,'check_reverse'), \
+                 patch.object(M.SESSION,'reattach_tcp',return_value=True) as attach:
+                proof=M.install(run,run/'ca.crt','c'*64,run/'before.json')
+            if isolated:
+                attach.assert_called_once();self.assertEqual(attach.call_args.args[:2],(state,run));self.assertEqual(attach.call_args.args[3],'root')
+                self.assertFalse(any(args==('id','-u') for args in commands))
+            else:attach.assert_not_called()
+            self.assertEqual(proof['result'],'INSTALLED');self.assertTrue(proof['originalRootsPreserved'])
+            self.assertFalse(proof['appRestarted']);self.assertFalse(proof['zygoteRestarted'])
+            self.assertEqual(proof['selinux'],'Enforcing');self.assertEqual(proof['apkSha256'],ready['apkSha256'])
+            self.assertEqual(proof['webViewTrustedProbe'],'REQUIRED');self.assertEqual(proof['wrongHostnameProbe'],'REQUIRED')
+            self.assertIn((state,['root']),[c.args for c in adb.call_args_list])
+            self.assertTrue(any(args[:7]==('toybox','nsenter','-t','321','-m','--','mount') and '--bind' in args for args in commands))
+            self.assertFalse(any(args[0] in ('setenforce','stop','start','reboot','am') for args in commands))
+            commands.clear()
+            def replay_shell(state,*args,**kwargs):
+                if args[:2]==('sh','-c') and 'sha256sum' in args[2]:
+                    return '\n'.join(value+' /guest/cacerts/'+name for name,value in expected.items())
+                return shell(state,*args,**kwargs)
+            with patch.object(M,'preflight',return_value=(state,ready)), patch.object(M,'cert_info',return_value=ca), \
+                 patch.object(M,'untrusted_receipt',return_value='e'*64),patch.object(M,'apk_hash',return_value=ready['apkSha256']), \
+                 patch.object(M,'shell',side_effect=replay_shell),patch.object(M,'namespaces',return_value=[target]) as namespaces, \
+                 patch.object(M,'inventory',side_effect=[original,expected]),patch.object(M.SESSION,'adb_command') as replay_adb, \
+                 patch.object(M.SESSION,'register_emulator'),patch.object(M.SESSION,'check_reverse'), \
+                 patch.object(M.SESSION,'reattach_tcp',return_value=True) as replay_attach:
+                replay=M.install(run,run/'ca.crt','c'*64,run/'before.json',reapply=True)
+            if isolated:replay_attach.assert_called_once();self.assertEqual(replay_attach.call_args.args[3],'root')
+            else:replay_attach.assert_not_called()
+            self.assertEqual(replay['apkSha256'],ready['apkSha256'])
+            self.assertTrue(replay['reapplied']);self.assertEqual(replay['bootId'],'boot-two')
+            self.assertEqual(namespaces.call_args.kwargs,{'require_app':False})
+            self.assertFalse(any(call.args[1][0]=='push' for call in replay_adb.call_args_list))
+            self.assertEqual(len(list((run/'evidence').glob('android-trust-reapply-*.json'))),1)
+            for args in commands:
+                if args[:2]==('sh','-c'): self.assertEqual(len(shlex.split(args[2])),1)
+
+
+class ApkIntegrity(unittest.TestCase):
+    REMOTE='/data/app/~~synthetic==/md.obsidian-owned==/base.apk'
+
+    def run_readback(self,body=b'official synthetic APK',remote_hash=None,remote_size=None,after_change=False,path_change=False,pull_error=None,layout=None,hash_output=None,size_output=None,linked=False,pull_delay=0,final_witness_delay=0):
+        self.calls=[];self.shell_calls=[];self.temporary_paths=[];self.proofs=[];self.timeouts=[];clock=[0.]
+        official=b'official synthetic APK';expected=__import__('hashlib').sha256(official).hexdigest();resolve_count=0;hash_count=0
+        with tempfile.TemporaryDirectory(prefix='obsync-apk-integrity-') as tmp:
+            run=Path(tmp).resolve();(run/'evidence').mkdir();(run/'private').mkdir(mode=0o700)
+            def shell(state,*args,**kwargs):
+                nonlocal resolve_count,hash_count
+                self.shell_calls.append(args);self.timeouts.append(kwargs.get('timeout'))
+                if args==('pm','path','md.obsidian'):
+                    resolve_count+=1
+                    return layout if layout is not None else 'package:'+self.REMOTE.replace('owned','changed' if path_change and resolve_count==2 else 'owned')
+                if args==('toybox','stat','-c','%s',self.REMOTE):return size_output if size_output is not None else str(len(official) if remote_size is None else remote_size)
+                if args==('toybox','sha256sum',self.REMOTE):
+                    hash_count+=1
+                    if hash_count==2:clock[0]+=final_witness_delay
+                    return hash_output if hash_output is not None else (('f'*64 if after_change and hash_count==2 else remote_hash or expected)+'  '+self.REMOTE)
+                raise AssertionError('unexpected remote operation')
+            def adb(state,args,**kwargs):
+                if args[0]=='shell':return shell(state,*args[1:],**kwargs)
+                self.calls.append(args);self.timeouts.append(kwargs.get('timeout'));clock[0]+=pull_delay
+                if args[:2]!=['pull',self.REMOTE]:raise AssertionError('only one purpose-built pull is allowed')
+                path=Path(args[2]);self.temporary_paths.append(path)
+                if linked:path.symlink_to(run/'unrelated')
+                elif body is not None:path.write_bytes(body)
+                if pull_error:raise pull_error
+                return 'progress with private path must not be recorded'
+            try:
+                with patch.object(M,'shell',side_effect=shell),patch.object(M.SESSION,'adb_command',side_effect=adb),patch.object(M.time,'monotonic',side_effect=lambda:clock[0]),patch.object(M.time,'time',return_value=1000):
+                    return M.apk_hash({'sourceHead':'a'*40,'expiresAtEpoch':1030},run,expected,'before-trust')
+            finally:
+                self.proofs=[json.loads(path.read_text()) for path in (run/'evidence').glob('android-apk-readback-*.json')]
+                self.assertEqual(len(self.proofs),1);self.assertEqual(list((run/'private').iterdir()),[])
+                self.assertTrue(all(not path.exists() for path in self.temporary_paths))
+                self.assertNotIn(self.REMOTE,json.dumps(self.proofs));self.assertNotIn('progress',json.dumps(self.proofs))
+
+    def test_only_exact_owned_base_apk_layout_can_reach_transfer(self):
+        for value in ['package:/data/app/other/base.apk','package:'+self.REMOTE+';echo nope','package:'+self.REMOTE+'\npackage:'+self.REMOTE]:
+            with patch.object(M.SESSION,'adb_command',return_value=value),self.assertRaisesRegex(M.ApkReadbackError,'apk_package_layout_refused'):M.apk_path({})
+        with patch.object(M.SESSION,'adb_command',return_value='package:'+self.REMOTE):self.assertEqual(M.apk_path({}),self.REMOTE)
+
+    def test_one_pull_matches_remote_witnesses_and_official_pin_with_finally_cleanup(self):
+        result=self.run_readback();proof=self.proofs[0]
+        self.assertEqual(result,__import__('hashlib').sha256(b'official synthetic APK').hexdigest())
+        self.assertEqual(proof['result'],'VERIFIED');self.assertEqual(proof['local'],proof['before']);self.assertEqual(proof['before'],proof['after'])
+        self.assertEqual(proof['pullAttempts'],1);self.assertEqual(proof['pullExitCode'],0);self.assertTrue(proof['temporaryRemoved'])
+        self.assertEqual(len(self.calls),1);self.assertEqual(sum(args[0]=='toybox' for args in self.shell_calls),4)
+
+    def test_error_text_empty_truncated_corrupt_or_missing_host_file_never_matches(self):
+        for body in [b'cat: Permission denied',b'',b'official',b'corrupt synthetic APK',None]:
+            with self.subTest(body=body),self.assertRaises(M.ApkReadbackError):self.run_readback(body=body)
+            proof=self.proofs[0];self.assertEqual(proof['result'],'FAIL');self.assertEqual(proof['pullAttempts'],1);self.assertTrue(proof['temporaryRemoved'])
+        with self.assertRaises(M.ApkReadbackError):self.run_readback(linked=True)
+        self.assertEqual(self.proofs[0]['reason'],'apk_local_file_refused')
+
+    def test_unchanged_remote_and_host_disagreeing_with_official_pin_still_refuse(self):
+        body=b'other bytes';other=__import__('hashlib').sha256(body).hexdigest()
+        with self.assertRaisesRegex(M.ApkReadbackError,'apk_official_pin_mismatch'):self.run_readback(body=body,remote_hash=other,remote_size=len(body))
+        self.assertEqual(self.proofs[0]['local'],self.proofs[0]['before'])
+
+    def test_changed_path_hash_or_size_and_malformed_remote_metadata_refuse(self):
+        for values in [{'after_change':True},{'path_change':True},{'remote_size':999},{'size_output':'0'},{'size_output':'Permission denied'},
+                       {'hash_output':'not-a-hash  '+self.REMOTE},{'hash_output':'a'*64+'  /other/base.apk'},
+                       {'layout':'package:/data/app/other/base.apk'},{'layout':'package:'+self.REMOTE+';echo nope'},
+                       {'layout':'package:'+self.REMOTE+'\npackage:'+self.REMOTE}]:
+            with self.subTest(values=values),self.assertRaises(M.ApkReadbackError):self.run_readback(**values)
+            self.assertEqual(self.proofs[0]['result'],'FAIL');self.assertTrue(self.proofs[0]['temporaryRemoved']);self.assertLessEqual(len(self.calls),1)
+
+    def test_one_original_30_second_budget_refuses_late_pull_or_final_witness(self):
+        for values in [{'pull_delay':31},{'final_witness_delay':31}]:
+            with self.subTest(values=values),self.assertRaisesRegex(M.ApkReadbackError,'apk_readback_deadline'):self.run_readback(**values)
+            proof=self.proofs[0];self.assertEqual(proof['result'],'FAIL');self.assertEqual(proof['deadlineMs'],30000)
+            self.assertEqual(proof['elapsedMs'],31000);self.assertTrue(proof['temporaryRemoved']);self.assertEqual(proof['pullAttempts'],1)
+            self.assertTrue(all(0<value<=30 for value in self.timeouts))
+
+    def test_pull_failure_or_timeout_never_retries_or_records_private_error_strings(self):
+        for error,reason in [(subprocess.CalledProcessError(7,['private command'],stderr=b'private stderr'),'apk_device_command_failed'),
+                             (subprocess.TimeoutExpired(['private command'],1,stderr=b'private stderr'),'apk_device_command_timeout')]:
+            with self.assertRaisesRegex(M.ApkReadbackError,reason):self.run_readback(body=b'partial',pull_error=error)
+            proof=self.proofs[0];self.assertEqual(proof['result'],'FAIL');self.assertEqual(proof['pullAttempts'],1)
+            self.assertEqual(proof['local']['bytes'],7);self.assertTrue(proof['temporaryRemoved']);self.assertNotIn('private',json.dumps(proof))
+
+
+    def test_exit1_without_local_file_retains_only_closed_bounded_command_diagnostics(self):
+        cases=[(b'Permission denied','permission_denied'),(b'No such file or directory','file_missing'),
+               (b'error: device offline','transport_unavailable'),(b'protocol fault','protocol_error'),
+               (b'No space left on device','no_space'),(b'failed to write','write_error'),
+               (b'cannot write file','write_error'),(b'cannot create file/directory','write_error'),
+               (b'failed to stat remote object','file_missing'),(b'remote object XXX does not exist','file_missing'),
+               (b'unexpected ID_DONE','protocol_error'),(b'msg.data.size too large','protocol_error'),
+               (b'unexpected response from daemon','protocol_error'),(b'decompress failed','decompression_error'),
+               (b'failed to read copy response: EOF','transfer_read_error'),(b'unrecognized failure','OTHER'),(b'x'*2049+b'Permission denied','OTHER')]
+        for marker,category in cases:
+            stdout=b'/private/OWNER-PATH token=FORBIDDEN-STDOUT'
+            stderr=marker+b' /data/app/OWNER-PRIVATE-PATH credential=FORBIDDEN-STDERR'
+            error=subprocess.CalledProcessError(1,['FORBIDDEN-ARGV'],output=stdout,stderr=stderr)
+            with self.subTest(category=category,marker=marker[:30]),self.assertRaisesRegex(M.ApkReadbackError,'apk_device_command_failed') as caught:
+                self.run_readback(body=None,pull_error=error)
+            proof=self.proofs[0];self.assertEqual(proof['result'],'FAIL');self.assertEqual(proof['stage'],'pull_official_apk')
+            self.assertEqual(proof['pullAttempts'],1);self.assertEqual(len(self.calls),1);self.assertEqual(proof['pullExitCode'],1)
+            self.assertIsNone(proof['local']);self.assertIsNone(proof['after']);self.assertTrue(proof['temporaryRemoved'])
+            self.assertEqual(proof['commandFailure'],{'stdoutBytes':len(stdout),'stderrBytes':len(stderr),'errorClass':category})
+            self.assertEqual(caught.exception.reason,'apk_device_command_failed');self.assertEqual(caught.exception.stage,'pull_official_apk')
+            for text in ['OWNER','FORBIDDEN','credential=','token=','Permission denied']:
+                self.assertNotIn(text,json.dumps(proof))
+        facts=M.SESSION.APK.apk_command_failure(subprocess.CalledProcessError(1,[],output='Permission denied /PRIVATE',stderr='UNKNOWN'))
+        self.assertEqual(facts['errorClass'],'permission_denied');self.assertEqual(facts['stdoutBytes'],len('Permission denied /PRIVATE'))
+        self.assertEqual(M.SESSION.APK.apk_command_failure(subprocess.CalledProcessError(1,[],output=b'x'*2049+b'Permission denied',stderr=b''))['errorClass'],'OTHER')
+
+    def test_actual_trust_cli_preserves_only_allowlisted_apk_reason_and_stage(self):
+        import ast,io,sys
+        source=Path(M.__file__).read_text();tree=ast.parse(source)
+        handler=tree.body[-1].body[0].handlers[0]
+        code=compile(ast.Module(body=handler.body,type_ignores=[]),M.__file__,'exec')
+        for error,reason,stage in [(M.ApkReadbackError('apk_device_command_failed','pull_official_apk'),'apk_device_command_failed','pull_official_apk'),
+                                   (M.ApkReadbackError('/PRIVATE token=FORBIDDEN','/PRIVATE'),'apk_readback_refused',None)]:
+            output=io.StringIO()
+            with patch.object(sys,'stderr',output),self.assertRaises(SystemExit) as caught:
+                exec(code,{'error':error,'ApkReadbackError':M.ApkReadbackError,'SESSION':M.SESSION,'json':json,'sys':sys})
+            self.assertEqual(caught.exception.code,1);value=json.loads(output.getvalue())
+            self.assertEqual(value['result'],'FAIL');self.assertEqual(value['detail'],reason);self.assertEqual(value['apkStage'],stage)
+            self.assertNotIn('PRIVATE',output.getvalue());self.assertNotIn('FORBIDDEN',output.getvalue())
+
+
+if __name__=='__main__':unittest.main()

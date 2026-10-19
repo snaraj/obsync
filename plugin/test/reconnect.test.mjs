@@ -118,6 +118,13 @@ async function fixture(t) {
   instance.checkForUpdate = async () => {};
   instance.log = (line) => logs.push(line);
   t.after(() => instance.onunload());
+  // This fixture represents an admitted suite2 vault; raw legacy metadata cannot start it.
+  const { State } = box.require(join(box.home, "build/state.js")), c = box.require(join(box.home, "build/crypto.js"));
+  metadata = { ...identity(), vrk: null, deviceId: null, deviceSecret: null };
+  const admitted = await State.open(instance, false, instance.app.secretStorage);
+  await admitted.stageEnrollment2(KEYS.vrk, "pair");
+  await admitted.adoptSuite2({ root: KEYS.vrk, generation: (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(KEYS.vrk)))).fileId,
+    deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
   return {
     instance, win, logs, bar, engines, ApiError, DomainMapError,
     plan: (fn) => { plan = fn; },
@@ -514,9 +521,15 @@ test("every current answer reaches the power policy and a replacement engine inh
 test("a start still inside the transport's retries already reads offline, and the answer puts idle back", async (t) => {
   const r = await fixture(t);
   const gate = deferred();
-  r.plan(async (n) => { if (n === 1) await gate.promise; });
+  let entered = false;
+  r.plan(async (n) => { if (n === 1) { entered = true; await gate.promise; } });
+  // An asynchronous host read may take longer than a fixed number of renderer turns.
+  const loadData = r.instance.loadData;
+  r.instance.loadData = async () => { await new Promise((resolve) => setTimeout(resolve, 20)); return loadData(); };
   const loading = r.instance.onload();
-  await settle();
+  // Native custody load is asynchronous; wait for the held start, not three turns.
+  await new FakeTimers().run(0, () => entered);
+  assert.equal(r.instance.state?.paired, true, "the held start loaded its acknowledged custody before status is read");
   assert.equal(r.instance.statusText(), "idle", "nothing has been attempted yet");
   report(r, false);
   assert.equal(r.instance.statusText(), "offline — retrying", "the first unanswered attempt is shown at once");

@@ -117,6 +117,7 @@ async function vault(t) {
     manifestKey: k.manifestKey,
     domainId: KEYS.domainId,
     mapFileId: k.map.fileId,
+    generation: k.generation,
     deviceId: KEYS.deviceId,
     concurrency: 4,
     authored: new Set(),

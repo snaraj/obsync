@@ -370,6 +370,18 @@ requires the refusal.
 
 ## Journal frames
 
+`setup_enrolment` publishes the complete account/recovery authority and active
+device (including its wrapped API secret) in one CRC-framed append. All IDs,
+proof/reset checks and wrapping precede publication under the journal lock;
+readers observe both index changes after fsync. A torn prefix applies neither,
+while a lost response after fsync can leave the whole enrollment durable.
+The nested account's kind/sequence/context and actual device/account IDs must
+agree. Ordinary account updates remain separate `account` frames.
+
+An old reader refuses this unknown journal kind in the replay tail. Compacted
+snapshots still use existing account/device records at this increment; this
+alone does not establish the proposed suite-2 downgrade barrier.
+
 `account` (setup, and every change to the account's recovery verifier:
 its registration, and the operator's `obsyncd recovery reset apply`, which
 writes the account again without one and with `recovery_cleared_at`, the
@@ -672,7 +684,7 @@ reporting it.
   server implements no AES and never could write plaintext
   (`docs/architecture.md` 3 and 5.1). Its payload assembles a selected newest
   head; retained-version metadata in the manifest is not a backup of every
-  historical payload. The key it accepts (`--key-file`) does not decrypt content.
+  historical payload. No content key is accepted; decryption stays on a trusted client.
   Both export and check are offline recovery tools, not a full restore proof.
 
 ### Offline check and recovery verdicts

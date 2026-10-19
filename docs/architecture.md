@@ -16,7 +16,8 @@ Two programs and one contract between them:
   collection and integrity scrubbing in the background. It speaks plain
   HTTP/1.1 on one port and is always deployed behind a TLS terminator.
 - **The Obsidian plugin** — TypeScript compiled to one `main.js`, zero
-  runtime dependencies, WebCrypto for all cryptography. It watches the
+  runtime dependencies, WebCrypto for content cryptography and the OS service
+  for desktop credential custody. It watches the
   vault, chunks and encrypts changed files on the device, uploads what the
   server does not have, follows the server's change feed, and writes other
   devices' changes into the vault. It runs on every Obsidian platform.
@@ -32,8 +33,11 @@ reliability, and resource use; `docs/benchmarks.md` pins the numbers.
 **Blind server.** The server never holds the vault key and cannot decrypt
 anything. What it learns is exactly: device identities and their activity,
 opaque file identifiers, ciphertext chunk hashes and sizes, version graph
-shape, and timestamps. What it never learns: file names, paths, contents,
-or which plaintext two chunks share.
+shape, and timestamps. File names, paths and contents are encrypted. Repeated
+chunks in the same domain have the same ciphertext identifier, revealing
+equality and deduplication patterns. Chosen-input confirmation attacks and
+other metadata inference require separate analysis; encryption does not hide
+those observations.
 
 **Why this default.** The product must be trustworthy to strangers who run
 it on hardware they do not fully control, and it must match a privacy-first,
@@ -68,12 +72,13 @@ could remove the terminator from that device-credential exchange; it is not
 implemented by the current protocol. Nothing removes a terminator from the session
 path; reading cookies is what terminating TLS means.
 
-Strip the terminator entirely and the server's own authentication still
-holds: every device request carries an HMAC over method, path, query,
+The server also authenticates every device request with an HMAC over method, path, query,
 timestamp, nonce and body hash, with a +/-300 s window and a 600 s nonce
-cache, so a recorded request cannot be replayed and an altered one cannot be
-presented. What plain HTTP loses is confidentiality of the metadata and of
-the credential itself, never request integrity and never content. This cuts
+cache, so a recorded signature alone cannot authorize an altered request or
+a replay. Someone who captures the device secret during setup or pairing
+can create new valid requests with that device's account authority. Plain
+HTTP exposes that exchange as well as metadata; content remains encrypted
+with separate device-held keys. This cuts
 the other way too, and it is the reason the private deployment is not a soft
 one: **being on the LAN or the VPN grants nothing to this application.**
 Reaching the port is not authorisation. Every request is still authenticated
@@ -121,8 +126,11 @@ what the server does, only who else is on the path.
 
 ## 3. Cryptography
 
-All device-side primitives are WebCrypto (`crypto.subtle`): AES-256-GCM,
-HMAC-SHA-256, HKDF-SHA-256, SHA-256, and `crypto.getRandomValues`. The
+Active content and pairing use suite 2: RFC 5297 AES-SIV with two AES-256 keys,
+implemented with platform WebCrypto AES-CBC/CTR, plus HMAC-SHA-256,
+HKDF-SHA-256, SHA-256, P-256 ECDH and `crypto.getRandomValues`. AES-GCM remains
+only in explicitly selected legacy history/migration readers. A failed suite-2
+open never tries the legacy decoder. The
 server needs only SHA-256, HMAC-SHA-256, HKDF-SHA-256, and constant-time
 comparison, implemented in `crates/obsync-core` against published test
 vectors. The server performs no AES and no asymmetric operation in v1.
@@ -131,11 +139,11 @@ vectors. The server performs no AES and no asymmetric operation in v1.
 
 | Key | Size | Where it lives | Derived how |
 | --- | --- | --- | --- |
-| Vault root key `VRK` | 32 B random | Every paired device; recovery phrase | Created by the first device |
+| Vault root key `VRK` | 32 B random | Every paired device; complete recovery backup | Created by the first device |
 | Domain key `K_d` | 32 B | Devices only; never sent to the server | `HKDF(VRK, salt="obsync/v1/domain", info=domain_id)` |
 | Manifest key `K_m,d` | 32 B | Devices holding `K_d` | `HKDF(K_d, salt="obsync/v1/manifest", info=domain_id)` |
 | Domain-map key `K_map` | 32 B | Devices holding `VRK`; owner only | `HKDF(VRK, salt="obsync/v1/domainmap", info="")` |
-| Chunk key `K_c` | 32 B | Transient on the device | `HKDF(K_d, salt="obsync/v1/chunk", info=cid)` |
+| Suite-2 SIV key | 64 B | Transient on the device | `HKDF(base, salt="obsync/seal-v2/siv", info=SHA-256(T), 64)`; the complete counted context `T` is also authenticated |
 | Device secret | 32 B | The device; wrapped at rest on the server | Issued by the server at pairing |
 | Server key | 32 B | `OBSYNC_SERVER_KEY` or generated once | Random |
 
@@ -154,17 +162,21 @@ nobody (section 5).
 
 For plaintext chunk `P` in domain `d`:
 
-1. `cid = HMAC-SHA-256(K_d, P)` — a keyed content id, never sent anywhere.
-2. `K_c = HKDF(K_d, "obsync/v1/chunk", cid)`; `nonce = HKDF(K_c,
-   "obsync/v1/nonce", "")[0..12]`. One key per distinct plaintext, one
-   message per key, so the derived nonce is safe.
-3. `C = AES-256-GCM(K_c, nonce, P, aad = "obsync/v1/chunk")`.
+1. Let `G` be this root's keyed map file ID. Derive independent 32-byte
+   `idKey` and `base` from `K_d`, with HKDF salt labels
+   `obsync/seal-v2/chunk-id` and `obsync/seal-v2/chunk-base`, and info `G || d`.
+2. `cid = HMAC-SHA-256(idKey, P)` is a keyed content ID inside the encrypted
+   manifest, never a clear server field.
+3. Encode the kind-3 context `T` with `G`, `d` and `cid`; derive the 64-byte
+   SIV key above and seal `P` with `[T]` as associated data. `C` is the
+   16-byte synthetic IV followed by ciphertext. No random nonce is drawn.
 4. `sid = SHA-256(C)` (hex) is the storage id the server addresses, verifies
    on upload, and reports in the change feed.
 
-Identical plaintext in the same domain yields identical `C` and `sid` on
-every device, so deduplication works across devices without the server
-learning anything about `P`. The server verifies `sid` on every upload and
+Identical plaintext in the same generation and domain yields identical `C` and `sid` on
+every device, so deduplication works across devices. The server observes
+equality and ciphertext length; it does not receive `P` or the key. The
+server verifies `sid` on every upload and
 on every scrub, so a corrupted or forged chunk is refused or quarantined.
 
 No compression in v1. LiveSync's own measurements show a 9 % storage gain
@@ -187,8 +199,8 @@ that limit.
 ### 3.4 File manifests and versions
 
 A file has a random 16-byte `file_id` chosen by the device that created it.
-Each version carries a manifest, JSON encrypted under `K_m,d` — the manifest
-key of the domain the file belongs to (5.1) — with a random 12-byte nonce:
+Each version carries a manifest, JSON sealed with a suite-2 SIV key derived
+from `K_m,d`, the manifest base key of its domain (5.1):
 
 ```json
 {"v":1,"path":"Notes/Ideas.md","size":1234,"mtime":1757200000000,
@@ -201,17 +213,22 @@ key of the domain the file belongs to (5.1) — with a random 12-byte nonce:
 chunk key, and it never leaves the encrypted manifest. `sha256` is the
 plaintext digest for single-chunk files; multi-chunk files carry no
 whole-file digest because WebCrypto has no streaming digest and the plugin
-implements no hash of its own. Their integrity is per chunk: AES-GCM
+implements no hash of its own. Their integrity is per chunk: AES-SIV
 authenticates each chunk under a key derived from its `cid`, and the puller
 recomputes `cid` from the decrypted bytes before writing anything.
 
-The manifest's AAD is `file_id || content_version_id` where
-`content_version_id = SHA-256(file_id || parents sorted || sids in order)`,
-the version preimage minus the ciphertext itself, so the manifest is bound
-to its file, its parents, and its chunk list without a circular reference.
+The authenticated kind-1 context includes generation, domain, file ID,
+counted sorted unique parents and counted SIDs in their original order.
+Counts prevent a parent from being reinterpreted as a SID. The context excludes
+the ciphertext-dependent version ID, avoiding a circular derivation.
+The [suite-2 contract](security/e09-key-nonce-inventory.md#chosen-replacement-rfc-5297-aes-siv-with-one-migration)
+defines exact bytes, distinct map/pairing roles, resource caps and conditional
+security bounds. Deterministic encryption leaks equality; it is not an
+unlimited-lifetime or freshness guarantee.
 
 The server-visible version record is `{file_id, version_id, parents[],
-sids[], bytes, manifest_ct, manifest_nonce, device_id, ts}`.
+sids[], bytes, seal_suite:2, manifest_ct, device_id, ts}`. It has no
+`manifest_nonce`; mixed and unknown sealing variants refuse.
 `version_id = SHA-256(file_id || parents sorted || manifest_ct || sids)`,
 recomputed by the server, so two devices producing the same version
 collide harmlessly. Paths live only inside `manifest_ct`.
@@ -247,16 +264,14 @@ Two properties make a folder record safe to publish from anywhere:
   devices that create the same folder independently therefore arrive at ONE
   record. With two, deleting the folder would tombstone one and leave the
   other live, and the next device to read the feed would put the folder back.
-- **Its manifest carries no timestamp, and its nonce is derived** the way the
-  domain map's is (`HKDF(K_m,d, "obsync/v1/nonce", SHA-256(aad || plaintext))`).
+- **Its manifest carries no timestamp, and suite-2 sealing is deterministic.**
   The bytes two devices produce for the same folder in the same state are
   then identical, so the `version_id` is identical and the second device's
-  post is the `200` no-op `docs/protocol.md` already promises. The key is
-  shared with the randomly-nonced file manifests and that costs nothing: a
-  nonce derived by HKDF from the message is a pseudorandom 96-bit value, so
-  the chance it meets a random one is the chance two random ones meet, and it
-  repeats only for a message identical in both AAD and plaintext — whose
-  ciphertext was already identical.
+  post is the `200` no-op `docs/protocol.md` already promises. Folder and file
+  records use the same counted record-context grammar, with SIV keys derived
+  per complete context. The runtime enforces per-operation limits, not an
+  aggregate lifetime quota; see the
+  [key and nonce accounting note](security/e09-key-nonce-inventory.md).
 
 What the server additionally learns is that a folder deleted and recreated at
 one path is the same opaque label, which is what a file id already tells it
@@ -269,7 +284,7 @@ keeps the losing head of a fork that does not merge (plugin 1.1.3, section
 where `file_id` is the forked file's and `version_id` its losing head's. Every
 device that settles the fork derives the same id and posts the same first
 version, so the server keeps one copy rather than one per device. It is an
-ordinary file record: `v: 1`, a random nonce, the path only inside
+ordinary file record: `v: 1`, deterministic suite-2 sealing, the path only inside
 `manifest_ct`. The server learns nothing new from the id. It is keyed by
 `K_m,d`, which never reaches the server, so to the server it is an opaque
 16-byte label exactly like a random file id -- it cannot compute it, cannot
@@ -350,8 +365,13 @@ same measured volume pass a start uses and opening no journal, so
 is serving and needs no shell in the image. Reading the file off the volume
 remains the fallback for a server that is not running (`docs/recovery.md`).
 The user is shown the
-recovery phrase (the `VRK` as 24 words from a fixed 2048-word list, with a
-checksum) once and must confirm it. Without any paired device and without
+complete recovery backup (`obsync-recovery-v2` followed by the `VRK` as
+24 checksum-bearing words) and must paste that complete text back. New setup
+requires explicit suite-2 server capability. Recovery stages the root until
+the account, generation and encrypted map authenticate and local custody is
+acknowledged; it sends literal `recover_only:true` and cannot create an absent
+account. Bare legacy words are accepted only by the explicit legacy upgrade
+or history operation, never as automatic live recovery. Without a paired device and without
 that phrase the vault is unrecoverable by design.
 
 ### 4.2 Pairing a new device
@@ -371,9 +391,9 @@ that phrase the vault is unrecoverable by design.
    device-authenticated route refuses it (`403 device_pending`) except
    polling this pairing's envelope (`409 not_approved`). A claimant has no
    authority of any kind until step 3.
-   On current clients the claim also includes optional sealed `{name, notes}`
+   On current clients the claim also requires sealed `{name, notes}`
    for the claimant's vault. A separate `obsync/v1/pair-vault` HKDF label and
-   AES-GCM binding to the pairing ID keep these details blind to the server;
+   suite-2 kind-5 SIV context binding to the pairing ID keep these details blind to the server;
    the creator decrypts them before showing approval (protocol: Pairing).
 3. The paired device polls the pairing, fixes the claim it reads, and only
    then reveals its public key (`POST /v1/pairing/{id}/reveal`); the new
@@ -417,10 +437,34 @@ it holds no `VRK`. Approval is always from a paired Obsidian instance.
 ### Device-local credential custody
 
 Obsidian 1.13.0 or newer is required; the vendored official API package is
-pinned at exactly that version, so the compiler refuses any newer member. The plugin uses only the public SecretStorage
-`getSecret` and `setSecret` operations for its exact owned entries. A validated,
-random installation ID determines their names. No secret inventory or
-other plugin installation is read or imported.
+pinned at exactly that version for the public API. Public SecretStorage
+`getSecret` and `setSecret` operate only on obsync's exact owned entries. A
+validated, random installation ID determines their names. No secret inventory
+or other plugin installation is read or imported.
+
+On desktop, a narrowly scoped adapter additionally uses the private
+`app.secretStorage.adapter.safeStorage` bridge. It requires exact-true native
+encryption availability and, on Linux, a recognized protected backend
+(`gnome_libsecret`, `kwallet`, `kwallet5` or `kwallet6`). Missing, changed or
+throwing interfaces and `basic_text` or unknown backends stop credential
+loading and persistence. Only `isEncryptionAvailable`, `encryptString`,
+`decryptString` and Linux's `getSelectedStorageBackend` are used, with the
+built-in `buffer` module for ciphertext decoding. There is no arbitrary IPC,
+native setter, downloaded package or system configuration change.
+
+The adapter encrypts the entire owned envelope before calling public
+`setSecret`. Encryption failure performs no public secret write; success
+passes only an `obsync-native-custody-v1:` prefix and canonical base64 native
+ciphertext. If Obsidian's outer storage layer subsequently falls back to
+plaintext, its input is already encrypted. Decryption retains the existing
+installation, revision, server, device and generation checks. New desktop
+metadata requires this representation; raw JSON is never a fallback. This
+private bridge is a compatibility constraint: an unsupported host fails closed.
+The native packet and decoded credential envelope each have a 16 MiB budget;
+this bounds local credential parsing and does not limit note or vault sizes.
+Mobile uses the public native SecretStorage path and requires its own physical
+device acceptance; the desktop wrapper does not establish a mobile encrypted-only
+API contract.
 
 The entry contains one versioned envelope with current and previous valid
 credential records: vault root key, device secret and optional edge headers,
@@ -429,15 +473,19 @@ Plugin `data.json` holds that reference and nonsecret bookkeeping. Loading
 selects only the record named by metadata with the matching server/device
 identity; malformed or mismatched data, and a missing entry this vault has
 held, stop loading instead of resetting identity or generating another key.
-A missing entry this vault never held -- a copied vault, or a folder renamed
+A missing legacy-v1 entry this vault never held -- a copied vault, or a folder renamed
 outside Obsidian, which Obsidian registers as a new vault id with empty
 secret storage -- loads as a device that never paired, never as the device
 the reference names, and nothing is written until the person pairs it or
-starts fresh. So does metadata exactly one revision past the entry's current
+starts fresh, provided no orphaned legacy claim remains. Historically, metadata exactly one revision past the entry's current
 record, which a desktop killed between the two writes leaves because its
 secret storage reaches disk after the data file: that device keeps its name
 and holds no credential, never one taken from an older record, until it pairs
-again. Which reference a vault last opened is kept in Obsidian's
+again. Desktop migration refuses that ambiguous revision instead, preserving
+the old bytes for recovery or pairing in a fresh vault. Missing credentials
+with a remaining legacy claim also refuse without writes. New wrapped desktop
+metadata always refuses missing or torn custody; it never adopts those legacy
+recovery shortcuts. Which reference a vault last opened is kept in Obsidian's
 per-vault local storage; it is not a secret. Key-only recovery and
 credential-only enrollment are preserved as incomplete states. A pairing
 claim waiting for its key is held in a second owned entry, beside the
@@ -448,8 +496,17 @@ key is kept or the claim ends, or once it is older than the pairing's ten
 minutes. A recovery phrase can restore a key; it does not authorize a
 pending device.
 
-Existing plaintext settings migrate by writing and reading back the owned
-entry before replacing metadata. Saves use detached snapshots and serialize
+Desktop migration validates the old envelope, writes and reads back a native
+encrypted replacement at a deterministic new owned reference, and acknowledges
+new metadata before clearing the exact previous owned credential and claim
+entries. A persisted cleanup marker resumes an interrupted cleanup; sync does
+not start until that cleanup completes. Failures before metadata acknowledgement
+preserve the old authoritative record. Old clients refuse the new metadata
+format. No inventory or unrelated entry is touched, and this does not erase
+previous filesystem snapshots or backups. Legacy plaintext plugin settings
+likewise migrate before their replacement metadata is acknowledged.
+
+Saves use detached snapshots and serialize
 concurrent requests. Bookkeeping-only saves do not rewrite secret bytes.
 Credential changes retain the previous valid record so failed metadata writes
 can reload the prior identity; if metadata actually reached storage despite
@@ -476,19 +533,34 @@ The public `setSecret` call is synchronous and documents no crash-durable
 transaction with `saveData`. Immediate readback is verification of the host
 API result, not proof of persistence across app or OS failure. Native app
 restart checks remain required on supported platforms. SecretStorage is
-vault-local and shared with other trusted plugins; this does not promise
-universal OS encryption or isolation from those plugins or the local OS.
+vault-local and shared with other trusted plugins. The desktop wrapper protects
+stored credential bytes through the OS service; it provides no isolation from
+the running OS or trusted plugins, and does not authenticate rollback or prove
+joint crash durability. It adds no server-side key or recovery bypass.
 See the [official storage guide](https://docs.obsidian.md/plugins/guides/secret-storage)
 and [API baseline](https://github.com/snaraj/obsync/blob/main/plugin/vendor/obsidian/README.md).
 
 ### 4.3 Revocation and recovery
 
-The dashboard and any paired device can revoke a device; the server drops
-its wrapped secret and every request from it fails from that moment. Data
-already on a revoked device stays readable there; rotating `VRK` after a
-device compromise is a phase-2 operation (re-encrypt manifests and
-re-derive domain keys; chunks under a domain whose key is rotated are
-re-uploaded lazily).
+The plugin offers two explicit actions. **Block server access only** revokes
+the credential on an honest server; the device retains its content key and
+can decrypt later ciphertext obtained elsewhere. The dashboard's revoke route
+has this same access-only meaning. **Rotate the vault key** is the recommended
+plugin action: a retained coordinator generates an independent root, freezes
+and authenticates the full current inventory, re-encrypts it, saves the new
+backup and resumes after a local reload before commit. Prepare and commit each
+require device authentication plus the operator's setup token. Commit retires
+all other credentials; retained devices pair again with verified comparison codes.
+
+Protection against the old key starts after a receiving device adopts the new
+generation. Offline devices and a malicious server may keep an old branch;
+they cannot make a pinned new client accept old-key ciphertext. Rotation cannot
+erase copied plaintext or keys, prove that an unwitnessed backup is newest, or
+guarantee server availability. One previous root may remain for explicit
+read-only history; live sync never tries it. The
+[rotation contract](security/device-revocation.md) states the phases, migration
+floor, recovery and full-reseed limits. Runtime implementation and independent,
+native-device acceptance remain separate evidence.
 
 A REVOKED device can also be taken off the device lists, from the same two
 places (`POST /v1/devices/{id}/archive`, plugin and server 1.1.5; the person
@@ -598,14 +670,12 @@ anyone but the owner access to anything, and no wording in this repository
 should suggest otherwise.
 
 **Manual access on the host** is the only access path beyond a paired
-device: `obsyncd export --domain <id> --key-file <file> --out <dir>`
-reconstructs that domain's stored ciphertext from the volumes -- file records
-carry their domain in clear (5.1 item 4), so the filter is exact -- and the
-operator decrypts it on a device that holds the key. The key file must be
-readable by its owner alone (`chmod 600`), and `--key-file -` reads the key
-from standard input instead. The older `--key <hex>` still works but prints
-a warning: a key on the command line is visible in the process list and
-kept in shell history. It is the same binary; opening
+device: `obsyncd export --domain <id> --out <dir>` reconstructs that domain's
+stored ciphertext from the volumes -- file records carry their domain in
+clear (5.1 item 4), so the filter is exact. Decryption belongs on a trusted
+client holding the key. The server command accepts no content key: `--key`
+and `--key-file` are refused, including stdin. Never send content keys to
+server/admin tooling. It is the same binary; opening
 storage performs the recovery and posture changes described in
 [Offline check and recovery verdicts](storage.md#offline-check-and-recovery-verdicts).
 Use a restored copy with the server stopped, preserving the pristine backup.
@@ -673,16 +743,20 @@ without `VRK`, and to the server the object is one more opaque file.
 
 The plaintext is
 `{"v":1,"domains":[{"id":"<32 hex>","paths":["<prefix>",…]},…]}`, bounded by
-the 1 MiB manifest ceiling. Its nonce is derived, not random —
-`HKDF(K_map, "obsync/v1/nonce", SHA-256(aad || plaintext))[0..12]` — so two
+the 1 MiB manifest ceiling. Suite 2 uses `K_map` as the base for a kind-2
+counted SIV context, requiring its file ID to equal the locally derived generation
+and its SID list to be empty. Two
 devices that write the same map at the same moment produce the same bytes
 and the same version id and collide harmlessly, exactly as two devices
-producing the same chunk do (3.2). The key and nonce repeat only for a
-message that is identical in both its plaintext and its AAD.
+producing the same chunk do (3.2). Identical plaintext and context repeat
+deterministically; the active format carries no 96-bit nonce.
+The [key and nonce accounting note](security/e09-key-nonce-inventory.md)
+states the conditional bound and finite-assurance limits.
 
 The map on the server is the authority. A device reads it at every start,
-before it syncs anything: if it is absent the device writes one (v0.1's map
-is a single default domain with the empty prefix), if it is present it
+before it syncs anything: only a newly created enrollment with its explicit,
+persisted initialization authority may create a missing map. Recovery, pairing
+and active/migrating clients stop if it is absent. If it is present it
 replaces whatever the device remembered, and if it cannot be read or has
 more than one head the device refuses to sync and says so. Guessing which
 map is current would mean writing a file under the wrong key, so this
@@ -703,7 +777,7 @@ file the store holds.
 
 **5. Moving a path across a domain boundary is a delete and a create.**
 Content encrypted under domain A cannot become content under domain B by
-relabelling: `cid = HMAC(K_d, plaintext)` and the chunk key derive from
+relabelling: the keyed content ID and chunk base derive from
 `K_d`, so the bytes must be re-chunked and re-encrypted under `K_B`, which
 yields new cids, new sids and a new manifest under `K_m,B`. Because a file's
 domain is immutable (item 4), the move is a tombstone for the old file id in
@@ -711,8 +785,9 @@ domain A and a new file id in domain B. The old chunks age out through
 retention and garbage collection. Anyone who held domain A keeps every copy
 they already downloaded; a move removes future access, never past access.
 
-**6. Revocation is rotation, and rotation is a new domain.** To revoke a
-recipient the owner points the same paths at a NEW `domain_id` in the map.
+**6. Future recipient revocation requires a fresh domain key.** A restricted
+recipient must never receive the vault root; changing a domain ID excludes
+only a holder of that domain key, not a root holder. The owner would point the same paths at a NEW `domain_id` in the map.
 `K_d` for the new id is unrelated to the old one, files re-upload lazily
 under it as they are next written, and the old domain's data ages out. The
 recipient keeps what it already has: nothing in this design, or in any
@@ -1928,9 +2003,12 @@ restore/manual-download settlement before loading state, then only the
 current load generation resumes sync, including after publication errors.
 Network cancellation detaches the waiter,
 but a shared outstanding-request guard prevents another manual request
-until the old one settles. `requestUrl` exposes neither abort nor streaming
-or a pre-buffer byte ceiling; the size check runs before JSON parsing, after
-Obsidian has buffered the response. A local publication already dispatched
+until the old one settles. The browser Fetch adapter retains logical
+cancellation and buffers the complete response once; it does not add a
+pre-buffer byte ceiling. The size check runs before JSON parsing, after
+buffering. Its redirect refusal and credential-free preflight requirements are
+defined in [the transport contract](protocol.md#browser-transport-and-cors).
+A local publication already dispatched
 must settle. It is never undone after cancellation: success is a local-copy
 receipt, and an uncertain outcome names the path to check.
 
@@ -2334,7 +2412,10 @@ version notices, device policy, history recovery, server storage and a local
 dashboard. Native install/update, app-restart credential persistence and
 multi-device acceptance are separate validation results in `docs/validation.md`.
 
-Key-agreement enrollment, passkeys, vault-key rotation, recipient grants,
+The suite-2 candidate implements explicit fresh-root rotation and legacy
+upgrade; [validation records](validation-runs/2026-10-12-security-train.md)
+separate source/runtime checks from remaining acceptance and release approval.
+Key-agreement enrollment, passkeys, recipient grants,
 replica servers, size padding and multi-account support are deferred without
 numbered release promises. Sharing remains subject to section 5's acceptance
 criteria. Native Obsidian distribution owns client updates; a separate

@@ -41,7 +41,8 @@ device to your server: pair each device once, and sync then runs by itself.
    pairing. For a workspace vault, select only the note folders you mean to
    share. Each device keeps its own folder selection.
 4. On the first device, use **Setup or recover** with the server's setup token
-   and keep the recovery phrase safe. On every other device, enter the pairing
+   and keep the complete recovery backup safe, including `obsync-recovery-v2`
+   and all 24 words. On every other device, enter the pairing
    code from **Pair a new device** on a device that already syncs, then approve
    the new device there. The [Quickstart](quickstart.md) shows each step.
 
@@ -64,32 +65,47 @@ written, migrated and recovered is in
 Obsidian's own [storage guide](https://docs.obsidian.md/plugins/guides/secret-storage)
 describes the storage itself.
 
-**On Linux**, that storage is only as strong as your desktop's keyring, such as
-GNOME Keyring or KWallet. Without one, as on a minimal window manager or in a
-container, Obsidian still accepts the keys and keeps them unencrypted (seen
-with Obsidian 1.13.7), protected only by your home folder's permissions.
-Nothing warns you at setup; from its next start Obsidian shows a notice that
-secrets are stored without encryption. Obsidian does not tell plugins which
-storage it uses, so obsync cannot warn you itself:
+**On desktop**, obsync encrypts its credential envelope with the operating
+system's encryption service before handing it to Obsidian. If protection is
+unavailable or unsupported, setup and sync stop before credentials are saved.
+There is no option to continue with unencrypted key storage. The integration
+uses a narrow private Obsidian interface; a host update that removes it will
+stop sync until compatibility is restored.
+
+**On Linux**, run an unlocked supported desktop keyring, such as GNOME Keyring
+or KWallet. A minimal desktop or container without one cannot set up or sync.
 [On Linux, the keys may not be in a keyring](troubleshooting.md#on-linux-the-keys-may-not-be-in-a-keyring)
 says what to do.
 
-If secret storage is unavailable or cannot be verified, sync stops with an
-error, and nothing is sent or changed. Then:
+**On phones**, obsync continues to use Obsidian's native secret storage. The
+desktop wrapper does not establish how a phone stores its keys; physical-phone
+validation is separate. This local storage protection is also separate from
+the content encryption applied before sending anything to the sync server.
 
-1. Reload Obsidian.
-2. If it keeps happening, have your recovery phrase or another syncing device
-   at hand, reinstall obsync, and pair this device again. Your notes stay in
-   the vault. Do not repeat server setup.
+If the secret-storage API is missing, a read or write fails, or the owned entry
+does not match its metadata, sync stops with an error. Migrating a prior
+desktop entry encrypts a new copy before clearing the old owned entry; old
+disk snapshots and backups are not securely erased. For a reported storage error:
 
-A copied vault, or one whose folder was renamed outside Obsidian, is not an
-error: it opens unpaired, says so, and offers **Pair this device** and
-**Start fresh**
+1. For unavailable desktop encryption, unlock the supported OS key store and
+   reload Obsidian. If the host interface is unsupported, use a supported host
+   version; reinstalling the plugin does not create an OS key store.
+2. For a missing or damaged credential entry, keep the existing vault intact.
+   Pair a fresh vault from another syncing device, or use verified recovery
+   with the complete recovery backup. Compare any unsynced local notes before
+   retiring the old vault. Reinstalling obsync does not repair a mismatched
+   credential record; do not reset the server account.
+
+A current-format installation stops if its metadata lacks the matching owned
+secret or generation pin; copying or renaming its vault does not reset that
+check. Keep the original vault and complete backup, and pair a fresh
+installation in a new vault rather than editing those records. Older storage
+formats may instead open unpaired and offer **Pair this device** and **Start fresh**
 ([what to do](troubleshooting.md#a-copied-or-renamed-vault-says-it-is-a-copy)).
 
 A pairing waiting for approval finishes even if its dialog was closed, and
 after Obsidian restarts, as long as it is approved within the code's ten
-minutes; after that, pair again with a new code. The recovery phrase cannot
+minutes; after that, pair again with a new code. The recovery backup cannot
 approve a pending device. Other plugin installations are never imported
 automatically.
 

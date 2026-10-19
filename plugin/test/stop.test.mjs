@@ -22,7 +22,8 @@ import { join } from "node:path";
 import { FakeTimers, KEYS, rig, sandbox } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
-const { SyncEngine } = require("../build/sync/engine.js");
+const seal2 = require("../build/seal2.js");
+const { SAVE_COALESCE_MS, SyncEngine } = require("../build/sync/engine.js");
 const { pushFile } = require("../build/sync/push.js");
 const { applyChange } = require("../build/sync/pull.js");
 const { Transport } = require("../build/transport.js");
@@ -163,7 +164,7 @@ test("a resumed upload that is stopped reads no further than its next chunk (#18
   d.host.seed(VIDEO, bytes, 1000);
   const sealed = [];
   for await (const part of chunkStream({ size: bytes.length, read: async (at, length) => bytes.subarray(at, at + length) })) {
-    sealed.push(await c.encryptChunk(d.keys.domainKey, part));
+    sealed.push(await seal2.encryptChunk2(d.keys.domainKey, { generation: d.keys.generation, domainId: KEYS.domainId }, part));
   }
   assert.ok(sealed.length >= 4, `the fixture is many chunks (${sealed.length})`);
   // Everything but the last chunk landed before a restart: a resumed upload.
@@ -203,7 +204,7 @@ test("a stopped engine's download ends at its next batch and leaves nothing behi
   const parts = Array.from({ length: 9 }, (_, index) => noise(CHUNK_MIN, 0x5eed0000 + index));
   const chunks = [];
   for (const part of parts) {
-    const { cid, sid, ciphertext } = await c.encryptChunk(d.keys.domainKey, part);
+    const { cid, sid, ciphertext } = await seal2.encryptChunk2(d.keys.domainKey, { generation: d.keys.generation, domainId: KEYS.domainId }, part);
     d.server.chunks.set(sid, ciphertext);
     chunks.push({ sid, cid: c.hex(cid), len: part.length });
   }
@@ -342,4 +343,58 @@ test("a folder Save during a large upload is in force within one chunk's time, a
   await d.timers.run(10, () => d.state.fileByPath(VIDEO) !== undefined);
   assert.deepEqual(puts.slice(sent).filter((sid) => landed.has(sid)), [], "no chunk that landed before the Save is sent again");
   await instance.engine.stopAndWait();
+});
+
+
+test("a stop drains a coalesced metadata write dispatched before it, including its receipt", async t => {
+  const d = await device(), first = "Notes/first.md", second = "Notes/second.md";
+  for (const [path, fileId] of [[first, "41".repeat(16)], [second, "42".repeat(16)]]) {
+    await d.server.publish({ fileId, path, bytes: enc("REMOTE SENTINEL\n"), mtime: 1000,
+      domainKey: d.keys.domainKey, manifestKey: d.keys.manifestKey });
+  }
+  const writer = d.host.writer.bind(d.host), heldFile = deferred();
+  let fileEntered = false;
+  d.host.writer = async path => {
+    if (path === second) { fileEntered = true; await heldFile.promise; }
+    return writer(path);
+  };
+  const save = d.state.store.saveData, heldSave = deferred();
+  let saveEntered = false, snapshot;
+  d.state.store.saveData = async value => {
+    if (!saveEntered && value.files[first]) {
+      saveEntered = true; snapshot = structuredClone(value); await heldSave.promise;
+    }
+    return save(value);
+  };
+  t.after(() => { d.engine.stop(); heldFile.resolve(); heldSave.resolve(); d.server.releaseFeed(); });
+  await d.engine.start();
+  await d.timers.run(0, () => fileEntered && d.state.fileByPath(first) !== undefined);
+  await d.timers.run(SAVE_COALESCE_MS, () => saveEntered);
+  assert.equal(d.engine.started, true, "the metadata was dispatched before the stop");
+  assert.equal(d.state.saving, true);
+  assert.ok(snapshot.files[first]);
+  const mark = d.host.logs.length, before = d.statuses.length;
+  let done = false;
+  const stopping = d.engine.stopAndWait().then(() => { done = true; });
+  assert.equal(d.engine.started, false, "stop closes work admission before waiting for persistence");
+  heldFile.resolve();
+  await d.timers.run(0);
+  assert.equal(done, false, "the stop returned while dispatched metadata was held");
+  const later = "Notes/after-stop.md";
+  d.host.seed(later, "LATE LOCAL SENTINEL\n", 2000);
+  d.engine.changed(later);
+  assert.equal(d.engine.pending.has(later) || d.engine.queue.includes(later), false,
+    "new vault work is not admitted while the stopped engine drains persistence");
+  assert.deepEqual(d.statuses.slice(before), [], "no idle before persistence settles");
+  assert.equal(d.host.logs.slice(mark).some(line => line.startsWith("state decision=saved reason=coalesced ")), false);
+  heldSave.resolve(); await stopping;
+  const after = d.host.logs.slice(mark);
+  const receipt = after.findIndex(line => /^state decision=saved reason=coalesced records=1 budget_ms=1500 duration_ms=\d+$/.test(line));
+  const quiesced = after.findIndex(line => /^engine decision=quiesced /.test(line));
+  assert.ok(receipt >= 0 && quiesced > receipt, after.join("\n"));
+  assert.deepEqual(d.statuses.slice(before), [{ kind: "idle" }]);
+  assert.equal(d.state.fileByPath(later), undefined, "new vault work was not recorded as synced");
+  assert.equal((await d.server.noteFiles(d.keys.manifestKey)).length, 2, "the stopped engine published no new note");
+  assert.equal(after.some(line => line.startsWith("push path_class=file decision=published ")), false);
+  assert.equal((await d.state.store.loadData()).files[first].fileId, snapshot.files[first].fileId);
 });

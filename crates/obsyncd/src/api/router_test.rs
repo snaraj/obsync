@@ -26,6 +26,7 @@ fn health_endpoints_resolve() {
 
 #[test]
 fn setup_and_account_resolve() {
+    assert_eq!(route("GET", "/v1/setup"), Route::SetupCapabilities);
     assert_eq!(route("POST", "/v1/setup"), Route::Setup);
     assert_eq!(route("GET", "/v1/account"), Route::Account);
     assert_eq!(
@@ -194,7 +195,7 @@ fn the_log_class_is_a_template_and_never_carries_an_id() {
 #[test]
 fn an_unknown_path_or_method_does_not_resolve() {
     assert!(resolve("GET", "/v1/nope").is_none());
-    assert!(resolve("GET", "/v1/setup").is_none(), "setup is POST only");
+    assert!(resolve("PUT", "/v1/setup").is_none());
     assert!(resolve("DELETE", "/v1/devices").is_none());
     assert!(resolve("GET", "/app.png").is_none());
     assert!(resolve("GET", "/dev/mock.html").is_none());

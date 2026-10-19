@@ -327,6 +327,7 @@ test("scope saving waits for engine work without manual downloads and serializes
   await new Promise(setImmediate);
   assert.match(refusal?.message ?? "", /already being saved/);
   assert.equal(state.data.syncFolders, undefined);
+  for (const deadline = Date.now() + 10_000; saved()?.pendingScope === undefined && Date.now() < deadline;) await new Promise(setImmediate);
   assert.equal(saved().syncFolders, undefined, "the old selection stays in force while its transfers stop");
   assert.deepEqual(saved().pendingScope, { folders: ["Notes"] }, "and the first save's choice is already kept (#185)");
   work.resolve();
@@ -432,7 +433,8 @@ function relaunchable(t) {
   const Plugin = box.require(join(box.home, "build/main.js")).default;
   const obsidian = box.require("obsidian");
   const secrets = memorySecrets();
-  let metadata = { vrk: KEYS.vrk, deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, serverUrl: "https://sync.example.invalid", lastSeq: 17, files: {} };
+  let metadata = { serverUrl: "https://sync.example.invalid", lastSeq: 17, files: {} };
+  let admitted = false;
   const logs = [];
   const launch = async () => {
     const instance = new Plugin();
@@ -445,6 +447,14 @@ function relaunchable(t) {
     instance.checkForUpdate = async () => {};
     instance.startEngine = async () => { logs.push("start"); };
     instance.log = (line) => logs.push(line);
+    if (!admitted) {
+      const { State } = box.require(join(box.home, "build/state.js")), c = box.require(join(box.home, "build/crypto.js"));
+      const state = await State.open(instance, false, secrets);
+      await state.stageEnrollment2(KEYS.vrk, "pair");
+      await state.adoptSuite2({ root: KEYS.vrk, generation: (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(KEYS.vrk)))).fileId,
+        deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
+      admitted = true;
+    }
     await instance.onload();
     await instance.firstStart;
     return instance;
@@ -920,9 +930,8 @@ async function lifecyclePlugin(t) {
   // Obsidian does not wait for the first start (`onload` returns before it); these tests do.
   const load = instance.onload.bind(instance);
   instance.onload = async () => { await load(); await instance.firstStart; };
-  const r = await fakeState();
   const logs = [], statuses = [], mounts = [];
-  instance.state = r.state;
+  let metadata = { serverUrl: "https://sync.example.invalid" }, written = false;
   instance.log = (line) => logs.push(line);
   instance.host = { log: (line) => logs.push(line), enclosingVault: async () => null, closeQuestion: () => undefined, stopEditorSaves: () => undefined };
   instance.setStatus = (status) => statuses.push(status);
@@ -932,9 +941,19 @@ async function lifecyclePlugin(t) {
   for (const method of ["addSettingTab", "addCommand", "registerObsidianProtocolHandler", "registerEvent"]) {
     instance[method] = () => mounts.push(method);
   }
+  instance.loadData = async () => structuredClone(metadata);
+  instance.saveData = async (value) => { metadata = structuredClone(value); written = true; };
+  const { State } = box.require(join(box.home, "build/state.js")), c = box.require(join(box.home, "build/crypto.js"));
+  const state = await State.open(instance, false, instance.app.secretStorage);
+  await state.stageEnrollment2(KEYS.vrk, "pair");
+  await state.adoptSuite2({ root: KEYS.vrk, generation: (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(KEYS.vrk)))).fileId,
+    deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
+  instance.state = state;
+  written = false;
+  // Reload is intentionally unpaired unless the test supplies the admitted metadata below.
   instance.loadData = async () => ({});
-  instance.saveData = async () => undefined;
-  return { instance, Engine, logs, statuses, mounts, ...r };
+  return { instance, box, Engine, logs, statuses, mounts, state, saved: () => written ? structuredClone(metadata) : null,
+    loadedData: () => structuredClone(metadata) };
 }
 
 test("startup registers only the native installation's pairing actions", async (t) => {
@@ -1056,6 +1075,80 @@ test("callbacks invoked after unload do not inspect state, start sync or save a 
   await assert.rejects(instance.saveSyncFolders(["Notes"]), /unloaded/);
   assert.equal(instance.syncContext(), null);
   await assert.rejects(instance.fetchRemoteOnly("SENTINEL"), /not running/);
+  assert.throws(() => instance.captureSession(), /previous plugin session is inactive/, "unloaded enrollment capture refuses before State");
+  assert.throws(() => instance.finishReplacementPairing(), /previous plugin session is inactive/, "unloaded replacement completion refuses before State");
+  assert.throws(() => instance.openHistory(), /Start sync/, "unloaded current history refuses before State");
+  assert.throws(() => instance.openHistory(true, true), /Start sync/, "unloaded previous history refuses before State");
+  for (const action of [
+    () => instance.startRotation(null), () => instance.prepareRotation("SYNTHETIC", "SYNTHETIC"),
+    () => instance.seedRotation(() => {}), () => instance.commitRotation("SYNTHETIC", "SYNTHETIC"),
+    () => instance.cancelRotationDraft(), () => instance.recoverRotationAccess("SYNTHETIC", "SYNTHETIC"),
+    () => instance.recoverLegacyForUpgrade("SYNTHETIC", "SYNTHETIC", () => {}),
+    () => instance.pairAfterRotation("SYNTHETIC", () => {}), () => instance.retireHistoryBackup("SYNTHETIC", () => {}),
+    () => instance.stageNewVaultKey(), () => instance.stageRecoveryBackup("SYNTHETIC"),
+    () => instance.stageLegacyHistoryBackup("SYNTHETIC"),
+  ]) await assert.rejects(action, /previous plugin session is inactive/, "unloaded transition entry refuses before State");
+});
+
+test("a captured enrollment session refuses after unload before consulting its retired State", async (t) => {
+  const { instance, state } = await lifecyclePlugin(t);
+  const session = instance.captureSession();
+  session.assertCurrent();
+  instance.onunload();
+  state.assertAvailable = () => assert.fail("retired State availability was inspected");
+  Object.defineProperty(instance, "state", { get: () => assert.fail("retired session accessed State") });
+  assert.throws(session.assertCurrent, /previous plugin session is inactive/, "retired session checks lifecycle first");
+});
+
+test("a pending rotation action finishing after unload neither inspects State nor updates UI", async (t) => {
+  const { instance, statuses } = await lifecyclePlugin(t);
+  instance.rotationClient = {};
+  const entered = deferred(), completed = deferred();
+  t.after(() => completed.resolve());
+  const action = instance.rotationAction(async () => { entered.resolve(); await completed.promise; });
+  const refused = assert.rejects(action, /previous plugin session is inactive/, "retired rotation completion checks lifecycle before cleanup State");
+  await entered.promise;
+  instance.onunload();
+  Object.defineProperty(instance, "state", { get: () => assert.fail("rotation cleanup accessed retired State") });
+  completed.resolve();
+  await refused;
+  assert.equal(instance.rotationRunning, false, "retired rotation releases action ownership");
+  assert.deepEqual(statuses, [], "retired rotation leaves the UI untouched");
+});
+
+test("replacement pairing whose engine drain finishes after unload refuses without reading retired State", async (t) => {
+  const { instance, box, statuses } = await lifecyclePlugin(t);
+  const c = box.require(join(box.home, "build/crypto.js"));
+  const backup = await box.require(join(box.home, "build/recoveryBackup.js")).encodeRecoveryBackup(c.unhex(KEYS.vrk));
+  const entered = deferred(), drained = deferred();
+  t.after(() => drained.resolve());
+  instance.engine = { stop: () => {}, stopAndWait: () => { entered.resolve(); return drained.promise; } };
+  const pairing = instance.pairAfterRotation(backup, () => {});
+  const refused = assert.rejects(pairing, /previous plugin session is inactive/, "retired pairing drain checks lifecycle before cleanup State");
+  await entered.promise;
+  instance.onunload();
+  Object.defineProperty(instance, "state", { get: () => assert.fail("pairing cleanup accessed retired State") });
+  drained.resolve();
+  await refused;
+  assert.deepEqual(statuses, [], "retired pairing leaves the UI untouched");
+});
+
+test("replacement pairing dialog closing after unload leaves retired State untouched", async (t) => {
+  const { instance, box } = await lifecyclePlugin(t);
+  const c = box.require(join(box.home, "build/crypto.js"));
+  const backup = await box.require(join(box.home, "build/recoveryBackup.js")).encodeRecoveryBackup(c.unhex(KEYS.vrk));
+  let close, opened = 0, restarts = 0;
+  box.require(join(box.home, "build/ui/modals.js")).PairClaimModal = class {
+    constructor(_app, _plugin, _code, closed) { close = closed; }
+    open() { opened++; }
+  };
+  instance.startEngine = async () => { restarts++; };
+  await instance.pairAfterRotation(backup, () => {});
+  assert.equal(opened, 1, "active replacement pairing reaches the modal");
+  instance.onunload();
+  Object.defineProperty(instance, "state", { get: () => assert.fail("pairing close accessed retired State") });
+  assert.doesNotThrow(close, "retired pairing close checks lifecycle before State");
+  assert.equal(restarts, 0, "retired pairing close never restarts sync");
 });
 
 test("unload cancels startup even when there was no previous engine to drain", async (t) => {
@@ -1117,10 +1210,10 @@ test("an unloaded or superseded state load cannot mount UI, replace state or che
 });
 
 test("unloading during paired startup suppresses late engine status and the startup update probe", async (t) => {
-  const { instance, Engine, state, statuses } = await lifecyclePlugin(t);
+  const { instance, Engine, state, statuses, loadedData } = await lifecyclePlugin(t);
   const entered = deferred(), startup = deferred();
   let updates = 0;
-  instance.loadData = async () => structuredClone(state.data);
+  instance.loadData = async () => loadedData();
   instance.checkForUpdate = async () => { updates++; };
   Engine.prototype.start = async function () {
     entered.resolve();
@@ -1139,7 +1232,7 @@ test("unloading during paired startup suppresses late engine status and the star
 });
 
 test("a late startup failure or status cannot clear or overwrite a replacement engine", async (t) => {
-  const { instance, Engine, state, statuses } = await lifecyclePlugin(t);
+  const { instance, Engine, state, statuses, loadedData } = await lifecyclePlugin(t);
   const entered = deferred(), startup = deferred();
   let starts = 0;
   Engine.prototype.start = async function () {
@@ -1154,7 +1247,7 @@ test("a late startup failure or status cannot clear or overwrite a replacement e
   const starting = instance.startEngine();
   await entered.promise;
   instance.onunload();
-  instance.loadData = async () => structuredClone(state.data);
+  instance.loadData = async () => loadedData();
   await instance.onload();
   const replacement = instance.engine;
   assert.ok(replacement);

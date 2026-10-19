@@ -80,7 +80,7 @@ mod tests {
                 sids: vec![sid],
                 bytes: body.len() as u64,
                 manifest_ct: manifest.to_vec(),
-                manifest_nonce: [1; 12],
+                manifest_seal: obsyncd::storage::ManifestSeal::Legacy([1; 12]),
                 device_id: device,
                 deleted: false,
             })
@@ -118,13 +118,7 @@ mod tests {
                 }
                 if verb == "export" {
                     command
-                        .args([
-                            "--domain",
-                            &domain.to_string(),
-                            "--key",
-                            &"00".repeat(32),
-                            "--out",
-                        ])
+                        .args(["--domain", &domain.to_string(), "--out"])
                         .arg(fixture.0.join(format!("export-{complete}")));
                 }
                 let output = command.output().expect("CLI completes");

@@ -1,0 +1,858 @@
+#!/usr/bin/env python3
+"""Fresh private Android acceptance lifecycle; no personal devices or profiles."""
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tarfile
+import time
+import zipfile
+
+
+APK_SPEC = importlib.util.spec_from_file_location('android_apk',Path(__file__).with_name('android-apk.py'))
+APK = importlib.util.module_from_spec(APK_SPEC)
+APK_SPEC.loader.exec_module(APK)
+
+TCP_SPEC=importlib.util.spec_from_file_location('owned_emulator_tcp',Path(__file__).with_name('emulator-tcp.py'))
+TCP=importlib.util.module_from_spec(TCP_SPEC);TCP_SPEC.loader.exec_module(TCP)
+
+def emulator_target(state):
+    mode=state.get('adbTransport','emulator')
+    if mode not in ('emulator','isolated-tcp') or mode!='isolated-tcp' and state.get('selectedTcpAdb') is not None:
+        raise ValueError('explicit emulator transport differs from binding')
+    return TCP.selected(state) if mode=='isolated-tcp' else state['serial']
+
+def bootstrap_command(state,args,timeout=3):
+    if state.get('selectedTcpAdb') is not None:raise ValueError('bootstrap target forbidden after TCP selection')
+    return TCP.command(state,adb_env(state),state['serial'],args,time.monotonic()+timeout)
+
+def reattach_tcp(state,run,end,phase,observe=None,restoration_context=None):
+    if state.get('adbTransport')!='isolated-tcp':raise ValueError('isolated transport lifecycle required')
+    return TCP.reattach(state,run,adb_env(state),end,phase,save,observe,APK.apk_command_failure,restoration_context)
+
+def digest(path):
+    with open(path, 'rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def save(path, value):
+    path.write_text(json.dumps(value, indent=2) + '\n')
+    path.chmod(0o600)
+
+
+def sanitized_diagnostic(data):
+    text = data.decode('utf-8', errors='replace') if isinstance(data, bytes) else str(data)
+    text = re.sub(r'[^\x20-\x7e\n\t]', '', text)
+    lines = []
+    for line in text.splitlines():
+        if re.search(r'(?i)token|secret|password|credential|authorization|recovery|pairing|\bkey\b|adbkey', line):
+            lines.append('[credential-related line omitted]')
+            continue
+        line = re.sub(r'https?://\S+', '[url]', line)
+        line = re.sub(r"(?:[A-Za-z]:)?/[^\s'\"<>]+", '[path]', line)
+        line = re.sub(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', '[address]', line)
+        line = re.sub(r'[A-Za-z0-9_+/=-]{24,}', '[identifier]', line)
+        lines.append(line)
+    return '\n'.join(lines)[-4096:]
+
+
+def startup_diagnostics(run, stage, error):
+    # The journey may already have credentials: never promote its private logs.
+    if stage not in ('prepare', 'boot', 'install'):
+        return False
+    logs = {}
+    for name in ('prepare', 'adb', 'emulator'):
+        path = run/'private'/(name+'.log')
+        if path.is_file() and not path.is_symlink():
+            with path.open('rb') as stream:
+                size = stream.seek(0, os.SEEK_END)
+                stream.seek(max(0, size-8192))
+                tail = stream.read(8192)
+            if size > 8192:
+                tail = tail.partition(b'\n')[2]  # omit a possibly truncated sensitive line
+            logs[name] = sanitized_diagnostic(tail)
+    stderr = getattr(error, 'stderr', None) or b''
+    if len(stderr) > 8192:
+        stderr = stderr[-8192:]
+        stderr = stderr.partition(b'\n' if isinstance(stderr, bytes) else '\n')[2]
+    save(run/'evidence/startup-diagnostics.json', {'stage': stage, 'logs': logs,
+        'exceptionType': type(error).__name__, 'returncode': getattr(error, 'returncode', None),
+        'stderr': sanitized_diagnostic(stderr)})
+    return True
+
+
+def install_failure(run, state, apk_sha256, error, started):
+    # Failure evidence only. Never export raw output, argv, paths or exception text.
+    def stream(value):
+        if value is None: return {'capture': 'NONE', 'observedLength': 0, 'lengthUnit': 'UNKNOWN'}
+        if not isinstance(value, (bytes, str)): return {'capture': 'UNKNOWN_TYPE'}
+        prefix = value[:8192]
+        if isinstance(prefix, str): prefix = prefix.encode('utf-8', errors='replace')
+        truncated = len(value) > 8192 or len(prefix) > 8192
+        prefix = prefix[:8192]
+        banners = [name for name, marker in (('STREAMED', b'Performing Streamed Install'),
+            ('PUSH', b'Performing Push Install'), ('INCREMENTAL', b'Performing Incremental Install')) if marker in prefix]
+        reports = re.findall(rb'copy_to_file\(\) finished with success after ([0-9]{1,12}) bytes', prefix)
+        return {'capture': 'BOUNDED_PREFIX', 'observedLength': len(value), 'lengthUnit': 'BYTES' if isinstance(value, bytes) else 'UNICODE_CODEPOINTS',
+            'prefixBytes': len(prefix), 'prefixSha256': hashlib.sha256(prefix).hexdigest(), 'prefixCapBytes': 8192, 'truncated': truncated,
+            'bannerClass': banners[0] if len(banners) == 1 else 'MULTIPLE' if banners else 'NOT_OBSERVED',
+            'copyBeginObserved': bool(re.search(rb'copy_to_file\([0-9]{1,10} -> [0-9]{1,10}\)', prefix)),
+            'localEofObserved': b'copy_to_file() : read 0 bytes; exiting' in prefix,
+            'localReportedBytes': int(reports[0]) if len(reports) == 1 else None}
+    timed_out = isinstance(error, subprocess.TimeoutExpired)
+    save(run/'evidence/android-install-failure.json', {'schema': 1, 'sourceHead': state['sourceHead'], 'apkSha256': apk_sha256,
+        'result': 'FAIL', 'stage': 'DIRECT_DEFAULT_ADB_INSTALL', 'attempts': 1, 'requestedCapMs': 90000,
+        'elapsedMs': round((time.monotonic()-started)*1000), 'traceScope': 'INSTALL_CLIENT_ONLY_ADB_CATEGORY',
+        'failureClass': 'AUTOMATION_INSTALL_TIMEOUT' if timed_out else 'UNCLASSIFIED',
+        'exceptionClass': 'SUBPROCESS_TIMEOUT' if timed_out else 'NONZERO_EXIT' if isinstance(error, subprocess.CalledProcessError) else 'OS_ERROR' if isinstance(error, OSError) else 'OTHER_ERROR',
+        'stdout': stream(getattr(error, 'output', None)), 'stderr': stream(getattr(error, 'stderr', None)),
+        'phaseMeaning': 'OBSERVED_MARKERS_ONLY', 'localCounterProvesGuestConsumption': False, 'rawOutputExported': False})
+    return True
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
+
+
+def identity(pid):
+    r = subprocess.run(['ps', '-p', str(pid), '-o', 'lstart=,command='],
+                       capture_output=True, text=True, check=False)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def checked_file(path):
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('regular artifact required: ' + path.name)
+    return path
+
+
+def pinned_file(item):
+    path = checked_file(Path(item['path']).expanduser().absolute())
+    if not re.fullmatch('[0-9a-f]{64}', item['sha256']) or digest(path) != item['sha256']:
+        raise ValueError('artifact SHA-256 mismatch: ' + path.name)
+    return path
+
+
+def archive_files(path):
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as archive:
+            for entry in archive.infolist():
+                if not entry.is_dir():
+                    if (entry.external_attr >> 16) & 0o170000 == 0o120000:
+                        continue  # symlinks are not executed; targets are checked independently
+                    with archive.open(entry) as stream:
+                        yield entry.filename, hashlib.file_digest(stream, 'sha256').hexdigest()
+    else:
+        with tarfile.open(path, 'r:*') as archive:
+            for entry in archive:
+                if entry.isfile():
+                    with archive.extractfile(entry) as stream:
+                        yield entry.name, hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def verify_assets(path, sdk, java, image):
+    assets = json.loads(checked_file(path).read_text())
+    apk = assets['apk']
+    if not re.fullmatch(r'https://github\.com/obsidianmd/obsidian-releases/releases/download/v[^/]+/Obsidian-[^/]+\.apk', apk['url']):
+        raise ValueError('official Obsidian release URL required')
+    apk_path = pinned_file(apk)
+    verified = set()
+    proofs = []
+    for item in assets['archives']:
+        url = item['url']
+        if not (url.startswith('https://dl.google.com/android/repository/') or
+                url.startswith('https://github.com/adoptium/temurin21-binaries/releases/download/')):
+            raise ValueError('official tooling archive URL required')
+        archive = pinned_file(item)
+        root = Path(item['installRoot']).expanduser().absolute()
+        prefix = item.get('prefix', '')
+        count = 0
+        for name, expected in archive_files(archive):
+            if not name.startswith(prefix):
+                raise ValueError('archive member outside declared prefix')
+            rel = PurePosixPath(name[len(prefix):])
+            if rel.is_absolute() or '..' in rel.parts:
+                raise ValueError('unsafe archive member')
+            installed = root.joinpath(*rel.parts)
+            checked_file(installed)
+            if digest(installed) != expected:
+                raise ValueError('installed tooling differs from official archive: ' + str(rel))
+            verified.add(installed.resolve())
+            count += 1
+        if not count:
+            raise ValueError('empty tooling archive')
+        proofs.append({'sha256': item['sha256'], 'url': url, 'verifiedFiles': count})
+    image_path = sdk / 'system-images' / Path(*image.split(';')[1:])
+    required = [sdk/'platform-tools/adb', sdk/'emulator/emulator',
+                sdk/'cmdline-tools/latest/bin/avdmanager', java/'bin/java']
+    required += list(image_path.glob('*.img')) + list(image_path.glob('kernel*'))
+    if not any(p.suffix == '.img' for p in required):
+        raise ValueError('verified installed system image required')
+    for p in required:
+        if p.resolve() not in verified:
+            raise ValueError('required tool/image absent from verified archives: ' + p.name)
+    for tree in (sdk/'platform-tools', sdk/'emulator', sdk/'cmdline-tools/latest', image_path, java):
+        for p in tree.rglob('*'):
+            if p.is_file() and p.name != 'package.xml' and p.resolve() not in verified:
+                raise ValueError('unverified installed tooling file: ' + p.name)
+    return apk_path, {'apkSha256': apk['sha256'], 'apkUrl': apk['url'], 'archives': proofs}
+
+
+def validate(a):
+    if not 1 <= a.seconds <= 86400:
+        raise ValueError('session duration must be 1..86400 seconds')
+    if not 1 <= a.boot_seconds <= 900:
+        raise ValueError('boot budget must be 1..900 seconds')
+    if a.port % 2 or not 5554 <= a.port <= 5584:
+        raise ValueError('even console port 5554..5584 required')
+    if not re.fullmatch(r'system-images;android-\d+;[\w_-]+;[\w_-]+', a.system_image):
+        raise ValueError('installed system-image identifier required')
+    if a.run.exists() or a.run.is_symlink():
+        raise ValueError('fresh run required; existing data preserved')
+    for parent in [a.run.parent, *a.run.parent.parents]:
+        if parent.is_symlink():
+            raise ValueError('run parent must not contain symlinks')
+    common = Path(subprocess.check_output(['git', '-C', str(a.source), 'rev-parse',
+                  '--path-format=absolute', '--git-common-dir'], text=True).strip()).parent
+    for root in (a.source.resolve(), common.resolve()):
+        run = a.run.resolve()
+        if root == run or root in run.parents or run in root.parents:
+            raise ValueError('run must be outside repository and its ancestors')
+    head = subprocess.check_output(['git', '-C', str(a.source), 'rev-parse', 'HEAD'], text=True).strip()
+    if not re.fullmatch('[0-9a-f]{40}', a.source_head) or head != a.source_head:
+        raise ValueError('exact candidate source head required')
+    if subprocess.check_output(['git', '-C', str(a.source), 'status', '--porcelain']):
+        raise ValueError('clean candidate source required')
+    if shutil.disk_usage(a.run.parent).free < 20 * 1024**3:
+        raise ValueError('20 GiB free required')
+    for port in [a.port, a.port + 1]:
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', port))
+    if len(set(a.reverse)) != len(a.reverse) or any(not 1024 <= p <= 65535 for p in a.reverse):
+        raise ValueError('unique nonprivileged reverse ports required')
+    return verify_assets(a.assets, a.sdk, a.java, a.system_image)
+
+
+def adb_env(state):
+    if state.get('targetKind')=='usb':return dict(state['environment'])
+    # Do not inherit any host Android keys, homes, sockets or discovery settings.
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('ADB', 'ANDROID_'))}
+    env.update(state['environment'])
+    return env
+
+
+def live_state(run):
+    if run.is_symlink():
+        raise ValueError('linked run refused')
+    state = json.loads(checked_file(run/'android.json').read_text())
+    if state.get('format') != 1 or state.get('run') != str(run.resolve()):
+        raise ValueError('not this Android run')
+    if time.time() >= state['expiresAtEpoch']:
+        raise ValueError('expired Android session')
+    for record in [state['holder'], *state['processes'].values()]:
+        if identity(record['pid']) != record['identity']:
+            raise RuntimeError('owned process identity changed; no command sent')
+    if state.get('targetKind')=='usb':
+        spec=importlib.util.spec_from_file_location('android_usb',Path(__file__).with_name('android-usb.py'))
+        usb=importlib.util.module_from_spec(spec);spec.loader.exec_module(usb);usb.target_guard(state)
+        return state
+    if state.get('targetKind') not in (None,'emulator') or not re.fullmatch('emulator-(555[468]|55[678][02468])', state['serial']):
+        raise ValueError('owned emulator serial required')
+    emulator_target(state)
+    if state.get('adbTransport')=='isolated-tcp':TCP.listener(state,state['selectedTcpAdb']['hostPort'],time.monotonic()+3)
+    return state
+
+
+def adb_command(state, args, timeout=30, binary=False):
+    if state.get('targetKind')=='usb' and (args[0] in ('root','unroot','remount','disable-verity','enable-verity','reboot','install','uninstall','usb','tcpip','connect','disconnect','devices') or args[:3] in (['shell','pm','clear'],['shell','cmd','package']) and 'clear' in args):
+        raise ValueError('USB fixture forbids root/trust/app replacement or wipe, discovery, transport change, and reboot')
+    # Every call is scoped, including discovery of this private server's devices.
+    argv = [str(Path(state['sdk'])/'platform-tools/adb'), '-P', str(state['adbPort']),
+            '-s', state['serial'] if state.get('targetKind')=='usb' else emulator_target(state), *args]
+    remaining = state['expiresAtEpoch'] - time.time()
+    if remaining <= 0:
+        raise TimeoutError('Android lifecycle deadline before device command')
+    command_env = adb_env(state)
+    if args[:1] == ['install']: command_env['ADB_TRACE'] = 'adb'
+    return subprocess.check_output(argv, env=command_env, text=not binary,
+                                   stderr=subprocess.PIPE, timeout=min(timeout, remaining))
+
+
+def register_emulator(state, port):
+    # Disable both USB and automatic emulator discovery. Register only our port
+    # with the private server's standard host service (ADB length-prefixed wire).
+    request = f'host:emulator:{port}'.encode('ascii')
+    with socket.create_connection(('127.0.0.1', state['adbPort']), timeout=2) as conn:
+        conn.sendall(f'{len(request):04x}'.encode('ascii') + request)
+        # This notification intentionally has no reply. The next boot-property
+        # command independently proves that the exact serial became usable.
+
+
+def check_reverse(state,timeout=None):
+    if not state['reversePorts']:
+        return
+    lines = adb_command(state, ['reverse', '--list'],**({} if timeout is None else {'timeout':timeout})).splitlines()
+    for port in state['reversePorts']:
+        pair = [f'tcp:{port}', f'tcp:{port}']
+        if not any(line.split()[-2:] == pair for line in lines):
+            raise RuntimeError('owned adb reverse missing; reconnect explicitly before retry')
+
+
+def exit_code(child):
+    # WNOWAIT retains this original child PID even after exit, so its PGID
+    # cannot be reused before cleanup finishes signalling the whole group.
+    status = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    if status is None:
+        return None
+    return status.si_status if status.si_code == os.CLD_EXITED else -status.si_status
+
+
+def group_members(pgid):
+    result = subprocess.run(['ps', '-g', str(pgid), '-o', 'pid=,pgid=,stat='],
+                            capture_output=True, text=True, check=False)
+    if result.returncode not in (0, 1) or result.stderr.strip():
+        raise RuntimeError('owned group inspection failed')
+    members = []
+    for line in result.stdout.splitlines():
+        pid, group, status = line.split()
+        if int(group) != pgid:
+            raise RuntimeError('group inspection returned another process group')
+        members.append((int(pid), status))
+    return members
+
+
+def adb_listener(owned, state):
+    child = owned.children['adb']
+    deadline = min(time.time()+10, state['expiresAtEpoch'])
+    while time.time() < deadline:
+        if exit_code(child) is not None:
+            raise RuntimeError('adb exited before listener proof: exit='+str(exit_code(child)))
+        result = subprocess.run(['lsof', '-nP', '-a', '-p', str(child.pid), '-iTCP:'+str(state['adbPort']),
+                                 '-sTCP:LISTEN', '-Fn'], capture_output=True, text=True, check=False)
+        listeners = [line[1:] for line in result.stdout.splitlines() if line.startswith('n')]
+        if listeners:
+            if listeners != [f"127.0.0.1:{state['adbPort']}"]:
+                raise RuntimeError('private adb listener is not exclusively IPv4 loopback')
+            save(owned.run/'evidence/adb-listener.json', {'result':'PASS', 'pid':child.pid,
+                 'address':'127.0.0.1', 'port':state['adbPort'], 'usbDisabled':state.get('targetKind')!='usb','usbScope':'one supplied serial' if state.get('targetKind')=='usb' else 'disabled'})
+            return
+        if result.returncode not in (0, 1):
+            raise RuntimeError('private adb listener inspection failed')
+        time.sleep(.1)
+    raise TimeoutError('private adb loopback listener proof deadline')
+
+
+class Owned:
+    def __init__(self, run, state):
+        self.run, self.state, self.children = run, state, {}
+
+    def launch(self, name, argv, env):
+        with (self.run/'private'/f'{name}.log').open('ab') as log:
+            child = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
+                                     stdout=log, stderr=log, start_new_session=True)
+        self.children[name] = child  # custody precedes any operation that can fail
+        return child
+
+    def record(self, name):
+        child = self.children[name]
+        previous = None
+        for _ in range(40):
+            current = identity(child.pid)
+            if exit_code(child) is not None:
+                raise RuntimeError(name + ' exited before startup; inspect private log')
+            if current and current == previous:
+                self.state['processes'][name] = {'pid': child.pid, 'identity': current}
+                save(self.run/'android.json', self.state)
+                return
+            previous = current
+            time.sleep(.1)
+        raise RuntimeError(name + ' process identity did not settle')
+
+    def require_running(self, phase):
+        ended = []
+        for name in ('emulator', 'adb'):
+            code = exit_code(self.children[name])
+            if code is not None:
+                ended.append(f'{name} exit={code}')
+        if ended:
+            raise RuntimeError('owned process exited during '+phase+': '+', '.join(ended))
+
+    def stop(self, term_seconds=10):
+        if not isinstance(term_seconds,int) or not 1 <= term_seconds <= 90:
+            raise ValueError('bounded owned shutdown grace required')
+        failures = []
+        for name, child in reversed(list(self.children.items())):
+            try:
+                # No controller observation reaps this leader. Its reserved PID
+                # proves custody of the original PGID while descendants remain.
+                exit_code(child)
+                for sig, budget in ((signal.SIGTERM,term_seconds), (signal.SIGKILL,5)):
+                    try:
+                        os.killpg(child.pid, sig)
+                    except (ProcessLookupError, PermissionError):
+                        if any(not status.startswith('Z') for _,status in group_members(child.pid)):
+                            raise
+                    deadline = time.monotonic()+budget
+                    while time.monotonic() < deadline:
+                        if not any(not status.startswith('Z') for _,status in group_members(child.pid)):
+                            break
+                        time.sleep(.1)
+                    else:
+                        continue
+                    break
+                else:
+                    raise RuntimeError('owned group still has live members')
+                child.wait(timeout=5)  # reap only after the last group signal
+                deadline = time.monotonic()+5
+                while group_members(child.pid):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError('owned group remains after reaping leader')
+                    time.sleep(.1)
+            except Exception:
+                failures.append(name)
+        if failures:
+            raise RuntimeError('cleanup incomplete: ' + ','.join(failures))
+
+
+def execute(a):
+    isolated=getattr(a,'adb_transport','emulator')=='isolated-tcp'
+    if isolated and a.online:raise ValueError('isolated TCP mode does not support --online')
+    apk, proof = validate(a)
+    adb_port = free_port()
+    controller_identity = identity(os.getpid())
+    if not controller_identity:
+        raise RuntimeError('controller identity unavailable before fixture creation')
+    os.umask(0o077)
+    started = time.time()
+    state = {'format': 1, 'run': str(a.run.resolve()), 'sourceHead': a.source_head,
+             'sdk': str(a.sdk), 'adbPort': adb_port, 'serial': f'emulator-{a.port}',
+             'processes': {}, 'adbTransport':getattr(a,'adb_transport','emulator'), 'expiresAtEpoch': started + a.seconds,
+             **({'rebootRequestMethod':TCP.REBOOT_REQUEST_METHOD} if isolated else {}),
+             'reversePorts': a.reverse, 'holder': {'pid': os.getpid(), 'identity': controller_identity},
+             'environment': {'HOME': str(a.run/'runtime/user'), 'JAVA_HOME': str(a.java), 'ANDROID_USER_HOME': str(a.run/'runtime/user'),
+                 'ANDROID_EMULATOR_HOME': str(a.run/'runtime/user'), 'ANDROID_AVD_HOME': str(a.run/'runtime/avds'),
+                 'ANDROID_HOME': str(a.sdk), 'ANDROID_SDK_ROOT': str(a.sdk),
+                 'ADB_SERVER_SOCKET': f'tcp:127.0.0.1:{adb_port}', 'ANDROID_ADB_SERVER_PORT': str(adb_port),
+                 'ADB_USB': '0', 'ADB_EMU': '0', 'ADB_MDNS': '0',
+                 'ADB_MDNS_AUTO_CONNECT': '', 'ADB_VENDOR_KEYS': str(a.run/'runtime/user/adbkey')}}
+    owned = Owned(a.run, state)
+    stage, result, failure = 'prepare', 'FAIL', None
+    install_command_error = None
+    deadline = time.monotonic() + a.seconds
+    previous_handlers = {}
+
+    def interrupted(signum, _frame):
+        raise InterruptedError('Android lifecycle interrupted by signal ' + str(signum))
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        previous_handlers[sig] = signal.signal(sig, interrupted)
+    created = False
+    try:
+        a.run.mkdir(mode=0o700)
+        created = True
+        for name in ('runtime/user', 'runtime/avds', 'private', 'evidence'):
+            (a.run/name).mkdir(parents=True, mode=0o700)
+        save(a.run/'android.json', state)
+        save(a.run/'evidence/assets.json', proof)
+        env = adb_env(state)
+        with (a.run/'private/prepare.log').open('wb') as log:
+            subprocess.run([str(a.sdk/'cmdline-tools/latest/bin/avdmanager'), 'create', 'avd',
+                '-n', 'obsync-acceptance', '-k', a.system_image, '-d', a.device,
+                '-p', str(a.run/'runtime/avds/obsync-acceptance.avd')], input=b'no\n',
+                stdout=log, stderr=log, env=env, check=True, timeout=min(60, a.seconds))
+        stage = 'boot'
+        adb = str(a.sdk/'platform-tools/adb')
+        owned.launch('adb', [adb, '-L', f'tcp:{adb_port}', '--one-device',
+                            'obsync-no-usb', 'server', 'nodaemon'], env)
+        owned.record('adb')  # require the server alive before any client can autostart
+        adb_listener(owned, state)
+        route_argv=TCP.prepare(state)+['-debug','init'] if isolated else []
+        save(a.run/'android.json',state)
+        emulator = owned.launch('emulator', [str(a.sdk/'emulator/emulator'), '-avd', 'obsync-acceptance',
+            '-port', str(a.port), *route_argv, '-no-window', '-no-audio', '-no-boot-anim', '-no-snapshot-load', '-no-snapshot-save',
+            '-no-metrics', '-crash-report-mode', 'never', '-cores', '2', '-memory', '2048', '-gpu', a.gpu], env)
+        boot_deadline = min(deadline, time.monotonic() + a.boot_seconds)
+        while time.monotonic() < boot_deadline:
+            owned.require_running('boot')
+            try:
+                register_emulator(state, a.port + 1)
+                if (bootstrap_command if isolated else adb_command)(state, ['shell', 'getprop', 'sys.boot_completed'], timeout=3).strip() == '1':
+                    break
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
+            time.sleep(.3)
+        else:
+            raise TimeoutError('emulator boot deadline; try another explicit graphics mode in a fresh run')
+        owned.record('emulator')  # record actual qemu identity after launcher exec
+        if isolated:TCP.initial(state,a.run,env,boot_deadline,save,APK.apk_command_failure)
+        elif not a.online:
+            adb_command(state, ['shell', 'svc', 'wifi', 'disable'])
+            adb_command(state, ['shell', 'svc', 'data', 'disable'])
+        for port in a.reverse:
+            adb_command(state, ['reverse', f'tcp:{port}', f'tcp:{port}'])
+        check_reverse(state)
+        stage = 'install'
+        install_started = time.monotonic()
+        try:
+            output = adb_command(state, ['install', str(apk)], timeout=90)
+        except (OSError, subprocess.SubprocessError) as error:
+            try:
+                if install_failure(a.run,state,proof['apkSha256'],error,install_started): install_command_error = error
+            except Exception: pass  # Preserve the original failure; missing receipt has no classification.
+            raise
+        if output.strip() != 'Success' and not output.rstrip().endswith('\nSuccess'):
+            raise RuntimeError('APK install did not report Success')
+        if APK.apk_hash(state,a.run,proof['apkSha256'],'initial-install',adb_command,save)!=proof['apkSha256']:
+            raise RuntimeError('installed APK differs from verified official bytes')
+        activity = adb_command(state, ['shell', 'cmd', 'package', 'resolve-activity', '--brief', 'md.obsidian']).strip().splitlines()[-1]
+        if not re.fullmatch(r'md\.obsidian/[\w.$]+', activity):
+            raise RuntimeError('Obsidian launch activity unresolved')
+        adb_command(state, ['shell', 'am', 'start', '-W', '-n', activity])
+        save(a.run/'evidence/android-ready.json', {'result': 'READY', 'freshProfile': True,
+            'sourceHead': a.source_head, 'apkSha256': proof['apkSha256'], 'installedApkVerified': True,
+            'adbTransport':state['adbTransport'],'selectedAdbTarget':emulator_target(state),
+            'graphicsMode': a.gpu, 'systemImage': a.system_image, 'expiresAtEpoch': state['expiresAtEpoch'],
+            'facts': {name: adb_command(state, ['shell', 'getprop', name]).strip() for name in
+                      ('ro.build.version.release', 'ro.build.version.sdk', 'ro.build.version.security_patch', 'ro.product.cpu.abi')},
+            'physicalPhone': 'NOT_RUN', 'productAcceptance': 'NOT_RUN'})
+        print(json.dumps({'result': 'READY', 'run': str(a.run)}), flush=True)
+        stage = 'journey'
+        command_env = env | {'OBSYNC_ANDROID_RUN': str(a.run), 'OBSYNC_ANDROID_SERIAL': emulator_target(state),
+                             'OBSYNC_ANDROID_ADB_PORT': str(adb_port)}
+        journey = owned.launch('journey', a.command, command_env)
+        while exit_code(journey) is None:
+            if time.monotonic() >= deadline:
+                raise TimeoutError('Android lifecycle deadline')
+            owned.require_running('journey')
+            time.sleep(.2)
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Android lifecycle deadline after journey')
+        if exit_code(journey):
+            raise RuntimeError('journey exited ' + str(exit_code(journey)) + '; journey must emit sanitized phase evidence')
+        result = 'PASS'
+    except BaseException as error:
+        failure = {'stage': stage, 'exceptionType': type(error).__name__, 'detail': sanitized_diagnostic(str(error))[:400]}
+        if error is install_command_error and isinstance(error, subprocess.TimeoutExpired):
+            failure['failureClass'] = 'AUTOMATION_INSTALL_TIMEOUT'
+        if created and (a.run/'evidence').is_dir():
+            startup_diagnostics(a.run, stage, error)
+        raise
+    finally:
+        # Block further interruption while tearing down the children we own.
+        for sig in previous_handlers:
+            signal.signal(sig, signal.SIG_IGN)
+        cleanup = 'FAIL'
+        try:
+            owned.stop()
+            for name in ('runtime', 'private') if created else ():
+                if (a.run/name).is_symlink():
+                    raise RuntimeError('owned runtime directory became a link; preserved')
+                if (a.run/name).exists():
+                    shutil.rmtree(a.run/name)
+            if created:
+                (a.run/'android.json').unlink(missing_ok=True)
+            cleanup = 'PASS'
+        finally:
+            try:
+                if created:
+                    (a.run/'evidence').mkdir(mode=0o700, exist_ok=True)
+                    save(a.run/'evidence/result.json', {'result': result if cleanup == 'PASS' else 'FAIL',
+                        'journeyResult': result, 'cleanup': cleanup, 'failure': failure, 'sourceHead': a.source_head,
+                        'ownedGroupsRemaining': 0 if cleanup == 'PASS' else None,
+                        'runtimeAbsent': not (a.run/'runtime').exists(),
+                        'privateAbsent': not (a.run/'private').exists(),
+                        'manifestAbsent': not (a.run/'android.json').exists(),
+                        'controllerExitMustBeVerified': True,
+                        'durationSeconds': round(time.time()-started, 3), 'budgetSeconds': a.seconds,
+                        'productAcceptance': 'NOT_ASSERTED', 'physicalPhone': 'NOT_RUN'})
+            finally:
+                for sig, handler in previous_handlers.items():
+                    signal.signal(sig, handler)
+
+
+def app_pid(state, timeout=30):
+    try:
+        value=adb_command(state,['shell','pidof','md.obsidian'],timeout=timeout).strip()
+    except subprocess.CalledProcessError as error:
+        if error.returncode==1: return None
+        raise
+    if not value.isdigit() or int(value)<=1:
+        raise RuntimeError('one owned Obsidian process required')
+    return int(value)
+
+
+def devtools_present(state,pid,timeout=30):
+    text=adb_command(state,['shell','cat','/proc/net/unix'],timeout=timeout)
+    return any(line.split()[-1:]==[f'@webview_devtools_remote_{pid}'] for line in text.splitlines())
+
+
+def stopped_app(state,end=None):
+    if end is None:
+        old=app_pid(state)
+        adb_command(state,['shell','am','force-stop','md.obsidian'])
+        deadline=time.monotonic()+10
+        while app_pid(state) is not None or (old and devtools_present(state,old)):
+            if time.monotonic()>=deadline:
+                raise TimeoutError('old Obsidian process/devtools socket absence deadline')
+            time.sleep(.1)
+        return old
+    def budget():
+        value=end-time.monotonic()
+        if value<=0:raise TimeoutError('owned reboot preparation deadline')
+        return min(30,value)
+    old=app_pid(state,timeout=budget())
+    adb_command(state,['shell','am','force-stop','md.obsidian'],timeout=budget())
+    end=min(end,time.monotonic()+10)
+    while app_pid(state,timeout=budget()) is not None or (old and devtools_present(state,old,timeout=budget())):
+        budget();time.sleep(min(.1,budget()))
+    budget()
+    return old
+
+
+class HomeObservationError(RuntimeError):
+    def __init__(self, reason, diagnostic):
+        super().__init__(reason)
+        self.reason, self.diagnostic = reason, diagnostic
+
+
+def resumed_activity_counts(activities):
+    # Never retain task names, packages or raw dumpsys output. A null/malformed
+    # resumed field is not evidence that another Activity actually resumed.
+    lines=[line for line in activities.splitlines() if 'ResumedActivity' in line]
+    packages=[]
+    for line in lines:
+        match=re.search(r'\bActivityRecord\{[^}]*\bu[0-9]+\s+([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+)/[A-Za-z0-9_.$]+(?:\s|\})',line)
+        if match:packages.append(match.group(1))
+    return {'resumedLineCount':len(lines),'resumedActivityCount':len(packages),
+            'obsidianResumedCount':sum(package=='md.obsidian' for package in packages),
+            'otherResumedCount':sum(package!='md.obsidian' for package in packages),
+            'obsidianMentioned':any('md.obsidian' in line for line in lines)}
+
+
+def background_after_one_home(state, clock=None, sleep=None):
+    clock=clock or time.monotonic;sleep=sleep or time.sleep
+    started=clock()
+    # This finite 30s observation remains within the full runner's existing
+    # 300s lifecycle phase and the controller's absolute ownership deadline.
+    budget=max(0,min(30,state['expiresAtEpoch']-time.time()))
+    deadline=started+budget
+    diagnostic={'stage':'observe_home_background','homeKeypressCount':0,'polls':0,
+                'deadlineMs':round(budget*1000),'elapsedMs':0,'before':None,'after':None,
+                'processPresent':False,'processRetained':False}
+    def fail(reason):
+        diagnostic['elapsedMs']=round((clock()-started)*1000)
+        raise HomeObservationError(reason,dict(diagnostic))
+    def remaining():
+        left=deadline-clock()
+        if left<=0:fail('home_background_deadline')
+        return left
+    def pid():
+        try:value=app_pid(state,timeout=remaining())
+        except HomeObservationError:raise
+        except subprocess.TimeoutExpired:fail('home_device_command_timeout')
+        except (OSError,subprocess.SubprocessError):fail('home_device_command_failed')
+        except RuntimeError:fail('home_invalid_application_pid')
+        diagnostic['processPresent']=value is not None
+        return value
+    def command(args):
+        try:return adb_command(state,args,timeout=remaining())
+        except HomeObservationError:raise
+        except subprocess.TimeoutExpired:fail('home_device_command_timeout')
+        except (OSError,subprocess.SubprocessError):fail('home_device_command_failed')
+    original=pid()
+    if original is None:fail('home_application_absent')
+    diagnostic['homeKeypressCount']=1
+    command(['shell','input','keyevent','KEYCODE_HOME'])
+    while True:
+        remaining()
+        matched=pid()==original
+        diagnostic['processRetained']=matched
+        if not matched:fail('home_application_process_changed')
+        counts=resumed_activity_counts(command(['shell','dumpsys','activity','activities']))
+        diagnostic['polls']+=1
+        if diagnostic['before'] is None:diagnostic['before']=counts
+        diagnostic['after']=counts
+        matched=pid()==original
+        diagnostic['processRetained']=matched
+        if not matched:fail('home_application_process_changed')
+        diagnostic['processRetained']=True
+        remaining()  # A late successful read cannot outrun the original budget.
+        if counts['otherResumedCount']>0 and not counts['obsidianMentioned']:
+            diagnostic['elapsedMs']=round((clock()-started)*1000)
+            return {'result':'BACKGROUNDED','applicationPid':original,'processRetained':True,**diagnostic}
+        sleep(min(.1,remaining()))
+
+
+def lifecycle(run, action, boot_seconds=240):
+    state=live_state(run)
+    if state.get('targetKind')=='usb' and action=='reboot':raise ValueError('physical device reboot needs separate explicit authorization and lifecycle support')
+    check_reverse(state)
+    if action=='home':
+        try:proof=background_after_one_home(state)
+        except HomeObservationError as error:
+            save(run/'evidence'/('android-home-failure-'+str(time.time_ns())+'.json'),
+                 {'result':'FAIL','sourceHead':state['sourceHead'],'reason':error.reason,**error.diagnostic})
+            raise
+    elif action=='restart-app':
+        boot=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id']).strip()
+        if (run/'evidence/android-trust.json').exists():
+            current=json.loads((run/'evidence/android-trust-current.json').read_text())
+            if current.get('bootId')!=boot:
+                raise RuntimeError('reapply owned synthetic CA for this boot before starting app network')
+        old=stopped_app(state)
+        activity=adb_command(state,['shell','cmd','package','resolve-activity','--brief','md.obsidian']).strip().splitlines()[-1]
+        if not re.fullmatch(r'md\.obsidian/[\w.$]+',activity):
+            raise RuntimeError('official Obsidian launch activity unresolved')
+        launch_started=round(time.time()*1000)
+        adb_command(state,['shell','am','start','-W','-n',activity])
+        deadline=time.monotonic()+30
+        while True:
+            new=app_pid(state)
+            if new and new!=old and devtools_present(state,new): break
+            if time.monotonic()>=deadline: raise TimeoutError('fresh Obsidian process/devtools deadline')
+            time.sleep(.2)
+        proof={'result':'RESTARTED' if old else 'STARTED','oldPid':old,
+               'oldProcessAndSocketAbsent':old is not None,'oldApplicationAlreadyAbsent':old is None,'newPid':new,
+               'freshDevtoolsSocket':True,'appDataReset':False,'nativeEnrollmentRetention':'NOT_ASSERTED',
+               'launchStartedAtEpochMs':launch_started}
+    elif action=='reboot':
+        if not 1<=boot_seconds<=900: raise ValueError('boot deadline must be 1..900 seconds')
+        isolated=state.get('adbTransport')=='isolated-tcp'
+        if isolated:
+            deadline=min(time.monotonic()+boot_seconds,time.monotonic()+max(0,state['expiresAtEpoch']-time.time()))
+            old=stopped_app(state,end=deadline)
+            before=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id'],timeout=TCP.remaining(deadline)).strip()
+            TCP.request_reboot(state,run,adb_env(state),deadline,save,lambda:live_state(run))
+        else:
+            old=stopped_app(state)  # preserve Android stopped-package flag through reboot
+            before=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id']).strip()
+            adb_command(state,['reboot'])
+            deadline=min(time.monotonic()+boot_seconds,time.monotonic()+max(0,state['expiresAtEpoch']-time.time()))
+        observation={'schema':1,'sourceHead':state['sourceHead'],'evidenceClass':'DIAGNOSTIC_ONLY','phase':'reboot','counts':{},'stages':{},'terminal':'NOT_REACHED','priorGuest':state.get('selectedTcpAdb',{}).get('guest')}
+        def record(facts):
+            stage=facts['stage'];row=observation['stages'].setdefault(stage,{'count':0,'first':facts,'last':facts});row['count']+=1;row['last']=facts
+            key=facts['result'];observation['counts'][key]=observation['counts'].get(key,0)+1
+        after=None;failed=False;restoration_context={}
+        try:
+            while time.monotonic()<deadline:
+                try:
+                    started=time.monotonic()
+                    try:
+                        register_emulator(state,int(state['serial'].split('-')[1])+1)
+                        record({'stage':'register_original_emulator','result':'COMPLETE','elapsedMs':round((time.monotonic()-started)*1000)})
+                    except (OSError,subprocess.SubprocessError) as error:
+                        record({'stage':'register_original_emulator','result':'ERROR','exceptionType':type(error).__name__,'elapsedMs':round((time.monotonic()-started)*1000),**({'commandFailure':APK.apk_command_failure(error)} if isinstance(error,(subprocess.CalledProcessError,subprocess.TimeoutExpired)) else {})})
+                        raise
+                    if state.get('adbTransport')=='isolated-tcp' and not reattach_tcp(state,run,deadline,'reboot',record,restoration_context):
+                        time.sleep(.3);continue
+                    final_stage='selected_final_boot_identity'
+                    try:
+                        after=adb_command(state,['shell','cat','/proc/sys/kernel/random/boot_id'],timeout=TCP.remaining(deadline)).strip()
+                        final_stage='selected_final_boot_completed'
+                        ready=adb_command(state,['shell','getprop','sys.boot_completed'],timeout=TCP.remaining(deadline)).strip()
+                        TCP.remaining(deadline)
+                        record({'stage':'selected_final_boot_proof','result':'COMPLETE','bootIdSha256':hashlib.sha256(after.encode()).hexdigest(),'bootChanged':after!=before,'bootCompleted':ready=='1'})
+                    except (OSError,subprocess.SubprocessError) as error:
+                        record({'stage':final_stage,'result':'ERROR','exceptionType':type(error).__name__,**({'commandFailure':APK.apk_command_failure(error)} if isinstance(error,(subprocess.CalledProcessError,subprocess.TimeoutExpired)) else {})})
+                        raise
+                    if after!=before and ready=='1': break
+                except (OSError,subprocess.SubprocessError,TCP.ExpectedAttachmentPending): pass
+                time.sleep(.3)
+            else: raise TimeoutError('owned Android device reboot deadline')
+            observation['terminal']='REATTACHED'
+        except BaseException as error:
+            failed=True;observation['terminal']='FAILED';observation['exceptionType']=type(error).__name__
+            raise
+        finally:
+            if isolated:
+                try:save(run/'evidence/owned-reboot-reattachment-observation.json',observation)
+                except Exception:
+                    if not failed:raise
+        def tail_budget():
+            if not isolated:return {}
+            value=deadline-time.monotonic()
+            if value<=0:raise TimeoutError('owned Android reboot verification deadline')
+            return {'timeout':min(30,value)}
+        if app_pid(state,**tail_budget()) is not None:
+            raise RuntimeError('Obsidian unexpectedly running before post-reboot trust restoration')
+        mappings=adb_command(state,['reverse','--list'],**tail_budget())
+        had_reverse=all(any(line.split()[-2:]==[f'tcp:{p}',f'tcp:{p}'] for line in mappings.splitlines()) for p in state['reversePorts'])
+        for port in state['reversePorts']:
+            adb_command(state,['reverse',f'tcp:{port}',f'tcp:{port}'],**tail_budget())
+        check_reverse(state,**tail_budget())
+        if isolated:TCP.remaining(deadline)
+        proof={'result':'REBOOTED','oldPid':old,'oldBootId':before,'newBootId':after,
+               'actualGuestReboot':True,'reverseMappingsSurvived':had_reverse,'reverseMappingsRestored':True,
+               **({'rebootRequestMethod':TCP.REBOOT_REQUEST_METHOD,'rebootRequestWitness':'evidence/owned-tcp-reboot-request.json'} if isolated else {}),
+               'applicationStopped':True,'trustReapplyRequired':(run/'evidence/android-trust.json').exists(),
+               'nextStep':'android-trust.py reapply with original pinned CA and pretrust receipt, then restart-app',
+               'physicalDeviceReboot':'NOT_RUN'}
+    else: raise ValueError('unknown owned Android lifecycle action')
+    proof.update(sourceHead=state['sourceHead'],atEpoch=time.time())
+    save(run/'evidence'/('android-'+action+'-'+str(time.time_ns())+'.json'),proof)
+    if action=='reboot' and state.get('adbTransport')=='isolated-tcp':TCP.remaining(deadline)
+    return proof
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='action', required=True)
+    for action in ('run', 'preflight'):
+        p = sub.add_parser(action)
+        for name in ('source', 'run', 'sdk', 'java', 'assets'):
+            p.add_argument('--'+name, type=lambda v: Path(v).expanduser().absolute(), required=True)
+        p.add_argument('--source-head', required=True)
+        p.add_argument('--system-image', default='system-images;android-35;google_apis;arm64-v8a')
+        p.add_argument('--device', default='pixel_8')
+        p.add_argument('--port', type=int, default=5584)
+        p.add_argument('--seconds', type=int, default=14400)
+        p.add_argument('--boot-seconds', type=int, default=240)
+        p.add_argument('--gpu', choices=('auto', 'software', 'host', 'swiftshader'), default='software')
+        p.add_argument('--reverse', type=int, action='append', default=[])
+        p.add_argument('--online', action='store_true')
+        p.add_argument('--adb-transport',choices=('emulator','isolated-tcp'),default='emulator')
+        if action == 'run':
+            p.add_argument('command', nargs=argparse.REMAINDER)
+    for action in ('home','restart-app','reboot'):
+        p=sub.add_parser(action)
+        p.add_argument('--run',type=lambda v:Path(v).expanduser().absolute(),required=True)
+        p.add_argument('--boot-seconds',type=int,default=240)
+    p = sub.add_parser('adb')
+    p.add_argument('--run', type=lambda v: Path(v).expanduser().absolute(), required=True)
+    p.add_argument('command', nargs=argparse.REMAINDER)
+    a = parser.parse_args()
+    if a.action in ('home','restart-app','reboot'):
+        print(json.dumps(lifecycle(a.run,a.action,a.boot_seconds)))
+    elif a.action == 'adb':
+        state = live_state(a.run)
+        check_reverse(state)
+        command = a.command[1:] if a.command[:1] == ['--'] else a.command
+        if not command or command[0].startswith('-') or command[0] in ('start-server', 'kill-server', 'server', 'connect', 'disconnect', 'usb', 'tcpip'):
+            parser.error('scoped device command required')
+        sys.stdout.buffer.write(adb_command(state, command, binary=True))
+    elif a.action == 'preflight':
+        _, proof = validate(a)
+        print(json.dumps({'result': 'VERIFIED', 'assets': proof, 'emulatorStarted': False}))
+    else:
+        a.command = a.command[1:] if a.command[:1] == ['--'] else a.command
+        if not a.command:
+            parser.error('one bounded journey command is required')
+        execute(a)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        print(json.dumps({'result': 'FAIL', 'exceptionType': type(error).__name__, 'detail': str(error)[:400]}), file=sys.stderr)
+        sys.exit(1)

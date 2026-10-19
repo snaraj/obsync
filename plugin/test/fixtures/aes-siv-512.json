@@ -1,0 +1,42 @@
+{
+  "provenance": "OpenSSL 4.0.3 default-provider EVP AES-256-SIV; wrapper independently checked against RFC5297 AppendixA; regenerate with siv-reference.c",
+  "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "ad": [
+    "010203",
+    "a0a1a2a3"
+  ],
+  "cases": [
+    {
+      "plaintext": "",
+      "sealed": "0a7174299bc773e27f51ea54541a4742"
+    },
+    {
+      "plaintext": "00",
+      "sealed": "974accd92c669d98353f89865e8e4e28c6"
+    },
+    {
+      "plaintext": "000102030405060708090a0b0c0d0e",
+      "sealed": "97d11bfcf26613e4923939d186b1d727bbaf800da89021ad6834eede1cbffa"
+    },
+    {
+      "plaintext": "000102030405060708090a0b0c0d0e0f",
+      "sealed": "57cda57a784eca483a18ac774b4f73bb03eb73831b5844505f3f121c7bfd833f"
+    },
+    {
+      "plaintext": "000102030405060708090a0b0c0d0e0f10",
+      "sealed": "49e4cbb44dfd78fd5b54f760c47ce8f2639e8baf059eaf736829a1d1c3910d7ccc"
+    },
+    {
+      "plaintext": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e",
+      "sealed": "5c0d6350f391821d53ec48f32dc7df0c59f627a6305d584312198e14d8cf0d6a1454c9688b76a4f3270b136bed57ad"
+    },
+    {
+      "plaintext": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "sealed": "0a9980347f0c2fa4eaaa49fdb9ded078096d2bd011caafc9739311a0c9d70c4502f173cb99401c96951fdfb1f6f1bd86"
+    },
+    {
+      "plaintext": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "sealed": "095c27fe14dfbec52e9ad5a765764aefa60f132c3cc46b05f1f04578fff386b44e2abd5227646039de00136ccf97ed6954"
+    }
+  ]
+}

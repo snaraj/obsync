@@ -110,7 +110,7 @@ fn version(
         sids: sids.to_vec(),
         bytes: 1,
         manifest_ct: manifest,
-        manifest_nonce: [1u8; 12],
+        manifest_seal: crate::storage::ManifestSeal::Legacy([1u8; 12]),
         device_id: setup.device,
         deleted,
     }
@@ -1087,7 +1087,7 @@ fn a_journal_that_already_holds_more_heads_than_the_ceiling_replays_unchanged() 
                 sids: Vec::new(),
                 bytes: 1,
                 manifest_ct: manifest,
-                manifest_nonce: [1u8; 12],
+                manifest_seal: crate::storage::ManifestSeal::Legacy([1u8; 12]),
                 device_id: setup.device,
                 ts: UnixMs::now(),
                 deleted: false,
@@ -1909,7 +1909,7 @@ fn a_crash_mid_journal_costs_only_the_torn_frame() {
             sids: vec![sid],
             bytes: 1,
             manifest_ct: manifest,
-            manifest_nonce: [1u8; 12],
+            manifest_seal: crate::storage::ManifestSeal::Legacy([1u8; 12]),
             device_id: device,
             deleted: false,
         })
@@ -4498,3 +4498,549 @@ fn releasing_waiters_answers_a_long_poll_at_once_and_every_later_one() {
         "and a later one does not wait"
     );
 }
+
+fn atomic_setup(proof: Option<&str>, recover_only: bool) -> NewSetup {
+    NewSetup {
+        generation: None,
+        account_name: "atomic sentinel".into(),
+        recovery_verifier: None,
+        recovery_proof: proof.map(str::to_string),
+        recover_only,
+        device_name: "atomic device".into(),
+        platform: "linux".into(),
+        app_version: "1.1.7".into(),
+        secret: [0x59; 32],
+    }
+}
+
+#[test]
+fn atomic_setup_append_refusals_preserve_account_arm_and_devices() {
+    for initial in [true, false] {
+        for at in [AppendPhase::Write, AppendPhase::Sync] {
+            let dir = TempDir::new("atomic-setup-refusal");
+            let cfg = config(&dir);
+            let store = open(&cfg);
+            if !initial {
+                store.setup("existing sentinel").unwrap();
+                store.reset_recovery(UnixMs(7)).unwrap();
+            }
+            let before = store.account();
+            let seq = store.head_seq();
+            store.set_fault(Fault::JournalAppendErrno { code: 28, at });
+            assert!(
+                store
+                    .setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), !initial), UnixMs(9))
+                    .is_err()
+            );
+            assert_eq!(store.head_seq(), seq);
+            assert!(store.devices().is_empty());
+            assert_eq!(
+                store.account().map(|a| (
+                    a.account_id,
+                    a.name,
+                    a.recovery_verifier,
+                    a.recovery_cleared
+                )),
+                before.clone().map(|a| (
+                    a.account_id,
+                    a.name,
+                    a.recovery_verifier,
+                    a.recovery_cleared
+                ))
+            );
+            drop(store);
+            let store = open(&cfg);
+            assert!(store.devices().is_empty());
+            assert_eq!(
+                store.account().map(|a| (
+                    a.account_id,
+                    a.name,
+                    a.recovery_verifier,
+                    a.recovery_cleared
+                )),
+                before.map(|a| (
+                    a.account_id,
+                    a.name,
+                    a.recovery_verifier,
+                    a.recovery_cleared
+                ))
+            );
+        }
+    }
+}
+
+#[test]
+fn atomic_setup_every_torn_byte_boundary_replays_both_or_neither() {
+    for initial in [true, false] {
+        let dir = TempDir::new("atomic-setup-byte-cut");
+        let cfg = config(&dir);
+        let store = open(&cfg);
+        if !initial {
+            store.setup("existing sentinel").unwrap();
+            store.reset_recovery(UnixMs(7)).unwrap();
+        }
+        let segment = cfg.journal_dir.join("v1/journal/000001.log");
+        let prefix = fs::read(&segment).map(|b| b.len()).unwrap_or(0);
+        let before = store.account();
+        let outcome = store
+            .setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), !initial), UnixMs(9))
+            .unwrap();
+        let complete = fs::read(&segment).unwrap();
+        drop(store);
+        for cut in prefix..=complete.len() {
+            fs::write(&segment, &complete[..cut]).unwrap();
+            let restored = open(&cfg);
+            if cut == complete.len() {
+                let devices = restored.devices();
+                assert_eq!(devices.len(), 1, "cut {cut}");
+                assert_eq!(devices[0].device_id, outcome.device.device_id);
+                assert_eq!(
+                    devices[0].account_id,
+                    restored.account().unwrap().account_id
+                );
+                assert_eq!(
+                    restored.device_secret(&devices[0].device_id),
+                    Some([0x59; 32])
+                );
+                assert_eq!(restored.account().unwrap().recovery_cleared, None);
+                if !initial {
+                    assert!(restored.account().unwrap().recovery_verifier.is_some());
+                }
+            } else {
+                assert!(restored.devices().is_empty(), "cut {cut}");
+                assert_eq!(
+                    restored.account().map(|a| (
+                        a.account_id,
+                        a.recovery_verifier,
+                        a.recovery_cleared
+                    )),
+                    before
+                        .clone()
+                        .map(|a| (a.account_id, a.recovery_verifier, a.recovery_cleared)),
+                    "cut {cut}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn atomic_setup_lost_reply_restarts_with_the_complete_enrollment() {
+    let dir = TempDir::new("atomic-setup-lost-reply");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    store.setup("existing sentinel").unwrap();
+    store.reset_recovery(UnixMs(7)).unwrap();
+    store.set_fault(Fault::JournalCrashAfterSync);
+    assert!(
+        store
+            .setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), true), UnixMs(9))
+            .is_err()
+    );
+    assert!(
+        store.devices().is_empty(),
+        "crash happened before index apply"
+    );
+    assert_eq!(store.account().unwrap().recovery_cleared, Some(UnixMs(7)));
+    drop(store);
+    let restored = open(&cfg);
+    let device = &restored.devices()[0];
+    assert_eq!(device.name, "atomic device");
+    assert_eq!(device.state, DeviceState::Active);
+    assert_eq!(restored.device_secret(&device.device_id), Some([0x59; 32]));
+    let account = restored.account().unwrap();
+    assert_eq!(account.name, "existing sentinel");
+    assert_eq!(account.recovery_cleared, None);
+    assert_eq!(account.recovery_registered, Some(UnixMs(9)));
+    assert_eq!(
+        account.recovery_verifier,
+        Some(hex::encode(&sha256(&[0xa7; 32])))
+    );
+    assert!(matches!(
+        restored.setup_enrolment(atomic_setup(Some(&"b8".repeat(32)), true), UnixMs(10)),
+        Err(StoreError::BadRecoveryProof)
+    ));
+    // POST setup remains non-idempotent: a deliberate same-proof recovery
+    // enrolls another device, but never consumes a second reset arm.
+    let retry = restored
+        .setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), true), UnixMs(10))
+        .unwrap();
+    assert_eq!(retry.armed_at, None);
+    assert_eq!(
+        restored.account().unwrap().recovery_registered,
+        Some(UnixMs(9))
+    );
+    assert_eq!(restored.devices().len(), 2);
+}
+
+#[test]
+fn atomic_setup_reset_arm_races_choose_one_verifier_and_one_device() {
+    let dir = TempDir::new("atomic-setup-race");
+    let cfg = config(&dir);
+    let store = Arc::new(open(&cfg));
+    store.setup("existing sentinel").unwrap();
+    store.reset_recovery(UnixMs(7)).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let workers: Vec<_> = ["a7".repeat(32), "b8".repeat(32)]
+        .into_iter()
+        .map(|proof| {
+            let store = Arc::clone(&store);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                store.setup_enrolment(atomic_setup(Some(&proof), true), UnixMs(9))
+            })
+        })
+        .collect();
+    barrier.wait();
+    let results: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|r| matches!(r, Err(StoreError::BadRecoveryProof)))
+            .count(),
+        1
+    );
+    assert_eq!(store.devices().len(), 1);
+    assert_eq!(store.account().unwrap().recovery_cleared, None);
+    drop(store);
+    let restored = open(&cfg);
+    assert_eq!(restored.devices().len(), 1);
+    assert_eq!(restored.account().unwrap().recovery_cleared, None);
+}
+
+#[test]
+fn atomic_setup_registration_race_cannot_spend_arm_and_enroll_wrong_proof() {
+    let dir = TempDir::new("atomic-registration-race");
+    let cfg = config(&dir);
+    let store = Arc::new(open(&cfg));
+    store.setup("existing sentinel").unwrap();
+    store.reset_recovery(UnixMs(7)).unwrap();
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let verifier = hex::encode(&sha256(&[0xb8; 32]));
+    let register = {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            store.register_recovery(&verifier, UnixMs(8)).unwrap()
+        })
+    };
+    let recover = {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            store.setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), true), UnixMs(9))
+        })
+    };
+    barrier.wait();
+    let registered = register.join().unwrap();
+    let recovered = recover.join().unwrap();
+    assert_ne!(
+        registered,
+        recovered.is_ok(),
+        "exactly one verifier won the serialized boundary"
+    );
+    assert_eq!(store.devices().len(), usize::from(recovered.is_ok()));
+    let expected = if registered { [0xb8; 32] } else { [0xa7; 32] };
+    assert_eq!(
+        store.account().unwrap().recovery_verifier,
+        Some(hex::encode(&sha256(&expected)))
+    );
+    assert_eq!(store.account().unwrap().recovery_cleared, None);
+}
+
+#[test]
+fn atomic_setup_before_append_watermark_refusal_changes_nothing() {
+    for initial in [true, false] {
+        let dir = TempDir::new("atomic-setup-watermark");
+        let cfg = config(&dir);
+        let store = open(&cfg);
+        if !initial {
+            store.setup("existing sentinel").unwrap();
+            store.reset_recovery(UnixMs(7)).unwrap();
+        }
+        let before = store.account();
+        let seq = store.head_seq();
+        drop(store);
+        let mut tight = cfg.clone();
+        tight.journal_capacity = journal_root_bytes(&cfg) + WATERMARK;
+        let store = open(&tight);
+        assert!(matches!(
+            store.setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), !initial), UnixMs(9)),
+            Err(StoreError::JournalFull { .. })
+        ));
+        assert_eq!(store.head_seq(), seq);
+        assert!(store.devices().is_empty());
+        drop(store);
+        let restored = open(&cfg);
+        assert_eq!(
+            restored
+                .account()
+                .map(|a| (a.account_id, a.recovery_verifier, a.recovery_cleared)),
+            before.map(|a| (a.account_id, a.recovery_verifier, a.recovery_cleared))
+        );
+        assert!(restored.devices().is_empty());
+        assert_eq!(restored.head_seq(), seq);
+    }
+}
+
+#[test]
+fn atomic_setup_recovery_preserves_referenced_blob_usage_and_quota_after_restart() {
+    for reset in [false, true] {
+        let dir = TempDir::new("atomic-recovery-quota");
+        let cfg = config(&dir);
+        let setup = ready(&cfg);
+        let account_id = setup.account;
+        set_quota(&setup, 8);
+        let sid = put(&setup, b"sentinel");
+        let reference = version(&setup, file(7), "quota", &[], &[sid], false);
+        setup.store.append_version(reference).unwrap();
+        let proof = "a7".repeat(32);
+        if reset {
+            setup.store.reset_recovery(UnixMs(7)).unwrap();
+        } else {
+            assert!(
+                setup
+                    .store
+                    .register_recovery(&hex::encode(&sha256(&[0xa7; 32])), UnixMs(7))
+                    .unwrap()
+            );
+        }
+        let assert_quota = |store: &Store| {
+            let account = store.account().unwrap();
+            assert_eq!(account.account_id, account_id);
+            assert_eq!(account.used_bytes, 8, "real blob inventory, reset={reset}");
+            assert_eq!(account.quota_bytes, Some(8));
+            assert!(store.chunk_exists(&sid));
+            assert!(
+                store.file(&file(7)).is_some(),
+                "referenced version survives"
+            );
+            let new_sid = Sid::new(sha256(b"x"));
+            assert!(matches!(
+                store.put_chunk(&account_id, &new_sid, 1, &mut &b"x"[..]),
+                Err(StoreError::QuotaExceeded { used: 9, quota: 8 })
+            ));
+            assert!(!store.chunk_exists(&new_sid), "refused body did not land");
+            assert_eq!(store.account().unwrap().used_bytes, 8);
+        };
+        assert_quota(&setup.store);
+        let recovery = setup
+            .store
+            .setup_enrolment(atomic_setup(Some(&proof), true), UnixMs(9))
+            .unwrap();
+        assert!(recovery.recovered);
+        assert_eq!(recovery.device.account_id, account_id);
+        assert_quota(&setup.store);
+        drop(setup);
+        let restored = open(&cfg);
+        assert_quota(&restored);
+        assert_eq!(
+            restored.device_secret(&recovery.device.device_id),
+            Some([0x59; 32])
+        );
+    }
+}
+
+fn suite2_setup(store: &Store) -> SetupOutcome {
+    let mut input = atomic_setup(None, false);
+    input.generation = Some(file(0xb2));
+    input.recovery_verifier = Some(hex::encode(&sha256(&[0xa7; 32])));
+    store.setup_enrolment(input, UnixMs(9)).unwrap()
+}
+
+#[test]
+fn suite2_floor_setup_recovery_publication_and_snapshot_are_durable() {
+    let dir = TempDir::new("suite2-floor-durable");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    let enrolled = suite2_setup(&store);
+    let generation = file(0xb2);
+    assert_eq!(store.index().authority.generation, Some(generation));
+    assert_eq!(
+        store.index().authority.grants[&enrolled.device.device_id].generation,
+        generation
+    );
+    let account = enrolled.device.account_id;
+    let fid = file(0xa2);
+    let ct = vec![0x91; 32];
+    let vid = version_id_of(&fid, &[], &ct, &[]);
+    let mut v = NewVersion {
+        account_id: account,
+        file_id: fid,
+        domain_id: DOMAIN,
+        version_id: vid,
+        parents: vec![],
+        sids: vec![],
+        bytes: 0,
+        manifest_ct: ct,
+        manifest_seal: ManifestSeal::Legacy([0; 12]),
+        device_id: enrolled.device.device_id,
+        deleted: false,
+    };
+    assert!(matches!(
+        store.append_version(v.clone()),
+        Err(StoreError::AuthorityRefused("suite_required"))
+    ));
+    v.manifest_seal = ManifestSeal::Suite2;
+    store.append_version(v).unwrap();
+    assert_eq!(store.index().files[&fid].generation, Some(generation));
+    assert!(matches!(
+        store.setup_enrolment(atomic_setup(Some(&"a7".repeat(32)), true), UnixMs(10)),
+        Err(StoreError::AuthorityRefused("suite_required"))
+    ));
+    let mut wrong = atomic_setup(Some(&"a7".repeat(32)), true);
+    wrong.generation = Some(file(0xb3));
+    assert!(matches!(
+        store.setup_enrolment(wrong, UnixMs(10)),
+        Err(StoreError::AuthorityRefused("generation_mismatch"))
+    ));
+    let mut input = atomic_setup(Some(&"a7".repeat(32)), true);
+    input.generation = Some(generation);
+    let recovered = store.setup_enrolment(input, UnixMs(10)).unwrap();
+    assert!(recovered.recovered);
+    store.snapshot().unwrap();
+    drop(store);
+    let restored = open(&cfg);
+    assert!(restored.index().authority.floor2());
+    assert_eq!(restored.index().files[&fid].generation, Some(generation));
+    assert_eq!(
+        restored.device_secret(&recovered.device.device_id),
+        Some([0x59; 32])
+    );
+    assert_eq!(
+        restored.file(&fid).unwrap().versions[0].manifest_seal,
+        ManifestSeal::Suite2
+    );
+    assert!(cfg.journal_dir.join("v1/journal/000000.log").exists());
+}
+
+#[test]
+fn suite2_floor_refuses_implicit_promotion_of_legacy_recovery() {
+    let dir = TempDir::new("suite2-migration-required");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    store.setup("legacy").unwrap();
+    store
+        .register_recovery(&hex::encode(&sha256(&[0xa7; 32])), UnixMs(7))
+        .unwrap();
+    let seq = store.head_seq();
+    let mut recovery = atomic_setup(Some(&"a7".repeat(32)), true);
+    recovery.generation = Some(file(0xb2));
+    assert!(matches!(
+        store.setup_enrolment(recovery, UnixMs(9)),
+        Err(StoreError::AuthorityRefused("migration_required"))
+    ));
+    assert_eq!(store.head_seq(), seq);
+    assert!(!store.index().authority.floor2());
+    assert!(store.devices().is_empty());
+    assert!(!cfg.journal_dir.join("v1/journal/000000.log").exists());
+}
+
+#[test]
+fn suite2_floor_marker_failures_keep_durable_authority_and_restart_completes_barrier() {
+    for phase in [
+        FloorPhase::Write,
+        FloorPhase::Sync,
+        FloorPhase::Publish,
+        FloorPhase::DirSync,
+    ] {
+        let dir = TempDir::new("suite2-floor-fault");
+        let cfg = config(&dir);
+        let store = open(&cfg);
+        store.set_fault(Fault::FloorMarkerErrno {
+            code: 28,
+            at: phase,
+        });
+        let mut input = atomic_setup(None, false);
+        input.generation = Some(file(0xb2));
+        input.recovery_verifier = Some(hex::encode(&sha256(&[0xa7; 32])));
+        assert!(store.setup_enrolment(input, UnixMs(9)).is_err());
+        assert!(
+            store.index().authority.floor2(),
+            "durable fact reflected, {phase:?}"
+        );
+        assert!(matches!(
+            store.setup_enrolment(atomic_setup(None, true), UnixMs(10)),
+            Err(StoreError::AuthorityRefused("suite_required"))
+        ));
+        assert!(
+            store.snapshot().is_err(),
+            "never compact before barrier, {phase:?}"
+        );
+        drop(store);
+        let restored = open(&cfg);
+        assert!(restored.index().authority.floor2());
+        assert!(restored.journal().floor_ready());
+        assert_eq!(restored.devices().len(), 1);
+        assert_eq!(
+            restored.account().unwrap().recovery_verifier,
+            Some(hex::encode(&sha256(&[0xa7; 32])))
+        );
+    }
+}
+
+#[test]
+fn suite2_floor_crash_after_first_fact_replays_before_creating_marker() {
+    let dir = TempDir::new("suite2-floor-fact-crash");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    store.set_fault(Fault::JournalCrashAfterSync);
+    let mut input = atomic_setup(None, false);
+    input.generation = Some(file(0xb2));
+    input.recovery_verifier = Some(hex::encode(&sha256(&[0xa7; 32])));
+    assert!(store.setup_enrolment(input, UnixMs(9)).is_err());
+    assert!(store.account().is_none());
+    assert!(!cfg.journal_dir.join("v1/journal/000000.log").exists());
+    drop(store);
+    let restored = open(&cfg);
+    assert!(restored.index().authority.floor2());
+    assert_eq!(restored.devices().len(), 1);
+    assert!(restored.journal().floor_ready());
+}
+
+#[test]
+fn suite2_floor_corrupt_or_ambiguous_marker_never_truncates_into_legacy() {
+    let dir = TempDir::new("suite2-floor-corrupt");
+    let cfg = config(&dir);
+    let store = open(&cfg);
+    suite2_setup(&store);
+    store.snapshot().unwrap();
+    drop(store);
+    let marker = cfg.journal_dir.join("v1/journal/000000.log");
+    let good = fs::read(&marker).unwrap();
+    for bad in [&good[..good.len() - 1], b"bad marker"] {
+        fs::write(&marker, bad).unwrap();
+        let log = Log::buffered(LogLevel::Debug);
+        let posture = Posture::enforce(&cfg, &log).unwrap();
+        assert!(matches!(
+            Store::open(&cfg, [7; 32], &posture, log),
+            Err(StoreError::Corrupt(_))
+        ));
+        assert_eq!(fs::read(&marker).unwrap(), bad, "no replay truncation");
+    }
+    fs::write(&marker, &good).unwrap();
+    // Keep the software barrier but remove every authority source: refuse,
+    // never infer that marker-only state authorizes a legacy account.
+    for name in ["journal/000001.log", "index"] {
+        let path = cfg.journal_dir.join("v1").join(name);
+        if path.is_dir() {
+            fs::remove_dir_all(&path).unwrap();
+            fs::create_dir(&path).unwrap();
+        } else {
+            fs::remove_file(path).unwrap();
+        }
+    }
+    let log = Log::buffered(LogLevel::Debug);
+    let posture = Posture::enforce(&cfg, &log).unwrap();
+    assert!(matches!(
+        Store::open(&cfg, [7; 32], &posture, log),
+        Err(StoreError::Corrupt(_))
+    ));
+    assert_eq!(fs::read(&marker).unwrap(), good);
+}
+
+mod rotation;
