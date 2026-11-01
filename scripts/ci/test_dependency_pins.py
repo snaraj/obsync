@@ -32,7 +32,7 @@ class NodeToolchainPins(unittest.TestCase):
         )
         self.assertEqual(len(node_images), 1)
         self.assertEqual(node_images[0][0], f"{node}-trixie-slim")
-        self.assertEqual(node_images[0][1], "0d1e33586362bb9e608c4e751e7a9e7edb55c9ac11461ed5666af696cc461dd4")
+        self.assertEqual(node_images[0][1], "94816674c62774da0d099a947bf4613b9e1972a2733abd0d0cd80e795f8411d0")
         self.assertIn(f'test "$(node --version)" = "v{node}"', dockerfile)
         self.assertIn(f'test "$(npm --version)" = "{npm}"', dockerfile)
 

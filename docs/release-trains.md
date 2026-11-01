@@ -10,16 +10,17 @@ are applied on GitHub; they describe planned delivery, not completed acceptance.
 | [v1.1.6](https://github.com/snaraj/obsync/milestone/31) | Native Rust CLI discovery, contexts and verified installation | #255 |
 | [v1.1.7](https://github.com/snaraj/obsync/milestone/33) | First-sync writes, background performance, load-test regressions, measured pipeline/design work and CLI usability | #274, #277, #283, #319, #325, #329 |
 | [v1.1.8](https://github.com/snaraj/obsync/milestone/37) | End-to-end encryption assurance, strict recovery, client key custody, configurable device revocation and build/CI dependency updates | #344, #346; dependency PRs #348–#355 |
-| [v1.1.9](https://github.com/snaraj/obsync/milestone/34) | Pairing confirmation, physical-phone blind-start/readback, remaining concurrent-input timing and conflict-notice acceptance | #290, #314, #339, #340 |
-| [v1.1.10](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs and final integrated acceptance | #254, #256, #257, #258, #261, #262, #321 |
-| [v1.1.11](https://github.com/snaraj/obsync/milestone/32) | Deferred export, storage/deployment, backup/recovery and co-editing engine | #259, #260, #315, #317 |
-| [v1.1.12](https://github.com/snaraj/obsync/milestone/36) | Large-file limits, mobile streaming and measured device ceilings | #330, #331, #332 |
+| [v1.1.9](https://github.com/snaraj/obsync/milestone/38) | Security dependency repairs: Node build runtime, server trust bundle and documentation certifi | #357, #362, #363 |
+| [v1.1.10](https://github.com/snaraj/obsync/milestone/34) | Pairing confirmation, physical-phone blind-start/readback, remaining concurrent-input timing and conflict-notice acceptance | #290, #314, #339, #340 |
+| [v1.1.11](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs and final integrated acceptance | #254, #256, #257, #258, #261, #262, #321 |
+| [v1.1.12](https://github.com/snaraj/obsync/milestone/32) | Deferred export, storage/deployment, backup/recovery and co-editing engine | #259, #260, #315, #317 |
+| [v1.1.13](https://github.com/snaraj/obsync/milestone/36) | Large-file limits, mobile streaming and measured device ceilings | #330, #331, #332 |
 
 #325 separates the immediate measurements, pipeline improvements, reviewed
 state/migration design and bounded experiments from #315's later engine. Its
 experimental engine code does not ship in 1.1.7. #319 moves out of the deferred
-bucket into 1.1.7. #254 and #262 close only after the integrated 1.1.10 management
-train's public artifact and live acceptance; the explicit 1.1.11 work stays open.
+bucket into 1.1.7. #254 and #262 close only after the integrated 1.1.11 management
+train's public artifact and live acceptance; the explicit 1.1.12 work stays open.
 
 Owner decision, 2026-10-12: ship the security train (#344, #346, PR #347)
 first as **v1.1.8**, and move the previously agreed v1.1.8–v1.1.11 trains
@@ -51,6 +52,12 @@ hardware-backed credential-storage behavior. The general physical-device
 requirement and later trains are unchanged. Required CI and independent
 approval of the final commit still apply.
 
+Owner decision, 2026-11-01: ship security issues **#357, #362 and #363**
+first as **v1.1.9**, moving the previously agreed v1.1.9–v1.1.12 groups
+forward one patch to v1.1.10–v1.1.13. Their issue memberships and acceptance
+requirements are unchanged. This is the scoped dependency repair release;
+it does not claim completion of the later feature groups.
+
 ## Composition and acceptance
 
 Each numbered release is assembled into one artifact PR before owner merge.
@@ -69,13 +76,16 @@ The release order follows the table; no date or completed capability is promised
   dependency pins and composed build/CI compatibility, and exact-head
   independent approval. Physical-phone verification has the release-specific
   owner waiver above; it is not reported as passed.
-- 1.1.9 requires pairing-state readback and physical-phone acceptance; emulator
+- 1.1.9 requires vulnerable-baseline and repaired Node controls, verified trust-bundle
+  contents, composed build gates, independent exact-head review, authenticated
+  artifacts and live server delivery. It introduces no new product behavior.
+- 1.1.10 requires pairing-state readback and physical-phone acceptance; emulator
   rehearsal is supplemental evidence.
-- 1.1.10 requires the integrated CLI, native Obsidian and real MCP-host journeys,
+- 1.1.11 requires the integrated CLI, native Obsidian and real MCP-host journeys,
   applicable security/performance gates and exact public artifact proof.
-- 1.1.11 depends on the reviewed designs and retains every deferred security,
+- 1.1.12 depends on the reviewed designs and retains every deferred security,
   recovery, native-device, mixed-version and convergence requirement.
-- 1.1.12 requires measured size and watermark boundaries, mixed-version
+- 1.1.13 requires measured size and watermark boundaries, mixed-version
   refusals and real-phone evidence before raising advertised limits.
 
 Security, E2EE, durability and performance requirements remain unchanged.

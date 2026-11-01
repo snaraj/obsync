@@ -48,7 +48,7 @@ cli: ## Build and exercise the installed native management CLI
 
 dashboard: ## Test the dashboard's pure functions
 	# The explicit glob names the dashboard test files without relying on
-	# Node's directory-discovery behavior. Verified with pinned Node 26.12.0.
+	# Node's directory-discovery behavior. Verified with pinned Node 26.12.1.
 	node --test dashboard/test/*.test.mjs
 
 chart: ## Helm lint, render, and the rendered pins
