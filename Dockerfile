@@ -16,14 +16,14 @@
 # is the immutable build input and the tag states the Node version a reader
 # should expect from those bytes.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/node:26.12.0-trixie-slim@sha256:0d1e33586362bb9e608c4e751e7a9e7edb55c9ac11461ed5666af696cc461dd4 AS plugin
+FROM --platform=$BUILDPLATFORM docker.io/library/node:26.12.1-trixie-slim@sha256:94816674c62774da0d099a947bf4613b9e1972a2733abd0d0cd80e795f8411d0 AS plugin
 WORKDIR /src/plugin
 COPY plugin/package.json plugin/package-lock.json ./
 # The tag and digest select Node; these checks also prove the npm bundled by
 # that image is the separately reviewed package-manager pin. `--ignore-scripts`
 # is not optional: it is the difference between installing a compiler and
 # executing arbitrary install hooks (requirement 5).
-RUN test "$(node --version)" = "v26.12.0" && \
+RUN test "$(node --version)" = "v26.12.1" && \
     test "$(npm --version)" = "11.20.0" && \
     npm ci --ignore-scripts --no-audit --no-fund
 COPY plugin/ ./
@@ -170,7 +170,7 @@ COPY LICENSE /LICENSE
 # read-only root filesystem, no capabilities, and no shell" is a property of
 # these bytes rather than of the manifest that runs them.
 # ---------------------------------------------------------------------------
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:1c2c046bc09ed40fad370b599a0b1ae7987f55b01e247cf27a7c27cd97e5bbc7
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:25ac8f0c3b2334a9eb05452266bd4697864a8c8ef0ef71e5e6480d7f92868329
 COPY --from=datadirs --chown=65532:65532 /skeleton/ /
 COPY --from=server --chown=65532:65532 /out/obsyncd /usr/local/bin/obsyncd
 COPY --from=bundle --chown=65532:65532 / /opt/obsync/plugin/

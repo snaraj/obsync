@@ -5,6 +5,14 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.9 - 2026-11-01
+
+### Security
+
+- Update the Node build runtime to 26.12.1 and exercise DNS and TLS identity refusal regressions (#362).
+- Refresh the digest-pinned runtime trust bundle to remove distrusted certificate authorities (#363).
+- Update the hash-pinned documentation certifi bundle to 2026.10.19 (#357).
+
 ## 1.1.8 - Unreleased
 
 ### Security
