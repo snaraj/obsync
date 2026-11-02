@@ -90,6 +90,7 @@ import {
   LeaveServerModal, PairClaimModal, PairCreateModal, RecentModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, alreadyPaired,
 } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
+import { RotationModal } from "./ui/rotation";
 import { Indicator, indicated } from "./ui/indicator";
 import {
   ChainLink,
@@ -5904,6 +5905,11 @@ export default class ObsyncPlugin extends Plugin {
     }
     settings.open();
     settings.openTabById(this.manifest.id);
+  }
+
+  /** The encryption upgrade, or the transition this device saved, from Show sync status (#364). */
+  openEncryption(): void {
+    new RotationModal(this.app, this).open();
   }
 
   statusText(): string {

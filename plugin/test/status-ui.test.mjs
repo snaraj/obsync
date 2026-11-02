@@ -417,6 +417,7 @@ function dialog(t, status) {
     onStatusChange: (watcher) => { watchers.add(watcher); return () => watchers.delete(watcher); },
     retry: () => calls.push("retry"),
     openSettings: () => calls.push("settings"),
+    openEncryption: () => calls.push("encryption"),
     notices: { recent: () => current.recent ?? [] },
     openNote: (path) => calls.push(`open:${path}`),
     showRecent: () => calls.push("recent"),
@@ -483,6 +484,46 @@ test("Show sync status stays true while open, and offers the next step for the s
   }
   d.modal.onClose();
   assert.equal(d.watchers.size, 0, "closed, it stops listening");
+});
+
+test("Show sync status opens the encryption upgrade or the pending transition itself, never a Retry that cannot start sync (#364)", (t) => {
+  const d = dialog(t, { kind: "error", message: "UPGRADE NEEDED" });
+  Object.assign(d.plugin.state, { paired: true, custody2: () => d.current.custody });
+  for (const [custody, text, desc] of [
+    [null, "Upgrade encryption", "This vault needs the encryption upgrade before it can sync. Local notes are unchanged."],
+    [{ phase: "prepared", rotation: {} }, "Resume encryption transition", "An encryption transition is pending, so sync is stopped until it finishes."],
+  ]) {
+    d.calls.length = 0;
+    d.current.custody = custody;
+    // After a restart the transition is still pending though nothing says error.
+    for (const status of [{ kind: "error", message: "UPGRADE NEEDED" }, { kind: "idle" }]) {
+      d.modal.onOpen();
+      d.change(status);
+      assert.ok(d.drawn.includes(desc), text);
+      assert.equal(d.button().text, text);
+      d.button().click();
+      assert.deepEqual(d.calls, ["close", "encryption"], text);
+      d.calls.length = 0;
+    }
+  }
+  // Current custody, or no pairing, keeps the steps it had.
+  for (const [paired, custody] of [[true, { phase: "active" }], [false, null]]) {
+    d.plugin.state.paired = paired;
+    d.current.custody = custody;
+    d.modal.onOpen();
+    d.change({ kind: "error", code: "clock", message: "CLOCK" });
+    assert.equal(d.button().text, "Retry now", `paired=${paired}`);
+    d.modal.onClose();
+  }
+});
+
+test("the encryption step opens the encryption dialog from the plugin (#364)", async (t) => {
+  const p = await plugin(t);
+  const opened = [];
+  p.obsidian.Modal.prototype.open = function () { opened.push(this); };
+  p.instance.openEncryption();
+  assert.deepEqual(opened.map((modal) => modal.constructor.name), ["RotationModal"]);
+  assert.equal(opened[0].plugin, p.instance);
 });
 
 test("Show sync status asked for again while it shows is that one dialog, brought forward and current, never a second (#269)", async (t) => {
