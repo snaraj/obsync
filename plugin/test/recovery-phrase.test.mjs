@@ -118,6 +118,23 @@ test("Escape on the words at setup leaves them unconfirmed, owed one reminder; p
   assert.ok(b.obsidian.notices.includes("obsync: Complete recovery backup confirmed."));
 });
 
+test("the legacy words and the current backup each copy whole, exactly as shown (#364)", async (t) => {
+  const b = box(t);
+  const written = [];
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text) => { written.push(text); } } });
+  t.after(() => { delete navigator.clipboard; });
+  for (const [custody, expected] of [[{ suite: 2 }, await b.backup()], [null, (await b.words()).join(" ")]]) {
+    const p = plugin({ recoveryPhrase: "confirmed" });
+    p.state.custody2 = () => custody;
+    const d = dialog(b, p, false);
+    await d.ready();
+    assert.deepEqual(d.drawn.filter((line) => line.startsWith("pre: ")), [`pre: ${expected}`]);
+    await b.made.find((w) => w.kind === "button" && w.text === "Copy").click();
+    assert.equal(written.at(-1), expected, custody === null ? "legacy words" : "current backup");
+  }
+  assert.equal(written.length, 2);
+});
+
 test("the words shown from the palette offer the check to an unconfirmed device, and closing them records nothing (#170)", async (t) => {
   const b = box(t);
   for (const [state, check] of [["unconfirmed", true], ["skipped", true], ["confirmed", false]]) {

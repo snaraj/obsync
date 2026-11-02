@@ -126,6 +126,30 @@ export function secretText(setting: Setting, placeholder: string, value: string,
 }
 
 /**
+ * A recovery backup to carry away whole, drawn as the pairing code is (#364):
+ * Obsidian's body is `user-select: none`, and `.obsync-code` selects the block
+ * in one gesture. Copy writes exactly this text, called inside the tap where
+ * mobile web views allow it; a refused clipboard selects the block instead and
+ * says how to copy it by hand.
+ */
+export function backupText(plugin: ObsyncPlugin, parent: HTMLElement, text: string): void {
+  const block = parent.createEl("pre", { cls: "obsync-code", text });
+  const select = (): void => { block.ownerDocument.getSelection()?.selectAllChildren(block); };
+  new Setting(parent)
+    .addButton((button) => button.setButtonText("Copy").onClick(async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        tell(plugin, "recovery backup copied. Save it away from this device, then copy something else over it.");
+      } catch (error) {
+        plugin.log(`backup decision=copy_refused reason=${error instanceof Error ? error.name : "unknown"}`);
+        select();
+        tell(plugin, "this device refused clipboard access, so the backup is selected instead: press Ctrl+C or Cmd+C, or press and hold it and choose Copy.");
+      }
+    }))
+    .addButton((button) => button.setButtonText("Select").onClick(select));
+}
+
+/**
  * Every pairing step mints or consumes state, so none of them is repeatable
  * and a lost answer is never retried (`transport.ts`). The user is the one
  * who can act on it: a pairing that may or may not have advanced is one to
@@ -1293,14 +1317,14 @@ export class RecoveryPhraseModal extends Modal {
       const words = await recoveryPhrase(unhex(root));
       assertCurrent();
       if (this.opened !== opened) return;
-      this.contentEl.createEl("pre", { text: words.join(" ") });
+      backupText(this.plugin, this.contentEl, words.join(" "));
       return;
     }
     const backup = await encodeRecoveryBackup(unhex(root));
     assertCurrent();
     if (this.opened !== opened) return;
     this.contentEl.createEl("p", { text: "Keep this complete backup, including obsync-recovery-v2, away from this device. Anyone holding it can read this vault. Its format marker is required for recovery." });
-    this.contentEl.createEl("pre", { text: backup });
+    backupText(this.plugin, this.contentEl, backup);
     if (!this.confirmFirst && state.data.recoveryPhrase === "confirmed") return;
     this.offered = { state, root, assertCurrent };
     let answer = "", saving = false;
@@ -1383,7 +1407,8 @@ export class VaultKeyModal extends Modal {
  * now while the server is not answering, with when the next try runs by
  * itself; Pair again for a device the server no longer knows; Open settings
  * for something in front of the server; Retry now once a clock or a full
- * server has been fixed.
+ * server has been fixed; the encryption upgrade or the pending transition
+ * itself while sync waits on one (#364).
  */
 export class StatusModal extends Modal {
   private unwatch: (() => void) | null = null;
@@ -1480,6 +1505,19 @@ export class StatusModal extends Modal {
         .addButton((button) => button.setButtonText("Pair this device").setCta().onClick(() => {
           this.close();
           new PairClaimModal(this.app, this.plugin).open();
+        }));
+      return;
+    }
+    // Sync waits on an encryption change (#364): its dialog, never a Retry that cannot start sync.
+    const custody = this.plugin.state.paired ? this.plugin.state.custody2() : undefined;
+    if (custody === null || custody?.rotation) {
+      new Setting(this.contentEl)
+        .setName("What to do")
+        .setDesc(custody === null ? "This vault needs the encryption upgrade before it can sync. Local notes are unchanged."
+          : "An encryption transition is pending, so sync is stopped until it finishes.")
+        .addButton((button) => button.setButtonText(custody === null ? "Upgrade encryption" : "Resume encryption transition").setCta().onClick(() => {
+          this.close();
+          this.plugin.openEncryption();
         }));
       return;
     }

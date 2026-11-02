@@ -37,7 +37,13 @@
   color: var(--text-faint);
 }
 
+/*
+ * A pairing code or a recovery backup, selected whole in one gesture (#364).
+ * iOS WebKit reads only the prefixed property; `text` is its fallback.
+ */
 .obsync-code {
+  -webkit-user-select: text;
+  -webkit-user-select: all;
   user-select: all;
   overflow-wrap: anywhere;
   white-space: pre-wrap;

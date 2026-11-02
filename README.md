@@ -143,7 +143,7 @@ Already have HTTPS in front, from a proxy or tunnel you trust? Run the
 - **An account on that server**, created from the setup token; your Obsidian account plays no part.
 - **GitHub Releases, through Obsidian**, for install and update; Obsidian ignores the extra release assets.
 - **Your vault's file list**, to decide what to sync; hidden (`.obsidian`, `.git`) and symlinked folders skipped.
-- **The clipboard, written only** by **Copy code** and **Copy link** in **Pair a new device**, never read.
+- **The clipboard, written only** by **Copy code** and **Copy link** in **Pair a new device** and by **Copy** beside a recovery backup, never read.
 - **Your browser, when you ask for the setup guide.** It opens the project's guide there; the plugin itself sends nothing.
 
 What the server can and cannot see: [`SECURITY.md`](SECURITY.md) and the [threat model](docs/threat-model.md).
