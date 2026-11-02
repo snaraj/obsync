@@ -741,7 +741,8 @@ test("explicit replacement refuses wrong old authority, purpose, pending state a
   const r = backing(legacy()), state = await r.open(), before = clone(state.data), metadata = r.metadata(), secrets = [...r.entries];
   for (const [root, purpose, expected] of [[root2, "recover", await generationOf(KEYS.vrk)], [root2, "new", await generationOf(KEYS.vrk)],
     [KEYS.vrk, "pair", await generationOf(KEYS.vrk)], [root2, "pair", "00".repeat(16)], ["BAD", "pair", await generationOf(KEYS.vrk)]]) {
-    await assert.rejects(state.stageReplacementEnrollment2(root, purpose, expected), root === "BAD" ? StateStorageError : reason("pin_replacement"));
+    // In words that say what happened (#370), never the storage stop's.
+    await assert.rejects(state.stageReplacementEnrollment2(root, purpose, expected), root === "BAD" ? StateStorageError : refusedInWords);
     assert.doesNotThrow(() => state.assertAvailable(), "invalid action is refused before a storage transaction starts");
     assert.deepEqual(state.data, before); assert.deepEqual(r.metadata(), metadata); assert.deepEqual([...r.entries], secrets);
   }
@@ -758,6 +759,95 @@ test("explicit replacement refuses wrong old authority, purpose, pending state a
     await assert.rejects(current.stageReplacementEnrollment2(root2, "pair", await generationOf(KEYS.vrk)), reason("rotation_identity_changed"));
     assert.deepEqual(x.metadata(), oldMetadata); assert.deepEqual([...x.entries], oldSecret); assert.throws(() => current.assertAvailable());
   }
+});
+
+/** A key this device's keys cannot take (#370): refused by reason, said as what happened, never as a storage fault. */
+const refusedInWords = (error) => reason("pin_replacement")(error) &&
+  /^This device holds a vault key, or a key change it has not finished, that the key it was offered cannot replace, so it took nothing\./.test(error.message);
+/** What Leave this server, or a reset after the server stopped accepting it, leaves: no credential, the key kept. */
+const forget = async (state) => { state.forgetPairing(); state.data.serverUrl = "https://sync.example.invalid"; await state.save(); };
+
+test("an unpaired device holding an older root sets it aside byte for byte and pairs with the new one, from legacy or suite-2 custody (#370)", async () => {
+  for (const priorSuite of [1, 2]) {
+    const r = backing(priorSuite === 1 ? legacy() : null), state = await r.open();
+    if (priorSuite === 2) { await state.stageEnrollment2(KEYS.vrk, "pair"); await state.adoptSuite2(await enrollment2()); }
+    await forget(state);
+    assert.equal(state.paired, false); assert.equal(state.data.vrk, KEYS.vrk, "leaving keeps the key");
+    // Whatever bookkeeping an unpaired device still holds belongs to the older key: the new one starts over.
+    oldCatalog(state); await state.save();
+    assert.equal(await state.stageEnrollment2(root2, "pair"), true, "an older key was set aside");
+    assert.equal(state.data.vrk, null); assert.equal(state.paired, false); assertSyncReset(state.data);
+    assertSyncReset(r.metadata());
+    const history = { root: KEYS.vrk, generation: await generationOf(KEYS.vrk), suite: priorSuite };
+    assert.deepEqual(state.custody2().history, history);
+    assert.deepEqual(state.stagedEnrollment2(), { root: root2, generation: await generationOf(root2), purpose: "pair" });
+    const again = await r.open();
+    assert.deepEqual(again.custody2(), state.custody2(), "staged durably: a restart finds it");
+    await again.adoptSuite2({ ...await enrollment2(root2), deviceId: "55".repeat(16), deviceSecret: "66".repeat(32) });
+    assert.equal(again.paired, true); assert.equal(again.data.vrk, root2); assert.equal(again.custody2().initializeMap, false);
+    assert.deepEqual(again.custody2().history, history);
+    assert.ok(Buffer.from(again.custody2().history.root, "hex").equals(Buffer.from(KEYS.vrk, "hex")), "the older root is byte-identical");
+    assert.deepEqual((await r.open()).custody2(), again.custody2(), "and survives a restart");
+    for (const marker of [KEYS.vrk, root2, "history", "enrollment"]) assert.equal(JSON.stringify(r.metadata()).includes(marker), false);
+  }
+});
+
+test("setting an older root aside refuses a second one, a paired device, other purposes and anything but settled custody, in words (#370)", async () => {
+  // Custody keeps one earlier key: a third root is refused in its own words.
+  const r = backing(), state = await r.open();
+  await state.stageEnrollment2(KEYS.vrk, "pair"); await state.adoptSuite2(await enrollment2()); await forget(state);
+  await state.stageEnrollment2(root2, "pair"); await state.adoptSuite2({ ...await enrollment2(root2), deviceId: "55".repeat(16), deviceSecret: "66".repeat(32) });
+  await forget(state);
+  const metadata = r.metadata(), secrets = [...r.entries], third = "cd".repeat(32);
+  await assert.rejects(state.stageEnrollment2(third, "pair"), (error) => reason("history_held")(error) &&
+    /^This device already keeps one earlier vault key and can keep only one, so it did not pair\. .*Remove previous history key/.test(error.message) &&
+    !/secret storage/.test(error.message));
+  assert.doesNotThrow(() => state.assertAvailable(), "refused before any storage transaction");
+  assert.deepEqual(r.metadata(), metadata); assert.deepEqual([...r.entries], secrets);
+  assert.equal(state.data.vrk, root2); assert.equal(state.custody2().history.root, KEYS.vrk);
+
+  // The pin stays for a paired device, legacy or suite 2, and for every purpose but pairing.
+  const pairedLegacy = await backing(legacy()).open(), pairedCurrent = await backing().open();
+  await pairedCurrent.stageEnrollment2(KEYS.vrk, "pair"); await pairedCurrent.adoptSuite2(await enrollment2());
+  for (const paired of [pairedLegacy, pairedCurrent]) await assert.rejects(paired.stageEnrollment2(root2, "pair"), refusedInWords);
+  for (const purpose of ["new", "recover"]) {
+    for (const priorSuite of [1, 2]) {
+      const x = backing(priorSuite === 1 ? legacy() : null), held = await x.open();
+      if (priorSuite === 2) { await held.stageEnrollment2(KEYS.vrk, "pair"); await held.adoptSuite2(await enrollment2()); }
+      await forget(held);
+      await assert.rejects(held.stageEnrollment2(root2, purpose), refusedInWords, `${purpose} suite ${priorSuite}`);
+      assert.equal(held.data.vrk, KEYS.vrk); assert.doesNotThrow(() => held.assertAvailable());
+    }
+  }
+
+  // Half a credential is still a credential: never set aside as an unpaired
+  // device's. A load refuses one, so only memory can hold it.
+  for (const dropped of ["deviceId", "deviceSecret"]) {
+    const held = await backing(legacy()).open();
+    held.data[dropped] = null;
+    assert.equal(held.paired, false);
+    await assert.rejects(held.stageEnrollment2(root2, "pair"), refusedInWords, dropped);
+    assert.doesNotThrow(() => held.assertAvailable());
+  }
+
+  // Only settled custody: not a map still to initialize, not an enrollment staged for the held root.
+  const fresh = await backing().open();
+  await fresh.stageEnrollment2(KEYS.vrk, "new"); await fresh.adoptSuite2({ ...await enrollment2(), purpose: "new" }); await forget(fresh);
+  assert.equal(fresh.custody2().initializeMap, true);
+  await assert.rejects(fresh.stageEnrollment2(root2, "pair"), refusedInWords, "a map still to initialize");
+  const staged = await backing().open();
+  await staged.stageEnrollment2(KEYS.vrk, "pair"); await staged.adoptSuite2(await enrollment2()); await forget(staged);
+  await staged.stageEnrollment2(KEYS.vrk, "recover");
+  await assert.rejects(staged.stageEnrollment2(root2, "pair"), refusedInWords, "an enrollment staged for the held root");
+  assert.equal(staged.stagedEnrollment2().root, KEYS.vrk);
+
+  // A credential the device dropped but never saved is still the record's: the
+  // write refuses rather than set aside a key that record still pairs.
+  const unsaved = await backing(legacy()).open(), { serverUrl, edgeHeaders } = unsaved.data;
+  unsaved.forgetPairing();
+  Object.assign(unsaved.data, { serverUrl, edgeHeaders });
+  await assert.rejects(unsaved.stageEnrollment2(root2, "pair"), reason("rotation_identity_changed"));
+  assert.throws(() => unsaved.assertAvailable());
 });
 
 test("explicit replacement storage failures preserve old visible authority and never infer a completed transition", async () => {

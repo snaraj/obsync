@@ -42,6 +42,7 @@ server again unless the entry says so.
 | The two devices show different match codes, pairing says a device runs obsync older than 1.1.5, or the new device says the other device's key does not match the code | [The two devices show different match codes](#the-two-devices-show-different-match-codes) |
 | After approving, the device that made the code says the new device did not keep the key, or has not started syncing | [The device that made the code says the new device did not keep the key](#the-device-that-made-the-code-says-the-new-device-did-not-keep-the-key) |
 | **Pair a new device** closed as soon as you selected **Approve** | [Pair a new device closed after approving](#pair-a-new-device-closed-after-approving) |
+| After another device upgraded the vault's encryption, this device says it was removed, or pairing it again says secret storage failed, that it keeps an earlier key, or that it has no Server URL | [A device that missed an encryption upgrade cannot pair](#a-device-that-missed-an-encryption-upgrade-cannot-pair) |
 | You closed the recovery phrase without writing it down | [You closed the recovery phrase without checking it](#you-closed-the-recovery-phrase-without-checking-it) |
 | "obsync security warning: Another device set a different recovery key" | [Another device set a different recovery key](#another-device-set-a-different-recovery-key) |
 | Leave says the recovery key was set less than 7 days ago, or `409 recovery_too_new` | [The only device cannot leave in its first week](#the-only-device-cannot-leave-in-its-first-week) |
@@ -772,6 +773,44 @@ device's **Devices** list. Revocation is final by design.
 
 **How to fix it.** Pair the device again as a new device. Its notes stay in its
 vault.
+
+## A device that missed an encryption upgrade cannot pair
+
+**What you see.** Another device upgraded this vault's encryption, or rotated
+its key, while this device was not taking part. This device then reads:
+
+> obsync: error — This device was removed from your server, possibly because another device upgraded this vault's encryption. Local notes are unchanged. Pair it again from a device that still syncs: obsync settings, Pair this device.
+
+Up to 1.1.10 it said instead that "This vault needs the encryption upgrade",
+and pairing it again, with **Pair this device** or after **Leave this server**,
+ended in "obsync could not read or save this vault's sync credentials in
+Obsidian's secret storage". Nothing was wrong with secret storage, and
+reloading Obsidian changed nothing.
+
+**Why it happens.** An encryption upgrade, like a key rotation, gives the
+vault a new key and removes every device that did not take part. A removed
+device, like one that left its server, keeps its older key on purpose, so
+that pairing again joins the same vault. Up to 1.1.10, the pairing that
+delivered the new key was refused because the device still held the older
+one.
+
+**How to fix it.**
+
+1. In obsync settings on this device, select **Pair this device**. You do not
+   need to leave the server first.
+2. On a device that still syncs, select **Pair a new device**, and approve
+   only if both screens show the same code.
+3. This device pairs with the vault's new key. Its older key is kept
+   read-only, for the history written under it, as
+   [Pair after rotation](recovery.md) keeps one. Local notes stay where they
+   are.
+4. If pairing says this device "already keeps one earlier vault key": it
+   keeps only one. With that earlier key's backup, open **Vault key →
+   Recovery backup → Remove previous history key**, then pair again. Without
+   that backup, reinstall obsync on this device and pair it; your notes stay
+   in this vault.
+5. If pairing says this device has no Server URL, type your server's address
+   in **Server URL** first: **Leave this server** forgets it.
 
 <a id="stale_timestamp--the-clock"></a><a id="stale_timestamp-the-clock"></a>
 

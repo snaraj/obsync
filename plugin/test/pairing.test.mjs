@@ -132,7 +132,7 @@ test("a pasted setup token loses quotes, spaces and line breaks, and nothing els
 test("every setup and pairing refusal reads as what happened and what to do, never a code (#154)", () => {
   const { ApiError } = require("../build/transport.js");
   const codes = ["bad_setup_token", "already_set_up", "not_set_up", "unknown_pairing", "pairing_expired",
-    "already_claimed", "stale_timestamp", "edge_required", "device_revoked"];
+    "already_claimed", "stale_timestamp", "edge_required", "device_revoked", "no_server_url"];
   const texts = new Set();
   for (const code of codes) {
     const text = pairing.refusalText(new ApiError(400, code, "server detail sentinel"));
@@ -144,6 +144,8 @@ test("every setup and pairing refusal reads as what happened and what to do, nev
   assert.match(pairing.refusalFor("pairing_expired"), /expired.*Pair a new device/);
   assert.match(pairing.refusalFor("unknown_pairing"), /does not match a pairing.*Pair a new device/);
   assert.match(pairing.refusalFor("already_set_up"), /Pair a new device.*Pair this device/);
+  // Refused here before any request, after Leave forgot the address: never "the server refused" (#370).
+  assert.match(pairing.refusalFor("no_server_url"), /^This device has no Server URL, so nothing was sent\. Type your server's address in Server URL/);
   const unknown = pairing.refusalText(new ApiError(418, "teapot_code", "sentinel"));
   assert.ok(!unknown.includes("teapot_code") && !unknown.includes("418"), unknown);
   assert.equal(pairing.refusalText(new Error("this plugin's own words")), "this plugin's own words");

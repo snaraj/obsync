@@ -148,7 +148,7 @@ test("the stylesheet keeps one indicator width without continuous animation", ()
 
 // --- the plugin: click, commands, Sync now, a phone ------------------------
 
-async function plugin(t, { mobile = false, view = null, data = null } = {}) {
+async function plugin(t, { mobile = false, view = null, data = null, prepare = async () => {} } = {}) {
   const b = box(t);
   b.obsidian.Platform.isMobile = mobile;
   t.after(() => { b.obsidian.Platform.isMobile = false; });
@@ -198,6 +198,7 @@ async function plugin(t, { mobile = false, view = null, data = null } = {}) {
     await state.stageEnrollment2(KEYS.vrk, "pair");
     await state.adoptSuite2({ root: KEYS.vrk, generation: (await keys()).generation,
       deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
+    await prepare(state, b);
   }
   await instance.onload();
   return { ...b, instance, commands, hooks, item, views, ApiError, presses, sending: (count) => { sent = count; }, verifying: (found) => { verified = found; },
@@ -577,6 +578,16 @@ test("Show sync status opens the encryption upgrade or the pending transition it
       d.calls.length = 0;
     }
   }
+  // A device the server removed pairs again, whatever it holds (#370): legacy
+  // custody beside a rejected credential never sends it to the upgrade.
+  d.current.custody = null;
+  d.plugin.forgottenDevice = true;
+  d.modal.onOpen();
+  d.change({ kind: "error", code: "credential_rejected", message: "REMOVED BY UPGRADE" });
+  assert.ok(d.drawn.includes("REMOVED BY UPGRADE"));
+  assert.equal(d.button().text, "Pair again");
+  d.modal.onClose();
+  d.plugin.forgottenDevice = false;
   // Current custody, or no pairing, keeps the steps it had.
   for (const [paired, custody] of [[true, { phase: "active" }], [false, null]]) {
     d.plugin.state.paired = paired;
@@ -586,6 +597,32 @@ test("Show sync status opens the encryption upgrade or the pending transition it
     assert.equal(d.button().text, "Retry now", `paired=${paired}`);
     d.modal.onClose();
   }
+});
+
+test("a start with an encryption transition pending says so, never idle, at a restart and after (desktop rig, 1.1.10)", async (t) => {
+  // The rig: a vault restarted with its transition at prepared read
+  // "obsync: idle" while sync was stopped and Settings offered Resume.
+  const pending = "Encryption transition pending. Sync is stopped. Resume it in obsync settings.";
+  const p = await plugin(t, { prepare: async (state, b) => {
+    const root = "ab".repeat(32), { accountRecovery } = b.require(join(b.home, "build/accountRecovery.js"));
+    const c = b.require(join(b.home, "build/crypto.js")), next = (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(root)))).fileId;
+    const old = (await keys()).generation;
+    await state.stageRotation(root, { lineage: old, operation: "23".repeat(16), oldGeneration: old, newGeneration: next,
+      targetDeviceId: null, recoveryVerifier: (await accountRecovery(root)).verifier });
+  } });
+  assert.deepEqual(p.instance.currentStatus(), { kind: "error", message: pending }, "the restart's own start");
+  assert.equal(p.instance.statusText(), `error — ${pending}`, "what the bar and the Connection row read");
+  // Either sign of a transition is enough: the pending custody alone, or a
+  // transition action holding sync on custody that is still current.
+  p.instance.rotating = false;
+  p.instance.setStatus({ kind: "idle" });
+  await p.instance.startEngine();
+  assert.deepEqual(p.instance.currentStatus(), { kind: "error", message: pending }, "custody alone");
+  const q = await plugin(t);
+  assert.equal(q.instance.currentStatus().kind, "idle", "an ordinary start is unchanged");
+  q.instance.rotating = true;
+  await q.instance.startEngine();
+  assert.deepEqual(q.instance.currentStatus(), { kind: "error", message: pending }, "the action alone");
 });
 
 test("the encryption step opens the encryption dialog from the plugin (#364)", async (t) => {

@@ -40,6 +40,11 @@ design, and it is also the reason recovery has the shape it does.
    initiator select **Pair a new device**; compare the codes on the actual two
    screens before approval. Local notes stay, and the old key is kept for
    read-only history. Devices you do not approve never receive the new key.
+   A device the rotation or an encryption upgrade already removed, or one that
+   left the server, has no pairing to replace: it uses **Pair this device**,
+   and its older key is kept for history the same way. It keeps one earlier
+   key at most ([A device that missed an encryption upgrade cannot
+   pair](troubleshooting.md#a-device-that-missed-an-encryption-upgrade-cannot-pair)).
    After access-only removal, ordinary pairing from a syncing device enrolls a
    replacement without changing the vault key.
 

@@ -51,6 +51,14 @@ export class StateStorageError extends Error {
   }
 }
 
+/**
+ * A key this device's own keys cannot take, said as that (#370): storage did
+ * not fail, so the storage words above would send the person to reload and
+ * reinstall for nothing.
+ */
+const KEY_REFUSED = "This device holds a vault key, or a key change it has not finished, that the key it was offered cannot replace, so it took nothing. Its notes and keys are unchanged. If this device still syncs, use Leave this server in obsync settings first.";
+const HISTORY_HELD = "This device already keeps one earlier vault key and can keep only one, so it did not pair. Its notes and keys are unchanged. Remove that earlier key with its backup (obsync settings, Vault key, Remove previous history key), or reinstall obsync on this device; your notes stay in this vault.";
+
 /** What a device a crash left with no keys is told (issue #230; `State.keysLost`). */
 export const KEYS_LOST = "Obsidian closed while obsync was saving this device's keys, so it holds none. Pair this device again from a device that syncs; nothing was deleted.";
 
@@ -879,7 +887,7 @@ export class State {
   private replacementPatch: Partial<Credentials> | null = null;
   private wrapped = false;
   private cleanupPending = false;
-  private custodyAdmission: "replacement" | "resume" | "legacy-upgrade" | null = null;
+  private custodyAdmission: "replacement" | "rejoin" | "resume" | "legacy-upgrade" | null = null;
 
   private constructor(
     private readonly store: Store,
@@ -1122,7 +1130,7 @@ export class State {
   /** Only acknowledged custody is exposed; this returns no mutable authority. */
   custody2(): Custody2 | null { return this.currentCustody === null ? null : JSON.parse(JSON.stringify(this.currentCustody)) as Custody2; }
 
-  private async changeCustody(next: Custody2 | null, patch: Partial<Credentials> = {}, resetSync = false, admission?: "replacement" | "resume" | "legacy-upgrade"): Promise<void> {
+  private async changeCustody(next: Custody2 | null, patch: Partial<Credentials> = {}, resetSync = false, admission?: "replacement" | "rejoin" | "resume" | "legacy-upgrade"): Promise<void> {
     this.assertAvailable(); this.assertHolder();
     if (this.changingCustody) throw new StateStorageError("custody_busy");
     this.changingCustody = true;
@@ -1150,13 +1158,37 @@ export class State {
       { vrk: input.root, deviceId: input.deviceId, deviceSecret: input.deviceSecret });
   }
 
-  async stageEnrollment2(root: string, purpose: "new" | "recover" | "pair"): Promise<void> {
-    const derived = await generation(root);
+  /**
+   * Stage the key an enrollment is for, before its request. True when an
+   * older key was set aside for it.
+   *
+   * AN UNPAIRED DEVICE STILL HOLDING AN OLDER KEY PAIRS (#370). Another
+   * device's encryption upgrade gave the vault a new key and removed this
+   * one, which kept its key, as `forgetPairing` keeps it; every pairing after
+   * that was refused here. That key authorizes nothing on the server, and the
+   * new one came through an approved, code-checked pairing, so the older one
+   * is set aside read-only as history, exactly as `stageReplacementEnrollment2`
+   * sets a paired device's aside. Custody holds one earlier key, so a second
+   * is refused in words. A paired device is never offered another key here:
+   * it holds a credential, which this branch requires absent. Only an active
+   * custody with no map to initialize is set aside; its generation is the
+   * held key's by `custody`.
+   */
+  async stageEnrollment2(root: string, purpose: "new" | "recover" | "pair"): Promise<boolean> {
+    const derived = await generation(root), held = this.data.vrk;
+    const heldGeneration = purpose === "pair" && held !== null && held !== root ? await generation(held) : null, old = this.currentCustody;
+    if (heldGeneration !== null && this.data.deviceId === null && this.data.deviceSecret === null && (old === null || (old.phase === "active" && !old.initializeMap))) {
+      if (old?.history) throw new StateStorageError("history_held", HISTORY_HELD);
+      await this.changeCustody({ suite: 2, generation: derived, phase: "enrollment", initializeMap: false, enrollment: { root, purpose }, rotation: null,
+        history: { root: held!, generation: heldGeneration, suite: old === null ? 1 : 2 } }, { vrk: null, deviceId: null, deviceSecret: null }, true, "rejoin");
+      return true;
+    }
     if (!["new", "recover", "pair"].includes(purpose) || this.paired || this.currentCustody?.rotation ||
       (this.data.vrk !== null && (this.data.vrk !== root || purpose === "new")) ||
-      (this.currentCustody?.enrollment && (this.currentCustody.enrollment.root !== root || this.currentCustody.enrollment.purpose !== purpose))) throw new StateStorageError("pin_replacement");
+      (this.currentCustody?.enrollment && (this.currentCustody.enrollment.root !== root || this.currentCustody.enrollment.purpose !== purpose))) throw new StateStorageError("pin_replacement", KEY_REFUSED);
     await this.changeCustody({ suite: 2, generation: derived, phase: "enrollment", initializeMap: purpose === "new",
       enrollment: { root, purpose }, rotation: null, history: this.currentCustody?.history ?? null });
+    return false;
   }
 
   stagedEnrollment2(): { root: string; purpose: "new" | "recover" | "pair"; generation: string } | null {
@@ -1169,10 +1201,10 @@ export class State {
     this.assertAvailable(); this.assertHolder();
     const oldRoot = this.data.vrk, old = this.custody2();
     if (purpose !== "pair" || !this.paired || old?.initializeMap || old?.history ||
-      (old !== null && (old.phase !== "active" || old.enrollment !== null || old.rotation !== null))) throw new StateStorageError("pin_replacement");
+      (old !== null && (old.phase !== "active" || old.enrollment !== null || old.rotation !== null))) throw new StateStorageError("pin_replacement", KEY_REFUSED);
     const oldGeneration = await generation(oldRoot), nextGeneration = await generation(newRoot);
     if (oldGeneration !== expectedOldGeneration || nextGeneration === oldGeneration || this.data.vrk !== oldRoot ||
-      (old !== null && old.generation !== oldGeneration) || JSON.stringify(this.currentCustody) !== JSON.stringify(old)) throw new StateStorageError("pin_replacement");
+      (old !== null && old.generation !== oldGeneration) || JSON.stringify(this.currentCustody) !== JSON.stringify(old)) throw new StateStorageError("pin_replacement", KEY_REFUSED);
     await this.changeCustody({ suite: 2, generation: nextGeneration, phase: "enrollment", initializeMap: false,
       enrollment: { root: newRoot, purpose }, rotation: null, history: { root: oldRoot!, generation: oldGeneration, suite: old === null ? 1 : 2 } },
       { vrk: null, deviceId: null, deviceSecret: null }, true, "replacement");
@@ -1290,8 +1322,11 @@ export class State {
     const payload = { serverUrl: snapshot.serverUrl, ...verified };
     const previousPayload = this.record === null ? null : { serverUrl: this.record.serverUrl, ...credentials({ ...this.record }) };
     const verifiedCustody = next === null ? null : await custody(next, verified);
-    const replacing = this.custodyAdmission === "replacement" && this.replacementPatch !== null && verifiedCustody?.enrollment?.purpose === "pair" && verifiedCustody.history !== null &&
-      previousPayload?.vrk === verifiedCustody.history.root && previousPayload.deviceId !== null && previousPayload.deviceSecret !== null &&
+    // One custody, two admissions: a replacement sets a paired device's key
+    // aside, a rejoin an unpaired one's (#370), each from the credential it holds.
+    const paired = this.custodyAdmission === "replacement";
+    const replacing = (paired || this.custodyAdmission === "rejoin") && this.replacementPatch !== null && verifiedCustody?.enrollment?.purpose === "pair" && verifiedCustody.history !== null &&
+      previousPayload?.vrk === verifiedCustody.history.root && (previousPayload.deviceId !== null) === paired && (previousPayload.deviceSecret !== null) === paired &&
       payload.vrk === null && payload.deviceId === null && payload.deviceSecret === null && payload.serverUrl === previousPayload.serverUrl &&
       JSON.stringify(payload.edgeHeaders) === JSON.stringify(previousPayload.edgeHeaders) && verifiedCustody.history.suite === (this.currentCustody === null ? 1 : 2);
     const resuming = this.custodyAdmission === "resume" && verifiedCustody !== null && verifiedCustody.rotation !== null && verifiedCustody.rotation.resume !== null &&

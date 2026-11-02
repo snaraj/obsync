@@ -62,7 +62,7 @@ import { RotationClient } from "./rotationClient";
 import { resumeRotationCredential } from "./rotationRecovery";
 import { recoverLegacyUpgrade } from "./legacyUpgrade";
 import { parseLegacyRecoveryHistory, parseRecoveryBackup } from "./recoveryBackup";
-import { accountRecovery, FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "./accountRecovery";
+import { accountRecovery, FORGOTTEN_DEVICE, RECOVERY_MISMATCH, forgottenCredential } from "./accountRecovery";
 import { DomainMapError, domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
@@ -528,6 +528,9 @@ const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restor
 /** Why sync cannot run, and what to do, where a start or Force sync says it (#369). */
 const NEEDS_UPGRADE = "This vault needs the encryption upgrade. Open obsync settings, then Upgrade encryption. Local notes are unchanged.";
 const TRANSITION_PENDING = "Encryption transition pending. Sync is stopped. Resume it in obsync settings.";
+/** A legacy device the server no longer accepts (#370): an upgrade on another device removes every device that missed it. */
+const REMOVED_BY_UPGRADE = "This device was removed from your server, possibly because another device upgraded this vault's encryption. " +
+  "Local notes are unchanged. Pair it again from a device that still syncs: obsync settings, Pair this device.";
 const NOT_PAIRED = "This device is not paired yet. On a device that already syncs this vault, choose Pair a new device, " +
   "then paste its code in obsync settings with Pair this device.";
 
@@ -4454,9 +4457,11 @@ export default class ObsyncPlugin extends Plugin {
 
   private async startEngineOwned(): Promise<void> {
     const generation = this.lifecycle;
-    if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null || this.rotating || this.state.custody2()?.rotation) return;
-    if (this.state.custody2() === null) {
-      this.setStatus({ kind: "error", message: NEEDS_UPGRADE });
+    if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null) return;
+    // A TRANSITION PENDING IS SAID, never `idle` (desktop rig, 1.1.10): a
+    // restart found it, returned here, and the bar read idle with sync stopped.
+    if (this.rotating || this.state.custody2()?.rotation) {
+      this.setStatus({ kind: "error", message: TRANSITION_PENDING });
       return;
     }
     const started = Date.now();
@@ -4471,6 +4476,20 @@ export default class ObsyncPlugin extends Plugin {
     const wanted = (engine: SyncEngine | null): boolean =>
       this.isCurrent(generation) && !this.changingScope && this.restoring === null && !this.leaving && !this.rotating && !this.state.custody2()?.rotation && this.engine === engine;
     const superseded = (): void => this.log(`engine decision=stopped reason=superseded duration_ms=${Date.now() - started}`);
+    // A LEGACY DEVICE ANOTHER DEVICE'S UPGRADE REMOVED IS TOLD SO (#370), not
+    // sent to an upgrade that already ran: Check's signed read, with a
+    // person's patience, asks whether its credential stands. Rejected, it is
+    // a removed device, which Pair this device brings back; standing,
+    // unanswered or refused otherwise, the upgrade is still what it needs.
+    if (this.state.custody2() === null) {
+      const engine = this.engine, deviceId = this.state.data.deviceId;
+      const credential = await this.transport.account({ interactive: true })
+        .then(() => "standing", (error: unknown) => forgottenCredential(error) ? "rejected" : "unconfirmed");
+      if (!wanted(engine) || this.state.data.deviceId !== deviceId) return superseded();
+      this.log(`engine decision=stopped reason=needs_upgrade credential=${credential} duration_ms=${Date.now() - started} budget_ms=${INTERACTIVE_MS}`);
+      this.setStatus(credential === "rejected" ? { kind: "error", code: "credential_rejected", message: REMOVED_BY_UPGRADE } : { kind: "error", message: NEEDS_UPGRADE });
+      return;
+    }
     // Whoever asked for this start owns it: a reconnect still pending would
     // be a second engine, so its timer is taken here and its count carried,
     // and the start below either closes the cycle or continues it.

@@ -774,7 +774,7 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting): Promis
         await state.stageReplacementEnrollment2(envelope.vrk, "pair", waiting.replacementGeneration);
         waiting.replacementGeneration = null;
         replaced = true;
-      } else await state.stageEnrollment2(envelope.vrk, "pair");
+      } else if (await state.stageEnrollment2(envelope.vrk, "pair")) plugin.log("pairing role=claimant decision=staged reason=kept_previous_key");
       assertCurrent();
       // BEFORE THE KEY IS KEPT, because a kept key starts the first sync,
       // and that sync publishes every note here to every device syncing
@@ -818,7 +818,8 @@ async function collect(plugin: ObsyncPlugin, app: App, waiting: Waiting): Promis
     const code = error instanceof ApiError ? error.code : "";
     const reason = error instanceof ClaimEnded ? error.reason
       : Object.hasOwn(CLAIM_REFUSALS, code) ? CLAIM_REFUSALS[code] as string : code === "" ? "local_or_lost" : code;
-    plugin.log(`pairing role=claimant decision=${kept ? "paired" : "failed"} reason=${reason} duration_ms=${Date.now() - started}`);
+    // A local refusal by its own reason: `local_or_lost` hid the held key a phone met (#370).
+    plugin.log(`pairing role=claimant decision=${kept ? "paired" : "failed"} reason=${error instanceof StateStorageError ? error.reason : reason} duration_ms=${Date.now() - started}`);
     // A newer session of this plugin owns the state now, and a state that
     // stopped is the next session's too: nothing is taken back from here,
     // and a kept key is kept.
@@ -1509,7 +1510,8 @@ export class StatusModal extends Modal {
       return;
     }
     // Sync waits on an encryption change (#364): its dialog, never a Retry that cannot start sync.
-    const custody = this.plugin.state.paired ? this.plugin.state.custody2() : undefined;
+    // A device the server removed pairs again, whatever encryption it held (#370).
+    const custody = this.plugin.state.paired && !this.plugin.forgottenDevice ? this.plugin.state.custody2() : undefined;
     if (custody === null || custody?.rotation) {
       new Setting(this.contentEl)
         .setName("What to do")
