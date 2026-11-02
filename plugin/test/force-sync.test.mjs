@@ -12,14 +12,18 @@
 
 import { strict as assert } from "node:assert";
 import test from "node:test";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
 import { createRequire } from "node:module";
-import { FakeTimers, KEYS, rig, settled } from "./fake.mjs";
+import { FakeTimers, KEYS, STEP_MS, rig, sandbox, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { FORCE_BUDGET_MS, LARGE_APPLY_BYTES, SyncEngine, REVOKED_DEVICE } = require("../build/sync/engine.js");
 const seal2 = require("../build/seal2.js");
 const c = require("../build/crypto.js");
 const { bytesSource, chunkStream } = require("../build/chunker.js");
+const { EditorBusy } = require("../build/sync/pull.js");
+const { pushFile } = require("../build/sync/push.js");
 
 const OTHER = "ffffffffffffffffffffffffffffffff";
 const enc = (text) => new TextEncoder().encode(text);
@@ -59,6 +63,13 @@ function requests(r) {
 
 const asked = (urls, fileId) => urls.filter((url) => fileGet.exec(url)?.[1] === fileId).length;
 
+/** The plugin's one answer to a press (`main.ts`, `forceAnswer`), which needs Obsidian's module: from a sandbox. */
+function answers(t) {
+  const box = sandbox();
+  t.after(() => rmSync(box.home, { recursive: true, force: true }));
+  return box.require(join(box.home, "build/main.js")).forceAnswer;
+}
+
 test("a file the server has and this device lacks is received, and a press again asks the server for nothing", async () => {
   const r = await rig();
   const timers = new FakeTimers();
@@ -73,7 +84,7 @@ test("a file the server has and this device lacks is received, and a press again
   assert.equal(r.host.text("missed.md"), "MISSED SENTINEL\n");
   assert.deepEqual(tally, { checked: 0, sent: 0, listed: 1, received: 1, downloading: 0, complete: true },
     "the domain map is not a file on the server");
-  assert.ok(r.host.logs.some((line) => line.startsWith("force_sync decision=done checked=0 sent=0 listed=1 behind=1 received=1 downloading=0 requests=2 ")),
+  assert.ok(r.host.logs.some((line) => line.startsWith("force_sync decision=done checked=0 sent=0 from=start listed=1 behind=1 received=1 downloading=0 requests=2 ")),
     r.host.logs.filter((line) => line.startsWith("force_sync")).join(" | "));
 
   const urls = requests(r);
@@ -260,10 +271,134 @@ test("a pass over its time says so, and the next press goes on from there", asyn
 
   const first = await engine.forceSync();
 
-  assert.deepEqual(first, { checked: 0, sent: 0, listed: 3, received: 1, downloading: 0, complete: false });
+  assert.deepEqual(first, { checked: 0, sent: 0, listed: 2, received: 1, downloading: 0, complete: false }, "it stopped at the second file");
   assert.ok(r.host.logs.some((line) => line.startsWith("force_sync decision=stopped reason=budget ")));
   const second = await engine.forceSync();
   assert.deepEqual(second, { checked: 1, sent: 0, listed: 3, received: 2, downloading: 0, complete: true });
   for (const i of [0, 1, 2]) assert.equal(r.host.text(`slow-${i}.md`), `SLOW ${i} SENTINEL\n`);
   engine.stop();
+});
+
+test("a settled pass is in step with the server, and the answer says so", async (t) => {
+  const forceAnswer = answers(t);
+  const r = await rig();
+  const timers = new FakeTimers();
+  await publish(r, "91".repeat(16), "arrived.md", "ARRIVED SENTINEL\n");
+  passed(r);
+  const engine = await started(r, timers);
+
+  const tally = await engine.forceSync();
+
+  assert.deepEqual(engine.current(), { kind: "idle" });
+  assert.equal(forceAnswer(tally, engine.current(), 0), "in step with the server: checked 0 files here and 1 on the server; sent 0, received 1.");
+  engine.stop();
+});
+
+test("a newer version an open editor holds back is said as outstanding, by its path, until a press after the editor lets go lands it", async (t) => {
+  const forceAnswer = answers(t);
+  const r = await rig();
+  const timers = new FakeTimers();
+  r.host.seed("note.md", "BASE SENTINEL\n", 1000);
+  const base = await pushFile(r.context, "note.md");
+  await publish(r, base.fileId, "note.md", "REMOTE SENTINEL\n", [base.versionId], 3000);
+  passed(r);
+  // The person is typing in the note: the write that would land the newer version is refused.
+  let busy = true;
+  r.host.typing = (path) => path === "note.md" && busy;
+  const writer = r.host.writer.bind(r.host);
+  r.host.writer = async (path) => {
+    const pending = await writer(path);
+    return { ...pending, commit: async (mtime) => {
+      if (path === "note.md" && busy) throw new EditorBusy();
+      return pending.commit(mtime);
+    } };
+  };
+  const engine = await started(r, timers);
+
+  const held = await engine.forceSync();
+
+  assert.deepEqual(held, { checked: 1, sent: 0, listed: 1, received: 0, downloading: 0, complete: true });
+  assert.equal(r.host.text("note.md"), "BASE SENTINEL\n");
+  assert.deepEqual(engine.current(), { kind: "syncing", pending: 1, held: "note.md" });
+  assert.equal(forceAnswer(held, engine.current(), 0),
+    "checked 1 file here and 1 on the server; sent 0, received 0; still syncing 1 file, waiting for unsaved changes in note.md.");
+
+  busy = false;
+  const landed = await engine.forceSync();
+
+  assert.equal(r.host.text("note.md"), "REMOTE SENTINEL\n", "the press retried the held version");
+  assert.deepEqual(engine.current(), { kind: "idle" });
+  assert.equal(forceAnswer(landed, engine.current(), 0), "in step with the server: checked 1 file here and 1 on the server; sent 0, received 0.");
+  engine.stop();
+});
+
+test("a listing slower than the budget settles each page before the next, a press again goes on from there, and a finished round starts over", async () => {
+  for (const slow of [false, true]) {
+    const r = await rig();
+    const timers = new FakeTimers();
+    const ids = ["81", "82", "83"].map((byte) => byte.repeat(16));
+    for (const [i, id] of ids.entries()) await publish(r, id, `listed-${i}.md`, `LISTED ${i} SENTINEL\n`);
+    passed(r);
+    let clock = 1757200000000;
+    const engine = await started(r, timers, () => true, () => clock);
+    r.server.pageLimit = 1;
+    const real = r.transport.options.request;
+    let pace = slow ? FORCE_BUDGET_MS * 0.4 : 0;
+    // Each page of the listing takes four tenths of the budget: three pages spend it.
+    r.transport.options.request = (request) => {
+      if (request.url.includes("/v1/files?")) clock += pace;
+      return real(request);
+    };
+    const presses = [];
+    do presses.push(await engine.forceSync()); while (!presses.at(-1).complete && presses.length < 5);
+
+    for (const i of [0, 1, 2]) assert.equal(r.host.text(`listed-${i}.md`), `LISTED ${i} SENTINEL\n`, `slow=${slow}`);
+    assert.equal(presses.reduce((sum, press) => sum + press.received, 0), 3, `slow=${slow}`);
+    if (!slow) assert.equal(presses.length, 1, "a fast listing finishes in one press");
+    else {
+      assert.equal(presses.length, 2, "the second press goes on where the first stopped");
+      assert.equal(presses[0].complete, false);
+      assert.ok(presses[0].received >= 1, "the first press settled the pages it listed");
+      assert.ok(r.host.logs.some((line) => line.startsWith("force_sync decision=stopped reason=budget checked=0 sent=0 from=start ")));
+      assert.ok(r.host.logs.some((line) => line.startsWith("force_sync decision=done ") && line.includes(" from=cursor ")),
+        r.host.logs.filter((line) => line.startsWith("force_sync")).join(" | "));
+    }
+    // A round that reached the last page is over: the next press lists from the first page again.
+    pace = 0;
+    const first = "0".repeat(31) + "1";
+    await publish(r, first, "listed-first.md", "FIRST SENTINEL\n");
+    passed(r);
+    const again = await engine.forceSync();
+    assert.equal(r.host.text("listed-first.md"), "FIRST SENTINEL\n", `slow=${slow}`);
+    assert.equal(again.received, 1);
+    assert.equal(again.complete, true);
+    engine.stop();
+  }
+});
+
+test("a stop while a page's last file waits its turn neither passes the page nor claims the round", async () => {
+  const r = await rig();
+  const timers = new FakeTimers();
+  await publish(r, "a1".repeat(16), "waiting.md", "WAITING SENTINEL\n");
+  passed(r);
+  const engine = await started(r, timers);
+  const real = r.transport.options.request;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  r.transport.options.request = (request) => {
+    // Another pull holds the chain while the listing is read, so the file's turn queues behind it.
+    if (request.url.includes("/v1/files?")) void engine.exclusive("hold", () => gate);
+    return real(request);
+  };
+
+  const pass = engine.forceSync();
+  await timers.run(STEP_MS, () => engine.holder?.label === "hold" && engine.behind === 1);
+  engine.stop();
+  release();
+  const tally = await pass;
+
+  assert.equal(tally.complete, false);
+  assert.equal(engine.forceAfter, null, "the page was not passed");
+  assert.equal(r.host.text("waiting.md"), null);
+  assert.ok(r.host.logs.some((line) => line.startsWith("force_sync decision=stopped reason=stop ")));
 });

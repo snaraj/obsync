@@ -355,10 +355,20 @@ test("Force sync is its own command and answers once: in step, still arriving, c
   await new Promise(setImmediate);
   assert.deepEqual(notices(), ["obsync: in step with the server: checked 3 files here and 5 on the server; sent 1, received 2."]);
   assert.deepEqual(p.presses, ["force_sync"], "the command ran the engine's pass");
+  // Still outstanding: said in the status bar's words, and never "in step".
   p.forcing({ checked: 1, listed: 1, sent: 0, received: 0, downloading: 1 });
+  p.instance.setStatus({ kind: "syncing", pending: 1 });
   await press();
-  assert.equal(notices().at(-1), "obsync: checked 1 file here and 1 on the server; sent 0, received 0, still downloading 1.");
-  p.forcing({ downloading: 0, complete: false });
+  assert.equal(notices().at(-1), "obsync: checked 1 file here and 1 on the server; sent 0, received 0; still syncing 1 file.");
+  p.instance.setStatus({ kind: "idle" });
+  await press();
+  assert.equal(notices().at(-1), "obsync: checked 1 file here and 1 on the server; sent 0, received 0.", "a download handed to the lane is not in step");
+  p.forcing({ downloading: 0 });
+  p.instance.setStatus({ kind: "syncing", pending: 1, held: "Notes/typing.md" });
+  await press();
+  assert.equal(notices().at(-1), "obsync: checked 1 file here and 1 on the server; sent 0, received 0; still syncing 1 file, waiting for unsaved changes in Notes/typing.md.");
+  p.instance.setStatus({ kind: "idle" });
+  p.forcing({ complete: false });
   await press();
   assert.equal(notices().at(-1), "obsync: checked 1 file here and 1 on the server; sent 0, received 0. It stopped before the end; select Force sync again to go on.");
   p.forcing({ complete: true });

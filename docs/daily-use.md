@@ -73,7 +73,12 @@ then goes through every file the server holds and fetches each one this device
 lacks or holds an older version of. A note changed both here and elsewhere is
 combined, or both versions are kept side by side; nothing is written over
 without a word. It answers once: `in step with the server`, with how many files
-it checked here and on the server and how many it sent and received. A device
+it checked here and on the server and how many it sent and received -- or, when
+something is still outstanding, such as a newer version waiting for you to stop
+typing in its note, the same tally and what the status bar says is left. Its
+pass over the server's list stops after ten minutes or 2,000 requests, not
+counting the reading of this device's own files; it then says so, and the next
+press goes on from the page it reached. A device
 that cannot sync is told why and the one thing to do instead -- pair it again,
 upgrade the encryption, pair it for the first time, or wait for a server that
 is not answering -- and nothing is sent. Held deletions stay held, and

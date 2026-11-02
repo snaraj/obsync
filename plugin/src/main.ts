@@ -81,7 +81,7 @@ import {
   parseSyncFolders,
 } from "./syncScope";
 import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
-import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus, refusalText as pressRefusal, stopped } from "./sync/engine";
+import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, ForceTally, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus, refusalText as pressRefusal, stopped } from "./sync/engine";
 import { EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, pastedToken, platformLabel, refusalFor, refusalText } from "./pairing";
@@ -653,6 +653,55 @@ interface SettingsHost {
  * and a reader who cannot see the whole sentence still has to learn what is
  * available and which version they run before anything else.
  */
+/**
+ * A status in the words the status bar shows (`statusText`), for every state
+ * but `idle`, whose words depend on the pairing and the selection.
+ */
+export function statusWords(status: Exclude<EngineStatus, { kind: "idle" }>): string {
+  switch (status.kind) {
+    case "syncing": {
+      // Sync now waiting on a pull says which (issue #276).
+      const waiting = status.waiting === undefined ? "" : `, waiting for ${PULL_WORDS[status.waiting] ?? "another sync step"}`;
+      // Nothing counted, but the feed has not answered yet: not idle either.
+      // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
+      if (status.pending === 0) return `checking for changes${waiting}`;
+      // A FILE READ ONLY TO VERIFY IT IS NO CHANGE (#246): Sync now's
+      // content check read "syncing 7,700 files" on a vault with none.
+      const changes = status.pending - (status.checking ?? 0);
+      const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
+      if (changes === 0) return `checking ${files(status.pending)} for changes${waiting}`;
+      return `syncing ${files(changes)}` +
+        (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`) + waiting;
+    }
+    case "offline":
+      // True of both places that set it: the running engine polls again
+      // in seconds, and a stopped one is on the reconnect timer.
+      return "offline — retrying";
+    case "error":
+      return `error — ${status.message}`;
+    case "paused":
+      return `paused — ${status.message}`;
+  }
+}
+
+/**
+ * Force sync's one answer (#369), from what the press returned -- its tally,
+ * the words of a refusal it met, or nothing -- and the status after it.
+ * "In step" only for a SETTLED pass: the round finished, no deletion held
+ * back, nothing downloading, and the status idle. Anything still outstanding
+ * -- a version waiting on an editor, a download, a push -- is said in the
+ * status's own words instead; absence and a standing refusal are the answer.
+ */
+export function forceAnswer(result: ForceTally | string | null, status: EngineStatus, heldDeletions: number): string | null {
+  if (status.kind === "offline") return NOT_ANSWERING;
+  if (status.kind === "error") return status.message;
+  if (result === null || typeof result === "string") return result;
+  const words = `checked ${count(result.checked, "file")} here and ${result.listed} on the server; sent ${result.sent}, received ${result.received}`;
+  if (!result.complete) return `${words}. It stopped before the end; select Force sync again to go on.`;
+  if (status.kind !== "idle") return `${words}; still ${statusWords(status)}.`;
+  return heldDeletions > 0 || result.downloading > 0 ? `${words}.` : `in step with the server: ${words}.`;
+}
+
 export function updateMessage(server: string, local: string): string {
   return (
     `${PLUGIN_NAME} ${server} is available (this device runs ${local}). ` +
@@ -4690,23 +4739,14 @@ export default class ObsyncPlugin extends Plugin {
       return;
     }
     if (!this.engine) await this.startEngine();
-    let answer: string | null = null;
+    let result: ForceTally | string | null = null;
     try {
-      const tally = await this.engine?.forceSync();
-      if (tally !== undefined) {
-        const { checked, sent, listed, received, downloading, complete } = tally;
-        const words = `checked ${count(checked, "file")} here and ${listed} on the server; sent ${sent}, received ${received}` +
-          (downloading > 0 ? `, still downloading ${downloading}` : "");
-        const held = this.engine?.context?.state.data.heldDeletions.length ?? 0;
-        answer = !complete ? `${words}. It stopped before the end; select Force sync again to go on.`
-          : held > 0 || downloading > 0 ? `${words}.` : `in step with the server: ${words}.`;
-      }
+      result = (await this.engine?.forceSync()) ?? null;
     } catch (error) {
       if (stopped(error)) return;
-      answer = pressRefusal(error);
+      result = pressRefusal(error);
     }
-    const after = this.shown();
-    answer = after.kind === "offline" ? NOT_ANSWERING : after.kind === "error" ? after.message : answer;
+    const answer = forceAnswer(result, this.shown(), this.engine?.context?.state.data.heldDeletions.length ?? 0);
     if (answer !== null) this.notices.show({ kind: "confirm", text: answer });
   }
 
@@ -5986,34 +6026,10 @@ export default class ObsyncPlugin extends Plugin {
 
   statusText(): string {
     const status = this.shown();
-    switch (status.kind) {
-      case "idle":
-        // A bare `idle` over a selection of no folders read as all being well (issue #150, S30d).
-        if (!this.state.paired) return "not paired";
-        return this.state.data.syncFolders?.length === 0 ? "idle — syncing no folders" : "idle";
-      case "syncing": {
-        // Sync now waiting on a pull says which (issue #276).
-        const waiting = status.waiting === undefined ? "" : `, waiting for ${PULL_WORDS[status.waiting] ?? "another sync step"}`;
-        // Nothing counted, but the feed has not answered yet: not idle either.
-        // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
-        if (status.pending === 0) return `checking for changes${waiting}`;
-        // A FILE READ ONLY TO VERIFY IT IS NO CHANGE (#246): Sync now's
-        // content check read "syncing 7,700 files" on a vault with none.
-        const changes = status.pending - (status.checking ?? 0);
-        const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
-        if (changes === 0) return `checking ${files(status.pending)} for changes${waiting}`;
-        return `syncing ${files(changes)}` +
-          (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`) + waiting;
-      }
-      case "offline":
-        // True of both places that set it: the running engine polls again
-        // in seconds, and a stopped one is on the reconnect timer.
-        return "offline — retrying";
-      case "error":
-        return `error — ${status.message}`;
-      case "paused":
-        return `paused — ${status.message}`;
-    }
+    if (status.kind !== "idle") return statusWords(status);
+    // A bare `idle` over a selection of no folders read as all being well (issue #150, S30d).
+    if (!this.state.paired) return "not paired";
+    return this.state.data.syncFolders?.length === 0 ? "idle — syncing no folders" : "idle";
   }
 
   /**

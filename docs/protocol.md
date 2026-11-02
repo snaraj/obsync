@@ -402,8 +402,14 @@ role.
   pairing or substituted key cannot open it. A code plus recorded traffic
   does not supply the ECDH secret. Before active adoption, the claimant must
   authenticate the existing map under this staged root. Ordinary pairing cannot
-  replace a different held root: explicit generation retirement first preserves
-  one history-only root and requires local confirmation.
+  replace a different held root on a paired device, nor for setup or recovery:
+  explicit generation retirement first preserves one history-only root and
+  requires local confirmation. The one exception (plugin 1.1.11) is an unpaired
+  device -- no device credential -- still holding an older root, as an
+  encryption upgrade or Leave this server leaves it, whose custody is legacy or
+  active with no map to initialize: pairing sets that root aside read-only as
+  history. Custody keeps at most one history root, so a device already holding
+  one refuses the pairing (`history_held`) and stages nothing.
 - **What is refused.** A claim without `claimant_pub` (a device before 1.1.5,
   or a key stripped on the way: the two look the same) is rejected on the
   creator, which says to update the new device; a claim whose name or
