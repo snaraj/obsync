@@ -5,11 +5,12 @@ import { mkdirSync, mkdtempSync, promises as fsPromises, rmSync } from "node:fs"
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
 import { createRequire } from "node:module";
-import { KEYS, memorySecrets, sandbox } from "./fake.mjs";
+import { KEYS, memorySecrets, obsidianThen, sandbox } from "./fake.mjs";
 
 /** A recording `Setting` button: what it says, how it is styled, whether it holds the focus. */
 class Button {
   constructor() { this.buttonEl = { focus: () => { this.focused = true; } }; }
+  then(cb) { return obsidianThen.call(this, cb); }
   setButtonText(value) { this.text = value; return this; }
   setCta() { this.cta = true; return this; }
   setDestructive() { this.destructive = true; return this; }

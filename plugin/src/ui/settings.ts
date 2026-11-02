@@ -542,7 +542,9 @@ export class ObsyncSettingTab extends PluginSettingTab {
             .setTooltip("Check every file here and on the server, and bring this device level with the server.")
             .onClick(() => {
               button.setDisabled(true);
-              void this.plugin.forceSync().finally(() => button.setDisabled(false));
+              // A block, never `=> button.setDisabled(...)`: a component is a thenable that resolves to
+              // itself, so a promise handed one never settles and the renderer spins.
+              void this.plugin.forceSync().finally(() => { button.setDisabled(false); });
             }))
           .addButton((button) => button.setButtonText("Open dashboard").onClick(() => { void this.plugin.openDashboard(); }));
       },

@@ -17,7 +17,7 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { KEYS, keys, memorySecrets, sandbox, statusItem } from "./fake.mjs";
+import { KEYS, keys, memorySecrets, obsidianThen, sandbox, statusItem } from "./fake.mjs";
 
 const settle = async () => { for (let i = 0; i < 3; i++) await new Promise(setImmediate); };
 
@@ -463,6 +463,7 @@ test("on a phone a refusal that needs the person is said once in a notice; on a 
 // --- Show sync status ------------------------------------------------------
 
 class Component {
+  then(cb) { return obsidianThen.call(this, cb); }
   setButtonText(value) { this.text = value; return this; }
   setCta() { return this; }
   onClick(handler) { this.click = handler; return this; }
