@@ -20,7 +20,7 @@ system; it is not a device run, and only a record below is
 | Client | Recorded on a device | Proven in CI |
 | --- | --- | --- |
 | macOS | The runs below that name it; most recently [2026-10-08](2026-10-08-character-merge-117.md), two instances typing at one place on the 1.1.7 candidate | `desktop-matrix.yml`, `obsidian-macos`: the official Obsidian app, two instances, through setup, pairing, notes both ways, a rename and folders, against the server behind Caddy; `plugin-tests` on macOS |
-| iPhone | The runs below that name it; most recently [2026-10-08](2026-10-08-character-merge-117.md), seven sessions on the 1.1.7 candidate: paired, one defect shown to be Obsidian's, a co-typing defect found and fixed, and the background, relaunch, offline and leave journeys passed | Nothing: no CI job runs a phone |
+| iPhone | The runs below that name it; most recently [2026-11-02](2026-11-02-phone-1.1.12.md), the published 1.1.11 and 1.1.12: a phone the encryption upgrade removed pairs again on 1.1.12 and reaches the desktop's files | Nothing: no CI job runs a phone |
 | iPad | Not yet recorded | Nothing |
 | Windows | [2026-09-27](2026-09-27-windows-11-vm.md): Windows 11 on ARM64 in a virtual machine, the 1.1.4 build; most recently [2026-09-30](2026-09-30-train-1.1.5.md), a 1.1.5 train build | `desktop-matrix.yml`, `obsidian-windows`: the same journeys, plus a case-only rename, the trash and a file another program holds open on NTFS; `plugin-tests` on Windows |
 | Linux | Not yet recorded | `desktop-matrix.yml`, `obsidian-linux`: the protected-keyring journey uses the official AppImage and trust scoped to each instance's NSS store; a third instance without CA trust refuses. Without a protected keyring, the separate leg requires visible refusal before credential writes or enrollment |
@@ -35,6 +35,11 @@ cancelled or skipped leaf blocks the gate and publication.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-11-02 phone, 1.1.11 and 1.1.12](2026-11-02-phone-1.1.12.md): the owner's
+  iPhone, removed by the encryption upgrade, pairs again. On 1.1.11 it was asked
+  to upload 149 notes the server held, and cancelled (#376). On 1.1.12 it
+  paired with no question and reached the desktop's 151 files, with the
+  server's count unchanged.
 - [2026-11-02 1.1.11 train](2026-11-02-train-1.1.11.md): one macOS desktop,
   three vaults. A device removed by a key rotation pairs again with its older
   key kept as history (the 1.1.10 control reproduces the phone's refusal);
