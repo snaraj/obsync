@@ -38,8 +38,8 @@ observed from what was still outstanding.
 - [2026-11-02 phone, 1.1.11 and 1.1.12](2026-11-02-phone-1.1.12.md): the owner's
   iPhone, removed by the encryption upgrade, pairs again. On 1.1.11 it was asked
   to upload 149 notes the server held, and cancelled (#376). On 1.1.12 it
-  paired with no question and reached the desktop's 151 files, with the
-  server's count unchanged.
+  paired with no question and reached the desktop's 151 files; the server's
+  listing count was unchanged.
 - [2026-11-02 1.1.11 train](2026-11-02-train-1.1.11.md): one macOS desktop,
   three vaults. A device removed by a key rotation pairs again with its older
   key kept as history (the 1.1.10 control reproduces the phone's refusal);
