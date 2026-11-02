@@ -556,10 +556,6 @@ function route() {
 
 /* ---- wiring -------------------------------------------------------------- */
 
-// Everything below used to run as the module body. It runs from `start()`
-// instead, which changes nothing in a browser -- the call at the end of this
-// file is unconditional there -- and lets a test drive the same wiring over a
-// stand-in document and fetch.
 export function start(overrides = {}) {
   Object.assign(env, overrides);
 

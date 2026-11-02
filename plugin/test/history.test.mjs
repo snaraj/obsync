@@ -25,9 +25,6 @@ async function note(r, path = "Notes/note.md", text = "HISTORY SENTINEL", fileId
   return r.server.publish({ fileId, path, bytes: enc(text), mtime: 1000, domainKey: r.keys.domainKey, manifestKey: r.keys.manifestKey, parents });
 }
 const entry = (record, path = "Notes/note.md") => ({ fileId: record.file_id, versionId: record.version_id, domainId: record.domain_id, path, size: record.bytes, ts: record.ts, deleted: record.deleted });
-// The forward walk. It is no longer the default -- newest first is (#102) --
-// but it is the same primitive and these are its tests; `newest.test.mjs`
-// covers the descending walk and the automatic search.
 const browser = (r, operation = new HistoryOperation(), now) =>
   new HistoryBrowser(r.context, operation, { newestFirst: false, now });
 /**

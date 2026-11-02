@@ -32,7 +32,7 @@ class NodeToolchainPins(unittest.TestCase):
         )
         self.assertEqual(len(node_images), 1)
         self.assertEqual(node_images[0][0], f"{node}-trixie-slim")
-        self.assertEqual(node_images[0][1], "94816674c62774da0d099a947bf4613b9e1972a2733abd0d0cd80e795f8411d0")
+        self.assertEqual(node_images[0][1], "e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39")
         self.assertIn(f'test "$(node --version)" = "v{node}"', dockerfile)
         self.assertIn(f'test "$(npm --version)" = "{npm}"', dockerfile)
 
@@ -71,7 +71,7 @@ class CodeqlActionPins(unittest.TestCase):
         self.assertEqual({role for role, _, _ in pins}, {"init", "analyze"})
         self.assertEqual(len(pins), 2)
         self.assertEqual({(sha, version) for _, sha, version in pins},
-                         {("6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee", "v4.39.0")})
+                         {("9b3254085494b55a0f7c4c2b3d2d52cc712ce370", "v4.39.1")})
 
 
 if __name__ == "__main__":

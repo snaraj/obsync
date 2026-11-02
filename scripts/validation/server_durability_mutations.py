@@ -80,8 +80,6 @@ CASES = [
         "",
     )], "a_refused_batch_is_cut_back_so_the_next_one_lands_on_a_clean_line"),
     # --- a flush that panics settles its batch (drop guard) -----------------
-    # Retargeted in 1.1.5 (#292): the outcome carries the refusal and whether
-    # the log is faulted now; the subject, the batch settled, is the same.
     ("panicked-flight-settles", AUTH, [(
         "        let _ = self.batch.outcome.set(Err(Refused {\n"
         "            io: std::io::ErrorKind::Other,\n            faulted,\n        }));\n", "",
@@ -289,8 +287,6 @@ CASES = [
         "        std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded\n    ) {\n"
         "        return ApiError::new(507, \"storage_full\", \"the volume is out of space\");\n    }\n", "",
     )], NONCE_NO_ROOM),
-    # Re-anchored in 1.1.5 (#294): the refusal carries what the cut answered
-    # now; the subject, a faulted log never answered 507, is the same.
     ("nonce-faulted-log-never-reads-full", AUTH, [(
         "    if refused.faulted.is_some() {\n", "    if false && refused.faulted.is_some() {\n",
     )], "a_faulted_nonce_log_says_so_until_a_restart_and_never_that_it_is_full"),

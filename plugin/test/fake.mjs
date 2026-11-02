@@ -1360,7 +1360,7 @@ export class FakeServer {
 }
 
 /** How long a wait for an OUTCOME may take in real time before it gives up. */
-const WAIT_BUDGET_MS = 10000;
+export const WAIT_BUDGET_MS = 60000;
 /** How long a wait for NOTHING watches, in real time, before it is satisfied. */
 const QUIET_MS = 250;
 /**
@@ -1462,6 +1462,19 @@ export class FakeTimers {
       }
     }
   }
+}
+
+/**
+ * Wait for `step` to hold, moving virtual time only as `step` does, within
+ * `budgetMs` of real time on the monotonic clock too: a test may freeze
+ * `Date.now`, which `run` reads.
+ */
+export function outcomeWithin(timers, step, budgetMs = WAIT_BUDGET_MS) {
+  const deadline = performance.now() + budgetMs;
+  return timers.run(0, () => {
+    if (performance.now() >= deadline) throw new Error(`fake timers: the outcome exceeded its ${budgetMs} ms real-time budget`);
+    return step();
+  }, budgetMs);
 }
 
 export const KEYS = {

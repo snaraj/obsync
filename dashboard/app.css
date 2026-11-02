@@ -9,6 +9,7 @@
   --ink: #14161c;
   --ink-2: #545a69;
   --rule: #dcdde2;
+  --control: #878a94;
   --rule-2: #eceded;
   --accent: #1f47c4;
   --warn: #8a4405;
@@ -26,6 +27,7 @@
     --ink: #e8eaf0;
     --ink-2: #a6acbb;
     --rule: #2b2f3b;
+    --control: #666c7e;
     --rule-2: #21242d;
     --accent: #9db6ff;
     --warn: #f0b060;
@@ -118,7 +120,7 @@ main { padding: 0.9rem; max-width: 76rem; }
 
 button {
   font: inherit; color: var(--ink); background: var(--surface);
-  border: 1px solid var(--rule); border-radius: 3px;
+  border: 1px solid var(--control); border-radius: 3px;
   padding: 0.3rem 0.6rem; cursor: pointer;
 }
 button:hover { border-color: var(--ink-2); }
@@ -131,7 +133,7 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .field label { font-size: 0.82rem; color: var(--ink-2); }
 input {
   font: inherit; color: var(--ink); background: var(--surface);
-  border: 1px solid var(--rule); border-radius: 3px; padding: 0.35rem 0.5rem;
+  border: 1px solid var(--control); border-radius: 3px; padding: 0.35rem 0.5rem;
   max-width: 48ch;
 }
 input:invalid:not(:placeholder-shown) { border-color: var(--danger); }

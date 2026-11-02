@@ -16,14 +16,14 @@
 # is the immutable build input and the tag states the Node version a reader
 # should expect from those bytes.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/node:26.12.1-trixie-slim@sha256:94816674c62774da0d099a947bf4613b9e1972a2733abd0d0cd80e795f8411d0 AS plugin
+FROM --platform=$BUILDPLATFORM docker.io/library/node:26.13.0-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39 AS plugin
 WORKDIR /src/plugin
 COPY plugin/package.json plugin/package-lock.json ./
 # The tag and digest select Node; these checks also prove the npm bundled by
 # that image is the separately reviewed package-manager pin. `--ignore-scripts`
 # is not optional: it is the difference between installing a compiler and
 # executing arbitrary install hooks (requirement 5).
-RUN test "$(node --version)" = "v26.12.1" && \
+RUN test "$(node --version)" = "v26.13.0" && \
     test "$(npm --version)" = "11.20.0" && \
     npm ci --ignore-scripts --no-audit --no-fund
 COPY plugin/ ./

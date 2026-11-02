@@ -1,4 +1,4 @@
-# Benchmarks — LiveSync is the reference to beat
+# Benchmarks — the reference self-hosted sync plugin is the bar to beat
 
 *Internals, for contributors and reviewers.*
 
@@ -6,29 +6,29 @@ Dated 2026-09-26. Every number below names the command that produces it.
 The competitor runs only inside a throwaway container during a benchmark
 run and ships in no artifact (AGENTS.md requirement 5).
 
-## What LiveSync does (from its own documentation, 2026-09)
+## What the reference plugin does (from its own documentation, 2026-09)
 
-- Backend: CouchDB replication over HTTP (or S3-compatible, or P2P).
-- Chunks stored as CouchDB documents; binary files as base64 text (+33 %
+- Backend: document-database replication over HTTP (or S3-compatible, or P2P).
+- Chunks stored as database documents; binary files as base64 text (+33 %
   on the wire and at rest before compression).
 - DEFLATE level 8 per chunk, then AES-256-GCM with HKDF (E2EE v2).
   Reported: 9.0–9.1 % storage saved, upload wall time +197–199 %, CPU
   +581–650 %; median upload 1.49 s → 4.45 s with E2EE.
 - Conflicts: three-way text merge from the nearest common ancestor when
   history is present; binary conflicts pick the newer mtime.
-- Files above `syncMaxSizeInMB` are skipped.
+- Files above a configured maximum size are skipped.
 - Garbage collection is a manual ceremony that must wait for every device.
-- HTTPS mandatory on mobile; CouchDB needs a reverse proxy with raised body
+- HTTPS mandatory on mobile; the database needs a reverse proxy with raised body
   limits and disabled buffering.
 - Replication batches: 50 documents, 40 concurrent batches.
 
 ## Scenarios and targets
 
-| # | Scenario | Measure | Target vs LiveSync |
+| # | Scenario | Measure | Target vs the reference |
 | --- | --- | --- | --- |
 | B1 | 10 000 notes of 2 KiB, initial upload from one desktop | wall time, server CPU s | ≥ 2× faster, ≤ ½ CPU |
 | B2 | Edit propagation, desktop A → desktop B, 1 KiB change | p50 / p95 latency, from the write on A to the file on B's disk | p50 < 1.5 s, p95 < 3 s |
-| B3 | 2 GiB file upload and download over LAN | MiB/s, peak RSS on server and client | ≥ 3× LiveSync; server RSS < 256 MiB |
+| B3 | 2 GiB file upload and download over LAN | MiB/s, peak RSS on server and client | ≥ 3× the reference; server RSS < 256 MiB |
 | B4 | 20 GiB file, upload killed at 50 %, resumed | bytes re-sent | < 1 chunk |
 | B5 | 200 × 20 MiB images burst from mobile | wall time, failures | zero failures |
 | B6 | Modify 1 MiB inside a 4 GiB archive | bytes uploaded | ≤ 16 MiB |
@@ -45,7 +45,7 @@ reports B2 twice: end to end as above, and the network-and-server part alone
 (push to observe), so a change to either half shows up in its own number.
 
 B4, B5, B6 and B8 are not measured yet, and nothing here has been run against
-LiveSync: the targets' comparison column is still a goal, not a result.
+the reference plugin: the targets' comparison column is still a goal, not a result.
 
 ## Harness
 

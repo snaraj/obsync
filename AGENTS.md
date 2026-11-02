@@ -17,7 +17,7 @@ nothing here depends on them.
    commits carry the noreply identity per "Commit identity mechanics"; the
    pinned toolchain is `rust-toolchain.toml` (Rust 1.98.0, components
    `rustfmt`, `clippy`, `llvm-tools`) and `plugin/package.json` (Node
-   26.12.1, npm 11.20.0, one exact `typescript` devDependency). The gate
+   26.13.0, npm 11.20.0, one exact `typescript` devDependency). The gate
    verifies these exactly.
 4. Survey live state yourself: `gh issue list`, `gh pr list`, including the
    open-agent-PR count against the PR budget below.
@@ -44,8 +44,8 @@ not by setting.
 
 `docs/architecture.md` is the design; `docs/protocol.md` the wire contract;
 `docs/storage.md` the volume and durability contract; `docs/threat-model.md`
-what is and is not defended; `docs/benchmarks.md` the numbers LiveSync sets
-and obsync must beat; `docs/validation.md` the device validation plan;
+what is and is not defended; `docs/benchmarks.md` the numbers the reference
+self-hosted sync plugin sets and obsync must beat; `docs/validation.md` the device validation plan;
 `docs/platform-onboarding.md` what the platform repository must add.
 
 ## Requirements

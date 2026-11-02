@@ -141,7 +141,7 @@ function providerHits(sources, needles) {
 
 test('index.html: opens with a doctype, so the page is never in quirks mode', () => {
   assert.deepEqual(missingDoctype(HTML), []);
-  assert.ok(HTML.startsWith('<!DOCTYPE html>\n<meta charset="utf-8">'));
+  assert.ok(HTML.startsWith('<!DOCTYPE html>\n<html lang="en">\n<meta charset="utf-8">'));
 });
 
 test('index.html: no inline script', () => {
@@ -499,4 +499,33 @@ test('the tag scanner survives quoted angle brackets and entities', () => {
   const scanned = tags('<p title="a > b">&lt;not a tag&gt;</p><br>');
   assert.deepEqual(scanned.map((t) => t.name), ['p', 'br']);
   assert.equal(attr(scanned[0].attrs, 'title'), 'a > b');
+});
+
+test('button and input borders reach 3:1 against the page in both schemes', () => {
+  const css = read('app.css');
+  const luminance = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const dark = css.indexOf('prefers-color-scheme: dark');
+  assert.ok(dark > 0);
+  for (const scheme of [css.slice(0, dark), css.slice(dark)]) {
+    const token = (name) => scheme.match(new RegExp(`--${name}: (#[0-9a-f]{6});`))[1];
+    for (const ground of ['bg', 'surface']) {
+      assert.ok(ratio(token('control'), token(ground)) >= 3, `--control on --${ground}`);
+    }
+  }
+  for (const rule of [/^button \{[^}]*\}/m, /^input \{[^}]*\}/m]) {
+    assert.match(css.match(rule)[0], /border: 1px solid var\(--control\)/);
+  }
+  const controls = [...css.matchAll(/^\s*((?:button|input)[^{,]*(?:,[^{]*)?)\{([^}]*)\}/gm)];
+  assert.ok(controls.length >= 2);
+  for (const [, selector, body] of controls) {
+    assert.doesNotMatch(body, /border[^;]*var\(--rule\)/, `${selector.trim()} draws its border in --rule`);
+  }
 });
