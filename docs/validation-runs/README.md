@@ -35,6 +35,12 @@ cancelled or skipped leaf blocks the gate and publication.
 Newest first. Each record identifies its build and separates what was
 observed from what was still outstanding.
 
+- [2026-11-02 1.1.11 train](2026-11-02-train-1.1.11.md): one macOS desktop,
+  three vaults. A device removed by a key rotation pairs again with its older
+  key kept as history (the 1.1.10 control reproduces the phone's refusal);
+  a pending transition reads pending after a restart; Force sync restores a
+  note the feed would not resend, and a renderer spin it caused is found and
+  fixed. The physical phone follows on the published release.
 - [2026-10-16 Android transport](2026-10-16-mobile-transport.md): 100 strict
   installed-plugin/APK transfer cycles, retained transport failures and independent
   evidence checks. Fresh full acceptance and physical-phone acceptance remain open.
