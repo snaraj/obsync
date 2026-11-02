@@ -5,6 +5,13 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.12 - 2026-11-02
+
+### Fixed
+
+- Pairing a device again after an encryption upgrade or key rotation no longer asks to upload notes the server already holds. On a server whose earlier key generation filled more than one page of the change feed, the check stopped at the first empty page and counted every note on the device as new; choosing Pair and upload would have copied each one to every device (#376).
+- The mobile acceptance harness tests no longer fail on a CI runner with less than 20 GiB free (#373).
+
 ## 1.1.11 - 2026-11-02
 
 ### Added
