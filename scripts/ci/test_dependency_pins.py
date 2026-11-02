@@ -71,7 +71,7 @@ class CodeqlActionPins(unittest.TestCase):
         self.assertEqual({role for role, _, _ in pins}, {"init", "analyze"})
         self.assertEqual(len(pins), 2)
         self.assertEqual({(sha, version) for _, sha, version in pins},
-                         {("6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee", "v4.39.0")})
+                         {("9b3254085494b55a0f7c4c2b3d2d52cc712ce370", "v4.39.1")})
 
 
 if __name__ == "__main__":
