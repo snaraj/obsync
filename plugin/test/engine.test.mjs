@@ -10,7 +10,7 @@
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { FakeTimers, KEYS, keys, rig, WAIT_BUDGET_MS } from "./fake.mjs";
+import { FakeTimers, KEYS, keys, outcomeWithin, rig } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { Transport } = require("../build/transport.js");
@@ -1102,17 +1102,13 @@ test("a note queued while the drain saves its records is still sent (#313)", asy
   };
   // Advance only a timer this watcher actually owns. While stat/crypto runs,
   // freeze virtual time instead of spending its advance limit on promises.
-  const watcherUntil = (condition) => {
-    const deadline = performance.now() + WAIT_BUDGET_MS;
-    return timers.run(0, () => {
-      assert.ok(performance.now() < deadline, "the watcher outcome exceeded its real-time budget");
-      if (condition()) return true;
-      const handles = new Set([...engine.pending.values()].map((pending) => pending.handle));
-      const next = Math.min(...timers.entries.filter((entry) => handles.has(entry.handle)).map((entry) => entry.due));
-      if (Number.isFinite(next)) timers.now = Math.max(timers.now, next);
-      return false;
-    }, WAIT_BUDGET_MS);
-  };
+  const watcherUntil = (condition) => outcomeWithin(timers, () => {
+    if (condition()) return true;
+    const handles = new Set([...engine.pending.values()].map((pending) => pending.handle));
+    const next = Math.min(...timers.entries.filter((entry) => handles.has(entry.handle)).map((entry) => entry.due));
+    if (Number.isFinite(next)) timers.now = Math.max(timers.now, next);
+    return false;
+  });
   host.seed("First.md", "the first note", 3000);
   engine.changed("First.md");
   await watcherUntil(() => release !== null);

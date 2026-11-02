@@ -1464,6 +1464,19 @@ export class FakeTimers {
   }
 }
 
+/**
+ * Wait for `step` to hold, moving virtual time only as `step` does, within
+ * `budgetMs` of real time on the monotonic clock too: a test may freeze
+ * `Date.now`, which `run` reads.
+ */
+export function outcomeWithin(timers, step, budgetMs = WAIT_BUDGET_MS) {
+  const deadline = performance.now() + budgetMs;
+  return timers.run(0, () => {
+    if (performance.now() >= deadline) throw new Error(`fake timers: the outcome exceeded its ${budgetMs} ms real-time budget`);
+    return step();
+  }, budgetMs);
+}
+
 export const KEYS = {
   vrk: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
   domainId: "0123456789abcdef0123456789abcdef",
