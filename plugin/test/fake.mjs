@@ -1187,13 +1187,16 @@ export class FakeServer {
       const remaining = this.journal.filter((frame) => frame.seq > since);
       // A frame names its file's heads as they are when the page is served,
       // not as they were when it was journaled: obsyncd builds every page
-      // from its index (`storage/index.rs`, `changes`).
-      const changes = remaining.slice(0, limit).map((frame) => {
+      // from its index (`storage/index.rs`, `changes`). Another generation's
+      // entries count toward the page and are not shown (`otherGeneration`).
+      const window = remaining.slice(0, limit);
+      const changes = window.filter((frame) => !frame.otherGeneration).map((frame) => {
         const file = this.files.get(frame.file_id);
         return file === undefined ? frame : { ...frame, heads: file.heads, conflicted: file.heads.length > 1 };
       });
-      if (changes.length > 0) {
-        return this.json(200, { seq: remaining.length > limit ? changes[changes.length - 1].seq : this.seq, head_seq: this.seq, changes });
+      const truncated = remaining.length > limit;
+      if (changes.length > 0 || truncated) {
+        return this.json(200, { seq: truncated ? window[window.length - 1].seq : this.seq, head_seq: this.seq, changes });
       }
       if (Number(params.get("wait") ?? 0) === 0) return this.json(200, { seq: this.seq, head_seq: this.seq, changes: [] });
       // A real long poll: hold until the test lands a frame or releases it.
@@ -1376,6 +1379,17 @@ export class FakeServer {
     this.journal.push(frame);
     this.releaseFeed();
     return frame;
+  }
+
+  /**
+   * Entries another key generation holds, ahead of whatever a test publishes
+   * next. obsyncd scopes the feed to the caller's generation and counts what
+   * it skips toward the page (`storage/index.rs`, `changes_generation`), so
+   * after a rotation a long feed's first pages can be empty and short of the
+   * head.
+   */
+  otherGenerationEntries(count) {
+    for (let i = 0; i < count; i++) this.journal.push({ seq: ++this.seq, otherGeneration: true });
   }
 }
 

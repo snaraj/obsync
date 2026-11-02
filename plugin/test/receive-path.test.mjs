@@ -579,12 +579,15 @@ test("a note held for a feed that never catches up goes out when the hold's limi
   host.seed(pathOf(0), "the copy here differs\n", 1757000000000);
   const request = server.request;
   let initialFeedComplete = false;
-  // Startup can publish a folder between pages: fail only after the walk's terminal empty page.
+  // Startup can publish a folder between pages: fail only once the walk has read the feed to its head.
   server.request = async (asked) => {
     const feed = asked.url.includes("/v1/changes?");
     if (feed && initialFeedComplete) return server.error(500, "internal");
     const response = await request(asked);
-    if (feed && response.status === 200 && JSON.parse(response.text).changes.length === 0) initialFeedComplete = true;
+    if (feed && response.status === 200) {
+      const page = JSON.parse(response.text);
+      if (page.seq >= page.head_seq) initialFeedComplete = true;
+    }
     return response;
   };
   const d = await device(server, { host });
