@@ -868,6 +868,31 @@ export const SYNC_NOW_FEED_MS = INTERACTIVE_MS;
 export const SYNC_NOW_BUDGET_MS = INTERACTIVE_MS;
 
 /**
+ * What Force sync's server pass may spend (issue #369): requests -- the
+ * listing's pages and one read per file it asks for, each counted once however
+ * often the transport retries it -- and time. The Verify all files press before
+ * it is not counted. A pass cut short says so, and the next press goes on from
+ * the page it stopped at (`forceAfter`).
+ */
+export const FORCE_BUDGET_REQUESTS = 2000;
+export const FORCE_BUDGET_MS = 10 * 60 * 1000;
+
+/** What Force sync did, for the one answer it gives (`main.ts`). */
+export interface ForceTally {
+  /** Files read here, as Verify all files reads them, and the changes sent. */
+  checked: number;
+  sent: number;
+  /** Files of the server's listing this press went through, the domain map aside. */
+  listed: number;
+  /** Listed files this device now holds otherwise than before the pass. */
+  received: number;
+  /** Large heads handed to the background lane, still arriving. */
+  downloading: number;
+  /** True only when this press reached the listing's last page, finishing a round. */
+  complete: boolean;
+}
+
+/**
  * How soon a PARKED record is tried again (issue #144): one minute, doubling
  * to half an hour for as long as anything stays parked. A retry of a file the
  * disk had no room for downloads it again, so a five-second loop moved 5.5 GB
@@ -1132,6 +1157,10 @@ export class SyncEngine {
   /** Paths already sent again under a new vault key (`rekeyed`): once each. */
   private readonly republished = new Set<string>();
   private rekeyNoticeShown = false;
+  /** Force sync's files the pull path took nothing from, by the heads it saw: not asked again until those move. */
+  private readonly levelAt = new Map<string, string>();
+  /** Where Force sync's listing goes on: past the last page whose files were all settled; `null` starts a round. */
+  private forceAfter: string | null = null;
 
   constructor(private readonly options: EngineOptions) {
     this.timers = options.timers ?? defaultTimers;
@@ -5095,6 +5124,94 @@ export class SyncEngine {
   /** "Verify all files" (#197): Sync now, reading every file's contents however large. */
   verifyAll(): Promise<{ checked: number; sent: number }> {
     return this.press("verify_all", Number.POSITIVE_INFINITY);
+  }
+
+  /**
+   * "Force sync" (#369): Verify all files, then the server's complete listing.
+   * A file held here at none of its heads, or not at all, is asked of the
+   * server and handed to the pull path as a parked record is
+   * (`retryOne`), a large head to the lane: the pull path's rules decide what
+   * lands -- the selection, the ceilings, merge or keep both -- so nothing is
+   * written here that the feed would not have written.
+   *
+   * PAGE BY PAGE, FROM WHERE THE LAST PRESS STOPPED. A page's files are
+   * settled before the next page is asked for, and the cursor passes a page
+   * only once every one of them is, so a press the budget cuts short leaves
+   * the next one less to do; a round ends at the last page, and the next press
+   * starts another. A file the pull path took nothing from -- outside the
+   * selection, deleted before this device held it -- is not asked again until
+   * its heads move.
+   */
+  async forceSync(): Promise<ForceTally> {
+    const { checked, sent } = await this.press("force_sync", Number.POSITIVE_INFINITY);
+    const context = this.need();
+    const { state, transport, host } = context;
+    const started = this.nowFn();
+    let requests = 0;
+    const spent = (): boolean => !this.running || requests >= FORCE_BUDGET_REQUESTS || this.nowFn() - started > FORCE_BUDGET_MS;
+    const held = new Set([...Object.values(state.data.files), ...Object.values(state.data.folders), ...Object.values(state.data.graves)]
+      .map((record) => record.versionId));
+    const from = this.forceAfter;
+    let listed = 0;
+    let behind = 0;
+    let received = 0;
+    let downloading = 0;
+    let complete = false;
+    pages: while (!spent()) {
+      const page = await transport.listFiles(this.forceAfter, { signal: context.signal });
+      requests++;
+      for (const file of page.files) {
+        if (file.file_id === context.mapFileId) continue;
+        listed++;
+        if (file.heads.some((head) => held.has(head)) || this.levelAt.get(file.file_id) === String(file.heads)) continue;
+        behind++;
+        if (spent()) break pages;
+        requests++;
+        await this.track(this.exclusive("force_sync", async () => {
+          if (!this.running) return;
+          const was = this.heldVersion(context, file.file_id);
+          const current = await transport.getFile(file.file_id, { signal: context.signal });
+          const large = this.ahead(context, file.file_id, current);
+          if (large !== null && await this.background(context, large)) {
+            downloading++;
+            return;
+          }
+          try {
+            await this.reconcileFile(file.file_id, current);
+          } catch (error) {
+            this.park(context, file.file_id, error);
+          }
+          if (this.heldVersion(context, file.file_id) !== was) received++;
+          else this.levelAt.set(file.file_id, String(file.heads));
+        }));
+      }
+      if (!this.running) break;
+      this.forceAfter = page.next;
+      if (page.next === null) {
+        complete = true;
+        break;
+      }
+    }
+    // A stop -- a revoked device's, say -- has said why; `idle` here would take that back.
+    if (this.running) {
+      await state.save();
+      this.status(this.resting());
+    }
+    host.log(
+      `force_sync decision=${complete ? "done" : `stopped reason=${this.running ? "budget" : "stop"}`} checked=${checked} sent=${sent} ` +
+        `from=${from === null ? "start" : "cursor"} listed=${listed} behind=${behind} received=${received} downloading=${downloading} requests=${requests} ` +
+        `budget_requests=${FORCE_BUDGET_REQUESTS} duration_ms=${this.nowFn() - started} budget_ms=${FORCE_BUDGET_MS}`,
+    );
+    return { checked, sent, listed, received, downloading, complete };
+  }
+
+  /** The version of `fileId` this device holds: its note's, its folder's, or its deletion's. */
+  private heldVersion(context: SyncContext, fileId: string): string | undefined {
+    const { state } = context;
+    const path = state.pathByFileId(fileId);
+    return (path === undefined ? undefined : state.fileByPath(path)?.versionId) ??
+      Object.values(state.data.folders).find((folder) => folder.fileId === fileId)?.versionId ??
+      state.data.graves[fileId]?.versionId;
   }
 
   private async press(trigger: string, verifyUpTo: number): Promise<{ checked: number; sent: number }> {

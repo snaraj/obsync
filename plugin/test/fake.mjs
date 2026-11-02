@@ -100,6 +100,23 @@ export function scratch(prefix) {
  * and the test runner runs test FILES in parallel — a sandbox that copied it
  * unconditionally would race the bundle test's rebuild.
  */
+/**
+ * Obsidian's `then` on every component and on `Setting` (`obsidian.d.ts`,
+ * `BaseComponent.then`, "Facilitates chaining"; app.js
+ * `function(e){ return e(this), this }`): it calls back with itself and returns
+ * itself. Each one is a thenable that resolves to itself, so a promise handed
+ * one never settles -- `.finally(() => button.setDisabled(false))` spun a real
+ * desktop renderer at 100% (#369). The fakes do the same, BOUNDED: the spin is
+ * all microtasks, so no test timeout can fire inside it, and past 10,000 calls
+ * on one object this throws, which fails the test that handed it over.
+ */
+export function obsidianThen(cb) {
+  this.thens = (this.thens ?? 0) + 1;
+  if (this.thens > 10000) throw new Error("fake obsidian: a component was handed to a promise, which resolves it to itself without end");
+  cb(this);
+  return this;
+}
+
 export function sandbox({ dist = false } = {}) {
   const home = scratch("obsync-sandbox-");
   // CodeMirror's state module, which Obsidian also provides to plugins: only
@@ -144,7 +161,8 @@ class PluginSettingTab {
   constructor(app, plugin) { this.app = app; this.plugin = plugin; this.id = plugin.manifest?.id ?? "fixture"; this.name = plugin.manifest?.name ?? "Fixture"; }
   update() {} hide() {}
 }
-class Setting { constructor(el) { this.el = el; } }
+${obsidianThen}
+class Setting { constructor(el) { this.el = el; } then(cb) { return obsidianThen.call(this, cb); } }
 // Every Notice the plugin raises is recorded, so a test can read what the
 // user was actually told instead of asserting on a call it cannot see.
 // \`raised\` keeps the objects too, because a notice the plugin wires a
@@ -756,6 +774,8 @@ export class FakeServer {
     this.deduplicated = [];
     /** Set to model a server before 1.0.7: no `version_id` in the answer. */
     this.oldServer = false;
+    /** The most files one listing page holds, however many were asked for (`GET /v1/files`). */
+    this.pageLimit = 1000;
     this.devices = [
       {
         device_id: deviceId,
@@ -1133,7 +1153,7 @@ export class FakeServer {
     // exclusive cursor, at most 1000, `next` the last id included.
     if (path === "/v1/files" && request.method === "GET") {
       const params = new URLSearchParams(query);
-      const limit = Math.min(Math.max(Number(params.get("limit") ?? 1000), 1), 1000);
+      const limit = Math.min(Math.max(Number(params.get("limit") ?? 1000), 1), this.pageLimit);
       const ids = [...this.files.keys()].sort().filter((id) => id > (params.get("after") ?? ""));
       const page = ids.slice(0, limit);
       return this.json(200, {

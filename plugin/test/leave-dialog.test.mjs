@@ -12,11 +12,12 @@ import { strict as assert } from "node:assert";
 import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
-import { sandbox } from "./fake.mjs";
+import { obsidianThen, sandbox } from "./fake.mjs";
 
 const tick = () => new Promise(setImmediate);
 
 class Component {
+  then(cb) { return obsidianThen.call(this, cb); }
   setButtonText(value) { this.text = value; return this; }
   setCta() { this.cta = true; return this; }
   setDestructive() { this.destructive = true; return this; }

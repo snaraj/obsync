@@ -62,7 +62,7 @@ import { RotationClient } from "./rotationClient";
 import { resumeRotationCredential } from "./rotationRecovery";
 import { recoverLegacyUpgrade } from "./legacyUpgrade";
 import { parseLegacyRecoveryHistory, parseRecoveryBackup } from "./recoveryBackup";
-import { accountRecovery, FORGOTTEN_DEVICE, RECOVERY_MISMATCH } from "./accountRecovery";
+import { accountRecovery, FORGOTTEN_DEVICE, RECOVERY_MISMATCH, forgottenCredential } from "./accountRecovery";
 import { DomainMapError, domainMapKeys, loadDomainMap, soleDomain } from "./domainmap";
 import { ByteSource, CHUNK_MAX } from "./chunker";
 import { Clock, pageTimers, workerClock } from "./clock";
@@ -81,7 +81,7 @@ import {
   parseSyncFolders,
 } from "./syncScope";
 import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
-import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
+import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, ForceTally, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus, refusalText as pressRefusal, stopped } from "./sync/engine";
 import { EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, pastedToken, platformLabel, refusalFor, refusalText } from "./pairing";
@@ -90,6 +90,7 @@ import {
   LeaveServerModal, PairClaimModal, PairCreateModal, RecentModal, RecoveryPhraseModal, RemoteOnlyModal, StatusModal, Waiting, alreadyPaired,
 } from "./ui/modals";
 import { HistoryModal } from "./ui/history";
+import { RotationModal } from "./ui/rotation";
 import { Indicator, indicated } from "./ui/indicator";
 import {
   ChainLink,
@@ -524,6 +525,15 @@ function soleSpelling(names: string[], segment: string): string | null {
  */
 const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback|throttle_unavailable)\b|^engine decision=waiting\b/;
 
+/** Why sync cannot run, and what to do, where a start or Force sync says it (#369). */
+const NEEDS_UPGRADE = "This vault needs the encryption upgrade. Open obsync settings, then Upgrade encryption. Local notes are unchanged.";
+const TRANSITION_PENDING = "Encryption transition pending. Sync is stopped. Resume it in obsync settings.";
+/** A legacy device the server no longer accepts (#370): an upgrade on another device removes every device that missed it. */
+const REMOVED_BY_UPGRADE = "This device was removed from your server, possibly because another device upgraded this vault's encryption. " +
+  "Local notes are unchanged. Pair it again from a device that still syncs: obsync settings, Pair this device.";
+const NOT_PAIRED = "This device is not paired yet. On a device that already syncs this vault, choose Pair a new device, " +
+  "then paste its code in obsync settings with Pair this device.";
+
 /**
  * How long a device waits to start again after the server could not be
  * reached: 5 s, doubling to a 5-minute cap, for as long as the plugin is
@@ -643,6 +653,55 @@ interface SettingsHost {
  * and a reader who cannot see the whole sentence still has to learn what is
  * available and which version they run before anything else.
  */
+/**
+ * A status in the words the status bar shows (`statusText`), for every state
+ * but `idle`, whose words depend on the pairing and the selection.
+ */
+export function statusWords(status: Exclude<EngineStatus, { kind: "idle" }>): string {
+  switch (status.kind) {
+    case "syncing": {
+      // Sync now waiting on a pull says which (issue #276).
+      const waiting = status.waiting === undefined ? "" : `, waiting for ${PULL_WORDS[status.waiting] ?? "another sync step"}`;
+      // Nothing counted, but the feed has not answered yet: not idle either.
+      // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
+      if (status.pending === 0) return `checking for changes${waiting}`;
+      // A FILE READ ONLY TO VERIFY IT IS NO CHANGE (#246): Sync now's
+      // content check read "syncing 7,700 files" on a vault with none.
+      const changes = status.pending - (status.checking ?? 0);
+      const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
+      if (changes === 0) return `checking ${files(status.pending)} for changes${waiting}`;
+      return `syncing ${files(changes)}` +
+        (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`) + waiting;
+    }
+    case "offline":
+      // True of both places that set it: the running engine polls again
+      // in seconds, and a stopped one is on the reconnect timer.
+      return "offline — retrying";
+    case "error":
+      return `error — ${status.message}`;
+    case "paused":
+      return `paused — ${status.message}`;
+  }
+}
+
+/**
+ * Force sync's one answer (#369), from what the press returned -- its tally,
+ * the words of a refusal it met, or nothing -- and the status after it.
+ * "In step" only for a SETTLED pass: the round finished, no deletion held
+ * back, nothing downloading, and the status idle. Anything still outstanding
+ * -- a version waiting on an editor, a download, a push -- is said in the
+ * status's own words instead; absence and a standing refusal are the answer.
+ */
+export function forceAnswer(result: ForceTally | string | null, status: EngineStatus, heldDeletions: number): string | null {
+  if (status.kind === "offline") return NOT_ANSWERING;
+  if (status.kind === "error") return status.message;
+  if (result === null || typeof result === "string") return result;
+  const words = `checked ${count(result.checked, "file")} here and ${result.listed} on the server; sent ${result.sent}, received ${result.received}`;
+  if (!result.complete) return `${words}. It stopped before the end; select Force sync again to go on.`;
+  if (status.kind !== "idle") return `${words}; still ${statusWords(status)}.`;
+  return heldDeletions > 0 || result.downloading > 0 ? `${words}.` : `in step with the server: ${words}.`;
+}
+
 export function updateMessage(server: string, local: string): string {
   return (
     `${PLUGIN_NAME} ${server} is available (this device runs ${local}). ` +
@@ -3917,6 +3976,7 @@ export default class ObsyncPlugin extends Plugin {
 
     this.addCommand({ id: "sync-now", name: "Sync now (obsync)", callback: () => void this.syncNow() });
     this.addCommand({ id: "verify-all", name: "Verify all files (obsync)", callback: () => void this.syncNow(true) });
+    this.addCommand({ id: "force-sync", name: "Force sync with the server (obsync)", callback: () => void this.forceSync() });
     this.addCommand({ id: "restore-history", name: "Restore from history (obsync)", callback: () => new HistoryModal(this.app, this).open() });
     this.addCommand({
       id: "pair-device",
@@ -4446,9 +4506,11 @@ export default class ObsyncPlugin extends Plugin {
 
   private async startEngineOwned(): Promise<void> {
     const generation = this.lifecycle;
-    if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null || this.rotating || this.state.custody2()?.rotation) return;
-    if (this.state.custody2() === null) {
-      this.setStatus({ kind: "error", message: "This vault needs the encryption upgrade. Open obsync settings, then Upgrade encryption. Local notes are unchanged." });
+    if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null) return;
+    // A TRANSITION PENDING IS SAID, never `idle` (desktop rig, 1.1.10): a
+    // restart found it, returned here, and the bar read idle with sync stopped.
+    if (this.rotating || this.state.custody2()?.rotation) {
+      this.setStatus({ kind: "error", message: TRANSITION_PENDING });
       return;
     }
     const started = Date.now();
@@ -4463,6 +4525,20 @@ export default class ObsyncPlugin extends Plugin {
     const wanted = (engine: SyncEngine | null): boolean =>
       this.isCurrent(generation) && !this.changingScope && this.restoring === null && !this.leaving && !this.rotating && !this.state.custody2()?.rotation && this.engine === engine;
     const superseded = (): void => this.log(`engine decision=stopped reason=superseded duration_ms=${Date.now() - started}`);
+    // A LEGACY DEVICE ANOTHER DEVICE'S UPGRADE REMOVED IS TOLD SO (#370), not
+    // sent to an upgrade that already ran: Check's signed read, with a
+    // person's patience, asks whether its credential stands. Rejected, it is
+    // a removed device, which Pair this device brings back; standing,
+    // unanswered or refused otherwise, the upgrade is still what it needs.
+    if (this.state.custody2() === null) {
+      const engine = this.engine, deviceId = this.state.data.deviceId;
+      const credential = await this.transport.account({ interactive: true })
+        .then(() => "standing", (error: unknown) => forgottenCredential(error) ? "rejected" : "unconfirmed");
+      if (!wanted(engine) || this.state.data.deviceId !== deviceId) return superseded();
+      this.log(`engine decision=stopped reason=needs_upgrade credential=${credential} duration_ms=${Date.now() - started} budget_ms=${INTERACTIVE_MS}`);
+      this.setStatus(credential === "rejected" ? { kind: "error", code: "credential_rejected", message: REMOVED_BY_UPGRADE } : { kind: "error", message: NEEDS_UPGRADE });
+      return;
+    }
     // Whoever asked for this start owns it: a reconnect still pending would
     // be a second engine, so its timer is taken here and its count carried,
     // and the start below either closes the cycle or continues it.
@@ -4637,6 +4713,43 @@ export default class ObsyncPlugin extends Plugin {
     if (answer !== null) this.notices.show({ kind: "confirm", text: answer });
   }
 
+  /**
+   * Force sync (#369): this device level with the server, or why it cannot
+   * be. Standing first, in the words Show sync status uses: a device that
+   * cannot sync sends and asks nothing, and is told the one thing to do. Then
+   * the engine's pass (`SyncEngine.forceSync`), answered once, as Sync now is.
+   */
+  async forceSync(): Promise<void> {
+    if (this.changingScope || this.restoring !== null) return;
+    const status = this.shown();
+    const custody = this.state.paired ? this.state.custody2() : undefined;
+    const [reason, refusal]: [string, string] | [null, null] = this.state.keysLost ? ["keys_lost", KEYS_LOST]
+      : !this.state.paired ? ["not_paired", NOT_PAIRED]
+      // Revoked or forgotten, in the words the refusal came with; both set `forgottenDevice`.
+      : status.kind === "error" && status.code === "credential_rejected" ? ["credential_rejected", status.message]
+      : this.forgottenDevice ? ["forgotten", FORGOTTEN_DEVICE]
+      : custody === null ? ["needs_upgrade", NEEDS_UPGRADE]
+      : custody?.rotation || this.rotating ? ["transition", TRANSITION_PENDING]
+      : status.kind === "offline" ? ["offline", NOT_ANSWERING]
+      : [null, null];
+    if (refusal !== null) {
+      this.log(`force_sync decision=refused reason=${reason}`);
+      if (status.kind === "offline") this.wake("force_sync");
+      this.notices.show({ kind: "confirm", text: refusal });
+      return;
+    }
+    if (!this.engine) await this.startEngine();
+    let result: ForceTally | string | null = null;
+    try {
+      result = (await this.engine?.forceSync()) ?? null;
+    } catch (error) {
+      if (stopped(error)) return;
+      result = pressRefusal(error);
+    }
+    const answer = forceAnswer(result, this.shown(), this.engine?.context?.state.data.heldDeletions.length ?? 0);
+    if (answer !== null) this.notices.show({ kind: "confirm", text: answer });
+  }
+
   /** Resume in Show sync status: sync one paused note again (issue #179). */
   async resumeNote(fileId: string): Promise<void> {
     await this.engine?.resume(fileId, "status");
@@ -4663,7 +4776,7 @@ export default class ObsyncPlugin extends Plugin {
     this.rotationRunning = true;
     try { await action(this.rotationClient); assertCurrent(); }
     finally { this.rotationRunning = false; if (this.isCurrent(generation) && this.state === state) this.rotating = state.custody2()?.rotation != null; }
-    if (this.rotating) this.setStatus({ kind: "error", message: "Encryption transition pending. Sync is stopped. Resume it in obsync settings." });
+    if (this.rotating) this.setStatus({ kind: "error", message: TRANSITION_PENDING });
   }
 
   startRotation(target: string | null): Promise<void> { return this.rotationAction(client => client.start(target)); }
@@ -5906,36 +6019,17 @@ export default class ObsyncPlugin extends Plugin {
     settings.openTabById(this.manifest.id);
   }
 
+  /** The encryption upgrade, or the transition this device saved, from Show sync status (#364). */
+  openEncryption(): void {
+    new RotationModal(this.app, this).open();
+  }
+
   statusText(): string {
     const status = this.shown();
-    switch (status.kind) {
-      case "idle":
-        // A bare `idle` over a selection of no folders read as all being well (issue #150, S30d).
-        if (!this.state.paired) return "not paired";
-        return this.state.data.syncFolders?.length === 0 ? "idle — syncing no folders" : "idle";
-      case "syncing": {
-        // Sync now waiting on a pull says which (issue #276).
-        const waiting = status.waiting === undefined ? "" : `, waiting for ${PULL_WORDS[status.waiting] ?? "another sync step"}`;
-        // Nothing counted, but the feed has not answered yet: not idle either.
-        // A count names what it counts: "syncing 2" left "2 what?" (owner, 2026-09-27).
-        if (status.pending === 0) return `checking for changes${waiting}`;
-        // A FILE READ ONLY TO VERIFY IT IS NO CHANGE (#246): Sync now's
-        // content check read "syncing 7,700 files" on a vault with none.
-        const changes = status.pending - (status.checking ?? 0);
-        const files = (n: number): string => `${n} file${n === 1 ? "" : "s"}`;
-        if (changes === 0) return `checking ${files(status.pending)} for changes${waiting}`;
-        return `syncing ${files(changes)}` +
-          (status.held === undefined ? "" : `, waiting for unsaved changes in ${status.held}`) + waiting;
-      }
-      case "offline":
-        // True of both places that set it: the running engine polls again
-        // in seconds, and a stopped one is on the reconnect timer.
-        return "offline — retrying";
-      case "error":
-        return `error — ${status.message}`;
-      case "paused":
-        return `paused — ${status.message}`;
-    }
+    if (status.kind !== "idle") return statusWords(status);
+    // A bare `idle` over a selection of no folders read as all being well (issue #150, S30d).
+    if (!this.state.paired) return "not paired";
+    return this.state.data.syncFolders?.length === 0 ? "idle — syncing no folders" : "idle";
   }
 
   /**

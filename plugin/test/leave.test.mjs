@@ -448,6 +448,18 @@ test("a device left with no credential can send nothing at all", async (t) => {
   assert.deepEqual(r.old.unsigned, [], "nothing unsigned ever reached the server it left");
 });
 
+test("pairing after Leave, before an address is typed, says the Server URL is empty and sends nothing (#370)", async (t) => {
+  // It read "The server refused this step", from a request that never left.
+  const r = await fixture(t, { devices: 2 });
+  await r.instance.leaveServer({ discardUnpushed: false, localOnly: false });
+  const sent = r.seen.length;
+  const error = await r.instance.transport.pairingClaim2("12".repeat(16), "34".repeat(32), {}).then(() => assert.fail("a claim went out"), (refused) => refused);
+  assert.equal(error.code, "no_server_url");
+  const { refusalText } = r.box.require(join(r.box.home, "build/pairing.js"));
+  assert.match(refusalText(error), /^This device has no Server URL, so nothing was sent\. Type your server's address in Server URL in obsync settings/);
+  assert.equal(r.seen.length, sent, "nothing reached any server");
+});
+
 test("a device revoked elsewhere leaves locally, which is its way back to pairing (#143)", async (t) => {
   // S20 and S80: revoked from another device or the dashboard, and then told
   // to leave before it may pair again. The server refuses the revoke because

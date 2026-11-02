@@ -5,11 +5,12 @@ import { mkdirSync, mkdtempSync, promises as fsPromises, rmSync } from "node:fs"
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
 import { createRequire } from "node:module";
-import { KEYS, memorySecrets, sandbox } from "./fake.mjs";
+import { KEYS, memorySecrets, obsidianThen, sandbox } from "./fake.mjs";
 
 /** A recording `Setting` button: what it says, how it is styled, whether it holds the focus. */
 class Button {
   constructor() { this.buttonEl = { focus: () => { this.focused = true; } }; }
+  then(cb) { return obsidianThen.call(this, cb); }
   setButtonText(value) { this.text = value; return this; }
   setCta() { this.cta = true; return this; }
   setDestructive() { this.destructive = true; return this; }
@@ -33,13 +34,15 @@ const heldClaims = (result) => result.held.filter((value) => value !== null);
  * revealed creator key or none, `sealFor(kex)`, an envelope that key pair
  * sealed for this claimant's own key, with its `creator_pub`, and `sealed`,
  * the honest creator's. `code` is the code pasted, or a function of the honest
- * code; `prelude(modal)` runs before the claim starts.
+ * code; `prelude(modal)` runs before the claim starts. `setup(state)` shapes
+ * the loaded state before the plugin holds it; `forgotten` is a device the
+ * server stopped accepting, which Pair this device resets first (#370).
  */
 async function claimant(t, response, {
   onWait = () => {}, beforeKeySave = async () => {}, beforeClaim = async () => {},
   unknown = 0, answer = null, data = {}, root = null, revoke = () => ({ outcome: "ok", value: undefined }),
   replacementGeneration = null, initialSuite = 1, surveyError = null, onSurvey = () => {}, beforeStageSave = async () => {}, beforeLegacyClear = async () => {},
-  code = null, waits = 3, onRestart = () => {}, field = null, prelude = () => {},
+  code = null, waits = 3, onRestart = () => {}, field = null, prelude = () => {}, setup = async () => {}, forgotten = false,
 } = {}) {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));
@@ -106,6 +109,7 @@ async function claimant(t, response, {
     await loaded.stageEnrollment2(data.vrk, "pair");
     await loaded.adoptSuite2({ root: data.vrk, generation: await generationOf(data.vrk), deviceId: data.deviceId, deviceSecret: data.deviceSecret, purpose: "pair" });
   }
+  await setup(loaded);
   state = loaded;
   state.heldClaim = () => held.at(-1) ?? null;
   state.holdClaim = value => { held.push(value); return true; };
@@ -149,7 +153,7 @@ async function claimant(t, response, {
       pairingEnvelope: async (pairingId) => {
         assert.equal(pairingId, id); calls.push("envelope");
         assert.equal(plugin.credential(state)?.id, KEYS.deviceId, "the claim signs its own collection");
-        assert.equal(state.data.deviceSecret, data.deviceSecret ?? null, "no credential is kept before its key");
+        assert.equal(state.data.deviceSecret, forgotten ? null : data.deviceSecret ?? null, "no credential is kept before its key");
         const sealed = await sealFor(creator);
         return response({ ApiError, sealed, plugin, modal, pairing, claims, creator, attacker, waiting, sealFor,
           attempt: calls.filter((call) => call === "envelope").length });
@@ -158,8 +162,10 @@ async function claimant(t, response, {
         calls.push(deviceId === KEYS.deviceId ? "revoke" : `revoke:${deviceId}`);
         return revoke({ ApiError, deviceId });
       },
+      forgetDevice: () => {},
     },
   });
+  plugin.forgottenDevice = forgotten;
   // The real host: over no filesystem unless a test names the vault root on disk.
   const { ObsidianHost } = box.require(join(box.home, "build/main.js"));
   plugin.host = new ObsidianHost(plugin, root === null ? null : { fs: { promises: fsPromises }, path: nodePath, base: root });
@@ -673,15 +679,16 @@ test("an enrolled device whose key never arrived pairs again, and its stranded c
   assert.ok(result.logs.includes("pairing role=claimant decision=revoked reason=stranded_enrolment"));
 });
 
-test("ordinary pairing refuses replacing a held root; the same root preserves phrase confirmation", async (t) => {
+test("an unpaired device pairing into another vault sets its held root aside and its phrase is unconfirmed; the same root keeps it (#370)", async (t) => {
   // A phrase restored for one vault, then a pairing into another: the words
-  // this device confirmed are not the new vault's.
+  // this device confirmed are not the new vault's, and the key they make is
+  // kept read-only beside it, never replaced in place.
   const other = await claimant(t, approved, { data: { vrk: "99".repeat(32), recoveryPhrase: "confirmed" } });
-  assert.equal(other.plugin.state.data.vrk, "99".repeat(32));
-  assert.equal(other.plugin.state.data.recoveryPhrase, "confirmed");
-  assert.equal(other.saves.length, 0);
-  assert.equal(other.stages.length, 0);
-  assert.equal(other.restarted, 0);
+  assert.equal(other.plugin.state.data.vrk, KEYS.vrk);
+  assert.equal(other.plugin.state.data.recoveryPhrase, "unconfirmed");
+  assert.equal(other.plugin.state.custody2().history.root, "99".repeat(32));
+  assert.equal(other.stages.length, 1);
+  assert.equal(other.restarted, 1);
   const same = await claimant(t, approved, { data: { vrk: KEYS.vrk, recoveryPhrase: "confirmed" } });
   assert.equal(same.saves.at(-1).vrk, KEYS.vrk);
   assert.equal(same.saves.at(-1).recoveryPhrase, "confirmed");
@@ -818,14 +825,15 @@ test("explicit replacement claimant retires only the expected legacy/suite2 gene
   }
 });
 
-test("explicit replacement wrong generation never surveys/adopts, while ordinary held-root pairing still refuses", async t => {
+test("explicit replacement wrong generation never surveys/adopts; ordinary pairing refuses a paired device and sets an unpaired one's root aside (#370)", async t => {
   const oldRoot = "aa".repeat(32), data = { vrk: oldRoot, deviceId: "55".repeat(16), deviceSecret: "66".repeat(32) };
   const wrong = await claimant(t, approved, { replacementGeneration: "00".repeat(16), data });
   assert.deepEqual(wrong.calls, ["claim", "envelope", "revoke"]); assert.equal(wrong.restarted, 0);
   assert.equal(wrong.current.vrk, oldRoot); assert.equal(wrong.current.deviceId, data.deviceId); assert.deepEqual(wrong.stages, []);
   const ordinary = await claimant(t, approved, { data }); assert.deepEqual(ordinary.calls, []); assert.equal(ordinary.current.vrk, oldRoot);
   const held = await claimant(t, approved, { data: { vrk: oldRoot } });
-  assert.deepEqual(held.calls, ["claim", "envelope", "revoke"]); assert.equal(held.restarted, 0); assert.equal(held.current.vrk, oldRoot);
+  assert.deepEqual(held.calls, ["claim", "envelope", "survey"]); assert.equal(held.restarted, 1); assert.equal(held.current.vrk, KEYS.vrk);
+  assert.equal(held.plugin.state.custody2().history.root, oldRoot);
 });
 
 test("explicit replacement staging refusal preserves old authority and never resumes or sends cleanup HTTP", async t => {
@@ -835,4 +843,80 @@ test("explicit replacement staging refusal preserves old authority and never res
     beforeStageSave: async () => { throw new Error("synthetic replacement disk full"); } });
   assert.deepEqual(r.calls, ["claim", "envelope"]); assert.equal(r.current.vrk, oldRoot); assert.equal(r.current.deviceId, "55".repeat(16));
   assert.equal(r.restarted, 0); assert.deepEqual(r.replacementFinished, []); assert.equal(r.rootRetained, true); assert.throws(() => r.plugin.state.assertAvailable());
+});
+
+// ---- issue #370: a device an encryption upgrade left behind pairs again ----
+
+const OLD_ROOT = "aa".repeat(32);
+const generationHex = async (root) => {
+  const c = createRequire(import.meta.url)("../build/crypto.js");
+  return (await c.domainMapIds(await c.deriveDomainMapKey(c.unhex(root)))).fileId;
+};
+/** A suite-2 device paired at `root`, as its own pairing left it. */
+const joined = async (state, root, deviceId = "55".repeat(16), deviceSecret = "66".repeat(32)) => {
+  await state.stageEnrollment2(root, "pair");
+  await state.adoptSuite2({ root, generation: await generationHex(root), deviceId, deviceSecret, purpose: "pair" });
+};
+/** What Leave this server leaves on the device, once the person has typed the address again. */
+const left = async (state) => {
+  state.forgetPairing();
+  state.data.serverUrl = "https://sync.example.invalid";
+  await state.save();
+};
+/** Before the survey: the older key is already set aside, and nothing of it or a credential is live. */
+const setAside = (state) => {
+  assert.equal(state.data.vrk, null); assert.equal(state.data.deviceId, null);
+  assert.equal(state.custody2().history.root, OLD_ROOT);
+};
+
+/** Paired with the delivered key, the older one kept read-only, and the activated device never taken back. */
+async function rejoined(result, suite) {
+  assert.deepEqual(result.calls, ["claim", "envelope", "survey"], "no revoke: revokeSelf never ran");
+  assert.equal(result.restarted, 1);
+  assert.equal(result.current.vrk, KEYS.vrk);
+  assert.equal(result.current.deviceId, KEYS.deviceId);
+  const history = result.plugin.state.custody2().history;
+  assert.deepEqual(history, { root: OLD_ROOT, generation: await generationHex(OLD_ROOT), suite });
+  assert.ok(Buffer.from(history.root, "hex").equals(Buffer.from(OLD_ROOT, "hex")), "the older key is kept byte for byte");
+  assert.ok(result.logs.includes("pairing role=claimant decision=staged reason=kept_previous_key"), result.logs.join(" | "));
+  assert.ok(result.logs.some((line) => /^pairing role=claimant decision=paired duration_ms=\d+$/.test(line)), result.logs.join(" | "));
+  assert.ok(result.notices.some((text) => text.includes("this device is paired, and its first sync is running")));
+  assert.ok(!result.notices.some((text) => /secret storage/.test(text)), result.notices.join(" | "));
+}
+
+test("a device an encryption upgrade removed pairs again with Pair this device, its older key kept as history (#370)", async (t) => {
+  // The iPhone of #370: revoked by another device's upgrade, told so, and
+  // pressing Pair this device. Legacy custody and suite-2 custody alike.
+  const legacy = await claimant(t, approved, { forgotten: true, onSurvey: setAside,
+    data: { vrk: OLD_ROOT, deviceId: "55".repeat(16), deviceSecret: "66".repeat(32) } });
+  await rejoined(legacy, 1);
+  assert.equal(legacy.plugin.forgottenDevice, false);
+  const current = await claimant(t, approved, { forgotten: true, onSurvey: setAside, setup: (state) => joined(state, OLD_ROOT) });
+  await rejoined(current, 2);
+  assert.equal(current.plugin.forgottenDevice, false);
+});
+
+test("a device that left its server pairs again, its older key kept as history (#370)", async (t) => {
+  await rejoined(await claimant(t, approved, { onSurvey: setAside, data: { vrk: OLD_ROOT } }), 1);
+  await rejoined(await claimant(t, approved, { onSurvey: setAside, setup: async (state) => { await joined(state, OLD_ROOT); await left(state); } }), 2);
+});
+
+test("a device already keeping an earlier key refuses another in words, never the storage words, and takes its activation back (#370)", async (t) => {
+  const between = "bb".repeat(32);
+  const r = await claimant(t, approved, { setup: async (state) => {
+    await joined(state, OLD_ROOT); await left(state);
+    assert.equal(await state.stageEnrollment2(between, "pair"), true);
+    await state.adoptSuite2({ root: between, generation: await generationHex(between), deviceId: "77".repeat(16), deviceSecret: "88".repeat(32), purpose: "pair" });
+    await left(state);
+  } });
+  assert.deepEqual(r.calls, ["claim", "envelope", "revoke"]);
+  assert.equal(r.restarted, 0);
+  assert.equal(r.current.vrk, between, "the key it held is unchanged");
+  assert.equal(r.plugin.state.custody2().history.root, OLD_ROOT, "and so is the one it keeps");
+  assert.doesNotThrow(() => r.plugin.state.assertAvailable(), "a refusal, not a storage stop");
+  const said = r.notices.at(-1);
+  assert.match(said, /already keeps one earlier vault key and can keep only one, so it did not pair\..*Remove previous history key/);
+  assert.equal(r.shown.at(-1), said.replace(/^obsync: /, ""), "the dialog says the same");
+  assert.doesNotMatch(r.notices.join("\n"), /secret storage|Reload Obsidian/);
+  assert.ok(r.logs.some((line) => /^pairing role=claimant decision=failed reason=history_held duration_ms=\d+$/.test(line)), r.logs.join(" | "));
 });

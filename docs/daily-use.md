@@ -15,6 +15,7 @@ and each name ends in `(obsync)`, so typing `obsync` there lists them all:
 | --- | --- |
 | Sync now | Sends and fetches everything waiting now. A computer also checks the contents of files up to 8 MiB; a phone asks its storage for each file's size and date and reads only the files that differ |
 | Verify all files | Checks every file's contents, however large. Slower; use it if you think another tool changed a file without changing its size or date |
+| Force sync with the server | Verify all files, then every file the server holds: brings this device level with the server, or says why it cannot. See below |
 | Show sync status | What the engine is doing, and why it is not doing more |
 | Pair a new device | Mints a one-time pairing code on this device |
 | Pair this device | Opens the dialog that takes a pairing code from a device that already syncs; on a device that syncs already, it only says so |
@@ -64,6 +65,24 @@ needs pressing when you return; **Sync now** only makes the next attempt
 happen now. `error` is different: it names a refusal the plugin will not retry
 by itself, such as a revoked device or a clock too far off, and the reason
 says what to do.
+
+**Force sync with the server**, also a button under **Connection** in obsync
+settings, is for a device you think has fallen out of step. The server is the
+one source of truth: Force sync reads every file here and sends what changed,
+then goes through every file the server holds and fetches each one this device
+lacks or holds an older version of. A note changed both here and elsewhere is
+combined, or both versions are kept side by side; nothing is written over
+without a word. It answers once: `in step with the server`, with how many files
+it checked here and on the server and how many it sent and received -- or, when
+something is still outstanding, such as a newer version waiting for you to stop
+typing in its note, the same tally and what the status bar says is left. Its
+pass over the server's list stops after ten minutes or 2,000 requests, not
+counting the reading of this device's own files; it then says so, and the next
+press goes on from the page it reached. A device
+that cannot sync is told why and the one thing to do instead -- pair it again,
+upgrade the encryption, pair it for the first time, or wait for a server that
+is not answering -- and nothing is sent. Held deletions stay held, and
+selected folders, size limits and remote-only files keep their meaning.
 
 ## What syncs and what does not
 

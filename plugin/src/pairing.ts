@@ -538,6 +538,8 @@ const REFUSALS: Record<string, string> = {
   stale_timestamp: "This device's clock is more than five minutes off, so the server refused it. Set the date and time automatically, then try again.",
   edge_required: EDGE_REQUIRED,
   device_revoked: "This device was removed from the server, so it cannot pair another. Use Leave this server in obsync's settings, then pair this device again.",
+  // Refused on this device before any request, never by a server (#370): Leave forgets the address.
+  no_server_url: "This device has no Server URL, so nothing was sent. Type your server's address in Server URL in obsync settings, the one your other devices use, then try again.",
 };
 
 /** The text for one refusal code; one this table does not know says so without naming it. */

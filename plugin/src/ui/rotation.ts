@@ -1,9 +1,9 @@
-import { App, Modal, Setting } from "obsidian";
+import { App, Modal, Setting, type ButtonComponent } from "obsidian";
 import type ObsyncPlugin from "../main";
 import { unhex } from "../crypto";
 import { encodeRecoveryBackup } from "../recoveryBackup";
 import { refusalText } from "../pairing";
-import { literal, secretText } from "./modals";
+import { backupText, literal, secretText } from "./modals";
 
 /** Explicit access-only versus fresh-key choice; content verification is always on. */
 export class RevokeModal extends Modal {
@@ -29,15 +29,20 @@ export class RevokeModal extends Modal {
 export class RotationModal extends Modal {
   private alive = false;
   private busy = false;
+  private done = false;
   private message = "";
+  /** The backup pasted back, kept across a failed attempt until one succeeds (#364); the setup token never is. */
+  private readback = "";
   constructor(app: App, private readonly plugin: ObsyncPlugin, private readonly target: string | null = null) { super(app); }
   override onOpen(): void { this.alive = true; void this.render(); }
-  override onClose(): void { this.alive = false; this.contentEl.empty(); }
+  override onClose(): void { this.alive = false; this.readback = ""; this.contentEl.empty(); }
 
-  private async run(work: () => Promise<void>): Promise<void> {
+  /** One action at a time, its button saying so while it runs (#364). */
+  private async run(button: ButtonComponent, work: () => Promise<void>): Promise<void> {
     if (this.busy) return;
     this.busy = true; this.message = "";
-    try { await work(); }
+    button.setDisabled(true).setButtonText("Working…");
+    try { await work(); this.readback = ""; }
     catch (error) { this.message = refusalText(error); }
     finally { this.busy = false; if (this.alive) await this.render(); }
   }
@@ -46,16 +51,21 @@ export class RotationModal extends Modal {
     if (!this.alive) return;
     this.contentEl.empty(); this.setTitle("Encryption upgrade and key rotation");
     if (this.message) this.contentEl.createEl("p", { text: this.message });
+    if (this.done) {
+      this.contentEl.createEl("p", { text: "Encryption change complete. The new generation is ready on this device. Pair each retained device again; devices you do not pair cannot decrypt future updates." });
+      new Setting(this.contentEl).addButton(button => button.setButtonText("Done").setCta().onClick(() => this.close()));
+      return;
+    }
     const pending = this.plugin.state.custody2();
     if (!pending?.rotation) {
       this.contentEl.createEl("p", { text: "This action creates an independent vault key and re-encrypts every available current version. Local notes stay in place. Every other device loses server access at commit and must pair again. Old backups remain useful for old history; they cannot decrypt future updates under the new key." });
       new Setting(this.contentEl).addButton(button => button.setButtonText("Stage encryption transition").setCta()
-        .onClick(() => { void this.run(() => this.plugin.startRotation(this.target)); }));
+        .onClick(() => { void this.run(button, () => this.plugin.startRotation(this.target)); }));
       return;
     }
     this.contentEl.createEl("p", { text: "Sync is stopped while this transition is pending. Keep both the old and new recovery backups. You can close this dialog and resume from settings." });
     if (pending.phase === "draft") new Setting(this.contentEl).addButton(button => button.setButtonText("Cancel unprepared transition")
-      .onClick(() => { void this.run(() => this.plugin.cancelRotationDraft()); }));
+      .onClick(() => { void this.run(button, () => this.plugin.cancelRotationDraft()); }));
     else new Setting(this.contentEl).setName("Coordinator access no longer works?")
       .setDesc("Recover access to this exact pending transition with its new backup and the setup token. Sync stays stopped.")
       .addButton(button => button.setButtonText("Recover transition access").onClick(() => {
@@ -65,26 +75,28 @@ export class RotationModal extends Modal {
       this.contentEl.createEl("p", { text: "The server snapshot is frozen. Re-encrypt and read back every current version before commit." });
       const progress = this.contentEl.createEl("p", { text: "Ready to transfer." });
       new Setting(this.contentEl).addButton(button => button.setButtonText("Re-encrypt current versions").setCta().onClick(() => {
-        void this.run(() => this.plugin.seedRotation((done, total) => { if (this.alive) progress.setText(`Verified ${done} of ${total} versions.`); }));
+        void this.run(button, () => this.plugin.seedRotation((done, total) => { if (this.alive) progress.setText(`Verified ${done} of ${total} versions.`); }));
       }));
       return;
     }
     if (pending.phase === "commit_unknown") this.contentEl.createEl("p", { text: "All versions have been transferred and the catalog saved. Restart Obsidian, reopen this dialog, and confirm the new backup and setup token to commit. Other devices must then pair from this device." });
     else this.contentEl.createEl("p", { text: "Save this complete new backup separately, including its format marker. Paste it back below before freezing the server snapshot." });
-    let backup = "", token = "";
+    let token = "";
     try {
       const encoded = await encodeRecoveryBackup(unhex(pending.rotation.newRoot));
       if (!this.alive || this.plugin.state.custody2()?.rotation?.intent.operation !== pending.rotation.intent.operation) return;
-      this.contentEl.createEl("pre", { text: encoded });
+      backupText(this.plugin, this.contentEl, encoded);
     } catch (error) { if (this.alive) this.contentEl.createEl("p", { text: refusalText(error) }); return; }
-    new Setting(this.contentEl).setName("Confirm complete new backup").addTextArea(input => { literal(input.inputEl); input.onChange(value => { backup = value; }); });
+    new Setting(this.contentEl).setName("Confirm complete new backup").addTextArea(input => {
+      literal(input.inputEl); input.setValue(this.readback).onChange(value => { this.readback = value; });
+    });
     const clearToken = secretText(new Setting(this.contentEl).setName("Setup token"), "Setup token", "", value => { token = value; });
     new Setting(this.contentEl).addButton(button => button.setButtonText(pending.phase === "commit_unknown" ? "Commit new key" : "Prepare transition").setCta().onClick(() => {
-      const suppliedToken = token, suppliedBackup = backup; token = ""; backup = ""; clearToken();
-      void this.run(async () => {
+      const suppliedToken = token, suppliedBackup = this.readback; token = ""; clearToken();
+      void this.run(button, async () => {
         if (pending.phase === "commit_unknown") {
           await this.plugin.commitRotation(suppliedToken, suppliedBackup);
-          this.message = "New generation ready on this device. Pair each retained device again. Devices you do not pair cannot decrypt future updates.";
+          this.done = true;
         } else await this.plugin.prepareRotation(suppliedToken, suppliedBackup);
       });
     }));
@@ -106,8 +118,8 @@ export class LegacyUpgradeModal extends Modal {
     const message = this.contentEl.createEl("p", { text: "" });
     new Setting(this.contentEl).addButton(button => button.setButtonText("Recover for upgrade").setCta().onClick(() => {
       if (this.busy || !this.alive) return;
-      this.busy = true;
-      const supplied = { token, backup }; token = ""; backup = ""; clear();
+      this.busy = true; message.setText("Working…");
+      const supplied = { token, backup }; token = ""; clear();
       void this.plugin.recoverLegacyForUpgrade(supplied.token, supplied.backup, () => {
         if (!this.alive) throw new Error("This recovery dialog is closed.");
       }).then(() => {
@@ -131,8 +143,8 @@ class RotationAccessModal extends Modal {
     const message = this.contentEl.createEl("p");
     new Setting(this.contentEl).addButton(button => button.setButtonText("Recover access").onClick(async () => {
       if (this.busy) return;
-      this.busy = true;
-      const suppliedBackup = backup, suppliedToken = token; backup = ""; token = ""; clearToken();
+      this.busy = true; message.setText("Working…");
+      const suppliedBackup = backup, suppliedToken = token; token = ""; clearToken();
       try {
         const outcome = await this.plugin.recoverRotationAccess(suppliedToken, suppliedBackup);
         if (!this.alive) return;
@@ -165,7 +177,7 @@ export class PreviousKeyModal extends Modal {
     new Setting(this.contentEl).addButton(button => button.setButtonText(this.action === "replace" ? "Continue to pairing" : "Remove previous key").onClick(async () => {
       if (this.busy) return;
       this.busy = true;
-      const text = backup; backup = "";
+      const text = backup;
       const current = (): void => { if (!this.alive) throw new Error("This dialog was closed."); };
       try {
         if (this.action === "replace") await this.plugin.pairAfterRotation(text, current);

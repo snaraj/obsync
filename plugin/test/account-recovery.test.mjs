@@ -351,6 +351,67 @@ test("legacy registration refusal retains last-device protection; live sync requ
   assert.equal((await r.instance.leaveServer({ discardUnpushed: false, localOnly: false })).reason, "last_device");
 });
 
+// ---- issue #370: a legacy device another device's upgrade removed --------
+
+/** A legacy device's own start, unstubbed. */
+async function legacyStart(r) {
+  delete r.instance.startEngine;
+  await r.instance.startEngine();
+  assert.equal(r.instance.engine, null, "legacy custody never starts a live engine");
+}
+const UPGRADE = /^This vault needs the encryption upgrade\. Open obsync settings, then Upgrade encryption\. Local notes are unchanged\.$/;
+const needsUpgrade = (credential) => new RegExp(`^engine decision=stopped reason=needs_upgrade credential=${credential} duration_ms=\\d+ budget_ms=10000$`);
+
+test("a legacy device its server stopped accepting is told it was removed and may pair again, never sent to the upgrade (#370)", async (t) => {
+  // The iPhone of #370: another device upgraded the vault, which removed it;
+  // this device read "needs the encryption upgrade" and could not pair.
+  for (const reject of [(server) => { server.devices[0].revoked = true; }, (server) => { server.secrets.delete(KEYS.deviceId); }]) {
+    const r = await plugin(t, { legacy: true });
+    reject(r.server);
+    await legacyStart(r);
+    const status = r.instance.currentStatus();
+    assert.equal(status.code, "credential_rejected", "the engine's own status for a rejected credential");
+    assert.match(status.message, /^This device was removed from your server, possibly because another device upgraded this vault's encryption\. Local notes are unchanged\. .*Pair this device\.$/);
+    assert.equal(r.instance.forgottenDevice, true);
+    const { alreadyPaired } = r.box.require(join(r.box.home, "build/ui/modals.js"));
+    assert.equal(alreadyPaired(r.instance), null, "Pair this device is accepted without Leave");
+    assert.deepEqual(r.server.requests.map((request) => `${request.method} ${request.target}`), ["GET /v1/account"], "one signed read, Check's");
+    assert.ok(r.logs.some((line) => needsUpgrade("rejected").test(line)), r.logs.join(" | "));
+    assert.equal(r.instance.state.data.vrk, KEYS.vrk, "nothing local changed");
+  }
+});
+
+test("a legacy device whose credential stands, or whose server does not answer, is still sent to the upgrade (#370)", async (t) => {
+  const standing = await plugin(t, { legacy: true });
+  await legacyStart(standing);
+  assert.match(standing.instance.currentStatus().message, UPGRADE);
+  assert.equal(standing.instance.forgottenDevice, false);
+  assert.deepEqual(standing.server.requests.map((request) => `${request.method} ${request.target}`), ["GET /v1/account"]);
+  assert.ok(standing.logs.some((line) => needsUpgrade("standing").test(line)), standing.logs.join(" | "));
+  const offline = await plugin(t, { legacy: true });
+  offline.server.unreachable.add(KEYS.deviceId);
+  offline.instance.transport.sleep = async () => {};
+  await legacyStart(offline);
+  assert.match(offline.instance.currentStatus().message, UPGRADE);
+  assert.equal(offline.instance.forgottenDevice, false);
+  assert.ok(offline.logs.some((line) => needsUpgrade("unconfirmed").test(line)), offline.logs.join(" | "));
+});
+
+test("a legacy start whose device begins or finishes leaving while it asks says nothing of the answer (#370, #233)", async (t) => {
+  for (const during of [(r) => { r.instance.leaving = true; }, (r) => { r.instance.state.forgetPairing(); }]) {
+    const r = await plugin(t, { legacy: true });
+    r.server.devices[0].revoked = true;
+    const account = r.instance.transport.account.bind(r.instance.transport);
+    r.instance.transport.account = async (patience) => { try { return await account(patience); } finally { during(r); } };
+    const before = r.instance.currentStatus();
+    await legacyStart(r);
+    assert.deepEqual(r.instance.currentStatus(), before, "a leave says what happened itself");
+    assert.equal(r.instance.forgottenDevice, false);
+    assert.ok(r.logs.some((line) => /^engine decision=stopped reason=superseded duration_ms=\d+$/.test(line)), r.logs.join(" | "));
+    assert.ok(!r.logs.some((line) => /reason=needs_upgrade/.test(line)));
+  }
+});
+
 test("a forgotten credential permits restoring the phrase before re-enrollment", async (t) => {
   const r = await plugin(t);
   r.server.secrets.clear();

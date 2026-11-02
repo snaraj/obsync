@@ -23,7 +23,7 @@ import test from "node:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { FakeHost, KEYS, memorySecrets, sandbox, statusItem } from "./fake.mjs";
+import { FakeHost, KEYS, memorySecrets, obsidianThen, sandbox, statusItem } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const n = require("../build/notices.js");
@@ -520,6 +520,7 @@ test("Recent opens the note it names, and says so when that note is no longer th
 // --- Show sync status and Settings -----------------------------------------
 
 class Widget {
+  then(cb) { return obsidianThen.call(this, cb); }
   setButtonText(value) { this.text = value; return this; }
   setCta() { return this; }
   onClick(handler) { this.click = handler; return this; }

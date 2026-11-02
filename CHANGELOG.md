@@ -5,6 +5,20 @@ Keep a Changelog; versions follow SemVer. Every artifact-classified merge
 advances exactly one SemVer step -- one patch, one minor, or one major
 (AGENTS.md, requirement 10).
 
+## 1.1.11 - 2026-11-02
+
+### Added
+
+- Force sync with the server: a command, and a button under Connection in obsync's settings. It checks every file on this device and every file the server holds, fetches what this device lacks or holds an older version of, and answers once with what it checked, sent and received. A device that cannot sync is told why and the one thing to do instead (#369).
+
+### Fixed
+
+- A device that missed an encryption upgrade or a key rotation can pair again. Its older vault key is kept as read-only history. Before, pairing failed with a false message about Obsidian's secret storage and took its new enrollment back (#370).
+- A device from before the encryption upgrade that the server has already removed is told to pair again, not to run the upgrade (#370).
+- After a restart with an encryption transition pending, the status bar says so instead of "idle" (#370).
+- After Leave this server, pairing with no Server URL says the address is missing instead of "The server refused this step" (#370).
+- The recovery backup can be copied and selected, on iPhone too; a retry no longer submits an empty backup; and Show sync status offers a way back to a pending encryption upgrade or transition (#364).
+
 ## 1.1.10 - 2026-11-02
 
 ### Fixed

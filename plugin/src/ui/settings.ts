@@ -478,7 +478,7 @@ export class ObsyncSettingTab extends PluginSettingTab {
   }
 
   /**
-   * The Connection row, and Check (#182).
+   * The Connection row, Check (#182) and Force sync (#369).
    *
    * THE ROW SAYS WHAT THE STATUS BAR SAYS, while Settings is open: it follows
    * every status change, where it used to read `idle` for as long as the tab
@@ -537,6 +537,15 @@ export class ObsyncSettingTab extends PluginSettingTab {
                 describe();
               });
           }))
+          // Not pressed twice: one pass reads every file here and every file the server lists.
+          .addButton((button) => button.setButtonText("Force sync")
+            .setTooltip("Check every file here and on the server, and bring this device level with the server.")
+            .onClick(() => {
+              button.setDisabled(true);
+              // A block, never `=> button.setDisabled(...)`: a component is a thenable that resolves to
+              // itself, so a promise handed one never settles and the renderer spins.
+              void this.plugin.forceSync().finally(() => { button.setDisabled(false); });
+            }))
           .addButton((button) => button.setButtonText("Open dashboard").onClick(() => { void this.plugin.openDashboard(); }));
       },
     };
