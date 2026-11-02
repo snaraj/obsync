@@ -162,7 +162,9 @@ a run could pass every V row and still ship a plugin that loses a folder the
 first time someone reorganises one. The journeys below are that half. They are
 written for a stranger with no knowledge of any particular deployment: each
 needs two real devices in one account, one desktop and one phone, and nothing
-else. The acting device is named first.
+else. The acting device is named first. From v1.1.12 an Android emulator
+running the official Obsidian app may stand in for the phone; its rows name
+that class, never "phone".
 
 | # | Journey | Pass condition | Devices |
 | --- | --- | --- | --- |

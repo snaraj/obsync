@@ -499,8 +499,11 @@ Several agents work this repository at once. Git worktrees under
    route active until the exchange is resolved.
 7. **Run the user journeys** for a change to `plugin/` or the sync path: the
    affected journeys in `docs/validation.md`, on real devices, one desktop and
-   one phone, with their outcomes recorded in `docs/validation-runs/`. Nothing
-   else completes it, and the reviewer may demand that record for a verdict.
+   one phone, with their outcomes recorded in `docs/validation-runs/`. From
+   v1.1.12 the phone may be an Android emulator running the official Obsidian
+   app (owner ruling, 2026-11-02); its rows then name that class, never
+   "phone". Nothing else completes it, and the reviewer may demand that record
+   for a verdict.
 8. **Prove server release controls** for an automatic-release change per
    `docs/release.md`.
 9. **Owner comments** are answered with reproduction, not assertion.
