@@ -307,8 +307,6 @@ test("a last-device refusal focuses Cancel before the local-only leave action", 
   d.button("Leave on this device only");
 });
 
-// ---- issue #157 -------------------------------------------------------------
-
 test("one press is one leave: the buttons give way to progress at once, and a second press does nothing", async (t) => {
   // S22: ~23 s with the dialog unchanged, and a second press started a second leave.
   let finish;
