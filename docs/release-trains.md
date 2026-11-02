@@ -74,6 +74,18 @@ groups forward one patch to v1.1.12–v1.1.15. Their issue memberships and
 acceptance requirements are unchanged; the owner confirmed the move on
 2026-11-02.
 
+Owner decision, 2026-11-02: for 1.1.11 the owner waived physical-phone
+verification as a merge gate. A candidate reaches the owner's phone only
+through a download served from the laptop, which the owner's operating rules
+forbid. The desktop record
+([2026-11-02](validation-runs/2026-11-02-train-1.1.11.md)) stands. The
+physical-phone journey runs on the published release right after
+publication: the owner's iPhone, removed by the encryption upgrade, pairs
+again with its older key kept, then Force sync. It is recorded, and a failure
+there is fixed in the next patch. The waiver establishes no iPhone
+behaviour; the general physical-device requirement and later trains are
+unchanged.
+
 ## Composition and acceptance
 
 Each numbered release is assembled into one artifact PR before owner merge.
@@ -102,7 +114,8 @@ The release order follows the table; no date or completed capability is promised
 - 1.1.11 requires the plugin's desktop and physical-phone journeys (pairing again
   after a key rotation, the pending-transition restart, Force sync) recorded in
   `docs/validation-runs/`, composed build gates, independent exact-head review,
-  authenticated artifacts and live server delivery.
+  authenticated artifacts and live server delivery. Physical-phone verification
+  has the release-specific owner waiver above and runs on the published release.
 - 1.1.12 requires pairing-state readback and physical-phone acceptance; emulator
   rehearsal is supplemental evidence.
 - 1.1.13 requires the integrated CLI, native Obsidian and real MCP-host journeys,
