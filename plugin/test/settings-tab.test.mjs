@@ -578,6 +578,22 @@ test("Check reads 'Checking…' at once, asks with a person's patience, and answ
   assert.equal(s.obsidian.notices.at(-1), "obsync: Your server refused this request; the obsync log names the reason.");
 });
 
+test("the Connection row's Force sync runs the plugin's, and cannot be pressed again while it runs (#369)", async (t) => {
+  const pressed = [];
+  let finish;
+  const s = open(t, { forceSync: () => { pressed.push("forceSync"); return new Promise((resolve) => { finish = resolve; }); } });
+  const { made } = s.render("Connection");
+  assert.deepEqual(made.map((widget) => widget.text), ["Check", "Force sync", "Open dashboard"]);
+  const force = s.button(made, "Force sync");
+  assert.equal(force.tooltip, "Check every file here and on the server, and bring this device level with the server.");
+  force.click();
+  assert.deepEqual(pressed, ["forceSync"]);
+  assert.equal(force.disabled, true);
+  finish();
+  await tick();
+  assert.equal(force.disabled, false, "pressable again once it answered");
+});
+
 test("the Connection row says what the status bar says while Settings is open, and stops following when it closes (#182)", (t) => {
   let words = "idle";
   const s = open(t, { statusText: () => words });

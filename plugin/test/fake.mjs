@@ -756,6 +756,8 @@ export class FakeServer {
     this.deduplicated = [];
     /** Set to model a server before 1.0.7: no `version_id` in the answer. */
     this.oldServer = false;
+    /** The most files one listing page holds, however many were asked for (`GET /v1/files`). */
+    this.pageLimit = 1000;
     this.devices = [
       {
         device_id: deviceId,
@@ -1133,7 +1135,7 @@ export class FakeServer {
     // exclusive cursor, at most 1000, `next` the last id included.
     if (path === "/v1/files" && request.method === "GET") {
       const params = new URLSearchParams(query);
-      const limit = Math.min(Math.max(Number(params.get("limit") ?? 1000), 1), 1000);
+      const limit = Math.min(Math.max(Number(params.get("limit") ?? 1000), 1), this.pageLimit);
       const ids = [...this.files.keys()].sort().filter((id) => id > (params.get("after") ?? ""));
       const page = ids.slice(0, limit);
       return this.json(200, {

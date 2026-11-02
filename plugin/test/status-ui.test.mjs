@@ -156,6 +156,8 @@ async function plugin(t, { mobile = false, view = null, data = null } = {}) {
   const { ApiError } = b.require(join(b.home, "build/transport.js"));
   let sent = 0;
   let verified = { checked: 0, sent: 0 };
+  let forced = { checked: 0, sent: 0, listed: 0, received: 0, downloading: 0, complete: true };
+  const presses = [];
   b.require(join(b.home, "build/sync/engine.js")).SyncEngine = class {
     reachability() {}
     constructor(options) { this.options = options; }
@@ -165,6 +167,7 @@ async function plugin(t, { mobile = false, view = null, data = null } = {}) {
     async stopAndWait() {}
     async syncNow() { return sent; }
     async verifyAll() { return verified; }
+    async forceSync() { presses.push("force_sync"); return forced; }
     wake() {}
     current() { return { kind: "idle" }; }
   };
@@ -197,7 +200,8 @@ async function plugin(t, { mobile = false, view = null, data = null } = {}) {
       deviceId: KEYS.deviceId, deviceSecret: KEYS.deviceSecret, purpose: "pair" });
   }
   await instance.onload();
-  return { ...b, instance, commands, hooks, item, views, ApiError, sending: (count) => { sent = count; }, verifying: (found) => { verified = found; } };
+  return { ...b, instance, commands, hooks, item, views, ApiError, presses, sending: (count) => { sent = count; }, verifying: (found) => { verified = found; },
+    forcing: (tally) => { forced = { ...forced, ...tally }; } };
 }
 
 /** A view whose header takes actions, as `ItemView.addAction` does. */
@@ -224,7 +228,7 @@ test("clicking the indicator opens Show sync status (#156)", async (t) => {
 
 test("the palette finds every command under 'obsync', and their ids have not changed (#156)", async (t) => {
   const p = await plugin(t);
-  assert.deepEqual(p.commands.map((command) => command.id), ["sync-now", "verify-all", "restore-history", "pair-device", "pair-this-device", "show-recovery-phrase",
+  assert.deepEqual(p.commands.map((command) => command.id), ["sync-now", "verify-all", "force-sync", "restore-history", "pair-device", "pair-this-device", "show-recovery-phrase",
     "open-dashboard", "open-setup-guide", "remote-only", "status", "leave-server", "switch-server",
     "notices-everything", "notices-needs-me", "merges-once", "merges-every", "merges-off", "recent"]);
   for (const command of p.commands) assert.match(command.name, /obsync/, command.name);
@@ -337,6 +341,73 @@ test("Verify all files is its own command and answers once with what it checked 
   const before = notices().length;
   await press();
   assert.deepEqual(notices().slice(before), ["obsync: Your server is not answering. Sync resumes by itself when it is back."]);
+});
+
+test("Force sync is its own command and answers once: in step, still arriving, cut short, or beside held deletions (#369)", async (t) => {
+  const p = await plugin(t);
+  const notices = () => p.obsidian.notices.filter((notice) => notice.startsWith("obsync:"));
+  const force = p.commands.find((command) => command.id === "force-sync");
+  assert.equal(force.name, "Force sync with the server (obsync)");
+  const press = async () => { for (const toast of p.obsidian.raised) toast.hide(); await p.instance.forceSync(); };
+  p.forcing({ checked: 3, sent: 1, listed: 5, received: 2 });
+  await force.callback();
+  await new Promise(setImmediate);
+  assert.deepEqual(notices(), ["obsync: in step with the server: checked 3 files here and 5 on the server; sent 1, received 2."]);
+  assert.deepEqual(p.presses, ["force_sync"], "the command ran the engine's pass");
+  p.forcing({ checked: 1, listed: 1, sent: 0, received: 0, downloading: 1 });
+  await press();
+  assert.equal(notices().at(-1), "obsync: checked 1 file here and 1 on the server; sent 0, received 0, still downloading 1.");
+  p.forcing({ downloading: 0, complete: false });
+  await press();
+  assert.equal(notices().at(-1), "obsync: checked 1 file here and 1 on the server; sent 0, received 0. It stopped before the end; select Force sync again to go on.");
+  p.forcing({ complete: true });
+  p.instance.state.data.heldDeletions = ["Notes/gone.md"];
+  await press();
+  assert.equal(notices().at(-1), "obsync: checked 1 file here and 1 on the server; sent 0, received 0.", "never in step beside deletions held back");
+  p.instance.state.data.heldDeletions = [];
+  // A refusal the pass met is the answer.
+  p.instance.engine.forceSync = async () => { throw new p.ApiError(403, "device_revoked", "REVOKED SENTINEL"); };
+  await press();
+  assert.match(notices().at(-1), /^obsync: This device was removed from your server\..*Pair it again/);
+  assert.doesNotMatch(notices().join("\n"), /SENTINEL|device_revoked|403/);
+});
+
+test("Force sync on a device that cannot sync says why and the one thing to do, and runs nothing (#369)", async (t) => {
+  const p = await plugin(t);
+  const logs = [], woke = [];
+  p.instance.log = (line) => logs.push(line);
+  p.instance.wake = (reason) => woke.push(reason);
+  const notices = () => p.obsidian.notices.filter((notice) => notice.startsWith("obsync:"));
+  const press = async () => { for (const toast of p.obsidian.raised) toast.hide(); await p.instance.forceSync(); return notices().at(-1); };
+  const custody = p.instance.state.custody2.bind(p.instance.state);
+
+  p.instance.setStatus({ kind: "error", code: "credential_rejected", message: "REVOKED SENTINEL. Pair it again." });
+  assert.equal(p.instance.forgottenDevice, true, "a rejected credential marks the device forgotten");
+  assert.equal(await press(), "obsync: REVOKED SENTINEL. Pair it again.", "the words Show sync status shows beside Pair again");
+  // Forgotten with no refusal standing: a device the server stopped recognising earlier.
+  p.instance.statusValue = { kind: "idle" };
+  assert.match(await press(), /no longer recognises this device.*pair from a syncing device/);
+  p.instance.forgottenDevice = false;
+  p.instance.state.custody2 = () => null;
+  assert.match(await press(), /needs the encryption upgrade\. Open obsync settings, then Upgrade encryption\./);
+  p.instance.state.custody2 = () => ({ ...custody(), rotation: {} });
+  assert.match(await press(), /Encryption transition pending\. Sync is stopped\. Resume it in obsync settings\./);
+  p.instance.state.custody2 = custody;
+  p.instance.state.keysLost = { dataRevision: 1, secretRevision: 1 };
+  assert.match(await press(), /holds none\. Pair this device again/);
+  p.instance.state.keysLost = null;
+  p.instance.transport.options.reachable(false);
+  assert.equal(await press(), "obsync: Your server is not answering. Sync resumes by itself when it is back.");
+  assert.deepEqual(woke, ["force_sync"], "and it goes on trying in the background");
+  assert.deepEqual(p.presses, [], "nothing was sent or asked");
+  assert.deepEqual(logs.filter((line) => line.startsWith("force_sync")), ["credential_rejected", "forgotten", "needs_upgrade", "transition", "keys_lost", "offline"]
+    .map((reason) => `force_sync decision=refused reason=${reason}`));
+
+  const fresh = await plugin(t, { data: { serverUrl: "https://sync.example.invalid", edgeHeaders: [] } });
+  await fresh.instance.forceSync();
+  assert.equal(fresh.obsidian.notices.filter((notice) => notice.startsWith("obsync:")).at(-1),
+    "obsync: This device is not paired yet. On a device that already syncs this vault, choose Pair a new device, then paste its code in obsync settings with Pair this device.");
+  assert.deepEqual(fresh.presses, []);
 });
 
 test("on a phone the indicator is in the header of the view in front, moves with it, and a tap opens Show sync status (#209)", async (t) => {

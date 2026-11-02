@@ -81,7 +81,7 @@ import {
   parseSyncFolders,
 } from "./syncScope";
 import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
-import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus } from "./sync/engine";
+import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus, refusalText as pressRefusal, stopped } from "./sync/engine";
 import { EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
 import { newDeviceTag, newVaultKey, PAIRING_ACTION, pastedToken, platformLabel, refusalFor, refusalText } from "./pairing";
@@ -524,6 +524,12 @@ function soleSpelling(names: string[], segment: string): string | null {
  * routine, and stays at debug.
  */
 const FAILURE_DECISION = /\bdecision=(refused|failed|stopped|stalled|lost|restore_failed|gave_up|temp_cleanup_failed|unresolved|fallback|throttle_unavailable)\b|^engine decision=waiting\b/;
+
+/** Why sync cannot run, and what to do, where a start or Force sync says it (#369). */
+const NEEDS_UPGRADE = "This vault needs the encryption upgrade. Open obsync settings, then Upgrade encryption. Local notes are unchanged.";
+const TRANSITION_PENDING = "Encryption transition pending. Sync is stopped. Resume it in obsync settings.";
+const NOT_PAIRED = "This device is not paired yet. On a device that already syncs this vault, choose Pair a new device, " +
+  "then paste its code in obsync settings with Pair this device.";
 
 /**
  * How long a device waits to start again after the server could not be
@@ -3918,6 +3924,7 @@ export default class ObsyncPlugin extends Plugin {
 
     this.addCommand({ id: "sync-now", name: "Sync now (obsync)", callback: () => void this.syncNow() });
     this.addCommand({ id: "verify-all", name: "Verify all files (obsync)", callback: () => void this.syncNow(true) });
+    this.addCommand({ id: "force-sync", name: "Force sync with the server (obsync)", callback: () => void this.forceSync() });
     this.addCommand({ id: "restore-history", name: "Restore from history (obsync)", callback: () => new HistoryModal(this.app, this).open() });
     this.addCommand({
       id: "pair-device",
@@ -4449,7 +4456,7 @@ export default class ObsyncPlugin extends Plugin {
     const generation = this.lifecycle;
     if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null || this.rotating || this.state.custody2()?.rotation) return;
     if (this.state.custody2() === null) {
-      this.setStatus({ kind: "error", message: "This vault needs the encryption upgrade. Open obsync settings, then Upgrade encryption. Local notes are unchanged." });
+      this.setStatus({ kind: "error", message: NEEDS_UPGRADE });
       return;
     }
     const started = Date.now();
@@ -4638,6 +4645,52 @@ export default class ObsyncPlugin extends Plugin {
     if (answer !== null) this.notices.show({ kind: "confirm", text: answer });
   }
 
+  /**
+   * Force sync (#369): this device level with the server, or why it cannot
+   * be. Standing first, in the words Show sync status uses: a device that
+   * cannot sync sends and asks nothing, and is told the one thing to do. Then
+   * the engine's pass (`SyncEngine.forceSync`), answered once, as Sync now is.
+   */
+  async forceSync(): Promise<void> {
+    if (this.changingScope || this.restoring !== null) return;
+    const status = this.shown();
+    const custody = this.state.paired ? this.state.custody2() : undefined;
+    const [reason, refusal]: [string, string] | [null, null] = this.state.keysLost ? ["keys_lost", KEYS_LOST]
+      : !this.state.paired ? ["not_paired", NOT_PAIRED]
+      // Revoked or forgotten, in the words the refusal came with; both set `forgottenDevice`.
+      : status.kind === "error" && status.code === "credential_rejected" ? ["credential_rejected", status.message]
+      : this.forgottenDevice ? ["forgotten", FORGOTTEN_DEVICE]
+      : custody === null ? ["needs_upgrade", NEEDS_UPGRADE]
+      : custody?.rotation || this.rotating ? ["transition", TRANSITION_PENDING]
+      : status.kind === "offline" ? ["offline", NOT_ANSWERING]
+      : [null, null];
+    if (refusal !== null) {
+      this.log(`force_sync decision=refused reason=${reason}`);
+      if (status.kind === "offline") this.wake("force_sync");
+      this.notices.show({ kind: "confirm", text: refusal });
+      return;
+    }
+    if (!this.engine) await this.startEngine();
+    let answer: string | null = null;
+    try {
+      const tally = await this.engine?.forceSync();
+      if (tally !== undefined) {
+        const { checked, sent, listed, received, downloading, complete } = tally;
+        const words = `checked ${count(checked, "file")} here and ${listed} on the server; sent ${sent}, received ${received}` +
+          (downloading > 0 ? `, still downloading ${downloading}` : "");
+        const held = this.engine?.context?.state.data.heldDeletions.length ?? 0;
+        answer = !complete ? `${words}. It stopped before the end; select Force sync again to go on.`
+          : held > 0 || downloading > 0 ? `${words}.` : `in step with the server: ${words}.`;
+      }
+    } catch (error) {
+      if (stopped(error)) return;
+      answer = pressRefusal(error);
+    }
+    const after = this.shown();
+    answer = after.kind === "offline" ? NOT_ANSWERING : after.kind === "error" ? after.message : answer;
+    if (answer !== null) this.notices.show({ kind: "confirm", text: answer });
+  }
+
   /** Resume in Show sync status: sync one paused note again (issue #179). */
   async resumeNote(fileId: string): Promise<void> {
     await this.engine?.resume(fileId, "status");
@@ -4664,7 +4717,7 @@ export default class ObsyncPlugin extends Plugin {
     this.rotationRunning = true;
     try { await action(this.rotationClient); assertCurrent(); }
     finally { this.rotationRunning = false; if (this.isCurrent(generation) && this.state === state) this.rotating = state.custody2()?.rotation != null; }
-    if (this.rotating) this.setStatus({ kind: "error", message: "Encryption transition pending. Sync is stopped. Resume it in obsync settings." });
+    if (this.rotating) this.setStatus({ kind: "error", message: TRANSITION_PENDING });
   }
 
   startRotation(target: string | null): Promise<void> { return this.rotationAction(client => client.start(target)); }
