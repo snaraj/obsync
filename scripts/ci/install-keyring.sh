@@ -68,7 +68,7 @@ while read -r path sha; do
     kept="${kept} ${name}=${status#ii }"
     continue
   fi
-  curl --proto '=https' --tlsv1.2 -sSfL --retry 4 --retry-delay 5 -o "${work}/${file}" "${SNAPSHOT}/${path}" \
+  curl --proto '=https' --tlsv1.2 -sSfL --retry 20 --retry-delay 30 --retry-max-time 900 -o "${work}/${file}" "${SNAPSHOT}/${path}" \
     || deny "could not download ${path}"
   printf '%s  %s\n' "${sha}" "${work}/${file}" | sha256sum -c - >/dev/null \
     || deny "${file} does not match its pinned SHA-256"

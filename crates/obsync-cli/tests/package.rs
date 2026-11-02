@@ -23,8 +23,14 @@ use std::{
 // only spawn's fork/exec handoff; child waits and fixture work remain parallel.
 static SPAWN_HANDOFF: Mutex<()> = Mutex::new(());
 
+fn handoff() -> std::sync::MutexGuard<'static, ()> {
+    SPAWN_HANDOFF
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn spawn_fixture(command: &mut Command) -> std::io::Result<Child> {
-    let _handoff = SPAWN_HANDOFF.lock().unwrap();
+    let _handoff = handoff();
     command.spawn()
 }
 
@@ -65,7 +71,7 @@ impl Lab {
         ] {
             let p = source.join(name);
             {
-                let _handoff = SPAWN_HANDOFF.lock().unwrap();
+                let _handoff = handoff();
                 fs::write(&p, &bytes).unwrap();
                 fs::set_permissions(
                     &p,
@@ -249,13 +255,19 @@ fn changed_package_or_installation_refuses_before_removing_anything() {
     }
     let mut lab = Lab::new();
     let caller = lab.root.join("caller");
-    fs::copy(lab.source.join("obsync"), &caller).unwrap();
+    {
+        let _handoff = handoff();
+        fs::copy(lab.source.join("obsync"), &caller).unwrap();
+    }
     // Never execute the changed package member; the unchanged caller must
     // reject even a self-consistent manifest describing another executable.
     let binary = lab.source.join("obsync");
     let mut changed = fs::read(&binary).unwrap();
     changed.extend(b"synthetic fixture");
-    fs::write(&binary, &changed).unwrap();
+    {
+        let _handoff = handoff();
+        fs::write(&binary, &changed).unwrap();
+    }
     let mut manifest =
         json::parse(&fs::read(lab.source.join("package-manifest.json")).unwrap()).unwrap();
     if let Value::Object(fields) = &mut manifest {

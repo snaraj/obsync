@@ -7,17 +7,14 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ## 1.1.10 - 2026-11-02
 
-### Security
-
-- Update the Node build runtime to 26.13.0, actions/setup-python to 7.1.0 and the CodeQL actions to 4.39.1 (#359, #360, #361).
-
 ### Fixed
 
 - Give the dashboard a declared language and give buttons and inputs borders at 3:1 contrast in both colour schemes (#341).
-- Remove three sources of nondeterministic CI failures: the plugin harness's 10-second real-time wait under load (#343), a fork during the CLI package fixture's executable write (#338), and a transient mirror error during the desktop matrix's package download.
+- Remove three sources of nondeterministic CI failures: the plugin harness's 10-second real-time wait under load (#343), a fork during the CLI package fixture's executable writes (#338, partly: the Linux regression control is still open), and a transient mirror error during the desktop matrix's package download.
 
 ### Changed
 
+- Update the Node build runtime to 26.13.0, actions/setup-python to 7.1.0 and the CodeQL actions to 4.39.1 (#359, #360, #361).
 - Describe other projects in the documentation without naming them (#328), and remove stale and process-history comments outside the plugin (#366).
 
 ## 1.1.9 - 2026-11-01

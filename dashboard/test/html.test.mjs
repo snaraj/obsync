@@ -523,4 +523,9 @@ test('button and input borders reach 3:1 against the page in both schemes', () =
   for (const rule of [/^button \{[^}]*\}/m, /^input \{[^}]*\}/m]) {
     assert.match(css.match(rule)[0], /border: 1px solid var\(--control\)/);
   }
+  const controls = [...css.matchAll(/^\s*((?:button|input)[^{,]*(?:,[^{]*)?)\{([^}]*)\}/gm)];
+  assert.ok(controls.length >= 2);
+  for (const [, selector, body] of controls) {
+    assert.doesNotMatch(body, /border[^;]*var\(--rule\)/, `${selector.trim()} draws its border in --rule`);
+  }
 });

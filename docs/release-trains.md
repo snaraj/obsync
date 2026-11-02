@@ -20,8 +20,8 @@ are applied on GitHub; they describe planned delivery, not completed acceptance.
 #325 separates the immediate measurements, pipeline improvements, reviewed
 state/migration design and bounded experiments from #315's later engine. Its
 experimental engine code does not ship in 1.1.7. #319 moves out of the deferred
-bucket into 1.1.7. #254 and #262 close only after the integrated 1.1.11 management
-train's public artifact and live acceptance; the explicit 1.1.12 work stays open.
+bucket into 1.1.7. #254 and #262 close only after the integrated 1.1.12 management
+train's public artifact and live acceptance; the explicit 1.1.13 work stays open.
 
 Owner decision, 2026-10-12: ship the security train (#344, #346, PR #347)
 first as **v1.1.8**, and move the previously agreed v1.1.8–v1.1.11 trains

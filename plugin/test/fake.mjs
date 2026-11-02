@@ -1360,7 +1360,7 @@ export class FakeServer {
 }
 
 /** How long a wait for an OUTCOME may take in real time before it gives up. */
-const WAIT_BUDGET_MS = 60000;
+export const WAIT_BUDGET_MS = 60000;
 /** How long a wait for NOTHING watches, in real time, before it is satisfied. */
 const QUIET_MS = 250;
 /**
