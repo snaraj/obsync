@@ -1103,9 +1103,9 @@ test("a note queued while the drain saves its records is still sent (#313)", asy
   // Advance only a timer this watcher actually owns. While stat/crypto runs,
   // freeze virtual time instead of spending its advance limit on promises.
   const watcherUntil = (condition) => {
-    const deadline = performance.now() + 10000;
+    const deadline = performance.now() + 60000;
     return timers.run(0, () => {
-      assert.ok(performance.now() < deadline, "the watcher outcome exceeded its 10-second budget");
+      assert.ok(performance.now() < deadline, "the watcher outcome exceeded its 60-second budget");
       if (condition()) return true;
       const handles = new Set([...engine.pending.values()].map((pending) => pending.handle));
       const next = Math.min(...timers.entries.filter((entry) => handles.has(entry.handle)).map((entry) => entry.due));

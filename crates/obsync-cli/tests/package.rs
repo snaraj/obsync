@@ -64,12 +64,15 @@ impl Lab {
             ("obsync", fs::read(env!("CARGO_BIN_EXE_obsync")).unwrap()),
         ] {
             let p = source.join(name);
-            fs::write(&p, &bytes).unwrap();
-            fs::set_permissions(
-                &p,
-                fs::Permissions::from_mode(if name == "obsync" { 0o700 } else { 0o600 }),
-            )
-            .unwrap();
+            {
+                let _handoff = SPAWN_HANDOFF.lock().unwrap();
+                fs::write(&p, &bytes).unwrap();
+                fs::set_permissions(
+                    &p,
+                    fs::Permissions::from_mode(if name == "obsync" { 0o700 } else { 0o600 }),
+                )
+                .unwrap();
+            }
             if name == "obsync" {
                 // The release profile strips symbols. Do the same to this
                 // private executable copy before hashing it: Linux DWARF can
