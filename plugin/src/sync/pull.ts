@@ -536,7 +536,11 @@ export async function heldNotes(transport: Transport, manifestKey: Bytes, scope:
         if (!(error instanceof ManifestError)) throw error;
       }
     }
-    if (page.changes.length === 0 || page.seq <= since) break;
+    // AN EMPTY PAGE IS NOT THE END (#376). obsyncd counts the entries of
+    // another key generation toward a page and skips them, so after a
+    // rotation the first pages of a long feed can carry nothing at all while
+    // their cursor is still short of the head.
+    if (page.seq >= page.head_seq || page.seq <= since) break;
     since = page.seq;
   }
   const parents = parentsFrom(graph);

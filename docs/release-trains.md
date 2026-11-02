@@ -13,16 +13,17 @@ are applied on GitHub; they describe planned delivery, not completed acceptance.
 | [v1.1.9](https://github.com/snaraj/obsync/milestone/38) | Security dependency repairs: Node build runtime, server trust bundle and documentation certifi | #357, #362, #363 |
 | [v1.1.10](https://github.com/snaraj/obsync/milestone/39) | Maintenance: dependency updates, CI flake repairs, dashboard language and control contrast, neutral documentation, comment cleanup outside the plugin | #328, #338, #341, #343, #359, #360, #361, #366 |
 | [v1.1.11](https://github.com/snaraj/obsync/milestone/40) | Force sync with the server, a copyable recovery backup with a direct way back to the encryption upgrade, and pairing again after a missed encryption upgrade | #364, #369, #370 |
-| [v1.1.12](https://github.com/snaraj/obsync/milestone/34) | Pairing confirmation, physical-phone blind-start/readback, remaining concurrent-input timing and conflict-notice acceptance | #290, #314, #339, #340 |
-| [v1.1.13](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs and final integrated acceptance | #254, #256, #257, #258, #261, #262, #321 |
-| [v1.1.14](https://github.com/snaraj/obsync/milestone/32) | Deferred export, storage/deployment, backup/recovery and co-editing engine | #259, #260, #315, #317 |
-| [v1.1.15](https://github.com/snaraj/obsync/milestone/36) | Large-file limits, mobile streaming and measured device ceilings | #330, #331, #332 |
+| [v1.1.12](https://github.com/snaraj/obsync/milestone/41) | Pairing again after a rotation without a false upload question, and the mobile harness tests' disk-space dependence | #373, #376 |
+| [v1.1.13](https://github.com/snaraj/obsync/milestone/34) | Pairing confirmation, physical-phone blind-start/readback, remaining concurrent-input timing and conflict-notice acceptance | #290, #314, #339, #340 |
+| [v1.1.14](https://github.com/snaraj/obsync/milestone/35) | Management authentication, existing-server setup, device lifecycle, MCP observe, readable logs and final integrated acceptance | #254, #256, #257, #258, #261, #262, #321 |
+| [v1.1.15](https://github.com/snaraj/obsync/milestone/32) | Deferred export, storage/deployment, backup/recovery and co-editing engine | #259, #260, #315, #317 |
+| [v1.1.16](https://github.com/snaraj/obsync/milestone/36) | Large-file limits, mobile streaming and measured device ceilings | #330, #331, #332 |
 
 #325 separates the immediate measurements, pipeline improvements, reviewed
 state/migration design and bounded experiments from #315's later engine. Its
 experimental engine code does not ship in 1.1.7. #319 moves out of the deferred
-bucket into 1.1.7. #254 and #262 close only after the integrated 1.1.13 management
-train's public artifact and live acceptance; the explicit 1.1.14 work stays open.
+bucket into 1.1.7. #254 and #262 close only after the integrated 1.1.14 management
+train's public artifact and live acceptance; the explicit 1.1.15 work stays open.
 
 Owner decision, 2026-10-12: ship the security train (#344, #346, PR #347)
 first as **v1.1.8**, and move the previously agreed v1.1.8–v1.1.11 trains
@@ -86,6 +87,16 @@ there is fixed in the next patch. The waiver establishes no iPhone
 behaviour; the general physical-device requirement and later trains are
 unchanged.
 
+Owner request, 2026-11-02: pairing the owner's iPhone again on 1.1.11 asked
+to upload 149 notes the server already held (#376). The fix ships with #373
+as **v1.1.12**, moving the agreed v1.1.12–v1.1.15 groups forward one patch
+to v1.1.13–v1.1.16; their issue memberships and acceptance requirements are
+unchanged. From v1.1.12 an Android emulator running the official Obsidian app
+may stand in for the phone (AGENTS.md step 7). For 1.1.12 itself the owner
+chose to skip the pre-merge phone and emulator journeys: the owner's iPhone
+pairing again on the published release is its phone journey, recorded
+afterwards, and a failure there is fixed in the next patch.
+
 ## Composition and acceptance
 
 Each numbered release is assembled into one artifact PR before owner merge.
@@ -116,13 +127,17 @@ The release order follows the table; no date or completed capability is promised
   `docs/validation-runs/`, composed build gates, independent exact-head review,
   authenticated artifacts and live server delivery. Physical-phone verification
   has the release-specific owner waiver above and runs on the published release.
-- 1.1.12 requires pairing-state readback and physical-phone acceptance; emulator
+- 1.1.12 requires the #376 failure and its repair shown against the live
+  server's evidence and the plugin suite, composed build gates, independent
+  exact-head review, authenticated artifacts and live server delivery. Its
+  phone journey has the release-specific owner decision above.
+- 1.1.13 requires pairing-state readback and physical-phone acceptance; emulator
   rehearsal is supplemental evidence.
-- 1.1.13 requires the integrated CLI, native Obsidian and real MCP-host journeys,
+- 1.1.14 requires the integrated CLI, native Obsidian and real MCP-host journeys,
   applicable security/performance gates and exact public artifact proof.
-- 1.1.14 depends on the reviewed designs and retains every deferred security,
+- 1.1.15 depends on the reviewed designs and retains every deferred security,
   recovery, native-device, mixed-version and convergence requirement.
-- 1.1.15 requires measured size and watermark boundaries, mixed-version
+- 1.1.16 requires measured size and watermark boundaries, mixed-version
   refusals and real-phone evidence before raising advertised limits.
 
 Security, E2EE, durability and performance requirements remain unchanged.

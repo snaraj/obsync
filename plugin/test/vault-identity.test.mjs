@@ -342,6 +342,44 @@ test("a claimant counts the notes the server's vault does not hold, byte for byt
   assert.ok(p.logs.some((line) => /^pairing role=claimant decision=surveyed local=3 unknown=3 older=0 held=2 duration_ms=\d+$/.test(line)));
 });
 
+// After a rotation the feed opens with the earlier generation's entries, more
+// than a page of them, and obsyncd answers those pages empty with a cursor short
+// of the head. The survey stopped at the first one and asked to upload every
+// note the server already held (#376, a phone pairing again, 2026-11-02).
+test("a claimant reads past pages another key generation fills, and finds the notes the server holds (#376)", async (t) => {
+  const server = new FakeServer();
+  const k = await keys();
+  server.otherGenerationEntries(1001);
+  await server.seedDomainMap(k.map, KEYS.domainId);
+  await server.publish({
+    fileId: "11".repeat(16), path: "Notes/a.md", bytes: enc("alpha\n"), mtime: 1757200000000,
+    domainKey: k.domainKey, manifestKey: k.manifestKey,
+  });
+  const copy = new FakeHost();
+  copy.seed("Notes/a.md", "alpha\n");
+  copy.seed("Private/new.md", "only here\n");
+  const p = await plugin(t, { server, host: copy, metadata: { vrk: null } });
+  assert.equal(await p.instance.notesUnknownTo2(KEYS.vrk, (await keys()).generation, p.instance.transport), 1, "only the note the server lacks");
+  assert.deepEqual(p.posts(), [], "the survey only reads");
+  assert.ok(p.logs.some((line) => /^pairing role=claimant decision=surveyed local=2 unknown=1 older=0 held=1 duration_ms=\d+$/.test(line)), p.logs.join("\n"));
+});
+
+// A page that does not move the cursor ends the survey, whatever it says of
+// the head: a server that answered one forever would hold pairing forever.
+test("a survey ends on a page that leaves the cursor where it was (#376)", async (t) => {
+  const { server } = await holdingVault();
+  const copy = new FakeHost();
+  copy.seed("Notes/a.md", "alpha\n");
+  const p = await plugin(t, { server, host: copy, metadata: { vrk: null } });
+  let calls = 0;
+  p.instance.transport.changes = async (since) => {
+    if (++calls > 3) throw new Error("the survey asked for the same cursor again");
+    return { seq: since, head_seq: since + 10, changes: [] };
+  };
+  assert.equal(await p.instance.notesUnknownTo2(KEYS.vrk, (await keys()).generation, p.instance.transport), 1);
+  assert.equal(calls, 1, "one read, then the survey stops");
+});
+
 // A device paired again after the others edited while it was away holds each
 // such note as it last saw it: an earlier version, which pairing takes as that
 // version and uploads nothing (#194). Counted as unknown, it asked about notes

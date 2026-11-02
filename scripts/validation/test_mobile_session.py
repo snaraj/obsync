@@ -35,7 +35,7 @@ class Configuration(unittest.TestCase):
             'obsidianSha256':M.COMMON.digest(paths['obsidianExecutable']),'obsidianAsarSha256':M.COMMON.digest(paths['obsidianAsar']),
             'tlsScriptSha256':M.COMMON.digest(paths['tlsScript']),'observerSha256':M.COMMON.digest(self.source/'scripts/ci/observer.mjs'),
             'pluginHashes':{n:M.COMMON.digest(self.source/'plugin/dist'/n) for n in M.PLUGIN}}
-        self.path=self.root/'config.json'
+        self.path=self.root/'config.json';self.free=20*1024**3
 
     def load(self):
         self.path.write_text(json.dumps(self.config));self.path.chmod(0o600)
@@ -47,7 +47,10 @@ class Configuration(unittest.TestCase):
             def __enter__(self):return self
             def __exit__(self,*_):pass
             def bind(self,address):self.address=address
-        with patch.object(M.subprocess,'check_output',side_effect=git),patch.object(M.socket,'socket',return_value=Port()):
+        def space(path):
+            self.assertEqual(Path(path),self.run.parent);return SimpleNamespace(free=self.free)
+        with patch.object(M.subprocess,'check_output',side_effect=git),patch.object(M.socket,'socket',return_value=Port()), \
+             patch.object(M.shutil,'disk_usage',side_effect=space):
             return M.configuration(self.path,self.run)
 
     def test_exact_pins_and_default_budget_without_creating_run(self):
@@ -59,6 +62,11 @@ class Configuration(unittest.TestCase):
         self.config['mode']='core';self.assertEqual(self.load()['mode'],'core')
         self.config['mode']='skip-security'
         with self.assertRaisesRegex(ValueError,'core or acceptance'):self.load()
+
+    def test_less_than_twenty_gib_free_refuses_without_creating_run(self):
+        self.free-=1
+        with self.assertRaisesRegex(ValueError,'20 GiB free required'):self.load()
+        self.assertFalse(self.run.exists())
 
     def test_changed_application_javascript_refuses(self):
         Path(self.config['obsidianAsar']).write_bytes(b'tampered application JS')
