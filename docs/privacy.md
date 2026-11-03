@@ -34,9 +34,10 @@ that server holds it.
 - **Every device paired to the account, and every dashboard session, can read
   the device list**, addresses included.
 - **It keeps a device's record after the device is revoked.** Its name, its
-  last address and its newest 256 activity events stay until the server is
-  [purged](purge.md). The server's own log holds no addresses and no device
-  names. [What the server keeps about a device](dashboard.md#what-the-server-keeps-about-a-device)
+  last known address and country, and its newest 256 activity events stay
+  until the server is [purged](purge.md). A country is replaced only by a
+  later event that carries one, so it can outlast the history. The server's
+  own log holds no client addresses and no device names. [What the server keeps about a device](dashboard.md#what-the-server-keeps-about-a-device)
   lists each item, how long it stays and what removes it.
 - **It sends nothing to the project or to anyone else.** It only answers
   requests.

@@ -182,12 +182,13 @@ them, and for how long.
 | What | How long | What removes it |
 | --- | --- | --- |
 | Its name, platform, plugin version and pairing date | As long as its record exists | Only a [purge](purge.md) removes the record |
-| Its latest address and country, and when it last signed in, checked in and wrote | Until a later sign-in, check-in or edit replaces them; unchanged once it stops connecting | A purge |
+| When it last signed in, checked in and wrote | Until a later sign-in, check-in or edit replaces them; unchanged once it stops connecting | A purge |
+| Its latest known address and country | Each is replaced only by a later event that carries one. An event without a country leaves the previous country in place: in `none` edge mode, or when the edge sends no valid country. So a country can outlive the whole history, and switching edge modes does not clear it | A purge |
 | **History**: each `sign_in`, `heartbeat` and `edit`, with its time, address and country | Its newest 256 events, with no time limit; **History** shows the newest 64 | Newer events push the oldest out; a device that stops connecting keeps its last 256 |
 | Which device wrote each stored version, and when | As long as that version is kept ([Garbage collection](storage.md#garbage-collection)) | Garbage collection |
 
-- **Revoking or forgetting a device keeps its record**, its last address and
-  its history included. Only a pairing claim nobody approved is deleted
+- **Revoking or forgetting a device keeps its record**, its last known address
+  and country and its history included. Only a pairing claim nobody approved is deleted
   outright: rejected, expired, or dropped by a restart.
 - **A [purge](purge.md) is the only way to erase a device's record**, and it
   erases everything else with it.
@@ -198,7 +199,8 @@ them, and for how long.
   last one), not a clock, so on a quiet server that can take a long time.
   Backups of the journal volume hold the same records for as long as you keep
   them.
-- **The server's log holds no addresses and no names.** Each request line
+- **The server's log holds no client addresses and no device names.** The only
+  addresses it logs are the ones the server itself listens on. Each request line
   carries the method, the route, the first eight characters of the device id,
   the status, the response size, the time taken and the decision. The server writes it
   to standard error, and your container runtime decides how long it is kept.
