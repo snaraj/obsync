@@ -390,8 +390,9 @@ reset's time, arming one re-enrolment until a verifier is registered),
 revoke, delete, wrap),
 `version` (which carries its file's `domain_id`, so replay reaches the same
 domain the post named), `gc` (a list of sids collected), `scrub` (a step
-that found a mismatch, or completed a pass), `seen` (device sign-in and edit
-events, retention-bounded; an accepted version post appends its `version`
+that found a mismatch, or completed a pass), `seen` (device sign-in, heartbeat
+and edit events; the index keeps each device's newest 256; an accepted
+version post appends its `version`
 frame and its `seen` edit frame together, with one fsync, which posts queued
 behind the previous fsync share; durability rule 2). There
 is no `domain` frame: a domain exists because a file record names it

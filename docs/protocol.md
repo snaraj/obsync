@@ -913,7 +913,8 @@ device whose link opened it is revoked.
   "chunks_retained"}`, `<scrub>` = `{"ts","duration_ms","chunks_verified",
   "bytes_verified","mismatches","quarantined":<count>,"complete_pass"}`.
 - `GET /v1/admin/devices` → as `/v1/devices` plus `history:[{"ts","event":
-  "sign_in|edit|heartbeat","address","country"}]` bounded by retention.
+  "sign_in|edit|heartbeat","address","country"}]`: the device's newest 64
+  events, newest first, of the 256 the server keeps per device.
 - `POST /v1/admin/devices/{id}/revoke` → `204`; `409 last_device` when the
   target is the only ACTIVE device and account recovery is unregistered, and
   `409 recovery_too_new` when it is registered and younger than seven days. Revocation also closes the dashboard

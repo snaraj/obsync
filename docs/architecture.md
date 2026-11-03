@@ -2309,8 +2309,10 @@ Address and country: in `cloudflare` edge mode from the edge's
 connecting-address and country headers; in `none` mode from the peer
 address or a trusted proxy's `X-Forwarded-For` or `Forwarded` header. Either
 header is believed only from a peer inside `OBSYNC_TRUSTED_PROXY_CIDRS`, and
-when a proxy sends both they must name the same client or neither is believed. Device history retention defaults to 90
-days. Multi-account operation is a backlog issue; every record already
+when a proxy sends both they must name the same client or neither is believed. Each device's history keeps its newest
+256 events, with no time limit
+([The dashboard](dashboard.md#what-the-server-keeps-about-a-device)).
+Multi-account operation is a backlog issue; every record already
 carries an `account_id`.
 
 ## 9. Configuration

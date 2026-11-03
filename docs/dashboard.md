@@ -84,8 +84,8 @@ authenticate WebAuthn credentials.
 The address comes from the edge's connecting-address header in `cloudflare`
 edge mode, and from the peer address or a trusted proxy header in `none` mode.
 The COUNTRY has one source only, the edge's country header, so in `none` mode
-that column is empty rather than guessed. Device history retention defaults to
-90 days.
+that column is empty rather than guessed. How long the server keeps them is
+[below](#what-the-server-keeps-about-a-device).
 [Protocol](protocol.md#dashboard-admin-api) is the exact shape of every
 response behind these pages.
 
@@ -173,6 +173,41 @@ Those capture slots require a recorded run of the current dashboard
 vault against a throwaway server, and they obey the same redaction rules as
 every other capture in this repository — no address, no device identifier, no credential
 of any kind ([the screenshot conventions](captures/README.md)).
+
+## What the server keeps about a device
+
+What to tell anyone who syncs to your server and asks what it holds about
+them, and for how long.
+
+| What | How long | What removes it |
+| --- | --- | --- |
+| Its name, platform, plugin version and pairing date | As long as its record exists | Only a [purge](purge.md) removes the record |
+| Its latest address and country, and when it last signed in, checked in and wrote | Until a later sign-in, check-in or edit replaces them; unchanged once it stops connecting | A purge |
+| **History**: each `sign_in`, `heartbeat` and `edit`, with its time, address and country | Its newest 256 events, with no time limit; **History** shows the newest 64 | Newer events push the oldest out; a device that stops connecting keeps its last 256 |
+| Which device wrote each stored version, and when | As long as that version is kept ([Garbage collection](storage.md#garbage-collection)) | Garbage collection |
+
+- **Revoking or forgetting a device keeps its record**, its last address and
+  its history included. Only a pairing claim nobody approved is deleted
+  outright: rejected, expired, or dropped by a restart.
+- **A [purge](purge.md) is the only way to erase a device's record**, and it
+  erases everything else with it.
+- **Replaced values stay on disk a while longer.** Every change is appended to
+  the journal, so an earlier address or name, or an event past the newest 256,
+  stays in older files on the journal volume until later compactions remove
+  them. Compaction follows the journal's growth (at least 16 MiB since the
+  last one), not a clock, so on a quiet server that can take a long time.
+  Backups of the journal volume hold the same records for as long as you keep
+  them.
+- **The server's log holds no addresses and no names.** Each request line
+  carries the method, the route, the first eight characters of the device id,
+  the status, the response size, the time taken and the decision. The server writes it
+  to standard error, and your container runtime decides how long it is kept.
+  **Logs** reads from memory: the newest 1,000 requests that proved a
+  credential and the newest 200 that did not. A restart clears them.
+- **Whatever terminates TLS in front of the server sees every address**: your
+  reverse proxy, a tunnel provider, or the Compose deployment's Caddy. Whether
+  it logs them, and for how long, is its own configuration; the
+  `deploy/compose/Caddyfile` this repository ships turns on no access log.
 
 ## Next
 
