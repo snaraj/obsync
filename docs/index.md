@@ -47,6 +47,7 @@ tunnel you trust; Cloudflare is one optional choice.
 
 | I want to… | Go to |
 | --- | --- |
+| Know what obsync and this site collect, and what a server keeps | [Privacy](privacy.md) |
 | Know what the plugin touches | [What this plugin accesses](https://github.com/snaraj/obsync#what-this-plugin-accesses) |
 | Know what is encrypted and what the server can see | [Threat model](threat-model.md) |
 | Know what the dashboard defends | [The dashboard's threat model](security/dashboard.md) |

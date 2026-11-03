@@ -43,6 +43,7 @@ version you run. There is no beta channel and no pre-release tag.
 
 | Page | What it answers |
 | --- | --- |
+| [Privacy](privacy.md) | What the project and its documentation site collect, and what a server keeps and for how long |
 | [What this plugin accesses](../README.md#what-this-plugin-accesses) | Every surface the plugin touches |
 | [Threat model](threat-model.md) | What is encrypted, what is defended, and what is not |
 | [The dashboard's threat model](security/dashboard.md) | Sessions, sign-in, revocation, residuals |

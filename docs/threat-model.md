@@ -289,7 +289,7 @@ claims. A backup format prefix does not prove freshness.
    choice 3).
 6. The dashboard's decision log is two bounded in-memory rings, not an audit
    trail: unauthenticated traffic evicts only unauthenticated traffic, but
-   neither ring is durable and a restart empties both. Process stdout is the
+   neither ring is durable and a restart empties both. The process's standard error is the
    record ([`security/dashboard.md`](security/dashboard.md)).
 7. Server primitives are checked against published vectors. The SHA-256
    differential test compares with an available host tool and skips when
