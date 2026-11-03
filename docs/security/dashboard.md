@@ -87,11 +87,11 @@ device.
   behind it on a route where the log has no other way to judge one: those
   lines took credentialed ring space and carried the journal head with them.
 - Every refused sign-in is a `warn` line carrying its decision, and it
-  reaches the Logs page as well as stdout for as long as it is retained: a
+  reaches the Logs page as well as the server's standard error for as long as it is retained: a
   run of attempts is visible rather than merely rate-limited, and it cannot
   push the authenticated record off that page (the ring split below). A
   refusal is unauthenticated traffic, so it sits in the 200-line public ring
-  and other unauthenticated traffic can displace it there; stdout keeps it
+  and other unauthenticated traffic can displace it there; standard error keeps it
   either way.
 - The address and country shown for a device are the peer's, unless an edge
   is configured; forwarded headers from an untrusted peer are ignored.
@@ -158,7 +158,7 @@ device.
   to check one against. The refusal therefore proves nothing, carries no
   `X-Obsync-Seq`, and its line sits in the public ring, where a revoked
   device still hammering the server is visible but can be displaced by other
-  unauthenticated traffic. Stdout keeps every one of those lines. A pending
+  unauthenticated traffic. Standard error keeps every one of those lines. A pending
   device is the other way round: it still holds its secret, so
   `403 device_pending` is answered only after its signature verifies and is
   credentialed.
@@ -178,7 +178,7 @@ device.
   1000 lines from credentialed requests, 200 from everything else — so
   unauthenticated traffic can push out only other unauthenticated traffic,
   including other unauthenticated traffic's own refusals. Both rings are
-  shown. Ship stdout for an audit trail; every line in these rings was
+  shown. Ship standard error for an audit trail; every line in these rings was
   written there first.
 - `POST /v1/setup` and `POST /v1/pairing/{id}/claim` remain PUBLIC routes,
   but a setup call whose token compares equal records the proof and is
