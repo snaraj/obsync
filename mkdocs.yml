@@ -155,6 +155,7 @@ nav:
       - Purging a server: purge.md
       - Changelog: https://github.com/snaraj/obsync/blob/main/CHANGELOG.md
   - Trust and privacy:
+      - Privacy: privacy.md
       - What this plugin accesses: https://github.com/snaraj/obsync#what-this-plugin-accesses
       - Threat model: threat-model.md
       - The dashboard's threat model: security/dashboard.md

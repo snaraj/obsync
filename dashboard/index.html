@@ -171,7 +171,8 @@
     <h1 id="devices-h">Devices</h1>
     <p class="note">
       Every paired device syncs its selected folders under its own ceilings. Revoking one drops its
-      wrapped secret: its next request fails and no other device is affected.
+      wrapped secret: its next request fails and no other device is affected. Thirty days after a
+      device is revoked, the server deletes its addresses; its name and history stay.
     </p>
     <div class="scroller">
       <table class="grid" id="devices-table">
@@ -409,7 +410,7 @@
   <tr class="history" hidden>
     <td colspan="11">
       <ol class="events" data-f="events"></ol>
-      <p class="empty" data-f="empty" hidden>No history within the retention window.</p>
+      <p class="empty" data-f="empty" hidden>No history recorded.</p>
     </td>
   </tr>
 </template>

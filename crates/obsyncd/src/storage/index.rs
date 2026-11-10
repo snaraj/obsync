@@ -17,8 +17,9 @@ use crate::storage::types::{
 };
 use crate::types::{AccountId, DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
-/// How many activity events one device keeps. Retention days bound them too;
-/// this bounds memory when a device heartbeats far more often than expected.
+/// How many activity events one device keeps, with no time limit: this bounds
+/// memory when a device heartbeats far more often than expected. A revoked
+/// device's addresses go after `REVOKED_ADDRESS_DAYS`; its events stay.
 pub(crate) const SEEN_HISTORY: usize = 256;
 
 /// Most heads one file may hold.
@@ -292,6 +293,8 @@ impl Index {
                 policy,
                 app_version,
                 archived,
+                revoked_at,
+                forget_addresses,
             } => {
                 if let Some(entry) = self.devices.get_mut(device_id) {
                     if let Some(name) = name {
@@ -310,6 +313,22 @@ impl Index {
                         && entry.record.state == DeviceState::Revoked
                     {
                         entry.record.archived = *flag;
+                    }
+                    // The retention facts, under the same guard: only a
+                    // revoked device's addresses are ever forgotten, and its
+                    // first stamp is the one that counts (issue #341).
+                    if entry.record.state == DeviceState::Revoked {
+                        if entry.record.revoked_at.is_none() {
+                            entry.record.revoked_at = *revoked_at;
+                        }
+                        if *forget_addresses {
+                            entry.record.address = None;
+                            entry.record.country = None;
+                            for event in &mut entry.seen {
+                                event.address = None;
+                                event.country = None;
+                            }
+                        }
                     }
                 }
             }
@@ -1128,6 +1147,8 @@ mod tests {
             policy: None,
             app_version: None,
             archived: Some(flag),
+            revoked_at: None,
+            forget_addresses: false,
         };
         index.apply(&record(2, archive(true)));
         assert!(
@@ -1153,6 +1174,8 @@ mod tests {
                 policy: None,
                 app_version: None,
                 archived: None,
+                revoked_at: None,
+                forget_addresses: false,
             },
         ));
         assert!(index.devices[&id].record.archived);

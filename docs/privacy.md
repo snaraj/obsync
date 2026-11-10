@@ -2,7 +2,7 @@
 
 *For anyone deciding whether to trust obsync, and for anyone reading this site.*
 
-Dated 2026-11-02.
+Dated 2026-11-10.
 
 obsync is software you run. The project runs no sync service, keeps no account
 for you, and receives nothing from the plugin, the CLI or the server. What exists
@@ -33,10 +33,15 @@ that server holds it.
   lists every field.
 - **Every device paired to the account, and every dashboard session, can read
   the device list**, addresses included.
-- **It keeps a device's record after the device is revoked.** Its name, its
-  last known address and country, and its newest 256 activity events stay
-  until the server is [purged](purge.md). A country is replaced only by a
-  later event that carries one, so it can outlast the history. The server's
+- **It keeps a device's record after the device is revoked, and deletes its
+  addresses 30 days later.** Thirty days after a device is revoked, the server
+  deletes every address and country it recorded for that device, in its record
+  and in its history. Its name and its newest 256 activity events, without
+  addresses, stay until the server is [purged](purge.md). A device revoked by a
+  server older than 1.1.13 counts its 30 days from that server's first hour on
+  1.1.13 or later. A country is replaced only by a later event that carries
+  one, so for a device still in use it can outlast the history. Older journal
+  files and backups of the server's volumes keep a copy for longer. The server's
   own log holds no client addresses and no device names. [What the server keeps about a device](dashboard.md#what-the-server-keeps-about-a-device)
   lists each item, how long it stays and what removes it.
 - **It sends nothing to the project or to anyone else.** It only answers

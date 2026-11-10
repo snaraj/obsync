@@ -5044,3 +5044,179 @@ fn suite2_floor_corrupt_or_ambiguous_marker_never_truncates_into_legacy() {
 }
 
 mod rotation;
+
+/// The addresses and countries a test device was seen with, in its record
+/// and its history, and the length of that history.
+fn addresses(store: &Store, id: &DeviceId) -> (bool, usize, usize) {
+    let record = store.device(id).expect("device");
+    let history = store.seen_history(id, 10);
+    (
+        record.address.is_some() || record.country.is_some(),
+        history
+            .iter()
+            .filter(|e| e.address.is_some() || e.country.is_some())
+            .count(),
+        history.len(),
+    )
+}
+
+fn seen_from_an_address(store: &Store, id: &DeviceId, ts: u64) {
+    store
+        .record_seen(
+            id,
+            SeenEvent {
+                kind: SeenKind::SignIn,
+                ts: UnixMs(ts),
+                address: Some("198.51.100.7".to_string()),
+                country: Some("XX".to_string()),
+            },
+        )
+        .expect("seen");
+}
+
+/// Issue #341: a revoked device's addresses and countries are forgotten
+/// `REVOKED_ADDRESS_DAYS` after its revocation; its record and its history of
+/// events stay; an active device is never touched; and a reopened store reads
+/// back what the last pass left.
+#[test]
+fn a_revoked_devices_addresses_go_thirty_days_after_its_revocation_and_its_history_stays() {
+    let dir = TempDir::new("revoked-addresses");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let gone = spare_device(&setup.store, setup.account);
+    seen_from_an_address(&setup.store, &setup.device, 1);
+    seen_from_an_address(&setup.store, &gone, 2);
+    seen_from_an_address(&setup.store, &gone, 3);
+    let revoked = UnixMs(1_800_000_000_000);
+    setup
+        .store
+        .revoke_device_unless_last(&gone, revoked)
+        .expect("revoke");
+    assert_eq!(
+        setup.store.device(&gone).expect("device").revoked_at,
+        Some(revoked),
+        "the revocation starts the count"
+    );
+    assert_eq!(
+        setup
+            .store
+            .device(&setup.device)
+            .expect("device")
+            .revoked_at,
+        None,
+        "an active device has no count"
+    );
+
+    // Twenty-nine days, then a millisecond short of thirty: everything stays,
+    // and a pass does not move the start.
+    setup
+        .store
+        .gc_run(UnixMs(revoked.0 + (REVOKED_ADDRESS_DAYS - 1) * DAY_MS));
+    assert_eq!(
+        addresses(&setup.store, &gone),
+        (true, 2, 2),
+        "forgotten before thirty days"
+    );
+    assert_eq!(
+        setup.store.device(&gone).expect("device").revoked_at,
+        Some(revoked)
+    );
+    setup
+        .store
+        .gc_run(UnixMs(revoked.0 + REVOKED_ADDRESS_DAYS * DAY_MS - 1));
+    assert_eq!(
+        addresses(&setup.store, &gone),
+        (true, 2, 2),
+        "forgotten a millisecond early"
+    );
+
+    // Thirty days: the addresses go, the history and the record stay.
+    setup
+        .store
+        .gc_run(UnixMs(revoked.0 + REVOKED_ADDRESS_DAYS * DAY_MS));
+    assert_eq!(
+        addresses(&setup.store, &gone),
+        (false, 0, 2),
+        "the addresses stayed, or the history went"
+    );
+    let record = setup.store.device(&gone).expect("the record stays");
+    assert_eq!(
+        (record.name.as_str(), record.last_sign_in),
+        ("spare device", Some(UnixMs(3)))
+    );
+    assert_eq!(
+        addresses(&setup.store, &setup.device),
+        (true, 1, 1),
+        "an active device lost its address"
+    );
+    let said = setup.store.log.captured();
+    assert!(
+        said.contains(
+            "event=device_addresses decision=retention stamped=0 forgotten=1 budget_days=30"
+        ),
+        "{said}"
+    );
+    assert!(!said.contains("198.51.100.7"), "an address reached the log");
+
+    // Read back from the journal, as a restart does, and nothing more to do.
+    drop(setup);
+    let store = open(&cfg);
+    assert_eq!(
+        addresses(&store, &gone),
+        (false, 0, 2),
+        "a restart brought the addresses back"
+    );
+    let frames = store.index().seq;
+    store.gc_run(UnixMs(revoked.0 + 40 * DAY_MS));
+    assert_eq!(
+        store.index().seq.0,
+        frames.0 + 1,
+        "a pass with nothing to forget journalled more than its collection"
+    );
+}
+
+/// A device a server before 1.1.13 revoked carries no revocation time: its
+/// thirty days count from the first pass that finds it revoked, never from
+/// before the upgrade (issue #341).
+#[test]
+fn a_device_revoked_before_the_stamp_counts_from_the_first_pass_that_finds_it() {
+    let dir = TempDir::new("revoked-legacy");
+    let cfg = config(&dir);
+    let setup = ready(&cfg);
+    let old = spare_device(&setup.store, setup.account);
+    seen_from_an_address(&setup.store, &old, 2);
+    // The revocation exactly as 1.1.12 journalled it: the frame alone.
+    {
+        let mut journal = setup.store.journal();
+        let index = setup.store.index();
+        setup
+            .store
+            .commit(&mut journal, index, |_| {
+                vec![Frame::DeviceRevoke { device_id: old }]
+            })
+            .expect("revoke as before");
+    }
+    assert_eq!(setup.store.device(&old).expect("device").revoked_at, None);
+    let found = UnixMs(1_800_000_000_000);
+    setup.store.gc_run(found);
+    assert_eq!(
+        setup.store.device(&old).expect("device").revoked_at,
+        Some(found)
+    );
+    assert!(setup.store.log.captured().contains(
+        "event=device_addresses decision=retention stamped=1 forgotten=0 budget_days=30"
+    ));
+    // The stamp survives a snapshot and a restart, so the count never restarts.
+    setup.store.snapshot().expect("snapshot");
+    drop(setup);
+    let store = open(&cfg);
+    assert_eq!(store.device(&old).expect("device").revoked_at, Some(found));
+    store.gc_run(UnixMs(found.0 + REVOKED_ADDRESS_DAYS * DAY_MS - 1));
+    assert_eq!(
+        addresses(&store, &old),
+        (true, 1, 1),
+        "counted from before the first pass"
+    );
+    store.gc_run(UnixMs(found.0 + REVOKED_ADDRESS_DAYS * DAY_MS));
+    assert_eq!(addresses(&store, &old), (false, 0, 1));
+}
