@@ -1,9 +1,22 @@
 name: CLI native acceptance
 
+# A range that changes only documentation -- requirement 10's allowlist, the
+# same paths `release_contract.py docs-only` names -- changes nothing this
+# runs, and publishes nothing that would read its result.
 on:
   pull_request:
+    paths-ignore:
+      - AGENTS.md
+      - README.md
+      - .gitignore
+      - 'docs/**/*.md'
   push:
     branches: [main]
+    paths-ignore:
+      - AGENTS.md
+      - README.md
+      - .gitignore
+      - 'docs/**/*.md'
   workflow_dispatch:
 
 permissions: {}

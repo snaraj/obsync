@@ -21,15 +21,23 @@ name: Proxy matrix
 #                                     skipped here, because proxy-e2e.sh holds
 #                                     the same poll and also wakes one.
 #
-# IT IS A WORKFLOW OF ITS OWN, for the reason compose-e2e.yml gives: the
-# release publisher authorizes against the job inventories of pr-gate.yml and
-# codeql.yml alone. Whether it becomes a REQUIRED check is the owner's ruleset
-# decision, not this file's.
+# CALLED BY pr-gate.yml (its `proxy` job) with the images that run's
+# `container` and `image-arm64` jobs built and proved, so every leg here loads
+# those bytes rather than building its own; its jobs are therefore in the
+# inventory the publisher authorizes against and the aggregate `gate` requires
+# them. A manual run builds the image itself.
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      image-amd64:
+        description: ID of the amd64 image pr-gate's container job proved
+        type: string
+        required: true
+      image-arm64:
+        description: ID of the arm64 image pr-gate's image-arm64 job built
+        type: string
+        required: true
   workflow_dispatch:
 
 permissions: {}
@@ -64,8 +72,16 @@ jobs:
           config="${RUNNER_TEMP}/docker-empty-config"
           mkdir -p "${config}"
           printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
-      - name: Build the shipped image
-        run: docker build --tag "obsync-proxy-e2e:${GITHUB_SHA}" .
+      - name: Download the image the gate proved
+        if: inputs.image-amd64 != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: obsync-image-amd64
+          path: ${{ runner.temp }}/handoff
+      - name: Take that image by ID, or build it on a standalone run
+        env:
+          IMAGE_ID: ${{ inputs.image-amd64 }}
+        run: scripts/ci/image-handoff.sh take "${IMAGE_ID}" "${RUNNER_TEMP}/handoff" "obsync-proxy-e2e:${GITHUB_SHA}"
       - name: The sync path's limits through the proxy
         env:
           PROXY: ${{ matrix.proxy }}
@@ -118,8 +134,16 @@ jobs:
             aarch64 | arm64) ;;
             *) printf 'DENY: this leg claims arm64 and runs on %s\n' "$(uname -m)" >&2; exit 1 ;;
           esac
-      - name: Build the shipped image
-        run: docker build --tag "obsync-proxy-e2e:${GITHUB_SHA}" .
+      - name: Download the image the gate built
+        if: inputs.image-arm64 != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: obsync-image-arm64
+          path: ${{ runner.temp }}/handoff
+      - name: Take that image by ID, or build it on a standalone run
+        env:
+          IMAGE_ID: ${{ inputs.image-arm64 }}
+        run: scripts/ci/image-handoff.sh take "${IMAGE_ID}" "${RUNNER_TEMP}/handoff" "obsync-proxy-e2e:${GITHUB_SHA}"
       - name: The sync path's limits through nginx
         run: scripts/ci/proxy-e2e.sh "obsync-proxy-e2e:${GITHUB_SHA}" nginx
       - name: The forwarded headers through and around nginx

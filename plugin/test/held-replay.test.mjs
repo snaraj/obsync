@@ -181,7 +181,11 @@ test("a rename posted after the start's walk still lands on a device paired agai
   const server = new FakeServer();
   const k = await keys();
   await server.seedDomainMap(k.map, KEYS.domainId);
-  const F = "f7".repeat(16);
+  // The kept note is published under a RANDOM id, and the same-name tiebreak
+  // keeps the smaller id at the name (`pull.ts`). At "f7…" one run in about
+  // thirty-two drew a larger id, lost the name to the server's note, and the
+  // wait below never held (#378). The largest id makes the kept note win always.
+  const F = "ff".repeat(16);
   const enc = (value) => new TextEncoder().encode(value);
   const v1 = await server.publish({ fileId: F, path: "Notes/a.md", bytes: enc("SERVER SENTINEL\n"), mtime: 1757100000000, domainKey: k.domainKey, manifestKey: k.manifestKey });
   const host = new FakeHost();

@@ -9,17 +9,23 @@ name: Compose end to end
 # file, restart the stack and find all of it still there --- and find the API
 # refusing every request that is not properly signed.
 #
-# IT IS A WORKFLOW OF ITS OWN, like docs-site.yml and for the same reason: the
-# release publisher authorizes against the job inventories of pr-gate.yml and
-# codeql.yml alone (`EXPECTED_MAIN_JOBS` and `EXPECTED_CODEQL_JOBS` in
-# scripts/ci/release_contract.py). A job added to the gate would have moved an
-# inventory the publisher reads; a workflow of its own moves nothing. Whether
-# it becomes a REQUIRED check is the owner's ruleset decision, not this file's.
+# CALLED BY pr-gate.yml (its `compose` job) with the images that run built and
+# proved, one per architecture; its legs are in the inventory the publisher
+# authorizes against (`EXPECTED_AGGREGATED_JOBS` in
+# scripts/ci/release_contract.py) and the aggregate `gate` requires them. A
+# manual run builds the image itself.
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      image-amd64:
+        description: ID of the amd64 image pr-gate's container job proved
+        type: string
+        required: true
+      image-arm64:
+        description: ID of the arm64 image pr-gate's image-arm64 job built
+        type: string
+        required: true
   workflow_dispatch:
 
 permissions: {}
@@ -42,7 +48,8 @@ jobs:
     # image), and it is named here because "which distributions is the Compose
     # path exercised on" is a question this workflow is the answer to. The
     # binary's independence from the distribution underneath it is
-    # `arch-matrix.yml`'s eight legs, not this one's.
+    # `arch-matrix.yml`'s distribution loop, not this one's.
+    name: compose (${{ matrix.target.architecture }})
     strategy:
       fail-fast: false
       matrix:
@@ -89,8 +96,16 @@ jobs:
           esac
           printf 'runner=%s claimed=%s host=%s\n' "${observed}" "${ARCHITECTURE}" "$(. /etc/os-release && printf '%s %s' "${ID}" "${VERSION_ID}")"
           test "${observed}" = "${ARCHITECTURE}"
-      - name: Build the shipped image
-        run: docker build --tag "obsync-compose-e2e:${GITHUB_SHA}" .
+      - name: Download the image the gate built for this architecture
+        if: inputs[format('image-{0}', matrix.target.architecture)] != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: obsync-image-${{ matrix.target.architecture }}
+          path: ${{ runner.temp }}/handoff
+      - name: Take that image by ID, or build it on a standalone run
+        env:
+          IMAGE_ID: ${{ inputs[format('image-{0}', matrix.target.architecture)] }}
+        run: scripts/ci/image-handoff.sh take "${IMAGE_ID}" "${RUNNER_TEMP}/handoff" "obsync-compose-e2e:${GITHUB_SHA}"
       - name: Run the commands the server guide shows
         run: scripts/ci/compose-e2e.sh "obsync-compose-e2e:${GITHUB_SHA}"
       - name: Remove anything the run left behind

@@ -516,7 +516,7 @@ cannot unwrap a single device ([recovery](recovery.md)).
 
 ## 9. What CI proves about this page
 
-`.github/workflows/helm-e2e.yml` builds the image from the commit under test,
+`.github/workflows/helm-e2e.yml` takes the image built from the commit under test,
 creates a throwaway `kind` cluster, prepares the two directories and installs
 the chart from THIS repository — with the volume commands, the StorageClass
 and PersistentVolumes, the values file, the TLS front of section 4 and the

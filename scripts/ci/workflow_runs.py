@@ -29,7 +29,9 @@ segment joined by `&&` after a bare `false` or `!` never counts either. `;` and
 `|` start a new command list, so they clear it. A STEP OR JOB carrying an `if:`
 is skipped whole: `if: false` on the smoke step is the workflow's own spelling
 of switching a check off, and the battery this file feeds has to run
-unconditionally to be the battery.
+unconditionally to be the battery. The one exception is a step whose whole
+condition is `!cancelled()`: it runs whenever the job runs, even after an
+earlier step failed, which is MORE often than a step with no `if:` at all.
 
 A FOLDED body (`run: >-`) is captured raw by the reader and printed line by
 line rather than folded into one command. That can only make a segment SHORTER
@@ -47,6 +49,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import miniyaml  # noqa: E402
 
 OPERATOR = re.compile(r"(\|\||&&|[|;])")
+# A step condition that runs at least as often as no condition.
+UNCONDITIONAL = frozenset({"!cancelled()", "${{ !cancelled() }}"})
 # A segment that is exactly one of these makes every `&&` after it unreachable.
 DEAD = frozenset({"false", "!"})
 # An assignment prefix is stripped only when its value is bare: a quoted value
@@ -70,7 +74,7 @@ def run_values(text: str) -> list[str]:
             continue
         steps = job.get("steps")
         for step in steps if isinstance(steps, list) else []:
-            if not isinstance(step, dict) or "if" in step:
+            if not isinstance(step, dict) or ("if" in step and step["if"] not in UNCONDITIONAL):
                 continue
             run = step.get("run")
             if isinstance(run, str):

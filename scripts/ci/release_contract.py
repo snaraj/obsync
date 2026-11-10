@@ -11,12 +11,13 @@ THE SEVEN LOCKSTEP LOCKS. `VERSION`, the workspace `version` in `Cargo.toml`,
 heading. Six files, seven facts, one number.
 
 THE CLASSIFIER HAS TWO VERDICTS AND NO FLAG. A range whose every commit is
-confined to root `AGENTS.md`, `README.md`, `.gitignore`, and Markdown under
-`docs/` is `no-artifact` and must advance nothing. Anything else is `artifact`
-and must advance every lock exactly ONE SEMVER STEP from its protected base --
-one patch, one minor, or one major, and nothing else. A non-allowlisted path
-with an unchanged version denies; there is no third path and no environment
-variable that reaches one.
+confined to root `AGENTS.md`, `README.md`, `.gitignore`, Markdown under
+`docs/`, and the CI and test trees no shipped artifact is built from
+(`NO_ARTIFACT_TREES`) is `no-artifact` and must advance nothing. Anything else
+is `artifact` and must advance every lock exactly ONE SEMVER STEP from its
+protected base -- one patch, one minor, or one major, and nothing else. A path
+outside both with an unchanged version denies; there is no third path and no
+environment variable that reaches one.
 """
 
 from __future__ import annotations
@@ -91,7 +92,26 @@ EXPECTED_CUSTODY_JOBS = {
     "custody / plugin-tests (windows-2025)": "success",
     "custody / plugin-tests (macos-15)": "success",
 }
-EXPECTED_MAIN_JOBS = {**EXPECTED_GATE_JOBS, **EXPECTED_CUSTODY_JOBS}
+# Every other job the aggregate `gate` requires and the ruleset does not name:
+# the image's arm64 build and the end-to-end workflows pr-gate calls with the
+# images it built. On main every one runs; only a documentation-only range,
+# which never publishes, skips the image-exercising ones.
+EXPECTED_AGGREGATED_JOBS = {
+    "changes": "success",
+    "mobile-harness": "success",
+    "image-arm64": "success",
+    "arch / native (amd64)": "success",
+    "arch / native (arm64)": "success",
+    "proxy / proxy (caddy)": "success",
+    "proxy / proxy (nginx)": "success",
+    "proxy / proxy (traefik)": "success",
+    "proxy / proxy (haproxy)": "success",
+    "proxy / proxy-arm64": "success",
+    "compose / compose (amd64)": "success",
+    "compose / compose (arm64)": "success",
+    "helm / helm": "success",
+}
+EXPECTED_MAIN_JOBS = {**EXPECTED_GATE_JOBS, **EXPECTED_CUSTODY_JOBS, **EXPECTED_AGGREGATED_JOBS}
 EXPECTED_CODEQL_MATRIX_JOBS = {
     "analyze (javascript-typescript, none)": "success",
     "analyze (rust, none)": "success",
@@ -143,6 +163,32 @@ CHART_DIGEST_LINE_RE = re.compile(r"^  digest: .*$", re.MULTILINE)
 
 DOCUMENTATION_FILES = frozenset({"AGENTS.md", "README.md", ".gitignore"})
 DOCUMENTATION_TREE = "docs/"
+# Trees nothing shipped is built from, so a change confined to them -- a
+# workflow, a contract suite, a test -- needs no release of byte-identical
+# product. Each is outside the image's build context (`.dockerignore` drops
+# `.github`, `scripts`, `dashboard/test`, `cli/test`), or inside it only as a
+# test the build runs and never copies out: the plugin bundle is `tsc` over
+# `plugin/src` (tsconfig `include`), the binary is `cargo build --release -p
+# obsyncd`, which compiles no `tests/` target and nothing in `mutants/`; the
+# chart is `helm package chart`; the CLI package is LICENSE, cli/README.md,
+# VERSION and the release binary. The Dockerfile, the lockfiles, the base
+# images and every toolchain pin stay artifact surfaces.
+NO_ARTIFACT_TREES = (
+    ".github/",
+    "scripts/ci/",
+    "scripts/validation/",
+    "plugin/test/",
+    "dashboard/test/",
+    "cli/test/",
+    "crates/obsync-cli/tests/",
+    "crates/obsyncd/tests/",
+    "crates/obsyncd/mutants/",
+)
+# Versions merged before the publisher existed in its present form. v0.1.6 and
+# v0.1.7 reached main untagged and immutable successors superseded them, so
+# publishing either now would ship a stale build; `owed` reports them and
+# fails only from this version on.
+OWED_FROM = (0, 1, 11)
 RELEASE_LOCK_PATHS = (
     "VERSION",
     "Cargo.toml",
@@ -692,10 +738,15 @@ def _validated_history_transitions(
 
 
 def is_documentation_path(path: str) -> bool:
-    """The closed documentation allowlist. Widening it is a released change."""
+    """The closed documentation allowlist: what a docs-only range may touch."""
     if path in DOCUMENTATION_FILES:
         return True
     return path.startswith(DOCUMENTATION_TREE) and path.endswith(".md")
+
+
+def is_no_artifact_path(path: str) -> bool:
+    """Documentation, or a tree no shipped artifact is built from."""
+    return is_documentation_path(path) or path.startswith(NO_ARTIFACT_TREES)
 
 
 def _diff_entries(repository: Path, base: str, commit: str) -> list[tuple[str, str, str, str]]:
@@ -729,16 +780,33 @@ def _diff_entries(repository: Path, base: str, commit: str) -> list[tuple[str, s
     return entries
 
 
-def _undocumented_paths(repository: Path, base: str, commit: str) -> list[str]:
+def _paths_outside(
+    repository: Path, base: str, commit: str, allowed: Callable[[str], bool]
+) -> list[str]:
     offending: list[str] = []
     for src_mode, dst_mode, status, path in _diff_entries(repository, base, commit):
         if status not in _DIFF_STATUSES:
             offending.append(path)
         elif src_mode not in _DIFF_MODES or dst_mode not in _DIFF_MODES:
             offending.append(path)
-        elif not is_documentation_path(path):
+        elif not allowed(path):
             offending.append(path)
     return offending
+
+
+def docs_only(repository: Path, base_sha: str, head_sha: str) -> bool:
+    """Whether every path `base..head` changes is documentation.
+
+    The PR gate skips the end-to-end jobs that only exercise the image for
+    such a range. A symlink, a mode change or an unresolvable range is not
+    documentation, and an error here fails the gate rather than skipping.
+    """
+    base_sha = require_sha(base_sha, "base SHA")
+    head_sha = require_sha(head_sha, "head SHA")
+    for sha in (base_sha, head_sha):
+        if _git(repository, "rev-parse", f"{sha}^{{commit}}") != sha:
+            raise ContractError("docs-only range does not resolve exactly")
+    return not _paths_outside(repository, base_sha, head_sha, is_documentation_path)
 
 
 def classify_transition(
@@ -776,7 +844,7 @@ def classify_transition(
     offending: list[str] = []
     previous = base_sha
     for commit in commits:
-        offending.extend(_undocumented_paths(repository, previous, commit))
+        offending.extend(_paths_outside(repository, previous, commit, is_no_artifact_path))
         previous = commit
     if offending:
         if not _monotonic_transitions(repository, base_sha, commits):
@@ -793,22 +861,22 @@ def classify_transition(
             "tag": intent.tag,
         }
     # STRUCTURAL BACKSTOPS, and deliberately kept. Neither of the two checks
-    # below can fail today: no release lock is in the documentation allowlist,
-    # so a range that touched one already left `offending` non-empty and took
-    # the artifact path above. They exist for the day somebody widens
-    # `is_documentation_path` -- the one edit that would make a lock change
-    # look like documentation -- so that widening fails loudly here instead of
+    # below can fail today: no release lock is a no-artifact path, so a range
+    # that touched one already left `offending` non-empty and took the
+    # artifact path above. They exist for the day somebody widens
+    # `is_no_artifact_path` -- the one edit that would make a lock change look
+    # like documentation -- so that widening fails loudly here instead of
     # silently retiring the release. They are backstops, not live guards, and
     # should not be scored as either passing or decorative checks.
     boundaries = _monotonic_transitions(repository, base_sha, commits)
     if boundaries:
         raise ContractError(
-            "documentation-only range must contain exactly 0 release boundaries; "
+            "no-artifact range must contain exactly 0 release boundaries; "
             f"found {len(boundaries)}"
         )
     for path in RELEASE_LOCK_PATHS:
         if _git_file(repository, base_sha, path) != _git_file(repository, head_sha, path):
-            raise ContractError(f"documentation-only range mutated release lock {path}")
+            raise ContractError(f"no-artifact range mutated release lock {path}")
     retained = validate_snapshot(
         {path: _git_file(repository, head_sha, path) for path in RELEASE_LOCK_PATHS}
     )
@@ -862,6 +930,72 @@ def discover_transition_window(repository: Path, head_sha: str) -> TransitionWin
     return TransitionWindow(
         base_sha=base_sha, intent=ReleaseIntent(source_sha=head_sha, version=head.version)
     )
+
+
+def release_ledger(
+    repository: Path, head: str, releases: list[object]
+) -> list[dict[str, str]]:
+    """What every version main has advanced to still owes, oldest first.
+
+    The orchestrator dispatches the publisher once per merge and keeps nothing,
+    so a failed dispatch leaves a version on main that nobody is asked to
+    deliver. This walks the same validated transitions `release-window` does
+    and gives each version one state:
+
+      owed       no tag names a main commit at this version
+      tagged     tagged, and no published Release
+      published  a published Release that is not yet the immutable one
+                 carrying its sealed evidence manifest
+      verified   immutable, final, and carrying `obsync-<tag>-release-manifest.json`;
+                 the weekly audit re-proves the newest one in depth
+
+    A tag on a commit outside main's first-parent history, or at another
+    version, is refused rather than counted.
+    """
+    head_sha = _git(repository, "rev-parse", "--verify", f"{head}^{{commit}}")
+    transitions = _validated_history_transitions(repository, head_sha)
+    mainline = set(_first_parent_history(repository, head_sha))
+    published: dict[str, Mapping[str, object]] = {}
+    for raw in releases:
+        record = _object(raw, "Release listing entry")
+        tag = record.get("tag_name")
+        if not isinstance(tag, str) or tag in published:
+            raise ContractError("Release listing has a missing or repeated tag_name")
+        if record.get("draft") is False:
+            published[tag] = record
+    ledger: list[dict[str, str]] = []
+    for _base, boundary, version in transitions:
+        tag = version.tag
+        resolved = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"],
+            check=False, capture_output=True, text=True,
+        )
+        record = published.get(tag)
+        if resolved.returncode != 0:
+            state = "owed"
+        elif resolved.stdout.strip() not in mainline or _version_at(repository, resolved.stdout.strip()) != version:
+            raise ContractError(f"tag {tag} does not name a main commit at {version}")
+        elif record is None:
+            state = "tagged"
+        elif (
+            record.get("immutable") is True
+            and record.get("prerelease") is False
+            and f"obsync-{tag}-release-manifest.json"
+            in {asset.get("name") for asset in _array(record.get("assets"), "Release assets") if isinstance(asset, Mapping)}
+        ):
+            state = "verified"
+        else:
+            state = "published"
+        ledger.append({"version": str(version), "tag": tag, "commit": boundary, "state": state})
+    return ledger
+
+
+def owed_versions(ledger: list[dict[str, str]]) -> list[str]:
+    """The owed versions the audit refuses: every one from `OWED_FROM` on."""
+    return [
+        entry["version"] for entry in ledger
+        if entry["state"] == "owed" and Version.parse(entry["version"]) >= Version(*OWED_FROM)
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -2038,6 +2172,17 @@ def _parser() -> argparse.ArgumentParser:
     window.add_argument("--repository", type=Path, required=True)
     window.add_argument("--head", required=True)
 
+    documentation = commands.add_parser("docs-only")
+    documentation.add_argument("--repository", type=Path, required=True)
+    documentation.add_argument("--base", required=True)
+    documentation.add_argument("--head", required=True)
+
+    owed = commands.add_parser("owed")
+    owed.add_argument("--repository", type=Path, required=True)
+    owed.add_argument("--head", required=True)
+    owed.add_argument("--releases-json", type=Path, required=True,
+                      help="`gh api --paginate --slurp repos/OWNER/REPO/releases` output")
+
     event = commands.add_parser("workflow-run")
     event.add_argument("--event", type=Path, required=True)
     event.add_argument("--repository", required=True)
@@ -2238,6 +2383,18 @@ def main(argv: list[str] | None = None) -> int:
                     sort_keys=True,
                 )
             )
+        elif args.command == "docs-only":
+            print(str(docs_only(args.repository, args.base, args.head)).lower())
+        elif args.command == "owed":
+            pages = json.loads(args.releases_json.read_text(encoding="utf-8"))
+            releases = [entry for page in _array(pages, "Release pages") for entry in _array(page, "Release page")]
+            ledger = release_ledger(args.repository, args.head, releases)
+            for entry in ledger:
+                print(f"{entry['state']:<9} {entry['tag']:<8} {entry['commit']}")
+            owed = owed_versions(ledger)
+            if owed:
+                print(f"DENY: owed versions with no tag: {', '.join(owed)}", file=sys.stderr)
+                return 1
         elif args.command == "workflow-run":
             print(
                 plan_workflow_run(

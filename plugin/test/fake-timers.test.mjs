@@ -27,3 +27,27 @@ test("a watched outcome is refused at its budget even with Date.now frozen", { t
 test("the default outcome budget is at least sixty seconds", () => {
   assert.ok(WAIT_BUDGET_MS >= 60000);
 });
+
+// A wait that met an order it never expected (#378) is refused once its clock
+// is spent and nothing moves, naming what it saw, not after the whole budget.
+test("a spent wait whose timers stay silent is refused as stalled, with what it observed", async () => {
+  const timers = new FakeTimers();
+  timers.stallMs = 300;
+  timers.observe = () => "holder=hold behind=2";
+  timers.set(() => undefined, 3600000);
+  const started = performance.now();
+  await assert.rejects(timers.run(50, () => false), /stalled.*advances=1800 pending_ms=\[\d+\] holder=hold behind=2/);
+  assert.ok(performance.now() - started < 30000);
+});
+
+test("a spent wait is not a stall while timers still move", async () => {
+  const timers = new FakeTimers();
+  timers.stallMs = 300;
+  const ready = performance.now() + 1500;
+  const beat = setInterval(() => timers.set(() => undefined, 3600000), 100);
+  try {
+    assert.equal(await timers.run(0, () => performance.now() >= ready), true);
+  } finally {
+    clearInterval(beat);
+  }
+});

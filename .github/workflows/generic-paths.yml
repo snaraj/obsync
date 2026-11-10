@@ -6,16 +6,19 @@ name: Generic paths
 # volumes, its network-policy controller), and the chart on an IPv6-only
 # cluster. Each job's script says what it proves and why.
 #
-# WHEN IT RUNS. Nightly, by hand, and on a pull request that changes what
+# WHEN IT RUNS. Weekly, by hand, and on a pull request that changes what
 # these paths run: the server, the chart, the deploy files, or the scripts
 # themselves. They take longer than a pull request should wait for when it
-# touches none of that.
+# touches none of that. Weekly rather than nightly: a pull request that
+# touches these paths runs them at its commit, so a scheduled run on an
+# unchanged main tests only drift outside the repository (the runner images;
+# every image and tool here is pinned), and a week keeps that signal.
 #
 # IT IS A WORKFLOW OF ITS OWN, for the reason compose-e2e.yml gives.
 
 on:
   schedule:
-    - cron: '23 4 * * *'
+    - cron: '23 4 * * 1'
   workflow_dispatch:
   pull_request:
     paths:

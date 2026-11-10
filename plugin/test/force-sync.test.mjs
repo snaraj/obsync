@@ -391,8 +391,16 @@ test("a stop while a page's last file waits its turn neither passes the page nor
     return real(request);
   };
 
+  // Every turn the chain is asked for, by label. Other pulls (the feed's page,
+  // a scan) may queue around these two on a slow runner, so the wait names the
+  // file's own turn instead of counting the queue (#378).
+  const queued = [];
+  const exclusive = engine.exclusive;
+  engine.exclusive = function (label, work) { queued.push(label); return exclusive.call(this, label, work); };
+  timers.observe = () => `holder=${engine.holder?.label ?? "idle"} behind=${engine.behind} queued=${queued.join(",")}`;
+
   const pass = engine.forceSync();
-  await timers.run(STEP_MS, () => engine.holder?.label === "hold" && engine.behind === 1);
+  await timers.run(STEP_MS, () => engine.holder?.label === "hold" && queued.includes("force_sync"));
   engine.stop();
   release();
   const tally = await pass;

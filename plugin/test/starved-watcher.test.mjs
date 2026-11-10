@@ -677,7 +677,12 @@ async function editListed(t, options, arm = () => undefined, firstAttempt = null
     await timers.run(STEP_MS, () => r.logs.some(parkedRename));
     timers.now += 60000; // Complete the fixture's separately observed initial download retry.
   }
-  await timers.run(STEP_MS, () => settled(r, "Notes/n.md"));
+  // A host may refuse a write for a moment (Windows: EPERM on the rename), and
+  // the file is parked behind a retry minutes away. Each wait below drives a
+  // retry that a fresh completed refusal owns, so it waits on the note
+  // landing whichever way it lands (#378).
+  const initialRetry = renameRetryClock(r, timers, r.logs.length);
+  await timers.run(STEP_MS, () => settled(r, "Notes/n.md") || (initialRetry(), false));
   for (const path of ["Notes", "Notes/n.md"]) await r.adapter.late(path);
   await timers.run(STEP_MS);
   const view = arm(r, timers);
@@ -698,7 +703,7 @@ async function editListed(t, options, arm = () => undefined, firstAttempt = null
   try {
     await timers.run(landingStep, () => {
       if (r.text("Notes/n.md") === AFTER && r.state.fileByPath("Notes/n.md")?.mtime === 2000) return true;
-      if (firstAttempt !== null) advanceRetry();
+      advanceRetry();
       return false;
     });
   } catch (error) {

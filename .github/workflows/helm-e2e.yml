@@ -8,15 +8,18 @@ name: Helm end to end
 # claim that binds on first consumer, a volume the runtime uid cannot write, a
 # digest nothing can resolve --- renders perfectly.
 #
-# IT IS A WORKFLOW OF ITS OWN, for the reason compose-e2e.yml gives: the
-# release publisher authorizes against the job inventories of pr-gate.yml and
-# codeql.yml alone. Whether it becomes a REQUIRED check is the owner's ruleset
-# decision, not this file's.
+# CALLED BY pr-gate.yml (its `helm` job) with the amd64 image that run's
+# `container` job built and proved; the aggregate `gate` requires it. A manual
+# run builds the image itself. The chart's render across every Kubernetes
+# version it claims runs in pr-gate's `chart` job.
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      image-amd64:
+        description: ID of the amd64 image pr-gate's container job proved
+        type: string
+        required: true
   workflow_dispatch:
 
 permissions: {}
@@ -26,24 +29,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  kube-versions:
-    # The chart rendered for every Kubernetes version its `kubeVersion`
-    # claims, in the spellings managed clusters report (EKS, GKE, k3s), and
-    # refused just below the floor. Seconds, and no cluster.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install checksum-verified tools
-        run: ./scripts/ci/install-tools.sh
-      - name: Render across the claimed range
-        run: scripts/ci/chart-kube-versions.sh
-
   helm:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -72,16 +57,24 @@ jobs:
         run: ./scripts/ci/install-tools.sh
       - name: Install the pinned kind
         run: ./scripts/ci/install-kind.sh
-      - name: Build the shipped image under the name the chart deploys
+      - name: Download the image the gate proved
+        if: inputs.image-amd64 != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: obsync-image-amd64
+          path: ${{ runner.temp }}/handoff
+      - name: Take that image under the name the chart deploys
         # The values schema fixes `image.repository` to this repository's own
         # name and the release contract fixes the tag to this VERSION, so the
         # only image the chart can be asked to run is this one. That is a
         # property worth keeping rather than working around: the cluster
         # deploys the reference the published install deploys, by digest.
+        env:
+          IMAGE_ID: ${{ inputs.image-amd64 }}
         run: |
           set -euo pipefail
           version="$(tr -d '[:space:]' < VERSION)"
-          docker build --tag "ghcr.io/snaraj/obsync:v${version}" .
+          scripts/ci/image-handoff.sh take "${IMAGE_ID}" "${RUNNER_TEMP}/handoff" "ghcr.io/snaraj/obsync:v${version}"
           printf 'OBSYNC_E2E_IMAGE=ghcr.io/snaraj/obsync:v%s\n' "${version}" >> "${GITHUB_ENV}"
       - name: Install the chart the Kubernetes guide shows
         run: scripts/ci/helm-e2e.sh "${OBSYNC_E2E_IMAGE}"
