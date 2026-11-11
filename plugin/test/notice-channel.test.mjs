@@ -265,6 +265,52 @@ test("a flood is three toasts and one 'N more' that opens Show sync status; an e
   assert.ok(c.logs.includes("notice decision=folded kind=info visible=3 budget=3 count=1"), c.logs.join(" | "));
 });
 
+/** A conflict copy as `keptBoth` says it (`sync/pull.ts`). */
+const copied = (path, copy, device = "iPhone") => ({
+  kind: "conflict", text: "kept both versions of {notes}: {device}'s is in a copy beside it.", paths: [path],
+  key: `conflict\u0000${path}\u0000${device}`, detail: `The copy is "${copy}".`, device,
+});
+
+test("a burst of conflict copies of one note is one toast that counts them, and Recent names every copy (#340)", () => {
+  const c = channel({ level: "needs-me", merges: "off" });
+  for (let i = 1; i <= 12; i++) {
+    c.channel.show(copied("Daily/Plan.md", `Plan (conflict from iPhone, 2026-10-08 1200 ${i})`));
+    c.advance(500);
+  }
+  assert.deepEqual(c.toasts.map((toast) => toast.text), ["obsync: kept both versions of \"Plan\": iPhone's is in a copy beside it (12 times)."],
+    "each copy opened a toast of its own");
+  assert.doesNotMatch(c.toasts[0].text, /conflict from/, "the copy's long name is on the toast");
+  const recent = c.channel.recent();
+  assert.equal(recent.length, 12, "a copy is missing from Recent");
+  assert.deepEqual(recent.map((entry) => entry.text.split(" The copy is ")[1]),
+    Array.from({ length: 12 }, (_, i) => `"Plan (conflict from iPhone, 2026-10-08 1200 ${12 - i})".`));
+  assert.ok(recent.every((entry) => entry.device === "iPhone" && entry.paths.join() === "Daily/Plan.md"), "Recent lost the note or the device");
+  assert.ok(c.logs.includes("notice decision=joined kind=conflict since_ms=5500 budget_ms=8000 count=12"), c.logs.join(" | "));
+
+  // Gone by itself, the next copy of the same note is a new toast, not a word on a hidden one.
+  c.advance(8000);
+  c.channel.show(copied("Daily/Plan.md", "Plan (conflict from iPhone, 2026-10-08 1201)"));
+  assert.deepEqual(c.toasts.map((toast) => toast.text).slice(1), ["obsync: kept both versions of \"Plan\": iPhone's is in a copy beside it."]);
+});
+
+test("copies of many notes and from two devices in one burst never cover the screen with more than three toasts and one 'N more' (#340)", () => {
+  const c = channel();
+  for (let round = 0; round < 4; round++) {
+    for (const note of ["A.md", "B.md", "C.md", "D.md", "E.md"]) {
+      for (const device of ["iPhone", "MacBook"]) c.channel.show(copied(note, `${note.slice(0, -3)} (conflict ${round})`, device));
+    }
+  }
+  const shown = c.toasts.filter((toast) => !toast.hidden);
+  assert.equal(shown.length, 4, shown.map((toast) => toast.text).join(" | "));
+  assert.match(shown.at(-1).text, /^obsync: \d+ more — see Recent in Show sync status\.$/);
+  assert.deepEqual(shown.slice(0, 3).map((toast) => toast.text), [
+    "obsync: kept both versions of \"A\": iPhone's is in a copy beside it (4 times).",
+    "obsync: kept both versions of \"A\": MacBook's is in a copy beside it (4 times).",
+    "obsync: kept both versions of \"B\": iPhone's is in a copy beside it (4 times).",
+  ], "a device's copy was counted under the other's name");
+  assert.equal(c.channel.recent().length, 40, "every copy is in Recent");
+});
+
 test("a toast dismissed by a click no longer counts against the screen", (t) => {
   const box = sandbox();
   t.after(() => rmSync(box.home, { recursive: true, force: true }));

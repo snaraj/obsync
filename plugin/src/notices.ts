@@ -53,6 +53,12 @@ export interface SyncNotice {
    * replaces it.
    */
   readonly key?: string;
+  /**
+   * Words Recent and the command line keep after the sentence, and the toast
+   * leaves out: what is long to read on a phone and useful to look up later,
+   * such as the name of a conflict copy (#340).
+   */
+  readonly detail?: string;
   readonly actions?: readonly NoticeAction[];
   /** What a click on the toast opens. */
   readonly open?: () => void;
@@ -173,6 +179,12 @@ export function sentence(notice: SyncNotice, paths: readonly string[] = notice.p
   return times > 1 ? text.replace(/\.?$/, ` (${times} times).`) : text;
 }
 
+/** What Recent keeps of this notice: the sentence, and its `detail` after it. */
+function kept(notice: SyncNotice, paths?: readonly string[], times?: number): string {
+  const text = sentence(notice, paths, times);
+  return notice.detail === undefined ? text : `${text} ${notice.detail}`;
+}
+
 /** What a toast of this notice says: "obsync: ", or "obsync security warning: ", and the sentence. */
 export function toastText(notice: SyncNotice, paths?: readonly string[], times?: number): string {
   return `obsync${notice.kind === "security" ? " security warning" : ""}: ${sentence(notice, paths, times, true)}`;
@@ -257,7 +269,7 @@ export class NoticeChannel {
   /** Every notice so far this session, newest first; one said again in a row is one line that counts it. */
   recent(): readonly RecentEntry[] {
     return this.recentList.map(({ entry, notice, times }) =>
-      times > 1 ? { ...entry, text: sentence(notice, entry.paths, times) } : entry).reverse();
+      times > 1 ? { ...entry, text: kept(notice, entry.paths, times) } : entry).reverse();
   }
 
   /** Take the toast of this key off the screen, whatever its kind (#308); Recent keeps its line. */
@@ -271,7 +283,7 @@ export class NoticeChannel {
   show(notice: SyncNotice): void {
     const now = this.screen.now();
     const { kind } = notice;
-    this.remember({ at: now, kind, text: sentence(notice), paths: notice.paths ?? [], ...notice.device === undefined ? {} : { device: notice.device } }, notice);
+    this.remember({ at: now, kind, text: kept(notice), paths: notice.paths ?? [], ...notice.device === undefined ? {} : { device: notice.device } }, notice);
     const quiet = this.quiet(notice, now);
     if (quiet !== null) {
       this.screen.log(`notice decision=quiet kind=${kind} ${quiet}`);
