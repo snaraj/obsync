@@ -710,9 +710,10 @@ const INTERNAL = [
   // says whether a history operation holds the one outstanding manual read,
   // so the repair tick can yield to it instead of colliding (issue #103).
   "manualBusy", "openManual", "closeManual",
-  // And the retry machinery: the address read per attempt, the patience a
-  // call is given, the pause `wake` ends early (issues #134, #182, #186).
-  "base", "budget", "until", "pause", "ended", "nap", "wake", "retryAt", "pollsInFlight",
+  // And the retry machinery: the address read and judged per attempt
+  // (`destination`), the patience a call is given, the pause `wake` ends
+  // early (issues #134, #182, #186).
+  "destination", "budget", "until", "pause", "ended", "nap", "wake", "retryAt", "pollsInFlight",
   // And the ceiling an answer is measured against (#202).
   "capped",
   // And the deadline each attempt is abandoned by (#195).

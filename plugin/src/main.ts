@@ -80,7 +80,7 @@ import {
   inSyncTree,
   parseSyncFolders,
 } from "./syncScope";
-import { ApiError, DeviceRecord, INSECURE_SERVER_URL, INTERACTIVE_MS, insecureServerUrl, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
+import { ApiError, DeviceRecord, INTERACTIVE_MS, heldAddressRefusal, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
 import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, ForceTally, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus, refusalText as pressRefusal, stopped } from "./sync/engine";
 import { EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
@@ -3950,7 +3950,7 @@ export default class ObsyncPlugin extends Plugin {
         state.assertAvailable();
         // Ends the call, never retried (`SessionEnded`, issue #272).
         if (!this.isCurrent(generation) || this.state !== state) throw new SessionEnded();
-        return fetchHttp(request);
+        return fetchHttp(request, this.isMobile);
       },
       serverUrl: () => state.data.serverUrl,
       isMobile: this.isMobile,
@@ -3982,15 +3982,17 @@ export default class ObsyncPlugin extends Plugin {
       this.log("state decision=not_paired reason=copied_vault");
       this.notices.show({ kind: "error", text: `${COPIED_VAULT} Both are in obsync's settings, under This device.` });
     }
-    // AN ADDRESS SETTINGS WOULD REFUSE: saved before plain HTTP was refused
-    // there, or edited in the data file. Every request refuses it
-    // (`Transport.base`); this says so once, with what to change, and the
-    // status keeps saying it until the address is changed.
-    if (insecureServerUrl(state.data.serverUrl, this.isMobile)) {
-      this.log("state decision=refused reason=insecure_server_url");
-      this.notices.show({ kind: "error", key: REFUSAL_NOTICE, text: `t${INSECURE_SERVER_URL.slice(1)}` });
-      this.noticed = INSECURE_SERVER_URL;
-      this.setStatus({ kind: "error", code: "server_url", message: INSECURE_SERVER_URL });
+    // AN ADDRESS SETTINGS WOULD REFUSE: plain HTTP saved before it was
+    // refused there, or anything edited into the data file, a whole address
+    // or not. Every request refuses it (`Transport.destination`); this says
+    // so once, with what to change, and the status keeps saying it until the
+    // address is changed.
+    const held = heldAddressRefusal(state.data.serverUrl, this.isMobile);
+    if (held !== null) {
+      this.log(`state decision=refused reason=${held.code}`);
+      this.notices.show({ kind: "error", key: REFUSAL_NOTICE, text: `t${held.text.slice(1)}` });
+      this.noticed = held.text;
+      this.setStatus({ kind: "error", code: "server_url", message: held.text });
     }
     // AND A DEVICE A CRASH LEFT WITH NO KEYS the same way in (issue #230).
     if (state.keysLost) {

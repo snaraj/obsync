@@ -17,7 +17,7 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ### Security
 
-- A Server URL starting with `http://` that leads to another computer is refused for every request, not only when typed in Settings: an address saved by an earlier version, or edited by hand, sends nothing, and obsync says once what to change. `http://localhost` still works on a computer (#386).
+- A Server URL starting with `http://` that leads to another computer is refused for every request, not only when typed in Settings: an address saved by an earlier version, or edited by hand, sends nothing, and obsync says once what to change. So is an address that is not a whole web address, such as `http://` alone, which could be read as naming another computer. `http://localhost` still works on a computer (#386).
 - The server deletes a revoked device's network addresses and countries 30 days after it is revoked. Its name and its activity history stay. A device revoked before 1.1.13 counts its 30 days from the first hour the server runs 1.1.13 (#341).
 
 ### Changed

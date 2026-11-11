@@ -6,16 +6,19 @@
  * Fetch reports redirect/CORS/TLS/network failure alike. Leave that failure
  * to Transport's bounded retries and one-shot lost-response accounting.
  */
-import type { HttpRequest, HttpResponse } from "./transport";
+import { addressRefusal, type HttpRequest, type HttpResponse } from "./transport";
 
-export async function fetchHttp(request: HttpRequest): Promise<HttpResponse> {
-  // Old stored addresses may bypass current settings normalization. Refuse
-  // before fetch can echo URL credentials in its construction error.
-  try {
-    const url = new URL(request.url);
-    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username !== "" || url.password !== "") throw new Error();
-  } catch {
-    throw new TypeError("obsync refused the server URL; use HTTP(S) without URL credentials.");
+/**
+ * THE LAST HOP JUDGES THE URL IT IS HANDED, by the one address rule
+ * (`addressRefusal`), whoever built it: a caller that does not come through
+ * `Transport.destination` still cannot send plain HTTP off this computer, or
+ * send to what does not parse. `isMobile` is required, so no caller can leave
+ * the platform out. Refused before fetch can echo URL credentials in its
+ * construction error.
+ */
+export async function fetchHttp(request: HttpRequest, isMobile: boolean): Promise<HttpResponse> {
+  if (addressRefusal(request.url, isMobile) !== null) {
+    throw new TypeError("obsync refused the server URL; use HTTPS, or plain HTTP only to this computer, without URL credentials.");
   }
   const response = await fetch(request.url, {
     method: request.method,

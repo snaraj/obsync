@@ -21,6 +21,7 @@ server again unless the entry says so.
 | The status bar shows a cloud with a line through it, and nothing syncs | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
 | "Use your server's https address", or on a phone "Mobile Obsidian only reaches HTTPS servers"; **Check** says "Server URL was not saved" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
 | "This device's Server URL is a plain HTTP address, so obsync sends nothing to it" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
+| "That is not a web address obsync can use", or "This device's Server URL is not a complete web address" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
 | **Check** takes about a minute, then says the server is unreachable | [Check says the server cannot be reached](#check-says-the-server-cannot-be-reached) |
 | One device connects and another does not, or a browser warns about the certificate | [The certificate is not trusted on this device](#the-certificate-is-not-trusted-on-this-device) |
 | obsync says the certificate was made for another name, or **Check** says nothing answered while a browser says the certificate is not valid for this name | [The certificate is for another name](#the-certificate-is-for-another-name) |
@@ -214,12 +215,23 @@ the status bar keeps saying until the address changes:
 
 > This device's Server URL is a plain HTTP address, so obsync sends nothing to it: every request would cross the network unencrypted. Change it to your server's https address in obsync's settings, under Server.
 
+An address that is not a whole web address, such as `http://` or `https:` on
+its own, is refused the same way rather than guessed at. Typed, it gets:
+
+> That is not a web address obsync can use. Type your server's https address, such as https://sync.example.com.
+
+and found when obsync starts:
+
+> This device's Server URL is not a complete web address, so obsync sends nothing to it. Enter your server's https address again in obsync's settings, under Server.
+
 ![Check selected with the refused address still in Server URL: the notice reads Server URL was not saved, then asks for the https address](assets/check-server-url-not-saved.png)
 
 **Why it happens.** The address starts with `http://`. Plain HTTP would send
 your credentials unencrypted, so the plugin accepts it only for a server on the
-same computer, and never on a phone. An address the plugin refuses is not
-saved, even though the field still shows it.
+same computer, and never on a phone. An address with no server name in it is
+refused rather than completed: read the way web addresses are read, `http://`
+followed by obsync's own path names a computer called `v1`. An address the
+plugin refuses is not saved, even though the field still shows it.
 
 **How to fix it.**
 

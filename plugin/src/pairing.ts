@@ -57,7 +57,7 @@ import {
   unhex,
   utf8,
 } from "./crypto";
-import { ApiError, EDGE_REQUIRED, INSECURE_SERVER_URL, certificateRefusal } from "./transport";
+import { ApiError, EDGE_REQUIRED, INSECURE_SERVER_URL, MALFORMED_SERVER_URL, certificateRefusal } from "./transport";
 import { WORDLIST } from "./wordlist";
 import { openPairing, sealPairing } from "./seal2";
 import { readPairingSeal2 } from "./sealWire";
@@ -541,6 +541,7 @@ const REFUSALS: Record<string, string> = {
   // Refused on this device before any request, never by a server (#370): Leave forgets the address.
   no_server_url: "This device has no Server URL, so nothing was sent. Type your server's address in Server URL in obsync settings, the one your other devices use, then try again.",
   insecure_server_url: INSECURE_SERVER_URL,
+  malformed_server_url: MALFORMED_SERVER_URL,
 };
 
 /** The text for one refusal code; one this table does not know says so without naming it. */
