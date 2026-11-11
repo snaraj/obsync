@@ -16,7 +16,9 @@
 # has installed is left alone and named: dpkg then refuses the set if one it
 # keeps does not fit the rest, and that refusal means the pins move, never a
 # forced install. Every file is verified before any is installed, and all go
-# to one `dpkg -i`, which orders them.
+# to one `dpkg -i`, which orders them. `OBSYNC_KEYRING_CACHE` optionally names
+# a directory kept between runs (the workflow's cache): a package found there
+# is not downloaded again, and is verified against its pin all the same.
 #
 # Requires: curl, sha256sum, dpkg, sudo. amd64 only: the leg runs there.
 set -euo pipefail
@@ -68,10 +70,19 @@ while read -r path sha; do
     kept="${kept} ${name}=${status#ii }"
     continue
   fi
-  curl --proto '=https' --tlsv1.2 -sSfL --retry 20 --retry-delay 30 --retry-max-time 900 -o "${work}/${file}" "${SNAPSHOT}/${path}" \
-    || deny "could not download ${path}"
+  cache="${OBSYNC_KEYRING_CACHE:-}"
+  if [ -n "${cache}" ] && [ -f "${cache}/${file}" ]; then
+    cp "${cache}/${file}" "${work}/${file}"
+  else
+    curl --proto '=https' --tlsv1.2 -sSfL --retry 20 --retry-delay 30 --retry-max-time 900 --retry-all-errors \
+      -o "${work}/${file}" "${SNAPSHOT}/${path}" || deny "could not download ${path}"
+  fi
   printf '%s  %s\n' "${sha}" "${work}/${file}" | sha256sum -c - >/dev/null \
     || deny "${file} does not match its pinned SHA-256"
+  if [ -n "${cache}" ] && [ ! -f "${cache}/${file}" ]; then
+    mkdir -p "${cache}"
+    cp "${work}/${file}" "${cache}/${file}"
+  fi
 done <<<"${PINS}"
 
 shopt -s nullglob

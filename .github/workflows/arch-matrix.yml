@@ -14,23 +14,24 @@ name: Architecture matrix
 # stdlib-only tests buys nothing --- is not contradicted: nothing is emulated.
 #
 # The `server` stage runs `cargo clippy --workspace --all-targets --locked` and
-# `cargo test --workspace --locked` on the build platform, so building that
-# stage natively on each runner IS the unit suite on each architecture. There
-# is no second way to run it that would prove more.
-#
-# The amd64 half of `native` deliberately overlaps the gate's `container` job:
-# one set of steps proves both architectures, which is worth more than a
-# smaller matrix that proves them differently.
-#
-# IT IS A WORKFLOW OF ITS OWN, for the reason compose-e2e.yml gives: the
-# release publisher authorizes against the job inventories of pr-gate.yml and
-# codeql.yml alone. Whether either job becomes a REQUIRED check is the owner's
-# ruleset decision, not this file's.
+# `cargo test --workspace --locked` on the build platform, so building the
+# image natively on each runner IS the unit suite on each architecture. That
+# build happens ONCE per architecture, in pr-gate.yml's `container` (amd64) and
+# `image-arm64` jobs; this workflow is called by pr-gate's `arch` job with
+# their IDs, loads exactly those images, and proves the binary inside each. A
+# manual run builds the image itself.
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      image-amd64:
+        description: ID of the amd64 image pr-gate's container job proved
+        type: string
+        required: true
+      image-arm64:
+        description: ID of the arm64 image pr-gate's image-arm64 job built
+        type: string
+        required: true
   workflow_dispatch:
 
 permissions: {}
@@ -41,6 +42,7 @@ concurrency:
 
 jobs:
   native:
+    name: native (${{ matrix.target.architecture }})
     strategy:
       # Both architectures are reported. A failure on one is a fact about that
       # architecture, and cancelling the other would throw away the comparison
@@ -83,8 +85,16 @@ jobs:
           esac
           printf 'runner=%s claimed=%s\n' "${observed}" "${ARCHITECTURE}"
           test "${observed}" = "${ARCHITECTURE}"
-      - name: Build the server stage natively, which runs clippy and the tests
-        run: docker build --target server --tag "obsync-arch:${GITHUB_SHA}" .
+      - name: Download the image the gate built for this architecture
+        if: inputs[format('image-{0}', matrix.target.architecture)] != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: obsync-image-${{ matrix.target.architecture }}
+          path: ${{ runner.temp }}/handoff
+      - name: Take that image by ID, or build it on a standalone run
+        env:
+          IMAGE_ID: ${{ inputs[format('image-{0}', matrix.target.architecture)] }}
+        run: scripts/ci/image-handoff.sh take "${IMAGE_ID}" "${RUNNER_TEMP}/handoff" "obsync-arch-full:${GITHUB_SHA}"
       - name: Prove the shipped binary is a static ELF for this architecture
         # distroless/static has no shell, so nothing can be asked INSIDE the
         # image: `docker create` plus `docker cp` need no entrypoint and no
@@ -93,8 +103,8 @@ jobs:
           ELF: ${{ matrix.target.elf }}
         run: |
           set -euo pipefail
-          container="$(docker create --name "obsync-arch-${GITHUB_SHA}" "obsync-arch:${GITHUB_SHA}")"
-          docker cp "${container}:/out/obsyncd" "${RUNNER_TEMP}/obsyncd"
+          container="$(docker create --name "obsync-arch-${GITHUB_SHA}" "obsync-arch-full:${GITHUB_SHA}")"
+          docker cp "${container}:/usr/local/bin/obsyncd" "${RUNNER_TEMP}/obsyncd"
           docker rm --force "${container}" > /dev/null
           description="$(file --brief "${RUNNER_TEMP}/obsyncd")"
           printf 'obsyncd: %s\n' "${description}"
@@ -118,9 +128,9 @@ jobs:
               exit 1
               ;;
           esac
-      - name: Build the full shipped image natively
-        run: docker build --tag "obsync-arch-full:${GITHUB_SHA}" .
       - name: Prove the image runs as nonroot with the shipped entrypoint
+        env:
+          ARCHITECTURE: ${{ matrix.target.architecture }}
         run: |
           set -euo pipefail
           inspected="${RUNNER_TEMP}/obsync-image.json"
@@ -132,85 +142,35 @@ jobs:
           test "$(jq -c '.[0].Config.Entrypoint' "${inspected}")" = '["/usr/local/bin/obsyncd"]'
           test "$(jq -c '.[0].Config.Cmd' "${inspected}")" = '["serve"]'
           test "$(jq -c '.[0].Config.ExposedPorts | keys' "${inspected}")" = '["8080/tcp"]'
-        env:
-          ARCHITECTURE: ${{ matrix.target.architecture }}
-      - name: Hand the binary to the distribution matrix
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: obsyncd-${{ matrix.target.architecture }}
-          path: ${{ runner.temp }}/obsyncd
-          if-no-files-found: error
-          overwrite: true
-          # Long enough to read a failed run, short enough that a build
-          # artifact is not left lying about for a quarter.
-          retention-days: 1
-      - name: Remove anything the build left behind
+      - name: Run the binary on four distributions
+        # It is a static musl build, so there is no glibc floor to document:
+        # these four runs are what says so rather than a sentence claiming it.
+        # Every image is pinned by digest, because a tag would make "does it
+        # run on Debian" depend on the day the job ran. Each one runs whatever
+        # the one before it did, and each failure is named.
+        run: |
+          set -uo pipefail
+          failed=''
+          for image in \
+            docker.io/library/debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a \
+            docker.io/library/ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3 \
+            docker.io/library/fedora:45@sha256:99e203b80b1c3d8f7e161ec10a68fd02b081ef83a3963553e513c82846b97814 \
+            docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8; do
+            if scripts/ci/distro-smoke.sh "${RUNNER_TEMP}/obsyncd" "${image}"; then
+              printf 'distribution PASS %s\n' "${image%%@*}"
+            else
+              printf '::error::distribution FAIL %s\n' "${image%%@*}"
+              failed="${failed} ${image%%@*}"
+            fi
+          done
+          test -z "${failed}"
+      - name: Remove anything the run left behind
         # `docker create` makes a container that no `docker run` removes, and a
         # failure between the create and the cp would leave it standing.
         if: always()
         run: |
           set -uo pipefail
           docker rm --force "obsync-arch-${GITHUB_SHA}" >/dev/null 2>&1 || true
-          exit 0
-
-  distributions:
-    # The binary is built once per architecture and PROVEN on four
-    # distributions per architecture. It is a static musl build, so there is no
-    # glibc floor to document and these eight legs are what says so rather than
-    # a sentence claiming it. Every image is pinned by digest: a tag would make
-    # "does it run on Debian" depend on the day the job ran.
-    needs: native
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - runner: ubuntu-24.04
-            architecture: amd64
-          - runner: ubuntu-24.04-arm
-            architecture: arm64
-        distribution:
-          - name: debian
-            image: docker.io/library/debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
-          - name: ubuntu
-            image: docker.io/library/ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3
-          - name: fedora
-            image: docker.io/library/fedora:45@sha256:99e203b80b1c3d8f7e161ec10a68fd02b081ef83a3963553e513c82846b97814
-          - name: alpine
-            image: docker.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
-    runs-on: ${{ matrix.target.runner }}
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Point Docker at an empty configuration
-        run: |
-          set -euo pipefail
-          config="${RUNNER_TEMP}/docker-empty-config"
-          mkdir -p "${config}"
-          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
-      - name: Take the binary this architecture built
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: obsyncd-${{ matrix.target.architecture }}
-          path: ${{ runner.temp }}/binary
-      - name: Run it on this distribution
-        # An artifact does not carry the executable bit, so it is restored
-        # here rather than inside the smoke, where it would be a permission
-        # the test granted itself.
-        env:
-          IMAGE: ${{ matrix.distribution.image }}
-        run: |
-          set -euo pipefail
-          chmod +x "${RUNNER_TEMP}/binary/obsyncd"
-          scripts/ci/distro-smoke.sh "${RUNNER_TEMP}/binary/obsyncd" "${IMAGE}"
-      - name: Remove anything the run left behind
-        if: always()
-        run: |
-          set -uo pipefail
           docker ps --all --quiet --filter name=obsync-distro- \
             | xargs -r docker rm --force
           exit 0

@@ -3,8 +3,10 @@ name: Release alias audit
 # Weekly, READ-ONLY revalidation of the newest published Release. Publication
 # proved these facts once; this workflow proves they are still true -- that no
 # alias was re-pointed, no signature revoked, no asset replaced, and that
-# today's vulnerability database still clears the shipped image. It holds no
-# write permission anywhere, so a failure here is a report and never a repair.
+# today's vulnerability database still clears the shipped image. It also walks
+# every version main ever advanced to and fails on one nobody delivered. It
+# holds no write permission anywhere, so a failure here is a report and never
+# a repair: it creates no tag and no Release.
 on:
   schedule:
     - cron: '17 8 * * 1'
@@ -33,7 +35,26 @@ jobs:
           fetch-depth: 0
       - name: Install checksum-verified tools
         run: ./scripts/ci/install-tools.sh
+      - name: Require every version main advanced to to have been delivered
+        # The orchestrator dispatches the publisher once per merge and keeps
+        # nothing, so a lost dispatch leaves a version on main with no tag.
+        # `owed` prints each version's state (owed, tagged, published,
+        # verified) and fails on an owed one from 0.1.11 on; older ones are
+        # reported and grandfathered (`OWED_FROM`).
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          releases="${RUNNER_TEMP}/audit-releases.json"
+          gh api --method GET --paginate --slurp \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "${releases}"
+          python3 -B scripts/ci/release_contract.py owed \
+            --repository . --head HEAD --releases-json "${releases}"
       - name: Re-bind the latest Release, aliases, signatures, assets, and scan
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_PASSWORD: ${{ secrets.GITHUB_TOKEN }}

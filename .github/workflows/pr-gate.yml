@@ -37,7 +37,11 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      # Each check below runs unless the run was cancelled, so one red no
+      # longer hides the verdict of every check after it; any red still fails
+      # the job.
       - name: Test the hostile contract suites
+        if: ${{ !cancelled() }}
         run: python3 -B -m unittest discover -s scripts/ci -p 'test_*.py' -v
       - name: Enforce the commit identity, trailer, and signature contract
         # `gitleaks git` and `gitleaks dir` both read BLOB content, so commit
@@ -45,7 +49,7 @@ jobs:
         # either scan. This step closes that gap for the range this event
         # actually contributes -- never all of history, which would
         # re-litigate the root commit on every run.
-        if: github.event_name != 'workflow_dispatch'
+        if: ${{ !cancelled() && github.event_name != 'workflow_dispatch' }}
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -69,7 +73,7 @@ jobs:
       - name: Enforce one exact release step from the protected base
         # The seven lockstep locks (docs/release.md), walked over every commit
         # in the range this event contributes. Two verdicts and no flag.
-        if: github.event_name != 'workflow_dispatch'
+        if: ${{ !cancelled() && github.event_name != 'workflow_dispatch' }}
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -113,18 +117,23 @@ jobs:
           # overwrite the collision fails the gate and strands the merged SHA.
           overwrite: true
       - name: Install checksum-verified tools
+        if: ${{ !cancelled() }}
         run: ./scripts/ci/install-tools.sh
       - name: Validate workflows
+        if: ${{ !cancelled() }}
         run: actionlint
       - name: Reject high or critical source vulnerabilities
+        if: ${{ !cancelled() }}
         run: >-
           trivy fs --scanners vuln
           --severity HIGH,CRITICAL --exit-code 1
           --ignore-unfixed=false --timeout 10m
           --cache-dir "${RUNNER_TEMP}/trivy-source-cache" .
       - name: Scan full history for secrets
+        if: ${{ !cancelled() }}
         run: gitleaks git --no-banner --redact --max-target-megabytes=2 --verbose .
       - name: Scan working tree for secrets
+        if: ${{ !cancelled() }}
         run: gitleaks dir --no-banner --redact --verbose .
 
   application:
@@ -177,8 +186,6 @@ jobs:
           cargo build --locked -p obsyncd
           node scripts/ci/e2ee.mjs
           python3 -B scripts/ci/test_cors_routes.py
-      - name: Verify mobile acceptance harness guards and broken controls
-        run: bash scripts/ci/mobile-harness.sh
       - name: Build and test the offline CLI
         run: |
           cargo build --locked --release -p obsync-cli
@@ -189,6 +196,32 @@ jobs:
         run: node --test dashboard/test/*.test.mjs
       - name: Pin the Makefile and CI to one battery
         run: ./scripts/ci/makefile-invariants.sh
+
+  mobile-harness:
+    # Its own job so the minute and a half it takes is off `application`'s
+    # critical path. It needs the built plugin and nothing else that job makes.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.0'
+          check-latest: false
+      - name: Build the plugin the harness pins
+        working-directory: plugin
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+      - name: Verify mobile acceptance harness guards and broken controls
+        run: bash scripts/ci/mobile-harness.sh
 
   chart:
     runs-on: ubuntu-24.04
@@ -211,6 +244,11 @@ jobs:
           helm template smoke chart --kube-version v1.36.0 >/dev/null
       - name: Prove the rendered ingress, storage, and security pins
         run: python3 -B scripts/ci/chart_pins.py all
+      - name: Render across the claimed Kubernetes range
+        # Every minor `kubeVersion` claims, in the spellings managed clusters
+        # report (EKS, GKE, k3s), and refused just below the floor. Each
+        # version that fails is named.
+        run: scripts/ci/chart-kube-versions.sh
 
   container:
     # The image the release actually ships, built on every PR instead of first
@@ -235,10 +273,16 @@ jobs:
     # SECRETLESS. Nothing is pushed, no registry is logged into, and the job
     # holds `contents: read`: there is no credential here to push with even if
     # a step asked to.
+    #
+    # BUILT ONCE. Its last step hands the image it proved to every job below
+    # that exercises it; they load those bytes and refuse any other image by
+    # ID (scripts/ci/image-handoff.sh) instead of building their own.
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
+    outputs:
+      image: ${{ steps.handoff.outputs.image }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -349,10 +393,155 @@ jobs:
         # anonymously by digest with three attempts, so a Docker Hub hiccup
         # reads as a registry failure and never as an obsync defect.
         run: scripts/ci/compose-smoke.sh "obsync-gate-full:${GITHUB_SHA}"
+      - name: Hand the proven image to the jobs that exercise it
+        id: handoff
+        run: |
+          set -euo pipefail
+          image="$(scripts/ci/image-handoff.sh save "obsync-gate-full:${GITHUB_SHA}" "${RUNNER_TEMP}/handoff")"
+          printf 'image=%s\n' "${image}" >> "${GITHUB_OUTPUT}"
+      - name: Keep it for this run only
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: obsync-image-amd64
+          path: ${{ runner.temp }}/handoff/image.tar
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  changes:
+    # Whether every path this event changed is documentation: root AGENTS.md,
+    # README.md, .gitignore, or Markdown under docs/ (`release_contract.py
+    # docs-only`, the release classifier's own allowlist). Only then are the
+    # end-to-end jobs that exercise the image skipped; every other job above
+    # runs on every change. A manual run is never documentation-only.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      docs-only: ${{ steps.classify.outputs.docs-only }}
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Classify the changed paths
+        id: classify
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE_SHA: ${{ github.event.before }}
+          PUSH_HEAD_SHA: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          case "${GITHUB_EVENT_NAME}" in
+            pull_request) base="${PR_BASE_SHA}" head="${PR_HEAD_SHA}" ;;
+            push) base="${PUSH_BASE_SHA}" head="${PUSH_HEAD_SHA}" ;;
+            *) base='' head='' ;;
+          esac
+          docs_only=false
+          if [ -n "${base}" ]; then
+            docs_only="$(python3 -B scripts/ci/release_contract.py docs-only \
+              --repository . --base "${base}" --head "${head}")"
+          fi
+          printf 'docs-only=%s\n' "${docs_only}" | tee -a "${GITHUB_OUTPUT}"
+
+  image-arm64:
+    # `container`'s build on the free, native `ubuntu-24.04-arm` runner: the
+    # image the reference arm64 host runs, built ONCE for every arm64 job
+    # below, with clippy, the Rust suite and the plugin suite run inside it on
+    # arm64. Nothing is emulated, pushed or logged into.
+    needs: changes
+    if: needs.changes.outputs.docs-only != 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      image: ${{ steps.handoff.outputs.image }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Point Docker at an empty configuration
+        run: |
+          set -euo pipefail
+          config="${RUNNER_TEMP}/docker-empty-config"
+          mkdir -p "${config}"
+          printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
+      - name: Prove the runner is arm64
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            aarch64 | arm64) ;;
+            *) printf 'DENY: this job claims arm64 and runs on %s\n' "$(uname -m)" >&2; exit 1 ;;
+          esac
+      - name: Build the shipped image natively
+        run: docker build --tag "obsync-arm64:${GITHUB_SHA}" .
+      - name: Hand the image to the arm64 jobs
+        id: handoff
+        run: |
+          set -euo pipefail
+          image="$(scripts/ci/image-handoff.sh save "obsync-arm64:${GITHUB_SHA}" "${RUNNER_TEMP}/handoff")"
+          printf 'image=%s\n' "${image}" >> "${GITHUB_OUTPUT}"
+      - name: Keep it for this run only
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: obsync-image-arm64
+          path: ${{ runner.temp }}/handoff/image.tar
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
 
   custody:
     name: custody
+    needs: container
     uses: ./.github/workflows/desktop-matrix.yml
+    with:
+      image-amd64: ${{ needs.container.outputs.image }}
+    permissions:
+      contents: read
+
+  # The end-to-end workflows, called with the images built above. Each is a
+  # documentation-only range's one skip (`changes`).
+  arch:
+    needs: [changes, container, image-arm64]
+    if: needs.changes.outputs.docs-only != 'true'
+    uses: ./.github/workflows/arch-matrix.yml
+    with:
+      image-amd64: ${{ needs.container.outputs.image }}
+      image-arm64: ${{ needs.image-arm64.outputs.image }}
+    permissions:
+      contents: read
+
+  proxy:
+    needs: [changes, container, image-arm64]
+    if: needs.changes.outputs.docs-only != 'true'
+    uses: ./.github/workflows/proxy-matrix.yml
+    with:
+      image-amd64: ${{ needs.container.outputs.image }}
+      image-arm64: ${{ needs.image-arm64.outputs.image }}
+    permissions:
+      contents: read
+
+  compose:
+    needs: [changes, container, image-arm64]
+    if: needs.changes.outputs.docs-only != 'true'
+    uses: ./.github/workflows/compose-e2e.yml
+    with:
+      image-amd64: ${{ needs.container.outputs.image }}
+      image-arm64: ${{ needs.image-arm64.outputs.image }}
+    permissions:
+      contents: read
+
+  helm:
+    needs: [changes, container]
+    if: needs.changes.outputs.docs-only != 'true'
+    uses: ./.github/workflows/helm-e2e.yml
+    with:
+      image-amd64: ${{ needs.container.outputs.image }}
     permissions:
       contents: read
 
@@ -362,9 +551,11 @@ jobs:
     # or removed -- turns the gate red instead of quietly leaving a required
     # check that never reports. `needs` alone is not enough: a skipped
     # dependency leaves this job skipped, and a skipped required check can
-    # satisfy a ruleset, so each result is asserted explicitly.
+    # satisfy a ruleset, so each result is asserted explicitly. `skipped` is
+    # accepted for the five image-exercising jobs alone, and only when
+    # `changes` classified the range documentation-only.
     if: always()
-    needs: [security, application, chart, container, custody]
+    needs: [security, application, mobile-harness, chart, container, changes, custody, image-arm64, arch, proxy, compose, helm]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -373,16 +564,29 @@ jobs:
         env:
           SECURITY: ${{ needs.security.result }}
           APPLICATION: ${{ needs.application.result }}
+          MOBILE_HARNESS: ${{ needs.mobile-harness.result }}
           CHART: ${{ needs.chart.result }}
           CONTAINER: ${{ needs.container.result }}
+          CHANGES: ${{ needs.changes.result }}
           CUSTODY: ${{ needs.custody.result }}
+          IMAGE_ARM64: ${{ needs.image-arm64.result }}
+          ARCH: ${{ needs.arch.result }}
+          PROXY: ${{ needs.proxy.result }}
+          COMPOSE: ${{ needs.compose.result }}
+          HELM: ${{ needs.helm.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs-only }}
         run: |
           set -euo pipefail
           failed=0
-          for entry in "security=${SECURITY}" "application=${APPLICATION}" "chart=${CHART}" "container=${CONTAINER}" "custody=${CUSTODY}"; do
-            printf '%-12s %s\n' "${entry%%=*}" "${entry#*=}"
-            if [ "${entry#*=}" != success ]; then
-              failed=1
-            fi
+          for entry in "security=${SECURITY}" "application=${APPLICATION}" "mobile-harness=${MOBILE_HARNESS}" \
+            "chart=${CHART}" "container=${CONTAINER}" "changes=${CHANGES}" "custody=${CUSTODY}" \
+            "image-arm64=${IMAGE_ARM64}" "arch=${ARCH}" "proxy=${PROXY}" "compose=${COMPOSE}" "helm=${HELM}"; do
+            printf '%-14s %s\n' "${entry%%=*}" "${entry#*=}"
+            case "${entry}" in
+              *=success) ;;
+              image-arm64=skipped | arch=skipped | proxy=skipped | compose=skipped | helm=skipped)
+                test "${DOCS_ONLY:-}" = true || failed=1 ;;
+              *) failed=1 ;;
+            esac
           done
           test "${failed}" -eq 0

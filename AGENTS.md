@@ -164,10 +164,10 @@ Numbered for citation, repo-scoped, none negotiable in code:
     `VERSION`, the workspace `version` in `Cargo.toml`, chart `version` and
     `appVersion`, `chart/values.yaml` `image.tag` (`vX.Y.Z`),
     root `manifest.json` `version`, and the `CHANGELOG.md` `X.Y.Z` entry.
-    A range whose every commit is confined to the closed documentation
-    allowlist — root `AGENTS.md`, `README.md`, `.gitignore`, and Markdown
-    files under `docs/` — classifies no-artifact and advances nothing. The
-    classifier has exactly two verdicts and no flag; a non-allowlisted path
+    A range confined to root `AGENTS.md`, `README.md`, `.gitignore`,
+    Markdown under `docs/` and the CI and test trees nothing shipped is built
+    from (`NO_ARTIFACT_TREES`, `scripts/ci/release_contract.py`) is
+    no-artifact and advances nothing. Two verdicts, no flag: any other path
     with an unchanged version denies. Successful main CI dispatches the
     publisher, which creates the annotated `X.Y.Z` tag at the exact merged
     SHA, emits the signed multi-arch image (linux/amd64, linux/arm64), the
@@ -300,7 +300,7 @@ leaves draft. Review depth is risk-based:
   ONE independent adversarial review, and owner merge.
 - **Normal code changes** take focused tests, one full local gate, one
   review.
-- **Docs, comments, formatting** (requirement 10's no-artifact class) run
+- **Docs, comments, formatting** (requirement 10's documentation paths) run
   the relevant checks; review is the coordinator's routing decision.
 
 **Code-scanning dispositions.** A CodeQL alert is resolved in exactly two

@@ -59,6 +59,12 @@ jobs:
       - name: Conditioned step
         if: false
         run: helm lint chart
+      - name: Runs unless cancelled
+        if: ${{ !cancelled() }}
+        run: actionlint
+      - name: Unless cancelled, and never
+        if: ${{ !cancelled() && false }}
+        run: trivy fs .
   two:
     if: always()
     runs-on: ubuntu-24.04
@@ -78,11 +84,18 @@ class ResolvesWhatTheStepsRun(unittest.TestCase):
         ]
 
     def test_a_step_that_runs_no_string_contributes_nothing(self):
-        # Eight steps across two jobs, four commands. The `uses:` step is not a
+        # Ten steps across two jobs, five commands. The `uses:` step is not a
         # command; `run: true # …` is not one either, because the reader strips
-        # the comment and resolves the bare `true` as a BOOLEAN; and the two
+        # the comment and resolves the bare `true` as a BOOLEAN; and the three
         # conditioned ones are excluded below.
-        self.assertEqual(len(workflow_runs.run_values(STEPS)), 4)
+        self.assertEqual(len(workflow_runs.run_values(STEPS)), 5)
+
+    def test_a_step_that_runs_unless_cancelled_still_runs(self):
+        # `!cancelled()` runs the step even after an earlier one failed: more
+        # often than no condition, never less. Anything added to it is a
+        # condition like any other.
+        self.assertIn("actionlint", self.segments())
+        self.assertNotIn("trivy fs .", self.segments())
 
     def test_a_conditioned_step_contributes_nothing(self):
         # `if: false` on a step is this repository's neutralization written in

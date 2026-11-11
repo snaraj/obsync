@@ -45,10 +45,11 @@ release's own `manifest.json`.
 
 ## Classifier
 
-Two verdicts, no flag: `artifact` (any path outside the documentation
-allowlist changed, and every lock advanced exactly one release step) or
-`no-artifact` (every commit confined to root `AGENTS.md`, `README.md`,
-`.gitignore`, and Markdown under `docs/`; no lock touched).
+Two verdicts, no flag: `artifact` (any other path changed, and every lock
+advanced exactly one release step) or `no-artifact` (every commit confined to
+root `AGENTS.md`, `README.md`, `.gitignore`, Markdown under `docs/`, and the
+CI and test trees nothing shipped is built from, `NO_ARTIFACT_TREES` in
+`scripts/ci/release_contract.py`; no lock touched).
 
 **Genesis.** A range whose base carries NONE of the seven locks — the state a
 repository born from GitHub's own root commit is in, which the release-step

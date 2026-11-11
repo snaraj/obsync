@@ -37,8 +37,8 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Classify the completed range from its authorized gate verdict
-        # A documentation-only merge changes no artifact, so there is nothing
-        # to version, sign, scan, or release. The gate that validated the exact
+        # A no-artifact merge (documentation, CI or tests only) changes no
+        # artifact, so there is nothing to version, sign, scan, or release. The gate that validated the exact
         # pushed range published its verdict as a run artifact on the run this
         # event names. This step re-derives the class from git rather than
         # believing the verdict's label -- but the re-derivation is
@@ -111,7 +111,7 @@ jobs:
               # run, taken from the Actions record. This repository merges by
               # squash or rebase into a linear main, so that head IS the
               # boundary of the previous gated push and needs no walk to
-              # recover; a documentation-only push changes no lock, so all six
+              # recover; a no-artifact push changes no lock, so all six
               # lock files must also be byte-identical across it.
               previous_json="${RUNNER_TEMP}/previous-main-runs.json"
               gh api --method GET \
@@ -134,7 +134,7 @@ jobs:
               git merge-base --is-ancestor "${previous_head}" "${COMPLETED_SHA}"
               for lock in VERSION Cargo.toml chart/Chart.yaml chart/values.yaml manifest.json plugin/manifest.json CHANGELOG.md; do
                 if ! git diff --quiet "${previous_head}" "${COMPLETED_SHA}" -- "${lock}"; then
-                  printf 'DENY: %s changed since the last gated main head %s; this is not a documentation-only push\n' \
+                  printf 'DENY: %s changed since the last gated main head %s; this is not a no-artifact push\n' \
                     "${lock}" "${previous_head}" >&2
                   exit 1
                 fi
@@ -144,9 +144,9 @@ jobs:
                 --first-parent)"
               test "$(jq -er '.class' <<<"${anchored}")" = no-artifact
               test "$(jq -er '.tag' <<<"${anchored}")" = "${retained_tag}"
-              printf 'NO-ARTIFACT: %s is documentation-only; no tag, no Release, publisher not dispatched.\n' \
+              printf 'NO-ARTIFACT: %s changes no artifact surface; no tag, no Release, publisher not dispatched.\n' \
                 "${COMPLETED_SHA}"
-              printf '## No-artifact merge\n\nCommit %s changed documentation surfaces only; the retained version stays %s and the publisher was not dispatched.\n' \
+              printf '## No-artifact merge\n\nCommit %s changed no artifact surface; the retained version stays %s and the publisher was not dispatched.\n' \
                 "${COMPLETED_SHA}" "${retained_tag}" >> "${GITHUB_STEP_SUMMARY}"
               ;;
             *)

@@ -24,13 +24,25 @@ name: Desktop matrix
 #   plugin-tests      `npm test` on Windows and macOS, where the desktop code's
 #                     rename, link and inode assumptions meet NTFS and APFS.
 #
-# Required on every PR/main through pr-gate's custody job; also runnable
-# nightly and by hand. The local reusable call uses this exact commit. There
-# is no second standalone PR run, path filter or skipped-native success.
+# Required on every PR/main through pr-gate's custody job, which hands it the
+# image `container` built and proved; also runnable weekly and by hand, when
+# it builds that image itself. The local reusable call uses this exact commit.
+# There is no second standalone PR run, path filter or skipped-native success.
+#
+# WEEKLY, NOT NIGHTLY. Every PR and main push already runs all of this at the
+# exact commit. A scheduled run on an unchanged commit tests only drift outside
+# the repository: the hosted runner images, and nothing pinned (Obsidian and
+# every base image are digest- or checksum-pinned). A week keeps that signal;
+# eight identical nightly runs of one main commit bought nothing more.
 on:
   workflow_call:
+    inputs:
+      image-amd64:
+        description: ID of the image pr-gate's container job built and proved
+        type: string
+        required: true
   schedule:
-    - cron: '53 4 * * *'
+    - cron: '53 4 * * 1'
   workflow_dispatch:
 
 permissions: {}
@@ -75,12 +87,38 @@ jobs:
           config="${RUNNER_TEMP}/docker-empty-config"
           mkdir -p "${config}"
           printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
-      - name: Build the shipped image
-        run: docker build --tag "obsync-desktop-e2e:${GITHUB_SHA}" .
+      - name: Download the image the gate proved
+        if: inputs.image-amd64 != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: obsync-image-amd64
+          path: ${{ runner.temp }}/handoff
+      - name: Take that image by ID, or build it on a standalone run
+        env:
+          IMAGE_ID: ${{ inputs.image-amd64 }}
+        run: scripts/ci/image-handoff.sh take "${IMAGE_ID}" "${RUNNER_TEMP}/handoff" "obsync-desktop-e2e:${GITHUB_SHA}"
+      # The pinned downloads, kept between runs so a slow or absent upstream
+      # is no longer this leg's failure. Both scripts verify every file
+      # against its SHA-256 pin whether it was cached or fetched.
+      - name: Restore the pinned Obsidian AppImage
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/obsidian-appimage
+          key: obsidian-appimage-${{ runner.arch }}-${{ hashFiles('scripts/ci/obsidian-e2e.sh') }}
+      - name: Restore the pinned GNOME Keyring packages
+        if: matrix.keyring == 'gnome-keyring'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/keyring-debs
+          key: keyring-debs-${{ runner.arch }}-${{ hashFiles('scripts/ci/install-keyring.sh') }}
       - name: Install the pinned GNOME Keyring
         if: matrix.keyring == 'gnome-keyring'
+        env:
+          OBSYNC_KEYRING_CACHE: ${{ runner.temp }}/keyring-debs
         run: scripts/ci/install-keyring.sh
       - name: Two Obsidian instances through the Caddy leg
+        env:
+          OBSYNC_E2E_APPIMAGE: ${{ runner.temp }}/obsidian-appimage/Obsidian.AppImage
         run: scripts/ci/proxy-e2e.sh "obsync-desktop-e2e:${GITHUB_SHA}" caddy --then scripts/ci/obsidian-e2e.sh
       - name: Remove anything the run left behind
         if: always()
@@ -148,7 +186,8 @@ jobs:
           exit 0
 
   static-binary:
-    # The server's static linux/amd64 build from this commit, for the WSL leg.
+    # The server's static linux/amd64 build from this commit, for the WSL leg:
+    # the binary inside the image the gate proved, or a standalone build.
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -164,12 +203,20 @@ jobs:
           config="${RUNNER_TEMP}/docker-empty-config"
           mkdir -p "${config}"
           printf 'DOCKER_CONFIG=%s\n' "${config}" >> "${GITHUB_ENV}"
-      - name: Build the server stage and take the binary out
+      - name: Download the image the gate proved
+        if: inputs.image-amd64 != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: obsync-image-amd64
+          path: ${{ runner.temp }}/handoff
+      - name: Take the binary out of that image, or of a standalone build
+        env:
+          IMAGE_ID: ${{ inputs.image-amd64 }}
         run: |
           set -euo pipefail
-          docker build --target server --tag "obsync-static:${GITHUB_SHA}" .
+          scripts/ci/image-handoff.sh take "${IMAGE_ID}" "${RUNNER_TEMP}/handoff" "obsync-static:${GITHUB_SHA}"
           container="$(docker create "obsync-static:${GITHUB_SHA}")"
-          docker cp "${container}:/out/obsyncd" "${RUNNER_TEMP}/obsyncd"
+          docker cp "${container}:/usr/local/bin/obsyncd" "${RUNNER_TEMP}/obsyncd"
           docker rm --force "${container}" >/dev/null
       - name: Hand the binary to the Windows leg
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

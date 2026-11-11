@@ -226,7 +226,10 @@ printf 'makefile-invariants: (c) the Makefile parses and make help runs (non-vac
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/makefile-invariants.XXXXXX")"
 trap 'rm -rf -- "${scratch}"' EXIT
 probe='cargo clippy --workspace --all-targets -- -D warnings'
-block='npm run build'
+# The block-scalar probe must run at exactly ONE site in the workflow, or a
+# mutant of that one site leaves the command running at another: `npm run
+# build` also runs in the `mobile-harness` job, `npm test` only in `application`.
+block='npm test'
 tab="$(printf '\t')"
 
 rewrite() {

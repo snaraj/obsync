@@ -1404,6 +1404,15 @@ const QUIET_MS = 250;
  */
 const MAX_ADVANCES = 1800;
 const QUIET_ADVANCES = 40;
+/**
+ * A STALL: the wait's virtual clock is spent (or never moves), nothing is
+ * due, and no timer was set, cleared or fired for this long in real time.
+ * Only work already in flight can still finish it, and twice the ten seconds
+ * of silent off-thread work `fake-timers.test.mjs` pins is its allowance.
+ * A wait that met an order it never expected fails here, naming what it saw,
+ * instead of idling out the whole budget (#378).
+ */
+const STALL_MS = 20000;
 
 /**
  * ONE IDLE ROUND: about a millisecond of real time, yielded. `setTimeout(1)`
@@ -1427,16 +1436,29 @@ export class FakeTimers {
     this.entries = [];
     this.next = 1;
     this.now = 0;
+    this.touched = 0;
+    this.stallMs = STALL_MS;
+    /** What a refused wait reports beside the timers, e.g. the pull chain's holder and queue. */
+    this.observe = () => "";
   }
 
   set(fn, ms) {
     const handle = this.next++;
     this.entries.push({ handle, fn, due: this.now + ms });
+    this.touched++;
     return handle;
   }
 
   clear(handle) {
     this.entries = this.entries.filter((entry) => entry.handle !== handle);
+    this.touched++;
+  }
+
+  /** The state a refused wait names: the virtual clock, what is pending and when, and the test's own view. */
+  observed(advances) {
+    const pending = this.entries.map((entry) => entry.due - this.now).sort((a, b) => a - b);
+    const seen = this.observe();
+    return `virtual_ms=${this.now} advances=${advances} pending_ms=[${pending.slice(0, 8).join(",")}]${seen ? ` ${seen}` : ""}`;
   }
 
   /**
@@ -1464,16 +1486,28 @@ export class FakeTimers {
    * A wait with no predicate is the other kind: it precedes an assertion that
    * nothing happened, and it drains for a real quiet window so that claim is
    * about a real interval rather than about a turn count.
+   *
+   * Once the virtual clock can move no further and nothing is due, only work
+   * already in flight can satisfy a predicate. A wait that then sees no timer
+   * set, cleared or fired for `stallMs`, and nothing due on the clock as it
+   * stands after the yield and the predicate, is refused as stalled, with
+   * what it observed, rather than after the whole budget.
    */
   async run(advanceMs = 1000, until = null, budgetMs = WAIT_BUDGET_MS) {
     this.now += advanceMs;
     const deadline = Date.now() + (until ? budgetMs : QUIET_MS);
     const advanceLimit = until ? MAX_ADVANCES : QUIET_ADVANCES;
     let advances = 0;
+    let touched = this.touched;
+    let quietSince = performance.now();
     for (;;) {
       const due = this.entries.filter((entry) => entry.due <= this.now);
       this.entries = this.entries.filter((entry) => entry.due > this.now);
       for (const entry of due) entry.fn();
+      if (due.length > 0 || touched !== this.touched) {
+        touched = this.touched;
+        quietSince = performance.now();
+      }
       if (due.length > 0) {
         await new Promise((resolve) => setImmediate(resolve));
       } else {
@@ -1489,7 +1523,20 @@ export class FakeTimers {
       if (until) {
         if (until()) return true;
         if (Date.now() >= deadline) {
-          throw new Error(`fake timers: waited ${budgetMs} ms of real time and the condition never held`);
+          throw new Error(`fake timers: waited ${budgetMs} ms of real time and the condition never held: ${this.observed(advances)}`);
+        }
+        // The yield and the predicate both run code that can set or clear a
+        // timer, or move the clock onto a registered one (`editListed` drives
+        // a parked rename's retry so), so the stall is judged on the queue and
+        // clock as they are now, not as this round found them.
+        if (touched !== this.touched) {
+          touched = this.touched;
+          quietSince = performance.now();
+        }
+        const spent = advanceMs === 0 || advances >= advanceLimit;
+        const dueNow = this.entries.some((entry) => entry.due <= this.now);
+        if (spent && !dueNow && performance.now() - quietSince >= this.stallMs) {
+          throw new Error(`fake timers: stalled, nothing due and no timer set, cleared or fired for ${this.stallMs} ms of real time with the virtual clock spent and the condition false: ${this.observed(advances)}`);
         }
       } else if (Date.now() >= deadline) {
         return true;

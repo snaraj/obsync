@@ -90,17 +90,22 @@ esac
 printf 'obsidian-e2e: START obsidian=%s asset=%s url=https://%s:%s address=%s keyring=%s\n' \
   "${OBSIDIAN_VERSION}" "${asset}" "${OBSYNC_E2E_HOST}" "${OBSYNC_E2E_PORT}" "${address}" "${keyring}"
 
-# Obsidian, by digest, unpacked. `OBSYNC_E2E_APPIMAGE` names a copy already on
-# disk; it is held to the same pin.
-if [ -n "${OBSYNC_E2E_APPIMAGE:-}" ]; then
-  cp "${OBSYNC_E2E_APPIMAGE}" "${scratch}/Obsidian.AppImage" || deny "no AppImage at ${OBSYNC_E2E_APPIMAGE}"
+# Obsidian, by digest, unpacked. `OBSYNC_E2E_APPIMAGE` names where a copy is
+# kept between runs (the workflow's cache): used when present, filled after a
+# download when absent. Either way the bytes are held to the same pin.
+if [ -n "${OBSYNC_E2E_APPIMAGE:-}" ] && [ -f "${OBSYNC_E2E_APPIMAGE}" ]; then
+  cp "${OBSYNC_E2E_APPIMAGE}" "${scratch}/Obsidian.AppImage"
 else
-  curl --proto '=https' --tlsv1.2 -sSfL \
+  curl --proto '=https' --tlsv1.2 -sSfL --retry 5 --retry-all-errors \
     "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/${asset}" \
     -o "${scratch}/Obsidian.AppImage" || deny "could not download ${asset}"
 fi
 printf '%s  %s\n' "${sha}" "${scratch}/Obsidian.AppImage" | sha256sum -c - >/dev/null \
   || deny "${asset} does not match its pinned SHA-256"
+if [ -n "${OBSYNC_E2E_APPIMAGE:-}" ] && [ ! -f "${OBSYNC_E2E_APPIMAGE}" ]; then
+  mkdir -p "$(dirname "${OBSYNC_E2E_APPIMAGE}")"
+  cp "${scratch}/Obsidian.AppImage" "${OBSYNC_E2E_APPIMAGE}"
+fi
 chmod +x "${scratch}/Obsidian.AppImage"
 # The AppImage's own unpacker links `libz.so`, the name only zlib's DEVELOPMENT
 # package provides; a private symlink to the runtime library stands in for it,

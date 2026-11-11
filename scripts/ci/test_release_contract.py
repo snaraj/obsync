@@ -13,6 +13,8 @@ that returned lists of paths would be testing the test.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -301,6 +303,48 @@ class TheClassifier(GitFixture):
         self.assertFalse(contract.is_documentation_path("nested/AGENTS.md"))
         self.assertTrue(contract.is_documentation_path("docs/nested/deep.md"))
 
+    def test_a_workflow_contract_or_test_only_range_classifies_no_artifact(self):
+        # Requirement 10: nothing shipped is built from these trees, so a range
+        # confined to them is no release of byte-identical product.
+        head = self.repository.commit({
+            ".github/workflows/pr-gate.yml": "name: gate\n",
+            "scripts/ci/test_x.py": "pass\n",
+            "scripts/validation/run.sh": "true\n",
+            "plugin/test/fake.mjs": "export {};\n",
+            "crates/obsyncd/tests/api.rs": "#[test] fn t() {}\n",
+        }, "ci")
+        verdict = self.classify(self.base, head)
+        self.assertEqual((verdict["class"], verdict["version"]), ("no-artifact", "0.1.0"))
+        self.assertTrue(contract.docs_only(self.root, self.base, self.base) is True)
+        self.assertFalse(contract.docs_only(self.root, self.base, head),
+                         "a workflow change still runs every end-to-end job")
+
+    def test_a_shipped_input_without_a_release_step_still_denies(self):
+        # The Dockerfile, the lockfiles, the toolchain pin and the product
+        # source are what the bytes are built from; and a name that merely
+        # STARTS like a no-artifact tree is not inside it.
+        for path in ("Dockerfile", "Cargo.lock", "plugin/package-lock.json", "rust-toolchain.toml",
+                     ".dockerignore", "plugin/src/main.ts", "plugin/tests/x.mjs", ".githubx/a.yml",
+                     "scripts/cix/a.py", "crates/obsyncd/src/tests/a.rs", "chart/templates/x.yaml"):
+            with self.subTest(path=path):
+                self.assertFalse(contract.is_no_artifact_path(path))
+        head = self.repository.commit({"Dockerfile": "FROM scratch\n"}, "image")
+        with self.assertRaisesRegex(contract.ContractError, "without one exact release step: Dockerfile"):
+            self.classify(self.base, head)
+
+    def test_no_release_lock_is_a_no_artifact_path(self):
+        for path in (*contract.RELEASE_LOCK_PATHS, "plugin/manifest.json"):
+            with self.subTest(lock=path):
+                self.assertFalse(contract.is_no_artifact_path(path))
+
+    def test_documentation_alone_is_docs_only(self):
+        head = self.repository.commit({"docs/x.md": "notes\n", "AGENTS.md": "contract\n"}, "docs")
+        self.assertTrue(contract.docs_only(self.root, self.base, head))
+        mixed = self.repository.commit({"plugin/test/a.mjs": "export {};\n"}, "test")
+        self.assertFalse(contract.docs_only(self.root, self.base, mixed))
+        with self.assertRaises(contract.ContractError):
+            contract.docs_only(self.root, "0" * 40, head)
+
     def test_a_skipped_or_reverted_patch_denies(self):
         skipped = self.repository.commit({**locks("0.1.3", ["0.1.0"]), "src.rs": "x\n"}, "skip")
         with self.assertRaises(contract.ContractError):
@@ -361,6 +405,89 @@ class TheClassifier(GitFixture):
             {**locks("0.1.2", ["0.1.1", "0.1.0"]), "src.rs": "b\n"}, "two"
         )
         self.assertEqual(self.classify(first, second, first_parent=True)["tag"], "v0.1.2")
+
+
+class TheReleaseLedger(GitFixture):
+    """`owed`: every version main advanced to, and how far its delivery got."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The base carries 0.1.0 from its first commit, so the ledger starts
+        # at the first version main ADVANCED to.
+        self.boundaries = {"0.1.0": self.base}
+        self.chain("0.1.1", "0.1.2")
+
+    def chain(self, *versions: str) -> None:
+        history = [str(v) for v in sorted(map(contract.Version.parse, self.boundaries), reverse=True)]
+        for version in versions:
+            self.boundaries[version] = self.repository.commit(
+                {**locks(version, history), "src.rs": version}, version)
+            history.insert(0, version)
+
+    def release(self, tag: str, **overrides: object) -> dict:
+        return {"tag_name": tag, "draft": False, "prerelease": False, "immutable": True,
+                "assets": [{"name": f"obsync-{tag}-release-manifest.json"}], **overrides}
+
+    def ledger(self, releases: list) -> dict[str, str]:
+        return {entry["version"]: entry["state"]
+                for entry in contract.release_ledger(self.root, "HEAD", releases)}
+
+    def test_each_version_takes_the_state_its_delivery_reached(self):
+        self.assertEqual(self.ledger([]), {"0.1.1": "owed", "0.1.2": "owed"})
+        self.repository.git("tag", "v0.1.1", self.boundaries["0.1.1"])
+        self.repository.git("tag", "v0.1.2", self.boundaries["0.1.2"])
+        self.assertEqual(self.ledger([self.release("v0.1.1"), self.release("v0.1.2", immutable=False)]),
+                         {"0.1.1": "verified", "0.1.2": "published"})
+        self.assertEqual(self.ledger([self.release("v0.1.1", draft=True)]), {"0.1.1": "tagged", "0.1.2": "tagged"})
+        for flaw in ({"assets": []}, {"prerelease": True}):
+            with self.subTest(flaw=sorted(flaw)):
+                self.assertEqual(self.ledger([self.release("v0.1.1", **flaw)])["0.1.1"], "published")
+
+    def test_an_untagged_version_is_owed_and_refused_from_the_threshold_on(self):
+        # 0.1.1 to 0.1.10 sit below OWED_FROM and are reported, never refused;
+        # 0.1.11 is the first version an untagged merge makes a failure.
+        self.chain("0.1.3", "0.1.4", "0.1.5", "0.1.6", "0.1.7", "0.1.8", "0.1.9", "0.1.10")
+        ledger = contract.release_ledger(self.root, "HEAD", [])
+        self.assertEqual({entry["state"] for entry in ledger}, {"owed"})
+        self.assertEqual(contract.owed_versions(ledger), [])
+        self.chain("0.1.11")
+        ledger = contract.release_ledger(self.root, "HEAD", [])
+        self.assertEqual(contract.owed_versions(ledger), ["0.1.11"])
+        self.assertEqual(ledger[-1]["commit"], self.boundaries["0.1.11"])
+        self.repository.git("tag", "0.1.11", self.boundaries["0.1.11"])
+        self.assertEqual(contract.owed_versions(contract.release_ledger(self.root, "HEAD", [])), [])
+
+    def test_the_command_prints_the_ledger_and_fails_on_an_owed_version(self):
+        self.chain("0.1.3", "0.1.4", "0.1.5", "0.1.6", "0.1.7", "0.1.8", "0.1.9", "0.1.10", "0.1.11")
+        pages = self.root / "releases.json"  # untracked: the ledger reads history, not the tree
+        pages.write_text(json.dumps([[self.release("v0.1.1")], []]), encoding="utf-8")
+        self.repository.git("tag", "v0.1.1", self.boundaries["0.1.1"])
+        argv = ["owed", "--repository", str(self.root), "--head", "main", "--releases-json", str(pages)]
+        printed, refused = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(refused):
+            self.assertEqual(contract.main(argv), 1)
+        self.assertIn(f"verified  v0.1.1   {self.boundaries['0.1.1']}", printed.getvalue())
+        self.assertIn("DENY: owed versions with no tag: 0.1.11", refused.getvalue())
+        self.repository.git("tag", "0.1.11", self.boundaries["0.1.11"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(contract.main(argv), 0)
+
+    def test_a_tag_off_main_or_at_another_version_is_refused(self):
+        # Off main but AT the version, so only the mainline guard can refuse it.
+        tree = self.repository.git("rev-parse", f"{self.boundaries['0.1.1']}^{{tree}}")
+        side = self.repository.git("commit-tree", "-p", self.base, "-m", "side", tree)
+        self.repository.git("tag", "v0.1.1", side)
+        with self.assertRaisesRegex(contract.ContractError, "does not name a main commit"):
+            contract.release_ledger(self.root, "HEAD", [])
+        self.repository.git("tag", "-f", "v0.1.1", self.base)
+        with self.assertRaisesRegex(contract.ContractError, "does not name a main commit"):
+            contract.release_ledger(self.root, "HEAD", [])
+
+    def test_a_repeated_or_nameless_release_is_refused(self):
+        for listing in ([self.release("v0.1.0"), self.release("v0.1.0")], [{"draft": False}]):
+            with self.subTest(listing=len(listing)):
+                with self.assertRaises(contract.ContractError):
+                    contract.release_ledger(self.root, "HEAD", listing)
 
 
 class TheReleaseStepRanges(unittest.TestCase):
@@ -1538,27 +1665,42 @@ class TheRequiredCheckSetMatchesTheWorkflows(unittest.TestCase):
             set(contract.EXPECTED_GATE_JOBS) | set(contract.EXPECTED_CODEQL_JOBS),
         )
 
+    def rendered(self, job_id: str, job: dict) -> list[str]:
+        """The check names GitHub gives one job's legs."""
+        matrix = job.get("strategy", {}).get("matrix", {})
+        self.assertLessEqual(len(matrix), 1, "the inventory needs a single-axis matrix")
+        if not matrix:
+            return [job.get("name", job_id)]
+        axis, values = next(iter(matrix.items()))
+        self.assertIsInstance(values, list)
+        names = []
+        for value in values:
+            if isinstance(value, dict):
+                self.assertIn("name", job, "an object matrix needs an explicit job name")
+                name = job["name"]
+                for key, field in value.items():
+                    name = name.replace("${{ matrix." + axis + "." + key + " }}", str(field))
+            else:
+                name = job.get("name", f"{job_id} ({value})").replace("${{ matrix." + axis + " }}", value)
+            self.assertNotIn("${{", name)
+            names.append(name)
+        return names
+
     def test_the_expected_main_jobs_are_the_workflow_jobs(self):
         # The publisher authorizes against this inventory, so a job renamed or
-        # added in pr-gate.yml without updating the contract must fail HERE
-        # rather than at the next release.
-        self.assertEqual(set(workflow("pr-gate.yml")["jobs"]) - {"custody"},
-                         set(contract.EXPECTED_GATE_JOBS))
-        rendered = set(contract.EXPECTED_GATE_JOBS)
-        for job_id, job in workflow("desktop-matrix.yml")["jobs"].items():
-            matrix = job.get("strategy", {}).get("matrix", {})
-            self.assertLessEqual(len(matrix), 1, "desktop inventory needs a single-axis matrix")
-            if matrix:
-                axis, values = next(iter(matrix.items()))
-                self.assertIsInstance(values, list)
-                for value in values:
-                    name = job.get("name", f"{job_id} ({value})")
-                    name = name.replace("${{ matrix." + axis + " }}", value)
-                    rendered.add("custody / " + name)
-            else:
-                rendered.add("custody / " + job.get("name", job_id))
+        # added in pr-gate.yml or in a workflow it calls, without updating the
+        # contract, must fail HERE rather than at the next release.
+        rendered = set()
+        for caller, job in workflow("pr-gate.yml")["jobs"].items():
+            if "uses" not in job:
+                rendered.add(caller)
+                continue
+            for job_id, called in workflow(Path(job["uses"]).name)["jobs"].items():
+                rendered.update(f"{job.get('name', caller)} / {name}" for name in self.rendered(job_id, called))
         self.assertEqual(rendered, set(contract.EXPECTED_MAIN_JOBS))
         self.assertEqual(set(contract.EXPECTED_MAIN_JOBS.values()), {"success"})
+        self.assertEqual(len(contract.EXPECTED_MAIN_JOBS), len(contract.EXPECTED_GATE_JOBS)
+                         + len(contract.EXPECTED_CUSTODY_JOBS) + len(contract.EXPECTED_AGGREGATED_JOBS))
 
     def test_the_codeql_matrix_names_the_expected_jobs(self):
         matrix = workflow("codeql.yml")["jobs"]["analyze"]["strategy"]["matrix"]["include"]
@@ -1587,12 +1729,16 @@ class TheDesktopCustodyIsARequiredGateJob(unittest.TestCase):
         self.assertEqual(gate["on"]["push"]["branches"], ["main"])
         self.assertIn("custody", gate["jobs"], "custody must be declared")
         self.assertEqual(gate["jobs"]["custody"], {
-            "name": "custody", "uses": "./.github/workflows/desktop-matrix.yml",
+            "name": "custody", "needs": "container", "uses": "./.github/workflows/desktop-matrix.yml",
+            "with": {"image-amd64": "${{ needs.container.outputs.image }}"},
             "permissions": {"contents": "read"},
         }, "custody must call the exact-commit workflow without skips or extra authority")
         desktop = workflow("desktop-matrix.yml")
         self.assertEqual(set(desktop["on"]), {"workflow_call", "workflow_dispatch", "schedule"})
-        self.assertIsNone(desktop["on"]["workflow_call"], "custody has no bypass inputs or secrets")
+        self.assertEqual(desktop["on"]["workflow_call"], {"inputs": {"image-amd64": {
+            "description": "ID of the image pr-gate's container job built and proved",
+            "type": "string", "required": True}}},
+            "custody takes the proved image's ID and nothing else: no bypass input, no secret")
         self.assertEqual(desktop["permissions"], {})
         self.assertNotEqual(gate["concurrency"]["group"], desktop["concurrency"]["group"])
         self.assertEqual(set(desktop["jobs"]), {
@@ -1663,6 +1809,63 @@ class TheDesktopCustodyIsARequiredGateJob(unittest.TestCase):
                     with self.assertRaises(contract.ContractError):
                         contract.validate_main_jobs_record(jobs_record(inventory),
                             expected_run_id=42, expected_source_sha="a" * 40)
+
+
+class TheCalledEndToEndWorkflowsTakeTheGateImages(unittest.TestCase):
+    """Every workflow pr-gate calls takes the images its run proved, and nothing else."""
+
+    SKIPPABLE = {"image-arm64", "arch", "proxy", "compose", "helm"}
+
+    def test_each_call_passes_only_the_proved_image_ids_and_has_no_bypass(self):
+        jobs = workflow("pr-gate.yml")["jobs"]
+        sources = {"image-amd64": "${{ needs.container.outputs.image }}",
+                   "image-arm64": "${{ needs.image-arm64.outputs.image }}"}
+        called = {caller: job for caller, job in jobs.items() if "uses" in job}
+        self.assertEqual(set(called), {"custody", "arch", "proxy", "compose", "helm"})
+        for caller, job in called.items():
+            with self.subTest(caller=caller):
+                self.assertEqual(job["permissions"], {"contents": "read"})
+                self.assertNotIn("secrets", job)
+                inputs = workflow(Path(job["uses"]).name)["on"]["workflow_call"]
+                self.assertEqual(set(inputs), {"inputs"}, "no secrets reach a called workflow")
+                self.assertEqual(job["with"], {name: sources[name] for name in inputs["inputs"]})
+                for spec in inputs["inputs"].values():
+                    self.assertEqual((spec["type"], spec["required"]), ("string", True))
+                for job_id, leaf in workflow(Path(job["uses"]).name)["jobs"].items():
+                    self.assertNotIn("if", leaf, f"{caller} / {job_id} can be conditioned out")
+                    self.assertNotIn("continue-on-error", leaf)
+
+    def test_only_the_image_exercising_jobs_skip_and_only_on_documentation(self):
+        jobs = workflow("pr-gate.yml")["jobs"]
+        for name, job in jobs.items():
+            with self.subTest(job=name):
+                if name in self.SKIPPABLE:
+                    self.assertEqual(job["if"], "needs.changes.outputs.docs-only != 'true'")
+                    self.assertIn("changes", job["needs"])
+                elif name != "gate":
+                    self.assertNotIn("if", job)
+
+    def test_the_aggregate_accepts_skipped_only_for_those_jobs_and_only_on_documentation(self):
+        gate = workflow("pr-gate.yml")["jobs"]["gate"]
+        step, = gate["steps"]
+        self.assertEqual(step["env"]["DOCS_ONLY"], "${{ needs.changes.outputs.docs-only }}")
+        variables = {job: name for name, value in step["env"].items() for job in gate["needs"]
+                     if value == "${{ needs." + job + ".result }}"}
+        success = {"PATH": "/usr/bin:/bin", **{name: "success" for name in variables.values()}}
+
+        def execute(values):
+            return subprocess.run(["/bin/bash", "-c", step["run"]], env=values,
+                                  capture_output=True, text=True, timeout=5).returncode
+
+        for job, name in variables.items():
+            for docs_only in ("true", "false", None):
+                with self.subTest(job=job, docs_only=docs_only):
+                    values = {**success, name: "skipped"}
+                    if docs_only is not None:
+                        values["DOCS_ONLY"] = docs_only
+                    accepted = job in self.SKIPPABLE and docs_only == "true"
+                    self.assertEqual(execute(values) == 0, accepted)
+        self.assertEqual(execute({**success, "DOCS_ONLY": "true"}), 0)
 
 
 class TheImageBuildIsARequiredGateJob(unittest.TestCase):
