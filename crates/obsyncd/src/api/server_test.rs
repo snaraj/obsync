@@ -20,7 +20,7 @@ use obsync_core::json::{Value, parse};
 use obsync_core::{hmac, sha256};
 
 use crate::api::auth::{Clock, FakeClock};
-use crate::api::{App, handler};
+use crate::api::{App, LogLine, handler};
 use crate::config::{Config, Edge};
 use crate::dashboard::Dashboard;
 use crate::log::{Log, LogLevel};
@@ -1005,6 +1005,89 @@ fn health_endpoints_answer_and_every_response_is_hardened() {
         None,
         "a 401 must not answer what an authenticated read would"
     );
+}
+
+/// The level each request line takes (#321): a probe that answered is debug,
+/// every refusal and fault keeps the level it had, and everything else is info.
+#[test]
+fn a_probe_that_answered_is_debug_and_nothing_else_moves() {
+    let line = |path_class: &'static str, status: u16, decision: &'static str| LogLine {
+        ts: 0,
+        method: "GET",
+        path_class,
+        device: None,
+        status,
+        bytes: 0,
+        duration_ms: 0,
+        decision,
+    };
+    for (path_class, status, decision, level) in [
+        ("/livez", 200, "ok", LogLevel::Debug),
+        ("/readyz", 200, "ok", LogLevel::Debug),
+        ("/readyz", 503, "not_ready", LogLevel::Error),
+        ("/livez", 503, "shutting_down", LogLevel::Error),
+        ("/readyz", 404, "no_route", LogLevel::Warn),
+        ("/readyz", 304, "ok", LogLevel::Info),
+        ("/v1/changes", 200, "ok", LogLevel::Info),
+        ("/v1/changes", 401, "missing_auth", LogLevel::Warn),
+        ("/v1/chunks/{sid}", 503, "slow_body", LogLevel::Warn),
+        ("/v1/chunks/{sid}", 500, "io_error", LogLevel::Error),
+    ] {
+        assert_eq!(
+            super::request_level(&line(path_class, status, decision)),
+            level,
+            "{path_class} {status} {decision}"
+        );
+    }
+}
+
+/// Over the wire, as the pod log reads it: an answered probe at debug, the
+/// same probe refused at once at error, and an ordinary request at info.
+#[test]
+fn an_answered_probe_logs_at_debug_and_a_refused_one_at_once() {
+    let h = Harness::start_with(
+        "probe-levels",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    assert_eq!(Req::get("/livez").send(h.addr).status, 200);
+    assert_eq!(Req::get("/readyz").send(h.addr).status, 200);
+    let blobs = h.dir.join("blobs");
+    let stashed = h.dir.join("blobs-stashed");
+    std::fs::rename(&blobs, &stashed).expect("stash the volume");
+    std::fs::write(&blobs, b"not a directory\n").expect("occupy the mount point");
+    h.clock.set(NOW + crate::api::READY_CACHE_SECS + 1);
+    let refused = Req::get("/readyz").send(h.addr);
+    std::fs::remove_file(&blobs).expect("free the mount point");
+    std::fs::rename(&stashed, &blobs).expect("restore");
+    assert_eq!(refused.status, 503, "{}", refused.text());
+    let cred = h.setup_account();
+    assert_eq!(
+        Req::get("/v1/account").sign(&cred, NOW).send(h.addr).status,
+        200
+    );
+    let lines: Vec<String> = h
+        .captured()
+        .lines()
+        .filter(|l| l.contains(" event=request "))
+        .map(|l| l.split_once(' ').map_or(l, |(_, rest)| rest).to_string())
+        .collect();
+    let level = |path: &str, status: u16| -> Vec<&str> {
+        lines
+            .iter()
+            .filter(|l| {
+                l.contains(&format!(" path_class={path} "))
+                    && l.contains(&format!(" status={status} "))
+            })
+            .filter_map(|l| l.split(' ').next())
+            .collect()
+    };
+    assert_eq!(level("/livez", 200), ["level=debug"], "{lines:#?}");
+    assert_eq!(level("/readyz", 200), ["level=debug"], "{lines:#?}");
+    assert_eq!(level("/readyz", 503), ["level=error"], "{lines:#?}");
+    assert_eq!(level("/v1/account", 200), ["level=info"], "{lines:#?}");
 }
 
 /// The one line a pod log says when a device joins (#321): its short id,

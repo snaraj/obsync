@@ -22,7 +22,7 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ### Changed
 
-- The server writes one line to its log when a device joins by pairing, with the start of its id and its platform (#321).
+- The server logs answered health checks at debug level, so they no longer fill its log, and writes one line when a device joins by pairing, with the start of its id and its platform (#321).
 - Update the Node build runtime image to its current digest and the Rust builder image to 1.99.1 (#381, #372).
 - The documentation site lists the Privacy page under Trust and privacy (#341).
 

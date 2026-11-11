@@ -45,7 +45,7 @@ use obsync_core::json::obj;
 
 use crate::config::Config;
 use crate::dashboard::Dashboard;
-use crate::log::{Log, Val};
+use crate::log::{Log, LogLevel, Val};
 use crate::plugin_dist::PluginDist;
 use crate::storage::types::{DeviceState, StoreError};
 use crate::storage::{Store, error_fields};
@@ -1033,6 +1033,11 @@ impl App {
     /// link, and the device retries it. Logged as an error, every phone on a
     /// weak signal read as a failing server, which the troubleshooting table
     /// says it is not (#212).
+    ///
+    /// A health probe that ANSWERED is debug (#321): the orchestrator asks
+    /// every few seconds, and those lines were 99 % of a pod's log. A probe
+    /// that did not answer `2xx` keeps its line at warn or error, at once,
+    /// and the probe's answer itself never changes (requirement 7).
     fn emit(&self, line: &LogLine) {
         let fields = [
             ("method", Val::word(line.method)),
@@ -1046,14 +1051,27 @@ impl App {
             ("duration_ms", Val::ms(line.duration_ms)),
             ("decision", Val::word(line.decision)),
         ];
-        let sender = matches!(line.decision, "slow_body" | "body_incomplete");
-        if line.status >= 500 && !sender {
-            self.log.error("request", &fields);
-        } else if line.status >= 400 {
-            self.log.warn("request", &fields);
-        } else {
-            self.log.info("request", &fields);
+        match request_level(line) {
+            LogLevel::Error => self.log.error("request", &fields),
+            LogLevel::Warn => self.log.warn("request", &fields),
+            LogLevel::Info => self.log.info("request", &fields),
+            LogLevel::Debug => self.log.debug("request", &fields),
         }
+    }
+}
+
+/// The level of one request's line ([`App::emit`]).
+fn request_level(line: &LogLine) -> LogLevel {
+    let sender = matches!(line.decision, "slow_body" | "body_incomplete");
+    let probe = matches!(line.path_class, "/livez" | "/readyz");
+    if line.status >= 500 && !sender {
+        LogLevel::Error
+    } else if line.status >= 400 {
+        LogLevel::Warn
+    } else if probe && (200..300).contains(&line.status) {
+        LogLevel::Debug
+    } else {
+        LogLevel::Info
     }
 }
 
