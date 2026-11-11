@@ -16,7 +16,7 @@
 # is the immutable build input and the tag states the Node version a reader
 # should expect from those bytes.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/node:26.13.0-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39 AS plugin
+FROM --platform=$BUILDPLATFORM docker.io/library/node:26.13.0-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS plugin
 WORKDIR /src/plugin
 COPY plugin/package.json plugin/package-lock.json ./
 # The tag and digest select Node; these checks also prove the npm bundled by
@@ -57,11 +57,11 @@ COPY --from=plugin /src/plugin/dist/styles.css /styles.css
 # server -- test once natively, then cross-compile one fully static binary.
 #
 # The digest was resolved with:
-#   docker buildx imagetools inspect docker.io/library/rust:1.99.0-slim-trixie
-# The index digest was independently rechecked on 2026-10-13.
+#   docker buildx imagetools inspect docker.io/library/rust:1.99.1-slim-trixie
+# The index digest was resolved again from the registry on 2026-11-10.
 # The compiler below remains selected by rust-toolchain.toml.
 # ---------------------------------------------------------------------------
-FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.99.0-slim-trixie@sha256:2752b332db73fdbb7dc576f06c82ed1f312005784ef913d7e04a28f5f55dc581 AS server
+FROM --platform=$BUILDPLATFORM docker.io/library/rust:1.99.1-slim-trixie@sha256:f6c4a35d21dbb3c89d7a8d056c193e94fc09037f2b58dd858b09c39a47dd02d7 AS server
 ARG TARGETARCH
 ENV CARGO_TERM_COLOR=never
 WORKDIR /src
