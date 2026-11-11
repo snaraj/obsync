@@ -1007,6 +1007,47 @@ fn health_endpoints_answer_and_every_response_is_hardened() {
     );
 }
 
+/// The one line a pod log says when a device joins (#321): its short id,
+/// its platform and how it joined -- never its address, name or whole id.
+#[test]
+fn a_device_that_pairs_says_it_joined_in_one_line_without_its_address_or_name() {
+    let h = Harness::start_with(
+        "device-joined",
+        Setup {
+            capture_log: true,
+            ..Setup::default()
+        },
+    );
+    let creator = h.setup_account();
+    let (id, claimant) = claim_pairing(&h, &creator);
+    approve_pairing(&h, &creator, &id);
+    assert!(
+        !h.captured().contains("event=device_joined"),
+        "joined before it collected the key"
+    );
+    collect_envelope(&h, &claimant, &id);
+    let log = h.captured();
+    let joined: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("event=device_joined"))
+        .collect();
+    assert_eq!(joined.len(), 1, "{log}");
+    let fields = joined[0]
+        .split_once(" level=")
+        .expect("a timestamp first")
+        .1;
+    assert_eq!(
+        fields,
+        format!(
+            "info event=device_joined device={} platform=ios method=pairing",
+            &claimant.id[..8]
+        )
+    );
+    for leak in [claimant.id.as_str(), "127.0.0.1", "phone", "::1"] {
+        assert!(!joined[0].contains(leak), "{leak} in {}", joined[0]);
+    }
+}
+
 #[test]
 fn readyz_tells_the_truth_about_the_volumes_and_about_shutting_down() {
     let h = Harness::start("readyz");
