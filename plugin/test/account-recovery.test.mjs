@@ -398,7 +398,7 @@ test("a legacy device whose credential stands, or whose server does not answer, 
 });
 
 test("a legacy start whose device begins or finishes leaving while it asks says nothing of the answer (#370, #233)", async (t) => {
-  for (const during of [(r) => { r.instance.leaving = true; }, (r) => { r.instance.state.forgetPairing(); }]) {
+  for (const during of [(r) => { r.instance.operation = { kind: "leave" }; }, (r) => { r.instance.state.forgetPairing(); }]) {
     const r = await plugin(t, { legacy: true });
     r.server.devices[0].revoked = true;
     const account = r.instance.transport.account.bind(r.instance.transport);
@@ -429,7 +429,7 @@ test("recovery reset refuses an active enrollment and an in-progress restore", a
   await r.instance.resetForgottenEnrollment();
   assert.equal(r.instance.state.data.deviceId, KEYS.deviceId);
   r.instance.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
-  r.instance.restoring = {};
+  r.instance.operation = { kind: "restore", operation: {} };
   await assert.rejects(r.instance.resetForgottenEnrollment(), /Finish the current restore/);
   assert.equal(r.instance.state.data.deviceId, KEYS.deviceId);
 });
