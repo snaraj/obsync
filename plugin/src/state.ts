@@ -547,6 +547,8 @@ function readEnvelope(raw: string, installationId: string): SecretEnvelope {
  * beside the live one, and a reconcile pass owes a removal for the stale key:
  * that tombstone retires the live folder on every other device. So a key
  * written for an id forgets every other key holding it, and answers which.
+ * The write itself says which key is live: it is the folder just made, moved
+ * or published. A saved file does not, and keeps both (`parseData`).
  */
 function claimFolder(folders: Record<string, FolderRecord>, path: string, record: FolderRecord): string[] {
   const displaced = Object.keys(folders).filter((other) => other !== path && folders[other]?.fileId === record.fileId);
@@ -558,9 +560,8 @@ function claimFolder(folders: Record<string, FolderRecord>, path: string, record
 /**
  * Parse noncritical bookkeeping onto defaults. State.open validates identity
  * and credential persistence separately before this data reaches the engine.
- * `healed` collects the folder keys a saved file held twice (`claimFolder`).
  */
-export function parseData(loaded: unknown, isMobile: boolean, healed: string[] = []): ObsyncData {
+export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
   const data = defaultData(isMobile);
   if (!isRecord(loaded)) return data;
   // A damaged restriction must never fall back to the whole vault. Refuse
@@ -618,9 +619,11 @@ export function parseData(loaded: unknown, isMobile: boolean, healed: string[] =
       // reach the vault, so a path it names is input, not memory.
       if (!isVaultPath(path) || !isRecord(record)) continue;
       if (typeof record["fileId"] !== "string" || typeof record["versionId"] !== "string") continue;
-      // A file saved before 1.1.13 can hold one folder under two spellings
-      // (#375): read back as `setFolder` writes, the later key keeps the id.
-      healed.push(...claimFolder(data.folders, path, { fileId: record["fileId"], versionId: record["versionId"] }));
+      // A file saved before 1.1.13 can hold one folder id under two spellings
+      // (#375), and both are kept. Which one is the folder this vault shows
+      // is the vault's to say, at the next reconcile pass (`engine.ts`,
+      // `twinFolders`): the order a file lists them in says nothing about it.
+      data.folders[path] = { fileId: record["fileId"], versionId: record["versionId"] };
     }
   }
   // Both of these are the device's own bookkeeping about work in flight, and
@@ -945,9 +948,6 @@ export class State {
    */
   keysLost: { dataRevision: number; secretRevision: number } | null = null;
 
-  /** Folder keys the load forgot because a later one held the same id (#375); the engine's start says so. */
-  healedFolders = 0;
-
   static async open(
     store: Store, isMobile: boolean, secrets: SecretStore,
     onFailure: (error: StateStorageError) => void = () => {},
@@ -957,7 +957,6 @@ export class State {
   ): Promise<State> {
     let state: State | undefined;
     let migrate = false;
-    const healed: string[] = [];
     const claim = lease.holder = {};
     const fresh = (data: ObsyncData): State => {
       const id = hex(randomBytes(16));
@@ -978,7 +977,7 @@ export class State {
       if (loaded != null && !isRecord(loaded)) throw new StateStorageError("invalid_metadata");
       const metadata = loaded ?? {};
       let data: ObsyncData;
-      try { data = parseData(metadata, isMobile, healed); }
+      try { data = parseData(metadata, isMobile); }
       catch (error) {
         throw new StateStorageError("invalid_sync_folders", error instanceof Error ? error.message : "Invalid saved folder selection; sync is stopped.");
       }
@@ -1021,7 +1020,6 @@ export class State {
           state.currentCustody = verifiedCustody;
           state.wrapped = wrapped;
           state.cleanupPending = wrapped && metadata["credentialCleanupPending"] === true;
-          state.healedFolders = healed.length;
           held.hold(ref);
           await state.finishDesktopMigration();
           held.hold(state.reference());
@@ -1067,7 +1065,6 @@ export class State {
       if (state?.failure !== failure) onFailure(failure);
       throw failure;
     }
-    state.healedFolders = healed.length;
     if (migrate) {
       await state.save();
       held.hold(state.reference());

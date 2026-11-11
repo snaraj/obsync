@@ -8,14 +8,15 @@
  * the same id -- beside the one the re-case had moved. The stale key was then
  * a folder the vault no longer shows, and a reconcile pass owes a removal for
  * it: a tombstone for the LIVE child's id, which every other device obeys.
- * The state now holds one key per id, and a file saved with two is healed when
- * it is read.
+ * A write now holds one key per id. A file saved with two keeps both until
+ * the vault says which folder it shows: never by the order the file lists
+ * them in, and never with a removal for an id another key holds.
  */
 
 import { strict as assert } from "node:assert";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { FakeTimers, STEP_MS, pair, rig, settled } from "./fake.mjs";
+import { FakeTimers, KEYS, STEP_MS, pair, rig, settled } from "./fake.mjs";
 
 const require = createRequire(import.meta.url);
 const { SCAN_MS, SyncEngine } = require("../build/sync/engine.js");
@@ -35,6 +36,66 @@ const live = (server, fileId) => {
   const file = server.files.get(fileId);
   return file.heads.length === 1 && file.versions.find((version) => version.version_id === file.heads[0])?.deleted === false;
 };
+
+/** Every version a device posted after `mark`, by id, newest last. */
+const postedSince = (server, mark, deviceId = KEYS.deviceId) => [...server.files].flatMap(([fileId, file]) => file.versions
+  .filter((version) => version.seq > mark && version.device_id === deviceId)
+  .map((version) => ({ fileId, deleted: version.deleted })));
+
+/**
+ * What a 1.1.12 desktop could save: the child folder under two spellings with
+ * one id. The stale key comes FIRST as the #375 sequence writes it, or LAST
+ * once a capitals-only rename made while sync was not running -- in the file
+ * manager, with Obsidian closed -- turns the earlier key into the one the
+ * vault shows: nothing is written then, so the order stays. `disk` is the
+ * vault before the plugin starts again. Answers the reloaded state and its
+ * engine after the first reconcile pass.
+ */
+async function savedTwice(t, { caseSensitive, order, disk = () => undefined }) {
+  const r = await rig({ caseSensitive });
+  r.host.seed(NOTE, "a note under the child folder\n", 1000);
+  await pushFolder(r.context, "Parent");
+  await pushFolder(r.context, "Parent/Child");
+  await pushFile(r.context, NOTE);
+  const parent = r.state.folderByPath("Parent");
+  const child = r.state.folderByPath("Parent/Child");
+  const live = [["Parent", parent], ["Parent/Child", child]];
+  const stale = ["parent/Child", { ...child }];
+  r.state.data.folders = Object.fromEntries(order === "last" ? [...live, stale] : [stale, ...live]);
+  await r.state.save();
+  disk(r.host);
+  const mark = r.server.seq;
+  const ids = r.server.files.size;
+  const state = await r.reload();
+  assert.deepEqual(Object.keys(state.data.folders), Object.keys(r.state.data.folders), "the load dropped or moved a key");
+  const timers = new FakeTimers();
+  const engine = new SyncEngine({ state, transport: r.transport, host: r.host, now: () => r.host.clock, timers });
+  t.after(() => engine.stop());
+  await engine.start();
+  await engine.syncNow();
+  await timers.run(SCAN_MS);
+  return { ...r, state, engine, timers, child, mark, ids };
+}
+
+/** A folder renamed where no event reports it, as one renamed while Obsidian was closed: its files and its own entry. */
+function respell(host, from, to) {
+  const under = (path) => path === from || path.startsWith(`${from}/`);
+  for (const path of [...host.files.keys()].filter(under)) {
+    host.files.set(to + path.slice(from.length), host.files.get(path));
+    host.files.delete(path);
+  }
+  for (const path of [...host.explicitFolders].filter(under)) {
+    host.explicitFolders.delete(path);
+    host.explicitFolders.add(to + path.slice(from.length));
+  }
+}
+
+/** One folder id under two keys was settled with nothing sent for it, and no folder published under a new id. */
+function nothingSent(r, label) {
+  assert.deepEqual(postedSince(r.server, r.mark).filter(({ fileId }) => fileId === r.child.fileId), [], `${label}: a version was posted for the shared id`);
+  assert.ok(live(r.server, r.child.fileId), `${label}: the folder's record on the server is a tombstone`);
+  assert.equal(r.server.files.size, r.ids, `${label}: a folder was published under a new id`);
+}
 
 test("a parent re-cased by the pull and renamed back here leaves one record per folder, under the new spelling (#375)", async (t) => {
   // The desktop folds case; the device that published the lower-case
@@ -76,46 +137,142 @@ test("a parent re-cased by the pull and renamed back here leaves one record per 
   assert.equal(a.state.folderByPath("Parent/Child")?.versionId, server.files.get(child).heads[0]);
 });
 
-test("a saved file holding one folder under two spellings is read back with one, the later, and the next start retires nothing (#375)", async (t) => {
-  const r = await rig({ caseSensitive: false });
-  r.host.seed(NOTE, "a note under the child folder\n", 1000);
-  await pushFolder(r.context, "Parent");
-  await pushFolder(r.context, "Parent/Child");
-  await pushFile(r.context, NOTE);
-  const child = r.state.folderByPath("Parent/Child");
-  // What a 1.1.12 desktop saved after the issue's sequence: the stale
-  // spelling first, the live one written after it, one id.
-  r.state.data.folders = { "parent/Child": { ...child }, Parent: r.state.folderByPath("Parent"), "Parent/Child": child };
+for (const caseSensitive of [false, true]) {
+  for (const order of ["first", "last"]) {
+    test(`a saved file with the stale spelling ${order}, on a host that ${caseSensitive ? "keeps capitals apart" : "folds them"}: ` +
+      "the first reconcile keeps the folder the vault shows, under its id, and sends nothing (#375)", async (t) => {
+      const r = await savedTwice(t, { caseSensitive, order });
+      nothingSent(r, `stale ${order}`);
+      assert.deepEqual(Object.keys(r.state.data.folders).sort(), ["Parent", "Parent/Child"], JSON.stringify(r.state.data.folders));
+      assert.deepEqual(r.state.folderByPath("Parent/Child"), r.child, "the live folder's record changed");
+      assert.deepEqual(r.state.data.folderRemovals, {}, "a removal is still owed");
+      assert.ok(r.host.logs.includes(`folder path_class=folder decision=forgot reason=same_file_id at=removal file=${r.child.fileId}`),
+        "forgetting the stale key said nothing");
+    });
+  }
+}
+
+test("the load keeps every folder key it reads, in the file's order, two keys for one id included (#375)", () => {
+  const record = (fileId, versionId) => ({ fileId: fileId.repeat(32), versionId: versionId.repeat(64) });
+  const folders = { a: record("1", "a"), B: record("2", "b"), "B/c": record("3", "c"), A: record("1", "d") };
+  const data = parseData({ folders }, false);
+  assert.deepEqual(data.folders, folders);
+  assert.deepEqual(Object.keys(data.folders), ["a", "B", "B/c", "A"]);
+});
+
+test("two folders this vault shows, saved under one id: both kept and nothing sent, said once; deleting one sends nothing (#375)", async (t) => {
+  const r = await rig({ caseSensitive: true });
+  r.host.seed("Notes/One.md", "a note\n", 1000);
+  await pushFolder(r.context, "Notes");
+  await pushFile(r.context, "Notes/One.md");
+  const notes = r.state.folderByPath("Notes");
+  // A host that keeps capitals apart holds both, and the file names both with one id.
+  r.host.explicitFolders.add("notes");
+  r.state.data.folders = { Notes: notes, notes: { ...notes } };
   await r.state.save();
-
+  const mark = r.server.seq;
+  const ids = r.server.files.size;
   const state = await r.reload();
-  assert.deepEqual(Object.keys(state.data.folders), ["Parent", "Parent/Child"], "the stale key survived the load");
-  assert.deepEqual(state.data.folders["Parent/Child"], child, "the live record changed");
-  assert.equal(state.healedFolders, 1);
-
-  const versions = r.server.files.get(child.fileId).versions.length;
   const timers = new FakeTimers();
   const engine = new SyncEngine({ state, transport: r.transport, host: r.host, now: () => r.host.clock, timers });
   t.after(() => engine.stop());
   await engine.start();
   await engine.syncNow();
+  await engine.syncNow();
   await timers.run(SCAN_MS);
-  assert.ok(r.host.logs.includes("folder path_class=folder decision=forgot reason=same_file_id at=load count=1"), "the healed load said nothing");
-  assert.equal(r.server.files.get(child.fileId).versions.length, versions, "the start posted a version for the folder's id");
-  assert.ok(live(r.server, child.fileId), "the folder's record on the server is a tombstone");
-  assert.deepEqual(Object.keys(state.data.folders).sort(), ["Parent", "Parent/Child"]);
-  assert.equal(state.healedFolders, 0, "the heal is said once");
+  assert.deepEqual(postedSince(r.server, mark), [], "the device posted a version");
+  assert.equal(r.server.files.size, ids);
+  assert.deepEqual(state.data.folders, { Notes: notes, notes }, "a key was forgotten or changed");
+  assert.ok(r.host.logs.includes(`reconcile path_class=folder decision=held reason=same_file_id shown=2 count=2 file=${notes.fileId}`));
+  const said = r.host.notices.filter((text) => text.includes("saved as one folder"));
+  assert.deepEqual(said, ['obsync: "Notes" and "notes" are saved as one folder, but this vault has them as separate folders. ' +
+    "Nothing was removed on your other devices. Rename or delete all but one of them here, and obsync keeps the one left."],
+  "not said exactly once");
+
+  // The way out the notice names: one of them goes, and the other keeps the id.
+  r.host.explicitFolders.delete("notes");
+  engine.folderDeleted("notes");
+  await timers.run(STEP_MS, () => state.folderByPath("notes") === undefined);
+  await engine.syncNow();
+  await timers.run(SCAN_MS);
+  assert.deepEqual(postedSince(r.server, mark), [], "deleting one of the two posted a version");
+  assert.ok(live(r.server, notes.fileId));
+  assert.deepEqual(state.data.folders, { Notes: notes });
+  assert.deepEqual(state.data.folderRemovals, {});
 });
 
-test("the load keeps every folder whose id is its own, and the later of two keys for one id", () => {
-  const record = (fileId, versionId) => ({ fileId: fileId.repeat(32), versionId: versionId.repeat(64) });
-  const healed = [];
-  const data = parseData({ folders: { a: record("1", "a"), B: record("2", "b"), "B/c": record("3", "c"), A: record("1", "d") } }, false, healed);
-  assert.deepEqual(data.folders, { B: record("2", "b"), "B/c": record("3", "c"), A: record("1", "d") });
-  assert.deepEqual(healed, ["a"]);
-  const none = [];
-  assert.deepEqual(Object.keys(parseData({ folders: { a: record("1", "a"), b: record("2", "a") } }, false, none).folders), ["a", "b"]);
-  assert.deepEqual(none, []);
+test("a saved file whose two spellings this vault shows neither of: both kept, nothing removed or published, said once; renamed back, it settles (#375)", async (t) => {
+  // Renamed by capitals alone while Obsidian was closed: a third spelling.
+  const r = await savedTwice(t, { caseSensitive: false, order: "last", disk: (host) => respell(host, "Parent/Child", "Parent/CHILD") });
+  nothingSent(r, "neither shown");
+  assert.deepEqual(Object.keys(r.state.data.folders).sort(), ["Parent", "Parent/Child", "parent/Child"], "a key was forgotten");
+  assert.deepEqual(r.state.data.folderRemovals, {});
+  assert.ok(r.host.logs.includes(`reconcile path_class=folder decision=held reason=same_file_id shown=0 count=2 file=${r.child.fileId}`));
+  assert.ok(r.host.logs.includes("reconcile path_class=folder decision=held reason=same_file_id"), "the new spelling's hold said nothing");
+  await r.engine.syncNow();
+  await r.timers.run(SCAN_MS);
+  const said = r.host.notices.filter((text) => text.includes("under none of those names"));
+  assert.deepEqual(said, ['obsync: the folder saved as "Parent/Child" and "parent/Child" is in this vault under none of those names, ' +
+    "so nothing was removed on your other devices. Rename it back to one of them, and obsync keeps that one."], "not said exactly once");
+
+  // The way out the notice names.
+  respell(r.host, "Parent/CHILD", "Parent/Child");
+  await r.engine.syncNow();
+  await r.timers.run(SCAN_MS);
+  nothingSent(r, "renamed back");
+  assert.deepEqual(Object.keys(r.state.data.folders).sort(), ["Parent", "Parent/Child"]);
+  assert.deepEqual(r.state.folderByPath("Parent/Child"), r.child);
+});
+
+test("a re-case received, reconciled at once, retires nothing and publishes nothing new (#375)", async (t) => {
+  const { server, timers, a, b } = await pair(t, "immediate", { isMobileB: false, caseSensitiveA: false, caseSensitiveB: true });
+  a.host.makeFolder("Parent/Child");
+  a.host.write(NOTE, "a note under the child folder\n", 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => b.host.text(NOTE) !== undefined && settled(a, NOTE));
+  await timers.run(SCAN_MS);
+  const child = a.state.folderByPath("Parent/Child").fileId;
+  b.host.makeFolder("parent");
+  await timers.run(STEP_MS, () => a.state.folderByPath("parent") !== undefined);
+  // The re-case wrote the moved keys, and the old spellings' are gone.
+  assert.deepEqual(Object.keys(a.state.data.folders).sort(), ["parent", "parent/Child"]);
+  const mark = server.seq;
+  await a.engine.syncNow();
+  await timers.run(SCAN_MS);
+  assert.deepEqual(postedSince(server, mark), [], "the reconcile after the re-case posted a version");
+  assert.equal(a.state.folderByPath("parent/Child")?.fileId, child);
+  assert.ok(live(server, child));
+  assert.deepEqual(a.state.data.folderRemovals, {});
+});
+
+test("a rename made here, reconciled at once, leaves every folder live under the id it holds, and nothing under a new one (#375)", async (t) => {
+  const { server, timers, a, b } = await pair(t, "immediate", { isMobileB: false, caseSensitiveA: false, caseSensitiveB: true });
+  a.host.makeFolder("Parent/Child");
+  a.host.write(NOTE, "a note under the child folder\n", 1000);
+  await a.engine.start();
+  await b.engine.start();
+  await timers.run(STEP_MS, () => b.host.text(NOTE) !== undefined && settled(a, NOTE));
+  await timers.run(SCAN_MS);
+  const child = a.state.folderByPath("Parent/Child").fileId;
+  b.host.makeFolder("parent");
+  await timers.run(STEP_MS, () => a.state.folderByPath("parent") !== undefined);
+  const known = new Set(server.files.keys());
+  const mark = server.seq;
+
+  a.host.renameFolder("parent", "Parent");
+  await a.engine.syncNow();
+  await timers.run(SCAN_MS);
+  const posted = postedSince(server, mark);
+  assert.deepEqual(posted.filter(({ fileId }) => !known.has(fileId) && fileId !== a.state.folderByPath("Parent")?.fileId), [],
+    `a folder was published under a new id: ${JSON.stringify(posted)}`);
+  assert.deepEqual(Object.keys(a.state.data.folders).sort(), ["Parent", "Parent/Child"], JSON.stringify(a.state.data.folders));
+  assert.equal(a.state.folderByPath("Parent/Child").fileId, child, "the child's id changed");
+  for (const [path, record] of Object.entries(a.state.data.folders)) {
+    assert.ok(live(server, record.fileId), `${path} was left retired`);
+    assert.deepEqual(server.files.get(record.fileId).heads, [record.versionId], `${path}'s record is not the server's head`);
+  }
+  assert.deepEqual(a.state.data.folderRemovals, {});
 });
 
 test("a re-case received and a rename made here move the same folders: the folder, every depth beneath it, and no sibling sharing its prefix (#375)", async (t) => {

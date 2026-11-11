@@ -9,7 +9,7 @@ advances exactly one SemVer step -- one patch, one minor, or one major
 
 ### Fixed
 
-- A folder whose capitalisation was changed on another device, and then changed back on a computer, no longer leaves the folder inside it recorded twice. A later sync could have removed that inner folder from your other devices. A device now keeps one record per folder, and repairs a doubled record from an earlier version when it starts (#375).
+- A folder whose capitalisation was changed on another device, and then changed back on a computer, no longer leaves the folder inside it recorded twice. A later sync could have removed that inner folder from your other devices. A device now keeps one record per folder. A doubled record saved by an earlier version is settled at the next sync by the name the vault shows, never by removing anything on your other devices; when the vault shows both names or neither, obsync changes nothing and says so (#375).
 - When two devices edit one note at the same time and obsync keeps several copies, it shows one notice for that note that counts them, instead of one long notice per copy covering the note on a phone. Show sync status still names every copy (#340).
 - A file too large to sync is refused before any of it is uploaded, with a notice naming the file and its size. Before, the whole file was uploaded first, which could take hours, and only then refused. Most files up to about 19 GiB fit; the exact limit is between about 4.7 and 38 GiB, depending on the file's content (#330).
 - The status bar no longer shows the check mark while sync is stopped: while a folder selection is saved, while this device leaves its server, during a restore and during an encryption change. It shows a stop icon, and its tooltip says what stopped it (#387).

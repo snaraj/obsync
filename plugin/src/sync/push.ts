@@ -974,6 +974,17 @@ export async function pushFolderDelete(context: SyncContext, path: string, judge
     assertVaultPath(path);
     const record = context.state.folderByPath(path);
     if (record === undefined) return null;
+    // NO TOMBSTONE FOR AN ID ANOTHER KEY STILL HOLDS (#375). A file saved
+    // before 1.1.13 can name one folder id under two spellings (`state.ts`,
+    // `parseData`), and this key's tombstone would retire the other's folder
+    // on every device. One folder named twice loses a name, not the folder:
+    // this key is forgotten, and the server is told nothing.
+    if (Object.entries(context.state.data.folders).some(([other, held]) => other !== path && held.fileId === record.fileId)) {
+      context.state.forgetFolder(path);
+      await context.state.save();
+      context.host.log(`folder path_class=folder decision=forgot reason=same_file_id at=removal file=${record.fileId}`);
+      return null;
+    }
     const parents = record.versionId !== "" ? [record.versionId] : [];
     const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false, undefined, judged);
     context.state.forgetFolder(path);

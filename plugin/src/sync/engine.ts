@@ -62,7 +62,7 @@
 import { forgottenCredential, FORGOTTEN_DEVICE } from "../accountRecovery";
 import { ByteSource, CHUNK_MAX } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
-import { count, HELD, quoted, type SyncNotice } from "../notices";
+import { count, HELD, quoted, titles, type SyncNotice } from "../notices";
 import {
   DomainMap,
   DomainMapError,
@@ -1258,10 +1258,6 @@ export class SyncEngine {
         current.generation !== mapKeys.fileId || state.data.vrk !== vrk) throw new Error("engine: suite2 authority changed");
     const dropped = this.options.state.data.dropped;
     for (const [path, mark] of Object.entries(dropped)) if (mark === UNVERIFIED_LANDING) delete dropped[path];
-    if (state.healedFolders > 0) {
-      host.log(`folder path_class=folder decision=forgot reason=same_file_id at=load count=${state.healedFolders}`);
-      state.healedFolders = 0;
-    }
     if (this.cancelled) return;
     const deviceNames = new Map<string, string>();
     this.contextValue = {
@@ -4347,7 +4343,8 @@ export class SyncEngine {
     // protocol states: the old record's tombstone, then the new record as a
     // barrier, then the moves underneath -- which queue behind that barrier
     // precisely because they are queued after it.
-    const casedFolders = tombstones ? await this.recaseFolders(context, folders, label) : new Set<string>();
+    const twins = tombstones ? this.twinFolders(context, folders, label) : new Set<string>();
+    const casedFolders = tombstones ? await this.recaseFolders(context, folders, label, twins) : new Set<string>();
     // AND EVERY FOLDER RECORD THIS DEVICE STILL OWES, ALSO BEFORE THE FILE
     // WORK (review round 4, finding 3). Publishing a record for a folder that
     // has none is how a vault that predates 1.1.0 converges once both devices
@@ -4370,6 +4367,14 @@ export class SyncEngine {
         present.add(folder);
         if (casedFolders.has(folder)) continue;
         if (context.state.folderByPath(folder) !== undefined) continue;
+        // NOR A NEW SPELLING OF A FOLDER THIS DEVICE HOLDS UNDER TWO KEYS IT
+        // CANNOT SETTLE (`twinFolders`): published, it is a second id for one
+        // folder, and renaming it to one of the two names is how they settle.
+        if ([...twins].some((twin) => twin.toLowerCase() === folder.toLowerCase())) {
+          folderSkipped++;
+          context.host.log(`${label} path_class=folder decision=held reason=same_file_id`);
+          continue;
+        }
         // A RETIRED ROOT WAITS FOR THE FEED (issue #127). A device stopped
         // between a selected folder's tombstone and the record that renames
         // it published the folder again here, and that record, written, ended
@@ -4760,7 +4765,7 @@ export class SyncEngine {
         // them back (issues #162, #219).
         if (context.state.data.heldDeletions.some((path) => path.startsWith(`${folder}/`))) continue;
         if (!this.running) return;
-        if (present.has(folder) || casedFolders.has(folder)) continue;
+        if (present.has(folder) || casedFolders.has(folder) || twins.has(folder)) continue;
         const judged = owed[folder] ?? undefined;
         if (!this.trackedFolder(folder, "reconcile_folder_state", judged)) {
           folderSkipped++;
@@ -4882,6 +4887,45 @@ export class SyncEngine {
   }
 
   /**
+   * ONE FOLDER ID UNDER TWO KEYS (#375), settled by what this vault shows,
+   * never by the order a file lists them in. A file saved before 1.1.13 can
+   * hold both (`state.ts`, `parseData`). Where the vault shows exactly one,
+   * nothing here is needed: the others are records of folders it does not
+   * show, their removals come due below, and `pushFolderDelete` forgets each
+   * without a word to the server, because another key holds its id. Where it
+   * shows both -- two real folders, on a host that keeps capitals apart -- or
+   * neither, this device cannot tell which folder the id is. Those keys are
+   * answered, and nothing below removes, moves or publishes for any of them;
+   * the user is told once, by name, what was found.
+   */
+  private twinFolders(context: SyncContext, folders: string[], label: string): Set<string> {
+    const listed = new Set(folders);
+    const keys = new Map<string, string[]>();
+    for (const [path, record] of Object.entries(context.state.data.folders)) keys.set(record.fileId, [...keys.get(record.fileId) ?? [], path]);
+    const held = new Set<string>();
+    for (const [fileId, paths] of keys) {
+      const shown = paths.filter((path) => listed.has(path)).length;
+      if (paths.length < 2 || shown === 1) continue;
+      for (const path of paths) held.add(path);
+      // No path in the line: a name is vault content (requirement 6).
+      context.host.log(`${label} path_class=folder decision=held reason=same_file_id shown=${shown} count=${paths.length} file=${fileId}`);
+      if (context.refused.has(`twins\u0000${fileId}`)) continue;
+      context.refused.add(`twins\u0000${fileId}`);
+      const names = titles(paths).map((name) => `"${name}"`);
+      const named = `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+      context.host.notify({
+        kind: "info",
+        text: shown === 0
+          ? `the folder saved as ${named} is in this vault under none of those names, so nothing was removed on your other ` +
+            "devices. Rename it back to one of them, and obsync keeps that one."
+          : `${named} are saved as one folder, but this vault has them as separate folders. Nothing was removed on your other ` +
+            "devices. Rename or delete all but one of them here, and obsync keeps the one left.",
+      });
+    }
+    return held;
+  }
+
+  /**
    * The folder renames this pass DISCOVERED: a folder this device records
    * under a spelling the vault no longer shows, beside a listed folder that
    * differs from it in capitalisation alone. Obsidian was closed when it
@@ -4906,7 +4950,7 @@ export class SyncEngine {
    * overtaking the record that is the only thing entitled to re-case the
    * directory on the receiving side.
    */
-  private async recaseFolders(context: SyncContext, folders: string[], label: string): Promise<Set<string>> {
+  private async recaseFolders(context: SyncContext, folders: string[], label: string, twins: Set<string>): Promise<Set<string>> {
     const handled = new Set<string>();
     const listed = new Set(folders);
     const spellings = new Map<string, string[]>();
@@ -4921,7 +4965,9 @@ export class SyncEngine {
       // it holds exactly ONE folder that differs from it in case alone. A
       // listing holding both, or three spellings of one name, is a host
       // saying something no filesystem can be, and nothing is renamed on it.
-      if (listed.has(from)) continue;
+      // Nor is a key whose id another key holds and the vault settles neither
+      // way (`twinFolders`): its tombstone is the other key's too.
+      if (listed.has(from) || twins.has(from)) continue;
       const candidates = (spellings.get(from.toLowerCase()) ?? []).filter((candidate) => caseOnly(candidate, from));
       if (candidates.length !== 1) continue;
       const to = candidates[0] as string;

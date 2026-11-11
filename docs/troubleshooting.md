@@ -76,6 +76,7 @@ server again unless the entry says so.
 | On a phone, Leave lists files your other devices already have | [Leave lists files your other devices already have](#leave-lists-files-your-other-devices-already-have) |
 | On a phone, a note another app changed keeps its old text on your other devices | [On a phone, a note another app rewrote stays old elsewhere](#on-a-phone-a-note-another-app-rewrote-stays-old-elsewhere) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
+| `"<folder>" and "<folder>" are saved as one folder`, or `the folder saved as ... is in this vault under none of those names` | [One folder saved under two names](#one-folder-saved-under-two-names) |
 | A computer you paired later shows an empty folder under a name another device renamed away | [An empty folder appeared on a computer paired later](#an-empty-folder-appeared-on-a-computer-paired-later) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
@@ -2185,6 +2186,37 @@ deletes the notes you are trying to keep, everywhere. Follow this order:
 The plugin does not do step 3 for you: it cannot know that every other device
 has already been updated, and deleting one sync too early is exactly the loss
 this order avoids.
+
+## One folder saved under two names
+
+**What you see.** A notice names two folders that differ only in capitals:
+
+> obsync: "Notes" and "notes" are saved as one folder, but this vault has them as separate folders. Nothing was removed on your other devices. Rename or delete all but one of them here, and obsync keeps the one left.
+
+or
+
+> obsync: the folder saved as "Notes" and "notes" is in this vault under none of those names, so nothing was removed on your other devices. Rename it back to one of them, and obsync keeps that one.
+
+**Why it happens.** Up to 1.1.12, a folder whose capitals were changed on
+another device, and then changed back on a computer, could stay saved in
+obsync's records under both names. Removing the name the vault no longer
+shows could have removed the folder itself from your other devices. From
+1.1.13, when the vault shows exactly one of the two names, obsync keeps that
+one, forgets the other and sends nothing. When the vault shows both, or
+neither, it cannot tell which folder is meant: it changes nothing, sends
+nothing, and says so once each time sync starts.
+
+**How to fix it.**
+
+- **The vault has both.** A Linux computer, an iPhone or an iPad keeps the two
+  names apart. Move anything you want to keep into the folder you keep, then
+  delete or rename the other one. Its folder is not removed on your other
+  devices; notes still inside it are, as with any deletion.
+- **The vault has neither.** The folder was renamed or deleted while obsync was
+  not running. Rename it back to one of the two names in the notice, capitals
+  included, and let it sync once. obsync keeps that one, and you can rename
+  or delete it as usual afterwards. If you deleted it, create a folder with
+  one of the two names, let it sync once, then delete it.
 
 ## A notice says there are more
 
