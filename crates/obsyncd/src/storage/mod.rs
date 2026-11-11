@@ -158,6 +158,12 @@ impl VersionQueue {
 /// instructions could shorten too (AGENTS.md requirement 4).
 pub const RECOVERY_HOLD_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
+/// How long a revoked device's network addresses and countries are kept,
+/// counted from its revocation (issue #341); a device revoked before 1.1.13
+/// counts from the first maintenance pass that finds it revoked. Its record,
+/// name and activity history stay, as before.
+pub const REVOKED_ADDRESS_DAYS: u64 = 30;
+
 /// A crash point, armed by a test so recovery can be proven rather than
 /// argued (AGENTS.md, "Testing doctrine": injected fault points).
 ///
@@ -1508,6 +1514,8 @@ impl Store {
                 policy,
                 app_version,
                 archived: None,
+                revoked_at: None,
+                forget_addresses: false,
             }]
         })?;
         Ok(self.index().devices[id].record.clone())
@@ -1624,8 +1632,21 @@ impl Store {
                 }
             }
         }
+        // The revocation and the start of its address retention (issue
+        // #341), in one append: the thirty days count from this moment.
         self.commit(&mut journal, index, |_| {
-            vec![Frame::DeviceRevoke { device_id: *id }]
+            vec![
+                Frame::DeviceRevoke { device_id: *id },
+                Frame::DeviceUpdate {
+                    device_id: *id,
+                    name: None,
+                    policy: None,
+                    app_version: None,
+                    archived: None,
+                    revoked_at: Some(now),
+                    forget_addresses: false,
+                },
+            ]
         })?;
         self.log.info(
             "device_revoked",
@@ -1715,6 +1736,8 @@ impl Store {
                 policy: None,
                 app_version: None,
                 archived: Some(true),
+                revoked_at: None,
+                forget_addresses: false,
             }]
         })?;
         Ok(())
@@ -1828,6 +1851,7 @@ impl Store {
     /// the index holds once more was re-uploaded after the frame forgot it,
     /// and the file standing under its name is that upload, not garbage.
     pub fn gc_run(&self, now: UnixMs) -> GcSummary {
+        self.forget_revoked_addresses(now);
         // Budget zero: collection is bounded by what retention releases, not
         // by bytes, and the SUMMARY line carries the duration it took.
         let started = self.log.start("gc", 0);
@@ -1902,6 +1926,74 @@ impl Store {
             ],
         );
         summary
+    }
+
+    /// The retention of a revoked device's addresses (issue #341), on the
+    /// hourly collection's clock: a device revoked before its revocation
+    /// carried a stamp is stamped now, and one stamped [`REVOKED_ADDRESS_DAYS`]
+    /// ago has its addresses and countries
+    /// forgotten, in its record and in every event of its history. Journalled
+    /// as facts, so a replay reaches the same index; the journal's older
+    /// segments keep what they hold until compaction, as for any replaced
+    /// value (`docs/dashboard.md`).
+    fn forget_revoked_addresses(&self, now: UnixMs) {
+        let mut journal = self.journal();
+        let index = self.index();
+        let kept_ms = REVOKED_ADDRESS_DAYS * 24 * 60 * 60 * 1000;
+        let (mut stamped, mut forgotten) = (0u64, 0u64);
+        let mut frames = Vec::new();
+        for (id, entry) in &index.devices {
+            if entry.record.state != DeviceState::Revoked {
+                continue;
+            }
+            let (revoked_at, forget_addresses) = match entry.record.revoked_at {
+                None => (Some(now), false),
+                Some(at)
+                    if now.0.saturating_sub(at.0) >= kept_ms
+                        && (entry.record.address.is_some()
+                            || entry.record.country.is_some()
+                            || entry
+                                .seen
+                                .iter()
+                                .any(|e| e.address.is_some() || e.country.is_some())) =>
+                {
+                    (None, true)
+                }
+                Some(_) => continue,
+            };
+            if forget_addresses {
+                forgotten += 1;
+            } else {
+                stamped += 1;
+            }
+            frames.push(Frame::DeviceUpdate {
+                device_id: *id,
+                name: None,
+                policy: None,
+                app_version: None,
+                archived: None,
+                revoked_at,
+                forget_addresses,
+            });
+        }
+        if frames.is_empty() {
+            return;
+        }
+        if let Err(e) = self.commit(&mut journal, index, |_| frames) {
+            let mut fields = vec![("decision", Val::word(e.code()))];
+            fields.extend(error_fields(&e));
+            self.log.error("device_addresses_failed", &fields);
+            return;
+        }
+        self.log.info(
+            "device_addresses",
+            &[
+                ("decision", Val::word("retention")),
+                ("stamped", Val::count(stamped)),
+                ("forgotten", Val::count(forgotten)),
+                ("budget_days", Val::count(REVOKED_ADDRESS_DAYS)),
+            ],
+        );
     }
 
     /// Re-hash up to `budget_bytes` of pending chunks, resuming the pass
@@ -2625,5 +2717,6 @@ fn new_device_record(d: NewDevice, now: UnixMs) -> Result<DeviceRecord, StoreErr
         policy: DevicePolicy::default(),
         state: d.state,
         archived: false,
+        revoked_at: None,
     })
 }
