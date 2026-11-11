@@ -39,7 +39,7 @@ import { inFolderScope, inSyncScope } from "../syncScope";
 import { VaultPathError } from "../vaultPath";
 import type { SyncContext } from "./engine";
 import { decodeRecordManifest } from "./pull";
-import { Manifest, bury, folderManifest, postManifest, pushFile } from "./push";
+import { Manifest, bury, folderManifest, postManifest, pushFile, recordFolder } from "./push";
 
 /** Reads the check may make: the listing, then two per record not a head. */
 export const RESTORE_BUDGET_REQUESTS = 1000;
@@ -245,7 +245,7 @@ async function recoverOne(
     } satisfies Manifest);
     const posted = await postManifest(context, entry.fileId, parents, [], manifest, 0, !entry.folder);
     context.authored.add(posted.versionId);
-    if (entry.kind === "folder") context.state.setFolder(entry.path, { fileId: entry.fileId, versionId: posted.versionId });
+    if (entry.kind === "folder") recordFolder(context, entry.path, { fileId: entry.fileId, versionId: posted.versionId });
     else bury(context, entry.fileId, posted.versionId, entry.path, entry.folder);
     await context.state.save();
     return entry.kind;

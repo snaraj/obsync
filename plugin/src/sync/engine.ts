@@ -62,7 +62,7 @@
 import { forgottenCredential, FORGOTTEN_DEVICE } from "../accountRecovery";
 import { ByteSource, CHUNK_MAX } from "../chunker";
 import { Bytes, deriveDomainKey, deriveManifestKey, unhex } from "../crypto";
-import { count, HELD, quoted, type SyncNotice } from "../notices";
+import { count, HELD, quoted, titles, type SyncNotice } from "../notices";
 import {
   DomainMap,
   DomainMapError,
@@ -79,7 +79,7 @@ import { VaultPathError, errorText, caseOnly, vaultPathRefusal } from "../vaultP
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, sameChunks, settleBeside, stage, unwritableText, yieldName } from "./pull";
 import { publishPause } from "./pause";
-import { PathGone, carryPost, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
+import { PathGone, TooLarge, carryPost, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest, tooLargeText } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS, REPAIR_WALK_MS } from "./repair";
 import { Suspicion, probeFeed, recoverLost, seenBefore, young } from "./restore";
 
@@ -535,7 +535,14 @@ export type EngineStatus =
   | { kind: "syncing"; pending: number; held?: string; checking?: number; waiting?: string }
   | { kind: "offline" }
   | { kind: "error"; message: string; code?: string }
-  | { kind: "paused"; message: string };
+  | { kind: "paused"; message: string }
+  /**
+   * NOTHING SYNCS: this engine was stopped, and `why` is the plain words for
+   * what stopped it ("saving the folder selection"). It used to end in
+   * `idle`, which the bar draws as the check of a device in step, so a
+   * stopped or superseded engine could leave "synced" on screen.
+   */
+  | { kind: "stopped"; why: string };
 
 /**
  * What a refusal about this device's whole sync says, in plain words, with the
@@ -632,6 +639,8 @@ export function refusalStatus(error: unknown, then = RESUMES): EngineStatus | nu
   }
   // Pairing's own words for the edge (`transport.ts`), so the two never disagree.
   if (error.code === "edge_required") return { kind: "error", code: "edge", message: said(EDGE_REQUIRED) };
+  // Refused on this device, before anything was sent: only the person can change it.
+  if (error.code === "insecure_server_url" || error.code === "malformed_server_url") return { kind: "error", code: "server_url", message: error.detail };
   return null;
 }
 
@@ -1010,7 +1019,7 @@ export class SyncEngine {
    * what the status says while the change is here, and a write of another
    * path takes neither away.
    */
-  private readonly unsent = new Map<string, { failure: number; refused: boolean; full: boolean }>();
+  private readonly unsent = new Map<string, { failure: number; refused: boolean; full: boolean; size?: number }>();
   private failures = 0;
   private running = false;
   private cancelled = false;
@@ -1400,7 +1409,7 @@ export class SyncEngine {
    * next step; what does not end is named once past `STOP_WAIT_MS`, and still
    * waited for: whether a stop may abandon it is the owner's to decide.
    */
-  async stopAndWait(): Promise<void> {
+  async stopAndWait(why: string): Promise<void> {
     const started = this.nowFn();
     this.stop();
     const watch = this.timers.set(() => {
@@ -1414,7 +1423,7 @@ export class SyncEngine {
     this.timers.clear(watch);
     await this.options.state.save();
     this.options.host.log(`engine decision=quiesced duration_ms=${this.nowFn() - started}`);
-    this.status({ kind: "idle" });
+    this.status({ kind: "stopped", why });
   }
 
   /** The paths this engine is pushing now, for a person waiting on its stop. */
@@ -2246,7 +2255,6 @@ export class SyncEngine {
     // construction: the second call finds no selected folder left to move
     // and returns.
     this.followSelection(from, to);
-    const recorded = Object.keys(this.need().state.data.folders);
     // THE FOLDER RECORD IS A WIRE BARRIER FOR A RENAME BY CAPITALISATION
     // ALONE. Only a folder record can re-case a directory on a host that
     // folds case, so a move that overtakes it is refused there with a notice
@@ -2258,8 +2266,10 @@ export class SyncEngine {
     // this folder's record needs it: everything beneath it moved with the
     // directory entry, and the receiver carries those records along.
     const barrier = caseOnly(from, to);
-    for (const path of [from, ...recorded.filter((candidate) => candidate.startsWith(`${from}/`))]) {
-      const target = to + path.slice(from.length);
+    // The tree a received re-case moves (`State.folderTree`), the folder
+    // itself first, whether or not it has a record yet.
+    const tree = this.need().state.folderTree(from, to).filter(([path]) => path !== from);
+    for (const [path, target] of [[from, to] as [string, string], ...tree]) {
       // A FOLDER THAT LEFT THE SCOPE IS NOT A FOLDER THAT WAS DELETED, and a
       // selected folder can now be the one that left: its record is this
       // device's (`trackedFolder`), and its new name may be one no device
@@ -2843,6 +2853,19 @@ export class SyncEngine {
       const held = error instanceof Unwritable ? context.state.fileByPath(error.path) : undefined;
       if (held !== undefined) {
         this.park(context, held.fileId, error);
+        return;
+      }
+      // A FILE TOO LARGE FOR ONE VERSION (#330) was refused before a byte of
+      // it was sent (`push.ts`, `manifestFits`, which logged why): said once
+      // per size, and named in the status for as long as it is here.
+      if (error instanceof TooLarge) {
+        this.unsent.set(path, { failure: ++this.failures, refused: true, full: false, size: error.size });
+        const key = `too_large\u0000${path}\u0000${error.size}`;
+        if (!context.refused.has(key)) {
+          context.refused.add(key);
+          context.host.notify({ kind: "error", paths: [path], text: `did not send {notes}: ${tooLargeText(error.size)}` });
+        }
+        this.status(this.resting());
         return;
       }
       // A path this device may not sync is a decision, not a failure: it is
@@ -3448,6 +3471,8 @@ export class SyncEngine {
     if (this.absent) return { kind: "offline" };
     // A CHANGE THE SERVER REFUSED IS SAID BY NAME for as long as it is here
     // (#299): gone when a push of it is taken, or a pass finds nothing to send.
+    const large = [...this.unsent].filter(([, entry]) => entry.size !== undefined).at(-1);
+    if (large !== undefined) return { kind: "error", code: "too_large", message: `Did not send ${quoted(large[0])}: ${tooLargeText(large[1].size as number)}` };
     const refused = [...this.unsent].filter(([, entry]) => entry.refused).map(([path]) => path);
     if (refused.length > 0) return { kind: "error", code: "push_refused", message: refusedChange(refused) };
     // PATHS, NOT ENTRIES (#296): a note queued again while its push is in
@@ -4318,7 +4343,8 @@ export class SyncEngine {
     // protocol states: the old record's tombstone, then the new record as a
     // barrier, then the moves underneath -- which queue behind that barrier
     // precisely because they are queued after it.
-    const casedFolders = tombstones ? await this.recaseFolders(context, folders, label) : new Set<string>();
+    const twins = tombstones ? this.twinFolders(context, folders, label) : new Set<string>();
+    const casedFolders = tombstones ? await this.recaseFolders(context, folders, label, twins) : new Set<string>();
     // AND EVERY FOLDER RECORD THIS DEVICE STILL OWES, ALSO BEFORE THE FILE
     // WORK (review round 4, finding 3). Publishing a record for a folder that
     // has none is how a vault that predates 1.1.0 converges once both devices
@@ -4341,6 +4367,14 @@ export class SyncEngine {
         present.add(folder);
         if (casedFolders.has(folder)) continue;
         if (context.state.folderByPath(folder) !== undefined) continue;
+        // NOR A NEW SPELLING OF A FOLDER THIS DEVICE HOLDS UNDER TWO KEYS IT
+        // CANNOT SETTLE (`twinFolders`): published, it is a second id for one
+        // folder, and renaming it to one of the two names is how they settle.
+        if ([...twins].some((twin) => twin.toLowerCase() === folder.toLowerCase())) {
+          folderSkipped++;
+          context.host.log(`${label} path_class=folder decision=held reason=same_file_id`);
+          continue;
+        }
         // A RETIRED ROOT WAITS FOR THE FEED (issue #127). A device stopped
         // between a selected folder's tombstone and the record that renames
         // it published the folder again here, and that record, written, ended
@@ -4731,7 +4765,7 @@ export class SyncEngine {
         // them back (issues #162, #219).
         if (context.state.data.heldDeletions.some((path) => path.startsWith(`${folder}/`))) continue;
         if (!this.running) return;
-        if (present.has(folder) || casedFolders.has(folder)) continue;
+        if (present.has(folder) || casedFolders.has(folder) || twins.has(folder)) continue;
         const judged = owed[folder] ?? undefined;
         if (!this.trackedFolder(folder, "reconcile_folder_state", judged)) {
           folderSkipped++;
@@ -4853,6 +4887,45 @@ export class SyncEngine {
   }
 
   /**
+   * ONE FOLDER ID UNDER TWO KEYS (#375), settled by what this vault shows,
+   * never by the order a file lists them in. A file saved before 1.1.13 can
+   * hold both (`state.ts`, `parseData`). Where the vault shows exactly one,
+   * nothing here is needed: the others are records of folders it does not
+   * show, their removals come due below, and `pushFolderDelete` forgets each
+   * without a word to the server, because another key holds its id. Where it
+   * shows both -- two real folders, on a host that keeps capitals apart -- or
+   * neither, this device cannot tell which folder the id is. Those keys are
+   * answered, and nothing below removes, moves or publishes for any of them;
+   * the user is told once, by name, what was found.
+   */
+  private twinFolders(context: SyncContext, folders: string[], label: string): Set<string> {
+    const listed = new Set(folders);
+    const keys = new Map<string, string[]>();
+    for (const [path, record] of Object.entries(context.state.data.folders)) keys.set(record.fileId, [...keys.get(record.fileId) ?? [], path]);
+    const held = new Set<string>();
+    for (const [fileId, paths] of keys) {
+      const shown = paths.filter((path) => listed.has(path)).length;
+      if (paths.length < 2 || shown === 1) continue;
+      for (const path of paths) held.add(path);
+      // No path in the line: a name is vault content (requirement 6).
+      context.host.log(`${label} path_class=folder decision=held reason=same_file_id shown=${shown} count=${paths.length} file=${fileId}`);
+      if (context.refused.has(`twins\u0000${fileId}`)) continue;
+      context.refused.add(`twins\u0000${fileId}`);
+      const names = titles(paths).map((name) => `"${name}"`);
+      const named = `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+      context.host.notify({
+        kind: "info",
+        text: shown === 0
+          ? `the folder saved as ${named} is in this vault under none of those names, so nothing was removed on your other ` +
+            "devices. Rename it back to one of them, and obsync keeps that one."
+          : `${named} are saved as one folder, but this vault has them as separate folders. Nothing was removed on your other ` +
+            "devices. Rename or delete all but one of them here, and obsync keeps the one left.",
+      });
+    }
+    return held;
+  }
+
+  /**
    * The folder renames this pass DISCOVERED: a folder this device records
    * under a spelling the vault no longer shows, beside a listed folder that
    * differs from it in capitalisation alone. Obsidian was closed when it
@@ -4877,7 +4950,7 @@ export class SyncEngine {
    * overtaking the record that is the only thing entitled to re-case the
    * directory on the receiving side.
    */
-  private async recaseFolders(context: SyncContext, folders: string[], label: string): Promise<Set<string>> {
+  private async recaseFolders(context: SyncContext, folders: string[], label: string, twins: Set<string>): Promise<Set<string>> {
     const handled = new Set<string>();
     const listed = new Set(folders);
     const spellings = new Map<string, string[]>();
@@ -4892,7 +4965,9 @@ export class SyncEngine {
       // it holds exactly ONE folder that differs from it in case alone. A
       // listing holding both, or three spellings of one name, is a host
       // saying something no filesystem can be, and nothing is renamed on it.
-      if (listed.has(from)) continue;
+      // Nor is a key whose id another key holds and the vault settles neither
+      // way (`twinFolders`): its tombstone is the other key's too.
+      if (listed.has(from) || twins.has(from)) continue;
       const candidates = (spellings.get(from.toLowerCase()) ?? []).filter((candidate) => caseOnly(candidate, from));
       if (candidates.length !== 1) continue;
       const to = candidates[0] as string;

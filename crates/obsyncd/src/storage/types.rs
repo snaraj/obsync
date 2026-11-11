@@ -124,6 +124,11 @@ pub struct DeviceRecord {
     /// it wrote. A client that does not know the flag sees the device it
     /// always saw.
     pub archived: bool,
+    /// When the device was revoked -- for one revoked before 1.1.13, when
+    /// maintenance first found it revoked: the start of the
+    /// [`crate::storage::REVOKED_ADDRESS_DAYS`] after which its addresses are
+    /// forgotten (issue #341). `None` for every device that is not revoked.
+    pub revoked_at: Option<UnixMs>,
 }
 
 impl DeviceRecord {

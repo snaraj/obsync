@@ -8,7 +8,7 @@
  * (`styles.css`, `.obsync-status`): a check when this device is up to date, a
  * wheel while it syncs, a cloud struck through while the server
  * does not answer, an alert when something needs the person, a pause for a
- * paused note. The words -- always starting "obsync:" -- are its tooltip and
+ * paused note, a stop sign while nothing syncs because sync was stopped. The words -- always starting "obsync:" -- are its tooltip and
  * accessible name, and Show sync status, which a click opens, says them in
  * full with the next step.
  *
@@ -27,7 +27,7 @@
 import { getIcon, setIcon, setTooltip } from "obsidian";
 import type { EngineStatus } from "../sync/engine";
 
-export type Indicated = "synced" | "syncing" | "offline" | "attention" | "paused" | "quiet";
+export type Indicated = "synced" | "syncing" | "offline" | "attention" | "paused" | "quiet" | "stopped";
 
 /**
  * Each state's icon, by Lucide name. Obsidian ships Lucide and has renamed
@@ -41,6 +41,7 @@ const ICONS: Record<Indicated, string[]> = {
   attention: ["circle-alert", "alert-circle"],
   paused: ["circle-pause", "pause-circle", "pause"],
   quiet: ["cloud"],
+  stopped: ["circle-stop", "stop-circle", "square"],
 };
 
 export const SYNCING_AFTER_MS = 500;
@@ -59,6 +60,8 @@ export function indicated(status: EngineStatus, quiet: boolean): Indicated {
       return "attention";
     case "paused":
       return "paused";
+    case "stopped":
+      return "stopped";
   }
 }
 

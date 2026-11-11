@@ -20,6 +20,8 @@ server again unless the entry says so.
 | A second sync icon, red with a line through it, sits beside obsync's | [Reading the status bar](#reading-the-status-bar) |
 | The status bar shows a cloud with a line through it, and nothing syncs | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
 | "Use your server's https address", or on a phone "Mobile Obsidian only reaches HTTPS servers"; **Check** says "Server URL was not saved" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
+| "This device's Server URL is a plain HTTP address, so obsync sends nothing to it" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
+| "That is not a web address obsync can use", or "This device's Server URL is not a complete web address" | [Obsidian asks for an https address](#obsidian-asks-for-an-https-address) |
 | **Check** takes about a minute, then says the server is unreachable | [Check says the server cannot be reached](#check-says-the-server-cannot-be-reached) |
 | One device connects and another does not, or a browser warns about the certificate | [The certificate is not trusted on this device](#the-certificate-is-not-trusted-on-this-device) |
 | obsync says the certificate was made for another name, or **Check** says nothing answered while a browser says the certificate is not valid for this name | [The certificate is for another name](#the-certificate-is-for-another-name) |
@@ -55,6 +57,7 @@ server again unless the entry says so.
 | --- | --- |
 | A note came back as a conflict copy | [A conflict copy appeared](#a-conflict-copy-appeared) |
 | A note or file never arrives on another device | [A file is not syncing](#a-file-is-not-syncing) |
+| `did not send "<file>": ... it is too large to sync, and none of it was sent` | [A file is too large to sync](#a-file-is-too-large-to-sync) |
 | On a computer, a change made while Obsidian's window is minimized or behind other windows arrives minutes later | [Changes wait while Obsidian is in the background](#changes-wait-while-obsidian-is-in-the-background) |
 | The status stays at `syncing 1 file` and another device's change to a note does not appear | [A note stays at syncing 1 file](#a-note-stays-at-syncing-1-file) |
 | This computer's changes reach your other devices, but theirs stop arriving here, or **Sync now** says `waiting for` a sync step | [Changes from your other devices stop arriving](#changes-from-your-other-devices-stop-arriving) |
@@ -74,6 +77,7 @@ server again unless the entry says so.
 | On a phone, Leave lists files your other devices already have | [Leave lists files your other devices already have](#leave-lists-files-your-other-devices-already-have) |
 | On a phone, a note another app changed keeps its old text on your other devices | [On a phone, a note another app rewrote stays old elsewhere](#on-a-phone-a-note-another-app-rewrote-stays-old-elsewhere) |
 | A folder deleted on another device stays on a Mac | [A deleted folder stays on a Mac](#a-deleted-folder-stays-on-a-mac) |
+| `"<folder>" and "<folder>" are saved as one folder`, or `the folder saved as ... is in this vault under none of those names` | [One folder saved under two names](#one-folder-saved-under-two-names) |
 | A computer you paired later shows an empty folder under a name another device renamed away | [An empty folder appeared on a computer paired later](#an-empty-folder-appeared-on-a-computer-paired-later) |
 | An empty folder appeared where another device has a linked folder | [A linked folder shows up empty on other devices](#a-linked-folder-shows-up-empty-on-other-devices) |
 | Two folders whose names differ only in capitals | [Two folders that differ only in capitalisation](#two-folders-that-differ-only-in-capitalisation) |
@@ -132,6 +136,7 @@ desktop status bar in the dark theme; yours follow your theme's colours.
 | <img src="assets/status-offline.png" alt="cloud with a line through it" width="36" height="31"> | `obsync: offline — retrying` | The device cannot reach the server; it keeps trying on its own | [The device cannot reach the server](#the-device-cannot-reach-the-server) |
 | <img src="assets/status-error.png" alt="alert sign" width="36" height="31"> | `obsync: error — <reason>` | Sync stopped and needs you | [Sync stopped with an error](#sync-stopped-with-an-error) |
 | <img src="assets/status-paused.png" alt="pause sign" width="36" height="31"> | `obsync: paused — <note>` | One note is held because something on this device keeps rewriting it; every other note keeps syncing | [Stop repeated rewrites](daily-use.md#stop-repeated-rewrites) |
+| A stop sign (from 1.1.13) | `obsync: stopped — <what stopped it>`, such as `saving the folder selection`, `leaving the server`, `restoring a version` or `changing encryption` | Sync is stopped while that finishes; nothing is lost | Nothing. Sync starts again by itself when it finishes. If it stays, select **Retry now** in **Show sync status** |
 | <img src="assets/status-quiet.png" alt="faint cloud" width="36" height="31"> | `obsync: not paired`, or `obsync: idle — syncing no folders` | This device is not paired yet, or **Selected folders** is empty | [The plugin says this device is not paired](#the-plugin-says-this-device-is-not-paired), or choose folders in the plugin's settings |
 
 The wheel appears only when syncing lasts longer than half a second, so a
@@ -204,12 +209,29 @@ If you select **Check** before you correct the address, Check says the same
 thing, after "Server URL was not saved:", and asks no server. It does not
 ask the address saved before either.
 
+From 1.1.13, an address saved before this rule, or written into obsync's data
+file by hand, is refused too. When obsync starts with one, it says once, and
+the status bar keeps saying until the address changes:
+
+> This device's Server URL is a plain HTTP address, so obsync sends nothing to it: every request would cross the network unencrypted. Change it to your server's https address in obsync's settings, under Server.
+
+An address that is not a whole web address, such as `http://` or `https:` on
+its own, is refused the same way rather than guessed at. Typed, it gets:
+
+> That is not a web address obsync can use. Type your server's https address, such as https://sync.example.com.
+
+and found when obsync starts:
+
+> This device's Server URL is not a complete web address, so obsync sends nothing to it. Enter your server's https address again in obsync's settings, under Server.
+
 ![Check selected with the refused address still in Server URL: the notice reads Server URL was not saved, then asks for the https address](assets/check-server-url-not-saved.png)
 
 **Why it happens.** The address starts with `http://`. Plain HTTP would send
 your credentials unencrypted, so the plugin accepts it only for a server on the
-same computer, and never on a phone. An address the plugin refuses is not
-saved, even though the field still shows it.
+same computer, and never on a phone. An address with no server name in it is
+refused rather than completed: read the way web addresses are read, `http://`
+followed by obsync's own path names a computer called `v1`. An address the
+plugin refuses is not saved, even though the field still shows it.
 
 **How to fix it.**
 
@@ -1392,6 +1414,33 @@ selection are not synced in either direction.
 
 ![The Sync folders on this device section: Folder selection set to Whole vault, the Selected folders box, and the Save button](assets/settings-sync-folders.png)
 
+## A file is too large to sync
+
+**What you see.** A notice, and the status bar, say `did not send "<file>": at
+<size> it is too large to sync, and none of it was sent.` The rest of the
+vault keeps syncing.
+
+**Why it happens.** One version of a file lists every piece the file was cut
+into, and a server stores that list in at most 1 MiB, encrypted. A piece is 1
+to 8 MiB, cut where the content decides, so the largest file that fits is
+between about 4.7 and 38 GiB: about 19 GiB for most files. From 1.1.13 the
+plugin measures the list before it sends anything and refuses a file whose
+list would not fit. Up to 1.1.12 it uploaded the whole file first, which could
+take hours, and only then was the version refused.
+
+A file between about 4.7 and 38 GiB is read once, without sending anything, to
+find where its pieces are cut. A device that refused a file reads it again only
+after the file changes.
+
+**How to fix it.**
+
+1. Move the file out of the synced folders, or out of the vault. **Sync
+   folders on this device** in the plugin's settings shows which folders sync.
+2. Or split it into files smaller than about 4 GiB each; every file under that
+   always fits.
+3. Archives, disk images and videos rarely belong in a notes vault; keep them
+   in a backup instead.
+
 ## A large file another program changed stays old on your other devices
 
 **What you see.** A file over 8 MiB that another program changed, often while
@@ -1743,7 +1792,10 @@ That is obsync refusing to throw away an edit, not a failure. See
 lines. Afterwards the last words one of them typed are missing from the note,
 and a note named `<note> (conflict from <device>, <date> UTC, <id>)` holds
 them. A notice said `obsync: kept both versions of "<note>": <device>'s is in
-"<copy>".`, or `obsync: stopped combining edits to "<note>"` (up to 1.1.4:
+a copy beside it.` (up to 1.1.12: `... <device>'s is in "<copy>".`; several
+copies of one note now share one notice that counts them, and **Recent** in
+**Show sync status** names each copy), or `obsync: stopped combining edits to
+"<note>"` (up to 1.1.4:
 `obsync kept both versions of <note>` or `obsync stopped merging <note>`). It
 happens most on a busy computer, and when a third device has the note open.
 
@@ -2146,6 +2198,37 @@ deletes the notes you are trying to keep, everywhere. Follow this order:
 The plugin does not do step 3 for you: it cannot know that every other device
 has already been updated, and deleting one sync too early is exactly the loss
 this order avoids.
+
+## One folder saved under two names
+
+**What you see.** A notice names two folders that differ only in capitals:
+
+> obsync: "Notes" and "notes" are saved as one folder, but this vault has them as separate folders. Nothing was removed on your other devices. Rename or delete all but one of them here, and obsync keeps the one left.
+
+or
+
+> obsync: the folder saved as "Notes" and "notes" is in this vault under none of those names, so nothing was removed on your other devices. Rename it back to one of them, and obsync keeps that one.
+
+**Why it happens.** Up to 1.1.12, a folder whose capitals were changed on
+another device, and then changed back on a computer, could stay saved in
+obsync's records under both names. Removing the name the vault no longer
+shows could have removed the folder itself from your other devices. From
+1.1.13, when the vault shows exactly one of the two names, obsync keeps that
+one, forgets the other and sends nothing. When the vault shows both, or
+neither, it cannot tell which folder is meant: it changes nothing, sends
+nothing, and says so once each time sync starts.
+
+**How to fix it.**
+
+- **The vault has both.** A Linux computer, an iPhone or an iPad keeps the two
+  names apart. Move anything you want to keep into the folder you keep, then
+  delete or rename the other one. Its folder is not removed on your other
+  devices; notes still inside it are, as with any deletion.
+- **The vault has neither.** The folder was renamed or deleted while obsync was
+  not running. Rename it back to one of the two names in the notice, capitals
+  included, and let it sync once. obsync keeps that one, and you can rename
+  or delete it as usual afterwards. If you deleted it, create a folder with
+  one of the two names, let it sync once, then delete it.
 
 ## A notice says there are more
 

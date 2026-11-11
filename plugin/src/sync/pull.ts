@@ -120,7 +120,7 @@ import {
 } from "../syncScope";
 import { pauseId, publishPause } from "./pause";
 import { conflictCopyPath, conflictStamp, isMergeableText, merge, mergeText } from "./conflict";
-import { FolderManifest, Manifest, ManifestChunk, PauseManifest, bury, pendingPublication, postManifest, pushFile, pushFolderDelete, reviveFile, retire, serialPublication, sidDigest } from "./push";
+import { FolderManifest, Manifest, ManifestChunk, PauseManifest, bury, pendingPublication, postManifest, pushFile, pushFolderDelete, recordFolder, reviveFile, retire, serialPublication, sidDigest } from "./push";
 
 /**
  * One batched chunk fetch. The bound is MEMORY, and it is computed from the
@@ -211,10 +211,20 @@ export function unwritableText(path: string, reason: string): string {
   return `Cannot write ${path} here: ${UNWRITABLE[reason] ?? "it could not be written"}`;
 }
 
-/** A conflict copy, said one way wherever it is made: the note by title, the copy by its own. */
+/**
+ * A conflict copy, said one way wherever it is made: the note by title, the
+ * copy by its own name in Recent.
+ *
+ * ONE TOAST PER NOTE AND DEVICE (#340). Two devices typing into one note can
+ * leave a copy a second, and each copy's name in the sentence made each its
+ * own toast: on a phone, three long ones and "N more" over the note being
+ * typed in. The key is the note's and the device's, so every copy of one burst
+ * joins the toast already up and counts there; Recent keeps each copy's name.
+ */
 function keptBoth(context: SyncContext, path: string, copy: string, device?: string): void {
   context.host.notify({
-    kind: "conflict", text: `kept both versions of {notes}: {device}'s is in ${quoted(copy)}.`, paths: [path],
+    kind: "conflict", text: "kept both versions of {notes}: {device}'s is in a copy beside it.", paths: [path],
+    key: `conflict\u0000${path}\u0000${device ?? ""}`, detail: `The copy is ${quoted(copy)}.`,
     ...device === undefined ? {} : { device },
   });
 }
@@ -1548,7 +1558,7 @@ async function applyFolder(
     }
     throw error;
   }
-  context.state.setFolder(path, { fileId: change.file_id, versionId: change.version_id });
+  recordFolder(context, path, { fileId: change.file_id, versionId: change.version_id });
   await context.state.save();
   context.host.log(`folder path_class=folder decision=created seq=${change.seq}`);
   return "applied";
@@ -1658,8 +1668,8 @@ async function recaseFolder(
   // handler, which moves the selection before the call returns.
   const retired = caseTwinRoot(to, context.state.data.syncFolders);
   const files = Object.keys(context.state.data.files).filter((path) => path.startsWith(prefix));
-  const folders = Object.keys(context.state.data.folders)
-    .filter((path) => path === from || path.startsWith(prefix));
+  const tree = context.state.folderTree(from, to);
+  const folders = tree.map(([path]) => path);
   // Marked BEFORE the rename, like every other write this device makes. A
   // folder rename is reported ONCE, for the folder, and this plugin fans that
   // one event out into a move of every file beneath it and a
@@ -1719,13 +1729,16 @@ async function recaseFolder(
     context.state.setFile(under(path), record);
     context.state.forgetPath(path);
   }
-  for (const folder of folders) {
+  // Forgotten first, then written: a key written while its old one stands
+  // would forget it for holding the same id (`recordFolder`), and the move
+  // is one folder, not one forgotten.
+  const moving = tree.flatMap(([folder, moved]) => {
     const record = context.state.folderByPath(folder);
-    if (record === undefined) continue;
-    context.state.setFolder(under(folder), record);
     context.state.forgetFolder(folder);
-  }
-  context.state.setFolder(to, { fileId: change.file_id, versionId: change.version_id });
+    return record === undefined ? [] : [[moved, record] as const];
+  });
+  for (const [moved, record] of moving) recordFolder(context, moved, record);
+  recordFolder(context, to, { fileId: change.file_id, versionId: change.version_id });
   // SPENT HERE, WITH THE RECORD IT ADMITTED (`admitFolderRecord`, issue
   // #127): a second record one capitalisation off this folder is a twin again
   // -- including the twin a case-sensitive sender publishes moments later.

@@ -117,6 +117,13 @@ pub(crate) enum Frame {
         policy: Option<DevicePolicy>,
         app_version: Option<String>,
         archived: Option<bool>,
+        /// When a revoked device was first found revoked (issue #341). Rides
+        /// this frame for the reason `archived` does: a server before 1.1.13
+        /// replays it as the no-op update it reads.
+        revoked_at: Option<UnixMs>,
+        /// The revoked device's addresses and countries are forgotten, its
+        /// history kept (issue #341). An older server replays it as a no-op.
+        forget_addresses: bool,
     },
     /// A pairing's creator approved the claimant: it becomes active.
     DeviceActivate { device_id: DeviceId },
@@ -1734,7 +1741,7 @@ fn version_from(value: &Value) -> Result<VersionRecord, StoreError> {
 }
 
 fn device_value(record: &DeviceRecord, wrapped: &[u8; 32]) -> Value {
-    json::obj(vec![
+    let mut pairs = vec![
         ("id", text(record.device_id)),
         ("account", text(record.account_id)),
         ("name", text(&record.name)),
@@ -1752,7 +1759,12 @@ fn device_value(record: &DeviceRecord, wrapped: &[u8; 32]) -> Value {
         ("state", text(record.state.as_word())),
         ("archived", Value::Bool(record.archived)),
         ("wrapped", text(hex::encode(wrapped))),
-    ])
+    ];
+    // Only once it is known, so every other record reads as it always did.
+    if let Some(at) = record.revoked_at {
+        pairs.push(("revoked_at", num(at.0)));
+    }
+    json::obj(pairs)
 }
 
 fn device_from(value: &Value) -> Result<(DeviceRecord, [u8; 32]), StoreError> {
@@ -1782,6 +1794,8 @@ fn device_from(value: &Value) -> Result<(DeviceRecord, [u8; 32]), StoreError> {
             .get("archived")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        // Absent before 1.1.13 and for a device that is not revoked.
+        revoked_at: field_opt_num(value, "revoked_at").map(UnixMs),
     };
     Ok((record, field_bytes::<32>(value, "wrapped")?))
 }
@@ -1954,8 +1968,16 @@ impl Record {
                 policy,
                 app_version,
                 archived,
+                revoked_at,
+                forget_addresses,
             } => {
                 pairs.push(("device", text(*device_id)));
+                if let Some(at) = revoked_at {
+                    pairs.push(("revoked_at", num(at.0)));
+                }
+                if *forget_addresses {
+                    pairs.push(("forget_addresses", Value::Bool(true)));
+                }
                 pairs.push(("name", opt_text(name)));
                 pairs.push(("app", opt_text(app_version)));
                 pairs.push((
@@ -2110,6 +2132,9 @@ impl Record {
                 // Absent in every frame written before the flag existed, and
                 // absent means "no change", so those frames replay as they did.
                 archived: value.get("archived").and_then(Value::as_bool),
+                revoked_at: field_opt_num(&value, "revoked_at").map(UnixMs),
+                forget_addresses: value.get("forget_addresses").and_then(Value::as_bool)
+                    == Some(true),
                 policy: match value.get("policy") {
                     Some(policy) if !policy.is_null() => Some(DevicePolicy {
                         per_file_max_bytes: field_num(policy, "pfm")?,
@@ -2757,6 +2782,8 @@ mod tests {
                 }),
                 app_version: Some("0.1.1".to_string()),
                 archived: None,
+                revoked_at: None,
+                forget_addresses: false,
             },
             // The same frame carrying the archive flag, which is what an
             // archive writes: it round trips like any other (issue #247).
@@ -2766,6 +2793,18 @@ mod tests {
                 policy: None,
                 app_version: None,
                 archived: Some(true),
+                revoked_at: None,
+                forget_addresses: false,
+            },
+            // And the two retention facts (issue #341).
+            Frame::DeviceUpdate {
+                device_id: device.device_id,
+                name: None,
+                policy: None,
+                app_version: None,
+                archived: None,
+                revoked_at: Some(UnixMs(12)),
+                forget_addresses: true,
             },
             Frame::Device {
                 record: DeviceRecord {

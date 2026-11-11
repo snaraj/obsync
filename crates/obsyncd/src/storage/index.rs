@@ -17,8 +17,9 @@ use crate::storage::types::{
 };
 use crate::types::{AccountId, DeviceId, DomainId, FileId, Seq, Sid, UnixMs, VersionId};
 
-/// How many activity events one device keeps. Retention days bound them too;
-/// this bounds memory when a device heartbeats far more often than expected.
+/// How many activity events one device keeps, with no time limit: this bounds
+/// memory when a device heartbeats far more often than expected. A revoked
+/// device's addresses go after `REVOKED_ADDRESS_DAYS`; its events stay.
 pub(crate) const SEEN_HISTORY: usize = 256;
 
 /// Most heads one file may hold.
@@ -292,6 +293,8 @@ impl Index {
                 policy,
                 app_version,
                 archived,
+                revoked_at,
+                forget_addresses,
             } => {
                 if let Some(entry) = self.devices.get_mut(device_id) {
                     if let Some(name) = name {
@@ -310,6 +313,22 @@ impl Index {
                         && entry.record.state == DeviceState::Revoked
                     {
                         entry.record.archived = *flag;
+                    }
+                    // The retention facts, under the same guard: only a
+                    // revoked device's addresses are ever forgotten, and its
+                    // first stamp is the one that counts (issue #341).
+                    if entry.record.state == DeviceState::Revoked {
+                        if entry.record.revoked_at.is_none() {
+                            entry.record.revoked_at = *revoked_at;
+                        }
+                        if *forget_addresses {
+                            entry.record.address = None;
+                            entry.record.country = None;
+                            for event in &mut entry.seen {
+                                event.address = None;
+                                event.country = None;
+                            }
+                        }
                     }
                 }
             }
@@ -1128,6 +1147,8 @@ mod tests {
             policy: None,
             app_version: None,
             archived: Some(flag),
+            revoked_at: None,
+            forget_addresses: false,
         };
         index.apply(&record(2, archive(true)));
         assert!(
@@ -1153,11 +1174,60 @@ mod tests {
                 policy: None,
                 app_version: None,
                 archived: None,
+                revoked_at: None,
+                forget_addresses: false,
             },
         ));
         assert!(index.devices[&id].record.archived);
         index.apply(&record(6, archive(false)));
         assert!(!index.devices[&id].record.archived, "and it can come back");
+    }
+
+    /// The address retention is a property of a REVOKED device too (issue
+    /// #341), guarded here as well as in the store's pass: no frame, however
+    /// it was written or replayed, stamps or strips a device that syncs.
+    #[test]
+    fn a_replayed_retention_frame_never_touches_a_device_that_syncs() {
+        let mut index = Index::default();
+        let device = DeviceRecord {
+            address: Some("198.51.100.7".to_string()),
+            country: Some("XX".to_string()),
+            ..device_record()
+        };
+        let id = device.device_id;
+        index.apply(&record(
+            1,
+            Frame::Device {
+                record: device,
+                wrapped: [7u8; 32],
+            },
+        ));
+        let retention = Frame::DeviceUpdate {
+            device_id: id,
+            name: None,
+            policy: None,
+            app_version: None,
+            archived: None,
+            revoked_at: Some(UnixMs(9)),
+            forget_addresses: true,
+        };
+        index.apply(&record(2, retention.clone()));
+        let kept = &index.devices[&id].record;
+        assert_eq!(kept.revoked_at, None, "an ACTIVE device is never stamped");
+        assert_eq!(
+            (kept.address.as_deref(), kept.country.as_deref()),
+            (Some("198.51.100.7"), Some("XX")),
+            "an ACTIVE device keeps its address"
+        );
+
+        index.apply(&record(3, Frame::DeviceRevoke { device_id: id }));
+        index.apply(&record(4, retention));
+        let gone = &index.devices[&id].record;
+        assert_eq!(gone.revoked_at, Some(UnixMs(9)), "a revoked one is");
+        assert_eq!(
+            (gone.address.as_deref(), gone.country.as_deref()),
+            (None, None)
+        );
     }
 
     #[test]

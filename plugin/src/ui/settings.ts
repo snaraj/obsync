@@ -40,6 +40,7 @@ import { formatBytes, parseBytes, type Policy } from "../policy";
 import { platformLabel } from "../pairing";
 import { parseSyncFolders } from "../syncScope";
 import { refusalStatus, refusalText } from "../sync/engine";
+import { serverUrlRefusal } from "../transport";
 import { KEYS_LOST, type EdgeHeader, type State } from "../state";
 import { LEVELS, MERGES, count } from "../notices";
 import { HEADER_NAME, ownHeader, browserHeader, customHeaderBudget, type DeviceRecord } from "../transport";
@@ -117,29 +118,8 @@ export function normalizeServerUrl(value: string): string {
   }
 }
 
-/** Plain HTTP that never leaves this computer: the README's one-computer trial. */
-const LOOPBACK = /^http:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?$/i;
-
-/**
- * Why this device may not adopt a normalised address, or `null`; an empty
- * address is "not configured", not a refusal. The row below and
- * `ObsyncPlugin.setServerUrl` share this rule.
- *
- * PLAIN HTTP IS REFUSED ON EVERY PLATFORM, loopback on a desktop excepted.
- * Mobile Obsidian refuses it outright. A desktop used to accept it, and a
- * plain HTTP address in front of a terminator that redirects to HTTPS worked,
- * silently: the setup token -- also the dashboard's recovery sign-in -- and
- * every later request crossed the network in the clear before the redirect
- * (2026-09-24 battery, S08; #136). `normalizeServerUrl` lower-cases the
- * scheme, so the `Https://` a phone keyboard capitalises is the address it means.
- */
-export function serverUrlRefusal(url: string, isMobile: boolean): string | null {
-  if (url === "" || url.startsWith("https://")) return null;
-  if (isMobile) return "Mobile Obsidian only reaches HTTPS servers.";
-  return LOOPBACK.test(url)
-    ? null
-    : "Use your server's https address. Plain HTTP would send the setup token and every request unencrypted; it is accepted only for this computer itself (localhost or 127.0.0.1).";
-}
+/** The one address rule, for this row, `setServerUrl`, a load and every request (`transport.ts`). */
+export { serverUrlRefusal } from "../transport";
 
 /** The form every edge-header refusal ends with. No provider is named (`PROVIDER NEUTRALITY` above). */
 const HEADER_FORM = "Write one header per line as Name: value, for example X-Access-Id: 1234.";

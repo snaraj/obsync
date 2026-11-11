@@ -66,7 +66,7 @@ Numbered for citation, repo-scoped, none negotiable in code:
    committed as the owner's GitHub noreply identity (both fields). No
    co-author or session trailers of any kind. Agent-authored commit messages
    and PR bodies end with the ACTING agent's own signature, exactly matching
-   its agent label in the roster below (`- Fable5.1` ↔ `fable5.1`,
+   its agent label in the roster below (`- Fable5.2` ↔ `fable5.2`, `- Fable5.1` ↔ `fable5.1`,
    `- Opus5.5` ↔ `opus5.5`, `- Opus5` ↔ `opus5`, `- Sonnet5` ↔ `sonnet5`, `- 5.6 Sol` ↔ `5.6-sol`,
    `- GPT-6` ↔ `gpt-6`).
 4. **Fail-closed doctrine — never weaken.** No security behavior may be made
@@ -407,7 +407,7 @@ is evidence, never authority.
   reviewer with either verdict; reapplied only for a complete replacement
   head. Never on an issue.
 - **Agent labels.** Every agent-created PR and issue carries `agent-authored`
-  AND the acting agent's own label: `fable5.1` (Claude Fable 5.1, `D97706`),
+  AND the acting agent's own label: `fable5.2` (Claude Fable 5.2), `fable5.1` (Claude Fable 5.1, `D97706`),
   `opus5.5` (Claude Opus 5.5), `opus5` (Claude Opus 5), `sonnet5` (Claude Sonnet 5, `0EA5E9`), `5.6-sol`
   (ChatGPT 5.6 Sol), `gpt-6` (Codex GPT-6). Body signature must match the label.
 - **PR budget.** At most 3 agent PRs open by default. The owner authorized

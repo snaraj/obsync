@@ -44,8 +44,8 @@
 import { sealScope, type SyncContext } from "./engine";
 import { encryptChunk2, openRecord, sealRecord } from "../seal2";
 import { readManifestSeal2 } from "../sealWire";
-import { GRAVES_MAX, type FileRecord as FileState } from "../state";
-import { CHUNK_MAX, chunkStream } from "../chunker";
+import { GRAVES_MAX, type FileRecord as FileState, type FolderRecord } from "../state";
+import { CHUNK_MAX, CHUNK_MIN, chunkStream } from "../chunker";
 import {
   Bytes,
   base64,
@@ -62,6 +62,7 @@ import { ApiError, FileRecord, UPLOAD_BUDGET_BYTES, VersionAck, VersionPost } fr
 import { SyncFolders, assertFolderCaseScope, assertFolderScope, assertSyncPath, inSyncScope } from "../syncScope";
 import { VaultPathError, assertVaultPath } from "../vaultPath";
 import { quoted } from "../notices";
+import { formatBytes } from "../policy";
 
 /**
  * The ciphertext one push holds between encrypting a chunk and the server
@@ -164,6 +165,90 @@ export interface PushOutcome {
 }
 
 /**
+ * The largest encrypted manifest a server stores, in base64 characters
+ * (`crates/obsyncd/src/api/files.rs`, `MANIFEST_CT_MAX`): one version's
+ * path, size and chunk list. At about 162 bytes a chunk it lists about 4,850
+ * chunks -- near 19 GiB at the 4 MiB chunk target, between 4.7 and 38 GiB by
+ * content -- and a version that cannot be posted is a file that cannot sync.
+ */
+export const MANIFEST_CT_MAX = 1024 * 1024;
+
+/**
+ * A file whose chunk list cannot fit one version (issue #330), refused
+ * before any chunk leaves the device: the upload used to run to the end --
+ * hours for a 25 GiB file -- and only the version post was refused.
+ */
+export class TooLarge extends Error {
+  constructor(readonly size: number) { super("push: too_large"); }
+}
+
+/** What the person reads about a file too large to sync, after its name. */
+export function tooLargeText(size: number): string {
+  return `at ${formatBytes(size)} it is too large to sync, and none of it was sent. Move it out of the synced folders or ` +
+    "split it into smaller files; Troubleshooting has more under \"A file is too large to sync\".";
+}
+
+/** Verdicts by path, for a file of that size and time: a pass every 30 s must not read 30 GiB again (#330). */
+const roomFor = new WeakMap<SyncContext, Map<string, { size: number; mtime: number; fits: boolean }>>();
+
+/**
+ * Whether the version of a file of more than one chunk fits the manifest
+ * ceiling, decided BEFORE any chunk is encrypted or sent (issue #330).
+ *
+ * BY SIZE WHEN THE SIZE DECIDES, BY THE CUT POINTS WHEN IT DOES NOT. Every
+ * chunk but the last is 1 to 8 MiB (`chunker.ts`), so a file has between
+ * `size / 8 MiB` and `size / 1 MiB + 1` chunks, and a chunk entry
+ * (`{"sid":…,"cid":…,"len":…}`) costs 154 bytes and the digits of its length
+ * -- seven, but for the last -- and a comma between two. Below about 4.7 GiB even the most chunks fit, and above about
+ * 38 GiB even the fewest do not: the size alone answers. Between the two the
+ * count depends on the content -- the cut points are content-defined -- so
+ * the file is read once for its cut points alone (the rolling hash, nothing
+ * encrypted, nothing sent) and the exact manifest is measured. That read is
+ * the cost of a file in that range, once per size and time.
+ */
+async function manifestFits(context: SyncContext, path: string, size: number, mtime: number): Promise<boolean> {
+  const known = roomFor.get(context)?.get(path);
+  if (known !== undefined && known.size === size && known.mtime === mtime) return known.fits;
+  const started = context.now();
+  // The manifest without its chunks, `answer` included: the longest it can be.
+  const bare = utf8(JSON.stringify({ v: 1, path, size, mtime, domain: context.domainId, chunks: [], sha256: "", deleted: false, answer: true })).length;
+  const encoded = (bytes: number): number => 4 * Math.ceil((bytes + 16) / 3);
+  const fewest = Math.ceil(size / CHUNK_MAX);
+  const most = Math.floor((size - 1) / CHUNK_MIN) + 1;
+  let chunks = fewest;
+  let length: number;
+  let decided = "size";
+  if (encoded(bare + 162 * most) <= MANIFEST_CT_MAX) {
+    chunks = most;
+    length = encoded(bare + 162 * most);
+  } else if (encoded(bare + 162 * fewest - 7) > MANIFEST_CT_MAX) {
+    length = encoded(bare + 162 * fewest - 7);
+  } else {
+    decided = "cut_points";
+    let entries = 0;
+    chunks = 0;
+    for await (const chunk of chunkStream(context.host.source(path, size))) {
+      if (context.signal?.aborted === true) throw new ApiError(0, "cancelled", "sync stopped on this device");
+      chunks++;
+      entries += 154 + String(chunk.length).length;
+    }
+    length = encoded(bare + entries + chunks - 1);
+  }
+  const fits = length <= MANIFEST_CT_MAX;
+  let verdicts = roomFor.get(context);
+  if (verdicts === undefined) roomFor.set(context, verdicts = new Map());
+  verdicts.set(path, { size, mtime, fits });
+  // Said when it refuses, and when it cost a read: a file the size clears is every large file.
+  if (!fits || decided !== "size") {
+    context.host.log(
+      `push path_class=file decision=${fits ? "fits" : "refused"} reason=manifest_ceiling bytes=${size} chunks=${chunks} ` +
+        `manifest_bytes=${length} budget=${MANIFEST_CT_MAX} decided_by=${decided} duration_ms=${context.now() - started}`,
+    );
+  }
+  return fits;
+}
+
+/**
  * The file a push was asked for is no longer there (issue #164). Not a
  * failure: a note renamed, deleted or moved with its folder between the queue
  * and the read has an event of its own, and that event decides what is
@@ -181,6 +266,16 @@ export class PathGone extends Error {
 export function bury(context: SyncContext, fileId: string, versionId: string, path: string, folder: boolean, ts?: number): void {
   const dropped = context.state.bury(fileId, { versionId, path, folder, ...(ts === undefined ? {} : { ts }) });
   if (dropped > 0) context.host.log(`grave decision=dropped reason=cap dropped=${dropped} budget=${GRAVES_MAX}`);
+}
+
+/**
+ * Record a folder, and say when that forgot the same folder under another
+ * spelling (issue #375; `state.ts`, `claimFolder`). No path in the line: a
+ * folder's name is vault content.
+ */
+export function recordFolder(context: SyncContext, path: string, record: FolderRecord): void {
+  const forgot = context.state.setFolder(path, record).length;
+  if (forgot > 0) context.host.log(`folder path_class=folder decision=forgot reason=same_file_id count=${forgot} file=${record.fileId}`);
 }
 
 /** SHA-256 over the concatenated sids: a size-independent content identity. */
@@ -465,6 +560,7 @@ async function publishFile(context: SyncContext, path: string, force = false, ov
     plaintextHash = hex(await sha256(plaintext));
     single = ciphertext;
   } else {
+    if (!(await manifestFits(context, path, stat.size, stat.mtime))) throw new TooLarge(stat.size);
     uploads = await sendChunks(context, path, stat.size, plan);
   }
 
@@ -863,7 +959,7 @@ export async function pushFolder(context: SyncContext, path: string, recreate = 
     ack = await postManifest(context, fileId, ack.ack.heads, [], manifest, 0, false);
     reason = "recreated";
   }
-  context.state.setFolder(path, { fileId, versionId: ack.versionId });
+  recordFolder(context, path, { fileId, versionId: ack.versionId });
   await context.state.save();
   context.host.log(`folder path_class=folder decision=published reason=${reason} version=${ack.versionId}`);
   return ack.versionId;
@@ -878,6 +974,17 @@ export async function pushFolderDelete(context: SyncContext, path: string, judge
     assertVaultPath(path);
     const record = context.state.folderByPath(path);
     if (record === undefined) return null;
+    // NO TOMBSTONE FOR AN ID ANOTHER KEY STILL HOLDS (#375). A file saved
+    // before 1.1.13 can name one folder id under two spellings (`state.ts`,
+    // `parseData`), and this key's tombstone would retire the other's folder
+    // on every device. One folder named twice loses a name, not the folder:
+    // this key is forgotten, and the server is told nothing.
+    if (Object.entries(context.state.data.folders).some(([other, held]) => other !== path && held.fileId === record.fileId)) {
+      context.state.forgetFolder(path);
+      await context.state.save();
+      context.host.log(`folder path_class=folder decision=forgot reason=same_file_id at=removal file=${record.fileId}`);
+      return null;
+    }
     const parents = record.versionId !== "" ? [record.versionId] : [];
     const ack = await postManifest(context, record.fileId, parents, [], folderManifest(context, path, true), 0, false, undefined, judged);
     context.state.forgetFolder(path);

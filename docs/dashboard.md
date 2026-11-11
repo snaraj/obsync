@@ -183,19 +183,23 @@ them, and for how long.
 | --- | --- | --- |
 | Its name, platform, plugin version and pairing date | As long as its record exists | Only a [purge](purge.md) removes the record |
 | When it last signed in, checked in and wrote | Until a later sign-in, check-in or edit replaces them; unchanged once it stops connecting | A purge |
-| Its latest known address and country | Each is replaced only by a later event that carries one. An event without a country leaves the previous country in place: in `none` edge mode, or when the edge sends no valid country. So a country can outlive the whole history, and switching edge modes does not clear it | A purge |
-| **History**: each `sign_in`, `heartbeat` and `edit`, with its time, address and country | Its newest 256 events, with no time limit; **History** shows the newest 64 | Newer events push the oldest out; a device that stops connecting keeps its last 256 |
+| Its latest known address and country | Each is replaced only by a later event that carries one. An event without a country leaves the previous country in place: in `none` edge mode, or when the edge sends no valid country. So a country can outlive the whole history, and switching edge modes does not clear it | Deleted 30 days after the device is revoked; otherwise a purge |
+| **History**: each `sign_in`, `heartbeat` and `edit`, with its time, address and country | Its newest 256 events, with no time limit; **History** shows the newest 64 | Newer events push the oldest out; a device that stops connecting keeps its last 256. Thirty days after the device is revoked, every event's address and country are deleted and the events stay |
 | Which device wrote each stored version, and when | As long as that version is kept ([Garbage collection](storage.md#garbage-collection)) | Garbage collection |
 
-- **Revoking or forgetting a device keeps its record**, its last known address
-  and country and its history included. Only a pairing claim nobody approved is deleted
-  outright: rejected, expired, or dropped by a restart.
+- **Revoking or forgetting a device keeps its record**, its history included.
+  Its addresses and countries stay for 30 days after the revocation, then the
+  server's hourly maintenance deletes them, from the record and from every
+  event; the log line `device_addresses decision=retention` counts them. A
+  device revoked by a server older than 1.1.13 counts its 30 days from the
+  first hour this server ran 1.1.13 or later. Only a pairing claim nobody
+  approved is deleted outright: rejected, expired, or dropped by a restart.
 - **A [purge](purge.md) is the only way to erase a device's record**, and it
   erases everything else with it.
 - **Replaced values stay on disk a while longer.** Every change is appended to
-  the journal, so an earlier address or name, or an event past the newest 256,
-  stays in older files on the journal volume until later compactions remove
-  them. Compaction follows the journal's growth (at least 16 MiB since the
+  the journal, so an earlier address or name, an address deleted 30 days after
+  a revocation, or an event past the newest 256, stays in older files on the
+  journal volume until later compactions remove them. Compaction follows the journal's growth (at least 16 MiB since the
   last one), not a clock, so on a quiet server that can take a long time.
   Backups of the journal volume hold the same records for as long as you keep
   them.

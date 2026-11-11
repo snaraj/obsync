@@ -266,6 +266,8 @@ export function routeFor(method: string, target: string): Route | null {
 export interface TransportOptions {
   request: RequestFn;
   serverUrl: () => string;
+  /** A phone or tablet: plain HTTP is refused there even to this device itself (`addressRefusal`). */
+  isMobile: boolean;
   /** The device credential, or `null` before pairing. */
   device: () => { id: string; secret: Bytes } | null;
   edgeHeaders: () => EdgeHeader[];
@@ -734,6 +736,73 @@ export function customHeaderBudget(names: readonly string[]): boolean {
     && 68 + names.length + names.reduce((total, name) => total + name.length, 0) <= 4096;
 }
 
+/** Plain HTTP that never leaves this computer: the README's one-computer trial. */
+const LOOPBACK = /^http:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?$/i;
+
+/**
+ * THE ONE ADDRESS RULE, AND IT FAILS CLOSED: why nothing may be sent to `url`
+ * from this device, or `null`. The Server URL row and `setServerUrl` judge
+ * what is typed (`serverUrlRefusal`), a load judges the address it finds
+ * (`heldAddressRefusal`), every request judges its base AND the whole URL it
+ * will send (`Transport.destination`), and the adapter judges the URL it is
+ * handed (`fetchHttp`). What does not parse as an absolute http(s) URL, or
+ * carries a user name or password, is `malformed`, and refused: a held scheme
+ * and its slashes alone leave the base `http:`, and `http:` + `/v1/setup` is
+ * `http:/v1/setup`, which a URL parser reads as a request to the host `v1` --
+ * plain HTTP to a host nobody typed (review of #388, finding 1).
+ *
+ * PLAIN HTTP IS REFUSED ON EVERY PLATFORM, loopback on a desktop excepted.
+ * Mobile Obsidian refuses it outright. A desktop used to accept it, and a
+ * plain HTTP address in front of a terminator that redirects to HTTPS worked,
+ * silently: the setup token -- also the dashboard's recovery sign-in -- and
+ * every later request crossed the network in the clear before the redirect
+ * (2026-09-24 battery, S08; #136). Judged by the parsed origin, so the
+ * `Https://` a phone keyboard capitalises is the address it means.
+ */
+export function addressRefusal(url: string, isMobile: boolean): "malformed" | "plain_http" | null {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return "malformed"; }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "malformed";
+  if (parsed.protocol === "http:" && (isMobile || !LOOPBACK.test(parsed.origin))) return "plain_http";
+  return parsed.username === "" && parsed.password === "" ? null : "malformed";
+}
+
+/** The Server URL row's words for `addressRefusal`; an empty address is "not configured", not a refusal. */
+export function serverUrlRefusal(url: string, isMobile: boolean): string | null {
+  const refused = url === "" ? null : addressRefusal(url, isMobile);
+  if (refused === null) return null;
+  if (refused === "malformed") return "That is not a web address obsync can use. Type your server's https address, such as https://sync.example.com.";
+  return isMobile
+    ? "Mobile Obsidian only reaches HTTPS servers."
+    : "Use your server's https address. Plain HTTP would send the setup token and every request unencrypted; it is accepted only for this computer itself (localhost or 127.0.0.1).";
+}
+
+/**
+ * What a device says when the address it holds is plain HTTP `addressRefusal`
+ * refuses: saved before Settings refused it, or edited in the data file.
+ */
+export const INSECURE_SERVER_URL =
+  "This device's Server URL is a plain HTTP address, so obsync sends nothing to it: every request would cross the network unencrypted. " +
+  "Change it to your server's https address in obsync's settings, under Server.";
+
+/** And when it is not a whole address at all. */
+export const MALFORMED_SERVER_URL =
+  "This device's Server URL is not a complete web address, so obsync sends nothing to it. " +
+  "Enter your server's https address again in obsync's settings, under Server.";
+
+/**
+ * The code and the words for an address this device holds that `addressRefusal`
+ * refuses, or `null`; an empty one is "not configured". ONE ANSWER for the
+ * start-up notice (`main.ts`) and every request (`Transport.destination`).
+ */
+export function heldAddressRefusal(url: string, isMobile: boolean): { code: string; text: string } | null {
+  const refused = url === "" ? null : addressRefusal(url, isMobile);
+  if (refused === null) return null;
+  return refused === "plain_http"
+    ? { code: "insecure_server_url", text: INSECURE_SERVER_URL }
+    : { code: "malformed_server_url", text: MALFORMED_SERVER_URL };
+}
+
 export class Transport {
   // Shared across modal close/reopen. Cancellation discards a late result,
   // but cannot permit a second buffered request before the first settles.
@@ -811,16 +880,32 @@ export class Transport {
     return Math.round(base / 2 + this.random() * (base / 2));
   }
 
-  /** The server address as it stands NOW, read by every attempt. */
-  private base(): string {
+  /**
+   * The URL a request to `target` is sent to: the server address as it stands
+   * NOW, read by every attempt, and the route after it. THE ADDRESS RULE AT
+   * THE BOUNDARY, for an address that never passed Settings (`addressRefusal`):
+   * a request carries the device's signature, and a setup or pairing its
+   * token. The base is judged, and so is the URL base and route make together,
+   * because that is where the request goes -- an address the parser repairs
+   * once a route follows it names a host nobody typed. Refused before anything
+   * is hashed, signed or sent.
+   */
+  private destination(target: string): string {
     const base = this.options.serverUrl().replace(/\/+$/, "");
     if (base === "") throw new ApiError(0, "no_server_url", "no server URL is configured");
-    return base;
+    const url = base + target;
+    const isMobile = this.options.isMobile === true;
+    const refused = heldAddressRefusal(base, isMobile) ?? heldAddressRefusal(url, isMobile);
+    if (refused !== null) {
+      this.log(`http decision=refused reason=${refused.code}`);
+      throw new ApiError(0, refused.code, refused.text);
+    }
+    return url;
   }
 
   private async prepare(target: string, options: CallOptions): Promise<Prepared> {
     // Refused before anything is hashed or signed; each attempt asks again.
-    this.base();
+    this.destination(target);
     const headers: Record<string, string> = {};
     let body: Bytes = new Uint8Array(0);
     let bodyText: string | undefined;
@@ -871,7 +956,7 @@ export class Transport {
    * manufactured itself.
    */
   private async attempt(method: string, target: string, sending: Prepared, check = (): void => undefined): Promise<Attempt> {
-    const url = this.base() + target;
+    const url = this.destination(target);
     const headers = { ...sending.headers };
     if (sending.device) {
       const ts = Math.floor(this.now() / 1000);

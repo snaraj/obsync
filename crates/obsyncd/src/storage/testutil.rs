@@ -103,6 +103,7 @@ pub(crate) fn device_record() -> DeviceRecord {
         },
         state: DeviceState::Active,
         archived: false,
+        revoked_at: None,
     }
 }
 

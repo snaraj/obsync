@@ -61,8 +61,12 @@
 #                     comes from the proxy and from nothing else. This is what
 #                     `0.0.0.0/0` in that variable would silently destroy, and
 #                     a stale CIDR in the compose file fails here.
-#   8. the server saw it  obsync's OWN log carries the `event=request
-#                     path_class=/readyz status=200` line for that request.
+#   8. the server saw it  an unsigned `GET /v1/changes` sent through the
+#                     proxy is refused `401`, and obsync's OWN log carries the
+#                     `event=request path_class=/v1/changes status=401
+#                     decision=missing_auth` line for it. Not the readiness
+#                     probe's line: an answered probe logs at debug (#321),
+#                     below the default level, and a refusal never does.
 #                     RESIDUAL, stated rather than overclaimed: this server
 #                     does not log the client address (`api/mod.rs::emit`), so
 #                     the DERIVATION of the forwarded address is pinned by the
@@ -462,12 +466,21 @@ awk -v ip="${proxy_address}" -v cidr="${trusted}" 'BEGIN {
 }' || deny "the proxy address ${proxy_address} is outside the trusted range ${trusted}"
 prove "trusted range: ${trusted} is the allocated subnet of ${network} and holds the proxy at ${proxy_address}"
 
-# (8) The server's own account of the request that arrived through the proxy.
+# (8) The server's own account of a request that arrived through the proxy. An
+# answered readiness probe logs at debug (#321), below the default level, so
+# the request asked about is one every level shows: an unsigned feed read,
+# which obsync refuses `401 missing_auth` at warn.
+refused="$(curl --silent --show-error --max-time 3 --output /dev/null --write-out '%{http_code}' \
+  --cacert "${root_certificate}" \
+  --resolve "${HOST}:${HTTPS_PORT}:127.0.0.1" \
+  "https://${HOST}:${HTTPS_PORT}/v1/changes" 2>/dev/null || true)"
+[ "${refused}" = 401 ] \
+  || deny "an unsigned GET /v1/changes through the proxy answered ${refused:-nothing}, not 401"
 request_line="$(docker logs "${obsync_container}" 2>&1 \
-  | grep -F 'event=request' | grep -F 'path_class=/readyz' | grep -F 'status=200' \
-  | tail -n 1 || true)"
+  | grep -F 'event=request' | grep -F 'path_class=/v1/changes' | grep -F 'status=401' \
+  | grep -F 'decision=missing_auth' | tail -n 1 || true)"
 [ -n "${request_line}" ] \
-  || deny 'the obsync log carries no served /readyz request; the proxied 200 did not come from this server'
+  || deny 'the obsync log carries no refused /v1/changes request; the proxied 401 did not come from this server'
 prove "the server saw it: ${request_line}"
 
 # (9) The setup token, read the documented way from the compose-managed

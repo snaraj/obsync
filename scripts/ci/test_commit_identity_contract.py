@@ -43,7 +43,7 @@ class TheCleanCaseIsAccepted(unittest.TestCase):
     def test_every_roster_signature_is_accepted(self):
         # Specify the documented lanes independently: iterating the validator's
         # own tuple cannot detect an omitted lane.
-        for signature in ("- Fable5.1", "- Opus5.5", "- Opus5", "- Sonnet5", "- 5.6 Sol", "- GPT-6"):
+        for signature in ("- Fable5.2", "- Fable5.1", "- Opus5.5", "- Opus5", "- Sonnet5", "- 5.6 Sol", "- GPT-6"):
             with self.subTest(signature=signature):
                 self.assertEqual(
                     contract.refusals([commit(body=f"Subject\n\nBody.\n\n{signature}")]), []
@@ -107,6 +107,14 @@ class SignatureRefusals(unittest.TestCase):
             "- GPT-6 (adversarial reviewer)",
             "- GPT-6\nafterword",
         ):
+            with self.subTest(signature=signature):
+                self.assertIn(
+                    "signature", rules([commit(body=f"Subject\n\nBody.\n\n{signature}")])
+                )
+
+    def test_fable52_near_matches_are_refused(self):
+        # The roster gained `- Fable5.2` beside `- Fable5.1`; the match stays exact.
+        for signature in ("- Fable5.20", "- Fable5.3", "- fable5.2", "- Fable 5.2", "- Fable5", "- Fable5.2 (lane)"):
             with self.subTest(signature=signature):
                 self.assertIn(
                     "signature", rules([commit(body=f"Subject\n\nBody.\n\n{signature}")])

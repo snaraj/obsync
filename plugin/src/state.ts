@@ -540,6 +540,24 @@ function readEnvelope(raw: string, installationId: string): SecretEnvelope {
 }
 
 /**
+ * ONE FILE ID, ONE FOLDER KEY (issue #375). A folder's file id is derived
+ * from the path it was first published at, and a re-case moves its record to
+ * the new spelling with that id (`sync/pull.ts`, `recaseFolder`), so the same
+ * id can be written under a second key. Two keys for one id is a stale one
+ * beside the live one, and a reconcile pass owes a removal for the stale key:
+ * that tombstone retires the live folder on every other device. So a key
+ * written for an id forgets every other key holding it, and answers which.
+ * The write itself says which key is live: it is the folder just made, moved
+ * or published. A saved file does not, and keeps both (`parseData`).
+ */
+function claimFolder(folders: Record<string, FolderRecord>, path: string, record: FolderRecord): string[] {
+  const displaced = Object.keys(folders).filter((other) => other !== path && folders[other]?.fileId === record.fileId);
+  for (const other of displaced) delete folders[other];
+  folders[path] = record;
+  return displaced;
+}
+
+/**
  * Parse noncritical bookkeeping onto defaults. State.open validates identity
  * and credential persistence separately before this data reaches the engine.
  */
@@ -601,6 +619,10 @@ export function parseData(loaded: unknown, isMobile: boolean): ObsyncData {
       // reach the vault, so a path it names is input, not memory.
       if (!isVaultPath(path) || !isRecord(record)) continue;
       if (typeof record["fileId"] !== "string" || typeof record["versionId"] !== "string") continue;
+      // A file saved before 1.1.13 can hold one folder id under two spellings
+      // (#375), and both are kept. Which one is the folder this vault shows
+      // is the vault's to say, at the next reconcile pass (`engine.ts`,
+      // `twinFolders`): the order a file lists them in says nothing about it.
       data.folders[path] = { fileId: record["fileId"], versionId: record["versionId"] };
     }
   }
@@ -1554,8 +1576,9 @@ export class State {
     return this.data.folders[path];
   }
 
-  setFolder(path: string, record: FolderRecord): void {
-    this.data.folders[path] = record;
+  /** Record a folder, and answer the keys that held its id until now (`claimFolder`). */
+  setFolder(path: string, record: FolderRecord): string[] {
+    const displaced = claimFolder(this.data.folders, path, record);
     delete this.data.graves[record.fileId];
     // A RECORD WRITTEN FOR THIS FOLDER ENDS ITS RETIREMENT. The receiving
     // rule is "the tombstone for this folder's record has been applied and no
@@ -1563,6 +1586,20 @@ export class State {
     // `admitFolderRecord`), and this is every writer of one -- the feed's own
     // create, a re-case, and this device's own publication.
     delete this.data.retiredRoots[path];
+    return displaced;
+  }
+
+  /**
+   * The folder records a rename of `from` to `to` covers -- `from` itself and
+   * every one beneath it, in key order -- each with the name it takes. ONE
+   * answer for the pull's re-case and this device's own rename (`sync/pull.ts`,
+   * `recaseFolder`; `sync/engine.ts`, `folderRenamed`), so the two cannot
+   * cover different trees.
+   */
+  folderTree(from: string, to: string): [string, string][] {
+    return Object.keys(this.data.folders)
+      .filter((path) => path === from || path.startsWith(`${from}/`))
+      .map((path) => [path, to + path.slice(from.length)]);
   }
 
   forgetFolder(path: string): void {

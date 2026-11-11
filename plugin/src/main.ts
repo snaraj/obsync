@@ -80,7 +80,7 @@ import {
   inSyncTree,
   parseSyncFolders,
 } from "./syncScope";
-import { ApiError, DeviceRecord, INTERACTIVE_MS, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
+import { ApiError, DeviceRecord, INTERACTIVE_MS, heldAddressRefusal, NOT_OBSYNC, Patience, Sent, SessionEnded, Transport, isNewer, lostMessage } from "./transport";
 import { AFTER_START, DISK_STALLED, EngineStatus, FEED_FAILED, ForceTally, MoveResult, NOT_ANSWERING, NoticeAction, PressListing, PULL_WORDS, SyncContext, SyncEngine, Timers, TrashResult, VaultHost, VaultStat, VaultWriter, refusalStatus, refusalText as pressRefusal, stopped } from "./sync/engine";
 import { EditorBusy, fetchRemoteOnly, heldNotes } from "./sync/pull";
 import { CopyPublicationError, HistoryBrowser, HistoryEntry, HistoryOperation, restoreCopy } from "./sync/history";
@@ -681,8 +681,39 @@ export function statusWords(status: Exclude<EngineStatus, { kind: "idle" }>): st
       return `error — ${status.message}`;
     case "paused":
       return `paused — ${status.message}`;
+    case "stopped":
+      return `stopped — ${status.why}`;
   }
 }
+
+/**
+ * WHAT THIS DEVICE IS DOING THAT SYNC MUST WAIT FOR, at most one at a time:
+ * saving a folder selection (`setScope`), leaving its server (`leave`), or
+ * restoring a version from history (`restoreHistory`). Three booleans used to
+ * say it, and nothing stopped two of them being true at once -- a restore
+ * begun while a leave was giving up the credential. A folder save may take
+ * over a restore, which it cancels and waits for; nothing else takes over
+ * anything. An encryption transition is not one of these: it is saved state
+ * that outlives a reload, and a leave or a folder save may happen beside it.
+ */
+export type Operation =
+  | { kind: "none" }
+  | { kind: "scope" }
+  | { kind: "leave" }
+  | { kind: "restore"; operation: HistoryOperation };
+
+const NO_OPERATION: Operation = { kind: "none" };
+
+/**
+ * Whether a start may go on (`startEngineOwned`, at every step): only while
+ * nothing in `Operation` runs, and never during an encryption transition.
+ */
+export function startWanted(operation: Operation, transition: boolean): boolean {
+  return operation.kind === "none" && !transition;
+}
+
+/** A folder save or a restore holds sync stopped: Sync now, Force sync and history wait for it. */
+const holdsSync = (operation: Operation): boolean => operation.kind === "scope" || operation.kind === "restore";
 
 /**
  * Force sync's one answer (#369), from what the press returned -- its tally,
@@ -3845,11 +3876,10 @@ export default class ObsyncPlugin extends Plugin {
   private readonly engineTeardowns = new Set<Promise<void>>();
   /** Every start under way (`startEngine`): what a leave settles before it revokes (#233). */
   private readonly starts = new Set<Promise<void>>();
-  private changingScope = false;
+  /** The one operation under way that sync waits for (`Operation`). */
+  private operation: Operation = NO_OPERATION;
   /** Ends the wait of the folder Save in progress: its Cancel (issue #185). */
   private scopeCancel: AbortController | null = null;
-  /** A leave is running: a second press, or a second dialog, is refused (S22). */
-  private leaving = false;
   private rotating = false;
   private rotationRunning = false;
   private rotationClient: RotationClient | null = null;
@@ -3857,7 +3887,6 @@ export default class ObsyncPlugin extends Plugin {
   /** The folder renames handled this turn, before and after: their entries' own reports are theirs (`registerVaultEvents`). */
   private renamedFolders: [string, string][] = [];
   private readonly histories = new Set<HistoryBrowser>();
-  private restoring: HistoryOperation | null = null;
   private manualRestore: Promise<{ path: string; syncRequested: boolean }> | null = null;
   /**
    * The reconnect a start that could not reach the server left behind: how
@@ -3875,7 +3904,7 @@ export default class ObsyncPlugin extends Plugin {
 
   override async onload(): Promise<void> {
     const generation = this.lifecycle = {};
-    this.changingScope = false;
+    if (this.operation.kind === "scope") this.operation = NO_OPERATION;
     this.teardownEngine();
     // A same-instance reload owns resumption after older writers settle.
     // They may still persist the old State, so wait before taking a snapshot.
@@ -3921,9 +3950,10 @@ export default class ObsyncPlugin extends Plugin {
         state.assertAvailable();
         // Ends the call, never retried (`SessionEnded`, issue #272).
         if (!this.isCurrent(generation) || this.state !== state) throw new SessionEnded();
-        return fetchHttp(request);
+        return fetchHttp(request, this.isMobile);
       },
       serverUrl: () => state.data.serverUrl,
+      isMobile: this.isMobile,
       device: () => this.credential(state),
       edgeHeaders: () => state.data.edgeHeaders,
       log: (line) => this.log(line),
@@ -3951,6 +3981,18 @@ export default class ObsyncPlugin extends Plugin {
     if (state.copied) {
       this.log("state decision=not_paired reason=copied_vault");
       this.notices.show({ kind: "error", text: `${COPIED_VAULT} Both are in obsync's settings, under This device.` });
+    }
+    // AN ADDRESS SETTINGS WOULD REFUSE: plain HTTP saved before it was
+    // refused there, or anything edited into the data file, a whole address
+    // or not. Every request refuses it (`Transport.destination`); this says
+    // so once, with what to change, and the status keeps saying it until the
+    // address is changed.
+    const held = heldAddressRefusal(state.data.serverUrl, this.isMobile);
+    if (held !== null) {
+      this.log(`state decision=refused reason=${held.code}`);
+      this.notices.show({ kind: "error", key: REFUSAL_NOTICE, text: `t${held.text.slice(1)}` });
+      this.noticed = held.text;
+      this.setStatus({ kind: "error", code: "server_url", message: held.text });
     }
     // AND A DEVICE A CRASH LEFT WITH NO KEYS the same way in (issue #230).
     if (state.keysLost) {
@@ -4453,7 +4495,7 @@ export default class ObsyncPlugin extends Plugin {
     engine.stop();
     // stopAndWait drains in-flight work before its final State save. That save
     // may reject after a storage failure; retain the drain until it settles.
-    const teardown = Promise.resolve().then(() => engine.stopAndWait()).catch((error: unknown) => {
+    const teardown = Promise.resolve().then(() => engine.stopAndWait("stopping")).catch((error: unknown) => {
       if (error instanceof StateStorageError && error.reason === "superseded") return;
       this.log("engine decision=stopped reason=teardown_save_failed");
     });
@@ -4506,7 +4548,7 @@ export default class ObsyncPlugin extends Plugin {
 
   private async startEngineOwned(): Promise<void> {
     const generation = this.lifecycle;
-    if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || this.changingScope || this.restoring !== null) return;
+    if (!this.isCurrent(generation) || !this.state.paired || this.forgottenDevice || holdsSync(this.operation)) return;
     // A TRANSITION PENDING IS SAID, never `idle` (desktop rig, 1.1.10): a
     // restart found it, returned here, and the bar read idle with sync stopped.
     if (this.rotating || this.state.custody2()?.rotation) {
@@ -4523,7 +4565,7 @@ export default class ObsyncPlugin extends Plugin {
     // `engine` is still the one; one that is not goes no further, and says so
     // in one line. What it made, whoever superseded it has stopped.
     const wanted = (engine: SyncEngine | null): boolean =>
-      this.isCurrent(generation) && !this.changingScope && this.restoring === null && !this.leaving && !this.rotating && !this.state.custody2()?.rotation && this.engine === engine;
+      this.isCurrent(generation) && startWanted(this.operation, this.rotating || this.state.custody2()?.rotation != null) && this.engine === engine;
     const superseded = (): void => this.log(`engine decision=stopped reason=superseded duration_ms=${Date.now() - started}`);
     // A LEGACY DEVICE ANOTHER DEVICE'S UPGRADE REMOVED IS TOLD SO (#370), not
     // sent to an upgrade that already ran: Check's signed read, with a
@@ -4545,7 +4587,7 @@ export default class ObsyncPlugin extends Plugin {
     this.takeReconnectTimer();
     this.cancelHistories();
     const previous = this.engine;
-    await previous?.stopAndWait();
+    await previous?.stopAndWait("restarting sync");
     if (!wanted(previous)) return superseded();
     const engine: SyncEngine = new SyncEngine({
       state: this.state,
@@ -4575,12 +4617,13 @@ export default class ObsyncPlugin extends Plugin {
         this.reconnect = null;
       }
       // A START THAT GOT THROUGH ENDS WHATEVER AN EARLIER ONE SAID (#155): the
-      // cycle's `offline`, and an error a relaunch after a revoke, a rebuilt
-      // server or a wrong address left standing for as long as nothing spoke.
+      // cycle's `offline`, an error a relaunch after a revoke, a rebuilt
+      // server or a wrong address left standing for as long as nothing spoke,
+      // and the `stopped` of the engine this one replaces.
       // A quiet start emits nothing of its own, so the engine is asked; what
       // the new engine already said is its own, and stands.
       const earlier = this.statusValue.kind;
-      if (earlier === "error" || earlier === "offline") this.setStatus(engine.current());
+      if (earlier === "error" || earlier === "offline" || earlier === "stopped") this.setStatus(engine.current());
       await this.registerAccountRecovery();
     } catch (error) {
       if (this.engine !== engine) { engine.stop(); return; }
@@ -4686,7 +4729,7 @@ export default class ObsyncPlugin extends Plugin {
    * and what it found.
    */
   async syncNow(everything = false): Promise<void> {
-    if (this.changingScope || this.restoring !== null) return;
+    if (holdsSync(this.operation)) return;
     const away = this.shown().kind === "offline";
     if (away) {
       this.wake("sync_now");
@@ -4720,7 +4763,7 @@ export default class ObsyncPlugin extends Plugin {
    * the engine's pass (`SyncEngine.forceSync`), answered once, as Sync now is.
    */
   async forceSync(): Promise<void> {
-    if (this.changingScope || this.restoring !== null) return;
+    if (holdsSync(this.operation)) return;
     const status = this.shown();
     const custody = this.state.paired ? this.state.custody2() : undefined;
     const [reason, refusal]: [string, string] | [null, null] = this.state.keysLost ? ["keys_lost", KEYS_LOST]
@@ -4756,14 +4799,14 @@ export default class ObsyncPlugin extends Plugin {
   }
 
   syncContext(): SyncContext | null {
-    return this.lifecycle === null || this.changingScope || this.restoring !== null || this.rotating || this.state.custody2()?.rotation ? null : this.engine?.context ?? null;
+    return this.lifecycle === null || holdsSync(this.operation) || this.rotating || this.state.custody2()?.rotation ? null : this.engine?.context ?? null;
   }
 
   private async quiesceForRotation(): Promise<void> {
-    if (this.leaving || this.changingScope || this.restoring !== null) throw new Error("Finish the current leave, folder change or restore first.");
+    if (this.operation.kind !== "none") throw new Error("Finish the current leave, folder change or restore first.");
     this.rotating = true;
     this.cancelReconnect(); this.cancelHistories();
-    await this.engine?.stopAndWait();
+    await this.engine?.stopAndWait("changing encryption");
     await Promise.allSettled([...this.starts, ...this.engineTeardowns, ...this.manualFetches]);
     this.engine = null;
   }
@@ -4876,7 +4919,7 @@ export default class ObsyncPlugin extends Plugin {
     const history = previous ? this.state.custody2()?.history : null;
     if (previous && !history) throw new Error("This device has no previous-generation history key.");
     const operation: HistoryOperation = new HistoryOperation(() => this.isCurrent(generation) && this.engine === engine &&
-      !this.changingScope && (this.restoring === null || this.restoring === operation) &&
+      this.operation.kind !== "scope" && (this.operation.kind !== "restore" || this.operation.operation === operation) &&
       this.state.data.deviceId === deviceId && this.state.data.vrk === vrk && this.state.data.serverUrl === serverUrl &&
       (!previous || JSON.stringify(this.state.custody2()?.history) === JSON.stringify(history)));
     const browser = new HistoryBrowser(context, operation, { newestFirst, ...(history ? { previous: history } : {}) });
@@ -4894,8 +4937,10 @@ export default class ObsyncPlugin extends Plugin {
 
   restoreHistory(browser: HistoryBrowser, entry: HistoryEntry): Promise<{ path: string; syncRequested: boolean }> {
     browser.operation.check();
-    if (!this.histories.has(browser) || this.restoring !== null) throw new Error("Another recovery operation owns this device. Wait or cancel it first.");
-    this.restoring = browser.operation;
+    if (!this.histories.has(browser) || this.operation.kind === "restore") throw new Error("Another recovery operation owns this device. Wait or cancel it first.");
+    // A leave or a folder save in progress owns the device: its own cancels end this dialog.
+    if (this.operation.kind !== "none") throw new Error("This device is leaving its server or saving its folder selection. Restore once that finishes.");
+    this.operation = { kind: "restore", operation: browser.operation };
     for (const other of this.histories) if (other !== browser) other.operation.cancel();
     const work = this.restoreHistoryOwned(browser, entry);
     this.manualRestore = work;
@@ -4910,7 +4955,7 @@ export default class ObsyncPlugin extends Plugin {
     let syncRequested = false;
     try {
       // No self-deadlock: the restore is held separately from older Fetches.
-      await previous?.stopAndWait();
+      await previous?.stopAndWait("restoring a version");
       browser.operation.check();
       await browser.operation.wait(Promise.allSettled(this.manualFetches));
       browser.operation.check();
@@ -4919,15 +4964,15 @@ export default class ObsyncPlugin extends Plugin {
       this.log(`history decision=restore_failed reason=${error instanceof CopyPublicationError ? "publication_may_exist" : "refused_or_cancelled"}`);
       throw error;
     } finally {
-      if (this.restoring === browser.operation) this.restoring = null;
+      if (this.operation.kind === "restore" && this.operation.operation === browser.operation) this.operation = NO_OPERATION;
       this.closeHistory(browser);
-      if (this.isCurrent(generation) && !this.changingScope && this.engine === previous) {
+      if (this.isCurrent(generation) && this.operation.kind !== "scope" && this.engine === previous) {
         // Ordinary startup may wait on network retries. Do not withhold a
         // completed local-copy receipt while that independent work settles.
         const restart = this.startEngine();
         syncRequested = created !== null;
         void restart.then(() => {
-          if (created && this.isCurrent(generation) && !this.changingScope && this.engine?.started) {
+          if (created && this.isCurrent(generation) && this.operation.kind !== "scope" && this.engine?.started) {
             // No pull echo marker or historical identity: ordinary push
             // gives this new local file a fresh id and empty parents.
             this.engine.changed(created.path);
@@ -4997,8 +5042,10 @@ export default class ObsyncPlugin extends Plugin {
       this.log("scope decision=refused reason=invalid_selection");
       throw error;
     }
-    if (this.changingScope) throw new Error("A folder selection is already being saved.");
-    this.changingScope = true;
+    if (this.operation.kind === "scope") throw new Error("A folder selection is already being saved.");
+    if (this.operation.kind === "leave") throw new Error("This device is leaving its server. Change the folder selection once that finishes.");
+    // A restore in progress is taken over: the cancel below ends it, and the stop waits for it.
+    this.operation = { kind: "scope" };
     this.cancelHistories();
     const cancel = this.scopeCancel = new AbortController();
     const started = Date.now();
@@ -5017,7 +5064,7 @@ export default class ObsyncPlugin extends Plugin {
       // stopped long poll may finish, but must not advance its cursor.
       const previous = this.engine;
       const quiet = (async (): Promise<boolean> => {
-        await previous?.stopAndWait();
+        await previous?.stopAndWait("saving the folder selection");
         await Promise.allSettled(this.manualFetches);
         await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);
         return false;
@@ -5050,7 +5097,7 @@ export default class ObsyncPlugin extends Plugin {
       throw error;
     } finally {
       if (this.scopeCancel === cancel) this.scopeCancel = null;
-      if (this.isCurrent(generation)) this.changingScope = false;
+      if (this.isCurrent(generation) && this.operation.kind === "scope") this.operation = NO_OPERATION;
     }
     if (withdrawn) {
       void this.startEngine().catch(() => this.log("scope decision=sync_pending reason=restart_failed"));
@@ -5106,7 +5153,7 @@ export default class ObsyncPlugin extends Plugin {
    * start, and said so once.
    */
   private async finishScopeChange(generation: object | null): Promise<void> {
-    if (!this.isCurrent(generation) || this.changingScope) return;
+    if (!this.isCurrent(generation) || this.operation.kind === "scope") return;
     try {
       await this.applyScope(this.state, "start", Date.now(), () => undefined);
       this.notices.show({ kind: "info", text: "the folder selection you saved before Obsidian closed is now in effect." });
@@ -5263,11 +5310,11 @@ export default class ObsyncPlugin extends Plugin {
     }
     this.log(`device decision=revoked self=${deviceId === this.state.data.deviceId}`);
     if (deviceId === this.state.data.deviceId) {
-      await this.engine?.stopAndWait();
+      await this.engine?.stopAndWait("removing this device");
       this.engine = null;
       // Not this device's own leave, which forgets the pairing next and says
       // what happened itself: a phone put this up after every Leave (#233).
-      if (!this.leaving) this.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
+      if (this.operation.kind !== "leave") this.setStatus({ kind: "error", code: "credential_rejected", message: FORGOTTEN_DEVICE });
     }
   }
 
@@ -5468,20 +5515,21 @@ export default class ObsyncPlugin extends Plugin {
       // ONE LEAVE AT A TIME: a second one, started while the first was still
       // revoking, ended beside its success with a notice about an inactive
       // session (S22).
-      if (this.leaving) {
+      if (this.operation.kind === "leave") {
         reason = "already_leaving";
         throw new Error("This device is already leaving the server. Wait for that to finish.");
       }
-      if (this.changingScope || this.restoring !== null) {
+      if (holdsSync(this.operation)) {
         reason = "busy";
         throw new Error("This device is changing its folder selection or restoring a version. Leave the server once that finishes.");
       }
-      this.leaving = owned = true;
+      this.operation = { kind: "leave" };
+      owned = true;
       const starting = [...this.starts];
       // Quiesce first, so the count below is a fact rather than a guess and
       // no push, fetch or restore is still running against the credential
       // this is about to give up.
-      await this.engine?.stopAndWait();
+      await this.engine?.stopAndWait("leaving the server");
       // AND A START UNDER WAY IS SETTLED BEFORE ANYTHING ELSE (#233): one
       // begun as Obsidian opened, a reconnect, a Sync now. The stop above
       // ended its requests; from here it makes no engine and starts none
@@ -5559,7 +5607,7 @@ export default class ObsyncPlugin extends Plugin {
       if (reason === "unfinished") reason = "ok";
       return { decision: "left", revoked };
     } finally {
-      if (owned) this.leaving = false;
+      if (owned && this.operation.kind === "leave") this.operation = NO_OPERATION;
       this.log(
         `unpair decision=${revoked ? "revoked" : cleared ? "left_locally" : "refused"} reason=${reason} unpushed=${unpushed} ` +
           `local_cleared=${cleared} previous_credential=${previous} duration_ms=${Date.now() - started}`,
@@ -5750,11 +5798,11 @@ export default class ObsyncPlugin extends Plugin {
   /** Forget only a rejected enrollment; keep local content, key and address. */
   async resetForgottenEnrollment(): Promise<void> {
     if (!this.forgottenDevice) return;
-    if (this.changingScope || this.restoring !== null) throw new Error("Finish the current restore or folder change first.");
+    if (holdsSync(this.operation)) throw new Error("Finish the current restore or folder change first.");
     const { state, assertCurrent } = this.captureSession();
     this.cancelReconnect();
     this.cancelHistories();
-    await this.engine?.stopAndWait();
+    await this.engine?.stopAndWait("pairing again");
     await Promise.allSettled(this.engineTeardowns);
     await Promise.allSettled(this.manualFetches);
     await Promise.allSettled(this.manualRestore === null ? [] : [this.manualRestore]);

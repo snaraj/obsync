@@ -494,7 +494,7 @@ function publicSetupDetail(message, request, value, text) {
     const file = new URL("../../crates/obsyncd/src/api/mod.rs", import.meta.url);
     if (fs.statSync(file).size > 1024 * 1024) refuse("public_template_source");
     const source = fs.readFileSync(file, "utf8");
-    if (createHash("sha256").update(source).digest("hex") !== "11c6b6ab39d2c02ccbc7bc9faa445f1a40d85fb43cfd3542f487eb1c8ede5d28") refuse("public_template_source");
+    if (createHash("sha256").update(source).digest("hex") !== "05c01293fe44b0507ef4b705a9efe43de07dc5fa4b25444a6bb2dc9c18902d43") refuse("public_template_source");
     const arms = [...source.matchAll(/StoreError::AuthorityRefused\(_\) => ApiError::new\(\s*409,\s*code,\s*"([^"\r\n]+)",\s*\)/g)];
     if (arms.length !== 1 || arms[0][1] !== SETUP_GENERATION_DETAIL) refuse("public_template_source");
   } catch { refuse("public_template_source"); }
