@@ -74,7 +74,7 @@ import {
   soleDomain,
 } from "../domainmap";
 import { State, UNVERIFIED_LANDING, isPushed } from "../state";
-import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, MAX_WAIT_SECONDS, NOT_OBSYNC, RESTART_CODES, SessionEnded, Transport, certificateRefusal } from "../transport";
+import { ApiError, ChangeRecord, ChangesPage, EDGE_REQUIRED, FileRecord, INTERACTIVE_MS, MAX_WAIT_SECONDS, INSECURE_SERVER_URL, NOT_OBSYNC, RESTART_CODES, SessionEnded, Transport, certificateRefusal } from "../transport";
 import { VaultPathError, errorText, caseOnly, vaultPathRefusal } from "../vaultPath";
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, sameChunks, settleBeside, stage, unwritableText, yieldName } from "./pull";
@@ -632,6 +632,8 @@ export function refusalStatus(error: unknown, then = RESUMES): EngineStatus | nu
   }
   // Pairing's own words for the edge (`transport.ts`), so the two never disagree.
   if (error.code === "edge_required") return { kind: "error", code: "edge", message: said(EDGE_REQUIRED) };
+  // Refused on this device, before anything was sent: only the person can change it.
+  if (error.code === "insecure_server_url") return { kind: "error", code: "server_url", message: INSECURE_SERVER_URL };
   return null;
 }
 

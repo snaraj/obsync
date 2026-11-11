@@ -266,6 +266,8 @@ export function routeFor(method: string, target: string): Route | null {
 export interface TransportOptions {
   request: RequestFn;
   serverUrl: () => string;
+  /** A phone or tablet: plain HTTP is refused there even to this device itself (`serverUrlRefusal`). */
+  isMobile: boolean;
   /** The device credential, or `null` before pairing. */
   device: () => { id: string; secret: Bytes } | null;
   edgeHeaders: () => EdgeHeader[];
@@ -734,6 +736,53 @@ export function customHeaderBudget(names: readonly string[]): boolean {
     && 68 + names.length + names.reduce((total, name) => total + name.length, 0) <= 4096;
 }
 
+/** Plain HTTP that never leaves this computer: the README's one-computer trial. */
+const LOOPBACK = /^http:\/\/(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?$/i;
+
+/**
+ * Why this device may not use a server address, or `null`; an empty address
+ * is "not configured", not a refusal. ONE RULE for the Server URL row,
+ * `ObsyncPlugin.setServerUrl`, the address a load finds, and every request
+ * (`Transport.base`).
+ *
+ * PLAIN HTTP IS REFUSED ON EVERY PLATFORM, loopback on a desktop excepted.
+ * Mobile Obsidian refuses it outright. A desktop used to accept it, and a
+ * plain HTTP address in front of a terminator that redirects to HTTPS worked,
+ * silently: the setup token -- also the dashboard's recovery sign-in -- and
+ * every later request crossed the network in the clear before the redirect
+ * (2026-09-24 battery, S08; #136). `normalizeServerUrl` lower-cases the
+ * scheme, so the `Https://` a phone keyboard capitalises is the address it means.
+ */
+export function serverUrlRefusal(url: string, isMobile: boolean): string | null {
+  if (url === "" || url.startsWith("https://")) return null;
+  if (isMobile) return "Mobile Obsidian only reaches HTTPS servers.";
+  return LOOPBACK.test(url)
+    ? null
+    : "Use your server's https address. Plain HTTP would send the setup token and every request unencrypted; it is accepted only for this computer itself (localhost or 127.0.0.1).";
+}
+
+/**
+ * Whether a held address is plain HTTP that `serverUrlRefusal` refuses, judged
+ * by its origin -- the form Settings saves (`normalizeServerUrl`) -- so an
+ * address saved before that, or edited in the data file, is judged as Settings
+ * would judge it. ONE ANSWER for the start-up notice (`main.ts`) and every
+ * request (`Transport.base`). What does not parse, or is not HTTP at all, is
+ * `fetchHttp`'s to refuse.
+ */
+export function insecureServerUrl(url: string, isMobile: boolean): boolean {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { return false; }
+  return parsed.protocol === "http:" && serverUrlRefusal(parsed.origin, isMobile) !== null;
+}
+
+/**
+ * What a device says when the address it holds is one `insecureServerUrl`
+ * refuses: saved before Settings refused it, or edited in the data file.
+ */
+export const INSECURE_SERVER_URL =
+  "This device's Server URL is a plain HTTP address, so obsync sends nothing to it: every request would cross the network unencrypted. " +
+  "Change it to your server's https address in obsync's settings, under Server.";
+
 export class Transport {
   // Shared across modal close/reopen. Cancellation discards a late result,
   // but cannot permit a second buffered request before the first settles.
@@ -815,6 +864,13 @@ export class Transport {
   private base(): string {
     const base = this.options.serverUrl().replace(/\/+$/, "");
     if (base === "") throw new ApiError(0, "no_server_url", "no server URL is configured");
+    // THE SETTINGS RULE AT THE BOUNDARY, for an address that never passed it:
+    // a request to it carries the device's signature, and a setup or pairing
+    // its token, in the clear. Refused before anything is hashed or signed.
+    if (insecureServerUrl(base, this.options.isMobile === true)) {
+      this.log("http decision=refused reason=insecure_server_url");
+      throw new ApiError(0, "insecure_server_url", INSECURE_SERVER_URL);
+    }
     return base;
   }
 

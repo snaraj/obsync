@@ -111,7 +111,8 @@ test("legacy invalid or credential-bearing URLs refuse before fetch with value-f
   };
   for (const base of [
     `https://fixture-user:${marker}@fixture.example.invalid`,
-    `http://${marker}@fixture.example.invalid`,
+    // Loopback, so the plain-HTTP rule passes it and this adapter is what refuses its credentials.
+    `http://${marker}@127.0.0.1:8888`,
     `https://:${marker}@fixture.example.invalid`,
     `javascript:${marker}`, `data:text/plain,${marker}`,
     `http://[${marker}`, `${marker} invalid URL`,
@@ -131,6 +132,15 @@ test("legacy invalid or credential-bearing URLs refuse before fetch with value-f
     const outcome = await transport.setup("22".repeat(32), "Synthetic", { name: "Test", platform: "linux", app_version: "test" });
     assert.equal(outcome.outcome, "lost", "existing one-shot accounting stays conservative");
     assert.equal(outcome.reason, "network=obsync refused the server URL; use HTTP(S) without URL credentials.");
+    assert.equal(sent.length, 0);
+  }
+  // Plain HTTP across the network is the transport's own refusal, before this adapter or a signature (`insecureServerUrl`).
+  {
+    const rows = [];
+    const transport = new Transport({ request: fetchHttp, serverUrl: () => `http://${marker}@fixture.example.invalid`, device: () => ({ id: "11".repeat(16), secret: new Uint8Array(32) }), edgeHeaders: () => [], log: row => rows.push(row), maxAttempts: 1 });
+    await assert.rejects(transport.account(), error => error.code === "insecure_server_url" && !error.message.includes(marker) && !error.detail.includes(marker));
+    await assert.rejects(transport.setup("22".repeat(32), "Synthetic", { name: "Test", platform: "linux", app_version: "test" }), error => error.code === "insecure_server_url");
+    assert.deepEqual(rows, ["http decision=refused reason=insecure_server_url", "http decision=refused reason=insecure_server_url"]);
     assert.equal(sent.length, 0);
   }
   // Validate without rewriting the URL or its query/path/body bytes.
