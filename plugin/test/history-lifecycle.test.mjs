@@ -297,7 +297,7 @@ for (const failure of [false, true]) test(`same-instance reload resumes after ${
     assert.equal(h.loads(), 0, "state must not load while publication owns the old snapshot");
     assert.equal(h.starts(), 0);
     assert.equal(r.instance.engine, null);
-    assert.notEqual(r.instance.restoring, null, "reload must retain the old publication owner");
+    assert.equal(r.instance.operation.kind, "restore", "reload must retain the old publication owner");
     let secondLoad;
     if (transition !== "reload") {
       r.instance.onunload();
@@ -311,7 +311,7 @@ for (const failure of [false, true]) test(`same-instance reload resumes after ${
     assert.equal(r.host.text(path), "RETAINED SENTINEL");
     if (failure) assert.match(result.error.message, /copy may exist/);
     else { assert.equal(result.value.path, path); assert.equal(result.value.syncRequested, false); }
-    assert.equal(r.instance.restoring, null);
+    assert.equal(r.instance.operation.kind, "none");
     assert.equal(r.instance.manualRestore, null);
     if (transition === "unload_again") {
       assert.equal(h.loads(), 0);

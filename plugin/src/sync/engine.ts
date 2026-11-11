@@ -535,7 +535,14 @@ export type EngineStatus =
   | { kind: "syncing"; pending: number; held?: string; checking?: number; waiting?: string }
   | { kind: "offline" }
   | { kind: "error"; message: string; code?: string }
-  | { kind: "paused"; message: string };
+  | { kind: "paused"; message: string }
+  /**
+   * NOTHING SYNCS: this engine was stopped, and `why` is the plain words for
+   * what stopped it ("saving the folder selection"). It used to end in
+   * `idle`, which the bar draws as the check of a device in step, so a
+   * stopped or superseded engine could leave "synced" on screen.
+   */
+  | { kind: "stopped"; why: string };
 
 /**
  * What a refusal about this device's whole sync says, in plain words, with the
@@ -1406,7 +1413,7 @@ export class SyncEngine {
    * next step; what does not end is named once past `STOP_WAIT_MS`, and still
    * waited for: whether a stop may abandon it is the owner's to decide.
    */
-  async stopAndWait(): Promise<void> {
+  async stopAndWait(why: string): Promise<void> {
     const started = this.nowFn();
     this.stop();
     const watch = this.timers.set(() => {
@@ -1420,7 +1427,7 @@ export class SyncEngine {
     this.timers.clear(watch);
     await this.options.state.save();
     this.options.host.log(`engine decision=quiesced duration_ms=${this.nowFn() - started}`);
-    this.status({ kind: "idle" });
+    this.status({ kind: "stopped", why });
   }
 
   /** The paths this engine is pushing now, for a person waiting on its stop. */

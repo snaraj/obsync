@@ -410,9 +410,9 @@ test("a plugin reload during the revoke stops the clear and says so", async (t) 
 });
 
 test("leaving refuses while a folder change or a restore is in flight", async (t) => {
-  for (const busy of ["changingScope", "restoring"]) {
+  for (const busy of [{ kind: "scope" }, { kind: "restore", operation: {} }]) {
     const r = await fixture(t, { devices: 2 });
-    r.instance[busy] = busy === "changingScope" ? true : {};
+    r.instance.operation = busy;
     await assert.rejects(() => r.instance.leaveServer({ discardUnpushed: false, localOnly: false }), /folder selection or restoring/);
     assert.deepEqual(r.revokes(), []);
     assert.equal(r.state().deviceId, KEYS.deviceId);

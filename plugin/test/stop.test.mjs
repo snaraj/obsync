@@ -101,13 +101,13 @@ test("a stop ends a push asleep in its retry and the feed's long poll at once, i
   await d.timers.run(10, () => retried(d, "http POST /v1/chunks/exists") && d.server.feedWaiters.length === 1);
   const before = d.statuses.length;
 
-  const ms = await elapsed(d.timers, d.engine.stopAndWait());
+  const ms = await elapsed(d.timers, d.engine.stopAndWait("leaving the server"));
 
   assert.ok(ms < 2000, `the stop took ${ms} ms of virtual time; the push's budget is a minute`);
   assert.ok(d.host.logs.some((line) => /^http POST \/v1\/chunks\/exists decision=cancelled phase=sleeping/.test(line)), "the retry was ended in its pause");
   assert.ok(d.host.logs.some((line) => /^http GET \/v1\/changes\?\S+ decision=cancelled phase=in_flight/.test(line)), "the long poll was ended, not left open");
   assert.ok(d.host.logs.includes("push path_class=file decision=cancelled reason=engine_stopped"), d.host.logs.join("\n"));
-  assert.deepEqual(d.statuses.slice(before), [{ kind: "idle" }], "one word, once nothing runs, and no failure for the work the stop ended");
+  assert.deepEqual(d.statuses.slice(before), [{ kind: "stopped", why: "leaving the server" }], "one word, once nothing runs, and no failure for the work the stop ended");
   assert.equal(d.host.logs.some((line) => /decision=(failed|stopped)\b/.test(line)), false, "nor a line at warn level");
   assert.equal(d.state.fileByPath(NOTE), undefined, "the note is still unsent, and the next start's pass queues it");
 });
@@ -129,13 +129,13 @@ test("the status never says idle while an upload is still stopping (#185)", asyn
   const before = d.statuses.length;
 
   let done = false;
-  const stopping = d.engine.stopAndWait().then(() => { done = true; });
+  const stopping = d.engine.stopAndWait("saving the folder selection").then(() => { done = true; });
   await d.timers.run();
   assert.equal(done, false, "a read in progress is not something a stop can cut");
   assert.deepEqual(d.statuses.slice(before), [], "and while it finishes the status stays what it was: never idle");
   held.resolve();
   await stopping;
-  assert.deepEqual(d.statuses.slice(before), [{ kind: "idle" }]);
+  assert.deepEqual(d.statuses.slice(before), [{ kind: "stopped", why: "saving the folder selection" }], "the stop's word, never idle");
 });
 
 for (const shape of ["one chunk", "many chunks"]) test(`a chunk upload asleep in its backoff ends at once when sync stops: ${shape} (#157)`, async () => {
@@ -375,7 +375,7 @@ test("a stop drains a coalesced metadata write dispatched before it, including i
   assert.ok(snapshot.files[first]);
   const mark = d.host.logs.length, before = d.statuses.length;
   let done = false;
-  const stopping = d.engine.stopAndWait().then(() => { done = true; });
+  const stopping = d.engine.stopAndWait("restarting sync").then(() => { done = true; });
   assert.equal(d.engine.started, false, "stop closes work admission before waiting for persistence");
   heldFile.resolve();
   await d.timers.run(0);
@@ -392,7 +392,7 @@ test("a stop drains a coalesced metadata write dispatched before it, including i
   const receipt = after.findIndex(line => /^state decision=saved reason=coalesced records=1 budget_ms=1500 duration_ms=\d+$/.test(line));
   const quiesced = after.findIndex(line => /^engine decision=quiesced /.test(line));
   assert.ok(receipt >= 0 && quiesced > receipt, after.join("\n"));
-  assert.deepEqual(d.statuses.slice(before), [{ kind: "idle" }]);
+  assert.deepEqual(d.statuses.slice(before), [{ kind: "stopped", why: "restarting sync" }]);
   assert.equal(d.state.fileByPath(later), undefined, "new vault work was not recorded as synced");
   assert.equal((await d.server.noteFiles(d.keys.manifestKey)).length, 2, "the stopped engine published no new note");
   assert.equal(after.some(line => line.startsWith("push path_class=file decision=published ")), false);

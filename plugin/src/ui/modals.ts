@@ -1534,6 +1534,14 @@ export class StatusModal extends Modal {
         .addButton((button) => button.setButtonText("Retry now").setCta().onClick(() => { this.plugin.retry(); }));
       return;
     }
+    // Stopped while something else finishes: it starts again by itself, and a press asks at once.
+    if (status.kind === "stopped") {
+      new Setting(this.contentEl)
+        .setName("Sync is stopped")
+        .setDesc(`It starts again by itself once obsync is done ${status.why}.`)
+        .addButton((button) => button.setButtonText("Retry now").onClick(() => { this.plugin.retry(); }));
+      return;
+    }
     if (status.kind !== "error") return;
     const pair = status.code === "credential_rejected";
     const settings = pair || status.code === "edge";

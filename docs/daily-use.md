@@ -36,7 +36,9 @@ where it is, so the bar does not flicker while you type.
 Hover the icon for its words: `obsync: not paired` before pairing, then
 `obsync: idle` (`obsync: idle — syncing no folders` when **Selected folders**
 is empty), `obsync: syncing <n>` while `n` files are in flight, `obsync:
-offline — retrying` when the server cannot be reached, and `obsync: error —
+offline — retrying` when the server cannot be reached, `obsync: stopped —
+<what>` with a stop sign while a folder selection is saved, this device leaves
+its server, a version is restored or encryption changes, and `obsync: error —
 <reason>` when sync has stopped and needs you. Click it for **Show sync
 status**, which says the same in full, stays current while it is open, and
 offers the one thing to do next: **Retry now**, **Pair again** or **Open

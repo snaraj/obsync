@@ -565,6 +565,15 @@ test("Show sync status stays true while open, and offers the next step for the s
     assert.deepEqual(d.calls, call, status.code);
     if (call.includes("close")) d.modal.onOpen();
   }
+
+  // Stopped while something else finishes: what, and a way to ask again at once.
+  d.calls.length = 0;
+  d.change({ kind: "stopped", why: "saving the folder selection" });
+  assert.ok(d.drawn.includes("Sync is stopped"));
+  assert.ok(d.drawn.includes("It starts again by itself once obsync is done saving the folder selection."));
+  assert.equal(d.button().text, "Retry now");
+  d.button().click();
+  assert.deepEqual(d.calls, ["retry"]);
   d.modal.onClose();
   assert.equal(d.watchers.size, 0, "closed, it stops listening");
 });
