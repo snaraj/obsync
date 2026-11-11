@@ -79,7 +79,7 @@ import { VaultPathError, errorText, caseOnly, vaultPathRefusal } from "../vaultP
 import { SyncFolders, inFolderScope, inSyncScope, movedSelection, selectionAfterRename } from "../syncScope";
 import { ANSWER_MS, ApplyResult, answerOf, announceCopies, decodeRecordManifest, droppedWrite, EDITING_WINDOW_MS, HeldNote, Prefetch, Unwritable, applyChange, heldNotes, publishHeld, restoreRecorded, resumePaused, sameChunks, settleBeside, stage, unwritableText, yieldName } from "./pull";
 import { publishPause } from "./pause";
-import { PathGone, carryPost, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest } from "./push";
+import { PathGone, TooLarge, carryPost, pushDelete, pushFile, pushFolder, pushFolderDelete, sidDigest, tooLargeText } from "./push";
 import { ChunkRepair, REPAIR_BATCH_SIDS, REPAIR_SCAN_MS, REPAIR_TICK_MS, REPAIR_WALK_MS } from "./repair";
 import { Suspicion, probeFeed, recoverLost, seenBefore, young } from "./restore";
 
@@ -1010,7 +1010,7 @@ export class SyncEngine {
    * what the status says while the change is here, and a write of another
    * path takes neither away.
    */
-  private readonly unsent = new Map<string, { failure: number; refused: boolean; full: boolean }>();
+  private readonly unsent = new Map<string, { failure: number; refused: boolean; full: boolean; size?: number }>();
   private failures = 0;
   private running = false;
   private cancelled = false;
@@ -2850,6 +2850,19 @@ export class SyncEngine {
         this.park(context, held.fileId, error);
         return;
       }
+      // A FILE TOO LARGE FOR ONE VERSION (#330) was refused before a byte of
+      // it was sent (`push.ts`, `manifestFits`, which logged why): said once
+      // per size, and named in the status for as long as it is here.
+      if (error instanceof TooLarge) {
+        this.unsent.set(path, { failure: ++this.failures, refused: true, full: false, size: error.size });
+        const key = `too_large\u0000${path}\u0000${error.size}`;
+        if (!context.refused.has(key)) {
+          context.refused.add(key);
+          context.host.notify({ kind: "error", paths: [path], text: `did not send {notes}: ${tooLargeText(error.size)}` });
+        }
+        this.status(this.resting());
+        return;
+      }
       // A path this device may not sync is a decision, not a failure: it is
       // logged and dropped, and the status bar stays quiet. Every other
       // failure is the user's business.
@@ -3453,6 +3466,8 @@ export class SyncEngine {
     if (this.absent) return { kind: "offline" };
     // A CHANGE THE SERVER REFUSED IS SAID BY NAME for as long as it is here
     // (#299): gone when a push of it is taken, or a pass finds nothing to send.
+    const large = [...this.unsent].filter(([, entry]) => entry.size !== undefined).at(-1);
+    if (large !== undefined) return { kind: "error", code: "too_large", message: `Did not send ${quoted(large[0])}: ${tooLargeText(large[1].size as number)}` };
     const refused = [...this.unsent].filter(([, entry]) => entry.refused).map(([path]) => path);
     if (refused.length > 0) return { kind: "error", code: "push_refused", message: refusedChange(refused) };
     // PATHS, NOT ENTRIES (#296): a note queued again while its push is in
