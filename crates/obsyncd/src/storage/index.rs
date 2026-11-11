@@ -1183,6 +1183,53 @@ mod tests {
         assert!(!index.devices[&id].record.archived, "and it can come back");
     }
 
+    /// The address retention is a property of a REVOKED device too (issue
+    /// #341), guarded here as well as in the store's pass: no frame, however
+    /// it was written or replayed, stamps or strips a device that syncs.
+    #[test]
+    fn a_replayed_retention_frame_never_touches_a_device_that_syncs() {
+        let mut index = Index::default();
+        let device = DeviceRecord {
+            address: Some("198.51.100.7".to_string()),
+            country: Some("XX".to_string()),
+            ..device_record()
+        };
+        let id = device.device_id;
+        index.apply(&record(
+            1,
+            Frame::Device {
+                record: device,
+                wrapped: [7u8; 32],
+            },
+        ));
+        let retention = Frame::DeviceUpdate {
+            device_id: id,
+            name: None,
+            policy: None,
+            app_version: None,
+            archived: None,
+            revoked_at: Some(UnixMs(9)),
+            forget_addresses: true,
+        };
+        index.apply(&record(2, retention.clone()));
+        let kept = &index.devices[&id].record;
+        assert_eq!(kept.revoked_at, None, "an ACTIVE device is never stamped");
+        assert_eq!(
+            (kept.address.as_deref(), kept.country.as_deref()),
+            (Some("198.51.100.7"), Some("XX")),
+            "an ACTIVE device keeps its address"
+        );
+
+        index.apply(&record(3, Frame::DeviceRevoke { device_id: id }));
+        index.apply(&record(4, retention));
+        let gone = &index.devices[&id].record;
+        assert_eq!(gone.revoked_at, Some(UnixMs(9)), "a revoked one is");
+        assert_eq!(
+            (gone.address.as_deref(), gone.country.as_deref()),
+            (None, None)
+        );
+    }
+
     #[test]
     fn one_collection_frame_prunes_versions_across_files_and_the_feed_follows() {
         let mut index = Index::default();
